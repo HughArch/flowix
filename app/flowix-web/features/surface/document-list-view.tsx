@@ -553,9 +553,6 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
   const mediaFilterCount = (appliedMediaNameQuery ? 1 : 0)
     + (appliedMediaPathQuery ? 1 : 0)
     + (mediaLibraryFilter.file_type ? 1 : 0);
-  const mediaDraftFilterCount = (mediaNameQuery.trim() ? 1 : 0)
-    + (mediaPathQuery.trim() ? 1 : 0)
-    + (mediaTypeQuery === 'any' ? 0 : 1);
   const saveMediaFilters = useCallback(async () => {
     if (!onMediaLibraryFilterChange) return false;
     const condition = normalizeMediaLibraryFileCondition({

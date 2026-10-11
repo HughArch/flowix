@@ -173,7 +173,6 @@ function MediaLibraryDatasetPopover({ document, notebook, filePath, editable, bu
   busy?: boolean;
   onSaved: (document: MediaLibraryDocument) => void;
 }) {
-  const { t } = useI18n();
   const condition = document ? mediaLibraryFileCondition(document) : {};
   const [open, setOpen] = useState(false);
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
