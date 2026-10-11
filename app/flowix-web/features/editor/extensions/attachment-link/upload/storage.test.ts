@@ -28,7 +28,7 @@ describe('attachment storage failures', () => {
 
     it('saves selected files for a path-based note using its notebook instead of a legacy memo ID', async () => {
         vi.mocked(invoke).mockResolvedValue('/notebook/attachments/fig.png');
-        const result = await createAttachmentUploadFromPaths(['/selected/fig.png'], undefined, undefined, 'notebook-owner');
+        const result = await createAttachmentUploadFromPaths(['/selected/fig.png'], { notebookId: 'notebook-owner' });
         expect(invoke).toHaveBeenCalledWith('save_attachment', {
             sourcePath: '/selected/fig.png', notebookId: 'notebook-owner',
         });
@@ -37,18 +37,18 @@ describe('attachment storage failures', () => {
 
     it('does not create an attachment for an unauthorized source', async () => {
         vi.mocked(invoke).mockRejectedValue(new Error('not authorized'));
-        expect(await createAttachmentUploadFromPaths(['/private/file.txt'], 'memo-a')).toEqual({ assets: [] });
+        expect(await createAttachmentUploadFromPaths(['/private/file.txt'], { ownerPath: 'memo-a' })).toEqual({ assets: [] });
     });
 
     it('does not create an attachment for an empty save result', async () => {
         vi.mocked(invoke).mockResolvedValue(null);
-        expect(await createAttachmentUploadFromPaths(['/selected/file.txt'], 'memo-a')).toEqual({ assets: [] });
+        expect(await createAttachmentUploadFromPaths(['/selected/file.txt'], { ownerPath: 'memo-a' })).toEqual({ assets: [] });
     });
 
     it('keeps successful imports in a partially failed batch', async () => {
         vi.mocked(invoke).mockRejectedValueOnce(new Error('read failed'))
             .mockResolvedValueOnce('/notebook/attachments/good.txt');
-        const result = await createAttachmentUploadFromPaths(['/bad.txt', '/good.txt'], 'memo-a');
+        const result = await createAttachmentUploadFromPaths(['/bad.txt', '/good.txt'], { ownerPath: 'memo-a' });
         expect(result.assets).toHaveLength(1);
         expect(result.assets[0].storageKey).toBe('/notebook/attachments/good.txt');
     });
@@ -79,7 +79,7 @@ describe('attachment storage failures', () => {
 
     it('sends the same note path for every file in a batch', async () => {
         vi.mocked(invoke).mockResolvedValue('/attachments/saved.txt');
-        await createAttachmentUploadFromPaths(['/one.txt', '/two.txt'], 'memo-a');
+        await createAttachmentUploadFromPaths(['/one.txt', '/two.txt'], { ownerPath: 'memo-a' });
         expect(invoke).toHaveBeenNthCalledWith(1, 'save_attachment', { sourcePath: '/one.txt', notePath: 'memo-a' });
         expect(invoke).toHaveBeenNthCalledWith(2, 'save_attachment', { sourcePath: '/two.txt', notePath: 'memo-a' });
     });
@@ -87,8 +87,8 @@ describe('attachment storage failures', () => {
     it('does not mix note paths between overlapping uploads', async () => {
         vi.mocked(invoke).mockResolvedValue('/attachments/saved.txt');
         await Promise.all([
-            createAttachmentUploadFromPaths(['/one.txt'], 'memo-a'),
-            createAttachmentUploadFromPaths(['/two.txt'], 'memo-b'),
+            createAttachmentUploadFromPaths(['/one.txt'], { ownerPath: 'memo-a' }),
+            createAttachmentUploadFromPaths(['/two.txt'], { ownerPath: 'memo-b' }),
         ]);
         expect(invoke).toHaveBeenCalledWith('save_attachment', { sourcePath: '/one.txt', notePath: 'memo-a' });
         expect(invoke).toHaveBeenCalledWith('save_attachment', { sourcePath: '/two.txt', notePath: 'memo-b' });
@@ -114,7 +114,7 @@ describe('attachment storage failures', () => {
         const controller = new AbortController();
         let complete!: (path: string) => void;
         vi.mocked(invoke).mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
-        const upload = createAttachmentUploadFromPaths(['/first.txt', '/second.txt'], 'memo-a', controller.signal);
+        const upload = createAttachmentUploadFromPaths(['/first.txt', '/second.txt'], { ownerPath: 'memo-a', signal: controller.signal });
         controller.abort();
         complete('/attachments/first.txt');
         const result = await upload;

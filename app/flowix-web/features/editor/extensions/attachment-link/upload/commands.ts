@@ -49,7 +49,7 @@ export function createAttachmentCommands(ownerPath?: string, getNotebookId?: () 
                             multiple: params?.multiple ?? true,
                         });
                         if (!paths?.length || signal.aborted) return [];
-                        return (await createAttachmentUploadFromPaths(paths, ownerPath, signal, notebookId)).assets;
+                        return (await createAttachmentUploadFromPaths(paths, { ownerPath, notebookId, signal })).assets;
                     }
                     const files = await pickBrowserFiles(params, signal);
                     if (signal.aborted) return [];

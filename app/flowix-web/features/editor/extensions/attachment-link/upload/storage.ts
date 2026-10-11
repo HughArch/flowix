@@ -11,6 +11,12 @@ export type AttachmentFileSaver = (params: { file: File; fileName: string }) => 
 
 export const MAX_ATTACHMENT_CONTENT_BYTES = 64 * 1024 * 1024;
 
+export type AttachmentPathUploadOptions = {
+    ownerPath?: string;
+    notebookId?: string;
+    signal?: AbortSignal;
+};
+
 export async function createAttachmentUpload(
     files: File[],
     saveContent?: AttachmentContentSaver,
@@ -73,7 +79,10 @@ export async function createAttachmentUpload(
     return { assets };
 }
 
-export async function createAttachmentUploadFromPaths(paths: string[], ownerPath?: string, signal?: AbortSignal, notebookId?: string): Promise<{ assets: StoredAsset[] }> {
+export async function createAttachmentUploadFromPaths(
+    paths: string[],
+    { ownerPath, notebookId, signal }: AttachmentPathUploadOptions = {},
+): Promise<{ assets: StoredAsset[] }> {
     const assets: StoredAsset[] = [];
     if (!ownerPath && !notebookId) {
         reportUploadFailure('OWNER_REQUIRED');
