@@ -58,6 +58,7 @@ export function mapAgentChunkToEvent(
     reasoning_boundary?: boolean;
     codex_turn_id?: string;
     parent_message_id?: string;
+    client_user_message_id?: string;
   };
   const threadId = chunk.thread_id;
   const runId = chunk.run_id?.trim();
@@ -76,6 +77,7 @@ export function mapAgentChunkToEvent(
     sourceSubsequence: messageMetadata.source_subsequence,
     codexTurnId: messageMetadata.codex_turn_id,
     parentMessageId: messageMetadata.parent_message_id,
+    clientUserMessageId: messageMetadata.client_user_message_id,
     reasoningBoundary: messageMetadata.reasoning_boundary,
   };
 
@@ -102,8 +104,8 @@ export function mapAgentChunkToEvent(
             chunk.id,
           ) ?? chunk.id,
         sourceTimestamp: chunk.timestamp,
-        sourceSequence: 0,
-        sourceSubsequence: 0,
+        sourceSequence: base.sourceSequence ?? 0,
+        sourceSubsequence: base.sourceSubsequence ?? 0,
       };
     case "text": {
       const messageId = canonicalAgentMessageId(

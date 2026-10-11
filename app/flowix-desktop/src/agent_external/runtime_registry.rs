@@ -180,6 +180,7 @@ pub struct ExternalRuntimeRegistry {
     runtimes: HashMap<ExternalRuntimeKind, Box<dyn ExternalCliRuntime>>,
     codex: Option<Arc<CodexAppServerManager>>,
     deepseek_harness: Option<Arc<DeepSeekHarnessManager>>,
+    pi: Option<Arc<PiRpcManager>>,
     admissions: Mutex<AdmissionState>,
 }
 
@@ -631,6 +632,7 @@ impl ExternalRuntimeRegistry {
     ) -> Self {
         let codex_for_registry = codex.clone();
         let deepseek_harness_for_registry = deepseek_harness.clone();
+        let pi_for_registry = pi.clone();
         Self::try_from_runtimes(vec![
             Box::new(codex),
             Box::new(claude),
@@ -642,6 +644,7 @@ impl ExternalRuntimeRegistry {
         .expect("built-in external runtimes must have unique kinds")
         .with_codex(codex_for_registry)
         .with_deepseek_harness(deepseek_harness_for_registry)
+        .with_pi(pi_for_registry)
     }
 
     fn with_codex(mut self, codex: Arc<CodexAppServerManager>) -> Self {
@@ -651,6 +654,11 @@ impl ExternalRuntimeRegistry {
 
     fn with_deepseek_harness(mut self, manager: Arc<DeepSeekHarnessManager>) -> Self {
         self.deepseek_harness = Some(manager);
+        self
+    }
+
+    fn with_pi(mut self, manager: Arc<PiRpcManager>) -> Self {
+        self.pi = Some(manager);
         self
     }
 
@@ -665,12 +673,13 @@ impl ExternalRuntimeRegistry {
                 ));
             }
         }
-        // Test-only construction does not need direct Codex steering access.
-        // `new` installs the concrete manager immediately afterwards.
+        // Test-only construction does not need direct concrete-manager
+        // steering access. `new` installs managers after registration.
         Ok(Self {
             runtimes: registry,
             codex: None,
             deepseek_harness: None,
+            pi: None,
             admissions: Mutex::new(AdmissionState::default()),
         })
     }
@@ -702,6 +711,83 @@ impl ExternalRuntimeRegistry {
         .await
     }
 
+    pub async fn queue_codex_follow_up(
+        &self,
+        thread_id: &str,
+        message: AgentUserMessage,
+        client_user_message_id: String,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<serde_json::Value, String> {
+        self.ensure_thread_writable(thread_id).await?;
+        let codex = self
+            .codex
+            .as_ref()
+            .ok_or_else(|| "Codex runtime is unavailable".to_string())?;
+        codex
+            .queue_follow_up(thread_id, message, client_user_message_id, app_handle)
+            .await
+    }
+
+    pub async fn list_codex_follow_ups(
+        &self,
+        thread_id: &str,
+    ) -> Result<serde_json::Value, String> {
+        self.ensure_thread_writable(thread_id).await?;
+        self.codex
+            .as_ref()
+            .ok_or_else(|| "Codex runtime is unavailable".to_string())?
+            .list_queued_follow_ups(thread_id)
+            .await
+    }
+
+    pub async fn restore_codex_follow_ups(
+        &self,
+        thread_id: &str,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<serde_json::Value, String> {
+        self.ensure_thread_writable(thread_id).await?;
+        self.codex
+            .as_ref()
+            .ok_or_else(|| "Codex runtime is unavailable".to_string())?
+            .restore_queued_follow_ups(thread_id, app_handle)
+            .await
+    }
+
+    pub async fn delete_codex_follow_up(
+        &self,
+        thread_id: &str,
+        queued_submission_id: &str,
+    ) -> Result<serde_json::Value, String> {
+        self.ensure_thread_writable(thread_id).await?;
+        self.codex
+            .as_ref()
+            .ok_or_else(|| "Codex runtime is unavailable".to_string())?
+            .delete_queued_follow_up(thread_id, queued_submission_id)
+            .await
+    }
+
+    pub async fn deliver_codex_follow_up_now(
+        &self,
+        thread_id: &str,
+        queued_submission_id: &str,
+        message: AgentUserMessage,
+        client_user_message_id: String,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<(), String> {
+        self.ensure_thread_writable(thread_id).await?;
+        self.codex
+            .as_ref()
+            .ok_or_else(|| "Codex runtime is unavailable".to_string())?
+            .deliver_queued_follow_up_now(
+                thread_id,
+                queued_submission_id,
+                message,
+                client_user_message_id,
+                app_handle,
+            )
+            .await
+    }
+
     pub async fn steer_deepseek_harness(
         &self,
         thread_id: &str,
@@ -722,6 +808,47 @@ impl ExternalRuntimeRegistry {
             app_handle,
         )
         .await
+    }
+
+    pub async fn queue_pi_message(
+        &self,
+        thread_id: &str,
+        message: AgentUserMessage,
+        client_user_message_id: String,
+        delivery: &str,
+    ) -> Result<(), String> {
+        self.ensure_thread_writable(thread_id).await?;
+        self.pi
+            .as_ref()
+            .ok_or_else(|| "Pi runtime is unavailable".to_string())?
+            .queue_message(thread_id, message, client_user_message_id, delivery)
+            .await
+    }
+
+    pub async fn promote_pi_follow_up(
+        &self,
+        thread_id: &str,
+        client_user_message_id: &str,
+    ) -> Result<(), String> {
+        self.ensure_thread_writable(thread_id).await?;
+        self.pi
+            .as_ref()
+            .ok_or_else(|| "Pi runtime is unavailable".to_string())?
+            .promote_follow_up_to_steer(thread_id, client_user_message_id)
+            .await
+    }
+
+    pub async fn delete_pi_queued_message(
+        &self,
+        thread_id: &str,
+        client_user_message_id: &str,
+    ) -> Result<(), String> {
+        self.ensure_thread_writable(thread_id).await?;
+        self.pi
+            .as_ref()
+            .ok_or_else(|| "Pi runtime is unavailable".to_string())?
+            .delete_queued_message(thread_id, client_user_message_id)
+            .await
     }
 
     pub fn get(&self, kind: ExternalRuntimeKind) -> Option<&dyn ExternalCliRuntime> {

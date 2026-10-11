@@ -18,7 +18,7 @@ export async function handleFileUpload(
         if (filteredFiles.length === 0) return;
 
         await runTrackedUpload(view, async (signal) =>
-            (await createAttachmentUpload(filteredFiles, undefined, undefined, ownerPath, signal)).assets,
+            (await createAttachmentUpload(filteredFiles, undefined, undefined, ownerPath, signal, true)).assets,
         position, replaceRange, ownerPath);
     } catch (err) {
         console.error('[FileUpload] Upload failed:', err);

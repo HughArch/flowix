@@ -1,6 +1,8 @@
 import { ensureCollectionDisplay, bindCollectionDisplayPath } from '@/lib/collection-display-registry';
-import { collections, externalDocuments } from '@platform/tauri/client';
-import { parseCollectionEnvelope } from '@features/collection/model';
+import { collections, externalDocuments, files } from '@platform/tauri/client';
+import { parseCollectionDocumentV2 } from '@features/collection/model';
+import { createFolderCollectionContent } from '@features/collection/folder-collection';
+import { toast } from '@/lib/toast';
 import { captureFileBrowserContext } from './file-browser-context';
 import { notes as notesClient, type PluginDescriptor, type MarkdownLocation } from '@platform/tauri/client';
 import { canonicalDirectoryPath, canonicalPath } from '@/lib/path';
@@ -247,9 +249,9 @@ export async function openCollectionTarget(
   if (item && item.parseState !== 'valid') unavailableReason = item.parseState === 'unsupported' ? '此集合版本暂不支持' : '集合文件格式无效';
   if (item && !unavailableReason && descriptor.viewId) {
     try {
-      const envelope = parseCollectionEnvelope(await externalDocuments.read(filePath, notebook.path));
+      const envelope = parseCollectionDocumentV2(await externalDocuments.read(filePath, notebook.path));
       const payload = envelope.payload;
-      const views = item.collectionType === 'table' ? (payload.table as { views: Array<{ id: string }> }).views : [payload.view as { id: string }];
+      const views = payload.views.items as Array<{ id: string }>;
       if (!views.some((view) => view.id === descriptor.viewId)) unavailableReason = '此视图已不存在，请重新选择视图';
     } catch { unavailableReason = '无法读取集合视图'; }
   }
@@ -279,8 +281,44 @@ async function openCollectionFile(filePath: string, notebookPath: string | null,
   const resolvedId = notebookId ?? workspace.notebooks.find((item) => canonicalPath(item.path) === root)?.id
     ?? (workspace.selectedNotebook && canonicalPath(workspace.selectedNotebook.path) === root ? workspace.selectedNotebook.id : null);
   if (!resolvedId || !root) throw new Error('无法确定集合所属笔记本');
-  const envelope = parseCollectionEnvelope(await externalDocuments.read(filePath, root));
+  const envelope = parseCollectionDocumentV2(await externalDocuments.read(filePath, root));
   await openCollectionTarget({ notebookId: resolvedId, collectionId: envelope.collection.id }, options);
+}
+export async function openFolderCollectionOrList(target: DocumentListTarget): Promise<void> {
+  const notebookId = target.scope.notebookId;
+  const notebook = notebookId ? getWorkspaceMemoState().notebooks.find((item) => item.id === notebookId) : null;
+  if (!notebook || !notebookId) {
+    await openDocumentListTarget(target);
+    return;
+  }
+  const folderPath = canonicalDirectoryPath(target.scope.path);
+  const indexPath = `${folderPath}/.index.yaml`;
+  let source = await files.read(indexPath, notebook.path);
+  let loadingToastId: string | number | undefined;
+  try {
+    if (source === null) {
+      loadingToastId = toast.info('正在创建并打开笔记集合…', { duration: 60_000 });
+      const folderName = folderPath.split('/').filter(Boolean).pop() ?? notebook.name;
+      const content = createFolderCollectionContent('notes', folderName);
+      try {
+        await files.create(indexPath, content, notebook.path);
+        source = content;
+      } catch (error) {
+        // Another click may have created the same index while this one was waiting.
+        source = await files.read(indexPath, notebook.path);
+        if (source === null) throw error;
+      }
+    }
+    const envelope = parseCollectionDocumentV2(source);
+    if (envelope.collection.placement !== 'folder') throw new Error('文件夹 .index.yaml 必须声明 placement: folder');
+    await openCollectionTarget({
+      notebookId,
+      collectionId: envelope.collection.id,
+      viewId: (envelope.payload.views as { default_id?: string }).default_id,
+    });
+  } finally {
+    if (loadingToastId !== undefined) toast.dismiss(loadingToastId);
+  }
 }
 export function openTableTarget(filePath: string, notebookPath: string | null, notebookId: string | null, options?: { history?: 'push' | 'skip'; destination?: 'main-third' }): Promise<void> {
   return openCollectionFile(filePath, notebookPath, notebookId, options);
@@ -563,6 +601,17 @@ export async function openExternalTarget(
   path: string | null,
   options?: OpenExternalTargetOptions,
 ): Promise<WorkspaceContentLocation | null> {
+  if (path && /\.index\.yaml$/i.test(path)) {
+    const capturedFileBrowser = options?.fileBrowser ?? captureFileBrowserContext(path, options?.scopePath);
+    const scopePath = options?.scopePath ?? capturedFileBrowser.scopePath;
+    const notebookId = options?.notebookId
+      ?? options?.fileBrowser?.notebookId
+      ?? getWorkspaceMemoState().notebooks.find((notebook) => scopePath && canonicalPath(notebook.path) === canonicalPath(scopePath))?.id
+      ?? capturedFileBrowser.notebookId
+      ?? null;
+    await openCollectionFile(path, scopePath, notebookId, { history: options?.history, destination: options?.destination });
+    return null;
+  }
   if (path && /\.lib\.ya?ml$/i.test(path)) {
     const capturedFileBrowser = options?.fileBrowser ?? captureFileBrowserContext(path, options?.scopePath);
     const scopePath = options?.scopePath ?? capturedFileBrowser.scopePath;

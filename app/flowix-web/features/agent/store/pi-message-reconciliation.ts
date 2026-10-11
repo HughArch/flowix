@@ -55,7 +55,17 @@ export function reconcilePiTimeline(
       return existing;
     }
     const reconciled = existing && existing !== row
-      ? { ...existing, ...row, renderKey: existing.renderKey ?? (row.renderKey ? existing.id : undefined) }
+      ? {
+          ...existing,
+          ...row,
+          renderKey: existing.renderKey ?? (row.renderKey ? existing.id : undefined),
+          // The live user row holds Flowix's visible prompt; Pi history can
+          // contain extra runtime context that should stay out of the composer timeline.
+          ...(row.role === "user" ? {
+            content: existing.content,
+            attachments: existing.attachments ?? row.attachments,
+          } : {}),
+        }
       : row;
     seen.add(piRowIdentity(reconciled));
     seenRenderKeys.add(messageRenderKey(reconciled));

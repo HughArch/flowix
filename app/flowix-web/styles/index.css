@@ -1033,7 +1033,7 @@
 /* 中间列“新建对话”菜单进入品牌色背景时, Agent 图标与 slash 菜单一致变白。 */
 .agent-conversation-new-agent-item:hover > .agent-icon--masked,
 .agent-conversation-new-agent-item:focus-visible > .agent-icon--masked {
-  background-color: #fff;
+  background-color: var(--primary-foreground);
 }
 
 .agent-conversation-new-agent-item:hover > img,

@@ -6,7 +6,9 @@ use std::collections::{BTreeMap, HashSet};
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum CollectionType {
+    #[serde(rename = "notes", alias = "table")]
     Table,
+    #[serde(rename = "media", alias = "media_library")]
     MediaLibrary,
 }
 impl CollectionType {
@@ -16,6 +18,13 @@ impl CollectionType {
             Self::MediaLibrary => "media_library",
         }
     }
+}
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize, Default)]
+#[serde(rename_all = "snake_case")]
+pub enum CollectionPlacement {
+    #[default]
+    Standalone,
+    Folder,
 }
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -32,11 +41,16 @@ pub struct CollectionMetadata {
     pub id: String,
     #[serde(rename = "type")]
     pub kind: CollectionType,
+    #[serde(default, skip_serializing_if = "is_standalone")]
+    pub placement: CollectionPlacement,
     pub name: String,
     pub revision: i64,
     pub created_at: String,
     pub updated_at: String,
     pub properties: BTreeMap<String, CollectionProperty>,
+}
+fn is_standalone(value: &CollectionPlacement) -> bool {
+    *value == CollectionPlacement::Standalone
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -118,27 +132,105 @@ impl CollectionDocument {
         validate_properties(&metadata.properties)
     }
     pub fn supported(&self) -> bool {
-        self.schema_version == 1 && self.payload["schema_version"] == 1
+        matches!(self.schema_version, 1 | 2)
+            && self.payload["schema_version"] == self.schema_version
     }
     pub fn validate(&self) -> Result<(), String> {
         self.validate_header()?;
         if !self.supported() {
             return Err("UNSUPPORTED_COLLECTION_VERSION".into());
         }
-        let keys: &[&str] = match self.collection.kind {
-            CollectionType::Table => &["schema_version", "table", "records"],
-            CollectionType::MediaLibrary => &["schema_version", "view", "records"],
-        };
-        only_keys(&self.payload, keys)?;
-        match self.collection.kind {
-            CollectionType::Table => validate_table(&self.payload)?,
-            CollectionType::MediaLibrary => validate_media_library(&self.payload)?,
+        if self.schema_version == 2 {
+            validate_collection_v2(self)?;
+        } else {
+            let keys: &[&str] = match self.collection.kind {
+                CollectionType::Table => &["schema_version", "table", "records"],
+                CollectionType::MediaLibrary => &["schema_version", "view", "records"],
+            };
+            only_keys(&self.payload, keys)?;
+            match self.collection.kind {
+                CollectionType::Table => validate_table(&self.payload)?,
+                CollectionType::MediaLibrary => validate_media_library(&self.payload)?,
+            }
         }
         Ok(())
     }
     pub fn serialize(&self) -> Result<String, String> {
         self.validate()?;
         serde_yaml::to_string(self).map_err(|e| e.to_string())
+    }
+    /// Convert a validated legacy file for an edit. Reading alone never rewrites it.
+    pub fn normalized_v2(&self) -> Result<Self, String> {
+        self.validate()?;
+        if self.schema_version == 2 {
+            return Ok(self.clone());
+        }
+        let source = match self.collection.placement {
+            CollectionPlacement::Folder => serde_json::json!({"scope":"containing_folder","depth":"descendants"}),
+            CollectionPlacement::Standalone => serde_json::json!({"scope":"notebook","depth":"descendants"}),
+        };
+        let payload = match self.collection.kind {
+            CollectionType::Table => {
+                let table = &self.payload["table"];
+                let auto = &self.payload["records"]["auto_collect"];
+                let views = array(table, "views")?.iter().map(|view| serde_json::json!({
+                    "id": view["id"], "name": view["name"], "layout": view["type"],
+                    "filter": {"all":[],"any":[]},
+                    "sort": [{"field":"modified_at","direction":"desc"}],
+                    "config": view["config"]
+                })).collect::<Vec<_>>();
+                let exclude = if auto.is_null() { Vec::new() } else {
+                    array(auto, "excluded_note_paths")?.iter()
+                        .map(|path| serde_json::json!({"note_path":path}))
+                        .collect::<Vec<_>>()
+                };
+                serde_json::json!({
+                    "schema_version":2,
+                    "dataset": {
+                        "source":source,
+                        "schema":{"primary_field_id":table["primary_field_id"],"fields":table["fields"]},
+                        "records":{"include":self.payload["records"]["data"],"exclude":exclude},
+                        "filter":legacy_table_filter(auto)?
+                    },
+                    "views":{"default_id":views[0]["id"],"items":views}
+                })
+            }
+            CollectionType::MediaLibrary => {
+                let view = &self.payload["view"];
+                let mut rules = Vec::new();
+                if let Some(file) = view["condition"].get("file_condition") {
+                    legacy_file_rules(file, false, &mut rules);
+                }
+                let records = array(&self.payload["records"], "data")?.iter()
+                    .map(|record| serde_json::json!({
+                        "id":record["id"], "updated_at":record["updated_at"],
+                        "resource_id":format!("path:{}",record["note_path"].as_str().unwrap_or_default()),
+                        "relative_path":record["note_path"]
+                    })).collect::<Vec<_>>();
+                serde_json::json!({
+                    "schema_version":2,
+                    "dataset": {
+                        "source":source,"schema":{"fields":[]},
+                        "records":{"include":records,"exclude":[]},
+                        "filter":if rules.is_empty() { Value::Null } else { serde_json::json!({"all":rules,"any":[]}) }
+                    },
+                    "views":{"default_id":view["id"],"items":[{
+                        "id":view["id"],"name":"媒体库","layout":"waterfall",
+                        "filter":{"all":rules,"any":[]},
+                        "sort":[view.get("sort").cloned().unwrap_or_else(|| serde_json::json!({"field":"created_at","direction":"desc"}))],
+                        "config":{}
+                    }]}
+                })
+            }
+        };
+        let normalized = Self {
+            format: self.format.clone(),
+            schema_version: 2,
+            collection: self.collection.clone(),
+            payload,
+        };
+        normalized.validate()?;
+        Ok(normalized)
     }
     pub fn revise(&mut self) -> Result<(), String> {
         self.collection.revision = self
@@ -151,6 +243,296 @@ impl CollectionDocument {
             chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         Ok(())
     }
+}
+fn legacy_file_rules(file: &Value, notes: bool, output: &mut Vec<Value>) {
+    for (key, field) in [("file_name_contains", "file_name"), ("path_contains", "path")] {
+        if let Some(value) = file[key].as_str().filter(|value| !value.is_empty()) {
+            output.push(serde_json::json!({"field":field,"op":"contains","value":value}));
+        }
+    }
+    if let Some(kind) = file["file_type"].as_str().filter(|kind| !kind.is_empty()) {
+        output.push(serde_json::json!({"field":"kind","op":"eq","value":if notes { "note" } else { kind }}));
+    }
+}
+fn legacy_table_filter(auto: &Value) -> Result<Value, String> {
+    if auto.is_null() {
+        return Ok(Value::Null);
+    }
+    let condition = &auto["condition"];
+    let properties = condition.get("property_conditions").and_then(Value::as_array)
+        .map(|items| items.iter().map(|item| serde_json::json!({
+            "field":item["field_id"].as_str().map(str::trim).unwrap_or_default(),"op":item["operator"],
+            "value":item["value"].as_str().map(str::trim).unwrap_or_default()
+        })).collect::<Vec<_>>()).unwrap_or_default();
+    let mut files = Vec::new();
+    if let Some(file) = condition.get("file_condition") {
+        legacy_file_rules(file, true, &mut files);
+    }
+    if properties.is_empty() && files.is_empty() {
+        return Ok(Value::Null);
+    }
+    if condition["property_match"] == "intersection" && !properties.is_empty() {
+        if !files.is_empty() {
+            let mut any = vec![serde_json::json!({"all":properties,"any":[]})];
+            any.extend(files);
+            return Ok(serde_json::json!({"all":[],"any":any}));
+        }
+        return Ok(serde_json::json!({"all":properties,"any":[]}));
+    }
+    let mut any = properties;
+    any.extend(files);
+    Ok(serde_json::json!({"all":[],"any":any}))
+}
+fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
+    let payload = &document.payload;
+    only_keys(payload, &["schema_version", "dataset", "views"])?;
+    let dataset = payload.get("dataset").ok_or("MISSING_COLLECTION_DATASET")?;
+    only_keys(dataset, &["source", "schema", "records", "filter"])?;
+    let source = dataset.get("source").ok_or("MISSING_COLLECTION_SOURCE")?;
+    only_keys(source, &["scope", "depth", "path"])?;
+    let scope = source["scope"].as_str().ok_or("INVALID_COLLECTION_SCOPE")?;
+    let depth = source["depth"].as_str().ok_or("INVALID_COLLECTION_DEPTH")?;
+    if !matches!(depth, "direct_children" | "descendants") {
+        return Err("INVALID_COLLECTION_DEPTH".into());
+    }
+    match (document.collection.placement, scope) {
+        (CollectionPlacement::Folder, "containing_folder") if source.get("path").is_none() => {}
+        (CollectionPlacement::Standalone, "notebook") if source.get("path").is_none() => {}
+        (CollectionPlacement::Standalone, "folder") => {
+            let path = source["path"]
+                .as_str()
+                .ok_or("INVALID_COLLECTION_SCOPE_PATH")?;
+            if path.is_empty()
+                || path.starts_with('/')
+                || path.contains('\\')
+                || path
+                    .split('/')
+                    .any(|part| part.is_empty() || part == "." || part == "..")
+            {
+                return Err("INVALID_COLLECTION_SCOPE_PATH".into());
+            }
+        }
+        _ => return Err("COLLECTION_SCOPE_PLACEMENT_MISMATCH".into()),
+    }
+
+    let schema = dataset.get("schema").ok_or("MISSING_COLLECTION_SCHEMA")?;
+    only_keys(
+        schema,
+        if document.collection.kind == CollectionType::Table {
+            &["primary_field_id", "fields"]
+        } else {
+            &["fields"]
+        },
+    )?;
+    let fields = schema["fields"]
+        .as_array()
+        .ok_or("INVALID_COLLECTION_SCHEMA")?;
+    if document.collection.kind == CollectionType::MediaLibrary && !fields.is_empty() {
+        return Err("MEDIA_COLLECTION_FIELDS_UNSUPPORTED".into());
+    }
+    let records = dataset.get("records").ok_or("MISSING_COLLECTION_RECORDS")?;
+    only_keys(records, &["include", "exclude"])?;
+    for key in ["include", "exclude"] {
+        let entries = array(records, key)?;
+        let mut record_ids = HashSet::new();
+        let mut record_paths = HashSet::new();
+        for entry in entries {
+            match document.collection.kind {
+                CollectionType::Table => {
+                    only_keys(entry, &["id", "updated_at", "note_path"])?;
+                    let path = entry["note_path"]
+                        .as_str()
+                        .ok_or("INVALID_NOTE_RECORD_PATH")?;
+                    if entry.get("id").is_some_and(|value| {
+                        value.as_str().is_none_or(|id| {
+                            !valid_id(id, "rec_") || !record_ids.insert(id.to_owned())
+                        })
+                    }) || entry.get("updated_at").is_some_and(|value| {
+                        value
+                            .as_str()
+                            .is_none_or(|date| chrono::DateTime::parse_from_rfc3339(date).is_err())
+                    }) {
+                        return Err("INVALID_NOTE_RECORD".into());
+                    }
+                    let is_draft = key == "include" && path.is_empty();
+                    if !is_draft {
+                        validate_relative_resource_path(Some(path), "note_path")?;
+                    }
+                    if !is_draft && !record_paths.insert(path.to_owned()) {
+                        return Err("DUPLICATE_NOTE_RECORD".into());
+                    }
+                }
+                CollectionType::MediaLibrary => {
+                    only_keys(entry, &["id", "updated_at", "resource_id", "relative_path"])?;
+                    let path = entry.get("relative_path").and_then(Value::as_str);
+                    if entry["resource_id"].as_str().is_none_or(str::is_empty)
+                        || entry.get("id").is_some_and(|value| {
+                            value.as_str().is_none_or(|id| {
+                                !valid_id(id, "rec_") || !record_ids.insert(id.to_owned())
+                            })
+                        })
+                        || entry.get("updated_at").is_some_and(|value| {
+                            value.as_str().is_none_or(|date| {
+                                chrono::DateTime::parse_from_rfc3339(date).is_err()
+                            })
+                        })
+                    {
+                        return Err("INVALID_MEDIA_RESOURCE_ID".into());
+                    }
+                    validate_relative_resource_path(path, "relative_path")?;
+                    if !record_paths.insert(path.unwrap().to_owned()) {
+                        return Err("DUPLICATE_MEDIA_RECORD".into());
+                    }
+                }
+            }
+        }
+    }
+    if let Some(filter) = dataset.get("filter") {
+        if !filter.is_null() {
+            validate_rule_filter(filter, document.collection.kind)?;
+        }
+    }
+    let views = payload.get("views").ok_or("MISSING_COLLECTION_VIEWS")?;
+    only_keys(views, &["default_id", "items"])?;
+    let items = array(views, "items")?;
+    if items.is_empty() {
+        return Err("COLLECTION_REQUIRES_VIEW".into());
+    }
+    let mut ids = HashSet::new();
+    for view in items {
+        only_keys(view, &["id", "name", "layout", "filter", "sort", "config"])?;
+        id(view, "view_", &mut ids)?;
+        let layout = view["layout"].as_str().ok_or("INVALID_COLLECTION_VIEW")?;
+        let layout_valid = match document.collection.kind {
+            CollectionType::Table => matches!(layout, "table" | "kanban" | "calendar" | "gallery"),
+            CollectionType::MediaLibrary => layout == "waterfall",
+        };
+        if view["name"]
+            .as_str()
+            .is_none_or(|name| name.trim().is_empty())
+            || !layout_valid
+            || !view["config"].is_object()
+        {
+            return Err("INVALID_COLLECTION_VIEW".into());
+        }
+        if let Some(filter) = view.get("filter") {
+            validate_rule_filter(filter, document.collection.kind)?;
+        }
+        if let Some(sort) = view.get("sort") {
+            for item in sort.as_array().ok_or("INVALID_COLLECTION_SORT")? {
+                only_keys(item, &["field", "direction"])?;
+                if item["field"].as_str().is_none_or(str::is_empty)
+                    || !matches!(item["direction"].as_str(), Some("asc" | "desc"))
+                {
+                    return Err("INVALID_COLLECTION_SORT".into());
+                }
+                if document.collection.kind == CollectionType::MediaLibrary
+                    && (item["field"] != "created_at" || item["direction"] != "desc")
+                {
+                    return Err("INVALID_COLLECTION_SORT".into());
+                }
+            }
+        }
+    }
+    let default_id = views["default_id"].as_str().ok_or("INVALID_DEFAULT_VIEW")?;
+    if !ids.contains(default_id) {
+        return Err("INVALID_DEFAULT_VIEW".into());
+    }
+    if document.collection.kind == CollectionType::Table {
+        let table_views = items.iter().map(|view| serde_json::json!({
+            "id": view["id"], "name": view["name"], "type": view["layout"], "config": view["config"]
+        })).collect::<Vec<_>>();
+        let legacy = serde_json::json!({
+            "schema_version": 1,
+            "table": { "primary_field_id": schema["primary_field_id"], "fields": fields, "views": table_views },
+            "records": { "data": [], "auto_collect": null }
+        });
+        validate_table(&legacy)?;
+    }
+    Ok(())
+}
+fn validate_rule_filter(filter: &Value, collection_type: CollectionType) -> Result<(), String> {
+    validate_rule_filter_depth(filter, collection_type, 0)
+}
+fn validate_rule_filter_depth(filter: &Value, collection_type: CollectionType, depth: usize) -> Result<(), String> {
+    only_keys(filter, &["all", "any"])?;
+    for key in ["all", "any"] {
+        for rule in array(filter, key)? {
+            if rule.get("all").is_some() || rule.get("any").is_some() {
+                if depth != 0 { return Err("INVALID_COLLECTION_FILTER_DEPTH".into()); }
+                validate_rule_filter_depth(rule, collection_type, depth + 1)?;
+                continue;
+            }
+            only_keys(rule, &["field", "op", "value"])?;
+            if rule["field"].as_str().is_none_or(str::is_empty)
+                || !matches!(
+                    rule["op"].as_str(),
+                    Some("eq" | "equals" | "contains" | "in")
+                )
+                || rule.get("value").is_none()
+            {
+                return Err("INVALID_COLLECTION_FILTER_RULE".into());
+            }
+            match rule["op"].as_str().unwrap_or_default() {
+                "contains" if !rule["value"].is_string() => {
+                    return Err("INVALID_COLLECTION_FILTER_VALUE".into());
+                }
+                "in" if rule["value"].as_array().is_none_or(Vec::is_empty) => {
+                    return Err("INVALID_COLLECTION_FILTER_VALUE".into());
+                }
+                "eq" | "equals"
+                    if !(rule["value"].is_string()
+                        || rule["value"].is_number()
+                        || rule["value"].is_boolean()) =>
+                {
+                    return Err("INVALID_COLLECTION_FILTER_VALUE".into());
+                }
+                _ => {}
+            }
+            let field = rule["field"].as_str().unwrap_or_default();
+            let valid_for_type = match collection_type {
+                CollectionType::Table => match field {
+                    "file_name" | "path" => rule["op"] == "contains",
+                    "kind" => (rule["op"] == "eq" && rule["value"] == "note")
+                        || (rule["op"] == "in"
+                            && rule["value"].as_array().is_some_and(|values| {
+                                values.len() == 1 && values[0] == "note"
+                            })),
+                    _ => matches!(rule["op"].as_str(), Some("eq" | "equals" | "contains" | "in")),
+                },
+                CollectionType::MediaLibrary => match field {
+                    "file_name" | "path" => rule["op"] == "contains" && rule["value"].is_string(),
+                    "kind" => (rule["op"] == "eq"
+                        && matches!(rule["value"].as_str(), Some("image" | "video")))
+                        || (rule["op"] == "in"
+                            && rule["value"].as_array().is_some_and(|values| {
+                                !values.is_empty()
+                                    && values
+                                        .iter()
+                                        .all(|value| matches!(value.as_str(), Some("image" | "video")))
+                            })),
+                    _ => false,
+                },
+            };
+            if !valid_for_type {
+                return Err("INVALID_COLLECTION_FILTER_RULE".into());
+            }
+        }
+    }
+    Ok(())
+}
+fn validate_relative_resource_path(path: Option<&str>, field: &str) -> Result<(), String> {
+    let path = path.ok_or_else(|| format!("INVALID_COLLECTION_RESOURCE:{field}"))?;
+    if path.is_empty()
+        || path.starts_with('/')
+        || path.contains('\\')
+        || path
+            .split('/')
+            .any(|part| part.is_empty() || part == "." || part == "..")
+    {
+        return Err(format!("INVALID_COLLECTION_RESOURCE:{field}"));
+    }
+    Ok(())
 }
 fn only_keys(value: &Value, keys: &[&str]) -> Result<(), String> {
     if value

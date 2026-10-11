@@ -267,9 +267,9 @@ fn read_dir_single_level_with_policy(
                 }
             }
 
-            // .flowix is application-owned notebook data. It stays hidden
-            // even when the user opts into hidden directories.
-            if name == ".flowix" {
+            // Notebook metadata and folder collection indexes stay out of
+            // both file trees even when hidden entries are included.
+            if name == ".flowix" || name.eq_ignore_ascii_case(".index.yaml") {
                 continue;
             }
 
@@ -434,7 +434,10 @@ pub(crate) fn migrate_legacy_watcher_rules(
     config: &crate::watcher::WhitelistConfig,
     memo: &MemoFile,
 ) -> Result<(), String> {
-    if read_notebook_view_preferences(root).file_management.legacy_watcher_migrated {
+    if read_notebook_view_preferences(root)
+        .file_management
+        .legacy_watcher_migrated
+    {
         return Ok(());
     }
     with_registered_notebook_change(root, memo, "migrate_file_management_preferences", || {
@@ -553,8 +556,11 @@ pub fn get_notebook_view_preferences(
     if !is_registered_notebook_root(root, &state) {
         return Err("NOTEBOOK_NOT_REGISTERED".to_string());
     }
-    migrate_legacy_watcher_rules(root, &state.user_config.get_preference().watcher,
-        &read_lock(&state.memo_file, "memo_file"))?;
+    migrate_legacy_watcher_rules(
+        root,
+        &state.user_config.get_preference().watcher,
+        &read_lock(&state.memo_file, "memo_file"),
+    )?;
     if root
         .join(".flowix/file-management-refresh-pending")
         .exists()
@@ -590,14 +596,20 @@ fn refresh_file_management_indexes(
     memo_file
         .reconcile_media_resources(&notebook.id)
         .map_err(|error| format!("refresh media index failed: {error}"))?;
-    crate::commands::document_list::refresh_view_document_catalog_checked(&memo_file, &notebook.id, root)?;
+    crate::commands::document_list::refresh_view_document_catalog_checked(
+        &memo_file,
+        &notebook.id,
+        root,
+    )?;
     if let Some(marker_before) = marker_before {
-        memo_file.with_registered_path_change(&[root], "finish_file_management_refresh", || {
-            if fs::read(&refresh_marker).ok().as_deref() == Some(marker_before.as_slice()) {
-                fs::remove_file(&refresh_marker)?;
-            }
-            Ok(())
-        }).map_err(|error| format!("clear index refresh marker failed: {error}"))?;
+        memo_file
+            .with_registered_path_change(&[root], "finish_file_management_refresh", || {
+                if fs::read(&refresh_marker).ok().as_deref() == Some(marker_before.as_slice()) {
+                    fs::remove_file(&refresh_marker)?;
+                }
+                Ok(())
+            })
+            .map_err(|error| format!("clear index refresh marker failed: {error}"))?;
     }
     let _ = app.emit(
         "file-management-changed",
@@ -629,8 +641,11 @@ pub fn get_file_management_candidates(
     if !is_registered_notebook_root(root, &state) {
         return Err("NOTEBOOK_NOT_REGISTERED".to_string());
     }
-    migrate_legacy_watcher_rules(root, &state.user_config.get_preference().watcher,
-        &read_lock(&state.memo_file, "memo_file"))?;
+    migrate_legacy_watcher_rules(
+        root,
+        &state.user_config.get_preference().watcher,
+        &read_lock(&state.memo_file, "memo_file"),
+    )?;
     let policy = read_notebook_view_preferences(root).file_management;
     let defaults = FileManagementPolicy::default();
     let mut pending = vec![root.to_path_buf()];
@@ -827,7 +842,10 @@ pub fn set_notebook_view_preferences(
             &read_lock(&state.memo_file, "memo_file"),
             "set_notebook_view_preferences",
             || {
-                migrate_legacy_watcher_rules_locked(&root, &state.user_config.get_preference().watcher)?;
+                migrate_legacy_watcher_rules_locked(
+                    &root,
+                    &state.user_config.get_preference().watcher,
+                )?;
                 let previous_preferences = read_notebook_view_preferences(&root);
                 let previous_policy = previous_preferences.file_management.clone();
                 let path = notebook_preferences_path(&root)?;
@@ -837,7 +855,9 @@ pub fn set_notebook_view_preferences(
                 fs::create_dir_all(parent)
                     .map_err(|error| format!("create notebook config directory failed: {error}"))?;
                 let preferences = NotebookViewPreferences {
-                    default_create_folder: normalize_default_create_folder(preferences.default_create_folder)?,
+                    default_create_folder: normalize_default_create_folder(
+                        preferences.default_create_folder,
+                    )?,
                     file_management: FileManagementPolicy {
                         included_paths: normalize_relative_folder_paths(
                             preferences.file_management.included_paths,
@@ -862,15 +882,22 @@ pub fn set_notebook_view_preferences(
                     previous_preferences.default_create_folder != preferences.default_create_folder;
                 let refresh_marker = root.join(".flowix/file-management-refresh-pending");
                 if previous_policy.included_paths != preferences.file_management.included_paths
-                    || previous_policy.excluded_index_paths != preferences.file_management.excluded_index_paths
+                    || previous_policy.excluded_index_paths
+                        != preferences.file_management.excluded_index_paths
                 {
-                    flowix_core::memo_file::atomic_write_bytes(&refresh_marker,
-                        uuid::Uuid::new_v4().to_string().as_bytes())
-                        .map_err(|error| format!("mark index refresh pending failed: {error}"))?;
+                    flowix_core::memo_file::atomic_write_bytes(
+                        &refresh_marker,
+                        uuid::Uuid::new_v4().to_string().as_bytes(),
+                    )
+                    .map_err(|error| format!("mark index refresh pending failed: {error}"))?;
                 }
                 flowix_core::memo_file::atomic_write_bytes(&path, &bytes)
                     .map_err(|error| format!("write notebook preferences failed: {error}"))?;
-                Ok((tree_visibility_changed, default_create_folder_changed, refresh_marker))
+                Ok((
+                    tree_visibility_changed,
+                    default_create_folder_changed,
+                    refresh_marker,
+                ))
             },
         )?;
     if tree_visibility_changed || default_create_folder_changed {
@@ -1039,12 +1066,7 @@ pub async fn read_docx_file(
     let window_label = window.label().to_owned();
     crate::document_io::run("read_docx", move || {
         let state = app.state::<AppState>();
-        let path = authorized_docx_path(
-            &file_path,
-            space_path.as_deref(),
-            &window_label,
-            &state,
-        )?;
+        let path = authorized_docx_path(&file_path, space_path.as_deref(), &window_label, &state)?;
         let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
         if metadata.len() > MAX_DOCX_PREVIEW_BYTES {
             return Err(format!(
@@ -1082,7 +1104,13 @@ const MAX_DOCX_MARKDOWN_IMAGE_BYTES: usize = 25 * 1024 * 1024;
 const MAX_DOCX_MARKDOWN_TOTAL_IMAGE_BYTES: usize = 50 * 1024 * 1024;
 
 fn docx_image_extension(content_type: &str) -> Option<&'static str> {
-    match content_type.split(';').next()?.trim().to_ascii_lowercase().as_str() {
+    match content_type
+        .split(';')
+        .next()?
+        .trim()
+        .to_ascii_lowercase()
+        .as_str()
+    {
         "image/png" => Some("png"),
         "image/jpeg" | "image/jpg" => Some("jpg"),
         "image/gif" => Some("gif"),
@@ -1102,7 +1130,9 @@ fn docx_asset_markdown_url(path: &Path) -> String {
     let mut encoded = String::new();
     let path = path.to_string_lossy();
     for byte in path.as_bytes() {
-        if byte.is_ascii_alphanumeric() || matches!(*byte, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'') {
+        if byte.is_ascii_alphanumeric()
+            || matches!(*byte, b'-' | b'_' | b'.' | b'!' | b'~' | b'*' | b'\'')
+        {
             encoded.push(*byte as char);
         } else {
             use std::fmt::Write as _;
@@ -1123,19 +1153,26 @@ fn prepare_docx_images(images: Vec<DocxMarkdownImage>) -> Result<Vec<PreparedDoc
         .into_iter()
         .map(|image| {
             if !image.marker.starts_with("flowix-docx-image-")
-                || !image.marker.bytes().all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+                || !image
+                    .marker
+                    .bytes()
+                    .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
                 || !markers.insert(image.marker.clone())
             {
                 return Err("DOCX_IMAGE_INVALID: invalid or duplicate image reference".to_string());
             }
             let extension = docx_image_extension(&image.content_type)
                 .ok_or_else(|| "DOCX_IMAGE_UNSUPPORTED: unsupported image format".to_string())?;
-            if image.content_base64.len() > MAX_DOCX_MARKDOWN_IMAGE_BYTES.saturating_mul(4) / 3 + 8 {
+            if image.content_base64.len() > MAX_DOCX_MARKDOWN_IMAGE_BYTES.saturating_mul(4) / 3 + 8
+            {
                 return Err("DOCX_IMAGE_TOO_LARGE: an image is larger than 25 MB".to_string());
             }
             total_encoded_bytes = total_encoded_bytes.saturating_add(image.content_base64.len());
-            if total_encoded_bytes > MAX_DOCX_MARKDOWN_TOTAL_IMAGE_BYTES.saturating_mul(4) / 3 + 16 {
-                return Err("DOCX_IMAGE_TOO_LARGE: total image data is larger than 50 MB".to_string());
+            if total_encoded_bytes > MAX_DOCX_MARKDOWN_TOTAL_IMAGE_BYTES.saturating_mul(4) / 3 + 16
+            {
+                return Err(
+                    "DOCX_IMAGE_TOO_LARGE: total image data is larger than 50 MB".to_string(),
+                );
             }
             let bytes = base64::engine::general_purpose::STANDARD
                 .decode(image.content_base64.as_bytes())
@@ -1145,9 +1182,15 @@ fn prepare_docx_images(images: Vec<DocxMarkdownImage>) -> Result<Vec<PreparedDoc
             }
             total_bytes = total_bytes.saturating_add(bytes.len());
             if total_bytes > MAX_DOCX_MARKDOWN_TOTAL_IMAGE_BYTES {
-                return Err("DOCX_IMAGE_TOO_LARGE: total image data is larger than 50 MB".to_string());
+                return Err(
+                    "DOCX_IMAGE_TOO_LARGE: total image data is larger than 50 MB".to_string(),
+                );
             }
-            Ok(PreparedDocxImage { marker: image.marker, extension, bytes })
+            Ok(PreparedDocxImage {
+                marker: image.marker,
+                extension,
+                bytes,
+            })
         })
         .collect()
 }
@@ -1197,7 +1240,9 @@ fn create_docx_markdown_with_images(
     let mut markdown = content;
     for image in &prepared_images {
         if !markdown.contains(&image.marker) {
-            return Err("DOCX_IMAGE_REFERENCE_MISSING: converted image reference is missing".to_string());
+            return Err(
+                "DOCX_IMAGE_REFERENCE_MISSING: converted image reference is missing".to_string(),
+            );
         }
     }
 
@@ -1278,27 +1323,31 @@ pub async fn create_docx_markdown(
     let window_label = window.label().to_owned();
     crate::document_io::run("create_docx_markdown", move || {
         let state = app.state::<AppState>();
-        let source = authorized_docx_path(
-            &file_path,
-            Some(&space_path),
-            &window_label,
-            &state,
-        )?;
+        let source = authorized_docx_path(&file_path, Some(&space_path), &window_label, &state)?;
         // Creating a sibling requires an explicit browsable-space grant. A
         // one-file open grant is sufficient for preview, but not for writing.
         if !can_access_scoped_file(&source, Some(&space_path), &state) {
             return Err("DOCX_FORBIDDEN: cannot create Markdown outside this space".to_string());
         }
         let memo_file = read_lock(&state.memo_file, "memo_file");
-        let notebook_ids = memo_file.notebook_ids_for_paths(&[&source])
+        let notebook_ids = memo_file
+            .notebook_ids_for_paths(&[&source])
             .map_err(|error| error.to_string())?;
         let target = if notebook_ids.is_empty() {
             create_docx_markdown_with_images(&source, &space_path, content, images, &state)?
         } else {
             let ids: Vec<&str> = notebook_ids.iter().map(String::as_str).collect();
-            memo_file.with_notebook_change(&ids, "create_docx_markdown_with_images", || {
-                Ok(create_docx_markdown_with_images(&source, &space_path, content, images, &state))
-            }).map_err(|error| error.to_string())??
+            memo_file
+                .with_notebook_change(&ids, "create_docx_markdown_with_images", || {
+                    Ok(create_docx_markdown_with_images(
+                        &source,
+                        &space_path,
+                        content,
+                        images,
+                        &state,
+                    ))
+                })
+                .map_err(|error| error.to_string())??
         };
         refresh_notebook_note_index(&memo_file, &target);
         Ok(target.to_string_lossy().into_owned())
@@ -1364,7 +1413,10 @@ pub async fn read_image_preview(
     let slots = MEDIA_PREVIEW_SLOTS
         .get_or_init(|| Arc::new(Semaphore::new(MEDIA_PREVIEW_CONCURRENCY)))
         .clone();
-    let permit = slots.acquire_owned().await.map_err(|error| error.to_string())?;
+    let permit = slots
+        .acquire_owned()
+        .await
+        .map_err(|error| error.to_string())?;
     let preview = tauri::async_runtime::spawn_blocking(move || {
         let _permit = permit;
         let preview = decode_image_preview(&path, max_dimension).ok()?;
@@ -1444,7 +1496,10 @@ struct MediaPreviewCancellation {
 
 impl MediaPreviewCancellation {
     fn new() -> Self {
-        Self { cancelled: AtomicBool::new(false), notify: Notify::new() }
+        Self {
+            cancelled: AtomicBool::new(false),
+            notify: Notify::new(),
+        }
     }
 
     fn cancel(&self) {
@@ -1491,7 +1546,13 @@ pub async fn get_media_thumbnail(
         .and_then(|time| time.duration_since(UNIX_EPOCH).ok())
         .map(|duration| duration.as_nanos())
         .unwrap_or(0);
-    let identity = format!("v4:{}:{}:{}:{}", path.display(), metadata.len(), modified_ns, kind);
+    let identity = format!(
+        "v4:{}:{}:{}:{}",
+        path.display(),
+        metadata.len(),
+        modified_ns,
+        kind
+    );
     let digest = format!("{:x}", Sha256::digest(identity.as_bytes()));
     let cache_root = app
         .path()
@@ -1533,7 +1594,9 @@ pub async fn get_media_thumbnail(
     let worker_cancellation = cancellation.clone();
     let join_result = tauri::async_runtime::spawn_blocking(move || -> Result<bool, String> {
         let _permit = permit;
-        if worker_cancellation.is_cancelled() { return Ok(false); }
+        if worker_cancellation.is_cancelled() {
+            return Ok(false);
+        }
         if output.is_file() {
             return Ok(true);
         }
@@ -1560,16 +1623,25 @@ pub async fn get_media_thumbnail(
 
 #[tauri::command]
 pub fn cancel_media_thumbnail(request_id: String) {
-    let Some(requests) = MEDIA_PREVIEW_REQUESTS.get() else { return; };
+    let Some(requests) = MEDIA_PREVIEW_REQUESTS.get() else {
+        return;
+    };
     if let Ok(requests) = requests.lock() {
-        if let Some(request) = requests.get(&request_id) { request.cancel(); }
+        if let Some(request) = requests.get(&request_id) {
+            request.cancel();
+        }
     }
 }
 
 fn remove_media_preview_request(request_id: &str, expected: &Arc<MediaPreviewCancellation>) {
-    let Some(requests) = MEDIA_PREVIEW_REQUESTS.get() else { return; };
+    let Some(requests) = MEDIA_PREVIEW_REQUESTS.get() else {
+        return;
+    };
     if let Ok(mut requests) = requests.lock() {
-        if requests.get(request_id).is_some_and(|current| Arc::ptr_eq(current, expected)) {
+        if requests
+            .get(request_id)
+            .is_some_and(|current| Arc::ptr_eq(current, expected))
+        {
             requests.remove(request_id);
         }
     }
@@ -1590,7 +1662,8 @@ fn decode_image_preview(source: &Path, size: u32) -> Result<image::DynamicImage,
     use image::ImageDecoder;
     let mut reader = image::ImageReader::open(source)
         .map_err(|error| error.to_string())?
-        .with_guessed_format().map_err(|error| error.to_string())?;
+        .with_guessed_format()
+        .map_err(|error| error.to_string())?;
     let mut limits = image::Limits::default();
     limits.max_alloc = Some(256 * 1024 * 1024);
     limits.max_image_width = Some(32768);
@@ -1614,13 +1687,20 @@ fn write_image_thumbnail(
     output: &Path,
     cancellation: &MediaPreviewCancellation,
 ) -> Result<bool, String> {
-    if cancellation.is_cancelled() { return Ok(false); }
+    if cancellation.is_cancelled() {
+        return Ok(false);
+    }
     match decode_image_preview(source, 640) {
         Ok(preview) => write_thumbnail_png(output, &preview, cancellation),
         Err(error) => {
-            let extension = source.extension().and_then(|value| value.to_str()).unwrap_or("").to_ascii_lowercase();
+            let extension = source
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("")
+                .to_ascii_lowercase();
             if error.starts_with("MEDIA_PREVIEW_UNSUPPORTED:")
-                && matches!(extension.as_str(), "heic" | "heif" | "avif") {
+                && matches!(extension.as_str(), "heic" | "heif" | "avif")
+            {
                 write_system_thumbnail(source, output, cancellation, true)
             } else {
                 Err(error)
@@ -1666,7 +1746,9 @@ fn write_system_thumbnail(
                 let _ = child.wait();
                 return Ok(false);
             }
-            if let Some(status) = child.try_wait().map_err(|error| error.to_string())? { break status; }
+            if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
+                break status;
+            }
             std::thread::sleep(Duration::from_millis(60));
         };
         if !status.success() || cancellation.is_cancelled() {
@@ -1676,9 +1758,17 @@ fn write_system_thumbnail(
             .map_err(|error| error.to_string())?
             .filter_map(Result::ok)
             .map(|entry| entry.path())
-            .find(|candidate| candidate.extension().is_some_and(|extension| extension == "png"));
-        let Some(thumbnail) = thumbnail else { return Ok(false); };
-        if cancellation.is_cancelled() { return Ok(false); }
+            .find(|candidate| {
+                candidate
+                    .extension()
+                    .is_some_and(|extension| extension == "png")
+            });
+        let Some(thumbnail) = thumbnail else {
+            return Ok(false);
+        };
+        if cancellation.is_cancelled() {
+            return Ok(false);
+        }
         let preview = decode_image_preview(&thumbnail, 640)?;
         if preserve_alpha {
             return write_thumbnail_png(output, &preview, cancellation);
@@ -1698,7 +1788,9 @@ fn write_thumbnail_jpeg(
     quality: u8,
     cancellation: &MediaPreviewCancellation,
 ) -> Result<bool, String> {
-    if cancellation.is_cancelled() { return Ok(false); }
+    if cancellation.is_cancelled() {
+        return Ok(false);
+    }
     let mut jpeg = Vec::new();
     image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, quality)
         .encode_image(image)
@@ -1711,7 +1803,9 @@ fn write_thumbnail_png(
     image: &image::DynamicImage,
     cancellation: &MediaPreviewCancellation,
 ) -> Result<bool, String> {
-    if cancellation.is_cancelled() { return Ok(false); }
+    if cancellation.is_cancelled() {
+        return Ok(false);
+    }
     let mut png = std::io::Cursor::new(Vec::new());
     image
         .write_to(&mut png, image::ImageFormat::Png)
@@ -1724,7 +1818,9 @@ fn write_thumbnail_bytes(
     bytes: Vec<u8>,
     cancellation: &MediaPreviewCancellation,
 ) -> Result<bool, String> {
-    if cancellation.is_cancelled() { return Ok(false); }
+    if cancellation.is_cancelled() {
+        return Ok(false);
+    }
     let nonce = MEDIA_PREVIEW_TEMP_SEQUENCE.fetch_add(1, Ordering::Relaxed);
     let temporary = output.with_extension(format!("{nonce}.tmp"));
     fs::write(&temporary, bytes).map_err(|error| error.to_string())?;
@@ -1743,26 +1839,38 @@ fn write_thumbnail_bytes(
 
 fn prune_media_thumbnail_cache(cache_root: &Path) {
     let lock = MEDIA_PREVIEW_PRUNE_LOCK.get_or_init(|| Mutex::new(()));
-    let Ok(_guard) = lock.lock() else { return; };
-    let Ok(entries) = fs::read_dir(cache_root) else { return; };
+    let Ok(_guard) = lock.lock() else {
+        return;
+    };
+    let Ok(entries) = fs::read_dir(cache_root) else {
+        return;
+    };
     let mut files: Vec<(SystemTime, u64, PathBuf)> = entries
         .filter_map(Result::ok)
         .filter_map(|entry| {
             let metadata = entry.metadata().ok()?;
-            metadata.is_file().then(|| (
-                metadata.modified().unwrap_or(UNIX_EPOCH),
-                metadata.len(),
-                entry.path(),
-            ))
+            metadata.is_file().then(|| {
+                (
+                    metadata.modified().unwrap_or(UNIX_EPOCH),
+                    metadata.len(),
+                    entry.path(),
+                )
+            })
         })
         .collect();
     let total = files.iter().map(|(_, size, _)| *size).sum::<u64>();
-    if total <= MEDIA_PREVIEW_CACHE_LIMIT_BYTES { return; }
+    if total <= MEDIA_PREVIEW_CACHE_LIMIT_BYTES {
+        return;
+    }
     files.sort_by_key(|(modified, _, _)| *modified);
     let mut retained = total;
     for (_, size, path) in files {
-        if retained <= MEDIA_PREVIEW_CACHE_LIMIT_BYTES { break; }
-        if fs::remove_file(path).is_ok() { retained = retained.saturating_sub(size); }
+        if retained <= MEDIA_PREVIEW_CACHE_LIMIT_BYTES {
+            break;
+        }
+        if fs::remove_file(path).is_ok() {
+            retained = retained.saturating_sub(size);
+        }
     }
 }
 
@@ -1796,9 +1904,16 @@ pub fn read_video_preview(
             .ok()?
             .filter_map(Result::ok)
             .map(|entry| entry.path())
-            .find(|candidate| candidate.extension().is_some_and(|extension| extension == "png"))?;
+            .find(|candidate| {
+                candidate
+                    .extension()
+                    .is_some_and(|extension| extension == "png")
+            })?;
         let bytes = fs::read(thumbnail).ok()?;
-        let preview = image::load_from_memory(&bytes).ok()?.thumbnail(480, 480).to_rgb8();
+        let preview = image::load_from_memory(&bytes)
+            .ok()?
+            .thumbnail(480, 480)
+            .to_rgb8();
         let mut jpeg = Vec::new();
         image::codecs::jpeg::JpegEncoder::new_with_quality(&mut jpeg, 72)
             .encode_image(&preview)
@@ -1838,12 +1953,16 @@ pub fn write_file(
         }
     };
     let saved = match notebook_ids.as_slice() {
-        [notebook_id] => memo_file.write_file_for_notebook(notebook_id, path, content.as_bytes()).is_ok(),
+        [notebook_id] => memo_file
+            .write_file_for_notebook(notebook_id, path, content.as_bytes())
+            .is_ok(),
         [] => memo_file.write_file(path, content.as_bytes()).is_ok(),
-        _ => memo_file.with_registered_path_change(&[path], "write_file_nested_notebooks", || {
-            fs::metadata(path)?;
-            flowix_core::memo_file::atomic_write_bytes(path, content.as_bytes())
-        }).is_ok(),
+        _ => memo_file
+            .with_registered_path_change(&[path], "write_file_nested_notebooks", || {
+                fs::metadata(path)?;
+                flowix_core::memo_file::atomic_write_bytes(path, content.as_bytes())
+            })
+            .is_ok(),
     };
     if saved {
         refresh_notebook_note_index(&memo_file, path);
@@ -1908,11 +2027,15 @@ pub fn delete_file(file_path: String, space_path: Option<String>, state: State<A
         }
     };
     let deleted = match notebook_ids.as_slice() {
-        [notebook_id] => memo_file.delete_file_for_notebook(notebook_id, path).is_ok(),
+        [notebook_id] => memo_file
+            .delete_file_for_notebook(notebook_id, path)
+            .is_ok(),
         [] => memo_file.delete_file(path).is_ok(),
-        _ => memo_file.with_registered_path_change(&[path], "delete_file_nested_notebooks", || {
-            fs::remove_file(path)
-        }).is_ok(),
+        _ => memo_file
+            .with_registered_path_change(&[path], "delete_file_nested_notebooks", || {
+                fs::remove_file(path)
+            })
+            .is_ok(),
     };
     if deleted {
         refresh_notebook_note_index(&memo_file, path);
@@ -1922,7 +2045,11 @@ pub fn delete_file(file_path: String, space_path: Option<String>, state: State<A
 }
 
 #[tauri::command]
-pub fn delete_folder(folder_path: String, space_path: String, state: State<AppState>) -> Result<bool, String> {
+pub fn delete_folder(
+    folder_path: String,
+    space_path: String,
+    state: State<AppState>,
+) -> Result<bool, String> {
     let folder = Path::new(&folder_path);
     let scope = Path::new(&space_path);
     // Never allow the notebook root itself to be removed. The folder command
@@ -1941,10 +2068,13 @@ pub fn delete_folder(folder_path: String, space_path: String, state: State<AppSt
     }
     start_security_bookmark_access(&state, folder);
     let memo_file = read_lock(&state.memo_file, "memo_file");
-    let notebook_ids = memo_file.notebook_ids_for_paths(&[folder]).map_err(file_mutation_error)?;
+    let notebook_ids = memo_file
+        .notebook_ids_for_paths(&[folder])
+        .map_err(file_mutation_error)?;
     let deletion_attempted = std::cell::Cell::new(false);
     let deletion = if notebook_ids.is_empty() {
-        memo_file.acquire_cross_process_write_lock()
+        memo_file
+            .acquire_cross_process_write_lock()
             .and_then(|_guard| {
                 deletion_attempted.set(true);
                 fs::remove_dir_all(folder)
@@ -1956,11 +2086,17 @@ pub fn delete_folder(folder_path: String, space_path: String, state: State<AppSt
                 || !path_is_inside(folder, scope)
                 || folder == scope
             {
-                return Err(std::io::Error::new(std::io::ErrorKind::NotFound, "folder changed while waiting for notebook lock"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::NotFound,
+                    "folder changed while waiting for notebook lock",
+                ));
             }
             let metadata = fs::symlink_metadata(folder)?;
             if !metadata.is_dir() || metadata.file_type().is_symlink() {
-                return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "folder is no longer a directory"));
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "folder is no longer a directory",
+                ));
             }
             deletion_attempted.set(true);
             fs::remove_dir_all(folder)
@@ -1973,7 +2109,10 @@ pub fn delete_folder(folder_path: String, space_path: String, state: State<AppSt
             }
         }
         return Err(if deletion_attempted.get() && folder.exists() {
-            format!("FOLDER_DELETE_PARTIAL: {} remains: {error}", folder.display())
+            format!(
+                "FOLDER_DELETE_PARTIAL: {} remains: {error}",
+                folder.display()
+            )
         } else {
             format!("FOLDER_DELETE_FAILED: {error}")
         });
@@ -2380,10 +2519,15 @@ pub async fn import_file(
     let memo_file = state.memo_file.clone();
     tokio::task::spawn_blocking(move || {
         let store = read_lock(&memo_file, "memo_file");
-        let ids = store.notebook_ids_for_paths(&[&target]).map_err(file_mutation_error)?;
+        let ids = store
+            .notebook_ids_for_paths(&[&target])
+            .map_err(file_mutation_error)?;
         let copy = |destination: &Path| -> std::io::Result<()> {
             let mut input = fs::File::open(&source)?;
-            let mut output = fs::OpenOptions::new().write(true).create_new(true).open(destination)?;
+            let mut output = fs::OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(destination)?;
             if let Err(error) = std::io::copy(&mut input, &mut output) {
                 let _ = fs::remove_file(destination);
                 return Err(error);
@@ -2399,11 +2543,18 @@ pub async fn import_file(
                 copy,
             ),
             [] => {
-                let _guard = store.acquire_cross_process_write_lock().map_err(file_mutation_error)?;
+                let _guard = store
+                    .acquire_cross_process_write_lock()
+                    .map_err(file_mutation_error)?;
                 copy(&target)
             }
-            _ => store.with_registered_path_change(&[&target], "import_file_nested_notebooks", || copy(&target)),
-        }.map_err(file_mutation_error)?;
+            _ => store.with_registered_path_change(
+                &[&target],
+                "import_file_nested_notebooks",
+                || copy(&target),
+            ),
+        }
+        .map_err(file_mutation_error)?;
         Ok(target.to_string_lossy().into_owned())
     })
     .await
@@ -2479,9 +2630,11 @@ pub fn create_folder(
         let _guard = memo_file.acquire_cross_process_write_lock().ok()?;
         fs::create_dir_all(&target_path).ok()?;
     } else {
-        memo_file.with_registered_path_change(&[&target_path], "create_folder", || {
-            fs::create_dir_all(&target_path)
-        }).ok()?;
+        memo_file
+            .with_registered_path_change(&[&target_path], "create_folder", || {
+                fs::create_dir_all(&target_path)
+            })
+            .ok()?;
     }
 
     Some(DocTreeItem {
@@ -2526,13 +2679,23 @@ pub fn create_document(
     }
     start_security_bookmark_access(&state, &target_path);
     let memo_file = read_lock(&state.memo_file, "memo_file");
-    let notebook_ids = memo_file.notebook_ids_for_paths(&[&target_path]).map_err(file_mutation_error)?;
+    let notebook_ids = memo_file
+        .notebook_ids_for_paths(&[&target_path])
+        .map_err(file_mutation_error)?;
     match notebook_ids.as_slice() {
-        [notebook_id] => memo_file.create_file_for_notebook(notebook_id, &target_path, b"").map_err(file_mutation_error)?,
-        [] => memo_file.create_file(&target_path, b"").map_err(file_mutation_error)?,
-        _ => memo_file.with_registered_path_change(&[&target_path], "create_document_nested_notebooks", || {
-            flowix_core::memo_file::atomic_create_bytes(&target_path, b"")
-        }).map_err(file_mutation_error)?,
+        [notebook_id] => memo_file
+            .create_file_for_notebook(notebook_id, &target_path, b"")
+            .map_err(file_mutation_error)?,
+        [] => memo_file
+            .create_file(&target_path, b"")
+            .map_err(file_mutation_error)?,
+        _ => memo_file
+            .with_registered_path_change(
+                &[&target_path],
+                "create_document_nested_notebooks",
+                || flowix_core::memo_file::atomic_create_bytes(&target_path, b""),
+            )
+            .map_err(file_mutation_error)?,
     }
 
     Ok(DocTreeItem {

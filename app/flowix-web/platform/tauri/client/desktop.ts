@@ -1,5 +1,5 @@
 import { invokeDocumentMutation } from './document-mutation';
-import { convertFileSrc, invoke } from '@tauri-apps/api/core';
+import { convertFileSrc, invoke } from '@platform/tauri/core';
 import type { ThemeId } from '@/lib/theme';
 import type { NoteColor } from '@/types/note-item';
 
@@ -174,13 +174,13 @@ export const files = {
     limit?: number;
   }) => invoke<DocumentPage>('list_document_page', { request }),
   listTableDocuments: async (notebookId: string): Promise<TableDocumentListItem[]> =>
-    (await collections.list(notebookId, 'table')).filter((item) => item.collectionId !== null).map((item) => ({
+    (await collections.list(notebookId, 'table')).filter((item) => item.collectionId !== null && item.relativePath.split('/').pop()?.toLocaleLowerCase() !== '.index.yaml').map((item) => ({
       relativePath: item.relativePath, collectionId: item.collectionId!, name: item.name,
       modifiedMs: item.modifiedMs, fileRevision: item.revision ?? 0, inViews: item.inViews, identityConflict: item.identityConflict,
     })),
   setTableDocumentInViews: collections.setInViews,
   listMediaLibraries: async (notebookId: string): Promise<MediaLibraryListItem[]> =>
-    (await collections.list(notebookId, 'media_library')).filter((item) => item.collectionId !== null).map((item) => ({
+    (await collections.list(notebookId, 'media_library')).filter((item) => item.collectionId !== null && item.relativePath.split('/').pop()?.toLocaleLowerCase() !== '.index.yaml').map((item) => ({
       relativePath: item.relativePath, collectionId: item.collectionId!, name: item.name,
       modifiedMs: item.modifiedMs, inViews: item.inViews, identityConflict: item.identityConflict,
     })),
@@ -242,8 +242,8 @@ export const files = {
 };
 
 export const mediaResources = {
-  listPage: (notebookPath: string, kinds: Array<'image' | 'video'>, cursor?: string | null, limit?: number) =>
-    invoke<MediaResourcePage>('list_media_resources_page', { notebookPath, kinds, cursor, limit }),
+  listPage: (notebookPath: string, kinds: Array<'image' | 'video'>, cursor?: string | null, limit?: number, folderRelativePath?: string | null, folderDepth?: 'direct_children' | 'descendants') =>
+    invoke<MediaResourcePage>('list_media_resources_page', { notebookPath, kinds, cursor, limit, folderRelativePath, folderDepth }),
   get: (filePath: string, notebookPath: string) => invoke<MediaResourceResponse>(
     'get_media_resource',
     { filePath, notebookPath },
@@ -296,9 +296,28 @@ export const dialogs = {
     invoke<boolean>('copy_attachment_file', { sourcePath, targetPath }),
 };
 
-export const attachments = {
-  saveFromPath: (sourcePath: string, notebookId: string) =>
-    invoke<string | null>('save_attachment', { sourcePath, notebookId }),
+/** `created` is false when the operation reused or directly referenced a file. */
+export type NotebookAssetSaveResult = { path: string; created: boolean };
+/** Select an owner and optionally override the default `attachments/` destination. */
+export type NotebookAssetSaveOptions = {
+  notebookId?: string;
+  notePath?: string;
+  targetDirectoryPath?: string;
+  deduplicate?: boolean;
+  reuseNotebookFile?: boolean;
+};
+
+export const notebookAssets = {
+  /** Save with same-name SHA-256 deduplication; local-path reuse is opt-in. */
+  saveFromPath: (sourcePath: string, options: NotebookAssetSaveOptions) =>
+    invoke<NotebookAssetSaveResult | null>('save_notebook_asset', {
+      sourcePath,
+      ...(options.notebookId ? { notebookId: options.notebookId } : {}),
+      ...(options.notePath ? { notePath: options.notePath } : {}),
+      deduplicate: options.deduplicate ?? true,
+      reuseNotebookFile: options.reuseNotebookFile ?? false,
+      ...(options.targetDirectoryPath ? { targetDirectoryPath: options.targetDirectoryPath } : {}),
+    }),
 };
 
 export interface ExternalDocumentChangedEvent {

@@ -162,6 +162,8 @@ export interface DocumentListSurface extends SurfaceBase {
   notebookPath: string;
   notebookId: string | null;
   filters: { resourceKinds?: string[]; tags?: string[]; customFilterId?: string };
+  mediaScope?: { relativePath: string; depth: 'direct_children' | 'descendants' };
+  mediaDatasetActive?: boolean;
 }
 
 export type WorkColumnSurface =

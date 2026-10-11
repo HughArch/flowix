@@ -1588,10 +1588,69 @@
   max-height: min(520px, calc(100vh - 16px));
 }
 
-/* The Codex model picker owns a right-hand hover submenu, like the memo
- * sorting menu. Keep the outer popover from clipping that submenu. */
-.agent-thread-card__codex-settings-popover--has-submenu {
-  overflow: visible;
+.agent-thread-card__codex-settings-popover--pi-mode {
+  width: 180px;
+}
+
+/* Codex keeps the model list scrollable above a persistent reasoning control. */
+.agent-thread-card__codex-settings-popover--model-picker {
+  display: flex;
+  height: min(280px, calc(100vh - 16px));
+  max-height: min(280px, calc(100vh - 16px));
+  flex-direction: column;
+  overflow: hidden;
+  padding: 0;
+}
+
+.agent-thread-card__codex-settings-model-list {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+  padding: 0.25rem;
+}
+
+.agent-thread-card__codex-settings-reasoning-footer {
+  position: sticky;
+  bottom: 0;
+  z-index: 1;
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  flex: 0 0 auto;
+  gap: 2px;
+  margin: 0 8px 8px;
+  padding: 3px;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: transparent;
+}
+
+.agent-thread-card__codex-settings-reasoning-tab {
+  min-width: 0;
+  padding: 6px 2px;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: calc(var(--app-font-size, 15px) * 0.78);
+  line-height: 1.2;
+  white-space: nowrap;
+  cursor: pointer;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.agent-thread-card__codex-settings-reasoning-tab[aria-selected="true"] {
+  background: var(--hover-bg);
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.agent-thread-card__codex-settings-reasoning-tab:hover,
+.agent-thread-card__codex-settings-reasoning-tab:focus-visible {
+  color: var(--foreground);
+  outline: none;
 }
 
 .agent-thread-card__codex-settings-popover:not([hidden]) {
@@ -1615,77 +1674,6 @@
   color: var(--muted-foreground);
   font-size: 0.75rem;
   line-height: 1.2;
-}
-
-/* Codex model -> reasoning effort submenu.  This is intentionally scoped to
- * model groups so Claude / OpenCode keep their flat model picker. */
-.agent-thread-card__codex-settings-model-group {
-  position: relative;
-  display: block;
-  margin: 0 0 2px;
-}
-
-.agent-thread-card__codex-settings-item--submenu {
-  gap: 6px;
-}
-
-.agent-thread-card__codex-settings-item--submenu
-  .agent-thread-card__chevron-icon {
-  width: 14px;
-  height: 14px;
-  flex: 0 0 auto;
-  color: currentColor;
-  opacity: 0.72;
-}
-
-.agent-thread-card__codex-settings-submenu {
-  position: absolute;
-  top: 0;
-  left: calc(100% + 4px);
-  z-index: 106;
-  display: grid;
-  gap: 2px;
-  width: min(212px, calc(100vw - 16px));
-  max-height: min(280px, calc(100vh - 16px));
-  overflow-y: auto;
-  padding: 0.25rem;
-  border: 1px solid var(--border-popup);
-  border-radius: 0.75rem;
-  background: var(--card);
-  color: var(--agent-foreground);
-  box-shadow: 0 4px 24px -3px rgb(0 0 0 / 24%);
-  opacity: 0;
-  pointer-events: none;
-  transform: translateX(-4px) scale(0.98);
-  transform-origin: top left;
-  transition:
-    opacity 120ms ease,
-    transform 120ms ease,
-    visibility 120ms ease;
-  visibility: hidden;
-}
-
-.agent-thread-card__codex-settings-model-group:hover
-  .agent-thread-card__codex-settings-submenu,
-.agent-thread-card__codex-settings-model-group:focus-within
-  .agent-thread-card__codex-settings-submenu,
-.agent-thread-card__codex-settings-model-group[data-submenu-open="true"]
-  .agent-thread-card__codex-settings-submenu {
-  opacity: 1;
-  pointer-events: auto;
-  transform: translateX(0) scale(1);
-  visibility: visible;
-}
-
-.agent-thread-card__codex-settings-submenu
-  .agent-thread-card__codex-settings-item {
-  min-height: 26px;
-  padding-left: 8px;
-  font-size: calc(var(--app-font-size, 15px) * 0.86);
-}
-
-.agent-thread-card__codex-settings-submenu[data-submenu-side="left"] {
-  transform-origin: top right;
 }
 
 .agent-thread-card__codex-settings-item {

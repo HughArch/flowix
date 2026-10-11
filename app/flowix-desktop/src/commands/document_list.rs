@@ -1,10 +1,10 @@
 //! Notebook folder listings and collection-to-note reference maintenance.
-use std::{fs, path::Path, time::UNIX_EPOCH};
-use rusqlite::{params, Connection, OptionalExtension};
-use serde::{Deserialize, Serialize};
-use tauri::State;
 use crate::{app::state::AppState, lock_utils::read_lock};
 use flowix_core::memo_file::{FileManagementPolicy, FileWriteOutcome, MemoFile};
+use rusqlite::{params, Connection, OptionalExtension};
+use serde::{Deserialize, Serialize};
+use std::{fs, path::Path, time::UNIX_EPOCH};
+use tauri::State;
 const DEFAULT_LIMIT: usize = 48;
 const MAX_LIMIT: usize = 100;
 
@@ -67,13 +67,26 @@ fn setup(conn: &Connection) -> Result<(), String> {
         .map_err(|error| error.to_string())
 }
 pub(crate) fn is_table_document_path(path: &Path) -> bool {
-    super::collection::collection_type_for_path(path) == Some(flowix_core::collection::CollectionType::Table)
+    super::collection::collection_type_for_path(path)
+        == Some(flowix_core::collection::CollectionType::Table)
 }
-pub(crate) fn refresh_table_document_path(memo: &MemoFile, path: &Path) { super::collection::refresh_path(memo, path); }
-pub(crate) fn refresh_view_document_path(memo: &MemoFile, path: &Path) { super::collection::refresh_path(memo, path); }
-pub(crate) fn refresh_view_document_catalog_checked(memo: &MemoFile, id: &str, _root: &Path) -> Result<(), String> { super::collection::refresh_catalog(memo, id) }
+pub(crate) fn refresh_table_document_path(memo: &MemoFile, path: &Path) {
+    super::collection::refresh_path(memo, path);
+}
+pub(crate) fn refresh_view_document_path(memo: &MemoFile, path: &Path) {
+    super::collection::refresh_path(memo, path);
+}
+pub(crate) fn refresh_view_document_catalog_checked(
+    memo: &MemoFile,
+    id: &str,
+    _root: &Path,
+) -> Result<(), String> {
+    super::collection::refresh_catalog(memo, id)
+}
 pub(crate) fn refresh_view_document_catalog(memo: &MemoFile, id: &str, root: &Path) {
-    if let Err(error) = refresh_view_document_catalog_checked(memo, id, root) { tracing::warn!(%error, "collection catalog refresh failed"); }
+    if let Err(error) = refresh_view_document_catalog_checked(memo, id, root) {
+        tracing::warn!(%error, "collection catalog refresh failed");
+    }
 }
 
 fn rebased_relative_path(value: &str, old_path: &str, new_path: &str) -> Option<String> {
@@ -90,66 +103,72 @@ fn rebased_relative_path(value: &str, old_path: &str, new_path: &str) -> Option<
 }
 
 fn rebase_table_document_paths(source: &str, old_path: &str, new_path: &str) -> Option<String> {
-    let mut value: serde_yaml::Value = serde_yaml::from_str(source).ok()?;
+    let mut document = flowix_core::collection::CollectionDocument::parse(source)
+        .ok()?
+        .normalized_v2()
+        .ok()?;
+    if document.collection.kind != flowix_core::collection::CollectionType::Table {
+        return None;
+    }
     let mut changed = false;
     let updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-
-    if let Some(records) = value
-        .get_mut("payload")
-        .and_then(|payload| payload.get_mut("records"))
-        .and_then(|records| records.get_mut("data"))
-        .and_then(serde_yaml::Value::as_sequence_mut)
-    {
-        for record in records {
-            let Some(path) = record.get("note_path").and_then(serde_yaml::Value::as_str) else {
-                continue;
-            };
-            if let Some(rebased) = rebased_relative_path(path, old_path, new_path) {
-                if let Some(record) = record.as_mapping_mut() {
-                    record.insert(
-                        serde_yaml::Value::String("note_path".to_owned()),
-                        serde_yaml::Value::String(rebased),
-                    );
-                    record.insert(
-                        serde_yaml::Value::String("updated_at".to_owned()),
-                        serde_yaml::Value::String(updated_at.clone()),
-                    );
+    let dataset = document.payload.get_mut("dataset")?;
+    let records = dataset.get_mut("records")?;
+    for key in ["include", "exclude"] {
+        if let Some(items) = records
+            .get_mut(key)
+            .and_then(serde_json::Value::as_array_mut)
+        {
+            for record in items {
+                let path_key = if record.get("note_path").is_some() {
+                    "note_path"
+                } else {
+                    "relative_path"
+                };
+                let Some(path) = record.get(path_key).and_then(serde_json::Value::as_str) else {
+                    continue;
+                };
+                if let Some(rebased) = rebased_relative_path(path, old_path, new_path) {
+                    record[path_key] = serde_json::Value::String(rebased);
+                    record["updated_at"] = serde_json::Value::String(updated_at.clone());
                     changed = true;
                 }
             }
         }
     }
-
-    if let Some(excluded_paths) = value
-        .get_mut("payload")
-        .and_then(|payload| payload.get_mut("records"))
-        .and_then(|records| records.get_mut("auto_collect"))
-        .and_then(|auto_collect| auto_collect.get_mut("excluded_note_paths"))
-        .and_then(serde_yaml::Value::as_sequence_mut)
-    {
-        for path in excluded_paths {
-            let Some(path_text) = path.as_str() else {
-                continue;
-            };
-            if let Some(rebased) = rebased_relative_path(path_text, old_path, new_path) {
-                *path = serde_yaml::Value::String(rebased);
-                changed = true;
+    fn rebase_rule_paths(value: &mut serde_json::Value, old_path: &str, new_path: &str) -> bool {
+        let mut changed = false;
+        if let Some(object) = value.as_object_mut() {
+            if object.get("field").and_then(serde_json::Value::as_str) == Some("path") {
+                if let Some(path) = object.get("value").and_then(serde_json::Value::as_str) {
+                    if let Some(rebased) = rebased_relative_path(path, old_path, new_path) {
+                        object.insert("value".into(), serde_json::Value::String(rebased));
+                        changed = true;
+                    }
+                }
+            }
+            for child in object.values_mut() {
+                changed |= rebase_rule_paths(child, old_path, new_path);
+            }
+        } else if let Some(array) = value.as_array_mut() {
+            for child in array {
+                changed |= rebase_rule_paths(child, old_path, new_path);
             }
         }
+        changed
     }
-
-    if let Some(folder_path) = value
-        .get_mut("payload")
-        .and_then(|payload| payload.get_mut("records"))
-        .and_then(|records| records.get_mut("auto_collect"))
-        .and_then(|auto_collect| auto_collect.get_mut("condition"))
-        .and_then(|condition| condition.get_mut("file_condition"))
-        .and_then(|file_condition| file_condition.get_mut("path_contains"))
+    if let Some(filter) = dataset.get_mut("filter") {
+        changed |= rebase_rule_paths(filter, old_path, new_path);
+    }
+    if let Some(views) = document
+        .payload
+        .get_mut("views")
+        .and_then(|views| views.get_mut("items"))
+        .and_then(serde_json::Value::as_array_mut)
     {
-        if let Some(path_text) = folder_path.as_str() {
-            if let Some(rebased) = rebased_relative_path(path_text, old_path, new_path) {
-                *folder_path = serde_yaml::Value::String(rebased);
-                changed = true;
+        for view in views {
+            if let Some(filter) = view.get_mut("filter") {
+                changed |= rebase_rule_paths(filter, old_path, new_path);
             }
         }
     }
@@ -157,12 +176,9 @@ fn rebase_table_document_paths(source: &str, old_path: &str, new_path: &str) -> 
     if !changed {
         return None;
     }
-    let collection = value.get_mut("collection")?.as_mapping_mut()?;
-    let key = serde_yaml::Value::String("revision".into());
-    let revision = collection.get(&key)?.as_i64()?.checked_add(1)?;
-    collection.insert(key, serde_yaml::Value::Number(revision.into()));
-    collection.insert(serde_yaml::Value::String("updated_at".into()), serde_yaml::Value::String(updated_at));
-    serde_yaml::to_string(&value).ok()
+    document.collection.revision = document.collection.revision.checked_add(1)?;
+    document.collection.updated_at = updated_at;
+    document.serialize().ok()
 }
 
 /// Best-effort maintenance of table-to-note references after a note path move.
@@ -191,7 +207,10 @@ pub(crate) fn rebase_table_note_paths(
         return;
     };
 
-    for item in documents.into_iter().filter(|item| item.collection_type == flowix_core::collection::CollectionType::Table && item.parse_state == "valid") {
+    for item in documents.into_iter().filter(|item| {
+        item.collection_type == flowix_core::collection::CollectionType::Table
+            && item.parse_state == "valid"
+    }) {
         let path = root.join(&item.relative_path);
         let Ok(source) = fs::read_to_string(&path) else {
             continue;
@@ -200,7 +219,8 @@ pub(crate) fn rebase_table_note_paths(
         else {
             continue;
         };
-        match memo_file.write_file_if_matches_for_notebook(notebook_id, &path, &next, Some(&source)) {
+        match memo_file.write_file_if_matches_for_notebook(notebook_id, &path, &next, Some(&source))
+        {
             Ok(FileWriteOutcome::Saved) => refresh_table_document_path(memo_file, &path),
             Ok(FileWriteOutcome::Conflict { .. }) => {
                 tracing::debug!(path = %path.display(), "table reference rebase skipped after concurrent edit")
@@ -301,6 +321,9 @@ pub async fn list_document_page(
                 Err(error) => { tracing::debug!(path = %entry.path().display(), "skip unreadable document entry: {error}"); continue; }
             };
             let path = entry.path();
+            if entry.file_name().to_string_lossy().eq_ignore_ascii_case(".index.yaml") {
+                continue;
+            }
             let relative = match path.strip_prefix(&root) {
                 Ok(relative) => relative,
                 Err(_) => continue,

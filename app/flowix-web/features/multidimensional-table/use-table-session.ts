@@ -7,6 +7,7 @@ import { toast } from '@/lib/toast';
 import { findFileDisplayPath, type FileDisplayIdentity } from '@/lib/file-display-registry';
 import { parseTableDocumentAsync } from './parse-table-document';
 import { serializeTableDocument, parseTableDocument, validateTableDocument, type MultidimensionalTableDocument } from './model';
+import { isLegacyCollectionSource } from '@features/collection/model';
 
 interface TableSessionOptions {
   filePath: string;
@@ -27,14 +28,10 @@ interface NoteChangeEvent {
 function normalizeTableSessionDocument(document: MultidimensionalTableDocument): MultidimensionalTableDocument {
   return {
     ...document,
-    records: {
-      ...document.records,
-      data: document.records.data.map((record) => ({ ...record, note_path: record.note_path.replace(/\\/g, '/') })),
-      auto_collect: document.records.auto_collect ? {
-        ...document.records.auto_collect,
-        excluded_note_paths: document.records.auto_collect.excluded_note_paths.map((path) => path.replace(/\\/g, '/')),
-      } : null,
-    },
+    dataset: { ...document.dataset, records: { ...document.dataset.records,
+      include: document.dataset.records.include.map((record) => ({ ...record, note_path: record.note_path.replace(/\\/g, '/') })),
+      exclude: document.dataset.records.exclude.map((record) => ({ ...record, note_path: record.note_path.replace(/\\/g, '/') })),
+    } },
   };
 }
 
@@ -98,6 +95,18 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
       if (!isCurrentSession(sequence, key)) return;
       let next = await parseTableDocumentAsync(source);
       if (!isCurrentSession(sequence, key)) return;
+      let sourceContent = source;
+      if (isLegacyCollectionSource(source)) {
+        const migration = await externalDocuments.write({ filePath: getCurrentFilePath(), content: serializeTableDocument(next), expectedContent: source, scopePath: notebookPath });
+        if (!isCurrentSession(sequence, key)) return;
+        if (migration.status === 'saved') sourceContent = migration.content;
+        else if (migration.status === 'conflict') {
+          const latest = await parseTableDocumentAsync(migration.diskContent);
+          if (latest.collection.id !== next.collection.id) throw new Error('表格身份已变化，无法迁移旧格式');
+          next = latest;
+          sourceContent = migration.diskContent;
+        } else if (migration.status === 'error') throw new Error(migration.message);
+      }
 
       let noteLoadError: string | null = null;
       let resolvedId = notebookId;
@@ -125,7 +134,6 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
       // Keep unresolved paths in the table file so users can see and repair a
       // broken reference. A successful note-list read is not permission to
       // erase the path: the file may have moved or the index may be catching up.
-      const sourceContent = source;
       next = normalizeTableSessionDocument(next);
 
       sourceContentRef.current = { sessionKey: key, content: sourceContent };
@@ -238,8 +246,8 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
       setNotes((current) => mergeEntries(current));
       setNotesLoadError(null);
       if (sourceChanged) setDocument((current) => current ? { ...next,
-        table: reuseCollectionValue(current.table, next.table),
-        records: reuseCollectionValue(current.records, next.records),
+        dataset: reuseCollectionValue(current.dataset, next.dataset),
+        views: reuseCollectionValue(current.views, next.views),
       } : next);
       pendingTableSyncRef.current = false;
     } catch (error) {
@@ -321,8 +329,8 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
     const next = normalizeTableSessionDocument(parseTableDocument(content));
     sourceContentRef.current = { sessionKey, content };
     setDocument((current) => current ? { ...next,
-      table: reuseCollectionValue(current.table, next.table),
-      records: reuseCollectionValue(current.records, next.records),
+      dataset: reuseCollectionValue(current.dataset, next.dataset),
+      views: reuseCollectionValue(current.views, next.views),
     } : next);
   }, [sessionKey]);
 
@@ -337,8 +345,8 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
       if (next.collection.id !== collectionId) return;
       sourceContentRef.current = { sessionKey: key, content };
       setDocument((current) => current ? { ...next,
-        table: reuseCollectionValue(current.table, next.table),
-        records: reuseCollectionValue(current.records, next.records),
+        dataset: reuseCollectionValue(current.dataset, next.dataset),
+        views: reuseCollectionValue(current.views, next.views),
       } : next);
     }).catch(() => undefined);
   }), [collectionId, isCurrentSession, notebookPath, resolvedNotebookId, sessionKey]);

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { addTableView, createTableDocument, parseTableDocument, serializeTableDocument, validateTableDocument } from './model';
+import { addTableView, canEditTableAutoCollectFilter, createTableDocument, parseTableDocument, serializeTableDocument, validateTableDocument, withTableAutoCollect } from './model';
 
-describe('table format v1', () => {
+describe('table format v2', () => {
   it('round trips a new table', () => {
     const table = createTableDocument();
     expect(table.collection.type).toBe('table');
@@ -11,9 +11,9 @@ describe('table format v1', () => {
   it('creates each view type over the shared records without requiring a data table view', () => {
     for (const type of ['table', 'kanban', 'calendar', 'gallery'] as const) {
       const document = createTableDocument(type);
-      expect(document.table.views).toHaveLength(1);
-      expect(document.table.views[0].type).toBe(type);
-      expect(document.records).toEqual({ data: [], auto_collect: null });
+      expect(document.views.items).toHaveLength(1);
+      expect(document.views.items[0].layout).toBe(type);
+      expect(document.dataset.records).toEqual({ include: [], exclude: [] });
       expect(parseTableDocument(serializeTableDocument(document))).toEqual(document);
     }
   });
@@ -21,13 +21,13 @@ describe('table format v1', () => {
   it('adds a second data table view without copying records', () => {
     const document = createTableDocument('gallery');
     const added = addTableView(document, 'table');
-    expect(added.document.table.views.map((view) => view.type)).toEqual(['gallery', 'table']);
-    expect(added.document.records).toBe(document.records);
+    expect(added.document.views.items.map((view) => view.layout)).toEqual(['gallery', 'table']);
+    expect(added.document.dataset.records).toBe(document.dataset.records);
   });
 
   it('rejects unsupported versions', () => {
     const table = createTableDocument();
-    expect(() => parseTableDocument(serializeTableDocument(table).replace('schema_version: 1', 'schema_version: 2'))).toThrow('不支持');
+    expect(() => parseTableDocument(serializeTableDocument(table).replace('schema_version: 2', 'schema_version: 3'))).toThrow('不支持');
   });
 
   it('rejects duplicate linked notes', () => {
@@ -35,7 +35,7 @@ describe('table format v1', () => {
     const records = ['a', 'b'].map((suffix) => ({
       id: `rec_${suffix.repeat(32)}`, updated_at: '', note_path: 'same.md',
     }));
-    expect(() => parseTableDocument(serializeTableDocument({ ...table, records: { ...table.records, data: records } }))).toThrow('重复关联');
+    expect(() => parseTableDocument(serializeTableDocument({ ...table, dataset: { ...table.dataset, records: { ...table.dataset.records, include: records } } }))).toThrow('重复关联');
   });
 
   it('rejects property values duplicated in table records', () => {
@@ -46,25 +46,25 @@ describe('table format v1', () => {
       note_path: '计划/项目.md',
       values: { status: '进行中' },
     };
-    expect(() => validateTableDocument({ ...table, records: { ...table.records, data: [record] } })).toThrow('表格记录格式无效');
+    expect(() => validateTableDocument({ ...table, dataset: { ...table.dataset, records: { ...table.dataset.records, include: [record] } } })).toThrow('表格记录格式无效');
   });
 
   it('keeps conditions for note properties that are not table fields', () => {
     const table = createTableDocument();
-    const withCondition = {
-      ...table,
-      records: {
-        ...table.records,
-        auto_collect: {
+    const withCondition = withTableAutoCollect(table, {
           condition: {
             property_match: 'union' as const,
             property_conditions: [{ field_id: 'workflow', operator: 'contains' as const, value: 'release' }],
           },
-          excluded_note_paths: [],
-        },
-      },
-    };
+        });
 
     expect(parseTableDocument(serializeTableDocument(withCondition))).toEqual(withCondition);
+  });
+
+  it('prevents the compact rule editor from rewriting filters it cannot represent', () => {
+    const table = createTableDocument();
+    const filter = { all: [{ field: 'workflow', op: 'in', value: ['ready', 'blocked'] }], any: [] };
+    expect(canEditTableAutoCollectFilter({ ...table, dataset: { ...table.dataset, filter } })).toBe(false);
+    expect(canEditTableAutoCollectFilter(table)).toBe(true);
   });
 });

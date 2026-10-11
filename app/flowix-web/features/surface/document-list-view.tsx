@@ -1,5 +1,5 @@
-import { memo, useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ChevronDown, Folder, Inbox, Play } from 'lucide-react';
+import { memo, useCallback, useEffect, useRef, useState } from 'react';
+import { Folder, Inbox, Play } from 'lucide-react';
 import { FunnelIcon, PlusIcon, TrashSimpleIcon } from '@phosphor-icons/react';
 import { files, mediaResources, type DocumentPage, type DocumentPageItem, type FileBrowserDirectoriesChangedEvent, type MediaResourcePage, type NotebookFolderOption } from '@platform/tauri/client';
 import { externalFileViewKind, fileExtension, isCodeTextFilePath, resourceKindFromPath } from '@features/editor/public/code-file';
@@ -10,15 +10,14 @@ import { createLogger } from '@/lib/logger';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
 import { Button } from '@shared/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@shared/ui/select';
 import { useI18n } from '@/lib/i18n';
-import { hasMediaLibraryDatasetCondition, matchesMediaLibraryDataset, normalizeMediaLibraryFileCondition, type MediaLibraryFileCondition, type MediaLibraryRecord } from '@features/media-library/model';
+import { matchesMediaCollectionFilter, normalizeMediaLibraryFileCondition, type MediaLibraryFileCondition, type MediaLibraryRecord } from '@features/media-library/model';
 import { NotebookTreeFileIcon } from '@features/memo/components/notebook-tree-file-icon';
 import { NotebookTreeResourceIcon } from '@features/memo/components/file-type-icon';
-import { ResourceFolderIcon } from './resource-file-icon';
 import type { DocumentListSurface } from './types';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import { requestMediaPreview } from './media-preview-tasks';
+import { MediaLibraryFilterPanel } from '@features/media-library/media-library-filter-panel';
 import documentCardPlaceholder from '@/assets/placeholder-document-card.jpg';
 import imageCardPlaceholder from '@/assets/placeholder-image-card.jpg';
 import videoCardPlaceholder from '@/assets/placeholder-video-card.jpg';
@@ -71,7 +70,7 @@ async function loadLinkedMediaItems(
   for (let offset = 0; offset < records.length; offset += 8) {
     const batch = records.slice(offset, offset + 8);
     const resolved = await Promise.all(batch.map(async (record) => {
-      const filePath = joinNotebookMemoPath(notebookPath, record.note_path);
+      const filePath = joinNotebookMemoPath(notebookPath, record.relative_path);
       if (!filePath) return null;
       try {
         const { resource } = await mediaResources.get(filePath, notebookPath);
@@ -106,7 +105,12 @@ function mediaItemRelativeDirectory(filePath: string, notebookPath: string): str
   return mediaItemRelativePath(filePath, notebookPath).split('/').slice(0, -1).join('/') || '.';
 }
 
-const DocumentCard = memo(function DocumentCard({ item, notebookPath, openItem, mediaLibrary = false, observeMediaCard, manuallyAddedImage = false, onRequestDelete, deleteLabel, deleteDisabled = false }: { item: DocumentPageItem; notebookPath: string; openItem: (item: DocumentPageItem) => Promise<void>; mediaLibrary?: boolean; observeMediaCard?: (node: Element, onNear: () => void) => () => void; manuallyAddedImage?: boolean; onRequestDelete?: (item: DocumentPageItem) => void; deleteLabel?: string; deleteDisabled?: boolean }) {
+function matchesMediaRuleFilter(item: DocumentPageItem, notebookPath: string, filter?: Record<string, unknown> | null): boolean {
+  if (item.resourceKind !== 'image' && item.resourceKind !== 'video') return false;
+  return matchesMediaCollectionFilter(mediaItemRelativePath(item.fullPath, notebookPath), item.resourceKind, filter);
+}
+
+const DocumentCard = memo(function DocumentCard({ item, notebookPath, openItem, mediaLibrary = false, observeMediaCard, onRequestDelete, deleteLabel, deleteDisabled = false }: { item: DocumentPageItem; notebookPath: string; openItem: (item: DocumentPageItem) => Promise<void>; mediaLibrary?: boolean; observeMediaCard?: (node: Element, onNear: () => void) => () => void; onRequestDelete?: (item: DocumentPageItem) => void; deleteLabel?: string; deleteDisabled?: boolean }) {
   const kind = mediaLibrary && (item.resourceKind === 'image' || item.resourceKind === 'video')
     ? item.resourceKind
     : item.resourceKind === 'folder' ? 'other' : externalFileViewKind(item.fullPath);
@@ -115,6 +119,7 @@ const DocumentCard = memo(function DocumentCard({ item, notebookPath, openItem, 
   const [previewLoading, setPreviewLoading] = useState(false);
   const [opening, setOpening] = useState(false);
   const [nearViewport, setNearViewport] = useState(false);
+  const [cardHovered, setCardHovered] = useState(false);
   const cardRef = useRef<HTMLButtonElement>(null);
   useEffect(() => {
     if (!mediaLibrary || !cardRef.current || !observeMediaCard) {
@@ -165,7 +170,7 @@ const DocumentCard = memo(function DocumentCard({ item, notebookPath, openItem, 
     loading={mediaLibrary ? 'eager' : 'lazy'}
     className={`${mediaLibrary ? kind === 'video' ? 'block h-[360px] w-full object-cover' : 'block max-h-[360px] w-full object-contain' : 'h-full w-full object-cover'} ${preview ? '' : 'opacity-50'}`}
   />;
-  if (mediaLibrary) return <div className="group relative w-full break-inside-avoid">
+  if (mediaLibrary) return <div className="group relative w-full break-inside-avoid" onMouseEnter={() => setCardHovered(true)} onMouseLeave={() => setCardHovered(false)}>
     <button type="button" disabled={opening} aria-busy={opening || previewLoading} onClick={() => {
     setOpening(true);
     void openItem(item).finally(() => setOpening(false));
@@ -174,13 +179,13 @@ const DocumentCard = memo(function DocumentCard({ item, notebookPath, openItem, 
       {image}
       {previewLoading && <span aria-hidden="true" className="pointer-events-none absolute inset-0 animate-pulse bg-[var(--muted)]" />}
       {kind === 'video' && <span className="absolute inset-0 flex items-center justify-center" aria-hidden="true"><span className="flex h-11 w-11 items-center justify-center rounded-full bg-black/40 text-white shadow-lg backdrop-blur-sm"><Play className="ml-0.5 h-5 w-5 fill-current stroke-current" strokeWidth={1.5} /></span></span>}
-      <span className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col gap-0.5 bg-gradient-to-t from-black/40 via-black/25 to-transparent px-2.5 pb-2.5 pt-8 text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100">
-        <span className="truncate text-[13px] font-medium leading-5" title={item.name}>{item.name}</span>
+      <span className="pointer-events-none absolute inset-x-0 bottom-0 flex flex-col gap-0.5 bg-gradient-to-t from-black/40 via-black/25 to-transparent px-2.5 pb-2 pt-8 text-white opacity-0 transition-opacity duration-150 group-hover:opacity-100 group-focus-visible:opacity-100">
         <span className="truncate text-[11px] leading-4 text-white/75" title={mediaItemRelativeDirectory(item.fullPath, notebookPath)}>{mediaItemRelativeDirectory(item.fullPath, notebookPath)}</span>
+        <span className="truncate text-[13px] font-medium leading-5" title={item.name}>{item.name}</span>
       </span>
     </span>
     </button>
-    {manuallyAddedImage && onRequestDelete && <Button
+    {item.resourceKind === 'image' && onRequestDelete && <Button
       type="button"
       variant="ghost"
       size="sm"
@@ -188,7 +193,8 @@ const DocumentCard = memo(function DocumentCard({ item, notebookPath, openItem, 
       title={deleteLabel}
       disabled={deleteDisabled}
       onClick={() => onRequestDelete(item)}
-      className="absolute right-2 top-2 z-10 h-7 w-7 rounded-lg bg-[var(--card)]/90 p-0 text-[var(--muted-foreground)] opacity-0 shadow-sm transition-opacity hover:bg-[var(--card)] hover:text-[var(--destructive)] group-hover:opacity-100 group-focus-within:opacity-100"
+      style={{ backgroundColor: 'color-mix(in srgb, var(--hover-bg) 36%, transparent)' }}
+      className={`absolute right-2 top-2 z-10 h-7 w-7 rounded-lg p-0 text-[var(--foreground)] shadow-sm transition-[opacity,color] hover:text-[var(--destructive)] ${cardHovered ? 'opacity-100' : 'opacity-0 group-focus-within:opacity-100'}`}
     ><TrashSimpleIcon size={14} weight="bold" aria-hidden="true" /></Button>}
   </div>;
   return <button type="button" disabled={opening} aria-busy={opening} onClick={() => {
@@ -225,15 +231,18 @@ const DocumentCard = memo(function DocumentCard({ item, notebookPath, openItem, 
   </button>;
 });
 
-export function DocumentListView({ surface, mediaLibrary = false, libraryName = '媒体库', libraryFilePath, mediaLibraryFilter = {}, mediaLibraryRecords = EMPTY_MEDIA_LIBRARY_RECORDS, onMediaLibraryFilterChange, onRenameLibrary, onAddMedia, onDeleteLibrary, onDeleteManualMedia, libraryActionsDisabled = false }: {
+export function DocumentListView({ surface, mediaLibrary = false, libraryName = '媒体库', libraryFilePath, mediaLibraryFilter = {}, mediaLibraryRecords = EMPTY_MEDIA_LIBRARY_RECORDS, mediaLibraryExcludedPaths = [], mediaLibraryDatasetFilter, mediaLibraryViewFilter, onMediaLibraryFilterChange, onRenameLibrary, onAddMedia, onDeleteLibrary, onDeleteMedia, libraryActionsDisabled = false }: {
   surface: DocumentListSurface;
   mediaLibrary?: boolean;
   libraryName?: string;
   libraryFilePath?: string;
   mediaLibraryFilter?: MediaLibraryFileCondition;
   mediaLibraryRecords?: MediaLibraryRecord[];
+  mediaLibraryExcludedPaths?: string[];
+  mediaLibraryDatasetFilter?: Record<string, unknown> | null;
+  mediaLibraryViewFilter?: Record<string, unknown> | null;
   onAddMedia?: () => Promise<boolean>;
-  onDeleteManualMedia?: (item: DocumentPageItem) => Promise<boolean>;
+  onDeleteMedia?: (item: DocumentPageItem) => Promise<boolean>;
   onMediaLibraryFilterChange?: (condition: MediaLibraryFileCondition) => Promise<boolean>;
   onRenameLibrary?: (title: string) => Promise<void>;
   onDeleteLibrary?: () => void;
@@ -241,13 +250,13 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
 }) {
   const { t } = useI18n();
   const resourceKindsKey = (surface.filters.resourceKinds ?? []).join('\u0000');
-  const hasMediaDataset = hasMediaLibraryDatasetCondition(mediaLibraryFilter);
+  const hasMediaDataset = Boolean(surface.mediaDatasetActive);
   const hasLinkedMedia = mediaLibraryRecords.length > 0;
   const [items, setItems] = useState<DocumentPageItem[]>([]);
   const [linkedItems, setLinkedItems] = useState<DocumentPageItem[]>([]);
   const [addingMedia, setAddingMedia] = useState(false);
-  const [manualMediaToDelete, setManualMediaToDelete] = useState<DocumentPageItem | null>(null);
-  const [deletingManualMedia, setDeletingManualMedia] = useState(false);
+  const [mediaToDelete, setMediaToDelete] = useState<DocumentPageItem | null>(null);
+  const [deletingMedia, setDeletingMedia] = useState(false);
   const [folders, setFolders] = useState<DocumentPageItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [loadingLinkedItems, setLoadingLinkedItems] = useState(false);
@@ -440,7 +449,7 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
     setNextCursor(null);
     const pageRequest = mediaLibrary
       ? hasMediaDataset
-        ? mediaResources.listPage(surface.notebookPath, (surface.filters.resourceKinds ?? ['image', 'video']).filter((kind): kind is 'image' | 'video' => kind === 'image' || kind === 'video'), null, MEDIA_LIBRARY_PAGE_SIZE)
+        ? mediaResources.listPage(surface.notebookPath, (surface.filters.resourceKinds ?? ['image', 'video']).filter((kind): kind is 'image' | 'video' => kind === 'image' || kind === 'video'), null, MEDIA_LIBRARY_PAGE_SIZE, surface.mediaScope?.relativePath ?? null, surface.mediaScope?.depth)
         : Promise.resolve({ resources: [], nextCursor: null, hasMore: false } satisfies MediaResourcePage)
       : files.listDocumentPage({ notebookId: surface.notebookId, folderPath: surface.folderPath, resourceKinds: surface.filters.resourceKinds });
     const linkedRequest = mediaLibrary
@@ -494,14 +503,14 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
       }
     });
     return () => { cancelled = true; requestGenerationRef.current += 1; };
-  }, [hasMediaDataset, hasLinkedMedia, mediaLibrary, mediaLibraryRecords, revision, surface.folderPath, surface.filters.resourceKinds, surface.notebookId, surface.notebookPath, resourceKindsKey]);
+  }, [hasMediaDataset, hasLinkedMedia, mediaLibrary, mediaLibraryRecords, revision, surface.folderPath, surface.filters.resourceKinds, surface.mediaScope?.relativePath, surface.mediaScope?.depth, surface.mediaDatasetActive, surface.notebookId, surface.notebookPath, resourceKindsKey]);
   const loadMore = useCallback(() => {
     if (!surface.notebookId || (mediaLibrary && !hasMediaDataset) || !nextCursor || loading || loadingMore || !hasMore) return;
     const generation = requestGenerationRef.current;
     setLoadingMore(true);
     setMoreError(false);
     const pageRequest = mediaLibrary
-      ? mediaResources.listPage(surface.notebookPath, (surface.filters.resourceKinds ?? ['image', 'video']).filter((kind): kind is 'image' | 'video' => kind === 'image' || kind === 'video'), nextCursor, MEDIA_LIBRARY_PAGE_SIZE)
+      ? mediaResources.listPage(surface.notebookPath, (surface.filters.resourceKinds ?? ['image', 'video']).filter((kind): kind is 'image' | 'video' => kind === 'image' || kind === 'video'), nextCursor, MEDIA_LIBRARY_PAGE_SIZE, surface.mediaScope?.relativePath ?? null, surface.mediaScope?.depth)
       : files.listDocumentPage({ notebookId: surface.notebookId, folderPath: surface.folderPath, resourceKinds: surface.filters.resourceKinds, cursor: nextCursor });
     void pageRequest.then((page) => {
       if (generation !== requestGenerationRef.current) return;
@@ -517,7 +526,7 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
     }).finally(() => {
       if (generation === requestGenerationRef.current) setLoadingMore(false);
     });
-  }, [hasMediaDataset, hasMore, loading, loadingMore, mediaLibrary, nextCursor, resourceKindsKey, surface.filters.resourceKinds, surface.folderPath, surface.notebookId, surface.notebookPath]);
+  }, [hasMediaDataset, hasMore, loading, loadingMore, mediaLibrary, nextCursor, resourceKindsKey, surface.filters.resourceKinds, surface.folderPath, surface.mediaScope?.relativePath, surface.mediaScope?.depth, surface.mediaDatasetActive, surface.notebookId, surface.notebookPath]);
   useEffect(() => {
     if (!hasMore || moreError || !endRef.current || !scrollRef.current) return;
     const observer = new IntersectionObserver((entries) => {
@@ -528,22 +537,22 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
   }, [hasMore, loadMore, moreError]);
   const appliedMediaNameQuery = (mediaLibraryFilter.file_name_contains ?? '').trim().toLocaleLowerCase();
   const appliedMediaPathQuery = (mediaLibraryFilter.path_contains ?? '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLocaleLowerCase();
+  const excludedMediaPathSet = new Set(mediaLibraryExcludedPaths.map((path) => path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLocaleLowerCase()));
   const visibleItems = mediaLibrary
     ? [...new Map([
-      ...linkedItems,
+      ...linkedItems.filter((item) => !excludedMediaPathSet.has(mediaItemRelativePath(item.fullPath, surface.notebookPath).toLocaleLowerCase())
+        && matchesMediaRuleFilter(item, surface.notebookPath, mediaLibraryViewFilter)),
       ...(hasMediaDataset ? items.filter((item) => (
         (item.resourceKind === 'image' || item.resourceKind === 'video')
-        && matchesMediaLibraryDataset({ relativePath: mediaItemRelativePath(item.fullPath, surface.notebookPath), kind: item.resourceKind }, mediaLibraryFilter)
+        && !excludedMediaPathSet.has(mediaItemRelativePath(item.fullPath, surface.notebookPath).toLocaleLowerCase())
+        && matchesMediaRuleFilter(item, surface.notebookPath, mediaLibraryDatasetFilter)
+        && matchesMediaRuleFilter(item, surface.notebookPath, mediaLibraryViewFilter)
       )) : []),
     ].map((item) => [canonicalPath(item.fullPath), item])).values()]
     : [...folders, ...items];
   const mediaFilterCount = (appliedMediaNameQuery ? 1 : 0)
     + (appliedMediaPathQuery ? 1 : 0)
     + (mediaLibraryFilter.file_type ? 1 : 0);
-  const linkedMediaPathKeys = useMemo(() => new Set(mediaLibraryRecords.flatMap((record) => {
-    const filePath = joinNotebookMemoPath(surface.notebookPath, record.note_path);
-    return filePath ? [canonicalPath(filePath).toLocaleLowerCase()] : [];
-  })), [mediaLibraryRecords, surface.notebookPath]);
   const mediaDraftFilterCount = (mediaNameQuery.trim() ? 1 : 0)
     + (mediaPathQuery.trim() ? 1 : 0)
     + (mediaTypeQuery === 'any' ? 0 : 1);
@@ -563,20 +572,20 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
   const applyMediaFilters = useCallback(async () => {
     if (await saveMediaFilters()) setMediaFiltersOpen(false);
   }, [saveMediaFilters]);
-  const confirmDeleteManualMedia = useCallback(async () => {
-    if (!manualMediaToDelete || !onDeleteManualMedia || deletingManualMedia) return;
-    setDeletingManualMedia(true);
+  const confirmDeleteMedia = useCallback(async () => {
+    if (!mediaToDelete || !onDeleteMedia || deletingMedia) return;
+    setDeletingMedia(true);
     try {
-      if (await onDeleteManualMedia(manualMediaToDelete)) {
-        setManualMediaToDelete(null);
+      if (await onDeleteMedia(mediaToDelete)) {
+        setMediaToDelete(null);
         setRevision((value) => value + 1);
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('media.fileTree.deleteFailed'));
     } finally {
-      setDeletingManualMedia(false);
+      setDeletingMedia(false);
     }
-  }, [deletingManualMedia, manualMediaToDelete, onDeleteManualMedia, t]);
+  }, [deletingMedia, mediaToDelete, onDeleteMedia, t]);
   const columnCount = Math.max(1, Math.floor((viewport.width + 14) / 214));
   const rowHeight = 224;
   const rowCount = Math.ceil(visibleItems.length / columnCount);
@@ -640,7 +649,7 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
       {mediaLibrary ? <>
         <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-5 py-1">
           <div className="flex h-7 max-w-[500px] min-w-0 -translate-x-[2px] items-center gap-1.5 pr-2" title={libraryName} onDoubleClick={editingLibraryTitle ? undefined : beginLibraryTitleEdit}>
-            <NotebookTreeResourceIcon path={libraryFilePath ?? 'media-library.lib.yaml'} className="h-5 w-5 shrink-0" />
+            <NotebookTreeResourceIcon path={libraryFilePath ?? 'media-library.lib.yaml'} collectionType="media_library" className="h-5 w-5 shrink-0" />
             {editingLibraryTitle ? <input
               ref={libraryTitleInputRef}
               autoFocus
@@ -689,85 +698,22 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
                 ><FunnelIcon size={14} weight="bold" aria-hidden="true" /></Button>
               </PopoverTrigger>
               <PopoverContent align="end" side="bottom" sideOffset={0} fitViewport style={{ zIndex: 150 }} ignorePopoverOutside={folderPickerOpen} className="max-h-[min(70vh,420px)] w-[320px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl px-1 py-2 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-                <div className="space-y-1">
-                  <div className="flex items-center justify-between">
-                    <p className="agent-thread-card__codex-settings-title px-2">{t('multidimensionalTable.autoCollect.file')}</p>
-                    {mediaDraftFilterCount > 0 && <button type="button" className="mx-2 rounded-lg px-2 py-1 text-xs text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]" onClick={() => {
-                      setMediaNameQuery('');
-                      setMediaTypeQuery('any');
-                      setMediaPathQuery('');
-                    }}>{t('mediaLibrary.clearFilters')}</button>}
-                  </div>
-                  <label className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
-                    <span className="px-0.5 text-sm text-[var(--foreground)]">{t('mediaLibrary.filterFileName')}</span>
-                    <input
-                      autoFocus
-                      value={mediaNameQuery}
-                      onChange={(event) => setMediaNameQuery(event.currentTarget.value)}
-                      placeholder={t('mediaLibrary.filterFileNamePlaceholder')}
-                      aria-label={t('mediaLibrary.filterFileName')}
-                      className="h-8 w-full rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm outline-none focus:border-[var(--brand)]"
-                    />
-                  </label>
-                  <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
-                    <span className="px-0.5 text-sm text-[var(--foreground)]">{t('mediaLibrary.filterType')}</span>
-                    <Select value={mediaTypeQuery} onValueChange={(value) => setMediaTypeQuery(value as 'any' | 'image' | 'video')}>
-                      <SelectTrigger className="h-8 min-w-0 w-full rounded-lg bg-transparent px-2 text-left text-sm">
-                        <SelectValue>{mediaTypeQuery === 'image' ? t('mediaLibrary.images') : mediaTypeQuery === 'video' ? t('mediaLibrary.videos') : t('mediaLibrary.all')}</SelectValue>
-                      </SelectTrigger>
-                      <SelectContent align="start" fitViewport style={{ zIndex: 170 }} className="flowix-preferences-select-content">
-                        <SelectItem value="any">{t('mediaLibrary.all')}</SelectItem>
-                        <SelectItem value="image">{t('mediaLibrary.images')}</SelectItem>
-                        <SelectItem value="video">{t('mediaLibrary.videos')}</SelectItem>
-                      </SelectContent>
-                    </Select>
-                  </div>
-                  <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
-                    <span className="px-0.5 text-sm text-[var(--foreground)]">{t('mediaLibrary.filterPath')}</span>
-                    <Popover open={folderPickerOpen} onOpenChange={setFolderPickerOpen}>
-                      <PopoverTrigger asChild>
-                        <button type="button" disabled={!surface.notebookPath} className="flex h-8 w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-transparent px-2 text-left text-sm disabled:opacity-50">
-                          <span className="min-w-0 truncate">{mediaPathQuery || t('mediaLibrary.chooseFolder')}</span>
-                          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
-                        </button>
-                      </PopoverTrigger>
-                      <PopoverContent side="bottom" align="start" sideOffset={4} style={{ zIndex: 170 }} className="max-h-[min(60vh,280px)] w-[260px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-                        {folderOptionsLoading ? <p className="px-2 py-2 text-xs text-[var(--muted-foreground)]">{t('mediaLibrary.loadingFolders')}</p>
-                          : <div className="space-y-0.5">
-                            <button
-                              type="button"
-                              aria-pressed={!mediaPathQuery}
-                              onClick={() => { setMediaPathQuery(''); setFolderPickerOpen(false); }}
-                              className={`flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-sm hover:bg-[var(--muted)] ${!mediaPathQuery ? 'bg-[var(--muted)]' : ''}`}
-                            >
-                              <span className="flex min-w-0 flex-1 items-center gap-2 pl-2">
-                                <ResourceFolderIcon expanded={false} className="h-[18px] w-[18px] shrink-0" />
-                                <span className="min-w-0 truncate">{t('mediaLibrary.anyFolder')}</span>
-                              </span>
-                            </button>
-                            {folderOptions.length === 0 ? <p className="px-2 py-2 text-xs text-[var(--muted-foreground)]">{t('mediaLibrary.noFolders')}</p> : folderOptions.map((option) => {
-                              const segments = option.relativePath.split('/');
-                              const folderName = segments[segments.length - 1] ?? option.relativePath;
-                              const selected = mediaPathQuery === option.relativePath;
-                              return <button
-                                key={option.relativePath}
-                                type="button"
-                                title={option.relativePath}
-                                aria-pressed={selected}
-                                onClick={() => { setMediaPathQuery(option.relativePath); setFolderPickerOpen(false); }}
-                                className={`flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-sm hover:bg-[var(--muted)] ${selected ? 'bg-[var(--muted)]' : ''}`}
-                                style={{ paddingLeft: `${8 + option.depth * 16}px` }}
-                              >
-                                <ResourceFolderIcon expanded={false} className="h-[18px] w-[18px] shrink-0" />
-                                <span className="min-w-0 truncate">{folderName}</span>
-                              </button>;
-                            })}
-                          </div>}
-                      </PopoverContent>
-                    </Popover>
-                  </div>
-                </div>
-                <div className="mt-2 mx-2"><button type="button" className="flex h-8 w-full items-center justify-center rounded-lg border border-[var(--border)] bg-white text-sm text-gray-900 hover:bg-gray-100 disabled:opacity-50" onClick={() => void applyMediaFilters()}>{t('mediaLibrary.apply')}</button></div>
+                <MediaLibraryFilterPanel
+                  fileName={mediaNameQuery}
+                  fileType={mediaTypeQuery}
+                  path={mediaPathQuery}
+                  folderPickerOpen={folderPickerOpen}
+                  folderOptions={folderOptions}
+                  folderOptionsLoading={folderOptionsLoading}
+                  notebookAvailable={Boolean(surface.notebookPath)}
+                  autoFocus
+                  onFileNameChange={setMediaNameQuery}
+                  onFileTypeChange={setMediaTypeQuery}
+                  onPathChange={setMediaPathQuery}
+                  onFolderPickerOpenChange={setFolderPickerOpen}
+                  onReset={() => { setMediaNameQuery(''); setMediaTypeQuery('any'); setMediaPathQuery(''); }}
+                  onApply={() => { void applyMediaFilters(); }}
+                />
               </PopoverContent>
             </Popover>
             {onAddMedia && <Button
@@ -825,22 +771,21 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
             ? <div className="flex h-full min-h-[160px] items-center justify-center text-sm text-[var(--muted-foreground)]">{t('mediaLibrary.searchingMore')}</div>
           : mediaLibrary
             ? <div className="gap-0.5 pt-0" style={{ columns: '220px', columnGap: '2px', contentVisibility: 'auto', containIntrinsicSize: '1px 1000px' }}>{visibleItems.map((item) => {
-              const manuallyAddedImage = item.resourceKind === 'image' && linkedMediaPathKeys.has(canonicalPath(item.fullPath).toLocaleLowerCase());
-              return <div key={item.fullPath} className="break-inside-avoid py-px"><DocumentCard item={item} notebookPath={surface.notebookPath} openItem={openItem} mediaLibrary observeMediaCard={observeMediaCard} manuallyAddedImage={manuallyAddedImage} onRequestDelete={onDeleteManualMedia ? setManualMediaToDelete : undefined} deleteLabel={t('media.fileTree.delete')} deleteDisabled={libraryActionsDisabled || deletingManualMedia} /></div>;
+              return <div key={item.fullPath} className="break-inside-avoid py-px"><DocumentCard item={item} notebookPath={surface.notebookPath} openItem={openItem} mediaLibrary observeMediaCard={observeMediaCard} onRequestDelete={onDeleteMedia ? setMediaToDelete : undefined} deleteLabel={t('media.fileTree.delete')} deleteDisabled={libraryActionsDisabled || deletingMedia} /></div>;
             })}</div>
             : <div style={{ paddingTop: firstRow * rowHeight, paddingBottom: Math.max(0, rowCount - lastRow) * rowHeight }}><div className="grid w-full grid-cols-[repeat(auto-fill,minmax(min(100%,200px),1fr))] items-stretch gap-3.5 pt-3">{visibleCards.map((item) => <DocumentCard key={item.fullPath} item={item} notebookPath={surface.notebookPath} openItem={openItem} />)}</div></div>}
       {moreError && <button type="button" className="mt-4 rounded-lg px-2 py-1 text-sm text-[var(--brand)] hover:bg-[var(--muted)]" onClick={loadMore}>加载失败，点击重试</button>}
       {hasMore && !moreError && <div ref={endRef} className="h-1" aria-hidden="true" />}
     </OverlayScrollbar>
-    {mediaLibrary && <Dialog open={!!manualMediaToDelete} onOpenChange={(open) => { if (!open && !deletingManualMedia) setManualMediaToDelete(null); }}>
+    {mediaLibrary && <Dialog open={!!mediaToDelete} onOpenChange={(open) => { if (!open && !deletingMedia) setMediaToDelete(null); }}>
       <DialogContent className="max-w-sm" showCloseButton={false}>
         <DialogHeader>
-          <DialogTitle>{t('media.fileTree.deleteTitle')}</DialogTitle>
-          <DialogDescription>{t('media.fileTree.deleteDescription', { name: manualMediaToDelete?.name ?? '' })}</DialogDescription>
+          <DialogTitle>{t('mediaLibrary.deleteImageTitle')}</DialogTitle>
+          <DialogDescription>{t('mediaLibrary.deleteImageDescription', { name: mediaToDelete?.name ?? '' })}</DialogDescription>
         </DialogHeader>
         <div className="mt-4 flex justify-end gap-2">
-          <Button type="button" variant="ghost" size="sm" className="rounded-lg" disabled={deletingManualMedia} onClick={() => setManualMediaToDelete(null)}>{t('dialog.cancel')}</Button>
-          <Button type="button" variant="outline" size="sm" disabled={deletingManualMedia} onClick={() => void confirmDeleteManualMedia()} className="rounded-lg hover:border-[var(--destructive)] hover:bg-transparent hover:text-[var(--destructive)]">{t('dialog.delete')}</Button>
+          <Button type="button" variant="ghost" size="sm" className="rounded-lg" disabled={deletingMedia} onClick={() => setMediaToDelete(null)}>{t('dialog.cancel')}</Button>
+          <Button type="button" variant="outline" size="sm" disabled={deletingMedia} onClick={() => void confirmDeleteMedia()} className="rounded-lg hover:border-[var(--destructive)] hover:bg-transparent hover:text-[var(--destructive)]">{t('dialog.delete')}</Button>
         </div>
       </DialogContent>
     </Dialog>}

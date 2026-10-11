@@ -13,6 +13,8 @@ import {
   Loader2,
   MoreHorizontal,
   SquarePen,
+  Table2,
+  GalleryHorizontalEnd,
 } from 'lucide-react';
 import {
   getVisibleCreateFilter,
@@ -131,6 +133,20 @@ export function MemoList({
   dataLoadingEnabled = true,
 }: MemoListProps) {
   const { t } = useI18n();
+  const getTableDefaultName = (viewType: TableViewType) => viewType === 'gallery'
+    ? t('memo.create.galleryDefaultName')
+    : viewType === 'kanban'
+      ? t('memo.create.kanbanDefaultName')
+      : viewType === 'calendar'
+        ? t('memo.create.calendarDefaultName')
+        : t('memo.create.tableDefaultName');
+  const getTableDialogTitle = (viewType: TableViewType) => viewType === 'gallery'
+    ? t('memo.create.galleryDialogTitle')
+    : viewType === 'kanban'
+      ? t('memo.create.kanbanDialogTitle')
+      : viewType === 'calendar'
+        ? t('memo.create.calendarDialogTitle')
+        : t('memo.create.tableDialogTitle');
   const [showScrollTopHint, setShowScrollTopHint] = useState(false);
   const { registerCard, prepareForInsert, onListRendered } =
     useMemoInsertAnimation();
@@ -149,7 +165,7 @@ export function MemoList({
   const showFolderView = memoListView === 'folders' && Boolean(selectedNotebook);
   const [createTypeMenuOpen, setCreateTypeMenuOpen] = useState(false);
   const [newTableDialogOpen, setNewTableDialogOpen] = useState(false);
-  const [newTableName, setNewTableName] = useState('新建多维表格');
+  const [newTableName, setNewTableName] = useState(() => t('memo.create.tableDefaultName'));
   const [newTableViewType, setNewTableViewType] = useState<TableViewType>('table');
   const [createTableDialogNotebookId, setCreateTableDialogNotebookId] = useState<string | null>(null);
   const createTableOnCreatedRef = useRef<OpenCreateTableDialogRequest['onCreated'] | null>(null);
@@ -939,7 +955,7 @@ export function MemoList({
         ? defaultCreateFolder ?? undefined
         : (await fileApi.getNotebookViewPreferences(targetNotebook.path)).defaultCreateFolder ?? undefined;
       const created = await createTableDocumentFile(targetNotebook.path, parentRelativePath, newTableName, newTableViewType);
-      const view = created.table.table.views[0];
+      const view = created.table.views.items[0];
       if (!view) throw new Error('新建多维表格没有可用视图');
       await onCreated?.({ relativePath: created.relativePath, collectionId: created.table.collection.id, viewId: view.id });
       setNewTableDialogOpen(false);
@@ -1053,7 +1069,7 @@ export function MemoList({
         </DropdownMenuItem>
       ))}
       <MemoNavigationSubmenu
-        label={t('editor.toolbar.more')}
+        label={t('memo.fileTree.viewsSectionTitle')}
         icon={<MoreHorizontal className="h-4 w-4" aria-hidden="true" />}
         open={createMoreMenuOpen}
         onOpenChange={setCreateMoreMenuOpen}
@@ -1061,14 +1077,14 @@ export function MemoList({
         loadingText=""
         hideHeader
         onCloseMenu={() => setCreateTypeMenuOpen(false)}
-        submenuClassName="w-[147px]"
+        submenuClassName="w-[176px]"
         submenuContent={(
           <div className="flex flex-col gap-0.5">
             {([
               { type: 'table' as const, label: t('memo.create.table') },
-              { type: 'gallery' as const, label: t('editor.slash.label.galleryView') },
-              { type: 'kanban' as const, label: t('editor.slash.label.kanbanView') },
-              { type: 'calendar' as const, label: t('editor.slash.label.calendarView') },
+              { type: 'gallery' as const, label: t('memo.create.newGallery') },
+              { type: 'kanban' as const, label: t('memo.create.newKanban') },
+              { type: 'calendar' as const, label: t('memo.create.newCalendar') },
             ]).map(({ type, label }) => (
               <button
                 key={type}
@@ -1078,7 +1094,7 @@ export function MemoList({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => {
                   setNewTableViewType(type);
-                  setNewTableName(t('memo.create.tableDefaultName'));
+                  setNewTableName(getTableDefaultName(type));
                   setCreateTableDialogNotebookId(null);
                   createTableOnCreatedRef.current = null;
                   setCreateMoreMenuOpen(false);
@@ -1086,7 +1102,11 @@ export function MemoList({
                   setNewTableDialogOpen(true);
                 }}
               >
-                <span className="mention-note-title">{label}</span>
+                <span className="flex min-w-0 items-center gap-2">
+                  {type === 'table' ? <Table2 className="h-4 w-4 shrink-0" aria-hidden="true" /> : <span className="h-4 w-4 shrink-0" aria-hidden="true" />}
+                  <span className="mention-note-title">{label}</span>
+                </span>
+                <span className="mention-note-notebook opacity-50">{t('memo.create.note')}</span>
               </button>
             ))}
             <button
@@ -1101,7 +1121,11 @@ export function MemoList({
                 setNewLibraryDialogOpen(true);
               }}
             >
-              <span className="mention-note-title">{t('memo.create.mediaLibrary')}</span>
+              <span className="flex min-w-0 items-center gap-2">
+                <GalleryHorizontalEnd className="h-4 w-4 shrink-0" aria-hidden="true" />
+                <span className="mention-note-title">{t('memo.create.mediaLibrary')}</span>
+              </span>
+              <span className="mention-note-notebook opacity-50">{t('memo.create.mediaImageShort')}/{t('memo.create.mediaVideoShort')}</span>
             </button>
           </div>
         )}
@@ -1128,7 +1152,7 @@ export function MemoList({
                 onClick={() => handleCreateAgentConversation(type.key)}
                 className="agent-conversation-new-agent-item group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
               >
-                <AgentIcon typeKey={type.key} alt="" color={type.key === 'pi' ? 'var(--muted-foreground)' : undefined} className="h-4 w-4 shrink-0 object-contain" />
+                <AgentIcon typeKey={type.key} alt="" className="h-4 w-4 shrink-0 object-contain" />
                 <span className="min-w-0 flex-1 truncate">{name}</span>
                 {showNotInstalled && (
                   <span className="shrink-0 text-xs text-[var(--muted-foreground)] group-hover:text-[var(--primary-foreground)]">
@@ -1384,7 +1408,7 @@ export function MemoList({
       }}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle className="text-base">{newTableViewType === 'table' ? t('memo.create.tableDialogTitle') : `${t('memo.create.tableDialogTitle')} · ${newTableViewType === 'gallery' ? t('editor.slash.label.galleryView') : newTableViewType === 'kanban' ? t('editor.slash.label.kanbanView') : t('editor.slash.label.calendarView')}`}</DialogTitle>
+            <DialogTitle className="text-base">{getTableDialogTitle(newTableViewType)}</DialogTitle>
             <DialogDescription>{t('memo.create.tableDescription')}</DialogDescription>
           </DialogHeader>
           <form className="mt-2 space-y-4" onSubmit={(event) => { event.preventDefault(); void handleCreateTable(); }}>
@@ -1392,7 +1416,7 @@ export function MemoList({
               autoFocus
               value={newTableName}
               onChange={(event) => setNewTableName(event.target.value)}
-              placeholder={t('memo.create.tableDefaultName')}
+              placeholder={getTableDefaultName(newTableViewType)}
               className="h-8 w-full rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm outline-none focus:border-[var(--brand)]"
             />
             <div className="flex justify-end gap-2">

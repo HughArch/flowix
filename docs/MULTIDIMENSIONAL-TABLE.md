@@ -1,15 +1,15 @@
 # 多维表格文件格式与桌面端实现
 
-集合公共格式、统一索引、改名和展示身份见 [集合索引](COLLECTION-INDEX.md)。表格业务结构位于 `payload.table`、`payload.records`。
+集合公共格式、统一索引、改名和展示身份见 [集合索引](COLLECTION-INDEX.md)。磁盘文件使用 schema v2：字段在 `payload.dataset.schema`，记录与取数规则在 `payload.dataset.records`、`payload.dataset.filter`，视图在 `payload.views`。前端仍将它适配到表格 surface 使用的运行时模型。
 
 ## 文件身份与存储
 
-- 一张表保存为一个 UTF-8 YAML 文件：`r<uuidv7>.table.yml`。
-- 当前格式版本为 1；字段类型使用统一属性类型 ID。应用只接受版本 1 文件。
+- 独立表格保存为 `<名称>.index.yaml`；文件夹表格保存为该文件夹根目录下的 `.index.yaml`。
+- 新建和写入使用统一集合 schema v2；旧 `.table.yaml`、`.table.yml` 和 schema v1 文件继续读取。
 - 集合身份写入 `collection.id`，格式为 `col_<uuidv7>`；文件名和相对路径不构成身份。
 - 表定义、视图、字段选项、笔记引用和 revision 都保存在这一个文件中；笔记属性值保存在对应笔记 frontmatter 中。
 - 新文件放在当前笔记本的文件树目录；从文件树当前目录创建时使用该目录，否则使用笔记本默认创建目录。
-- 该文件不是 Markdown 笔记，不进入笔记索引，也不通过文档编辑器编辑。工作区按 `.table.yml` 后缀解析并展示独立表格 surface。
+- 该文件不是 Markdown 笔记，不进入笔记索引，也不通过文档编辑器编辑。工作区解析集合 envelope 后展示表格 surface；集合类型由 `collection.type` 决定。
 - 云同步暂不包含表格文件。
 
 ## ID 规则
@@ -24,7 +24,7 @@
 | 视图 | `view_<uuidv7>` |
 | 记录 | `rec_<uuidv7>` |
 
-ID 创建后不可因改名或排序而变化。`records.data` 保存手动关联的记录，每条仅含 `id`、`updated_at` 和 `note_path`；`records.auto_collect` 保存属性条件组、文件条件和排除路径，未启用时为 `null`。属性条件组与文件条件组任一匹配即可；属性组内部使用 `property_match` 指定并集或交集。自动收集的文件条件只检查 Markdown 笔记，`file_type` 仅接受 `markdown` 或空值（界面中的“不限”不写入类型值）；图片、视频等非笔记文件类型不属于表格记录。匹配结果在运行时计算，不复制到 `records.data`。所有属性值只存在于对应笔记 frontmatter，不复制到表格 YAML。属性字段通过 `property_key` 读取和更新 frontmatter。单选和多选在笔记中写入选项显示名称，选项 ID 仅供表格配置引用。视图配置通过字段 ID 引用字段。
+ID 创建后不可因改名或排序而变化。磁盘 `dataset.records.include` 保存手动关联记录，`exclude` 保存排除项；`dataset.filter` 保存规则取数条件。前端兼容的运行时投影仍以 `records.data` 和 `records.auto_collect` 表示这些内容。自动收集条件候选来自笔记列表，不包含图片、视频等非笔记文件；匹配结果只在运行时计算。所有属性值只存在于对应笔记 frontmatter，不复制到集合文件。属性字段通过 `property_key` 读取和更新 frontmatter。单选和多选在笔记中写入选项显示名称，选项 ID 仅供表格配置引用。视图配置通过字段 ID 引用字段。
 
 ## 字段类型与值
 
@@ -48,7 +48,7 @@ ID 创建后不可因改名或排序而变化。`records.data` 保存手动关�
 
 ## 模块边界
 
-- `model.ts` 定义表格格式、创建默认文档、序列化与严格结构校验；`records.data` 不允许携带属性值，`records.auto_collect` 独立保存匹配规则。版本 1 不接受未知字段。
+- `model.ts` 定义表格运行时模型、默认文档、schema v2 适配和结构校验；序列化将运行时 `records.data`、`records.auto_collect` 转成统一 `dataset` 与 `views` 结构。表格记录不携带笔记属性值。
 - `parse-table-document.ts` 负责异步解析入口；达到 128 KiB 的 UTF-8 文件交由专用 Web Worker 解析。
 - `use-table-session.ts` 管理单表加载、笔记本解析、竞态隔离、CAS 保存与冲突重载。
 - `use-table-cell-writer.ts` 管理单元格 frontmatter 写入队列、乐观更新、错误回滚和单元格保存状态。
@@ -64,7 +64,7 @@ ID 创建后不可因改名或排序而变化。`records.data` 保存手动关�
 - 编辑器引用先选择表格，再选择具体视图；同类型视图可有多个。也可为已有表格创建所需类型的视图，引用节点保存所选 `viewId`。缺失的视图需要用户显式改选，不会自动切换到第一个视图。
 - 新增属性列时，字段名映射为笔记 frontmatter 的 `property_key`；编辑单元格直接写入笔记属性，表格 YAML 不复制属性值。
 - `note_path` 保存笔记本内相对路径；表格首列显示笔记标题并可打开笔记文档。
-- `records.auto_collect` 可保存笔记属性、笔记名称、笔记文件夹和 Markdown 类型条件；属性条件既可以引用已有表格字段，也可以直接填写任意笔记 frontmatter 属性键，不要求先创建对应的表格属性列。候选来自笔记列表，不包含图片、视频等非笔记文件。属性条件组可设为并集（任一匹配）或交集（全部匹配），默认并集，文件条件组仍按并集匹配。条件结果与 `records.data` 按笔记路径去重，且不会写入 `records.data`。移除条件结果会记录排除路径，避免该笔记再次出现在匹配结果中。导航栏的“条件匹配”入口在所有视图下均可使用。
+- 运行时自动收集条件可匹配笔记属性、笔记名称、笔记文件夹和 Markdown 类型；属性条件既可以引用已有表格字段，也可以直接填写任意笔记 frontmatter 属性键。属性条件组可设为并集或交集，文件条件按并集匹配。条件结果与显式记录按笔记路径去重，不会写入显式记录。移除条件结果会记录排除路径，避免该笔记再次出现在匹配结果中。导航栏的“条件匹配”入口在所有视图下均可使用。
 - 草稿行或无法解析关联笔记的行保留在表格中，属性单元格不可编辑；笔记列表加载失败时显示“无法确认”并可重试。列表成功加载但仍找不到关联笔记时保留原路径，显示“关联失效”，可从主字段更换关联。
 - 笔记在笔记本内更名或移动时，Flowix 尝试静默改写多维表记录及自动收集排除路径；改写失败不阻塞笔记操作，表格后续加载时保留原路径并显示失效状态，供用户修复。
 - 从表格移除行只删除表格中的笔记引用，不删除笔记文件及其 frontmatter 属性。

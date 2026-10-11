@@ -157,6 +157,7 @@ pub async fn plugin_run(
                 provider_id: None,
                 reasoning_effort: None,
                 mode: None,
+                code_mode: None,
             }),
             ..Default::default()
         }),

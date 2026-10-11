@@ -1,7 +1,14 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
 
 const agentAccessMock = vi.hoisted(() => ({
-  config: { version: 1, entries: [] as Array<Record<string, unknown>> },
+  config: {
+    version: 1,
+    entries: [] as Array<Record<string, unknown>>,
+  } as {
+    version: number;
+    entries: Array<Record<string, unknown>>;
+    defaults?: { runtime?: { pi?: { piCodeMode?: boolean } } };
+  },
   get: vi.fn(),
   set: vi.fn(),
   addFolderFromPicker: vi.fn(),
@@ -64,6 +71,7 @@ describe("agent-access-store workspace selection", () => {
     useAgentAccessStore.setState({
       config: { version: 1, entries: [] },
       isLoading: false,
+      hasLoaded: false,
     });
   });
 
@@ -89,6 +97,34 @@ describe("agent-access-store workspace selection", () => {
 
     const entries = useAgentAccessStore.getState().config.entries;
     expect(entries.every((entry) => entry.workspace === false)).toBe(true);
+  });
+
+  it("keeps a Pi writing selection made while initial settings are loading", async () => {
+    const { useAgentAccessStore } =
+      await import("@features/agent/store/agent-access-store");
+    let resolveGet!: (config: typeof agentAccessMock.config) => void;
+    agentAccessMock.get.mockReturnValueOnce(
+      new Promise((resolve) => { resolveGet = resolve; }),
+    );
+
+    const load = useAgentAccessStore.getState().loadInitial();
+    await useAgentAccessStore.getState().setDefaultRuntime("pi", {
+      piCodeMode: false,
+    });
+    resolveGet({
+      version: 1,
+      entries: [{ id: "loaded-entry" }],
+      defaults: { runtime: { pi: { piCodeMode: true } } },
+    });
+    await load;
+
+    expect(
+      useAgentAccessStore.getState().config.defaults?.runtime?.pi?.piCodeMode,
+    ).toBe(false);
+    expect(useAgentAccessStore.getState().config.entries).toEqual([
+      { id: "loaded-entry" },
+    ]);
+    expect(agentAccessMock.config.defaults?.runtime?.pi?.piCodeMode).toBe(false);
   });
 
 

@@ -6,7 +6,7 @@ describe('parseTableDocumentAsync', () => {
   it('parses current table documents through the asynchronous API', async () => {
     const source = serializeTableDocument(createTableDocument());
     const parsed = await parseTableDocumentAsync(source);
-    expect(parsed).toMatchObject({ records: { data: [], auto_collect: null } });
-    expect(parsed.table).not.toHaveProperty('name');
+    expect(parsed).toMatchObject({ dataset: { records: { include: [], exclude: [] } } });
+    expect(parsed.dataset.schema).not.toHaveProperty('name');
   });
 });

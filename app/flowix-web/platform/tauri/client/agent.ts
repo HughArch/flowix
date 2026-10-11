@@ -296,8 +296,37 @@ export const agent = {
     invoke<string | null>('read_cached_agent_image', { path }),
   chatStream: (threadId: string, message: AgentUserMessage) =>
     invoke<ChatResponse>('chat_with_agent_stream', { threadId, message }),
-  steerChat: (threadId: string, message: AgentUserMessage, clientUserMessageId: string) =>
-    invoke<void>('steer_agent_stream', { threadId, message, clientUserMessageId }),
+  steerChat: (threadId: string, message: AgentUserMessage, clientUserMessageId: string, deliveryMode: 'steer' | 'follow_up' = 'steer') =>
+    invoke<void>('steer_agent_stream', { threadId, message, clientUserMessageId, deliveryMode }),
+  promotePiFollowUpToSteer: (threadId: string, clientUserMessageId: string) =>
+    invoke<void>('promote_pi_follow_up_to_steer', { threadId, clientUserMessageId }),
+  deletePiQueuedMessage: (threadId: string, clientUserMessageId: string) =>
+    invoke<void>('delete_pi_queued_message', { threadId, clientUserMessageId }),
+  queueCodexFollowUp: (threadId: string, message: AgentUserMessage, clientUserMessageId: string) =>
+    invoke<{ queuedSubmission: { id: string; input: unknown[]; clientUserMessageId: string } }>(
+      'queue_codex_follow_up', { threadId, message, clientUserMessageId },
+    ),
+  listCodexFollowUps: (threadId: string) =>
+    invoke<{ data: Array<{ id: string; input: unknown[]; clientUserMessageId: string }>; nextCursor: string | null }>(
+      'list_codex_follow_ups', { threadId },
+    ),
+  restoreCodexFollowUps: (threadId: string) =>
+    invoke<{ data: Array<{ id: string; input: unknown[]; clientUserMessageId: string }>; nextCursor: string | null }>(
+      'restore_codex_follow_ups', { threadId },
+    ),
+  deleteCodexFollowUp: (threadId: string, queuedSubmissionId: string) =>
+    invoke<{ deleted: boolean }>('delete_codex_follow_up', { threadId, queuedSubmissionId }),
+  deliverCodexFollowUpNow: (
+    threadId: string,
+    queuedSubmissionId: string,
+    message: AgentUserMessage,
+    clientUserMessageId: string,
+  ) => invoke<void>('deliver_codex_follow_up_now', {
+    threadId,
+    queuedSubmissionId,
+    message,
+    clientUserMessageId,
+  }),
   executeDeepSeekHarnessCommand: (threadId: string, command: string, message: AgentUserMessage) =>
     invoke<unknown>('execute_deepseek_harness_command', { threadId, command, message }),
   listDeepSeekHarnessSkills: (threadId: string, message: AgentUserMessage) =>

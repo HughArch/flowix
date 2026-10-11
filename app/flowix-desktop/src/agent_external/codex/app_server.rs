@@ -17,7 +17,7 @@ use serde_json::{json, Value};
 use tauri::Emitter;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{Child, ChildStdin};
-use tokio::sync::{oneshot, Mutex};
+use tokio::sync::{oneshot, Mutex, OwnedMutexGuard};
 
 use super::command::{build_codex_entrypoint, preflight_codex, resolve_codex_cwd};
 use super::{parse_codex_version, AGENT_TYPE};
@@ -40,6 +40,48 @@ const CODEX_COMMAND_MESSAGE_TYPE: &str = "codex-command";
 const CODEX_COMMENTARY_MESSAGE_TYPE: &str = "agent-commentary";
 const MIN_PAGINATED_CODEX_VERSION: &str = "0.150.0";
 
+fn is_stale_queued_submission_error(error: &str) -> bool {
+    error
+        .to_ascii_lowercase()
+        .contains("queued submission not found")
+}
+
+fn is_queue_start_conflict_error(error: &str) -> bool {
+    let error = error.to_ascii_lowercase();
+    is_stale_queued_submission_error(&error)
+        || error.contains("thread already has an active or pending turn")
+        || error.contains("codex already has an active turn")
+}
+
+fn codex_user_input(message: &AgentUserMessage) -> Vec<Value> {
+    let mut input = vec![json!({
+        "type": "text",
+        "text": message.llm_content.clone().unwrap_or_else(|| message.content.clone()),
+    })];
+    input.extend(
+        message
+            .image_paths
+            .iter()
+            .filter(|path| std::path::Path::new(path).is_file())
+            .filter(|path| is_image_attachment(path))
+            .map(|path| json!({ "type": "localImage", "path": path })),
+    );
+    let attached_files = message
+        .image_paths
+        .iter()
+        .filter(|path| std::path::Path::new(path).is_file())
+        .filter(|path| !is_image_attachment(path))
+        .map(|path| format!("- {path}"))
+        .collect::<Vec<_>>();
+    if !attached_files.is_empty() {
+        input.push(json!({
+            "type": "text",
+            "text": format!("\n<attached_files>\n{}\n</attached_files>", attached_files.join("\n")),
+        }));
+    }
+    input
+}
+
 fn is_image_attachment(path: &str) -> bool {
     matches!(
         std::path::Path::new(path)
@@ -61,6 +103,8 @@ struct Connection {
 struct ActiveTurn {
     flowix_thread_id: String,
     run_id: String,
+    /// Present when Codex started this turn directly from its Follow-up queue.
+    client_user_message_id: Option<String>,
     codex_thread_id: String,
     codex_turn_id: String,
     binding: TurnBinding,
@@ -86,6 +130,16 @@ struct ActiveTurn {
     /// per active turn so the terminal payload remains a true fallback
     /// instead of a second delivery.
     completed_agent_messages: Arc<Mutex<Vec<CompletedAgentMessage>>>,
+}
+
+#[derive(Clone)]
+struct QueuedCodexFollowUp {
+    flowix_thread_id: String,
+    codex_thread_id: String,
+    queued_submission_id: Option<String>,
+    client_user_message_id: String,
+    message: AgentUserMessage,
+    run_id: String,
 }
 
 #[derive(Clone, Debug)]
@@ -151,6 +205,13 @@ struct Inner {
     pending_cancellations: Mutex<HashMap<String, String>>,
     app_handle: Mutex<Option<tauri::AppHandle>>,
     active_turns: Mutex<HashMap<String, ActiveTurn>>,
+    /// Flowix queue entries awaiting Codex's automatic post-turn start.
+    /// Codex owns the actual queue; this map only binds its next turn to the
+    /// matching Flowix run and optimistic user message.
+    queued_follow_ups: Mutex<HashMap<String, Vec<QueuedCodexFollowUp>>>,
+    /// Serialize queue mutations and delivery decisions per Flowix thread,
+    /// including calls from separate webviews.
+    follow_up_operation_locks: Mutex<HashMap<String, Arc<Mutex<()>>>>,
     /// Keep notification routing and buffered-event replay in one total order.
     notification_dispatch: Mutex<()>,
     latest_usage: Mutex<HashMap<String, crate::agent_types::UsageInfo>>,
@@ -160,6 +221,253 @@ struct Inner {
 
 pub struct CodexAppServerManager {
     inner: Arc<Inner>,
+}
+
+fn queued_follow_up_from_submission(
+    flowix_thread_id: &str,
+    codex_thread_id: &str,
+    submission: &Value,
+) -> Option<QueuedCodexFollowUp> {
+    let client_user_message_id = submission
+        .get("clientUserMessageId")
+        .and_then(Value::as_str)?
+        .to_string();
+    let queued_submission_id = submission
+        .get("id")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let input = submission.get("input").and_then(Value::as_array)?;
+    let texts = input
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("text"))
+        .filter_map(|item| item.get("text").and_then(Value::as_str))
+        .collect::<Vec<_>>();
+    let content = texts.join("\n");
+    let image_paths = input
+        .iter()
+        .filter(|item| item.get("type").and_then(Value::as_str) == Some("localImage"))
+        .filter_map(|item| item.get("path").and_then(Value::as_str))
+        .map(str::to_string)
+        .collect();
+    let run_id = crate::agent_external::resolve_run_id(flowix_thread_id, None);
+    Some(QueuedCodexFollowUp {
+        flowix_thread_id: flowix_thread_id.to_string(),
+        codex_thread_id: codex_thread_id.to_string(),
+        queued_submission_id,
+        client_user_message_id,
+        message: AgentUserMessage {
+            content: content.clone(),
+            llm_content: Some(content),
+            image_paths,
+            run_id: Some(run_id.clone()),
+            system_reminder_directory: None,
+            agent_type: Some(AGENT_TYPE.to_string()),
+            runtime_config: None,
+            permission_mode: None,
+            codex_model: None,
+            codex_reasoning_effort: None,
+            conversation_title: None,
+        },
+        run_id,
+    })
+}
+
+fn queued_follow_up_at_queue_head(
+    flowix_thread_id: &str,
+    codex_thread_id: &str,
+    queue: &Value,
+) -> Option<QueuedCodexFollowUp> {
+    queue
+        .get("data")
+        .and_then(Value::as_array)
+        .and_then(|submissions| submissions.first())
+        .and_then(|submission| {
+            queued_follow_up_from_submission(flowix_thread_id, codex_thread_id, submission)
+        })
+}
+
+fn order_queued_follow_ups(items: &mut Vec<QueuedCodexFollowUp>, provider_order: &[String]) {
+    let positions = provider_order
+        .iter()
+        .enumerate()
+        .map(|(index, id)| (id.as_str(), index))
+        .collect::<HashMap<_, _>>();
+    let mut indexed = items.drain(..).enumerate().collect::<Vec<_>>();
+    indexed.sort_by_key(|(original_index, item)| {
+        match item
+            .queued_submission_id
+            .as_deref()
+            .and_then(|id| positions.get(id).copied())
+        {
+            Some(provider_index) => (1, provider_index, *original_index),
+            // An item missing from the provider queue may already have been
+            // consumed and still be waiting for its `turn/started` event.
+            // Keep those candidates before the live queue, in their prior
+            // order, so that event can still claim the correct run.
+            None if item.queued_submission_id.is_some() => (0, *original_index, 0),
+            None => (2, *original_index, 0),
+        }
+    });
+    items.extend(indexed.into_iter().map(|(_, item)| item));
+}
+
+async fn remember_queued_follow_ups(
+    inner: &Arc<Inner>,
+    flowix_thread_id: &str,
+    codex_thread_id: &str,
+    queue: &Value,
+) {
+    let Some(submissions) = queue.get("data").and_then(Value::as_array) else {
+        return;
+    };
+    let mut provider_order = Vec::new();
+    for submission in submissions {
+        if let Some(id) = submission.get("id").and_then(Value::as_str) {
+            provider_order.push(id.to_string());
+        }
+        if let Some(queued) =
+            queued_follow_up_from_submission(flowix_thread_id, codex_thread_id, submission)
+        {
+            upsert_queued_follow_up(inner, queued).await;
+        }
+    }
+    if let Some(items) = inner
+        .queued_follow_ups
+        .lock()
+        .await
+        .get_mut(codex_thread_id)
+    {
+        order_queued_follow_ups(items, &provider_order);
+    }
+}
+
+async fn upsert_queued_follow_up(inner: &Arc<Inner>, queued: QueuedCodexFollowUp) {
+    let mut by_thread = inner.queued_follow_ups.lock().await;
+    let items = by_thread.entry(queued.codex_thread_id.clone()).or_default();
+    if let Some(existing) = items.iter_mut().find(|item| {
+        item.client_user_message_id == queued.client_user_message_id
+            || (queued.queued_submission_id.is_some()
+                && item.queued_submission_id == queued.queued_submission_id)
+    }) {
+        if existing.queued_submission_id.is_none() {
+            existing.queued_submission_id = queued.queued_submission_id;
+        }
+        return;
+    }
+    items.push(queued);
+}
+
+async fn remove_queued_follow_up(
+    inner: &Arc<Inner>,
+    codex_thread_id: &str,
+    queued_submission_id: Option<&str>,
+    client_user_message_id: Option<&str>,
+) {
+    let mut by_thread = inner.queued_follow_ups.lock().await;
+    let Some(items) = by_thread.get_mut(codex_thread_id) else {
+        return;
+    };
+    items.retain(|item| {
+        !(queued_submission_id.is_some_and(|id| item.queued_submission_id.as_deref() == Some(id))
+            || client_user_message_id.is_some_and(|id| item.client_user_message_id == id))
+    });
+    if items.is_empty() {
+        by_thread.remove(codex_thread_id);
+    }
+}
+
+async fn lock_follow_up_operations(
+    inner: &Arc<Inner>,
+    flowix_thread_id: &str,
+) -> OwnedMutexGuard<()> {
+    let lock = {
+        let mut locks = inner.follow_up_operation_locks.lock().await;
+        locks
+            .entry(flowix_thread_id.to_string())
+            .or_insert_with(|| Arc::new(Mutex::new(())))
+            .clone()
+    };
+    lock.lock_owned().await
+}
+
+async fn bind_automatically_started_queue_turn(
+    inner: &Arc<Inner>,
+    codex_thread_id: &str,
+    codex_turn_id: &str,
+) {
+    let app_handle = inner.app_handle.lock().await.clone();
+    let Some(app_handle) = app_handle else {
+        return;
+    };
+    let queued = {
+        let mut by_thread = inner.queued_follow_ups.lock().await;
+        let Some(items) = by_thread.get_mut(codex_thread_id) else {
+            return;
+        };
+        if items.is_empty() {
+            return;
+        }
+        let queued = items.remove(0);
+        if items.is_empty() {
+            by_thread.remove(codex_thread_id);
+        }
+        queued
+    };
+    let started_at = chrono::Utc::now().timestamp_millis();
+    let stream_end_emitted = Arc::new(AtomicBool::new(false));
+    let completed_agent_messages = Arc::new(Mutex::new(Vec::new()));
+    {
+        let mut active_turns = inner.active_turns.lock().await;
+        if active_turns
+            .values()
+            .any(|active| active.codex_thread_id == codex_thread_id)
+        {
+            drop(active_turns);
+            // A separately tracked run already owns this provider thread.
+            // Put the queue record back so the next matching start can claim it.
+            inner
+                .queued_follow_ups
+                .lock()
+                .await
+                .entry(codex_thread_id.to_string())
+                .or_default()
+                .insert(0, queued);
+            return;
+        }
+        active_turns.insert(
+            queued.flowix_thread_id.clone(),
+            ActiveTurn {
+                flowix_thread_id: queued.flowix_thread_id.clone(),
+                run_id: queued.run_id.clone(),
+                client_user_message_id: Some(queued.client_user_message_id.clone()),
+                codex_thread_id: codex_thread_id.to_string(),
+                codex_turn_id: codex_turn_id.to_string(),
+                binding: TurnBinding::StartedNotification,
+                pending_notifications: Vec::new(),
+                turn_ready: Arc::new(tokio::sync::Notify::new()),
+                cancel_requested: false,
+                stopping: false,
+                command_id: None,
+                command: None,
+                app_handle: app_handle.clone(),
+                started_at,
+                last_event_at: started_at,
+                stream_end_emitted: stream_end_emitted.clone(),
+                completed_agent_messages: completed_agent_messages.clone(),
+            },
+        );
+    }
+    let manager = CodexAppServerManager {
+        inner: inner.clone(),
+    };
+    manager
+        .emit_stream_start(
+            &app_handle,
+            &queued.flowix_thread_id,
+            &queued.message,
+            &queued.run_id,
+        )
+        .await;
 }
 
 impl CodexAppServerManager {
@@ -174,6 +482,8 @@ impl CodexAppServerManager {
                 pending_cancellations: Mutex::new(HashMap::new()),
                 app_handle: Mutex::new(None),
                 active_turns: Mutex::new(HashMap::new()),
+                queued_follow_ups: Mutex::new(HashMap::new()),
+                follow_up_operation_locks: Mutex::new(HashMap::new()),
                 notification_dispatch: Mutex::new(()),
                 latest_usage: Mutex::new(HashMap::new()),
                 next_request_id: AtomicU64::new(1),
@@ -748,6 +1058,7 @@ impl CodexAppServerManager {
             self.inner.active_turns.lock().await.insert(flowix_thread_id.clone(), ActiveTurn {
                 flowix_thread_id: flowix_thread_id.clone(),
                 run_id: run_id.clone(),
+                client_user_message_id: None,
                 codex_thread_id: codex_thread_id.clone(),
                 codex_turn_id: String::new(),
                 binding: TurnBinding::StartResponse,
@@ -893,28 +1204,7 @@ impl CodexAppServerManager {
             .filter(|turn| turn.command_id.is_none() && !turn.codex_turn_id.is_empty())
             .map(|turn| (turn.codex_thread_id.clone(), turn.codex_turn_id.clone()))
             .ok_or_else(|| "Codex has no steerable active turn".to_string())?;
-        let mut input = vec![json!({
-            "type": "text",
-            "text": message.llm_content.unwrap_or(message.content),
-        })];
-        input.extend(
-            message
-                .image_paths
-                .iter()
-                .filter(|path| std::path::Path::new(path).is_file())
-                .filter(|path| is_image_attachment(path))
-                .map(|path| json!({ "type": "localImage", "path": path })),
-        );
-        let attached_files = message
-            .image_paths
-            .iter()
-            .filter(|path| std::path::Path::new(path).is_file())
-            .filter(|path| !is_image_attachment(path))
-            .map(|path| format!("- {path}"))
-            .collect::<Vec<_>>();
-        if !attached_files.is_empty() {
-            input.push(json!({ "type": "text", "text": format!("\n<attached_files>\n{}\n</attached_files>", attached_files.join("\n")) }));
-        }
+        let input = codex_user_input(&message);
         self.request(
             "turn/steer",
             json!({
@@ -927,6 +1217,637 @@ impl CodexAppServerManager {
         .await?;
         let _ = app_handle;
         Ok(())
+    }
+
+    async fn resolve_queue_thread_id(&self, flowix_thread_id: &str) -> Result<String, String> {
+        self.ensure_connection().await?;
+        let stored = self
+            .inner
+            .thread_manager
+            .get_external_session(flowix_thread_id, AGENT_TYPE)
+            .await
+            .map_err(|error| error.to_string())?;
+        let codex_thread_id = select_external_session_for_runtime(stored, None)
+            .ok_or_else(|| "Codex thread is not available for queue operations".to_string())?;
+        self.request("thread/resume", json!({ "threadId": codex_thread_id }))
+            .await?;
+        Ok(codex_thread_id)
+    }
+
+    /// Add a Follow-up to Codex's persistent app-server queue.
+    pub async fn queue_follow_up(
+        self: &Arc<Self>,
+        flowix_thread_id: &str,
+        message: AgentUserMessage,
+        client_user_message_id: String,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<Value, String> {
+        let codex_thread_id = self.resolve_queue_thread_id(flowix_thread_id).await?;
+        let _queue_operation = lock_follow_up_operations(&self.inner, flowix_thread_id).await;
+        *self.inner.app_handle.lock().await = Some(app_handle.clone());
+        let run_id = message
+            .run_id
+            .clone()
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or_else(|| crate::agent_external::resolve_run_id(flowix_thread_id, None));
+        let mut message = message;
+        message.run_id = Some(run_id.clone());
+        upsert_queued_follow_up(
+            &self.inner,
+            QueuedCodexFollowUp {
+                flowix_thread_id: flowix_thread_id.to_string(),
+                codex_thread_id: codex_thread_id.clone(),
+                queued_submission_id: None,
+                client_user_message_id: client_user_message_id.clone(),
+                message: message.clone(),
+                run_id,
+            },
+        )
+        .await;
+        let input = codex_user_input(&message);
+        let result = self
+            .request(
+                "thread/queue/add",
+                json!({
+                    "threadId": codex_thread_id.clone(),
+                    "clientUserMessageId": client_user_message_id.clone(),
+                    "input": input,
+                }),
+            )
+            .await;
+        match result {
+            Ok(result) => {
+                let queued_submission_id = result
+                    .pointer("/queuedSubmission/id")
+                    .and_then(Value::as_str)
+                    .map(str::to_string);
+                if let Some(id) = queued_submission_id.as_deref() {
+                    {
+                        let mut by_thread = self.inner.queued_follow_ups.lock().await;
+                        if let Some(queued) =
+                            by_thread.get_mut(&codex_thread_id).and_then(|items| {
+                                items.iter_mut().find(|item| {
+                                    item.client_user_message_id == client_user_message_id
+                                })
+                            })
+                        {
+                            queued.queued_submission_id = Some(id.to_string());
+                        }
+                    }
+
+                    let provider_is_idle = {
+                        let mut active_turns = self.inner.active_turns.lock().await;
+                        if active_turns.get(flowix_thread_id).is_some_and(|active| {
+                            active.codex_thread_id == codex_thread_id
+                                && active.stream_end_emitted.load(Ordering::Acquire)
+                        }) {
+                            active_turns.remove(flowix_thread_id);
+                        }
+                        !active_turns
+                            .values()
+                            .any(|active| active.codex_thread_id == codex_thread_id)
+                    };
+                    if provider_is_idle {
+                        // The thread can become idle while this queue/add RPC
+                        // is in flight. Start the provider's current queue
+                        // head, which may be an older submission, instead of
+                        // jumping directly to the item just added.
+                        let queue_head = match self
+                            .request(
+                                "thread/queue/list",
+                                json!({ "threadId": codex_thread_id.clone() }),
+                            )
+                            .await
+                        {
+                            Ok(queue) => {
+                                remember_queued_follow_ups(
+                                    &self.inner,
+                                    flowix_thread_id,
+                                    &codex_thread_id,
+                                    &queue,
+                                )
+                                .await;
+                                queued_follow_up_at_queue_head(
+                                    flowix_thread_id,
+                                    &codex_thread_id,
+                                    &queue,
+                                )
+                            }
+                            Err(error) => {
+                                tracing::debug!(
+                                    "Codex queue item accepted; could not inspect idle queue head: {error}"
+                                );
+                                None
+                            }
+                        };
+                        if let Some(queue_head) = queue_head {
+                            let head_id = queue_head.queued_submission_id.clone();
+                            upsert_queued_follow_up(&self.inner, queue_head.clone()).await;
+                            // Keep the message/run identity already
+                            // associated with the Flowix optimistic row.
+                            let head_message = if let Some(head_id) = head_id.as_deref() {
+                                self.inner
+                                    .queued_follow_ups
+                                    .lock()
+                                    .await
+                                    .get(&codex_thread_id)
+                                    .and_then(|items| {
+                                        items.iter().find(|item| {
+                                            item.queued_submission_id.as_deref() == Some(head_id)
+                                        })
+                                    })
+                                    .map(|item| item.message.clone())
+                            } else {
+                                None
+                            };
+                            if let (Some(head_id), Some(head_message)) = (head_id, head_message) {
+                                if let Err(error) = self
+                                    .start_queued_follow_up(
+                                        flowix_thread_id,
+                                        &head_id,
+                                        head_message,
+                                        app_handle,
+                                    )
+                                    .await
+                                {
+                                    tracing::debug!(
+                                        "Codex queue item accepted; deferred idle start: {error}"
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+                Ok(result)
+            }
+            Err(error) => {
+                remove_queued_follow_up(
+                    &self.inner,
+                    &codex_thread_id,
+                    None,
+                    Some(&client_user_message_id),
+                )
+                .await;
+                Err(error)
+            }
+        }
+    }
+
+    async fn list_queued_follow_ups_unlocked(
+        &self,
+        flowix_thread_id: &str,
+        codex_thread_id: &str,
+    ) -> Result<Value, String> {
+        let result = self
+            .request("thread/queue/list", json!({ "threadId": codex_thread_id }))
+            .await?;
+        remember_queued_follow_ups(&self.inner, flowix_thread_id, codex_thread_id, &result).await;
+        Ok(result)
+    }
+
+    /// Read Codex's persistent queue so UI state can be restored after reload.
+    pub async fn list_queued_follow_ups(&self, flowix_thread_id: &str) -> Result<Value, String> {
+        let codex_thread_id = self.resolve_queue_thread_id(flowix_thread_id).await?;
+        let _queue_operation = lock_follow_up_operations(&self.inner, flowix_thread_id).await;
+        self.list_queued_follow_ups_unlocked(flowix_thread_id, &codex_thread_id)
+            .await
+    }
+
+    /// Restore an idle provider queue into the normal run lifecycle. This is
+    /// separate from `list_queued_follow_ups`, which is also used for
+    /// read-before-delete and stale-item reconciliation.
+    pub async fn restore_queued_follow_ups(
+        self: &Arc<Self>,
+        flowix_thread_id: &str,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<Value, String> {
+        let codex_thread_id = self.resolve_queue_thread_id(flowix_thread_id).await?;
+        let _queue_operation = lock_follow_up_operations(&self.inner, flowix_thread_id).await;
+        let result = self
+            .list_queued_follow_ups_unlocked(flowix_thread_id, &codex_thread_id)
+            .await?;
+        // Restored provider queues may have no active turn to trigger Codex's
+        // automatic queue drain. Reconcile and start the provider queue head
+        // here so the webview only hydrates state; it does not choose work.
+        let provider_is_idle = {
+            let mut active_turns = self.inner.active_turns.lock().await;
+            if active_turns.get(flowix_thread_id).is_some_and(|active| {
+                active.codex_thread_id == codex_thread_id
+                    && active.stream_end_emitted.load(Ordering::Acquire)
+            }) {
+                active_turns.remove(flowix_thread_id);
+            }
+            !active_turns
+                .values()
+                .any(|active| active.codex_thread_id == codex_thread_id)
+        };
+        if provider_is_idle {
+            if let Some(head) =
+                queued_follow_up_at_queue_head(flowix_thread_id, &codex_thread_id, &result)
+            {
+                if let Some(queue_id) = head.queued_submission_id.as_deref() {
+                    upsert_queued_follow_up(&self.inner, head.clone()).await;
+                    if let Err(error) = self
+                        .start_queued_follow_up(
+                            flowix_thread_id,
+                            queue_id,
+                            head.message,
+                            app_handle,
+                        )
+                        .await
+                    {
+                        tracing::debug!("Codex restored queue start deferred: {error}");
+                    }
+                }
+            }
+        }
+        Ok(result)
+    }
+
+    pub async fn delete_queued_follow_up(
+        &self,
+        flowix_thread_id: &str,
+        queued_submission_id: &str,
+    ) -> Result<Value, String> {
+        let codex_thread_id = self.resolve_queue_thread_id(flowix_thread_id).await?;
+        let _queue_operation = lock_follow_up_operations(&self.inner, flowix_thread_id).await;
+        self.delete_queue_entry_with_retry(
+            flowix_thread_id,
+            &codex_thread_id,
+            queued_submission_id,
+        )
+        .await?;
+        Ok(json!({ "deleted": true }))
+    }
+
+    async fn delete_queue_entry(
+        &self,
+        codex_thread_id: &str,
+        queued_submission_id: &str,
+    ) -> Result<Value, String> {
+        let result = self
+            .request(
+                "thread/queue/delete",
+                json!({
+                    "threadId": codex_thread_id,
+                    "queuedSubmissionId": queued_submission_id,
+                }),
+            )
+            .await?;
+        if result.get("deleted").and_then(Value::as_bool) == Some(true) {
+            remove_queued_follow_up(
+                &self.inner,
+                &codex_thread_id,
+                Some(queued_submission_id),
+                None,
+            )
+            .await;
+        }
+        Ok(result)
+    }
+
+    async fn delete_queue_entry_with_retry(
+        &self,
+        flowix_thread_id: &str,
+        codex_thread_id: &str,
+        queued_submission_id: &str,
+    ) -> Result<(), String> {
+        let first_error = match self
+            .delete_queue_entry(codex_thread_id, queued_submission_id)
+            .await
+        {
+            Ok(result) if result.get("deleted").and_then(Value::as_bool) == Some(true) => {
+                return Ok(());
+            }
+            Ok(_) => "Codex queue delete did not confirm deletion".to_string(),
+            Err(error) => error,
+        };
+
+        // A timed-out delete can still have succeeded remotely. Re-read before
+        // retrying so a duplicate delivery cannot be queued by stale state.
+        let queue = self
+            .list_queued_follow_ups_unlocked(flowix_thread_id, codex_thread_id)
+            .await?;
+        let still_queued = queue
+            .get("data")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("id").and_then(Value::as_str) == Some(queued_submission_id)
+                })
+            });
+        if !still_queued {
+            return Ok(());
+        }
+
+        match self
+            .delete_queue_entry(codex_thread_id, queued_submission_id)
+            .await
+        {
+            Ok(result) if result.get("deleted").and_then(Value::as_bool) == Some(true) => Ok(()),
+            Ok(_) => Err(first_error),
+            Err(_) => Err(first_error),
+        }
+    }
+
+    /// Explicitly start one queued message while the thread is idle, such as
+    /// when restoring a persisted queue into a new Flowix session.
+    async fn start_queued_follow_up(
+        self: &Arc<Self>,
+        flowix_thread_id: &str,
+        queued_submission_id: &str,
+        message: AgentUserMessage,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<Value, String> {
+        *self.inner.app_handle.lock().await = Some(app_handle.clone());
+        self.ensure_connection().await?;
+        let flowix_thread_id = flowix_thread_id.to_string();
+        let codex_thread_id = self.resolve_queue_thread_id(&flowix_thread_id).await?;
+        let run_id = message
+            .run_id
+            .clone()
+            .unwrap_or_else(|| crate::agent_external::resolve_run_id(&flowix_thread_id, None));
+        let stream_end_emitted = Arc::new(AtomicBool::new(false));
+        let completed_agent_messages = Arc::new(Mutex::new(Vec::new()));
+
+        // `thread/queue/start` starts a real provider turn. Register it before
+        // the RPC so app-server notifications can be associated with this
+        // product thread and delivered through the normal run lifecycle.
+        {
+            let mut active_turns = self.inner.active_turns.lock().await;
+            if active_turns.contains_key(&flowix_thread_id) {
+                return Err("Codex already has an active turn for this thread".to_string());
+            }
+            active_turns.insert(
+                flowix_thread_id.clone(),
+                ActiveTurn {
+                    flowix_thread_id: flowix_thread_id.clone(),
+                    run_id: run_id.clone(),
+                    client_user_message_id: None,
+                    codex_thread_id: codex_thread_id.clone(),
+                    codex_turn_id: String::new(),
+                    binding: TurnBinding::StartResponse,
+                    pending_notifications: Vec::new(),
+                    turn_ready: Arc::new(tokio::sync::Notify::new()),
+                    cancel_requested: false,
+                    stopping: false,
+                    command_id: None,
+                    command: None,
+                    app_handle: app_handle.clone(),
+                    started_at: chrono::Utc::now().timestamp_millis(),
+                    last_event_at: chrono::Utc::now().timestamp_millis(),
+                    stream_end_emitted: stream_end_emitted.clone(),
+                    completed_agent_messages: completed_agent_messages.clone(),
+                },
+            );
+        }
+        self.emit_stream_start(app_handle, &flowix_thread_id, &message, &run_id)
+            .await;
+
+        let started = async {
+            let result = self
+                .request(
+                    "thread/queue/start",
+                    json!({
+                        "threadId": codex_thread_id,
+                        "queuedSubmissionId": queued_submission_id,
+                    }),
+                )
+                .await?;
+            let codex_turn_id = result
+                .pointer("/turn/id")
+                .and_then(Value::as_str)
+                .filter(|id| !id.trim().is_empty())
+                .ok_or_else(|| "Codex app-server did not return a turn id".to_string())?
+                .to_string();
+
+            let _dispatch = self.inner.notification_dispatch.lock().await;
+            let (should_interrupt, pending_notifications) = {
+                let mut active_turns = self.inner.active_turns.lock().await;
+                let Some(active) = active_turns
+                    .get_mut(&flowix_thread_id)
+                    .filter(|active| active.run_id == run_id)
+                else {
+                    return Ok(result);
+                };
+                active.codex_turn_id = codex_turn_id;
+                active.turn_ready.notify_one();
+                let pending = std::mem::take(&mut active.pending_notifications);
+                let should_interrupt = active.cancel_requested && !active.codex_turn_id.is_empty();
+                if should_interrupt {
+                    active.cancel_requested = false;
+                }
+                (should_interrupt, pending)
+            };
+            for notification in pending_notifications {
+                dispatch_notification_inner(&self.inner, &notification).await;
+            }
+            drop(_dispatch);
+            if should_interrupt {
+                let active = self
+                    .inner
+                    .active_turns
+                    .lock()
+                    .await
+                    .get(&flowix_thread_id)
+                    .filter(|active| active.run_id == run_id)
+                    .map(|active| (active.codex_thread_id.clone(), active.codex_turn_id.clone()));
+                if let Some((codex_thread_id, codex_turn_id)) = active {
+                    let _ = self
+                        .request(
+                            "turn/interrupt",
+                            json!({ "threadId": codex_thread_id, "turnId": codex_turn_id }),
+                        )
+                        .await;
+                }
+            }
+            Ok::<Value, String>(result)
+        }
+        .await;
+
+        match started {
+            Ok(result) => {
+                remove_queued_follow_up(
+                    &self.inner,
+                    &codex_thread_id,
+                    Some(queued_submission_id),
+                    None,
+                )
+                .await;
+                Ok(result)
+            }
+            Err(error) => {
+                // The queue can auto-start as the current turn ends, between
+                // our list and explicit start calls. In that case its
+                // notifications were buffered against this optimistic run.
+                // Bind the actual started turn and replay them instead of
+                // discarding the real response as a stale queue error.
+                let _dispatch = self.inner.notification_dispatch.lock().await;
+                let (started_turn, pending_notifications, active_for_end) = {
+                    let mut active_turns = self.inner.active_turns.lock().await;
+                    let active = active_turns
+                        .get_mut(&flowix_thread_id)
+                        .filter(|active| active.run_id == run_id);
+                    if let Some(active) = active {
+                        let started_turn_id = active
+                            .pending_notifications
+                            .iter()
+                            .find(|notification| {
+                                notification.get("method").and_then(Value::as_str)
+                                    == Some("turn/started")
+                                    && notification
+                                        .pointer("/params/threadId")
+                                        .and_then(Value::as_str)
+                                        == Some(active.codex_thread_id.as_str())
+                            })
+                            .and_then(|notification| {
+                                notification
+                                    .pointer("/params/turnId")
+                                    .or_else(|| notification.pointer("/params/turn/id"))
+                                    .and_then(Value::as_str)
+                            })
+                            .map(str::to_string);
+                        if let Some(turn_id) = started_turn_id {
+                            active.codex_turn_id = turn_id.clone();
+                            active.binding = TurnBinding::StartedNotification;
+                            active.turn_ready.notify_one();
+                            let pending = std::mem::take(&mut active.pending_notifications);
+                            (
+                                Some(turn_id),
+                                pending,
+                                Some(active.stream_end_emitted.clone()),
+                            )
+                        } else {
+                            let active = active_turns.remove(&flowix_thread_id);
+                            (None, Vec::new(), active.map(|turn| turn.stream_end_emitted))
+                        }
+                    } else {
+                        (None, Vec::new(), None)
+                    }
+                };
+                if let Some(turn_id) = started_turn {
+                    for notification in pending_notifications {
+                        dispatch_notification_inner(&self.inner, &notification).await;
+                    }
+                    drop(_dispatch);
+                    remove_queued_follow_up(
+                        &self.inner,
+                        &codex_thread_id,
+                        Some(queued_submission_id),
+                        None,
+                    )
+                    .await;
+                    return Ok(json!({
+                        "turn": { "id": turn_id, "status": "inProgress" }
+                    }));
+                }
+                drop(_dispatch);
+                let active = {
+                    let mut active_turns = self.inner.active_turns.lock().await;
+                    if active_turns
+                        .get(&flowix_thread_id)
+                        .is_some_and(|active| active.run_id == run_id)
+                    {
+                        active_turns.remove(&flowix_thread_id)
+                    } else {
+                        None
+                    }
+                };
+                if !stream_end_emitted.load(Ordering::Acquire) {
+                    // Another window or a concurrent provider-side transition
+                    // may have consumed this durable queue item. Close the
+                    // optimistic run cleanly so the frontend can refresh the
+                    // queue without showing a false model failure.
+                    if !is_queue_start_conflict_error(&error) {
+                        self.emit_run_error(app_handle, &flowix_thread_id, error.clone(), &run_id)
+                            .await;
+                    }
+                    self.emit_stream_end(
+                        app_handle,
+                        &flowix_thread_id,
+                        &run_id,
+                        (!is_queue_start_conflict_error(&error)).then(|| error.clone()),
+                        active
+                            .as_ref()
+                            .map(|turn| &turn.stream_end_emitted)
+                            .or(active_for_end.as_ref())
+                            .unwrap_or(&stream_end_emitted),
+                    )
+                    .await;
+                }
+                Err(error)
+            }
+        }
+    }
+
+    /// Deliver a selected Follow-up immediately. Runtime state is authoritative:
+    /// steer an active chat, or start the queued submission when idle.
+    pub async fn deliver_queued_follow_up_now(
+        self: &Arc<Self>,
+        flowix_thread_id: &str,
+        queued_submission_id: &str,
+        message: AgentUserMessage,
+        client_user_message_id: String,
+        app_handle: &tauri::AppHandle,
+    ) -> Result<(), String> {
+        let codex_thread_id = self.resolve_queue_thread_id(flowix_thread_id).await?;
+        let _queue_operation = lock_follow_up_operations(&self.inner, flowix_thread_id).await;
+        let queue = self
+            .list_queued_follow_ups_unlocked(flowix_thread_id, &codex_thread_id)
+            .await?;
+        let target_is_queued = queue
+            .get("data")
+            .and_then(Value::as_array)
+            .is_some_and(|items| {
+                items.iter().any(|item| {
+                    item.get("id").and_then(Value::as_str) == Some(queued_submission_id)
+                })
+            });
+        if !target_is_queued {
+            return Err(format!(
+                "queued submission not found: {queued_submission_id}"
+            ));
+        }
+        let active_turn = {
+            let active_turns = self.inner.active_turns.lock().await;
+            let active = active_turns.get(flowix_thread_id);
+            if active.is_some_and(|active| {
+                active.client_user_message_id.as_deref() == Some(client_user_message_id.as_str())
+                    && !active.stream_end_emitted.load(Ordering::Acquire)
+            }) {
+                return Err("Codex Follow-up already started".to_string());
+            }
+            active.is_some_and(|active| {
+                active.command_id.is_none() && !active.stream_end_emitted.load(Ordering::Acquire)
+            })
+        };
+        if !active_turn {
+            self.start_queued_follow_up(
+                flowix_thread_id,
+                queued_submission_id,
+                message,
+                app_handle,
+            )
+            .await?;
+            return Ok(());
+        }
+
+        self.steer_chat(
+            flowix_thread_id,
+            message,
+            client_user_message_id,
+            app_handle,
+        )
+        .await?;
+        match self
+            .delete_queue_entry_with_retry(flowix_thread_id, &codex_thread_id, queued_submission_id)
+            .await
+        {
+            Ok(()) => Ok(()),
+            Err(error) => Err(format!(
+                "Codex Follow-up was steered but queue cleanup failed: {error}"
+            )),
+        }
     }
 
     pub async fn stop_chat(
@@ -985,20 +1906,32 @@ impl CodexAppServerManager {
                     "turn/interrupt",
                     json!({ "threadId": active.codex_thread_id, "turnId": active.codex_turn_id }),
                 )
-                .await {
+                .await
+            {
                 tracing::warn!("[Codex] StopUnconfirmed for run {}: {error}", active.run_id);
                 return false;
             }
         }
         let confirmed = tokio::time::timeout(std::time::Duration::from_secs(5), async {
             loop {
-                let still_active = self.inner.active_turns.lock().await.get(thread_id)
+                let still_active = self
+                    .inner
+                    .active_turns
+                    .lock()
+                    .await
+                    .get(thread_id)
                     .is_some_and(|current| current.run_id == active.run_id);
-                if !still_active { break; }
+                if !still_active {
+                    break;
+                }
                 tokio::time::sleep(std::time::Duration::from_millis(50)).await;
             }
-        }).await.is_ok();
-        if !confirmed { tracing::warn!("[Codex] StopUnconfirmed for run {}", active.run_id); }
+        })
+        .await
+        .is_ok();
+        if !confirmed {
+            tracing::warn!("[Codex] StopUnconfirmed for run {}", active.run_id);
+        }
         let _ = app_handle;
         confirmed
     }
@@ -1011,14 +1944,16 @@ impl CodexAppServerManager {
             .iter()
             .map(|(id, active)| {
                 let mut info = RunInfo::active(
-                        active.started_at,
-                        None,
-                        Some(AGENT_TYPE),
-                        Some(active.run_id.clone()),
-                        Some(active.flowix_thread_id.clone()),
-                        Some(active.codex_thread_id.clone()),
-                    );
-                if active.stopping { info.phase = Some("stopping".to_string()); }
+                    active.started_at,
+                    None,
+                    Some(AGENT_TYPE),
+                    Some(active.run_id.clone()),
+                    Some(active.flowix_thread_id.clone()),
+                    Some(active.codex_thread_id.clone()),
+                );
+                if active.stopping {
+                    info.phase = Some("stopping".to_string());
+                }
                 (id.clone(), info)
             })
             .collect()
@@ -1561,6 +2496,7 @@ impl CodexAppServerManager {
             ActiveTurn {
                 flowix_thread_id: flowix_thread_id.to_string(),
                 run_id: run_id.clone(),
+                client_user_message_id: None,
                 codex_thread_id: codex_thread_id.clone(),
                 codex_turn_id: String::new(),
                 binding: TurnBinding::StartedNotification,
@@ -2054,7 +2990,10 @@ async fn close_connection(inner: &Arc<Inner>, generation: u64) {
     // first would allow another app-server to start while the old one still owns
     // native turns, and would release every active run prematurely.
     let mut current = inner.connection.lock().await;
-    let Some(connection) = current.as_mut().filter(|connection| connection.generation == generation) else {
+    let Some(connection) = current
+        .as_mut()
+        .filter(|connection| connection.generation == generation)
+    else {
         return;
     };
     if let Err(error) = connection._child.kill().await {
@@ -2215,6 +3154,11 @@ async fn dispatch_notification_inner(inner: &Arc<Inner>, message: &Value) {
         .get("turnId")
         .and_then(Value::as_str)
         .or_else(|| params.pointer("/turn/id").and_then(Value::as_str));
+    if method == "turn/started" {
+        if let (Some(thread_id), Some(turn_id)) = (thread_id, turn_id) {
+            bind_automatically_started_queue_turn(inner, thread_id, turn_id).await;
+        }
+    }
     let mut interrupt_target = None;
     let active = {
         let mut turns = inner.active_turns.lock().await;
@@ -3012,6 +3956,107 @@ mod tests {
     use super::*;
 
     #[test]
+    fn identifies_queue_entries_already_consumed_by_codex() {
+        assert!(is_stale_queued_submission_error(
+            "queued submission not found: 01a12a9e-d74e-7b71-8771-78cd958e8a72"
+        ));
+        assert!(!is_stale_queued_submission_error("turn is still active"));
+        assert!(is_queue_start_conflict_error(
+            "thread already has an active or pending turn"
+        ));
+    }
+
+    #[test]
+    fn reads_queued_submission_content_for_automatic_turn_binding() {
+        let queued = queued_follow_up_from_submission(
+            "flowix-thread",
+            "codex-thread",
+            &json!({
+                "id": "provider-queue-id",
+                "clientUserMessageId": "flowix-user-id",
+                "input": [
+                    { "type": "text", "text": "follow-up request" },
+                    { "type": "localImage", "path": "/tmp/reference.png" }
+                ]
+            }),
+        )
+        .unwrap();
+
+        assert_eq!(queued.flowix_thread_id, "flowix-thread");
+        assert_eq!(queued.codex_thread_id, "codex-thread");
+        assert_eq!(
+            queued.queued_submission_id.as_deref(),
+            Some("provider-queue-id")
+        );
+        assert_eq!(queued.client_user_message_id, "flowix-user-id");
+        assert_eq!(queued.message.content, "follow-up request");
+        assert_eq!(queued.message.image_paths, vec!["/tmp/reference.png"]);
+    }
+
+    #[test]
+    fn selects_the_oldest_provider_submission_when_starting_an_idle_queue() {
+        let queue = json!({
+            "data": [
+                {
+                    "id": "older-queue-id",
+                    "clientUserMessageId": "older-client-id",
+                    "input": [{ "type": "text", "text": "older follow-up" }]
+                },
+                {
+                    "id": "newer-queue-id",
+                    "clientUserMessageId": "newer-client-id",
+                    "input": [{ "type": "text", "text": "newer follow-up" }]
+                }
+            ]
+        });
+
+        let head = queued_follow_up_at_queue_head("flowix-thread", "codex-thread", &queue).unwrap();
+
+        assert_eq!(head.queued_submission_id.as_deref(), Some("older-queue-id"));
+        assert_eq!(head.client_user_message_id, "older-client-id");
+        assert_eq!(head.message.content, "older follow-up");
+    }
+
+    #[test]
+    fn aligns_local_turn_binding_order_with_the_provider_queue() {
+        let mut items = vec![
+            queued_follow_up_from_submission(
+                "flowix-thread",
+                "codex-thread",
+                &json!({
+                    "id": "newer-queue-id",
+                    "clientUserMessageId": "newer-client-id",
+                    "input": [{ "type": "text", "text": "newer follow-up" }]
+                }),
+            )
+            .unwrap(),
+            queued_follow_up_from_submission(
+                "flowix-thread",
+                "codex-thread",
+                &json!({
+                    "id": "older-queue-id",
+                    "clientUserMessageId": "older-client-id",
+                    "input": [{ "type": "text", "text": "older follow-up" }]
+                }),
+            )
+            .unwrap(),
+        ];
+
+        order_queued_follow_ups(
+            &mut items,
+            &["older-queue-id".to_string(), "newer-queue-id".to_string()],
+        );
+
+        assert_eq!(
+            items
+                .iter()
+                .map(|item| item.client_user_message_id.as_str())
+                .collect::<Vec<_>>(),
+            ["older-client-id", "newer-client-id"],
+        );
+    }
+
+    #[test]
     fn compares_codex_cli_versions_numerically() {
         let minimum = parse_codex_version(MIN_PAGINATED_CODEX_VERSION).unwrap();
         assert!(parse_codex_version("0.150.0").unwrap() >= minimum);
@@ -3230,7 +4275,9 @@ mod tests {
                 { "id": "reasoning-active", "type": "reasoning", "summary": "thinking" }
             ]
         })]);
-        assert!(active.iter().all(|message| message.is_completed == Some(false)));
+        assert!(active
+            .iter()
+            .all(|message| message.is_completed == Some(false)));
 
         let completed_item = app_server_turn_messages(&[json!({
             "id": "turn-active", "status": "inProgress",
@@ -3238,10 +4285,15 @@ mod tests {
         })]);
         assert_eq!(completed_item[0].is_completed, Some(true));
 
-        let page = paginate_app_server_turns(&[
-            json!({ "id": "turn-done", "status": "completed", "items": [] }),
-            json!({ "id": "turn-active", "status": "inProgress", "items": [] }),
-        ], None, None, 10);
+        let page = paginate_app_server_turns(
+            &[
+                json!({ "id": "turn-done", "status": "completed", "items": [] }),
+                json!({ "id": "turn-active", "status": "inProgress", "items": [] }),
+            ],
+            None,
+            None,
+            10,
+        );
         assert_eq!(page.complete_turn_ids, Some(vec!["turn-done".to_string()]));
 
         let finished = app_server_turn_messages(&[json!({
@@ -3251,7 +4303,9 @@ mod tests {
                 { "id": "reasoning-finished", "type": "reasoning", "summary": "thought" }
             ]
         })]);
-        assert!(finished.iter().all(|message| message.is_completed == Some(true)));
+        assert!(finished
+            .iter()
+            .all(|message| message.is_completed == Some(true)));
     }
 
     #[test]

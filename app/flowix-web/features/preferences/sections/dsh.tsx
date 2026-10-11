@@ -172,7 +172,7 @@ export function DshSettingsSection({ autoUpdate = false }: { autoUpdate?: boolea
               className={cn(
                 'flex min-w-0 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-xs transition-colors',
                 selected
-                  ? 'bg-[color-mix(in_oklch,var(--card)_93%,#000)] font-medium text-[var(--primary)] shadow-sm'
+                  ? 'bg-[var(--card)] font-medium text-[var(--primary)] shadow-sm'
                   : 'text-[var(--muted-foreground)] hover:bg-[var(--card)]/70 hover:text-[var(--foreground)]',
               )}
               onClick={() => setActiveTab(id)}
@@ -578,7 +578,7 @@ function PluginsTab() {
       </div>
       {/* WKWebView 下外层滚动容器吃不到底部间距, 在列表自身留 pb-10 兜底 */}
       <div className="space-y-2 pb-10">
-        {loadError && <p className="rounded-lg border border-red-500/30 bg-red-500/5 px-3.5 py-3 text-xs text-red-600">{t('preferences.dsh.plugins.loadError')}: {loadError}</p>}
+        {loadError && <p className="rounded-lg border border-[color-mix(in_oklch,var(--destructive)_30%,transparent)] bg-[color-mix(in_oklch,var(--destructive)_5%,transparent)] px-3.5 py-3 text-xs text-[var(--destructive)]">{t('preferences.dsh.plugins.loadError')}: {loadError}</p>}
         {catalog === null && loadError === null && (
           <div className="flex h-[100px] items-center justify-center text-center text-xs text-[var(--muted-foreground)]">
             {t('preferences.dsh.plugins.loading')}
@@ -606,7 +606,7 @@ function PluginsTab() {
                     <div className="flex items-center justify-between gap-2">
                       <h4 className="truncate text-sm font-medium text-[var(--foreground)]">{plugin.id}</h4>
                       <div className="inline-flex shrink-0 items-center gap-2">
-                        <Check className={cn('h-3 w-3', plugin.enabled ? 'text-emerald-500' : 'text-[var(--muted-foreground)]')} />
+                        <Check className={cn('h-3 w-3', plugin.enabled ? 'text-[var(--success)]' : 'text-[var(--muted-foreground)]')} />
                         <span className="text-[11px] text-[var(--muted-foreground)]">
                           {t(plugin.enabled ? 'preferences.dsh.plugins.enabled' : 'preferences.dsh.plugins.disabled')}
                         </span>

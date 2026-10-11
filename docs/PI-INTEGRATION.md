@@ -1,6 +1,6 @@
 # Pi runtime integration
 
-Flowix uses Pi v1.0.3 through its JSONL RPC process interface. Each Flowix
+Flowix uses Pi v1.1.0 through its JSONL RPC process interface. Each Flowix
 conversation gets a separate Pi session directory and a reusable RPC process.
 Streamed text, reasoning, tool calls, tool results, and token usage are
 projected into Flowix's existing conversation journal. Image attachments are
@@ -21,7 +21,7 @@ Pi session with the persisted Pi session ID and the updated runtime settings.
 
 ## Build variants
 
-- `npm run tauri:dev:pi` downloads the matching Pi v1.0.3 archive into
+- `npm run tauri:dev:pi` downloads the matching Pi v1.1.0 archive into
   `.build/pi-runtime`, verifies its pinned SHA-256 digest, and points the dev
   app at that executable. No system-wide Pi installation is required.
 - `npm run tauri:dev` reuses Pi from an installed Flowix app when it finds one
@@ -29,8 +29,8 @@ Pi session with the persisted Pi session ID and the updated runtime settings.
   override the executable path, or `FLOWIX_PROD_APP_PATH` when the app is in a
   non-standard location. This avoids downloading or staging another Pi build.
 - `npm run tauri:build:prod` builds Flowix without Pi. The user must have `pi`
-  on `PATH` or set `PI_CLI_PATH` to a Pi v1.0.3 executable.
-- `npm run tauri:build:prod:pi` downloads the matching Pi v1.0.3 release
+  on `PATH` or set `PI_CLI_PATH` to a Pi v1.1.0 executable.
+- `npm run tauri:build:prod:pi` downloads the matching Pi v1.1.0 release
   archive, verifies its pinned SHA-256 digest, and puts the matching runtime
   in the app resources. The universal macOS build stages arm64 and x64
   archives separately and includes only the matching runtime in each app.

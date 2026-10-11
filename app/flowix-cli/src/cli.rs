@@ -233,7 +233,7 @@ pub(crate) fn cli_command() -> Command {
     Command::new(DISPLAY_BIN)
         .version(env!("CARGO_PKG_VERSION"))
         .about("Manage local Flowix notebooks, Markdown notes, and artifacts")
-        .after_help("For Markdown content, --file is recommended (especially on Windows PowerShell 5.1). Files must be UTF-8. Note addresses use <notebook-id>::<relative-path> or an absolute path. Examples:\n  flowix create <notebook> --file body.md --json\n  flowix show work::Notes/Example.md --json\n  flowix write work::Notes/Example.md --file body.md --json\n  flowix list\n  flowix search TODO --tag project/flowix --limit 20\n  flowix collection read --notebook <notebook-id> --id <collection-id> --json\n  flowix collection read --notebook <notebook-id> --path 'Assets/Images.lib.yaml' --json\n  flowix mcp")
+        .after_help("For Markdown content, --file is recommended (especially on Windows PowerShell 5.1). Files must be UTF-8. Note addresses use <notebook-id>::<relative-path> or an absolute path. Examples:\n  flowix create <notebook> --file body.md --json\n  flowix show work::Notes/Example.md --json\n  flowix write work::Notes/Example.md --file body.md --json\n  flowix list\n  flowix search TODO --tag project/flowix --limit 20\n  flowix collection read --notebook <notebook-id> --id <collection-id> --json\n  flowix collection read --notebook <notebook-id> --path 'Assets/Images.index.yaml' --json\n  flowix mcp")
         .arg(
             Arg::new("json")
                 .long("json")

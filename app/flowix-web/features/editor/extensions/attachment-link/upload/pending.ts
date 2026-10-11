@@ -73,8 +73,9 @@ export async function runTrackedUpload(
     } catch (error) {
         if (!controller.signal.aborted) reportUploadFailure(error);
     } finally {
-        if (!inserted && assets.length) {
-            recordAttachmentRecovery(assets.flatMap((asset) => asset.storageKey ? [asset.storageKey] : []), ownerPath);
+        const newlyCreatedAssets = assets.filter((asset) => asset.created !== false);
+        if (!inserted && newlyCreatedAssets.length) {
+            recordAttachmentRecovery(newlyCreatedAssets.flatMap((asset) => asset.storageKey ? [asset.storageKey] : []), ownerPath);
             reportUninsertedAttachments();
         }
         if (!view.isDestroyed) view.dispatch(view.state.tr.setMeta(fileUploadPluginKey, { remove: id }).setMeta('addToHistory', false));

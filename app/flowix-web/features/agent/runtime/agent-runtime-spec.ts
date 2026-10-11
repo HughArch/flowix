@@ -37,6 +37,8 @@ export interface BuildAgentRuntimeConfigInput {
   permissionMode: AgentPermissionMode;
   codexModel: AgentCodexModel;
   codexReasoningEffort: AgentCodexReasoningEffort;
+  /** Shared Pi extension mode; legacy conversation values are ignored. */
+  piCodeMode?: boolean;
   instanceRuntimeConfig?: RuntimeConfig;
   /** Notebook-local add-dir files; retained as a compatibility input shape. */
   defaultFiles?: FilesConfig;
@@ -178,12 +180,19 @@ const AGENT_RUNTIME_SPECS: Record<AgentTypeKey, AgentRuntimeSpec> = {
   pi: {
     typeKey: "pi",
     // Pi RPC has no sandbox prompt, but its built-in tools can be selected with
-    // --tools. The permission mode maps to the available tool set in the host.
-    emptySettings: ["model", "permission"],
+    // --tools. The permission mode maps to the available tool set in the host;
+    // codemode follows the shared Pi preference across conversations.
+    emptySettings: ["model", "mode", "permission"],
     accessOptions: SHARED_ACCESS_OPTIONS,
     workspace: { selectBeforeFirstRun: false, switchWhileRunning: false, switchBetweenRuns: false, switchRequiresRuntimeRestart: true, preservesConversationSession: true },
     buildRuntimeConfig: ({ cwd, workspacePaths, permissionMode, codexModel }) => ({
-      pi: { cwd, workspacePaths, permissionMode: normalizeCodexPermissionMode(permissionMode), model: codexModel },
+      pi: {
+        cwd,
+        workspacePaths,
+        permissionMode: normalizeCodexPermissionMode(permissionMode),
+        model: codexModel,
+        codeMode: false,
+      },
     }),
   },
   "deepseek-harness": {
@@ -228,7 +237,7 @@ export function supportsAgentRuntimeSetting(
 
 export function supportsAgentEmptySettings(typeKey: AgentTypeKey): boolean {
   // files 控件已移除 (主空间由侧边栏资料列表决定), 空状态设置区只看
-  // model / permission / reasoning 是否有可配置项。
+  // model / mode / permission / reasoning 是否有可配置项。
   const spec = getAgentRuntimeSpec(typeKey);
   return spec.emptySettings.length > 0;
 }
@@ -245,6 +254,7 @@ export function buildAgentRuntimeConfig({
   permissionMode,
   codexModel,
   codexReasoningEffort,
+  piCodeMode,
   instanceRuntimeConfig,
   defaultFiles,
   workspaceSnapshot,
@@ -293,6 +303,7 @@ export function buildAgentRuntimeConfig({
   if (typeKey === "pi" && runtimeConfig.pi) {
     runtimeConfig.pi.providerId = instanceRuntimeConfig?.model?.providerId;
     runtimeConfig.pi.reasoningEffort = instanceRuntimeConfig?.reasoningEffort;
+    runtimeConfig.pi.codeMode = piCodeMode ?? false;
   }
   return runtimeConfig;
 }

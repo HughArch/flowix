@@ -2,9 +2,12 @@
 use crate::{app::state::AppState, lock_utils::read_lock};
 use flowix_core::{
     collection::{
-        valid_id, validate_properties, CollectionDocument, CollectionProperty, CollectionType,
+        valid_id, validate_properties, CollectionDocument, CollectionPlacement, CollectionProperty,
+        CollectionType,
     },
-    memo_file::{atomic_write_bytes, rename_file_noclobber, FileLockIntent, FileManagementPolicy, MemoFile},
+    memo_file::{
+        atomic_write_bytes, rename_file_noclobber, FileLockIntent, FileManagementPolicy, MemoFile,
+    },
 };
 use rusqlite::{params, Connection, TransactionBehavior};
 use serde::{Deserialize, Serialize};
@@ -28,12 +31,45 @@ fn catalog_lock(id: &str) -> Result<Arc<Mutex<bool>>, String> {
 }
 pub fn collection_type_for_path(path: &Path) -> Option<CollectionType> {
     let name = path.file_name()?.to_str()?.to_lowercase();
-    if name.ends_with(".table.yml") || name.ends_with(".table.yaml") {
+    if name == ".index.yaml" || name.ends_with(".index.yaml") {
+        // The v2 collection type is declared in the file envelope.
+        Some(CollectionType::Table)
+    } else if name.ends_with(".table.yml") || name.ends_with(".table.yaml") {
         Some(CollectionType::Table)
     } else if name.ends_with(".lib.yaml") || name.ends_with(".lib.yml") {
         Some(CollectionType::MediaLibrary)
     } else {
         None
+    }
+}
+fn collection_path_matches_placement(
+    path: &Path,
+    kind: CollectionType,
+    placement: CollectionPlacement,
+) -> bool {
+    let filename = path
+        .file_name()
+        .and_then(|value| value.to_str())
+        .unwrap_or_default()
+        .to_lowercase();
+    let has_nonempty_stem = |suffix: &str| {
+        filename
+            .strip_suffix(suffix)
+            .is_some_and(|stem| !stem.is_empty())
+    };
+    match placement {
+        CollectionPlacement::Folder => filename == ".index.yaml",
+        CollectionPlacement::Standalone => {
+            has_nonempty_stem(".index.yaml")
+                || match kind {
+                    CollectionType::Table => {
+                        has_nonempty_stem(".table.yaml") || has_nonempty_stem(".table.yml")
+                    }
+                    CollectionType::MediaLibrary => {
+                        has_nonempty_stem(".lib.yaml") || has_nonempty_stem(".lib.yml")
+                    }
+                }
+        }
     }
 }
 fn exact_path_exists(path: &Path) -> bool {
@@ -66,6 +102,7 @@ pub struct CollectionIndexItem {
     pub index_sequence: i64,
     pub relative_path: String,
     pub collection_id: Option<String>,
+    #[serde(serialize_with = "serialize_index_collection_type")]
     pub collection_type: CollectionType,
     pub name: String,
     pub schema_version: Option<i64>,
@@ -81,6 +118,15 @@ pub struct CollectionIndexItem {
     pub error_code: Option<String>,
     pub in_views: bool,
     pub identity_conflict: bool,
+}
+fn serialize_index_collection_type<S>(
+    kind: &CollectionType,
+    serializer: S,
+) -> Result<S::Ok, S::Error>
+where
+    S: serde::Serializer,
+{
+    serializer.serialize_str(kind.as_str())
 }
 pub struct CollectionCatalog {
     root: PathBuf,
@@ -129,9 +175,18 @@ impl CollectionCatalog {
         let result = root.join(path);
         let parent = dunce::canonicalize(result.parent().ok_or("INVALID_COLLECTION_PATH")?)
             .map_err(|e| e.to_string())?;
-        if !parent.starts_with(root)
-            || FileManagementPolicy::from_notebook_root(root).is_ignored_at(root, path)
-        {
+        let policy = FileManagementPolicy::from_notebook_root(root);
+        let folder_index = path
+            .file_name()
+            .and_then(|name| name.to_str())
+            .is_some_and(|name| name.eq_ignore_ascii_case(".index.yaml"));
+        let ignored = if folder_index {
+            path.parent()
+                .is_none_or(|parent| policy.is_ignored_at(root, parent))
+        } else {
+            policy.is_ignored_at(root, path)
+        };
+        if !parent.starts_with(root) || ignored {
             return Err("PATH_OUTSIDE_NOTEBOOK".into());
         }
         if let Ok(meta) = fs::symlink_metadata(&result) {
@@ -145,7 +200,7 @@ impl CollectionCatalog {
         Self::inspect_at_root(&self.root, path)
     }
     fn inspect_at_root(root: &Path, path: &Path) -> Result<CollectionIndexItem, String> {
-        let kind = collection_type_for_path(path).ok_or("UNSUPPORTED_COLLECTION_FILE")?;
+        let suffix_kind = collection_type_for_path(path).ok_or("UNSUPPORTED_COLLECTION_FILE")?;
         let relative = path
             .strip_prefix(root)
             .map_err(|e| e.to_string())?
@@ -163,7 +218,7 @@ impl CollectionCatalog {
             index_sequence: 0,
             relative_path: relative,
             collection_id: None,
-            collection_type: kind,
+            collection_type: suffix_kind,
             name: path
                 .file_name()
                 .unwrap_or_default()
@@ -191,6 +246,7 @@ impl CollectionCatalog {
             .and_then(|s| CollectionDocument::parse(&s))
         {
             Ok(document) => {
+                item.collection_type = document.collection.kind;
                 item.collection_id = Some(document.collection.id.clone());
                 item.name = document.collection.name.clone();
                 item.schema_version = Some(document.schema_version);
@@ -200,7 +256,12 @@ impl CollectionCatalog {
                     .map_err(|e| e.to_string())?;
                 item.created_at = Some(document.collection.created_at.clone());
                 item.updated_at = Some(document.collection.updated_at.clone());
-                if document.collection.kind != kind {
+                let placement_matches = collection_path_matches_placement(
+                    path,
+                    document.collection.kind,
+                    document.collection.placement,
+                );
+                if !placement_matches {
                     item.error_code = Some("COLLECTION_TYPE_EXTENSION_MISMATCH".into());
                 } else if !document.supported() {
                     item.parse_state = "unsupported".into();
@@ -248,11 +309,16 @@ impl CollectionCatalog {
                 let entry = entry.map_err(|e| e.to_string())?;
                 let path = entry.path();
                 let kind = entry.file_type().map_err(|e| e.to_string())?;
+                let relative = path.strip_prefix(&self.root).map_err(|e| e.to_string())?;
+                let folder_index = path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case(".index.yaml"))
+                    && relative
+                        .parent()
+                        .is_some_and(|parent| !policy.is_tree_hidden_at(&self.root, parent));
                 if kind.is_symlink()
-                    || policy.is_tree_hidden_at(
-                        &self.root,
-                        path.strip_prefix(&self.root).map_err(|e| e.to_string())?,
-                    )
+                    || (policy.is_tree_hidden_at(&self.root, relative) && !folder_index)
                 {
                     continue;
                 }
@@ -266,11 +332,15 @@ impl CollectionCatalog {
             }
         }
         let indexed = {
-            let mut statement = self.conn.prepare("SELECT relative_path FROM collection_documents")
+            let mut statement = self
+                .conn
+                .prepare("SELECT relative_path FROM collection_documents")
                 .map_err(|error| error.to_string())?;
-            let rows = statement.query_map([], |row| row.get::<_, String>(0))
+            let rows = statement
+                .query_map([], |row| row.get::<_, String>(0))
                 .map_err(|error| error.to_string())?;
-            rows.collect::<Result<Vec<_>, _>>().map_err(|error| error.to_string())?
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?
         };
         for relative in indexed {
             paths.insert(self.root.join(relative));
@@ -284,15 +354,25 @@ impl CollectionCatalog {
     }
     pub fn refresh(&mut self, paths: &[PathBuf]) -> Result<i64, String> {
         let root = self.root.clone();
-        let tx = self.conn.transaction_with_behavior(TransactionBehavior::Immediate)
+        let policy = FileManagementPolicy::from_notebook_root(&root);
+        let tx = self
+            .conn
+            .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(|error| error.to_string())?;
         for path in paths {
             if let Ok(relative) = path.strip_prefix(&root) {
                 let relative = relative.to_string_lossy().replace('\\', "/");
-                let hidden = FileManagementPolicy::from_notebook_root(&root)
-                    .is_tree_hidden_at(&root, Path::new(&relative));
+                let relative_path = Path::new(&relative);
+                let hidden = policy.is_tree_hidden_at(&root, relative_path);
+                let visible_folder_index = relative_path
+                    .file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.eq_ignore_ascii_case(".index.yaml"))
+                    && relative_path
+                        .parent()
+                        .is_some_and(|parent| !policy.is_tree_hidden_at(&root, parent));
                 let item = if exact_path_exists_checked(path)?
-                    && !hidden
+                    && (!hidden || visible_folder_index)
                     && collection_type_for_path(path).is_some()
                 {
                     Some(Self::inspect_at_root(&root, path)?)
@@ -499,7 +579,9 @@ fn with_catalog<T>(
     action(&mut catalog)
 }
 pub(crate) fn refresh_catalog(memo: &MemoFile, id: &str) -> Result<(), String> {
-    let _guard = memo.operation_locks().notebook_read(id, "refresh_collection_catalog")
+    let _guard = memo
+        .operation_locks()
+        .notebook_read(id, "refresh_collection_catalog")
         .map_err(|error| error.to_string())?;
     with_catalog(memo, id, |catalog| catalog.reconcile())
 }
@@ -520,7 +602,10 @@ pub(crate) fn refresh_path(memo: &MemoFile, path: &Path) {
         .collect::<Vec<_>>();
     candidates.sort_by_key(|(_, root)| std::cmp::Reverse(root.components().count()));
     if let Some((id, _)) = candidates.first() {
-        let _guard = match memo.operation_locks().notebook_read(id, "refresh_collection_path") {
+        let _guard = match memo
+            .operation_locks()
+            .notebook_read(id, "refresh_collection_path")
+        {
             Ok(guard) => guard,
             Err(error) => {
                 tracing::warn!(notebook_id = %id, %error, "collection index refresh lock failed");
@@ -580,29 +665,25 @@ pub struct CollectionMutationResult {
 fn target_relative_path(
     request: &CollectionMutation,
     item: &CollectionIndexItem,
-    path: &Path,
     document: &CollectionDocument,
 ) -> Result<String, String> {
     if let Some(relative) = &request.target_relative_path {
+        if document.collection.placement == CollectionPlacement::Folder {
+            return Err("FOLDER_COLLECTION_PATH_IS_FIXED".into());
+        }
         return Ok(relative.clone());
     }
     if request.new_name.is_none() {
         return Ok(item.relative_path.clone());
     }
 
-    let filename = path
-        .file_name()
-        .and_then(|value| value.to_str())
-        .ok_or("INVALID_COLLECTION_PATH")?;
-    let lower = filename.to_lowercase();
-    let extension = [".table.yaml", ".table.yml", ".lib.yaml", ".lib.yml"]
-        .into_iter()
-        .find(|extension| lower.ends_with(extension))
-        .ok_or("UNSUPPORTED_COLLECTION_FILE")?;
+    if document.collection.placement == CollectionPlacement::Folder {
+        return Err("FOLDER_COLLECTION_PATH_IS_FIXED".into());
+    }
     Ok(Path::new(&item.relative_path)
         .parent()
         .unwrap_or(Path::new(""))
-        .join(format!("{}{extension}", document.collection.name))
+        .join(format!("{}.index.yaml", document.collection.name))
         .to_string_lossy()
         .replace('\\', "/"))
 }
@@ -641,31 +722,49 @@ fn mutate(
     // A pending rename can change the path used to identify the file lock.
     // Finish recovery under the notebook's structural lock before resolving it.
     let pending = with_catalog(memo, &request.notebook_id, |catalog| {
-        let count: i64 = catalog.conn.query_row(
-            "SELECT COUNT(*) FROM collection_operations WHERE status='pending'",
-            [], |row| row.get(0),
-        ).map_err(|error| error.to_string())?;
+        let count: i64 = catalog
+            .conn
+            .query_row(
+                "SELECT COUNT(*) FROM collection_operations WHERE status='pending'",
+                [],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
         Ok(count != 0)
     })?;
     if pending {
         memo.with_notebook_change(&[&request.notebook_id], "recover_collections", || {
-            Ok(with_catalog(memo, &request.notebook_id, |catalog| catalog.recover()))
-        }).map_err(|error| error.to_string())??;
+            Ok(with_catalog(memo, &request.notebook_id, |catalog| {
+                catalog.recover()
+            }))
+        })
+        .map_err(|error| error.to_string())??;
     }
     if request.new_name.is_some() || request.target_relative_path.is_some() {
-        return memo.with_notebook_change(&[&request.notebook_id], "mutate_collection_structure", || {
-            with_catalog(memo, &request.notebook_id, |catalog| catalog.recover())
-                .map_err(std::io::Error::other)?;
-            Ok(mutate_locked(memo, request, None))
-        }).map_err(|error| error.to_string())?;
+        return memo
+            .with_notebook_change(
+                &[&request.notebook_id],
+                "mutate_collection_structure",
+                || {
+                    with_catalog(memo, &request.notebook_id, |catalog| catalog.recover())
+                        .map_err(std::io::Error::other)?;
+                    Ok(mutate_locked(memo, request, None))
+                },
+            )
+            .map_err(|error| error.to_string())?;
     }
     let path = with_catalog(memo, &request.notebook_id, |catalog| {
         let item = catalog.resolve(&request.collection_id)?;
         catalog.checked_path(&item.relative_path)
     })?;
-    memo.with_file_write(&request.notebook_id, &path, FileLockIntent::Existing,
-        "mutate_collection", |locked_path| Ok(mutate_locked(memo, request, Some(locked_path))))
-        .map_err(|error| error.to_string())?
+    memo.with_file_write(
+        &request.notebook_id,
+        &path,
+        FileLockIntent::Existing,
+        "mutate_collection",
+        |locked_path| Ok(mutate_locked(memo, request, Some(locked_path))),
+    )
+    .map_err(|error| error.to_string())?
 }
 
 fn mutate_locked(
@@ -708,9 +807,13 @@ fn mutate_locked(
             }
             validate_properties(&document.collection.properties)?;
         }
-        let target_relative = target_relative_path(&request, &item, &path, &document)?;
+        let target_relative = target_relative_path(&request, &item, &document)?;
         let target = catalog.checked_path(&target_relative)?;
-        if collection_type_for_path(&target) != Some(document.collection.kind) {
+        if !collection_path_matches_placement(
+            &target,
+            document.collection.kind,
+            document.collection.placement,
+        ) {
             return Err("COLLECTION_TYPE_EXTENSION_MISMATCH".into());
         }
         let case_only = target != path
@@ -735,10 +838,14 @@ fn mutate_locked(
                 .to_string_lossy()
                 .replace('\\', "/")
         });
-        if request.new_name.is_some() || request.properties.is_some() {
+        let rewrite_content = request.new_name.is_some()
+            || request.properties.is_some()
+            || (request.target_relative_path.is_some() && document.schema_version == 1);
+        if rewrite_content {
+            document = document.normalized_v2()?;
             document.revise()?;
         }
-        let next_content = if request.new_name.is_some() || request.properties.is_some() {
+        let next_content = if rewrite_content {
             document.serialize()?
         } else {
             source.clone()
@@ -822,7 +929,9 @@ pub async fn resolve_collection(
     let memo = state.memo_file.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let memo = read_lock(&memo, "memo_file");
-        with_catalog(&memo, &notebook_id, |catalog| catalog.resolve(&collection_id))
+        with_catalog(&memo, &notebook_id, |catalog| {
+            catalog.resolve(&collection_id)
+        })
     })
     .await
     .map_err(|e| e.to_string())?
@@ -867,33 +976,36 @@ pub async fn make_collection_identity_unique(
     let memo = state.memo_file.clone();
     tauri::async_runtime::spawn_blocking(move || {
         let memo = read_lock(&memo, "memo_file");
-        let id = memo.with_notebook_change(&[&notebook_id], "make_collection_identity_unique", || {
-            Ok(with_catalog(&memo, &notebook_id, |catalog| {
-            catalog.recover()?;
-            let path = catalog.checked_path(&relative_path)?;
-            let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
-            let mut document = CollectionDocument::parse(&source)?;
-            document.validate()?;
-            catalog.reconcile()?;
-            let duplicates: i64 = catalog
-                .conn
-                .query_row(
-                    "SELECT COUNT(*) FROM collection_documents WHERE collection_id=?1",
-                    [&document.collection.id],
-                    |row| row.get(0),
-                )
-                .map_err(|e| e.to_string())?;
-            if duplicates < 2 {
-                return Err("COLLECTION_ID_NOT_DUPLICATED".into());
-            }
-            document.collection.id = format!("col_{}", uuid::Uuid::now_v7().simple());
-            document.revise()?;
-            atomic_write_bytes(&path, document.serialize()?.as_bytes())
-                .map_err(|e| e.to_string())?;
-            catalog.refresh(&[path])?;
-            Ok(document.collection.id)
-            }))
-        }).map_err(|error| error.to_string())??;
+        let id = memo
+            .with_notebook_change(&[&notebook_id], "make_collection_identity_unique", || {
+                Ok(with_catalog(&memo, &notebook_id, |catalog| {
+                    catalog.recover()?;
+                    let path = catalog.checked_path(&relative_path)?;
+                    let source = fs::read_to_string(&path).map_err(|e| e.to_string())?;
+                    let mut document = CollectionDocument::parse(&source)?;
+                    document.validate()?;
+                    catalog.reconcile()?;
+                    let duplicates: i64 = catalog
+                        .conn
+                        .query_row(
+                            "SELECT COUNT(*) FROM collection_documents WHERE collection_id=?1",
+                            [&document.collection.id],
+                            |row| row.get(0),
+                        )
+                        .map_err(|e| e.to_string())?;
+                    if duplicates < 2 {
+                        return Err("COLLECTION_ID_NOT_DUPLICATED".into());
+                    }
+                    document = document.normalized_v2()?;
+                    document.collection.id = format!("col_{}", uuid::Uuid::now_v7().simple());
+                    document.revise()?;
+                    atomic_write_bytes(&path, document.serialize()?.as_bytes())
+                        .map_err(|e| e.to_string())?;
+                    catalog.refresh(&[path])?;
+                    Ok(document.collection.id)
+                }))
+            })
+            .map_err(|error| error.to_string())??;
         let _ = app.emit(
             "file-management-changed",
             serde_json::json!({"notebookId":notebook_id}),
@@ -1168,12 +1280,15 @@ mod tests {
         let first = std::thread::spawn(move || {
             with_catalog(&first_memo, &first_book, |_| {
                 entered_tx.send(()).unwrap();
-                release_rx.recv_timeout(std::time::Duration::from_secs(2))
+                release_rx
+                    .recv_timeout(std::time::Duration::from_secs(2))
                     .map_err(|error| error.to_string())?;
                 Ok(())
             })
         });
-        entered_rx.recv_timeout(std::time::Duration::from_secs(2)).unwrap();
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(2))
+            .unwrap();
         let second = with_catalog(&memo, &book, |_| {
             release_tx.send(()).unwrap();
             Ok(())

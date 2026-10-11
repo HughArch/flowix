@@ -3,23 +3,48 @@ use std::io::{self, Read, Write};
 use std::path::{Path, PathBuf};
 
 use flowix_core::memo_file::{FileLockIntent, MemoFile};
+use serde::Serialize;
+use sha2::{Digest, Sha256};
 
 use crate::config::path_is_inside;
 
 pub(super) const MAX_ATTACHMENT_BYTES: u64 = 1024 * 1024 * 1024;
 
-fn copy_bounded(reader: &mut impl Read, writer: &mut impl Write, limit: u64) -> io::Result<u64> {
-    let copied = io::copy(&mut reader.take(limit.saturating_add(1)), writer)?;
-    if copied > limit {
-        return Err(io::Error::new(
-            io::ErrorKind::InvalidData,
-            "ATTACHMENT_FILE_TOO_LARGE",
-        ));
-    }
-    Ok(copied)
+/// Saved path and whether this operation created a new notebook file.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub(crate) struct SavedNotebookAsset {
+    pub(super) path: String,
+    pub(super) created: bool,
 }
 
-/// Resolve the owning notebook for an attachment. Ownership is expressed by
+fn copy_bounded(
+    reader: &mut impl Read,
+    writer: &mut impl Write,
+    limit: u64,
+) -> io::Result<(String, u64)> {
+    let mut hasher = Sha256::new();
+    let mut copied = 0_u64;
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = reader.read(&mut buffer)?;
+        if read == 0 {
+            break;
+        }
+        copied += read as u64;
+        if copied > limit {
+            return Err(io::Error::new(
+                io::ErrorKind::InvalidData,
+                "ATTACHMENT_FILE_TOO_LARGE",
+            ));
+        }
+        writer.write_all(&buffer[..read])?;
+        hasher.update(&buffer[..read]);
+    }
+    Ok((format!("{:x}", hasher.finalize()), copied))
+}
+
+/// Resolve the owning notebook for a saved asset. Ownership is expressed by
 /// path: `note_path` may be an absolute path inside a registered notebook or
 /// a notebook-relative path (which then requires `notebook_id`). Returns the
 /// resolved notebook id plus the notebook-relative note path when known.
@@ -34,7 +59,7 @@ pub(super) fn resolve_note_owner(
             .ok_or_else(|| {
                 io::Error::new(
                     io::ErrorKind::InvalidInput,
-                    "explicit attachment owner required",
+                    "explicit notebook owner required",
                 )
             })?;
         notebook_root(store, Some(id))?;
@@ -43,10 +68,15 @@ pub(super) fn resolve_note_owner(
     let candidate = Path::new(note_path);
     if candidate.is_absolute() {
         let canonical_note = dunce::canonicalize(candidate).map_err(|error| {
-            io::Error::new(io::ErrorKind::NotFound, format!("owner note not found: {error}"))
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("owner note not found: {error}"),
+            )
         })?;
         for notebook in store.read_notebook_configs()? {
-            let Ok(root) = dunce::canonicalize(&notebook.path) else { continue };
+            let Ok(root) = dunce::canonicalize(&notebook.path) else {
+                continue;
+            };
             if let Ok(relative) = canonical_note.strip_prefix(&root) {
                 if notebook_id.is_some_and(|id| id != notebook.id) {
                     return Err(io::Error::new(
@@ -94,12 +124,7 @@ pub(super) fn notebook_root(store: &MemoFile, notebook_id: Option<&str>) -> io::
             Some(id) => notebook.id == id,
             None => notebook.is_default,
         })
-        .ok_or_else(|| {
-            io::Error::new(
-                io::ErrorKind::NotFound,
-                "attachment notebook is not registered",
-            )
-        })?;
+        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "notebook is not registered"))?;
     let root = dunce::canonicalize(&notebook.path)?;
     if !root.is_dir() {
         return Err(io::Error::new(
@@ -149,9 +174,39 @@ pub(super) fn save_for_owner(
     note_path: Option<&str>,
     name: &str,
     reader: &mut impl Read,
-) -> io::Result<PathBuf> {
+    deduplicate: bool,
+) -> io::Result<SavedNotebookAsset> {
+    save_for_owner_in_directory(
+        store,
+        notebook_id,
+        note_path,
+        name,
+        reader,
+        deduplicate,
+        None,
+    )
+}
+
+/// Save into a canonical notebook directory; `None` selects `attachments/`.
+pub(super) fn save_for_owner_in_directory(
+    store: &MemoFile,
+    notebook_id: Option<&str>,
+    note_path: Option<&str>,
+    name: &str,
+    reader: &mut impl Read,
+    deduplicate: bool,
+    target_directory: Option<&Path>,
+) -> io::Result<SavedNotebookAsset> {
     let (notebook_id, owner_note) = resolve_note_owner(store, notebook_id, note_path)?;
-    save_locked(store, Some(&notebook_id), owner_note.as_deref(), name, reader)
+    save_locked(
+        store,
+        Some(&notebook_id),
+        owner_note.as_deref(),
+        name,
+        reader,
+        deduplicate,
+        target_directory,
+    )
 }
 
 #[cfg(test)]
@@ -161,7 +216,8 @@ fn save(
     name: &str,
     reader: &mut impl Read,
 ) -> io::Result<PathBuf> {
-    save_locked(store, notebook_id, None, name, reader)
+    save_locked(store, notebook_id, None, name, reader, false, None)
+        .map(|saved| PathBuf::from(saved.path))
 }
 
 fn save_locked(
@@ -170,27 +226,52 @@ fn save_locked(
     owner_note: Option<&str>,
     name: &str,
     reader: &mut impl Read,
-) -> io::Result<PathBuf> {
+    deduplicate: bool,
+    target_directory: Option<&Path>,
+) -> io::Result<SavedNotebookAsset> {
     let root = notebook_root(store, notebook_id)?;
-    let lock_id = store.read_notebook_configs()?.into_iter()
-        .find(|notebook| dunce::canonicalize(&notebook.path).ok().as_deref() == Some(root.as_path()))
+    let lock_id = store
+        .read_notebook_configs()?
+        .into_iter()
+        .find(|notebook| {
+            dunce::canonicalize(&notebook.path).ok().as_deref() == Some(root.as_path())
+        })
         .map(|notebook| notebook.id)
-        .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "attachment notebook is not registered"))?;
-    let directory = root.join("attachments");
-    if !path_is_inside(&directory, &root) {
+        .ok_or_else(|| {
+            io::Error::new(
+                io::ErrorKind::NotFound,
+                "attachment notebook is not registered",
+            )
+        })?;
+    let attachments_directory = root.join("attachments");
+    if !path_is_inside(&attachments_directory, &root) {
         return Err(io::Error::new(
             io::ErrorKind::PermissionDenied,
             "attachment directory escapes notebook",
         ));
     }
-    store.with_notebook_change(&[&lock_id], "create_attachment_directory", || fs::create_dir_all(&directory))?;
-    let directory = dunce::canonicalize(&directory)?;
-    if !directory.starts_with(&root) {
-        return Err(io::Error::new(
-            io::ErrorKind::PermissionDenied,
-            "attachment directory escapes notebook",
-        ));
-    }
+    let directory = if let Some(target_directory) = target_directory {
+        let directory = dunce::canonicalize(target_directory)?;
+        if !directory.starts_with(&root) || !directory.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "target directory is outside notebook or is not a directory",
+            ));
+        }
+        directory
+    } else {
+        store.with_notebook_change(&[&lock_id], "create_attachment_directory", || {
+            fs::create_dir_all(&attachments_directory)
+        })?;
+        let directory = dunce::canonicalize(&attachments_directory)?;
+        if !directory.starts_with(&root) {
+            return Err(io::Error::new(
+                io::ErrorKind::PermissionDenied,
+                "attachment directory escapes notebook",
+            ));
+        }
+        directory
+    };
     let name = safe_name(name);
     let name_path = Path::new(&name);
     let stem = name_path
@@ -199,9 +280,23 @@ fn save_locked(
         .unwrap_or("attachment");
     let extension = name_path.extension().and_then(|value| value.to_str());
     let mut temporary = Some(tempfile::NamedTempFile::new_in(&directory)?);
-    copy_bounded(reader, temporary.as_mut().unwrap(), MAX_ATTACHMENT_BYTES)?;
+    let fingerprint = copy_bounded(reader, temporary.as_mut().unwrap(), MAX_ATTACHMENT_BYTES)?;
     temporary.as_ref().unwrap().as_file().sync_all()?;
-    let fingerprint = super::upload_journal::fingerprint(temporary.as_mut().unwrap().as_file_mut())?;
+    // Prefer an already stored attachment when a caller selected a custom
+    // notebook folder. This lets the editor and media library share assets.
+    if deduplicate && directory != attachments_directory {
+        if let Ok(attachment_directory) = dunce::canonicalize(&attachments_directory) {
+            if attachment_directory.starts_with(&root) {
+                let attachment = attachment_directory.join(&name);
+                if existing_file_matches(store, &lock_id, &attachment, &fingerprint)? {
+                    return Ok(SavedNotebookAsset {
+                        path: attachment.to_string_lossy().into_owned(),
+                        created: false,
+                    });
+                }
+            }
+        }
+    }
     for index in 0..10_000 {
         let filename = if index == 0 {
             name.clone()
@@ -212,37 +307,112 @@ fn save_locked(
             }
         };
         let target = directory.join(filename);
-        let created = store.with_file_write(&lock_id, &target, FileLockIntent::Create,
-            "save_attachment", |locked_target| {
+        enum TargetResult {
+            Created,
+            Reused,
+            Occupied,
+        }
+        let result = store.with_file_write(
+            &lock_id,
+            &target,
+            FileLockIntent::Create,
+            "save_notebook_asset",
+            |locked_target| {
                 match fs::symlink_metadata(locked_target) {
-                    Ok(_) => return Ok(false),
+                    Ok(metadata) => {
+                        // Reuse only the exact requested filename. A numbered
+                        // collision name can have a different original name.
+                        if deduplicate
+                            && index == 0
+                            && matches_fingerprint(locked_target, &metadata, &fingerprint)?
+                        {
+                            return Ok(TargetResult::Reused);
+                        }
+                        return Ok(TargetResult::Occupied);
+                    }
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
                 }
-                let journal =
-                    super::upload_journal::prepare(&root, locked_target, owner_note, &fingerprint)?;
+                let journal = if path_is_inside(locked_target, &attachments_directory) {
+                    Some(super::upload_journal::prepare(
+                        &root,
+                        locked_target,
+                        owner_note,
+                        &fingerprint,
+                    )?)
+                } else {
+                    None
+                };
                 match temporary.take().unwrap().persist_noclobber(locked_target) {
                     Ok(_) => {
-                        if let Err(error) = journal.confirm() {
-                            tracing::warn!("Attachment saved; recovery confirmation failed: {error}");
+                        if let Some(journal) = journal {
+                            if let Err(error) = journal.confirm() {
+                                tracing::warn!(
+                                    "Attachment saved; recovery confirmation failed: {error}"
+                                );
+                            }
                         }
-                        Ok(true)
+                        Ok(TargetResult::Created)
                     }
                     Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
                         temporary = Some(error.file);
-                        Ok(false)
+                        Ok(TargetResult::Occupied)
                     }
                     Err(error) => Err(error.error),
                 }
-            })?;
-        if created {
-            return Ok(target);
+            },
+        )?;
+        match result {
+            TargetResult::Created => {
+                return Ok(SavedNotebookAsset {
+                    path: target.to_string_lossy().into_owned(),
+                    created: true,
+                });
+            }
+            TargetResult::Reused => {
+                return Ok(SavedNotebookAsset {
+                    path: target.to_string_lossy().into_owned(),
+                    created: false,
+                });
+            }
+            TargetResult::Occupied => {}
         }
     }
     Err(io::Error::new(
         io::ErrorKind::AlreadyExists,
-        "attachment name limit reached",
+        "notebook asset name limit reached",
     ))
+}
+
+fn existing_file_matches(
+    store: &MemoFile,
+    notebook_id: &str,
+    path: &Path,
+    fingerprint: &(String, u64),
+) -> io::Result<bool> {
+    store.with_file_write(
+        notebook_id,
+        path,
+        FileLockIntent::Create,
+        "reuse_attachment",
+        |locked_path| match fs::symlink_metadata(locked_path) {
+            Ok(metadata) => matches_fingerprint(locked_path, &metadata, fingerprint),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(false),
+            Err(error) => Err(error),
+        },
+    )
+}
+
+fn matches_fingerprint(
+    path: &Path,
+    metadata: &fs::Metadata,
+    fingerprint: &(String, u64),
+) -> io::Result<bool> {
+    if !metadata.file_type().is_file() || metadata.len() != fingerprint.1 {
+        return Ok(false);
+    }
+    let mut existing = fs::File::open(path)?;
+    Ok(super::upload_journal::fingerprint(&mut existing)? == *fingerprint)
 }
 
 pub(super) fn authorized_attachment(store: &MemoFile, source: &Path) -> io::Result<PathBuf> {

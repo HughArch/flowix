@@ -49,11 +49,11 @@ export function createAttachmentCommands(ownerPath?: string, getNotebookId?: () 
                             multiple: params?.multiple ?? true,
                         });
                         if (!paths?.length || signal.aborted) return [];
-                        return (await createAttachmentUploadFromPaths(paths, { ownerPath, notebookId, signal })).assets;
+                        return (await createAttachmentUploadFromPaths(paths, { ownerPath, notebookId, signal, deduplicate: true })).assets;
                     }
                     const files = await pickBrowserFiles(params, signal);
                     if (signal.aborted) return [];
-                    return (await createAttachmentUpload(files, undefined, undefined, ownerPath, signal)).assets;
+                    return (await createAttachmentUpload(files, undefined, undefined, ownerPath, signal, true)).assets;
                 }, undefined, params?.replaceRange, ownerPath);
                 return true;
             },

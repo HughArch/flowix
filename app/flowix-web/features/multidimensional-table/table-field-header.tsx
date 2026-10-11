@@ -275,6 +275,63 @@ export function TableFieldHeader({
     if (await onChangeType(field, type, nextOptions)) setOptionsDraft(nextOptions);
   };
 
+  const folderPathRow = <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
+    <span className="px-0.5 text-sm text-[var(--foreground)]">{t('multidimensionalTable.autoCollect.path')}</span>
+    <Popover open={folderPickerOpen} onOpenChange={setFolderPickerOpen}>
+      <PopoverTrigger asChild>
+        <button type="button" disabled={saving || !notebookPath} className="flex h-8 w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-transparent px-2 text-left text-sm disabled:opacity-50">
+          <span className="min-w-0 truncate">{autoCollectDraft.file_condition?.path_contains || t('multidimensionalTable.autoCollect.chooseFolder')}</span>
+          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
+        </button>
+      </PopoverTrigger>
+      <PopoverContent side="bottom" align="start" sideOffset={4} style={{ zIndex: 170 }} className="max-h-[min(60vh,280px)] w-[260px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+        {folderOptionsLoading ? <p className="px-2 py-2 text-xs text-[var(--muted-foreground)]">{t('multidimensionalTable.autoCollect.loadingFolders')}</p>
+          : <div className="space-y-0.5">
+            <button
+              type="button"
+              aria-pressed={!autoCollectDraft.file_condition?.path_contains}
+              onClick={() => {
+                setAutoCollectDraft((current) => ({
+                  ...current,
+                  file_condition: { file_name_contains: current.file_condition?.file_name_contains ?? '', file_type: current.file_condition?.file_type ?? '', path_contains: '' },
+                }));
+                setFolderPickerOpen(false);
+              }}
+              className={`flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-sm hover:bg-[var(--muted)] ${!autoCollectDraft.file_condition?.path_contains ? 'bg-[var(--muted)]' : ''}`}
+            >
+              <span className="flex min-w-0 flex-1 items-center gap-2 pl-2">
+                <ResourceFolderIcon expanded={false} className="h-[18px] w-[18px] shrink-0" />
+                <span className="min-w-0 truncate">{t('multidimensionalTable.autoCollect.anyFolder')}</span>
+              </span>
+            </button>
+            {folderOptions.length === 0 ? <p className="px-2 py-2 text-xs text-[var(--muted-foreground)]">{t('multidimensionalTable.autoCollect.noFolders')}</p> : folderOptions.map((option) => {
+              const segments = option.relativePath.split('/');
+              const folderName = segments[segments.length - 1] ?? option.relativePath;
+              const selected = autoCollectDraft.file_condition?.path_contains === option.relativePath;
+              return <button
+                key={option.relativePath}
+                type="button"
+                title={option.relativePath}
+                aria-pressed={selected}
+                onClick={() => {
+                  setAutoCollectDraft((current) => ({
+                    ...current,
+                    file_condition: { file_name_contains: current.file_condition?.file_name_contains ?? '', file_type: current.file_condition?.file_type ?? '', path_contains: option.relativePath },
+                  }));
+                  setFolderPickerOpen(false);
+                }}
+                className={`flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-sm hover:bg-[var(--muted)] ${selected ? 'bg-[var(--muted)]' : ''}`}
+                style={{ paddingLeft: `${8 + option.depth * 16}px` }}
+              >
+                <ResourceFolderIcon expanded={false} className="h-[18px] w-[18px] shrink-0" />
+                <span className="min-w-0 truncate">{folderName}</span>
+              </button>;
+            })}
+          </div>}
+      </PopoverContent>
+    </Popover>
+  </div>;
+
   return <Popover open={open} onOpenChange={handleOpenChange}>
     <PopoverTrigger asChild>
       <button type="button" disabled={saving} title={conditionOnly ? '管理数据集' : field.property_key ?? '笔记文档'} aria-label={conditionOnly ? '管理数据集' : `编辑属性 ${label}`} className={compact
@@ -405,6 +462,8 @@ export function TableFieldHeader({
                   }))}
                   className="flex h-7 items-center gap-1 rounded-lg px-2 text-left text-xs text-[var(--muted-foreground)] hover:bg-[var(--hover-bg)] hover:text-[var(--foreground)] disabled:opacity-50"
                 ><Plus className="h-3.5 w-3.5" aria-hidden="true" />添加条件</button>
+                <p className="agent-thread-card__codex-settings-title px-2">{t('multidimensionalTable.autoCollect.location')}</p>
+                {folderPathRow}
                 <p className="agent-thread-card__codex-settings-title px-2">{t('multidimensionalTable.autoCollect.file')}</p>
                 <div className="space-y-1">
                   <label className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
@@ -439,67 +498,14 @@ export function TableFieldHeader({
                       </SelectContent>
                     </Select>
                   </div>
-                  <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
-                    <span className="px-0.5 text-sm text-[var(--foreground)]">{t('multidimensionalTable.autoCollect.path')}</span>
-                    <Popover open={folderPickerOpen} onOpenChange={setFolderPickerOpen}>
-                      <PopoverTrigger asChild>
-                        <button type="button" disabled={saving || !notebookPath} className="flex h-8 w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-transparent px-2 text-left text-sm disabled:opacity-50">
-                          <span className="min-w-0 truncate">{autoCollectDraft.file_condition?.path_contains || t('multidimensionalTable.autoCollect.chooseFolder')}</span>
-                          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
-                        </button>
-                      </PopoverTrigger>
-                      <PopoverContent side="bottom" align="start" sideOffset={4} style={{ zIndex: 170 }} className="max-h-[min(60vh,280px)] w-[260px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-                        {folderOptionsLoading ? <p className="px-2 py-2 text-xs text-[var(--muted-foreground)]">{t('multidimensionalTable.autoCollect.loadingFolders')}</p>
-                          : <div className="space-y-0.5">
-                            <button
-                              type="button"
-                              aria-pressed={!autoCollectDraft.file_condition?.path_contains}
-                              onClick={() => {
-                                setAutoCollectDraft((current) => ({
-                                  ...current,
-                                  file_condition: { file_name_contains: current.file_condition?.file_name_contains ?? '', file_type: current.file_condition?.file_type ?? '', path_contains: '' },
-                                }));
-                                setFolderPickerOpen(false);
-                              }}
-                              className={`flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-sm hover:bg-[var(--muted)] ${!autoCollectDraft.file_condition?.path_contains ? 'bg-[var(--muted)]' : ''}`}
-                            >
-                              <span className="flex min-w-0 flex-1 items-center gap-2 pl-2">
-                                <ResourceFolderIcon expanded={false} className="h-[18px] w-[18px] shrink-0" />
-                                <span className="min-w-0 truncate">{t('multidimensionalTable.autoCollect.anyFolder')}</span>
-                              </span>
-                            </button>
-                            {folderOptions.length === 0 ? <p className="px-2 py-2 text-xs text-[var(--muted-foreground)]">{t('multidimensionalTable.autoCollect.noFolders')}</p> : folderOptions.map((option) => {
-                              const segments = option.relativePath.split('/');
-                              const folderName = segments[segments.length - 1] ?? option.relativePath;
-                              const selected = autoCollectDraft.file_condition?.path_contains === option.relativePath;
-                              return <button
-                                key={option.relativePath}
-                                type="button"
-                                title={option.relativePath}
-                                aria-pressed={selected}
-                                onClick={() => {
-                                  setAutoCollectDraft((current) => ({
-                                    ...current,
-                                    file_condition: { file_name_contains: current.file_condition?.file_name_contains ?? '', file_type: current.file_condition?.file_type ?? '', path_contains: option.relativePath },
-                                  }));
-                                  setFolderPickerOpen(false);
-                                }}
-                                className={`flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-sm hover:bg-[var(--muted)] ${selected ? 'bg-[var(--muted)]' : ''}`}
-                                style={{ paddingLeft: `${8 + option.depth * 16}px` }}
-                              >
-                                <ResourceFolderIcon expanded={false} className="h-[18px] w-[18px] shrink-0" />
-                                <span className="min-w-0 truncate">{folderName}</span>
-                              </button>;
-                            })}
-                          </div>}
-                      </PopoverContent>
-                    </Popover>
-                  </div>
                 </div>
             </div>
-            {showAutoCollect && <div className="mt-2 mx-2"><button type="button" disabled={saving} className="flex h-8 w-full items-center justify-center rounded-lg border border-[var(--border)] bg-white text-sm text-gray-900 hover:bg-gray-100 disabled:opacity-50" onClick={async () => {
-              if (await onSaveAutoCollect(field, resolveAutoCollectCondition(autoCollectDraft, autoCollectFields))) closeMenu();
-            }}>应用</button></div>}
+            {showAutoCollect && <div className="mt-2 mx-2 flex gap-2">
+              <button type="button" disabled={saving} className="flex h-8 flex-1 items-center justify-center rounded-lg border border-[var(--border)] bg-transparent text-sm text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-50" onClick={() => setAutoCollectDraft(readAutoCollectCondition(field, autoCollectFields, null))}>{t('multidimensionalTable.autoCollect.reset')}</button>
+              <button type="button" disabled={saving} className="flex h-8 flex-1 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] text-sm text-[var(--foreground)] hover:bg-[var(--muted)] disabled:opacity-50" onClick={async () => {
+                if (await onSaveAutoCollect(field, resolveAutoCollectCondition(autoCollectDraft, autoCollectFields))) closeMenu();
+              }}>应用</button>
+            </div>}
           </PopoverContent>
         </Popover>}
         {conditionOnly && conditionPanelContent}

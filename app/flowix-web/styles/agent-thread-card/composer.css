@@ -161,7 +161,8 @@
   padding: 0;
   line-height: 1.25;
 }
-.agent-background-terminals__queue-row span:last-child {
+.agent-background-terminals__queue-text {
+  flex: 1 1 auto;
   min-width: 0;
   overflow: hidden;
   color: var(--foreground);
@@ -169,8 +170,61 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.agent-background-terminals__queue-mark { display: inline-flex; flex: 0 0 auto; color: var(--primary); }
-.agent-background-terminals__queue-mark svg { display: block; width: 0.75rem; height: 0.75rem; }
+.agent-background-terminals__queue-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--primary);
+}
+.agent-background-terminals__queue-mark svg {
+  display: block;
+  width: 0.75rem;
+  height: 0.75rem;
+}
+.agent-background-terminals__queue-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.6rem;
+  margin-left: auto;
+}
+.agent-background-terminals__queue-steer,
+.agent-background-terminals__queue-delete {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  height: 1.32rem;
+  border-radius: 0.3rem;
+  padding: 0 0.4rem;
+  font-size: 0.7rem;
+  line-height: 1;
+  color: var(--primary);
+  background: color-mix(in srgb, var(--primary) 10%, transparent);
+}
+.agent-background-terminals__queue-steer:hover,
+.agent-background-terminals__queue-delete:hover {
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+}
+.agent-background-terminals__queue-steer:focus-visible,
+.agent-background-terminals__queue-delete:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.agent-background-terminals__queue-delete {
+  display: inline-flex;
+  width: 1.32rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+}
+.agent-background-terminals__queue-delete svg {
+  display: block;
+  width: 0.875rem;
+  height: 0.875rem;
+}
+.agent-background-terminals__queue-soon {
+  flex: 0 0 auto;
+  color: var(--primary);
+  font-size: 0.7rem;
+}
 .agent-thread-card__queued-messages { margin: 0 0 -1.15rem; }
 
 /* Approval uses the same process strip and the same composer stack slot. The

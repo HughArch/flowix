@@ -48,29 +48,29 @@ export function formatDateTime(
 export function displayTitleFromFilename(filename: string | null | undefined): string {
   if (!filename) return '';
   const basename = filename.split(/[\\/]/).pop() ?? filename;
-  return basename.replace(/\.(md|markdown)$/i, '').replace(/\.(table|lib)\.ya?ml$/i, '');
+  return basename.replace(/\.(md|markdown)$/i, '').replace(/\.(table|lib)\.ya?ml$/i, '').replace(/\.index\.yaml$/i, '');
 }
 
 export function isTableDocumentFilename(filename: string | null | undefined): boolean {
   if (!filename) return false;
   const basename = filename.split(/[\\/]/).pop() ?? filename;
-  return /\.table\.ya?ml$/i.test(basename);
+  return /\.table\.ya?ml$/i.test(basename) || /\.index\.yaml$/i.test(basename);
 }
 
 export function isMediaLibraryFilename(filename: string | null | undefined): boolean {
   if (!filename) return false;
   const basename = filename.split(/[\\/]/).pop() ?? filename;
-  return /\.lib\.ya?ml$/i.test(basename);
+  return /\.lib\.ya?ml$/i.test(basename) || /\.index\.yaml$/i.test(basename);
 }
 
 export function mediaLibraryExtension(filename: string | null | undefined): string {
   if (!filename) return '';
   const basename = filename.split(/[\\/]/).pop() ?? filename;
-  return basename.match(/\.lib\.ya?ml$/i)?.[0] ?? '';
+  return basename.match(/\.lib\.ya?ml$/i)?.[0] ?? basename.match(/\.index\.yaml$/i)?.[0] ?? '';
 }
 
 export function tableDocumentExtension(filename: string | null | undefined): string {
   if (!filename) return '';
   const basename = filename.split(/[\\/]/).pop() ?? filename;
-  return basename.match(/\.table\.ya?ml$/i)?.[0] ?? '';
+  return basename.match(/\.table\.ya?ml$/i)?.[0] ?? basename.match(/\.index\.yaml$/i)?.[0] ?? '';
 }

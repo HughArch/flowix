@@ -55,6 +55,15 @@ export function parentDirectoryPath(filePath: string, notebookPath: string): str
   return canonicalDirectoryPath(parent || notebookPath);
 }
 
+/** Returns a directory path relative to the notebook root, or null when outside it. */
+export function notebookRelativeDirectoryPath(notebookPath: string, directoryPath: string): string | null {
+  const root = canonicalDirectoryPath(notebookPath);
+  const directory = canonicalDirectoryPath(directoryPath);
+  if (directory === root) return '';
+  const rootPrefix = root === '/' ? '/' : `${root}/`;
+  return directory.startsWith(rootPrefix) ? directory.slice(rootPrefix.length) : null;
+}
+
 export function samePath(left: string, right: string): boolean {
   return canonicalPath(left) === canonicalPath(right);
 }

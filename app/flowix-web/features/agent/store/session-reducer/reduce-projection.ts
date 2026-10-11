@@ -101,7 +101,7 @@ function applyUserMessageToProjection(
     attachments: event.attachments,
     // Codex turn ids and Pi session message ids let provider-backed user rows
     // adopt their optimistic row in place.
-    optimisticId: event.codexTurnId || event.agentType === "pi"
+    optimisticId: event.codexTurnId || (event.agentType === "pi" && !event.clientUserMessageId)
       ? completedRunUserMessageId(event.agentType, event.runId)
       : undefined,
   });

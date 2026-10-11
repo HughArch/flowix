@@ -210,7 +210,7 @@ export function AgentPluginWorkbench({
             const isCheckbox = field.type === 'checkbox';
             return (
               <div key={field.id} className="flex flex-col gap-2">
-                {!isCheckbox && <label className="text-sm font-medium text-[var(--foreground)]" htmlFor={id}>{pluginFieldLabel(field)}{field.required && <span className="ml-1 text-red-500">*</span>}</label>}
+                {!isCheckbox && <label className="text-sm font-medium text-[var(--foreground)]" htmlFor={id}>{pluginFieldLabel(field)}{field.required && <span className="ml-1 text-[var(--destructive)]">*</span>}</label>}
                 <PluginFieldControl
                   field={field}
                   value={values[field.id]}
@@ -222,12 +222,12 @@ export function AgentPluginWorkbench({
               </div>
             );
           })}
-          <button disabled={!canGenerate} onClick={() => void handleGenerate()} className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-medium text-white disabled:cursor-not-allowed disabled:opacity-50">
+          <button disabled={!canGenerate} onClick={() => void handleGenerate()} className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-medium text-[var(--primary-foreground)] disabled:cursor-not-allowed disabled:opacity-50">
             {running ? <SpinnerIcon size={16} weight="bold" className="animate-spin" /> : <MagicWandIcon size={16} weight="bold" />}
             {running ? '生成中…' : runStatus === 'completed' ? '重新生成' : '生成插件产物'}
           </button>
           {missingRequiredField && <p className="text-xs text-[var(--muted-foreground)]">请填写必填项：{pluginFieldLabel(missingRequiredField)}</p>}
-          {error && <p className="rounded-lg bg-red-500/10 p-3 text-xs text-red-600">{error}</p>}
+          {error && <p className="rounded-lg bg-[color-mix(in_oklch,var(--destructive)_10%,transparent)] p-3 text-xs text-[var(--destructive)]">{error}</p>}
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-hidden">

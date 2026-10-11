@@ -35,5 +35,5 @@ const piPackage = JSON.parse(await readFile(path.join(repoRoot, 'node_modules/@e
 if (piPackage.version !== piAiVersion) throw new Error(`Installed pi-ai ${piPackage.version} does not match locked ${piAiVersion}`)
 
 await mkdir(path.dirname(outputPath), { recursive: true })
-await writeFile(outputPath, `${JSON.stringify({ piVersion: '1.0.3', piAiVersion, apis, providers }, null, 2)}\n`)
+await writeFile(outputPath, `${JSON.stringify({ piVersion: '1.1.0', piAiVersion, apis, providers }, null, 2)}\n`)
 process.stdout.write(`Generated ${path.relative(repoRoot, outputPath)} (${providers.length} providers, ${apis.length} APIs).\n`)

@@ -47,7 +47,7 @@ impl FileManagementPolicy {
     }
 
     pub fn is_locked_name(name: &str) -> bool {
-        matches!(name, ".flowix" | ".plugin-output")
+        matches!(name, ".flowix" | ".plugin-output") || name.eq_ignore_ascii_case(".index.yaml")
     }
 
     pub fn has_hidden_attribute(path: &Path) -> bool {

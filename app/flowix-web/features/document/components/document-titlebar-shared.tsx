@@ -112,6 +112,10 @@ export interface DocumentTitlebarProps {
     onRevealInFileManager: () => void;
     onRequestDelete: () => void;
   };
+  folderCollectionViewType?: {
+    current: 'table' | 'media_library';
+    onSelect: (type: 'table' | 'media_library') => void;
+  };
 }
 
 const AGENT_THREAD_CARD_FULLSCREEN_CHANGE_EVENT =
@@ -173,6 +177,7 @@ export function ExternalDocumentActions({
   canExportContent,
   canSaveAsTemplate,
   canViewVersionHistory,
+  folderCollectionViewType,
 }: {
   filePath: string;
   iconButtonClass: string;
@@ -188,6 +193,7 @@ export function ExternalDocumentActions({
   canExportContent: boolean;
   canSaveAsTemplate: boolean;
   canViewVersionHistory: boolean;
+  folderCollectionViewType?: DocumentTitlebarProps['folderCollectionViewType'];
 }) {
   const { t, language } = useI18n();
   const indexable = useDocumentStore((state) => state.activeExternalSession?.indexable ?? false);
@@ -196,6 +202,7 @@ export function ExternalDocumentActions({
     note.notebookId === session?.notebookId && note.relativePath === session?.relativePath));
   const [fileColors, setFileColors] = useState<NoteColor[]>([]);
   const [confirmDelete, setConfirmDelete] = useState(false);
+  const [pendingViewType, setPendingViewType] = useState<'table' | 'media_library' | null>(null);
   const [confirmVersion, setConfirmVersion] = useState<VersionDisplay | null>(null);
   const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
   const [versionRefreshKey, setVersionRefreshKey] = useState(0);
@@ -283,7 +290,17 @@ export function ExternalDocumentActions({
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent align="end" className="w-[200px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-        <EditorFontSwitcher fontMode={fontSwitch.fontMode} downloadingMode={fontSwitch.downloadingMode} percent={fontSwitch.percent} onSelect={fontSwitch.selectFontMode} />
+        {folderCollectionViewType ? (
+          <>
+            <div className="shrink-0 px-2 py-1 text-xs font-normal uppercase tracking-wider text-[var(--muted-foreground)]">视图类型</div>
+            {([['table', '多维表格'], ['media_library', '媒体库']] as const).map(([type, label]) => (
+              <DropdownMenuItem key={type} onClick={() => { if (type !== folderCollectionViewType.current) setPendingViewType(type); }} className={itemClass}>
+                <span className="flex-1">{label}</span>
+                {folderCollectionViewType.current === type && <Check className="h-4 w-4" aria-hidden="true" />}
+              </DropdownMenuItem>
+            ))}
+          </>
+        ) : <EditorFontSwitcher fontMode={fontSwitch.fontMode} downloadingMode={fontSwitch.downloadingMode} percent={fontSwitch.percent} onSelect={fontSwitch.selectFontMode} />}
         <DropdownMenuItem onClick={onCopyPath} className={itemClass}>
           <LinkSimpleIcon className="mr-2 h-4 w-4" /> {t('memo.fileTree.copyPath')}
         </DropdownMenuItem>
@@ -354,6 +371,22 @@ export function ExternalDocumentActions({
           <TrashSimpleIcon className="mr-2 h-4 w-4" /> {t(indexable ? 'memo.delete.confirm' : 'document.external.deleteFile')}
         </DropdownMenuItem>
       </DropdownMenuContent>
+      <Dialog open={pendingViewType !== null} onOpenChange={(open) => { if (!open) setPendingViewType(null); }}>
+        <DialogContent>
+          <DialogHeader>
+            <DialogTitle>是否确认切换？</DialogTitle>
+            <DialogDescription>切换后，当前集合的展示规则会重置</DialogDescription>
+          </DialogHeader>
+          <div className="mt-4 flex justify-end gap-2">
+            <button type="button" onClick={() => setPendingViewType(null)} className="h-8 rounded-lg px-3 text-sm hover:bg-[var(--muted)]">{t('dialog.cancel')}</button>
+            <button type="button" onClick={() => {
+              const type = pendingViewType;
+              setPendingViewType(null);
+              if (type) folderCollectionViewType?.onSelect(type);
+            }} className="h-8 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm hover:bg-[var(--muted)]">确认切换</button>
+          </div>
+        </DialogContent>
+      </Dialog>
       <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <DialogContent>
           <DialogHeader>

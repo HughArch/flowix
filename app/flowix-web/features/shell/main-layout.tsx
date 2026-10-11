@@ -41,6 +41,8 @@ import {
   type DshDownloadProgress,
 } from '@platform/tauri/client';
 import { files } from '@platform/tauri/client/desktop';
+import { switchFolderCollectionType } from '@features/collection/folder-collection';
+import { openCollectionTarget } from '@features/workspace/use-cases/workspace-navigation';
 import { WindowsTitlebarControls } from '@shared/window-titlebar-controls';
 import { NotebookDeleteDialog } from '@features/shell/components/notebook-delete-dialog';
 import { ExternalFileDropOverlay } from '@features/shell/components/drag-overlay/external-file-drop-overlay';
@@ -611,6 +613,20 @@ export function MainLayout({
       onRevealInFileManager: handleRevealMedia,
       onRequestDelete: handleRequestDeleteMedia,
     } : undefined,
+    folderCollectionViewType: navigationState.target.kind === 'collection'
+      && navigationState.target.filePath.endsWith('/.index.yaml')
+      && navigationState.target.notebookId
+      ? {
+          current: navigationState.target.collectionType,
+          onSelect: (type: 'table' | 'media_library') => {
+            const target = navigationState.target;
+            if (target.kind !== 'collection' || target.collectionType === type) return;
+            void switchFolderCollectionType(target.filePath, target.notebookPath, type)
+              .then((collectionId) => openCollectionTarget({ notebookId: target.notebookId, collectionId, viewId: null }, { destination: 'main-third', history: 'skip' }))
+              .catch((error) => { toast.error(error instanceof Error ? error.message : '切换视图类型失败'); });
+          },
+        }
+      : undefined,
   };
 
   return (

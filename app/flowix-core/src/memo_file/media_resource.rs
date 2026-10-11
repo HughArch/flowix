@@ -328,6 +328,7 @@ impl MemoFile {
         kinds: &[MediaResourceKind],
         cursor: Option<(i64, String)>,
         limit: usize,
+        folder_scope: Option<(String, bool)>,
     ) -> std::io::Result<MediaResourcePage> {
         let conn = self.open_notebook_db(notebook_id)?;
         let kind_filter = match kinds {
@@ -336,19 +337,37 @@ impl MemoFile {
             [MediaResourceKind::Video] => " AND kind = 'video'".to_owned(),
             _ => " AND kind IN ('image', 'video')".to_owned(),
         };
-        let cursor_filter = if cursor.is_some() {
-            " AND (created_at < ?2 OR (created_at = ?2 AND id < ?3))"
-        } else {
-            ""
-        };
+        let mut values = vec![rusqlite::types::Value::Text(notebook_id.to_owned())];
+        let mut where_extra = String::new();
+        if let Some((folder, descendants)) = folder_scope {
+            let folder = folder.trim_matches('/');
+            if folder.is_empty() {
+                if !descendants { where_extra.push_str(" AND instr(relative_path, '/') = 0"); }
+            } else {
+                let prefix = format!("{folder}/");
+                values.push(rusqlite::types::Value::Text(prefix.clone()));
+                values.push(rusqlite::types::Value::Text(prefix.clone()));
+                where_extra.push_str(&format!(" AND substr(relative_path, 1, length(?{})) = ?{}", values.len() - 1, values.len()));
+                if !descendants {
+                    values.push(rusqlite::types::Value::Text(prefix));
+                    where_extra.push_str(&format!(" AND instr(substr(relative_path, length(?{}) + 1), '/') = 0", values.len()));
+                }
+            }
+        }
+        if let Some((created_at, id)) = cursor {
+            values.push(rusqlite::types::Value::Integer(created_at));
+            values.push(rusqlite::types::Value::Text(id));
+            where_extra.push_str(&format!(" AND (created_at < ?{} OR (created_at = ?{} AND id < ?{}))", values.len() - 1, values.len() - 1, values.len()));
+        }
         let limit = limit.clamp(1, 120).saturating_add(1) as i64;
+        values.push(rusqlite::types::Value::Integer(limit));
         let sql = format!(
             "SELECT id, notebook_id, relative_path, kind, size_bytes, modified_ms,
                     fingerprint, properties, properties_revision, created_at, updated_at
              FROM media_resources
-             WHERE notebook_id = ?1 AND deleted_at IS NULL AND missing_since IS NULL{kind_filter}{cursor_filter}
-             ORDER BY created_at DESC, id DESC LIMIT ?{limit_param}",
-            limit_param = if cursor.is_some() { 4 } else { 2 },
+             WHERE notebook_id = ?1 AND deleted_at IS NULL AND missing_since IS NULL{kind_filter}{where_extra}
+             ORDER BY created_at DESC, id DESC LIMIT ?{}",
+            values.len(),
         );
         let mut statement = conn.prepare(&sql).map_err(sqlite_to_io)?;
         let decode_row = |row: &rusqlite::Row<'_>| -> rusqlite::Result<MediaResource> {
@@ -368,17 +387,10 @@ impl MemoFile {
                 updated_at: row.get(10)?,
             })
         };
-        let mut resources = if let Some((created_at, id)) = cursor {
-            statement.query_map(params![notebook_id, created_at, id, limit], decode_row)
-                .map_err(sqlite_to_io)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(sqlite_to_io)?
-        } else {
-            statement.query_map(params![notebook_id, limit], decode_row)
-                .map_err(sqlite_to_io)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(sqlite_to_io)?
-        };
+        let mut resources = statement.query_map(rusqlite::params_from_iter(values.iter()), decode_row)
+            .map_err(sqlite_to_io)?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(sqlite_to_io)?;
         let has_more = resources.len() > limit as usize - 1;
         if has_more { resources.pop(); }
         let next_cursor = has_more.then(|| resources.last()).flatten()

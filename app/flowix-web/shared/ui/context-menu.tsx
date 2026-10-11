@@ -315,11 +315,20 @@ function ContextMenuSubmenu({
 
 	const alignToTrigger = React.useCallback((trigger: HTMLButtonElement) => {
 		const rect = trigger.getBoundingClientRect();
-		const width = 176;
+		const width = Math.min(176, Math.max(0, window.innerWidth - 8));
+		const submenu = submenuRef.current;
+		const maxHeight = Math.max(0, window.innerHeight - 8);
+		if (submenu) {
+			submenu.style.width = `${width}px`;
+			submenu.style.maxWidth = `${width}px`;
+			submenu.style.maxHeight = `${maxHeight}px`;
+			submenu.style.overflowY = 'auto';
+		}
+		const height = Math.min(submenu?.scrollHeight ?? 220, maxHeight);
 		const left = window.innerWidth - rect.right < width + 4
 			? Math.max(4, rect.left - width)
-			: rect.right;
-		const top = Math.max(4, Math.min(rect.top, window.innerHeight - 68));
+			: Math.min(rect.right, window.innerWidth - width - 4);
+		const top = Math.max(4, Math.min(rect.top, window.innerHeight - height - 4));
 		setPosition((current) => current?.left === left && current.top === top ? current : { left, top });
 	}, []);
 	const show = (trigger: HTMLButtonElement) => {

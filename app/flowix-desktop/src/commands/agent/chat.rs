@@ -109,7 +109,8 @@ pub async fn chat_with_agent_stream(
     // 不再 await 整个 stream 跑完。真正的助手回答通过 `agent-chunk` 事件
     // (`Text` / `Reasoning` 变体) 推到前端, 按 `thread_id` 派发到
     // `threadStates[tid]`。
-    let result = state.external_runtimes
+    let result = state
+        .external_runtimes
         .dispatch_chat(&threadId, runtime, message, &app_handle)
         .await;
     tracing::info!(
@@ -127,6 +128,7 @@ pub async fn steer_agent_stream(
     threadId: String,
     message: AgentUserMessage,
     clientUserMessageId: String,
+    deliveryMode: Option<String>,
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
@@ -143,11 +145,119 @@ pub async fn steer_agent_stream(
                 .steer_deepseek_harness(&threadId, message, clientUserMessageId, &app_handle)
                 .await
         }
+        Some("pi") => {
+            let delivery = deliveryMode.as_deref().unwrap_or("steer");
+            state
+                .external_runtimes
+                .queue_pi_message(&threadId, message, clientUserMessageId, delivery)
+                .await
+        }
         other => Err(format!(
             "turn/steer is not supported for agent type {}",
             other.unwrap_or("<missing>")
         )),
     }
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn promote_pi_follow_up_to_steer(
+    threadId: String,
+    clientUserMessageId: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .external_runtimes
+        .promote_pi_follow_up(&threadId, &clientUserMessageId)
+        .await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn delete_pi_queued_message(
+    threadId: String,
+    clientUserMessageId: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .external_runtimes
+        .delete_pi_queued_message(&threadId, &clientUserMessageId)
+        .await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn queue_codex_follow_up(
+    threadId: String,
+    message: AgentUserMessage,
+    clientUserMessageId: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    state
+        .external_runtimes
+        .queue_codex_follow_up(&threadId, message, clientUserMessageId, &app_handle)
+        .await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn list_codex_follow_ups(
+    threadId: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    state
+        .external_runtimes
+        .list_codex_follow_ups(&threadId)
+        .await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn restore_codex_follow_ups(
+    threadId: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<serde_json::Value, String> {
+    state
+        .external_runtimes
+        .restore_codex_follow_ups(&threadId, &app_handle)
+        .await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn delete_codex_follow_up(
+    threadId: String,
+    queuedSubmissionId: String,
+    state: State<'_, AppState>,
+) -> Result<serde_json::Value, String> {
+    state
+        .external_runtimes
+        .delete_codex_follow_up(&threadId, &queuedSubmissionId)
+        .await
+}
+
+#[tauri::command]
+#[allow(non_snake_case)]
+pub async fn deliver_codex_follow_up_now(
+    threadId: String,
+    queuedSubmissionId: String,
+    message: AgentUserMessage,
+    clientUserMessageId: String,
+    state: State<'_, AppState>,
+    app_handle: tauri::AppHandle,
+) -> Result<(), String> {
+    state
+        .external_runtimes
+        .deliver_codex_follow_up_now(
+            &threadId,
+            &queuedSubmissionId,
+            message,
+            clientUserMessageId,
+            &app_handle,
+        )
+        .await
 }
 
 /// Execute a DeepSeek Harness human slash command. This is deliberately a
@@ -162,7 +272,10 @@ pub async fn execute_deepseek_harness_command(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
-    state.external_runtimes.ensure_thread_writable(&threadId).await?;
+    state
+        .external_runtimes
+        .ensure_thread_writable(&threadId)
+        .await?;
     if !matches!(
         message.agent_type.as_deref(),
         Some("deepseek-harness") | Some("deepseek_harness") | Some("dsh") | None

@@ -107,7 +107,7 @@ function ArtifactToolWorkbench({
             </div>
           </div>
 
-          {error && <p className="rounded-lg bg-red-500/10 p-3 text-sm text-red-600">{error}</p>}
+          {error && <p className="rounded-lg bg-[color-mix(in_oklch,var(--destructive)_10%,transparent)] p-3 text-sm text-[var(--destructive)]">{error}</p>}
 
           <section>
             <div className="mb-2 flex items-center justify-between">

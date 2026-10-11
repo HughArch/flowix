@@ -1,6 +1,7 @@
 import type { AgentTypeKey } from "@/types/agent";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
 import { useAgentRuntimeStore } from "@features/agent/store/agent-runtime-store";
+import { useAgentAccessStore } from "@features/agent/store/agent-access-store";
 import type { ThreadProjection } from "@features/agent/store/session-reducer";
 import {
   isLocalExternalThreadId,
@@ -43,6 +44,7 @@ export class AgentThreadCardSubscriptionsController {
       this.subscribeThreadState(),
       this.subscribeTitle(),
       this.subscribeSettings(),
+      this.subscribeAgentAccess(),
       ...this.subscribeConversation(),
       this.subscribeRuntime(),
     ];
@@ -222,6 +224,23 @@ export class AgentThreadCardSubscriptionsController {
   private subscribeRuntime(): Unsubscribe {
     return useAgentRuntimeStore.subscribe(() => {
       this.options.syncRuntimeBadge();
+    });
+  }
+
+  private subscribeAgentAccess(): Unsubscribe {
+    return useAgentAccessStore.subscribe((state, previous) => {
+      if (
+        state.config.defaults?.runtime?.pi?.piCodeMode ===
+        previous.config.defaults?.runtime?.pi?.piCodeMode
+      ) {
+        return;
+      }
+      if (this.options.getTypeKey() !== "pi") return;
+      this.options.refreshAttrs();
+      this.options.refreshExternalAgentEmptySettings();
+      if (this.options.isExternalSettingsOpen()) {
+        this.options.renderCodexSettingsPopover();
+      }
     });
   }
 }

@@ -15,6 +15,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Field, SectionHeader, FIELD_INPUT_CLASS } from '@features/preferences/sections/primitives';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
+import { useAgentAccessStore } from '@features/agent/store/agent-access-store';
 
 type Draft = Omit<PiProviderConfig, 'credentialConfigured'>;
 const CUSTOM_PROVIDER = '__pi_custom_provider__';
@@ -89,24 +90,47 @@ export function PiSettingsSection() {
   const [providerCatalog, setProviderCatalog] = useState<PiModelCatalog | null>(null);
   const [providerCatalogError, setProviderCatalogError] = useState<string | null>(null);
   const [features, setFeatures] = useState({ codeMode: false, toolSearch: false });
+  const codeMode = useAgentAccessStore((state) =>
+    state.config.defaults?.runtime?.pi?.piCodeMode ?? false,
+  );
+  const agentAccessLoaded = useAgentAccessStore((state) => state.hasLoaded);
   const [featuresLoading, setFeaturesLoading] = useState(true);
   const [featuresSaving, setFeaturesSaving] = useState(false);
   const [featuresError, setFeaturesError] = useState<string | null>(null);
   useEffect(() => {
     let cancelled = false;
     void piModels.getFeatures()
-      .then((value) => { if (!cancelled) setFeatures(value); })
+      .then((value) => {
+        if (cancelled) return;
+        setFeatures(value);
+      })
       .catch((error) => {
         if (!cancelled) setFeaturesError(error instanceof Error ? error.message : String(error));
       })
       .finally(() => { if (!cancelled) setFeaturesLoading(false); });
     return () => { cancelled = true; };
   }, []);
+  useEffect(() => {
+    if (!agentAccessLoaded || featuresLoading || !features.codeMode) return;
+    const savedMode = useAgentAccessStore.getState().config.defaults
+      ?.runtime?.pi?.piCodeMode;
+    // Migrate the old Pi-only preference only after agent-access hydration;
+    // otherwise its late initial read could overwrite a user's new selection.
+    if (savedMode === undefined) {
+      void useAgentAccessStore.getState().setDefaultRuntime('pi', {
+        piCodeMode: true,
+      });
+    }
+  }, [agentAccessLoaded, featuresLoading, features.codeMode]);
   const setFeature = async (key: 'codeMode' | 'toolSearch', value: boolean) => {
+    if (key === 'codeMode') {
+      await useAgentAccessStore.getState().setDefaultRuntime('pi', { piCodeMode: value });
+      return;
+    }
     const next = { ...features, [key]: value };
     setFeatures(next);
     setFeaturesSaving(true);
-    try { await piModels.saveFeatures(next); }
+    try { await piModels.saveFeatures({ ...next, codeMode }); }
     catch (error) {
       setFeatures(features);
       toast.error(error instanceof Error ? error.message : String(error));
@@ -446,7 +470,7 @@ export function PiSettingsSection() {
         <div className="space-y-2">
           {featuresError && <p role="alert" className="text-xs text-[var(--destructive)]">{featuresError}</p>}
           {([
-            ['codeMode', t('preferences.pi.codeModeUnavailable')],
+            ['codeMode', t('preferences.pi.codeMode')],
             ['toolSearch', t('preferences.pi.toolSearch')],
           ] as const).map(([key, label]) => (
             <div key={key} className="flex items-center justify-between gap-3 rounded-xl border border-[var(--divider)] bg-[var(--card)] p-3 text-sm">
@@ -455,12 +479,12 @@ export function PiSettingsSection() {
                 type="button"
                 role="switch"
                 aria-label={label}
-                aria-checked={features[key]}
-                disabled={key === 'codeMode' || featuresLoading || featuresSaving || Boolean(featuresError)}
-                onClick={() => void setFeature(key, !features[key])}
-                className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${features[key] ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'}`}
+                aria-checked={key === 'codeMode' ? codeMode : features[key]}
+                disabled={key === 'toolSearch' && (featuresLoading || featuresSaving || Boolean(featuresError))}
+                onClick={() => void setFeature(key, !(key === 'codeMode' ? codeMode : features[key]))}
+                className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${(key === 'codeMode' ? codeMode : features[key]) ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'}`}
               >
-                <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-[var(--card)] shadow-sm transition-transform ${features[key] ? 'translate-x-4' : 'translate-x-0'}`} />
+                <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-[var(--card)] shadow-sm transition-transform ${(key === 'codeMode' ? codeMode : features[key]) ? 'translate-x-4' : 'translate-x-0'}`} />
               </button>
             </div>
           ))}

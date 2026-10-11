@@ -75,6 +75,7 @@ export async function dispatchChatStream({
     codexReasoningEffort,
     instanceRuntimeConfig,
     defaultFiles,
+    piCodeMode: accessState.config.defaults?.runtime?.pi?.piCodeMode,
     workspaceSnapshot,
   });
   if (instanceId) markConversationWorkspaceStarted(instanceId);

@@ -211,8 +211,8 @@ function TableReferencePicker({ editor, replaceRange, anchor, generation, prefer
       if (document.collection.id !== candidate.collectionId) {
         throw new Error('表格文件已更新，请重新打开选择器后选择');
       }
-      const view = document.table.views.find((entry) => entry.type === preferredViewType)
-        ?? document.table.views[0];
+      const view = document.views.items.find((entry) => entry.layout === preferredViewType)
+        ?? document.views.items[0];
       if (!view) throw new Error('多维表格没有可用视图');
       attachReference(candidate, document.collection.id, view.id);
     } catch (error) {
@@ -252,7 +252,7 @@ function TableReferencePicker({ editor, replaceRange, anchor, generation, prefer
         relativePath: created.relativePath,
         collectionId: created.table.collection.id,
         name: created.name,
-      }, created.table.collection.id, created.table.table.views[0]?.id ?? null);
+      }, created.table.collection.id, created.table.views.items[0]?.id ?? null);
     } catch (error) {
       if (!isCurrentPicker(generation)) return;
       toast.error(error instanceof Error ? error.message : '创建多维表格失败');

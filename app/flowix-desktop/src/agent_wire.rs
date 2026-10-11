@@ -55,6 +55,8 @@ pub struct RuntimePathConfig {
     pub reasoning_effort: Option<String>,
     /// DeepSeek Harness conversation preset: standard / code / minimal / cordis.
     pub mode: Option<String>,
+    /// Pi builtin codemode extension toggle.
+    pub code_mode: Option<bool>,
 }
 
 #[derive(Serialize, Deserialize, Clone, Default)]
@@ -225,6 +227,11 @@ impl AgentUserMessage {
     pub fn mode_for_runtime(&self, runtime: &str) -> Option<&str> {
         self.runtime_config_for(runtime)
             .and_then(|config| config.mode.as_deref())
+    }
+
+    pub fn code_mode_for_runtime(&self, runtime: &str) -> Option<bool> {
+        self.runtime_config_for(runtime)
+            .and_then(|config| config.code_mode)
     }
 }
 

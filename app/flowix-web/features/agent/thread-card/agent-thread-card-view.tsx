@@ -10,6 +10,7 @@ import {
   type ThreadState,
 } from "@features/agent/store/thread-runtime-state";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
+import { canActOnQueuedMessage } from "@features/agent/store/follow-up-queue-slice";
 import { acquireThreadInterest } from "@features/agent/store/thread-interest";
 import type { ThreadProjection } from "@features/agent/store/session-reducer";
 import { selectRenderableThreadMessages } from "@features/agent/store/thread-render-messages";
@@ -49,6 +50,7 @@ import {
 import {
   createArrowBendDownRightIcon,
   createFullscreenIcon,
+  createTrashSimpleIcon,
 } from "@features/agent/thread-card/agent-thread-card-icons";
 import { createAgentThreadCardDom } from "@features/agent/thread-card/view/agent-thread-card-dom-factory";
 import { AgentThreadCardChromeController } from "@features/agent/thread-card/chrome";
@@ -158,6 +160,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
   // 反馈保持一致。
   private loadingIndicator: HTMLDivElement;
   private queuedMessages: HTMLDivElement;
+  private hydratedCodexQueueThreadId: string | null = null;
   private collapseButton: HTMLButtonElement;
   private deleteButton: HTMLButtonElement;
   private fullscreenButton: HTMLButtonElement;
@@ -574,13 +577,15 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
         // termination control back into Send.
         if (runtime.isCodexCommandStoppable) return true;
         return runtime.isModelRunning && runtime.status !== "stopping" &&
-          !((this.typeKey === "codex" || this.typeKey === "deepseek-harness") &&
-            !!this.composerController?.getPrompt().trim());
+          !((this.typeKey === "codex" || this.typeKey === "deepseek-harness" || this.typeKey === "pi") &&
+            (!!this.composerController?.getPrompt().trim() || this.composerImages.hasImages));
       },
       getSendButtonRunning: () => {
         const runtime = this.currentRuntimeView();
+        const hasDraft = !!this.composerController?.getPrompt().trim() || this.composerImages.hasImages;
         return runtime.status === "stopping" || runtime.isDshCommandRunning ||
-          (runtime.isCodexCommandRunning && !runtime.isCodexCommandStoppable);
+          (runtime.isCodexCommandRunning && !runtime.isCodexCommandStoppable) ||
+          (this.typeKey === "codex" && runtime.isModelRunning && !hasDraft);
       },
       getHasAttachments: () => this.composerImages.hasImages,
       getHasPendingAttachments: () => this.composerImages.hasPending,
@@ -1498,10 +1503,15 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       !!this.threadId,
     );
 
-    // 输入框运行期不再 disabled ── Codex 可以继续输入并转入串行队列；
-    // 其它 agent 仍在 submit() 中等待当前运行结束。空输入时 send 按钮
-    // 继续显示 stop，已有输入时切换为 send。
+    // 运行中仍可输入并排队 Follow-up。Codex 空输入时显示运行中按钮
+    // (点击仍可停止),已有输入时切换为发送。
     this.composerController.setSendButtonState();
+    if (this.typeKey === "codex" && this.threadId && this.hydratedCodexQueueThreadId !== this.threadId) {
+      this.hydratedCodexQueueThreadId = this.threadId;
+      void useAgentSessionStore.getState().hydrateCodexFollowUps(this.threadId);
+    } else if (this.typeKey !== "codex") {
+      this.hydratedCodexQueueThreadId = null;
+    }
     const queued = useAgentSessionStore.getState().pendingSteeringMessages[this.threadId ?? ""] ?? [];
     this.queuedMessages.hidden = queued.length === 0;
     this.queuedMessages.setAttribute("aria-label", this.t("agent.backgroundTerminals.queued"));
@@ -1513,8 +1523,60 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
         mark.className = "agent-background-terminals__queue-mark";
         mark.append(createArrowBendDownRightIcon());
         const text = document.createElement("span");
+        text.className = "agent-background-terminals__queue-text";
         text.textContent = message.content;
         row.append(mark, text);
+        if (this.typeKey === "pi" || this.typeKey === "codex") {
+          const actions = document.createElement("span");
+          actions.className = "agent-background-terminals__queue-actions";
+          const actionsDisabled = !canActOnQueuedMessage(message, this.typeKey);
+          if (message.deliveryStatus === "submitting") {
+            const adding = document.createElement("span");
+            adding.className = "agent-background-terminals__queue-soon";
+            adding.setAttribute("role", "status");
+            adding.textContent = this.t("agent.queue.adding");
+            actions.append(adding);
+          }
+          if (message.deliveryMode === "follow_up") {
+            const steer = document.createElement("button");
+            steer.type = "button";
+            steer.className = "agent-background-terminals__queue-steer";
+            steer.disabled = actionsDisabled;
+            steer.textContent = this.t("agent.queue.steerNow");
+            steer.addEventListener("click", () => {
+              const threadId = this.renderThreadId;
+              if (!threadId) return;
+              void useAgentSessionStore.getState().promoteFollowUpToSteer(threadId, message.id)
+                .catch((error) => toast.error(error instanceof Error ? error.message : String(error)));
+            });
+            actions.append(steer);
+          } else if (message.deliveryMode === "steer") {
+            const soon = document.createElement("span");
+            soon.className = "agent-background-terminals__queue-soon";
+            soon.setAttribute("role", "status");
+            soon.textContent = message.deliveryStatus === "cleanup_failed"
+              ? this.t("agent.queue.cleanupFailed")
+              : this.t("agent.queue.sendingSoon");
+            actions.append(soon);
+          }
+          if (message.canDelete !== false) {
+            const remove = document.createElement("button");
+            remove.type = "button";
+            remove.className = "agent-background-terminals__queue-delete";
+            remove.disabled = actionsDisabled;
+            remove.setAttribute("aria-label", this.t("agent.queue.deleteQueued"));
+            remove.title = this.t("agent.queue.deleteQueued");
+            remove.append(createTrashSimpleIcon());
+            remove.addEventListener("click", () => {
+              const threadId = this.renderThreadId;
+              if (!threadId) return;
+              void useAgentSessionStore.getState().deleteQueuedFollowUp(threadId, message.id)
+                .catch((error) => toast.error(error instanceof Error ? error.message : String(error)));
+            });
+            actions.append(remove);
+          }
+          row.append(actions);
+        }
         return row;
       }),
     );
@@ -1749,17 +1811,12 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       return;
     }
 
-    // 运行期 (thread state isLoading / 正在创建 thread) 阻止发送 ──
-    // 输入框保持可用 (允许用户继续输入 / 改稿), 但 Enter 与 send 按钮
-    // (按钮在 isLoading 时是 stop 图标) 都无法真正投递消息。 当前草稿
-    // 保留在编辑器内, 不调 persistInputDraft("") / 直接改 DOM 清空。
-    // 清空; 用户可在运行结束后再次按 Enter 投递同一段草稿。
-    //
-    // 输入框不 disabled; busy 时只阻止发送, 用户仍可继续编辑草稿。
+    // 支持运行中排队的 agent 可继续发送；其它 agent 在 busy 时保留草稿。
     if (
       this.currentRuntimeView().isBusy &&
       this.typeKey !== "codex" &&
-      this.typeKey !== "deepseek-harness"
+      this.typeKey !== "deepseek-harness" &&
+      this.typeKey !== "pi"
     ) return;
     if (this.typeKey === "deepseek-harness" && hasPendingDshCommand(this.threadId)) return;
     if (this.typeKey === "codex" && hasPendingCodexCommand(this.threadId)) return;

@@ -26,6 +26,7 @@ fn sessions_enforce_owner_order_limits_expiry_and_release() {
             "notebook".into(),
             "file.bin".into(),
             size,
+            false,
         )
     };
     assert!(begin(base64_input::MAX_CONTENT_BYTES as u64 + 1).is_err());
@@ -84,6 +85,7 @@ fn sessions_enforce_owner_order_limits_expiry_and_release() {
             "notebook".into(),
             "empty".into(),
             0,
+            false,
         )
         .unwrap();
     sessions.cancel("main", &reopened).unwrap();

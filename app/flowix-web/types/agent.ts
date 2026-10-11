@@ -104,6 +104,8 @@ export interface DeepSeekHarnessRuntimeConfig extends CodexRuntimeConfig {
 export interface PiRuntimeConfig extends CodexRuntimeConfig {
   /** Pi chooses a provider/model pair from its configured model catalogue. */
   providerId?: string;
+  /** Pi codemode extension, selected per conversation. Defaults to false. */
+  codeMode?: boolean;
 }
 
 export interface ClaudeRuntimeConfig extends AgentRuntimeConfigBase {
@@ -200,6 +202,8 @@ export interface RuntimeConfig {
   reasoningEffort?: AgentCodexReasoningEffort;
   /** DeepSeek Harness Agent preset, locked per thread card. */
   deepseekHarness?: Pick<DeepSeekHarnessRuntimeConfig, "mode">;
+  /** Pi coding-agent presentation mode, locked per thread card. */
+  pi?: Pick<PiRuntimeConfig, "codeMode">;
   /** 预留：工具白名单 */
   tools?: string[];
   /** 旧版 cwd 显式覆盖；历史数据会迁移到 workspaceSnapshot。 */
@@ -343,6 +347,7 @@ export interface AgentChunkUserMessage {
   run_id?: string;
   message_id?: string;
   source_message_id?: string;
+  client_user_message_id?: string;
   attachments?: AgentMessageAttachment[];
 }
 
@@ -638,6 +643,7 @@ interface AgentEventBase {
   parentMessageId?: string;
   reasoningBoundary?: boolean;
   codexTurnId?: string;
+  clientUserMessageId?: string;
 }
 
 export type AgentEvent =

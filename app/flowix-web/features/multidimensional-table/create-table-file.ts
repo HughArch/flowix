@@ -12,7 +12,7 @@ export async function createTableDocumentFile(
   if (!trimmedName) throw new Error('请输入多维表格名称');
 
   const sanitizedName = sanitizeFileName(trimmedName);
-  const fileStem = sanitizedName.replace(/\.table\.yml$/i, '');
+  const fileStem = sanitizedName.replace(/(?:\.table\.ya?ml|\.index\.yaml)$/i, '');
   if (!fileStem) throw new Error('多维表格名称无效');
 
   const table = createTableDocument(initialViewType, fileStem);
@@ -20,7 +20,7 @@ export async function createTableDocumentFile(
     notebookPath,
     relativeFolder,
     fileStem,
-    '.table.yml',
+    '.index.yaml',
     serializeTableDocument(table),
   );
   return { filePath, relativePath, name: fileStem, table };

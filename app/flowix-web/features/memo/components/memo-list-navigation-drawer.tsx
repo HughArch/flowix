@@ -82,7 +82,7 @@ export function MemoListNavigationDrawer({
           open && !isClosing ? 'translate-x-0' : '-translate-x-full',
         )}
         style={{
-          backgroundColor: 'rgba(255, 255, 255, 0.8)',
+          backgroundColor: 'color-mix(in oklch, var(--background) 80%, transparent)',
           backdropFilter: 'blur(6px)',
           WebkitBackdropFilter: 'blur(6px)',
           willChange: 'transform',

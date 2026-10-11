@@ -73,7 +73,6 @@ const CODEX_SETTINGS_POPOVER_WIDTH_PX = 212;
 const CODEX_SETTINGS_POPOVER_MAX_HEIGHT_PX = 280;
 const CODEX_SETTINGS_POPOVER_OFFSET_PX = 6;
 const CODEX_SETTINGS_POPOVER_VIEWPORT_PADDING_PX = 8;
-const CODEX_SETTINGS_SUBMENU_GAP_PX = 4;
 
 
 function createComposerWorkspaceIcon(): SVGSVGElement | null {
@@ -279,7 +278,8 @@ export class ExternalAgentSettingsController {
   }
 
   /**
-   * 读 model/permission/reasoning 控件的当前值 ── 优先 instance 快照。
+   * 读 model/permission/reasoning 控件的当前值 ── 优先 instance 快照；
+   * Pi Codemode 是全局偏好，始终读取共享默认值。
    *  - instanceId 存在 + runtimeConfig 对应字段非空 → 用 instance 值
    *  - 否则 → fallback 到全局 useAgentSessionStore 对应字段
    *
@@ -294,6 +294,11 @@ export class ExternalAgentSettingsController {
     const instanceId = this.getInstanceId();
     // Phase 4 (2026-08-02): 真源切到 session-store.sessionMeta.settings.
     const settings = useAgentSessionStore.getState().sessionMeta.settings;
+    if (kind === "mode" && this.getTypeKey() === "pi") {
+      const sharedCodeMode = useAgentAccessStore.getState().config.defaults
+        ?.runtime?.pi?.piCodeMode;
+      return sharedCodeMode ? "code" : "writing";
+    }
     if (instanceId) {
       const runtimeConfig =
         useAgentSessionStore.getState().getInstance(instanceId)
@@ -324,6 +329,9 @@ export class ExternalAgentSettingsController {
         return typeDefault.reasoningEffort;
       }
       if (kind === "mode" && typeDefault.mode) return typeDefault.mode;
+      if (kind === "mode" && this.getTypeKey() === "pi") {
+        return typeDefault.piCodeMode ? "code" : "writing";
+      }
     }
     // DSH 不继承 Codex 系全局模型选择 (用户在 Codex 卡片选过的模型对 DSH
     // 无意义) —— 无 instance / 类型默认时等待全局 dsh-settings 的真实默认值。
@@ -376,6 +384,12 @@ export class ExternalAgentSettingsController {
         return;
       }
       if (kind === "mode") {
+        if (typeKey === "pi") {
+          void useAgentAccessStore.getState().setDefaultRuntime(typeKey, {
+            piCodeMode: value === "code",
+          });
+          return;
+        }
         instanceStore.setRuntimeConfig(instanceId, {
           deepseekHarness: { mode: value as AgentHarnessPreset },
         });
@@ -428,6 +442,12 @@ export class ExternalAgentSettingsController {
       return;
     }
     if (kind === "mode") {
+      if (typeKey === "pi") {
+        void useAgentAccessStore.getState().setDefaultRuntime(typeKey, {
+          piCodeMode: value === "code",
+        });
+        return;
+      }
       void useAgentAccessStore.getState().setDefaultRuntime(typeKey, {
         mode: value as AgentHarnessPreset,
       });
@@ -811,7 +831,7 @@ export class ExternalAgentSettingsController {
         ? this.createEmptyControl(
             "mode",
             this.t("agent.mode.title"),
-            this.getCurrentHarnessModeLabel(),
+            this.getCurrentModeLabel(),
           )
         : null;
       this.permissionButton = this.supportsRuntimeSetting("permission")
@@ -896,13 +916,13 @@ export class ExternalAgentSettingsController {
     return button;
   }
 
-  /** Compact DSH mode switcher placed beside the model control. */
+  /** Compact runtime mode switcher placed beside the model control. */
   createComposerModeButton(): HTMLButtonElement | null {
     if (!this.supportsRuntimeSetting("mode")) return null;
     const label = this.t("agent.mode.title");
     const button = createExternalAgentWorkspaceControl(
       label,
-      this.getCurrentHarnessModeLabel(),
+      this.getCurrentModeLabel(),
       (anchor) => this.toggleSettingsPopover("mode", anchor),
     );
     button.classList.replace(
@@ -959,7 +979,7 @@ export class ExternalAgentSettingsController {
 
   private refreshComposerModeButton(): void {
     if (!this.composerModeButton) return;
-    const value = this.getCurrentHarnessModeLabel();
+    const value = this.getCurrentModeLabel();
     const valueEl = this.composerModeButton.querySelector<HTMLElement>(
       ".agent-thread-card__composer-mode-value",
     );
@@ -1069,7 +1089,7 @@ export class ExternalAgentSettingsController {
     if (this.modeButton) {
       updateExternalAgentEmptyControl(
         this.modeButton,
-        this.getCurrentHarnessModeLabel(),
+        this.getCurrentModeLabel(),
       );
     }
     if (this.reasoningButton) {
@@ -1225,6 +1245,7 @@ export class ExternalAgentSettingsController {
     this.anchor = anchor;
     this.popover.hidden = false;
     this.popover.classList.remove("agent-thread-card__codex-settings-popover--mode");
+    this.popover.classList.remove("agent-thread-card__codex-settings-popover--pi-mode");
     this.syncControlOpenState(true, null);
     this.renderWorkspacePopover();
     this.schedulePosition();
@@ -1247,6 +1268,10 @@ export class ExternalAgentSettingsController {
     this.popover.classList.toggle(
       "agent-thread-card__codex-settings-popover--mode",
       open && kind === "mode",
+    );
+    this.popover.classList.toggle(
+      "agent-thread-card__codex-settings-popover--pi-mode",
+      open && kind === "mode" && this.getTypeKey() === "pi",
     );
     this.syncControlOpenState(open, kind);
 
@@ -1297,7 +1322,7 @@ export class ExternalAgentSettingsController {
     const kind = this.kind;
     this.popover.replaceChildren();
     this.popover.classList.toggle(
-      "agent-thread-card__codex-settings-popover--has-submenu",
+      "agent-thread-card__codex-settings-popover--model-picker",
       this.getTypeKey() === "codex" && kind === "model",
     );
     if (!kind || !this.supportsRuntimeSetting(kind)) return;
@@ -1324,7 +1349,7 @@ export class ExternalAgentSettingsController {
       return;
     }
     if (kind === "mode") {
-      this.renderHarnessModeSettings();
+      this.renderModeSettings();
       return;
     }
     this.renderPermissionSettings();
@@ -1332,7 +1357,7 @@ export class ExternalAgentSettingsController {
 
   private renderWorkspacePopover(): void {
     this.popover.classList.remove(
-      "agent-thread-card__codex-settings-popover--has-submenu",
+      "agent-thread-card__codex-settings-popover--model-picker",
     );
     this.popover.replaceChildren();
     if (this.workspacePage === "repositories") {
@@ -1662,7 +1687,6 @@ export class ExternalAgentSettingsController {
     this.positionFrame = window.requestAnimationFrame(() => {
       this.positionFrame = null;
       this.positionPopover();
-      this.positionOpenCodexSubmenus();
     });
   }
 
@@ -2050,7 +2074,14 @@ export class ExternalAgentSettingsController {
       : "standard";
   }
 
-  private getCurrentHarnessModeLabel(): string {
+  private getCurrentModeLabel(): string {
+    if (this.getTypeKey() === "pi") {
+      return this.t(
+        this.readRuntimeSetting("mode") === "code"
+          ? "agent.mode.piCode"
+          : "agent.mode.writing",
+      );
+    }
     const mode = this.getCurrentHarnessMode();
     return (
       this.t(
@@ -2069,20 +2100,33 @@ export class ExternalAgentSettingsController {
       this.resolveCurrentSelection();
     const options = this.getExternalModelOptions();
 
-    // Codex 的 reasoning effort 与模型强相关，使用「模型 → 深度」的
-    // 二级菜单表达这一层级关系。其它 runtime 仍保持原来的扁平模型列表，
-    // 避免把 Codex 专属的推理设置带到 Claude / OpenCode 等 Agent。
+    // Codex 的 reasoning effort 放在模型列表底部, 模型列表与强度可分别选择。
     if (this.getTypeKey() === "codex") {
+      this.popover.classList.add(
+        "agent-thread-card__codex-settings-popover--model-picker",
+      );
+      const modelList = document.createElement("div");
+      modelList.className = "agent-thread-card__codex-settings-model-list";
       const modelSection = document.createElement("div");
       modelSection.className = "agent-thread-card__codex-settings-section";
       modelSection.textContent = this.t("agent.model.title");
-      this.popover.append(modelSection);
+      modelList.append(modelSection);
 
       options.forEach((option) => {
-        this.popover.append(
-          this.createCodexModelSubmenu(option, current, currentProviderId),
+        modelList.append(
+          createCodexSettingsItem(
+            option.label,
+            option.id === current
+              && (option.providerId ?? "") === (currentProviderId ?? ""),
+            () => {
+              this.setExternalAgentModel(option);
+              this.renderPopover();
+              this.schedulePosition();
+            },
+          ),
         );
       });
+      this.popover.append(modelList, this.createCodexReasoningTabs());
       return;
     }
 
@@ -2164,181 +2208,41 @@ export class ExternalAgentSettingsController {
     this.renderReasoningOptions();
   }
 
-  /** Codex-only model → reasoning effort submenu. */
-  private createCodexModelSubmenu(
-    option: AgentModelOption,
-    current: AgentCodexModel,
-    currentProviderId: string | undefined,
-  ): HTMLElement {
-    const group = document.createElement("div");
-    group.className = "agent-thread-card__codex-settings-model-group";
-    group.dataset.codexModelSubmenuGroup = "true";
+  private createCodexReasoningTabs(): HTMLElement {
+    const footer = document.createElement("div");
+    footer.className = "agent-thread-card__codex-settings-reasoning-footer";
+    footer.setAttribute("role", "tablist");
+    footer.setAttribute("aria-orientation", "horizontal");
+    footer.setAttribute("aria-label", this.t("agent.reasoningDepth.title"));
 
-    const isCurrentModel =
-      option.id === current &&
-      (option.providerId ?? "") === (currentProviderId ?? "");
-    const trigger = this.createCodexModelSubmenuTrigger(
-      option,
-      isCurrentModel,
-      group,
-    );
-    const submenu = document.createElement("div");
-    submenu.className = "agent-thread-card__codex-settings-submenu";
-    submenu.setAttribute("role", "menu");
-    submenu.id = `codex-model-depth-${Math.random().toString(36).slice(2)}`;
-    trigger.setAttribute("aria-controls", submenu.id);
-    trigger.setAttribute("aria-expanded", "false");
-
-    const currentReasoning =
+    const current =
       this.readRuntimeSetting("reasoning") ??
       useAgentSessionStore.getState().sessionMeta.settings.agentCodexReasoningEffort;
-    CODEX_REASONING_OPTIONS.forEach((reasoning) => {
-      submenu.append(
-        createCodexSettingsItem(
-          reasoning.label,
-          reasoning.id === currentReasoning,
-          () => {
-            // Depth selection is a complete Codex model selection: keep the
-            // selected model and update the depth before closing the picker.
-            this.setExternalAgentModel(option);
-            this.writeRuntimeSetting("reasoning", reasoning.id);
-            this.setSettingsPopoverOpen(false);
-          },
-        ),
-      );
-    });
+    const tabOptions = CODEX_REASONING_OPTIONS.map((option) => ({
+      ...option,
+      label: this.t(`agent.reasoningDepth.${option.id}` as I18nKey),
+    }));
 
-    group.append(trigger, submenu);
-
-    let closeTimer: number | null = null;
-    const cancelClose = (): void => {
-      if (closeTimer === null) return;
-      window.clearTimeout(closeTimer);
-      closeTimer = null;
-    };
-    const openSubmenu = (): void => {
-      cancelClose();
-      this.popover
-        .querySelectorAll<HTMLElement>(
-          ".agent-thread-card__codex-settings-model-group",
-        )
-        .forEach((item) => {
-          if (item !== group) this.setCodexModelSubmenuExpanded(item, false);
+    tabOptions.forEach((option) => {
+      const tab = document.createElement("button");
+      tab.type = "button";
+      tab.className = "agent-thread-card__codex-settings-reasoning-tab";
+      tab.setAttribute("role", "tab");
+      tab.setAttribute("aria-selected", option.id === current ? "true" : "false");
+      tab.tabIndex = option.id === current ? 0 : -1;
+      tab.textContent = option.label;
+      tab.addEventListener("click", (event) => {
+        event.stopPropagation();
+        this.writeRuntimeSetting("reasoning", option.id);
+        footer.querySelectorAll<HTMLElement>("[role='tab']").forEach((item) => {
+          const selected = item === tab;
+          item.setAttribute("aria-selected", selected ? "true" : "false");
+          item.tabIndex = selected ? 0 : -1;
         });
-      this.setCodexModelSubmenuExpanded(group, true);
-    };
-    const scheduleClose = (): void => {
-      cancelClose();
-      closeTimer = window.setTimeout(() => {
-        closeTimer = null;
-        this.setCodexModelSubmenuExpanded(group, false);
-      }, 160);
-    };
-    group.addEventListener("mouseenter", openSubmenu);
-    group.addEventListener("mouseleave", scheduleClose);
-    group.addEventListener("focusin", openSubmenu);
-    group.addEventListener("focusout", (event) => {
-      const nextTarget = event.relatedTarget;
-      if (!(nextTarget instanceof Node) || !group.contains(nextTarget)) {
-        scheduleClose();
-      }
+      });
+      footer.append(tab);
     });
-    return group;
-  }
-
-  private positionOpenCodexSubmenus(): void {
-    this.popover
-      .querySelectorAll<HTMLElement>(
-        '.agent-thread-card__codex-settings-model-group[data-submenu-open="true"]',
-      )
-      .forEach((group) => {
-        const submenu = group.querySelector<HTMLElement>(
-          ".agent-thread-card__codex-settings-submenu",
-        );
-        if (submenu) this.positionCodexSubmenu(group, submenu);
-      });
-  }
-
-  private positionCodexSubmenu(
-    group: HTMLElement,
-    submenu: HTMLElement,
-  ): void {
-    const trigger = group.querySelector<HTMLElement>(
-      ".agent-thread-card__codex-settings-item--submenu",
-    );
-    if (!trigger) return;
-
-    const triggerRect = trigger.getBoundingClientRect();
-    const groupRect = group.getBoundingClientRect();
-    const submenuRect = submenu.getBoundingClientRect();
-    const padding = CODEX_SETTINGS_POPOVER_VIEWPORT_PADDING_PX;
-    const width = submenuRect.width || CODEX_SETTINGS_POPOVER_WIDTH_PX;
-    const height = submenuRect.height || CODEX_SETTINGS_POPOVER_MAX_HEIGHT_PX;
-    const viewportWidth = window.innerWidth;
-    const viewportHeight = window.innerHeight;
-
-    const rightCandidate = triggerRect.right + CODEX_SETTINGS_SUBMENU_GAP_PX;
-    const canOpenRight =
-      rightCandidate + width <= viewportWidth - padding;
-    const preferredLeft = canOpenRight
-      ? rightCandidate
-      : triggerRect.left - CODEX_SETTINGS_SUBMENU_GAP_PX - width;
-    const maxLeft = Math.max(padding, viewportWidth - padding - width);
-    const left = Math.min(Math.max(preferredLeft, padding), maxLeft);
-    const maxTop = Math.max(padding, viewportHeight - padding - height);
-    const top = Math.min(Math.max(triggerRect.top, padding), maxTop);
-
-    submenu.style.left = `${left - groupRect.left}px`;
-    submenu.style.top = `${top - groupRect.top}px`;
-    submenu.dataset.submenuSide = canOpenRight ? "right" : "left";
-  }
-
-  private createCodexModelSubmenuTrigger(
-    option: AgentModelOption,
-    selected: boolean,
-    group: HTMLElement,
-  ): HTMLElement {
-    const trigger = createCodexSettingsItem(
-      option.label,
-      selected,
-      () => {
-        this.popover
-          .querySelectorAll<HTMLElement>(
-            ".agent-thread-card__codex-settings-model-group",
-          )
-        .forEach((item) => {
-          if (item !== group) this.setCodexModelSubmenuExpanded(item, false);
-        });
-        this.setExternalAgentModel(option);
-        this.setCodexModelSubmenuExpanded(group, true);
-      },
-    );
-    trigger.classList.add("agent-thread-card__codex-settings-item--submenu");
-    trigger.setAttribute("aria-haspopup", "menu");
-    trigger.append(createChevronIcon("right"));
-    return trigger;
-  }
-
-  private setCodexModelSubmenuExpanded(
-    group: HTMLElement,
-    expanded: boolean,
-  ): void {
-    const trigger = group.querySelector<HTMLElement>(
-      ".agent-thread-card__codex-settings-item--submenu",
-    );
-    const submenu = group.querySelector<HTMLElement>(
-      ".agent-thread-card__codex-settings-submenu",
-    );
-    if (!trigger || !submenu) return;
-    trigger.setAttribute("aria-expanded", expanded ? "true" : "false");
-    group.dataset.submenuOpen = expanded ? "true" : "false";
-    if (expanded) {
-      window.requestAnimationFrame(() => {
-        if (group.isConnected && submenu.isConnected) {
-          this.positionCodexSubmenu(group, submenu);
-        }
-      });
-    }
+    return footer;
   }
 
   private createModelSettingsItem(
@@ -2378,7 +2282,28 @@ export class ExternalAgentSettingsController {
     });
   }
 
-  private renderHarnessModeSettings(): void {
+  private renderModeSettings(): void {
+    if (this.getTypeKey() === "pi") {
+      const current =
+        this.readRuntimeSetting("mode") === "code" ? "code" : "writing";
+      const options = [
+        { id: "writing", labelKey: "agent.mode.writing" as const },
+        { id: "code", labelKey: "agent.mode.piCode" as const },
+      ];
+      options.forEach((option) => {
+        this.popover.append(
+          createCodexSettingsItem(
+            this.t(option.labelKey),
+            option.id === current,
+            () => {
+              this.writeRuntimeSetting("mode", option.id);
+              this.setSettingsPopoverOpen(false);
+            },
+          ),
+        );
+      });
+      return;
+    }
     const current = this.getCurrentHarnessMode();
     // DSH 模式选择器使用田字格双列布局, 每个 cell 垂直堆叠标题+副标题。
     const grid = document.createElement("div");
@@ -2479,6 +2404,5 @@ export class ExternalAgentSettingsController {
         offset: CODEX_SETTINGS_POPOVER_OFFSET_PX,
       }),
     );
-    this.positionOpenCodexSubmenus();
   }
 }

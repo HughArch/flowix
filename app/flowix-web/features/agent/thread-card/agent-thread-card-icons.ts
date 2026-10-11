@@ -1,4 +1,7 @@
 import type { AgentTypeKey } from "@/types/agent";
+import { createElement } from "react";
+import { renderToStaticMarkup } from "react-dom/server";
+import { TrashSimpleIcon } from "@phosphor-icons/react";
 import { getToolIconPath } from "@features/agent/message/tools";
 
 export const ICON_STOP_PATH =
@@ -92,6 +95,22 @@ export function createTrashIcon(): SVGSVGElement {
     createSvg("0 0 256 256", "agent-thread-card__trash-icon"),
     ICON_TRASH_PATH,
   );
+}
+
+export function createTrashSimpleIcon(): SVGSVGElement {
+  const template = document.createElement("template");
+  template.innerHTML = renderToStaticMarkup(
+    createElement(TrashSimpleIcon, {
+      size: 14,
+      "aria-hidden": true,
+    }),
+  );
+  const icon = template.content.firstElementChild;
+  if (!(icon instanceof SVGSVGElement)) {
+    throw new Error("Failed to render TrashSimpleIcon");
+  }
+  icon.classList.add("agent-thread-card__trash-icon");
+  return icon;
 }
 
 export function createFullscreenIcon(kind: "enter" | "exit"): SVGSVGElement {

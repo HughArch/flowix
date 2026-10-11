@@ -79,7 +79,7 @@ export function TableGalleryView({ records, titleField, fields, renderValue, ima
             </button>;
           })}
         </div>
-      : <div className="flex min-h-40 items-center justify-center text-sm text-[var(--muted-foreground)]">未添加内容</div>}
+      : <div className="flex min-h-40 items-center justify-center text-sm text-[var(--muted-foreground)]">添加数据后查看</div>}
   </div>;
 }
 
@@ -235,7 +235,7 @@ export function TableKanbanView({ groupField, titleField, records, groups, rende
           {visibleAllRecords.map((record) => <article key={record.id} onPointerDown={(event) => onCardPointerDown(event, record.id)} className="multidimensional-table__kanban-card cursor-grab select-none touch-none rounded-lg border border-[var(--border)] px-3 py-3 active:cursor-grabbing">
             <div className="break-words text-sm font-medium leading-5 text-[var(--foreground)]">{renderValue(record, titleField)}</div>
           </article>)}
-          {allRecords.length === 0 && <div className="multidimensional-table__kanban-empty pointer-events-none flex min-h-24 select-none items-center justify-center rounded-lg border border-dashed border-[var(--border)] px-4 text-center text-xs text-[var(--muted-foreground)]">暂无笔记</div>}
+          {allRecords.length === 0 && <div className="multidimensional-table__kanban-empty pointer-events-none flex min-h-24 select-none items-center justify-center rounded-lg border border-dashed border-[var(--border)] px-4 text-center text-xs text-[var(--muted-foreground)]">添加数据后查看</div>}
         </div>
       </section>
       {previewLaneOptions.map((option) => {

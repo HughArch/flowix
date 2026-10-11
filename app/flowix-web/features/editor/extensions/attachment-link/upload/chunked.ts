@@ -1,14 +1,26 @@
 import { invoke } from '@platform/tauri/core';
 import { readFileBase64 } from './io';
+import type { AttachmentSaveResult } from './file-source';
 
 export const UPLOAD_CHUNK_BYTES = 256 * 1024;
 
-export async function uploadInChunks(file: File, fileName: string, ownerPath: string, signal?: AbortSignal): Promise<string> {
+export async function uploadInChunks(
+    file: File,
+    fileName: string,
+    ownerPath: string,
+    signal?: AbortSignal,
+    deduplicate = false,
+): Promise<AttachmentSaveResult> {
     const checkCancelled = () => {
         if (signal?.aborted) throw new DOMException('Upload cancelled', 'AbortError');
     };
     checkCancelled();
-    const uploadId = await invoke<string>('begin_attachment_upload', { ownerPath, fileName, size: file.size });
+    const uploadId = await invoke<string>('begin_attachment_upload', {
+        ownerPath,
+        fileName,
+        size: file.size,
+        ...(deduplicate ? { deduplicate: true } : {}),
+    });
     let finished = false;
     try {
         checkCancelled();
@@ -19,9 +31,9 @@ export async function uploadInChunks(file: File, fileName: string, ownerPath: st
             await invoke('append_attachment_upload', { uploadId, offset, content });
         }
         checkCancelled();
-        const path = await invoke<string>('finish_attachment_upload', { uploadId });
+        const result = await invoke<AttachmentSaveResult>('finish_attachment_upload', { uploadId });
         finished = true;
-        return path;
+        return result;
     } finally {
         if (!finished) {
             await invoke('cancel_attachment_upload', { uploadId }).catch(() => {});

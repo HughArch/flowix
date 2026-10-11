@@ -1,5 +1,6 @@
 import type { AgentRunState, AgentTypeKey } from '@/types/agent';
 import type { ThreadState } from '@features/agent/store/thread-runtime-state';
+import { isAgentThreadWorking } from '@features/agent/store/thread-runtime-state';
 import { getAgentType } from '@/lib/agent-types';
 
 export interface AgentThreadCardRunStatusView {
@@ -93,7 +94,7 @@ export function selectAgentThreadCardRuntimeView(input: {
   const isModelRunning =
     !isDshCommandRunning &&
     !isCodexCommandRunning &&
-    (input.isLoading || activeRun?.status === 'running');
+    (input.isLoading || activeRun?.status === 'running' || isAgentThreadWorking(input.state));
   // `isRunning` describes thread-owned work for the rest of the card (for
   // example settings must remain locked during a DSH command). It does not
   // mean that a synthetic model run was created; stop-button semantics stay
@@ -108,12 +109,8 @@ export function selectAgentThreadCardRuntimeView(input: {
    * 处于 isLoading 的 tool 行 — 任何一条成立都说明 agent 还在工作,应该
    * 把 loading-indicator 继续显示,而不是隐藏到下一轮 stream_start。
    */
-  const hasInFlightTool = !!activeRun?.currentTool;
-  const hasLoadingToolRow = (input.state?.messages ?? []).some(
-    (m) => m.role === 'tool' && m.isLoading,
-  );
-  const showLoadingIndicator =
-    isRunning || hasInFlightTool || hasLoadingToolRow;
+  const hasInFlightTool = isAgentThreadWorking(input.state) && !input.isLoading && activeRun?.status !== 'running';
+  const showLoadingIndicator = isRunning || hasInFlightTool;
   return {
     ...statusView,
     isRunning,
@@ -141,7 +138,7 @@ export function selectAgentThreadCardSendButtonState(input: {
   return {
     wantStop: input.wantStop,
     disabled:
-      !!input.isRunning ||
+      (!!input.isRunning && !input.wantStop) ||
       (!input.wantStop && (!hasInput || !!input.hasPendingAttachments)),
   };
 }

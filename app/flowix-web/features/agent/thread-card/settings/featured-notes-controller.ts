@@ -90,7 +90,7 @@ export class FeaturedNotesController {
     const table = await parseTableDocumentAsync(source);
     if (table.collection.id !== selection.collectionId) return [];
     const notesByPath = new Map(indexed.map((note) => [note.relativePath, note]));
-    return table.records.data.flatMap((record) => {
+    return table.dataset.records.include.flatMap((record) => {
       const note = notesByPath.get(record.note_path);
       return note ? [note] : [];
     });

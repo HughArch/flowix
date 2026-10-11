@@ -10,12 +10,12 @@ describe('chunked attachment transport', () => {
     beforeEach(() => {
         vi.mocked(invoke).mockReset();
         vi.mocked(readFileBase64).mockReset().mockResolvedValue('YQ==');
-        vi.mocked(invoke).mockImplementation(async (command) => command === 'begin_attachment_upload' ? 'upload' : '/attachments/file');
+        vi.mocked(invoke).mockImplementation(async (command) => command === 'begin_attachment_upload' ? 'upload' : { path: '/attachments/file', created: true });
     });
 
     it('slices input and waits for each chunk before committing', async () => {
         const file = new File([new Uint8Array(UPLOAD_CHUNK_BYTES + 1)], 'file');
-        expect(await uploadInChunks(file, 'file', 'memo')).toBe('/attachments/file');
+        expect(await uploadInChunks(file, 'file', 'memo')).toEqual({ path: '/attachments/file', created: true });
         expect(vi.mocked(readFileBase64).mock.calls.map(([blob]) => blob.size)).toEqual([UPLOAD_CHUNK_BYTES, 1]);
         expect(invoke).toHaveBeenNthCalledWith(2, 'append_attachment_upload', { uploadId: 'upload', offset: 0, content: 'YQ==' });
         expect(invoke).toHaveBeenNthCalledWith(3, 'append_attachment_upload', { uploadId: 'upload', offset: UPLOAD_CHUNK_BYTES, content: 'YQ==' });
@@ -54,9 +54,9 @@ describe('chunked attachment transport', () => {
         vi.mocked(invoke).mockImplementation(async (command) => {
             if (command === 'begin_attachment_upload') return 'upload';
             if (command === 'finish_attachment_upload') controller.abort();
-            return '/attachments/file';
+            return { path: '/attachments/file', created: true };
         });
-        expect(await uploadInChunks(new File([], 'file'), 'file', 'memo', controller.signal)).toBe('/attachments/file');
+        expect(await uploadInChunks(new File([], 'file'), 'file', 'memo', controller.signal)).toEqual({ path: '/attachments/file', created: true });
         expect(invoke).toHaveBeenCalledTimes(2);
     });
 });

@@ -1,4 +1,4 @@
-import { createCollectionMetadata, createCollectionId, createUuidV7, parseCollectionEnvelope, serializeCollectionEnvelope, validateCollectionMetadata, reviseCollection, hasOnlyKeys, type CollectionMetadata } from '@features/collection/model';
+import { createCollectionMetadata, createCollectionId, createUuidV7, parseCollectionDocumentV2, serializeCollectionDocumentV2, validateCollectionMetadata, reviseCollection, hasOnlyKeys, type CollectionMetadata, type CollectionSource } from '@features/collection/model';
 export { createUuidV7 } from '@features/collection/model';
 import { isTablePropertyKind, type TablePropertyKind } from '@/lib/property-types';
 
@@ -38,7 +38,6 @@ export interface TableAutoCollectFileCondition {
 
 export interface TableAutoCollectConfig {
   condition: TableAutoCollectCondition;
-  excluded_note_paths: string[];
 }
 
 export interface TableField {
@@ -54,14 +53,16 @@ export interface TableField {
 export interface TableView {
   id: string;
   name: string;
-  type: TableViewType;
+  layout: TableViewType;
+  filter: Record<string, unknown>;
+  sort: Array<{ field: string; direction: 'asc' | 'desc' }>;
   config: Record<string, unknown>;
 }
 
 export type TableViewType = 'table' | 'kanban' | 'calendar' | 'gallery';
 
 const VIEW_NAMES: Record<TableViewType, string> = {
-  table: '表格', kanban: '看板', calendar: '日历', gallery: '画廊列表',
+  table: '表格', kanban: '看板', calendar: '日历', gallery: '画廊',
 };
 
 export interface TableRecord {
@@ -73,28 +74,79 @@ export interface TableRecord {
 
 export interface MultidimensionalTableDocument {
   collection: CollectionMetadata;
-  table: {
-    primary_field_id: string;
-    fields: TableField[];
-    views: TableView[];
+  dataset: {
+    source: CollectionSource;
+    schema: { primary_field_id: string; fields: TableField[] };
+    records: { include: TableRecord[]; exclude: Array<{ note_path: string }> };
+    filter: Record<string, unknown> | null;
   };
-  records: {
-    data: TableRecord[];
-    auto_collect: TableAutoCollectConfig | null;
+  views: { default_id: string; items: TableView[] };
+}
+
+export function tableAutoCollectConfig(document: MultidimensionalTableDocument): TableAutoCollectConfig | null {
+  const filter = document.dataset.filter;
+  if (!filter) return null;
+  const all = Array.isArray(filter.all) ? filter.all as Record<string, unknown>[] : [];
+  const any = Array.isArray(filter.any) ? filter.any as Record<string, unknown>[] : [];
+  const grouped = any.find((rule) => Array.isArray(rule.all));
+  const propertyRules = grouped ? grouped.all as Record<string, unknown>[] : all.length ? all : any;
+  const property_conditions = propertyRules.flatMap((rule) => {
+    if (typeof rule.field !== 'string' || ['kind', 'file_name', 'path'].includes(rule.field) || typeof rule.value !== 'string') return [];
+    return [{ field_id: rule.field, operator: rule.op === 'contains' ? 'contains' as const : 'equals' as const, value: rule.value }];
+  });
+  const fileRules = [...all, ...any].filter((rule) => typeof rule.field === 'string');
+  const file_condition: TableAutoCollectFileCondition = {};
+  for (const rule of fileRules) {
+    if (rule.field === 'file_name' && rule.op === 'contains' && typeof rule.value === 'string') file_condition.file_name_contains = rule.value;
+    if (rule.field === 'path' && rule.op === 'contains' && typeof rule.value === 'string') file_condition.path_contains = rule.value;
+    if (rule.field === 'kind' && rule.op === 'eq' && rule.value === 'note') file_condition.file_type = 'markdown';
+  }
+  const condition: TableAutoCollectCondition = {
+    ...(property_conditions.length ? { property_conditions, property_match: grouped || all.length ? 'intersection' as const : 'union' as const } : {}),
+    ...(Object.keys(file_condition).length ? { file_condition } : {}),
   };
+  return { condition };
+}
+
+export function withTableAutoCollect(document: MultidimensionalTableDocument, config: TableAutoCollectConfig | null): MultidimensionalTableDocument {
+  if (!config) return { ...document, dataset: { ...document.dataset, filter: null } };
+  const properties = (config.condition.property_conditions ?? []).map((item) => ({ field: item.field_id.trim(), op: item.operator === 'contains' ? 'contains' : 'eq', value: item.value.trim() }));
+  const file = config.condition.file_condition;
+  const files: Record<string, unknown>[] = [];
+  if (file?.file_name_contains) files.push({ field: 'file_name', op: 'contains', value: file.file_name_contains });
+  if (file?.path_contains) files.push({ field: 'path', op: 'contains', value: file.path_contains });
+  if (file?.file_type === 'markdown') files.push({ field: 'kind', op: 'eq', value: 'note' });
+  const filter = properties.length && config.condition.property_match === 'intersection'
+    ? files.length ? { all: [], any: [{ all: properties, any: [] }, ...files] } : { all: properties, any: [] }
+    : { all: [], any: [...properties, ...files] };
+  return { ...document, dataset: { ...document.dataset, filter } };
+}
+
+function stableValue(value: unknown): unknown {
+  if (Array.isArray(value)) return value.map(stableValue);
+  if (!value || typeof value !== 'object') return value;
+  const entries = Object.entries(value).map(([key, entry]) => [key, key === 'op' && entry === 'equals' ? 'eq' : stableValue(entry)] as const);
+  return Object.fromEntries(entries.sort(([left], [right]) => left.localeCompare(right)));
+}
+
+/** The compact auto-collect form can edit only filters it can round-trip exactly. */
+export function canEditTableAutoCollectFilter(document: MultidimensionalTableDocument): boolean {
+  if (document.dataset.filter == null) return true;
+  const roundTripped = withTableAutoCollect(document, tableAutoCollectConfig(document)).dataset.filter;
+  return JSON.stringify(stableValue(document.dataset.filter)) === JSON.stringify(stableValue(roundTripped));
 }
 
 export const createTableId = createCollectionId;
 
 export function createTableView(document: MultidimensionalTableDocument, type: TableViewType, fieldId?: string): TableView {
-  const fields = document.table.fields;
+  const fields = document.dataset.schema.fields;
   const field = fields.find((item) => item.id === fieldId);
   if (type === 'kanban' && field?.type !== 'Select') throw new Error('看板需要单选属性');
   if (type === 'calendar' && fieldId && fieldId !== NOTE_CREATED_AT_FIELD_ID && fieldId !== NOTE_UPDATED_AT_FIELD_ID && field?.type !== 'Date') {
     throw new Error('日历需要日期属性');
   }
   const baseName = VIEW_NAMES[type];
-  const names = new Set(document.table.views.map((view) => view.name));
+  const names = new Set(document.views.items.map((view) => view.name));
   let name = baseName;
   for (let suffix = 2; names.has(name); suffix += 1) name = `${baseName} ${suffix}`;
   const config = type === 'table'
@@ -102,9 +154,9 @@ export function createTableView(document: MultidimensionalTableDocument, type: T
     : type === 'gallery'
       ? { visible_fields: fields.filter((item) => item.type !== 'primary').map((item) => item.id) }
       : type === 'calendar'
-        ? { date_field: fieldId ?? NOTE_CREATED_AT_FIELD_ID, title_field: document.table.primary_field_id }
+        ? { date_field: fieldId ?? NOTE_CREATED_AT_FIELD_ID, title_field: document.dataset.schema.primary_field_id }
         : { group_by: fieldId };
-  return { id: `view_${createUuidV7()}`, name, type, config };
+  return { id: `view_${createUuidV7()}`, name, layout: type, filter: { all: [], any: [] }, sort: [{ field: 'modified_at', direction: 'desc' }], config };
 }
 
 export function addTableView(document: MultidimensionalTableDocument, type: TableViewType, fieldId?: string): { document: MultidimensionalTableDocument; view: TableView } {
@@ -114,14 +166,14 @@ export function addTableView(document: MultidimensionalTableDocument, type: Tabl
     document: {
       ...document,
       collection: reviseCollection(document.collection),
-      table: { ...document.table, views: [...document.table.views, view] },
+      views: { ...document.views, items: [...document.views.items, view] },
     },
   };
 }
 
 /** Adds a shared note property only when the user explicitly chooses to create one. */
 export function addKanbanField(document: MultidimensionalTableDocument): { document: MultidimensionalTableDocument; field: TableField } {
-  const keys = new Set(document.table.fields.map((field) => field.property_key?.toLocaleLowerCase()));
+  const keys = new Set(document.dataset.schema.fields.map((field) => field.property_key?.toLocaleLowerCase()));
   let propertyKey = '状态';
   for (let suffix = 2; keys.has(propertyKey.toLocaleLowerCase()); suffix += 1) propertyKey = `状态 ${suffix}`;
   const field: TableField = {
@@ -134,13 +186,10 @@ export function addKanbanField(document: MultidimensionalTableDocument): { docum
     field,
     document: {
       ...document,
-      table: {
-        ...document.table,
-        fields: [...document.table.fields, field],
-        views: document.table.views.map((view) => view.type === 'table'
-          ? { ...view, config: { ...view.config, visible_fields: [...view.config.visible_fields as string[], field.id] } }
-          : view),
-      },
+      dataset: { ...document.dataset, schema: { ...document.dataset.schema, fields: [...document.dataset.schema.fields, field] } },
+      views: { ...document.views, items: document.views.items.map((view) => view.layout === 'table'
+        ? { ...view, config: { ...view.config, visible_fields: [...view.config.visible_fields as string[], field.id] } }
+        : view) },
     },
   };
 }
@@ -149,43 +198,53 @@ export function createTableDocument(initialViewType: TableViewType = 'table', na
   const noteFieldId = `fld_${createUuidV7()}`;
   let document: MultidimensionalTableDocument = {
     collection: createCollectionMetadata('table', name),
-    table: {
-      primary_field_id: noteFieldId,
-    fields: [{ id: noteFieldId, type: 'primary', property_key: 'note' }],
-      views: [],
-    },
-    records: { data: [], auto_collect: null },
+    dataset: { source: { scope: 'notebook', depth: 'descendants' },
+      schema: { primary_field_id: noteFieldId, fields: [{ id: noteFieldId, type: 'primary', property_key: 'note' }] },
+      records: { include: [], exclude: [] }, filter: null },
+    views: { default_id: '', items: [] },
   };
   let fieldId: string | undefined;
   if (initialViewType === 'kanban') {
     const added = addKanbanField(document);
     document = added.document;
     fieldId = added.field.id;
+  } else if (initialViewType === 'calendar') {
+    const dateField: TableField = {
+      id: `fld_${createUuidV7()}`,
+      type: 'Date',
+      property_key: '日期',
+    };
+    document = {
+      ...document,
+      dataset: {
+        ...document.dataset,
+        schema: { ...document.dataset.schema, fields: [...document.dataset.schema.fields, dateField] },
+      },
+    };
+    fieldId = dateField.id;
   }
-  document.table.views = [createTableView(document, initialViewType, fieldId)];
+  const view = createTableView(document, initialViewType, fieldId);
+  document.views = { default_id: view.id, items: [view] };
   return document;
 }
 
 export function parseTableDocument(source: string): MultidimensionalTableDocument {
-  const { collection, payload } = parseCollectionEnvelope(source, 'table');
-  const { schema_version: _version, ...data } = payload;
-  return validateTableDocument({ collection, ...data });
+  const parsed = parseCollectionDocumentV2(source, 'table');
+  return validateTableDocument({ collection: parsed.collection, dataset: parsed.payload.dataset, views: parsed.payload.views });
 }
 
 export function validateTableDocument(parsed: unknown): MultidimensionalTableDocument {
   if (!parsed || typeof parsed !== 'object') throw new Error('表格文件必须是 YAML 对象');
   const value = parsed as Partial<MultidimensionalTableDocument>;
   validateCollectionMetadata(value.collection, 'table');
-  if (!value.table || !Array.isArray(value.table.fields)
-      || !Array.isArray(value.table.views) || !value.records || Array.isArray(value.records) || !Array.isArray(value.records.data)) {
+  if (!value.dataset || !Array.isArray(value.dataset.schema?.fields)
+      || !value.views || !Array.isArray(value.views.items) || !value.dataset.records || !Array.isArray(value.dataset.records.include)) {
     throw new Error('不支持的多维表格文件格式');
   }
-  if (!hasOnlyKeys(value, ['collection', 'table', 'records'])
-    || !hasOnlyKeys(value.table, ['primary_field_id', 'fields', 'views'])
-    || !hasOnlyKeys(value.records, ['data', 'auto_collect'])) throw new Error('多维表格文件包含未知字段');
+  if (!hasOnlyKeys(value, ['collection', 'dataset', 'views'])) throw new Error('多维表格文件包含未知字段');
   const fieldIds = new Set<string>();
   const fieldKeys = new Set<string>();
-  for (const field of value.table.fields) {
+  for (const field of value.dataset?.schema.fields) {
     if (!field || !hasOnlyKeys(field, ['id', 'type', 'name', 'property_key', 'options', 'multiple'])
       || !/^fld_[0-9a-f]{32}$/.test(field.id) || fieldIds.has(field.id) || !(field.type === 'primary' || (String(field.type) !== 'Note' && isTablePropertyKind(field.type)))) {
       throw new Error('表格字段 ID 或类型无效');
@@ -208,14 +267,14 @@ export function validateTableDocument(parsed: unknown): MultidimensionalTableDoc
     }
     fieldIds.add(field.id);
   }
-  if (value.table.fields[0]?.type !== 'primary' || value.table.fields.filter((field) => field.type === 'primary').length !== 1) {
+  if (value.dataset?.schema.fields[0]?.type !== 'primary' || value.dataset?.schema.fields.filter((field) => field.type === 'primary').length !== 1) {
     throw new Error('多维表格首列必须是唯一的笔记引用字段');
   }
-  if (value.table.primary_field_id !== value.table.fields[0].id) throw new Error('多维表格主字段必须是笔记引用字段');
+  if (value.dataset?.schema.primary_field_id !== value.dataset?.schema.fields[0].id) throw new Error('多维表格主字段必须是笔记引用字段');
   const viewIds = new Set<string>();
-  if (value.table.views.length === 0) throw new Error('多维表格至少需要一个视图');
-  for (const view of value.table.views) {
-    if (!view || !hasOnlyKeys(view, ['id', 'name', 'type', 'config']) || !/^view_[0-9a-f]{32}$/.test(view.id) || viewIds.has(view.id) || typeof view.name !== 'string' || !view.name.trim() || !['table', 'kanban', 'calendar', 'gallery'].includes(view.type) || !view.config || typeof view.config !== 'object' || Array.isArray(view.config)) throw new Error('表格视图定义无效');
+  if (value.views?.items.length === 0) throw new Error('多维表格至少需要一个视图');
+  for (const view of value.views?.items) {
+    if (!view || !hasOnlyKeys(view, ['id', 'name', 'layout', 'filter', 'sort', 'config']) || !/^view_[0-9a-f]{32}$/.test(view.id) || viewIds.has(view.id) || typeof view.name !== 'string' || !view.name.trim() || !['table', 'kanban', 'calendar', 'gallery'].includes(view.layout) || !view.config || typeof view.config !== 'object' || Array.isArray(view.config)) throw new Error('表格视图定义无效');
     viewIds.add(view.id);
     const referencedFields = [view.config.group_by, view.config.title_field]
       .filter((item): item is string => typeof item === 'string');
@@ -225,23 +284,23 @@ export function validateTableDocument(parsed: unknown): MultidimensionalTableDoc
       referencedFields.push(view.config.date_field);
     }
     const visibleFields = view.config.visible_fields;
-    if ((view.type === 'table' || view.type === 'gallery')
+    if ((view.layout === 'table' || view.layout === 'gallery')
       && (!Array.isArray(visibleFields) || visibleFields.some((item) => typeof item !== 'string'))) {
       throw new Error(`视图“${view.name}”的显示字段配置无效`);
     }
-    if (view.type === 'table' || view.type === 'gallery') referencedFields.push(...visibleFields as string[]);
+    if (view.layout === 'table' || view.layout === 'gallery') referencedFields.push(...visibleFields as string[]);
     if (referencedFields.some((id) => !fieldIds.has(id))) throw new Error(`视图“${view.name}”引用了不存在的字段`);
-    const allowedConfigKeys = view.type === 'table' || view.type === 'gallery'
+    const allowedConfigKeys = view.layout === 'table' || view.layout === 'gallery'
       ? ['visible_fields']
-      : view.type === 'kanban' ? ['group_by'] : ['date_field', 'title_field', 'week_start'];
+      : view.layout === 'kanban' ? ['group_by'] : ['date_field', 'title_field', 'week_start'];
     if (!hasOnlyKeys(view.config, allowedConfigKeys)) throw new Error(`视图“${view.name}”包含未知配置`);
-    if (view.type === 'kanban') {
-      const groupField = value.table.fields.find((field) => field.id === view.config.group_by);
+    if (view.layout === 'kanban') {
+      const groupField = value.dataset?.schema.fields.find((field) => field.id === view.config.group_by);
       if (!groupField || groupField.type !== 'Select') throw new Error(`看板视图“${view.name}”需要单选属性`);
     }
-    if (view.type === 'calendar') {
+    if (view.layout === 'calendar') {
       const dateFieldId = view.config.date_field;
-      const dateField = typeof dateFieldId === 'string' ? value.table.fields.find((field) => field.id === dateFieldId) : undefined;
+      const dateField = typeof dateFieldId === 'string' ? value.dataset?.schema.fields.find((field) => field.id === dateFieldId) : undefined;
       if (dateFieldId !== NOTE_CREATED_AT_FIELD_ID && dateFieldId !== NOTE_UPDATED_AT_FIELD_ID && dateField?.type !== 'Date') {
         throw new Error(`日历视图“${view.name}”需要日期属性`);
       }
@@ -251,12 +310,7 @@ export function validateTableDocument(parsed: unknown): MultidimensionalTableDoc
   }
   const recordIds = new Set<string>();
   const linkedNotes = new Set<string>();
-  const autoCollect = value.records.auto_collect;
-  if (autoCollect === undefined) throw new Error('缺少笔记条件匹配配置');
-  if (autoCollect !== null && !isTableAutoCollectConfig(autoCollect)) {
-    throw new Error('笔记条件匹配配置无效');
-  }
-  for (const record of value.records.data) {
+  for (const record of value.dataset.records.include) {
     if (!record || !/^rec_[0-9a-f]{32}$/.test(record.id) || recordIds.has(record.id)
       || typeof record.updated_at !== 'string'
       || typeof record.note_path !== 'string'
@@ -271,36 +325,8 @@ export function validateTableDocument(parsed: unknown): MultidimensionalTableDoc
   return value as MultidimensionalTableDocument;
 }
 
-export function isTableAutoCollectConfig(value: unknown): value is TableAutoCollectConfig {
-  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
-  const config = value as Partial<TableAutoCollectConfig>;
-  const condition = config.condition;
-  if (!hasOnlyKeys(config, ['condition', 'excluded_note_paths'])
-    || !condition || typeof condition !== 'object' || Array.isArray(condition)
-    || !hasOnlyKeys(condition, ['property_conditions', 'property_match', 'file_condition'])
-    || !Array.isArray(config.excluded_note_paths)
-    || config.excluded_note_paths.some((path) => typeof path !== 'string')) return false;
-  if (condition.property_match !== undefined && !['union', 'intersection'].includes(condition.property_match)) return false;
-  if (condition.property_match !== undefined && !condition.property_conditions?.length) return false;
-  if (condition.property_conditions !== undefined && (!Array.isArray(condition.property_conditions) || condition.property_conditions.length === 0
-    || condition.property_conditions.some((item) => !item || !hasOnlyKeys(item, ['field_id', 'operator', 'value']) || typeof item.field_id !== 'string' || !item.field_id.trim()
-      || !['equals', 'contains'].includes(item.operator) || typeof item.value !== 'string' || !item.value.trim()))) return false;
-  if (condition.property_conditions?.length && condition.property_match === undefined) return false;
-  if (condition.file_condition !== undefined) {
-    const fileCondition = condition.file_condition;
-    if (!fileCondition || typeof fileCondition !== 'object' || Array.isArray(fileCondition)
-      || !hasOnlyKeys(fileCondition, ['file_name_contains', 'file_type', 'path_contains'])) return false;
-    for (const key of ['file_name_contains', 'file_type', 'path_contains'] as const) {
-      if (fileCondition[key] !== undefined && typeof fileCondition[key] !== 'string') return false;
-    }
-    if (fileCondition.file_type !== undefined && fileCondition.file_type !== '' && fileCondition.file_type !== 'markdown') return false;
-    if (!Object.values(fileCondition).some((item) => typeof item === 'string' && item.trim())) return false;
-  }
-  if (!condition.property_conditions?.length && !condition.file_condition) return false;
-  return true;
-}
-
 export function serializeTableDocument(document: MultidimensionalTableDocument): string {
   validateTableDocument(document);
-  return serializeCollectionEnvelope(document.collection, { table: document.table, records: document.records });
+  return serializeCollectionDocumentV2({ format: 'flowix.collection', schema_version: 2, collection: document.collection,
+    payload: { schema_version: 2, dataset: document.dataset, views: document.views } });
 }

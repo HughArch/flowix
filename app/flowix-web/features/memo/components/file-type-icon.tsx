@@ -96,7 +96,9 @@ export function FileTypeIcon({ path, className }: { path: string; className?: st
 }
 
 /** Resolve the custom icons used for non-note files in the notebook tree. */
-export function NotebookTreeResourceIcon({ path, className }: { path: string; className?: string }) {
+export function NotebookTreeResourceIcon({ path, className, collectionType }: { path: string; className?: string; collectionType?: 'table' | 'media_library' }) {
+  if (collectionType === 'media_library') return <MediaLibraryIcon className={className} />;
+  if (collectionType === 'table') return <TableDocumentIcon className={className} />;
   if (/\.lib\.ya?ml$/i.test(path)) return <MediaLibraryIcon className={className} />;
   if (isTableDocumentPath(path)) {
     return <TableDocumentIcon className={className} />;

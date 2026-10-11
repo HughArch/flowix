@@ -55,6 +55,7 @@ export function DocumentTitlebarWin({
     onDeleteExternalFile,
       },
   mediaActions,
+  folderCollectionViewType,
 }: DocumentTitlebarProps) {
   const { t } = useI18n();
   const isAgentThreadCardFullscreen = useAgentThreadCardFullscreenActive();
@@ -149,6 +150,7 @@ export function DocumentTitlebarWin({
             canExportContent={canExportContent}
             canSaveAsTemplate={canSaveAsTemplate}
             canViewVersionHistory={canViewVersionHistory}
+            folderCollectionViewType={folderCollectionViewType}
           />
         )}
         {isMediaSurface && mediaActions && (

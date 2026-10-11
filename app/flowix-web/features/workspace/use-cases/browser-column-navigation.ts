@@ -1,6 +1,6 @@
 import { collections, externalDocuments, notebooks } from '@platform/tauri/client';
 import { collectionNotebookId } from '@features/collection/mutations';
-import { parseCollectionEnvelope } from '@features/collection/model';
+import { parseCollectionDocumentV2 } from '@features/collection/model';
 import { ensureCollectionDisplay, bindCollectionDisplayPath } from '@/lib/collection-display-registry';
 import { captureFileBrowserContext } from './file-browser-context';
 import type { FileBrowserTarget } from '../store/file-browser-target';
@@ -441,7 +441,7 @@ async function prepareCollectionBrowserTarget(target: BrowserColumnTarget): Prom
   const root = registered ? canonicalDirectoryPath(registered.path) : null;
   if (!root) throw new Error('集合需要笔记本上下文');
   const notebookId = await collectionNotebookId(root, target.notebookId);
-  const envelope = target.collectionDisplay ? null : parseCollectionEnvelope(await externalDocuments.read(target.activeFilePath, root));
+  const envelope = target.collectionDisplay ? null : parseCollectionDocumentV2(await externalDocuments.read(target.activeFilePath, root));
   const collectionId = target.collectionDisplay?.collectionId ?? envelope!.collection.id;
   const item = await collections.resolve(notebookId, collectionId);
   if (item.identityConflict || item.parseState !== 'valid') throw new Error('集合身份冲突或格式暂不可用');

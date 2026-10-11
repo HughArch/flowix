@@ -110,7 +110,7 @@ import {
 } from '@platform/tauri/client';
 import { resourceKindFromPath } from '@features/editor/code-file';
 import { useDynamicVirtualList } from '@features/memo/components/memo-list/use-dynamic-virtual-list';
-import { createTableDocumentFile } from '@features/multidimensional-table/public/create-api';
+import { createTableDocumentFile, type TableViewType } from '@features/multidimensional-table/public/create-api';
 import { subscribe } from '@platform/tauri/event-bus';
 import {
   ContextMenu,
@@ -140,6 +140,48 @@ const TREE_EXTERNAL_DRAG_EXPAND_DELAY_MS = 1000;
 const logger = createLogger('notebook-file-tree');
 // Row gutter (6px) + inline padding (6px) + half of the 12px caret.
 const FOLDER_CARET_CENTER_OFFSET = 12;
+
+function useViewportSubmenuPosition(open: boolean) {
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const contentRef = useRef<HTMLDivElement | null>(null);
+  const [style, setStyle] = useState<CSSProperties>({ left: '100%', top: 0 });
+
+  useLayoutEffect(() => {
+    if (!open) return;
+    const updatePosition = () => {
+      const trigger = triggerRef.current;
+      const content = contentRef.current;
+      if (!trigger || !content) return;
+      const triggerRect = trigger.getBoundingClientRect();
+      const width = content.offsetWidth || 176;
+      const height = content.scrollHeight;
+      const opensLeft = window.innerWidth - triggerRect.right < width + 8;
+      const top = Math.max(4, Math.min(triggerRect.top, window.innerHeight - height - 4));
+      setStyle({
+        left: opensLeft ? undefined : '100%',
+        right: opensLeft ? '100%' : undefined,
+        top: top - triggerRect.top,
+      });
+    };
+    updatePosition();
+    const frame = window.requestAnimationFrame(updatePosition);
+    const observer = typeof ResizeObserver === 'undefined' || !contentRef.current
+      ? null
+      : new ResizeObserver(updatePosition);
+    if (observer && contentRef.current) observer.observe(contentRef.current);
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open]);
+
+  return { triggerRef, contentRef, style };
+}
+
 type NotebookTreeSection = 'agents' | 'pinned' | 'views' | 'files' | 'repositories';
 
 const DEFAULT_TREE_SECTION_ORDER: NotebookTreeSection[] = ['agents', 'pinned', 'views', 'files', 'repositories'];
@@ -221,7 +263,7 @@ function TreeSectionMoreMenu({
   onMoveDown: () => void;
   onCreateFolder?: () => void;
   onCreateNote?: () => void;
-  onCreateTable?: () => void;
+  onCreateTable?: (viewType?: TableViewType) => void;
   onCreateMediaLibrary?: () => void;
   onImportFiles?: () => void;
   sort?: FolderTreeSort;
@@ -231,6 +273,8 @@ function TreeSectionMoreMenu({
   const { t } = useI18n();
   const [sortSubmenuOpen, setSortSubmenuOpen] = useState(false);
   const [createSubmenuOpen, setCreateSubmenuOpen] = useState(false);
+  const createSubmenuPosition = useViewportSubmenuPosition(createSubmenuOpen);
+  const sortSubmenuPosition = useViewportSubmenuPosition(sortSubmenuOpen);
   const itemClassName = 'group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)] disabled:cursor-not-allowed disabled:opacity-40';
   const hasActionsAfterMovement = Boolean(
     onCreateNote || onCreateFolder || onCreateTable || onCreateMediaLibrary || onImportFiles || (sort && onSort),
@@ -269,7 +313,7 @@ function TreeSectionMoreMenu({
             {t('memo.fileTree.newFolder')}
           </DropdownMenuItem>
         )}
-        {(onCreateTable || onCreateMediaLibrary || onImportFiles) && (
+        {(onCreateTable || onCreateMediaLibrary) && (
           <div
             className="relative"
             onMouseEnter={() => setCreateSubmenuOpen(true)}
@@ -277,6 +321,7 @@ function TreeSectionMoreMenu({
           >
             <button
               type="button"
+              ref={createSubmenuPosition.triggerRef}
               className={cn(itemClassName, 'flex w-full items-center justify-between text-sm')}
               onClick={() => setCreateSubmenuOpen((open) => !open)}
               onMouseDown={(event) => event.preventDefault()}
@@ -288,28 +333,43 @@ function TreeSectionMoreMenu({
               <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
             {createSubmenuOpen && (
-              <div className="absolute left-full top-0 w-[176px] space-y-0.5 rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+              <div ref={createSubmenuPosition.contentRef} style={{ ...createSubmenuPosition.style, maxWidth: 'calc(100vw - 8px)', maxHeight: 'calc(100vh - 8px)', overflowY: 'auto' }} className="absolute w-[176px] space-y-0.5 rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
                 {onCreateTable && (
-                  <DropdownMenuItem onClick={onCreateTable} className={itemClassName}>
+                  <DropdownMenuItem onClick={() => onCreateTable()} className={itemClassName}>
                     <Table2 className="h-3.5 w-3.5" aria-hidden="true" />
-                    {t('memo.create.table')}
+                    <span>{t('memo.create.table')}</span>
+                    <span className="ml-auto text-xs text-[var(--muted-foreground)] opacity-50 group-hover:text-[var(--primary-foreground)] group-focus-visible:text-[var(--primary-foreground)]">{t('memo.create.note')}</span>
                   </DropdownMenuItem>
                 )}
+                {onCreateTable && ([
+                  ['gallery', 'memo.create.newGallery'],
+                  ['kanban', 'memo.create.newKanban'],
+                  ['calendar', 'memo.create.newCalendar'],
+                ] as const).map(([viewType, label]) => (
+                  <DropdownMenuItem key={viewType} onClick={() => onCreateTable(viewType)} className={itemClassName}>
+                    <span className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />
+                    {t(label)}
+                    <span className="ml-auto text-xs text-[var(--muted-foreground)] opacity-50 group-hover:text-[var(--primary-foreground)] group-focus-visible:text-[var(--primary-foreground)]">{t('memo.create.note')}</span>
+                  </DropdownMenuItem>
+                ))}
                 {onCreateMediaLibrary && (
                   <DropdownMenuItem onClick={onCreateMediaLibrary} className={itemClassName}>
                     <GalleryHorizontalEnd className="h-3.5 w-3.5" aria-hidden="true" />
-                    {t('memo.create.mediaLibraryTitle')}
-                  </DropdownMenuItem>
-                )}
-                {onImportFiles && (
-                  <DropdownMenuItem onClick={onImportFiles} className={itemClassName}>
-                    <DownloadSimpleIcon className="h-3.5 w-3.5" aria-hidden="true" />
-                    {t('memo.fileTree.import')}
+                    <span>{t('memo.create.mediaLibrary')}</span>
+                    <span className="ml-auto text-xs text-[var(--muted-foreground)] opacity-50 group-hover:text-[var(--primary-foreground)] group-focus-visible:text-[var(--primary-foreground)]">
+                      {t('memo.create.mediaImageShort')}/{t('memo.create.mediaVideoShort')}
+                    </span>
                   </DropdownMenuItem>
                 )}
               </div>
             )}
           </div>
+        )}
+        {onImportFiles && (
+          <DropdownMenuItem onClick={onImportFiles} className={itemClassName}>
+            <DownloadSimpleIcon className="h-3.5 w-3.5" aria-hidden="true" />
+            {t('memo.fileTree.import')}
+          </DropdownMenuItem>
         )}
         {sort && onSort && (
           <div
@@ -319,6 +379,7 @@ function TreeSectionMoreMenu({
           >
             <button
               type="button"
+              ref={sortSubmenuPosition.triggerRef}
               className={cn(itemClassName, 'memo-navigation-submenu-trigger flex w-full items-center justify-between text-sm')}
               onClick={() => setSortSubmenuOpen(true)}
               onMouseDown={(event) => event.preventDefault()}
@@ -333,7 +394,7 @@ function TreeSectionMoreMenu({
               </span>
             </button>
             {sortSubmenuOpen && (
-              <div className="absolute left-full top-0 w-[176px] space-y-0.5 rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+              <div ref={sortSubmenuPosition.contentRef} style={{ ...sortSubmenuPosition.style, maxWidth: 'calc(100vw - 8px)', maxHeight: 'calc(100vh - 8px)', overflowY: 'auto' }} className="absolute w-[176px] space-y-0.5 rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
                 {([
                   ['createdAt', 'memo.list.sortCreated'],
                   ['updatedAt', 'memo.list.sortUpdated'],
@@ -356,7 +417,7 @@ function TreeSectionMoreMenu({
             )}
           </div>
         )}
-        {hasActionsAfterMovement && <DropdownMenuSeparator />}
+        {hasActionsAfterMovement && onCustomizeDisplay && <DropdownMenuSeparator />}
         {onCustomizeDisplay && (
           <DropdownMenuItem onClick={(event) => {
             const rect = getPopupOriginRect(event.currentTarget);
@@ -1014,6 +1075,7 @@ export function NotebookFileTree({
   const [mediaLibraries, setMediaLibraries] = useState<MediaLibraryListItem[]>([]);
   const [newTableDialogOpen, setNewTableDialogOpen] = useState(false);
   const [newTableName, setNewTableName] = useState('');
+  const [newTableViewType, setNewTableViewType] = useState<TableViewType>('table');
   const [newTableInViews, setNewTableInViews] = useState(false);
   const [newTableParentFolder, setNewTableParentFolder] = useState<string | null>(null);
   const [isCreatingTable, setIsCreatingTable] = useState(false);
@@ -1755,10 +1817,17 @@ export function NotebookFileTree({
       toast.error(t('memo.fileTree.openFailed'));
     });
   }, [notebookId, notebookPath, t]);
-  const openNewTableDialog = useCallback((inViews = false, parentFolderPath?: string) => {
+  const openNewTableDialog = useCallback((inViews = false, parentFolderPath?: string, viewType: TableViewType = 'table') => {
     setNewTableInViews(inViews);
     setNewTableParentFolder(parentFolderPath ?? null);
-    setNewTableName(t('memo.create.tableDefaultName'));
+    setNewTableViewType(viewType);
+    setNewTableName(viewType === 'gallery'
+      ? t('memo.create.galleryDefaultName')
+      : viewType === 'kanban'
+        ? t('memo.create.kanbanDefaultName')
+        : viewType === 'calendar'
+          ? t('memo.create.calendarDefaultName')
+          : t('memo.create.tableDefaultName'));
     setNewTableDialogOpen(true);
   }, [t]);
   const handleSetTableDocumentInViews = useCallback(async (collectionId: string, inViews: boolean) => {
@@ -1826,12 +1895,13 @@ export function NotebookFileTree({
       const relativeFolder = newTableInViews || newTableParentFolder === null
         ? defaultCreateFolder
         : relativeFolderPath(notebookPath, newTableParentFolder);
-      const { filePath, table } = await createTableDocumentFile(notebookPath, relativeFolder, newTableName);
+      const { filePath, table } = await createTableDocumentFile(notebookPath, relativeFolder, newTableName, newTableViewType);
       if (newTableInViews) {
         await files.setTableDocumentInViews(notebookId, table.collection.id, true);
       }
       setNewTableDialogOpen(false);
       setNewTableName('');
+      setNewTableViewType('table');
       setNewTableInViews(false);
       setNewTableParentFolder(null);
       setTableDocuments(await files.listTableDocuments(notebookId));
@@ -1841,7 +1911,7 @@ export function NotebookFileTree({
     } finally {
       setIsCreatingTable(false);
     }
-  }, [defaultCreateFolder, isCreatingTable, newTableInViews, newTableName, newTableParentFolder, notebookId, notebookPath]);
+  }, [defaultCreateFolder, isCreatingTable, newTableInViews, newTableName, newTableParentFolder, newTableViewType, notebookId, notebookPath]);
 
   const openNewMediaLibraryDialog = useCallback((inViews = false, parentFolderPath?: string) => {
     setNewLibraryInViews(inViews);
@@ -2085,8 +2155,8 @@ export function NotebookFileTree({
           onCreateNote={handleCreateNoteAtPath}
           onCreateFolder={handleCreateFolderAtPath}
           onImportFiles={(path) => { void handleImportFiles(path); }}
-          onCreateView={(parentPath) => {
-            openNewTableDialog(false, parentPath);
+          onCreateView={(parentPath, viewType) => {
+            openNewTableDialog(false, parentPath, viewType);
           }}
           onCreateMediaLibrary={(parentPath) => openNewMediaLibraryDialog(false, parentPath)}
           tableViewVisibility={tableDocument ? {
@@ -2514,8 +2584,8 @@ export function NotebookFileTree({
                   onCreateNote={handleCreateNoteAtPath}
                   onCreateFolder={handleCreateFolderAtPath}
           onImportFiles={(path) => { void handleImportFiles(path); }}
-                  onCreateView={(parentPath) => {
-                    openNewTableDialog(false, parentPath);
+                  onCreateView={(parentPath, viewType) => {
+                    openNewTableDialog(false, parentPath, viewType);
                   }}
                   onCreateMediaLibrary={(parentPath) => openNewMediaLibraryDialog(false, parentPath)}
                   onRename={handleRename}
@@ -2555,29 +2625,13 @@ export function NotebookFileTree({
                 <ChevronRight className={cn('h-3.5 w-3.5 opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-within:opacity-100', viewsCollapsed && 'opacity-100', !viewsCollapsed && 'rotate-90')} />
               </button>
               <div className="ml-auto flex items-center">
-                <button
-                  type="button"
-                  className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] opacity-0 transition-[color,opacity] hover:text-[var(--foreground)] focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
-                  aria-label={t('memo.create.table')}
-                  title={t('memo.create.table')}
-                  onClick={() => openNewTableDialog(true)}
-                >
-                  <Table2 className="h-3.5 w-3.5" aria-hidden="true" />
-                </button>
-                <button
-                  type="button"
-                  className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] opacity-0 transition-[color,opacity] hover:text-[var(--foreground)] focus-visible:opacity-100 focus-visible:outline-none group-hover:opacity-100"
-                  aria-label={t('memo.create.mediaLibraryTitle')}
-                  title={t('memo.create.mediaLibraryTitle')}
-                  onClick={() => openNewMediaLibraryDialog(true)}
-                >
-                  <GalleryHorizontalEnd className="h-3.5 w-3.5" aria-hidden="true" />
-                </button>
                 <TreeSectionMoreMenu
                   canMoveUp={visibleSectionOrder.indexOf('views') > 0}
                   canMoveDown={visibleSectionOrder.indexOf('views') < visibleSectionOrder.length - 1}
                   onMoveUp={() => moveTreeSection('views', -1)}
                   onMoveDown={() => moveTreeSection('views', 1)}
+                  onCreateTable={(viewType) => openNewTableDialog(true, undefined, viewType)}
+                  onCreateMediaLibrary={() => openNewMediaLibraryDialog(true)}
                 />
               </div>
             </div>
@@ -2602,8 +2656,8 @@ export function NotebookFileTree({
                 onOpenInNewTab={onNoteOpenInNewTab ? handleOpenPathInNewTab : undefined}
                 onCreateNote={handleCreateNoteAtPath}
                 onCreateFolder={handleCreateFolderAtPath}
-                onCreateView={(parentPath) => {
-                  openNewTableDialog(true, parentPath);
+                onCreateView={(parentPath, viewType) => {
+                  openNewTableDialog(true, parentPath, viewType);
                 }}
                 onCreateMediaLibrary={(parentPath) => openNewMediaLibraryDialog(true, parentPath)}
                 tableViewVisibility={{
@@ -2640,7 +2694,7 @@ export function NotebookFileTree({
                 onOpenInNewTab={onNoteOpenInNewTab ? handleOpenPathInNewTab : undefined}
                 onCreateNote={handleCreateNoteAtPath}
                 onCreateFolder={handleCreateFolderAtPath}
-                onCreateView={(parentPath) => openNewTableDialog(true, parentPath)}
+                onCreateView={(parentPath, viewType) => openNewTableDialog(true, parentPath, viewType)}
                 onCreateMediaLibrary={(parentPath) => openNewMediaLibraryDialog(true, parentPath)}
                 mediaLibraryViewVisibility={{
                   inViews: library.inViews,
@@ -2688,24 +2742,6 @@ export function NotebookFileTree({
               <ChevronRight className={cn('h-3.5 w-3.5 opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-within:opacity-100', filesCollapsed && 'opacity-100', !filesCollapsed && 'rotate-90')} />
             </button>
             <div className="ml-auto flex items-center">
-              <button
-                type="button"
-                onClick={() => openNewTableDialog()}
-                aria-label={t('memo.create.table')}
-                title={t('memo.create.table')}
-                className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] opacity-0 transition-[color,opacity] hover:text-[var(--foreground)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--brand)] group-hover:opacity-100"
-              >
-                <Table2 className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
-              <button
-                type="button"
-                onClick={() => openNewMediaLibraryDialog()}
-                aria-label={t('memo.create.mediaLibraryTitle')}
-                title={t('memo.create.mediaLibraryTitle')}
-                className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] opacity-0 transition-[color,opacity] hover:text-[var(--foreground)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--brand)] group-hover:opacity-100"
-              >
-                <GalleryHorizontalEnd className="h-3.5 w-3.5" aria-hidden="true" />
-              </button>
               <TreeSectionMoreMenu
                 canMoveUp={visibleSectionOrder.indexOf('files') > 0}
                 canMoveDown={visibleSectionOrder.indexOf('files') < visibleSectionOrder.length - 1}
@@ -2713,7 +2749,7 @@ export function NotebookFileTree({
                 onMoveDown={() => moveTreeSection('files', 1)}
                 onCreateFolder={onCreateFolder}
                 onCreateNote={() => handleCreateNoteAtPath(notebookPath)}
-                onCreateTable={() => openNewTableDialog()}
+                onCreateTable={(viewType) => openNewTableDialog(false, undefined, viewType)}
                 onCreateMediaLibrary={() => openNewMediaLibraryDialog()}
                 onImportFiles={() => { void handleImportFiles(notebookPath); }}
                 sort={fileTreeSort}
@@ -2862,7 +2898,7 @@ export function NotebookFileTree({
               <NotebookCreateContextMenuItems
                 onCreateNote={() => handleCreateNoteAtPath(notebookPath)}
                 onCreateFolder={() => handleCreateFolderAtPath(notebookPath)}
-                onCreateTable={() => openNewTableDialog(false, notebookPath)}
+                onCreateTable={(viewType) => openNewTableDialog(false, notebookPath, viewType)}
                 onCreateMediaLibrary={() => openNewMediaLibraryDialog(false, notebookPath)}
                 onImport={() => { void handleImportFiles(notebookPath); }}
               />
@@ -2916,7 +2952,13 @@ export function NotebookFileTree({
       <Dialog open={newTableDialogOpen} onOpenChange={setNewTableDialogOpen}>
         <DialogContent className="max-w-sm">
           <DialogHeader>
-            <DialogTitle className="text-base">{t('memo.create.tableDialogTitle')}</DialogTitle>
+            <DialogTitle className="text-base">{newTableViewType === 'gallery'
+              ? t('memo.create.galleryDialogTitle')
+              : newTableViewType === 'kanban'
+                ? t('memo.create.kanbanDialogTitle')
+                : newTableViewType === 'calendar'
+                  ? t('memo.create.calendarDialogTitle')
+                  : t('memo.create.tableDialogTitle')}</DialogTitle>
             <DialogDescription>{t('memo.create.tableDescription')}</DialogDescription>
           </DialogHeader>
           <form className="mt-2 space-y-4" onSubmit={(event) => { event.preventDefault(); void handleCreateTableDocument(); }}>
@@ -2924,7 +2966,13 @@ export function NotebookFileTree({
               autoFocus
               value={newTableName}
               onChange={(event) => setNewTableName(event.target.value)}
-              placeholder={t('memo.create.tableDefaultName')}
+              placeholder={newTableViewType === 'gallery'
+                ? t('memo.create.galleryDefaultName')
+                : newTableViewType === 'kanban'
+                  ? t('memo.create.kanbanDefaultName')
+                  : newTableViewType === 'calendar'
+                    ? t('memo.create.calendarDefaultName')
+                    : t('memo.create.tableDefaultName')}
               className="h-8 w-full rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm outline-none focus:border-[var(--brand)]"
             />
             <div className="flex justify-end gap-2">

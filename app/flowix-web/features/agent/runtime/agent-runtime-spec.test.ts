@@ -32,6 +32,37 @@ describe("workspace capabilities", () => {
   });
 });
 
+describe("Pi Codemode shared preference", () => {
+  const input = {
+    typeKey: "pi" as const,
+    notebookPath: "/tmp/project",
+    permissionMode: "danger-full-access" as const,
+    codexModel: "inherit" as const,
+    codexReasoningEffort: "medium" as const,
+  };
+
+  it("does not let a saved conversation value override the shared preference", () => {
+    const legacyConversation = buildAgentRuntimeConfig({
+      ...input,
+      instanceRuntimeConfig: { pi: { codeMode: true } },
+    });
+    const sharedWriting = buildAgentRuntimeConfig({
+      ...input,
+      piCodeMode: false,
+      instanceRuntimeConfig: { pi: { codeMode: true } },
+    });
+    const sharedCode = buildAgentRuntimeConfig({
+      ...input,
+      piCodeMode: true,
+      instanceRuntimeConfig: { pi: { codeMode: false } },
+    });
+
+    expect(legacyConversation.pi?.codeMode).toBe(false);
+    expect(sharedWriting.pi?.codeMode).toBe(false);
+    expect(sharedCode.pi?.codeMode).toBe(true);
+  });
+});
+
 describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生", () => {
   beforeEach(() => {
     vi.clearAllMocks();

@@ -10,7 +10,14 @@ export type StoredAsset = {
     fileName?: string | null;
     storageMode?: 'attachment';
     storageKey?: string | null;
+    /** False when the backend reused an existing file or returned a notebook-local source path. */
+    created?: boolean;
     revokeObjectURL?: boolean;
+};
+
+export type AttachmentSaveResult = {
+    path: string;
+    created: boolean;
 };
 
 export type AttachmentUploadOptions = {

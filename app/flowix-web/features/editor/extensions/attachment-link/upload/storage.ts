@@ -1,4 +1,4 @@
-import { invoke } from '@platform/tauri/core';
+import { notebookAssets } from '@platform/tauri/client';
 import { acquireUploadSlot, readFileBase64 } from './io';
 import { reportUploadFailure } from './feedback';
 import { uploadInChunks } from './chunked';
@@ -15,6 +15,7 @@ export type AttachmentPathUploadOptions = {
     ownerPath?: string;
     notebookId?: string;
     signal?: AbortSignal;
+    deduplicate?: boolean;
 };
 
 export async function createAttachmentUpload(
@@ -23,6 +24,7 @@ export async function createAttachmentUpload(
     saveFile?: AttachmentFileSaver,
     ownerPath?: string,
     signal?: AbortSignal,
+    deduplicate = false,
 ): Promise<{ assets: StoredAsset[] }> {
     const assets: StoredAsset[] = [];
     if (!ownerPath && !saveContent && !saveFile) {
@@ -36,6 +38,7 @@ export async function createAttachmentUpload(
         const fileName = safeFileName(file.name);
 
         let storageKey: string | null = null;
+        let created = true;
         let release: (() => void) | undefined;
         try {
             release = acquireUploadSlot();
@@ -50,7 +53,9 @@ export async function createAttachmentUpload(
                     if (signal?.aborted) break;
                     storageKey = await saveContent({ content: base64Content, fileName });
                 } else {
-                    storageKey = await uploadInChunks(file, fileName, ownerPath!, signal);
+                    const saved = await uploadInChunks(file, fileName, ownerPath!, signal, deduplicate);
+                    storageKey = saved.path;
+                    created = saved.created;
                 }
             }
             if (!storageKey) throw new Error('Attachment save returned no path');
@@ -72,6 +77,7 @@ export async function createAttachmentUpload(
             fileName,
             storageMode: 'attachment',
             storageKey,
+            created,
             revokeObjectURL: false,
         });
     }
@@ -81,7 +87,7 @@ export async function createAttachmentUpload(
 
 export async function createAttachmentUploadFromPaths(
     paths: string[],
-    { ownerPath, notebookId, signal }: AttachmentPathUploadOptions = {},
+    { ownerPath, notebookId, signal, deduplicate = false }: AttachmentPathUploadOptions = {},
 ): Promise<{ assets: StoredAsset[] }> {
     const assets: StoredAsset[] = [];
     if (!ownerPath && !notebookId) {
@@ -94,15 +100,19 @@ export async function createAttachmentUploadFromPaths(
         const name = fileNameFromPath(path);
         const fileName = safeFileName(name);
         let storageKey: string | null = null;
+        let created = true;
         let release: (() => void) | undefined;
 
         try {
             release = acquireUploadSlot();
-            storageKey = await invoke<string | null>('save_attachment', {
-                sourcePath: path,
+            const saved = await notebookAssets.saveFromPath(path, {
                 ...(notebookId ? { notebookId } : { notePath: ownerPath }),
+                deduplicate,
+                reuseNotebookFile: true,
             });
-            if (!storageKey) throw new Error('Attachment save returned no path');
+            if (!saved?.path) throw new Error('Attachment save returned no path');
+            storageKey = saved.path;
+            created = saved.created;
         } catch (err) {
             console.error('[FileUpload] Failed to save attachment:', err);
             if (!signal?.aborted) reportUploadFailure(err);
@@ -121,6 +131,7 @@ export async function createAttachmentUploadFromPaths(
             fileName,
             storageMode: 'attachment',
             storageKey,
+            created,
         });
     }
 

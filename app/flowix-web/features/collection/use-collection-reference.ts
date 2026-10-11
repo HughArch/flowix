@@ -4,7 +4,7 @@ import { subscribe } from '@platform/tauri/event-bus';
 import { bindCollectionDisplayPath, ensureCollectionDisplay, pinCollectionDisplay } from '@/lib/collection-display-registry';
 import type { FileDisplayIdentity } from '@/lib/file-display-registry';
 import { canonicalDirectoryPath } from '@/lib/path';
-import { parseCollectionEnvelope, type CollectionType } from './model';
+import { parseCollectionDocumentV2, type CollectionType } from './model';
 import { subscribeLocalCollectionChanges } from './events';
 
 interface ReferenceState {
@@ -33,10 +33,10 @@ export function useCollectionReference(notebook: { id: string; path: string } | 
         if (item.identityConflict || item.parseState !== 'valid' || item.collectionType !== type) throw new Error('集合身份冲突或格式暂不可用');
         const path = `${root}/${item.relativePath}`;
         const content = await externalDocuments.read(path, root);
-        const envelope = parseCollectionEnvelope(content);
+        const envelope = parseCollectionDocumentV2(content);
         if (envelope.collection.id !== collectionId || envelope.collection.type !== type) throw new Error('集合身份已变化');
         if (viewId) {
-          const views = type === 'table' ? (envelope.payload.table as { views: Array<{ id: string }> }).views : [envelope.payload.view as { id: string }];
+          const views = envelope.payload.views.items as Array<{ id: string }>;
           if (!views.some((view) => view.id === viewId)) throw new Error('此集合视图已不存在');
         }
         if (!active || request !== generation) return;

@@ -4,9 +4,9 @@ import { Node as TiptapNode, mergeAttributes, type Editor, type MarkdownToken } 
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import type { EditorView, NodeView as ProseMirrorNodeView } from '@tiptap/pm/view';
 import { createRoot, type Root } from 'react-dom/client';
-import { ChevronDown, X } from 'lucide-react';
+import { X } from 'lucide-react';
 import { ArrowUpRightIcon, ArrowsLeftRightIcon, FunnelIcon, PlusIcon } from '@phosphor-icons/react';
-import { attachments, dialogs, externalDocuments, files, collections, mediaResources, type MediaResource, type NotebookFolderOption } from '@platform/tauri/client';
+import { dialogs, externalDocuments, files, collections, mediaResources, type MediaResource, type NotebookFolderOption } from '@platform/tauri/client';
 import { resourceKindFromPath } from '@features/editor/public/code-file';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { openCollectionTarget, replaceExternalDocumentPath } from '@features/workspace/use-cases/workspace-navigation';
@@ -16,15 +16,16 @@ import { useCollectionReference } from '@features/collection/use-collection-refe
 import { toast } from '@/lib/toast';
 import { Button } from '@shared/ui/button';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@shared/ui/select';
 import { useI18n } from '@/lib/i18n';
-import { ResourceFolderIcon } from '@features/surface/resource-file-icon';
 import { NotebookTreeResourceIcon } from '@features/memo/components/file-type-icon';
 import { openMediaLibraryReferencePicker } from './media-library-reference-picker';
+import { resolveMediaLibraryAddDirectories } from './add-location';
+import { saveMediaFile } from './media-import';
 import { renameMediaLibraryFile } from './rename-media-library';
 import { MediaLibraryPhotoWall } from './media-library-photo-wall';
 import { PHOTO_WALL_CANDIDATE_LIMIT } from './photo-wall-layout';
-import { createMediaLibraryRecord, hasMediaLibraryDatasetCondition, matchesMediaLibraryDataset, normalizeMediaLibraryFileCondition, parseMediaLibrary, serializeMediaLibrary, type MediaLibraryDocument, type MediaLibraryKind, type MediaLibraryRecord } from './model';
+import { MediaLibraryFilterPanel } from './media-library-filter-panel';
+import { createMediaLibraryRecord, mediaCollectionFilterFromCondition, mediaLibraryFileCondition, matchesMediaCollectionFilter, normalizeMediaLibraryFileCondition, parseMediaLibrary, serializeMediaLibrary, type MediaLibraryDocument, type MediaLibraryKind, type MediaLibraryRecord } from './model';
 
 const MEDIA_LIBRARY_REFERENCE_MARKER = 'flowix:media-library-reference';
 const MEDIA_LIBRARY_REFERENCE_VERSION = 1;
@@ -153,7 +154,7 @@ async function loadLinkedMediaResources(
   for (let offset = 0; offset < records.length && linked.length <= limit && isActive(); offset += 8) {
     const batch = records.slice(offset, offset + 8);
     const resolved = await Promise.all(batch.map(async (record) => {
-      const filePath = joinNotebookMemoPath(notebookPath, record.note_path);
+      const filePath = joinNotebookMemoPath(notebookPath, record.relative_path);
       if (!filePath) return null;
       try {
         return (await mediaResources.get(filePath, notebookPath)).resource;
@@ -173,7 +174,7 @@ function MediaLibraryDatasetPopover({ document, notebook, filePath, editable, bu
   onSaved: (document: MediaLibraryDocument) => void;
 }) {
   const { t } = useI18n();
-  const condition = document?.view.condition.file_condition ?? {};
+  const condition = document ? mediaLibraryFileCondition(document) : {};
   const [open, setOpen] = useState(false);
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [fileName, setFileName] = useState('');
@@ -218,7 +219,11 @@ function MediaLibraryDatasetPopover({ document, notebook, filePath, editable, bu
         const next: MediaLibraryDocument = {
           ...current,
           collection: { ...current.collection, revision: current.collection.revision + 1, updated_at: new Date().toISOString() },
-          view: { ...current.view, condition: Object.keys(nextCondition).length ? { file_condition: nextCondition } : {} },
+          dataset: { ...current.dataset, filter: Object.keys(nextCondition).length
+            ? mediaCollectionFilterFromCondition(nextCondition)
+            : current.dataset.filter ? { all: [{ field: 'kind', op: 'in', value: ['image', 'video'] }], any: [] } : null },
+          views: { ...current.views, items: current.views.items.map((view) => view.id === current.views.default_id
+            ? { ...view, filter: { all: [], any: [] } } : view) },
         };
         const result = await externalDocuments.write({ filePath, content: serializeMediaLibrary(next), expectedContent: source, scopePath: notebook.path });
         if (result.status === 'saved') {
@@ -248,41 +253,24 @@ function MediaLibraryDatasetPopover({ document, notebook, filePath, editable, bu
     </PopoverTrigger>
     <PopoverContent align="end" side="bottom" sideOffset={0} fitViewport style={{ zIndex: 150 }} ignorePopoverOutside={folderPickerOpen} className="max-h-[min(70vh,420px)] w-[320px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl px-1 py-2 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
       <div className="space-y-1">
-        <div className="flex items-center justify-between">
-          <p className="agent-thread-card__codex-settings-title px-2">数据集</p>
-          {(fileName.trim() || fileType !== 'any' || path.trim()) && <button type="button" className="mx-2 rounded-lg px-2 py-1 text-xs text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]" onClick={() => { setFileName(''); setFileType('any'); setPath(''); }}>{t('mediaLibrary.clearFilters')}</button>}
-        </div>
-        <label className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
-          <span className="px-0.5 text-sm text-[var(--foreground)]">{t('mediaLibrary.filterFileName')}</span>
-          <input value={fileName} onChange={(event) => setFileName(event.currentTarget.value)} placeholder={t('mediaLibrary.filterFileNamePlaceholder')} aria-label={t('mediaLibrary.filterFileName')} className="h-8 w-full rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm outline-none focus:border-[var(--brand)]" />
-        </label>
-        <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
-          <span className="px-0.5 text-sm text-[var(--foreground)]">{t('mediaLibrary.filterType')}</span>
-          <Select value={fileType} onValueChange={(value) => setFileType(value as 'any' | MediaLibraryKind)}>
-            <SelectTrigger className="h-8 min-w-0 w-full rounded-lg bg-transparent px-2 text-left text-sm"><SelectValue>{fileType === 'image' ? t('mediaLibrary.images') : fileType === 'video' ? t('mediaLibrary.videos') : t('mediaLibrary.all')}</SelectValue></SelectTrigger>
-            <SelectContent align="start" fitViewport style={{ zIndex: 170 }} className="flowix-preferences-select-content">
-              <SelectItem value="any">{t('mediaLibrary.all')}</SelectItem><SelectItem value="image">{t('mediaLibrary.images')}</SelectItem><SelectItem value="video">{t('mediaLibrary.videos')}</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
-        <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
-          <span className="px-0.5 text-sm text-[var(--foreground)]">{t('mediaLibrary.filterPath')}</span>
-          <Popover open={folderPickerOpen} onOpenChange={setFolderPickerOpen}>
-            <PopoverTrigger asChild><button type="button" disabled={!notebook} className="flex h-8 w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-transparent px-2 text-left text-sm disabled:opacity-50"><span className="min-w-0 truncate">{path || t('mediaLibrary.chooseFolder')}</span><ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" /></button></PopoverTrigger>
-            <PopoverContent side="bottom" align="start" sideOffset={4} style={{ zIndex: 170 }} className="max-h-[min(60vh,280px)] w-[260px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-              {loadingFolders ? <p className="px-2 py-2 text-xs text-[var(--muted-foreground)]">{t('mediaLibrary.loadingFolders')}</p> : <div className="space-y-0.5">
-                <button type="button" aria-pressed={!path} onClick={() => { setPath(''); setFolderPickerOpen(false); }} className={'flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-sm hover:bg-[var(--muted)]' + (!path ? ' bg-[var(--muted)]' : '')}><span className="flex min-w-0 flex-1 items-center gap-2 pl-2"><ResourceFolderIcon expanded={false} className="h-[18px] w-[18px] shrink-0" /><span className="min-w-0 truncate">{t('mediaLibrary.anyFolder')}</span></span></button>
-                {folderOptions.length === 0 ? <p className="px-2 py-2 text-xs text-[var(--muted-foreground)]">{t('mediaLibrary.noFolders')}</p> : folderOptions.map((option) => {
-                  const folderName = option.relativePath.split('/').filter(Boolean).pop() ?? option.relativePath;
-                  const selected = path === option.relativePath;
-                  return <button key={option.relativePath} type="button" title={option.relativePath} aria-pressed={selected} onClick={() => { setPath(option.relativePath); setFolderPickerOpen(false); }} className={'flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-sm hover:bg-[var(--muted)]' + (selected ? ' bg-[var(--muted)]' : '')} style={{ paddingLeft: 8 + option.depth * 16 }}><ResourceFolderIcon expanded={false} className="h-[18px] w-[18px] shrink-0" /><span className="min-w-0 truncate">{folderName}</span></button>;
-                })}
-              </div>}
-            </PopoverContent>
-          </Popover>
-        </div>
+        <MediaLibraryFilterPanel
+          fileName={fileName}
+          fileType={fileType}
+          path={path}
+          folderPickerOpen={folderPickerOpen}
+          folderOptions={folderOptions}
+          folderOptionsLoading={loadingFolders}
+          notebookAvailable={Boolean(notebook)}
+          busy={saving || busy}
+          applying={saving}
+          onFileNameChange={setFileName}
+          onFileTypeChange={setFileType}
+          onPathChange={setPath}
+          onFolderPickerOpenChange={setFolderPickerOpen}
+          onReset={() => { setFileName(''); setFileType('any'); setPath(''); }}
+          onApply={() => { void save(); }}
+        />
       </div>
-      <div className="mx-2 mt-2"><button type="button" disabled={saving || busy} className="flex h-8 w-full items-center justify-center rounded-lg border border-[var(--border)] bg-white text-sm text-gray-900 hover:bg-gray-100 disabled:opacity-50" onClick={() => void save()}>{saving ? '保存中…' : t('mediaLibrary.apply')}</button></div>
     </PopoverContent>
   </Popover>;
 }
@@ -331,17 +319,17 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
     if (!reference.content) return;
     const next = parseMediaLibrary(reference.content);
     setDocument((current) => current ? { ...next,
-      view: reuseCollectionValue(current.view, next.view),
-      records: reuseCollectionValue(current.records, next.records),
+      views: reuseCollectionValue(current.views, next.views),
+      dataset: { ...next.dataset, records: reuseCollectionValue(current.dataset.records, next.dataset.records) },
     } : next);
     setError(null);
   }, [reference.content]);
 
-  const condition = document?.view.condition.file_condition;
+  const condition = document ? mediaLibraryFileCondition(document) : undefined;
   const fileType = condition?.file_type;
-  const hasDatasetCondition = hasMediaLibraryDatasetCondition(condition);
+  const hasDatasetCondition = document?.dataset.filter != null;
   const hasDocument = document !== null;
-  const mediaLibraryRecords = document?.records.data ?? [];
+  const mediaLibraryRecords = document?.dataset.records.include ?? [];
   useEffect(() => {
     if (!nearViewport || !notebook || !hasDocument) return;
     if (!hasDatasetCondition && mediaLibraryRecords.length === 0) {
@@ -364,7 +352,7 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
           let hasMoreResources = true;
           while (active && matching.length <= EMBED_RESOURCE_LIMIT && hasMoreResources) {
             const page = await mediaResources.listPage(notebook.path, kinds, cursor, 120);
-            matching.push(...page.resources.filter((resource) => matchesMediaLibraryDataset(resource, condition)));
+            matching.push(...page.resources.filter((resource) => matchesMediaCollectionFilter(resource.relativePath, resource.kind, document?.dataset.filter)));
             hasMoreResources = page.hasMore;
             cursor = page.nextCursor;
             if (hasMoreResources && !cursor) break;
@@ -386,7 +374,7 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
       if (active) setError(reason instanceof Error ? reason.message : String(reason));
     }).finally(() => { if (active) setLoadingResources(false); });
     return () => { active = false; };
-  }, [condition, fileType, hasDatasetCondition, hasDocument, mediaLibraryRecords, nearViewport, notebook?.id, notebook?.path, resourceRevision]);
+  }, [document?.dataset.filter, fileType, hasDatasetCondition, hasDocument, mediaLibraryRecords, nearViewport, notebook?.id, notebook?.path, resourceRevision]);
 
   const openLibrary = useCallback(async () => {
     if (!filePath || !notebook || !attrs.collectionId) return;
@@ -420,37 +408,28 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
       const latestDocument = parseMediaLibrary(sourceContent);
       if (latestDocument.collection.id !== attrs.collectionId) throw new Error('媒体库身份已变化，请重新插入引用');
 
-      const pathFilter = latestDocument.view.condition.file_condition?.path_contains?.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
       const root = canonicalDirectoryPath(notebook.path);
+      const targetDirectories = resolveMediaLibraryAddDirectories(
+        resolved.filePath,
+        notebook.path,
+        mediaLibraryFileCondition(latestDocument).path_contains,
+      );
       const recordsToAppend = [] as ReturnType<typeof createMediaLibraryRecord>[];
       const completed: string[] = [];
       let failed = 0;
       for (const sourcePath of validPaths) {
-        let importedPath: string | null = null;
-        const targetDirectory = pathFilter ? joinNotebookMemoPath(notebook.path, pathFilter) : null;
-        if (pathFilter && targetDirectory) {
-          try {
-            importedPath = await files.importFile(sourcePath, targetDirectory, notebook.path);
-          } catch {
-            importedPath = null;
-          }
+        try {
+          const saved = await saveMediaFile(sourcePath, notebook.id, targetDirectories);
+          const importedPath = saved.path;
+          const canonicalImported = canonicalPath(importedPath);
+          if (!canonicalImported.startsWith(`${root}/`)) throw new Error('导入媒体路径不在当前笔记本');
+          const resource = await mediaResources.get(importedPath, notebook.path).catch(() => null);
+          recordsToAppend.push(createMediaLibraryRecord(canonicalImported.slice(root.length + 1).replace(/\\/g, '/'), resource?.resource.id));
+          completed.push(importedPath);
+        } catch (reason) {
+          console.error('[MediaLibraryReference] Failed to import image:', reason);
+          failed += 1;
         }
-        if (!importedPath) {
-          try {
-            const savedPath = await attachments.saveFromPath(sourcePath, notebook.id);
-            if (!savedPath) throw new Error('媒体附件保存失败');
-            const saved = canonicalPath(savedPath);
-            if (!saved.startsWith(`${root}/attachments/`)) throw new Error('附件保存路径不在当前笔记本');
-            recordsToAppend.push(createMediaLibraryRecord(saved.slice(root.length + 1).replace(/\\/g, '/')));
-            importedPath = savedPath;
-          } catch (reason) {
-            console.error('[MediaLibraryReference] Failed to import image:', reason);
-            failed += 1;
-            continue;
-          }
-        }
-        completed.push(importedPath);
-        await mediaResources.get(importedPath, notebook.path).catch(() => undefined);
       }
 
       let savedDocument = latestDocument;
@@ -459,9 +438,9 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
         let baseline = latestDocument;
         let saved = false;
         for (let attempt = 0; attempt < 2; attempt += 1) {
-          const linked = new Set(baseline.records.data.map((record) => canonicalPath(record.note_path).toLocaleLowerCase()));
+          const linked = new Set(baseline.dataset.records.include.map((record) => canonicalPath(record.relative_path).toLocaleLowerCase()));
           const additions = recordsToAppend.filter((record) => {
-            const key = canonicalPath(record.note_path).toLocaleLowerCase();
+            const key = canonicalPath(record.relative_path).toLocaleLowerCase();
             if (linked.has(key)) return false;
             linked.add(key);
             return true;
@@ -469,7 +448,7 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
           const next = {
             ...baseline,
             collection: { ...baseline.collection, revision: baseline.collection.revision + 1, updated_at: new Date().toISOString() },
-            records: { data: [...baseline.records.data, ...additions] },
+            dataset: { ...baseline.dataset, records: { ...baseline.dataset.records, include: [...baseline.dataset.records.include, ...additions] } },
           };
           const result = await externalDocuments.write({
             filePath: resolved.filePath,
@@ -555,8 +534,8 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
         },
       });
       setDocument((current) => current ? { ...result.document,
-        view: reuseCollectionValue(current.view, result.document.view),
-        records: reuseCollectionValue(current.records, result.document.records),
+        views: reuseCollectionValue(current.views, result.document.views),
+        dataset: { ...result.document.dataset, records: reuseCollectionValue(current.dataset.records, result.document.dataset.records) },
       } : result.document);
       if (result.metadataError) toast.error(`文件已重命名，配置名称未能保存：${result.metadataError}`);
     } catch (reason) {
@@ -571,7 +550,7 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
   return <section ref={sectionRef} className="my-3 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--editor-block-bg)] px-3 pb-3 pt-1.5" contentEditable={false} aria-label={`媒体库：${displayName}`}>
     <div className="mb-1.5 flex items-center gap-2">
       <div className="flex min-w-0 flex-1 items-center gap-1.5 pr-2" title={displayName} onDoubleClick={editingName ? undefined : beginRename}>
-        <NotebookTreeResourceIcon path={filePath ?? 'media-library.lib.yaml'} className="h-5 w-5 shrink-0" />
+        <NotebookTreeResourceIcon path={filePath ?? 'media-library.lib.yaml'} collectionType="media_library" className="h-5 w-5 shrink-0" />
         {editingName ? <input
           ref={nameInputRef}
           aria-label="媒体库文件名"

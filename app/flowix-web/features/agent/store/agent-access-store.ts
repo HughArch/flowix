@@ -35,6 +35,7 @@ export interface AgentAccessState {
   config: AgentAccessConfig;
   notebookConfigs: Record<string, NotebookAgentConfig>;
   isLoading: boolean;
+  hasLoaded: boolean;
 
   /** 从磁盘拉整份 config ── 启动 / 跨窗口事件 / 写失败回滚都走它。 */
   loadInitial: () => Promise<void>;
@@ -73,12 +74,46 @@ export interface AgentAccessState {
 
 const EMPTY_CONFIG: AgentAccessConfig = { version: 1, entries: [], defaults: {} };
 
+function mergeConcurrentConfigWrite(
+  loaded: AgentAccessConfig,
+  initial: AgentAccessConfig,
+  latest: AgentAccessConfig,
+): AgentAccessConfig {
+  if (latest === initial) return loaded;
+
+  const entries = latest.entries === initial.entries
+    ? loaded.entries
+    : [...new Map(
+        [...loaded.entries, ...latest.entries].map((entry) => [entry.id, entry]),
+      ).values()];
+
+  let defaults = loaded.defaults;
+  if (latest.defaults !== initial.defaults && latest.defaults) {
+    const runtime = { ...loaded.defaults?.runtime };
+    for (const agentType of Object.keys(latest.defaults.runtime ?? {}) as AgentTypeKey[]) {
+      runtime[agentType] = {
+        ...loaded.defaults?.runtime?.[agentType],
+        ...latest.defaults.runtime?.[agentType],
+      };
+    }
+    defaults = {
+      ...loaded.defaults,
+      ...latest.defaults,
+      ...(loaded.defaults?.runtime || latest.defaults.runtime ? { runtime } : {}),
+    };
+  }
+
+  return { ...loaded, entries, defaults };
+}
+
 export const useAgentAccessStore = create<AgentAccessState>((set, get) => ({
   config: EMPTY_CONFIG,
   notebookConfigs: {},
   isLoading: false,
+  hasLoaded: false,
 
   loadInitial: async () => {
+    const configAtStart = get().config;
     set({ isLoading: true });
     try {
       // Notebook-local config is the source of truth for add-dir roots.
@@ -86,7 +121,14 @@ export const useAgentAccessStore = create<AgentAccessState>((set, get) => ({
         agentAccess.get(),
         agentAccess.getNotebookConfigs?.() ?? Promise.resolve({}),
       ]);
-      set({ config, notebookConfigs, isLoading: false });
+      // Preserve a local settings write made while this read was in flight.
+      const latestConfig = get().config;
+      set({
+        config: mergeConcurrentConfigWrite(config, configAtStart, latestConfig),
+        notebookConfigs,
+        isLoading: false,
+        hasLoaded: true,
+      });
     } catch (e) {
       // 静默失败 ── 与 `user-settings-store.loadInitial` 同形, 把
       // 错误信息留给后续用户操作触发。 UI 在 config.entries 为空时

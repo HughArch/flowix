@@ -1,6 +1,7 @@
 'use client';
 
 import { reuseCollectionValue } from '@features/collection/content-equality';
+import { isLegacyCollectionSource } from '@features/collection/model';
 import { collectionDisplayDescriptor } from '@/lib/collection-display-registry';
 import { subscribe } from '@platform/tauri/event-bus';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -15,7 +16,7 @@ import { replaceExternalDocumentPath } from '@features/workspace/use-cases/works
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
-import { parseMediaLibrary, serializeMediaLibrary, type MediaLibraryDocument, type MediaLibraryFileCondition, type MediaLibraryKind } from './model';
+import { mediaCollectionFilterFromCondition, mediaLibraryDefaultView, mediaLibraryFileCondition, parseMediaLibrary, serializeMediaLibrary, type MediaLibraryDocument, type MediaLibraryFileCondition, type MediaLibraryKind } from './model';
 import { renameMediaLibraryFile } from './rename-media-library';
 import { useMediaLibraryActions } from './use-media-library-actions';
 
@@ -51,13 +52,24 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
       return;
     }
     sourceContentRef.current = null;
-    void files.read(currentFilePath, notebookPath).then((source) => {
+    void files.read(currentFilePath, notebookPath).then(async (source) => {
       if (cancelled) return;
       if (!source) throw new Error('无法读取媒体库文件');
-      const parsed = parseMediaLibrary(source);
+      let parsed = parseMediaLibrary(source);
       const expectedId = expectedCollectionId ?? (displayId ? collectionDisplayDescriptor(displayId)?.collectionId : null);
       if (expectedId && parsed.collection.id !== expectedId) throw new Error('集合身份已变化，不能打开路径中的替代文件');
-      sourceContentRef.current = source;
+      let currentSource = source;
+      if (isLegacyCollectionSource(source)) {
+        const migration = await externalDocuments.write({ filePath: currentFilePath, content: serializeMediaLibrary(parsed), expectedContent: source, scopePath: notebookPath });
+        if (migration.status === 'saved') currentSource = migration.content;
+        else if (migration.status === 'conflict') {
+          const latest = parseMediaLibrary(migration.diskContent);
+          if (latest.collection.id !== parsed.collection.id) throw new Error('集合身份已变化，无法迁移旧格式');
+          parsed = latest;
+          currentSource = migration.diskContent;
+        } else if (migration.status === 'error') throw new Error(migration.message);
+      }
+      sourceContentRef.current = currentSource;
       setDocument(parsed);
     }).catch((reason) => {
       if (!cancelled) setError(reason instanceof Error ? reason.message : String(reason));
@@ -75,8 +87,8 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
       if (next.collection.id !== event.collectionId) return;
       sourceContentRef.current = content;
       setDocument((current) => current ? { ...next,
-        records: reuseCollectionValue(current.records, next.records),
-        view: reuseCollectionValue(current.view, next.view),
+        dataset: { ...next.dataset, records: reuseCollectionValue(current.dataset.records, next.dataset.records) },
+        views: reuseCollectionValue(current.views, next.views),
       } : next);
     }).catch(() => undefined);
   }), [document?.collection.id, notebook?.id, notebookId, notebookPath]);
@@ -141,8 +153,16 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
     if (saving) return false;
     return persistMutation((current) => ({
       ...current,
-      collection: { ...current.collection, revision: current.collection.revision + 1, updated_at: new Date().toISOString() },
-      view: { ...current.view, condition: Object.keys(fileCondition).length > 0 ? { file_condition: fileCondition } : {} },
+      collection: {
+        ...current.collection,
+        revision: current.collection.revision + 1,
+        updated_at: new Date().toISOString(),
+      },
+      dataset: { ...current.dataset, filter: Object.keys(fileCondition).length > 0
+        ? mediaCollectionFilterFromCondition(fileCondition)
+        : null },
+      views: { ...current.views, items: current.views.items.map((view) => view.id === current.views.default_id
+        ? { ...view, filter: { all: [], any: [] } } : view) },
     }));
   }, [persistMutation, saving]);
 
@@ -174,8 +194,8 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
       });
       sourceContentRef.current = result.content;
       setDocument((current) => current ? { ...result.document,
-        records: reuseCollectionValue(current.records, result.document.records),
-        view: reuseCollectionValue(current.view, result.document.view),
+        dataset: { ...result.document.dataset, records: reuseCollectionValue(current.dataset.records, result.document.dataset.records) },
+        views: reuseCollectionValue(current.views, result.document.views),
       } : result.document);
       if (result.metadataError) toast.error(`文件已重命名，配置名称未能保存：${result.metadataError}`);
     } catch (reason) {
@@ -186,7 +206,7 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
     }
   }, [currentFilePath, displayId, document, fileIdentity, notebookPath, saving]);
 
-  const { addMedia, deleteManualMedia } = useMediaLibraryActions({
+  const { addMedia, deleteMedia } = useMediaLibraryActions({
     document, setDocument, notebookPath, notebookId: notebookId ?? notebook?.id ?? null, currentFilePath, saving, setSaving,
     sourceContentRef, saveInFlightRef, persistMutation, t,
   });
@@ -206,9 +226,37 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
 
 
 
-  const selectedKind = document?.view.condition.file_condition?.file_type;
+  const selectedKind = document ? mediaLibraryFileCondition(document).file_type : undefined;
   const resourceKinds = useMemo<MediaLibraryKind[]>(() => selectedKind ? [selectedKind] : ['image', 'video'], [selectedKind]);
   const activeCollectionId = document?.collection.id;
+  const libraryDisplayName = document?.collection.placement === 'folder'
+    ? currentFilePath.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '').split(/[\\/]/).pop() || document.collection.name
+    : document?.collection.name ?? '媒体库';
+  const mediaScope = useMemo(() => {
+    if (!document || !notebookPath) return undefined;
+    const source = document.dataset.source;
+    if (!source || source.scope === 'notebook') return undefined;
+    if (source.scope === 'folder') return { relativePath: source.path ?? '', depth: source.depth };
+    const root = canonicalDirectoryPath(notebookPath).replace(/\/$/, '');
+    const folder = canonicalDirectoryPath(currentFilePath.replace(/[\\/][^\\/]*$/, '')).replace(/\/$/, '');
+    if (folder === root) return { relativePath: '', depth: source.depth };
+    if (!folder.startsWith(`${root}/`)) return undefined;
+    return { relativePath: folder.slice(root.length + 1).replace(/\\/g, '/'), depth: source.depth };
+  }, [currentFilePath, document, notebookPath]);
+  const mediaLibraryRecords = useMemo(() => {
+    const records = document?.dataset.records.include ?? [];
+    if (!mediaScope) return records;
+    const base = mediaScope.relativePath.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+    return records.filter((record) => {
+      const path = record.relative_path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
+      if (!base) return mediaScope.depth === 'descendants' || !path.includes('/');
+      if (!path.startsWith(`${base}/`)) return false;
+      return mediaScope.depth === 'descendants' || !path.slice(base.length + 1).includes('/');
+    });
+  }, [document, mediaScope]);
+  const mediaLibraryExcludedPaths = useMemo(() => (document?.dataset.records.exclude ?? [])
+    .map((record) => record.relative_path)
+    .filter((path): path is string => typeof path === 'string'), [document?.dataset.records.exclude]);
   const listSurface: DocumentListSurface | null = useMemo(() => {
     const resolvedNotebookId = notebookId ?? notebook?.id;
     if (!resolvedNotebookId || !notebookPath || !activeCollectionId) return null;
@@ -221,8 +269,10 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
       notebookPath,
       notebookId: resolvedNotebookId,
       filters: { resourceKinds },
+      ...(mediaScope ? { mediaScope } : {}),
+      ...(document.dataset.filter !== null ? { mediaDatasetActive: true } : {}),
     };
-  }, [activeCollectionId, displayId, notebook?.id, notebookId, notebookPath, resourceKinds]);
+  }, [activeCollectionId, displayId, document?.dataset.filter, mediaScope, notebook?.id, notebookId, notebookPath, resourceKinds]);
 
   if (loading) return <div className="flex h-full items-center justify-center text-sm text-[var(--muted-foreground)]">正在打开媒体库…</div>;
   if (error) return <div className="flex h-full items-center justify-center px-6 text-center text-sm text-[var(--destructive)]">{error}</div>;
@@ -234,16 +284,19 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
       key={listSurface.displayId}
       surface={listSurface}
       mediaLibrary
-      libraryName={document.collection.name}
+      libraryName={libraryDisplayName}
       libraryFilePath={currentFilePath}
-      mediaLibraryFilter={document.view.condition.file_condition ?? {}}
-      mediaLibraryRecords={document.records.data}
+      mediaLibraryFilter={mediaLibraryFileCondition(document)}
+      mediaLibraryRecords={mediaLibraryRecords}
+      mediaLibraryExcludedPaths={mediaLibraryExcludedPaths}
+      mediaLibraryDatasetFilter={document.dataset.filter}
+      mediaLibraryViewFilter={mediaLibraryDefaultView(document).filter}
       onAddMedia={addMedia}
-      onDeleteLibrary={deleteLibraryFile}
-      onDeleteManualMedia={deleteManualMedia}
+      onDeleteLibrary={document.collection.placement === 'folder' ? undefined : deleteLibraryFile}
+      onDeleteMedia={deleteMedia}
       libraryActionsDisabled={saving}
       onMediaLibraryFilterChange={updateFilterCondition}
-      onRenameLibrary={renameLibraryFile}
+      onRenameLibrary={document.collection.placement === 'folder' ? undefined : renameLibraryFile}
     />
     <Dialog open={confirmDeleteLibrary} onOpenChange={(open) => { if (!open && !saving) setConfirmDeleteLibrary(false); }}>
       <DialogContent className="rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">

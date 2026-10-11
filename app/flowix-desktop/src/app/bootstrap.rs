@@ -642,7 +642,7 @@ pub fn run() {
             commands::dialog::save_file_dialog,
             commands::dialog::write_export_file,
             commands::export::export_pdf,
-            commands::dialog::save_attachment,
+            commands::dialog::save_notebook_asset,
             commands::dialog::upload_journal::list_attachment_import_records,
             commands::dialog::attachment_audit::scan_attachment_references,
             commands::dialog::upload_sessions::begin_attachment_upload,
@@ -665,6 +665,13 @@ pub fn run() {
             commands::agent::image_cache::read_cached_agent_image,
             commands::agent::chat::chat_with_agent_stream,
             commands::agent::chat::steer_agent_stream,
+            commands::agent::chat::promote_pi_follow_up_to_steer,
+            commands::agent::chat::delete_pi_queued_message,
+            commands::agent::chat::queue_codex_follow_up,
+            commands::agent::chat::list_codex_follow_ups,
+            commands::agent::chat::restore_codex_follow_ups,
+            commands::agent::chat::delete_codex_follow_up,
+            commands::agent::chat::deliver_codex_follow_up_now,
             commands::agent::chat::stop_agent_stream,
             commands::agent::chat::agent_running_threads,
             commands::agent::chat::agent_background_terminals,
@@ -906,12 +913,11 @@ fn run_startup_reconciliation(
     for notebook in initial_notebooks {
         let root = Path::new(&notebook.path);
         if root.is_dir() {
-            if let Err(error) =
-                crate::commands::file::migrate_legacy_watcher_rules(
-                    root, &legacy_watcher,
-                    &crate::lock_utils::read_lock(&memo_file, "memo_file"),
-                )
-            {
+            if let Err(error) = crate::commands::file::migrate_legacy_watcher_rules(
+                root,
+                &legacy_watcher,
+                &crate::lock_utils::read_lock(&memo_file, "memo_file"),
+            ) {
                 tracing::warn!(notebook = %notebook.id, %error, "legacy watcher rule migration deferred");
             }
         }

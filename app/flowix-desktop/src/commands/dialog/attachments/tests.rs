@@ -40,9 +40,18 @@ fn explicit_destination_does_not_switch_current_notebook() {
 fn note_owner_resolves_notebook_from_absolute_path() {
     let (directory, store) = fixture();
     let created = flowix_core::MemoService::new(&store)
-        .create_memo_named_with_tag_in_directory(Some("second"), None, "Untitled", "# Note\nbody\n", None)
+        .create_memo_named_with_tag_in_directory(
+            Some("second"),
+            None,
+            "Untitled",
+            "# Note\nbody\n",
+            None,
+        )
         .unwrap();
-    let note = directory.path().join("second").join(&created.memo.relative_path);
+    let note = directory
+        .path()
+        .join("second")
+        .join(&created.memo.relative_path);
     assert_eq!(
         resolve_note_owner(&store, None, Some(note.to_str().unwrap())).unwrap(),
         ("second".to_string(), Some("Untitled.md".to_string()))
@@ -67,17 +76,27 @@ fn missing_or_unknown_owner_never_falls_back_to_current_notebook() {
 #[test]
 fn owned_save_validates_identity_before_creating_attachments() {
     let (directory, store) = fixture();
-    assert!(save_for_owner(&store, None, None, "data", &mut &b"data"[..]).is_err());
+    assert!(save_for_owner(&store, None, None, "data", &mut &b"data"[..], false).is_err());
     let created = flowix_core::MemoService::new(&store)
-        .create_memo_named_with_tag_in_directory(Some("second"), None, "Untitled", "# Owner\nbody\n", None)
+        .create_memo_named_with_tag_in_directory(
+            Some("second"),
+            None,
+            "Untitled",
+            "# Owner\nbody\n",
+            None,
+        )
         .unwrap();
-    let note = directory.path().join("second").join(&created.memo.relative_path);
+    let note = directory
+        .path()
+        .join("second")
+        .join(&created.memo.relative_path);
     assert!(save_for_owner(
         &store,
         Some("first"),
         Some(note.to_str().unwrap()),
         "data",
-        &mut &b"data"[..]
+        &mut &b"data"[..],
+        false,
     )
     .is_err());
     assert!(!directory.path().join("first/attachments").exists());
@@ -87,10 +106,12 @@ fn owned_save_validates_identity_before_creating_attachments() {
         Some(note.to_str().unwrap()),
         "data",
         &mut &b"data"[..],
+        false,
     )
     .unwrap();
-    assert!(saved.starts_with(dunce::canonicalize(directory.path().join("second")).unwrap()));
-    assert_eq!(fs::read(saved).unwrap(), b"data");
+    assert!(Path::new(&saved.path)
+        .starts_with(dunce::canonicalize(directory.path().join("second")).unwrap()));
+    assert_eq!(fs::read(saved.path).unwrap(), b"data");
 }
 
 #[test]

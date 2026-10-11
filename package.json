@@ -1,7 +1,7 @@
 {
   "name": "flowix",
   "private": true,
-  "version": "1.5.4",
+  "version": "1.5.5",
   "type": "module",
   "packageManager": "npm@10.8.2",
   "scripts": {
@@ -98,7 +98,7 @@
     "zustand": "^5.0.13"
   },
   "devDependencies": {
-    "@earendil-works/pi-ai": "1.0.3",
+    "@earendil-works/pi-ai": "1.1.0",
     "@tauri-apps/cli": "^2",
     "@types/papaparse": "^5.5.2",
     "@types/react": "^19.1.8",

@@ -74,6 +74,11 @@ import {
   createThreadLifecycleSlice,
   type ThreadLifecycleSlice,
 } from "@features/agent/store/thread-lifecycle-slice";
+import {
+  createFollowUpQueueSlice,
+  isProjectionWorking,
+  type FollowUpQueueSlice,
+} from "@features/agent/store/follow-up-queue-slice";
 
 export {
   DEFAULT_AGENT_SESSION_META,
@@ -89,7 +94,8 @@ export interface AgentSessionStore
     ProjectionSlice,
     ConversationSlice,
     ThreadHistorySlice,
-    ThreadLifecycleSlice {
+    ThreadLifecycleSlice,
+    FollowUpQueueSlice {
   sendMessageToThread: (
     threadId: string,
     content: string,
@@ -105,11 +111,6 @@ export interface AgentSessionStore
       runId?: string;
     },
   ) => Promise<void>;
-  pendingSteeringMessages: Record<string, PendingSteeringMessage[]>;
-  enqueueSteeringMessage: (message: PendingSteeringMessage) => void;
-  removeSteeringMessage: (threadId: string, messageId: string) => void;
-  removeSteeringMessageByClientId: (threadId: string, clientUserMessageId: string) => void;
-  clearPendingSteeringMessages: (threadId: string) => void;
   stopStream: () => Promise<void>;
   stopThreadRun: (threadId: string, runId?: string) => Promise<void>;
   dispatchAgentEvent: (event: AgentEvent) => void;
@@ -122,15 +123,7 @@ export interface AgentSessionStore
   reconcileRunningRuns: () => Promise<Record<string, RunInfo>>;
 }
 
-export interface PendingSteeringMessage {
-  id: string;
-  threadId: string;
-  content: string;
-  imagePaths?: string[];
-  options?: Parameters<AgentSessionStore["sendMessageToThread"]>[3];
-  queuedAt: number;
-  clientUserMessageId?: string;
-}
+export type { PendingSteeringMessage } from "@features/agent/store/follow-up-queue-slice";
 
 type SessionGet = () => AgentSessionStore;
 
@@ -193,6 +186,13 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
         // Ignore a delayed lifecycle event from an older run. The reducer
         // uses the same active-run ownership rule for known run ids.
         if (activeRunId && event.runId && activeRunId !== event.runId) return;
+        const eventType = normalizeAgentTypeKey(event.agentType ?? state.sessionMeta.threadTypes[canonicalThreadId]);
+        if (eventType === "codex") {
+          // Codex drains its persistent queue itself after a turn completes.
+          // Starting it again from Flowix races the server and can target an
+          // already-consumed queued submission id.
+          return;
+        }
         state.clearPendingSteeringMessages(event.threadId);
         if (canonicalThreadId !== event.threadId) {
           state.clearPendingSteeringMessages(canonicalThreadId);
@@ -204,42 +204,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
         ...createProjectionSlice(set),
         ...createThreadHistorySlice(get),
         ...createThreadLifecycleSlice(set, get),
-        pendingSteeringMessages: {},
-        enqueueSteeringMessage: (message) => {
-          set((state) => ({
-            pendingSteeringMessages: {
-              ...state.pendingSteeringMessages,
-              [message.threadId]: [
-                ...(state.pendingSteeringMessages[message.threadId] ?? []),
-                message,
-              ],
-            },
-          }));
-        },
-        removeSteeringMessage: (threadId, messageId) => {
-          set((state) => {
-            const current = state.pendingSteeringMessages[threadId] ?? [];
-            const next = current.filter((message) => message.id !== messageId);
-            if (next.length === current.length) return state;
-            const pendingSteeringMessages = { ...state.pendingSteeringMessages };
-            if (next.length) pendingSteeringMessages[threadId] = next;
-            else delete pendingSteeringMessages[threadId];
-            return { pendingSteeringMessages };
-          });
-        },
-        removeSteeringMessageByClientId: (threadId, clientUserMessageId) => {
-          const current = get().pendingSteeringMessages[threadId] ?? [];
-          const match = current.find((message) => message.clientUserMessageId === clientUserMessageId);
-          if (match) get().removeSteeringMessage(threadId, match.id);
-        },
-        clearPendingSteeringMessages: (threadId) => {
-          set((state) => {
-            if (!state.pendingSteeringMessages[threadId]) return state;
-            const pendingSteeringMessages = { ...state.pendingSteeringMessages };
-            delete pendingSteeringMessages[threadId];
-            return { pendingSteeringMessages };
-          });
-        },
+        ...createFollowUpQueueSlice(set, get),
 
         sendMessageToThread: async (threadId, content, typeKey, options) => {
           const trimmed = content.trim();
@@ -286,8 +251,8 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
               options?.attachments ?? createAgentMessageAttachments(options?.imagePaths),
           });
           if (
-            (type.key === "codex" || type.key === "deepseek-harness") &&
-            get().threadProjections[threadId]?.runs.isLoading
+            (type.key === "codex" || type.key === "deepseek-harness" || type.key === "pi") &&
+            isProjectionWorking(get().threadProjections[threadId])
           ) {
             const clientUserMessageId = `flowix-${createRunId(threadId)}`;
             const pendingId = `pending-${clientUserMessageId}`;
@@ -296,21 +261,40 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
               threadId,
               content: trimmed,
               imagePaths: options?.imagePaths,
-              options,
+              runtimeConfig: options?.runtimeConfig,
               queuedAt: Date.now(),
               clientUserMessageId,
+              llmContent,
+              deliveryMode: type.key === 'pi' || type.key === 'codex' ? 'follow_up' : 'steer',
+              deliveryStatus: "submitting",
             });
             try {
-              await agentClient.steerChat(threadId, {
+              const activeTurnMessage = {
                 content: trimmed,
                 llmContent,
                 imagePaths: options?.imagePaths,
                 agentType: type.key,
                 runtimeConfig: options?.runtimeConfig ?? undefined,
-              }, clientUserMessageId);
+              };
+              if (type.key === "codex") {
+                await get().queueCodexFollowUp(
+                  threadId,
+                  activeTurnMessage,
+                  clientUserMessageId,
+                  pendingId,
+                );
+              } else {
+                await agentClient.steerChat(
+                  threadId,
+                  activeTurnMessage,
+                  clientUserMessageId,
+                  type.key === 'pi' ? 'follow_up' : 'steer',
+                );
+                get().updateSteeringMessage(threadId, pendingId, { deliveryStatus: "queued" });
+              }
             } catch (err) {
               get().removeSteeringMessage(threadId, pendingId);
-              logger.error("Failed to steer Codex turn", { error: String(err) });
+              logger.error("Failed to queue active-turn message", { error: String(err), agentType: type.key });
               get().dispatch({
                 kind: "error",
                 agentType: type.key,
@@ -432,7 +416,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
               if (!stopRunId) return;
             }
             accepted = await agentClient.stopChatStream(threadId, type.key, stopRunId);
-            if (accepted && (!runId || !activeRunIdBeforeStop || runId === activeRunIdBeforeStop)) {
+            if (accepted && type.key !== "codex" && (!runId || !activeRunIdBeforeStop || runId === activeRunIdBeforeStop)) {
               get().clearPendingSteeringMessages(threadId);
             }
           } catch (err) {
@@ -476,6 +460,11 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
             { threadTypes: state.sessionMeta.threadTypes },
           );
           recordAgentChunkMapped(chunk, event);
+          if (event.kind === "user_message") {
+            const clientId = event.clientUserMessageId ??
+              (productChunk.kind === "user_message" ? productChunk.message_id : undefined);
+            if (clientId) get().removeSteeringMessageByClientId(threadId, clientId);
+          }
           clearPendingSteeringForLifecycleEvent(event);
           streamDispatcher.dispatch(event);
         },

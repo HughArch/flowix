@@ -70,6 +70,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 vi.mock("@platform/tauri/client", () => ({
   agent: {
     ...createAgentClientMock(),
+    listSupportedModels: vi.fn(async () => []),
     cacheImage: vi.fn(async () => ({
       path: "/tmp/cached-agent-image.png",
       mimeType: "image/png",
@@ -81,6 +82,9 @@ vi.mock("@platform/tauri/client", () => ({
     getCodexSessionId: vi.fn(async () => null),
     getClaudeSessionId: vi.fn(async () => null),
     getCodexDefaultModel: vi.fn(async () => "gpt-5.5"),
+  },
+  piModels: {
+    list: vi.fn(async () => []),
   },
   notes: {
     search: vi.fn(async () => []),
@@ -137,7 +141,7 @@ vi.mock("@features/agent/store/agent-runtime-store", () => ({
     getState: () => ({
       statusByType: {},
       refresh: vi.fn(),
-      refreshIfStale: vi.fn(),
+      refreshIfStale: vi.fn(async () => undefined),
     }),
     subscribe: vi.fn(() => () => undefined),
   },
@@ -4000,15 +4004,19 @@ describe("AgentThreadCard composer during agent run", () => {
     vi.useRealTimers();
   });
 
-  it("keeps the composer enabled while a run is in flight and preserves the draft", async () => {
+  it.each(["deepseek-harness", "pi"] as const)("queues a message while %s is running", async (agentType) => {
     const { AgentThreadCard } =
       await import("@features/agent/thread-card");
     const { useAgentSessionStore } = await import(
       "@features/agent/store/agent-session-store"
     );
-    const threadId = "thread-card-busy-composer";
+    const threadId = `thread-card-busy-composer-${agentType}`;
     const host = document.createElement("div");
     document.body.append(host);
+    useAgentSessionStore.getState().updateThreadHistory(threadId, (projection) => ({
+      ...projection,
+      messages: [{ role: "user", content: "initial message", id: "initial-user", timestamp: new Date().toISOString() }],
+    }));
 
     editor = new Editor({
       element: host,
@@ -4021,7 +4029,7 @@ describe("AgentThreadCard composer during agent run", () => {
             attrs: {
               threadId,
               title: "Busy",
-              typeKey: "deepseek-harness",
+              typeKey: agentType,
               collapsed: false,
             },
           },
@@ -4038,7 +4046,7 @@ describe("AgentThreadCard composer during agent run", () => {
         runs: {
           "run-1": {
             runId: "run-1",
-            agentType: "deepseek-harness",
+            agentType,
             threadId,
             startedAt: Date.now(),
             status: "running",
@@ -4055,8 +4063,7 @@ describe("AgentThreadCard composer during agent run", () => {
     setComposerText(input, "next draft message");
     expect(getComposerValue(input)).toBe("next draft message");
 
-    // DSH 运行期提交走 steer()，所以已提交草稿会被清空；输入框仍保持
-    // 可编辑，后续消息进入 next-step steering 队列。
+    // 运行中提交后清空草稿；Pi 的消息默认进入 Follow-up。
     input.dispatchEvent(
       new KeyboardEvent("keydown", {
         key: "Enter",
@@ -4066,5 +4073,21 @@ describe("AgentThreadCard composer during agent run", () => {
     );
     await flushPromises();
     expect(getComposerValue(input)).toBe("");
+    if (agentType === "pi") {
+      await vi.waitFor(() => {
+        expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]).toEqual([
+          expect.objectContaining({ content: "next draft message", deliveryMode: "follow_up" }),
+        ]);
+      });
+      await vi.waitFor(() => expect(host.querySelector(".agent-background-terminals__queue-steer")).not.toBeNull());
+      const deleteButton = host.querySelector<HTMLButtonElement>(".agent-background-terminals__queue-delete");
+      expect(deleteButton?.querySelector("svg")).not.toBeNull();
+      expect(deleteButton?.getAttribute("aria-label")).toBeTruthy();
+      host.querySelector<HTMLButtonElement>(".agent-background-terminals__queue-steer")?.click();
+      await vi.waitFor(() => {
+        expect(host.querySelector(".agent-background-terminals__queue-soon")?.textContent).toBe("即将发送");
+        expect(host.querySelector(".agent-background-terminals__queue-steer")).toBeNull();
+      });
+    }
   });
 });

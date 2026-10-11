@@ -214,8 +214,8 @@ export function CloudSyncSection() {
                 <span className={cn(
                   'rounded-full px-2 py-0.5 text-xs',
                   state.membership?.active
-                    ? 'bg-emerald-500/15 text-emerald-600'
-                    : 'bg-amber-500/15 text-amber-600',
+                    ? 'bg-[color-mix(in_oklch,var(--success)_15%,transparent)] text-[var(--success)]'
+                    : 'bg-[color-mix(in_oklch,var(--warning)_15%,transparent)] text-[var(--warning)]',
                 )}>
                   {state.membership?.active
                     ? t('preferences.cloud.active')

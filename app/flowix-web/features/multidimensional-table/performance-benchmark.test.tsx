@@ -19,7 +19,7 @@ function measure(operation: () => void, rounds = 25) {
 describe('multidimensional table 1k x 20 frontend benchmark', () => {
   it('reports parse, serialize, grouping, pagination and view render costs', () => {
     const document = createTableDocument();
-    const noteField = document.table.fields[0];
+    const noteField = document.dataset.schema.fields[0];
     const fields: TableField[] = [noteField];
     for (let index = 0; index < 19; index += 1) {
       fields.push({ id: `fld_${createUuidV7()}`, type: index === 0 ? 'Select' : index === 1 ? 'Date' : index === 2 ? 'Image' : 'Text', property_key: `field_${index}`,
@@ -44,9 +44,9 @@ describe('multidimensional table 1k x 20 frontend benchmark', () => {
       note_path: notePath,
     };
     });
-    document.table.fields = fields;
-    document.table.views[0].config.visible_fields = fields.map(({ id }) => id);
-    document.records.data = records;
+    document.dataset.schema.fields = fields;
+    document.views.items[0].config.visible_fields = fields.map(({ id }) => id);
+    document.dataset.records.include = records;
     const source = serializeTableDocument(document);
     const statusField = fields[1];
     const dateField = fields[2];
@@ -72,7 +72,7 @@ describe('multidimensional table 1k x 20 frontend benchmark', () => {
       calendarRender1k: measure(() => { renderToStaticMarkup(<TableCalendarView cursor={new Date(2026, 0, 1)} onCursorChange={() => {}} days={days} groups={calendarGroups} dateFieldId={fields[2].id} titleField={fields[0]} renderValue={display} onMoveRecord={() => {}} />); }, 7),
     };
     console.info('TABLE_PERF_1K_X_20', JSON.stringify(results));
-    expect(parseTableDocument(source).records.data).toHaveLength(1_000);
+    expect(parseTableDocument(source).dataset.records.include).toHaveLength(1_000);
     expect(fieldsById.size).toBe(20);
     expect(visibleRows).toHaveLength(100);
     expect([...propertiesByPath.values()].filter((properties) => Array.isArray(properties.field_2) && properties.field_2.length > 0)).toHaveLength(200);

@@ -9,10 +9,11 @@ import { toast } from '@/lib/toast';
 import { createLogger } from '@/lib/logger';
 import { agent } from '@platform/tauri/client/agent';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
+import { canActOnQueuedMessage } from '@features/agent/store/follow-up-queue-slice';
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { acquireThreadInterest } from '@features/agent/store/thread-interest';
-import type { ThreadState } from '@features/agent/store/thread-runtime-state';
+import { isAgentThreadWorking, type ThreadState } from '@features/agent/store/thread-runtime-state';
 import {
   AgentThreadCardMessagesController,
   createThreadCacheSkeleton,
@@ -182,7 +183,9 @@ function AgentConversationDetailContent({
     renderThreadId ? state.threadProjections[renderThreadId] : undefined
   ));
   const messages = projection?.messages ?? EMPTY_MESSAGES;
-  const isLoading = !!projection?.runs.isLoading;
+  const isLoading = isAgentThreadWorking(
+    projection ? { ...projection.runs, messages: projection.messages } : undefined,
+  );
   const isStopping = projection?.runs.activeRunId
     ? projection.runs.runs[projection.runs.activeRunId]?.phase === 'stopping'
     : false;
@@ -419,9 +422,8 @@ function AgentConversationDetailContent({
 
   const submit = useCallback(async () => {
     // 线程绑定是异步的; submittingRef 挡住"创建中"期间的重入。Codex
-    // 和 DSH 已有运行时允许本次提交转入当前 turn 的 steering 队列，
-    // 其它 agent 仍等待当前运行结束。
-    const isSteerable = typeKeyRef.current === 'codex' || typeKeyRef.current === 'deepseek-harness';
+    // Pi 的运行中消息进入 Follow-up；Codex 和 DSH 进入当前运行的队列。
+    const isSteerable = typeKeyRef.current === 'codex' || typeKeyRef.current === 'deepseek-harness' || typeKeyRef.current === 'pi';
     if (submittingRef.current || (isLoadingRef.current && !isSteerable)) return;
     const composerController = composerControllerRef.current;
     const currentInstance = instanceRef.current;
@@ -508,6 +510,7 @@ function AgentConversationDetailContent({
     const store = useAgentSessionStore.getState();
     const release = acquireThreadInterest(threadId);
     void store.loadMessages(instance.agentType, threadId);
+    if (instance.agentType === "codex") void store.hydrateCodexFollowUps(threadId);
     return release;
   }, [instance, threadId]);
 
@@ -675,12 +678,16 @@ function AgentConversationDetailContent({
           return isLoadingRef.current && !isStoppingRef.current &&
             !isDshCommandRunningRef.current &&
             !isCodexCommandRunningRef.current &&
-            !((typeKeyRef.current === 'codex' || typeKeyRef.current === 'deepseek-harness') &&
-              !!composerControllerRef.current?.getPrompt().trim());
+            !((typeKeyRef.current === 'codex' || typeKeyRef.current === 'deepseek-harness' || typeKeyRef.current === 'pi') &&
+              (!!composerControllerRef.current?.getPrompt().trim() || composerImagesControllerRef.current?.hasImages));
         },
-        getSendButtonRunning: () =>
-          isStoppingRef.current || isDshCommandRunningRef.current ||
-          (isCodexCommandRunningRef.current && !isCodexCommandStoppableRef.current),
+        getSendButtonRunning: () => {
+          const hasDraft = !!composerControllerRef.current?.getPrompt().trim() ||
+            !!composerImagesControllerRef.current?.hasImages;
+          return isStoppingRef.current || isDshCommandRunningRef.current ||
+            (isCodexCommandRunningRef.current && !isCodexCommandStoppableRef.current) ||
+            (typeKeyRef.current === 'codex' && isLoadingRef.current && !hasDraft);
+        },
         getHasAttachments: () => composerImagesController.hasImages,
         getHasPendingAttachments: () => composerImagesController.hasPending,
         agentType: typeKeyRef.current,
@@ -916,7 +923,23 @@ function AgentConversationDetailContent({
             threadId={threadId}
             agentType={instance.agentType === 'codex' ? 'codex' : 'deepseek-harness'}
             enabled={instance.agentType === 'codex' || instance.agentType === 'deepseek-harness'}
-            queuedMessages={pendingSteeringMessages.map((message) => message.content)}
+            queuedMessages={pendingSteeringMessages.map((message) => ({
+              ...message,
+              actionsDisabled: !canActOnQueuedMessage(
+                message,
+                instance.agentType === 'codex' ? 'codex' : 'pi',
+              ),
+            }))}
+            onPromoteFollowUp={instance.agentType === 'pi' || instance.agentType === 'codex' ? (messageId) => {
+              if (!threadId) return;
+              void useAgentSessionStore.getState().promoteFollowUpToSteer(threadId, messageId)
+                .catch((error) => toast.error(error instanceof Error ? error.message : String(error)));
+            } : undefined}
+            onDeleteQueuedMessage={instance.agentType === 'pi' || instance.agentType === 'codex' ? (messageId) => {
+              if (!threadId) return;
+              void useAgentSessionStore.getState().deleteQueuedFollowUp(threadId, messageId)
+                .catch((error) => toast.error(error instanceof Error ? error.message : String(error)));
+            } : undefined}
           />
           <div ref={composerMountRef} />
         </div>

@@ -200,22 +200,25 @@ pub async fn save_file_dialog(
     .flatten()
 }
 
-// ==================== IPC: 闄勪欢淇濆瓨 ====================
+// ==================== IPC: notebook asset import ====================
 
 #[tauri::command]
-pub async fn save_attachment(
+pub async fn save_notebook_asset(
     window: tauri::WebviewWindow,
     source_path: String,
     notebook_id: Option<String>,
     note_path: Option<String>,
+    deduplicate: Option<bool>,
+    reuse_notebook_file: Option<bool>,
+    target_directory_path: Option<String>,
     state: State<'_, AppState>,
-) -> Result<Option<String>, String> {
+) -> Result<Option<attachments::SavedNotebookAsset>, String> {
     let permit = upload_quota::UPLOAD_QUOTA.acquire()?;
     let source = Path::new(&source_path);
     start_security_bookmark_access(&state, source);
     let source = dunce::canonicalize(source).map_err(|error| error.to_string())?;
     if !super::helpers::can_access_document_path(&source, window.label(), &state) {
-        return Err("Attachment source is not authorized".to_string());
+        return Err("Notebook asset source is not authorized".to_string());
     }
     if !source.is_file() {
         return Err("Attachment source is not a regular file".to_string());
@@ -227,34 +230,48 @@ pub async fn save_attachment(
         .to_string();
     let mut reader = fs::File::open(&source).map_err(|error| error.to_string())?;
     let metadata = reader.metadata().map_err(|error| error.to_string())?;
-    if !metadata.is_file() || metadata.len() > attachments::MAX_ATTACHMENT_BYTES {
-        return Err("ATTACHMENT_FILE_TOO_LARGE".to_string());
+    if !metadata.is_file() {
+        return Err("Notebook asset source is not a regular file".to_string());
     }
     let root = {
         let store = read_lock(&state.memo_file, "memo_file");
-        let (owner, _) = attachments::resolve_note_owner(
-            &store,
-            notebook_id.as_deref(),
-            note_path.as_deref(),
-        )
-        .map_err(|error| error.to_string())?;
+        let (owner, _) =
+            attachments::resolve_note_owner(&store, notebook_id.as_deref(), note_path.as_deref())
+                .map_err(|error| error.to_string())?;
         attachments::notebook_root(&store, Some(&owner)).map_err(|error| error.to_string())?
     };
     start_security_bookmark_access(&state, &root);
+    // Notebook-local assets are already durable workspace files. Return their
+    // canonical path instead of making an attachment copy.
+    if reuse_notebook_file.unwrap_or(false) && source.starts_with(&root) {
+        return Ok(Some(attachments::SavedNotebookAsset {
+            path: source.to_string_lossy().into_owned(),
+            created: false,
+        }));
+    }
+    if metadata.len() > attachments::MAX_ATTACHMENT_BYTES {
+        return Err("ATTACHMENT_FILE_TOO_LARGE".to_string());
+    }
+    let target_directory = target_directory_path.map(std::path::PathBuf::from);
     let memo_file = state.memo_file.clone();
-    tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
-        let _permit = permit;
-        let store = read_lock(&memo_file, "memo_file");
-        let path = attachments::save_for_owner(
-            &store,
-            notebook_id.as_deref(),
-            note_path.as_deref(),
-            &name,
-            &mut reader,
-        )
-        .map_err(|error| error.to_string())?;
-        Ok(Some(path.to_string_lossy().into_owned()))
-    })
+    let deduplicate = deduplicate.unwrap_or(false);
+    tokio::task::spawn_blocking(
+        move || -> Result<Option<attachments::SavedNotebookAsset>, String> {
+            let _permit = permit;
+            let store = read_lock(&memo_file, "memo_file");
+            let saved = attachments::save_for_owner_in_directory(
+                &store,
+                notebook_id.as_deref(),
+                note_path.as_deref(),
+                &name,
+                &mut reader,
+                deduplicate,
+                target_directory.as_deref(),
+            )
+            .map_err(|error| error.to_string())?;
+            Ok(Some(saved))
+        },
+    )
     .await
     .map_err(|error| error.to_string())?
 }

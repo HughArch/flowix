@@ -14,6 +14,15 @@ export function createAgentClientMock(
   const defaults = {
     chatStream: vi.fn<AgentClient["chatStream"]>().mockResolvedValue({ response: "" }),
     steerChat: vi.fn<AgentClient["steerChat"]>().mockResolvedValue(undefined),
+    promotePiFollowUpToSteer: vi.fn<AgentClient["promotePiFollowUpToSteer"]>().mockResolvedValue(undefined),
+    deletePiQueuedMessage: vi.fn<AgentClient["deletePiQueuedMessage"]>().mockResolvedValue(undefined),
+    queueCodexFollowUp: vi.fn<AgentClient["queueCodexFollowUp"]>().mockResolvedValue({
+      queuedSubmission: { id: "queue-1", input: [], clientUserMessageId: "client-1" },
+    }),
+    listCodexFollowUps: vi.fn<AgentClient["listCodexFollowUps"]>().mockResolvedValue({ data: [], nextCursor: null }),
+    restoreCodexFollowUps: vi.fn<AgentClient["restoreCodexFollowUps"]>().mockResolvedValue({ data: [], nextCursor: null }),
+    deleteCodexFollowUp: vi.fn<AgentClient["deleteCodexFollowUp"]>().mockResolvedValue({ deleted: true }),
+    deliverCodexFollowUpNow: vi.fn<AgentClient["deliverCodexFollowUpNow"]>().mockResolvedValue(undefined),
     executeDeepSeekHarnessCommand: vi.fn<AgentClient["executeDeepSeekHarnessCommand"]>().mockResolvedValue({}),
     listDeepSeekHarnessSkills: vi.fn<AgentClient["listDeepSeekHarnessSkills"]>().mockResolvedValue({ skills: [] }),
     stopChatStream: vi.fn<AgentClient["stopChatStream"]>().mockResolvedValue(true),

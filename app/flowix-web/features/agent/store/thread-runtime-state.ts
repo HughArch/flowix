@@ -49,6 +49,15 @@ export interface ThreadState {
   loadingMore: boolean;
 }
 
+/** A provider may end a stream while an external tool is still running. */
+export function isAgentThreadWorking(state: Pick<ThreadState, "isLoading" | "activeRunId" | "runs" | "messages"> | undefined): boolean {
+  if (!state) return false;
+  const activeRun = state.activeRunId ? state.runs[state.activeRunId] : undefined;
+  return state.isLoading || !!activeRun?.currentTool || state.messages.some(
+    (message) => message.role === "tool" && message.isLoading,
+  );
+}
+
 export type ThreadsMap = Record<string, ThreadState>;
 
 export function emptyThreadState(): ThreadState {

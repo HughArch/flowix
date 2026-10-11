@@ -72,21 +72,19 @@ pub struct PiFeatures {
 pub fn features() -> Result<PiFeatures, String> {
     let dir = pi_config_dir()?;
     let settings = read_json(&dir.join("settings.json"))?;
-    let mut features: PiFeatures = serde_json::from_value(
-        settings.get("flowixFeatures").cloned().unwrap_or_default(),
-    )
-    .unwrap_or_default();
-    features.code_mode = false;
+    let features: PiFeatures =
+        serde_json::from_value(settings.get("flowixFeatures").cloned().unwrap_or_default())
+            .unwrap_or_default();
     Ok(features)
 }
 
-pub fn save_features(mut features: PiFeatures) -> Result<(), String> {
-    features.code_mode = false;
+pub fn save_features(features: PiFeatures) -> Result<(), String> {
     let dir = pi_config_dir()?;
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let path = dir.join("settings.json");
     let mut settings = read_json(&path)?;
-    settings["flowixFeatures"] = serde_json::to_value(features).map_err(|error| error.to_string())?;
+    settings["flowixFeatures"] =
+        serde_json::to_value(features).map_err(|error| error.to_string())?;
     write_json(&path, &settings)
 }
 

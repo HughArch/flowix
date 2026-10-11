@@ -18,6 +18,52 @@ import {
 
 type ToolGroup = Extract<AgentRenderItem, { kind: "tool-group" }>;
 
+const TOOL_ROW_TRANSITION_MS = 180;
+const MIN_TOOL_ROW_VISIBLE_MS = 300;
+
+interface RunningToolRow {
+  message: AgentMessage;
+  element: HTMLElement;
+  animation: Animation | null;
+  exitTimer: number | null;
+  shownAt: number;
+  exiting: boolean;
+}
+
+function animateToolRow(element: HTMLElement, entering: boolean): Animation | null {
+  if (
+    window.matchMedia?.("(prefers-reduced-motion: reduce)").matches ||
+    typeof element.animate !== "function"
+  ) return null;
+
+  const height = element.getBoundingClientRect().height;
+  if (height <= 0) return null;
+
+  const full = {
+    height: `${height}px`,
+    paddingTop: "6px",
+    paddingBottom: "6px",
+    opacity: 1,
+    transform: "translateY(0)",
+  };
+  const collapsed = {
+    height: "0px",
+    paddingTop: "0px",
+    paddingBottom: "0px",
+    opacity: 0,
+    transform: "translateY(-4px)",
+  };
+  const animation = element.animate(
+    entering ? [collapsed, full] : [full, collapsed],
+    {
+      duration: TOOL_ROW_TRANSITION_MS,
+      easing: "ease-out",
+      fill: "both",
+    },
+  );
+  return animation;
+}
+
 function replaceChildrenWithCleanup(
   parent: HTMLElement,
   ...children: HTMLElement[]
@@ -157,6 +203,7 @@ export function createToolGroupElement(options: {
   let currentContext = context;
   let expanded = context.getToolGroupExpanded?.(group.id) ?? false;
   let durationTimer: number | null = null;
+  const runningToolRows = new Map<string, RunningToolRow>();
 
   const createRunningTool = (message: AgentMessage): HTMLElement | null => {
     const element = renderTool(message, currentContext);
@@ -180,9 +227,10 @@ export function createToolGroupElement(options: {
   };
 
   const syncCompletedTools = () => {
-    const visibleTools = expanded
+    const visibleTools = (expanded
       ? currentGroup.completedTools
-      : currentGroup.completedTools.filter(isFailedToolMessage);
+      : currentGroup.completedTools.filter(isFailedToolMessage)
+    ).filter((tool) => !runningToolRows.has(tool.id));
     if (visibleTools.length === 0) {
       replaceChildrenWithCleanup(completedTools);
       return;
@@ -193,11 +241,108 @@ export function createToolGroupElement(options: {
     replaceChildrenWithCleanup(completedTools, ...renderedTools);
   };
 
+  const removeRunningToolRow = (id: string, row: RunningToolRow) => {
+    if (row.exitTimer !== null) window.clearTimeout(row.exitTimer);
+    row.exitTimer = null;
+    row.element.remove();
+    disposeAgentThreadCardMessageTree(row.element);
+    if (runningToolRows.get(id) === row) runningToolRows.delete(id);
+    syncCompletedTools();
+  };
+
+  const startRowAnimation = (
+    id: string,
+    row: RunningToolRow,
+    entering: boolean,
+  ) => {
+    const animation = animateToolRow(row.element, entering);
+    row.animation = animation;
+    if (!animation) {
+      if (!entering) removeRunningToolRow(id, row);
+      return;
+    }
+    animation.onfinish = () => {
+      if (
+        row.animation !== animation ||
+        (entering && row.exiting) ||
+        (!entering && !row.exiting)
+      ) return;
+      row.animation = null;
+      animation.cancel();
+      if (!entering) removeRunningToolRow(id, row);
+    };
+  };
+
+  const startToolRowExit = (id: string, row: RunningToolRow) => {
+    row.element.setAttribute("aria-hidden", "true");
+    row.element.inert = true;
+    startRowAnimation(id, row, false);
+  };
+
   const syncRunningTools = () => {
-    const renderedTools = currentGroup.runningTools
-      .map(createRunningTool)
-      .filter((element): element is HTMLElement => element !== null);
-    replaceChildrenWithCleanup(runningTools, ...renderedTools);
+    const visibleIds = new Set<string>();
+
+    for (const message of currentGroup.runningTools) {
+      visibleIds.add(message.id);
+      let row = runningToolRows.get(message.id);
+      if (!row) {
+        const element = createRunningTool(message);
+        if (!element) continue;
+        const newRow = {
+          message,
+          element,
+          animation: null,
+          exitTimer: null,
+          shownAt: Date.now(),
+          exiting: false,
+        };
+        runningToolRows.set(message.id, newRow);
+        runningTools.append(element);
+        startRowAnimation(message.id, newRow, true);
+        continue;
+      }
+
+      if (row.exiting) {
+        if (row.exitTimer !== null) window.clearTimeout(row.exitTimer);
+        row.exitTimer = null;
+        row.animation?.cancel();
+        row.animation = null;
+        row.exiting = false;
+        row.element.removeAttribute("aria-hidden");
+        row.element.inert = false;
+      }
+
+      if (row.message !== message) {
+        row.animation?.cancel();
+        row.animation = null;
+        const replacement = createRunningTool(message);
+        if (replacement) {
+          row.element.replaceWith(replacement);
+          disposeAgentThreadCardMessageTree(row.element);
+          row.element = replacement;
+          row.message = message;
+        }
+      }
+      // appendChild also moves existing rows into the latest tool order.
+      runningTools.append(row.element);
+    }
+
+    for (const [id, row] of runningToolRows) {
+      if (visibleIds.has(id) || row.exiting) continue;
+      row.exiting = true;
+      const remaining = Math.max(
+        0,
+        MIN_TOOL_ROW_VISIBLE_MS - (Date.now() - row.shownAt),
+      );
+      if (remaining === 0) {
+        startToolRowExit(id, row);
+      } else {
+        row.exitTimer = window.setTimeout(() => {
+          row.exitTimer = null;
+          if (row.exiting) startToolRowExit(id, row);
+        }, remaining);
+      }
+    }
   };
 
   const label = document.createElement("span");

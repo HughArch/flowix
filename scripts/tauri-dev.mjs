@@ -100,7 +100,7 @@ function npmRun(script) {
 npmRun('cli:build:dev')
 if (withPi) {
   const piPlatform = { darwin: 'darwin', win32: 'windows', linux: 'linux' }[process.platform]
-  if (!piPlatform) throw new Error(`Pi v1.0.3 has no release for ${process.platform}`)
+  if (!piPlatform) throw new Error(`Pi v1.1.0 has no release for ${process.platform}`)
   run(process.execPath, [
     resolve(repoRoot, 'scripts/prepare-pi-bundle.mjs'),
     '--platform',
@@ -114,7 +114,7 @@ if (withPi) {
   childEnv.PI_CLI_PATH = [resolve(piResourceDir, 'dist', piBinary), resolve(piResourceDir, piBinary)]
     .find(existsSync)
   if (!childEnv.PI_CLI_PATH) throw new Error(`staged Pi executable was not found in ${piResourceDir}`)
-  console.log(`using bundled Pi v1.0.3 from ${childEnv.PI_CLI_PATH}`)
+  console.log(`using bundled Pi v1.1.0 from ${childEnv.PI_CLI_PATH}`)
 } else {
   run(process.execPath, [resolve(repoRoot, 'scripts/prepare-pi-catalog.mjs')])
 }

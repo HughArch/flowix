@@ -87,9 +87,13 @@ pub(super) fn app_server_turn_messages_with_offset(
                 turn_id.as_deref(),
             ) {
                 if matches!(message.role.as_str(), "assistant" | "reasoning") {
-                    let item_terminal = item.get("status").and_then(Value::as_str)
+                    let item_terminal = item
+                        .get("status")
+                        .and_then(Value::as_str)
                         .is_some_and(is_terminal_native_status);
-                    let turn_terminal = turn.get("status").and_then(Value::as_str)
+                    let turn_terminal = turn
+                        .get("status")
+                        .and_then(Value::as_str)
                         .is_some_and(is_terminal_native_status);
                     message.is_completed = Some(item_terminal || turn_terminal);
                 }
@@ -544,11 +548,16 @@ pub(super) fn paginate_app_server_turns(
         .unwrap_or(snapshot_end)
         .min(snapshot_end);
     let start = end.saturating_sub(limit);
-    let complete_turn_ids = turns[start..end].iter().filter_map(|turn| {
-        let status = turn.get("status").and_then(Value::as_str)?;
-        if !is_terminal_native_status(status) { return None; }
-        turn.get("id").and_then(Value::as_str).map(str::to_string)
-    }).collect();
+    let complete_turn_ids = turns[start..end]
+        .iter()
+        .filter_map(|turn| {
+            let status = turn.get("status").and_then(Value::as_str)?;
+            if !is_terminal_native_status(status) {
+                return None;
+            }
+            turn.get("id").and_then(Value::as_str).map(str::to_string)
+        })
+        .collect();
     ThreadMessagesPage {
         messages: app_server_turn_messages(&turns[start..end]),
         oldest_sequence: (start > 0).then_some(start as i64),

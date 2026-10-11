@@ -47,6 +47,8 @@ pub fn list_media_resources_page(
     kinds: Vec<String>,
     cursor: Option<String>,
     limit: Option<usize>,
+    folder_relative_path: Option<String>,
+    folder_depth: Option<String>,
     state: State<AppState>,
 ) -> Result<MediaResourcePage, String> {
     let requested = dunce::canonicalize(&notebook_path).map_err(|error| error.to_string())?;
@@ -64,18 +66,43 @@ pub fn list_media_resources_page(
         })
         .collect::<Result<Vec<_>, _>>()?;
     if kinds.is_empty() {
-        return Ok(MediaResourcePage { resources: Vec::new(), next_cursor: None, has_more: false });
+        return Ok(MediaResourcePage {
+            resources: Vec::new(),
+            next_cursor: None,
+            has_more: false,
+        });
     }
     let cursor = cursor
         .map(|value| {
             let (created_at, id) = value.split_once(':').ok_or("INVALID_CURSOR")?;
             let created_at = created_at.parse::<i64>().map_err(|_| "INVALID_CURSOR")?;
-            if id.is_empty() || id.contains('\0') { return Err("INVALID_CURSOR"); }
+            if id.is_empty() || id.contains('\0') {
+                return Err("INVALID_CURSOR");
+            }
             Ok((created_at, id.to_string()))
         })
         .transpose()?;
+    let folder_scope = folder_relative_path
+        .map(|path| {
+            let path = path.replace('\\', "/");
+            if path.starts_with('/') || path.split('/').any(|part| part == ".." || part == ".") {
+                return Err("INVALID_MEDIA_FOLDER_SCOPE".to_string());
+            }
+            let depth = folder_depth.as_deref().unwrap_or("descendants");
+            if !matches!(depth, "direct_children" | "descendants") {
+                return Err("INVALID_MEDIA_FOLDER_DEPTH".to_string());
+            }
+            Ok((path, depth == "descendants"))
+        })
+        .transpose()?;
     memo_file
-        .list_media_resources_page(&notebook_id, &kinds, cursor, limit.unwrap_or(60))
+        .list_media_resources_page(
+            &notebook_id,
+            &kinds,
+            cursor,
+            limit.unwrap_or(60),
+            folder_scope,
+        )
         .map_err(|error| error.to_string())
 }
 
@@ -142,7 +169,10 @@ pub fn update_media_resource(
         )
         .map_err(|error| error.to_string())?
         .ok_or_else(|| "media resource disappeared".to_string())?;
-    let _ = app.emit("media-properties-changed", serde_json::json!({ "notebookId": notebook_id }));
+    let _ = app.emit(
+        "media-properties-changed",
+        serde_json::json!({ "notebookId": notebook_id }),
+    );
     Ok(MediaResourceResponse { resource: updated })
 }
 

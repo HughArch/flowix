@@ -1,4 +1,4 @@
-import { parseCollectionEnvelope } from '@features/collection/model';
+import { parseCollectionDocumentV2 } from '@features/collection/model';
 import { collections, externalDocuments, type CollectionIndexItem } from '@platform/tauri/client';
 import { subscribe } from '@platform/tauri/event-bus';
 import { canonicalDirectoryPath } from '@/lib/path';
@@ -96,9 +96,9 @@ export async function refreshCollectionDisplays(event: CollectionChange): Promis
         const notebook = getWorkspaceMemoState().notebooks.find((candidate) => candidate.id === event.notebookId);
         if (notebook) {
           const notebookRoot = canonicalDirectoryPath(notebook.path);
-          const envelope = parseCollectionEnvelope(await externalDocuments.read(`${notebookRoot}/${item.relativePath}`, notebookRoot));
+          const envelope = parseCollectionDocumentV2(await externalDocuments.read(`${notebookRoot}/${item.relativePath}`, notebookRoot));
           if (envelope.collection.id !== id) throw new Error('COLLECTION_IDENTITY_CHANGED');
-          const views = item.collectionType === 'table' ? (envelope.payload.table as { views: Array<{ id: string }> }).views : [envelope.payload.view as { id: string }];
+          const views = envelope.payload.views.items as Array<{ id: string }>;
           viewIds = new Set(views.map((view) => view.id));
         }
       }

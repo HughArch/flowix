@@ -17,18 +17,18 @@ const archArg = process.argv.indexOf('--arch')
 const requestedArch = archArg >= 0 ? process.argv[archArg + 1] : undefined
 const arches = requestedArch ? [requestedArch] : platform === 'darwin' ? ['arm64', 'x64'] : [archValue]
 const platformName = { darwin: 'darwin', win32: 'windows', linux: 'linux' }[platform]
-if (!platformName) throw new Error(`Pi v1.0.3 has no release for ${platform}`)
+if (!platformName) throw new Error(`Pi v1.1.0 has no release for ${platform}`)
 if (arches.some(arch => !['arm64', 'x64'].includes(arch))) {
-  throw new Error(`Pi v1.0.3 has no release for ${platform}-${arches.join(',')}`)
+  throw new Error(`Pi v1.1.0 has no release for ${platform}-${arches.join(',')}`)
 }
 
 const checksums = {
-  'darwin-arm64': '7b1aa89ba13542f1aca61ebd63486d0417b5d2fefd5c41ededd8d083ab719b23',
-  'darwin-x64': '769e0c1d599dbc8e63ac355957bec8e9832bff91f190d67432392e62ac552194',
-  'linux-x64': '9b8c7ff523bd90881d1c1505168f0b9deb2c0357396b92b62f799550a48ff1ed',
-  'linux-arm64': 'd3093a79ac9e22ef430e2a73e002a3ddeb451de07b722b3aa53aa6a94eaa9edc',
-  'windows-x64': '6cddc3d11210539faa7ba0188504813f2f3ae6d8f93a161d4145cc61a8bdd5de',
-  'windows-arm64': 'ac29f24c02342886fa2d3c1c4629ae4e40d530357535b6a60b5c8ecaf803a11f',
+  'darwin-arm64': '3455b13de35c15a5893cdebc922678199e90a7ce99b06cbc23f37860e90d63c7',
+  'darwin-x64': '8fdd9149ae27e7470a6a10ed8a7c0ed80738d55adec80a8d7764f6386d1e658b',
+  'linux-x64': '3faa94666cd3849d37af320ff749407d0271b07a9b94f420c87e30866e10e289',
+  'linux-arm64': 'f3b0cac459f9df5420e4e48b48e95d81bfab57b701dd3fe4b08fda7d11d27dab',
+  'windows-x64': '98e3a14e13685a4836a10865bd7887bdc2fcfa1086120313420dc935a401d3d6',
+  'windows-arm64': '3dbbff7fae5aa6dfd0224752af2480be66463bf67a11bbbdf050956ba1c170a3',
 }
 
 await rm(stageRoot, { recursive: true, force: true })
@@ -47,10 +47,10 @@ for (const arch of arches) {
   const extension = platform === 'win32' ? 'zip' : 'tar.gz'
   const archive = `pi-${target}.${extension}`
   const digest = checksums[target]
-  if (!digest) throw new Error(`Pi v1.0.3 does not provide a ${target} package`)
+  if (!digest) throw new Error(`Pi v1.1.0 does not provide a ${target} package`)
   const archivePath = path.join(stageRoot, archive)
   const cachedArchivePath = path.join(downloadCache, archive)
-  const url = `https://github.com/earendil-works/pi/releases/download/v1.0.3/${archive}`
+  const url = `https://github.com/earendil-works/pi/releases/download/v1.1.0/pi-${target}.${extension}`
   const hashFile = async filePath => {
     const hash = createHash('sha256')
     for await (const chunk of createReadStream(filePath)) hash.update(chunk)
@@ -123,4 +123,4 @@ for (const arch of arches) {
 }
 await mkdir(stageRoot, { recursive: true })
 await writeFile(path.join(stageRoot, 'resources.json'), `${JSON.stringify(resources, null, 2)}\n`)
-process.stdout.write(`Staged Pi v1.0.3 (${arches.join(', ')}) for ${platformName}.\n`)
+process.stdout.write(`Staged Pi v1.1.0 (${arches.join(', ')}) for ${platformName}.\n`)

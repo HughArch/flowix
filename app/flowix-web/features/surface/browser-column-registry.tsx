@@ -292,9 +292,9 @@ function BrowserWebSurfaceView({ surface }: { surface: BrowserWebSurface }) {
             className="mx-1 h-4 w-4 shrink-0 animate-spin rounded-full border-2 border-[color-mix(in_oklch,var(--muted-foreground)_26%,transparent)] border-t-[var(--brand)]"
           />
         )}
-        {runtime?.error && <span className="shrink-0 text-[10px] text-red-500">{runtime.error}</span>}
+        {runtime?.error && <span className="shrink-0 text-[10px] text-[var(--destructive)]">{runtime.error}</span>}
       </form>
-      {addressError && <div className="shrink-0 px-3 py-1 text-[10px] text-red-500">{addressError}</div>}
+      {addressError && <div className="shrink-0 px-3 py-1 text-[10px] text-[var(--destructive)]">{addressError}</div>}
       <div className="relative min-h-0 min-w-0 flex-1 bg-white">
         <iframe
           key={`${surface.tabId}:${currentUrl}:${reloadToken}`}

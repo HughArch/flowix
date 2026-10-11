@@ -1,6 +1,14 @@
 import YAML from 'yaml';
 
+/** Runtime names stay stable while schema v2 uses the user-facing dataset names. */
 export type CollectionType = 'table' | 'media_library';
+export type CollectionPlacement = 'standalone' | 'folder';
+export type CollectionDepth = 'direct_children' | 'descendants';
+export interface CollectionSource {
+  scope: 'containing_folder' | 'notebook' | 'folder';
+  depth: CollectionDepth;
+  path?: string;
+}
 export type CollectionPropertyType = 'Text' | 'Number' | 'Boolean' | 'Date' | 'URL' | 'Icon' | 'Color' | 'Tag';
 export interface CollectionProperty {
   type: CollectionPropertyType;
@@ -10,17 +18,18 @@ export interface CollectionProperty {
 export interface CollectionMetadata {
   id: string;
   type: CollectionType;
+  placement: CollectionPlacement;
   name: string;
   revision: number;
   created_at: string;
   updated_at: string;
   properties: Record<string, CollectionProperty>;
 }
-export interface CollectionEnvelope {
+export interface CollectionDocumentV2 {
   format: 'flowix.collection';
-  schema_version: 1;
+  schema_version: 2;
   collection: CollectionMetadata;
-  payload: { schema_version: 1; [key: string]: unknown };
+  payload: { schema_version: 2; dataset: Record<string, unknown>; views: Record<string, unknown> };
 }
 
 export function createUuidV7(): string {
@@ -35,12 +44,52 @@ export function createUuidV7(): string {
   return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 export const createCollectionId = () => `col_${createUuidV7()}`;
-export function createCollectionMetadata(type: CollectionType, name: string): CollectionMetadata {
+export function createCollectionMetadata(
+  type: CollectionType,
+  name: string,
+  placement: CollectionPlacement = 'standalone',
+): CollectionMetadata {
   const now = new Date().toISOString();
-  return { id: createCollectionId(), type, name: name.trim(), revision: 0, created_at: now, updated_at: now, properties: {} };
+  return { id: createCollectionId(), type, placement, name: name.trim(), revision: 0, created_at: now, updated_at: now, properties: {} };
 }
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
+}
+function isNotebookRelativePath(path: unknown): path is string {
+  return typeof path === 'string' && Boolean(path) && !path.startsWith('/') && !path.includes('\\')
+    && path.split('/').every((part) => part && part !== '.' && part !== '..');
+}
+function filterRules(filter: Record<string, unknown>): Record<string, unknown>[] {
+  return [...(filter.all as Record<string, unknown>[]), ...(filter.any as Record<string, unknown>[])].flatMap((entry) =>
+    'field' in entry ? [entry] : filterRules(entry));
+}
+function validateRuleFilter(filter: unknown, depth = 0): filter is { all: Record<string, unknown>[]; any: Record<string, unknown>[] } {
+  if (!isRecord(filter) || !hasOnlyKeys(filter, ['all', 'any'])) return false;
+  return ['all', 'any'].every((key) => Array.isArray(filter[key]) && (filter[key] as unknown[]).every((raw) => {
+    if (!isRecord(raw)) return false;
+    if ('all' in raw || 'any' in raw) return depth === 0 && validateRuleFilter(raw, 1);
+    if (!hasOnlyKeys(raw, ['field', 'op', 'value']) || typeof raw.field !== 'string' || !raw.field.trim()) return false;
+    if (!['eq', 'equals', 'contains', 'in'].includes(String(raw.op))) return false;
+    if (raw.op === 'contains') return typeof raw.value === 'string';
+    if (raw.op === 'in') return Array.isArray(raw.value) && raw.value.length > 0;
+    return typeof raw.value === 'string' || typeof raw.value === 'number' || typeof raw.value === 'boolean';
+  }));
+}
+function ruleFilterMatchesCollectionType(filter: unknown, type: CollectionType): boolean {
+  if (!validateRuleFilter(filter)) return false;
+  return filterRules(filter).every((rule) => {
+    const field = rule.field;
+    if (type === 'table') {
+      if (field === 'file_name' || field === 'path') return rule.op === 'contains';
+      if (field === 'kind') return (rule.op === 'eq' && rule.value === 'note')
+        || (rule.op === 'in' && Array.isArray(rule.value) && rule.value.length === 1 && rule.value[0] === 'note');
+      return rule.op === 'eq' || rule.op === 'equals' || rule.op === 'contains' || rule.op === 'in';
+    }
+    if (field === 'file_name' || field === 'path') return rule.op === 'contains' && typeof rule.value === 'string';
+    if (field === 'kind') return (rule.op === 'eq' && (rule.value === 'image' || rule.value === 'video'))
+      || (rule.op === 'in' && Array.isArray(rule.value) && rule.value.every((kind) => kind === 'image' || kind === 'video'));
+    return false;
+  });
 }
 export function hasOnlyKeys(value: object, keys: readonly string[]): boolean {
   return Object.keys(value).every((key) => keys.includes(key));
@@ -60,9 +109,13 @@ export function validateCollectionProperty(property: unknown): property is Colle
   }
 }
 export function validateCollectionMetadata(value: unknown, type?: CollectionType): CollectionMetadata {
-  if (!isRecord(value) || !hasOnlyKeys(value, ['id', 'type', 'name', 'revision', 'created_at', 'updated_at', 'properties'])
+  const normalizedType = value && typeof value === 'object' && 'type' in value
+    ? (value.type === 'notes' ? 'table' : value.type === 'media' ? 'media_library' : value.type)
+    : undefined;
+  if (!isRecord(value) || !hasOnlyKeys(value, ['id', 'type', 'placement', 'name', 'revision', 'created_at', 'updated_at', 'properties'])
     || typeof value.id !== 'string' || !/^col_[0-9a-f]{32}$/.test(value.id)
-    || !['table', 'media_library'].includes(String(value.type)) || (type && value.type !== type)
+    || !['table', 'media_library'].includes(String(normalizedType)) || (type && normalizedType !== type)
+    || (value.placement !== undefined && !['standalone', 'folder'].includes(String(value.placement)))
     || typeof value.name !== 'string' || !value.name.trim() || value.name !== value.name.trim()
     || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0
     || typeof value.created_at !== 'string' || !Number.isFinite(Date.parse(value.created_at))
@@ -70,19 +123,242 @@ export function validateCollectionMetadata(value: unknown, type?: CollectionType
     || !isRecord(value.properties) || Object.entries(value.properties).some(([key, property]) => (
       !/^[a-z][a-z0-9_]*$/.test(key) || !validateCollectionProperty(property)
     ))) throw new Error('集合身份、版本或自有属性无效');
-  return value as unknown as CollectionMetadata;
+  return { ...value, type: normalizedType, placement: (value.placement as CollectionPlacement | undefined) ?? 'standalone' } as unknown as CollectionMetadata;
 }
-export function parseCollectionEnvelope(source: string, type?: CollectionType): CollectionEnvelope {
+
+function validateV2Envelope(value: Record<string, unknown>): { collection: CollectionMetadata; payload: Record<string, unknown> } {
+  if (!isRecord(value.collection) || !isRecord(value.payload) || !hasOnlyKeys(value.payload, ['schema_version', 'dataset', 'views'])
+    || value.payload.schema_version !== 2 || !isRecord(value.payload.dataset) || !isRecord(value.payload.views)) {
+    throw new Error('集合数据集或视图格式无效');
+  }
+  const collection = validateCollectionMetadata(value.collection);
+  const dataset = value.payload.dataset;
+  if (!hasOnlyKeys(dataset, ['source', 'schema', 'records', 'filter']) || !isRecord(dataset.source)
+    || !isRecord(dataset.schema) || !isRecord(dataset.records) || !hasOnlyKeys(dataset.records, ['include', 'exclude'])
+    || !Array.isArray(dataset.records.include) || !Array.isArray(dataset.records.exclude)
+    || !isRecord(value.payload.views) || !Array.isArray(value.payload.views.items)) {
+    throw new Error('集合数据集格式无效');
+  }
+  const source = dataset.source;
+  if (!hasOnlyKeys(source, ['scope', 'depth', 'path'])
+    || !['containing_folder', 'notebook', 'folder'].includes(String(source.scope))
+    || !['direct_children', 'descendants'].includes(String(source.depth))) throw new Error('集合数据范围无效');
+  if (collection.placement === 'folder') {
+    if (source.scope !== 'containing_folder' || source.path !== undefined) throw new Error('文件夹集合的数据范围必须绑定所在目录');
+  } else if (source.scope === 'containing_folder' || (source.scope === 'folder' && !isNotebookRelativePath(source.path))) {
+    throw new Error('独立集合的数据范围无效');
+  }
+  if (source.scope !== 'folder' && source.path !== undefined) throw new Error('集合数据范围不应包含 path');
+  if (!hasOnlyKeys(dataset.schema, collection.type === 'table' ? ['primary_field_id', 'fields'] : ['fields'])) throw new Error('集合字段定义包含未知字段');
+  if (collection.type === 'table' && (typeof dataset.schema.primary_field_id !== 'string' || !dataset.schema.primary_field_id.trim())) throw new Error('笔记集合缺少主字段');
+  if (collection.type === 'media_library' && (!Array.isArray(dataset.schema.fields) || dataset.schema.fields.length > 0)) throw new Error('媒体集合不支持自定义字段');
+  for (const kind of ['include', 'exclude'] as const) {
+    const seenIds = new Set<string>();
+    const seenPaths = new Set<string>();
+    for (const record of dataset.records[kind] as unknown[]) {
+      if (!isRecord(record) || (record.id !== undefined && (typeof record.id !== 'string' || !/^rec_[0-9a-f]{32}$/.test(record.id) || seenIds.has(record.id)))
+        || (record.updated_at !== undefined && (typeof record.updated_at !== 'string' || !Number.isFinite(Date.parse(record.updated_at))))) throw new Error('集合记录格式无效');
+      if (record.id !== undefined) seenIds.add(record.id as string);
+      const path = collection.type === 'table' ? record.note_path : record.relative_path;
+      const isDraftNote = collection.type === 'table' && kind === 'include' && path === '';
+      if (!isDraftNote && !isNotebookRelativePath(path)) throw new Error('集合记录路径无效');
+      if (!isDraftNote && seenPaths.has(path)) throw new Error('集合记录重复');
+      if (!isDraftNote) seenPaths.add(path);
+      if (collection.type === 'media_library' && (typeof record.resource_id !== 'string' || !record.resource_id.trim())) throw new Error('媒体记录缺少资源 ID');
+      if (collection.type === 'table' && !hasOnlyKeys(record, ['id', 'updated_at', 'note_path'])) throw new Error('笔记记录包含未知字段');
+      if (collection.type === 'media_library' && !hasOnlyKeys(record, ['id', 'updated_at', 'resource_id', 'relative_path'])) throw new Error('媒体记录包含未知字段');
+    }
+  }
+  const views = value.payload.views;
+  const viewItems = Array.isArray(views.items) ? views.items : null;
+  if (typeof views.default_id !== 'string' || !viewItems || viewItems.length === 0
+    || viewItems.some((view) => !isRecord(view) || !/^view_[0-9a-f]{32}$/.test(String(view.id))
+      || typeof view.name !== 'string' || !view.name.trim() || typeof view.layout !== 'string'
+      || !isRecord(view.config) || (view.filter !== undefined && !isRecord(view.filter))
+      || (view.sort !== undefined && !Array.isArray(view.sort)))) throw new Error('集合视图格式无效');
+  const validLayouts = collection.type === 'table' ? ['table', 'kanban', 'calendar', 'gallery'] : ['waterfall'];
+  if (viewItems.some((view) => !isRecord(view) || !validLayouts.includes(String(view.layout))
+    || (view.filter !== undefined && !ruleFilterMatchesCollectionType(view.filter, collection.type))
+    || (Array.isArray(view.sort) && view.sort.some((sort) => !isRecord(sort) || !hasOnlyKeys(sort, ['field', 'direction'])
+      || typeof sort.field !== 'string' || !sort.field || (sort.direction !== 'asc' && sort.direction !== 'desc')
+      || (collection.type === 'media_library' && (sort.field !== 'created_at' || sort.direction !== 'desc')))))) throw new Error('集合视图筛选、排序或布局无效');
+  if (!viewItems.some((view) => isRecord(view) && view.id === views.default_id)) throw new Error('默认集合视图不存在');
+  if (value.payload.dataset.filter !== null && value.payload.dataset.filter !== undefined && !ruleFilterMatchesCollectionType(value.payload.dataset.filter, collection.type)) {
+    throw new Error('集合规则筛选格式无效');
+  }
+
+  return { collection, payload: value.payload };
+}
+
+/** Read v1 files once and normalize them into the canonical v2 document. */
+export function parseCollectionDocumentV2(source: string, type?: CollectionType): CollectionDocumentV2 {
   const value: unknown = YAML.parse(source);
   if (!isRecord(value) || !hasOnlyKeys(value, ['format', 'schema_version', 'collection', 'payload'])
-    || value.format !== 'flowix.collection' || value.schema_version !== 1
-    || !isRecord(value.payload) || value.payload.schema_version !== 1) throw new Error('不支持的集合文件格式或版本');
-  validateCollectionMetadata(value.collection, type);
-  return value as unknown as CollectionEnvelope;
+    || value.format !== 'flowix.collection' || !isRecord(value.payload)) throw new Error('不支持的集合文件格式或版本');
+  if (value.schema_version !== value.payload.schema_version) throw new Error('不支持的集合文件格式或版本');
+  if (value.schema_version === 1 && value.payload.schema_version === 1) {
+    if (!isRecord(value.collection)) throw new Error('旧集合身份数据无效');
+    const legacyCollection = value.collection;
+    const collection = validateCollectionMetadata({
+      id: legacyCollection.id, type: legacyCollection.type, placement: legacyCollection.placement,
+      name: legacyCollection.name, revision: legacyCollection.revision, created_at: legacyCollection.created_at,
+      updated_at: legacyCollection.updated_at, properties: legacyCollection.properties ?? {},
+    }, type);
+    const legacyKeys = collection.type === 'table' ? ['schema_version', 'table', 'records'] : ['schema_version', 'view', 'records'];
+    const legacyConfig = value.payload[collection.type === 'table' ? 'table' : 'view'];
+    const legacyRecords = value.payload.records;
+    if (!hasOnlyKeys(value.payload, legacyKeys) || !isRecord(legacyConfig) || !isRecord(legacyRecords)
+      || !hasOnlyKeys(legacyRecords, collection.type === 'table' ? ['data', 'auto_collect'] : ['data'])
+      || !Array.isArray(legacyRecords.data)) throw new Error('旧集合业务数据格式无效');
+    const payload = migrateLegacyPayload(collection, legacyCollection, value.payload);
+    const document = { format: 'flowix.collection' as const, schema_version: 2 as const, collection,
+      payload: payload as CollectionDocumentV2['payload'] };
+    validateV2Envelope({ collection: { ...collection }, payload });
+    return document;
+  }
+  if (value.schema_version === 2 && value.payload.schema_version === 2) {
+    const collection = validateCollectionMetadata(value.collection, type);
+    const document = { format: 'flowix.collection' as const, schema_version: 2 as const, collection,
+      payload: value.payload as CollectionDocumentV2['payload'] };
+    validateV2Envelope({ collection: { ...collection }, payload: value.payload });
+    return document;
+  }
+  throw new Error('不支持的集合文件格式或版本');
 }
-export function serializeCollectionEnvelope(collection: CollectionMetadata, payload: Record<string, unknown>): string {
-  validateCollectionMetadata(collection);
-  return YAML.stringify({ format: 'flowix.collection', schema_version: 1, collection, payload: { ...payload, schema_version: 1 } }, { lineWidth: 0, indent: 2 });
+
+export function isLegacyCollectionSource(source: string): boolean {
+  const value: unknown = YAML.parse(source);
+  return isRecord(value) && value.format === 'flowix.collection' && value.schema_version === 1;
+}
+
+function tableFilterFromLegacyRuntime(condition: unknown): { all: Record<string, unknown>[]; any: Record<string, unknown>[] } | null {
+  if (!isRecord(condition)) return null;
+  const file = isRecord(condition.file_condition) ? condition.file_condition : {};
+  const criteria: Record<string, unknown>[] = [];
+  if (typeof file.file_name_contains === 'string' && file.file_name_contains) criteria.push({ field: 'file_name', op: 'contains', value: file.file_name_contains });
+  if (typeof file.path_contains === 'string' && file.path_contains) criteria.push({ field: 'path', op: 'contains', value: file.path_contains });
+  if (file.file_type === 'markdown') criteria.push({ field: 'kind', op: 'eq', value: 'note' });
+  const properties = Array.isArray(condition.property_conditions) ? condition.property_conditions.filter(isRecord).map((property) => ({
+    field: typeof property.field_id === 'string' ? property.field_id.trim() : property.field_id,
+    op: property.operator === 'contains' ? 'contains' : 'eq',
+    value: typeof property.value === 'string' ? property.value.trim() : property.value,
+  })) : [];
+  if (!properties.length && !criteria.length) return null;
+  if (condition.property_match === 'intersection' && properties.length) {
+    if (criteria.length) return { all: [], any: [{ all: properties, any: [] }, ...criteria] };
+    return { all: properties, any: [] };
+  }
+  return { all: [], any: [...properties, ...criteria] };
+}
+
+function mediaFilterFromLegacyRuntime(condition: unknown): { all: Record<string, unknown>[]; any: Record<string, unknown>[] } {
+  if (!isRecord(condition)) return { all: [], any: [] };
+  const file = isRecord(condition.file_condition) ? condition.file_condition : condition;
+  const criteria: Record<string, unknown>[] = [];
+  if (typeof file.file_name_contains === 'string' && file.file_name_contains) criteria.push({ field: 'file_name', op: 'contains', value: file.file_name_contains });
+  if (typeof file.file_type === 'string' && file.file_type) criteria.push({ field: 'kind', op: 'eq', value: file.file_type });
+  if (typeof file.path_contains === 'string' && file.path_contains) criteria.push({ field: 'path', op: 'contains', value: file.path_contains });
+  return { all: criteria, any: [] };
+}
+
+/** Convert legacy v1 business data to the v2 dataset and views model. */
+function migrateLegacyPayload(collection: CollectionMetadata, legacy: Record<string, unknown>, payload: Record<string, unknown>): Record<string, unknown> {
+  const source = isRecord(legacy.source) ? legacy.source : collection.placement === 'folder'
+    ? { scope: 'containing_folder', depth: 'descendants' }
+    : { scope: 'notebook', depth: 'descendants' };
+  const oldViewSettings = isRecord(legacy.viewSettings) ? legacy.viewSettings : {};
+  const viewSetting = (id: unknown): { name?: string; filter?: Record<string, unknown>; sort?: unknown[]; config?: Record<string, unknown> } => {
+    const entry = typeof id === 'string' ? oldViewSettings[id] : undefined;
+    if (!isRecord(entry)) return {};
+    return {
+      ...(typeof entry.name === 'string' ? { name: entry.name } : {}),
+      ...(isRecord(entry.filter) ? { filter: entry.filter } : {}),
+      ...(Array.isArray(entry.sort) ? { sort: entry.sort } : {}),
+      ...(isRecord(entry.config) ? { config: entry.config } : {}),
+    };
+  };
+  const oldExcludes = Array.isArray(legacy.datasetExcludeRecords)
+    ? legacy.datasetExcludeRecords.filter(isRecord)
+    : [];
+  if (collection.type === 'table') {
+    const table = isRecord(payload.table) ? payload.table : {};
+    const records = isRecord(payload.records) ? payload.records : {};
+    const data = Array.isArray(records.data) ? records.data as Record<string, unknown>[] : [];
+    const auto = isRecord(records.auto_collect) ? records.auto_collect : null;
+    const tableViews = Array.isArray(table.views) ? table.views.filter(isRecord) : [];
+    const excluded = [
+      ...oldExcludes.map((record) => record.note_path),
+      ...(Array.isArray(auto?.excluded_note_paths) ? auto.excluded_note_paths : []),
+    ].filter((path): path is string => typeof path === 'string' && Boolean(path));
+    return {
+      schema_version: 2,
+      dataset: {
+        source,
+        schema: { primary_field_id: table.primary_field_id, fields: table.fields ?? [] },
+        records: {
+          include: data.map(({ id, updated_at, note_path }) => ({ id, updated_at, note_path })),
+          exclude: [...new Set(excluded)].map((note_path) => ({ note_path })),
+        },
+        filter: legacy.datasetActive === false ? null
+          : isRecord(legacy.datasetFilter) ? legacy.datasetFilter
+            : auto ? tableFilterFromLegacyRuntime(auto.condition) : null,
+      },
+      views: {
+        default_id: tableViews.some((view) => view.id === legacy.defaultViewId) ? legacy.defaultViewId : tableViews[0]?.id,
+        items: tableViews.map((view) => ({
+          id: view.id, name: view.name, layout: view.type,
+          filter: viewSetting(view.id).filter ?? { all: [], any: [] },
+          sort: viewSetting(view.id).sort ?? [{ field: 'modified_at', direction: 'desc' }],
+          config: view.config ?? {},
+        })),
+      },
+    };
+  }
+  const view = isRecord(payload.view) ? payload.view : {};
+  const records = isRecord(payload.records) ? payload.records : {};
+  const data = Array.isArray(records.data) ? records.data as Record<string, unknown>[] : [];
+  const legacyMediaFilter = mediaFilterFromLegacyRuntime(view.condition);
+  return {
+    schema_version: 2,
+    dataset: {
+      source,
+      schema: { fields: [] },
+      records: {
+        include: data.map(({ id, updated_at, resource_id, note_path }) => ({ id, updated_at, resource_id: resource_id ?? `path:${note_path}`, relative_path: note_path })),
+        exclude: oldExcludes,
+      },
+      filter: isRecord(legacy.datasetFilter) ? legacy.datasetFilter
+        : (legacyMediaFilter.all.length ? legacyMediaFilter : null),
+    },
+    views: {
+      default_id: typeof legacy.defaultViewId === 'string' ? legacy.defaultViewId : view.id,
+      items: [{
+        id: view.id,
+        name: viewSetting(view.id).name ?? '媒体库',
+        layout: view.layout,
+        filter: viewSetting(view.id).filter ?? legacyMediaFilter,
+        sort: viewSetting(view.id).sort ?? [view.sort ?? { field: 'created_at', direction: 'desc' }],
+        config: viewSetting(view.id).config ?? {},
+      }, ...(Array.isArray(legacy.nonActiveViews) ? legacy.nonActiveViews.filter(isRecord) : [])],
+    },
+  };
+}
+
+export function serializeCollectionDocumentV2(document: CollectionDocumentV2): string {
+  if (document.format !== 'flowix.collection' || document.schema_version !== 2) throw new Error('集合文件版本无效');
+  validateV2Envelope({ collection: { ...document.collection }, payload: document.payload });
+  const checked = validateCollectionMetadata(document.collection);
+  const wireCollection = {
+    id: checked.id,
+    type: checked.type === 'table' ? 'notes' : 'media',
+    placement: checked.placement,
+    name: checked.name,
+    revision: checked.revision,
+    created_at: checked.created_at,
+    updated_at: checked.updated_at,
+    properties: checked.properties,
+  };
+  return YAML.stringify({ format: 'flowix.collection', schema_version: 2, collection: wireCollection, payload: document.payload }, { lineWidth: 0, indent: 2 });
 }
 export function reviseCollection(collection: CollectionMetadata): CollectionMetadata {
   return { ...collection, revision: collection.revision + 1, updated_at: new Date().toISOString() };

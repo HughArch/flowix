@@ -33,6 +33,7 @@ struct Upload {
     note_path: Option<String>,
     notebook_id: String,
     name: String,
+    deduplicate: bool,
     expected: u64,
     received: u64,
     created: Instant,
@@ -64,6 +65,7 @@ impl UploadSessions {
         notebook_id: String,
         name: String,
         size: u64,
+        deduplicate: bool,
     ) -> Result<String, String> {
         if size > base64_input::MAX_CONTENT_BYTES as u64 {
             return Err("ATTACHMENT_CONTENT_TOO_LARGE".into());
@@ -96,6 +98,7 @@ impl UploadSessions {
                 note_path,
                 notebook_id,
                 name,
+                deduplicate,
                 expected: size,
                 received: 0,
                 created: Instant::now(),
@@ -212,13 +215,13 @@ pub fn begin_attachment_upload(
     note_path: String,
     file_name: String,
     size: u64,
+    deduplicate: Option<bool>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let generation = state.upload_sessions.generation(window.label())?;
     let store = read_lock(&state.memo_file, "memo_file");
-    let (notebook_id, owner_note) =
-        attachments::resolve_note_owner(&store, None, Some(&note_path))
-            .map_err(|error| error.to_string())?;
+    let (notebook_id, owner_note) = attachments::resolve_note_owner(&store, None, Some(&note_path))
+        .map_err(|error| error.to_string())?;
     let root = attachments::notebook_root(&store, Some(&notebook_id))
         .map_err(|error| error.to_string())?;
     super::start_security_bookmark_access(&state, &root);
@@ -229,6 +232,7 @@ pub fn begin_attachment_upload(
         notebook_id,
         file_name,
         size,
+        deduplicate.unwrap_or(false),
     )
 }
 
@@ -256,24 +260,26 @@ pub async fn finish_attachment_upload(
     window: tauri::WebviewWindow,
     upload_id: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<attachments::SavedNotebookAsset, String> {
     let permit = admit_request(&upload_id, None)?;
     let sessions = state.upload_sessions.clone();
     let memo_file = state.memo_file.clone();
     let owner = window.label().to_string();
-    tokio::task::spawn_blocking(move || -> Result<String, String> {
+    tokio::task::spawn_blocking(move || -> Result<attachments::SavedNotebookAsset, String> {
         let _permit = permit;
         let mut upload = sessions.take(&owner, &upload_id)?;
         let store = read_lock(&memo_file, "memo_file");
-        let path = attachments::save_for_owner(
+        let deduplicate = upload.deduplicate;
+        let saved = attachments::save_for_owner(
             &store,
             Some(&upload.notebook_id),
             upload.note_path.as_deref(),
             &upload.name,
             &mut upload.file,
+            deduplicate,
         )
         .map_err(|error| error.to_string())?;
-        Ok(path.to_string_lossy().into_owned())
+        Ok(saved)
     })
     .await
     .map_err(|error| error.to_string())?

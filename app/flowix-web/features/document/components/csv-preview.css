@@ -106,7 +106,7 @@
 }
 
 .csv-preview .tabulator .tabulator-row .tabulator-cell.tabulator-range-selected:not(.tabulator-range-only-cell-selected):not(.tabulator-range-row-header) {
-  background-color: rgb(56 118 202 / 10%);
+  background-color: transparent !important;
 }
 
 .csv-preview .tabulator .tabulator-row .tabulator-cell.tabulator-row-header {

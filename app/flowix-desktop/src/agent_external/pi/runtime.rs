@@ -10,7 +10,7 @@ use sha2::{Digest, Sha256};
 use tauri::Manager;
 use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, Command};
-use tokio::sync::{mpsc, Mutex, OwnedMutexGuard};
+use tokio::sync::{mpsc, oneshot, Mutex, OwnedMutexGuard};
 use tokio::time::Duration;
 
 use super::super::lifecycle::ExternalLifecycleEmitter;
@@ -20,12 +20,193 @@ use super::super::{
 };
 use super::AGENT_TYPE;
 use crate::agent_session::ThreadManager;
-use crate::agent_wire::{AgentChunk, AgentUserMessage, RunInfo, UsageInfo};
+use crate::agent_wire::{AgentChunk, AgentMessageAttachment, AgentUserMessage, RunInfo, UsageInfo};
 
 const PI_IDLE_SESSION_TTL_MS: i64 = 10 * 60 * 1000;
 const PI_RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const PI_HISTORY_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const PI_ABORT_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
+
+fn next_pi_rpc_id() -> String {
+    static NEXT_ID: AtomicU64 = AtomicU64::new(0);
+    format!("flowix-command-{}", NEXT_ID.fetch_add(1, Ordering::Relaxed))
+}
+
+fn next_pi_queue_sequence() -> u64 {
+    static NEXT_SEQUENCE: AtomicU64 = AtomicU64::new(0);
+    NEXT_SEQUENCE.fetch_add(1, Ordering::Relaxed)
+}
+
+async fn pi_message_payload(
+    message: &AgentUserMessage,
+    cwd: &std::path::Path,
+) -> Result<Value, String> {
+    let base_prompt = message.llm_content.as_deref().unwrap_or(&message.content);
+    let workspace_paths = message.workspace_paths_for_runtime(AGENT_TYPE);
+    let mut prompt = super::super::append_workspace_context(base_prompt, cwd, &workspace_paths);
+    let mut images = Vec::new();
+    let mut attached_files = Vec::new();
+    for attachment in message.message_attachments() {
+        if attachment.r#type == "input_image" {
+            let bytes = tokio::fs::read(&attachment.path).await.map_err(|error| {
+                format!("cannot read attached image {}: {error}", attachment.name)
+            })?;
+            images.push(serde_json::json!({
+                "type": "image",
+                "data": base64::engine::general_purpose::STANDARD.encode(bytes),
+                "mimeType": attachment.mime_type,
+            }));
+        } else {
+            attached_files.push(attachment.path);
+        }
+    }
+    if !attached_files.is_empty() {
+        let paths = attached_files
+            .iter()
+            .map(|path| format!("- {path}"))
+            .collect::<Vec<_>>()
+            .join("\n");
+        prompt.push_str(&format!("\n\n<attached_files>\n{paths}\n</attached_files>"));
+    }
+    let mut payload = serde_json::json!({ "message": prompt });
+    if !images.is_empty() {
+        payload["images"] = Value::Array(images);
+    }
+    Ok(payload)
+}
+
+fn queued_payloads(
+    command_type: &str,
+    texts: &[String],
+    known: &mut HashMap<(String, String), VecDeque<Value>>,
+) -> Vec<Value> {
+    texts
+        .iter()
+        .map(|text| {
+            known
+                .get_mut(&(command_type.to_string(), text.clone()))
+                .and_then(VecDeque::pop_front)
+                .unwrap_or_else(|| serde_json::json!({ "message": text }))
+        })
+        .collect()
+}
+
+async fn enqueue_pi_payload(
+    session: &PiSession,
+    command_type: &str,
+    payload: Value,
+) -> Result<(), String> {
+    let id = next_pi_rpc_id();
+    let mut command = payload;
+    command["id"] = Value::String(id.clone());
+    command["type"] = Value::String(command_type.to_string());
+    session.request(&id, &command).await?;
+    Ok(())
+}
+
+async fn restore_pi_queues(
+    session: &PiSession,
+    active: &ActivePiRun,
+    steering: &[String],
+    follow_up: &[String],
+) -> Result<(), String> {
+    restore_pi_queues_excluding(session, active, steering, follow_up, None).await
+}
+
+async fn known_pi_queue_payloads(
+    active: &ActivePiRun,
+    steering: &[String],
+    follow_up: &[String],
+    excluded_id: Option<&str>,
+) -> HashMap<(String, String), VecDeque<Value>> {
+    let mut counts = HashMap::<(String, String), usize>::new();
+    for (mode, texts) in [("steer", steering), ("follow_up", follow_up)] {
+        for text in texts {
+            *counts.entry((mode.to_string(), text.clone())).or_default() += 1;
+        }
+    }
+    let mut entries = active
+        .queued_messages
+        .lock()
+        .await
+        .iter()
+        .filter(|(id, _)| Some(id.as_str()) != excluded_id)
+        .map(|(_, queued)| queued.clone())
+        .collect::<Vec<_>>();
+    entries.sort_by_key(|queued| queued.sequence);
+    let mut known = HashMap::<(String, String), VecDeque<Value>>::new();
+    for queued in entries {
+        if let Some(text) = queued.payload.get("message").and_then(Value::as_str) {
+            known
+                .entry((queued.command_type.to_string(), text.to_string()))
+                .or_default()
+                .push_back(queued.payload.clone());
+        }
+    }
+    for (key, payloads) in &mut known {
+        let excess = payloads
+            .len()
+            .saturating_sub(*counts.get(key).unwrap_or(&0));
+        for _ in 0..excess {
+            payloads.pop_front();
+        }
+    }
+    known
+}
+
+async fn pi_queue_target_index(
+    active: &ActivePiRun,
+    queue: &[String],
+    target: &PiQueuedMessage,
+) -> Option<usize> {
+    let target_text = target.payload.get("message")?.as_str()?;
+    let queued_count = queue
+        .iter()
+        .filter(|text| text.as_str() == target_text)
+        .count();
+    let mut sequences = active
+        .queued_messages
+        .lock()
+        .await
+        .values()
+        .filter(|queued| {
+            queued.command_type == target.command_type
+                && queued.payload.get("message").and_then(Value::as_str) == Some(target_text)
+        })
+        .map(|queued| queued.sequence)
+        .collect::<Vec<_>>();
+    sequences.sort_unstable();
+    if queued_count > sequences.len() {
+        return None;
+    }
+    let first_live = sequences.len().saturating_sub(queued_count);
+    let position = sequences[first_live..]
+        .iter()
+        .position(|sequence| *sequence == target.sequence)?;
+    queue
+        .iter()
+        .enumerate()
+        .filter(|(_, text)| text.as_str() == target_text)
+        .nth(position)
+        .map(|(index, _)| index)
+}
+
+async fn restore_pi_queues_excluding(
+    session: &PiSession,
+    active: &ActivePiRun,
+    steering: &[String],
+    follow_up: &[String],
+    excluded_id: Option<&str>,
+) -> Result<(), String> {
+    let mut known = known_pi_queue_payloads(active, steering, follow_up, excluded_id).await;
+    for payload in queued_payloads("steer", steering, &mut known) {
+        enqueue_pi_payload(session, "steer", payload).await?;
+    }
+    for payload in queued_payloads("follow_up", follow_up, &mut known) {
+        enqueue_pi_payload(session, "follow_up", payload).await?;
+    }
+    Ok(())
+}
 
 /// Pi generates thinking blocks as configured, but Flowix only forwards them
 /// when explicitly enabled by the host environment.
@@ -208,6 +389,7 @@ struct PiSession {
     stdin: Arc<Mutex<ChildStdin>>,
     records: Mutex<mpsc::UnboundedReceiver<Result<Value, String>>>,
     deferred_records: Mutex<VecDeque<Value>>,
+    response_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
     entries_cache: Mutex<PiEntriesCache>,
     child: Mutex<tokio::process::Child>,
     stdout_task: Mutex<Option<tokio::task::JoinHandle<()>>>,
@@ -220,6 +402,34 @@ struct PiSession {
 impl PiSession {
     async fn write(&self, value: &Value) -> Result<(), String> {
         write_rpc(&self.stdin, value).await
+    }
+
+    async fn request(&self, id: &str, value: &Value) -> Result<Value, String> {
+        let (sender, receiver) = oneshot::channel();
+        self.response_waiters
+            .lock()
+            .await
+            .insert(id.to_string(), sender);
+        if let Err(error) = self.write(value).await {
+            self.response_waiters.lock().await.remove(id);
+            return Err(error);
+        }
+        let response = match tokio::time::timeout(PI_RPC_REQUEST_TIMEOUT, receiver).await {
+            Ok(Ok(response)) => response,
+            Ok(Err(_)) => return Err("Pi RPC response channel closed".into()),
+            Err(_) => {
+                self.response_waiters.lock().await.remove(id);
+                return Err("Pi RPC command timed out".into());
+            }
+        };
+        if response.get("success").and_then(Value::as_bool) != Some(true) {
+            return Err(response
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("Pi rejected the RPC command")
+                .to_string());
+        }
+        Ok(response)
     }
 
     async fn write_prompt_if_running(
@@ -346,11 +556,64 @@ struct ActivePiRun {
     started_at: i64,
     session: Mutex<Option<Arc<PiSession>>>,
     session_id: Mutex<Option<String>>,
+    queued_messages: Mutex<HashMap<String, PiQueuedMessage>>,
+    queue_lock: Mutex<()>,
     stop_notify: tokio::sync::Notify,
     last_event_at: AtomicI64,
     stop_reason: Mutex<Option<String>>,
     finalizing: AtomicBool,
     stream_end_emitted: Arc<AtomicBool>,
+}
+
+#[derive(Clone)]
+struct PiQueuedMessage {
+    command_type: &'static str,
+    payload: Value,
+    sequence: u64,
+    display_text: String,
+    attachments: Vec<AgentMessageAttachment>,
+}
+
+struct PiProjectedUserMessage {
+    text: String,
+    attachments: Vec<AgentMessageAttachment>,
+    client_message_id: Option<String>,
+}
+
+impl ActivePiRun {
+    async fn take_queued_user_message(&self, native_text: &str) -> Option<PiProjectedUserMessage> {
+        let _queue_guard = self.queue_lock.lock().await;
+        let mut queued = self.queued_messages.lock().await;
+        let client_message_id = queued
+            .iter()
+            .filter(|(_, message)| {
+                message.payload.get("message").and_then(Value::as_str) == Some(native_text)
+            })
+            .min_by_key(|(_, message)| message.sequence)
+            .map(|(id, _)| id.clone())?;
+        let message = queued.remove(&client_message_id)?;
+        Some(PiProjectedUserMessage {
+            text: message.display_text,
+            attachments: message.attachments,
+            client_message_id: Some(client_message_id),
+        })
+    }
+}
+
+fn pi_user_message_text(message: &Value) -> String {
+    match message.get("content") {
+        Some(Value::String(text)) => text.clone(),
+        Some(Value::Array(blocks)) => blocks
+            .iter()
+            .filter_map(|block| {
+                (block.get("type").and_then(Value::as_str) == Some("text"))
+                    .then(|| block.get("text").and_then(Value::as_str))
+                    .flatten()
+            })
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
 }
 
 pub struct PiRpcManager {
@@ -423,6 +686,245 @@ impl PiRpcManager {
             shutting_down: AtomicBool::new(false),
             history_snapshots: Mutex::new(VecDeque::new()),
         }
+    }
+
+    pub async fn queue_message(
+        &self,
+        thread_id: &str,
+        message: AgentUserMessage,
+        client_message_id: String,
+        delivery: &str,
+    ) -> Result<(), String> {
+        let command_type = match delivery {
+            "steer" => "steer",
+            "follow_up" => "follow_up",
+            _ => return Err("unsupported Pi message delivery mode".into()),
+        };
+        let active = self
+            .active_runs
+            .lock()
+            .await
+            .get(thread_id)
+            .cloned()
+            .ok_or_else(|| "Pi has no active turn to queue a message for".to_string())?;
+        let _queue_guard = active.queue_lock.lock().await;
+        if active.finalizing.load(Ordering::Acquire) || active.stop_reason.lock().await.is_some() {
+            return Err("Pi turn is already stopping".into());
+        }
+        let session = tokio::time::timeout(PI_RPC_REQUEST_TIMEOUT, async {
+            loop {
+                if let Some(session) = active.session.lock().await.clone() {
+                    return Ok(session);
+                }
+                if active.finalizing.load(Ordering::Acquire)
+                    || active.stop_reason.lock().await.is_some()
+                {
+                    return Err("Pi turn stopped before the session was ready".to_string());
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .map_err(|_| "Pi session did not become ready in time".to_string())??;
+        let payload = pi_message_payload(&message, &session.config.cwd).await?;
+        let id = next_pi_rpc_id();
+        let mut command = payload.clone();
+        command["id"] = Value::String(id.clone());
+        command["type"] = Value::String(command_type.to_string());
+        active.queued_messages.lock().await.insert(
+            client_message_id.clone(),
+            PiQueuedMessage {
+                command_type,
+                payload,
+                sequence: next_pi_queue_sequence(),
+                display_text: message.content.clone(),
+                attachments: message.message_attachments(),
+            },
+        );
+        let response = match session.request(&id, &command).await {
+            Ok(response) => response,
+            Err(error) => {
+                active
+                    .queued_messages
+                    .lock()
+                    .await
+                    .remove(&client_message_id);
+                return Err(error);
+            }
+        };
+        let disposition = response
+            .pointer("/data/disposition")
+            .and_then(Value::as_str)
+            .unwrap_or("queued");
+        if disposition == "handled" {
+            active
+                .queued_messages
+                .lock()
+                .await
+                .remove(&client_message_id);
+        }
+        Ok(())
+    }
+
+    pub async fn promote_follow_up_to_steer(
+        &self,
+        thread_id: &str,
+        client_message_id: &str,
+    ) -> Result<(), String> {
+        let active = self
+            .active_runs
+            .lock()
+            .await
+            .get(thread_id)
+            .cloned()
+            .ok_or_else(|| "Pi has no active turn".to_string())?;
+        let _queue_guard = active.queue_lock.lock().await;
+        let target = active
+            .queued_messages
+            .lock()
+            .await
+            .get(client_message_id)
+            .cloned()
+            .filter(|queued| queued.command_type == "follow_up")
+            .ok_or_else(|| "Pi follow-up is no longer queued".to_string())?;
+        let session = active
+            .session
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| "Pi turn is still starting".to_string())?;
+        let clear_id = next_pi_rpc_id();
+        let cleared = session
+            .request(
+                &clear_id,
+                &serde_json::json!({ "id": clear_id.clone(), "type": "clear_queue" }),
+            )
+            .await?;
+        let data = cleared
+            .get("data")
+            .ok_or("Pi clear_queue response did not include queued messages")?;
+        let mut steering = data
+            .get("steering")
+            .and_then(Value::as_array)
+            .ok_or("Pi clear_queue response did not include steering messages")?
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let mut follow_up = data
+            .get("followUp")
+            .and_then(Value::as_array)
+            .ok_or("Pi clear_queue response did not include follow-up messages")?
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let Some(target_index) = pi_queue_target_index(&active, &follow_up, &target).await else {
+            restore_pi_queues(&session, &active, &steering, &follow_up).await?;
+            return Err("Pi follow-up has already started and cannot be steered".into());
+        };
+        follow_up.remove(target_index);
+        let mut pending =
+            known_pi_queue_payloads(&active, &steering, &follow_up, Some(client_message_id)).await;
+        let steer_payloads = queued_payloads("steer", &steering, &mut pending);
+        let follow_up_payloads = queued_payloads("follow_up", &follow_up, &mut pending);
+        steering.clear();
+        for payload in steer_payloads {
+            enqueue_pi_payload(&session, "steer", payload).await?;
+        }
+        enqueue_pi_payload(&session, "steer", target.payload.clone()).await?;
+        for payload in follow_up_payloads {
+            enqueue_pi_payload(&session, "follow_up", payload).await?;
+        }
+        active.queued_messages.lock().await.insert(
+            client_message_id.to_string(),
+            PiQueuedMessage {
+                command_type: "steer",
+                payload: target.payload,
+                sequence: next_pi_queue_sequence(),
+                display_text: target.display_text,
+                attachments: target.attachments,
+            },
+        );
+        Ok(())
+    }
+
+    pub async fn delete_queued_message(
+        &self,
+        thread_id: &str,
+        client_message_id: &str,
+    ) -> Result<(), String> {
+        let active = self
+            .active_runs
+            .lock()
+            .await
+            .get(thread_id)
+            .cloned()
+            .ok_or_else(|| "Pi has no active turn".to_string())?;
+        let _queue_guard = active.queue_lock.lock().await;
+        let target = active
+            .queued_messages
+            .lock()
+            .await
+            .get(client_message_id)
+            .cloned()
+            .ok_or_else(|| "Pi message is no longer queued".to_string())?;
+        let session = active
+            .session
+            .lock()
+            .await
+            .clone()
+            .ok_or_else(|| "Pi turn is still starting".to_string())?;
+        let clear_id = next_pi_rpc_id();
+        let cleared = session
+            .request(
+                &clear_id,
+                &serde_json::json!({ "id": clear_id.clone(), "type": "clear_queue" }),
+            )
+            .await?;
+        let data = cleared
+            .get("data")
+            .ok_or("Pi clear_queue response did not include queued messages")?;
+        let mut steering = data
+            .get("steering")
+            .and_then(Value::as_array)
+            .ok_or("Pi clear_queue response did not include steering messages")?
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let mut follow_up = data
+            .get("followUp")
+            .and_then(Value::as_array)
+            .ok_or("Pi clear_queue response did not include follow-up messages")?
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::to_string)
+            .collect::<Vec<_>>();
+        let queue = if target.command_type == "steer" {
+            &mut steering
+        } else {
+            &mut follow_up
+        };
+        let Some(target_index) = pi_queue_target_index(&active, queue, &target).await else {
+            restore_pi_queues(&session, &active, &steering, &follow_up).await?;
+            return Err("Pi message has already started and cannot be deleted".into());
+        };
+        queue.remove(target_index);
+        restore_pi_queues_excluding(
+            &session,
+            &active,
+            &steering,
+            &follow_up,
+            Some(client_message_id),
+        )
+        .await?;
+        active
+            .queued_messages
+            .lock()
+            .await
+            .remove(client_message_id);
+        Ok(())
     }
 
     pub async fn delete_session(&self, thread_id: &str) -> Result<bool, String> {
@@ -557,13 +1059,16 @@ impl PiRpcManager {
 
         let mut child = command
             .spawn()
-            .map_err(|error| format!("failed to start Pi v1.0.3 RPC: {error}"))?;
+            .map_err(|error| format!("failed to start Pi v1.1.0 RPC: {error}"))?;
         let stdin = Arc::new(Mutex::new(
             child.stdin.take().ok_or("Pi stdin unavailable")?,
         ));
         let stdout = child.stdout.take().ok_or("Pi stdout unavailable")?;
         let stderr_pipe = child.stderr.take().ok_or("Pi stderr unavailable")?;
         let (record_tx, record_rx) = mpsc::unbounded_channel();
+        let response_waiters =
+            Arc::new(Mutex::new(HashMap::<String, oneshot::Sender<Value>>::new()));
+        let response_routes = response_waiters.clone();
         let stdout_task = tokio::spawn(async move {
             let mut reader = BufReader::new(stdout);
             loop {
@@ -576,6 +1081,16 @@ impl PiRpcManager {
                     Err(error) => Err(error),
                 };
                 let fatal = record.is_err();
+                if let Ok(value) = record.as_ref() {
+                    if value.get("type").and_then(Value::as_str) == Some("response") {
+                        if let Some(id) = value.get("id").and_then(Value::as_str) {
+                            if let Some(waiter) = response_routes.lock().await.remove(id) {
+                                let _ = waiter.send(value.clone());
+                                continue;
+                            }
+                        }
+                    }
+                }
                 if record_tx.send(record).is_err() || fatal {
                     break;
                 }
@@ -596,6 +1111,7 @@ impl PiRpcManager {
             stdin,
             records: Mutex::new(record_rx),
             deferred_records: Mutex::new(VecDeque::new()),
+            response_waiters,
             entries_cache: Mutex::new(PiEntriesCache::default()),
             child: Mutex::new(child),
             stdout_task: Mutex::new(Some(stdout_task)),
@@ -1072,6 +1588,8 @@ impl PiRpcManager {
             started_at,
             session: Mutex::new(None),
             session_id: Mutex::new(None),
+            queued_messages: Mutex::new(HashMap::new()),
+            queue_lock: Mutex::new(()),
             stop_notify: tokio::sync::Notify::new(),
             last_event_at: AtomicI64::new(started_at),
             stop_reason: Mutex::new(None),
@@ -1163,6 +1681,7 @@ impl PiRpcManager {
             .provider_id_for_runtime(AGENT_TYPE)
             .map(str::to_owned);
         let permission_mode = message.permission_mode_for_runtime(AGENT_TYPE);
+        let pi_features = super::config::features()?;
         let runtime_model =
             runtime_model.filter(|value| !value.trim().is_empty() && value != "inherit");
         let thinking = message
@@ -1177,8 +1696,10 @@ impl PiRpcManager {
         let config = PiSessionConfig {
             cwd: cwd.clone(),
             tools: pi_tools_for_permission_mode(permission_mode).into(),
-            code_mode: super::config::features()?.code_mode,
-            tool_search: super::config::features()?.tool_search,
+            code_mode: message
+                .code_mode_for_runtime(AGENT_TYPE)
+                .unwrap_or(pi_features.code_mode),
+            tool_search: pi_features.tool_search,
             provider: provider.clone().filter(|value| !value.trim().is_empty()),
             model: runtime_model.clone(),
             thinking,
@@ -1260,6 +1781,7 @@ impl PiRpcManager {
             }
         }
         let mut settled = false;
+        let mut initial_user_seen = false;
         let mut sequence = 0_u64;
         let mut latest_usage = None;
         let mut stop_settle_deadline = None;
@@ -1437,6 +1959,31 @@ impl PiRpcManager {
                             return Err(error);
                         }
                     };
+                    let user_projection =
+                        if completed_message.get("role").and_then(Value::as_str) == Some("user") {
+                            if !initial_user_seen {
+                                initial_user_seen = true;
+                                Some(PiProjectedUserMessage {
+                                    text: message.content.clone(),
+                                    attachments: message.message_attachments(),
+                                    client_message_id: None,
+                                })
+                            } else {
+                                let native_text = pi_user_message_text(completed_message);
+                                Some(
+                                    active
+                                        .take_queued_user_message(&native_text)
+                                        .await
+                                        .unwrap_or(PiProjectedUserMessage {
+                                            text: native_text,
+                                            attachments: Vec::new(),
+                                            client_message_id: None,
+                                        }),
+                                )
+                            }
+                        } else {
+                            None
+                        };
                     self.project_completed_message(
                         app,
                         thread_id,
@@ -1444,7 +1991,7 @@ impl PiRpcManager {
                         run_id,
                         sequence,
                         completed_message,
-                        &message,
+                        user_projection.as_ref(),
                     )
                     .await?;
                 }
@@ -1565,7 +2112,7 @@ impl PiRpcManager {
         run_id: &str,
         sequence: u64,
         message: &Value,
-        user_message: &AgentUserMessage,
+        user_projection: Option<&PiProjectedUserMessage>,
     ) -> Result<(), String> {
         let role = message
             .get("role")
@@ -1579,15 +2126,15 @@ impl PiRpcManager {
             .and_then(Value::as_i64)
             .unwrap_or_else(|| chrono::Utc::now().timestamp_millis());
         if role == "user" {
+            let Some(user_projection) = user_projection else {
+                return Ok(());
+            };
             let user_chunk = AgentChunk::UserMessage {
                 thread_id: thread_id.to_string(),
                 id: message_id.to_string(),
-                text: user_message
-                    .llm_content
-                    .clone()
-                    .unwrap_or_else(|| user_message.content.clone()),
+                text: user_projection.text.clone(),
                 timestamp: source_timestamp,
-                attachments: user_message.message_attachments(),
+                attachments: user_projection.attachments.clone(),
             };
             self.emit_event_with_metadata(
                 app,
@@ -1599,6 +2146,7 @@ impl PiRpcManager {
                     source_timestamp: Some(source_timestamp),
                     message_phase: Some("completed"),
                     content_mode: Some("snapshot"),
+                    client_user_message_id: user_projection.client_message_id.clone(),
                     ..AgentChunkMetadata::default()
                 },
             )
@@ -1899,15 +2447,26 @@ impl PiRpcManager {
             *active.stop_reason.lock().await = Some(USER_STOPPED_REASON.to_string());
             active.stop_notify.notify_one();
         }
-        let confirmed = tokio::time::timeout(PI_ABORT_SETTLE_TIMEOUT + Duration::from_secs(1), async {
-            loop {
-                let still_active = self.active_runs.lock().await.get(thread_id)
-                    .is_some_and(|current| Arc::ptr_eq(current, &active));
-                if !still_active { break; }
-                tokio::time::sleep(Duration::from_millis(50)).await;
-            }
-        }).await.is_ok();
-        if !confirmed { tracing::warn!("[Pi RPC] StopUnconfirmed for run {}", active.run_id); }
+        let confirmed =
+            tokio::time::timeout(PI_ABORT_SETTLE_TIMEOUT + Duration::from_secs(1), async {
+                loop {
+                    let still_active = self
+                        .active_runs
+                        .lock()
+                        .await
+                        .get(thread_id)
+                        .is_some_and(|current| Arc::ptr_eq(current, &active));
+                    if !still_active {
+                        break;
+                    }
+                    tokio::time::sleep(Duration::from_millis(50)).await;
+                }
+            })
+            .await
+            .is_ok();
+        if !confirmed {
+            tracing::warn!("[Pi RPC] StopUnconfirmed for run {}", active.run_id);
+        }
         confirmed
     }
 
@@ -1931,11 +2490,10 @@ impl PiRpcManager {
                 Some(thread_id.clone()),
                 session_id,
             );
-            if stopping { info.phase = Some("stopping".to_string()); }
-            running.insert(
-                thread_id,
-                info,
-            );
+            if stopping {
+                info.phase = Some("stopping".to_string());
+            }
+            running.insert(thread_id, info);
         }
         running
     }
@@ -1987,16 +2545,31 @@ impl PiRpcManager {
             if let Some(session) = session {
                 self.remove_session_if_same(thread_id, &session).await;
             }
-            let settled = tokio::time::timeout(PI_ABORT_SETTLE_TIMEOUT + Duration::from_secs(1), async {
-                loop {
-                    let still_active = self.active_runs.lock().await.get(thread_id)
-                        .is_some_and(|current| Arc::ptr_eq(current, active));
-                    if !still_active { break; }
-                    tokio::time::sleep(Duration::from_millis(50)).await;
-                }
-            }).await.is_ok();
-            if settled { confirmed += 1; }
-            else { tracing::warn!("[Pi RPC] watchdog StopUnconfirmed for run {}", active.run_id); }
+            let settled =
+                tokio::time::timeout(PI_ABORT_SETTLE_TIMEOUT + Duration::from_secs(1), async {
+                    loop {
+                        let still_active = self
+                            .active_runs
+                            .lock()
+                            .await
+                            .get(thread_id)
+                            .is_some_and(|current| Arc::ptr_eq(current, active));
+                        if !still_active {
+                            break;
+                        }
+                        tokio::time::sleep(Duration::from_millis(50)).await;
+                    }
+                })
+                .await
+                .is_ok();
+            if settled {
+                confirmed += 1;
+            } else {
+                tracing::warn!(
+                    "[Pi RPC] watchdog StopUnconfirmed for run {}",
+                    active.run_id
+                );
+            }
         }
 
         let active_ids = self
@@ -2354,6 +2927,65 @@ mod tests {
         receive_rpc_response,
     };
     use serde_json::json;
+
+    #[tokio::test]
+    async fn pi_queue_rebuild_keeps_duplicate_message_attachments_with_the_right_item() {
+        use super::{known_pi_queue_payloads, pi_queue_target_index, ActivePiRun, PiQueuedMessage};
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicBool, AtomicI64};
+        use std::sync::Arc;
+        use tokio::sync::{Mutex, Notify};
+
+        let first = PiQueuedMessage {
+            command_type: "follow_up",
+            payload: json!({"message":"same text","images":[{"data":"first"}]}),
+            sequence: 1,
+            display_text: "first".into(),
+            attachments: Vec::new(),
+        };
+        let second = PiQueuedMessage {
+            command_type: "follow_up",
+            payload: json!({"message":"same text","images":[{"data":"second"}]}),
+            sequence: 2,
+            display_text: "second".into(),
+            attachments: Vec::new(),
+        };
+        let active = ActivePiRun {
+            run_id: "test".into(),
+            started_at: 0,
+            session: Mutex::new(None),
+            session_id: Mutex::new(None),
+            queued_messages: Mutex::new(HashMap::from([
+                ("first".into(), first.clone()),
+                ("second".into(), second.clone()),
+            ])),
+            queue_lock: Mutex::new(()),
+            stop_notify: Notify::new(),
+            last_event_at: AtomicI64::new(0),
+            stop_reason: Mutex::new(None),
+            finalizing: AtomicBool::new(false),
+            stream_end_emitted: Arc::new(AtomicBool::new(false)),
+        };
+        let texts = vec!["same text".to_string(), "same text".to_string()];
+        assert_eq!(
+            pi_queue_target_index(&active, &texts, &second).await,
+            Some(1)
+        );
+        let mut known =
+            known_pi_queue_payloads(&active, &[], &["same text".to_string()], Some("first")).await;
+        let payloads = super::queued_payloads("follow_up", &["same text".to_string()], &mut known);
+        assert_eq!(payloads[0]["images"][0]["data"], "second");
+        let delivered = active.take_queued_user_message("same text").await.unwrap();
+        assert_eq!(delivered.client_message_id.as_deref(), Some("first"));
+        assert_eq!(delivered.text, "first");
+        assert_eq!(
+            super::pi_user_message_text(&json!({
+                "role": "user",
+                "content": [{"type": "text", "text": "same text"}]
+            })),
+            "same text"
+        );
+    }
 
     #[tokio::test]
     async fn pi_rpc_accepts_frames_larger_than_the_shared_512_kib_limit() {

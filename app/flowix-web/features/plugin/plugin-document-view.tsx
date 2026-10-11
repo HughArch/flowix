@@ -81,7 +81,7 @@ export function PluginDocumentView({
 
   return <div ref={canvasRef} className="relative flex h-full min-w-0 flex-col overflow-hidden bg-[var(--document-bg)] [&:fullscreen]:h-screen">
     {artifact.status !== 'ready' && artifact.error && (
-      <div className="pointer-events-none absolute left-4 top-4 z-20 max-w-[min(520px,calc(100%-2rem))] rounded-lg border border-amber-500/30 bg-amber-500/10 px-3 py-2 text-xs text-amber-800 dark:text-amber-200">
+      <div className="pointer-events-none absolute left-4 top-4 z-20 max-w-[min(520px,calc(100%-2rem))] rounded-lg border border-[color-mix(in_oklch,var(--warning)_30%,transparent)] bg-[color-mix(in_oklch,var(--warning)_10%,transparent)] px-3 py-2 text-xs text-[var(--warning)]">
         {artifact.error}
       </div>
     )}

@@ -4,8 +4,8 @@ const iconCache = new Map<string, Promise<TauriImage>>();
 
 /** Rasterize a bundled Phosphor SVG and retain its Tauri image resource. */
 export function phosphorMenuIcon(key: string, svgSource: string): Promise<TauriImage> {
-  const dark = window.matchMedia?.('(prefers-color-scheme: dark)').matches ?? false;
-  const cacheKey = `${dark ? 'dark' : 'light'}:${key}`;
+  const color = getComputedStyle(document.documentElement).getPropertyValue('--foreground').trim() || '#4b4b4b';
+  const cacheKey = `${color}:${key}`;
   const cached = iconCache.get(cacheKey);
   if (cached) return cached;
 
@@ -17,7 +17,6 @@ export function phosphorMenuIcon(key: string, svgSource: string): Promise<TauriI
     const canvasSize = 36;
     const glyphSize = 28;
     const glyphOffset = (canvasSize - glyphSize) / 2;
-    const color = dark ? '#d4d4d4' : '#4b4b4b';
     const markup = svgSource.split('currentColor').join(color);
     const blob = new Blob([markup], { type: 'image/svg+xml' });
     const url = URL.createObjectURL(blob);

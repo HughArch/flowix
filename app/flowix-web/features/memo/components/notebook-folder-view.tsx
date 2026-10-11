@@ -25,7 +25,7 @@ import {
 import {
   openExternalTarget,
   openMediaTarget,
-  openDocumentListTarget,
+  openFolderCollectionOrList,
 } from '@features/workspace/use-cases/workspace-navigation';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import { createDocumentListTarget, workColumnTargetFilePath } from '@features/workspace/store/work-column-target';
@@ -304,7 +304,10 @@ export function NotebookFolderView({
           { kind: 'folder', path: folderPath, notebookPath: notebook.path, notebookId: notebook.id },
           {},
         );
-        openDocumentListTarget(target);
+        void openFolderCollectionOrList(target).catch((error) => {
+          logger.warn('opening folder collection failed', { folderPath, error });
+          toast.error(error instanceof Error ? error.message : typeof error === 'string' ? error : '无法打开文件夹集合');
+        });
       }}
       onNoteOpenInNewTab={(filePath) => { void openFileInNewTab(filePath); }}
       onCreateNote={(parentPath, title) => onCreateNote?.(parentPath, title)}

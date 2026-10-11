@@ -181,9 +181,10 @@ describe('agent thread card selectors', () => {
       typeKey: 'codex',
     });
 
-    expect(runtime.isRunning).toBe(false);
+    expect(runtime.isRunning).toBe(true);
+    expect(runtime.isBusy).toBe(true);
     expect(runtime.showLoadingIndicator).toBe(true);
-    expect(runtime.sendButtonWantsStop).toBe(false);
+    expect(runtime.sendButtonWantsStop).toBe(true);
   });
 
   it('treats a pending DSH command as thread work without inventing a model run', () => {
@@ -303,6 +304,11 @@ describe('agent thread card selectors', () => {
     expect(selectAgentThreadCardSendButtonState({
       wantStop: true,
       inputValue: '',
+    })).toEqual({ wantStop: true, disabled: false });
+    expect(selectAgentThreadCardSendButtonState({
+      wantStop: true,
+      inputValue: '',
+      isRunning: true,
     })).toEqual({ wantStop: true, disabled: false });
     expect(selectAgentThreadCardSendButtonState({
       wantStop: false,

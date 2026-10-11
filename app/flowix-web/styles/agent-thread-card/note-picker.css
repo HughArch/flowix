@@ -155,6 +155,12 @@
   cursor: wait;
 }
 
+.markdown-editor .agent-thread-card__send--running.agent-thread-card__send--stop {
+  background: var(--warning);
+  color: var(--floating-foreground);
+  cursor: pointer;
+}
+
 .markdown-editor .agent-thread-card__send-spinner {
   display: block;
   width: 13px;

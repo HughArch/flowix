@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
 import { Check, ChevronDown, ChevronRight, Layers, ListTodo, X } from 'lucide-react';
 
 import { useI18n } from '@/lib/i18n';
@@ -76,6 +76,9 @@ export function MemoNavigationSubmenu({
   onClick,
 }: NavigationSubmenuProps) {
   const closeTimerRef = useRef<number | null>(null);
+  const triggerRef = useRef<HTMLButtonElement | null>(null);
+  const submenuRef = useRef<HTMLDivElement | null>(null);
+  const [submenuPosition, setSubmenuPosition] = useState<CSSProperties>({ left: '100%', top: 0 });
   const selectedTagId = useTagStore((state) => state.selectedTagId);
 
   const cancelClose = () => {
@@ -94,6 +97,39 @@ export function MemoNavigationSubmenu({
 
   useEffect(() => () => cancelClose(), []);
 
+  useLayoutEffect(() => {
+    if (!open) return;
+    const updatePosition = () => {
+      const trigger = triggerRef.current;
+      const submenu = submenuRef.current;
+      if (!trigger || !submenu) return;
+      const rect = trigger.getBoundingClientRect();
+      const width = submenu.offsetWidth || 220;
+      const height = Math.min(submenu.scrollHeight, window.innerHeight - 16);
+      const opensLeft = window.innerWidth - rect.right < width + 8;
+      const top = Math.max(8, Math.min(rect.top, window.innerHeight - height - 8));
+      setSubmenuPosition({
+        left: opensLeft ? undefined : '100%',
+        right: opensLeft ? '100%' : undefined,
+        top: top - rect.top,
+      });
+    };
+    updatePosition();
+    const frame = window.requestAnimationFrame(updatePosition);
+    const observer = typeof ResizeObserver === 'undefined' || !submenuRef.current
+      ? null
+      : new ResizeObserver(updatePosition);
+    if (observer && submenuRef.current) observer.observe(submenuRef.current);
+    window.addEventListener('resize', updatePosition);
+    window.addEventListener('scroll', updatePosition, true);
+    return () => {
+      window.cancelAnimationFrame(frame);
+      observer?.disconnect();
+      window.removeEventListener('resize', updatePosition);
+      window.removeEventListener('scroll', updatePosition, true);
+    };
+  }, [open]);
+
   return (
     <div
       className="relative"
@@ -105,6 +141,7 @@ export function MemoNavigationSubmenu({
     >
       <button
         type="button"
+        ref={triggerRef}
         className={cn(
           'memo-navigation-submenu-trigger flex h-7 w-full cursor-pointer items-center justify-between rounded-lg py-0 pl-[6px] pr-2 text-sm text-[var(--foreground)] outline-none transition-colors',
           open
@@ -131,7 +168,7 @@ export function MemoNavigationSubmenu({
         </span>
       </button>
       {open && (
-        <div className={cn('absolute left-full top-0 z-[151] flex max-h-[min(560px,calc(100vh-16px))] w-[220px] flex-col overflow-hidden rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', submenuClassName)}>
+        <div ref={submenuRef} style={{ ...submenuPosition, maxWidth: 'calc(100vw - 16px)' }} className={cn('absolute z-[151] flex max-h-[min(560px,calc(100vh-16px))] w-[220px] flex-col overflow-hidden rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', submenuClassName)}>
           {!hideHeader && (
             <div
               className="mention-note-header"

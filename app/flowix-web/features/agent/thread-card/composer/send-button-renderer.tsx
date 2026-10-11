@@ -20,11 +20,11 @@ export function renderAgentThreadCardSendButton(
   // React 的 commit phase 被调到, 此时 React 已在渲染, flushSync 会触发
   // "flushSync was called from inside a lifecycle method" 报错。root.render
   // 只负责调度更新, DOM 提交可能发生在随后的事件循环。
-  const className = options.wantStop
-    ? "agent-thread-card__send agent-thread-card__send--stop"
-    : options.isRunning
-      ? "agent-thread-card__send agent-thread-card__send--running"
-      : "agent-thread-card__send";
+  const className = [
+    "agent-thread-card__send",
+    options.wantStop && "agent-thread-card__send--stop",
+    options.isRunning && "agent-thread-card__send--running",
+  ].filter(Boolean).join(" ");
 
   options.root.render(
     <Tooltip content={options.label}>
@@ -32,6 +32,7 @@ export function renderAgentThreadCardSendButton(
         type="button"
         className={className}
         disabled={options.disabled}
+        aria-busy={options.isRunning || undefined}
         aria-label={options.label}
         onClick={() => {
           if (options.wantStop) {
@@ -41,10 +42,10 @@ export function renderAgentThreadCardSendButton(
           options.onSubmit();
         }}
       >
-        {options.wantStop ? (
-          <StopIcon />
-        ) : options.isRunning ? (
+        {options.isRunning ? (
           <span className="agent-thread-card__send-spinner" aria-hidden="true" />
+        ) : options.wantStop ? (
+          <StopIcon />
         ) : (
           <SendIcon />
         )}

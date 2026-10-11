@@ -1,7 +1,7 @@
 //! Read-only collection dataset access shared by the CLI and MCP operation layer.
 use crate::{errors::CliError, store};
 use flowix_core::{
-    collection::{valid_id, CollectionDocument, CollectionType},
+    collection::{valid_id, CollectionDocument, CollectionPlacement, CollectionType},
     memo_file::FileManagementPolicy,
 };
 use rusqlite::Connection;
@@ -66,7 +66,7 @@ fn read_by_path(
     raw_path: &str,
 ) -> Result<(PathBuf, CollectionDocument), CliError> {
     let relative = normalize_relative_path(raw_path)?;
-    if policy.is_ignored_at(root, &relative) {
+    if policy.is_ignored_at(root, &relative) && !is_visible_folder_index(root, policy, &relative) {
         return Err(CliError::NotFound(format!(
             "collection not found: {raw_path}"
         )));
@@ -89,14 +89,18 @@ fn read_by_path(
     let canonical_relative = canonical
         .strip_prefix(root)
         .map_err(|error| CliError::Other(error.to_string()))?;
-    if policy.is_ignored_at(root, canonical_relative) {
+    if policy.is_ignored_at(root, canonical_relative) && !is_visible_folder_index(root, policy, canonical_relative) {
         return Err(CliError::NotFound(format!(
             "collection not found: {raw_path}"
         )));
     }
     let source = fs::read_to_string(&canonical)?;
     let document = CollectionDocument::parse(&source).map_err(CliError::Other)?;
-    validate_file_type(&canonical, document.collection.kind)?;
+    validate_file_type(
+        &canonical,
+        document.collection.kind,
+        document.collection.placement,
+    )?;
     Ok((canonical, document))
 }
 
@@ -178,7 +182,7 @@ fn read_matching_collection(
     if relative_path
         .components()
         .any(|component| !matches!(component, Component::Normal(_)))
-        || policy.is_ignored_at(root, relative_path)
+        || (policy.is_ignored_at(root, relative_path) && !is_visible_folder_index(root, policy, relative_path))
     {
         return None;
     }
@@ -194,7 +198,12 @@ fn read_matching_collection(
     let source = fs::read_to_string(&canonical).ok()?;
     let document = CollectionDocument::parse(&source).ok()?;
     if document.collection.id != id
-        || validate_file_type(&canonical, document.collection.kind).is_err()
+        || validate_file_type(
+            &canonical,
+            document.collection.kind,
+            document.collection.placement,
+        )
+        .is_err()
     {
         return None;
     }
@@ -213,7 +222,7 @@ fn collect_collection_files(
         let relative = path
             .strip_prefix(root)
             .map_err(|error| CliError::Other(error.to_string()))?;
-        if policy.is_ignored_at(root, relative) {
+        if policy.is_ignored_at(root, relative) && !is_visible_folder_index(root, policy, relative) {
             continue;
         }
         let file_type = entry.file_type()?;
@@ -243,7 +252,9 @@ fn normalize_relative_path(raw_path: &str) -> Result<PathBuf, CliError> {
 
 fn collection_type(path: &Path) -> Option<CollectionType> {
     let filename = path.file_name()?.to_string_lossy().to_ascii_lowercase();
-    if filename.ends_with(".table.yml") || filename.ends_with(".table.yaml") {
+    if filename == ".index.yaml" || filename.ends_with(".index.yaml") {
+        Some(CollectionType::Table)
+    } else if filename.ends_with(".table.yml") || filename.ends_with(".table.yaml") {
         Some(CollectionType::Table)
     } else if filename.ends_with(".lib.yml") || filename.ends_with(".lib.yaml") {
         Some(CollectionType::MediaLibrary)
@@ -252,9 +263,39 @@ fn collection_type(path: &Path) -> Option<CollectionType> {
     }
 }
 
-fn validate_file_type(path: &Path, actual: CollectionType) -> Result<(), CliError> {
-    if collection_type(path) != Some(actual) {
+fn validate_file_type(
+    path: &Path,
+    actual: CollectionType,
+    placement: CollectionPlacement,
+) -> Result<(), CliError> {
+    let filename = path.file_name().and_then(|value| value.to_str()).unwrap_or_default();
+    let filename = filename.to_ascii_lowercase();
+    let has_nonempty_stem = |suffix: &str| {
+        filename
+            .strip_suffix(suffix)
+            .is_some_and(|stem| !stem.is_empty())
+    };
+    let placement_matches = match placement {
+        CollectionPlacement::Folder => filename == ".index.yaml",
+        CollectionPlacement::Standalone => {
+            has_nonempty_stem(".index.yaml")
+                || match actual {
+                    CollectionType::Table => {
+                        has_nonempty_stem(".table.yaml") || has_nonempty_stem(".table.yml")
+                    }
+                    CollectionType::MediaLibrary => {
+                        has_nonempty_stem(".lib.yaml") || has_nonempty_stem(".lib.yml")
+                    }
+                }
+        }
+    };
+    if !placement_matches {
         return Err(CliError::Other("COLLECTION_TYPE_EXTENSION_MISMATCH".into()));
     }
     Ok(())
+}
+
+fn is_visible_folder_index(root: &Path, policy: &FileManagementPolicy, relative: &Path) -> bool {
+    relative.file_name().and_then(|name| name.to_str()).is_some_and(|name| name.eq_ignore_ascii_case(".index.yaml"))
+        && relative.parent().is_some_and(|parent| !policy.is_ignored_at(root, parent))
 }

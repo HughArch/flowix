@@ -1,84 +1,141 @@
-# 集合索引与展示身份
+# 集合协议与索引
 
-## 身份和文件
+多维表格、媒体库和文件夹集合共用集合协议。文件保存集合身份、数据集规则和视图；SQLite 仅是可重建的索引投影。
 
-多维表格（`table`）和媒体库（`media_library`）共用集合协议。集合 ID 是创建时生成的 `col_` + 32 位 UUIDv7 十六进制字符串，保存在文件中。名称、相对路径、所在目录均可变化，路径不用于生成身份。当前功能未上线，不提供旧格式迁移或兼容读取。
+## 文件命名与集合身份
+
+- 独立集合使用 `<名称>.index.yaml`。
+- 文件夹集合使用该文件夹根目录下的 `.index.yaml`。一个文件夹只配置一个集合，类型只能是笔记集合或媒体库集合之一。
+- 文件夹专用的 `.index.yaml` 始终不在笔记本文件树、访问空间文件树和目录文件列表中展示，也不能通过文件可见性设置显示；点击文件夹时仍会读取它并加载集合。
+- 文件夹的 `.index.yaml` 通过 `collection.placement: folder` 标明用途；独立文件通过 `placement: standalone` 标明用途。文件名不决定集合类型，`collection.type` 决定是 `notes` 还是 `media`。
+- `.table.yaml`、`.table.yml`、`.lib.yaml`、`.lib.yml` 继续作为旧文件名读取。新建及重命名后的独立集合使用 `.index.yaml`。
+- 集合 ID 为创建时生成的 `col_` + 32 位 UUIDv7 十六进制字符串。名称、文件名和相对路径均不构成集合身份。
+
+## 数据结构
+
+外层格式版本和业务载荷版本同步递增。当前写入 schema v2；读取 schema v1 旧集合时先在内存中转换为 v2，单纯打开不改磁盘文件，后续编辑保存时写回 v2。集合层、数据集和视图各自承担独立职责：
+
+导航、引用校验、文件夹类型切换和集合索引直接读取 v2 文档。现有表格与媒体编辑器在入口和保存处使用兼容适配，编辑器的旧字段不进入文件中的 `collection` 元数据。
 
 ```yaml
 format: flowix.collection
-schema_version: 1
+schema_version: 2
 collection:
   id: col_01900000000070008000000000000000
-  type: media_library
-  name: 参考素材
+  type: notes                 # notes | media
+  placement: folder           # standalone | folder
+  name: 开发任务管理
   revision: 0
-  created_at: "2026-09-21T11:33:20.000Z"
-  updated_at: "2026-09-21T11:33:20.000Z"
-  properties:
-    owner:
-      name: 负责人
-      type: Text
-      value: Alice
+  created_at: "2026-10-11T00:00:00.000Z"
+  updated_at: "2026-10-11T00:00:00.000Z"
+  properties: {}
 payload:
-  schema_version: 1
-  view:
-    id: view_01900000000070008000000000000001
-    layout: waterfall
-    condition: {}
-    sort: { field: created_at, direction: desc }
-  records: { data: [] }
+  schema_version: 2
+  dataset:
+    source:
+      scope: containing_folder # containing_folder | notebook | folder
+      depth: descendants      # direct_children | descendants
+    schema:
+      primary_field_id: fld_01900000000070008000000000000001
+      fields:
+        - id: fld_01900000000070008000000000000001
+          type: primary
+          property_key: note
+        - id: fld_01900000000070008000000000000002
+          type: Text
+          property_key: status
+          name: 状态
+    records:
+      include: []
+      exclude: []
+    filter:
+      all:
+        - { field: kind, op: eq, value: note }
+      any: []
+  views:
+    default_id: view_01900000000070008000000000000001
+    items:
+      - id: view_01900000000070008000000000000001
+        name: 表格
+        layout: table
+        filter: { all: [], any: [] }
+        sort:
+          - { field: modified_at, direction: desc }
+        config:
+          visible_fields:
+            - fld_01900000000070008000000000000001
+            - fld_01900000000070008000000000000002
 ```
 
-表格的业务结构位于 `payload.table` 和 `payload.records`。媒体库位于 `payload.view` 和 `payload.records`。集合属性独立于表格记录的笔记 frontmatter 和媒体资源属性，允许 Text、Number、Boolean、Date、URL、Icon、Color、Tag；属性键稳定，显示名称可改。集合属性通过底层协议及集合 ID/revision 管理，表格和媒体库不提供显性配置入口。
+`dataset.source` 限定取数位置和目录深度。文件夹集合必须使用 `containing_folder`，默认使用 `descendants` 包含下层子目录；路径由 `.index.yaml` 的实际父目录解析，不在文件内重复保存路径。独立集合可以使用整个笔记本范围，或用相对笔记本路径指定目录范围。
 
-四种版本分别是公共文件 `schema_version`、业务 `payload.schema_version`、内容并发控制 `collection.revision`、SQLite 索引结构版本。索引更新另有单调 `indexSequence`，用于防止晚到事件覆盖新路径。未知版本可进入索引，但不能编辑；无效文件保留诊断。
+`dataset.schema` 描述笔记属性字段；笔记属性值仍保存在各笔记 frontmatter。`records.include` 和 `records.exclude` 保存显式记录引用；笔记记录使用 `note_path`，媒体记录使用 `resource_id` 和 `relative_path`。尚未关联笔记的表格草稿行允许 `include.note_path: ""`。`dataset.filter` 保存规则取数条件。媒体集合当前不开放自定义字段，`schema.fields` 应为空；图片和视频身份仍由 `media_resources` 管理。
 
-## 统一索引
+`dataset.filter: null` 表示不按规则自动收集，仅展示显式记录。启用规则取数后，`{ all: [], any: [] }` 表示对来源范围不增加条件。媒体筛选面板修改 `dataset.filter`；`views.items[].filter` 仅用于视图级筛选，不再重复执行旧版 `file_condition`。
+
+筛选器使用 `all`（全部满足）与 `any`（至少满足一项）；规则项允许再包含一层 `all`/`any` 分组。旧表格中“多个属性同时满足，或命中文件条件”转换为 `any: [{ all: [属性规则…], any: [] }, 文件规则…]`，保留原有匹配结果。
+
+`views.default_id` 指向首次展示的视图。`views.items` 按集合类型保存布局、视图级筛选、排序和布局配置。点击文件夹时读取其 `.index.yaml`，用集合的默认视图打开；首次打开且尚未配置时，显示加载提示，在文件夹根目录创建笔记集合的 `.index.yaml`，随后打开多维表格视图。
+
+## 媒体库数据集示例
+
+```yaml
+collection:
+  type: media
+  placement: folder
+payload:
+  schema_version: 2
+  dataset:
+    source: { scope: containing_folder, depth: descendants }
+    schema: { fields: [] }
+    records:
+      include:
+        - id: rec_01900000000070008000000000000002
+          updated_at: "2026-10-11T00:00:00.000Z"
+          resource_id: media_01900000000070008000000000000003
+          relative_path: 图片/参考.png
+      exclude: []
+    filter:
+      all:
+        - { field: kind, op: in, value: [image, video] }
+      any: []
+  views:
+    default_id: view_01900000000070008000000000000004
+    items:
+      - id: view_01900000000070008000000000000004
+        name: 瀑布流
+        layout: waterfall
+        filter: { all: [], any: [] }
+        sort: [{ field: created_at, direction: desc }]
+        config: {}
+```
+
+上例展示的是完整 `payload` 的 `dataset` 与 `views` 内容；实际文件仍包含外层 `format`、`schema_version` 和完整 `collection` 元数据。
+
+## 索引与变更
 
 索引存放在 `<notebook>/.flowix/notebook.db`：
 
 | 表 | 用途 |
 | --- | --- |
-| `collection_documents` | 按相对路径记录集合 ID、类型、名称、版本、revision、属性、时间、文件指纹和解析状态 |
-| `collection_state` | 按集合 ID 保存视图分组等本地展示偏好 |
+| `collection_documents` | 按相对路径记录集合 ID、类型、名称、版本、revision、属性、时间、指纹和解析状态 |
+| `collection_state` | 按集合 ID 保存本地展示偏好 |
 | `collection_catalog_meta` | 索引结构版本与事件序号 |
 | `collection_operations` | 保存改名、移动、属性修改的恢复日志 |
 
-文件是集合元数据和业务内容的权威来源，索引是可重建投影。集合 ID 索引不设唯一约束，以便显示复制产生的冲突。冲突集合禁止按 ID 操作；选定副本可生成新 ID，原集合、记录和视图 ID 保持不变。
+文件是集合元数据和业务内容的权威来源，索引可重建。索引从 `.index.yaml` 文件内容读取集合类型，因此相同后缀支持笔记和媒体两种独立集合；目录专用 `.index.yaml` 不作为独立集合入口显示。
 
-集合目录统一扫描 `.table.yml/.table.yaml/.lib.yml/.lib.yaml`，失败扫描不清空可信索引。文件监视及文件管理动作刷新统一目录。媒体资源目录 `media_resources` 仍负责图片和视频文件，集合目录管理媒体库定义。
+集合 ID 索引不设唯一约束，以便显示复制产生的冲突。冲突集合禁止按 ID 操作；选定副本可生成新 ID，原集合、记录和视图 ID 保持不变。未知版本可进入索引，但不能编辑；无效文件保留诊断。
 
-## 改名和移动
+集合改名和移动通过 `notebookId + collectionId + expectedRevision + operationId` 定位最新内容并校验 revision。文件夹集合的路径固定为文件夹内的 `.index.yaml`，不允许单独改名或移出文件夹；移动文件夹时集合跟随文件夹移动。独立集合改名保留 `.index.yaml` 后缀。完成写入后刷新索引并发布集合变更事件。
 
-前端提交 `notebookId + collectionId + expectedRevision + operationId`，后端先按 ID 解析最新位置、确认内容身份及 revision，再校验目标路径和名称。改名同时更新 `collection.name`、revision、更新时间及文件名；属性修改保存最新业务载荷。移动通过 `targetRelativePath` 指定同一笔记本内的新位置。跨笔记本移动尚未提供。
+## 展示身份与读取入口
 
-写操作按跨进程文件锁、笔记本目录锁的顺序执行。日志先持久化，文件内容原子写入，目标文件禁止覆盖；仅大小写改名经过临时路径。完成后刷新索引并发布 `collection-changed`。启动及后续命令恢复未完成操作；无法完整提交时返回实际路径、名称、revision、内容和错误，界面采用实际结果。
+`collectionId` 标识集合；`viewId` 标识集合内部视图；`displayId` 标识工作区中的展示身份。历史记录和展示描述按 ID 恢复，文件路径只作缓存提示。缺少集合、身份冲突、视图缺失或版本不支持时显示不可用状态。
 
-## display id 和 history
-
-`collectionId` 标识集合；`viewId` 标识集合内部视图；`displayId` 标识 surface 展示身份，形式为 `display:<随机 UUID>`。逻辑目的地 `(notebookId, collectionId, viewId)` 绑定稳定 display id，分配发生在导航阶段。
-
-工作栏、浏览器栏和持久化恢复保存集合展示描述。改名通过目录事件重新绑定路径，保留 display id 和已有会话。改名不是导航，不增加历史、不清空前进栈。历史条目保存 display id、集合 ID、笔记本 ID 和视图 ID，路径仅为提示；前进后退重新按 ID 解析最新路径。
-
-注册表保留当前、待打开、上一展示、恢复目标、浏览器标签和历史引用中的 display id；操作过程中可临时固定身份。晚到的目录事件不能覆盖较新的路径。集合缺失、身份冲突、视图缺失或不支持的版本显示不可用状态，保留原展示身份；旧路径被其他集合占用时不能直接打开替代文件。
-
-## 接口和实现入口
-
-后端统一命令为 `list_collections`、`resolve_collection`、`mutate_collection`、`set_collection_display_state` 和 `make_collection_identity_unique`。原表格和媒体库列表前端接口只是统一目录的类型投影。
-
-CLI 与 MCP 共用只读操作 `collection.read`。CLI 示例：`flowix collection read --notebook <notebook-id> --id <collection-id>` 或 `flowix collection read --notebook <notebook-id> --path <notebook-relative-path>`；MCP 的 `memo` 工具使用结构化 action `collection.read`，参数为 `notebook` 加 `collectionId` 或 `path`。按路径读取只校验并读取指定文件；按 ID 读取优先查 SQLite 集合索引，索引缺失或结果失效时回退扫描文件。读取返回集合元数据和原始 payload；路径必须是笔记本内相对路径，ID 冲突和不支持的 schema 会报错。该简版不做视图筛选、分页或笔记 frontmatter 展开。
+桌面端统一使用 `list_collections`、`resolve_collection`、`mutate_collection`、`set_collection_display_state` 和 `make_collection_identity_unique`。CLI 与 MCP 共用只读操作 `collection.read`，可按集合 ID 或笔记本内相对路径读取。读取返回原始 payload，不运行视图筛选、分页或笔记 frontmatter 展开。
 
 - 公共协议：`app/flowix-core/src/collection.rs`、`app/flowix-web/features/collection/model.ts`
 - 索引和生命周期：`app/flowix-desktop/src/commands/collection.rs`
+- 文件夹点击与导航：`app/flowix-web/features/memo/components/notebook-folder-view.tsx`、`app/flowix-web/features/workspace/use-cases/workspace-navigation.ts`
 - 展示注册表：`app/flowix-web/lib/collection-display-registry.ts`
-- 导航及事件：`app/flowix-web/features/workspace/use-cases/workspace-navigation.ts`、`collection-display-tracking.ts`
-
-## ID 定位与定点更新
-
-独立打开和编辑器嵌入引用均通过 `notebookId + collectionId` 解析唯一集合；`relativePath` 是可选缓存，不是加载或身份校验的依据。嵌入表格与媒体库使用集合 display 注册表，引用挂载期间固定展示身份；同一集合的其他引用通过集合事件同步最新名称和路径，不需要批量修改笔记正文。
-
-改名只发布定点 `collection-changed`，不发布会导致全列表重载的 `file-management-changed`。已加载的视图分组与文件树更新对应行和路径缓存，媒体资源和表格业务结构未改变时保留对象引用、分页及滚动位置；文件监视中对应的改名通知不重复读取目录。集合展示跟踪只 resolve 受影响的 ID，不重查整份集合目录。集合导航经过保存屏障，默认激活已打开的同一集合视图；冲突重试必须校验基准集合 ID。
-
-### 首次改名的业务对象复用
-
-后端使用 `serde_json::Value` 承载业务载荷，首次序列化可能改变对象键的排列。前端使用共享语义比较（对象键顺序无关、数组顺序相关）复用未变的业务对象，不通过 `JSON.stringify` 字符串判断变化。表格加载、改名回包和事件同步采用相同的路径及默认值归一化，避免首次改名因序列化形态变化而替换列表依赖。名称、revision 和更新时间仍采用后端结果，真实业务变化正常更新。

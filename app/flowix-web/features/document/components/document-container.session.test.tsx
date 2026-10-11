@@ -166,11 +166,11 @@ describe('real document container session lifecycle', () => {
     useNoteStore.setState({ notebooks: [other, notebook], selectedNotebook: other });
     vi.stubGlobal('__TAURI__', {});
     const saved = `${notebook.path}/attachments/fig.png`;
-    vi.mocked(invoke).mockImplementation(async (command) => command === 'select_files' ? ['/selected/fig.png'] : saved);
+    vi.mocked(invoke).mockImplementation(async (command) => command === 'select_files' ? ['/selected/fig.png'] : { path: saved, created: true });
     await act(async () => { doc.render(); });
     await act(async () => { doc.editors.left!.commands.openFileDialog({ accept: 'image/*' }); });
-    expect(invoke).toHaveBeenCalledWith('save_attachment', {
-      sourcePath: '/selected/fig.png', notebookId: 'owner',
+    expect(invoke).toHaveBeenCalledWith('save_notebook_asset', {
+      sourcePath: '/selected/fig.png', notebookId: 'owner', deduplicate: true, reuseNotebookFile: true,
     });
     const images: string[] = [];
     doc.editors.left!.state.doc.descendants(node => { if (node.type.name === 'image') images.push(node.attrs.src); });
@@ -189,10 +189,10 @@ describe('real document container session lifecycle', () => {
       { ...base, id: 'owner', path },
     ] });
     vi.stubGlobal('__TAURI__', {});
-    vi.mocked(invoke).mockImplementation(async (command) => command === 'select_files' ? ['/selected/fig.png'] : `${path}/attachments/fig.png`);
+    vi.mocked(invoke).mockImplementation(async (command) => command === 'select_files' ? ['/selected/fig.png'] : { path: `${path}/attachments/fig.png`, created: true });
     await act(async () => { doc.editors.left!.commands.openFileDialog(); });
-    expect(invoke).toHaveBeenCalledWith('save_attachment', {
-      sourcePath: '/selected/fig.png', notebookId: 'owner',
+    expect(invoke).toHaveBeenCalledWith('save_notebook_asset', {
+      sourcePath: '/selected/fig.png', notebookId: 'owner', deduplicate: true, reuseNotebookFile: true,
     });
   });
   it('does not save an image to the selected notebook when the document is outside it', async () => {

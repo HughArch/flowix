@@ -48,6 +48,8 @@ export interface AgentAccessDefaultRuntime {
   reasoningEffort?: AgentCodexReasoningEffort;
   /** DeepSeek Harness tool presentation mode. */
   mode?: AgentHarnessPreset;
+  /** Default Pi codemode setting for newly created conversations. */
+  piCodeMode?: boolean;
 }
 
 /**

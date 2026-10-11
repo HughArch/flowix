@@ -41,6 +41,7 @@ import { NotebookTreeFileIcon } from '@features/memo/components/notebook-tree-fi
 import { NotebookTreeResourceIcon } from '@features/memo/components/file-type-icon';
 import { files, notes, product, type DocTreeItem } from '@platform/tauri/client';
 import { logNativeContextMenuError } from '@platform/tauri/native-context-menu';
+import type { TableViewType } from '@features/multidimensional-table/public/create-api';
 
 const TREE_MENU_CLASS =
   'w-[180px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]';
@@ -129,7 +130,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   onOpenInNewTab?: (path: string) => void;
   onCreateNote: (parentPath: string) => void;
   onCreateFolder: (parentPath: string) => void;
-  onCreateView: (parentPath: string) => void;
+  onCreateView: (parentPath: string, viewType?: TableViewType) => void;
   onCreateMediaLibrary: (parentPath: string) => void;
   onImportFiles?: (parentPath: string) => void;
   onRename: (item: DocTreeItem, nextName: string) => Promise<void> | void;
@@ -195,8 +196,10 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   };
   const resourceKind = isFolder ? null : item.resourceKind ?? resourceKindFromPath(item.name);
   const isNote = resourceKind === 'note';
-  const isTableDocument = !isFolder && isTableDocumentFilename(item.name);
-  const isMediaLibrary = !isFolder && isMediaLibraryFilename(item.name);
+  const isTableDocument = !isFolder && (Boolean(tableViewVisibility)
+    || (isTableDocumentFilename(item.name) && !isMediaLibraryFilename(item.name)));
+  const isMediaLibrary = !isFolder && (Boolean(mediaLibraryViewVisibility)
+    || (isMediaLibraryFilename(item.name) && !isTableDocumentFilename(item.name)));
   const isExtensionlessDocument = isNote || isTableDocument || isMediaLibrary;
   const [pathNote, setPathNote] = useState<NoteListItem | null>(null);
   const storeNote = useNoteStore((state) => {
@@ -373,7 +376,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
             : (event) => onOpen(item.fullPath, event)}
           onDoubleClick={isFolder
             ? toggleFolderOnDoubleClick
-            : onOpenInNewTab ? () => onOpenInNewTab(item.fullPath) : undefined}
+            : undefined}
           onFocus={() => onFocus?.(item.fullPath)}
           onPointerDown={(event) => {
             if (renaming) {
@@ -424,7 +427,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
             ) : isNote ? (
               <NotebookTreeFileIcon className="notebook-file-tree__default-file-icon h-[18px] w-[18px]" />
             ) : (
-              <NotebookTreeResourceIcon path={item.name} className="h-[18px] w-[18px]" />
+              <NotebookTreeResourceIcon path={item.name} collectionType={isMediaLibrary ? 'media_library' : isTableDocument ? 'table' : undefined} className="h-[18px] w-[18px]" />
             )}
           </span>
           <input
@@ -481,7 +484,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
               ) : isNote ? (
                 <NotebookTreeFileIcon className="notebook-file-tree__default-file-icon h-[18px] w-[18px]" />
               ) : (
-                <NotebookTreeResourceIcon path={item.name} className="h-[18px] w-[18px]" />
+                <NotebookTreeResourceIcon path={item.name} collectionType={isMediaLibrary ? 'media_library' : isTableDocument ? 'table' : undefined} className="h-[18px] w-[18px]" />
               )}
             </span>
           )}
@@ -564,7 +567,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
         <NotebookCreateContextMenuItems
           onCreateNote={() => onCreateNote(actionParentPath)}
           onCreateFolder={() => onCreateFolder(actionParentPath)}
-          onCreateTable={() => onCreateView(actionParentPath)}
+          onCreateTable={(viewType) => onCreateView(actionParentPath, viewType)}
           onCreateMediaLibrary={() => onCreateMediaLibrary(actionParentPath)}
           onImport={onImportFiles ? () => onImportFiles(actionParentPath) : undefined}
         />

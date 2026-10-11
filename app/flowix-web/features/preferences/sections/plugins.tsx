@@ -86,7 +86,7 @@ export function PluginsSection() {
           <RefreshCw className="mr-1.5 h-4 w-4" />刷新
         </Button>
       </div>
-      {error && <p className="rounded-md bg-red-500/10 p-3 text-xs text-red-600">{error}</p>}
+      {error && <p className="rounded-md bg-[color-mix(in_oklch,var(--destructive)_10%,transparent)] p-3 text-xs text-[var(--destructive)]">{error}</p>}
       <div className="space-y-2">
         {items.map((plugin) => (
           <div key={plugin.manifest.id} className="flex items-center justify-between rounded-lg border border-[var(--divider)] bg-[var(--card)] p-3">
@@ -94,9 +94,9 @@ export function PluginsSection() {
               <div className="flex items-center gap-2 text-sm font-medium text-[var(--foreground)]">
                 <span className="truncate">{plugin.manifest.name}</span>
                 {plugin.isSystem && <span className="rounded bg-[var(--muted)] px-1.5 py-0.5 text-[10px] text-[var(--muted-foreground)]">内置</span>}
-                {!plugin.enabled && <span className="rounded bg-amber-500/10 px-1.5 py-0.5 text-[10px] text-amber-700">已停用</span>}
+                {!plugin.enabled && <span className="rounded bg-[color-mix(in_oklch,var(--warning)_10%,transparent)] px-1.5 py-0.5 text-[10px] text-[var(--warning)]">已停用</span>}
                 {plugin.integrityStatus === 'verified'
-                  ? <span className="flex items-center gap-1 rounded bg-emerald-500/10 px-1.5 py-0.5 text-[10px] text-emerald-700" title="安装包文件与插件声明的 SHA-256 完整性清单一致"><ShieldCheck className="h-3 w-3" />完整性通过</span>
+                  ? <span className="flex items-center gap-1 rounded bg-[color-mix(in_oklch,var(--success)_10%,transparent)] px-1.5 py-0.5 text-[10px] text-[var(--success)]" title="安装包文件与插件声明的 SHA-256 完整性清单一致"><ShieldCheck className="h-3 w-3" />完整性通过</span>
                   : <span className="flex items-center gap-1 rounded bg-[var(--muted)] px-1.5 py-0.5 text-[10px] text-[var(--muted-foreground)]" title="插件未提供完整性清单"><ShieldQuestion className="h-3 w-3" />未校验</span>}
               </div>
               <p className="mt-1 truncate text-xs text-[var(--muted-foreground)]">{plugin.manifest.id} · v{plugin.manifest.version}</p>
@@ -104,7 +104,7 @@ export function PluginsSection() {
             </div>
             <div className="flex items-center gap-1">
               <Button variant="ghost" size="icon" disabled={busy || (plugin.isSystem && plugin.enabled)} onClick={() => void setEnabled(plugin)} title={plugin.enabled ? '停用插件' : '启用插件'}>
-                <Power className={`h-4 w-4 ${plugin.enabled ? 'text-emerald-500' : 'text-[var(--muted-foreground)]'}`} />
+                <Power className={`h-4 w-4 ${plugin.enabled ? 'text-[var(--success)]' : 'text-[var(--muted-foreground)]'}`} />
               </Button>
               {!plugin.isSystem && <Button variant="ghost" size="icon" disabled={busy} onClick={() => void uninstall(plugin)} title="卸载插件" className="text-[var(--muted-foreground)] hover:bg-transparent hover:text-[var(--destructive)]"><Trash2 className="h-4 w-4" /></Button>}
             </div>
@@ -113,11 +113,11 @@ export function PluginsSection() {
       </div>
       {diagnostics.some((item) => item.status === 'invalid') && (
         <div className="space-y-2">
-          <h3 className="flex items-center gap-2 text-sm font-medium text-amber-600"><AlertTriangle className="h-4 w-4" />加载失败</h3>
+          <h3 className="flex items-center gap-2 text-sm font-medium text-[var(--warning)]"><AlertTriangle className="h-4 w-4" />加载失败</h3>
           {diagnostics.filter((item) => item.status === 'invalid').map((item) => (
-            <div key={item.path} className="rounded-lg border border-amber-500/30 bg-amber-500/10 p-3">
+            <div key={item.path} className="rounded-lg border border-[color-mix(in_oklch,var(--warning)_30%,transparent)] bg-[color-mix(in_oklch,var(--warning)_10%,transparent)] p-3">
               <p className="truncate text-xs text-[var(--foreground)]">{item.path}</p>
-              <p className="mt-1 text-xs text-amber-700">{item.message}</p>
+              <p className="mt-1 text-xs text-[var(--warning)]">{item.message}</p>
             </div>
           ))}
         </div>

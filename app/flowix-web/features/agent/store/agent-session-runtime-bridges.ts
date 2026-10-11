@@ -1,4 +1,3 @@
-import type { AgentChunk } from '@/types/agent';
 import type { AgentSessionStore } from '@features/agent/store/agent-session-store';
 import { createAgentChunkBridge } from '@features/agent/store/agent-chunk-bridge';
 import { installGlobalAgentSettingsSync } from '@features/agent/store/global-agent-settings-sync';
@@ -13,19 +12,10 @@ export function installAgentSessionRuntimeBridges(store: AgentSessionStoreAccess
   installGlobalAgentSettingsSync((updater) => store.getState().setSessionMeta(updater));
 
   return createAgentChunkBridge((chunk) => {
-    const stateBeforeDispatch = store.getState();
-    const canonicalThreadId = resolveIncomingChunkThreadId(chunk, stateBeforeDispatch);
+    const canonicalThreadId = resolveIncomingChunkThreadId(chunk, store.getState());
     const runId = chunk.run_id?.trim();
     if (!canonicalThreadId || !runId) return;
     store.getState().dispatchAgentChunk(chunk);
-    if (chunk.kind === 'user_message') {
-      const enrichedChunk = chunk as AgentChunk & {
-        client_user_message_id?: string;
-        message_id?: string;
-      };
-      const clientId = enrichedChunk.client_user_message_id ?? enrichedChunk.message_id;
-      if (clientId) stateBeforeDispatch.removeSteeringMessageByClientId(canonicalThreadId, clientId);
-    }
     if (chunk.kind !== 'stream_end') return;
 
     const state = store.getState();

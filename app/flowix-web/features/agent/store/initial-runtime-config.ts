@@ -30,6 +30,9 @@ export function buildInitialInstanceRuntimeConfig(
     ...(defaultRuntime?.mode
       ? { deepseekHarness: { mode: defaultRuntime.mode } }
       : {}),
+    ...(defaultRuntime?.piCodeMode !== undefined
+      ? { pi: { codeMode: defaultRuntime.piCodeMode } }
+      : {}),
     notebookId,
   };
 }
