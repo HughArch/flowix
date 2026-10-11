@@ -15,6 +15,7 @@ export type StoredAsset = {
 
 export type AttachmentUploadOptions = {
     ownerPath?: string;
+    getNotebookId?: () => string | undefined;
     storage: { mode: 'attachment' };
     picker: { accept: string | undefined; multiple: boolean };
     ingest: {

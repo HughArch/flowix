@@ -55,6 +55,7 @@ import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 interface MarkdownEditorProps {
   /** Absolute or notebook-relative path of the note owning editor uploads. */
   ownerPath?: string;
+  getAttachmentNotebookId?: () => string | undefined;
   propertyTargetId?: string;
   onViewSourceMode?: () => void;
   transitionId?: number | null;
@@ -556,6 +557,7 @@ function focusEmptyParagraphAfterMedia(
 
 export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorProps>(function MarkdownEditor({
   ownerPath,
+  getAttachmentNotebookId,
   propertyTargetId,
   onViewSourceMode,
   transitionId = null,
@@ -1006,7 +1008,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         MarkdownEscape,
         HTMLStrongFallback,
         LegacyAdjacentStrongMarkdown,
-        AttachmentLink.configure({ ownerPath }),
+        AttachmentLink.configure({ ownerPath, getNotebookId: getAttachmentNotebookId }),
         MarkdownLink,
         LinkSelectionHighlight,
         CodeBlockShiki.configure({ traceId: transitionId }),

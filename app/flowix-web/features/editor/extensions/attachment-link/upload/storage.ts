@@ -73,9 +73,9 @@ export async function createAttachmentUpload(
     return { assets };
 }
 
-export async function createAttachmentUploadFromPaths(paths: string[], ownerPath?: string, signal?: AbortSignal): Promise<{ assets: StoredAsset[] }> {
+export async function createAttachmentUploadFromPaths(paths: string[], ownerPath?: string, signal?: AbortSignal, notebookId?: string): Promise<{ assets: StoredAsset[] }> {
     const assets: StoredAsset[] = [];
-    if (!ownerPath) {
+    if (!ownerPath && !notebookId) {
         reportUploadFailure('OWNER_REQUIRED');
         return { assets };
     }
@@ -91,7 +91,7 @@ export async function createAttachmentUploadFromPaths(paths: string[], ownerPath
             release = acquireUploadSlot();
             storageKey = await invoke<string | null>('save_attachment', {
                 sourcePath: path,
-                notePath: ownerPath,
+                ...(notebookId ? { notebookId } : { notePath: ownerPath }),
             });
             if (!storageKey) throw new Error('Attachment save returned no path');
         } catch (err) {

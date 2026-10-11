@@ -26,6 +26,15 @@ describe('attachment storage failures', () => {
 
     afterEach(() => vi.restoreAllMocks());
 
+    it('saves selected files for a path-based note using its notebook instead of a legacy memo ID', async () => {
+        vi.mocked(invoke).mockResolvedValue('/notebook/attachments/fig.png');
+        const result = await createAttachmentUploadFromPaths(['/selected/fig.png'], undefined, undefined, 'notebook-owner');
+        expect(invoke).toHaveBeenCalledWith('save_attachment', {
+            sourcePath: '/selected/fig.png', notebookId: 'notebook-owner',
+        });
+        expect(result.assets[0].storageKey).toBe('/notebook/attachments/fig.png');
+    });
+
     it('does not create an attachment for an unauthorized source', async () => {
         vi.mocked(invoke).mockRejectedValue(new Error('not authorized'));
         expect(await createAttachmentUploadFromPaths(['/private/file.txt'], 'memo-a')).toEqual({ assets: [] });
@@ -68,21 +77,21 @@ describe('attachment storage failures', () => {
         expect(result.assets[0].storageKey).toBe('/attachments/file.txt');
     });
 
-    it('sends the same memo identity for every file in a batch', async () => {
+    it('sends the same note path for every file in a batch', async () => {
         vi.mocked(invoke).mockResolvedValue('/attachments/saved.txt');
         await createAttachmentUploadFromPaths(['/one.txt', '/two.txt'], 'memo-a');
-        expect(invoke).toHaveBeenNthCalledWith(1, 'save_attachment', { sourcePath: '/one.txt', memoId: 'memo-a' });
-        expect(invoke).toHaveBeenNthCalledWith(2, 'save_attachment', { sourcePath: '/two.txt', memoId: 'memo-a' });
+        expect(invoke).toHaveBeenNthCalledWith(1, 'save_attachment', { sourcePath: '/one.txt', notePath: 'memo-a' });
+        expect(invoke).toHaveBeenNthCalledWith(2, 'save_attachment', { sourcePath: '/two.txt', notePath: 'memo-a' });
     });
 
-    it('does not mix identities between overlapping uploads', async () => {
+    it('does not mix note paths between overlapping uploads', async () => {
         vi.mocked(invoke).mockResolvedValue('/attachments/saved.txt');
         await Promise.all([
             createAttachmentUploadFromPaths(['/one.txt'], 'memo-a'),
             createAttachmentUploadFromPaths(['/two.txt'], 'memo-b'),
         ]);
-        expect(invoke).toHaveBeenCalledWith('save_attachment', { sourcePath: '/one.txt', memoId: 'memo-a' });
-        expect(invoke).toHaveBeenCalledWith('save_attachment', { sourcePath: '/two.txt', memoId: 'memo-b' });
+        expect(invoke).toHaveBeenCalledWith('save_attachment', { sourcePath: '/one.txt', notePath: 'memo-a' });
+        expect(invoke).toHaveBeenCalledWith('save_attachment', { sourcePath: '/two.txt', notePath: 'memo-b' });
     });
 
     it('rejects oversized Base64 uploads before reading or invoking storage', async () => {

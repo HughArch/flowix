@@ -61,7 +61,7 @@ export const AttachmentLink = Extension.create<AttachmentUploadOptions>({
     },
 
     addCommands() {
-        return createAttachmentCommands(this.options.ownerPath);
+        return createAttachmentCommands(this.options.ownerPath, this.options.getNotebookId);
     },
 });
 
