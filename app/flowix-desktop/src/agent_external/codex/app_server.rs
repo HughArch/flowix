@@ -2058,7 +2058,7 @@ impl CodexAppServerManager {
                     .or_else(|| model.get("id"))
                     .and_then(Value::as_str)
                     .map(str::trim)
-                    .filter(|model| !model.is_empty())
+                    .filter(|model| !model.is_empty() && !model.eq_ignore_ascii_case("inherit"))
             })
             .filter(|model| seen.insert((*model).to_string()))
             .map(str::to_string)

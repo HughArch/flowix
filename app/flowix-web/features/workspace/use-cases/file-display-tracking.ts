@@ -65,6 +65,6 @@ let stopGlobalTracking: (() => void) | null = null;
 
 /** Initialize before the first surface render; persisted browser tabs are already hydrated then. */
 export function ensureFileDisplayTrackingStarted(): void {
-  ensureCollectionDisplayTrackingStarted();
   if (!stopGlobalTracking) stopGlobalTracking = startFileDisplayTracking();
+  ensureCollectionDisplayTrackingStarted();
 }

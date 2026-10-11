@@ -197,6 +197,8 @@ impl AgentUserMessage {
 
     pub fn codex_model_for_runtime(&self) -> Option<&str> {
         self.model_for_runtime("codex")
+            .map(str::trim)
+            .filter(|model| !model.is_empty() && !model.eq_ignore_ascii_case("inherit"))
     }
 
     pub fn codex_reasoning_effort_for_runtime(&self) -> Option<&str> {

@@ -1,5 +1,5 @@
 import { parseCollectionDocumentV2 } from '@features/collection/model';
-import { collections, externalDocuments, type CollectionIndexItem } from '@platform/tauri/client';
+import { collections, externalDocuments, notebooks, type CollectionIndexItem } from '@platform/tauri/client';
 import { subscribe } from '@platform/tauri/event-bus';
 import { canonicalDirectoryPath } from '@/lib/path';
 import { bindCollectionDisplayPath, collectionDisplays, findCollectionDisplayPath } from '@/lib/collection-display-registry';
@@ -24,16 +24,27 @@ function replaceLiveFilePath(previousPath: string, path: string): void {
   useBrowserColumnStore.getState().replaceExternalPath(previousPath, path);
 }
 
-export function applyCollectionIndexItem(notebookId: string, item: CollectionIndexItem, sequence?: number, previousPath?: string): void {
+async function resolveNotebookPath(notebookId: string): Promise<string | null> {
+  const memo = getWorkspaceMemoState();
+  const notebook = memo.notebooks.find((candidate) => candidate.id === notebookId)
+    ?? (memo.selectedNotebook?.id === notebookId ? memo.selectedNotebook : null)
+    ?? (await notebooks.getAll()).find((candidate) => candidate.id === notebookId);
+  return notebook?.path ?? null;
+}
+
+function applyCollectionIndexItemAtRoot(
+  notebookId: string,
+  item: CollectionIndexItem,
+  rootPath: string,
+  sequence?: number,
+  previousPath?: string,
+): void {
   if (!item.collectionId) return;
   const key = JSON.stringify([notebookId, item.collectionId]);
   const incomingSequence = sequence ?? item.indexSequence;
   if (incomingSequence < (appliedSequences.get(key) ?? -1)) return;
   appliedSequences.set(key, incomingSequence);
-  const notebook = getWorkspaceMemoState().notebooks.find((candidate) => candidate.id === notebookId)
-    ?? (getWorkspaceMemoState().selectedNotebook?.id === notebookId ? getWorkspaceMemoState().selectedNotebook : null);
-  if (!notebook) return;
-  const root = canonicalDirectoryPath(notebook.path);
+  const root = canonicalDirectoryPath(rootPath);
   const path = `${root}/${item.relativePath}`;
   const previousPaths = new Set(previousPath ? [previousPath] : []);
   for (const descriptor of collectionDisplays(notebookId, item.collectionId)) {
@@ -61,6 +72,14 @@ export function applyCollectionIndexItem(notebookId: string, item: CollectionInd
   if (desired?.kind === 'collection' && desired.notebookId === notebookId && desired.collectionId === item.collectionId) {
     useWorkspaceRestoreStore.getState().setDesiredTarget(update(desired));
   }
+}
+
+export function applyCollectionIndexItem(notebookId: string, item: CollectionIndexItem, sequence?: number, previousPath?: string): void {
+  const memo = getWorkspaceMemoState();
+  const notebook = memo.notebooks.find((candidate) => candidate.id === notebookId)
+    ?? (memo.selectedNotebook?.id === notebookId ? memo.selectedNotebook : null);
+  if (!notebook) return;
+  applyCollectionIndexItemAtRoot(notebookId, item, notebook.path, sequence, previousPath);
 }
 
 function setCollectionUnavailable(notebookId: string, collectionId: string, reason: string, viewId?: string | null): void {
@@ -91,19 +110,19 @@ export async function refreshCollectionDisplays(event: CollectionChange): Promis
         continue;
       }
       const displays = collectionDisplays(event.notebookId, id);
+      // Memo may not have loaded its notebook list yet during startup.
+      const notebookPath = await resolveNotebookPath(event.notebookId);
+      if (!notebookPath) continue;
+      const notebookRoot = canonicalDirectoryPath(notebookPath);
       let viewIds: Set<string> | null = null;
       if (displays.some((display) => display.viewId)) {
-        const notebook = getWorkspaceMemoState().notebooks.find((candidate) => candidate.id === event.notebookId);
-        if (notebook) {
-          const notebookRoot = canonicalDirectoryPath(notebook.path);
-          const envelope = parseCollectionDocumentV2(await externalDocuments.read(`${notebookRoot}/${item.relativePath}`, notebookRoot));
-          if (envelope.collection.id !== id) throw new Error('COLLECTION_IDENTITY_CHANGED');
-          const views = envelope.payload.views.items as Array<{ id: string }>;
-          viewIds = new Set(views.map((view) => view.id));
-        }
+        const envelope = parseCollectionDocumentV2(await externalDocuments.read(`${notebookRoot}/${item.relativePath}`, notebookRoot));
+        if (envelope.collection.id !== id) throw new Error('COLLECTION_IDENTITY_CHANGED');
+        const views = envelope.payload.views.items as Array<{ id: string }>;
+        viewIds = new Set(views.map((view) => view.id));
       }
       if (sequences.get(key) !== generation) return;
-      applyCollectionIndexItem(event.notebookId, item);
+      applyCollectionIndexItemAtRoot(event.notebookId, item, notebookPath);
       for (const display of displays) if (display.viewId && viewIds && !viewIds.has(display.viewId)) setCollectionUnavailable(event.notebookId, id, '此视图已不存在，请重新选择视图', display.viewId);
     } catch (error) {
       if (sequences.get(key) !== generation) return;
@@ -118,7 +137,10 @@ export function ensureCollectionDisplayTrackingStarted(): void {
     applyCollectionIndexItem(change.notebookId, change.item, change.indexSequence, change.previousPath);
   });
   for (const tab of useBrowserColumnStore.getState().tabs) {
-    if (tab.target.kind === 'file-browser' && tab.target.collectionDisplay) void refreshCollectionDisplays({ notebookId: tab.target.collectionDisplay.notebookId });
+    if (tab.target.kind === 'file-browser' && tab.target.collectionDisplay) {
+      const display = tab.target.collectionDisplay;
+      void refreshCollectionDisplays({ notebookId: display.notebookId, collectionId: display.collectionId });
+    }
   }
   subscribe<CollectionChange>('collection-changed', (event) => { void refreshCollectionDisplays(event); });
   subscribe<CollectionChange>('flowix:path-note-changed', (event) => {

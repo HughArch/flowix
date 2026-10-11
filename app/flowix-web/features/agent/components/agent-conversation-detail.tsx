@@ -682,11 +682,8 @@ function AgentConversationDetailContent({
               (!!composerControllerRef.current?.getPrompt().trim() || composerImagesControllerRef.current?.hasImages));
         },
         getSendButtonRunning: () => {
-          const hasDraft = !!composerControllerRef.current?.getPrompt().trim() ||
-            !!composerImagesControllerRef.current?.hasImages;
           return isStoppingRef.current || isDshCommandRunningRef.current ||
-            (isCodexCommandRunningRef.current && !isCodexCommandStoppableRef.current) ||
-            (typeKeyRef.current === 'codex' && isLoadingRef.current && !hasDraft);
+            (isCodexCommandRunningRef.current && !isCodexCommandStoppableRef.current);
         },
         getHasAttachments: () => composerImagesController.hasImages,
         getHasPendingAttachments: () => composerImagesController.hasPending,

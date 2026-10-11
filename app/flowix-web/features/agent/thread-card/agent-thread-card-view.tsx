@@ -582,10 +582,8 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       },
       getSendButtonRunning: () => {
         const runtime = this.currentRuntimeView();
-        const hasDraft = !!this.composerController?.getPrompt().trim() || this.composerImages.hasImages;
         return runtime.status === "stopping" || runtime.isDshCommandRunning ||
-          (runtime.isCodexCommandRunning && !runtime.isCodexCommandStoppable) ||
-          (this.typeKey === "codex" && runtime.isModelRunning && !hasDraft);
+          (runtime.isCodexCommandRunning && !runtime.isCodexCommandStoppable);
       },
       getHasAttachments: () => this.composerImages.hasImages,
       getHasPendingAttachments: () => this.composerImages.hasPending,
