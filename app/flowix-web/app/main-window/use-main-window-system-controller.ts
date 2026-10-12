@@ -27,6 +27,7 @@ export interface MainWindowSystemController {
   dshDownload: DshDownloadProgress | null;
   dshInstallPromptOpen: boolean;
   onboardingOpen: boolean;
+  onboardingLoading: boolean;
   updater: AppUpdaterState;
   dshInstaller: DshRuntimeInstallerState;
   closeDshInstallPrompt(): void;
@@ -39,6 +40,7 @@ export function useMainWindowSystemController(): MainWindowSystemController {
   const [dshDownload, setDshDownload] = useState<DshDownloadProgress | null>(null);
   const [dshInstallPromptOpen, setDshInstallPromptOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
+  const [onboardingLoading, setOnboardingLoading] = useState(true);
   const { t } = useI18n();
   const updatePreferences = useAppUpdatePreferences();
   const updater = useAppUpdater({
@@ -83,9 +85,11 @@ export function useMainWindowSystemController(): MainWindowSystemController {
         setOnboardingOpen(true);
         return;
       }
-      if (!features.isIntroductDisplayed) setDshInstallPromptOpen(true);
+      // Notebook-only onboarding must not schedule the legacy Agent intro on a later launch.
     }).catch(() => {
       // Do not show onboarding when its durable state cannot be read.
+    }).finally(() => {
+      if (!cancelled) setOnboardingLoading(false);
     });
     return () => { cancelled = true; };
   }, []);
@@ -110,6 +114,7 @@ export function useMainWindowSystemController(): MainWindowSystemController {
     dshDownload,
     dshInstallPromptOpen,
     onboardingOpen,
+    onboardingLoading,
     updater,
     dshInstaller,
     closeDshInstallPrompt,

@@ -116,7 +116,7 @@ class TableReferenceNodeView implements ProseMirrorNodeView {
     if (pos === undefined) return;
     const node = this.view.state.doc.nodeAt(pos);
     if (!node || node.type.name !== 'tableReference') return;
-    openTableReferencePicker(this.editor, { from: pos, to: pos + node.nodeSize }, { kind: 'button', element: anchor });
+    openTableReferencePicker(this.editor, { from: pos, to: pos + node.nodeSize }, { kind: 'button', element: anchor, align: 'right' });
   }
 
   update(node: ProseMirrorNode): boolean {
@@ -151,7 +151,7 @@ function TableReferenceSurface({ attrs, editable, onViewChange, onRelativePathCh
 }) {
   const language = useAppLanguage();
   const notebook = useNoteStore((state) => state.notebooks.find((item) => item.id === attrs.notebookId));
-  const reference = useCollectionReference(notebook, attrs.collectionId, 'table', attrs.viewId);
+  const reference = useCollectionReference(notebook, attrs.collectionId, 'table');
   const fileIdentity = reference.fileIdentity;
   const filePath = fileIdentity?.path ?? null;
   const displayName = reference.item?.name ?? '多维表格';
@@ -197,12 +197,12 @@ function TableReferenceSurface({ attrs, editable, onViewChange, onRelativePathCh
                 canCreateFields
                 canCreateRecords={false}
                 showAssociateNoteAction
-                canDeleteViews={false}
                 onActiveViewChange={onViewChange}
                 onFilePathChange={handleFilePathChange}
                 trailingActions={(datasetAction) =>
                   <div className="multidimensional-table__view-nav-actions">
                     {datasetAction}
+                    <span role="separator" aria-orientation="vertical" className="multidimensional-table__view-nav-actions-separator" />
                     <Button type="button" variant="ghost" size="sm" className="h-7 w-7 rounded-lg p-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]" aria-label="打开多维表格" title="打开" disabled={!filePath || !notebook} onClick={openOriginal}>
                       <ArrowUpRightIcon size={14} weight="bold" aria-hidden="true" />
                     </Button>

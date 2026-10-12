@@ -253,6 +253,10 @@
   line-height: 1.2;
 }
 
+.slash-menu-items > .slash-menu-header {
+  flex: none;
+}
+
 .slash-menu-items-frame {
   position: relative;
   display: flex;

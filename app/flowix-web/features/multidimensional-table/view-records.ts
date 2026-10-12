@@ -1,8 +1,17 @@
 import type { NoteEntry } from '@platform/tauri/client';
 import type { TableField, TableRecord, TableView } from './model';
+import { NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID, NOTE_PATH_FIELD_ID, NOTE_SIZE_FIELD_ID, builtinPresetTableField, builtinPresetValue } from './builtin-fields';
 import { noteMatchesCollectionFilter } from './record-filter';
 
 function viewSortValue(field: string, record: TableRecord, note: NoteEntry | undefined, fields: TableField[]): unknown {
+  if (builtinPresetTableField(field)) {
+    const value = builtinPresetValue(field, note);
+    return value === '' || (Array.isArray(value) && !value.length) ? null : value;
+  }
+  if (field === NOTE_UPDATED_AT_FIELD_ID) return note?.updatedAt;
+  if (field === NOTE_CREATED_AT_FIELD_ID) return note?.createdAt;
+  if (field === NOTE_SIZE_FIELD_ID) return note?.sizeBytes;
+  if (field === NOTE_PATH_FIELD_ID) return note?.relativePath.replace(/\\/g, '/').split('/').slice(0, -1).join('/');
   if (field === 'modified_at') return note?.updatedAt ?? (Date.parse(record.updated_at) || null);
   if (field === 'created_at') return note?.createdAt;
   if (field === 'file_name') return record.note_path.split('/').pop() ?? record.note_path;

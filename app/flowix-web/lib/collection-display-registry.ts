@@ -10,14 +10,22 @@ interface DisplayRecord extends CollectionDisplayDescriptor { path: string | nul
 const displays = new Map<string, DisplayRecord>();
 const pins = new Map<string, number>();
 const idsByTarget = new Map<string, string>();
-const keyOf = (target: Omit<CollectionDisplayDescriptor, 'displayId'>) => JSON.stringify([target.notebookId, target.collectionId, target.viewId]);
+const keyOf = (target: Omit<CollectionDisplayDescriptor, 'displayId'>) => JSON.stringify([target.notebookId, target.collectionId]);
 
-/** Allocate in navigation transitions, never in surface render/resolution. */
+/** One display per collection; viewId is presentation state. Allocate outside render. */
 export function ensureCollectionDisplay(target: Omit<CollectionDisplayDescriptor, 'displayId'>, preferredId?: string): CollectionDisplayDescriptor {
   const key = keyOf(target);
   const existingId = idsByTarget.get(key);
   if (existingId) {
-    if (preferredId && preferredId !== existingId) throw new Error('集合展示身份冲突');
+    // Older persisted targets allocated an ID per view. Retain those IDs as
+    // aliases so mounted/restored surfaces can still resolve their location.
+    if (preferredId && preferredId !== existingId) {
+      const alias = displays.get(preferredId);
+      if (alias && keyOf(alias) !== key) throw new Error('展示 ID 已绑定到另一集合');
+      if (!alias) displays.set(preferredId, { ...displays.get(existingId)!, ...target, displayId: preferredId });
+    }
+    const record = displays.get(existingId)!;
+    record.viewId = target.viewId;
     return { ...target, displayId: existingId };
   }
   const displayId = preferredId ?? `display:${crypto.randomUUID()}`;
@@ -44,11 +52,12 @@ export function collectionDisplays(notebookId?: string, collectionId?: string): 
 export function reconcileCollectionDisplays(retained: Iterable<CollectionDisplayDescriptor>): void {
   const ids = new Set<string>();
   for (const descriptor of retained) {
-    ensureCollectionDisplay(descriptor, descriptor.displayId);
+    const canonical = ensureCollectionDisplay(descriptor, descriptor.displayId);
     ids.add(descriptor.displayId);
+    ids.add(canonical.displayId);
   }
   for (const [id, record] of displays) {
-    if (!ids.has(id) && !pins.has(id)) { displays.delete(id); idsByTarget.delete(keyOf(record)); }
+    if (!ids.has(id) && !pins.has(id)) { displays.delete(id); if (idsByTarget.get(keyOf(record)) === id) idsByTarget.delete(keyOf(record)); }
   }
 }
 

@@ -4,6 +4,7 @@ export {
   clearPluginWorkbenchTarget,
   dismissNavigationFailure,
   flushWorkspaceDocument,
+  openCollectionTarget,
   openPluginWorkbench,
   reconcileDeletedNotebook,
   retryLastNavigation,

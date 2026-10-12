@@ -1,4 +1,5 @@
-import { ChevronDown } from 'lucide-react';
+import { useEffect, useState } from 'react';
+import { ChevronRight, X } from 'lucide-react';
 import type { NotebookFolderOption } from '@platform/tauri/client';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@shared/ui/select';
@@ -10,6 +11,8 @@ export function MediaLibraryFilterPanel({
   fileName,
   fileType,
   path,
+  pathIsAll = false,
+  fixedFolderPath,
   folderPickerOpen,
   folderOptions,
   folderOptionsLoading,
@@ -17,9 +20,12 @@ export function MediaLibraryFilterPanel({
   busy = false,
   applying = false,
   autoFocus = false,
+  showLocationMenu = true,
+  locationOnly = false,
   onFileNameChange,
   onFileTypeChange,
   onPathChange,
+  onPathSelected,
   onFolderPickerOpenChange,
   onReset,
   onApply,
@@ -27,6 +33,9 @@ export function MediaLibraryFilterPanel({
   fileName: string;
   fileType: 'any' | MediaLibraryKind;
   path: string;
+  pathIsAll?: boolean;
+  /** Set for folder collections whose location cannot be changed. */
+  fixedFolderPath?: string;
   folderPickerOpen: boolean;
   folderOptions: NotebookFolderOption[];
   folderOptionsLoading: boolean;
@@ -34,61 +43,121 @@ export function MediaLibraryFilterPanel({
   busy?: boolean;
   applying?: boolean;
   autoFocus?: boolean;
+  showLocationMenu?: boolean;
+  locationOnly?: boolean;
   onFileNameChange: (value: string) => void;
   onFileTypeChange: (value: 'any' | MediaLibraryKind) => void;
   onPathChange: (value: string) => void;
+  onPathSelected?: (value: string | null) => Promise<boolean | void> | boolean | void;
   onFolderPickerOpenChange: (open: boolean) => void;
   onReset: () => void;
   onApply: () => void;
 }) {
   const { t } = useI18n();
+  const [collapsedFolders, setCollapsedFolders] = useState<Set<string>>(() => new Set());
+  useEffect(() => {
+    if (fixedFolderPath !== undefined && folderPickerOpen) onFolderPickerOpenChange(false);
+  }, [fixedFolderPath, folderPickerOpen, onFolderPickerOpenChange]);
+  useEffect(() => {
+    if (!folderPickerOpen) return;
+    setCollapsedFolders(new Set(folderOptions
+      .filter((option) => folderOptions.some((candidate) => candidate.relativePath.startsWith(`${option.relativePath}/`)))
+      .map((option) => option.relativePath)));
+  }, [folderPickerOpen, folderOptions]);
+  const selectPath = async (value: string | null) => {
+    if (onPathSelected && (await onPathSelected(value)) === false) return;
+    onPathChange(value ?? '');
+    onFolderPickerOpenChange(false);
+  };
+  const folderPathLabel = fixedFolderPath !== undefined
+    ? '固定'
+    : (path || pathIsAll) ? (pathIsAll ? t('mediaLibrary.anyFolder') : path) : undefined;
+  const canClearFolderPath = fixedFolderPath === undefined && Boolean(path || pathIsAll);
 
-  return <>
-    <div className="space-y-1">
-      <p className="agent-thread-card__codex-settings-title px-2">{t('media.properties.location')}</p>
-      <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
-        <span className="px-0.5 text-sm text-[var(--foreground)]">{t('mediaLibrary.filterPath')}</span>
-        <Popover open={folderPickerOpen} onOpenChange={onFolderPickerOpenChange}>
+  const locationMenu = <Popover open={folderPickerOpen} onOpenChange={onFolderPickerOpenChange}>
+        <div data-media-library-location-menu className={`flex min-w-0 items-center gap-0.5 rounded-lg transition-colors ${busy || !notebookAvailable || fixedFolderPath !== undefined ? '' : 'hover:bg-[var(--hover-bg)]'}`}>
           <PopoverTrigger asChild>
-            <button type="button" disabled={!notebookAvailable} className="flex h-8 w-full min-w-0 items-center justify-between gap-2 rounded-lg border border-[var(--border)] bg-transparent px-2 text-left text-sm disabled:opacity-50">
-              <span className="min-w-0 truncate">{path || t('mediaLibrary.choosePath')}</span>
-              <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
+            <button type="button" disabled={busy || !notebookAvailable || fixedFolderPath !== undefined} className="flex h-8 min-w-0 flex-1 items-center justify-between gap-2 rounded-lg pl-1.5 text-left text-sm disabled:opacity-50">
+              <span className="min-w-0 truncate">浏览和保存</span>
+              <span className="flex min-w-0 flex-1 items-center justify-end gap-1 text-[var(--muted-foreground)]">
+                {folderPathLabel && <span title={folderPathLabel} className="max-w-[150px] truncate text-right text-xs">{folderPathLabel}</span>}
+              </span>
             </button>
           </PopoverTrigger>
-          <PopoverContent side="bottom" align="start" sideOffset={4} style={{ zIndex: 170 }} className="max-h-[min(60vh,280px)] w-[260px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+          {canClearFolderPath && <button
+            type="button"
+            disabled={busy}
+            aria-label="清空路径"
+            title="清空路径"
+            onClick={(event) => {
+              event.stopPropagation();
+              void selectPath('');
+            }}
+            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] disabled:opacity-50"
+          ><X className="h-3 w-3" aria-hidden="true" /></button>}
+          <PopoverTrigger asChild>
+            <button type="button" aria-label="浏览和保存" disabled={busy || !notebookAvailable || fixedFolderPath !== undefined} className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] disabled:opacity-50">
+              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </PopoverTrigger>
+        </div>
+          <PopoverContent anchorSelector="[data-media-library-location-menu]" side="left" align="start" sideOffset={0} style={{ zIndex: 170 }} className="max-h-[min(60vh,280px)] w-[260px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
             {folderOptionsLoading ? <p className="px-2 py-2 text-xs text-[var(--muted-foreground)]">{t('mediaLibrary.loadingFolders')}</p>
               : <div className="space-y-0.5">
                 <button
                   type="button"
-                  aria-pressed={!path}
-                  onClick={() => { onPathChange(''); onFolderPickerOpenChange(false); }}
-                  className={`flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-sm hover:bg-[var(--muted)] ${!path ? 'bg-[var(--muted)]' : ''}`}
+                  aria-pressed={pathIsAll}
+                  onClick={() => { void selectPath(null); }}
+                  className={`flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-sm hover:bg-[var(--muted)] ${pathIsAll ? 'bg-[var(--muted)]' : ''}`}
                 >
                   <span className="flex min-w-0 flex-1 items-center gap-2 pl-2">
                     <ResourceFolderIcon expanded={false} className="h-[18px] w-[18px] shrink-0" />
                     <span className="min-w-0 truncate">{t('mediaLibrary.anyFolder')}</span>
                   </span>
                 </button>
-                {folderOptions.length === 0 ? <p className="px-2 py-2 text-xs text-[var(--muted-foreground)]">{t('mediaLibrary.noFolders')}</p> : folderOptions.map((option) => {
+                {folderOptions.length === 0 ? <p className="px-2 py-2 text-xs text-[var(--muted-foreground)]">{t('mediaLibrary.noFolders')}</p> : folderOptions.filter((option) => {
+                  const segments = option.relativePath.split('/');
+                  return !segments.slice(0, -1).some((_, index) => collapsedFolders.has(segments.slice(0, index + 1).join('/')));
+                }).map((option) => {
                   const folderName = option.relativePath.split('/').filter(Boolean).pop() ?? option.relativePath;
                   const selected = path === option.relativePath;
-                  return <button
-                    key={option.relativePath}
-                    type="button"
-                    title={option.relativePath}
-                    aria-pressed={selected}
-                    onClick={() => { onPathChange(option.relativePath); onFolderPickerOpenChange(false); }}
-                    className={`flex h-8 w-full items-center gap-2 rounded-lg pr-2 text-left text-sm hover:bg-[var(--muted)] ${selected ? 'bg-[var(--muted)]' : ''}`}
-                    style={{ paddingLeft: `${8 + option.depth * 16}px` }}
-                  >
-                    <ResourceFolderIcon expanded={false} className="h-[18px] w-[18px] shrink-0" />
-                    <span className="min-w-0 truncate">{folderName}</span>
-                  </button>;
+                  const hasChildren = folderOptions.some((candidate) => candidate.relativePath.startsWith(`${option.relativePath}/`));
+                  const collapsed = collapsedFolders.has(option.relativePath);
+                  return <div key={option.relativePath} className="flex h-8 min-w-0 items-center rounded-lg pr-2 text-sm hover:bg-[var(--muted)]" style={{ paddingLeft: `${8 + option.depth * 12}px` }}>
+                    {hasChildren ? <button
+                      type="button"
+                      aria-label={`${collapsed ? '展开' : '折叠'}文件夹 ${folderName}`}
+                      aria-expanded={!collapsed}
+                      onClick={() => setCollapsedFolders((current) => {
+                        const next = new Set(current);
+                        if (next.has(option.relativePath)) next.delete(option.relativePath);
+                        else next.add(option.relativePath);
+                        return next;
+                      })}
+                      className="inline-flex h-6 w-5 shrink-0 items-center justify-center rounded text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+                    ><ChevronRight className={`h-3.5 w-3.5 transition-transform ${collapsed ? '' : 'rotate-90'}`} aria-hidden="true" /></button>
+                      : <span className="w-5 shrink-0" aria-hidden="true" />}
+                    <button
+                      type="button"
+                      title={option.relativePath}
+                      aria-pressed={selected}
+                      onClick={() => { void selectPath(option.relativePath); }}
+                      className={`flex h-full min-w-0 flex-1 items-center gap-2 rounded-lg text-left ${selected ? 'bg-[var(--muted)]' : ''}`}
+                    >
+                      <ResourceFolderIcon expanded={!collapsed && hasChildren} className="h-[18px] w-[18px] shrink-0" />
+                      <span className="min-w-0 truncate">{folderName}</span>
+                    </button>
+                  </div>;
                 })}
               </div>}
           </PopoverContent>
-        </Popover>
-      </div>
+      </Popover>;
+
+  if (locationOnly) return locationMenu;
+
+  return <>
+    <div className="space-y-1">
+      {showLocationMenu && locationMenu}
       <p className="agent-thread-card__codex-settings-title px-2">{t('multidimensionalTable.autoCollect.file')}</p>
       <label className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
         <span className="px-0.5 text-sm text-[var(--foreground)]">{t('mediaLibrary.filterFileName')}</span>

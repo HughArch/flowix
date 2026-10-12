@@ -8,7 +8,8 @@ import {
   useState,
   type PointerEvent as ReactPointerEvent,
 } from 'react';
-import { FileText, GripVertical, SwatchBook, Trash2 } from 'lucide-react';
+import { FileText, GripVertical, SwatchBook } from 'lucide-react';
+import { TrashSimpleIcon } from '@phosphor-icons/react';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
 import { orderNoteTemplates, saveNoteTemplateOrder } from '@/lib/note-template-order';
@@ -252,7 +253,7 @@ export function TemplatesSection() {
             <div
               key={template.id}
               data-note-template-id={template.id}
-              className={`flex min-h-12 items-center gap-2 rounded-lg border bg-[var(--card)] px-2 py-2 transition-all ${
+              className={`flex min-h-12 items-center gap-2 rounded-xl border bg-[var(--card)] px-2 py-2 transition-all ${
                 dragOverTemplate?.id === template.id
                   ? 'border-[var(--brand)] bg-[var(--brand)]/5'
                   : 'border-[var(--border)]'
@@ -275,14 +276,14 @@ export function TemplatesSection() {
               <Button
                 type="button"
                 variant="ghost"
-                size="icon-sm"
+                size="icon"
                 tooltip={t('preferences.templates.delete')}
                 aria-label={`${t('preferences.templates.delete')} ${template.name}`}
                 disabled={deletingId === template.id}
                 onClick={() => void handleDelete(template)}
-                className="text-[var(--muted-foreground)] hover:bg-transparent hover:text-[var(--destructive)]"
+                className="size-7 hover:text-[var(--destructive)]"
               >
-                <Trash2 />
+                <TrashSimpleIcon className="h-4 w-4" aria-hidden="true" />
               </Button>
             </div>
           ))}

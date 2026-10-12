@@ -7,7 +7,7 @@ import { UndoRedo } from "@tiptap/extensions/undo-redo";
 import { Markdown } from "@tiptap/markdown";
 import { pushHandler } from "@/lib/shortcuts/handler-registry";
 
-import { selectAgentThreadCardSendButtonState } from "@features/agent/thread-card/agent-thread-card-selectors";
+import { selectComposerSubmissionState, type ComposerRuntimeState, type ComposerSubmissionState } from "./composer-submission-state";
 import { getPersistableInputDraft } from "@features/agent/thread-card/composer/composer-draft";
 import type { ComposerDraftController } from "@features/agent/thread-card/composer/composer-draft-controller";
 import { renderAgentThreadCardSendButton } from "@features/agent/thread-card/composer/send-button-renderer";
@@ -61,9 +61,8 @@ export interface ComposerControllerOptions {
   inputDraftMaxChars: number;
   getCurrentInputDraft: () => string;
   getUserHistoryMessages: () => string[];
-  getSendLabel: (wantStop: boolean, isRunning?: boolean) => string;
-  getSendButtonWantsStop: () => boolean;
-  getSendButtonRunning?: () => boolean;
+  getSendLabel: (label: ComposerSubmissionState["label"]) => string;
+  getRuntimeState: () => ComposerRuntimeState;
   getHasAttachments: () => boolean;
   getHasPendingAttachments: () => boolean;
   agentType?: AgentTypeKey;
@@ -90,9 +89,8 @@ export class ComposerController {
   private readonly inputDraftMaxChars: number;
   private readonly getCurrentInputDraft: () => string;
   private readonly getUserHistoryMessages: () => string[];
-  private readonly getSendLabel: (wantStop: boolean, isRunning?: boolean) => string;
-  private readonly getSendButtonWantsStop: () => boolean;
-  private readonly getSendButtonRunning: () => boolean;
+  private readonly getSendLabel: ComposerControllerOptions["getSendLabel"];
+  private readonly getRuntimeState: ComposerControllerOptions["getRuntimeState"];
   private readonly getHasAttachments: () => boolean;
   private readonly getHasPendingAttachments: () => boolean;
   private readonly submit: () => void;
@@ -119,8 +117,7 @@ export class ComposerController {
     this.getCurrentInputDraft = options.getCurrentInputDraft;
     this.getUserHistoryMessages = options.getUserHistoryMessages;
     this.getSendLabel = options.getSendLabel;
-    this.getSendButtonWantsStop = options.getSendButtonWantsStop;
-    this.getSendButtonRunning = options.getSendButtonRunning ?? (() => false);
+    this.getRuntimeState = options.getRuntimeState;
     this.getHasAttachments = options.getHasAttachments;
     this.getHasPendingAttachments = options.getHasPendingAttachments;
     this.submit = options.submit;
@@ -187,6 +184,11 @@ export class ComposerController {
       onModelSelect: options.onModelSelect,
       onPermissionSelect: options.onPermissionSelect,
       onDirectCommand: options.onDirectCommand,
+      canExecuteCommand: (command) => selectComposerSubmissionState({
+        ...this.getRuntimeState(), prompt: `/${command.name}`, kind: "command",
+        hasAttachments: command.execution !== "host-action" && this.getHasAttachments(),
+        hasPendingAttachments: this.getHasPendingAttachments(),
+      }).canSubmit,
       onCommandChange: () => this.handleEditorUpdate(),
       focusInput: () => this.focus(),
     });
@@ -375,22 +377,32 @@ export class ComposerController {
 
   setSendButtonState(inputValue: string = this.getPrompt().trim()): void {
     if (this.disposed) return;
-    const isRunning = this.getSendButtonRunning();
-    const { wantStop, disabled } = selectAgentThreadCardSendButtonState({
-      wantStop: this.getSendButtonWantsStop(),
-      inputValue,
-      isRunning,
+    const state = selectComposerSubmissionState({
+      ...this.getRuntimeState(), prompt: inputValue,
       hasAttachments: this.getHasAttachments(),
       hasPendingAttachments: this.getHasPendingAttachments(),
     });
     renderAgentThreadCardSendButton({
       root: this.sendButtonRoot,
-      label: this.getSendLabel(wantStop, isRunning),
-      wantStop,
-      isRunning,
-      disabled,
-      onStop: this.stop,
-      onSubmit: this.submit,
+      label: this.getSendLabel(state.label),
+      wantStop: state.action === "stop",
+      isRunning: state.action === "busy",
+      disabled: state.disabled,
+      onStop: () => {
+        const current = this.getSubmissionState();
+        if (!current.disabled && current.action === "stop") this.stop();
+      },
+      onSubmit: () => {
+        if (this.getSubmissionState().canSubmit) this.submit();
+      },
+    });
+  }
+
+  private getSubmissionState(): ComposerSubmissionState {
+    return selectComposerSubmissionState({
+      ...this.getRuntimeState(), prompt: this.getPrompt(),
+      hasAttachments: this.getHasAttachments(),
+      hasPendingAttachments: this.getHasPendingAttachments(),
     });
   }
 
@@ -425,7 +437,7 @@ export class ComposerController {
     this.scheduleScrollSelectionIntoView();
   };
 
-  private getDraftMarkdown(): string {
+  getDraftMarkdown(): string {
     return this.editor.getMarkdown();
   }
 
@@ -509,7 +521,7 @@ export class ComposerController {
 
     if (event.key !== "Enter" || event.shiftKey) return;
     event.preventDefault();
-    this.submit();
+    if (this.getSubmissionState().canSubmit) this.submit();
   };
 
   private isAtComposerBoundary(event: KeyboardEvent): boolean {

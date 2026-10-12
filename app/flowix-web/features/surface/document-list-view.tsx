@@ -1,6 +1,7 @@
+import { useTitleEditCaret } from '@shared/hooks/use-title-edit-caret';
 import { memo, useCallback, useEffect, useRef, useState } from 'react';
-import { Folder, Inbox, Play } from 'lucide-react';
-import { FunnelIcon, PlusIcon, TrashSimpleIcon } from '@phosphor-icons/react';
+import { ChevronRight, Folder, Inbox, Play } from 'lucide-react';
+import { DotsThreeIcon, FunnelIcon, PlusIcon, TrashSimpleIcon } from '@phosphor-icons/react';
 import { files, mediaResources, type DocumentPage, type DocumentPageItem, type FileBrowserDirectoriesChangedEvent, type MediaResourcePage, type NotebookFolderOption } from '@platform/tauri/client';
 import { externalFileViewKind, fileExtension, isCodeTextFilePath, resourceKindFromPath } from '@features/editor/public/code-file';
 import { toast } from '@/lib/toast';
@@ -231,11 +232,12 @@ const DocumentCard = memo(function DocumentCard({ item, notebookPath, openItem, 
   </button>;
 });
 
-export function DocumentListView({ surface, mediaLibrary = false, libraryName = '媒体库', libraryFilePath, mediaLibraryFilter = {}, mediaLibraryRecords = EMPTY_MEDIA_LIBRARY_RECORDS, mediaLibraryExcludedPaths = [], mediaLibraryDatasetFilter, mediaLibraryViewFilter, onMediaLibraryFilterChange, onRenameLibrary, onAddMedia, onDeleteLibrary, onDeleteMedia, libraryActionsDisabled = false }: {
+export function DocumentListView({ surface, mediaLibrary = false, libraryName = '媒体库', libraryFilePath, mediaLibraryFolderPath, mediaLibraryFilter = {}, mediaLibraryRecords = EMPTY_MEDIA_LIBRARY_RECORDS, mediaLibraryExcludedPaths = [], mediaLibraryDatasetFilter, mediaLibraryViewFilter, onMediaLibraryFilterChange, onRenameLibrary, onAddMedia, onDeleteMedia, onSwitchToTable, libraryActionsDisabled = false }: {
   surface: DocumentListSurface;
   mediaLibrary?: boolean;
   libraryName?: string;
   libraryFilePath?: string;
+  mediaLibraryFolderPath?: string;
   mediaLibraryFilter?: MediaLibraryFileCondition;
   mediaLibraryRecords?: MediaLibraryRecord[];
   mediaLibraryExcludedPaths?: string[];
@@ -245,7 +247,7 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
   onDeleteMedia?: (item: DocumentPageItem) => Promise<boolean>;
   onMediaLibraryFilterChange?: (condition: MediaLibraryFileCondition) => Promise<boolean>;
   onRenameLibrary?: (title: string) => Promise<void>;
-  onDeleteLibrary?: () => void;
+  onSwitchToTable?: () => void;
   libraryActionsDisabled?: boolean;
 }) {
   const { t } = useI18n();
@@ -269,12 +271,14 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
   const [renamingLibraryTitle, setRenamingLibraryTitle] = useState(false);
   const [mediaNameQuery, setMediaNameQuery] = useState('');
   const [mediaPathQuery, setMediaPathQuery] = useState('');
+  const [mediaPathIsAllQuery, setMediaPathIsAllQuery] = useState(false);
   const [mediaTypeQuery, setMediaTypeQuery] = useState<'any' | 'image' | 'video'>('any');
   const [mediaFiltersOpen, setMediaFiltersOpen] = useState(false);
+  const [mediaDataFiltersOpen, setMediaDataFiltersOpen] = useState(false);
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [folderOptions, setFolderOptions] = useState<NotebookFolderOption[]>([]);
   const [folderOptionsLoading, setFolderOptionsLoading] = useState(false);
-  const libraryTitleInputRef = useRef<HTMLInputElement>(null);
+  const { inputRef: libraryTitleInputRef, captureCaret: captureLibraryTitleCaret } = useTitleEditCaret(editingLibraryTitle);
   useEffect(() => {
     if (!editingLibraryTitle) setLibraryTitleDraft(libraryName);
   }, [editingLibraryTitle, libraryName]);
@@ -298,7 +302,6 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
     if (!onRenameLibrary || renamingLibraryTitle) return;
     setLibraryTitleDraft(libraryName);
     setEditingLibraryTitle(true);
-    requestAnimationFrame(() => libraryTitleInputRef.current?.select());
   }, [libraryName, onRenameLibrary, renamingLibraryTitle]);
   useEffect(() => {
     if (!editingLibraryTitle) return;
@@ -553,22 +556,63 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
   const mediaFilterCount = (appliedMediaNameQuery ? 1 : 0)
     + (appliedMediaPathQuery ? 1 : 0)
     + (mediaLibraryFilter.file_type ? 1 : 0);
-  const saveMediaFilters = useCallback(async () => {
+  const saveMediaFilters = useCallback(async (pathOverride?: string | null) => {
     if (!onMediaLibraryFilterChange) return false;
+    const pathIsAll = pathOverride === null || (pathOverride === undefined && mediaPathIsAllQuery);
     const condition = normalizeMediaLibraryFileCondition({
       file_name_contains: mediaNameQuery.trim(),
       file_type: mediaTypeQuery === 'any' ? undefined : mediaTypeQuery,
-      path_contains: mediaPathQuery.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''),
+      path_contains: pathIsAll ? undefined : (pathOverride ?? mediaPathQuery).trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''),
+      path_scope: pathIsAll ? 'all' : undefined,
     });
     const currentPath = (mediaLibraryFilter.path_contains ?? '').trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-    if (condition.file_name_contains === (mediaLibraryFilter.file_name_contains?.trim() || undefined)
+    if (pathOverride === undefined && condition.file_name_contains === (mediaLibraryFilter.file_name_contains?.trim() || undefined)
       && condition.file_type === mediaLibraryFilter.file_type
-      && condition.path_contains === (currentPath || undefined)) return true;
+      && condition.path_contains === (currentPath || undefined)
+      && condition.path_scope === mediaLibraryFilter.path_scope) return true;
     return onMediaLibraryFilterChange(condition);
-  }, [mediaLibraryFilter.file_name_contains, mediaLibraryFilter.file_type, mediaLibraryFilter.path_contains, mediaNameQuery, mediaPathQuery, mediaTypeQuery, onMediaLibraryFilterChange]);
+  }, [mediaLibraryFilter.file_name_contains, mediaLibraryFilter.file_type, mediaLibraryFilter.path_contains, mediaLibraryFilter.path_scope, mediaNameQuery, mediaPathIsAllQuery, mediaPathQuery, mediaTypeQuery, onMediaLibraryFilterChange]);
   const applyMediaFilters = useCallback(async () => {
     if (await saveMediaFilters()) setMediaFiltersOpen(false);
   }, [saveMediaFilters]);
+  const openMediaDatasetMenu = () => {
+    setMediaNameQuery(mediaLibraryFilter.file_name_contains ?? '');
+    setMediaTypeQuery(mediaLibraryFilter.file_type ?? 'any');
+    setMediaPathQuery(mediaLibraryFilter.path_contains ?? '');
+    setMediaPathIsAllQuery(mediaLibraryFilter.path_scope === 'all');
+    setMediaDataFiltersOpen(false);
+    setMediaFiltersOpen(true);
+  };
+  const renderMediaFilterPanel = (locationOnly: boolean) => (
+    <MediaLibraryFilterPanel
+      fileName={mediaNameQuery}
+      fileType={mediaTypeQuery}
+      path={mediaPathQuery}
+      pathIsAll={mediaPathIsAllQuery}
+      fixedFolderPath={mediaLibraryFolderPath}
+      folderPickerOpen={folderPickerOpen}
+      folderOptions={folderOptions}
+      folderOptionsLoading={folderOptionsLoading}
+      notebookAvailable={Boolean(surface.notebookPath)}
+      autoFocus={!locationOnly}
+      locationOnly={locationOnly}
+      showLocationMenu={false}
+      onFileNameChange={setMediaNameQuery}
+      onFileTypeChange={setMediaTypeQuery}
+      onPathChange={setMediaPathQuery}
+      onPathSelected={async (selectedPath) => {
+        const saved = await saveMediaFilters(selectedPath);
+        if (saved) {
+          setMediaPathQuery(selectedPath ?? '');
+          setMediaPathIsAllQuery(selectedPath === null);
+        }
+        return saved;
+      }}
+      onFolderPickerOpenChange={setFolderPickerOpen}
+      onReset={() => { setMediaNameQuery(''); setMediaTypeQuery('any'); }}
+      onApply={() => { void applyMediaFilters(); }}
+    />
+  );
   const confirmDeleteMedia = useCallback(async () => {
     if (!mediaToDelete || !onDeleteMedia || deletingMedia) return;
     setDeletingMedia(true);
@@ -642,14 +686,13 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
       scrollerClassName="h-full min-h-0 min-w-0 w-full flex-1 overflow-auto px-5 pb-4"
       scrollerRef={scrollRef}
     >
-    <div ref={headerRef} className={mediaLibrary ? 'multidimensional-table__view-nav -mx-5 flex min-w-0 shrink-0 items-center justify-between gap-1' : '-mx-5 flex flex-wrap items-center justify-between gap-2 px-5 pt-3'}>
+    <div ref={headerRef} className={mediaLibrary ? 'multidimensional-table__view-nav -mx-5 flex min-w-0 shrink-0 items-center justify-between gap-1 px-4' : '-mx-5 flex flex-wrap items-center justify-between gap-2 px-5 pt-3'}>
       {mediaLibrary ? <>
-        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto px-5 py-1">
-          <div className="flex h-7 max-w-[500px] min-w-0 -translate-x-[2px] items-center gap-1.5 pr-2" title={libraryName} onDoubleClick={editingLibraryTitle ? undefined : beginLibraryTitleEdit}>
+        <div className="flex min-w-0 flex-1 items-center gap-1 overflow-x-auto py-1">
+          <div className="flex h-7 min-w-0 max-w-full flex-[0_1_auto] -translate-x-[2px] items-center gap-1.5 pr-2" title={libraryName}>
             <NotebookTreeResourceIcon path={libraryFilePath ?? 'media-library.lib.yaml'} collectionType="media_library" className="h-5 w-5 shrink-0" />
             {editingLibraryTitle ? <input
               ref={libraryTitleInputRef}
-              autoFocus
               aria-label={t('mediaLibrary.titleLabel')}
               value={libraryTitleDraft}
               disabled={renamingLibraryTitle}
@@ -665,21 +708,37 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
                   setEditingLibraryTitle(false);
                 }
               }}
-              className="h-7 w-auto min-w-[4ch] max-w-[170px] flex-none [field-sizing:content] border-0 bg-transparent px-0 text-sm font-medium text-[var(--foreground)] outline-none"
-            /> : <span className="inline-flex h-full min-w-0 flex-1 items-center truncate text-sm font-medium text-[var(--foreground)]">{libraryName}</span>}
+              className="box-border h-[22px] min-w-[2em] max-w-full flex-[0_1_auto] rounded px-0.5 py-1 [field-sizing:content] border-0 bg-[var(--muted)] text-sm font-medium leading-none text-[var(--foreground)] outline-none"
+            /> : <span onDoubleClick={(event) => { if (!onRenameLibrary || renamingLibraryTitle) return; event.preventDefault(); captureLibraryTitleCaret(event.currentTarget, event.clientX, event.clientY); beginLibraryTitleEdit(); }} className="inline-flex min-w-[2em] flex-[0_1_auto] items-center truncate rounded px-0.5 py-1 text-sm font-medium leading-none text-[var(--foreground)] transition-colors hover:bg-[var(--muted)]">{libraryName}</span>}
           </div>
+          {onSwitchToTable && <>
+            <span aria-hidden="true" className="h-[1em] w-px shrink-0 bg-[var(--border)]" />
+            <Popover>
+              <PopoverTrigger asChild>
+                <Button type="button" variant="ghost" size="sm" aria-label="更多" title="更多"
+                  className="h-7 w-7 shrink-0 rounded-lg p-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]">
+                  <DotsThreeIcon size={16} weight="bold" aria-hidden="true" />
+                </Button>
+              </PopoverTrigger>
+              <PopoverContent align="start" side="bottom" sideOffset={5} fitViewport className="w-[160px] rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+                <button type="button" disabled={libraryActionsDisabled} onClick={onSwitchToTable}
+                  className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
+                  多维表格
+                </button>
+              </PopoverContent>
+            </Popover>
+          </>}
         </div>
-        <div className="flex shrink-0 items-center gap-2 px-5">
+        <div className="flex shrink-0 items-center gap-2">
           <span className="text-sm text-[var(--muted-foreground)]">{t('mediaLibrary.itemCount', { count: visibleItems.length, more: hasMore ? '+' : '' })}</span>
           <span aria-hidden="true" className="h-[1em] w-px shrink-0 bg-[var(--border)]" />
           <div className="flex shrink-0 items-center gap-0">
             <Popover open={mediaFiltersOpen} onOpenChange={(open) => {
               setMediaFiltersOpen(open);
               if (open) {
-                setMediaNameQuery(mediaLibraryFilter.file_name_contains ?? '');
-                setMediaTypeQuery(mediaLibraryFilter.file_type ?? 'any');
-                setMediaPathQuery(mediaLibraryFilter.path_contains ?? '');
+                openMediaDatasetMenu();
               } else {
+                setMediaDataFiltersOpen(false);
                 setFolderPickerOpen(false);
                 void saveMediaFilters();
               }
@@ -694,23 +753,22 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
                   className={`h-7 w-7 rounded-lg p-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] data-[state=open]:bg-[var(--muted)] data-[state=open]:text-[var(--foreground)] ${mediaFiltersOpen || mediaFilterCount > 0 ? 'bg-[var(--muted)] text-[var(--foreground)]' : ''}`}
                 ><FunnelIcon size={14} weight="bold" aria-hidden="true" /></Button>
               </PopoverTrigger>
-              <PopoverContent align="end" side="bottom" sideOffset={0} fitViewport style={{ zIndex: 150 }} ignorePopoverOutside={folderPickerOpen} className="max-h-[min(70vh,420px)] w-[320px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl px-1 py-2 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-                <MediaLibraryFilterPanel
-                  fileName={mediaNameQuery}
-                  fileType={mediaTypeQuery}
-                  path={mediaPathQuery}
-                  folderPickerOpen={folderPickerOpen}
-                  folderOptions={folderOptions}
-                  folderOptionsLoading={folderOptionsLoading}
-                  notebookAvailable={Boolean(surface.notebookPath)}
-                  autoFocus
-                  onFileNameChange={setMediaNameQuery}
-                  onFileTypeChange={setMediaTypeQuery}
-                  onPathChange={setMediaPathQuery}
-                  onFolderPickerOpenChange={setFolderPickerOpen}
-                  onReset={() => { setMediaNameQuery(''); setMediaTypeQuery('any'); setMediaPathQuery(''); }}
-                  onApply={() => { void applyMediaFilters(); }}
-                />
+              <PopoverContent align="end" side="bottom" sideOffset={0} fitViewport style={{ zIndex: 150 }} ignorePopoverOutside={folderPickerOpen || mediaDataFiltersOpen} className="w-[220px] max-w-[calc(100vw-16px)] rounded-xl p-1.5 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+                {renderMediaFilterPanel(true)}
+                <Popover open={mediaDataFiltersOpen} onOpenChange={setMediaDataFiltersOpen}>
+                  <PopoverTrigger asChild>
+                    <button type="button" className="flex h-8 w-full items-center justify-between rounded-lg px-1.5 text-left text-sm hover:bg-[var(--hover-bg)]">
+                      <span>数据条件</span>
+                      <span className="flex items-center gap-1 text-xs text-[var(--muted-foreground)]">
+                        {mediaNameQuery.trim() || mediaTypeQuery !== 'any' ? '已设置' : '未设置'}
+                        <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                      </span>
+                    </button>
+                  </PopoverTrigger>
+                  <PopoverContent side="right" align="start" sideOffset={0} fitViewport style={{ zIndex: 160 }} ignorePopoverOutside={folderPickerOpen} className="max-h-[min(70vh,420px)] w-[320px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl px-1 py-2 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+                    {renderMediaFilterPanel(false)}
+                  </PopoverContent>
+                </Popover>
               </PopoverContent>
             </Popover>
             {onAddMedia && <Button
@@ -729,16 +787,6 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
               }}
               className="h-7 w-7 rounded-lg p-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
             ><PlusIcon size={14} weight="bold" aria-hidden="true" /></Button>}
-            {onDeleteLibrary && <Button
-              type="button"
-              variant="ghost"
-              size="sm"
-              aria-label={t('mediaLibrary.deleteLibrary')}
-              title={t('mediaLibrary.deleteLibrary')}
-              disabled={libraryActionsDisabled}
-              onClick={onDeleteLibrary}
-              className="h-7 w-7 rounded-lg p-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--destructive)]"
-            ><TrashSimpleIcon size={14} weight="bold" aria-hidden="true" /></Button>}
           </div>
         </div>
       </> : <>
@@ -760,8 +808,13 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
         : !loading && visibleItems.length === 0 && !(mediaLibrary && hasMore)
         ? <div className="flex h-full min-h-[160px] items-center justify-center text-sm text-[var(--muted-foreground)]">
               <div className="flex flex-col items-center text-center">
-                <Inbox className="mb-3 h-10 w-10 opacity-50" strokeWidth={1.25} aria-hidden="true" />
-                <span>{mediaLibrary ? (mediaFilterCount > 0 ? t('mediaLibrary.noMatches') : t('mediaLibrary.empty')) : '列表内容为空'}</span>
+                {!mediaLibrary && <Inbox className="mb-3 h-10 w-10 opacity-50" strokeWidth={1.25} aria-hidden="true" />}
+                {mediaLibrary ? <div className="flex items-center gap-1">
+                  <span>未设置数据集合，</span>
+                  <button type="button" disabled={libraryActionsDisabled || !onMediaLibraryFilterChange} onClick={openMediaDatasetMenu} className="inline-flex items-center gap-0.5 text-[var(--foreground)] hover:text-[var(--brand)] disabled:opacity-50">
+                    添加<ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>
+                </div> : <span>列表内容为空</span>}
               </div>
             </div>
           : mediaLibrary && visibleItems.length === 0 && hasMore

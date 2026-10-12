@@ -158,9 +158,9 @@ export function TableTagValueInput({
     <PopoverContent
       align="start"
       sideOffset={4}
-      className="frontmatter-property__edit-popover p-1"
-      matchAnchorWidth
-      style={{ maxWidth: 'calc(100vw - 8px)', maxHeight: 'calc(100vh - 8px)', overflowY: 'auto' }}
+      className="frontmatter-property__edit-popover rounded-xl p-1"
+      matchAnchorWidth={1.2}
+      style={{ maxWidth: 'calc(100vw - 8px)', maxHeight: '280px', overflowY: 'auto' }}
     >
       <div
         className="frontmatter-property__edit-tags"
@@ -181,7 +181,7 @@ export function TableTagValueInput({
           disabled={disabled}
           spellCheck={false}
           aria-label={t('document.properties.tagInputPlaceholder')}
-          className="frontmatter-property__edit-input frontmatter-property__edit-tags-input multidimensional-table__tag-input"
+          className="frontmatter-property__edit-input frontmatter-property__edit-tags-input multidimensional-table__tag-input min-h-7 rounded-lg px-1.5 py-1 text-sm leading-5"
           value={draft}
           placeholder={tags.length === 0 ? t('document.properties.tagInputPlaceholder') : ''}
           onChange={(event) => { setDraft(event.target.value); setActiveTagIndex(null); }}

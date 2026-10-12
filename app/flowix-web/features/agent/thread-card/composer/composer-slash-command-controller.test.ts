@@ -7,6 +7,7 @@ import {
   COMPOSER_SLASH_COMMANDS,
   ComposerSlashCommandController,
   formatCodexSkillDisplayName,
+  type ComposerSlashCommand,
 } from './composer-slash-command-controller';
 import { ComposerSlashToken } from './composer-slash-token';
 
@@ -14,6 +15,8 @@ function setup(options: {
   agentType?: 'deepseek-harness' | 'codex';
   onModelSelect?: () => void;
   onPermissionSelect?: () => void;
+  onDirectCommand?: (command: ComposerSlashCommand) => void;
+  canExecuteCommand?: (command: ComposerSlashCommand) => boolean;
 } = {}) {
   const composer = document.createElement('div');
   const input = document.createElement('div');
@@ -47,6 +50,8 @@ function setup(options: {
     agentType: options.agentType ?? 'deepseek-harness',
     onModelSelect: options.onModelSelect,
     onPermissionSelect: options.onPermissionSelect,
+    onDirectCommand: options.onDirectCommand,
+    canExecuteCommand: options.canExecuteCommand,
   });
   return { composer, input, editor, controller };
 }
@@ -62,6 +67,28 @@ afterEach(() => {
 });
 
 describe('ComposerSlashCommandController', () => {
+  it('keeps a direct command in the editor for the shared submission transaction', () => {
+    const onDirectCommand = vi.fn();
+    const { input, editor, controller } = setup({ onDirectCommand });
+    type(editor, '/export');
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onDirectCommand).toHaveBeenCalledWith(expect.objectContaining({ name: 'export' }));
+    expect(editor.getMarkdown()).toContain('flowix://slash/deepseek-harness/export');
+    controller.dispose();
+    editor.destroy();
+  });
+
+  it('does not execute or clear a direct command that fails the submission guard', () => {
+    const onDirectCommand = vi.fn();
+    const { input, editor, controller } = setup({ onDirectCommand, canExecuteCommand: () => false });
+    type(editor, '/export');
+    input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
+    expect(onDirectCommand).not.toHaveBeenCalled();
+    expect(editor.getMarkdown()).toBe('/export');
+    controller.dispose();
+    editor.destroy();
+  });
+
   it('removes the Codex namespace from fallback skill labels', () => {
     expect(formatCodexSkillDisplayName('$figma:figma-use')).toBe('figma-use');
     expect(formatCodexSkillDisplayName('browser:control-in-app-browser'))

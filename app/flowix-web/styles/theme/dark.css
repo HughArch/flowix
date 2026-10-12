@@ -29,7 +29,7 @@
 	--secondary-foreground: oklch(0.865 0.008 var(--neutral-hue));
 	--muted: oklch(0.292 0.016 var(--neutral-hue));
 	--hover-bg: oklch(0.380 0.016 var(--neutral-hue));
-	--muted-foreground: oklch(0.716 0.015 var(--neutral-hue));
+	--muted-foreground: oklch(0.716 0.015 var(--neutral-hue) / 0.58);
 	--accent: oklch(0.310 0.022 var(--neutral-hue));
 
 	--border: oklch(0.300 0.014 var(--neutral-hue));

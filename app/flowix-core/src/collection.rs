@@ -268,20 +268,30 @@ fn legacy_table_filter(auto: &Value) -> Result<Value, String> {
     if let Some(file) = condition.get("file_condition") {
         legacy_file_rules(file, true, &mut files);
     }
-    if properties.is_empty() && files.is_empty() {
+    let mut paths = Vec::new();
+    files.retain(|rule| {
+        if rule["field"] == "path" {
+            paths.push(rule.clone());
+            false
+        } else {
+            true
+        }
+    });
+    if properties.is_empty() && files.is_empty() && paths.is_empty() {
         return Ok(Value::Null);
     }
     if condition["property_match"] == "intersection" && !properties.is_empty() {
         if !files.is_empty() {
             let mut any = vec![serde_json::json!({"all":properties,"any":[]})];
             any.extend(files);
-            return Ok(serde_json::json!({"all":[],"any":any}));
+            return Ok(serde_json::json!({"all":paths,"any":any}));
         }
-        return Ok(serde_json::json!({"all":properties,"any":[]}));
+        paths.extend(properties);
+        return Ok(serde_json::json!({"all":paths,"any":[]}));
     }
     let mut any = properties;
     any.extend(files);
-    Ok(serde_json::json!({"all":[],"any":any}))
+    Ok(serde_json::json!({"all":paths,"any":any}))
 }
 fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
     let payload = &document.payload;
@@ -319,7 +329,7 @@ fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
     only_keys(
         schema,
         if document.collection.kind == CollectionType::Table {
-            &["primary_field_id", "fields"]
+            &["primary_field_id", "fields", "field_order", "preset_fields"]
         } else {
             &["fields"]
         },
@@ -327,6 +337,26 @@ fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
     let fields = schema["fields"]
         .as_array()
         .ok_or("INVALID_COLLECTION_SCHEMA")?;
+    if document.collection.kind == CollectionType::Table {
+        if let Some(presets) = schema.get("preset_fields") {
+            let presets = presets.as_array().ok_or("INVALID_PRESET_FIELDS")?;
+            let allowed = [
+                "__note_name__",
+                "__note_description__",
+                "__note_tags__",
+                "__note_colors__",
+                "__note_icon__",
+                "__note_pinned__",
+            ];
+            let mut seen = HashSet::new();
+            for id in presets {
+                let id = id.as_str().ok_or("INVALID_PRESET_FIELDS")?;
+                if !allowed.contains(&id) || !seen.insert(id) {
+                    return Err("INVALID_PRESET_FIELDS".into());
+                }
+            }
+        }
+    }
     if document.collection.kind == CollectionType::MediaLibrary && !fields.is_empty() {
         return Err("MEDIA_COLLECTION_FIELDS_UNSUPPORTED".into());
     }
@@ -435,7 +465,9 @@ fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
         }
     }
     let default_id = views["default_id"].as_str().ok_or("INVALID_DEFAULT_VIEW")?;
-    if !ids.contains(default_id) {
+    // Table view selection is a recoverable preference. A dangling ID falls
+    // back to the first view in the frontend; structural view validation remains strict.
+    if document.collection.kind != CollectionType::Table && !ids.contains(default_id) {
         return Err("INVALID_DEFAULT_VIEW".into());
     }
     if document.collection.kind == CollectionType::Table {
@@ -448,6 +480,17 @@ fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
             "records": { "data": [], "auto_collect": null }
         });
         validate_table(&legacy)?;
+        if let Some(order) = schema.get("field_order") {
+            let order = order.as_array().ok_or("INVALID_FIELD_ORDER")?;
+            let mut seen = HashSet::new();
+            for (index, id) in order.iter().enumerate() {
+                let id = id.as_str().ok_or("INVALID_FIELD_ORDER")?;
+                if !seen.insert(id) || (index == 0 && schema["primary_field_id"] != id)
+                    || (!fields.iter().any(|field| field["id"] == id) && !is_supported_table_field_id(id)) {
+                    return Err("INVALID_FIELD_ORDER".into());
+                }
+            }
+        }
     }
     Ok(())
 }
@@ -669,6 +712,24 @@ fn file_condition(condition: &Value, table: bool) -> Result<(), String> {
     }
     Ok(())
 }
+const BUILTIN_TABLE_FIELD_IDS: &[&str] = &[
+    "__note_created_at__",
+    "__note_updated_at__",
+    "__note_relative_path__",
+    "__note_size__",
+    "__note_icon__",
+    "__note_tags__",
+    "__note_colors__",
+    "__note_pinned__",
+    "__note_description__",
+    "__note_name__",
+];
+const LEGACY_TABLE_FIELD_IDS: &[&str] = &["__note_todos__"];
+
+fn is_supported_table_field_id(id: &str) -> bool {
+    BUILTIN_TABLE_FIELD_IDS.contains(&id) || LEGACY_TABLE_FIELD_IDS.contains(&id)
+}
+
 fn validate_table(payload: &Value) -> Result<(), String> {
     let table = &payload["table"];
     only_keys(table, &["primary_field_id", "fields", "views"])?;
@@ -761,7 +822,10 @@ fn validate_table(payload: &Value) -> Result<(), String> {
                 only_keys(config, &["visible_fields"])?;
                 if array(config, "visible_fields")?
                     .iter()
-                    .any(|v| v.as_str().is_none_or(|id| !fields.contains(id)))
+                    .any(|v| v.as_str().is_none_or(|id| {
+                        !fields.contains(id)
+                            && !(kind == "table" && is_supported_table_field_id(id))
+                    }))
                 {
                     return Err("INVALID_VIEW_FIELD".into());
                 }
@@ -815,4 +879,50 @@ fn validate_media_library(payload: &Value) -> Result<(), String> {
         }
     }
     records(&payload["records"], false)
+}
+
+#[cfg(test)]
+mod builtin_field_tests {
+    use super::*;
+
+    #[test]
+    fn table_allows_deleted_remembered_view_but_still_validates_view_definitions() {
+        let source = include_str!("../../fixtures/collections/table-builtin-fields.yaml");
+        let mut document = CollectionDocument::parse(source).unwrap();
+        document.payload["views"]["default_id"] = serde_json::json!("view_ffffffffffffffffffffffffffffffff");
+        assert!(document.validate().is_ok());
+        document.payload["views"]["items"][0]["config"]["visible_fields"] = serde_json::json!(["__unknown__"]);
+        assert_eq!(document.validate().unwrap_err(), "INVALID_VIEW_FIELD");
+    }
+
+    fn payload(layout: &str, visible: Value) -> Value {
+        serde_json::json!({
+            "table": {
+                "primary_field_id": "fld_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                "fields": [{ "id": "fld_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "type": "primary", "property_key": "note" }],
+                "views": [{ "id": "view_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "name": "表格", "type": layout, "config": { "visible_fields": visible } }]
+            },
+            "records": { "data": [], "auto_collect": null }
+        })
+    }
+
+    #[test]
+    fn shared_v2_fixture_preserves_builtin_visibility_and_rejects_unknown_fields() {
+        let source = include_str!("../../fixtures/collections/table-builtin-fields.yaml");
+        let mut document = CollectionDocument::parse(source).unwrap();
+        assert!(CollectionDocument::parse(&document.serialize().unwrap()).is_ok());
+        document.payload["views"]["items"][0]["config"]["visible_fields"] = serde_json::json!([]);
+        let hidden = CollectionDocument::parse(&document.serialize().unwrap()).unwrap();
+        assert_eq!(hidden.payload["views"]["items"][0]["config"]["visible_fields"], serde_json::json!([]));
+        document.payload["views"]["items"][0]["config"]["visible_fields"] = serde_json::json!(["__unknown__"]);
+        assert_eq!(document.validate().unwrap_err(), "INVALID_VIEW_FIELD");
+    }
+
+    #[test]
+    fn table_accepts_builtin_visibility_without_schema_fields() {
+        let visible = serde_json::json!(["__note_created_at__", "__note_updated_at__", "__note_relative_path__", "__note_size__"]);
+        assert!(validate_table(&payload("table", visible.clone())).is_ok());
+        assert_eq!(validate_table(&payload("gallery", visible)).unwrap_err(), "INVALID_VIEW_FIELD");
+        assert_eq!(validate_table(&payload("table", serde_json::json!(["__unknown__"]))).unwrap_err(), "INVALID_VIEW_FIELD");
+    }
 }

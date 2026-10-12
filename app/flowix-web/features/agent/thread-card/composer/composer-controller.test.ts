@@ -1,5 +1,5 @@
 import { createRoot } from "react-dom/client";
-import { afterEach, beforeEach, describe, expect, it } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 import { invokeHandler } from "@/lib/shortcuts/handler-registry";
 
 import {
@@ -7,6 +7,7 @@ import {
   ComposerDraftController,
   createAgentComposerDom,
   disposeAgentComposerDom,
+  type ComposerControllerOptions,
 } from "./index";
 import { insertComposerSkillToken } from "./composer-skill-token";
 
@@ -26,7 +27,7 @@ beforeEach(() => {
   });
 });
 
-function setup() {
+function setup(overrides: Partial<ComposerControllerOptions> = {}) {
   const parts = createAgentComposerDom({
     t: (key) => key,
   });
@@ -49,11 +50,16 @@ function setup() {
     getCurrentInputDraft: () => "",
     getUserHistoryMessages: () => [],
     getSendLabel: () => "Send",
-    getSendButtonWantsStop: () => false,
+    getRuntimeState: () => ({
+      agentType: "codex", isModelRunning: false, isStopping: false,
+      isCommandRunning: false, isCommandStoppable: false,
+      isSubmitting: false, isAvailable: true,
+    }),
     getHasAttachments: () => false,
     getHasPendingAttachments: () => false,
     submit: () => undefined,
     stop: () => undefined,
+    ...overrides,
   });
   controllers.push(controller);
   domParts.push(parts);
@@ -71,6 +77,25 @@ afterEach(() => {
 });
 
 describe("ComposerController note references", () => {
+  it("applies the same pending-attachment guard to click and Enter", async () => {
+    let pending = true;
+    const submit = vi.fn();
+    const { controller } = setup({ getHasPendingAttachments: () => pending, submit });
+    controller.editorInstance.commands.setContent("hello", { contentType: "markdown" });
+    const input = controller.getInputElement();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    const button = () => document.querySelector<HTMLButtonElement>(".agent-thread-card__send")!;
+    await vi.waitFor(() => expect(button()?.disabled).toBe(true));
+    button().click();
+    expect(submit).not.toHaveBeenCalled();
+    pending = false;
+    controller.setSendButtonState();
+    await vi.waitFor(() => expect(button().disabled).toBe(false));
+    button().click();
+    input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
+    expect(submit).toHaveBeenCalledTimes(2);
+  });
+
   it("keeps boundary cursor navigation inside the nested composer", () => {
     const { controller } = setup();
     const editor = controller.editorInstance;

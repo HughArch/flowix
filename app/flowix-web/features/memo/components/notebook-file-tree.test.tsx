@@ -6,6 +6,7 @@ import { files, notes, type DocTreeItem } from '@platform/tauri/client';
 import { toast } from '@/lib/toast';
 import { EXTERNAL_FILE_DROP_EVENT } from '@features/document/components/use-external-file-drop';
 import type { FolderTreeController } from './use-folder-tree';
+import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import {
   NotebookFileTree,
   type NotebookMoveResult,
@@ -266,6 +267,35 @@ describe('NotebookFileTree pointer dragging', () => {
     expect(onFolderSelect).not.toHaveBeenCalled();
     expect(tree.toggle).toHaveBeenCalledWith('/notes/projects');
     await act(async () => root.unmount());
+  });
+
+  it('highlights the folder owning the active collection with the file selection background', async () => {
+    const previousNavigation = useWorkColumnStore.getState().navigation;
+    const { root } = await mount(successfulMove);
+    try {
+      await act(async () => useWorkColumnStore.setState({ navigation: {
+        ...previousNavigation,
+        target: {
+          kind: 'collection', displayId: 'collection:projects', notebookId: 'notes',
+          collectionId: 'projects', viewId: null, collectionType: 'table',
+          filePath: '/notes/projects/.index.yaml', notebookPath: '/notes', name: 'Projects',
+        },
+      } }));
+      const folderRow = host.querySelector<HTMLElement>('[data-notebook-tree-kind="folder"]')!;
+      expect(folderRow.getAttribute('aria-selected')).toBe('true');
+      expect(folderRow.classList.contains('bg-[var(--muted)]')).toBe(true);
+
+      await act(async () => useWorkColumnStore.setState({ navigation: {
+        ...previousNavigation, target: { kind: 'empty' },
+      } }));
+      expect(folderRow.getAttribute('aria-selected')).toBe('false');
+      expect(folderRow.classList.contains('bg-[var(--muted)]')).toBe(false);
+    } finally {
+      await act(async () => {
+        root.unmount();
+        useWorkColumnStore.setState({ navigation: previousNavigation });
+      });
+    }
   });
 
   it('scrolls an expanded repository to the top of the tree viewport after it renders', async () => {

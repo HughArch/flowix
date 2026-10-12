@@ -1,4 +1,4 @@
-import { openCollectionTarget } from '@features/workspace/use-cases/workspace-navigation';
+import { setCollectionActiveView } from '@features/workspace/use-cases/collection-view-state';
 'use client';
 
 import { CodeSurfaceFileBrowser } from './work-file-browser-view';
@@ -169,7 +169,7 @@ function CsvFileSurfaceView({ surface }: { surface: Extract<WorkColumnSurface, {
 function TableFileSurfaceView({ surface }: { surface: TableFileSurface }) {
   return <TableDocumentView {...surface.props} fileIdentity={surface.fileIdentity}
     onActiveViewChange={surface.props.expectedCollectionId && surface.props.notebookId ? (viewId) => {
-      void openCollectionTarget({ notebookId: surface.props.notebookId!, collectionId: surface.props.expectedCollectionId!, viewId });
+      setCollectionActiveView({ host: 'main-third' }, { notebookId: surface.props.notebookId!, collectionId: surface.props.expectedCollectionId! }, viewId);
     } : surface.props.onActiveViewChange} />;
 }
 

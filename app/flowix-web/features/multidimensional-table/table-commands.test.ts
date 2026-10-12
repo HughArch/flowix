@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
-import { createTableDocument, createUuidV7 } from './model';
-import { changeFieldType, removeField, renameField } from './table-commands';
+import { getAllPresets } from '@features/document/properties/presets';
+import { addTableView, createTableDocument, createUuidV7 } from './model';
+import { addPresetField, toggleDatasetTableFieldVisibility, changeFieldType, removeField, removePresetField, renameField } from './table-commands';
 
 function documentWithField() {
   const document = createTableDocument();
@@ -12,6 +13,33 @@ function documentWithField() {
 }
 
 describe('table field commands', () => {
+  it('keeps preset registration separate from visibility and only removes hidden presets', () => {
+    const document = createTableDocument();
+    const preset = getAllPresets([], (key) => key).find((item) => item.key === 'flowix_colors')!;
+    const added = addPresetField(document, preset);
+    expect(added.dataset.schema.preset_fields).toContain('__note_colors__');
+    expect(added.views.items[0].config.visible_fields).toContain('__note_colors__');
+    expect(() => removePresetField(added, preset)).toThrow('仅支持移除隐藏字段');
+
+    const hidden = toggleDatasetTableFieldVisibility(added, '__note_colors__');
+    const removed = removePresetField(hidden, preset);
+    expect(removed.dataset.schema.preset_fields).not.toContain('__note_colors__');
+    expect(removed.dataset.schema.field_order).not.toContain('__note_colors__');
+  });
+
+  it('adds and removes custom presets through the same field lifecycle', () => {
+    const document = createTableDocument();
+    const preset = { source: 'custom', category: 'custom', key: 'rating', label: '评分', kind: 'Number' } as const;
+    const added = addPresetField(document, preset);
+    const field = added.dataset.schema.fields.find((item) => item.property_key === 'rating');
+    expect(field?.type).toBe('Number');
+    expect(added.views.items[0].config.visible_fields).toContain(field?.id);
+
+    const hidden = toggleDatasetTableFieldVisibility(added, field!.id);
+    const removed = removePresetField(hidden, preset);
+    expect(removed.dataset.schema.fields.some((item) => item.id === field!.id)).toBe(false);
+  });
+
   it('renames only the display label', () => {
     const { document, fieldId } = documentWithField();
     const next = renameField(document, fieldId, '状态');
@@ -47,4 +75,36 @@ describe('table field commands', () => {
     document.views.items.push({ id: `view_${createUuidV7()}`, name: '看板', layout: 'kanban', filter: { all: [], any: [] }, sort: [], config: { group_by: fieldId } });
     expect(() => changeFieldType(document, fieldId, 'Text')).toThrow('请先调整依赖此属性的视图');
   });
+});
+
+it('shares dataset column visibility across table views and preserves other layouts', () => {
+  let document = createTableDocument('table', '项目', 'folder');
+  document = addTableView(document, 'table').document;
+  document = addTableView(document, 'calendar').document;
+  document = addTableView(document, 'gallery').document;
+  const fieldId = '__note_size__';
+  document.views.items[0].config.visible_fields = [...document.views.items[0].config.visible_fields as string[], fieldId];
+  const before = document.views.items.slice(2);
+  const shown = toggleDatasetTableFieldVisibility(document, fieldId);
+  expect(shown.views.items.slice(0, 2).every((view) => (view.config.visible_fields as string[]).includes(fieldId))).toBe(true);
+  expect(shown.views.items.slice(2)).toEqual(before);
+  const hidden = toggleDatasetTableFieldVisibility(shown, fieldId);
+  expect(hidden.views.items.slice(0, 2).every((view) => !(view.config.visible_fields as string[]).includes(fieldId))).toBe(true);
+  expect(hidden.views.items.slice(2)).toEqual(before);
+  expect(toggleDatasetTableFieldVisibility(document, document.dataset.schema.primary_field_id)).toBe(document);
+  const calendar = createTableDocument('calendar');
+  expect(toggleDatasetTableFieldVisibility(calendar, fieldId)).toBe(calendar);
+});
+
+it('removes field sort references while preserving unrelated sorts and note properties', () => {
+  const { document, fieldId } = documentWithField();
+  document.views.items[0].sort = [
+    { field: fieldId, direction: 'asc' },
+    { field: 'status', direction: 'desc' },
+    { field: 'modified_at', direction: 'desc' },
+  ];
+  const next = removeField(document, fieldId);
+  expect(next.views.items[0].sort).toEqual([{ field: 'modified_at', direction: 'desc' }]);
+  expect(next.dataset.records).toBe(document.dataset.records);
+  expect(document.views.items[0].sort).toHaveLength(3);
 });

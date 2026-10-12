@@ -475,6 +475,25 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     }
   });
 
+  it("reports lifecycle rejection to a composer transaction", async () => {
+    const { useAgentSessionStore } = await import("@features/agent/store/agent-session-store");
+    const store = useAgentSessionStore.getState();
+    store.setThreadMutationGuard("thread-rejected-lifecycle", true);
+    await expect(store.sendMessageToThread("thread-rejected-lifecycle", "keep input", "codex", {
+      rejectOnFailure: true,
+    })).rejects.toThrow("Agent thread is unavailable");
+  });
+
+  it("reports dispatch failure to the composer while retaining its error projection", async () => {
+    const { agent } = await import("@platform/tauri/client");
+    const { useAgentSessionStore } = await import("@features/agent/store/agent-session-store");
+    vi.mocked(agent.chatStream).mockRejectedValueOnce(new Error("request was rejected"));
+    await expect(useAgentSessionStore.getState().sendMessageToThread(
+      "thread-rejected-dispatch", "keep input", "deepseek-harness", { rejectOnFailure: true },
+    )).rejects.toThrow("request was rejected");
+    expect(useAgentSessionStore.getState().threadProjections["thread-rejected-dispatch"].runs.isLoading).toBe(false);
+  });
+
   it("does not let a non-active thread-card send overwrite the active title", async () => {
     const { useChatStore, useAgentConversationStore } = await import(
       "@features/agent/store/agent-session-test-facade"

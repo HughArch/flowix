@@ -35,7 +35,8 @@ export function useCollectionReference(notebook: { id: string; path: string } | 
         const content = await externalDocuments.read(path, root);
         const envelope = parseCollectionDocumentV2(content);
         if (envelope.collection.id !== collectionId || envelope.collection.type !== type) throw new Error('集合身份已变化');
-        if (viewId) {
+        // A stale table reference still opens; its selection policy applies the file/first-view fallback.
+        if (viewId && type !== 'table') {
           const views = envelope.payload.views.items as Array<{ id: string }>;
           if (!views.some((view) => view.id === viewId)) throw new Error('此集合视图已不存在');
         }

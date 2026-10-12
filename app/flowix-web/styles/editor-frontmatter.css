@@ -622,9 +622,7 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
 }
 
 .frontmatter-property__edit-tag-chip--plain {
-  /* Plain multi-select values have no prefix/content fragments, so the
-   * outer chip owns the complete visual padding just like the preview chip. */
-  padding: var(--document-tag-padding-block) var(--document-tag-padding-inline);
+  padding: 0;
 }
 
 .frontmatter-property__edit-tag-chip[data-keyboard-selected='true'] {

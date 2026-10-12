@@ -12,6 +12,7 @@ import {
   TrashSimpleIcon,
 } from '@phosphor-icons/react';
 
+import { useTitleEditCaret } from '@shared/hooks/use-title-edit-caret';
 import { useI18n } from '@/lib/i18n';
 import { isWindowsPlatform } from '@features/shortcuts';
 import { SidebarToggleIcon } from '@shared/icons/sidebar-toggle-icon';
@@ -64,6 +65,7 @@ function AgentConversationHeader({ instanceId }: { instanceId: string }) {
   });
   const codexModel = useAgentSessionStore((state) => state.sessionMeta.settings.agentCodexModel);
   const [isEditingTitle, setIsEditingTitle] = useState(false);
+  const { inputRef: titleInputRef, captureCaret: captureTitleCaret } = useTitleEditCaret(isEditingTitle);
   const [titleDraft, setTitleDraft] = useState('');
   const [isFavorite, setIsFavorite] = useState(() => isFavoriteConversation(instanceId));
 
@@ -241,8 +243,8 @@ function AgentConversationHeader({ instanceId }: { instanceId: string }) {
       </span>
       {isEditingTitle ? (
         <div className="min-w-0 flex-[0_1_auto] truncate rounded px-0.5 py-1 text-sm font-semibold leading-none text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] focus-within:bg-[var(--muted)] [-webkit-app-region:no-drag]">
-          <input autoFocus value={titleDraft}
-            className="agent-thread-card__title-input h-auto max-w-full min-w-0 border-0 bg-transparent p-0 font-inherit leading-none text-[var(--foreground)] shadow-none outline-none ring-0 focus:border-0 focus:bg-transparent focus:outline-none focus:ring-0 [-webkit-app-region:no-drag]"
+          <input ref={titleInputRef} value={titleDraft}
+            className="agent-thread-card__title-input box-border h-[14px] max-w-full min-w-0 border-0 bg-transparent p-0 font-inherit leading-none text-[var(--foreground)] shadow-none outline-none ring-0 focus:border-0 focus:bg-transparent focus:outline-none focus:ring-0 [-webkit-app-region:no-drag]"
             onChange={(event) => setTitleDraft(event.target.value)} onBlur={commitTitle}
             onKeyDown={(event) => {
               // Enter is also emitted while an IME is confirming its current
@@ -258,8 +260,11 @@ function AgentConversationHeader({ instanceId }: { instanceId: string }) {
           className="min-w-0 flex-[0_1_auto] truncate rounded px-0.5 py-1 text-sm font-semibold leading-none text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] [-webkit-app-region:no-drag]"
           onPointerDown={(event) => event.stopPropagation()}
           onMouseDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
+          onClick={(event) => event.stopPropagation()}
+          onDoubleClick={(event) => {
+            event.preventDefault();
             event.stopPropagation();
+            captureTitleCaret(event.currentTarget, event.clientX, event.clientY);
             setTitleDraft(instance.title?.trim() || '');
             setIsEditingTitle(true);
           }}

@@ -323,6 +323,122 @@ describe("useAgentSessionStore", () => {
     start.mockRestore();
   });
 
+  it("keeps accepted Codex steering visible until the matching user message arrives", async () => {
+    const threadId = "codex-steering-waits-for-tool";
+    const store = useAgentSessionStore.getState();
+    store.bindThreadType(threadId, "codex");
+    store.dispatch({ kind: "stream_start", agentType: "codex", threadId, runId: "active", timestamp: 1 });
+    store.enqueueSteeringMessage({
+      id: "waiting-entry", threadId, content: "next instruction", queuedAt: 2,
+      clientUserMessageId: "waiting-client", providerQueueId: "waiting-provider",
+      deliveryMode: "follow_up", deliveryStatus: "queued",
+    });
+    let finishRefresh!: (value: Awaited<ReturnType<typeof agentClient.listCodexFollowUps>>) => void;
+    const list = vi.spyOn(agentClient, "listCodexFollowUps").mockImplementationOnce(() =>
+      new Promise((resolve) => { finishRefresh = resolve; }));
+    const deliver = vi.spyOn(agentClient, "deliverCodexFollowUpNow").mockResolvedValue(undefined);
+    const promotion = store.promoteFollowUpToSteer(threadId, "waiting-entry");
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]?.[0].deliveryStatus).toBe("starting");
+    await store.promoteFollowUpToSteer(threadId, "waiting-entry");
+    expect(list).toHaveBeenCalledTimes(1);
+    finishRefresh({ data: [{ id: "waiting-provider", clientUserMessageId: "waiting-client",
+      input: [{ type: "text", text: "next instruction" }] }], nextCursor: null });
+    await promotion;
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]?.[0]).toMatchObject({
+      deliveryMode: "steer", deliveryStatus: "steering", canDelete: false,
+    });
+    await store.promoteFollowUpToSteer(threadId, "waiting-entry");
+    await store.deleteQueuedFollowUp(threadId, "waiting-entry");
+    expect(deliver).toHaveBeenCalledTimes(1);
+    store.dispatchAgentChunk({
+      kind: "user_message", agent_type: "codex", thread_id: threadId, run_id: "active",
+      id: "provider-user", text: "next instruction", timestamp: 3, client_user_message_id: "waiting-client",
+    });
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]).toBeUndefined();
+    list.mockRestore();
+    deliver.mockRestore();
+  });
+
+  it.each(["stream_end", "error"] as const)("clears only accepted Codex steering on %s without a correlated user event", (kind) => {
+    const threadId = `codex-missing-user-${kind}`;
+    const store = useAgentSessionStore.getState();
+    store.bindThreadType(threadId, "codex");
+    store.dispatch({ kind: "stream_start", agentType: "codex", threadId, runId: "active", timestamp: 1 });
+    for (const status of ["steering", "queued", "starting", "cleanup_failed"] as const) {
+      store.enqueueSteeringMessage({
+        id: status, threadId, content: status, queuedAt: 2, deliveryStatus: status,
+        deliveryMode: status === "steering" || status === "cleanup_failed" ? "steer" : "follow_up",
+      });
+    }
+    const terminal = (runId: string) => kind === "stream_end"
+      ? { kind, agentType: "codex" as const, threadId, runId, timestamp: 3, reason: null }
+      : { kind, agentType: "codex" as const, threadId, runId, timestamp: 3, message: "failed" };
+    store.dispatchAgentEvent(terminal("old"));
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]).toHaveLength(4);
+    store.dispatchAgentEvent(terminal("active"));
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]?.map((item) => item.id))
+      .toEqual(["queued", "starting", "cleanup_failed"]);
+  });
+
+  it("reconciles orphaned accepted steering from an idle Codex queue snapshot", async () => {
+    const threadId = "codex-idle-orphan";
+    const store = useAgentSessionStore.getState();
+    store.bindThreadType(threadId, "codex");
+    store.enqueueSteeringMessage({
+      id: "orphan", threadId, content: "already sent", queuedAt: 1,
+      clientUserMessageId: "orphan-client", deliveryMode: "steer", deliveryStatus: "steering", canDelete: false,
+    });
+    const restore = vi.spyOn(agentClient, "restoreCodexFollowUps").mockResolvedValue({
+      data: [{ id: "next-provider", clientUserMessageId: "next-client", input: [{ type: "text", text: "next" }] }],
+      nextCursor: null,
+    });
+    await store.hydrateCodexFollowUps(threadId);
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId])
+      .toEqual([expect.objectContaining({ content: "next", deliveryMode: "follow_up", deliveryStatus: "queued" })]);
+    restore.mockRestore();
+  });
+
+  it("does not retain accepted steering when its run ends before the RPC response", async () => {
+    const threadId = "codex-end-before-accept";
+    const store = useAgentSessionStore.getState();
+    store.bindThreadType(threadId, "codex");
+    store.dispatch({ kind: "stream_start", agentType: "codex", threadId, runId: "active", timestamp: 1 });
+    store.enqueueSteeringMessage({
+      id: "late", threadId, content: "late response", queuedAt: 2,
+      clientUserMessageId: "late-client", providerQueueId: "late-provider",
+      deliveryMode: "follow_up", deliveryStatus: "queued",
+    });
+    const list = vi.spyOn(agentClient, "listCodexFollowUps").mockResolvedValue({
+      data: [{ id: "late-provider", clientUserMessageId: "late-client", input: [{ type: "text", text: "late response" }] }],
+      nextCursor: null,
+    });
+    const deliver = vi.spyOn(agentClient, "deliverCodexFollowUpNow").mockImplementation(async () => {
+      store.dispatchAgentChunk({ kind: "stream_end", agent_type: "codex", thread_id: threadId, run_id: "active", reason: null });
+      store.flushAgentEventBuffer();
+    });
+    await store.promoteFollowUpToSteer(threadId, "late");
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]).toBeUndefined();
+    list.mockRestore();
+    deliver.mockRestore();
+  });
+
+  it("restores a Codex follow-up when the initial promotion refresh fails", async () => {
+    const threadId = "codex-promotion-refresh-error";
+    const store = useAgentSessionStore.getState();
+    store.bindThreadType(threadId, "codex");
+    store.enqueueSteeringMessage({
+      id: "retry-entry", threadId, content: "retry me", queuedAt: 1,
+      clientUserMessageId: "retry-client", providerQueueId: "retry-provider",
+      deliveryMode: "follow_up", deliveryStatus: "queued",
+    });
+    const list = vi.spyOn(agentClient, "listCodexFollowUps").mockRejectedValue(new Error("refresh failed"));
+    await expect(store.promoteFollowUpToSteer(threadId, "retry-entry")).rejects.toThrow("refresh failed");
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]?.[0]).toMatchObject({
+      deliveryMode: "follow_up", deliveryStatus: "queued",
+    });
+    list.mockRestore();
+  });
+
   it("does not repeat a successful steer when queue cleanup fails, and allows cleanup retry", async () => {
     const threadId = `codex-steer-cleanup-${Date.now()}`;
     const store = useAgentSessionStore.getState();

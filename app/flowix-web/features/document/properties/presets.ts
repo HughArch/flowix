@@ -22,6 +22,7 @@ import {
   TagIcon,
   TextAlignLeftIcon,
   TextTIcon,
+  CheckSquareIcon,
 } from '@phosphor-icons/react';
 import type { I18nKey } from '@/lib/i18n';
 import type { PropertyFieldConfig } from '@/lib/constants';
@@ -125,6 +126,15 @@ export const BUILTIN_PRESETS: readonly BuiltinPropertyPreset[] = [
     labelKey: 'document.action.pin',
     kind: 'Boolean',
     icon: PushPinIcon,
+  },
+  {
+    source: 'builtin',
+    category: 'name',
+    key: 'status',
+    labelKey: 'document.properties.commonKey.status',
+    kind: 'Select',
+    options: ['未开始', '进行中', '完成'],
+    icon: CheckSquareIcon,
   },
 ];
 

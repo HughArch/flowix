@@ -72,6 +72,12 @@ fn delete_note_path_internal(
         DeleteMemoOutcome::MissingCleaned
     };
 
+    crate::commands::document_list::remove_table_note_records(
+        &read_lock(&state.memo_file, "memo_file"),
+        &notebook_id,
+        &relative_path,
+    );
+
     let Some(before) = before else {
         return Ok(Some(outcome));
     };

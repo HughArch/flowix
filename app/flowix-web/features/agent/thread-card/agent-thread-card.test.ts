@@ -488,6 +488,14 @@ describe("AgentThreadCard NodeView streaming", () => {
     document.body.innerHTML = "";
     localStorage.clear();
     vi.clearAllMocks();
+    // ProseMirror selection updates require geometry APIs absent in jsdom.
+    Object.defineProperties(Range.prototype, {
+      getClientRects: { configurable: true, value: () => [] },
+      getBoundingClientRect: {
+        configurable: true,
+        value: () => ({ top: 0, bottom: 0, left: 0, right: 0, height: 0, width: 0 }),
+      },
+    });
 
     vi.stubGlobal("requestAnimationFrame", (callback: FrameRequestCallback) => {
       return window.setTimeout(() => callback(performance.now()), 0);
@@ -1421,6 +1429,34 @@ describe("AgentThreadCard NodeView streaming", () => {
       expect(toastMock.error).toHaveBeenCalledWith("thread initialization failed");
     });
     expect(agent.chatStream).not.toHaveBeenCalled();
+    expect(getComposerValue(input)).toBe("must not be sent");
+    expect(editor.getJSON().content?.[0]?.attrs?.inputDraft).toBe("must not be sent");
+  });
+
+  it("preserves text and attachments when the backend rejects a prepared send", async () => {
+    const { AgentThreadCard } = await import("@features/agent/thread-card");
+    const { agent } = await import("@platform/tauri/client");
+    vi.mocked(agent.chatStream).mockRejectedValueOnce(new Error("backend rejected request"));
+    const host = document.createElement("div");
+    document.body.append(host);
+    const images = [{ path: "/tmp/retry.pdf", mimeType: "application/pdf", name: "retry.pdf" }];
+    editor = new Editor({
+      element: host, extensions: [StarterKit, AgentThreadCard],
+      content: { type: "doc", content: [{ type: "agentThreadCard", attrs: {
+        threadId: "thread-rejected-send", typeKey: "deepseek-harness", collapsed: false,
+        inputDraft: "please review", inputImages: images,
+      } }] },
+    });
+    const input = getComposerInput(host);
+    (await waitForEnabledSendButton(host)).click();
+    await vi.waitFor(() => expect(toastMock.error).toHaveBeenCalledWith("backend rejected request"));
+    expect(getComposerValue(input)).toBe("please review");
+    expect(editor.getJSON().content?.[0]?.attrs?.inputImages).toEqual(images);
+    expect(host.querySelector<HTMLButtonElement>(".agent-thread-card__composer-image-remove")?.disabled).toBe(false);
+    expect(agent.deleteCachedImage).not.toHaveBeenCalled();
+    (await waitForEnabledSendButton(host)).click();
+    await vi.waitFor(() => expect(getComposerValue(input)).toBe(""));
+    expect(editor.getJSON().content?.[0]?.attrs?.inputImages).toEqual([]);
   });
 
   it("persists short Thread Card composer drafts in node attrs", async () => {
@@ -1544,10 +1580,11 @@ describe("AgentThreadCard NodeView streaming", () => {
     const sendButton = await waitForEnabledSendButton(host);
 
     sendButton.click();
-    // submit() 内部会 flushPendingDraft ── 立刻清空 attr, 不等 debounce。
-    vi.advanceTimersByTime(0);
-
-    expect(editor.getJSON().content?.[0]?.attrs?.inputDraft).toBeNull();
+    // Keep the snapshot through binding; clear only after backend acceptance.
+    expect(editor.getJSON().content?.[0]?.attrs?.inputDraft).toBe("send me");
+    await vi.waitFor(() => {
+      expect(editor?.getJSON().content?.[0]?.attrs?.inputDraft).toBeNull();
+    });
     expect(getComposerValue(input)).toBe("");
 
     vi.useRealTimers();
@@ -4071,8 +4108,7 @@ describe("AgentThreadCard composer during agent run", () => {
         cancelable: true,
       }),
     );
-    await flushPromises();
-    expect(getComposerValue(input)).toBe("");
+    await vi.waitFor(() => expect(getComposerValue(input)).toBe(""));
     if (agentType === "pi") {
       await vi.waitFor(() => {
         expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]).toEqual([

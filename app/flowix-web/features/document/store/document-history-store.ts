@@ -1,3 +1,4 @@
+import { ensureCollectionDisplay } from '@/lib/collection-display-registry';
 import { persist } from 'zustand/middleware';
 import type { CollectionDisplayDescriptor } from '@/lib/collection-display-registry';
 import { create } from 'zustand';
@@ -80,10 +81,28 @@ export function documentHistoryEntryKey(entry: DocumentHistoryEntry | null): str
   return fileLocatorKey(entry.path);
 }
 
+/** Normalize legacy per-view IDs at the history boundary, keeping keys display-based. */
+function normalizeEntry(entry: DocumentHistoryEntry): DocumentHistoryEntry {
+  return entry.kind === 'collection'
+    ? { ...entry, ...ensureCollectionDisplay(entry, entry.displayId) }
+    : entry;
+}
+
+function normalizeStack(stack: DocumentHistoryEntry[]): DocumentHistoryEntry[] {
+  const result: DocumentHistoryEntry[] = [];
+  for (const entry of stack) {
+    const normalized = normalizeEntry(entry);
+    if (result.length && documentHistoryEntryKey(result[result.length - 1]) === documentHistoryEntryKey(normalized)) result[result.length - 1] = normalized;
+    else result.push(normalized);
+  }
+  return result.slice(-MAX_HISTORY_ENTRIES);
+}
+
 function pushCapped(
   stack: DocumentHistoryEntry[],
   entry: DocumentHistoryEntry,
 ): DocumentHistoryEntry[] {
+  entry = normalizeEntry(entry);
   if (stack[stack.length - 1]
     && documentHistoryEntryKey(stack[stack.length - 1]) === documentHistoryEntryKey(entry)) {
     return stack;
@@ -122,6 +141,8 @@ export const useDocumentHistoryStore = create<DocumentHistoryStore>()(persist((s
     };
   }),
   recordNavigation: (current, next) => set((state) => {
+    current = current ? normalizeEntry(current) : null;
+    next = next ? normalizeEntry(next) : null;
     const currentKey = documentHistoryEntryKey(current);
     const nextKey = documentHistoryEntryKey(next);
     if (!nextKey || currentKey === nextKey) return state;
@@ -155,4 +176,8 @@ export const useDocumentHistoryStore = create<DocumentHistoryStore>()(persist((s
 }), {
   name: 'flowix.document-history.v1',
   partialize: (state) => ({ backStack: state.backStack, forwardStack: state.forwardStack }),
+  merge: (persisted, current) => {
+    const saved = persisted as Partial<Pick<DocumentHistoryStore, 'backStack' | 'forwardStack'>> | undefined;
+    return { ...current, backStack: normalizeStack(saved?.backStack ?? []), forwardStack: normalizeStack(saved?.forwardStack ?? []) };
+  },
 }));

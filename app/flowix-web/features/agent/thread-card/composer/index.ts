@@ -57,3 +57,6 @@ export {
   renderAgentThreadCardSendButton,
   type AgentThreadCardSendButtonRenderOptions,
 } from "./send-button-renderer";
+
+export { ComposerSubmissionController } from "./composer-submission-controller";
+export { getComposerRuntimeState } from "./composer-submission-state";

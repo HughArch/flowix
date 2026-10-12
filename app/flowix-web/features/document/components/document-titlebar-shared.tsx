@@ -49,6 +49,8 @@ import { notes as notesClient, product, type PathVersionMeta } from '@platform/t
 
 type VersionDisplay = PathVersionMeta;
 import { toast } from '@/lib/toast';
+import { FolderCollectionSwitchConfirmDialog } from '@features/collection/public/folder-api';
+import { notebookRelativeDirectoryPath, parentDirectoryPath } from '@/lib/path';
 import type { WorkspaceHostId } from '@features/workspace/store/workspace-focus-store';
 import { useI18n, translate, type AppLanguage, type I18nKey, type I18nParams } from '@/lib/i18n';
 import { createLogger } from '@/lib/logger';
@@ -75,6 +77,8 @@ export interface DocumentTitlebarProps {
   reserveWindowsControls?: boolean;
   /** Surface-specific titlebar skin for non-editable document-like views. */
   surfaceChrome?: 'document' | 'media';
+  /** Show Markdown editor typography controls in the More menu. */
+  showEditorFontSwitcher?: boolean;
   document: {
     externalFilePath?: string | null;
   };
@@ -148,10 +152,18 @@ export type DocumentState = 'empty' | 'external';
 // (the on-disk markdown lives outside the notebook and is not a memo).
 // =====================================================================
 
+function useExternalDocumentLocation() {
+  const session = useDocumentStore((state) => state.activeExternalSession);
+  const currentNotebookPath = useNoteStore((state) => state.selectedNotebook?.path ?? null);
+  const isInCurrentNotebook = Boolean(session && currentNotebookPath
+    && notebookRelativeDirectoryPath(currentNotebookPath, session.fileIdentity.path) !== null);
+  return { session, currentNotebookPath, isOutsideCurrentNotebook: Boolean(session && !isInCurrentNotebook) };
+}
+
 export function ExternalTitlebarBadge() {
   const { t } = useI18n();
-  const indexable = useDocumentStore((state) => state.activeExternalSession?.indexable ?? false);
-  if (indexable) return null;
+  const { session, isOutsideCurrentNotebook } = useExternalDocumentLocation();
+  if (!session || !isOutsideCurrentNotebook) return null;
   return (
     <span
       className="shrink-0 whitespace-nowrap pl-3 text-xs text-[var(--muted-foreground)]"
@@ -178,6 +190,7 @@ export function ExternalDocumentActions({
   canSaveAsTemplate,
   canViewVersionHistory,
   folderCollectionViewType,
+  showEditorFontSwitcher = false,
 }: {
   filePath: string;
   iconButtonClass: string;
@@ -194,10 +207,12 @@ export function ExternalDocumentActions({
   canSaveAsTemplate: boolean;
   canViewVersionHistory: boolean;
   folderCollectionViewType?: DocumentTitlebarProps['folderCollectionViewType'];
+  showEditorFontSwitcher?: boolean;
 }) {
   const { t, language } = useI18n();
-  const indexable = useDocumentStore((state) => state.activeExternalSession?.indexable ?? false);
-  const session = useDocumentStore((state) => state.activeExternalSession);
+  const { session, currentNotebookPath, isOutsideCurrentNotebook } = useExternalDocumentLocation();
+  const indexable = session?.indexable ?? false;
+  const hideDeleteAction = Boolean(folderCollectionViewType || isOutsideCurrentNotebook);
   const pathNote = useNoteStore((state) => state.notes.find((note) =>
     note.notebookId === session?.notebookId && note.relativePath === session?.relativePath));
   const [fileColors, setFileColors] = useState<NoteColor[]>([]);
@@ -272,6 +287,21 @@ export function ExternalDocumentActions({
     }
   };
 
+  const handleCopyPath = async () => {
+    if (!folderCollectionViewType && !isOutsideCurrentNotebook) {
+      onCopyPath();
+      return;
+    }
+    try {
+      const folderPath = parentDirectoryPath(filePath, currentNotebookPath ?? '/');
+      await navigator.clipboard.writeText(folderPath);
+      toast.success(t('memo.fileTree.pathCopied'));
+    } catch (error) {
+      logger.warn('copy external document folder path failed', { error, filePath });
+      toast.error(t('memo.fileTree.copyFailed'));
+    }
+  };
+
   return (
     <>
     {canEditColors && (
@@ -299,14 +329,15 @@ export function ExternalDocumentActions({
                 {folderCollectionViewType.current === type && <Check className="h-4 w-4" aria-hidden="true" />}
               </DropdownMenuItem>
             ))}
+            <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
           </>
-        ) : <EditorFontSwitcher fontMode={fontSwitch.fontMode} downloadingMode={fontSwitch.downloadingMode} percent={fontSwitch.percent} onSelect={fontSwitch.selectFontMode} />}
-        <DropdownMenuItem onClick={onCopyPath} className={itemClass}>
-          <LinkSimpleIcon className="mr-2 h-4 w-4" /> {t('memo.fileTree.copyPath')}
+        ) : showEditorFontSwitcher ? <EditorFontSwitcher fontMode={fontSwitch.fontMode} downloadingMode={fontSwitch.downloadingMode} percent={fontSwitch.percent} onSelect={fontSwitch.selectFontMode} /> : null}
+        <DropdownMenuItem onClick={() => void handleCopyPath()} className={itemClass}>
+          <LinkSimpleIcon className="h-4 w-4" /> {t('memo.fileTree.copyPath')}
         </DropdownMenuItem>
         {canCopyFullText && (
           <DropdownMenuItem onClick={onCopyFullText} className={itemClass}>
-            <CopyIcon className="mr-2 h-4 w-4" /> {t('document.action.copyFullText')}
+            <CopyIcon className="h-4 w-4" /> {t('document.action.copyFullText')}
           </DropdownMenuItem>
         )}
         <DropdownMenuItem
@@ -317,32 +348,31 @@ export function ExternalDocumentActions({
           }}
           className={itemClass}
         >
-          <FolderOpenIcon className="mr-2 h-4 w-4" /> {t('document.file.reveal')}
+          <FolderOpenIcon className="h-4 w-4" /> {t('document.file.reveal')}
         </DropdownMenuItem>
         {(canSaveAsTemplate || canExportContent) && (
           <>
             <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
             {canSaveAsTemplate && (
               <DropdownMenuItem onClick={onSaveAsTemplate} className={itemClass}>
-                <SwatchesIcon className="mr-2 h-4 w-4" /> {t('document.action.saveAsTemplate')}
+                <SwatchesIcon className="h-4 w-4" /> {t('document.action.saveAsTemplate')}
               </DropdownMenuItem>
             )}
             {canExportContent && (
               <>
                 <DropdownMenuItem onClick={onExportMarkdown} className={itemClass}>
-                  <FileMdIcon className="mr-2 h-4 w-4" /> {t('document.action.exportMarkdown')}
+                  <FileMdIcon className="h-4 w-4" /> {t('document.action.exportMarkdown')}
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={onExportWord} className={itemClass}>
-                  <FileDocIcon className="mr-2 h-4 w-4" /> {t('document.action.exportWord')}
+                  <FileDocIcon className="h-4 w-4" /> {t('document.action.exportWord')}
                 </DropdownMenuItem>
                 <DropdownMenuItem onClick={onExportPdf} className={itemClass}>
-                  <FilePdfIcon className="mr-2 h-4 w-4" /> {t('document.action.exportPdf')}
+                  <FilePdfIcon className="h-4 w-4" /> {t('document.action.exportPdf')}
                 </DropdownMenuItem>
               </>
             )}
           </>
         )}
-        <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
         {canViewVersionHistory && session?.notebookId && session.relativePath && (
           <>
             <DropdownMenuItem className={itemClass} onClick={() => {
@@ -354,7 +384,7 @@ export function ExternalDocumentActions({
                 await notesClient.createVersion(current.notebookId!, current.relativePath!);
                 setVersionRefreshKey((key) => key + 1);
               });
-            }}><ClockIcon className="mr-2 h-4 w-4" /> 保存归档</DropdownMenuItem>
+            }}><ClockIcon className="h-4 w-4" /> 保存归档</DropdownMenuItem>
             <VersionHistorySubmenu
               notebookId={session.notebookId}
               relativePath={session.relativePath}
@@ -364,30 +394,23 @@ export function ExternalDocumentActions({
             />
           </>
         )}
-        <DropdownMenuItem
+        {!hideDeleteAction && <DropdownMenuItem
           onClick={() => setConfirmDelete(true)}
           className="group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-transparent hover:text-[var(--destructive)]"
         >
-          <TrashSimpleIcon className="mr-2 h-4 w-4" /> {t(indexable ? 'memo.delete.confirm' : 'document.external.deleteFile')}
-        </DropdownMenuItem>
+          <TrashSimpleIcon className="h-4 w-4" /> {t(indexable ? 'memo.delete.confirm' : 'document.external.deleteFile')}
+        </DropdownMenuItem>}
       </DropdownMenuContent>
-      <Dialog open={pendingViewType !== null} onOpenChange={(open) => { if (!open) setPendingViewType(null); }}>
-        <DialogContent>
-          <DialogHeader>
-            <DialogTitle>是否确认切换？</DialogTitle>
-            <DialogDescription>切换后，当前集合的展示规则会重置</DialogDescription>
-          </DialogHeader>
-          <div className="mt-4 flex justify-end gap-2">
-            <button type="button" onClick={() => setPendingViewType(null)} className="h-8 rounded-lg px-3 text-sm hover:bg-[var(--muted)]">{t('dialog.cancel')}</button>
-            <button type="button" onClick={() => {
-              const type = pendingViewType;
-              setPendingViewType(null);
-              if (type) folderCollectionViewType?.onSelect(type);
-            }} className="h-8 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm hover:bg-[var(--muted)]">确认切换</button>
-          </div>
-        </DialogContent>
-      </Dialog>
-      <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
+      <FolderCollectionSwitchConfirmDialog
+        open={pendingViewType !== null}
+        onOpenChange={(open) => { if (!open) setPendingViewType(null); }}
+        onConfirm={() => {
+          const type = pendingViewType;
+          setPendingViewType(null);
+          if (type) folderCollectionViewType?.onSelect(type);
+        }}
+      />
+      {!hideDeleteAction && <Dialog open={confirmDelete} onOpenChange={setConfirmDelete}>
         <DialogContent>
           <DialogHeader>
             <DialogTitle>{t(indexable ? 'memo.delete.title' : 'document.external.deleteFileTitle')}</DialogTitle>
@@ -411,7 +434,7 @@ export function ExternalDocumentActions({
             </button>
           </div>
         </DialogContent>
-      </Dialog>
+      </Dialog>}
       <Dialog open={!!confirmVersion} onOpenChange={(open) => !open && setConfirmVersion(null)}>
         <DialogContent>
           <DialogHeader>
@@ -912,7 +935,7 @@ function VersionHistorySubmenu({
         className="group flex h-7 w-full cursor-pointer items-center justify-start gap-2 rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] hover:bg-[var(--hover-bg)] hover:text-[var(--foreground)]"
         onFocus={() => setOpen(true)}
       >
-        <ClockIcon className="w-4 h-4 mr-2" />
+        <ClockIcon className="h-4 w-4" />
         <span className="flex-1 text-left">{t("document.version.menuLabel")}</span>
         <ChevronRight className="h-3.5 w-3.5 text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]" />
       </button>
@@ -936,7 +959,7 @@ function VersionHistorySubmenu({
 
           <div className="max-h-[272px] overflow-y-auto px-1">
             {loading && (
-              <div className="flex items-center gap-2 px-2 py-3 text-xs text-[var(--muted-foreground)]">
+              <div className="flex items-center gap-1 px-2 py-3 text-xs text-[var(--muted-foreground)]">
                 <Loader2 className="h-3.5 w-3.5 animate-spin" />
                 {t("document.version.loading")}
               </div>
@@ -1020,14 +1043,14 @@ export function MediaActions({
           onClick={() => { void onCopyLink(); }}
           className="group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--hover-bg)] hover:text-[var(--foreground)]"
         >
-          <LinkSimpleIcon className="mr-2 h-4 w-4" />
+          <LinkSimpleIcon className="h-4 w-4" />
           {t('document.action.copyLink')}
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={onRevealInFileManager}
           className="group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--hover-bg)] hover:text-[var(--foreground)]"
         >
-          <FolderOpenIcon className="mr-2 h-4 w-4" />
+          <FolderOpenIcon className="h-4 w-4" />
           {t('memo.fileTree.reveal')}
         </DropdownMenuItem>
         <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
@@ -1035,7 +1058,7 @@ export function MediaActions({
           onClick={onRequestDelete}
           className="group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-transparent hover:text-[var(--destructive)]"
         >
-          <TrashSimpleIcon className="mr-2 h-4 w-4" />
+          <TrashSimpleIcon className="h-4 w-4" />
           {t('media.fileTree.delete')}
         </DropdownMenuItem>
       </DropdownMenuContent>

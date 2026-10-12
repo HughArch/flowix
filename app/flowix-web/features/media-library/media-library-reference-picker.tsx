@@ -1,93 +1,44 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import type { Editor } from '@tiptap/core';
 import { files, externalDocuments } from '@platform/tauri/client';
 import { useNoteStore } from '@features/memo/store/note-store';
-import { joinNotebookMemoPath } from '@/lib/path';
+import { canonicalPath, joinNotebookMemoPath } from '@/lib/path';
 import { toast } from '@/lib/toast';
-import { Input } from '@shared/ui/input';
-import { parseMediaLibrary } from './model';
+import { Plus } from 'lucide-react';
+import { createMediaLibraryFile, parseMediaLibrary } from './model';
+import { MediaLibraryIcon } from '@features/memo/components/file-type-icon';
+import {
+  closeCollectionReferencePicker,
+  collectionCandidateFolderLabel,
+  filterCollectionCandidates,
+  isCollectionReferencePickerCurrent,
+  openCollectionReferencePicker,
+  useCollectionPickerListNavigation,
+  type CollectionReferenceCandidate,
+  type CollectionReferenceInsertRange,
+  type CollectionReferencePickerAnchor,
+} from '@features/collection/reference-picker';
 
-interface InsertRange { from: number; to: number }
-interface MediaLibraryCandidate {
-  notebookId: string;
-  notebookName: string;
-  notebookPath: string;
-  relativePath: string;
-  collectionId: string;
-  name: string;
-}
-export type MediaLibraryReferencePickerAnchor =
-  | { kind: 'slash'; rect: Pick<DOMRect, 'left' | 'top' | 'bottom'> }
-  | { kind: 'button'; element: HTMLElement };
-
-let pickerRoot: Root | null = null;
-let pickerHost: HTMLDivElement | null = null;
-let pickerGeneration = 0;
-const PICKER_WIDTH = 272;
-
-function closePicker(generation?: number) {
-  if (generation !== undefined && generation !== pickerGeneration) return;
-  pickerGeneration += 1;
-  const root = pickerRoot;
-  const host = pickerHost;
-  pickerRoot = null;
-  pickerHost = null;
-  root?.unmount();
-  host?.remove();
-}
-
-function updatePickerPosition(editor: Editor, position: number, anchor: MediaLibraryReferencePickerAnchor) {
-  if (!pickerHost || editor.isDestroyed) return;
-  try {
-    const coords = editor.view.coordsAtPos(position);
-    const rect = anchor.kind === 'button' && anchor.element.isConnected
-      ? anchor.element.getBoundingClientRect()
-      : anchor.kind === 'slash' ? anchor.rect : coords;
-    const width = Math.min(PICKER_WIDTH, window.innerWidth - 16);
-    const height = Math.min(pickerHost.offsetHeight || 320, window.innerHeight - 16);
-    const top = Math.min(Math.max(anchor.kind === 'button' ? rect.bottom : rect.top, 8), Math.max(8, window.innerHeight - height - 8));
-    const left = Math.min(Math.max(rect.left, 8), Math.max(8, window.innerWidth - width - 8));
-    pickerHost.style.width = `${width}px`;
-    pickerHost.style.maxHeight = `${Math.max(160, window.innerHeight - 16)}px`;
-    pickerHost.style.top = `${top}px`;
-    pickerHost.style.left = `${left}px`;
-  } catch { closePicker(); }
-}
-
-function MediaLibraryReferencePicker({ editor, replaceRange, anchor, generation, onClose }: {
+function MediaLibraryReferencePicker({ editor, replaceRange, generation }: {
   editor: Editor;
-  replaceRange: InsertRange;
-  anchor: MediaLibraryReferencePickerAnchor;
+  replaceRange: CollectionReferenceInsertRange;
   generation: number;
-  onClose: () => void;
 }) {
   const notebookItems = useNoteStore((state) => state.notebooks);
+  const selectedNotebook = useNoteStore((state) => state.selectedNotebook);
   const notebooks = useMemo(() => notebookItems.filter((notebook) => !notebook.missing), [notebookItems]);
-  const [candidates, setCandidates] = useState<MediaLibraryCandidate[]>([]);
+  const [candidates, setCandidates] = useState<CollectionReferenceCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
   const [openingPath, setOpeningPath] = useState<string | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const searchRef = useRef<HTMLInputElement | null>(null);
-  const current = () => pickerGeneration === generation && pickerRoot !== null;
+  const [creating, setCreating] = useState(false);
+  const searchRef = useRef<HTMLTextAreaElement | null>(null);
+  const current = () => isCollectionReferencePickerCurrent(generation);
 
   useEffect(() => {
     searchRef.current?.focus();
-    const outside = (event: MouseEvent) => { if (event.target instanceof Node && !pickerHost?.contains(event.target)) onClose(); };
-    const escape = (event: KeyboardEvent) => { if (event.key === 'Escape') { event.preventDefault(); onClose(); } };
-    const reposition = () => updatePickerPosition(editor, replaceRange.from, anchor);
-    document.addEventListener('mousedown', outside, true);
-    document.addEventListener('keydown', escape, true);
-    window.addEventListener('resize', reposition);
-    window.addEventListener('scroll', reposition, true);
-    return () => {
-      document.removeEventListener('mousedown', outside, true);
-      document.removeEventListener('keydown', escape, true);
-      window.removeEventListener('resize', reposition);
-      window.removeEventListener('scroll', reposition, true);
-    };
-  }, [anchor, editor, onClose, replaceRange.from]);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -117,13 +68,16 @@ function MediaLibraryReferencePicker({ editor, replaceRange, anchor, generation,
     return () => { active = false; };
   }, [notebooks]);
 
-  const filtered = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase();
-    return normalized ? candidates.filter((item) => `${item.name} ${item.notebookName} ${item.relativePath}`.toLocaleLowerCase().includes(normalized)) : candidates;
-  }, [candidates, query]);
-  useLayoutEffect(() => { updatePickerPosition(editor, replaceRange.from, anchor); }, [anchor, editor, filtered.length, loading, replaceRange.from]);
+  const filtered = useMemo(() => filterCollectionCandidates(candidates, query), [candidates, query]);
+  const navigation = useCollectionPickerListNavigation(filtered.length, query);
+  useLayoutEffect(() => {
+    const textarea = searchRef.current;
+    if (!textarea) return;
+    textarea.style.height = '0px';
+    textarea.style.height = `${Math.min(textarea.scrollHeight + 2, window.innerHeight * 0.5)}px`;
+  }, [query]);
 
-  const select = async (candidate: MediaLibraryCandidate) => {
+  const select = async (candidate: CollectionReferenceCandidate) => {
     if (openingPath || !current()) return;
     setOpeningPath(candidate.relativePath);
     try {
@@ -134,7 +88,7 @@ function MediaLibraryReferencePicker({ editor, replaceRange, anchor, generation,
       const document = parseMediaLibrary(source);
       if (document.collection.id !== candidate.collectionId) throw new Error('媒体库文件已更新，请重新选择');
       if (editor.isDestroyed || !editor.isEditable) {
-        closePicker(generation);
+        closeCollectionReferencePicker(generation);
         if (!editor.isDestroyed) toast.error('当前笔记为只读，无法插入媒体库引用');
         return;
       }
@@ -143,7 +97,7 @@ function MediaLibraryReferencePicker({ editor, replaceRange, anchor, generation,
         attrs: { notebookId: candidate.notebookId, relativePath: candidate.relativePath, collectionId: candidate.collectionId },
       }).run();
       if (!inserted) throw new Error('无法在当前位置插入媒体库引用');
-      closePicker(generation);
+      closeCollectionReferencePicker(generation);
     } catch (error) {
       if (!current()) return;
       toast.error(error instanceof Error ? error.message : '读取媒体库失败');
@@ -151,20 +105,65 @@ function MediaLibraryReferencePicker({ editor, replaceRange, anchor, generation,
     }
   };
 
-  return <div className="slash-menu-dropdown table-reference-picker" role="dialog" aria-label="选择媒体库">
-    <label className="table-reference-picker__search">
-      <Input ref={searchRef} value={query} onChange={(event) => setQuery(event.currentTarget.value)} placeholder="搜索媒体库" className="h-7 min-w-0 flex-1 border-0 bg-transparent px-2 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0" />
-    </label>
+  const create = async () => {
+    const name = query.trim();
+    if (!name || creating || !current()) return;
+    if (!selectedNotebook || selectedNotebook.missing) {
+      toast.error('请先选择可用的笔记本');
+      return;
+    }
+    if (editor.isDestroyed || !editor.isEditable) {
+      closeCollectionReferencePicker(generation);
+      if (!editor.isDestroyed) toast.error('当前笔记为只读，无法插入媒体库引用');
+      return;
+    }
+    setCreating(true);
+    try {
+      const preferences = await files.getNotebookViewPreferences(selectedNotebook.path);
+      const { filePath, document } = await createMediaLibraryFile(selectedNotebook.path, preferences.defaultCreateFolder, name);
+      if (!current()) return;
+      const root = canonicalPath(selectedNotebook.path).replace(/\/+$/, '');
+      const canonicalFile = canonicalPath(filePath);
+      const relativePath = canonicalFile.startsWith(`${root}/`) ? canonicalFile.slice(root.length + 1) : null;
+      if (!relativePath) throw new Error('媒体库路径不在当前笔记本内');
+      const inserted = editor.chain().focus().insertContentAt(replaceRange, {
+        type: 'mediaLibraryReference',
+        attrs: { notebookId: selectedNotebook.id, relativePath, collectionId: document.collection.id },
+      }).run();
+      if (!inserted) throw new Error('无法在当前位置插入媒体库引用');
+      closeCollectionReferencePicker(generation);
+    } catch (error) {
+      if (!current()) return;
+      toast.error(error instanceof Error ? error.message : '创建媒体库失败');
+      setCreating(false);
+    }
+  };
+
+  return <div className={`slash-menu-dropdown table-reference-picker${navigation.keyboardNavigation ? ' is-keyboard-navigation' : ''}`} role="dialog" aria-label="选择媒体库">
+    <div className="table-reference-picker__search flex shrink-0 items-start gap-1">
+      <textarea ref={searchRef} rows={1} value={query} onChange={(event) => {
+        setQuery(event.currentTarget.value);
+      }} onKeyDown={(event) => {
+        navigation.onInputKeyDown(event);
+        if (event.key === 'Enter' && !event.nativeEvent.isComposing && !event.shiftKey) {
+          event.preventDefault();
+          const candidate = filtered[navigation.activeIndex];
+          if (candidate) void select(candidate);
+          else void create();
+        }
+      }} placeholder="输入名称搜索 或 新建" className="min-h-8 max-h-[50vh] min-w-0 flex-1 shrink-0 resize-none overflow-y-auto border-0 bg-transparent px-2 py-2 text-sm leading-5 shadow-none focus-visible:border-0 focus-visible:ring-0" />
+      {query.trim() && <button type="button" aria-label="新建媒体库" title="新建媒体库" disabled={creating} onMouseDown={(event) => event.preventDefault()} onClick={() => void create()} className="flex h-8 w-10 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-50"><Plus className="h-4 w-4" aria-hidden="true" /></button>}
+    </div>
     <div className="slash-menu-items-frame">
       <div className="slash-menu-items" role="listbox" aria-label="媒体库列表">
+        <div className="slash-menu-header" role="presentation"><span>选择已创建集合插入</span></div>
         {loading ? <div className="slash-menu-empty">正在读取媒体库…</div>
           : loadError ? <div className="slash-menu-empty text-[var(--destructive)]">{loadError}</div>
             : filtered.length === 0 ? <div className="slash-menu-empty">{candidates.length ? '没有匹配的媒体库' : '当前没有媒体库'}</div>
-              : filtered.map((candidate) => <button key={`${candidate.notebookId}:${candidate.relativePath}`} type="button" role="option" aria-selected="false" disabled={openingPath !== null} onMouseDown={(event) => event.preventDefault()} onClick={() => void select(candidate)} className="slash-menu-item disabled:opacity-50">
-                <span className="slash-menu-item-label min-w-0 flex-1">
-                  <span className="block truncate">{candidate.name}</span>
-                  <span className="block truncate text-xs text-[var(--muted-foreground)]">{candidate.notebookName} / {candidate.relativePath}</span>
-                </span>
+              : filtered.map((candidate, index) => <button key={`${candidate.notebookId}:${candidate.relativePath}`} ref={(element) => { navigation.optionRefs.current[index] = element; }} type="button" role="option" aria-selected={navigation.isSelected(index)} disabled={openingPath !== null || creating} onMouseMove={() => navigation.onOptionMouseMove(index)} onMouseDown={(event) => event.preventDefault()} onClick={() => void select(candidate)} className={`slash-menu-item disabled:opacity-50${navigation.isSelected(index) ? ' is-selected' : ''}`}>
+                <MediaLibraryIcon className="h-4 w-4 shrink-0" />
+                <span className="slash-menu-item-label min-w-0 flex-1">{candidate.name}</span>
+                <span className="slash-menu-item-description max-w-[42%]">{collectionCandidateFolderLabel(candidate)}</span>
                 {openingPath === candidate.relativePath && <span className="text-xs text-[var(--muted-foreground)]">读取中</span>}
               </button>)}
       </div>
@@ -172,16 +171,10 @@ function MediaLibraryReferencePicker({ editor, replaceRange, anchor, generation,
   </div>;
 }
 
-export function openMediaLibraryReferencePicker(editor: Editor, replaceRange: InsertRange, anchor: MediaLibraryReferencePickerAnchor) {
-  closePicker();
-  const generation = pickerGeneration;
-  pickerHost = document.createElement('div');
-  pickerHost.dataset.mediaLibraryReferencePicker = 'true';
-  pickerHost.style.position = 'fixed';
-  pickerHost.style.zIndex = '2147483647';
-  pickerHost.style.width = `${PICKER_WIDTH}px`;
-  document.body.appendChild(pickerHost);
-  pickerRoot = createRoot(pickerHost);
-  pickerRoot.render(<MediaLibraryReferencePicker editor={editor} replaceRange={replaceRange} anchor={anchor} generation={generation} onClose={() => closePicker(generation)} />);
-  requestAnimationFrame(() => updatePickerPosition(editor, replaceRange.from, anchor));
+export function openMediaLibraryReferencePicker(editor: Editor, replaceRange: CollectionReferenceInsertRange, anchor: CollectionReferencePickerAnchor) {
+  openCollectionReferencePicker(editor, replaceRange, anchor, 'media-library', (generation) => <MediaLibraryReferencePicker
+    editor={editor}
+    replaceRange={replaceRange}
+    generation={generation}
+  />);
 }

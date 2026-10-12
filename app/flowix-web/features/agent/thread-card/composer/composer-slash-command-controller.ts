@@ -10,34 +10,8 @@ import {
 } from "@features/agent/thread-card/composer/composer-skill-token";
 import type { AgentTypeKey } from "@/types/agent";
 
-export interface ComposerSlashCommand {
-  name: string;
-  description: string;
-  /** Agent-owned commands are only offered by that agent's composer. */
-  agentType?: AgentTypeKey;
-  /** Owner is explicit so another agent's same-named slash item is not reused. */
-  owner?: "dsh" | "flowix";
-  /** How selection continues: execute now, add a prompt token, or drill down. */
-  interaction?: "direct" | "prompt" | "drilldown";
-  /** Execution authority behind the selected item. */
-  execution?: "dsh-command" | "dsh-skill" | "codex-command" | "codex-skill" | "host-action";
-}
-
-export const COMPOSER_SLASH_COMMANDS: readonly ComposerSlashCommand[] = [
-  { name: "compact", description: "压缩较早的对话上下文", agentType: "deepseek-harness", owner: "dsh", interaction: "direct", execution: "dsh-command" },
-  { name: "skill", description: "选择一个 DSH Skill", agentType: "deepseek-harness", owner: "dsh", interaction: "drilldown", execution: "dsh-skill" },
-  { name: "goal", description: "设置或查看长时任务目标", agentType: "deepseek-harness", owner: "dsh", interaction: "prompt", execution: "dsh-command" },
-  { name: "plan", description: "进入或退出计划模式", agentType: "deepseek-harness", owner: "dsh", interaction: "prompt", execution: "dsh-command" },
-  { name: "model", description: "选择本次会话使用的模型", agentType: "deepseek-harness", owner: "flowix", interaction: "drilldown", execution: "host-action" },
-  { name: "permission", description: "切换权限预设", agentType: "deepseek-harness", owner: "flowix", interaction: "drilldown", execution: "host-action" },
-  { name: "export", description: "导出当前 DSH 会话记录", agentType: "deepseek-harness", owner: "dsh", interaction: "direct", execution: "dsh-command" },
-  { name: "compact", description: "压缩较早的 Codex 对话上下文", agentType: "codex", owner: "flowix", interaction: "direct", execution: "codex-command" },
-  { name: "skill", description: "选择一个 Codex Skill", agentType: "codex", owner: "flowix", interaction: "drilldown", execution: "codex-skill" },
-  { name: "goal", description: "设置或查看 Codex 长时任务目标", agentType: "codex", owner: "flowix", interaction: "prompt", execution: "codex-command" },
-  { name: "plan", description: "进入或退出 Codex 计划模式", agentType: "codex", owner: "flowix", interaction: "prompt", execution: "codex-command" },
-  { name: "model", description: "选择本次会话使用的模型", agentType: "codex", owner: "flowix", interaction: "drilldown", execution: "host-action" },
-  { name: "permission", description: "切换权限预设", agentType: "codex", owner: "flowix", interaction: "drilldown", execution: "host-action" },
-];
+import { COMPOSER_SLASH_COMMANDS, type ComposerSlashCommand } from "./composer-commands";
+export { COMPOSER_SLASH_COMMANDS, type ComposerSlashCommand } from "./composer-commands";
 
 export interface ComposerSlashSkill {
   name: string;
@@ -82,6 +56,7 @@ export interface ComposerSlashCommandControllerOptions {
   onModelSelect?: () => void;
   onPermissionSelect?: () => void;
   onDirectCommand?: (command: ComposerSlashCommand) => void;
+  canExecuteCommand?: (command: ComposerSlashCommand) => boolean;
   onCommandChange?: () => void;
   focusInput?: () => void;
 }
@@ -103,6 +78,7 @@ export class ComposerSlashCommandController {
   private readonly listCodexSkills: (() => Promise<readonly ComposerSlashSkill[]>) | undefined;
   private readonly onModelSelect: (() => void) | undefined;
   private readonly onPermissionSelect: (() => void) | undefined;
+  private readonly canExecuteCommand: ComposerSlashCommandControllerOptions["canExecuteCommand"];
   private readonly onDirectCommand: ((command: ComposerSlashCommand) => void) | undefined;
   private readonly onCommandChange: () => void;
   private readonly focusInput: () => void;
@@ -129,6 +105,7 @@ export class ComposerSlashCommandController {
     this.onModelSelect = options.onModelSelect;
     this.onPermissionSelect = options.onPermissionSelect;
     this.onDirectCommand = options.onDirectCommand;
+    this.canExecuteCommand = options.canExecuteCommand;
     this.onCommandChange = options.onCommandChange ?? (() => undefined);
     this.focusInput = options.focusInput ?? (() => {
       this.editor.commands.focus(null, { scrollIntoView: false });
@@ -453,6 +430,8 @@ export class ComposerSlashCommandController {
   }
 
   private select(command: ComposerSlashCommand): void {
+    if ((command.interaction === "direct" || command.execution === "host-action") &&
+      this.canExecuteCommand && !this.canExecuteCommand(command)) return;
     this.closeMenu();
     if (command.name === "model" && command.execution === "host-action") {
       this.clearInput();
@@ -465,7 +444,8 @@ export class ComposerSlashCommandController {
       return;
     }
     if (command.interaction === "direct") {
-      this.clearInput();
+      insertComposerSlashToken(this.editor, command.name, command.agentType);
+      this.onCommandChange();
       this.onDirectCommand?.(command);
       return;
     }

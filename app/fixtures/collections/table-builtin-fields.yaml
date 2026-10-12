@@ -1,0 +1,54 @@
+format: flowix.collection
+schema_version: 2
+collection:
+  id: col_cccccccccccccccccccccccccccccccc
+  type: notes
+  placement: folder
+  name: 内置字段契约样例
+  revision: 1
+  created_at: 2026-10-11T00:00:00Z
+  updated_at: 2026-10-11T00:00:00Z
+  properties: {}
+payload:
+  schema_version: 2
+  dataset:
+    source: { scope: containing_folder, depth: descendants }
+    schema:
+      field_order:
+        - fld_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+        - __note_name__
+        - __note_description__
+        - __note_tags__
+        - __note_colors__
+        - __note_icon__
+        - __note_pinned__
+        - __note_created_at__
+        - __note_updated_at__
+        - __note_relative_path__
+        - __note_size__
+      primary_field_id: fld_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      fields:
+        - { id: fld_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, type: primary, property_key: note }
+    filter: null
+    records: { include: [], exclude: [] }
+  views:
+    default_id: view_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    items:
+      - id: view_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        name: 表格
+        layout: table
+        filter: { all: [], any: [] }
+        sort: []
+        config:
+          visible_fields:
+            - fld_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+            - __note_name__
+            - __note_description__
+            - __note_tags__
+            - __note_colors__
+            - __note_icon__
+            - __note_pinned__
+            - __note_created_at__
+            - __note_updated_at__
+            - __note_relative_path__
+            - __note_size__

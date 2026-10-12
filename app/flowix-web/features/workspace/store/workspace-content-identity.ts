@@ -22,7 +22,7 @@ export function contentIdentityKey(
   identity: ContentIdentity,
 ): string | null {
   switch (identity.kind) {
-    case 'collection': return `collection:${JSON.stringify([identity.notebookId, identity.collectionId, identity.viewId])}`;
+    case 'collection': return `collection:${JSON.stringify([identity.notebookId, identity.collectionId])}`;
     case 'media': {
       const path = identity.path;
       return path.trim() ? fileLocatorKey(path) : null;

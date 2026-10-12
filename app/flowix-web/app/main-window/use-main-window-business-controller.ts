@@ -15,12 +15,14 @@ import {
 import {
   clearPluginWorkbenchTarget,
   flushWorkspaceDocument,
+  openCollectionTarget,
   openPluginWorkbench,
   reconcileDeletedNotebook,
   selectNotebook,
   useWorkspaceNavigationPhase,
   useWorkspaceTargetKind,
 } from '@features/workspace/public/main-window-api';
+import { switchFolderCollectionType, type CollectionType } from '@features/collection/public/folder-api';
 
 const logger = createLogger('main-window-business-controller');
 
@@ -33,6 +35,11 @@ export interface MainWindowBusinessController {
   deleteNotebook(notebook: Notebook): void;
   editNotebook(notebook: Notebook): void;
   openPlugin(plugin: PluginDescriptor): Promise<void>;
+  switchFolderCollectionType(target: {
+    filePath: string;
+    notebookPath: string;
+    notebookId: string;
+  }, type: CollectionType): Promise<void>;
   selectNotebook(notebook: Notebook): void;
 }
 
@@ -132,6 +139,40 @@ export function useMainWindowBusinessController(): MainWindowBusinessController 
     }
   }, [setActiveFilter, setActivePluginId, setMemoListVisible, workColumnTargetKind]);
 
+  const handleSwitchFolderCollectionType = useCallback(async (
+    target: { filePath: string; notebookPath: string; notebookId: string },
+    type: CollectionType,
+  ) => {
+    try {
+      const collectionId = await switchFolderCollectionType(target.filePath, target.notebookPath, type);
+      await openCollectionTarget(
+        { notebookId: target.notebookId, collectionId, viewId: null },
+        { destination: 'main-third', history: 'skip' },
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '切换视图类型失败');
+    }
+  }, []);
+
+  useEffect(() => {
+    const handleRequest = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        filePath?: string;
+        notebookPath?: string;
+        notebookId?: string;
+        type?: CollectionType;
+      }>).detail;
+      if (!detail?.filePath || !detail.notebookPath || !detail.notebookId || !detail.type) return;
+      void handleSwitchFolderCollectionType({
+        filePath: detail.filePath,
+        notebookPath: detail.notebookPath,
+        notebookId: detail.notebookId,
+      }, detail.type);
+    };
+    window.addEventListener('flowix:request-switch-folder-collection-type', handleRequest);
+    return () => window.removeEventListener('flowix:request-switch-folder-collection-type', handleRequest);
+  }, [handleSwitchFolderCollectionType]);
+
   return {
     notebookToDelete,
     notebookCreateRequest,
@@ -141,6 +182,7 @@ export function useMainWindowBusinessController(): MainWindowBusinessController 
     deleteNotebook: handleDeleteNotebook,
     editNotebook: handleEditNotebook,
     openPlugin,
+    switchFolderCollectionType: handleSwitchFolderCollectionType,
     selectNotebook: handleSelectNotebook,
   };
 }

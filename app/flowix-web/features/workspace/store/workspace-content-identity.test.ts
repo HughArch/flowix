@@ -2,6 +2,11 @@ import { describe, expect, it } from 'vitest';
 import { canonicalUrl, contentIdentityKey } from './workspace-content-identity';
 
 describe('workspace content identity', () => {
+  it('identifies a collection independently of its selected view', () => {
+    const collection = { kind: 'collection' as const, notebookId: 'book', collectionId: 'table' };
+    expect(contentIdentityKey({ ...collection, viewId: 'a' })).toBe(contentIdentityKey({ ...collection, viewId: 'b' }));
+    expect(contentIdentityKey({ ...collection, viewId: 'a' })).not.toBe(contentIdentityKey({ ...collection, collectionId: 'other', viewId: 'a' }));
+  });
   it('normalizes web URLs without collapsing the scheme separator', () => {
     expect(canonicalUrl('  HTTPS://Example.com/docs  ')).toBe('https://example.com/docs');
     expect(contentIdentityKey({ kind: 'web', url: 'https://example.com/docs' })).toBe(

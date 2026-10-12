@@ -55,7 +55,7 @@ function applyCollectionIndexItemAtRoot(
   for (const oldPath of previousPaths) if (oldPath !== path) replaceLiveFilePath(oldPath, path);
   const browser = useBrowserColumnStore.getState();
   const tabs = browser.tabs.map((tab) => tab.target.kind === 'file-browser' && tab.target.collectionDisplay?.notebookId === notebookId && tab.target.collectionDisplay.collectionId === item.collectionId
-    ? { ...tab, title: item.name ?? tab.title, target: { ...tab.target, activeFilePath: path, scopePath: root, collectionUnavailableReason: item.identityConflict ? '集合身份冲突，请先修复副本' : item.parseState !== 'valid' ? '集合文件格式或版本暂不可用' : undefined } } : tab);
+    ? { ...tab, title: item.name ?? tab.title, target: { ...tab.target, activeFilePath: path, scopePath: root, collectionType: item.collectionType, collectionUnavailableReason: item.identityConflict ? '集合身份冲突，请先修复副本' : item.parseState !== 'valid' ? '集合文件格式或版本暂不可用' : undefined } } : tab);
   if (tabs.some((tab, index) => tab !== browser.tabs[index])) useBrowserColumnStore.setState({ tabs });
   const update = <T extends WorkColumnTarget | null>(target: T): T => {
     if (target?.kind !== 'collection' || target.notebookId !== notebookId || target.collectionId !== item.collectionId) return target;
@@ -109,13 +109,18 @@ export async function refreshCollectionDisplays(event: CollectionChange): Promis
         setCollectionUnavailable(event.notebookId, id, '集合身份冲突或格式暂不可用');
         continue;
       }
-      const displays = collectionDisplays(event.notebookId, id);
+      // Selected views belong to live targets, not the shared display identity.
+      const navigation = useWorkColumnStore.getState().navigation;
+      const selections = [navigation.target, navigation.pendingTarget, useWorkspaceRestoreStore.getState().desiredTarget,
+        ...useBrowserColumnStore.getState().tabs.map((tab) => tab.target.kind === 'file-browser' ? tab.target.collectionDisplay : null)]
+        .filter((target): target is NonNullable<typeof target> & { notebookId: string; collectionId: string; viewId: string | null } =>
+          Boolean(target && 'collectionId' in target && target.notebookId === event.notebookId && target.collectionId === id));
       // Memo may not have loaded its notebook list yet during startup.
       const notebookPath = await resolveNotebookPath(event.notebookId);
       if (!notebookPath) continue;
       const notebookRoot = canonicalDirectoryPath(notebookPath);
       let viewIds: Set<string> | null = null;
-      if (displays.some((display) => display.viewId)) {
+      if (selections.some((selection) => selection.viewId)) {
         const envelope = parseCollectionDocumentV2(await externalDocuments.read(`${notebookRoot}/${item.relativePath}`, notebookRoot));
         if (envelope.collection.id !== id) throw new Error('COLLECTION_IDENTITY_CHANGED');
         const views = envelope.payload.views.items as Array<{ id: string }>;
@@ -123,7 +128,7 @@ export async function refreshCollectionDisplays(event: CollectionChange): Promis
       }
       if (sequences.get(key) !== generation) return;
       applyCollectionIndexItemAtRoot(event.notebookId, item, notebookPath);
-      for (const display of displays) if (display.viewId && viewIds && !viewIds.has(display.viewId)) setCollectionUnavailable(event.notebookId, id, '此视图已不存在，请重新选择视图', display.viewId);
+      for (const selection of selections) if (item.collectionType !== 'table' && selection.viewId && viewIds && !viewIds.has(selection.viewId)) setCollectionUnavailable(event.notebookId, id, '此视图已不存在，请重新选择视图', selection.viewId);
     } catch (error) {
       if (sequences.get(key) !== generation) return;
       if (/COLLECTION_(NOT_FOUND|IDENTITY_CONFLICT|IDENTITY_CHANGED)/.test(String(error))) setCollectionUnavailable(event.notebookId, id, '集合不存在或身份冲突');
@@ -144,7 +149,7 @@ export function ensureCollectionDisplayTrackingStarted(): void {
   }
   subscribe<CollectionChange>('collection-changed', (event) => { void refreshCollectionDisplays(event); });
   subscribe<CollectionChange>('flowix:path-note-changed', (event) => {
-    if (event.notebookId && (!event.relativePath || /\.(table|lib)\.ya?ml$/i.test(event.relativePath))) void refreshCollectionDisplays(event);
+    if (event.notebookId && (!event.relativePath || /(?:\.(table|lib)\.ya?ml|\.index\.yaml)$/i.test(event.relativePath))) void refreshCollectionDisplays(event);
   });
   subscribe<CollectionChange>('file-management-changed', (event) => { if (event.notebookId) void refreshCollectionDisplays(event); });
 }

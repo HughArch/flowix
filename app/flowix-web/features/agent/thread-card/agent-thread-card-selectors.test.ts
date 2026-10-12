@@ -3,7 +3,6 @@ import type { ThreadState } from '@features/agent/store/agent-session-test-facad
 import {
   selectAgentThreadCardRunStatus,
   selectAgentThreadCardRuntimeView,
-  selectAgentThreadCardSendButtonState,
 } from './agent-thread-card-selectors';
 
 function threadState(overrides: Partial<ThreadState> = {}): ThreadState {
@@ -292,38 +291,4 @@ describe('agent thread card selectors', () => {
     expect(runtime.showLoadingIndicator).toBe(false);
   });
 
-  it('selects send button state from loading and input text', () => {
-    expect(selectAgentThreadCardSendButtonState({
-      wantStop: false,
-      inputValue: '',
-    })).toEqual({ wantStop: false, disabled: true });
-    expect(selectAgentThreadCardSendButtonState({
-      wantStop: false,
-      inputValue: 'hello',
-    })).toEqual({ wantStop: false, disabled: false });
-    expect(selectAgentThreadCardSendButtonState({
-      wantStop: true,
-      inputValue: '',
-    })).toEqual({ wantStop: true, disabled: false });
-    expect(selectAgentThreadCardSendButtonState({
-      wantStop: true,
-      inputValue: '',
-      isRunning: true,
-    })).toEqual({ wantStop: true, disabled: false });
-    expect(selectAgentThreadCardSendButtonState({
-      wantStop: false,
-      inputValue: '',
-      hasAttachments: true,
-    })).toEqual({ wantStop: false, disabled: false });
-    expect(selectAgentThreadCardSendButtonState({
-      wantStop: false,
-      inputValue: 'hello',
-      hasPendingAttachments: true,
-    })).toEqual({ wantStop: false, disabled: true });
-    expect(selectAgentThreadCardSendButtonState({
-      wantStop: false,
-      inputValue: 'hello',
-      isRunning: true,
-    })).toEqual({ wantStop: false, disabled: true });
-  });
 });

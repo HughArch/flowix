@@ -132,6 +132,7 @@ function PopoverTrigger({ children, asChild, className, render, anchorToCell = f
 
 interface PopoverContentProps {
 	children: React.ReactNode;
+	anchorSelector?: string;
 	align?: "start" | "center" | "end";
 	side?: "top" | "right" | "bottom" | "left";
 	sideOffset?: number;
@@ -152,6 +153,7 @@ const EXIT_ANIMATION_FALLBACK_MS = 500;
 
 function PopoverContent({
 	children,
+	anchorSelector,
 	align = "end",
 	side = "bottom",
 	sideOffset = 4,
@@ -219,7 +221,8 @@ function PopoverContent({
 				content.style.overflowY = 'auto';
 			}
 			const trigger = triggerRef.current;
-			const rect = cellAnchorRect ?? anchorRect ?? trigger?.getBoundingClientRect();
+			const anchor = anchorSelector ? trigger?.closest<HTMLElement>(anchorSelector) : null;
+			const rect = anchor?.getBoundingClientRect() ?? cellAnchorRect ?? anchorRect ?? trigger?.getBoundingClientRect();
 			if (!rect) return;
 			const width = contentRef.current?.offsetWidth ?? 200;
 			const height = contentRef.current?.offsetHeight ?? 200;
@@ -278,7 +281,7 @@ function PopoverContent({
 			window.removeEventListener('scroll', updatePosition, true);
 			window.removeEventListener('resize', updatePosition);
 		};
-	}, [open, present, side, sideOffset, offsetY, align, anchorRect, cellAnchorRect, fitViewport]);
+	}, [open, present, side, sideOffset, offsetY, align, anchorRect, cellAnchorRect, anchorSelector, fitViewport]);
 
 	React.useEffect(() => {
 		if (!open || !cellAnchorRect) return;

@@ -4,7 +4,7 @@ import { Node as TiptapNode, mergeAttributes, type Editor, type MarkdownToken } 
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import type { EditorView, NodeView as ProseMirrorNodeView } from '@tiptap/pm/view';
 import { createRoot, type Root } from 'react-dom/client';
-import { X } from 'lucide-react';
+import { ChevronRight, X } from 'lucide-react';
 import { ArrowUpRightIcon, ArrowsLeftRightIcon, FunnelIcon, PlusIcon } from '@phosphor-icons/react';
 import { dialogs, externalDocuments, files, collections, mediaResources, type MediaResource, type NotebookFolderOption } from '@platform/tauri/client';
 import { resourceKindFromPath } from '@features/editor/public/code-file';
@@ -15,6 +15,7 @@ import { displayTitleFromFilename, mediaLibraryExtension } from '@/lib/utils';
 import { useCollectionReference } from '@features/collection/use-collection-reference';
 import { toast } from '@/lib/toast';
 import { Button } from '@shared/ui/button';
+import { useTitleEditCaret } from '@shared/hooks/use-title-edit-caret';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
 import { useI18n } from '@/lib/i18n';
 import { NotebookTreeResourceIcon } from '@features/memo/components/file-type-icon';
@@ -165,30 +166,38 @@ async function loadLinkedMediaResources(
   return linked;
 }
 
-function MediaLibraryDatasetPopover({ document, notebook, filePath, editable, busy = false, onSaved }: {
+function MediaLibraryDatasetPopover({ document, notebook, filePath, editable, busy = false, onSaved, open, onOpenChange: setOpen }: {
   document: MediaLibraryDocument | null;
   notebook: { id: string; path: string } | undefined;
   filePath: string | null;
   editable: boolean;
   busy?: boolean;
   onSaved: (document: MediaLibraryDocument) => void;
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
 }) {
   const condition = document ? mediaLibraryFileCondition(document) : {};
-  const [open, setOpen] = useState(false);
+  const [filterMenuOpen, setFilterMenuOpen] = useState(false);
   const [folderPickerOpen, setFolderPickerOpen] = useState(false);
   const [fileName, setFileName] = useState('');
   const [fileType, setFileType] = useState<'any' | MediaLibraryKind>('any');
   const [path, setPath] = useState('');
+  const [pathIsAll, setPathIsAll] = useState(false);
   const [folderOptions, setFolderOptions] = useState<NotebookFolderOption[]>([]);
   const [loadingFolders, setLoadingFolders] = useState(false);
   const [saving, setSaving] = useState(false);
 
   useEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setFilterMenuOpen(false);
+      setFolderPickerOpen(false);
+      return;
+    }
     setFileName(condition.file_name_contains ?? '');
     setFileType(condition.file_type ?? 'any');
     setPath(condition.path_contains ?? '');
-  }, [open, condition.file_name_contains, condition.file_type, condition.path_contains]);
+    setPathIsAll(condition.path_scope === 'all');
+  }, [open, condition.file_name_contains, condition.file_type, condition.path_contains, condition.path_scope]);
 
   useEffect(() => {
     if (!folderPickerOpen || !notebook) return;
@@ -202,12 +211,13 @@ function MediaLibraryDatasetPopover({ document, notebook, filePath, editable, bu
     return () => { active = false; };
   }, [folderPickerOpen, notebook]);
 
-  const save = useCallback(async () => {
-    if (!document || !notebook || !filePath || saving) return;
+  const save = useCallback(async (pathOverride?: string | null, closeOnSave = true): Promise<boolean> => {
+    if (!document || !notebook || !filePath || saving) return false;
     const nextCondition = normalizeMediaLibraryFileCondition({
       file_name_contains: fileName.trim(),
       file_type: fileType === 'any' ? undefined : fileType,
-      path_contains: path.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''),
+      path_contains: pathOverride === null ? undefined : (pathOverride ?? path).trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, ''),
+      path_scope: pathOverride === null || (pathOverride === undefined && pathIsAll) ? 'all' : undefined,
     });
     setSaving(true);
     try {
@@ -220,15 +230,15 @@ function MediaLibraryDatasetPopover({ document, notebook, filePath, editable, bu
           collection: { ...current.collection, revision: current.collection.revision + 1, updated_at: new Date().toISOString() },
           dataset: { ...current.dataset, filter: Object.keys(nextCondition).length
             ? mediaCollectionFilterFromCondition(nextCondition)
-            : current.dataset.filter ? { all: [{ field: 'kind', op: 'in', value: ['image', 'video'] }], any: [] } : null },
+            : null },
           views: { ...current.views, items: current.views.items.map((view) => view.id === current.views.default_id
             ? { ...view, filter: { all: [], any: [] } } : view) },
         };
         const result = await externalDocuments.write({ filePath, content: serializeMediaLibrary(next), expectedContent: source, scopePath: notebook.path });
         if (result.status === 'saved') {
           onSaved(next);
-          setOpen(false);
-          return;
+          if (closeOnSave) setOpen(false);
+          return true;
         }
         if (result.status === 'conflict' && attempt === 0) {
           source = result.diskContent;
@@ -238,38 +248,88 @@ function MediaLibraryDatasetPopover({ document, notebook, filePath, editable, bu
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '无法保存数据集条件');
+      return false;
     } finally {
       setSaving(false);
     }
-  }, [document, fileName, filePath, fileType, notebook, onSaved, path, saving]);
+    return false;
+  }, [document, fileName, filePath, fileType, notebook, onSaved, path, pathIsAll, saving]);
 
-  const activeCount = Number(Boolean(condition.file_name_contains)) + Number(Boolean(condition.file_type)) + Number(Boolean(condition.path_contains));
-  return <Popover open={open} onOpenChange={setOpen}>
+  const activeCount = Number(Boolean(condition.file_name_contains)) + Number(Boolean(condition.file_type)) + Number(Boolean(condition.path_contains) || condition.path_scope === 'all');
+  return <Popover open={open} onOpenChange={(next) => {
+    setOpen(next);
+    if (!next) {
+      setFilterMenuOpen(false);
+      setFolderPickerOpen(false);
+    }
+  }}>
     <PopoverTrigger asChild>
-      <Button type="button" variant="ghost" size="sm" className={'h-7 w-7 rounded-lg p-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]' + (open || activeCount ? ' bg-[var(--muted)] text-[var(--foreground)]' : '')} aria-label="数据集" title="数据集" disabled={!editable || busy || !document || !notebook || !filePath}>
+      <Button type="button" variant="ghost" size="sm" className={'h-7 w-7 rounded-lg p-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]' + (open || activeCount ? ' bg-[var(--muted)] text-[var(--foreground)]' : '')} aria-label="数据集合" title="数据集合" disabled={!editable || busy || !document || !notebook || !filePath}>
         <FunnelIcon size={14} weight="bold" aria-hidden="true" />
       </Button>
     </PopoverTrigger>
-    <PopoverContent align="end" side="bottom" sideOffset={0} fitViewport style={{ zIndex: 150 }} ignorePopoverOutside={folderPickerOpen} className="max-h-[min(70vh,420px)] w-[320px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl px-1 py-2 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-      <div className="space-y-1">
-        <MediaLibraryFilterPanel
-          fileName={fileName}
-          fileType={fileType}
-          path={path}
-          folderPickerOpen={folderPickerOpen}
-          folderOptions={folderOptions}
-          folderOptionsLoading={loadingFolders}
-          notebookAvailable={Boolean(notebook)}
-          busy={saving || busy}
-          applying={saving}
-          onFileNameChange={setFileName}
-          onFileTypeChange={setFileType}
-          onPathChange={setPath}
-          onFolderPickerOpenChange={setFolderPickerOpen}
-          onReset={() => { setFileName(''); setFileType('any'); setPath(''); }}
-          onApply={() => { void save(); }}
-        />
-      </div>
+    <PopoverContent align="end" side="bottom" sideOffset={0} fitViewport style={{ zIndex: 150 }} ignorePopoverOutside={filterMenuOpen || folderPickerOpen} className="w-[220px] max-w-[calc(100vw-16px)] rounded-xl p-1.5 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+      <MediaLibraryFilterPanel
+        fileName={fileName}
+        fileType={fileType}
+        path={path}
+        pathIsAll={pathIsAll}
+        folderPickerOpen={folderPickerOpen}
+        folderOptions={folderOptions}
+        folderOptionsLoading={loadingFolders}
+        notebookAvailable={Boolean(notebook)}
+        busy={saving || busy}
+        locationOnly
+        showLocationMenu={false}
+        onFileNameChange={setFileName}
+        onFileTypeChange={setFileType}
+        onPathChange={setPath}
+        onPathSelected={async (selectedPath) => {
+          const saved = await save(selectedPath, false);
+          if (saved) {
+            setPath(selectedPath ?? '');
+            setPathIsAll(selectedPath === null);
+          }
+          return saved;
+        }}
+        onFolderPickerOpenChange={setFolderPickerOpen}
+        onReset={() => {}}
+        onApply={() => {}}
+      />
+      <Popover open={filterMenuOpen} onOpenChange={setFilterMenuOpen}>
+        <PopoverTrigger asChild>
+          <button type="button" className="flex h-8 w-full items-center justify-between rounded-lg px-1.5 text-left text-sm hover:bg-[var(--hover-bg)] hover:text-[var(--foreground)] data-[state=open]:bg-[var(--hover-bg)] data-[state=open]:text-[var(--foreground)]">
+            <span>数据条件</span>
+            <span className="flex items-center gap-1 text-xs text-[var(--muted-foreground)]">
+              {fileName.trim() || fileType !== 'any' ? '已设置' : '未设置'}
+              <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </span>
+          </button>
+        </PopoverTrigger>
+        <PopoverContent side="right" align="start" sideOffset={0} fitViewport style={{ zIndex: 160 }} ignorePopoverOutside={folderPickerOpen} className="max-h-[min(70vh,420px)] w-[320px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl px-1 py-2 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+          <div className="space-y-1">
+            <MediaLibraryFilterPanel
+              fileName={fileName}
+              fileType={fileType}
+              path={path}
+              pathIsAll={pathIsAll}
+              folderPickerOpen={folderPickerOpen}
+              folderOptions={folderOptions}
+              folderOptionsLoading={loadingFolders}
+              notebookAvailable={Boolean(notebook)}
+              busy={saving || busy}
+              applying={saving}
+              showLocationMenu={false}
+              onFileNameChange={setFileName}
+              onFileTypeChange={setFileType}
+              onPathChange={setPath}
+              onFolderPickerOpenChange={setFolderPickerOpen}
+              onReset={() => { setFileName(''); setFileType('any'); }}
+              onApply={() => { void save(); }}
+            />
+          </div>
+        </PopoverContent>
+      </Popover>
     </PopoverContent>
   </Popover>;
 }
@@ -300,7 +360,7 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
   const [renaming, setRenaming] = useState(false);
   const [addingMedia, setAddingMedia] = useState(false);
   const addMediaInFlightRef = useRef(false);
-  const nameInputRef = useRef<HTMLInputElement>(null);
+  const { inputRef: nameInputRef, captureCaret: captureNameCaret } = useTitleEditCaret(editingName);
 
   useEffect(() => {
     const element = sectionRef.current;
@@ -325,8 +385,9 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
   }, [reference.content]);
 
   const condition = document ? mediaLibraryFileCondition(document) : undefined;
+  const [datasetMenuOpen, setDatasetMenuOpen] = useState(false);
   const fileType = condition?.file_type;
-  const hasDatasetCondition = document?.dataset.filter != null;
+  const hasDatasetCondition = Boolean(condition?.path_scope === 'all' || condition?.path_contains);
   const hasDocument = document !== null;
   const mediaLibraryRecords = document?.dataset.records.include ?? [];
   useEffect(() => {
@@ -494,7 +555,6 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
     if (!editable || renaming || addingMedia || !filePath) return;
     setNameDraft(document?.collection.name ?? reference.item?.name ?? '');
     setEditingName(true);
-    requestAnimationFrame(() => nameInputRef.current?.select());
   }, [addingMedia, document?.collection.name, reference.item?.name, editable, filePath, renaming]);
   const renameLibrary = useCallback(async (rawTitle: string) => {
     const title = rawTitle.trim();
@@ -544,11 +604,11 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
       setEditingName(false);
     }
   }, [attrs.collectionId, attrs.relativePath, document?.collection.name, reference.item?.name, reference.fileIdentity, editable, filePath, notebook, onRelativePathChange, renaming]);
-  const displayName = document?.collection.name ?? attrs.relativePath?.split('/').pop()?.replace(/\.lib\.ya?ml$/i, '') ?? '媒体库';
+  const displayName = document?.collection.name ?? reference.item?.name ?? attrs.relativePath?.split('/').pop()?.replace(/\.lib\.ya?ml$/i, '') ?? '媒体库';
 
   return <section ref={sectionRef} className="my-3 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--editor-block-bg)] px-3 pb-3 pt-1.5" contentEditable={false} aria-label={`媒体库：${displayName}`}>
     <div className="mb-1.5 flex items-center gap-2">
-      <div className="flex min-w-0 flex-1 items-center gap-1.5 pr-2" title={displayName} onDoubleClick={editingName ? undefined : beginRename}>
+      <div className="flex min-w-0 flex-1 items-center gap-1.5 pr-2" title={displayName}>
         <NotebookTreeResourceIcon path={filePath ?? 'media-library.lib.yaml'} collectionType="media_library" className="h-5 w-5 shrink-0" />
         {editingName ? <input
           ref={nameInputRef}
@@ -558,21 +618,28 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
           onChange={(event) => setNameDraft(event.currentTarget.value)}
           onBlur={(event) => void renameLibrary(event.currentTarget.value)}
           onKeyDown={(event) => {
+            if (event.key === 'Enter' && (event.nativeEvent.isComposing || event.keyCode === 229)) return;
             if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
             else if (event.key === 'Escape') { event.preventDefault(); setEditingName(false); setNameDraft(document?.collection.name ?? reference.item?.name ?? ''); }
           }}
-          className="h-7 min-w-0 w-full flex-1 border-0 bg-transparent px-0 text-sm font-medium text-[var(--foreground)] outline-none"
+          className="box-border h-[22px] min-w-[2em] max-w-full flex-[0_1_auto] rounded px-0.5 py-1 [field-sizing:content] border-0 bg-[var(--muted)] text-sm font-medium leading-none text-[var(--foreground)] outline-none"
         /> : <button
           type="button"
+          onDoubleClick={(event) => {
+            event.preventDefault();
+            event.stopPropagation();
+            captureNameCaret(event.currentTarget, event.clientX, event.clientY);
+            beginRename();
+          }}
           aria-label={`重命名媒体库：${displayTitleFromFilename(filePath)}`}
           title={`双击重命名：${displayTitleFromFilename(filePath)}`}
           disabled={!editable || renaming || addingMedia || !filePath}
           onKeyDown={(event) => { if (event.key === 'Enter' || event.key === 'F2') { event.preventDefault(); beginRename(); } }}
-          className="min-w-0 flex-1 truncate p-0 text-left text-sm font-medium text-[var(--foreground)] disabled:opacity-100"
-        >{reference.item?.name ?? displayName}</button>}
+          className="min-w-[2em] flex-[0_1_auto] truncate rounded px-0.5 py-1 text-left text-sm font-medium leading-none text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] disabled:opacity-100"
+        >{displayName}</button>}
       </div>
       <div className="flex shrink-0 items-center gap-0">
-        <MediaLibraryDatasetPopover document={document} notebook={notebook} filePath={filePath} editable={editable} busy={addingMedia || renaming || editingName} onSaved={setDocument} />
+        <MediaLibraryDatasetPopover document={document} notebook={notebook} filePath={filePath} editable={editable} busy={addingMedia || renaming || editingName} onSaved={setDocument} open={datasetMenuOpen} onOpenChange={setDatasetMenuOpen} />
         {editable && <Button
           type="button"
           variant="ghost"
@@ -599,7 +666,12 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
           : error
             ? <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">{error}</div>
             : resources.length === 0
-            ? <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">{hasDatasetCondition ? '媒体库暂无匹配资源' : '请先设置数据集条件'}</div>
+            ? <div className="flex items-center justify-center gap-1 py-8 text-sm text-[var(--muted-foreground)]">
+                <span>未设置数据集合，</span>
+                <button type="button" disabled={!editable || !document || !notebook || !filePath || addingMedia || renaming || editingName} onClick={() => setDatasetMenuOpen(true)} className="inline-flex items-center gap-0.5 text-[var(--foreground)] hover:text-[var(--brand)] disabled:opacity-50">
+                  添加<ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+              </div>
               : <>
                 <MediaLibraryPhotoWall resources={resources} notebookId={notebook.id} notebookPath={notebook.path} hasMore={hasMore} onOpenLibrary={openLibrary} />
               </>}

@@ -139,6 +139,7 @@ export async function runDshCommand(input: {
   onSaveExport?: (filename: string, content: string) => Promise<void>;
   onFocus?: () => void;
   sendFailedText?: string;
+  rejectOnFailure?: boolean;
 }): Promise<void> {
   const isCompact = isDshCompactCommand(input.command);
   let commandThreadId: string | null = null;
@@ -152,6 +153,9 @@ export async function runDshCommand(input: {
       imagePaths: input.imagePaths,
     });
     const execution = dshCommandResult(result);
+    if (!execution.ok && input.rejectOnFailure) {
+      throw new Error(execution.text || `DSH command failed: ${input.command}`);
+    }
 
     if (isCompact) {
       const previousCheckpointIds = new Set(
@@ -198,6 +202,7 @@ export async function runDshCommand(input: {
       );
     }
   } catch (error) {
+    if (input.rejectOnFailure) throw error;
     const message = errorMessage(error).trim();
     if (isCompact && commandThreadId) {
       appendTransientDshCommandResult(

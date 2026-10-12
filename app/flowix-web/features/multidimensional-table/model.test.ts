@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
 import { addTableView, canEditTableAutoCollectFilter, createTableDocument, parseTableDocument, serializeTableDocument, validateTableDocument, withTableAutoCollect } from './model';
+import { NOTE_ICON_FIELD_ID, NOTE_TAGS_FIELD_ID } from './builtin-fields';
 
 describe('table format v2', () => {
+  it('creates normalized field state with only tags and icon as default presets', () => {
+    const table = createTableDocument();
+    expect(table.dataset.schema.preset_fields).toEqual([NOTE_TAGS_FIELD_ID, NOTE_ICON_FIELD_ID]);
+    expect(table.dataset.schema.field_order[0]).toBe(table.dataset.schema.primary_field_id);
+    expect(table.dataset.schema.field_order).toContain(NOTE_TAGS_FIELD_ID);
+    expect(table.dataset.schema.field_order).toContain(NOTE_ICON_FIELD_ID);
+  });
+
   it('round trips a new table', () => {
     const table = createTableDocument();
     expect(table.collection.type).toBe('table');

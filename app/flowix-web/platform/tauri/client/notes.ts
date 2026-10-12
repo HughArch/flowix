@@ -13,6 +13,8 @@ export type MatchField = 'title' | 'tag' | 'body';
 export type NoteVersionSource = 'auto' | 'manual' | 'restore_backup' | 'cloud_conflict';
 
 export interface NoteEntry {
+  /** File size in bytes, supplied by the note index. */
+  sizeBytes?: number;
   relativePath: string;
   title: string;
   preview: string;

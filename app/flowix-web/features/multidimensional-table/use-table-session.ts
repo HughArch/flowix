@@ -1,3 +1,4 @@
+import { collectionSessionKey } from '@/lib/collection-session-key';
 import { canonicalDirectoryPath } from '@/lib/path';
 import { reuseCollectionValue } from '@features/collection/content-equality';
 import { useCallback, useEffect, useRef, useState } from 'react';
@@ -10,6 +11,7 @@ import { serializeTableDocument, parseTableDocument, validateTableDocument, type
 import { isLegacyCollectionSource } from '@features/collection/model';
 
 interface TableSessionOptions {
+  expectedCollectionId?: string | null;
   filePath: string;
   fileIdentity?: FileDisplayIdentity;
   notebookPath: string | null;
@@ -35,11 +37,10 @@ function normalizeTableSessionDocument(document: MultidimensionalTableDocument):
   };
 }
 
-export function useTableSession({ filePath, fileIdentity, notebookPath: rawNotebookPath, notebookId }: TableSessionOptions) {
+export function useTableSession({ filePath, fileIdentity, notebookPath: rawNotebookPath, notebookId, expectedCollectionId }: TableSessionOptions) {
   const notebookPath = rawNotebookPath ? canonicalDirectoryPath(rawNotebookPath) : null;
   const displayId = fileIdentity?.displayId;
-  const fileSessionId = displayId ?? filePath;
-  const sessionKey = displayId ?? JSON.stringify([fileSessionId, notebookPath, notebookId]);
+  const sessionKey = collectionSessionKey({ filePath, fileIdentity, notebookPath, notebookId, expectedCollectionId });
   const currentSessionKeyRef = useRef(sessionKey);
   currentSessionKeyRef.current = sessionKey;
   const getCurrentFilePath = useCallback(() => (
@@ -50,7 +51,12 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
 
   const [document, setDocument] = useState<MultidimensionalTableDocument | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const [saving, setSaving] = useState(false);
+  const [saving, setSavingState] = useState(false);
+  const [saveFailed, setSaveFailed] = useState(false);
+  const setSaving = useCallback((next: boolean) => {
+    setSavingState(next);
+    if (next) setSaveFailed(false);
+  }, []);
   const [notes, setNotes] = useState<NoteEntry[]>([]);
   const [resolvedNotebookId, setResolvedNotebookId] = useState<string | null>(notebookId);
   const [notesLoadError, setNotesLoadError] = useState<string | null>(null);
@@ -73,6 +79,10 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
     isCurrentSession(sequence, sessionKey)
   ), [isCurrentSession, sessionKey]);
 
+  const reportSaveFailure = useCallback((sequence: number) => {
+    if (isCurrentSession(sequence, sessionKey)) setSaveFailed(true);
+  }, [isCurrentSession, sessionKey]);
+
   const load = useCallback(async () => {
     syncSequenceRef.current += 1;
     pendingTableSyncRef.current = false;
@@ -82,6 +92,7 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
     setLoadGeneration(sequence);
     setLoadError(null);
     setDocument(null);
+    setSaveFailed(false);
     setSaving(false);
     setNotes([]);
     pendingNotePropertiesRef.current.clear();
@@ -284,6 +295,7 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
 
     writeLocksRef.current.add(lockKey);
     savingRef.current = true;
+    setSaveFailed(false);
     setSaving(true);
     try {
       validateTableDocument(next);
@@ -300,10 +312,10 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
         }
         sourceContentRef.current = { sessionKey: key, content: result.content };
         setDocument(next);
-        toast.success('保存完成');
         return true;
       }
       if (!isCurrentSession(sequence, key)) return false;
+      setSaveFailed(true);
       if (result.status === 'conflict') {
         toast.error('表格文件已被其他操作修改，正在同步最新内容');
         pendingTableSyncRef.current = true;
@@ -312,6 +324,7 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
       throw new Error(result.status === 'error' ? result.message : '表格文件已不存在');
     } catch (error) {
       if (!isCurrentSession(sequence, key)) return false;
+      setSaveFailed(true);
       toast.error(error instanceof Error ? error.message : '保存表格失败');
       pendingTableSyncRef.current = true;
       return false;
@@ -356,7 +369,9 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
     document: stateIsCurrent ? document : null,
     loadError: stateIsCurrent ? loadError : null,
     saving: stateIsCurrent ? saving : false,
+    saveFailed: stateIsCurrent ? saveFailed : false,
     setSaving,
+    reportSaveFailure,
     notes: stateIsCurrent ? notes : [],
     setNotes,
     resolvedNotebookId: stateIsCurrent ? resolvedNotebookId : notebookId,

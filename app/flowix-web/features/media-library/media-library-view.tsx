@@ -1,6 +1,7 @@
 'use client';
 
 import { reuseCollectionValue } from '@features/collection/content-equality';
+import { FolderCollectionSwitchConfirmDialog } from '@features/collection/public/folder-api';
 import { isLegacyCollectionSource } from '@features/collection/model';
 import { collectionDisplayDescriptor } from '@/lib/collection-display-registry';
 import { subscribe } from '@platform/tauri/event-bus';
@@ -15,7 +16,6 @@ import { displayTitleFromFilename, mediaLibraryExtension } from '@/lib/utils';
 import { replaceExternalDocumentPath } from '@features/workspace/use-cases/workspace-navigation';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
 import { mediaCollectionFilterFromCondition, mediaLibraryDefaultView, mediaLibraryFileCondition, parseMediaLibrary, serializeMediaLibrary, type MediaLibraryDocument, type MediaLibraryFileCondition, type MediaLibraryKind } from './model';
 import { renameMediaLibraryFile } from './rename-media-library';
 import { useMediaLibraryActions } from './use-media-library-actions';
@@ -30,7 +30,7 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [confirmDeleteLibrary, setConfirmDeleteLibrary] = useState(false);
+  const [confirmFolderSwitch, setConfirmFolderSwitch] = useState(false);
   const sourceContentRef = useRef<string | null>(null);
   const saveInFlightRef = useRef(false);
   const displayId = fileIdentity?.displayId;
@@ -211,21 +211,6 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
     sourceContentRef, saveInFlightRef, persistMutation, t,
   });
 
-  const deleteLibraryFile = useCallback(() => {
-    if (!currentFilePath || !notebookPath || saving || saveInFlightRef.current) return;
-    setConfirmDeleteLibrary(true);
-  }, [currentFilePath, notebookPath, saving]);
-
-  const confirmDeleteLibraryFile = useCallback(() => {
-    if (!currentFilePath || !notebookPath || saving || saveInFlightRef.current) return;
-    setConfirmDeleteLibrary(false);
-    window.dispatchEvent(new CustomEvent('flowix:request-delete-external-file', {
-      detail: { filePath: currentFilePath, notebookPath },
-    }));
-  }, [currentFilePath, notebookPath, saving]);
-
-
-
   const selectedKind = document ? mediaLibraryFileCondition(document).file_type : undefined;
   const resourceKinds = useMemo<MediaLibraryKind[]>(() => selectedKind ? [selectedKind] : ['image', 'video'], [selectedKind]);
   const activeCollectionId = document?.collection.id;
@@ -261,6 +246,7 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
     const resolvedNotebookId = notebookId ?? notebook?.id;
     if (!resolvedNotebookId || !notebookPath || !activeCollectionId) return null;
     const libraryIdentity = `media-library:${resolvedNotebookId}:${activeCollectionId}`;
+    const browseCondition = mediaLibraryFileCondition(document);
     return {
       kind: 'document-list',
       instanceKey: libraryIdentity,
@@ -270,7 +256,8 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
       notebookId: resolvedNotebookId,
       filters: { resourceKinds },
       ...(mediaScope ? { mediaScope } : {}),
-      ...(document.dataset.filter !== null ? { mediaDatasetActive: true } : {}),
+      ...((browseCondition.path_scope === 'all' || browseCondition.path_contains)
+        ? { mediaDatasetActive: true } : {}),
     };
   }, [activeCollectionId, displayId, document?.dataset.filter, mediaScope, notebook?.id, notebookId, notebookPath, resourceKinds]);
 
@@ -286,33 +273,28 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
       mediaLibrary
       libraryName={libraryDisplayName}
       libraryFilePath={currentFilePath}
+      mediaLibraryFolderPath={document.collection.placement === 'folder'
+        ? mediaScope?.relativePath || notebook?.name || ''
+        : undefined}
       mediaLibraryFilter={mediaLibraryFileCondition(document)}
       mediaLibraryRecords={mediaLibraryRecords}
       mediaLibraryExcludedPaths={mediaLibraryExcludedPaths}
       mediaLibraryDatasetFilter={document.dataset.filter}
       mediaLibraryViewFilter={mediaLibraryDefaultView(document).filter}
       onAddMedia={addMedia}
-      onDeleteLibrary={document.collection.placement === 'folder' ? undefined : deleteLibraryFile}
       onDeleteMedia={deleteMedia}
       libraryActionsDisabled={saving}
       onMediaLibraryFilterChange={updateFilterCondition}
       onRenameLibrary={document.collection.placement === 'folder' ? undefined : renameLibraryFile}
+      onSwitchToTable={document.collection.placement === 'folder' ? () => setConfirmFolderSwitch(true) : undefined}
     />
-    <Dialog open={confirmDeleteLibrary} onOpenChange={(open) => { if (!open && !saving) setConfirmDeleteLibrary(false); }}>
-      <DialogContent className="rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-        <DialogHeader>
-          <DialogTitle>{t('document.external.deleteFileTitle')}</DialogTitle>
-          <DialogDescription>{t('document.external.deleteFileDescription', { name: currentFilePath.split(/[\\/]/).pop() ?? currentFilePath })}</DialogDescription>
-        </DialogHeader>
-        <div className="mt-4 flex justify-end gap-2">
-          <button type="button" disabled={saving} onClick={() => setConfirmDeleteLibrary(false)} className="h-8 rounded-lg px-3 text-sm hover:bg-[var(--muted)] disabled:opacity-50">
-            {t('dialog.cancel')}
-          </button>
-          <button type="button" disabled={saving} onClick={confirmDeleteLibraryFile} className="h-8 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm text-[var(--foreground)] hover:border-[var(--destructive)] hover:bg-[var(--destructive)] hover:text-white disabled:opacity-50">
-            {t('dialog.delete')}
-          </button>
-        </div>
-      </DialogContent>
-    </Dialog>
+    <FolderCollectionSwitchConfirmDialog open={confirmFolderSwitch} onOpenChange={setConfirmFolderSwitch} confirmDisabled={saving} onConfirm={() => {
+      setConfirmFolderSwitch(false);
+      const resolvedNotebookId = notebookId ?? notebook?.id;
+      if (!notebookPath || !resolvedNotebookId) return;
+      window.dispatchEvent(new CustomEvent('flowix:request-switch-folder-collection-type', {
+        detail: { filePath: currentFilePath, notebookPath, notebookId: resolvedNotebookId, type: 'table' },
+      }));
+    }} />
   </div>;
 }

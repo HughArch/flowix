@@ -135,7 +135,7 @@ export function openBrowserColumnTarget(
               scopePath: target.scopePath,
             });
             if (target.activeFilePath) {
-              store.selectFileBrowserFile(existing.tabId, target.activeFilePath, target.collectionDisplay);
+              store.selectFileBrowserFile(existing.tabId, target.activeFilePath, target.collectionDisplay, target.collectionType);
             }
           }
         }
@@ -170,7 +170,7 @@ export function openBrowserColumnTarget(
         && tab.target.folderPath && canonicalPath(tab.target.folderPath) === canonicalPath(folderTarget.folderPath!)
         && tab.target.notebookId === folderTarget.notebookId);
       if (folderTab) {
-        if (target.activeFilePath) store.selectFileBrowserFile(folderTab.id, target.activeFilePath, target.collectionDisplay);
+        if (target.activeFilePath) store.selectFileBrowserFile(folderTab.id, target.activeFilePath, target.collectionDisplay, target.collectionType);
         store.commitTab(folderTab.id);
         if (moveWorkColumnTarget) {
           await clearWorkspaceDocument();
@@ -207,10 +207,10 @@ export function selectBrowserColumnFile(tabId: string, filePath: string | null, 
       && canonicalPath(candidate.target.activeFilePath) === canonicalPath(filePath)) : null;
     if (existing) { state.commitTab(existing.id); return true; }
     if (folderPath !== undefined) state.switchFileBrowserFolder(tabId, folderPath);
-    const prepared = await prepareCollectionBrowserTarget({ ...tab.target, activeFilePath: filePath, collectionDisplay: undefined });
+    const prepared = await prepareCollectionBrowserTarget({ ...tab.target, activeFilePath: filePath, collectionDisplay: undefined, collectionType: undefined });
     const location = findExistingWorkspaceContent(browserColumnTargetIdentity(prepared));
     if (location && !(location.host === 'browser-column' && location.tabId === tabId)) { activateExistingWorkspaceContent(browserColumnTargetIdentity(prepared)); return true; }
-    state.selectFileBrowserFile(tabId, prepared.kind === 'file-browser' ? prepared.activeFilePath : filePath, prepared.kind === 'file-browser' ? prepared.collectionDisplay : undefined);
+    state.selectFileBrowserFile(tabId, prepared.kind === 'file-browser' ? prepared.activeFilePath : filePath, prepared.kind === 'file-browser' ? prepared.collectionDisplay : undefined, prepared.kind === 'file-browser' ? prepared.collectionType : undefined);
     return true;
   });
   if (!filePath) return select();
@@ -294,8 +294,11 @@ export function openWorkColumnTargetInBrowserColumn(
           notebookPath: target.notebookPath ?? '',
           resourceKind: target.resourceKind,
         };
+      case 'table':
+      case 'media-library':
+        return { ...createFileBrowserTarget(target.filePath, target.notebookPath), notebookId: target.notebookId };
       case 'collection':
-        return { ...createFileBrowserTarget(target.filePath, target.notebookPath), notebookId: target.notebookId, collectionDisplay: target };
+        return { ...createFileBrowserTarget(target.filePath, target.notebookPath), notebookId: target.notebookId, collectionDisplay: target, collectionType: target.collectionType };
       case 'external':
         return { ...createFileBrowserTarget(target.path, target.scopePath), ...target.fileBrowser };
       case 'agent-conversation':
@@ -326,16 +329,19 @@ export function openWorkColumnTargetInBrowserColumn(
     if (target.kind !== 'agent-conversation') await flushWorkspaceDocument();
     if (!isStillCurrentTarget()) return null;
 
-    const id = browserTarget.kind === 'agent_conversation'
-        ? `agent:${browserTarget.instanceId}`
-        : browserTarget.kind === 'web'
-          ? `web:${canonicalUrl(browserTarget.url) ?? browserTarget.url}`
-          : browserTarget.kind === 'file-browser' ? browserTarget.collectionDisplay ? browserTarget.collectionDisplay.displayId : browserTarget.activeFilePath ? fileLocatorKey(browserTarget.activeFilePath) : `file-browser:${browserTarget.folderPath}` : 'empty';
+    const preparedTarget = await prepareCollectionBrowserTarget(browserTarget);
+    if (!isStillCurrentTarget()) return null;
+
+    const id = preparedTarget.kind === 'agent_conversation'
+        ? `agent:${preparedTarget.instanceId}`
+        : preparedTarget.kind === 'web'
+          ? `web:${canonicalUrl(preparedTarget.url) ?? preparedTarget.url}`
+          : preparedTarget.kind === 'file-browser' ? preparedTarget.collectionDisplay ? preparedTarget.collectionDisplay.displayId : preparedTarget.activeFilePath ? fileLocatorKey(preparedTarget.activeFilePath) : `file-browser:${preparedTarget.folderPath}` : 'empty';
     const tabId = useBrowserColumnStore.getState().openTab({
       id,
-      title: targetTabTitle(browserTarget),
-      icon: targetTabIcon(browserTarget),
-      target: browserTarget,
+      title: targetTabTitle(preparedTarget),
+      icon: targetTabIcon(preparedTarget),
+      target: preparedTarget,
     });
     if (target.kind === 'agent-conversation') {
       closeAgentTarget();
@@ -436,7 +442,7 @@ export function removeBrowserColumnTabsByPath(path: string): string[] {
 
 /** Resolve identity before a browser surface can mount. */
 async function prepareCollectionBrowserTarget(target: BrowserColumnTarget): Promise<BrowserColumnTarget> {
-  if (target.kind !== 'file-browser' || !target.activeFilePath || !/\.(table|lib)\.ya?ml$/i.test(target.activeFilePath)) return target;
+  if (target.kind !== 'file-browser' || !target.activeFilePath || (!target.collectionDisplay && !/(?:\.(table|lib)\.ya?ml|\.index\.yaml)$/i.test(target.activeFilePath))) return target.kind === 'file-browser' ? { ...target, collectionType: undefined } : target;
   const registered = (await notebooks.getAll()).find((notebook) => target.notebookId ? notebook.id === target.notebookId : canonicalPath(target.activeFilePath!).startsWith(`${canonicalDirectoryPath(notebook.path)}/`));
   const root = registered ? canonicalDirectoryPath(registered.path) : null;
   if (!root) throw new Error('集合需要笔记本上下文');
@@ -448,5 +454,5 @@ async function prepareCollectionBrowserTarget(target: BrowserColumnTarget): Prom
   const display = ensureCollectionDisplay({ notebookId, collectionId, viewId: target.collectionDisplay?.viewId ?? null }, target.collectionDisplay?.displayId);
   const path = `${root.replace(/\/$/, '')}/${item.relativePath}`;
   bindCollectionDisplayPath(display.displayId, path, item.indexSequence);
-  return { ...target, notebookId, scopePath: root, activeFilePath: path, collectionDisplay: display, collectionUnavailableReason: undefined };
+  return { ...target, notebookId, scopePath: root, activeFilePath: path, collectionDisplay: display, collectionType: item.collectionType, collectionUnavailableReason: undefined };
 }

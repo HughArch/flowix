@@ -7,9 +7,10 @@ import type { TableField, TableRecord } from './model';
 vi.mock('@shared/ui/popover', () => ({
   Popover: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   PopoverTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  PopoverContent: () => null,
+  PopoverContent: ({ children }: { children: React.ReactNode }) => renderPopupContent ? <>{children}</> : null,
 }));
 
+import { BUILTIN_TABLE_FIELDS, builtinPresetTableField } from './builtin-fields';
 import { TableRecordRow } from './table-record-row';
 
 const record: TableRecord = {
@@ -27,42 +28,44 @@ const linkedNote = {
   properties: { done: false },
 } as unknown as NoteEntry;
 
+let renderPopupContent = false;
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;
 
-function renderRow(noteStatus: 'draft' | 'linked' | 'unknown' | 'missing', note?: NoteEntry) {
+function renderRow(noteStatus: 'draft' | 'linked' | 'unknown' | 'missing', note?: NoteEntry, showBuiltinFields = false, allowSwitchNote = true, options: { autoOpen?: boolean; availableNotes?: NoteEntry[] } = {}) {
   container = document.createElement('div');
   root = createRoot(container);
   const handlers = {
-    openNotePicker: vi.fn(),
     retryNoteLookup: vi.fn(),
+    updateCell: vi.fn(),
   };
   act(() => root?.render(<table><tbody><TableRecordRow
     record={{ ...record, note_path: noteStatus === 'draft' ? '' : record.note_path }}
     imagePaths={() => []}
-    fieldColumnWidth={() => 'w-40'}
     notePropertyEditorValue={(currentNote, field) => field.type === 'primary' ? currentNote?.relativePath : currentNote?.properties.done}
     fields={fields}
+    builtinFields={showBuiltinFields ? BUILTIN_TABLE_FIELDS : []}
     note={note}
     isRuleLinked={false}
     notebookPath="/notebook"
-    getAvailableNotes={() => []}
+    getAvailableNotes={() => options.availableNotes ?? []}
     subscribeAvailableNotes={() => () => {}}
     noteStatus={noteStatus}
-    autoOpenPrimaryEditor={false}
+    allowSwitchNote={allowSwitchNote}
+    autoOpenPrimaryEditor={options.autoOpen ?? false}
     imageUrls={{}}
     saving={false}
     cellStatuses={new Map()}
     rowActionOpen={false}
-    onOpenNotePicker={handlers.openNotePicker}
     onRetryNoteLookup={handlers.retryNoteLookup}
     onReplaceNote={vi.fn()}
     onCreateAndLinkRecordNote={vi.fn(async () => true)}
     onAutoOpenHandled={vi.fn()}
     onRenameNote={vi.fn(async () => null)}
     onOpenNote={vi.fn()}
+    onDeleteNote={vi.fn()}
     onSelectImage={vi.fn(async () => {})}
-    onUpdateCell={vi.fn()}
+    onUpdateCell={handlers.updateCell}
     onDeleteRecord={vi.fn()}
     onRowActionOpenChange={vi.fn()}
   /></tbody></table>));
@@ -73,6 +76,8 @@ afterEach(() => {
   act(() => root?.unmount());
   root = null;
   container = null;
+  renderPopupContent = false;
+  vi.useRealTimers();
 });
 
 describe('TableRecordRow note fallback', () => {
@@ -84,17 +89,16 @@ describe('TableRecordRow note fallback', () => {
 
     act(() => retry?.click());
     expect(view.retryNoteLookup).toHaveBeenCalledOnce();
-    expect(view.openNotePicker).not.toHaveBeenCalled();
   });
 
   it('keeps a missing relation and lets the user replace it while disabling property edits', () => {
+    renderPopupContent = true;
     const view = renderRow('missing');
-    const replace = [...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('未在笔记列表找到'));
+    const replace = [...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('未找到笔记'));
     expect(replace).toBeTruthy();
     expect(view.container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(true);
 
-    act(() => replace?.click());
-    expect(view.openNotePicker).toHaveBeenCalledOnce();
+    expect(view.container.querySelector('textarea')?.getAttribute('placeholder')).toBe('输入名称搜索 或 新建');
   });
 
   it('keeps property editing enabled for a resolved note', () => {
@@ -105,5 +109,73 @@ describe('TableRecordRow note fallback', () => {
   it('disables property editing in an unlinked draft row', () => {
     const view = renderRow('draft');
     expect(view.container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(true);
+  });
+});
+
+describe('TableRecordRow builtin metadata', () => {
+  it('keeps file metadata read-only and makes mapped presets editable', () => {
+    const view = renderRow('linked', { ...linkedNote, relativePath: '项目/方案.md', sizeBytes: 1_250_000, createdAt: 0, updatedAt: 0 }, true);
+    const cells = view.container.querySelectorAll('td');
+    expect(cells).toHaveLength(3 + BUILTIN_TABLE_FIELDS.length);
+    expect(cells[4].textContent).toBe('notebook/项目/');
+    expect(cells[5].textContent).toBe('1.25 MB');
+    BUILTIN_TABLE_FIELDS.forEach((field, index) => {
+      const editor = cells[index + 2].querySelector('input,button,textarea');
+      if (builtinPresetTableField(field.id)) expect(editor).toBeTruthy();
+      else expect(editor).toBeNull();
+    });
+    expect(cells[cells.length - 1].querySelector('button[aria-label="更多行操作"]')).toBeTruthy();
+  });
+  it('writes pin edits using the shared preset key and stable column ID', async () => {
+    vi.useFakeTimers();
+    const view = renderRow('linked', { ...linkedNote, favorited: true }, true);
+    const index = BUILTIN_TABLE_FIELDS.findIndex((field) => field.label === '置顶');
+    const checkbox = view.container.querySelectorAll('td')[index + 2].querySelector<HTMLInputElement>('input');
+    expect(checkbox?.checked).toBe(true);
+    await act(async () => { checkbox?.click(); vi.advanceTimersByTime(1000); });
+    expect(view.updateCell).toHaveBeenCalledWith(expect.anything(), expect.anything(),
+      expect.objectContaining({ id: '__note_pinned__', property_key: 'flowix_favorited', type: 'Boolean' }), false);
+  });
+
+  it('leaves every builtin cell empty without an associated note', () => {
+    const view = renderRow('draft', undefined, true);
+    for (const cell of [...view.container.querySelectorAll('td')].slice(2, 2 + BUILTIN_TABLE_FIELDS.length)) {
+      expect(cell.textContent).toBe('');
+      expect(cell.querySelector('input,button,textarea')).toBeNull();
+    }
+  });
+
+});
+
+describe('folder table note switching', () => {
+  it('disables switching existing notes while retaining title editing', () => {
+    renderPopupContent = true;
+    const view = renderRow('linked', linkedNote, false, false);
+    expect(view.container.querySelector<HTMLButtonElement>('button[aria-label="切换文档"]')?.disabled).toBe(true);
+    expect(view.container.querySelector('textarea')).toBeTruthy();
+    expect(view.container.querySelector('input[type="search"]')).toBeNull();
+  });
+
+  it('disables switching draft notes while retaining title creation', () => {
+    renderPopupContent = true;
+    const view = renderRow('draft', undefined, false, false);
+    expect(view.container.querySelector('[role="listbox"]')).toBeNull();
+    expect(view.container.querySelector('textarea[aria-label="新建或选择笔记"]')).toBeTruthy();
+    expect(view.container.querySelector('input[type="search"]')).toBeNull();
+  });
+
+  it('loads candidates when an empty row opens without a separate switching control', () => {
+    renderPopupContent = true;
+    const view = renderRow('draft', undefined, false, true, { autoOpen: true, availableNotes: [linkedNote] });
+    expect(view.container.querySelector('[role="option"]')?.textContent).toBe('Missing');
+    expect(view.container.querySelector('textarea')?.getAttribute('placeholder')).toBe('输入名称搜索 或 新建');
+    expect(view.container.querySelector('input[type="search"]')).toBeNull();
+  });
+
+  it('keeps switching available for standalone tables', () => {
+    renderPopupContent = true;
+    const view = renderRow('draft');
+    expect(view.container.querySelector('[role="listbox"]')).toBeTruthy();
+    expect(view.container.querySelector('textarea')?.getAttribute('placeholder')).toBe('输入名称搜索 或 新建');
   });
 });

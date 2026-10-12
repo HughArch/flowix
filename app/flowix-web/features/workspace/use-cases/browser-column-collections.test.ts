@@ -1,0 +1,88 @@
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+import { collections, externalDocuments, notebooks, type CollectionIndexItem } from '@platform/tauri/client';
+import { createTableDocument, serializeTableDocument } from '@features/multidimensional-table/model';
+import { createMediaLibrary, serializeMediaLibrary } from '@features/media-library/model';
+import { ensureCollectionDisplay } from '@/lib/collection-display-registry';
+import { useWorkColumnStore } from '../store/work-column-store';
+import { useBrowserColumnStore } from '../store/browser-column-store';
+import type { WorkColumnTarget } from '../store/work-column-target';
+import { resetBrowserColumnCoordinator } from './browser-column-coordinator';
+import { openBrowserColumnText, openWorkColumnTargetInBrowserColumn, selectBrowserColumnFile } from './browser-column-navigation';
+
+function activate(target: WorkColumnTarget) {
+  const store = useWorkColumnStore.getState();
+  store.commitNavigation(store.beginNavigation(target, null), target);
+}
+
+function fixture(type: 'table' | 'media_library', filename: string) {
+  const document = type === 'table' ? createTableDocument() : createMediaLibrary('照片');
+  const content = type === 'table'
+    ? serializeTableDocument(document as ReturnType<typeof createTableDocument>)
+    : serializeMediaLibrary(document as ReturnType<typeof createMediaLibrary>);
+  const item: CollectionIndexItem = {
+    collectionId: document.collection.id, collectionType: type, relativePath: filename,
+    indexSequence: 1, name: document.collection.name, schemaVersion: 2, payloadSchemaVersion: 2,
+    revision: 0, properties: {}, createdAt: null, updatedAt: null, modifiedMs: 0,
+    sizeBytes: content.length, contentHash: null, parseState: 'valid', errorCode: null,
+    inViews: true, identityConflict: false,
+  };
+  vi.spyOn(collections, 'resolve').mockResolvedValue(item);
+  vi.spyOn(externalDocuments, 'read').mockResolvedValue(content);
+  return item;
+}
+
+describe('browser column collection navigation', () => {
+  beforeEach(() => {
+    resetBrowserColumnCoordinator();
+    useBrowserColumnStore.getState().reset();
+    activate({ kind: 'empty' });
+    vi.spyOn(notebooks, 'getAll').mockResolvedValue([
+      { id: 'notes', name: 'Notes', path: '/notes', createdAt: 0, updatedAt: 0, isDefault: true },
+    ]);
+  });
+  afterEach(() => vi.restoreAllMocks());
+
+  it.each(['table', 'media_library'] as const)('resolves .index.yaml as %s and clears collection state when selecting Markdown', async (type) => {
+    const item = fixture(type, '项目.index.yaml');
+    const opened = await openBrowserColumnText('/notes/项目.index.yaml', '/notes');
+    expect(opened?.host).toBe('browser-column');
+    const tab = useBrowserColumnStore.getState().tabs[0];
+    expect(tab.target).toMatchObject({ collectionType: type, collectionDisplay: { collectionId: item.collectionId } });
+    await selectBrowserColumnFile(tab.id, '/notes/plan.md');
+    expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({
+      activeFilePath: '/notes/plan.md', collectionType: undefined, collectionDisplay: undefined,
+    });
+  });
+
+  it('moves a collection with its selected view and resolves its current path', async () => {
+    const item = fixture('table', '移动后.index.yaml');
+    const display = ensureCollectionDisplay({ notebookId: 'notes', collectionId: item.collectionId!, viewId: 'selected-view' });
+    const target: WorkColumnTarget = { kind: 'collection', ...display, collectionType: 'table', filePath: '/notes/旧.index.yaml', notebookPath: '/notes', name: '项目' };
+    activate(target);
+    await openWorkColumnTargetInBrowserColumn(target);
+    expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({
+      activeFilePath: '/notes/移动后.index.yaml', collectionType: 'table', collectionDisplay: display,
+    });
+    expect(useWorkColumnStore.getState().navigation.target).toEqual({ kind: 'empty' });
+  });
+
+  it.each([
+    ['table', 'table', '旧.table.yaml'],
+    ['media-library', 'media_library', '旧.lib.yml'],
+  ] as const)('moves the legacy %s target', async (kind, type, filename) => {
+    fixture(type, filename);
+    activate({ kind, filePath: `/notes/${filename}`, notebookPath: '/notes', notebookId: 'notes' });
+    await openWorkColumnTargetInBrowserColumn(useWorkColumnStore.getState().navigation.target);
+    expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({ collectionType: type });
+  });
+
+  it('preserves the work column when collection resolution fails', async () => {
+    const item = fixture('table', '项目.index.yaml');
+    vi.mocked(collections.resolve).mockResolvedValue({ ...item, identityConflict: true });
+    const target: WorkColumnTarget = { kind: 'table', filePath: '/notes/项目.index.yaml', notebookPath: '/notes', notebookId: 'notes' };
+    activate(target);
+    await expect(openWorkColumnTargetInBrowserColumn(target)).rejects.toThrow('集合身份冲突');
+    expect(useBrowserColumnStore.getState().tabs).toEqual([]);
+    expect(useWorkColumnStore.getState().navigation.target).toEqual(target);
+  });
+});

@@ -46,3 +46,37 @@ describe('applyTableView', () => {
       .toEqual([draft]);
   });
 });
+
+it('sorts builtin metadata using raw values, keeps missing notes last, and clears to dataset order', () => {
+  const document = createTableDocument();
+  const records = [record('z/first.md'), record('a/second.md'), record('missing.md')];
+  const notes = new Map([
+    [records[0].note_path, { ...note(records[0].note_path, 20, ''), sizeBytes: 900_000 }],
+    [records[1].note_path, { ...note(records[1].note_path, 10, ''), sizeBytes: 10_000_000 }],
+  ]);
+  const apply = (field: string, direction: 'asc' | 'desc') => applyTableView(records,
+    { ...document.views.items[0], sort: [{ field, direction }] }, document.dataset.schema.fields,
+    document.dataset.schema.primary_field_id, (record) => notes.get(record.note_path));
+  expect(apply('__note_size__', 'asc')).toEqual(records);
+  expect(apply('__note_size__', 'desc')).toEqual([records[1], records[0], records[2]]);
+  for (const field of ['__note_created_at__', '__note_updated_at__', '__note_relative_path__']) {
+    expect(apply(field, 'asc')).toEqual([records[1], records[0], records[2]]);
+  }
+  expect(applyTableView(records, { ...document.views.items[0], sort: [] }, document.dataset.schema.fields,
+    document.dataset.schema.primary_field_id, (record) => notes.get(record.note_path))).toEqual(records);
+});
+
+it('sorts pin and description presets using pending property values and keeps missing notes last', () => {
+  const document = createTableDocument();
+  const records = [record('one.md'), record('two.md'), record('missing.md')];
+  const notes = [
+    { ...note('one.md', 0, ''), favorited: true, properties: { flowix_favorited: false, description: 'B' } },
+    { ...note('two.md', 0, ''), favorited: false, properties: { flowix_favorited: true, description: 'A' } },
+  ];
+  const apply = (field: string, direction: 'asc' | 'desc') => applyTableView(records,
+    { ...document.views.items[0], sort: [{ field, direction }] }, document.dataset.schema.fields,
+    document.dataset.schema.primary_field_id, (item) => notes.find((note) => note.relativePath === item.note_path));
+  expect(apply('__note_pinned__', 'desc')).toEqual([records[1], records[0], records[2]]);
+  expect(apply('__note_pinned__', 'asc')).toEqual(records);
+  expect(apply('__note_description__', 'asc')).toEqual([records[1], records[0], records[2]]);
+});

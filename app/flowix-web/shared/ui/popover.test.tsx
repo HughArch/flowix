@@ -92,4 +92,26 @@ describe('PopoverContent motion lifecycle', () => {
 
     expect(onOpenChange).toHaveBeenCalledWith(false);
   });
+
+  it('anchors to the entire field row instead of its nested button', async () => {
+    const rect = new DOMRect(20, 60, 320, 32);
+    const getBounds = vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
+      return this.hasAttribute('data-table-field-item') ? rect : new DOMRect(50, 60, 80, 32);
+    });
+    try {
+      await act(async () => root.render(createElement('div', { 'data-table-field-item': true },
+        createElement(TestFieldRowPopover))));
+      const content = document.body.querySelector<HTMLElement>('.flowix-popover-content');
+      expect(content?.style.left).toBe('340px');
+      expect(content?.style.top).toBe('60px');
+    } finally {
+      getBounds.mockRestore();
+    }
+  });
 });
+
+function TestFieldRowPopover() {
+  return createElement(Popover, { open: true },
+    createElement(PopoverTrigger, { asChild: true }, createElement('button', {}, 'Field')),
+    createElement(PopoverContent, { anchorSelector: '[data-table-field-item]', side: 'right', align: 'start', sideOffset: 0 }, 'Editor'));
+}

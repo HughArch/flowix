@@ -181,6 +181,94 @@ fn rebase_table_document_paths(source: &str, old_path: &str, new_path: &str) -> 
     document.serialize().ok()
 }
 
+fn remove_table_document_note_records(source: &str, note_path: &str) -> Option<String> {
+    let mut document = flowix_core::collection::CollectionDocument::parse(source)
+        .ok()?
+        .normalized_v2()
+        .ok()?;
+    if document.collection.kind != flowix_core::collection::CollectionType::Table {
+        return None;
+    }
+    let normalized_note_path = note_path.replace('\\', "/");
+    let dataset = document.payload.get_mut("dataset")?;
+    let records = dataset.get_mut("records")?;
+    let mut changed = false;
+    for key in ["include", "exclude"] {
+        let Some(items) = records
+            .get_mut(key)
+            .and_then(serde_json::Value::as_array_mut)
+        else {
+            continue;
+        };
+        let original_len = items.len();
+        items.retain(|record| {
+            record
+                .get("note_path")
+                .and_then(serde_json::Value::as_str)
+                .is_none_or(|path| path.replace('\\', "/") != normalized_note_path)
+        });
+        changed |= items.len() != original_len;
+    }
+    if !changed {
+        return None;
+    }
+    document.collection.revision = document.collection.revision.checked_add(1)?;
+    document.collection.updated_at =
+        chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
+    document.serialize().ok()
+}
+
+/// Remove persisted references to a note after deletion. Collection documents
+/// are independent user files, so conflicts or write failures must not undo
+/// the note deletion.
+pub(crate) fn remove_table_note_records(memo_file: &MemoFile, notebook_id: &str, note_path: &str) {
+    if note_path.is_empty() {
+        return;
+    }
+    let Some(notebook) = memo_file.get_notebook_config_by_id(notebook_id) else {
+        return;
+    };
+    let Ok(root) = dunce::canonicalize(&notebook.path) else {
+        return;
+    };
+    let Ok(documents) = super::collection::list_for_rebase(memo_file, notebook_id) else {
+        return;
+    };
+
+    for item in documents.into_iter().filter(|item| {
+        item.collection_type == flowix_core::collection::CollectionType::Table
+            && item.parse_state == "valid"
+    }) {
+        let path = root.join(&item.relative_path);
+        for _ in 0..2 {
+            let Ok(source) = fs::read_to_string(&path) else {
+                break;
+            };
+            let Some(next) = remove_table_document_note_records(&source, note_path) else {
+                break;
+            };
+            match memo_file.write_file_if_matches_for_notebook(
+                notebook_id,
+                &path,
+                &next,
+                Some(&source),
+            ) {
+                Ok(FileWriteOutcome::Saved) => {
+                    refresh_table_document_path(memo_file, &path);
+                    break;
+                }
+                Ok(FileWriteOutcome::Conflict { .. }) => {
+                    tracing::debug!(path = %path.display(), "table note reference removal retry after concurrent edit");
+                }
+                Err(error) => {
+                    tracing::debug!(path = %path.display(), "table note reference removal skipped: {error}");
+                    break;
+                }
+            }
+        }
+    }
+}
+
 /// Best-effort maintenance of table-to-note references after a note path move.
 /// Table files are independent user documents, so a failed/conflicted rewrite
 /// must never fail the note rename itself. Unresolved references are repaired

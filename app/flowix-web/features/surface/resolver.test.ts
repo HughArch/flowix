@@ -112,7 +112,7 @@ describe('surface resolvers', () => {
     });
     expect(surface.kind).toBe('table-file');
     if (surface.kind === 'table-file') {
-      expect(surface.props).toEqual({ filePath: '/notebook/Tasks.table.yml', notebookPath: '/notebook', notebookId: 'notebook-1' });
+      expect(surface.props).toEqual({ filePath: '/notebook/Tasks.table.yml', notebookPath: '/notebook', notebookId: 'notebook-1', fileIdentity: surface.fileIdentity });
     }
   });
 
@@ -162,4 +162,19 @@ describe('surface resolvers', () => {
     });
   });
 
+});
+
+it('keeps a collection surface mounted across views while preserving display identities', () => {
+  const target: Extract<WorkColumnTarget, { kind: 'collection' }> = {
+    kind: 'collection', notebookId: 'nb', collectionId: 'collection-a', viewId: 'table',
+    displayId: 'table-display', filePath: '/notebook/table.table.yaml', notebookPath: '/notebook', collectionType: 'table', name: 'Table',
+  };
+  const resolve = (value: typeof target) => surfaceFrom({ navigation: navigation(value), document: null, emptyMessage: 'Empty' });
+  const table = resolve(target);
+  const gallery = resolve({ ...target, viewId: 'gallery', displayId: 'gallery-display' });
+  expect(gallery.instanceKey).toBe(table.instanceKey);
+  expect(gallery.kind).toBe('table-file');
+  if (gallery.kind === 'table-file') expect(gallery.fileIdentity.displayId).toBe('gallery-display');
+  expect(resolve({ ...target, collectionId: 'collection-b' }).instanceKey).not.toBe(table.instanceKey);
+  expect(resolve({ ...target, notebookId: 'other-notebook' }).instanceKey).not.toBe(table.instanceKey);
 });
