@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 
 type UseResizablePanelsOptions = {
   documentPanelMinWidth: number;
@@ -20,7 +20,6 @@ export function useResizablePanels({
 }: UseResizablePanelsOptions) {
   const [memoColWidth, setMemoColWidth] = useState(MEMO_LIST_DEFAULT_WIDTH);
   const [isDraggingListDivider, setIsDraggingListDivider] = useState(false);
-  const listDividerStartRef = useRef({ x: 0, width: 0 });
 
   const isMemoListHidden = !memoListVisible;
   const memoListWidth = isMemoListHidden ? 0 : memoColWidth;
@@ -48,35 +47,13 @@ export function useResizablePanels({
     setMemoColWidth((width) => clampMemoListWidth(width));
   }, [clampMemoListWidth]);
 
-  const handleListDividerMouseDown = useCallback((event: ReactMouseEvent) => {
-    event.preventDefault();
-    setIsDraggingListDivider(true);
-    listDividerStartRef.current = { x: event.clientX, width: memoColWidth };
-  }, [memoColWidth]);
-
-  useEffect(() => {
-    if (!isDraggingListDivider) return;
-
-    const handleMouseMove = (event: MouseEvent) => {
-      const diff = event.clientX - listDividerStartRef.current.x;
-      const nextWidth = listDividerStartRef.current.width + diff;
-      setMemoColWidth(clampMemoListWidth(nextWidth));
-    };
-
-    const handleMouseUp = () => {
-      setIsDraggingListDivider(false);
-    };
-
-    window.addEventListener('mousemove', handleMouseMove);
-    window.addEventListener('mouseup', handleMouseUp);
-    return () => {
-      window.removeEventListener('mousemove', handleMouseMove);
-      window.removeEventListener('mouseup', handleMouseUp);
-    };
-  }, [clampMemoListWidth, isDraggingListDivider]);
+  const resizeMemoList = useCallback((width: number) => {
+    setMemoColWidth(clampMemoListWidth(width));
+  }, [clampMemoListWidth]);
 
   return {
-    handleListDividerMouseDown,
+    resizeMemoList,
+    setIsDraggingListDivider,
     isDraggingListDivider,
     isMemoListHidden,
     memoColWidth,

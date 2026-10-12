@@ -63,7 +63,7 @@ describe('shared collection contract fixture', () => {
   it('preserves builtin visibility and rejects unknown fields through the full parser', () => {
     const document = parseTableDocument(sharedFixture);
     expect(document.views.items[0].config.visible_fields).toEqual([
-      document.dataset.schema.primary_field_id, ...BUILTIN_TABLE_FIELDS.map((field) => field.id),
+      document.dataset.schema.primary_field_id, ...BUILTIN_TABLE_FIELDS.filter((field) => !builtinPresetTableField(field.id) || document.dataset.schema.preset_fields.includes(field.id)).map((field) => field.id),
     ]);
     expect(parseTableDocument(serializeTableDocument(document))).toEqual(document);
     document.views.items[0].config.visible_fields = [];

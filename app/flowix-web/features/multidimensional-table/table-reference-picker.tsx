@@ -7,7 +7,7 @@ import { joinNotebookMemoPath } from '@/lib/path';
 import { toast } from '@/lib/toast';
 import { createTableDocumentFile } from './create-table-file';
 import { parseTableDocumentAsync } from './parse-table-document';
-import { addKanbanView, addTableView, NOTE_CREATED_AT_FIELD_ID, serializeTableDocument, type TableViewType } from './model';
+import { addCalendarDateView, addKanbanView, addTableView, serializeTableDocument, type TableViewType } from './model';
 import {
   closeCollectionReferencePicker,
   collectionCandidateFolderLabel,
@@ -135,9 +135,12 @@ function TableReferencePicker({ editor, replaceRange, generation, preferredViewT
           const addedView = addKanbanView(targetDocument);
           targetDocument = addedView.document;
           view = addedView.view;
+        } else if (preferredViewType === 'calendar') {
+          const addedView = addCalendarDateView(targetDocument);
+          targetDocument = addedView.document;
+          view = addedView.view;
         } else {
-          const addedView = addTableView(targetDocument, preferredViewType,
-            preferredViewType === 'calendar' ? NOTE_CREATED_AT_FIELD_ID : undefined);
+          const addedView = addTableView(targetDocument, preferredViewType);
           targetDocument = addedView.document;
           view = addedView.view;
         }

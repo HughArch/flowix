@@ -1,7 +1,7 @@
 import { canonicalPath } from '@/lib/path';
 import { findFileDisplayId } from '@/lib/file-display-registry';
 import { getWorkspaceDocumentState } from '@features/document/public/workspace-api';
-import { getWorkspaceMemoState } from '@features/memo/public/workspace-api';
+import { getWorkspaceMemoState, updateNoteLinksAfterMove } from '@features/memo/public/workspace-api';
 import { useBrowserColumnStore } from '../store/browser-column-store';
 import { useWorkColumnStore } from '../store/work-column-store';
 import { useWorkspaceRestoreStore } from '../store/workspace-restore-store';
@@ -22,6 +22,7 @@ export function applyNotebookPathMove(input: {
     || previousRelative.split('/').includes('..') || nextRelative.split('/').includes('..')) return;
   const previous = `${root}/${previousRelative}`;
   const next = `${root}/${nextRelative}`;
+  updateNoteLinksAfterMove(previous, next, input.directory);
   const movedPath = (candidate: string): string | null => {
     const path = canonicalPath(candidate);
     if (path === previous) return next;

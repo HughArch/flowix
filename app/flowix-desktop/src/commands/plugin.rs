@@ -156,6 +156,7 @@ pub async fn plugin_run(
                 model: None,
                 provider_id: None,
                 reasoning_effort: None,
+                service_tier: None,
                 mode: None,
                 code_mode: None,
             }),

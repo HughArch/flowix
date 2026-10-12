@@ -589,17 +589,17 @@ export const TableRecordRow = memo(function TableRecordRow({
             if (!note) return;
             onRowActionOpenChange(false, record.id);
             onOpenNote(note);
-          }} className="flex h-7 w-full items-center justify-start rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-transparent disabled:opacity-50">
+          }} className="flex h-7 w-full items-center justify-start rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] disabled:opacity-50">
             <ArrowUpRightIcon className="mr-2 h-4 w-4" aria-hidden="true" />打开笔记
           </button>
           <button type="button" disabled={saving || !note} onClick={() => {
             if (!note) return;
             onRowActionOpenChange(false, record.id);
             onDeleteNote(note);
-          }} className="flex h-7 w-full items-center justify-start rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-transparent hover:text-[var(--destructive)] disabled:opacity-50">
+          }} className="flex h-7 w-full items-center justify-start rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--destructive)] disabled:opacity-50">
             <TrashSimpleIcon className="mr-2 h-4 w-4" aria-hidden="true" />删除笔记
           </button>
-          <button type="button" disabled={saving} onClick={() => onDeleteRecord(record.id)} className="flex h-7 w-full items-center justify-start rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-transparent hover:text-[var(--destructive)] disabled:opacity-50">
+          <button type="button" disabled={saving} onClick={() => onDeleteRecord(record.id)} className="flex h-7 w-full items-center justify-start rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--destructive)] disabled:opacity-50">
             <MinusCircleIcon className="mr-2 h-4 w-4" aria-hidden="true" />移除记录
           </button>
         </PopoverContent>

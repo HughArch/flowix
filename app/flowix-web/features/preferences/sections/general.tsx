@@ -1,6 +1,7 @@
 'use client';
 
 import { useEffect, useState, type ReactNode } from 'react';
+import { Check, Copy } from 'lucide-react';
 import { useAppUpdater } from '@features/shell/hooks/use-app-updater';
 import {
   Select,
@@ -32,6 +33,7 @@ interface GeneralSectionProps {
 export function GeneralSection({ language, afterGeneral, updateSettings }: GeneralSectionProps) {
   const { t } = useI18n();
   const [productInfo, setProductInfo] = useState<ProductInfo | null>(null);
+  const [versionCopied, setVersionCopied] = useState(false);
   const updater = useAppUpdater();
   const currentLanguageLabel =
     LANGUAGE_OPTIONS.find((option) => option.value === language)?.label ?? language;
@@ -72,6 +74,22 @@ export function GeneralSection({ language, afterGeneral, updateSettings }: Gener
     }
   };
 
+  const currentVersionText = productInfo
+    ? `${productInfo.productName} ${productInfo.version} / ${productInfo.os} ${productInfo.arch}`
+    : t('preferences.general.loading');
+
+  const handleCopyVersion = async () => {
+    if (!productInfo) return;
+    try {
+      await navigator.clipboard.writeText(currentVersionText);
+      setVersionCopied(true);
+      toast.success(t('preferences.general.versionCopied'));
+      window.setTimeout(() => setVersionCopied(false), 1600);
+    } catch {
+      toast.error(t('preferences.general.versionCopyFailed'));
+    }
+  };
+
   const checkingUpdates = updater.status === 'checking';
   const downloadingUpdate = updater.status === 'downloading';
   const installingUpdate = updater.status === 'installing';
@@ -109,16 +127,26 @@ export function GeneralSection({ language, afterGeneral, updateSettings }: Gener
       <SectionHeader title={t('preferences.general.about')} />
 
       <FieldRow title={t('preferences.general.currentVersion')}>
-        <span
-          className="max-w-[420px] truncate text-right text-sm text-[var(--muted-foreground)]"
-          title={productInfo
-            ? `${productInfo.productName} ${productInfo.version} / ${productInfo.os} ${productInfo.arch}`
-            : t('preferences.general.loading')}
-        >
-          {productInfo
-            ? `${productInfo.productName} ${productInfo.version} / ${productInfo.os} ${productInfo.arch}`
-            : t('preferences.general.loading')}
-        </span>
+        <div className="flex min-w-0 items-center gap-1">
+          <span
+            className="max-w-[420px] truncate text-right text-sm text-[var(--muted-foreground)]"
+            title={currentVersionText}
+          >
+            {currentVersionText}
+          </span>
+          <Button
+            type="button"
+            variant="ghost"
+            size="sm"
+            className="h-6 w-6 shrink-0 p-0"
+            aria-label={versionCopied ? t('preferences.general.versionCopied') : t('preferences.general.copyVersion')}
+            title={versionCopied ? t('preferences.general.versionCopied') : t('preferences.general.copyVersion')}
+            disabled={!productInfo}
+            onClick={() => void handleCopyVersion()}
+          >
+            {versionCopied ? <Check className="size-3.5" /> : <Copy className="size-3.5" />}
+          </Button>
+        </div>
       </FieldRow>
 
       <FieldRow

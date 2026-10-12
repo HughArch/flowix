@@ -1,4 +1,4 @@
-import { Fragment, useMemo, useRef, useState, type PointerEvent } from 'react';
+import { Fragment, useMemo, useRef, useState, type MouseEvent, type PointerEvent } from 'react';
 import { createPortal } from 'react-dom';
 import { Check, ChevronDown, ChevronLeft, ChevronRight, Link2, LoaderCircle, Plus } from 'lucide-react';
 import { ArrowSquareOutIcon, DotsThreeVerticalIcon, PencilSimpleIcon, TrashIcon } from '@phosphor-icons/react';

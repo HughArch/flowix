@@ -243,6 +243,75 @@ impl CollectionDocument {
             chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         Ok(())
     }
+
+    /// Rebase notebook-relative references after a confirmed file or directory move.
+    /// The caller owns revision updates and persistence.
+    pub fn rebase_paths(&mut self, previous: &str, next: &str) -> bool {
+        fn rebase(path: &str, previous: &str, next: &str) -> Option<String> {
+            if path == previous {
+                return Some(next.to_owned());
+            }
+            path.strip_prefix(&format!("{previous}/"))
+                .map(|suffix| format!("{next}/{suffix}"))
+        }
+        fn rules(value: &mut Value, previous: &str, next: &str) -> bool {
+            let mut changed = false;
+            match value {
+                Value::Object(object) => {
+                    if object.get("field").and_then(Value::as_str) == Some("path") {
+                        if let Some(path) = object.get("value").and_then(Value::as_str) {
+                            if let Some(path) = rebase(path, previous, next) {
+                                object.insert("value".into(), Value::String(path));
+                                changed = true;
+                            }
+                        }
+                    }
+                    for child in object.values_mut() {
+                        changed |= rules(child, previous, next);
+                    }
+                }
+                Value::Array(array) => {
+                    for child in array { changed |= rules(child, previous, next); }
+                }
+                _ => {}
+            }
+            changed
+        }
+        let previous = previous.trim_matches('/');
+        let next = next.trim_matches('/');
+        if previous.is_empty() || next.is_empty() || previous == next { return false; }
+        let Some(dataset) = self.payload.get_mut("dataset") else { return false; };
+        let mut changed = false;
+        if let Some(records) = dataset.get_mut("records") {
+            for kind in ["include", "exclude"] {
+                if let Some(items) = records.get_mut(kind).and_then(Value::as_array_mut) {
+                    for record in items {
+                        for key in ["note_path", "relative_path"] {
+                            if let Some(path) = record.get(key).and_then(Value::as_str) {
+                                if let Some(path) = rebase(path, previous, next) {
+                                    record[key] = Value::String(path);
+                                    changed = true;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(path) = dataset.get("source").and_then(|source| source.get("path")).and_then(Value::as_str) {
+            if let Some(path) = rebase(path, previous, next) {
+                dataset["source"]["path"] = Value::String(path);
+                changed = true;
+            }
+        }
+        if let Some(filter) = dataset.get_mut("filter") { changed |= rules(filter, previous, next); }
+        if let Some(views) = self.payload.get_mut("views").and_then(|views| views.get_mut("items")).and_then(Value::as_array_mut) {
+            for view in views {
+                if let Some(filter) = view.get_mut("filter") { changed |= rules(filter, previous, next); }
+            }
+        }
+        changed
+    }
 }
 fn legacy_file_rules(file: &Value, notes: bool, output: &mut Vec<Value>) {
     for (key, field) in [("file_name_contains", "file_name"), ("path_contains", "path")] {
@@ -347,6 +416,7 @@ fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
                 "__note_colors__",
                 "__note_icon__",
                 "__note_pinned__",
+                "__note_calendar_date__",
             ];
             let mut seen = HashSet::new();
             for id in presets {
@@ -723,6 +793,7 @@ const BUILTIN_TABLE_FIELD_IDS: &[&str] = &[
     "__note_pinned__",
     "__note_description__",
     "__note_name__",
+    "__note_calendar_date__",
 ];
 const LEGACY_TABLE_FIELD_IDS: &[&str] = &["__note_todos__"];
 
@@ -842,7 +913,7 @@ fn validate_table(payload: &Value) -> Result<(), String> {
             "calendar" => {
                 only_keys(config, &["date_field", "title_field", "week_start"])?;
                 let date = config["date_field"].as_str().ok_or("INVALID_DATE_FIELD")?;
-                if !["__note_created_at__", "__note_updated_at__"].contains(&date)
+                if !["__note_created_at__", "__note_updated_at__", "__note_calendar_date__"].contains(&date)
                     && !field_values
                         .iter()
                         .any(|field| field["id"] == date && field["type"] == "Date")
@@ -884,6 +955,39 @@ fn validate_media_library(payload: &Value) -> Result<(), String> {
 #[cfg(test)]
 mod builtin_field_tests {
     use super::*;
+
+    #[test]
+    fn calendar_date_preset_contract_round_trips() {
+        let source = include_str!("../../fixtures/collections/table-calendar-preset.yaml");
+        let document = CollectionDocument::parse(source).unwrap();
+        document.validate().unwrap();
+        assert_eq!(document.payload["views"]["items"][0]["config"]["date_field"], "__note_calendar_date__");
+        let restored = CollectionDocument::parse(&document.serialize().unwrap()).unwrap();
+        assert_eq!(restored.payload, document.payload);
+    }
+
+
+    #[test]
+    fn directory_rebase_updates_records_sources_and_filters_without_touching_similar_prefixes() {
+        let mut document = CollectionDocument::parse(include_str!("../../fixtures/collections/table-builtin-fields.yaml")).unwrap();
+        document.collection.placement = CollectionPlacement::Standalone;
+        document.payload["dataset"]["source"] = serde_json::json!({"scope":"folder","path":"Old","depth":"descendants"});
+        document.payload["dataset"]["records"] = serde_json::json!({
+            "include":[{"id":"rec_dddddddddddddddddddddddddddddddd","updated_at":"2026-10-11T00:00:00Z","note_path":"Old/a.md"}],
+            "exclude":[{"note_path":"Old/sub/b.md"},{"note_path":"Oldish/keep.md"}]
+        });
+        document.payload["dataset"]["filter"] = serde_json::json!({"all":[{"field":"path","op":"contains","value":"Old/sub"}],"any":[]});
+        document.payload["views"]["items"][0]["filter"] = serde_json::json!({"all":[],"any":[{"field":"path","op":"contains","value":"Old"}]});
+        assert!(document.rebase_paths("Old", "New"));
+        assert_eq!(document.payload["dataset"]["records"]["include"][0]["note_path"], "New/a.md");
+        assert_eq!(document.payload["dataset"]["records"]["exclude"][0]["note_path"], "New/sub/b.md");
+        assert_eq!(document.payload["dataset"]["records"]["exclude"][1]["note_path"], "Oldish/keep.md");
+        assert_eq!(document.payload["dataset"]["source"]["path"], "New");
+        assert_eq!(document.payload["dataset"]["filter"]["all"][0]["value"], "New/sub");
+        assert_eq!(document.payload["views"]["items"][0]["filter"]["any"][0]["value"], "New");
+        assert!(!document.rebase_paths("Old", "New"));
+        document.validate().unwrap();
+    }
 
     #[test]
     fn table_allows_deleted_remembered_view_but_still_validates_view_definitions() {

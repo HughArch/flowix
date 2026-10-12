@@ -61,3 +61,5 @@ export async function setCurrentWorkspaceNotebook(
 }
 
 export type { Notebook };
+
+export { updateNoteLinksAfterMove } from '../services/note-link-rewriter';

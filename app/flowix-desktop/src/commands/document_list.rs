@@ -89,95 +89,10 @@ pub(crate) fn refresh_view_document_catalog(memo: &MemoFile, id: &str, root: &Pa
     }
 }
 
-fn rebased_relative_path(value: &str, old_path: &str, new_path: &str) -> Option<String> {
-    let value = value.replace('\\', "/");
-    let old_path = old_path.trim_matches('/');
-    let new_path = new_path.trim_matches('/');
-    if value == old_path {
-        return Some(new_path.to_owned());
-    }
-    let prefix = format!("{old_path}/");
-    value
-        .strip_prefix(&prefix)
-        .map(|suffix| format!("{new_path}/{suffix}"))
-}
-
-fn rebase_table_document_paths(source: &str, old_path: &str, new_path: &str) -> Option<String> {
-    let mut document = flowix_core::collection::CollectionDocument::parse(source)
-        .ok()?
-        .normalized_v2()
-        .ok()?;
-    if document.collection.kind != flowix_core::collection::CollectionType::Table {
-        return None;
-    }
-    let mut changed = false;
-    let updated_at = chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
-    let dataset = document.payload.get_mut("dataset")?;
-    let records = dataset.get_mut("records")?;
-    for key in ["include", "exclude"] {
-        if let Some(items) = records
-            .get_mut(key)
-            .and_then(serde_json::Value::as_array_mut)
-        {
-            for record in items {
-                let path_key = if record.get("note_path").is_some() {
-                    "note_path"
-                } else {
-                    "relative_path"
-                };
-                let Some(path) = record.get(path_key).and_then(serde_json::Value::as_str) else {
-                    continue;
-                };
-                if let Some(rebased) = rebased_relative_path(path, old_path, new_path) {
-                    record[path_key] = serde_json::Value::String(rebased);
-                    record["updated_at"] = serde_json::Value::String(updated_at.clone());
-                    changed = true;
-                }
-            }
-        }
-    }
-    fn rebase_rule_paths(value: &mut serde_json::Value, old_path: &str, new_path: &str) -> bool {
-        let mut changed = false;
-        if let Some(object) = value.as_object_mut() {
-            if object.get("field").and_then(serde_json::Value::as_str) == Some("path") {
-                if let Some(path) = object.get("value").and_then(serde_json::Value::as_str) {
-                    if let Some(rebased) = rebased_relative_path(path, old_path, new_path) {
-                        object.insert("value".into(), serde_json::Value::String(rebased));
-                        changed = true;
-                    }
-                }
-            }
-            for child in object.values_mut() {
-                changed |= rebase_rule_paths(child, old_path, new_path);
-            }
-        } else if let Some(array) = value.as_array_mut() {
-            for child in array {
-                changed |= rebase_rule_paths(child, old_path, new_path);
-            }
-        }
-        changed
-    }
-    if let Some(filter) = dataset.get_mut("filter") {
-        changed |= rebase_rule_paths(filter, old_path, new_path);
-    }
-    if let Some(views) = document
-        .payload
-        .get_mut("views")
-        .and_then(|views| views.get_mut("items"))
-        .and_then(serde_json::Value::as_array_mut)
-    {
-        for view in views {
-            if let Some(filter) = view.get_mut("filter") {
-                changed |= rebase_rule_paths(filter, old_path, new_path);
-            }
-        }
-    }
-
-    if !changed {
-        return None;
-    }
-    document.collection.revision = document.collection.revision.checked_add(1)?;
-    document.collection.updated_at = updated_at;
+fn rebase_collection_document_paths(source: &str, old_path: &str, new_path: &str) -> Option<String> {
+    let mut document = flowix_core::collection::CollectionDocument::parse(source).ok()?.normalized_v2().ok()?;
+    if !document.rebase_paths(old_path, new_path) { return None; }
+    document.revise().ok()?;
     document.serialize().ok()
 }
 
@@ -269,11 +184,9 @@ pub(crate) fn remove_table_note_records(memo_file: &MemoFile, notebook_id: &str,
     }
 }
 
-/// Best-effort maintenance of table-to-note references after a note path move.
-/// Table files are independent user documents, so a failed/conflicted rewrite
-/// must never fail the note rename itself. Unresolved references are repaired
-/// to blank rows when the table is next loaded.
-pub(crate) fn rebase_table_note_paths(
+/// Best-effort maintenance of note/media collection references after a generic path move.
+/// Collection folder mutations perform the same transformation inside their operation journal.
+pub(crate) fn rebase_collection_paths(
     memo_file: &MemoFile,
     notebook_id: &str,
     old_relative_path: &str,
@@ -296,14 +209,13 @@ pub(crate) fn rebase_table_note_paths(
     };
 
     for item in documents.into_iter().filter(|item| {
-        item.collection_type == flowix_core::collection::CollectionType::Table
-            && item.parse_state == "valid"
+        item.parse_state == "valid"
     }) {
         let path = root.join(&item.relative_path);
         let Ok(source) = fs::read_to_string(&path) else {
             continue;
         };
-        let Some(next) = rebase_table_document_paths(&source, old_relative_path, new_relative_path)
+        let Some(next) = rebase_collection_document_paths(&source, old_relative_path, new_relative_path)
         else {
             continue;
         };
@@ -322,7 +234,7 @@ pub(crate) fn rebase_table_note_paths(
 
 /// Rebase references for a file or folder move when both paths belong to the
 /// same notebook. This path-based wrapper is used by generic file operations.
-pub(crate) fn rebase_table_note_paths_for_move(memo_file: &MemoFile, source: &Path, target: &Path) {
+pub(crate) fn rebase_collection_paths_for_move(memo_file: &MemoFile, source: &Path, target: &Path) {
     let Ok(notebooks) = memo_file.read_notebook_configs() else {
         return;
     };
@@ -335,7 +247,7 @@ pub(crate) fn rebase_table_note_paths_for_move(memo_file: &MemoFile, source: &Pa
         else {
             continue;
         };
-        rebase_table_note_paths(
+        rebase_collection_paths(
             memo_file,
             &notebook.id,
             &old_relative.to_string_lossy().replace('\\', "/"),

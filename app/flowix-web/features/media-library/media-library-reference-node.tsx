@@ -9,9 +9,9 @@ import { ArrowUpRightIcon, ArrowsLeftRightIcon, FunnelIcon, PlusIcon } from '@ph
 import { dialogs, externalDocuments, files, collections, mediaResources, type MediaResource, type NotebookFolderOption } from '@platform/tauri/client';
 import { resourceKindFromPath } from '@features/editor/public/code-file';
 import { useNoteStore } from '@features/memo/store/note-store';
-import { openCollectionTarget, replaceExternalDocumentPath } from '@features/workspace/use-cases/workspace-navigation';
+import { openCollectionTarget } from '@features/workspace/use-cases/workspace-navigation';
 import { canonicalDirectoryPath, canonicalPath, joinNotebookMemoPath } from '@/lib/path';
-import { displayTitleFromFilename, mediaLibraryExtension } from '@/lib/utils';
+import { displayTitleFromFilename } from '@/lib/utils';
 import { useCollectionReference } from '@features/collection/use-collection-reference';
 import { toast } from '@/lib/toast';
 import { Button } from '@shared/ui/button';
@@ -22,7 +22,7 @@ import { NotebookTreeResourceIcon } from '@features/memo/components/file-type-ic
 import { openMediaLibraryReferencePicker } from './media-library-reference-picker';
 import { resolveMediaLibraryAddDirectories } from './add-location';
 import { saveMediaFile } from './media-import';
-import { renameMediaLibraryFile } from './rename-media-library';
+import { renameMediaLibrary } from './rename-media-library';
 import { MediaLibraryPhotoWall } from './media-library-photo-wall';
 import { PHOTO_WALL_CANDIDATE_LIMIT } from './photo-wall-layout';
 import { MediaLibraryFilterPanel } from './media-library-filter-panel';
@@ -571,23 +571,12 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
       setNameDraft(currentTitle);
       return;
     }
-    const extension = mediaLibraryExtension(filePath);
-    if (!extension) {
-      toast.error('无法识别媒体库文件后缀');
-      setEditingName(false);
-      setNameDraft(currentTitle);
-      return;
-    }
     setRenaming(true);
     try {
       if (!attrs.collectionId) return;
-      const resolved = await resolveMediaLibraryPath(notebook, attrs.collectionId);
-      const result = await renameMediaLibraryFile({
-        filePath: resolved.filePath, notebookPath: notebook.path, notebookId: notebook.id, collectionId: attrs.collectionId, title,
+      const result = await renameMediaLibrary({
+        notebookPath: notebook.path, notebookId: notebook.id, collectionId: attrs.collectionId, title,
         onRenamed: (nextPath) => {
-          const identity = reference.fileIdentity;
-          if (!identity) return;
-          replaceExternalDocumentPath(identity.displayId, resolved.filePath, nextPath);
           const root = canonicalDirectoryPath(notebook.path);
           if (nextPath.startsWith(`${root}/`)) onRelativePathChange(nextPath.slice(root.length + 1));
         },
@@ -596,14 +585,14 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
         views: reuseCollectionValue(current.views, result.document.views),
         dataset: { ...result.document.dataset, records: reuseCollectionValue(current.dataset.records, result.document.dataset.records) },
       } : result.document);
-      if (result.metadataError) toast.error(`文件已重命名，配置名称未能保存：${result.metadataError}`);
+      if (result.errorCode) toast.error(`集合已更新，后续操作待恢复：${result.errorCode}`);
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : '重命名媒体库失败');
     } finally {
       setRenaming(false);
       setEditingName(false);
     }
-  }, [attrs.collectionId, attrs.relativePath, document?.collection.name, reference.item?.name, reference.fileIdentity, editable, filePath, notebook, onRelativePathChange, renaming]);
+  }, [attrs.collectionId, document?.collection.name, reference.item?.name, editable, filePath, notebook, onRelativePathChange, renaming]);
   const displayName = document?.collection.name ?? reference.item?.name ?? attrs.relativePath?.split('/').pop()?.replace(/\.lib\.ya?ml$/i, '') ?? '媒体库';
 
   return <section ref={sectionRef} className="my-3 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--editor-block-bg)] px-3 pb-3 pt-1.5" contentEditable={false} aria-label={`媒体库：${displayName}`}>

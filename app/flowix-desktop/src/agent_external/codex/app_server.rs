@@ -745,7 +745,10 @@ impl CodexAppServerManager {
             let valid = match key {
                 "sandbox_workspace_write.network_access" => value.is_boolean(),
                 "model_reasoning_effort" => {
-                    matches!(value.as_str(), Some("low" | "medium" | "high" | "xhigh"))
+                    matches!(
+                        value.as_str(),
+                        Some("low" | "medium" | "high" | "xhigh" | "max" | "ultra")
+                    )
                 }
                 "model_verbosity" => matches!(value.as_str(), Some("low" | "medium" | "high")),
                 "service_tier" => matches!(
@@ -1074,7 +1077,7 @@ impl CodexAppServerManager {
                 stream_end_emitted: stream_end_emitted.clone(),
                 completed_agent_messages: completed_agent_messages.clone(),
             });
-            let result = self.request("turn/start", json!({
+            let mut turn_params = json!({
                 "threadId": codex_thread_id,
                 "input": input,
                 "cwd": cwd,
@@ -1082,7 +1085,11 @@ impl CodexAppServerManager {
                 "effort": message.codex_reasoning_effort_for_runtime(),
                 "approvalPolicy": approval,
                 "sandboxPolicy": sandbox
-            })).await?;
+            });
+            if let Some(service_tier) = message.codex_service_tier_for_runtime() {
+                turn_params["serviceTier"] = json!(service_tier);
+            }
+            let result = self.request("turn/start", turn_params).await?;
             let codex_turn_id = result.pointer("/turn/id").and_then(Value::as_str)
                 .filter(|id| !id.trim().is_empty())
                 .ok_or_else(|| "Codex app-server did not return a turn id".to_string())?.to_string();
@@ -2043,7 +2050,7 @@ impl CodexAppServerManager {
         count
     }
 
-    pub async fn supported_models(&self) -> Result<Vec<String>, String> {
+    pub async fn supported_model_catalog(&self) -> Result<Vec<Value>, String> {
         self.ensure_connection().await?;
         let result = self.request("model/list", json!({ "limit": 100 })).await?;
         let mut seen = std::collections::HashSet::new();
@@ -2053,15 +2060,50 @@ impl CodexAppServerManager {
             .into_iter()
             .flatten()
             .filter_map(|model| {
-                model
+                let id = model
                     .get("model")
                     .or_else(|| model.get("id"))
+                    .or_else(|| model.get("slug"))
                     .and_then(Value::as_str)
                     .map(str::trim)
-                    .filter(|model| !model.is_empty() && !model.eq_ignore_ascii_case("inherit"))
+                    .filter(|id| !id.is_empty() && !id.eq_ignore_ascii_case("inherit"))?;
+                let source_efforts = model
+                    .get("supportedReasoningEfforts")
+                    .or_else(|| model.get("supported_reasoning_efforts"))
+                    .or_else(|| model.get("supported_reasoning_levels"));
+                let reasoning_efforts = source_efforts
+                    .and_then(Value::as_array)
+                    .into_iter()
+                    .flatten()
+                    .filter_map(|effort| {
+                        effort
+                            .as_str()
+                            .or_else(|| {
+                                effort
+                                    .get("reasoningEffort")
+                                    .or_else(|| effort.get("effort"))
+                                    .or_else(|| effort.get("reasoning_effort"))
+                                    .and_then(Value::as_str)
+                            })
+                    })
+                    .map(str::to_ascii_lowercase)
+                    .filter(|effort| {
+                        matches!(effort.as_str(), "low" | "medium" | "high" | "xhigh" | "max" | "ultra")
+                    })
+                    .collect::<Vec<_>>();
+                Some((id.to_string(), reasoning_efforts))
             })
-            .filter(|model| seen.insert((*model).to_string()))
-            .map(str::to_string)
+            .filter(|(id, _)| seen.insert(id.clone()))
+            .map(|(id, reasoning_efforts)| json!({ "id": id, "reasoningEfforts": reasoning_efforts }))
+            .collect())
+    }
+
+    pub async fn supported_models(&self) -> Result<Vec<String>, String> {
+        Ok(self
+            .supported_model_catalog()
+            .await?
+            .into_iter()
+            .filter_map(|model| model.get("id").and_then(Value::as_str).map(str::to_string))
             .collect())
     }
 

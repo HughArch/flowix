@@ -45,7 +45,8 @@ export function useMainPanelController({
   }, []);
 
   const {
-    handleListDividerMouseDown,
+    resizeMemoList,
+    setIsDraggingListDivider,
     isDraggingListDivider,
     isMemoListHidden,
     memoColWidth,
@@ -113,7 +114,8 @@ export function useMainPanelController({
     browserColumnLayoutKey,
     collapseMemoList,
     handleBrowserColumnResize,
-    handleListDividerMouseDown,
+    resizeMemoList,
+    setIsDraggingListDivider,
     handleToggleMemoList,
     handleToggleNoteNavigation,
     openNoteNavigation,

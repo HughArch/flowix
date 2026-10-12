@@ -53,6 +53,8 @@ pub struct RuntimePathConfig {
     /// 推理 effort("low" / "medium" / "high" / "xhigh")。
     /// 通用 metadata 协议字段,Provider 不支持时为 None。
     pub reasoning_effort: Option<String>,
+    /// Codex service tier: auto or priority.
+    pub service_tier: Option<String>,
     /// DeepSeek Harness conversation preset: standard / code / minimal / cordis.
     pub mode: Option<String>,
     /// Pi builtin codemode extension toggle.
@@ -203,6 +205,12 @@ impl AgentUserMessage {
 
     pub fn codex_reasoning_effort_for_runtime(&self) -> Option<&str> {
         self.reasoning_effort_for_runtime("codex")
+    }
+
+    pub fn codex_service_tier_for_runtime(&self) -> Option<&str> {
+        self.runtime_config_for("codex")
+            .and_then(|config| config.service_tier.as_deref())
+            .filter(|tier| matches!(*tier, "auto" | "priority"))
     }
 
     /// 通用: 任意 provider 的 model 字段(`StreamStart` chunk 使用)。

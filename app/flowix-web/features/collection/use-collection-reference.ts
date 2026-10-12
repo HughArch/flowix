@@ -50,11 +50,12 @@ export function useCollectionReference(notebook: { id: string; path: string } | 
     void refresh();
     const matches = (event: { notebookId: string; collectionId?: string }) => event.notebookId === notebook.id && (!event.collectionId || event.collectionId === collectionId);
     const stopCollection = subscribe<{ notebookId: string; collectionId: string }>('collection-changed', (event) => { if (matches(event)) void refresh(); });
-    const stopPath = subscribe<{ notebookId: string; relativePath?: string }>('flowix:path-note-changed', (event) => {
-      if (matches(event) && (!event.relativePath || /\.(table|lib)\.ya?ml$/i.test(event.relativePath))) void refresh();
+    const stopPath = subscribe<{ notebookId: string; relativePath?: string; directory?: boolean }>('flowix:path-note-changed', (event) => {
+      if (matches(event) && (event.directory || !event.relativePath || /(?:\.(table|lib)\.ya?ml|\.index\.yaml)$/i.test(event.relativePath))) void refresh();
     });
+    const stopCatalog = subscribe<{ notebookId: string }>('file-management-changed', (event) => { if (matches(event)) void refresh(); });
     const stopLocal = subscribeLocalCollectionChanges((event) => { if (matches({ notebookId: event.notebookId, collectionId: event.item.collectionId ?? undefined })) void refresh(); });
-    return () => { active = false; stopCollection(); stopPath(); stopLocal(); release?.(); };
+    return () => { active = false; stopCollection(); stopPath(); stopCatalog(); stopLocal(); release?.(); };
   }, [enabled, notebook?.id, root, collectionId, type, viewId, key]);
   return state.key === key ? state : { key, item: null, content: null, fileIdentity: undefined, error: null };
 }

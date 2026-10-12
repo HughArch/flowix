@@ -1,5 +1,7 @@
 'use client';
 
+import { ColumnResizeHandle } from './components/column-resize-handle';
+
 import { createLogger } from '@/lib/logger';
 import { canonicalPath } from '@/lib/path';
 import {
@@ -295,7 +297,8 @@ export function MainLayout({
     browserColumnLayoutKey,
     collapseMemoList,
     handleBrowserColumnResize,
-    handleListDividerMouseDown,
+    resizeMemoList,
+    setIsDraggingListDivider,
     handleToggleMemoList,
     handleToggleNoteNavigation,
     openNoteNavigation,
@@ -735,8 +738,8 @@ export function MainLayout({
           </ListColumn>
           {/* List <-> Memo detail divider */}
           {!isMemoListHidden && (
-            <div className="relative z-10 h-full w-px shrink-0 cursor-col-resize bg-[var(--divider)]" onMouseDown={handleListDividerMouseDown}>
-              <div className="absolute inset-y-0 left-0 w-[11px] bg-transparent" />
+            <div className="relative z-[60] h-full w-px shrink-0 bg-[var(--divider)]">
+              <ColumnResizeHandle label="调整列表列宽度" width={memoColWidth} onResize={resizeMemoList} onDraggingChange={setIsDraggingListDivider} />
             </div>
           )}
           <div

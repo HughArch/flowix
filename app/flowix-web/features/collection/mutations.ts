@@ -12,6 +12,7 @@ export async function collectionNotebookId(notebookPath: string, notebookId?: st
   if (!notebook) throw new Error('集合所属笔记本未注册');
   return notebook.id;
 }
+
 export async function mutateCollectionFile(options: {
   notebookId: string;
   notebookPath: string;
@@ -38,11 +39,13 @@ export async function mutateCollectionFile(options: {
       operationId: crypto.randomUUID(), newName: options.newName,
       targetRelativePath: options.targetRelativePath, properties: options.properties,
     });
-    const filePath = `${root}/${result.actualRelativePath}`;
+    const resultRoot = canonicalDirectoryPath(result.notebookPath);
+    const filePath = `${resultRoot}/${result.actualRelativePath}`;
     for (const operation of operations) operation.expectFollowupWrite(filePath);
     const updated = parseCollectionDocumentV2(result.content);
-    publishLocalCollectionChange({ notebookId: options.notebookId, previousPath, fileDisplayId, indexSequence: result.indexSequence, item: {
-      ...item, collectionId: result.collectionId, relativePath: result.actualRelativePath,
+    const actualPreviousPath = `${resultRoot}/${result.previousRelativePath}`;
+    publishLocalCollectionChange({ notebookId: options.notebookId, previousPath: actualPreviousPath, fileDisplayId, indexSequence: result.indexSequence, item: {
+      ...item, indexSequence: result.indexSequence, collectionId: result.collectionId, relativePath: result.actualRelativePath,
       name: result.actualName, revision: result.actualRevision, properties: updated.collection.properties,
       updatedAt: updated.collection.updated_at,
     } });

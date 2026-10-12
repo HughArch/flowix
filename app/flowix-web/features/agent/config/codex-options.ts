@@ -41,6 +41,8 @@ export const CODEX_REASONING_OPTIONS: Array<{
   { id: "medium", label: "Medium" },
   { id: "high", label: "High" },
   { id: "xhigh", label: "Extra High" },
+  { id: "max", label: "Max" },
+  { id: "ultra", label: "Ultra" },
 ];
 
 // 仅用于 UI 展示的模型 key 美化函数: 不改变真实 model id, 不影响

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { getAllPresets } from '@features/document/properties/presets';
-import { addTableView, createTableDocument, createUuidV7 } from './model';
-import { addPresetField, toggleDatasetTableFieldVisibility, changeFieldType, removeField, removePresetField, renameField } from './table-commands';
+import { addCalendarDateView, addTableView, createTableDocument, createUuidV7 } from './model';
+import { addPresetField, toggleDatasetTableFieldVisibility, changeFieldType, removeBuiltinField, removeField, removePresetField, renameField } from './table-commands';
 
 function documentWithField() {
   const document = createTableDocument();
@@ -107,4 +107,12 @@ it('removes field sort references while preserving unrelated sorts and note prop
   expect(next.views.items[0].sort).toEqual([{ field: 'modified_at', direction: 'desc' }]);
   expect(next.dataset.records).toBe(document.dataset.records);
   expect(document.views.items[0].sort).toHaveLength(3);
+});
+
+
+it('prevents both removal paths from removing a date preset used by a calendar', () => {
+  const { document } = addCalendarDateView(createTableDocument());
+  const preset = getAllPresets([], (key) => key).find((item) => item.key === 'calendar_date')!;
+  expect(() => removePresetField(document, preset)).toThrow('请先调整依赖此属性的视图');
+  expect(() => removeBuiltinField(document, '__note_calendar_date__')).toThrow('请先调整依赖此属性的视图');
 });

@@ -153,6 +153,7 @@ export function removePresetField(document: MultidimensionalTableDocument, prese
     throw new Error('仅支持移除隐藏字段');
   }
   if (!builtin) return removeField(document, fieldId);
+  if (viewsRequiringField(document, fieldId).length) throw new Error('请先调整依赖此属性的视图');
   if (!document.dataset.schema.preset_fields.includes(builtin.id)) return document;
   return {
     ...document,
@@ -176,6 +177,7 @@ export function removePresetField(document: MultidimensionalTableDocument, prese
 export function removeBuiltinField(document: MultidimensionalTableDocument, fieldId: string): MultidimensionalTableDocument {
   if (!BUILTIN_TABLE_FIELDS.some((field) => field.id === fieldId)) return document;
   if (fieldId === document.dataset.schema.primary_field_id) throw new Error('不能移除标题字段');
+  if (viewsRequiringField(document, fieldId).length) throw new Error('请先调整依赖此属性的视图');
   return {
     ...document,
     collection: reviseCollection(document.collection),

@@ -2,6 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TableField, TableRecord } from './model';
+import { NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID } from './model';
 import { TableCalendarView } from './table-secondary-views';
 
 const titleField: TableField = { id: 'note', type: 'primary', property_key: 'note' };
@@ -51,7 +52,7 @@ describe('TableCalendarView interactions', () => {
     expect(onOpenRecord).toHaveBeenCalledWith('first');
   });
 
-  it('opens a day on native double click inside an embedded editor and ignores note cards', () => {
+  it.each(['due', NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID])('opens a %s day on native double click inside an embedded editor and ignores note cards', (dateFieldId) => {
     container = document.createElement('div');
     const editor = document.createElement('div');
     editor.setAttribute('contenteditable', 'true');
@@ -69,7 +70,8 @@ describe('TableCalendarView interactions', () => {
       onCursorChange={vi.fn()}
       days={days}
       groups={new Map([['2026-10-12', [first]]])}
-      dateFieldId="due"
+      dateFieldId={dateFieldId}
+      canMoveRecords={dateFieldId === 'due'}
       titleField={titleField}
       renderValue={(record) => record.note_path}
       onMoveRecord={vi.fn()}

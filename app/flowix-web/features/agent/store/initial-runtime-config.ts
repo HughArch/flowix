@@ -27,6 +27,9 @@ export function buildInitialInstanceRuntimeConfig(
     ...(defaultRuntime?.reasoningEffort
       ? { reasoningEffort: defaultRuntime.reasoningEffort }
       : {}),
+    ...(defaultRuntime?.serviceTier
+      ? { serviceTier: defaultRuntime.serviceTier }
+      : {}),
     ...(defaultRuntime?.mode
       ? { deepseekHarness: { mode: defaultRuntime.mode } }
       : {}),

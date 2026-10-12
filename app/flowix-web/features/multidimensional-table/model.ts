@@ -2,7 +2,7 @@ import { createCollectionMetadata, createCollectionId, createUuidV7, parseCollec
 export { createUuidV7 } from '@features/collection/model';
 import { isTablePropertyKind, type TablePropertyKind } from '@/lib/property-types';
 
-import { NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID, NOTE_TAGS_FIELD_ID, NOTE_ICON_FIELD_ID, NOTE_STATUS_FIELD_ID, BUILTIN_TABLE_FIELDS, builtinPresetTableField, isBuiltinTableFieldId } from './builtin-fields';
+import { NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID, NOTE_CALENDAR_DATE_FIELD_ID, NOTE_TAGS_FIELD_ID, NOTE_ICON_FIELD_ID, NOTE_STATUS_FIELD_ID, BUILTIN_TABLE_FIELDS, builtinPresetTableField, isBuiltinTableFieldId } from './builtin-fields';
 export { NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID } from './builtin-fields';
 
 export type TableFieldType = Exclude<TablePropertyKind, 'Note'> | 'primary';
@@ -165,7 +165,7 @@ export function createTableView(document: MultidimensionalTableDocument, type: T
   const fields = document.dataset.schema.fields;
   const field = fields.find((item) => item.id === fieldId);
   if (type === 'kanban' && field?.type !== 'Select') throw new Error('看板需要单选属性');
-  if (type === 'calendar' && fieldId && fieldId !== NOTE_CREATED_AT_FIELD_ID && fieldId !== NOTE_UPDATED_AT_FIELD_ID && field?.type !== 'Date') {
+  if (type === 'calendar' && fieldId && fieldId !== NOTE_CREATED_AT_FIELD_ID && fieldId !== NOTE_UPDATED_AT_FIELD_ID && fieldId !== NOTE_CALENDAR_DATE_FIELD_ID && field?.type !== 'Date') {
     throw new Error('日历需要日期属性');
   }
   const baseName = VIEW_NAMES[type];
@@ -259,6 +259,30 @@ export function addKanbanView(document: MultidimensionalTableDocument): { docume
   };
 }
 
+/** Adds the calendar date preset and creates a calendar view that uses it. */
+export function addCalendarDateView(document: MultidimensionalTableDocument): { document: MultidimensionalTableDocument; view: TableView } {
+  const existing = document.dataset.schema.fields.find((field) => field.property_key?.trim().toLowerCase() === 'calendar_date');
+  if (existing && existing.type !== 'Date') throw new Error('日期属性已存在，但不是日期类型');
+  if (existing) return addTableView(document, 'calendar', existing.id);
+  const presetFields = document.dataset.schema.preset_fields.includes(NOTE_CALENDAR_DATE_FIELD_ID)
+    ? document.dataset.schema.preset_fields
+    : [...document.dataset.schema.preset_fields, NOTE_CALENDAR_DATE_FIELD_ID];
+  const withCalendarDate: MultidimensionalTableDocument = {
+    ...document,
+    collection: reviseCollection(document.collection),
+    dataset: { ...document.dataset, schema: {
+      ...document.dataset.schema,
+      preset_fields: presetFields,
+      field_order: completeFieldOrder(document.dataset.schema.primary_field_id, document.dataset.schema.fields, presetFields, document.dataset.schema.field_order),
+    } },
+  };
+  const view = createTableView(withCalendarDate, 'calendar', NOTE_CALENDAR_DATE_FIELD_ID);
+  return {
+    view,
+    document: { ...withCalendarDate, views: { ...withCalendarDate.views, default_id: view.id, items: [...withCalendarDate.views.items, view] } },
+  };
+}
+
 export function createTableDocument(initialViewType: TableViewType = 'table', name = '多维表格', placement: CollectionMetadata['placement'] = 'standalone'): MultidimensionalTableDocument {
   const noteFieldId = `fld_${createUuidV7()}`;
   let document: MultidimensionalTableDocument = {
@@ -267,13 +291,13 @@ export function createTableDocument(initialViewType: TableViewType = 'table', na
       schema: {
         primary_field_id: noteFieldId,
         fields: [{ id: noteFieldId, type: 'primary', property_key: 'note' }],
-        preset_fields: [NOTE_TAGS_FIELD_ID, NOTE_ICON_FIELD_ID],
+        preset_fields: [NOTE_TAGS_FIELD_ID, NOTE_ICON_FIELD_ID, ...(initialViewType === 'calendar' ? [NOTE_CALENDAR_DATE_FIELD_ID] : [])],
         field_order: [],
       },
       records: { include: [], exclude: [] }, filter: null },
     views: { default_id: '', items: [] },
   };
-  const fieldId = initialViewType === 'calendar' ? NOTE_CREATED_AT_FIELD_ID : undefined;
+  const fieldId = initialViewType === 'calendar' ? NOTE_CALENDAR_DATE_FIELD_ID : undefined;
   document.dataset.schema.field_order = completeFieldOrder(
     document.dataset.schema.primary_field_id,
     document.dataset.schema.fields,
@@ -359,7 +383,8 @@ export function validateTableDocument(parsed: unknown): MultidimensionalTableDoc
       .filter((item): item is string => typeof item === 'string');
     if (typeof view.config.date_field === 'string'
       && view.config.date_field !== NOTE_CREATED_AT_FIELD_ID
-      && view.config.date_field !== NOTE_UPDATED_AT_FIELD_ID) {
+      && view.config.date_field !== NOTE_UPDATED_AT_FIELD_ID
+      && view.config.date_field !== NOTE_CALENDAR_DATE_FIELD_ID) {
       referencedFields.push(view.config.date_field);
     }
     const visibleFields = view.config.visible_fields;
@@ -382,7 +407,7 @@ export function validateTableDocument(parsed: unknown): MultidimensionalTableDoc
     if (view.layout === 'calendar') {
       const dateFieldId = view.config.date_field;
       const dateField = typeof dateFieldId === 'string' ? value.dataset?.schema.fields.find((field) => field.id === dateFieldId) : undefined;
-      if (dateFieldId !== NOTE_CREATED_AT_FIELD_ID && dateFieldId !== NOTE_UPDATED_AT_FIELD_ID && dateField?.type !== 'Date') {
+      if (dateFieldId !== NOTE_CREATED_AT_FIELD_ID && dateFieldId !== NOTE_UPDATED_AT_FIELD_ID && dateFieldId !== NOTE_CALENDAR_DATE_FIELD_ID && dateField?.type !== 'Date') {
         throw new Error(`日历视图“${view.name}”需要日期属性`);
       }
       if (typeof view.config.title_field !== 'string') throw new Error(`日历视图“${view.name}”的标题字段无效`);

@@ -9,7 +9,7 @@ import { collectionFilterUsesField, type CollectionRuleFilter } from '@features/
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
 import { ChevronLeft, ChevronRight, LoaderCircle, Plus, Info, Table2 } from 'lucide-react';
 import { DotsThreeIcon, EyeIcon, EyeSlashIcon, PencilSimpleIcon, TrashIcon } from '@phosphor-icons/react';
-import { notebookAssets, dialogs, files, collections, notes as notesClient, windows, type NoteEntry } from '@platform/tauri/client';
+import { notebookAssets, dialogs, collections, notes as notesClient, windows, type NoteEntry } from '@platform/tauri/client';
 import { canonicalDirectoryPath, canonicalPath, joinNotebookMemoPath, notebookRelativeDirectoryPath, parentDirectoryPath } from '@/lib/path';
 import { toast } from '@/lib/toast';
 import { canonicalizePropertyKey } from '@features/document/properties/property-key';
@@ -22,8 +22,8 @@ import { createFileBrowserTarget, openBrowserColumnTarget } from '@features/work
 import { replaceExternalDocumentPath } from '@features/workspace/use-cases/workspace-navigation';
 import { NotebookTreeResourceIcon } from '@features/memo/components/file-type-icon';
 import { renameMarkdownTitle } from '@features/document/use-cases/local-document-operations';
-import { ensureFileDisplayIdentity, findFileDisplayIdentity, type FileDisplayIdentity } from '@/lib/file-display-registry';
-import { displayTitleFromFilename, tableDocumentExtension } from '@/lib/utils';
+import { ensureFileDisplayIdentity, type FileDisplayIdentity } from '@/lib/file-display-registry';
+import { displayTitleFromFilename } from '@/lib/utils';
 import { Button } from '@shared/ui/button';
 import { CenteredLoadingSpinner } from '@shared/ui/centered-loading-spinner';
 import { useTitleEditCaret } from '@shared/hooks/use-title-edit-caret';
@@ -35,6 +35,7 @@ import { ADDABLE_TABLE_PROPERTY_KINDS, getPropertyTypeDefinition, type PropertyK
 import {
   createUuidV7,
   addKanbanView,
+  addCalendarDateView,
   addTableView,
   findKanbanStatusField,
   type MultidimensionalTableDocument,
@@ -49,11 +50,12 @@ import {
   withTableAutoCollect,
   canEditTableAutoCollectFilter,
 } from './model';
-import { BUILTIN_TABLE_FIELDS, builtinPresetTableField, builtinTableFieldLabel } from './builtin-fields';
+import { BUILTIN_TABLE_FIELDS, NOTE_CALENDAR_DATE_FIELD_ID, builtinPresetTableField, builtinTableFieldLabel } from './builtin-fields';
 import { groupRecordsByValue, KANBAN_UNASSIGNED_GROUP_ID } from './view-index';
 import { noteMatchesCollectionFilter } from './record-filter';
 import { applyTableView } from './view-records';
-import { asyncMapLimit } from './async-map-limit';
+import { useTableImages } from './use-table-images';
+import { useTableScrollLoading } from './use-table-scroll-loading';
 import { TableCalendarView, TableGalleryView, TableKanbanView } from './table-secondary-views';
 import { TableSortButton, cycleTableSort, tableSortDirection } from './table-sort-button';
 import { TableDatasetMenu } from './table-dataset-menu';
@@ -95,8 +97,9 @@ export interface TableDocumentViewProps {
 }
 
 const FIELD_TYPE_CHOICES: TableFieldType[] = ADDABLE_TABLE_PROPERTY_KINDS.filter((kind) => kind !== 'Note');
-const TABLE_PAGE_SIZE = 10;
-const GALLERY_PAGE_SIZE = 14;
+const SCROLL_PAGE_SIZE = 50;
+const EMBEDDED_TABLE_PAGE_SIZE = 10;
+const EMBEDDED_GALLERY_PAGE_SIZE = 14;
 
 function noteInCollectionSource(
   notePath: string,
@@ -256,6 +259,10 @@ export function TableDocumentView(props: TableDocumentViewProps) {
 }
 
 function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebookId, expectedCollectionId, initialViewId, onActiveViewChange, editable = true, canCreateFields = true, canCreateRecords = true, showAssociateNoteAction = canCreateRecords, canDeleteViews = true, embeddedInEditor = false, onRemoveReference, trailingActions, onFilePathChange }: TableDocumentViewProps) {
+  const tablePageSize = embeddedInEditor ? EMBEDDED_TABLE_PAGE_SIZE : SCROLL_PAGE_SIZE;
+  const galleryPageSize = embeddedInEditor ? EMBEDDED_GALLERY_PAGE_SIZE : SCROLL_PAGE_SIZE;
+  const [currentFilePath, setCurrentFilePath] = useState(filePath);
+  useEffect(() => setCurrentFilePath(filePath), [filePath]);
   const { t } = useI18n();
   const { fields: propertyFields } = usePropertyFieldPreferences();
   const tablePresets = useMemo(() => {
@@ -268,7 +275,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   const {
     document, loadError, saving, saveFailed, setSaving, reportSaveFailure, notes, setNotes, resolvedNotebookId,
     notesLoadError, load, acceptContent, save: saveSession, loadSequenceRef, loadGeneration, isCurrentSession, pendingNotePropertiesRef,
-  } = useTableSession({ filePath, fileIdentity, notebookPath, notebookId, expectedCollectionId });
+  } = useTableSession({ filePath: currentFilePath, fileIdentity, notebookPath, notebookId, expectedCollectionId });
   const latestDocumentRef = useRef(document);
   latestDocumentRef.current = document;
   useEffect(() => {
@@ -282,12 +289,12 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       if (!active) return;
       if (indexedTable.identityConflict || indexedTable.parseState !== 'valid') return;
       const indexedPath = joinNotebookMemoPath(notebookPath, indexedTable.relativePath);
-      if (!indexedPath || canonicalPath(indexedPath) === canonicalPath(filePath)) return;
+      if (!indexedPath || canonicalPath(indexedPath) === canonicalPath(currentFilePath)) return;
       onFilePathChange(indexedPath);
     }).catch(() => undefined);
 
     return () => { active = false; };
-  }, [document, embeddedInEditor, expectedCollectionId, filePath, loadError, notebookId, notebookPath, onFilePathChange]);
+  }, [document, embeddedInEditor, expectedCollectionId, currentFilePath, loadError, notebookId, notebookPath, onFilePathChange]);
   const save = useCallback(async (...args: Parameters<typeof saveSession>) => {
     if (!editable) return false;
     return saveSession(...args);
@@ -303,46 +310,76 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   const manageRenameCancelledRef = useRef(false);
   const [editingTableName, setEditingTableName] = useState(false);
   const [tableNameDraft, setTableNameDraft] = useState('');
-  const [renamingTableFile, setRenamingTableFile] = useState(false);
+  const [renamingTable, setRenamingTable] = useState(false);
   const { inputRef: tableNameInputRef, captureCaret: captureTableTitleCaret } = useTitleEditCaret(editingTableName);
-  const renameTableFile = useCallback(async (rawTitle: string) => {
+  const commitTableTitle = useCallback(async (rawTitle: string) => {
     setEditingTableName(false);
     const title = rawTitle.trim();
-    const currentTitle = document?.collection.name ?? displayTitleFromFilename(filePath);
-    if (!editable || saving || renamingTableFile || !notebookPath || !title || title === currentTitle) return;
+    const currentTitle = document?.collection.placement === 'folder'
+      ? currentFilePath.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '').split(/[\\/]/).pop() ?? document.collection.name
+      : document?.collection.name ?? displayTitleFromFilename(currentFilePath);
+    if (!editable || saving || renamingTable || !notebookPath || !title || title === currentTitle) return;
     if (/[\\/]/.test(title)) {
       toast.error('文件名不能包含路径分隔符');
       return;
     }
-    const extension = tableDocumentExtension(filePath);
-    if (!extension) {
-      toast.error('无法识别多维表格文件后缀');
-      return;
-    }
-
     const sequence = loadSequenceRef.current;
     setSaving(true);
-    setRenamingTableFile(true);
-    const previousPath = canonicalPath(filePath);
-    const identity = fileIdentity ?? findFileDisplayIdentity(previousPath) ?? ensureFileDisplayIdentity(previousPath);
+    setRenamingTable(true);
     try {
       if (!document || !resolvedNotebookId) throw new Error('集合尚未加载完成');
-      const result = await mutateCollectionFile({ notebookId: resolvedNotebookId, notebookPath, collectionId: document.collection.id, expectedRevision: document.collection.revision, newName: title });
-      replaceExternalDocumentPath(identity.displayId, previousPath, result.filePath);
-      acceptContent(result.content);
+      const result = await mutateCollectionFile({
+        notebookId: resolvedNotebookId, notebookPath, collectionId: document.collection.id,
+        expectedRevision: document.collection.revision, newName: title,
+      });
+      if (!isCurrentSession(sequence) || !acceptContent(result.content)) return;
+      if (result.directoryMove) {
+        const oldPrefix = `${result.directoryMove.previousRelativePath}/`;
+        const nextPrefix = `${result.directoryMove.relativePath}/`;
+        setNotes((current) => current.map((note) => {
+          const path = note.relativePath.replace(/\\/g, '/');
+          return path.startsWith(oldPrefix) ? { ...note, relativePath: nextPrefix + path.slice(oldPrefix.length) } : note;
+        }));
+      }
+      setCurrentFilePath(result.filePath);
       onFilePathChange?.(result.filePath);
       if (result.errorCode) toast.error(`集合已更新，后续操作待恢复：${result.errorCode}`);
     } catch (error) {
       reportSaveFailure(sequence);
       toast.error(error instanceof Error ? error.message : '重命名多维表格失败');
     } finally {
-      setRenamingTableFile(false);
+      setRenamingTable(false);
       if (isCurrentSession(sequence)) setSaving(false);
     }
-  }, [acceptContent, document, editable, fileIdentity, filePath, notebookPath, onFilePathChange, renamingTableFile, resolvedNotebookId, saving, reportSaveFailure, setSaving, isCurrentSession, loadSequenceRef]);
+  }, [acceptContent, currentFilePath, document, editable, notebookPath, onFilePathChange, renamingTable, resolvedNotebookId, saving, reportSaveFailure, setNotes, setSaving, isCurrentSession, loadSequenceRef]);
   const editingViewInputRef = useRef<HTMLInputElement | null>(null);
   const editingViewMeasureRef = useRef<HTMLSpanElement | null>(null);
   const [viewAddOpen, setViewAddOpen] = useState(false);
+  const viewTabsScrollerRef = useRef<HTMLDivElement | null>(null);
+  const [viewTabsOverflow, setViewTabsOverflow] = useState({ left: false, right: false });
+  useLayoutEffect(() => {
+    const scroller = viewTabsScrollerRef.current;
+    if (!scroller) return;
+
+    const updateOverflow = () => {
+      const maxScrollLeft = scroller.scrollWidth - scroller.clientWidth;
+      setViewTabsOverflow((current) => {
+        const left = scroller.scrollLeft > 1;
+        const right = maxScrollLeft - scroller.scrollLeft > 1;
+        return current.left === left && current.right === right ? current : { left, right };
+      });
+    };
+
+    updateOverflow();
+    scroller.addEventListener('scroll', updateOverflow, { passive: true });
+    const resizeObserver = typeof ResizeObserver === 'undefined' ? null : new ResizeObserver(updateOverflow);
+    resizeObserver?.observe(scroller);
+    if (scroller.firstElementChild) resizeObserver?.observe(scroller.firstElementChild);
+    return () => {
+      scroller.removeEventListener('scroll', updateOverflow);
+      resizeObserver?.disconnect();
+    };
+  }, [document?.views.items, editingViewName]);
   const [folderMediaSwitchConfirmOpen, setFolderMediaSwitchConfirmOpen] = useState(false);
   const [fieldPanelHeaderId, setFieldPanelHeaderId] = useState<string | null>(null);
   const [pendingKanbanOption, setPendingKanbanOption] = useState<TableFieldOption | null>(null);
@@ -353,6 +390,8 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   const [calendarCursor, setCalendarCursor] = useState(() => new Date());
   const [tablePage, setTablePage] = useState(0);
   const [galleryPage, setGalleryPage] = useState(0);
+  const recordsScrollerRef = useRef<HTMLDivElement | null>(null);
+  const loadMoreRecordsRef = useRef<HTMLDivElement | null>(null);
   const [pendingTablePageRecordId, setPendingTablePageRecordId] = useState<string | null>(null);
   const { cellStatusesByRecord, updateCell } = useTableCellWriter({
     enabled: Boolean(document) && !saving && editable,
@@ -373,7 +412,6 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   const [newFieldOptions, setNewFieldOptions] = useState<TableFieldOption[]>([]);
   const [headerMenuFieldId, setHeaderMenuFieldId] = useState<string | null>(null);
   const [rowActionRecordId, setRowActionRecordId] = useState<string | null>(null);
-  const [imageUrls, setImageUrls] = useState<Record<string, string | null>>({});
   const [notePickerOpen, setNotePickerOpen] = useState(false);
   const [notePickerAnchorRect, setNotePickerAnchorRect] = useState<DOMRect | null>(null);
   const [notePickerRecordId, setNotePickerRecordId] = useState<string | null>(null);
@@ -383,7 +421,6 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   const conditionRecordIdsRef = useRef(new Map<string, string>());
 
   useEffect(() => {
-    setImageUrls({});
     setTablePage(0);
     setGalleryPage(0);
   }, [loadGeneration]);
@@ -454,7 +491,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     return notes.flatMap((note) => {
       const notePath = note.relativePath.replace(/\\/g, '/');
       if (linkedPaths.has(notePath) || excludedPaths.has(notePath)
-        || !noteInCollectionSource(notePath, document.dataset.source, filePath, notebookPath)
+        || !noteInCollectionSource(notePath, document.dataset.source, currentFilePath, notebookPath)
         || !noteMatchesCollectionFilter(note, document.dataset.schema.fields, noteField.id, datasetFilter)) return [];
       let id = conditionRecordIdsRef.current.get(notePath);
       if (!id) {
@@ -467,11 +504,11 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         note_path: notePath,
       }];
     });
-  }, [document, filePath, noteField, notebookPath, notes]);
+  }, [currentFilePath, document, noteField, notebookPath, notes]);
   const conditionRecordIds = useMemo(() => new Set(conditionRecords.map((record) => record.id)), [conditionRecords]);
   const scopedExplicitRecords = useMemo(() => document
-    ? document.dataset.records.include.filter((record) => noteInCollectionSource(record.note_path, document.dataset.source, filePath, notebookPath))
-    : [], [document, filePath, notebookPath]);
+    ? document.dataset.records.include.filter((record) => noteInCollectionSource(record.note_path, document.dataset.source, currentFilePath, notebookPath))
+    : [], [currentFilePath, document, notebookPath]);
   const datasetRecords = useMemo(() => [...scopedExplicitRecords, ...conditionRecords], [conditionRecords, scopedExplicitRecords]);
   const visibleRecords = useMemo(() => document
     ? applyTableView(datasetRecords, activeView, document.dataset.schema.fields, document.dataset.schema.primary_field_id, noteForRecord)
@@ -481,9 +518,11 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     if (!pendingTablePageRecordId) return;
     const recordIndex = visibleRecords.findIndex((record) => record.id === pendingTablePageRecordId);
     if (recordIndex < 0) return;
-    setTablePage(Math.floor(recordIndex / TABLE_PAGE_SIZE));
+    setTablePage((page) => embeddedInEditor
+      ? Math.floor(recordIndex / tablePageSize)
+      : Math.max(page, Math.floor(recordIndex / tablePageSize)));
     setPendingTablePageRecordId(null);
-  }, [activeView?.layout, pendingTablePageRecordId, visibleRecords]);
+  }, [activeView?.layout, embeddedInEditor, pendingTablePageRecordId, tablePageSize, visibleRecords]);
   const secondaryViewRecords = useMemo(() => activeView?.layout === 'table'
     ? visibleRecords
     : visibleRecords.filter((record) => record.note_path.trim().length > 0), [activeView?.layout, visibleRecords]);
@@ -503,53 +542,49 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     for (const listener of availableNotesListenersRef.current) listener();
   }, [availableNotes]);
   useEffect(() => {
+    setTablePage(0);
     setGalleryPage(0);
-  }, [activeViewId]);
+  }, [activeViewId, embeddedInEditor]);
 
-  const candidateImageReferences = useMemo(() => {
+  const pageCount = Math.max(1, Math.ceil(visibleRecords.length / tablePageSize));
+  const currentPage = Math.min(tablePage, pageCount - 1);
+  const galleryPageCount = Math.max(1, Math.ceil(secondaryViewRecords.length / galleryPageSize));
+  const galleryCurrentPage = Math.min(galleryPage, galleryPageCount - 1);
+  const visibleTableRecords = useMemo(() => visibleRecords.slice(
+    embeddedInEditor ? currentPage * tablePageSize : 0, (currentPage + 1) * tablePageSize,
+  ), [visibleRecords, embeddedInEditor, currentPage, tablePageSize]);
+  const visibleGalleryRecords = useMemo(() => secondaryViewRecords.slice(
+    embeddedInEditor ? galleryCurrentPage * galleryPageSize : 0, (galleryCurrentPage + 1) * galleryPageSize,
+  ), [secondaryViewRecords, embeddedInEditor, galleryCurrentPage, galleryPageSize]);
+  const scrollPageCount = activeView?.layout === 'gallery' ? galleryPageCount : pageCount;
+  const scrollPage = activeView?.layout === 'gallery' ? galleryCurrentPage : currentPage;
+  const loadMoreRecords = useCallback(() => {
+    const setPage = activeView?.layout === 'gallery' ? setGalleryPage : setTablePage;
+    setPage((page) => Math.min(page + 1, scrollPageCount - 1));
+  }, [activeView?.layout, scrollPageCount]);
+  useTableScrollLoading({
+    enabled: !embeddedInEditor && (activeView?.layout === 'table' || activeView?.layout === 'gallery'),
+    scrollerRef: recordsScrollerRef, sentinelRef: loadMoreRecordsRef,
+    page: scrollPage, pageCount: scrollPageCount, onLoadMore: loadMoreRecords,
+  });
+
+  const imageReferences = useMemo(() => {
     if (!document) return [];
     const active = resolveTableView(document, activeViewId ?? initialViewId);
     if (active?.layout !== 'table' && active?.layout !== 'gallery') return [];
     const visibleFields = active.config.visible_fields as string[];
     const imageFields = document.dataset.schema.fields.filter((field) => field.type === 'Image'
       && (active.layout === 'table' || visibleFields.includes(field.id)));
-    const pageSize = active.layout === 'gallery' ? GALLERY_PAGE_SIZE : TABLE_PAGE_SIZE;
-    const selectedPage = active.layout === 'gallery' ? galleryPage : tablePage;
-    const currentPage = Math.min(selectedPage, Math.max(0, Math.ceil(secondaryViewRecords.length / pageSize) - 1));
-    const viewRecords = secondaryViewRecords.slice(currentPage * pageSize, (currentPage + 1) * pageSize);
+    const viewRecords = active.layout === 'gallery' ? visibleGalleryRecords : visibleTableRecords;
     return viewRecords.flatMap((record) => {
       const noteKey = noteKeyForRecord(record);
       const note = noteKey ? noteByKey.get(noteKey) : undefined;
       return imageFields.flatMap((field) =>
         imagePaths(notePropertyEditorValue(note, field)).map((path) => ({ key: `${record.id}:${field.id}:${path}`, path })));
     });
-  }, [activeViewId, initialViewId, document, galleryPage, noteByKey, tablePage, secondaryViewRecords]);
-  const imageReferencesSignature = candidateImageReferences.map(({ key, path }) => `${key}\u0000${path}`).join('\u0001');
-  const stableImageReferencesRef = useRef<{ signature: string; references: typeof candidateImageReferences }>({ signature: '', references: [] });
-  if (stableImageReferencesRef.current.signature !== imageReferencesSignature) {
-    stableImageReferencesRef.current = { signature: imageReferencesSignature, references: candidateImageReferences };
-  }
-  const imageReferences = stableImageReferencesRef.current.references;
+  }, [activeViewId, initialViewId, document, noteByKey, visibleGalleryRecords, visibleTableRecords]);
 
-  useEffect(() => {
-    let cancelled = false;
-    const next: Record<string, string | null> = {};
-    const imagesByPath = new Map<string, Promise<string | null>>();
-    void asyncMapLimit(imageReferences, 4, async ({ key, path }) => {
-      const absolutePath = notebookPath ? joinNotebookMemoPath(notebookPath, path) : path;
-      if (!absolutePath) {
-        next[key] = null;
-        return;
-      }
-      let image = imagesByPath.get(absolutePath);
-      if (!image) {
-        image = files.readImage(absolutePath, notebookPath ?? undefined).catch(() => null);
-        imagesByPath.set(absolutePath, image);
-      }
-      next[key] = await image;
-    }).then(() => { if (!cancelled) setImageUrls(next); });
-    return () => { cancelled = true; };
-  }, [imageReferences, notebookPath]);
+  const imageUrls = useTableImages(imageReferences, notebookPath, loadGeneration);
 
   const saveAutoCollectCondition = useCallback(async (field: TableField, condition: TableAutoCollectCondition): Promise<boolean> => {
     if (!document || saving || field.type !== 'primary') return false;
@@ -681,7 +716,8 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   const applyCalendarDateToNote = useCallback(async (note: NoteEntry, calendarDate: { fieldId: string; date: string } | null): Promise<NoteEntry> => {
     if (!calendarDate) return note;
     if (!editable) throw new Error('当前引用为只读，无法修改笔记属性');
-    const field = document?.dataset.schema.fields.find((item) => item.id === calendarDate.fieldId);
+    const field = document?.dataset.schema.fields.find((item) => item.id === calendarDate.fieldId)
+      ?? builtinPresetTableField(calendarDate.fieldId) ?? undefined;
     if (field?.type !== 'Date' || !field.property_key) return note;
     const path = notebookPath ? joinNotebookMemoPath(notebookPath, note.relativePath) : null;
     if (!path) throw new Error('无法确定笔记路径，未能设置日期');
@@ -696,9 +732,9 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     if (!resolvedNotebookId) throw new Error('无法确定当前笔记本');
     const datasetPath = (document ? tableAutoCollectConfig(document) : null)?.condition.file_condition?.path_contains
       ?.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-    const parentRelativePath = datasetPath || resolveTableNoteParentRelativePath(filePath, notebookPath);
+    const parentRelativePath = datasetPath || resolveTableNoteParentRelativePath(currentFilePath, notebookPath);
     return notesClient.create(resolvedNotebookId, undefined, parentRelativePath, title);
-  }, [document, editable, filePath, notebookPath, resolvedNotebookId]);
+  }, [currentFilePath, document, editable, notebookPath, resolvedNotebookId]);
 
   const createViewForField = useCallback(async (field: TableField | string) => {
     if (!document || !pendingViewType || saving) return;
@@ -706,12 +742,18 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     const fieldId = typeof field === 'string' ? field : field.id;
     if ((pendingViewType === 'calendar' && typeof field !== 'string' && field.type !== 'Date')
       || (pendingViewType === 'kanban' && (typeof field === 'string' || field.type !== 'Select'))) return;
-    const added = addTableView(document, pendingViewType, fieldId);
-    if (await save(added.document, false, sequence) && isCurrentSession(sequence)) {
-      activateView(added.view.id);
-      setViewAddOpen(false);
-      setViewAddStep('kind');
-      setPendingViewType(null);
+    try {
+      const added = pendingViewType === 'calendar' && fieldId === NOTE_CALENDAR_DATE_FIELD_ID
+        ? addCalendarDateView(document)
+        : addTableView(document, pendingViewType, fieldId);
+      if (await save(added.document, false, sequence) && isCurrentSession(sequence)) {
+        activateView(added.view.id);
+        setViewAddOpen(false);
+        setViewAddStep('kind');
+        setPendingViewType(null);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '创建视图失败');
     }
   }, [document, isCurrentSession, loadSequenceRef, activateView, pendingViewType, save, saving]);
 
@@ -843,7 +885,8 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       const updatedNote = selectedNote ? await applyCalendarDateToNote(selectedNote, notePickerCalendarDate) : null;
       if (!isCurrentSession(sequence)) return;
       if (updatedNote && notePickerCalendarDate) {
-        const field = document.dataset.schema.fields.find((item) => item.id === notePickerCalendarDate.fieldId);
+        const field = document.dataset.schema.fields.find((item) => item.id === notePickerCalendarDate.fieldId)
+          ?? builtinPresetTableField(notePickerCalendarDate.fieldId);
         if (field?.type === 'Date' && field.property_key) {
           setNotes((current) => current.map((note) => note.relativePath.replace(/\\/g, '/') === selectedNoteKey ? updatedNote : note));
         }
@@ -1249,7 +1292,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   const updateRecordField = useCallback((recordId: string, fieldId: string, value: unknown) => {
     if (!document) return;
     const record = visibleRecords.find((item) => item.id === recordId);
-    const field = document.dataset.schema.fields.find((item) => item.id === fieldId);
+    const field = document.dataset.schema.fields.find((item) => item.id === fieldId) ?? builtinPresetTableField(fieldId) ?? undefined;
     if (record && field) updateCell(record, noteForRecord(record), field, value);
   }, [document, noteForRecord, updateCell, visibleRecords]);
 
@@ -1419,9 +1462,12 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
 
   const groupFieldId = activeView?.layout === 'kanban' && typeof activeView.config.group_by === 'string' ? activeView.config.group_by : null;
   const groupField = groupFieldId ? document?.dataset.schema.fields.find((field) => field.id === groupFieldId) : undefined;
-  const calendarField = calendarDateFieldId && !calendarDateMetadata ? document?.dataset.schema.fields.find((field) => field.id === calendarDateFieldId) : undefined;
+  const calendarField = calendarDateFieldId && !calendarDateMetadata
+    ? document?.dataset.schema.fields.find((field) => field.id === calendarDateFieldId) ?? builtinPresetTableField(calendarDateFieldId) ?? undefined
+    : undefined;
   const calendarDateFieldOptions = [
     ...NOTE_CALENDAR_DATE_FIELDS.map(({ id, label }) => ({ id, label, readOnly: true })),
+    ...(document?.dataset.schema.preset_fields.includes(NOTE_CALENDAR_DATE_FIELD_ID) ? [{ id: NOTE_CALENDAR_DATE_FIELD_ID, label: '日期' }] : []),
     ...(document?.dataset.schema.fields.filter((field) => field.type === 'Date').map((field) => ({ id: field.id, label: fieldLabel(field, propertyFields, t) })) ?? []),
   ];
   const kanbanGroups = useMemo(() => document && groupField?.type === 'Select'
@@ -1615,7 +1661,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         <Button type="button" variant="outline" size="sm" className="rounded-lg" onClick={() => void load()}>重新加载</Button>
         {embeddedInEditor
           ? onRemoveReference && <Button type="button" variant="outline" size="sm" className="rounded-lg" disabled={!editable} onClick={onRemoveReference}>移除</Button>
-          : document?.collection.placement !== 'folder' && <Button type="button" variant="outline" size="sm" className="rounded-lg text-[var(--destructive)]" disabled={!editable} onClick={() => window.dispatchEvent(new CustomEvent('flowix:request-delete-external-file', { detail: { filePath, notebookPath } }))}>删除多维表格</Button>}
+          : document?.collection.placement !== 'folder' && <Button type="button" variant="outline" size="sm" className="rounded-lg text-[var(--destructive)]" disabled={!editable} onClick={() => window.dispatchEvent(new CustomEvent('flowix:request-delete-external-file', { detail: { filePath: currentFilePath, notebookPath } }))}>删除多维表格</Button>}
       </div>
     </div>;
   }
@@ -1650,18 +1696,12 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         ...document.dataset.schema.fields.filter((field) => field.type === 'Select' && field.id !== statusField?.id),
       ]
       : [];
-  const pageCount = Math.max(1, Math.ceil(visibleRecords.length / TABLE_PAGE_SIZE));
-  const currentPage = Math.min(tablePage, pageCount - 1);
-  const visibleTableRecords = visibleRecords.slice(currentPage * TABLE_PAGE_SIZE, (currentPage + 1) * TABLE_PAGE_SIZE);
-  const galleryPageCount = Math.max(1, Math.ceil(secondaryViewRecords.length / GALLERY_PAGE_SIZE));
-  const galleryCurrentPage = Math.min(galleryPage, galleryPageCount - 1);
-  const visibleGalleryRecords = secondaryViewRecords.slice(galleryCurrentPage * GALLERY_PAGE_SIZE, (galleryCurrentPage + 1) * GALLERY_PAGE_SIZE);
   const showAssociateNoteButton = canCreateRecords || showAssociateNoteAction;
   const tableDisplayName = document.collection.placement === 'folder'
-    ? filePath.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '').split(/[\\/]/).pop() || document.collection.name
+    ? currentFilePath.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '').split(/[\\/]/).pop() || document.collection.name
     : document.collection.name;
   const cellSaveStatuses = [...cellStatusesByRecord.values()].flatMap((statuses) => [...statuses.values()]);
-  const isSaving = saving || renamingTableFile || cellSaveStatuses.some((status) => status.saving);
+  const isSaving = saving || renamingTable || cellSaveStatuses.some((status) => status.saving);
   const saveStatusText = saveFailed || cellSaveStatuses.some((status) => status.error) ? '未保存' : '已保存';
   const datasetTableViews = document.views.items.filter((view) => view.layout === 'table');
   const datasetFieldChecked = (fieldId: string) => datasetTableViews.length > 0
@@ -1698,7 +1738,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     config: tableAutoCollectConfig(document),
     notebookPath,
     fixedFolderPath: document.collection.placement === 'folder'
-      ? resolveTableNoteParentRelativePath(filePath, notebookPath) ?? ''
+      ? resolveTableNoteParentRelativePath(currentFilePath, notebookPath) ?? ''
       : undefined,
     saving: saving || !editable,
     t,
@@ -1846,8 +1886,8 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       </div>}
     />
   </div>;
-  const beginRenameTableFile = () => {
-    if (!editable || document?.collection.placement === 'folder' || saving || renamingTableFile || !notebookPath) return;
+  const beginEditTableTitle = () => {
+    if (!editable || saving || renamingTable || !notebookPath) return;
     setTableNameDraft(tableDisplayName);
     setEditingTableName(true);
   };
@@ -1859,21 +1899,21 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   tableFieldWidths.push(...visibleBuiltinFields.map((field) => ({ fieldId: field.id, width: field.width })));
   const orderedTableWidths = sortFields(tableFieldWidths, (field) => field.fieldId, fieldOrder);
   const tableMinWidth = tableFieldWidths.reduce((total, { width }) => total + width, TABLE_ACTION_COLUMN_MIN_WIDTH);
-  return <div className="flex h-full min-h-0 flex-col bg-transparent" aria-readonly={!editable}>
+  return <div className="multidimensional-table__surface flex h-full min-h-0 flex-col bg-transparent" aria-readonly={!editable}>
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <nav className="multidimensional-table__view-nav sticky top-0 z-10 flex min-w-0 shrink-0 items-center gap-1 px-4 py-1" aria-label="表格视图">
         <div
-          className="flex min-w-0 max-w-[40%] shrink-0 -translate-x-[2px] items-center gap-1.5 pr-2"
+          className="multidimensional-table__view-title flex min-w-0 max-w-[40%] shrink-0 -translate-x-[2px] items-center gap-1.5"
           title={tableDisplayName}
         >
-            <NotebookTreeResourceIcon path={filePath} collectionType="table" className="h-5 w-5 shrink-0" />
+            <NotebookTreeResourceIcon path={currentFilePath} collectionType="table" className="h-5 w-5 shrink-0" />
             {editingTableName ? <input
               ref={tableNameInputRef}
-              aria-label="多维表格文件名"
+              aria-label="多维表格名称"
               value={tableNameDraft}
-              disabled={renamingTableFile || saving}
+              disabled={renamingTable || saving}
               onChange={(event) => setTableNameDraft(event.currentTarget.value)}
-              onBlur={(event) => void renameTableFile(event.currentTarget.value)}
+              onBlur={(event) => void commitTableTitle(event.currentTarget.value)}
               onKeyDown={(event) => {
                 if (event.key === 'Enter') {
                   event.preventDefault();
@@ -1887,23 +1927,31 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
               className="box-border h-[22px] min-w-[2em] max-w-full flex-[0_1_auto] rounded px-0.5 py-1 [field-sizing:content] border-0 bg-[var(--muted)] text-sm font-medium leading-none text-[var(--foreground)] outline-none"
             /> : <button
               type="button"
-              onDoubleClick={(event) => { event.preventDefault(); captureTableTitleCaret(event.currentTarget, event.clientX, event.clientY); beginRenameTableFile(); }}
+              onDoubleClick={(event) => { event.preventDefault(); captureTableTitleCaret(event.currentTarget, event.clientX, event.clientY); beginEditTableTitle(); }}
               aria-label={`重命名多维表格：${tableDisplayName}`}
               title={`双击重命名：${tableDisplayName}`}
-              disabled={!editable || document.collection.placement === 'folder' || saving || renamingTableFile || !notebookPath}
+              disabled={!editable || saving || renamingTable || !notebookPath}
               onKeyDown={(event) => {
                 if (event.key === 'Enter' || event.key === 'F2') {
                   event.preventDefault();
-                  beginRenameTableFile();
+                  beginEditTableTitle();
                 }
               }}
               className="min-w-[2em] flex-[0_1_auto] truncate rounded px-0.5 py-1 text-left text-sm font-medium leading-none text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] disabled:opacity-100"
             >
               {tableDisplayName}
             </button>}
+            {renamingTable && <span role="status" aria-label={t('memo.fileTree.renaming')} className="inline-flex shrink-0 items-center text-[var(--muted-foreground)]">
+              <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+            </span>}
         </div>
         <span role="separator" aria-orientation="vertical" className="multidimensional-table__view-nav-separator" />
-        <div className="flex min-w-0 flex-1 items-center overflow-x-auto">
+        <div
+          className="multidimensional-table__view-tabs-scroller relative h-7 min-w-0 flex-1 overflow-hidden"
+          data-overflow-left={viewTabsOverflow.left ? 'true' : 'false'}
+          data-overflow-right={viewTabsOverflow.right ? 'true' : 'false'}
+        >
+          <div ref={viewTabsScrollerRef} className="scrollbar-hide flex h-full min-w-0 items-center overflow-x-auto">
           <div className="flex w-max min-w-max shrink-0 items-center gap-1.5 pr-2">
           {document.views.items.map((view) => (
             <ContextMenu key={view.id}>
@@ -2044,8 +2092,12 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
                     {fieldLabel(field, propertyFields, t)}
                   </button>)}
                   {pendingViewType === 'kanban' && viewFieldChoices.length === 0 && !statusField && <p className="px-2 py-2 text-xs leading-5 text-[var(--muted-foreground)]">可添加单选属性，作为看板分组</p>}
-                  {pendingViewType === 'calendar' && NOTE_CALENDAR_DATE_FIELDS.map((field) => <button type="button" key={field.id} disabled={saving} onClick={() => void createViewForField(field.id)} className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
-                    {field.label}
+                  {pendingViewType === 'calendar' && <button type="button" disabled={saving} onClick={() => void createViewForField(NOTE_CALENDAR_DATE_FIELD_ID)} className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
+                    日期
+                  </button>}
+                  {pendingViewType === 'calendar' && NOTE_CALENDAR_DATE_FIELDS.map((field) => <button type="button" key={field.id} disabled={saving} onClick={() => void createViewForField(field.id)} className="flex h-8 w-full items-center gap-1 rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
+                    <span>{field.label}</span>
+                    <span title="创建时间和更新时间由系统维护，不能通过拖动修改" className="shrink-0 rounded-md border border-[var(--border)] bg-[var(--muted)] px-1 py-px text-xs font-normal text-[var(--muted-foreground)]">只读</span>
                   </button>)}
                 </div>}
               </PopoverContent>
@@ -2053,10 +2105,11 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
           </div>
         </div>
         </div>
+        </div>
         {!embeddedInEditor && datasetAction}
         {trailingActions ? trailingActions(datasetAction) : embeddedInEditor ? datasetAction : null}
       </nav>
-      <OverlayScrollbar horizontalScrollbar={activeView?.layout === 'table' || activeView?.layout === 'kanban'} className={`multidimensional-table__scrollbar--bottom-clearance min-h-0 ${activeView?.layout === 'table' && !embeddedInEditor ? 'flex flex-col flex-[0_1_auto]' : 'flex-1'}`} scrollerClassName={`min-h-0 flex flex-col ${activeView?.layout === 'table' && !embeddedInEditor ? 'flex-[0_1_auto]' : 'h-full'} ${activeView?.layout === 'kanban' ? 'pr-4' : ''}`} onScroll={() => {
+      <OverlayScrollbar scrollerRef={recordsScrollerRef} horizontalScrollbar={activeView?.layout === 'table' || activeView?.layout === 'kanban'} className={`multidimensional-table__scrollbar--bottom-clearance min-h-0 ${activeView?.layout === 'table' && !embeddedInEditor ? 'flex flex-col flex-[0_1_auto]' : 'flex-1'}`} scrollerClassName={`min-h-0 flex flex-col ${activeView?.layout === 'table' && !embeddedInEditor ? 'flex-[0_1_auto]' : 'h-full'} ${activeView?.layout === 'kanban' ? 'pr-4' : ''}`} onScroll={() => {
         window.dispatchEvent(new Event('flowix:multidimensional-table-scroll'));
         setHeaderMenuFieldId(null);
         setNewFieldOpen(false);
@@ -2253,12 +2306,12 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         onOpenRecord={openLinkedRecord}
         addingNoteDate={calendarAddOpen ? calendarAddDate?.date : null}
         onDoubleClickDate={(date, anchorRect) => {
-          if (calendarDateMetadata) {
-            toast.warning(`日历按${calendarDateMetadata.label}展示，为只读状态`);
-            return;
-          }
           if (!editable) {
             toast.warning('当前多维表格为只读状态');
+            return;
+          }
+          if (calendarDateMetadata && date !== isoDate(new Date())) {
+            toast.warning(`日历按${calendarDateMetadata.label}展示，仅支持在今天新建笔记`);
             return;
           }
           openCalendarNotePopover(date, anchorRect, calendarDateFieldId);
@@ -2286,7 +2339,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         noteIcon={(record) => noteForRecord(record)?.icon ?? null}
         canAddData={editable && Boolean(noteField && resolvedNotebookId) && !saving}
       />}
-      {activeView?.layout === 'gallery' && galleryPageCount > 1 && <footer className="flex flex-wrap items-center justify-end gap-3 px-5 py-1.5 text-xs text-[var(--muted-foreground)]" aria-label="画廊分页">
+      {embeddedInEditor && activeView?.layout === 'gallery' && galleryPageCount > 1 && <footer className="flex flex-wrap items-center justify-end gap-3 px-5 py-1.5 text-xs text-[var(--muted-foreground)]" aria-label="画廊分页">
         <span>{secondaryViewRecords.length} 条</span>
         <button
           type="button"
@@ -2306,6 +2359,10 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
           下一页
         </button>
       </footer>}
+      {!embeddedInEditor && ((activeView?.layout === 'table' && currentPage < pageCount - 1)
+        || (activeView?.layout === 'gallery' && galleryCurrentPage < galleryPageCount - 1)) && (
+        <div ref={loadMoreRecordsRef} className="h-8 shrink-0" aria-hidden="true" />
+      )}
       </OverlayScrollbar>
       {activeView?.layout === 'table' && <div className={`flex w-full min-w-0 shrink-0 flex-wrap items-center justify-between gap-2 py-1.5 pr-4 ${embeddedInEditor ? '' : 'pl-4'}`}>
         {showAssociateNoteButton && (
@@ -2319,9 +2376,9 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
             添加笔记
           </button>
         )}
-        {pageCount > 1 && (
-          <footer className="flex flex-wrap items-center gap-3 text-xs text-[var(--muted-foreground)]" aria-label="表格分页">
-            <span>{visibleRecords.length} 条</span>
+        <footer className="flex flex-wrap items-center gap-3 text-xs text-[var(--muted-foreground)]" aria-label={embeddedInEditor && pageCount > 1 ? '表格分页' : '记录统计'}>
+          <span>{visibleRecords.length} 条</span>
+          {embeddedInEditor && pageCount > 1 && <>
             <button
               type="button"
               disabled={currentPage === 0}
@@ -2339,8 +2396,8 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
             >
               下一页
             </button>
-          </footer>
-        )}
+          </>}
+        </footer>
       </div>}
     </div>
     <Popover open={newFieldOpen} onOpenChange={(open) => {
@@ -2407,7 +2464,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       <PopoverContent side="bottom" align="start" sideOffset={6} fitViewport className="w-[240px] max-w-[calc(100vw-16px)] rounded-xl px-2 py-2 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
         <NoteCreatePicker
           value={calendarAddTitle} onChange={setCalendarAddTitle}
-          notes={availableNotes} allowSelect={document.collection.placement !== 'folder'}
+          notes={availableNotes} allowSelect={!calendarDateMetadata && document.collection.placement !== 'folder'}
           disabled={saving || !editable || !resolvedNotebookId} error={notesLoadError}
           onCreate={createCalendarNote} onSelect={linkCalendarNote} onCancel={closeCalendarAddPopover}
         />
@@ -2439,7 +2496,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         setFolderMediaSwitchConfirmOpen(false);
         if (notebookPath && notebookId) {
           window.dispatchEvent(new CustomEvent('flowix:request-switch-folder-collection-type', {
-            detail: { filePath, notebookPath, notebookId, type: 'media_library' },
+            detail: { filePath: currentFilePath, notebookPath, notebookId, type: 'media_library' },
           }));
         }
       }}

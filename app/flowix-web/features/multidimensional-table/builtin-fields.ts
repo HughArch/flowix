@@ -16,6 +16,7 @@ export const NOTE_PINNED_FIELD_ID = '__note_pinned__';
 export const NOTE_DESCRIPTION_FIELD_ID = '__note_description__';
 export const NOTE_NAME_FIELD_ID = '__note_name__';
 export const NOTE_STATUS_FIELD_ID = '__note_status__';
+export const NOTE_CALENDAR_DATE_FIELD_ID = '__note_calendar_date__';
 
 export interface BuiltinTableField {
   id: string;
@@ -30,6 +31,7 @@ type BuiltinPresetKey = (typeof BUILTIN_PRESETS)[number]['key'];
 const PRESET_FIELD_IDS: Readonly<Record<BuiltinPresetKey, string>> = {
   name: NOTE_NAME_FIELD_ID,
   status: NOTE_STATUS_FIELD_ID,
+  calendar_date: NOTE_CALENDAR_DATE_FIELD_ID,
   description: NOTE_DESCRIPTION_FIELD_ID,
   tags: NOTE_TAGS_FIELD_ID,
   flowix_colors: NOTE_COLORS_FIELD_ID,
@@ -38,7 +40,7 @@ const PRESET_FIELD_IDS: Readonly<Record<BuiltinPresetKey, string>> = {
 };
 const PRESET_FALLBACK_LABELS: Readonly<Record<BuiltinPresetKey, string>> = {
   name: '名称', description: '描述', tags: '标签', flowix_colors: '颜色', flowix_icon: '图标', flowix_favorited: '置顶',
-  status: '状态',
+  status: '状态', calendar_date: '日期',
 };
 
 export const BUILTIN_TABLE_FIELDS: readonly BuiltinTableField[] = [

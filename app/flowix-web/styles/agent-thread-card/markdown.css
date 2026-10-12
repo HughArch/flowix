@@ -1595,7 +1595,7 @@
 /* Codex keeps the model list scrollable above a persistent reasoning control. */
 .agent-thread-card__codex-settings-popover--model-picker {
   display: flex;
-  height: min(280px, calc(100vh - 16px));
+  width: min(212px, calc(100vw - 16px));
   max-height: min(280px, calc(100vh - 16px));
   flex-direction: column;
   overflow: hidden;
@@ -1610,47 +1610,88 @@
 }
 
 .agent-thread-card__codex-settings-reasoning-footer {
-  position: sticky;
-  bottom: 0;
+  position: relative;
   z-index: 1;
-  display: grid;
-  grid-template-columns: repeat(4, minmax(0, 1fr));
+  display: block;
   flex: 0 0 auto;
-  gap: 2px;
-  margin: 0 8px 8px;
-  padding: 3px;
-  border: 1px solid var(--border);
-  border-radius: 9999px;
-  background: transparent;
+  height: 24px;
+  margin: 4px 12px 10px;
+  padding: 0;
 }
 
-.agent-thread-card__codex-settings-reasoning-tab {
-  min-width: 0;
-  padding: 6px 2px;
+.agent-thread-card__codex-settings-reasoning-track {
+  position: absolute;
+  inset: 2px 0;
+  border-radius: 9999px;
+  background: linear-gradient(
+    to right,
+    var(--brand, #3b82f6) var(--reasoning-progress),
+    var(--border) var(--reasoning-progress)
+  );
+}
+
+.agent-thread-card__codex-settings-reasoning-tick {
+  position: absolute;
+  top: 50%;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: color-mix(in srgb, white 48%, var(--brand, #3b82f6));
+  transform: translate(-50%, -50%);
+}
+
+.agent-thread-card__codex-settings-reasoning-slider {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 24px;
+  margin: 0;
+  padding: 0;
   border: 0;
   border-radius: 9999px;
+  box-sizing: border-box;
+  appearance: none;
   background: transparent;
-  color: var(--muted-foreground);
-  font: inherit;
-  font-size: calc(var(--app-font-size, 15px) * 0.78);
-  line-height: 1.2;
-  white-space: nowrap;
   cursor: pointer;
-  transition:
-    background-color 120ms ease,
-    color 120ms ease;
+  touch-action: pan-y;
 }
 
-.agent-thread-card__codex-settings-reasoning-tab[aria-selected="true"] {
-  background: var(--hover-bg);
-  color: var(--foreground);
-  font-weight: 600;
+.agent-thread-card__codex-settings-reasoning-slider::-webkit-slider-runnable-track {
+  height: 20px;
+  background: transparent;
 }
 
-.agent-thread-card__codex-settings-reasoning-tab:hover,
-.agent-thread-card__codex-settings-reasoning-tab:focus-visible {
-  color: var(--foreground);
-  outline: none;
+.agent-thread-card__codex-settings-reasoning-slider::-moz-range-track {
+  height: 20px;
+  background: transparent;
+}
+
+.agent-thread-card__codex-settings-reasoning-slider::-webkit-slider-thumb {
+  width: 24px;
+  height: 24px;
+  margin-top: -2px;
+  box-sizing: border-box;
+  appearance: none;
+  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  border-radius: 50%;
+  background: var(--card, white);
+  box-shadow: 0 1px 4px color-mix(in srgb, black 18%, transparent);
+}
+
+.agent-thread-card__codex-settings-reasoning-slider::-moz-range-thumb {
+  width: 24px;
+  height: 24px;
+  box-sizing: border-box;
+  border: 1px solid color-mix(in srgb, var(--foreground) 12%, transparent);
+  border-radius: 50%;
+  background: var(--card, white);
+  box-shadow: 0 1px 4px color-mix(in srgb, black 18%, transparent);
+}
+
+.agent-thread-card__codex-settings-reasoning-slider:focus-visible {
+  outline: 2px solid var(--brand, #3b82f6);
+  outline-offset: 3px;
+  border-radius: 9999px;
 }
 
 .agent-thread-card__codex-settings-popover:not([hidden]) {
@@ -1674,6 +1715,52 @@
   color: var(--muted-foreground);
   font-size: 0.75rem;
   line-height: 1.2;
+}
+
+.agent-thread-card__codex-settings-section--model {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  min-height: 28px;
+  gap: 8px;
+}
+
+.agent-thread-card__codex-speed-toggle {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  gap: 2px;
+  min-width: 42px;
+  height: 18px;
+  padding: 0 3px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--hover-bg);
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 11px;
+  line-height: 1;
+  cursor: pointer;
+}
+
+.agent-thread-card__codex-speed-toggle:hover,
+.agent-thread-card__codex-speed-toggle:focus-visible {
+  color: var(--foreground);
+}
+
+.agent-thread-card__codex-speed-toggle:focus-visible {
+  outline: 2px solid var(--brand);
+  outline-offset: 1px;
+}
+
+.agent-thread-card__codex-speed-icon {
+  width: 10px;
+  height: 10px;
+  fill: none;
+  stroke: var(--muted-foreground);
+  stroke-linecap: round;
+  stroke-width: 1.5;
 }
 
 .agent-thread-card__codex-settings-item {

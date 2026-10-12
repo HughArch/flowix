@@ -930,6 +930,40 @@ mod tests {
     use super::*;
 
     #[test]
+    fn directory_index_rebase_preserves_media_identity_and_note_projections_and_is_repeatable() {
+        let (memo, _temp, root) = fixture();
+        fs::create_dir(root.join("Old")).unwrap();
+        fs::create_dir(root.join("Oldish")).unwrap();
+        fs::write(root.join("Old/photo.png"), b"image").unwrap();
+        fs::write(root.join("Old/note.md"), "hello").unwrap();
+        fs::write(root.join("Oldish/keep.png"), b"outside").unwrap();
+        memo.refresh_media_resource_path("nb_media_test", "Old/photo.png").unwrap();
+        memo.refresh_media_resource_path("nb_media_test", "Oldish/keep.png").unwrap();
+        memo.refresh_note_path("nb_media_test", "Old/note.md").unwrap();
+        let before = memo.read_media_resource("nb_media_test", "Old/photo.png").unwrap().unwrap();
+        memo.update_media_resource_properties("nb_media_test", &before.id, &serde_json::json!({"caption":"keep"})).unwrap();
+        let conn = memo.open_note_index_connection("nb_media_test").unwrap();
+        conn.execute("INSERT INTO note_tags(relative_path,tag) VALUES('Old/note.md','keep')", []).unwrap();
+        conn.execute("UPDATE notes SET created_at=42 WHERE relative_path='Old/note.md'", []).unwrap();
+        drop(conn);
+        fs::rename(root.join("Old"), root.join("New")).unwrap();
+        for _ in 0..2 {
+            memo.with_notebook_change(&["nb_media_test"], "test_directory_rebase", ||
+                memo.rebase_directory_indexes("nb_media_test", "Old", "New")).unwrap();
+        }
+        let after = memo.read_media_resource("nb_media_test", "New/photo.png").unwrap().unwrap();
+        assert_eq!(after.id, before.id);
+        assert_eq!(after.fingerprint, before.fingerprint);
+        assert_eq!(after.properties["caption"], "keep");
+        assert!(memo.read_media_resource("nb_media_test", "Old/photo.png").unwrap().is_none());
+        assert!(memo.read_media_resource("nb_media_test", "Oldish/keep.png").unwrap().is_some());
+        let conn = memo.open_note_index_connection("nb_media_test").unwrap();
+        assert_eq!(conn.query_row("SELECT created_at FROM notes WHERE relative_path='New/note.md'", [], |row| row.get::<_, i64>(0)).unwrap(), 42);
+        assert_eq!(conn.query_row("SELECT tag FROM note_tags WHERE relative_path='New/note.md'", [], |row| row.get::<_, String>(0)).unwrap(), "keep");
+        assert_eq!(conn.query_row("SELECT COUNT(*) FROM notes WHERE relative_path='Old/note.md'", [], |row| row.get::<_, i64>(0)).unwrap(), 0);
+    }
+
+    #[test]
     fn path_refresh_preserves_media_properties_across_rename_and_removal() {
         let (memo_file, _temp, root) = fixture();
         let old = root.join("old.png");

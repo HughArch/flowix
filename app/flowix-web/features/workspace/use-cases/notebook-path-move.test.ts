@@ -14,6 +14,7 @@ vi.mock('@features/document/public/workspace-api', () => ({
   getWorkspaceDocumentState: () => ({ activeExternalSession: { fileIdentity: { path: mocks.documentPath } } }),
 }));
 vi.mock('@features/memo/public/workspace-api', () => ({
+  updateNoteLinksAfterMove: vi.fn(),
   getWorkspaceMemoState: () => ({ selectedNote: mocks.selected, setSelectedNote: mocks.setSelectedNote }),
 }));
 vi.mock('../store/browser-column-store', () => ({
