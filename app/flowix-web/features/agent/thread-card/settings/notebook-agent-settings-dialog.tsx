@@ -289,7 +289,7 @@ function FileEditor({
           }} placeholder={isSkill ? "code-review" : "code-reviewer"} />
         </Field>
       </div>
-      {isSkill && <Field label="Pi 命令名" hint="Pi 中使用 /skill:<命令名>；旧格式会在保存时转换">
+      {isSkill && <Field label="Pi 命令名" hint="Pi 中使用 /skill:<命令名>；旧格式会自动使用安全名称">
         <input className={cn(inputClass, "font-mono text-xs")} value={form.commandName ?? form.id} onChange={(event) => onChange({ commandName: event.target.value.toLowerCase() })} placeholder="code-review" />
       </Field>}
       <Field label="一句话说明">
@@ -1046,6 +1046,10 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
     const collection = editor.fileKind === "skill" ? workspace.skills : workspace.agents;
     if (collection.some((item) => item.id === id && item.id !== editor.id)) {
       setFormError(`这个${label} ID 已经存在，请换一个。`);
+      return;
+    }
+    if (editor.fileKind === "skill" && collection.some((item) => (item.commandName?.trim() || item.id) === commandName && item.id !== editor.id)) {
+      setFormError("这个 Pi 命令名已经被其他 Skill 使用，请换一个。");
       return;
     }
     const nextFile = {

@@ -18,6 +18,7 @@ use super::super::{
     persist_and_emit_external_chunk, resolve_and_freeze_runtime_cwd, resolve_run_id,
     AgentChunkMetadata, USER_STOPPED_REASON,
 };
+use super::skill_resources::{self, PiStartupResources};
 use super::AGENT_TYPE;
 use crate::agent_session::ThreadManager;
 use crate::agent_wire::{AgentChunk, AgentMessageAttachment, AgentUserMessage, RunInfo, UsageInfo};
@@ -279,70 +280,6 @@ fn pi_tools_for_permission_mode(mode: Option<&str>) -> &'static str {
         // modes retain the existing full-access behavior.
         _ => "read,bash,edit,write",
     }
-}
-
-#[derive(Clone, Debug, Eq, PartialEq)]
-struct PiStartupResources {
-    skill_directories: Vec<PathBuf>,
-    fingerprint: String,
-}
-
-fn hash_pi_resource_part(hasher: &mut Sha256, value: &[u8]) {
-    hasher.update((value.len() as u64).to_le_bytes());
-    hasher.update(value);
-}
-
-fn hash_optional_pi_config_file(
-    hasher: &mut Sha256,
-    label: &str,
-    path: &Path,
-) -> Result<(), String> {
-    hash_pi_resource_part(hasher, label.as_bytes());
-    hash_pi_resource_part(hasher, path.to_string_lossy().as_bytes());
-    match std::fs::read(path) {
-        Ok(contents) => {
-            hash_pi_resource_part(hasher, b"present");
-            hash_pi_resource_part(hasher, &contents);
-        }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            hash_pi_resource_part(hasher, b"missing");
-        }
-        Err(error) => {
-            return Err(format!(
-                "cannot read Pi startup config {}: {error}",
-                path.display()
-            ));
-        }
-    }
-    Ok(())
-}
-
-fn capture_pi_startup_resources(cwd: &Path) -> Result<PiStartupResources, String> {
-    let skills = crate::commands::agent::notebook_agents::enabled_notebook_skills(cwd)?;
-    let config_dir = pi_config_dir()?;
-    let mut hasher = Sha256::new();
-    let mut skill_directories = Vec::with_capacity(skills.len());
-    for skill in skills {
-        hash_pi_resource_part(&mut hasher, b"notebook-skill");
-        hash_pi_resource_part(&mut hasher, skill.path.to_string_lossy().as_bytes());
-        hash_pi_resource_part(&mut hasher, &skill.contents);
-        skill_directories.push(skill.directory);
-    }
-    hash_optional_pi_config_file(&mut hasher, "user-mcp", &config_dir.join("mcp.json"))?;
-    hash_optional_pi_config_file(
-        &mut hasher,
-        "project-mcp",
-        &cwd.join(".pi").join("mcp.json"),
-    )?;
-    let fingerprint = hasher
-        .finalize()
-        .iter()
-        .map(|byte| format!("{byte:02x}"))
-        .collect();
-    Ok(PiStartupResources {
-        skill_directories,
-        fingerprint,
-    })
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -1592,7 +1529,11 @@ impl PiRpcManager {
             provider: None,
             model: None,
             thinking: None,
-            startup_resources: capture_pi_startup_resources(&cwd)?,
+            startup_resources: skill_resources::capture(
+                &cwd,
+                &pi_config_dir()?,
+                &resolve_pi_session_dir(thread_id, true)?,
+            )?,
         };
         let session = self.ensure_session(app, thread_id, config, true).await?;
         let _operation = tokio::time::timeout(
@@ -1900,7 +1841,11 @@ impl PiRpcManager {
             provider: provider.clone().filter(|value| !value.trim().is_empty()),
             model: runtime_model.clone(),
             thinking,
-            startup_resources: capture_pi_startup_resources(&cwd)?,
+            startup_resources: skill_resources::capture(
+                &cwd,
+                &pi_config_dir()?,
+                &resolve_pi_session_dir(thread_id, true)?,
+            )?,
         };
         let session = self.ensure_session(app, thread_id, config, false).await?;
         *active.session.lock().await = Some(session.clone());

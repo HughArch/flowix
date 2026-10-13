@@ -10,6 +10,7 @@ import {
   createAgentMessageViewModel,
   shouldRenderAgentMessage,
 } from "@features/agent/message";
+import { hidePiSkillInstructions } from "@features/agent/message/pi-skill-markup";
 import {
   attachAgentThreadCardMathCopyHandlers,
   highlightAgentThreadCardCodeBlocks,
@@ -627,11 +628,24 @@ export function createAgentThreadCardMessageElement(options: {
       content.textContent = messageView.visibleContent;
       item.append(content);
     } else if (message.role === "user") {
+      const skillMarkup = hidePiSkillInstructions(messageView.visibleContent);
       const bubble = document.createElement("div");
       bubble.className = "agent-thread-card__message-user-bubble";
       const content = document.createElement("div");
       content.className =
         "agent-thread-card__message-content agent-thread-card__message-content--user-preview";
+      if (skillMarkup.names.length > 0) {
+        const skillTags = document.createElement("div");
+        skillTags.className = "agent-thread-card__message-pi-skill-tags";
+        skillMarkup.names.forEach((name) => {
+          const tag = document.createElement("span");
+          tag.className = "agent-thread-card__message-pi-skill-tag";
+          tag.textContent = `/skill:${name}`;
+          tag.setAttribute("aria-label", `Pi Skill: ${name}`);
+          skillTags.append(tag);
+        });
+        bubble.append(skillTags);
+      }
       if (
         message.messageType === "dsh-command" ||
         message.messageType === "dsh-command-prompt"
@@ -651,7 +665,7 @@ export function createAgentThreadCardMessageElement(options: {
       renderAgentThreadCardBudgetedMarkdown({
         message,
         role: "user",
-        visibleContent: messageView.visibleContent,
+        visibleContent: skillMarkup.content,
         content,
         toggleParent: bubble,
         context: displayContext,

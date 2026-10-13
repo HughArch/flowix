@@ -1,4 +1,5 @@
 mod runtime;
+mod skill_resources;
 
 pub use runtime::installed_flowix_pi_binary;
 pub use runtime::{PiHistoryPage, PiHistoryRevision, PiRpcManager, PiSessionSnapshot};

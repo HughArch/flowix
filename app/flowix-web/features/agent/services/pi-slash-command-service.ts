@@ -9,13 +9,11 @@ export async function listPiSkills(cwd: string): Promise<readonly ComposerSlashS
   return skills
     .map((skill) => ({
       skill,
-      declaredName: skill.frontmatter.name?.trim() ?? "",
       commandName: skill.commandName?.trim() || skill.id,
     }))
-    .filter(({ skill, declaredName, commandName }) =>
+    .filter(({ skill, commandName }) =>
       skill.enabled &&
       skill.description.trim() &&
-      declaredName === commandName &&
       skill.path.replace(/\\/g, "/").endsWith("/SKILL.md") &&
       isValidPiSkillCommandName(commandName),
     )

@@ -57,6 +57,8 @@ pub struct NotebookAgentFile {
 pub(crate) struct NotebookSkillResource {
     pub directory: PathBuf,
     pub path: PathBuf,
+    pub command_name: String,
+    pub declared_name: Option<String>,
     pub contents: Vec<u8>,
 }
 
@@ -196,7 +198,7 @@ fn read_markdown_collection_with_contents(
         ("agent.md", "AGENT.md")
     };
 
-    children
+    let mut files = children
         .into_iter()
         .filter_map(|entry| {
             let path = entry.path();
@@ -263,7 +265,92 @@ fn read_markdown_collection_with_contents(
                 content,
             ))
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    if kind == "skills" {
+        assign_unique_pi_skill_names(&mut files);
+    }
+    Ok(files)
+}
+
+fn normalized_pi_skill_name(value: &str) -> String {
+    let mut result = String::new();
+    let mut separator = false;
+    for character in value.chars().flat_map(char::to_lowercase) {
+        if character.is_ascii_alphanumeric() {
+            if separator && !result.is_empty() && result.len() < 64 {
+                result.push('-');
+            }
+            if result.len() >= 64 {
+                break;
+            }
+            result.push(character);
+            separator = false;
+        } else {
+            separator = true;
+        }
+    }
+    while result.ends_with('-') {
+        result.pop();
+    }
+    if result.is_empty() {
+        "skill".to_string()
+    } else {
+        result
+    }
+}
+
+fn unique_pi_skill_name(base: &str, used: &HashSet<String>) -> String {
+    if !used.contains(base) {
+        return base.to_string();
+    }
+    for suffix in 2.. {
+        let suffix = format!("-{suffix}");
+        let prefix_length = 64usize.saturating_sub(suffix.len());
+        let prefix = base
+            .chars()
+            .take(prefix_length)
+            .collect::<String>()
+            .trim_end_matches('-')
+            .to_string();
+        let candidate = format!("{prefix}{suffix}");
+        if !used.contains(&candidate) {
+            return candidate;
+        }
+    }
+    unreachable!("finite skill names cannot exhaust the command-name space")
+}
+
+fn assign_unique_pi_skill_names(files: &mut [(NotebookAgentFile, String)]) {
+    let mut explicit_names = HashSet::new();
+    for (skill, _) in files.iter_mut() {
+        skill.command_name = skill
+            .frontmatter
+            .get("name")
+            .filter(|name| valid_pi_skill_name(name))
+            .cloned()
+            .filter(|name| explicit_names.insert(name.clone()));
+    }
+
+    let mut used = explicit_names;
+    for (skill, _) in files.iter_mut() {
+        if skill.command_name.is_some() {
+            continue;
+        }
+        let folder_id = Path::new(&skill.path)
+            .parent()
+            .and_then(Path::file_name)
+            .and_then(|name| name.to_str())
+            .unwrap_or(&skill.id);
+        let base = normalized_pi_skill_name(&skill.id);
+        let base = if base == "skill" {
+            normalized_pi_skill_name(folder_id)
+        } else {
+            base
+        };
+        let command_name = unique_pi_skill_name(&base, &used);
+        used.insert(command_name.clone());
+        skill.command_name = Some(command_name);
+    }
 }
 
 fn read_markdown_collection(root: &Path, kind: &str) -> Result<Vec<NotebookAgentFile>, String> {
@@ -305,6 +392,11 @@ pub(crate) fn enabled_notebook_skills(root: &Path) -> Result<Vec<NotebookSkillRe
             Ok(NotebookSkillResource {
                 directory,
                 path,
+                command_name: skill
+                    .command_name
+                    .clone()
+                    .unwrap_or_else(|| skill.id.clone()),
+                declared_name: skill.frontmatter.get("name").cloned(),
                 contents: contents.into_bytes(),
             })
         })
@@ -524,6 +616,7 @@ fn write_collection(
     existing: &[NotebookAgentFile],
 ) -> Result<(), String> {
     let mut ids = HashSet::new();
+    let mut command_names = HashSet::new();
     for item in incoming {
         validate_file(
             item,
@@ -535,6 +628,12 @@ fn write_collection(
         )?;
         if !ids.insert(item.id.clone()) {
             return Err(format!("{kind} ID 重复: {}", item.id));
+        }
+        if kind == "skills" {
+            let command_name = item.command_name.as_deref().unwrap_or(&item.id);
+            if !command_names.insert(command_name.to_string()) {
+                return Err(format!("Skill 命令名重复: {command_name}"));
+            }
         }
     }
     let base = ensure_agents_root(root)?.join(kind);
