@@ -19,11 +19,49 @@ export function createRuntimeInfoRequester(
       return async () => {
         const threadId = getThreadId();
         if (!threadId) return null;
+        // Pi run metadata lives in its native conversation history. Read the
+        // latest complete turn so the popup can recover model and usage after
+        // the in-memory run projection has been cleared by a reload.
+        const page = await agent.getPiSessionPage(threadId, null, 1);
+        const latestAssistant = [...page.messages].reverse().find(
+          (message) => message.role === "assistant",
+        );
+        const nativeUsage = latestAssistant?.usage;
+        const usage = nativeUsage && typeof nativeUsage === "object"
+          ? nativeUsage as Record<string, unknown>
+          : {};
+        const numeric = (value: unknown) =>
+          typeof value === "number" && Number.isFinite(value) ? value : undefined;
+        const inputTokens = numeric(usage.input);
+        const cachedInputTokens = numeric(usage.cacheRead);
+        const outputTokens = numeric(usage.output);
+        const totalTokens = numeric(usage.totalTokens) ?? (
+          [inputTokens, cachedInputTokens, numeric(usage.cacheWrite), outputTokens]
+            .some((value) => value !== undefined)
+            ? (inputTokens ?? 0) + (cachedInputTokens ?? 0)
+              + (numeric(usage.cacheWrite) ?? 0) + (outputTokens ?? 0)
+            : undefined
+        );
         const candidateSessionId = getSessionId();
-        const sessionId = candidateSessionId && candidateSessionId !== threadId
-          ? candidateSessionId
-          : await agent.getPiSessionId(threadId);
-        return { sessionId: sessionId ?? undefined, usage: {} };
+        const sessionId = page.revision.sessionId || (
+          candidateSessionId && candidateSessionId !== threadId
+            ? candidateSessionId
+            : await agent.getPiSessionId(threadId)
+        );
+        return {
+          sessionId: sessionId ?? undefined,
+          model: typeof latestAssistant?.model === "string"
+            ? typeof latestAssistant.provider === "string"
+              ? `${latestAssistant.provider}/${latestAssistant.model}`
+              : latestAssistant.model
+            : undefined,
+          usage: {
+            input_tokens: inputTokens,
+            cached_input_tokens: cachedInputTokens,
+            output_tokens: outputTokens,
+            total_tokens: totalTokens,
+          },
+        };
       };
     case "deepseek-harness":
       return async () => {

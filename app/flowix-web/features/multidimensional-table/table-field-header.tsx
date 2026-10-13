@@ -1,16 +1,16 @@
 'use client';
 
-import { useRef, useState, useEffect } from 'react';
+import { useRef, useState, useEffect, type ReactNode } from 'react';
 import { ChevronRight, Plus, X } from 'lucide-react';
 import type { PropertyPreset } from '@features/document/properties/presets';
+import { PropertyPresetMenu as TablePresetMenu } from '@features/document/components/property-preset-menu';
+export { PropertyPresetMenu as TablePresetMenu } from '@features/document/components/property-preset-menu';
 import { createPropertySvgIcon } from '@features/document/properties/property-type-icon';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
 import type { I18nKey } from '@/lib/i18n';
 import type { PropertyIconKind, PropertyKind } from '@/lib/property-types';
-import { getPropertyTypeDefinition } from '@/lib/property-types';
 import { createUuidV7, type TableField, type TableFieldOption, type TableFieldType } from './model';
 import { TableFieldList } from './table-field-list';
-import type { ReactNode } from 'react';
 
 export function FieldTypeIcon({ kind, title, compact = false }: { kind: PropertyIconKind; title: string; compact?: boolean }) {
   const hostRef = useRef<HTMLSpanElement>(null);
@@ -22,75 +22,6 @@ export function FieldTypeIcon({ kind, title, compact = false }: { kind: Property
   }, [kind]);
 
   return <span ref={hostRef} title={title} aria-hidden="true" className={`inline-flex ${compact ? 'h-4 w-4' : 'h-5 w-5'} shrink-0 items-center justify-center text-[var(--muted-foreground)]`} />;
-}
-
-export function TablePresetMenu({
-  triggerLabel = '预设属性',
-  triggerIcon,
-  triggerPadding = 'px-1.5',
-  customPresets,
-  systemPresets,
-  disabled,
-  open,
-  onOpenChange,
-  t,
-  onSelect,
-  onRemove,
-  onManage,
-  isAdded,
-}: {
-  triggerLabel?: string;
-  triggerIcon?: ReactNode;
-  triggerPadding?: 'px-1.5' | 'px-2';
-  customPresets: PropertyPreset[];
-  systemPresets: PropertyPreset[];
-  disabled: boolean;
-  open: boolean;
-  onOpenChange: (open: boolean) => void;
-  t: (key: I18nKey) => string;
-  onSelect: (preset: PropertyPreset) => void;
-  onRemove?: (preset: PropertyPreset) => void;
-  onManage: () => void;
-  isAdded?: (preset: PropertyPreset) => boolean;
-}) {
-  const renderGroup = (title: string, presets: PropertyPreset[], showType = false) => presets.length > 0 && <section className="space-y-0.5">
-    <p className="agent-thread-card__codex-settings-title">{title}</p>
-    {presets.map((preset) => {
-      const added = isAdded?.(preset) ?? false;
-      return <button
-        key={`${preset.source}:${preset.key}`}
-        type="button"
-        disabled={disabled}
-        aria-pressed={added}
-        onClick={() => added ? onRemove?.(preset) : onSelect(preset)}
-        className="flex h-8 w-full min-w-0 items-center justify-between gap-3 rounded-lg px-1.5 text-left text-sm hover:bg-[var(--hover-bg)] disabled:cursor-default disabled:opacity-50"
-        title={preset.key}
-      >
-        <span className="min-w-0 truncate">{preset.label}</span>
-        <span className="flex min-w-0 flex-1 items-center justify-end gap-1.5 text-right">
-          <span className="truncate text-right text-xs text-[var(--muted-foreground)]">{showType ? t(getPropertyTypeDefinition(preset.kind).labelKey) : preset.key}</span>
-        </span>
-        <input type="checkbox" checked={added} readOnly aria-hidden="true" tabIndex={-1} className="pointer-events-none h-4 w-4 shrink-0 accent-[var(--brand)]" />
-      </button>;
-    })}</section>;
-
-  return <Popover open={open} onOpenChange={onOpenChange}>
-    <PopoverTrigger asChild>
-      <button type="button" disabled={disabled} className={`flex h-8 w-full items-center justify-between rounded-lg ${triggerPadding} text-left text-sm hover:bg-[var(--hover-bg)] data-[state=open]:bg-[var(--hover-bg)] data-[state=open]:text-[var(--foreground)] disabled:opacity-50`}>
-        <span className="flex min-w-0 items-center gap-1.5">{triggerIcon}{triggerLabel}</span>
-        <ChevronRight className="h-3.5 w-3.5 text-[var(--muted-foreground)]" aria-hidden="true" />
-      </button>
-    </PopoverTrigger>
-    <PopoverContent side="left" align="start" sideOffset={0} ignoreSelectOutside={false} style={{ zIndex: 170 }} className="max-h-[min(70vh,420px)] w-[213px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl p-1.5 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-      <div className="space-y-2">
-        {renderGroup(t('document.properties.category.system'), systemPresets)}
-        {renderGroup(t('document.properties.category.custom'), customPresets, true)}
-        <button type="button" disabled={disabled} onClick={onManage} className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm text-[var(--foreground)] hover:bg-[var(--hover-bg)] disabled:opacity-50">
-          预设属性管理
-        </button>
-      </div>
-    </PopoverContent>
-  </Popover>;
 }
 
 export interface TableFieldEditorFormProps {
@@ -113,7 +44,7 @@ export interface TableFieldEditorFormProps {
   systemPresets: PropertyPreset[];
   presetMenuOpen: boolean;
   onPresetMenuOpenChange: (open: boolean) => void;
-  afterType?: ReactNode;
+  afterFooter?: ReactNode;
   showPresetMenu?: boolean;
   showOptions?: boolean;
   isPresetAdded?: (preset: PropertyPreset) => boolean;
@@ -148,7 +79,7 @@ export function TableFieldEditorForm({
   systemPresets,
   presetMenuOpen,
   onPresetMenuOpenChange,
-  afterType,
+  afterFooter,
   showPresetMenu = true,
   showOptions = true,
   isPresetAdded,
@@ -208,9 +139,9 @@ export function TableFieldEditorForm({
         </div>
       </PopoverContent>
     </Popover>
-    {afterType}
     {showPresetMenu && <TablePresetMenu
-      triggerLabel="预设属性"
+      triggerLabel="选择属性"
+      customGroupLabel={t('preferences.documentProperties.group.mine')}
       customPresets={customPresets}
       systemPresets={systemPresets}
       disabled={disabled}
@@ -223,11 +154,12 @@ export function TableFieldEditorForm({
       onManage={onManagePresets}
     />}
     {showOptions && supportsOptions && <div>
-      <p className="agent-thread-card__codex-settings-title px-0.5">选项</p>
+      <p className="agent-thread-card__codex-settings-title px-2">选项</p>
       <TableFieldList
         ids={options.map((option) => option.id)}
         disabled={disabled}
         itemTypeLabel="选项"
+        rowHover={false}
         label={(id) => options.find((option) => option.id === id)?.label || '未命名选项'}
         onReorder={(ids) => {
           const nextOptions = ids.map((id) => options.find((option) => option.id === id)!);
@@ -256,7 +188,7 @@ export function TableFieldEditorForm({
             }}
             placeholder={`选项 ${index + 1}`}
             aria-label={`选项 ${index + 1}`}
-            className="h-8 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm outline-none disabled:opacity-50"
+            className="h-8 min-w-0 flex-1 rounded-lg border border-[var(--border)] bg-transparent px-1.5 text-sm outline-none disabled:opacity-50"
           />
           <button
             type="button"
@@ -275,7 +207,7 @@ export function TableFieldEditorForm({
         type="button"
         disabled={disabled}
         onClick={() => onOptionsChange([...options, { id: `opt_${createUuidV7()}`, label: '' }])}
-        className="mt-1.5 flex h-7 w-full items-center gap-1.5 rounded-lg px-2 text-left text-xs text-[var(--muted-foreground)] hover:bg-[var(--hover-bg)] hover:text-[var(--foreground)] disabled:opacity-50"
+        className="mt-1.5 flex h-7 w-full items-center gap-1.5 rounded-lg px-2 text-left text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)] disabled:opacity-50"
       >
         <Plus className="h-3.5 w-3.5" aria-hidden="true" />添加选项
       </button>
@@ -283,9 +215,10 @@ export function TableFieldEditorForm({
     {onHide && <button type="button" aria-label="隐藏此列" title="隐藏此列" disabled={disabled} onClick={onHide} className="flex h-8 w-full min-w-0 items-center justify-between gap-3 rounded-lg px-1.5 text-left text-sm hover:bg-[var(--hover-bg)] disabled:cursor-default disabled:opacity-50">
       隐藏
     </button>}
-    {onDelete && <button type="button" aria-label="删除此列" title="删除此列" disabled={disabled} onClick={onDelete} className="flex h-8 w-full min-w-0 items-center justify-between gap-3 rounded-lg px-1.5 text-left text-sm hover:bg-[var(--hover-bg)] hover:text-[var(--destructive)] disabled:cursor-default disabled:opacity-50">
-      删除
+    {onDelete && <button type="button" aria-label="删除属性" title="删除属性" disabled={disabled} onClick={onDelete} className="flex h-8 w-full min-w-0 items-center justify-between gap-3 rounded-lg px-1.5 text-left text-sm hover:bg-[var(--hover-bg)] hover:text-[var(--destructive)] disabled:cursor-default disabled:opacity-50">
+      删除属性
     </button>}
+    {afterFooter}
   </div>;
 }
 
@@ -298,6 +231,7 @@ interface TableFieldHeaderProps {
   compact?: boolean;
   hideTypeIcon?: boolean;
   readOnly?: boolean;
+  systemPreset?: boolean;
   datasetMenu?: (onOpenChange: (open: boolean) => void) => ReactNode;
   saving: boolean;
   open: boolean;
@@ -314,7 +248,7 @@ interface TableFieldHeaderProps {
   onSaveEdits: (field: TableField, name: string, options: TableFieldOption[]) => Promise<boolean>;
   onChangeType: (field: TableField, type: TableFieldType, options: TableFieldOption[]) => Promise<boolean>;
   onApplyPreset: (field: TableField, preset: PropertyPreset) => Promise<boolean>;
-  onDelete: (field: TableField) => Promise<boolean>;
+  onDelete?: (field: TableField) => Promise<boolean>;
   onManagePresets: () => void;
   onHide?: (field: TableField) => void | Promise<void>;
 }
@@ -328,6 +262,7 @@ export function TableFieldHeader({
   compact = false,
   hideTypeIcon = false,
   readOnly = false,
+  systemPreset = false,
   datasetMenu,
   saving,
   open,
@@ -447,7 +382,7 @@ export function TableFieldHeader({
   };
 
   const deleteField = async () => {
-    if (await onDelete(field)) closeMenu();
+    if (onDelete && await onDelete(field)) closeMenu();
   };
 
   const hideField = async () => {
@@ -474,24 +409,24 @@ export function TableFieldHeader({
 
   return <Popover open={open} onOpenChange={handleOpenChange}>
     <PopoverTrigger asChild>
-      <button type="button" disabled={saving} title={field.property_key ?? '笔记文档'} aria-label={`编辑属性 ${label}`} className={compact
-        ? `flex h-8 w-full min-w-0 max-w-full flex-1 items-center ${trailingLabel ? 'gap-0.5' : 'gap-1.5'} overflow-hidden rounded-lg px-1 text-left text-sm text-[var(--foreground)] hover:bg-[var(--hover-bg)] disabled:opacity-50`
+      <button type="button" disabled={saving} title={label} aria-label={`编辑属性 ${label}`} className={compact
+        ? `flex h-8 w-full min-w-0 max-w-full flex-1 items-center ${trailingLabel ? 'gap-0.5' : 'gap-1.5'} overflow-hidden rounded-lg pl-0.5 pr-1 text-left text-sm text-[var(--foreground)] hover:bg-[var(--hover-bg)] disabled:opacity-50`
         : 'multidimensional-table__cell-content multidimensional-table__header-trigger group flex min-h-9 min-w-0 items-center gap-x-1.5 text-left text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] data-[state=open]:bg-[var(--muted)] disabled:cursor-not-allowed disabled:opacity-60'}>
         {!hideTypeIcon && <FieldTypeIcon kind={typeIconKind(field.type)} title={typeLabel(field.type)} compact={compact} />}
-        {compact && trailingLabel && <span className="inline-flex shrink-0 items-center rounded-md border border-[var(--border)] bg-[var(--muted)] px-1 py-px text-xs font-normal text-[var(--muted-foreground)]">{trailingLabel}</span>}
-        <span className={compact ? `block min-w-0 ${trailingLabel ? '' : 'flex-1'} overflow-hidden text-ellipsis whitespace-nowrap` : 'min-w-0 break-words'}>{label}</span>
+        {compact && trailingLabel && <span className={`inline-flex shrink-0 items-center rounded-md border border-[var(--border)] bg-[var(--muted)] px-1 ${trailingLabel === '只读' ? 'py-0 leading-4' : 'py-px'} text-xs font-normal text-[var(--muted-foreground)]`}>{trailingLabel}</span>}
+        <span className={compact ? `block min-w-0 ${trailingLabel ? '' : 'flex-1'} overflow-hidden text-ellipsis whitespace-nowrap` : 'min-w-0 overflow-hidden text-ellipsis whitespace-nowrap'}>{label}</span>
       </button>
     </PopoverTrigger>
     <PopoverContent anchorSelector={compact ? '[data-table-field-item]' : undefined} align="start" side={compact ? 'right' : 'bottom'} sideOffset={0} fitViewport style={{ zIndex: 160 }} ignorePopoverOutside={typeMenuOpen || presetMenuOpen || datasetMenuOpen} ignoreSelectOutside={field.type === 'primary'} className="max-h-[min(70vh,420px)] w-[213px] p-1.5 max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
       <TableFieldEditorForm
         name={propertyKeyDraft}
         onNameChange={setPropertyKeyDraft}
-        nameDisabled={field.type === 'primary' || readOnly}
+        nameDisabled={field.type === 'primary' || readOnly || systemPreset}
         onNameSubmit={submitName}
         type={field.type}
         typeChoices={typeChoices}
         onTypeChange={changeType}
-        typeDisabled={field.type === 'primary' || readOnly}
+        typeDisabled={field.type === 'primary' || readOnly || systemPreset}
         typeMenuOpen={typeMenuOpen}
         onTypeMenuOpenChange={(nextOpen) => {
           setTypeMenuOpen(nextOpen);
@@ -509,7 +444,7 @@ export function TableFieldHeader({
           setPresetMenuOpen(nextOpen);
           if (nextOpen) setTypeMenuOpen(false);
         }}
-        afterType={open && datasetMenu?.(setDatasetMenuOpen)}
+        afterFooter={open && datasetMenu?.(setDatasetMenuOpen)}
         showPresetMenu={false}
         showOptions={!readOnly}
         isPresetAdded={isPresetAdded}
@@ -517,7 +452,7 @@ export function TableFieldHeader({
         onRemovePreset={onRemovePreset}
         onManagePresets={managePresets}
         onHide={onHide ? () => { void hideField(); } : undefined}
-        onDelete={field.type !== 'primary' && (!readOnly || trailingLabel === '预设') ? () => void deleteField() : undefined}
+        onDelete={onDelete && field.type !== 'primary' && (!readOnly || trailingLabel === '预设') ? () => void deleteField() : undefined}
         disabled={saving}
         t={t}
         typeLabel={typeLabel}

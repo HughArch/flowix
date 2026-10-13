@@ -9,7 +9,6 @@ import { Button } from '@shared/ui/button';
 
 interface CliCommandItem {
   command: string;
-  alias?: string;
   usage: string;
   descriptionKey: I18nKey;
 }
@@ -17,49 +16,41 @@ interface CliCommandItem {
 const CLI_COMMANDS: CliCommandItem[] = [
   {
     command: 'notebooks',
-    alias: 'nb',
     usage: 'flowix notebooks',
     descriptionKey: 'preferences.cli.commands.notebooks',
   },
   {
     command: 'list',
-    alias: 'ls',
     usage: 'flowix list <notebook>',
     descriptionKey: 'preferences.cli.commands.list',
   },
   {
     command: 'show',
-    alias: 's',
     usage: 'flowix show <id>',
     descriptionKey: 'preferences.cli.commands.show',
   },
   {
     command: 'create',
-    alias: 'new, c',
     usage: 'echo "# title" | flowix create <notebook>',
     descriptionKey: 'preferences.cli.commands.create',
   },
   {
     command: 'delete',
-    alias: 'rm',
     usage: 'flowix delete <id>',
     descriptionKey: 'preferences.cli.commands.delete',
   },
   {
     command: 'edit',
-    alias: 'e',
     usage: 'flowix edit <id> --old <text> --new <text>',
     descriptionKey: 'preferences.cli.commands.edit',
   },
   {
     command: 'write',
-    alias: 'w',
     usage: 'printf "# title\\nbody\\n" | flowix write <id>',
     descriptionKey: 'preferences.cli.commands.write',
   },
   {
     command: 'search',
-    alias: 'q',
     usage: 'flowix search <query> --limit 20',
     descriptionKey: 'preferences.cli.commands.search',
   },
@@ -90,93 +81,73 @@ export function CliSection() {
 
   const statusText = loading
     ? t('preferences.cli.status.checking')
-    : status?.needsInstall
+    : !status
+      ? t('preferences.cli.status.unknown')
+      : status.needsInstall
       ? t('preferences.cli.status.needsInstall')
-      : t('preferences.cli.status.ready');
+      : t('preferences.cli.status.available');
 
   return (
     <div className="space-y-4 pb-6">
       <SectionHeader title={t('preferences.cli.title')} />
       <div className="space-y-2">
-        <div className="rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-2">
-          {loading ? (
-            <div className="flex h-[100px] items-center justify-center text-center text-xs text-[var(--muted-foreground)]">
-              {statusText}
-            </div>
-          ) : (
-            <div className="flex items-start justify-between gap-3">
-              <div className="min-w-0">
-                <div className="text-xs font-medium text-[var(--muted-foreground)]">
-                  {t('preferences.cli.binary')}
-                </div>
-                <div className="mt-1 flex flex-wrap items-center gap-2">
-                  <code className="text-sm text-[var(--foreground)]">flowix</code>
-                  <div className="flex flex-wrap items-center gap-2 text-xs text-[var(--muted-foreground)]">
-                    {!status?.needsInstall && (
-                      <Check className="size-3.5 text-[var(--success)]" />
-                    )}
-                    <span>{statusText}</span>
-                    {status?.binDir && (
-                      <code className="rounded bg-[var(--muted)] px-1.5 py-0.5 text-[var(--foreground)]">
-                        {status.binDir}
-                      </code>
-                    )}
-                  </div>
-                </div>
-                {error && (
-                  <p className="mt-1 text-xs text-[var(--destructive)]">
-                    {error}
-                  </p>
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3">
+          <div className="flex min-h-9 items-center gap-2.5">
+            <span className="shrink-0 text-xs font-medium text-[var(--muted-foreground)]">
+              {t('preferences.cli.status.label')}
+            </span>
+            {!loading && status && !status.needsInstall && (
+              <Check className="size-3.5 shrink-0 text-[var(--success)]" />
+            )}
+            <span className="shrink-0 text-sm text-[var(--foreground)]">{statusText}</span>
+            {!loading && (
+              <code className="min-w-0 flex-1 truncate text-sm text-[var(--muted-foreground)]" title={status?.commandPath || status?.binDir}>
+                {status?.commandPath || status?.binDir || 'flowix'}
+              </code>
+            )}
+            {status?.needsInstall && (
+              <Button
+                className="shrink-0 px-3"
+                onClick={() => void installPath()}
+                disabled={installing}
+              >
+                {installing ? (
+                  <Loader2 data-icon="inline-start" className="animate-spin" />
+                ) : (
+                  <Download data-icon="inline-start" />
                 )}
-                {status?.needsInstall && !error && (
-                  <p className="mt-1 text-xs text-[var(--muted-foreground)]">
-                    {t('preferences.cli.installHint')}
-                  </p>
-                )}
-              </div>
-              {status?.needsInstall && (
-                <Button
-                  className="px-3"
-                  onClick={() => void installPath()}
-                  disabled={installing}
-                >
-                  {installing ? (
-                    <Loader2 data-icon="inline-start" className="animate-spin" />
-                  ) : (
-                    <Download data-icon="inline-start" />
-                  )}
-                  {t('preferences.cli.install')}
-                </Button>
-              )}
-            </div>
+                {t('preferences.cli.install')}
+              </Button>
+            )}
+          </div>
+          {error && (
+            <p className="mt-2 text-xs text-[var(--destructive)]">
+              {error}
+            </p>
           )}
         </div>
 
-        <div className="divide-y divide-[var(--divider)]">
-          {CLI_COMMANDS.map((item) => (
-            <div key={item.command} className="py-3">
-              <div className="flex items-start justify-between gap-3">
-                <div className="min-w-0">
-                  <div className="flex flex-wrap items-center gap-2">
-                    <code className="text-sm font-medium text-[var(--foreground)]">
-                      {item.command}
-                    </code>
-                    {item.alias && (
-                      <span className="text-xs text-[var(--muted-foreground)]">
-                        {t('preferences.cli.alias')}: {item.alias}
-                      </span>
-                    )}
-                  </div>
-                  <p className="mt-1 text-sm text-[var(--muted-foreground)]">
-                    {t(item.descriptionKey)}
-                  </p>
-                </div>
-              </div>
-              <code className="mt-2 block overflow-x-auto rounded-md bg-[var(--muted)] px-2.5 py-2 text-xs text-[var(--foreground)]">
-                {item.usage}
-              </code>
+        <div className="overflow-x-auto">
+          <div className="min-w-[42rem] divide-y divide-[var(--divider)]">
+            <div className="grid grid-cols-[8rem_minmax(0,1fr)_22rem] items-center gap-4 py-2 text-xs font-medium text-[var(--muted-foreground)]">
+              <span>{t('preferences.cli.binary')}</span>
+              <span>{t('preferences.cli.description')}</span>
+              <span>{t('preferences.cli.example')}</span>
             </div>
-          ))}
+            {CLI_COMMANDS.map((item) => (
+              <div key={item.command} className="grid grid-cols-[8rem_minmax(0,1fr)_22rem] items-start gap-4 py-2.5">
+                <code className="truncate text-sm font-medium text-[var(--foreground)]">
+                  {item.command}
+                </code>
+                <p className="text-sm text-[var(--muted-foreground)]">
+                  {t(item.descriptionKey)}
+                </p>
+                <code className="block whitespace-normal break-words px-2.5 py-1 text-xs text-[var(--foreground)]">
+                  {item.usage}
+                </code>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
     </div>

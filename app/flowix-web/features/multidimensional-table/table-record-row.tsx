@@ -1,17 +1,17 @@
 import { sortFields } from './field-order';
 import { builtinTableFieldValue, builtinPresetTableField, builtinPresetValue, type BuiltinTableField } from './builtin-fields';
 import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { ChevronDown, ChevronUp, FileText, ImagePlus, MoreHorizontal } from 'lucide-react';
+import { ChevronDown, ChevronUp, FileText, MoreHorizontal } from 'lucide-react';
 import { ArrowUpRightIcon, ArrowsLeftRightIcon, LightningIcon, MinusCircleIcon, TrashSimpleIcon } from '@phosphor-icons/react';
 import type { NoteEntry } from '@platform/tauri/client';
 import { joinNotebookMemoPath } from '@/lib/path';
 import { displayTitleFromFilename } from '@/lib/utils';
-import { canonicalizePropertyKey } from '@features/document/properties/property-key';
+import { canonicalizePropertyKey } from '@features/properties/property-key';
 import { useComposingValue } from '@shared/hooks/use-composing-value';
-import { useI18n } from '@/lib/i18n';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
 import { DateValueInput } from '@features/document/components/note-properties/date-value-input';
 import { ColorValueInput } from '@features/document/properties/color-value-input';
+import { ImageValueInput } from '@features/document/properties/image-value-input';
 import { IconValueInput } from '@features/document/properties/icon-value-input';
 import { MultiSelectValueInput } from '@features/document/properties/multi-select-value-input';
 import { SelectValueInput } from '@features/document/properties/select-value-input';
@@ -211,7 +211,6 @@ export const TableRecordRow = memo(function TableRecordRow({
   onDeleteRecord,
   onRowActionOpenChange,
 }: TableRecordRowProps) {
-  const { t } = useI18n();
   const [editingPrimary, setEditingPrimary] = useState(false);
   const [primaryTitleDraft, setPrimaryTitleDraft] = useState('');
   const primaryTitleInput = useComposingValue(primaryTitleDraft, setPrimaryTitleDraft);
@@ -318,7 +317,7 @@ export const TableRecordRow = memo(function TableRecordRow({
       if (!note && builtinPresetTableField(field.id)) return <td key={field.id} className={`${showBottomBorder ? 'border-b' : ''} border-r border-[var(--border)] p-0 align-middle`} />;
       const value = builtinPresetTableField(field.id) ? builtinPresetValue(field.id, note) : notePropertyEditorValue(note, field);
       const inputClass = 'h-8 w-full rounded-md border-0 bg-transparent px-0 text-sm outline-none placeholder:text-[var(--muted-foreground)] placeholder:opacity-80 focus:border-0 focus:bg-transparent focus:ring-0 disabled:cursor-not-allowed disabled:opacity-50';
-      const isWrappingContent = field.type === 'primary' || field.type === 'Text' || field.type === 'Tag' || field.type === 'Tags';
+      const isWrappingContent = field.type === 'primary' || field.type === 'Text' || field.type === 'Tag' || field.type === 'MultiSelect';
       const cellStatus = cellStatuses.get(field.id);
       const cellDisabled = saving || Boolean(cellStatus?.saving) || noteStatus !== 'linked';
       const chooseImage = async () => {
@@ -481,33 +480,13 @@ export const TableRecordRow = memo(function TableRecordRow({
           })()
             : field.type === 'Image' ? (() => {
               const path = imagePaths(value)[0];
-              const uploading = uploadingImageFieldId === field.id;
-              return <div className="flex h-10 min-w-0 items-center gap-1 overflow-hidden px-0">
-              {path ? (() => {
-                const key = `${record.id}:${field.id}:${path}`;
-                return <button
-                  type="button"
-                  disabled={cellDisabled || uploading}
-                  onClick={() => void chooseImage()}
-                  className="group relative h-8 w-8 shrink-0 cursor-pointer overflow-hidden rounded-md border border-[var(--border)] bg-[var(--muted)] disabled:cursor-not-allowed disabled:opacity-50"
-                  title={t('document.properties.selectImage')}
-                  aria-label={t('document.properties.selectImage')}
-                >
-                  {imageUrls[key]
-                    ? <img src={imageUrls[key] ?? undefined} alt="" className="h-full w-full object-cover" />
-                    : <ImagePlus className="m-auto h-4 w-4 text-[var(--muted-foreground)]" aria-hidden="true" />}
-                  <span className="absolute inset-0 flex items-center justify-center bg-black/35 text-white opacity-0 transition-opacity group-hover:opacity-100">
-                    <ImagePlus className="h-4 w-4" aria-hidden="true" />
-                  </span>
-                </button>;
-              })()
-                : <button
-                    type="button"
-                    disabled={cellDisabled || uploading}
-                    onClick={() => void chooseImage()}
-                    className="frontmatter-property__date-picker-trigger flex h-8 min-w-0 flex-1 items-center rounded-lg border-0 bg-transparent px-0 text-left text-sm text-[var(--muted-foreground)] opacity-80 hover:bg-transparent focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
-                  >{uploading ? t('document.properties.selectingImage') : t('document.properties.selectImage')}</button>}
-              </div>;
+              return <ImageValueInput
+                path={path}
+                src={path ? imageUrls[`${record.id}:${field.id}:${path}`] : null}
+                disabled={cellDisabled}
+                uploading={uploadingImageFieldId === field.id}
+                onSelect={() => void chooseImage()}
+              />;
             })()
               : field.type === 'Color' ? <ColorValueInput
                 value={Array.isArray(value) ? value.map(String).join(', ') : typeof value === 'string' ? value : ''}
@@ -542,10 +521,10 @@ export const TableRecordRow = memo(function TableRecordRow({
                           variant="table"
                           onChange={(id) => onUpdateCell(record, note, field, id || null)}
                         />
-                          : field.type === 'Tag' || field.type === 'Tags' ? <TableTagValueInput
+                          : field.type === 'Tag' ? <TableTagValueInput
                             value={Array.isArray(value) ? value.map(String) : typeof value === 'string' ? value.split(',').map((item) => item.trim()).filter(Boolean) : []}
                             disabled={cellDisabled}
-                            isNoteTags={field.type === 'Tags' || canonicalizePropertyKey(field.property_key ?? '') === 'tags'}
+                            isNoteTags={canonicalizePropertyKey(field.property_key ?? '') === 'tags'}
                             onChange={(next) => onUpdateCell(record, note, field, next)}
                           />
                             : field.type === 'Number' ? <TableNumberInput

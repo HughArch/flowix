@@ -39,6 +39,8 @@ pub struct NotebookAgentWorkspace {
 pub struct NotebookAgentFile {
     pub id: String,
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub command_name: Option<String>,
     #[serde(default)]
     pub description: String,
     #[serde(default = "default_true")]
@@ -49,6 +51,13 @@ pub struct NotebookAgentFile {
     pub path: String,
     #[serde(default)]
     pub frontmatter: BTreeMap<String, String>,
+}
+
+#[derive(Debug, Clone)]
+pub(crate) struct NotebookSkillResource {
+    pub directory: PathBuf,
+    pub path: PathBuf,
+    pub contents: Vec<u8>,
 }
 
 fn default_version() -> u32 {
@@ -162,7 +171,10 @@ fn encode_scalar(value: &str) -> String {
     serde_json::to_string(value).unwrap_or_else(|_| format!("\"{}\"", value.replace('"', "\\\"")))
 }
 
-fn read_markdown_collection(root: &Path, kind: &str) -> Result<Vec<NotebookAgentFile>, String> {
+fn read_markdown_collection_with_contents(
+    root: &Path,
+    kind: &str,
+) -> Result<Vec<(NotebookAgentFile, String)>, String> {
     let directory = agents_root(root).join(kind);
     reject_symlink(&directory, &format!(".agents/{kind} 目录"))?;
     if !directory.exists() {
@@ -206,8 +218,24 @@ fn read_markdown_collection(root: &Path, kind: &str) -> Result<Vec<NotebookAgent
                 .cloned()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or(folder_id);
-            let name = frontmatter
-                .get("name")
+            let declared_name = frontmatter.get("name");
+            let command_name = if kind == "skills" {
+                declared_name
+                    .filter(|value| valid_pi_skill_name(value))
+                    .cloned()
+            } else {
+                None
+            };
+            let display_name = if kind == "skills" {
+                frontmatter
+                    .get("display-name")
+                    .filter(|value| !value.trim().is_empty())
+                    .or_else(|| declared_name.filter(|value| !valid_pi_skill_name(value)))
+                    .or(declared_name)
+            } else {
+                declared_name
+            };
+            let name = display_name
                 .cloned()
                 .filter(|value| !value.trim().is_empty())
                 .unwrap_or_else(|| id.clone());
@@ -221,17 +249,28 @@ fn read_markdown_collection(root: &Path, kind: &str) -> Result<Vec<NotebookAgent
                 .unwrap_or(&path)
                 .to_string_lossy()
                 .replace('\\', "/");
-            Ok(NotebookAgentFile {
-                id,
-                name,
-                description,
-                enabled,
-                body,
-                path: relative_path,
-                frontmatter,
-            })
+            Ok((
+                NotebookAgentFile {
+                    id,
+                    name,
+                    command_name,
+                    description,
+                    enabled,
+                    body,
+                    path: relative_path,
+                    frontmatter,
+                },
+                content,
+            ))
         })
         .collect()
+}
+
+fn read_markdown_collection(root: &Path, kind: &str) -> Result<Vec<NotebookAgentFile>, String> {
+    Ok(read_markdown_collection_with_contents(root, kind)?
+        .into_iter()
+        .map(|(file, _)| file)
+        .collect())
 }
 
 fn read_workspace(root: &Path) -> Result<NotebookAgentWorkspace, String> {
@@ -246,12 +285,50 @@ fn read_workspace(root: &Path) -> Result<NotebookAgentWorkspace, String> {
     })
 }
 
+pub(crate) fn enabled_notebook_skills(root: &Path) -> Result<Vec<NotebookSkillResource>, String> {
+    let root_text = root.to_string_lossy().into_owned();
+    let root = notebook_root(&root_text)?;
+    read_markdown_collection_with_contents(root, "skills")?
+        .into_iter()
+        .filter(|(skill, _)| {
+            skill.enabled
+                && skill.command_name.is_some()
+                && !skill.description.trim().is_empty()
+                && skill.path.rsplit('/').next() == Some("SKILL.md")
+        })
+        .map(|(skill, contents)| {
+            let path = root.join(&skill.path);
+            let directory = path
+                .parent()
+                .ok_or_else(|| format!("Pi Skill 路径无效: {}", path.display()))?
+                .to_path_buf();
+            Ok(NotebookSkillResource {
+                directory,
+                path,
+                contents: contents.into_bytes(),
+            })
+        })
+        .collect()
+}
+
 fn valid_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= MAX_ID_LENGTH
         && value.chars().all(|character| {
             character.is_ascii_lowercase() || character.is_ascii_digit() || character == '-'
         })
+}
+
+fn valid_pi_skill_name(value: &str) -> bool {
+    let bytes = value.as_bytes();
+    !bytes.is_empty()
+        && bytes.len() <= 64
+        && bytes.first().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes.last().is_some_and(u8::is_ascii_alphanumeric)
+        && bytes
+            .iter()
+            .all(|byte| byte.is_ascii_lowercase() || byte.is_ascii_digit() || *byte == b'-')
+        && !value.contains("--")
 }
 
 fn valid_text(value: &str, max_length: usize) -> bool {
@@ -269,6 +346,14 @@ fn validate_file(item: &NotebookAgentFile, kind: &str) -> Result<(), String> {
         return Err(format!(
             "{kind} 名称不能为空且不能超过 {MAX_NAME_LENGTH} 个字符"
         ));
+    }
+    if kind == "Skill" {
+        let command_name = item.command_name.as_deref().unwrap_or(&item.id);
+        if !valid_pi_skill_name(command_name) {
+            return Err(
+                "Pi Skill 命令名只能使用小写字母、数字和连字符，不能以连字符开头或结尾，也不能含连续连字符；长度不超过 64".into(),
+            );
+        }
     }
     if !valid_text(item.description.trim(), MAX_DESCRIPTION_LENGTH) {
         return Err(format!(
@@ -371,7 +456,24 @@ fn render_markdown(item: &NotebookAgentFile, kind: &str) -> String {
     );
     frontmatter.insert("enabled".to_string(), item.enabled.to_string());
     frontmatter.insert("id".to_string(), item.id.clone());
-    frontmatter.insert("name".to_string(), item.name.trim().to_string());
+    if kind == "skills" {
+        // `name` is Pi's slash-command identifier. Keep the editor's human
+        // readable label separately so a Chinese display name never becomes
+        // an invalid `/skill:<name>` command.
+        let command_name = item
+            .command_name
+            .as_deref()
+            .filter(|name| valid_pi_skill_name(name))
+            .unwrap_or(&item.id);
+        frontmatter.insert("name".to_string(), command_name.to_string());
+        if item.name.trim() == command_name {
+            frontmatter.remove("display-name");
+        } else {
+            frontmatter.insert("display-name".to_string(), item.name.trim().to_string());
+        }
+    } else {
+        frontmatter.insert("name".to_string(), item.name.trim().to_string());
+    }
     if kind == "agents" {
         frontmatter
             .entry("role".to_string())
@@ -508,6 +610,12 @@ pub fn notebook_agent_workspace_read(cwd: String) -> Result<NotebookAgentWorkspa
 }
 
 #[tauri::command]
+pub fn notebook_agent_skills_read(cwd: String) -> Result<Vec<NotebookAgentFile>, String> {
+    let root = notebook_root(&cwd)?;
+    read_markdown_collection(root, "skills")
+}
+
+#[tauri::command]
 pub fn notebook_agent_workspace_write(
     cwd: String,
     workspace: NotebookAgentWorkspace,
@@ -538,6 +646,7 @@ mod tests {
         let item = NotebookAgentFile {
             id: "reviewer".into(),
             name: "Review".into(),
+            command_name: None,
             description: "Checks code".into(),
             enabled: true,
             body: "Do the review.".into(),

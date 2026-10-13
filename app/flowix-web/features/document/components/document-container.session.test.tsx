@@ -26,7 +26,22 @@ vi.mock('./lazy-document-editor', async () => ({
   LazyDocumentEditor: (await import('@features/editor/markdown-editor')).MarkdownEditor,
   preloadDocumentEditor: () => {},
 }));
-vi.mock('../use-cases/local-document-operations', () => ({ localDocumentOperations: { read: mocks.read, write: mocks.write, rename: mocks.rename } }));
+vi.mock('../use-cases/local-document-operations', () => ({
+  markdownFilenameForTitle: (path: string, title: string) => {
+    const extension = path.match(/(\.markdown|\.md)$/i)?.[0] ?? '';
+    const trimmed = title.trim();
+    return trimmed ? `${trimmed}${extension}` : null;
+  },
+  renameMarkdownTitle: async ({ path, title, onPathChanged }: {
+    path: string; title: string; onPathChanged?: (oldPath: string, newPath: string) => void;
+  }) => {
+    const filename = `${title.trim()}.md`;
+    const renamed = await mocks.rename({ path, name: filename });
+    onPathChanged?.(path, renamed.path);
+    return { path: renamed.path, filename: renamed.path.split(/[\\/]/).pop() ?? filename, changed: true };
+  },
+  localDocumentOperations: { read: mocks.read, write: mocks.write, rename: mocks.rename },
+}));
 vi.mock('@features/workspace/use-cases/workspace-navigation', () => ({ replaceExternalDocumentPath: (displayId: string, oldPath: string, path: string) => {
   rebaseFileDisplayPath(oldPath, path, displayId); mocks.publish(path);
 }, openExternalTarget: vi.fn().mockResolvedValue({ host: 'main-third', state: 'active' }) }));
@@ -170,7 +185,7 @@ describe('real document container session lifecycle', () => {
     await act(async () => { doc.render(); });
     await act(async () => { doc.editors.left!.commands.openFileDialog({ accept: 'image/*' }); });
     expect(invoke).toHaveBeenCalledWith('save_notebook_asset', {
-      sourcePath: '/selected/fig.png', notebookId: 'owner', deduplicate: true, reuseNotebookFile: true,
+      sourcePath: '/selected/fig.png', notebookId: 'owner', deduplicate: true, reuseNotebookFile: false, reuseExistingAttachment: true,
     });
     const images: string[] = [];
     doc.editors.left!.state.doc.descendants(node => { if (node.type.name === 'image') images.push(node.attrs.src); });
@@ -192,7 +207,7 @@ describe('real document container session lifecycle', () => {
     vi.mocked(invoke).mockImplementation(async (command) => command === 'select_files' ? ['/selected/fig.png'] : { path: `${path}/attachments/fig.png`, created: true });
     await act(async () => { doc.editors.left!.commands.openFileDialog(); });
     expect(invoke).toHaveBeenCalledWith('save_notebook_asset', {
-      sourcePath: '/selected/fig.png', notebookId: 'owner', deduplicate: true, reuseNotebookFile: true,
+      sourcePath: '/selected/fig.png', notebookId: 'owner', deduplicate: true, reuseNotebookFile: false, reuseExistingAttachment: true,
     });
   });
   it('does not save an image to the selected notebook when the document is outside it', async () => {
@@ -203,7 +218,8 @@ describe('real document container session lifecycle', () => {
     vi.mocked(invoke).mockResolvedValue(['/selected/fig.png']);
     await act(async () => { doc.render(); });
     await act(async () => { doc.editors.left!.commands.openFileDialog(); });
-    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).toEqual(['select_files']);
+    // The watch lease is unrelated lifecycle noise; assert no asset was saved.
+    expect(invoke).not.toHaveBeenCalledWith('save_notebook_asset', expect.anything());
     expect(doc.editors.left!.getMarkdown()).toBe('Body');
   });
   it('opening a second view preserves scheduled autosave', async () => {
@@ -256,8 +272,47 @@ describe('real document container session lifecycle', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(300); });
     expect(findFileDisplayPath(doc.identity.displayId)).toBe(doc.identity.path);
     expect(mocks.write).toHaveBeenLastCalledWith(expect.objectContaining({ path: doc.identity.path, content: expect.stringContaining('retained body') }));
-    expect((container.querySelector('textarea.memo-title-editor') as HTMLTextAreaElement).value).toBe('Taken');
+    // A rejected rename restores the confirmed title and keeps the attempted
+    // title recoverable through an explicit action.
+    expect((container.querySelector('textarea.memo-title-editor') as HTMLTextAreaElement).value).toBe('A');
+    expect(container.textContent).toContain('Recover unsaved title');
     expect(doc.mounts()).toBe(2);
+  });
+  it('autosaves committed content without submitting or closing an active property draft', async () => {
+    const doc = setup();
+    mocks.read.mockResolvedValue('---\ncustom: old\n---\nBody');
+    await act(async () => { doc.render(); });
+    act(() => { doc.editors.left!.commands.insertContent('pending body '); });
+    act(() => {
+      doc.editors.left!.view.dom.querySelector<HTMLElement>('.frontmatter-property__display-value')!.click();
+    });
+    const input = document.body.querySelector<HTMLTextAreaElement>('.frontmatter-property__edit-input')!;
+    input.value = 'still typing';
+    await act(async () => { await vi.advanceTimersByTimeAsync(2100); });
+    expect(document.body.querySelector('.frontmatter-property__edit-input')).toBe(input);
+    expect(document.activeElement).toBe(input);
+    expect(input.value).toBe('still typing');
+    expect(getDocumentBuffer(doc.identity).content).toContain('custom: old');
+    expect(getDocumentBuffer(doc.identity).content).not.toContain('still typing');
+    expect(mocks.write).toHaveBeenCalledWith(expect.objectContaining({
+      content: expect.stringContaining('pending body'),
+    }));
+    expect(mocks.write.mock.calls.every(([request]) => !request.content.includes('still typing'))).toBe(true);
+  });
+  it('captures an open property draft when workspace ownership changes without a pointer event', async () => {
+    const doc = setup();
+    mocks.read.mockResolvedValue('---\ncustom: old\n---\nBody');
+    await act(async () => { doc.render(); });
+    act(() => {
+      doc.editors.left!.view.dom.querySelector<HTMLElement>('.frontmatter-property__display-value')!.click();
+    });
+    const input = document.body.querySelector<HTMLTextAreaElement>('.frontmatter-property__edit-input')!;
+    expect(input).not.toBeNull();
+    input.value = 'retained draft';
+    await act(async () => { useWorkspaceFocusStore.getState().focusHost('browser-column'); });
+    expect(getDocumentBuffer(doc.identity).content).toContain('custom: retained draft');
+    expect(doc.editors.right!.getMarkdown()).toContain('custom: retained draft');
+    expect(document.body.querySelector('.frontmatter-property__edit-popover')).toBeNull();
   });
   it('captures outgoing input before enabling the other view and ignores inactive snapshots', async () => {
     const doc = setup(); await act(async () => { doc.render(); });

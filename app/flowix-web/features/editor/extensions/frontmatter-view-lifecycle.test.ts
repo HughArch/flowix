@@ -3,8 +3,9 @@ import { observeFrontmatterView } from './frontmatter-view-lifecycle';
 
 const releases = vi.hoisted(() => [vi.fn(), vi.fn(), vi.fn()]);
 vi.mock('@features/preferences/public/runtime-api', () => ({
-  subscribeAppLanguage: () => releases[0], subscribePropertyFieldPreferences: () => releases[1],
+  subscribeAppLanguage: () => releases[0],
 }));
+vi.mock('@features/properties/public-api', () => ({ subscribePropertyPresets: () => releases[1] }));
 vi.mock('@/lib/store/settings-store', () => ({ useSettingsStore: { subscribe: () => releases[2] } }));
 
 it('releases every external listener and subscription exactly once on destruction', () => {

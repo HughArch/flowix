@@ -2,7 +2,6 @@
 
 import { useEffect, useMemo, useState } from 'react';
 import { Check, Copy } from 'lucide-react';
-import { SectionHeader } from '@features/preferences/sections/primitives';
 import { useCliLinkStatusStore } from '@features/preferences/store';
 import { useI18n } from '@/lib/i18n';
 import { Button } from '@shared/ui/button';
@@ -96,12 +95,15 @@ export function McpSection() {
 
   return (
     <div className="space-y-5">
-      <SectionHeader title={t('preferences.mcp.title')} />
-
-      <div className="space-y-4">
-        <div className="flex flex-wrap items-center gap-x-3 gap-y-2 text-sm text-[var(--muted-foreground)]">
-          <span>{t('preferences.mcp.supportedAgents')}</span>
-          <div className="flex items-center gap-2" aria-label={t('preferences.mcp.supportedAgents')}>
+      <div className="space-y-2 border-b border-[var(--divider)] pb-3">
+        <h3 className="text-base font-medium text-[var(--foreground)]">
+          {t('preferences.mcp.title')}
+        </h3>
+        <div className="flex min-h-6 items-center justify-between gap-3">
+          <span className="text-sm text-[var(--muted-foreground)]">
+            {t('preferences.mcp.supportedAgents')}
+          </span>
+          <div className="flex items-center gap-1" aria-label={t('preferences.mcp.supportedAgents')}>
             {SUPPORTED_AGENTS.map((agent) => (
               <span
                 key={agent.name}
@@ -123,8 +125,10 @@ export function McpSection() {
             ))}
           </div>
         </div>
+      </div>
 
-        <div className="rounded-md border border-[var(--border)] bg-[var(--card)] px-3 py-3">
+      <div className="space-y-4">
+        <div className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-3">
           <div className="text-sm font-medium text-[var(--foreground)]">
             {t('preferences.mcp.setupTitle')}
           </div>
@@ -135,7 +139,7 @@ export function McpSection() {
         </div>
 
         {snippets.map((snippet) => (
-          <div key={snippet.id} className="overflow-hidden rounded-md border border-[var(--border)] bg-[var(--card)]">
+          <div key={snippet.id} className="overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]">
             <div className="flex h-10 items-center justify-between gap-3 border-b border-[var(--divider)] px-3">
               <div className="min-w-0">
                 <div className="text-sm font-medium text-[var(--foreground)]">{snippet.title}</div>

@@ -50,6 +50,12 @@ vi.mock('@/lib/memo-dispatcher', () => ({
 }));
 
 import { AgentWindowEffects } from './agent-window-effects';
+import { useAgentAccessWindowSync } from './use-agent-access-window-sync';
+
+function PreferencesAccessSync() {
+  useAgentAccessWindowSync();
+  return null;
+}
 
 describe('AgentWindowEffects', () => {
   beforeEach(() => {
@@ -59,6 +65,33 @@ describe('AgentWindowEffects', () => {
 
   afterEach(() => {
     document.body.replaceChildren();
+  });
+
+  it('loads and synchronizes access preferences without mounting the Agent runtime', async () => {
+    const container = document.createElement('div');
+    document.body.appendChild(container);
+    const root = createRoot(container);
+
+    await act(async () => root.render(createElement(PreferencesAccessSync)));
+
+    expect(mocks.loadAccess).toHaveBeenCalledOnce();
+    expect(mocks.listenAccess).toHaveBeenCalledOnce();
+    expect(mocks.refreshRuntime).not.toHaveBeenCalled();
+    expect(mocks.useAgentEvents).not.toHaveBeenCalled();
+    expect(mocks.prewarmNotebookCache).not.toHaveBeenCalled();
+
+    await act(async () => mocks.listenAccess.mock.calls[0][0]());
+    expect(mocks.loadAccess).toHaveBeenCalledTimes(2);
+
+    const { onListenerReady } = mocks.listenAccess.mock.calls[0][1];
+    await act(async () => onListenerReady());
+    expect(mocks.loadAccess).toHaveBeenCalledTimes(3);
+    // Reconcile again if the native listener reconnects after a failure.
+    await act(async () => onListenerReady());
+    expect(mocks.loadAccess).toHaveBeenCalledTimes(4);
+
+    await act(async () => root.unmount());
+    expect(mocks.unlistenAccess).toHaveBeenCalledOnce();
   });
 
   it('owns the shared Agent lifecycle for a content-capable Webview', async () => {
@@ -73,7 +106,7 @@ describe('AgentWindowEffects', () => {
     expect(mocks.useAgentEvents).toHaveBeenCalledOnce();
     expect(mocks.acquireMemoEventBridge).toHaveBeenCalledOnce();
     expect(mocks.refreshRuntime).toHaveBeenCalledWith({ force: true });
-    expect(mocks.loadAccess).toHaveBeenCalledOnce();
+    expect(mocks.loadAccess).not.toHaveBeenCalled();
     expect(mocks.listenAccess).toHaveBeenCalledOnce();
     expect(mocks.prewarmNotebookCache).toHaveBeenCalledOnce();
 

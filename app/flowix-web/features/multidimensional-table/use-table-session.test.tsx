@@ -1,6 +1,7 @@
+import { usePropertyPresetStore } from '@features/properties/property-preset-store';
 import { act } from 'react';
 import { createRoot } from 'react-dom/client';
-import { expect, it, vi } from 'vitest';
+import { beforeEach, expect, it, vi } from 'vitest';
 import { createTableDocument, serializeTableDocument } from './model';
 
 const mocks = vi.hoisted(() => ({ read: vi.fn(), write: vi.fn() }));
@@ -15,6 +16,7 @@ vi.mock('./parse-table-document', async () => {
   return { parseTableDocumentAsync: async (source: string) => parseTableDocument(source) };
 });
 import { useTableSession } from './use-table-session';
+beforeEach(() => usePropertyPresetStore.setState({ loaded: true, registry: { fields: [] } }));
 
 it('reports external write failures, clears them for retry, and ignores stale session failures', async () => {
   const source = serializeTableDocument(createTableDocument());

@@ -179,8 +179,12 @@ function commitNavigation(
               notebookPath: target.notebookPath ? canonicalPath(target.notebookPath) : null,
               resourceKind: target.resourceKind,
             }
-          : target.kind === 'agent-conversation'
-            ? { kind: 'agent-conversation', instanceId: target.instanceId }
+        : target.kind === 'agent-conversation'
+            ? {
+                kind: 'agent-conversation',
+                instanceId: target.instanceId,
+                ...(target.blankIfMissing ? { blankIfMissing: true as const } : {}),
+              }
             : null;
     useWorkspaceRestoreStore.getState().setDesiredTarget(desiredTarget);
   }
@@ -468,6 +472,7 @@ export function historyEntryFromWorkColumnTarget(
       return {
         kind: 'agent-conversation',
         instanceId: target.instanceId,
+        ...(target.blankIfMissing ? { blankIfMissing: true as const } : {}),
         openedAt: Date.now(),
       };
     case 'web':
@@ -821,7 +826,7 @@ export async function flushWorkspaceDocument(): Promise<void> {
 
 export async function openAgentTarget(
   instanceId: string,
-  options?: { history?: 'push' | 'skip'; destination?: 'main-third' },
+  options?: { history?: 'push' | 'skip'; destination?: 'main-third'; blankIfMissing?: true },
 ): Promise<WorkspaceHostId | WorkspaceContentLocation> {
   const normalized = instanceId.trim();
   if (!normalized) return 'main-third';
@@ -838,7 +843,11 @@ export async function openAgentTarget(
     return existing;
   }
   await runNavigation(
-    { kind: 'agent-conversation', instanceId: normalized },
+    {
+      kind: 'agent-conversation',
+      instanceId: normalized,
+      ...(options?.blankIfMissing ? { blankIfMissing: true as const } : {}),
+    },
     async (requestId) => {
       await getWorkspaceDocumentState().openAgentConversation(
         normalized,
@@ -851,7 +860,11 @@ export async function openAgentTarget(
       if (!isCurrentNavigation(requestId)) return;
       commitNavigation(
         requestId,
-        { kind: 'agent-conversation', instanceId: normalized },
+        {
+          kind: 'agent-conversation',
+          instanceId: normalized,
+          ...(options?.blankIfMissing ? { blankIfMissing: true as const } : {}),
+        },
         options?.history ?? 'push',
       );
     },

@@ -264,3 +264,63 @@ fn dangling_name_collision_is_preserved() {
         .file_type()
         .is_symlink());
 }
+
+#[test]
+fn target_only_dedup_does_not_reuse_an_attachment_in_another_directory() {
+    let (directory, store) = fixture();
+    let existing = save_for_owner(
+        &store,
+        Some("first"),
+        None,
+        "photo.jpg",
+        &mut &b"image"[..],
+        true,
+    )
+    .unwrap();
+    let gallery = directory.path().join("first/gallery");
+    fs::create_dir(&gallery).unwrap();
+
+    let imported = save_for_owner_in_directory(
+        &store,
+        Some("first"),
+        None,
+        "photo.jpg",
+        &mut &b"image"[..],
+        true,
+        Some(&gallery),
+        false,
+    )
+    .unwrap();
+    assert!(imported.created);
+    assert_ne!(imported.path, existing.path);
+    assert_eq!(fs::read(&imported.path).unwrap(), b"image");
+
+    let repeated = save_for_owner_in_directory(
+        &store,
+        Some("first"),
+        None,
+        "photo.jpg",
+        &mut &b"image"[..],
+        true,
+        Some(&gallery),
+        false,
+    )
+    .unwrap();
+    assert!(!repeated.created);
+    assert_eq!(repeated.path, imported.path);
+
+    let different = save_for_owner_in_directory(
+        &store,
+        Some("first"),
+        None,
+        "photo.jpg",
+        &mut &b"different"[..],
+        true,
+        Some(&gallery),
+        false,
+    )
+    .unwrap();
+    assert!(different.created);
+    assert!(different.path.ends_with("photo_1.jpg"));
+    assert_eq!(fs::read(&existing.path).unwrap(), b"image");
+}

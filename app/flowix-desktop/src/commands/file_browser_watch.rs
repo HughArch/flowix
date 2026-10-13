@@ -233,25 +233,33 @@ fn should_ignore_path(path: &Path, lease: &WatchLease) -> bool {
 }
 
 fn is_internal_flowix_path(path: &Path, root_path: &Path) -> bool {
-    let canonical_path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let canonical_root = dunce::canonicalize(root_path).unwrap_or_else(|_| root_path.to_path_buf());
-    canonical_path.strip_prefix(canonical_root).is_ok_and(|relative| relative.components().any(|component| {
-        matches!(component, Component::Normal(name) if name == ".flowix")
-    }))
+    relative_path_under_root(path, root_path).is_some_and(|relative| {
+        relative.components().any(|component| {
+            matches!(component, Component::Normal(name) if name == ".flowix")
+        })
+    })
 }
 
 /// Test hidden-directory membership relative to the watched root. Hidden
 /// files at the root are intentionally not part of this check; the notebook
 /// tree's hidden-file policy is about directories and their descendants.
 fn has_hidden_component(path: &Path, root_path: &Path) -> bool {
-    let canonical_path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
-    let canonical_root = dunce::canonicalize(root_path).unwrap_or_else(|_| root_path.to_path_buf());
-    let Ok(relative) = canonical_path.strip_prefix(&canonical_root) else {
-        return false;
-    };
-    relative.components().any(|component| {
+    relative_path_under_root(path, root_path).is_some_and(|relative| relative.components().any(|component| {
         matches!(component, Component::Normal(name) if name.to_string_lossy().starts_with('.'))
-    })
+    }))
+}
+
+fn relative_path_under_root(path: &Path, root_path: &Path) -> Option<PathBuf> {
+    if let Ok(relative) = path.strip_prefix(root_path) {
+        return Some(relative.to_path_buf());
+    }
+
+    let canonical_path = dunce::canonicalize(path).ok()?;
+    let canonical_root = dunce::canonicalize(root_path).ok()?;
+    canonical_path
+        .strip_prefix(canonical_root)
+        .ok()
+        .map(Path::to_path_buf)
 }
 
 /// Return the directory whose direct children need to be reread.

@@ -14,11 +14,7 @@ import {
   getHistoryPage,
   HISTORY_PAGE_SIZE,
   areMessagesEquivalent,
-  historyCoversLiveTurn,
-  historyConfirmsLiveMessages,
-  reconcilePiHistory,
   mergeHistoricalMessages,
-  mergeMessagesForThreadRender,
   prependHistoricalMessages,
 } from "@features/agent/store/thread-history";
 // history-sync is loaded lazily to keep its reconcile engine out of the desktop
@@ -181,7 +177,7 @@ export function createThreadHistorySlice(
             : !cached && lastRun?.status === "completed"
               ? lastRun.runId
               : undefined;
-        const { isOlderHistorySnapshot, historyRevision, reconcileHistorySnapshot } =
+        const { isOlderHistorySnapshot, historyRevision, reconcileHistorySnapshot, codexHistoryConfirmsLiveTurn } =
           await loadHistorySync();
         get().updateThreadHistory(threadId, (projection) => {
           if (!requests.isCurrent(historyReadVersion)) return projection;
@@ -193,30 +189,19 @@ export function createThreadHistorySlice(
           ) {
             return projection;
           }
-          const reconciled =
-            cached?.status === "running"
-              ? agentType === "pi"
-                ? reconcilePiHistory(messages, cached.messages, page.hasMore, requestProjection)
-                : mergeMessagesForThreadRender({
-                  history: messages,
-                  live: cached.messages,
-                  agentType,
-                })
-              : reconcileHistorySnapshot({
-                  agentType,
-                  current: projection.messages,
-                  snapshot: {
-                    messages,
-                    coverage: page.coverage,
-                    revision: historyRevision(page.snapshotSequence),
-                    oldestCursor: page.oldestSequence,
-                    hasMore: page.hasMore,
-                  },
-                  requestProjection,
-                  reason: completedRunId ? "run_completed" : "open",
-                  runId: completedRunId,
-                  turnId: cached?.turnId,
-                }).messages;
+          const reconciled = reconcileHistorySnapshot({
+            agentType, current: projection.messages,
+            snapshot: { messages, coverage: page.coverage,
+              revision: historyRevision(page.snapshotSequence), oldestCursor: page.oldestSequence, hasMore: page.hasMore },
+            currentWindow: agentType === "codex" && projection.pagination.snapshotSequence != null
+              ? {
+                  start: projection.pagination.oldestSequence ?? (projection.pagination.hasMoreHistory ? null : 0),
+                  end: projection.pagination.snapshotSequence,
+                }
+              : undefined,
+            requestProjection, reason: completedRunId ? "run_completed" : "open",
+            runId: cached?.runId ?? completedRunId, turnId: cached?.turnId,
+          }).messages;
           const pagination = {
             initialStatus: "ready",
             initialError: null,
@@ -244,7 +229,7 @@ export function createThreadHistorySlice(
         if (
           agentType === "codex" &&
           cached?.status === "completed" &&
-          historyConfirmsLiveMessages(messages, cached.messages)
+          codexHistoryConfirmsLiveTurn(messages, cached.messages, cached.turnId, page.coverage)
         ) {
           get().clearCodexLiveTurn(threadId, cached.runId);
         }
@@ -342,6 +327,7 @@ export function createThreadHistorySlice(
             isOlderHistorySnapshot,
             historyRevision,
             reconcileHistorySnapshot,
+            codexHistoryConfirmsLiveTurn,
           } = await loadHistorySync();
           let page: Awaited<ReturnType<typeof getHistoryPage>> | null = null;
           let historicalMessages: ChatMessage[] = [];
@@ -359,7 +345,7 @@ export function createThreadHistorySlice(
               !cached ||
               cached.runId !== runId ||
               !cached.messages.some((message) => message.role === "user") ||
-              historyCoversLiveTurn(historicalMessages, cached.messages)
+              codexHistoryConfirmsLiveTurn(historicalMessages, cached.messages, cached.turnId, page.coverage)
             ) break;
           }
           if (!page) return;
@@ -386,6 +372,12 @@ export function createThreadHistorySlice(
               oldestCursor: page.oldestSequence,
               hasMore: page.hasMore,
             },
+            currentWindow: agentType === "codex" && projection.pagination.snapshotSequence != null
+              ? {
+                  start: projection.pagination.oldestSequence ?? (projection.pagination.hasMoreHistory ? null : 0),
+                  end: projection.pagination.snapshotSequence,
+                }
+              : undefined,
             requestProjection,
             reason: "run_completed",
             runId,
@@ -426,7 +418,7 @@ export function createThreadHistorySlice(
         if (agentType === "codex") {
           const cached = get().codexLiveTurns[threadId];
           if (cached && cached.runId === runId) {
-            if (historyConfirmsLiveMessages(historicalMessages, cached.messages)) {
+            if (codexHistoryConfirmsLiveTurn(historicalMessages, cached.messages, cached.turnId, page.coverage)) {
               get().clearCodexLiveTurn(threadId, runId);
             }
           }

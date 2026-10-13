@@ -13,8 +13,8 @@ export interface ComposerSlashTokenValue {
   agentType?: AgentTypeKey;
 }
 
-const SLASH_TOKEN_RE = /^\[\/([a-z0-9_-]+)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex)\/)?([a-z0-9_-]+)\)/i;
-const SLASH_TOKEN_GLOBAL_RE = /\[\/([a-z0-9_-]+)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex)\/)?([a-z0-9_-]+)\)/gi;
+const SLASH_TOKEN_RE = /^\[\/([a-z0-9._:-]+)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex|pi)\/)?([a-z0-9._:-]+)\)/i;
+const SLASH_TOKEN_GLOBAL_RE = /\[\/([a-z0-9._:-]+)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex|pi)\/)?([a-z0-9._:-]+)\)/gi;
 const LEGACY_DSH_COMMANDS = new Set([
   "compact",
   "skill",
@@ -94,7 +94,7 @@ export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
     const href = String(token.href ?? "");
     const path = href.replace(/^flowix:\/\/slash\//i, "");
     const parts = path.split("/");
-    const agentType = parts[0] === "deepseek-harness" || parts[0] === "codex"
+    const agentType = parts[0] === "deepseek-harness" || parts[0] === "codex" || parts[0] === "pi"
       ? parts[0]
       : undefined;
     const command = (agentType ? parts[1] : parts[0]) ||
@@ -276,7 +276,8 @@ export function composerSlashMarkdownToPrompt(markdown: string): string {
       if (
         scopedAgent &&
         scopedAgent.toLowerCase() !== "deepseek-harness" &&
-        scopedAgent.toLowerCase() !== "codex" ||
+        scopedAgent.toLowerCase() !== "codex" &&
+        scopedAgent.toLowerCase() !== "pi" ||
         (!scopedAgent && !LEGACY_DSH_COMMANDS.has(command.toLowerCase()))
       ) {
         return "";

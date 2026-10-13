@@ -106,7 +106,7 @@ it.each([
   const field = builtinPresetTableField(id)!;
   const previous = builtinPresetValue(id, latestNotes[0]);
   await act(async () => { latestWriter?.updateCell(record, latestNotes[0], field, value); });
-  expect(mocks.writeProperty).toHaveBeenCalledWith('/notebook/note.md', { [key]: value });
+  expect(mocks.writeProperty).toHaveBeenCalledWith('/notebook/note.md', { [key]: value }, { [key]: field.type });
   expect(builtinPresetValue(id, latestNotes[0])).toEqual(value);
   await act(async () => { request.resolve(false); await request.promise; });
   expect(builtinPresetValue(id, latestNotes[0])).toEqual(previous);

@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent } from 'react';
 import {
   ArchiveIcon,
   PencilSimpleIcon,
@@ -11,13 +11,11 @@ import {
 import { MessageCirclePlus, MoreHorizontal } from 'lucide-react';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
-import { normalizeBackendInstance } from '@features/agent/store/conversation-slice';
 import { createAndOpenAgentConversation } from '@features/agent/public/shell-api';
 import { useWorkspaceRestoreStore } from '@features/workspace/store/workspace-restore-store';
 import { selectAndOpenAgentConversation } from '@features/workspace/use-cases/agent-conversation-navigation';
 import { openBrowserColumnAgentConversation } from '@features/workspace/use-cases/browser-column-navigation';
 import { useNoteStore } from '@features/memo/store/note-store';
-import { agentClient } from '@features/agent/store/agent-client';
 import { isAgentConversationRunning } from '@features/agent/store/conversation-run-index';
 import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
 import {
@@ -27,7 +25,6 @@ import {
   isAlwaysVisibleNewConversationAgent,
 } from '@/lib/agent-types';
 import type { AgentTypeKey } from '@/types/agent';
-import type { AgentConversationCursor } from '@platform/tauri/client/agent';
 import {
   isAgentRuntimeInstalledState,
   normalizeAgentRuntimeStatus,
@@ -36,9 +33,6 @@ import { formatTimeAgo } from '@/lib/format-time-ago';
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-import { canUseNativeContextMenu, logNativeContextMenuError, popupNativeContextMenu } from '@platform/tauri/native-context-menu';
-import { loadNativeMenuIcons } from '@platform/tauri/native-menu-icons';
-import { buildConversationContextMenuItems } from '@features/agent/menus/conversation-context-menu';
 import {
   readFavoriteConversationIds,
   subscribeToFavoriteConversationChanges,
@@ -62,19 +56,13 @@ import { AgentIcon } from '@features/agent/components/agent-icon';
 import { Input } from '@shared/ui/input';
 import { Button } from '@shared/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@shared/ui/dialog';
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@shared/ui/context-menu';
 import { useFixedVirtualList, type FixedVirtualListItem } from './use-fixed-virtual-list';
+import { useConversationListData } from './use-conversation-list-data';
 import {
-  EMPTY_CONVERSATION_PAGE_STATE,
-  mergeConversationPage,
   mergeLiveConversation,
   sortFavoriteConversations,
-  updateConversationTitle,
-  type ConversationPageState,
 } from './conversation-list-pagination';
-
-const CONVERSATION_NATIVE_ICON_NAMES = [
-  'split', 'star', 'pencil', 'archive', 'delete',
-] as const;
 
 /**
  * The "Conversations" navigation view. It deliberately lists conversation
@@ -111,7 +99,7 @@ const CONVERSATION_GROUP_LABEL_KEY = {
   earlier: 'document.agent.group.earlier',
 } as const;
 const logger = createLogger('agent-conversation-list');
-const CONVERSATION_PAGE_SIZE = 30;
+const CONVERSATION_LOAD_MORE_THRESHOLD_PX = 80;
 
 interface AgentConversationListProps {
   /** Keep durable list state while closing transient UI when hidden. */
@@ -130,11 +118,6 @@ function isSyntheticOpenCodeHistoryInstance(instance: AgentConversationInstance)
 
 export function AgentConversationList({ isActive = true }: AgentConversationListProps) {
   const { t } = useI18n();
-  useEffect(() => {
-    if (!canUseNativeContextMenu()) return;
-    void loadNativeMenuIcons(CONVERSATION_NATIVE_ICON_NAMES)
-      .catch((error) => logNativeContextMenuError('conversation icon preload', error));
-  }, []);
   const instances = useAgentSessionStore((state) => state.conversationRegistry.instances);
   const threadTombstones = useAgentSessionStore((state) => state.threadTombstones);
   const lifecycleVersion = useAgentSessionStore((state) => state.lifecycleVersion);
@@ -152,21 +135,23 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
   const conversationDetailOpen = useWorkspaceRestoreStore(
     (state) => state.agentConversation.detailOpen,
   );
-  const [conversationPage, setConversationPage] = useState<ConversationPageState>(
-    EMPTY_CONVERSATION_PAGE_STATE,
-  );
-  const [isLoading, setIsLoading] = useState(true);
-  const [loadError, setLoadError] = useState(false);
-  const [firstPageRetry, setFirstPageRetry] = useState(0);
-  const [isLoadingMore, setIsLoadingMore] = useState(false);
-  const [loadMoreError, setLoadMoreError] = useState(false);
-  const [hasMore, setHasMore] = useState(true);
-  const [agentTypeCounts, setAgentTypeCounts] = useState<Readonly<Record<string, number>>>({});
-  const nextCursorRef = useRef<AgentConversationCursor | null>(null);
-  const listQueryKeyRef = useRef('');
-  const loadingMoreRef = useRef(false);
-  const requestSequenceRef = useRef(0);
   const [filterType, setFilterType] = useState<AgentTypeKey | null>(null);
+  const {
+    conversationPage,
+    isLoading,
+    loadError,
+    isLoadingMore,
+    loadMoreError,
+    hasMore,
+    agentTypeCounts,
+    loadMore: loadMoreConversations,
+    retryFirstPage,
+    updateTitle,
+  } = useConversationListData({
+    notebookId: currentNotebookId,
+    agentType: filterType,
+    lifecycleVersion,
+  });
   const [showScrollTopHint, setShowScrollTopHint] = useState(false);
   const latestCompletedRunIds = useAgentSessionStore((state) => state.latestCompletedRunIds);
   const readThroughRunIds = useAgentSessionStore((state) => state.readThroughRunIds);
@@ -234,27 +219,25 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
       // briefly return the old snapshot. Update this list's durable snapshot
       // too so the renamed title is visible immediately and cannot be
       // overwritten by the merge on the next render.
-      setConversationPage((current) => updateConversationTitle(
-        current,
+      updateTitle(
         target.instanceId,
         nextTitle,
         Math.max(Date.now(), target.updatedAt + 1),
-      ));
+      );
       setRenameTarget(null);
       setRenameSaving(false);
       await renamePromise;
     } catch {
-      setConversationPage((current) => updateConversationTitle(
-        current,
+      updateTitle(
         target.instanceId,
         target.title,
         target.updatedAt,
-      ));
+      );
       toast.error(t('agent.chat.conversation.renameFailed'));
     } finally {
       setRenameSaving(false);
     }
-  }, [renameDraft, renameTarget, t]);
+  }, [renameDraft, renameTarget, t, updateTitle]);
 
   const removeConversation = useCallback(async (instance: AgentConversationInstance, action: 'archive' | 'delete') => {
     const message = action === 'delete' ? t('agent.chat.conversation.deleteConfirm') : undefined;
@@ -272,109 +255,6 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
       toast.error(t(action === 'archive' ? 'status.agent.archiveFailed' : 'status.agent.deleteFailed'));
     }
   }, [t]);
-
-  // The list owns a durable paged snapshot from the backend. Zustand is only
-  // merged for live rows created or mounted in this window; history is never
-  // hydrated wholesale just to render the sidebar.
-  useEffect(() => {
-    let active = true;
-    const queryKey = `${currentNotebookId ?? ''}\u001f${filterType ?? ''}`;
-    const query = { notebookId: currentNotebookId, agentType: filterType, cursor: null } as const;
-    const queryChanged = listQueryKeyRef.current !== queryKey;
-    // Invalidate any in-flight page request before starting a new first page.
-    // A stale request must not append rows or clear the new query's loading UI.
-    requestSequenceRef.current += 1;
-    loadingMoreRef.current = false;
-    setIsLoadingMore(false);
-    listQueryKeyRef.current = queryKey;
-    nextCursorRef.current = null;
-    if (queryChanged) {
-      setConversationPage(EMPTY_CONVERSATION_PAGE_STATE);
-      setHasMore(true);
-      setLoadMoreError(false);
-    }
-    setLoadError(false);
-    // Lifecycle changes can trigger a fresh first page after the view is
-    // mounted, keeping deletion/archive state aligned with the backend.
-    setIsLoading(true);
-    void agentClient.listConversationInstancesPage(query, CONVERSATION_PAGE_SIZE)
-      .then(({ items, hasMore: nextHasMore, nextCursor }) => {
-        if (!active) return;
-        nextCursorRef.current = nextCursor;
-        setHasMore(nextHasMore);
-        setConversationPage(mergeConversationPage(
-          EMPTY_CONVERSATION_PAGE_STATE,
-          items.map(normalizeBackendInstance),
-        ));
-      })
-      .catch((error) => {
-        logger.error('failed to load conversations', { error });
-        if (active) setLoadError(true);
-      })
-      .finally(() => {
-        if (active) setIsLoading(false);
-      });
-    return () => {
-      active = false;
-    };
-  }, [currentNotebookId, filterType, lifecycleVersion, firstPageRetry]);
-
-  // Facets stay small even when the conversation history is large. This lets
-  // the agent filter describe the complete notebook while the conversation
-  // rows themselves remain cursor-paginated.
-  useEffect(() => {
-    let active = true;
-    void agentClient.listConversationTypeCountsByNotebook(currentNotebookId)
-      .then((counts) => {
-        if (!active) return;
-        setAgentTypeCounts(Object.fromEntries(
-          counts.map(({ agentType, count }) => [agentType, count]),
-        ));
-      })
-      .catch((error) => {
-        logger.error('failed to load conversation type counts', { error });
-      });
-    return () => {
-      active = false;
-    };
-  }, [currentNotebookId, lifecycleVersion]);
-
-  const loadMoreConversations = useCallback(async (retry = false) => {
-    if (loadingMoreRef.current || !hasMore || isLoading || loadError || (loadMoreError && !retry)) return;
-    loadingMoreRef.current = true;
-    setIsLoadingMore(true);
-    setLoadMoreError(false);
-    const queryKey = `${currentNotebookId ?? ''}\u001f${filterType ?? ''}`;
-    const requestSequence = ++requestSequenceRef.current;
-    try {
-      const query = { notebookId: currentNotebookId, agentType: filterType, cursor: nextCursorRef.current };
-      const { items, hasMore: nextHasMore, nextCursor } = await agentClient.listConversationInstancesPage(
-        query,
-        CONVERSATION_PAGE_SIZE,
-      );
-      if (
-        listQueryKeyRef.current !== queryKey
-        || requestSequenceRef.current !== requestSequence
-      ) return;
-      nextCursorRef.current = nextCursor;
-      setHasMore(nextHasMore);
-      setConversationPage((current) => mergeConversationPage(
-        current,
-        items.map(normalizeBackendInstance),
-      ));
-    } catch (error) {
-      logger.error('failed to load more conversations', { error });
-      if (
-        listQueryKeyRef.current === queryKey
-        && requestSequenceRef.current === requestSequence
-      ) setLoadMoreError(true);
-    } finally {
-      if (requestSequenceRef.current === requestSequence) {
-        loadingMoreRef.current = false;
-        setIsLoadingMore(false);
-      }
-    }
-  }, [currentNotebookId, filterType, hasMore, isLoading, loadError, loadMoreError]);
 
   const conversations = useMemo(() => {
     // The backend snapshot is the durable source of truth. An editor card is
@@ -521,6 +401,17 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     onScroll: onVirtualListScroll,
   } = useFixedVirtualList(conversationListItems, scrollerRef, { overscan: 8 });
 
+  const handleListScroll = (event: UIEvent<HTMLDivElement>) => {
+    const target = event.currentTarget;
+    onVirtualListScroll(event);
+    setShowScrollTopHint(target.scrollTop > 0);
+    const distanceToBottom = target.scrollHeight - target.scrollTop - target.clientHeight;
+    if (hasMore && !isLoading && !loadError && !loadMoreError
+      && distanceToBottom <= CONVERSATION_LOAD_MORE_THRESHOLD_PX) {
+      void loadMoreConversations();
+    }
+  };
+
   const displayName = (type: (typeof AGENT_TYPES)[number]): string =>
     type.nameKey ? t(type.nameKey as Parameters<typeof t>[0]) : type.name;
 
@@ -575,53 +466,6 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
       toast.error(error instanceof Error ? error.message : String(error));
     });
   }, [prepareConversation]);
-
-  const showConversationContextMenu = useCallback(async (
-    event: MouseEvent<HTMLDivElement>,
-    instance: AgentConversationInstance,
-  ) => {
-    // The Windows/non-native branch opens the in-app actions menu below. It
-    // must still consume the browser contextmenu event, otherwise Windows
-    // shows its native menu alongside the Flowix menu.
-    event.preventDefault();
-    event.stopPropagation();
-
-    if (!canUseNativeContextMenu()) {
-      setOpenMenuId(instance.instanceId);
-      return;
-    }
-
-    try {
-      const loadedIcons = await loadNativeMenuIcons(CONVERSATION_NATIVE_ICON_NAMES);
-      await popupNativeContextMenu(event, buildConversationContextMenuItems({
-        instance,
-        favorite: favoriteIds.has(instance.instanceId),
-        icons: {
-          split: loadedIcons.split!,
-          star: loadedIcons.star!,
-          pencil: loadedIcons.pencil!,
-          archive: loadedIcons.archive!,
-          delete: loadedIcons.delete!,
-        },
-        labels: {
-          openInBrowserColumn: t('workColumn.context.openInBrowserColumn'),
-          favorite: t('agent.chat.conversation.favorite'),
-          unfavorite: t('agent.chat.conversation.unfavorite'),
-          rename: t('agent.chat.conversation.rename'),
-          archive: t('document.agent.archiveConversation'),
-          delete: t('document.agent.deleteConversation'),
-        },
-        actions: {
-          openInBrowserColumn: openConversationInBrowserColumn,
-          toggleFavorite,
-          rename: renameConversation,
-          remove: (target, action) => void removeConversation(target, action),
-        },
-      }));
-    } catch (error) {
-      logNativeContextMenuError('conversation', error);
-    }
-  }, [favoriteIds, openConversationInBrowserColumn, removeConversation, renameConversation, t, toggleFavorite]);
 
   // 独立对话没有文档来源，但归属当前选中的
   // notebook。notebook 未选中时不可新建 (cwd 无法解析到笔记本路径)。
@@ -732,21 +576,14 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
           className="h-full"
           scrollerRef={scrollerRef}
           scrollerClassName="h-full overflow-y-auto px-1 py-2"
-          onScroll={(event) => {
-            const target = event.currentTarget;
-            onVirtualListScroll(event);
-            setShowScrollTopHint(target.scrollTop > 0);
-            if (hasMore && !isLoading && !loadError && !loadMoreError && target.scrollTop + target.clientHeight >= target.scrollHeight - 80) {
-              void loadMoreConversations();
-            }
-          }}
+          onScroll={handleListScroll}
         >
           {isLoading && scopedConversations.length === 0 ? (
             <ListSurfaceLoadingState label={t('status.agent.loadingConversations')} />
           ) : loadError && scopedConversations.length === 0 ? (
             <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-3 px-4 text-center text-sm text-[var(--muted-foreground)]" role="alert">
               <span>{t('status.agent.loadConversationsFailed')}</span>
-              <Button size="sm" onClick={() => setFirstPageRetry((value) => value + 1)}>{t('error.retry')}</Button>
+              <Button size="sm" onClick={retryFirstPage}>{t('error.retry')}</Button>
             </div>
           ) : scopedConversations.length === 0 ? (
             <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-[var(--muted-foreground)]">
@@ -758,7 +595,7 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
               loadError ? (
                 <div className="flex items-center justify-center gap-2 px-2 py-1 text-xs text-[var(--muted-foreground)]" role="alert">
                   <span>{t('status.agent.loadConversationsFailed')}</span>
-                  <Button size="xs" variant="ghost" onClick={() => setFirstPageRetry((value) => value + 1)}>{t('error.retry')}</Button>
+                  <Button size="xs" variant="ghost" onClick={retryFirstPage}>{t('error.retry')}</Button>
                 </div>
               ) : (
                 <ListSurfaceInlineLoadingState
@@ -815,13 +652,13 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                 const selected = instance.instanceId === selectedInstanceId;
                 const running = isAgentConversationRunning(instance, conversationRunIndex);
                 return (
-                  <div
-                    key={item.key}
-                    className="absolute inset-x-0 top-0"
-                    style={{ height: size, transform: `translateY(${start}px)` }}
-                  >
+                  <ContextMenu key={item.key}>
+                    <ContextMenuTrigger asChild>
+                      <div
+                        className="absolute inset-x-0 top-0"
+                        style={{ height: size, transform: `translateY(${start}px)` }}
+                      >
                     <div
-                      onContextMenu={(event) => void showConversationContextMenu(event, instance)}
                       className={cn(
                         'group relative flex h-9 w-full items-center rounded-lg px-2 text-left transition-colors',
                         selected ? 'bg-[var(--muted)]' : 'hover:bg-[var(--muted)]',
@@ -857,8 +694,7 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                           {formatTimeAgo(instance.updatedAt, t, { compact: true })}
                         </time>
                         </button>
-                        {!canUseNativeContextMenu() && (
-                          <DropdownMenu
+                        <DropdownMenu
                             open={openMenuId === instance.instanceId}
                             onOpenChange={(open) => setOpenMenuId(open ? instance.instanceId : null)}
                             className={cn(
@@ -896,7 +732,6 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                               </DropdownMenuItem>
                             </DropdownMenuContent>
                           </DropdownMenu>
-                        )}
                         <>
                           <button
                             type="button"
@@ -918,7 +753,27 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                           </button>
                         </>
                     </div>
-                  </div>
+                      </div>
+                    </ContextMenuTrigger>
+                    <ContextMenuContent className="w-[160px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+                      <ContextMenuItem onClick={() => openConversationInBrowserColumn(instance)} className="group h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
+                        <SquareSplitHorizontalIcon className="mr-2 h-4 w-4" /> {t('workColumn.context.openInBrowserColumn')}
+                      </ContextMenuItem>
+                      <ContextMenuItem onClick={() => toggleFavorite(instance.instanceId)} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
+                        <StarIcon className="h-4 w-4" weight={favoriteIds.has(instance.instanceId) ? 'fill' : 'regular'} />
+                        {favoriteIds.has(instance.instanceId) ? t('agent.chat.conversation.unfavorite') : t('agent.chat.conversation.favorite')}
+                      </ContextMenuItem>
+                      <ContextMenuItem onClick={() => renameConversation(instance)} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
+                        <PencilSimpleIcon className="h-4 w-4" /> {t('agent.chat.conversation.rename')}
+                      </ContextMenuItem>
+                      <ContextMenuItem onClick={() => void removeConversation(instance, 'archive')} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
+                        <ArchiveIcon className="h-4 w-4" /> {t('document.agent.archiveConversation')}
+                      </ContextMenuItem>
+                      <ContextMenuItem onClick={() => void removeConversation(instance, 'delete')} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-transparent hover:text-[var(--destructive)]">
+                        <TrashSimpleIcon className="h-4 w-4" /> {t('document.agent.deleteConversation')}
+                      </ContextMenuItem>
+                    </ContextMenuContent>
+                  </ContextMenu>
                 );
               })}
             </div>

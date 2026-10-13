@@ -8,8 +8,9 @@ function move(ids: string[], source: string, target: string, after: boolean): st
   return next;
 }
 
-export function TableFieldList({ ids, primaryId, activeId, disabled, label, renderField, onReorder, itemTypeLabel = '字段' }: {
+export function TableFieldList({ ids, primaryId, activeId, disabled, label, renderField, onReorder, itemTypeLabel = '字段', rowHover = true }: {
   ids: string[]; primaryId?: string; activeId?: string | null; disabled: boolean; itemTypeLabel?: string;
+  rowHover?: boolean;
   label: (id: string) => string; renderField: (id: string) => ReactNode;
   onReorder: (ids: string[]) => void | Promise<void>;
 }) {
@@ -75,7 +76,7 @@ export function TableFieldList({ ids, primaryId, activeId, disabled, label, rend
     window.addEventListener('pointercancel', onCancel); window.addEventListener('keydown', onKey); window.addEventListener('blur', cancel);
     return () => { session.current = null; window.removeEventListener('pointermove', onMove); window.removeEventListener('pointerup', onUp); window.removeEventListener('pointercancel', onCancel); window.removeEventListener('keydown', onKey); window.removeEventListener('blur', cancel); };
   }, [primaryId]);
-  return <div ref={listRef} className="min-w-0 space-y-0.5">{(preview ?? ids).map((id) => <div key={id} data-field-id={id} data-table-field-item data-active={activeId === id || undefined} className={`flex h-8 min-w-0 items-center rounded-lg hover:bg-[var(--hover-bg)] data-[active=true]:bg-[var(--hover-bg)] ${dragged === id ? 'opacity-50' : ''}`}>
+  return <div ref={listRef} className="min-w-0 space-y-0.5">{(preview ?? ids).map((id) => <div key={id} data-field-id={id} data-table-field-item data-active={activeId === id || undefined} className={`flex h-8 min-w-0 items-center rounded-lg ${rowHover ? 'hover:bg-[var(--hover-bg)] data-[active=true]:bg-[var(--hover-bg)]' : ''} ${dragged === id ? 'opacity-50' : ''}`}>
     <button type="button" title={id === primaryId ? '笔记名称固定在首列' : `拖动调整${itemTypeLabel}顺序`} aria-label={`拖动调整${itemTypeLabel}顺序 ${label(id)}`} disabled={disabled || id === primaryId}
       className="ml-1 flex h-6 w-6 shrink-0 cursor-grab touch-none items-center justify-center text-[var(--muted-foreground)] active:cursor-grabbing disabled:cursor-default disabled:opacity-40"
       onClick={(event) => event.stopPropagation()} onPointerDown={(event) => {

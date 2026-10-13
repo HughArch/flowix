@@ -30,7 +30,7 @@ export interface MainWindowBusinessController {
   notebookToDelete: Notebook | null;
   notebookCreateRequest: number;
   cancelDeleteNotebook(): void;
-  confirmDeleteNotebook(): Promise<void>;
+  confirmDeleteNotebook(deleteLocalFiles: boolean): Promise<void>;
   createNotebook(): void;
   deleteNotebook(notebook: Notebook): void;
   editNotebook(notebook: Notebook): void;
@@ -100,12 +100,12 @@ export function useMainWindowBusinessController(): MainWindowBusinessController 
     setTimeout(() => setNotebookToDelete(notebook), 0);
   }, []);
 
-  const confirmDeleteNotebook = useCallback(async () => {
+  const confirmDeleteNotebook = useCallback(async (deleteLocalFiles: boolean) => {
     const target = notebookToDelete;
     if (!target) return;
     try {
       if (selectedNotebook?.id === target.id) await flushWorkspaceDocument();
-      const deleted = await notebooksClient.delete(target.id);
+      const deleted = await notebooksClient.delete(target.id, deleteLocalFiles);
       if (!deleted) {
         toast.error(t('shell.notebook.deleteFailed'));
         return;

@@ -8,10 +8,11 @@ use crate::agent_session::types::{
     AgentExternalEvent, ChatMessage, NewAgentExternalEvent, ThreadInfo, ThreadMessagesPage,
 };
 use crate::agent_types::AgentId;
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
+use std::path::PathBuf;
 
 const MAX_EXTERNAL_EVENTS_PER_THREAD: i64 = 10_000;
 const EXTERNAL_HISTORY_TRUNCATED_JSON: &str = r#"{"kind":"history_truncated","version":1}"#;
@@ -166,6 +167,26 @@ impl ThreadManager {
         let runtime = runtime.to_string();
         self.run_blocking(move |tm| tm.get_external_session_inner(&thread_id, &runtime))
             .await
+    }
+
+    pub async fn get_pi_session_file(
+        self: &Arc<Self>,
+        thread_id: &str,
+    ) -> Result<Option<PathBuf>, ThreadError> {
+        let thread_id = thread_id.to_string();
+        self.run_blocking(move |tm| {
+            let conn = tm.lock_conn();
+            let path: Option<String> = conn
+                .query_row(
+                    "SELECT session_file FROM threads_pi WHERE thread_id = ?1",
+                    [&thread_id],
+                    |row| row.get(0),
+                )
+                .optional()?
+                .flatten();
+            Ok(path.map(PathBuf::from))
+        })
+        .await
     }
 
     fn get_external_session_inner(
@@ -420,43 +441,6 @@ impl ThreadManager {
             )?;
         }
         Ok(())
-    }
-
-    pub async fn list_agent_external_events_by_thread(
-        self: &Arc<Self>,
-        thread_id: &str,
-        after_id: Option<i64>,
-        limit: i64,
-    ) -> Result<Vec<AgentExternalEvent>, ThreadError> {
-        let thread_id = thread_id.to_string();
-        self.run_blocking(move |tm| {
-            tm.list_agent_external_events_by_thread_inner(&thread_id, after_id, limit)
-        })
-        .await
-    }
-
-    fn list_agent_external_events_by_thread_inner(
-        &self,
-        thread_id: &str,
-        after_id: Option<i64>,
-        limit: i64,
-    ) -> Result<Vec<AgentExternalEvent>, ThreadError> {
-        let limit = limit.clamp(1, 1000);
-        let after_id = after_id.unwrap_or(0);
-        let conn = self.lock_conn();
-        let mut stmt = conn.prepare(
-            "SELECT
-                id, runtime, thread_id, event_key, normalized_json, raw_json, created_at
-             FROM agent_external_events
-             WHERE thread_id = ?1 AND id > ?2
-             ORDER BY id ASC
-             LIMIT ?3",
-        )?;
-        let rows = stmt.query_map(
-            params![thread_id, after_id, limit],
-            Self::row_to_external_event,
-        )?;
-        Ok(rows.collect::<Result<Vec<_>, _>>()?)
     }
 
     fn row_to_external_event(row: &rusqlite::Row<'_>) -> rusqlite::Result<AgentExternalEvent> {

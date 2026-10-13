@@ -1,9 +1,9 @@
 use super::*;
 use std::collections::HashMap;
 
+mod freeze;
 mod inbound;
 mod observe;
-mod freeze;
 mod push;
 mod sync_pipeline;
 
@@ -45,9 +45,12 @@ fn find_v2_relocated_note(
     for _ in 0..notes.len() {
         // Reused paths leave older tombstones pointing at the same predecessor.
         // Follow the newest edge and stop if malformed lineage forms a cycle.
-        let next = notes.iter()
-            .filter(|note| note.notebook_id == notebook_id
-                && note.moved_from_note_id.as_deref() == Some(predecessor.as_str()))
+        let next = notes
+            .iter()
+            .filter(|note| {
+                note.notebook_id == notebook_id
+                    && note.moved_from_note_id.as_deref() == Some(predecessor.as_str())
+            })
             .max_by_key(|note| note.sync_seq)?;
         if !visited.insert(next.id.clone()) {
             return None;
@@ -67,7 +70,12 @@ impl SyncManager {
         from_path: &str,
         to_path: &str,
     ) -> Result<bool, SyncError> {
-        if !self.store.v2_notebooks(true)?.iter().any(|item| item.notebook_id == notebook_id) {
+        if !self
+            .store
+            .v2_notebooks(true)?
+            .iter()
+            .any(|item| item.notebook_id == notebook_id)
+        {
             return Ok(false);
         }
         self.store.enqueue_v2_move(notebook_id, from_path, to_path)
@@ -77,7 +85,10 @@ impl SyncManager {
         self.store.v2_pending_moves()
     }
 
-    pub fn v2_pending_move(&self, operation_id: &str) -> Result<Option<crate::v2::V2PendingMove>, SyncError> {
+    pub fn v2_pending_move(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<crate::v2::V2PendingMove>, SyncError> {
         self.store.v2_pending_move(operation_id)
     }
 
@@ -95,23 +106,39 @@ impl SyncManager {
         generation: u64,
     ) -> Result<HashSet<i64>, SyncError> {
         let mut self_sync_seqs = HashSet::new();
-        for movement in self.store.v2_pending_moves()?
-            .into_iter().filter(|item| notebook_scope.is_none_or(|scope| scope == item.notebook_id)) {
+        for movement in self
+            .store
+            .v2_pending_moves()?
+            .into_iter()
+            .filter(|item| notebook_scope.is_none_or(|scope| scope == item.notebook_id))
+        {
             drop(self.require_auth_generation(generation)?);
-            let result = self.client.v2_push(access_token, &[V2PushOperation::NoteMove {
-                operation_id: movement.operation_id.clone(),
-                base_revision: Some(movement.base_revision.clone()),
-                notebook_id: movement.notebook_id.clone(),
-                from_note_id: movement.from_note_id.clone(),
-                from_path: movement.from_path.clone(),
-                to_note_id: movement.to_note_id.clone(),
-                to_path: movement.to_path.clone(),
-            }]).await?;
-            let response = result.results.into_iter().next()
+            let result = self
+                .client
+                .v2_push(
+                    access_token,
+                    &[V2PushOperation::NoteMove {
+                        operation_id: movement.operation_id.clone(),
+                        base_revision: Some(movement.base_revision.clone()),
+                        notebook_id: movement.notebook_id.clone(),
+                        from_note_id: movement.from_note_id.clone(),
+                        from_path: movement.from_path.clone(),
+                        to_note_id: movement.to_note_id.clone(),
+                        to_path: movement.to_path.clone(),
+                    }],
+                )
+                .await?;
+            let response = result
+                .results
+                .into_iter()
+                .next()
                 .ok_or_else(|| SyncError::InvalidState("move result omitted".into()))?;
             if !response.ok {
-                let error = response.error.ok_or_else(|| SyncError::InvalidState("move error omitted".into()))?;
-                if (response.status == 409 && matches!(error.code.as_str(), "REVISION_CONFLICT" | "PATH_CONFLICT"))
+                let error = response
+                    .error
+                    .ok_or_else(|| SyncError::InvalidState("move error omitted".into()))?;
+                if (response.status == 409
+                    && matches!(error.code.as_str(), "REVISION_CONFLICT" | "PATH_CONFLICT"))
                     || (response.status == 404 && error.code == "FILE_NOT_FOUND")
                 {
                     return Err(SyncError::MoveConflict {
@@ -122,15 +149,21 @@ impl SyncManager {
                     });
                 }
                 return Err(SyncError::Api {
-                    status: response.status, code: error.code, message: error.message,
+                    status: response.status,
+                    code: error.code,
+                    message: error.message,
                     details: error.details,
                 });
             }
-            let data = response.data.ok_or_else(|| SyncError::InvalidState("move data omitted".into()))?;
+            let data = response
+                .data
+                .ok_or_else(|| SyncError::InvalidState("move data omitted".into()))?;
             drop(self.require_auth_generation(generation)?);
             self.store.acknowledge_v2_move(&movement, &data)?;
             self_sync_seqs.insert(data.sync_seq);
-            if let Some(source_seq) = data.source_sync_seq { self_sync_seqs.insert(source_seq); }
+            if let Some(source_seq) = data.source_sync_seq {
+                self_sync_seqs.insert(source_seq);
+            }
         }
         Ok(self_sync_seqs)
     }
@@ -151,30 +184,54 @@ impl SyncManager {
         let mut pages = 0;
         loop {
             for note in page.notes {
-                if note.notebook_id != notebook_id { continue; }
-                if note.id == note_id { remote = Some(note.clone()); }
-                if note.moved_from_note_id.is_some() { lineage.push(note); }
+                if note.notebook_id != notebook_id {
+                    continue;
+                }
+                if note.id == note_id {
+                    remote = Some(note.clone());
+                }
+                if note.moved_from_note_id.is_some() {
+                    lineage.push(note);
+                }
             }
-            let Some(page_token) = page.next_page_token else { break; };
+            let Some(page_token) = page.next_page_token else {
+                break;
+            };
             pages += 1;
             if pages > 10_000 {
-                return Err(SyncError::InvalidState("bootstrap exceeded page limit".into()));
+                return Err(SyncError::InvalidState(
+                    "bootstrap exceeded page limit".into(),
+                ));
             }
-            let first = self.client.v2_bootstrap_page(&token, Some(&page_token)).await;
+            let first = self
+                .client
+                .v2_bootstrap_page(&token, Some(&page_token))
+                .await;
             page = if first.as_ref().is_err_and(SyncError::is_unauthorized) {
                 token = self.force_refresh_access_token(generation).await?;
-                self.client.v2_bootstrap_page(&token, Some(&page_token)).await?
-            } else { first? };
+                self.client
+                    .v2_bootstrap_page(&token, Some(&page_token))
+                    .await?
+            } else {
+                first?
+            };
             if page.cursor != snapshot_cursor {
-                return Err(SyncError::InvalidState("bootstrap snapshot cursor changed".into()));
+                return Err(SyncError::InvalidState(
+                    "bootstrap snapshot cursor changed".into(),
+                ));
             }
         }
-        let remote = remote
-            .ok_or_else(|| SyncError::InvalidState(format!("conflicting cloud file {note_id} disappeared")))?;
-        let relocated = remote.deleted.then(|| {
-            find_v2_relocated_note(&lineage, notebook_id, note_id)
-        }).flatten();
-        let base_content = match baseline.as_ref().and_then(|state| state.content_hash.as_deref()) {
+        let remote = remote.ok_or_else(|| {
+            SyncError::InvalidState(format!("conflicting cloud file {note_id} disappeared"))
+        })?;
+        let relocated = remote
+            .deleted
+            .then(|| find_v2_relocated_note(&lineage, notebook_id, note_id))
+            .flatten();
+        let base_content = match baseline
+            .as_ref()
+            .and_then(|state| state.content_hash.as_deref())
+        {
             Some(hash) => match self.download_verified_v2_blob(&token, note_id, hash).await {
                 Ok(content) => Some(content),
                 // Retention may remove the ancestor. The desktop falls back to
@@ -184,8 +241,16 @@ impl SyncManager {
             },
             None => None,
         };
-        let remote_content = match relocated.as_ref().unwrap_or(&remote).content_hash.as_deref() {
-            Some(hash) => Some(self.download_verified_v2_blob(&token, note_id, hash).await?),
+        let remote_content = match relocated
+            .as_ref()
+            .unwrap_or(&remote)
+            .content_hash
+            .as_deref()
+        {
+            Some(hash) => Some(
+                self.download_verified_v2_blob(&token, note_id, hash)
+                    .await?,
+            ),
             None => None,
         };
         drop(self.require_auth_generation(generation)?);
@@ -244,16 +309,26 @@ impl SyncManager {
         Ok(history)
     }
 
-    pub async fn v2_historical_bytes(&self, note_id: &str, revision: &str)
-        -> Result<(crate::v2::V2History, Vec<u8>), SyncError> {
+    pub async fn v2_historical_bytes(
+        &self,
+        note_id: &str,
+        revision: &str,
+    ) -> Result<(crate::v2::V2History, Vec<u8>), SyncError> {
         let generation = self.auth_generation();
         let token = self.access_token(generation).await?;
         let history = self.client.v2_history(&token, note_id).await?;
-        let entry = history.revisions.iter().find(|entry| entry.revision == revision && !entry.deleted)
+        let entry = history
+            .revisions
+            .iter()
+            .find(|entry| entry.revision == revision && !entry.deleted)
             .ok_or_else(|| SyncError::InvalidState("history revision is unavailable".into()))?;
-        let hash = entry.content_hash.as_deref()
+        let hash = entry
+            .content_hash
+            .as_deref()
             .ok_or_else(|| SyncError::InvalidState("history revision has no content".into()))?;
-        let bytes = self.download_verified_v2_blob(&token, note_id, hash).await?;
+        let bytes = self
+            .download_verified_v2_blob(&token, note_id, hash)
+            .await?;
         let _guard = self.require_auth_generation(generation)?;
         Ok((history, bytes))
     }
@@ -319,18 +394,31 @@ impl SyncManager {
                     .or_insert(0_i64);
                 *total = total.saturating_add(note_bytes);
             }
-            let Some(page_token) = bootstrap.next_page_token.take() else { break; };
+            let Some(page_token) = bootstrap.next_page_token.take() else {
+                break;
+            };
             pages += 1;
             if pages > 10_000 {
-                return Err(SyncError::InvalidState("bootstrap exceeded page limit".into()));
+                return Err(SyncError::InvalidState(
+                    "bootstrap exceeded page limit".into(),
+                ));
             }
-            let first = self.client.v2_bootstrap_page(&token, Some(&page_token)).await;
+            let first = self
+                .client
+                .v2_bootstrap_page(&token, Some(&page_token))
+                .await;
             bootstrap = if first.as_ref().is_err_and(SyncError::is_unauthorized) {
                 token = self.force_refresh_access_token(generation).await?;
-                self.client.v2_bootstrap_page(&token, Some(&page_token)).await?
-            } else { first? };
+                self.client
+                    .v2_bootstrap_page(&token, Some(&page_token))
+                    .await?
+            } else {
+                first?
+            };
             if bootstrap.cursor != snapshot_cursor {
-                return Err(SyncError::InvalidState("bootstrap snapshot cursor changed".into()));
+                return Err(SyncError::InvalidState(
+                    "bootstrap snapshot cursor changed".into(),
+                ));
             }
         }
         let _generation = self.require_auth_generation(generation)?;
@@ -377,7 +465,10 @@ impl SyncManager {
             return Ok(false);
         }
         if matches!(operation, LocalChangeKind::Delete)
-            && self.store.v2_note_state(note_id)?.is_none_or(|state| state.deleted)
+            && self
+                .store
+                .v2_note_state(note_id)?
+                .is_none_or(|state| state.deleted)
         {
             self.store.discard_v2_unsynced_note(note_id)?;
             return Ok(false);
@@ -579,38 +670,66 @@ impl SyncManager {
         previous: &V2AccountSyncReport,
         notebook_scope: Option<&str>,
     ) -> Result<V2AccountSyncReport, SyncError> {
-        let token = previous.bootstrap_next_page_token.as_deref()
+        let token = previous
+            .bootstrap_next_page_token
+            .as_deref()
             .ok_or_else(|| SyncError::InvalidState("bootstrap has no next page".into()))?;
-        let generation = previous.auth_generation.ok_or(SyncError::NotAuthenticated)?;
+        let generation = previous
+            .auth_generation
+            .ok_or(SyncError::NotAuthenticated)?;
         let mut access_token = self.access_token(generation).await?;
-        let first = self.client.v2_bootstrap_page(&access_token, Some(token)).await;
+        let first = self
+            .client
+            .v2_bootstrap_page(&access_token, Some(token))
+            .await;
         let page = if first.as_ref().is_err_and(SyncError::is_unauthorized) {
             access_token = self.force_refresh_access_token(generation).await?;
-            self.client.v2_bootstrap_page(&access_token, Some(token)).await?
+            self.client
+                .v2_bootstrap_page(&access_token, Some(token))
+                .await?
         } else {
             first?
         };
         if page.cursor != previous.head_cursor {
-            return Err(SyncError::InvalidState("bootstrap snapshot cursor changed".into()));
+            return Err(SyncError::InvalidState(
+                "bootstrap snapshot cursor changed".into(),
+            ));
         }
-        let enabled_notebooks: Vec<_> = self.store.v2_notebooks(true)?.into_iter()
+        let enabled_notebooks: Vec<_> = self
+            .store
+            .v2_notebooks(true)?
+            .into_iter()
             .filter(|notebook| notebook_scope.is_none_or(|scope| scope == notebook.notebook_id))
             .collect();
-        let enabled_ids: HashSet<_> = enabled_notebooks.iter()
-            .map(|notebook| notebook.notebook_id.as_str()).collect();
-        let remote = self.remote_from_bootstrap(&access_token, &enabled_ids, &page).await?;
+        let enabled_ids: HashSet<_> = enabled_notebooks
+            .iter()
+            .map(|notebook| notebook.notebook_id.as_str())
+            .collect();
+        let remote = self
+            .remote_from_bootstrap(&access_token, &enabled_ids, &page)
+            .await?;
         let complete = page.next_page_token.is_none();
         let _generation = self.require_auth_generation(generation)?;
         Ok(V2AccountSyncReport {
             auth_generation: Some(generation),
             started_at: previous.started_at,
-            cursor: if complete { page.cursor } else { previous.cursor },
+            cursor: if complete {
+                page.cursor
+            } else {
+                previous.cursor
+            },
             head_cursor: previous.head_cursor,
             uploaded: 0,
             deleted: 0,
             remote,
-            bootstrapped_notebooks: if complete { enabled_notebooks.into_iter()
-                .map(|notebook| notebook.notebook_id).collect() } else { Vec::new() },
+            bootstrapped_notebooks: if complete {
+                enabled_notebooks
+                    .into_iter()
+                    .map(|notebook| notebook.notebook_id)
+                    .collect()
+            } else {
+                Vec::new()
+            },
             bootstrap_next_page_token: page.next_page_token,
         })
     }
@@ -943,10 +1062,18 @@ mod tests {
         let notebook_id = "nb_moves";
         let note = |id: &str, moved_from: Option<&str>, deleted: bool, sync_seq: i64| {
             crate::v2::V2BootstrapNote {
-                id: id.into(), notebook_id: notebook_id.into(), filename: format!("{id}.md"),
-                moved_from_note_id: moved_from.map(str::to_owned), revision: format!("rev_{sync_seq}"),
-                content_hash: (!deleted).then(|| format!("hash_{id}")), size_bytes: 1, deleted,
-                sync_seq, created_at: sync_seq, updated_at: sync_seq, attachments: Vec::new(),
+                id: id.into(),
+                notebook_id: notebook_id.into(),
+                filename: format!("{id}.md"),
+                moved_from_note_id: moved_from.map(str::to_owned),
+                revision: format!("rev_{sync_seq}"),
+                content_hash: (!deleted).then(|| format!("hash_{id}")),
+                size_bytes: 1,
+                deleted,
+                sync_seq,
+                created_at: sync_seq,
+                updated_at: sync_seq,
+                attachments: Vec::new(),
             }
         };
         // A -> B -> A -> C. The stale B tombstone appears before current C.
@@ -955,7 +1082,10 @@ mod tests {
             note("A", Some("B"), true, 5),
             note("C", Some("A"), false, 6),
         ];
-        assert_eq!(find_v2_relocated_note(&notes, notebook_id, "A").unwrap().id, "C");
+        assert_eq!(
+            find_v2_relocated_note(&notes, notebook_id, "A").unwrap().id,
+            "C"
+        );
     }
 
     #[test]
@@ -963,15 +1093,31 @@ mod tests {
         let notebook_id = "nb_moves";
         let notes = vec![
             crate::v2::V2BootstrapNote {
-                id: "B".into(), notebook_id: notebook_id.into(), filename: "B.md".into(),
-                moved_from_note_id: Some("A".into()), revision: "r1".into(), content_hash: None,
-                size_bytes: 0, deleted: true, sync_seq: 1, created_at: 1, updated_at: 1,
+                id: "B".into(),
+                notebook_id: notebook_id.into(),
+                filename: "B.md".into(),
+                moved_from_note_id: Some("A".into()),
+                revision: "r1".into(),
+                content_hash: None,
+                size_bytes: 0,
+                deleted: true,
+                sync_seq: 1,
+                created_at: 1,
+                updated_at: 1,
                 attachments: Vec::new(),
             },
             crate::v2::V2BootstrapNote {
-                id: "A".into(), notebook_id: notebook_id.into(), filename: "A.md".into(),
-                moved_from_note_id: Some("B".into()), revision: "r2".into(), content_hash: None,
-                size_bytes: 0, deleted: true, sync_seq: 2, created_at: 2, updated_at: 2,
+                id: "A".into(),
+                notebook_id: notebook_id.into(),
+                filename: "A.md".into(),
+                moved_from_note_id: Some("B".into()),
+                revision: "r2".into(),
+                content_hash: None,
+                size_bytes: 0,
+                deleted: true,
+                sync_seq: 2,
+                created_at: 2,
+                updated_at: 2,
                 attachments: Vec::new(),
             },
         ];

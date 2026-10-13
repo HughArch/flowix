@@ -121,7 +121,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   expanded: boolean;
   isLoadingChildren?: boolean;
   childrenError?: boolean;
-  onRetryChildren?: () => void;
+  onRetryChildren?: (path: string) => void;
   active: boolean;
   selected: boolean;
   onToggle: (path: string) => void;
@@ -529,7 +529,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
               onPointerDown={(event) => event.stopPropagation()}
               onClick={(event) => {
                 event.stopPropagation();
-                onRetryChildren?.();
+                onRetryChildren?.(item.fullPath);
               }}
             >
               {t('error.retry')}

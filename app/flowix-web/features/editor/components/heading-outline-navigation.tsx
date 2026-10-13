@@ -2,6 +2,7 @@ import type { Editor } from '@tiptap/core'
 import { createPortal } from 'react-dom'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useI18n } from '@/lib/i18n'
+import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar'
 
 const HEADING_SELECTOR = 'h1, h2, h3, h4'
 const NON_DOCUMENT_HEADING_SELECTOR = '.agent-thread-card, .frontmatter-property-node'
@@ -365,7 +366,10 @@ export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
             <div className="heading-outline-navigation__popover-title">
               {t('editor.headingOutline.title')}
             </div>
-            <div className="heading-outline-navigation__popover-list">
+            <OverlayScrollbar
+              className="heading-outline-navigation__popover-list-frame"
+              scrollerClassName="heading-outline-navigation__popover-list"
+            >
               {allHeadings.map((heading, index) => (
                 <button
                   key={`${heading.level}-${index}`}
@@ -378,7 +382,7 @@ export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
                   {heading.text || `H${heading.level}`}
                 </button>
               ))}
-            </div>
+            </OverlayScrollbar>
           </div>,
           document.body,
         )

@@ -1,14 +1,19 @@
 use super::*;
-use std::collections::HashMap;
 use crate::v2::{
     V2CloudAccount, V2DirtyEntity, V2EntityType, V2FreezeOperation, V2InflightOperation,
     V2NoteState, V2NotebookState, V2OperationKind, V2RemoteApply, V2SyncedNotebook, PROTOCOL_EPOCH,
 };
+use std::collections::HashMap;
 
 impl SyncStore {
     pub(super) fn initialize_v2_schema(connection: &Connection) -> Result<(), SyncError> {
         connection.execute_batch(
             r#"
+            CREATE TABLE IF NOT EXISTS session_restore_policy (
+                singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
+                blocked INTEGER NOT NULL CHECK(blocked IN (0, 1))
+            );
+            INSERT OR IGNORE INTO session_restore_policy(singleton, blocked) VALUES (1, 0);
             CREATE TABLE IF NOT EXISTS v2_cloud_account (
                 singleton INTEGER PRIMARY KEY CHECK(singleton = 1),
                 user_id TEXT NOT NULL,
@@ -175,6 +180,10 @@ impl SyncStore {
                 SyncError::InvalidState(format!("serialize v2 cloud account: {error}"))
             })?, account.protocol_epoch, now],
         )?;
+        transaction.execute(
+            "UPDATE session_restore_policy SET blocked = 0 WHERE singleton = 1",
+            [],
+        )?;
         transaction.commit()?;
         Ok(())
     }
@@ -184,6 +193,7 @@ impl SyncStore {
         let transaction = connection.transaction()?;
         transaction.execute_batch(
             r#"
+            UPDATE session_restore_policy SET blocked = 1 WHERE singleton = 1;
             DELETE FROM v2_retry_state;
             DELETE FROM v2_pending_moves;
             DELETE FROM v2_inflight_operations;
@@ -199,6 +209,14 @@ impl SyncStore {
         )?;
         transaction.commit()?;
         Ok(())
+    }
+
+    pub(crate) fn session_restore_blocked(&self) -> Result<bool, SyncError> {
+        Ok(self.open()?.query_row(
+            "SELECT blocked FROM session_restore_policy WHERE singleton = 1",
+            [],
+            |row| row.get(0),
+        )?)
     }
 
     pub fn v2_account(&self) -> Result<Option<V2CloudAccount>, SyncError> {
@@ -293,9 +311,7 @@ impl SyncStore {
     /// Count queued file operations by enabled notebook. Dirty note rows stay
     /// present while their frozen operation is in flight, so adding the
     /// inflight table here would count the same work twice.
-    pub fn v2_pending_file_operation_counts(
-        &self,
-    ) -> Result<HashMap<String, i64>, SyncError> {
+    pub fn v2_pending_file_operation_counts(&self) -> Result<HashMap<String, i64>, SyncError> {
         let connection = self.open()?;
         let mut statement = connection.prepare(
             r#"SELECT notebook_id, COUNT(*) FROM (
@@ -610,16 +626,19 @@ impl SyncStore {
             "DELETE FROM v2_dirty_entities WHERE entity_type = 'note' AND entity_id = ?1",
             [&remote.id],
         )?;
-        Self::write_v2_note_state(&transaction, &V2NoteState {
-            note_id: remote.id.clone(),
-            notebook_id: remote.notebook_id.clone(),
-            revision: remote.revision.clone(),
-            content_hash: remote.content_hash.clone(),
-            filename: remote.filename.clone(),
-            deleted: remote.deleted,
-            last_seq: remote.sync_seq,
-            attachments: remote.attachments.clone(),
-        })?;
+        Self::write_v2_note_state(
+            &transaction,
+            &V2NoteState {
+                note_id: remote.id.clone(),
+                notebook_id: remote.notebook_id.clone(),
+                revision: remote.revision.clone(),
+                content_hash: remote.content_hash.clone(),
+                filename: remote.filename.clone(),
+                deleted: remote.deleted,
+                last_seq: remote.sync_seq,
+                attachments: remote.attachments.clone(),
+            },
+        )?;
         transaction.execute(
             "UPDATE v2_synced_notebooks SET bootstrap_required = 1, updated_at = ?2 WHERE notebook_id = ?1 AND enabled = 1",
             params![remote.notebook_id, chrono::Utc::now().timestamp_millis()],
@@ -635,15 +654,28 @@ impl SyncStore {
     ) -> Result<(), SyncError> {
         let mut connection = self.open()?;
         let transaction = connection.transaction()?;
-        transaction.execute("DELETE FROM v2_inflight_operations WHERE entity_type = 'note' AND entity_id = ?1", [&source.id])?;
-        transaction.execute("DELETE FROM v2_dirty_entities WHERE entity_type = 'note' AND entity_id = ?1", [&source.id])?;
+        transaction.execute(
+            "DELETE FROM v2_inflight_operations WHERE entity_type = 'note' AND entity_id = ?1",
+            [&source.id],
+        )?;
+        transaction.execute(
+            "DELETE FROM v2_dirty_entities WHERE entity_type = 'note' AND entity_id = ?1",
+            [&source.id],
+        )?;
         for remote in [source, target] {
-            Self::write_v2_note_state(&transaction, &V2NoteState {
-                note_id: remote.id.clone(), notebook_id: remote.notebook_id.clone(),
-                revision: remote.revision.clone(), content_hash: remote.content_hash.clone(),
-                filename: remote.filename.clone(), deleted: remote.deleted,
-                last_seq: remote.sync_seq, attachments: remote.attachments.clone(),
-            })?;
+            Self::write_v2_note_state(
+                &transaction,
+                &V2NoteState {
+                    note_id: remote.id.clone(),
+                    notebook_id: remote.notebook_id.clone(),
+                    revision: remote.revision.clone(),
+                    content_hash: remote.content_hash.clone(),
+                    filename: remote.filename.clone(),
+                    deleted: remote.deleted,
+                    last_seq: remote.sync_seq,
+                    attachments: remote.attachments.clone(),
+                },
+            )?;
         }
         transaction.execute(
             "UPDATE v2_synced_notebooks SET bootstrap_required = 1, updated_at = ?2 WHERE notebook_id = ?1 AND enabled = 1",
@@ -803,7 +835,9 @@ impl SyncStore {
                 )?;
             }
             crate::v2::V2PushOperation::NoteMove { .. } => {
-                return Err(SyncError::InvalidState("move requires its own two-head acknowledgement".into()));
+                return Err(SyncError::InvalidState(
+                    "move requires its own two-head acknowledgement".into(),
+                ));
             }
         }
         transaction.execute(
@@ -829,9 +863,12 @@ impl SyncStore {
     pub fn v2_all_note_states(&self) -> Result<Vec<V2NoteState>, SyncError> {
         let connection = self.open()?;
         let mut statement = connection.prepare("SELECT note_id FROM v2_note_states")?;
-        let ids = statement.query_map([], |row| row.get::<_, String>(0))?
+        let ids = statement
+            .query_map([], |row| row.get::<_, String>(0))?
             .collect::<Result<Vec<_>, _>>()?;
-        ids.iter().map(|id| Self::read_v2_note_state(&connection, id).map(Option::unwrap)).collect()
+        ids.iter()
+            .map(|id| Self::read_v2_note_state(&connection, id).map(Option::unwrap))
+            .collect()
     }
 
     pub fn enqueue_v2_move(
@@ -840,7 +877,9 @@ impl SyncStore {
         from_path: &str,
         to_path: &str,
     ) -> Result<bool, SyncError> {
-        if from_path == to_path || from_path.starts_with("attachments/") != to_path.starts_with("attachments/") {
+        if from_path == to_path
+            || from_path.starts_with("attachments/") != to_path.starts_with("attachments/")
+        {
             return Ok(false);
         }
         let from_note_id = crate::v2::v2_path_note_id(notebook_id, from_path);
@@ -870,8 +909,14 @@ impl SyncStore {
                 source.revision, chrono::Utc::now().timestamp_millis()],
         )?;
         if inserted > 0 {
-            transaction.execute("DELETE FROM v2_inflight_operations WHERE entity_type = 'note' AND entity_id = ?1", [&from_note_id])?;
-            transaction.execute("DELETE FROM v2_dirty_entities WHERE entity_type = 'note' AND entity_id = ?1", [&from_note_id])?;
+            transaction.execute(
+                "DELETE FROM v2_inflight_operations WHERE entity_type = 'note' AND entity_id = ?1",
+                [&from_note_id],
+            )?;
+            transaction.execute(
+                "DELETE FROM v2_dirty_entities WHERE entity_type = 'note' AND entity_id = ?1",
+                [&from_note_id],
+            )?;
         }
         transaction.commit()?;
         Ok(inserted > 0)
@@ -882,16 +927,28 @@ impl SyncStore {
         let mut statement = connection.prepare(
             "SELECT operation_id, notebook_id, from_note_id, from_path, to_note_id, to_path, base_revision FROM v2_pending_moves ORDER BY created_at",
         )?;
-        let rows = statement.query_map([], |row| Ok(crate::v2::V2PendingMove {
-            operation_id: row.get(0)?, notebook_id: row.get(1)?, from_note_id: row.get(2)?,
-            from_path: row.get(3)?, to_note_id: row.get(4)?, to_path: row.get(5)?,
-            base_revision: row.get(6)?,
-        }))?;
+        let rows = statement.query_map([], |row| {
+            Ok(crate::v2::V2PendingMove {
+                operation_id: row.get(0)?,
+                notebook_id: row.get(1)?,
+                from_note_id: row.get(2)?,
+                from_path: row.get(3)?,
+                to_note_id: row.get(4)?,
+                to_path: row.get(5)?,
+                base_revision: row.get(6)?,
+            })
+        })?;
         rows.collect::<Result<Vec<_>, _>>().map_err(SyncError::from)
     }
 
-    pub fn v2_pending_move(&self, operation_id: &str) -> Result<Option<crate::v2::V2PendingMove>, SyncError> {
-        Ok(self.v2_pending_moves()?.into_iter().find(|item| item.operation_id == operation_id))
+    pub fn v2_pending_move(
+        &self,
+        operation_id: &str,
+    ) -> Result<Option<crate::v2::V2PendingMove>, SyncError> {
+        Ok(self
+            .v2_pending_moves()?
+            .into_iter()
+            .find(|item| item.operation_id == operation_id))
     }
 
     /// A rejected move is converted into a local conflict copy by the desktop
@@ -935,22 +992,42 @@ impl SyncStore {
         let transaction = connection.transaction()?;
         let source = Self::read_v2_note_state(&transaction, &movement.from_note_id)?
             .ok_or_else(|| SyncError::InvalidState("move source lost its local base".into()))?;
-        let source_revision = data.source_revision.as_ref()
-            .ok_or_else(|| SyncError::InvalidState("move response omitted source revision".into()))?;
-        let source_seq = data.source_sync_seq
-            .ok_or_else(|| SyncError::InvalidState("move response omitted source sequence".into()))?;
-        Self::write_v2_note_state(&transaction, &V2NoteState {
-            note_id: movement.from_note_id.clone(), notebook_id: movement.notebook_id.clone(),
-            revision: source_revision.clone(), content_hash: None, filename: movement.from_path.clone(),
-            deleted: true, last_seq: source_seq, attachments: Vec::new(),
+        let source_revision = data.source_revision.as_ref().ok_or_else(|| {
+            SyncError::InvalidState("move response omitted source revision".into())
         })?;
-        Self::write_v2_note_state(&transaction, &V2NoteState {
-            note_id: movement.to_note_id.clone(), notebook_id: movement.notebook_id.clone(),
-            revision: data.revision.clone(), content_hash: source.content_hash,
-            filename: movement.to_path.clone(), deleted: false, last_seq: data.sync_seq,
-            attachments: source.attachments,
+        let source_seq = data.source_sync_seq.ok_or_else(|| {
+            SyncError::InvalidState("move response omitted source sequence".into())
         })?;
-        transaction.execute("DELETE FROM v2_pending_moves WHERE operation_id = ?1", [&movement.operation_id])?;
+        Self::write_v2_note_state(
+            &transaction,
+            &V2NoteState {
+                note_id: movement.from_note_id.clone(),
+                notebook_id: movement.notebook_id.clone(),
+                revision: source_revision.clone(),
+                content_hash: None,
+                filename: movement.from_path.clone(),
+                deleted: true,
+                last_seq: source_seq,
+                attachments: Vec::new(),
+            },
+        )?;
+        Self::write_v2_note_state(
+            &transaction,
+            &V2NoteState {
+                note_id: movement.to_note_id.clone(),
+                notebook_id: movement.notebook_id.clone(),
+                revision: data.revision.clone(),
+                content_hash: source.content_hash,
+                filename: movement.to_path.clone(),
+                deleted: false,
+                last_seq: data.sync_seq,
+                attachments: source.attachments,
+            },
+        )?;
+        transaction.execute(
+            "DELETE FROM v2_pending_moves WHERE operation_id = ?1",
+            [&movement.operation_id],
+        )?;
         transaction.commit()?;
         Ok(())
     }

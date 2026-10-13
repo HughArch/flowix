@@ -2,8 +2,6 @@ use std::{collections::HashMap, path::Path};
 
 use tauri::State;
 
-use crate::agent_external::runtime_registry::ExternalCliRuntime;
-use crate::agent_session::AgentExternalEvent;
 use crate::agent_wire::{AgentChatResponse, AgentUserMessage, RunInfo};
 use crate::app::state::AppState;
 
@@ -393,32 +391,6 @@ pub async fn agent_background_jobs(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     state.deepseek_harness.background_jobs(&threadId).await
-}
-
-#[tauri::command]
-#[allow(non_snake_case)]
-pub async fn agent_external_events(
-    threadId: String,
-    afterId: Option<i64>,
-    limit: Option<i64>,
-    state: State<'_, AppState>,
-) -> Result<Vec<AgentExternalEvent>, String> {
-    let manager = &state.thread_manager;
-    let mut product_thread_id = threadId.clone();
-    for runtime in state.external_runtimes.iter().map(ExternalCliRuntime::key) {
-        if let Ok(Some(local_thread_id)) = manager
-            .find_thread_by_external_session(&threadId, runtime)
-            .await
-        {
-            product_thread_id = local_thread_id;
-            break;
-        }
-    }
-    let page_limit = limit.unwrap_or(1000).clamp(1, 1000);
-    manager
-        .list_agent_external_events_by_thread(&product_thread_id, afterId, page_limit)
-        .await
-        .map_err(|error| error.to_string())
 }
 
 /// Respond to a Codex app-server server request (command/file approval).

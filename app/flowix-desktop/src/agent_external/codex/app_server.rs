@@ -130,6 +130,8 @@ struct ActiveTurn {
     /// per active turn so the terminal payload remains a true fallback
     /// instead of a second delivery.
     completed_agent_messages: Arc<Mutex<Vec<CompletedAgentMessage>>>,
+    /// Runtime-owned receipts survive webview reloads until userMessage consumption.
+    pending_steers: Vec<Value>,
 }
 
 #[derive(Clone)]
@@ -454,6 +456,7 @@ async fn bind_automatically_started_queue_turn(
                 last_event_at: started_at,
                 stream_end_emitted: stream_end_emitted.clone(),
                 completed_agent_messages: completed_agent_messages.clone(),
+                pending_steers: Vec::new(),
             },
         );
     }
@@ -1076,6 +1079,7 @@ impl CodexAppServerManager {
                 last_event_at: chrono::Utc::now().timestamp_millis(),
                 stream_end_emitted: stream_end_emitted.clone(),
                 completed_agent_messages: completed_agent_messages.clone(),
+                pending_steers: Vec::new(),
             });
             let mut turn_params = json!({
                 "threadId": codex_thread_id,
@@ -1212,16 +1216,56 @@ impl CodexAppServerManager {
             .map(|turn| (turn.codex_thread_id.clone(), turn.codex_turn_id.clone()))
             .ok_or_else(|| "Codex has no steerable active turn".to_string())?;
         let input = codex_user_input(&message);
-        self.request(
-            "turn/steer",
-            json!({
-                "threadId": active.0,
-                "expectedTurnId": active.1,
-                "clientUserMessageId": client_user_message_id,
-                "input": input,
-            }),
-        )
-        .await?;
+        // Register before the RPC: item/completed can beat its response. An
+        // acknowledgement removes the receipt and the response never recreates it.
+        {
+            let mut turns = self.inner.active_turns.lock().await;
+            let turn = turns
+                .get_mut(flowix_thread_id)
+                .filter(|turn| {
+                    turn.codex_turn_id == active.1
+                        && !turn.stream_end_emitted.load(Ordering::Acquire)
+                })
+                .ok_or_else(|| "Codex has no steerable active turn".to_string())?;
+            if turn
+                .pending_steers
+                .iter()
+                .any(|item| item["clientUserMessageId"] == client_user_message_id)
+            {
+                return Err("Codex steering already submitted".to_string());
+            }
+            turn.pending_steers.push(json!({
+                "id": client_user_message_id, "clientUserMessageId": client_user_message_id,
+                "input": input, "content": message.content, "runId": turn.run_id,
+                "queuedAt": chrono::Utc::now().timestamp_millis(),
+                "deliveryStatus": "submitting"
+            }));
+        }
+        let result = self
+            .request(
+                "turn/steer",
+                json!({
+                    "threadId": active.0,
+                    "expectedTurnId": active.1,
+                    "clientUserMessageId": client_user_message_id,
+                    "input": input,
+                }),
+            )
+            .await;
+        {
+            let mut turns = self.inner.active_turns.lock().await;
+            if let Some(turn) = turns
+                .get_mut(flowix_thread_id)
+                .filter(|turn| turn.codex_turn_id == active.1)
+            {
+                finish_pending_steer(
+                    &mut turn.pending_steers,
+                    &client_user_message_id,
+                    result.is_ok(),
+                );
+            }
+        }
+        result?;
         let _ = app_handle;
         Ok(())
     }
@@ -1416,8 +1460,20 @@ impl CodexAppServerManager {
     pub async fn list_queued_follow_ups(&self, flowix_thread_id: &str) -> Result<Value, String> {
         let codex_thread_id = self.resolve_queue_thread_id(flowix_thread_id).await?;
         let _queue_operation = lock_follow_up_operations(&self.inner, flowix_thread_id).await;
-        self.list_queued_follow_ups_unlocked(flowix_thread_id, &codex_thread_id)
-            .await
+        let result = self
+            .list_queued_follow_ups_unlocked(flowix_thread_id, &codex_thread_id)
+            .await?;
+        Ok(self.with_pending_steers(flowix_thread_id, result).await)
+    }
+
+    async fn with_pending_steers(&self, flowix_thread_id: &str, mut result: Value) -> Value {
+        let turns = self.inner.active_turns.lock().await;
+        result["pendingDeliveries"] = json!(turns
+            .get(flowix_thread_id)
+            .filter(|turn| !turn.stream_end_emitted.load(Ordering::Acquire))
+            .map(|turn| turn.pending_steers.clone())
+            .unwrap_or_default());
+        result
     }
 
     /// Restore an idle provider queue into the normal run lifecycle. This is
@@ -1468,7 +1524,7 @@ impl CodexAppServerManager {
                 }
             }
         }
-        Ok(result)
+        Ok(self.with_pending_steers(flowix_thread_id, result).await)
     }
 
     pub async fn delete_queued_follow_up(
@@ -1605,6 +1661,7 @@ impl CodexAppServerManager {
                     last_event_at: chrono::Utc::now().timestamp_millis(),
                     stream_end_emitted: stream_end_emitted.clone(),
                     completed_agent_messages: completed_agent_messages.clone(),
+                    pending_steers: Vec::new(),
                 },
             );
         }
@@ -2553,6 +2610,7 @@ impl CodexAppServerManager {
                 last_event_at: chrono::Utc::now().timestamp_millis(),
                 stream_end_emitted: ended.clone(),
                 completed_agent_messages: completed_agent_messages.clone(),
+                pending_steers: Vec::new(),
             },
         );
         self.emit_codex_command(
@@ -3157,6 +3215,28 @@ async fn write_server_error(stdin: &Arc<Mutex<ChildStdin>>, id: &Value, method: 
     }
 }
 
+fn finish_pending_steer(pending: &mut Vec<Value>, client_id: &str, accepted: bool) {
+    if !accepted {
+        pending.retain(|item| item["clientUserMessageId"] != client_id);
+    } else if let Some(item) = pending
+        .iter_mut()
+        .find(|item| item["clientUserMessageId"] == client_id)
+    {
+        item["deliveryStatus"] = json!("steering");
+    }
+}
+
+fn acknowledge_pending_steers(pending: &mut Vec<Value>, item: &Value) {
+    if item.get("type").and_then(Value::as_str) != Some("userMessage") {
+        return;
+    }
+    if let Some(client_id) = item.get("clientId").and_then(Value::as_str) {
+        pending.retain(|receipt| {
+            receipt.get("clientUserMessageId").and_then(Value::as_str) != Some(client_id)
+        });
+    }
+}
+
 async fn dispatch_notification(inner: &Arc<Inner>, message: &Value) {
     let _dispatch = inner.notification_dispatch.lock().await;
     dispatch_notification_inner(inner, message).await;
@@ -3268,6 +3348,11 @@ async fn dispatch_notification_inner(inner: &Arc<Inner>, message: &Value) {
                 if let Some(turn_id) = turn_id {
                     active.codex_turn_id = turn_id.to_string();
                     active.turn_ready.notify_one();
+                }
+            }
+            if method == "item/completed" {
+                if let Some(item) = params.get("item") {
+                    acknowledge_pending_steers(&mut active.pending_steers, item);
                 }
             }
             if active.cancel_requested && !active.codex_turn_id.is_empty() {
@@ -3401,7 +3486,7 @@ async fn dispatch_notification_inner(inner: &Arc<Inner>, message: &Value) {
                             name,
                             input: item.clone(),
                         },
-                        item_metadata(item),
+                        with_turn_id(item_metadata(item), turn_id),
                     )
                     .await;
                 }
@@ -3439,7 +3524,7 @@ async fn dispatch_notification_inner(inner: &Arc<Inner>, message: &Value) {
                             name,
                             result: item.clone(),
                         },
-                        item_metadata(item),
+                        with_turn_id(item_metadata(item), turn_id),
                     )
                     .await;
                 }
@@ -3996,6 +4081,32 @@ fn app_server_approval_policy(permission: Option<&str>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consumes_only_the_correlated_pending_steer_and_never_recreates_a_receipt() {
+        let mut receipts = vec![
+            json!({ "clientUserMessageId": "first", "deliveryStatus": "submitting" }),
+            json!({ "clientUserMessageId": "second", "deliveryStatus": "steering" }),
+        ];
+        acknowledge_pending_steers(
+            &mut receipts,
+            &json!({ "type": "agentMessage", "clientId": "first" }),
+        );
+        assert_eq!(receipts.len(), 2);
+        acknowledge_pending_steers(
+            &mut receipts,
+            &json!({ "type": "userMessage", "clientId": "first" }),
+        );
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0]["clientUserMessageId"], "second");
+        finish_pending_steer(&mut receipts, "first", true);
+        assert_eq!(receipts.len(), 1);
+        acknowledge_pending_steers(
+            &mut receipts,
+            &json!({ "type": "userMessage", "clientId": "first" }),
+        );
+        assert_eq!(receipts.len(), 1);
+    }
 
     #[test]
     fn identifies_queue_entries_already_consumed_by_codex() {
@@ -4961,6 +5072,28 @@ Budget:
         );
         assert_eq!(messages[2].role, "tool");
         assert_eq!(messages[3].content, "Codex turn interrupted");
+    }
+
+    #[test]
+    fn omits_unfinished_assistant_items_from_interrupted_turn_history() {
+        let turns = vec![json!({
+            "id": "turn-interrupted",
+            "startedAt": 1_730_910_000,
+            "status": "interrupted",
+            "items": [
+                { "id": "u1", "type": "userMessage", "content": [{ "type": "text", "text": "Inspect" }] },
+                { "id": "draft", "type": "agentMessage", "status": "inProgress", "text": "unfinished" },
+                { "id": "answer", "type": "agentMessage", "status": "completed", "text": "Completed before stop" }
+            ]
+        })];
+
+        let messages = app_server_turn_messages(&turns);
+        assert_eq!(
+            messages.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(),
+            ["u1", "answer", "codex-turn-error-turn-interrupted"],
+        );
+        assert_eq!(messages[1].content, "Completed before stop");
+        assert_eq!(messages[1].is_completed, Some(true));
     }
 
     #[test]

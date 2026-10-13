@@ -17,7 +17,7 @@ use walkdir::WalkDir;
 
 use super::{
     notebook_path_from_relative, notebook_relative_path, AgentThreadItem, Memo, MemoFile,
-    MemoIndexEntry, MemoTodoEntry, NoteColor, PathTodoEntry, TodoItem,
+    MemoIndexEntry, NoteColor, TodoItem,
 };
 
 const SCHEMA_VERSION: i64 = 3;
@@ -1490,96 +1490,6 @@ impl MemoFile {
         pairs
     }
 
-    pub fn read_note_path_todos(
-        &self,
-        notebook_id: &str,
-        sort: &str,
-    ) -> io::Result<Vec<PathTodoEntry>> {
-        let conn = self.open_note_index_connection(notebook_id)?;
-        let order = if sort == "updatedAt" {
-            "t.updated_at DESC, t.created_at DESC"
-        } else {
-            "t.created_at DESC, t.updated_at DESC"
-        };
-        let sql = format!(
-            "SELECT t.relative_path, t.todo_id, t.content, t.status, t.priority, t.time_range, \
-            t.owner, t.assignee, t.created_at, t.updated_at FROM note_todos t ORDER BY {order}"
-        );
-        let mut statement = conn.prepare(&sql).map_err(io::Error::other)?;
-        let rows = statement
-            .query_map([], |row| {
-                Ok(PathTodoEntry {
-                    notebook_id: notebook_id.to_owned(),
-                    relative_path: row.get(0)?,
-                    todo_id: row.get(1)?,
-                    content: row.get(2)?,
-                    status: row.get(3)?,
-                    priority: row.get(4)?,
-                    time_range: row.get(5)?,
-                    owner: row.get(6)?,
-                    assignee: row.get(7)?,
-                    created_at: row.get(8)?,
-                    updated_at: row.get(9)?,
-                })
-            })
-            .map_err(io::Error::other)?;
-        rows.collect::<Result<Vec<_>, _>>()
-            .map_err(io::Error::other)
-    }
-
-    /// The Note projection owns task content and metadata. The legacy ID join only supplies
-    /// the current IPC field until task actions accept note paths directly.
-    pub(crate) fn note_todo_entries_with_legacy_ids(
-        &self,
-        notebook_id: &str,
-        sort: &str,
-    ) -> io::Result<Option<Vec<MemoTodoEntry>>> {
-        let conn = self.open_note_index_connection(notebook_id)?;
-        let missing: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM note_todos t LEFT JOIN memos m \
-             ON m.notebook_id = ?1 AND m.relative_path = t.relative_path \
-             WHERE m.id IS NULL",
-                params![notebook_id],
-                |row| row.get(0),
-            )
-            .map_err(io::Error::other)?;
-        if missing != 0 {
-            return Ok(None);
-        }
-        let order = if sort == "updatedAt" {
-            "t.updated_at DESC, t.created_at DESC"
-        } else {
-            "t.created_at DESC, t.updated_at DESC"
-        };
-        let sql = format!(
-            "SELECT t.todo_id, t.content, t.status, m.id, t.priority, t.time_range, \
-             t.owner, t.assignee, t.created_at, t.updated_at \
-             FROM note_todos t JOIN memos m \
-             ON m.notebook_id = ?1 AND m.relative_path = t.relative_path ORDER BY {order}"
-        );
-        let mut stmt = conn.prepare(&sql).map_err(io::Error::other)?;
-        let rows = stmt
-            .query_map(params![notebook_id], |row| {
-                Ok(MemoTodoEntry {
-                    todo_id: row.get(0)?,
-                    content: row.get(1)?,
-                    status: row.get(2)?,
-                    memo_id: row.get(3)?,
-                    priority: row.get(4)?,
-                    time_range: row.get(5)?,
-                    owner: row.get(6)?,
-                    assignee: row.get(7)?,
-                    created_at: row.get(8)?,
-                    updated_at: row.get(9)?,
-                })
-            })
-            .map_err(io::Error::other)?;
-        Ok(Some(
-            rows.collect::<Result<Vec<_>, _>>()
-                .map_err(io::Error::other)?,
-        ))
-    }
     /// Move note properties that may exist only in the legacy index into the
     /// Markdown frontmatter. Existing file properties always win.
     pub fn migrate_note_properties_for_notebook(
@@ -3081,10 +2991,6 @@ mod tests {
         let content = fs::read_to_string(root.join(&created.relative_path)).unwrap();
         assert!(content.contains("flowix_todo_metadata:"));
         store.reconcile_note_index("nb_test").unwrap();
-        let path_tasks = store.read_note_path_todos("nb_test", "createdAt").unwrap();
-        assert_eq!(path_tasks.len(), 1);
-        assert_eq!(path_tasks[0].relative_path, created.relative_path);
-        assert_eq!(path_tasks[0].priority, "high");
         let conn = store.open_note_index_connection("nb_test").unwrap();
         let (priority, owner, created_at): (String, String, i64) = conn
             .query_row(
@@ -3093,12 +2999,6 @@ mod tests {
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .unwrap();
-        let tasks = store
-            .read_todo_metadata_entries_for_notebook_id(Some("nb_test"), "createdAt")
-            .unwrap();
-        assert_eq!(tasks.len(), 1);
-        assert_eq!(tasks[0].memo_id, created.id);
-        assert_eq!(tasks[0].priority, "high");
         assert_eq!(
             (priority.as_str(), owner.as_str(), created_at),
             ("high", "me", 11)

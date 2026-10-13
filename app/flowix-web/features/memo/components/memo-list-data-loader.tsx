@@ -1,4 +1,4 @@
-import { useEffect } from 'react';
+import { useEffect, useRef } from 'react';
 import {
   type ColorFilterValue,
   type ExtendedFilterType,
@@ -54,6 +54,8 @@ export function MemoListDataLoader({
   onLoadStart,
   onLoadSuccess,
 }: MemoListDataLoaderProps) {
+  const startupQuerySkippedRef = useRef<string | null>(null);
+
   useEffect(() => {
     let cancelled = false;
     if (!dataLoadingEnabled) {
@@ -89,7 +91,13 @@ export function MemoListDataLoader({
       onLoadStart?.(queryKey);
       // The startup orchestrator has already loaded this exact query. Mark it
       // as rendered locally without issuing a duplicate IPC request.
-      if (initialMemoQueryKey === queryKey && memoListQueryKey === queryKey) {
+      if (
+        initialMemoQueryKey === queryKey
+        && memoListQueryKey === queryKey
+        && refreshTrigger === 0
+        && startupQuerySkippedRef.current !== queryKey
+      ) {
+        startupQuerySkippedRef.current = queryKey;
         setLoadedMemoListQueryKey(queryKey);
         setIsMemoListLoading(false);
         onLoadSuccess?.(queryKey);

@@ -5,6 +5,7 @@ import {
   createRenderedAgentMessageList,
   isCurrentTurnMessage,
   isLastMessageInTurnAndAssistant,
+  shouldShowMessageActions,
   type AgentThreadCardMessageRenderContext,
 } from "@features/agent/thread-card/messages/message-list-renderer";
 
@@ -38,6 +39,20 @@ function context(isLoading = false): AgentThreadCardMessageRenderContext {
 }
 
 describe("Codex turn-end message actions", () => {
+  it("treats a steer user message as part of the same active native turn", () => {
+    const messages = [
+      message("user", "user", "turn-1"),
+      message("before-steer", "assistant", "turn-1"),
+      message("steer", "user", "turn-1"),
+      message("final", "assistant", "turn-1"),
+    ];
+    expect(isCurrentTurnMessage(messages[1], messages)).toBe(true);
+    expect(isLastMessageInTurnAndAssistant(messages, 1)).toBe(false);
+    expect(isLastMessageInTurnAndAssistant(messages, 3)).toBe(true);
+    expect(shouldShowMessageActions(messages[1], messages, false)).toBe(false);
+    expect(shouldShowMessageActions(messages[3], messages, true)).toBe(false);
+  });
+
   it("renders commentary assistant rows around Codex tool rows", () => {
     const messages = [
       {
@@ -261,6 +276,29 @@ describe("Codex turn-end message actions", () => {
       ".agent-thread-card__message-fork-confirm-button",
     )?.click();
     expect(onFork).toHaveBeenCalledWith(expect.objectContaining({ id: "assistant-1" }));
+  });
+
+  it("shows fork action for a Pi assistant row with a native session entry id", () => {
+    const onFork = vi.fn();
+    const piMessage = {
+      ...message("assistant-1", "assistant"),
+      messageId: "pi-entry-1",
+      piBlockIndex: 0,
+      sourceSequence: 1,
+    };
+    const { list } = createRenderedAgentMessageList(
+      [piMessage],
+      { ...context(), onForkMessage: onFork },
+    );
+    const buttons = list.querySelectorAll<HTMLButtonElement>(
+      ".agent-thread-card__message-action",
+    );
+    expect(buttons).toHaveLength(2);
+    buttons[1].click();
+    list.querySelector<HTMLButtonElement>(
+      ".agent-thread-card__message-fork-confirm-button",
+    )?.click();
+    expect(onFork).toHaveBeenCalledWith(expect.objectContaining({ messageId: "pi-entry-1" }));
   });
 
   it("keeps the fork confirmation available while crossing the message action area", () => {

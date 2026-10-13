@@ -68,6 +68,7 @@ export interface ComposerControllerOptions {
   agentType?: AgentTypeKey;
   listDshSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   listCodexSkills?: () => Promise<readonly ComposerSlashSkill[]>;
+  listPiSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   listFolders?: () => readonly ComposerFolderReference[];
   folderGroupLabel?: string;
   listNotes?: (query: string) => Promise<readonly MentionNoteItem[]>;
@@ -181,6 +182,7 @@ export class ComposerController {
       agentType: options.agentType,
       listDshSkills: options.listDshSkills,
       listCodexSkills: options.listCodexSkills,
+      listPiSkills: options.listPiSkills,
       onModelSelect: options.onModelSelect,
       onPermissionSelect: options.onPermissionSelect,
       onDirectCommand: options.onDirectCommand,

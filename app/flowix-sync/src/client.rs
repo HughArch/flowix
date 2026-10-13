@@ -8,8 +8,8 @@ use crate::models::{
     CloudProduct, DataEnvelope, EntitlementData, MeData, RefreshData,
 };
 use crate::v2::{
-    V2BlobDownloadEnvelope, V2BlobReservationEnvelope, V2Bootstrap, V2ChangesPage, V2History, V2PushOperation,
-    V2PushResult, V2SyncStatus, PROTOCOL_EPOCH,
+    V2BlobDownloadEnvelope, V2BlobReservationEnvelope, V2Bootstrap, V2ChangesPage, V2History,
+    V2PushOperation, V2PushResult, V2SyncStatus, PROTOCOL_EPOCH,
 };
 
 fn apple_authorization_body(authorization: &AppleAuthorization) -> serde_json::Value {
@@ -79,8 +79,11 @@ impl CloudClient {
 
     async fn decode<T: DeserializeOwned>(response: reqwest::Response) -> Result<T, SyncError> {
         let status = response.status();
-        let request_id = response.headers().get("x-request-id")
-            .and_then(|value| value.to_str().ok()).map(str::to_owned);
+        let request_id = response
+            .headers()
+            .get("x-request-id")
+            .and_then(|value| value.to_str().ok())
+            .map(str::to_owned);
         let bytes = response.bytes().await?;
         if !status.is_success() {
             let parsed = serde_json::from_slice::<ApiErrorEnvelope>(&bytes).ok();
@@ -250,7 +253,9 @@ impl CloudClient {
         if response.status().is_success() {
             Ok(())
         } else {
-            Self::decode::<serde_json::Value>(response).await.map(|_| ())
+            Self::decode::<serde_json::Value>(response)
+                .await
+                .map(|_| ())
         }
     }
 
@@ -306,32 +311,56 @@ impl CloudClient {
         .map(|value| value.data)
     }
 
-    pub async fn v2_bootstrap_page(&self, access_token: &str, page_token: Option<&str>) -> Result<V2Bootstrap, SyncError> {
+    pub async fn v2_bootstrap_page(
+        &self,
+        access_token: &str,
+        page_token: Option<&str>,
+    ) -> Result<V2Bootstrap, SyncError> {
         let path = match page_token {
             Some(token) => format!("/v2/sync/bootstrap?limit=10&pageToken={token}"),
             None => "/v2/sync/bootstrap?limit=10".to_string(),
         };
         self.send::<DataEnvelope<V2Bootstrap>>(Method::GET, &path, Some(access_token), None)
-            .await.map(|value| value.data)
+            .await
+            .map(|value| value.data)
     }
 
-    pub async fn v2_history(&self, access_token: &str, note_id: &str) -> Result<V2History, SyncError> {
-        let mut history = self.send::<DataEnvelope<V2History>>(
-            Method::GET, &format!("/v2/sync/history?noteId={note_id}&limit=200"), Some(access_token), None,
-        ).await?.data;
+    pub async fn v2_history(
+        &self,
+        access_token: &str,
+        note_id: &str,
+    ) -> Result<V2History, SyncError> {
+        let mut history = self
+            .send::<DataEnvelope<V2History>>(
+                Method::GET,
+                &format!("/v2/sync/history?noteId={note_id}&limit=200"),
+                Some(access_token),
+                None,
+            )
+            .await?
+            .data;
         let mut pages = 0;
         while let Some(before) = history.next_before_seq.take() {
             pages += 1;
             if pages > 10_000 {
-                return Err(SyncError::InvalidState("history exceeded page limit".into()));
+                return Err(SyncError::InvalidState(
+                    "history exceeded page limit".into(),
+                ));
             }
-            let page = self.send::<DataEnvelope<V2History>>(
-                Method::GET,
-                &format!("/v2/sync/history?noteId={note_id}&limit=200&beforeSeq={before}"),
-                Some(access_token), None,
-            ).await?.data;
-            if page.note_id != history.note_id || page.current_revision != history.current_revision {
-                return Err(SyncError::InvalidState("history head changed during pagination".into()));
+            let page = self
+                .send::<DataEnvelope<V2History>>(
+                    Method::GET,
+                    &format!("/v2/sync/history?noteId={note_id}&limit=200&beforeSeq={before}"),
+                    Some(access_token),
+                    None,
+                )
+                .await?
+                .data;
+            if page.note_id != history.note_id || page.current_revision != history.current_revision
+            {
+                return Err(SyncError::InvalidState(
+                    "history head changed during pagination".into(),
+                ));
             }
             history.revisions.extend(page.revisions);
             history.next_before_seq = page.next_before_seq;

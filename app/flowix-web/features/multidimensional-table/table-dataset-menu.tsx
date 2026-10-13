@@ -6,6 +6,7 @@ import { files, type NotebookFolderOption } from '@platform/tauri/client';
 import { ResourceFolderIcon } from '@features/surface/resource-file-icon';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@shared/ui/select';
+import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import type { I18nKey } from '@/lib/i18n';
 import type { TableAutoCollectConfig, TableAutoCollectCondition, TableAutoCollectFileType, TableAutoCollectPropertyCondition } from './model';
 
@@ -390,8 +391,10 @@ export function TableDatasetMenu({ defaultFieldId, fields: autoCollectFields, co
   if (filterOnly) return filterMenu;
   return <Popover open={open} onOpenChange={changeOpen}>
     <PopoverTrigger asChild><button type="button" disabled={saving} title="数据集合" aria-label="管理数据集" className="inline-flex h-7 w-7 shrink-0 items-center justify-center rounded-lg p-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"><FunnelIcon size={14} weight="bold" aria-hidden="true" /></button></PopoverTrigger>
-    <PopoverContent align="end" side="bottom" sideOffset={0} fitViewport style={{ zIndex: 150 }} ignorePopoverOutside={autoCollectMenuOpen || folderPickerOpen || ignoreOutside} ignoreSelectOutside className="max-h-[min(70vh,420px)] w-[220px] max-w-[calc(100vw-16px)] overflow-y-auto overflow-x-hidden rounded-xl p-1.5 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-      <div className="space-y-0.5">{folderPathRow}{filterMenu}<div role="separator" aria-hidden="true" className="mx-2 h-px bg-[var(--border)]" />{children}</div>
+    <PopoverContent align="end" side="bottom" sideOffset={0} style={{ zIndex: 150 }} ignorePopoverOutside={autoCollectMenuOpen || folderPickerOpen || ignoreOutside} ignoreSelectOutside className="max-h-[80vh] w-[220px] max-w-[calc(100vw-16px)] overflow-hidden rounded-xl p-1.5 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+      <OverlayScrollbar className="max-h-[calc(80vh-14px)]" scrollerClassName="max-h-[calc(80vh-14px)] overflow-y-auto overflow-x-hidden">
+        <div className="space-y-0.5">{folderPathRow}{filterMenu}<div role="separator" aria-hidden="true" className="mx-2 h-px bg-[var(--border)]" />{children}</div>
+      </OverlayScrollbar>
     </PopoverContent>
   </Popover>;
 }

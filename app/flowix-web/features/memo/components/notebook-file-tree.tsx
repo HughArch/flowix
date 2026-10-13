@@ -14,7 +14,6 @@ import {
   type KeyboardEvent as ReactKeyboardEvent,
   type MouseEvent as ReactMouseEvent,
   type PointerEvent as ReactPointerEvent,
-  type ReactNode,
 } from 'react';
 import {
   Check,
@@ -30,15 +29,9 @@ import {
 import {
   ArrowDownIcon,
   ArrowUpIcon,
-  CopyIcon,
   FileIcon,
-  FolderOpenIcon,
   FolderSimplePlusIcon,
-  MinusCircleIcon,
-  PencilSimpleIcon,
   SquaresFourIcon,
-  SquareSplitHorizontalIcon,
-  TrashSimpleIcon,
   DownloadSimpleIcon,
 } from '@phosphor-icons/react';
 
@@ -57,7 +50,7 @@ import { cn, displayTitleFromFilename, isMediaLibraryFilename, isTableDocumentFi
 import { useI18n } from '@/lib/i18n';
 import { useComposingValue } from '@shared/hooks/use-composing-value';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
-import { ListSurfaceLoadingState, ListSurfaceSpinner, ListSurfaceViewport } from '@shared/ui/list-surface';
+import { ListSurfaceLoadingState, ListSurfaceViewport } from '@shared/ui/list-surface';
 import { Button } from '@shared/ui/button';
 import { Popover, PopoverContent } from '@shared/ui/popover';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
@@ -70,7 +63,6 @@ import {
 } from '@shared/ui/dropdown-menu';
 import { NotebookTreeFileIcon } from '@features/memo/components/notebook-tree-file-icon';
 import { NotebookCreateContextMenuItems } from '@features/memo/components/notebook-create-context-menu';
-import { NotebookCopyContextMenu } from '@features/memo/components/notebook-copy-context-menu';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { useCustomFilterStore } from '@features/memo/store/custom-filter-store';
 import { noteRepository } from '@features/memo/services/note-repository';
@@ -88,51 +80,45 @@ import { resolveNotebookAgentFiles } from '@/lib/agent-access-defaults';
 import {
   flattenLoadedTree,
   flattenVisibleTree,
-  useFolderTree,
   type FolderTreeController,
   type FolderTreeSort,
 } from '@features/memo/components/use-folder-tree';
 import { NotebookTreeRow } from '@features/memo/components/notebook-tree-row';
-import { ResourceFileIcon, ResourceFolderIcon } from '@features/surface/resource-file-icon';
 import { getWorkspaceAgentRepositories, type WorkspaceAgentRepository } from '@features/agent/public/workspace-api';
 import { useAgentAccessStore } from '@features/agent/store/agent-access-store';
 import { normalizeWorkspacePath } from '@features/agent/runtime/workspace-path';
 import {
   files,
   dialogs,
-  product,
   system,
   type DocTreeItem,
   type DocTreeResourceKind,
-  type FileBrowserDirectoriesChangedEvent,
   type MediaLibraryListItem,
   type TableDocumentListItem,
 } from '@platform/tauri/client';
 import { resourceKindFromPath } from '@features/editor/code-file';
-import { useDynamicVirtualList } from '@features/memo/components/memo-list/use-dynamic-virtual-list';
+import { useDynamicVirtualList } from '@features/memo/hooks/use-dynamic-virtual-list';
+import { useNotebookViewData } from './use-notebook-view-data';
+import { AgentRepositoriesSection } from './notebook-repositories-section';
+import { TREE_EDGE_GUTTER, INDENT_PER_LEVEL } from './notebook-tree-layout';
 import { createTableDocumentFile, type TableViewType } from '@features/multidimensional-table/public/create-api';
-import { subscribe } from '@platform/tauri/event-bus';
 import {
   ContextMenu,
   ContextMenuContent,
   ContextMenuItem,
-  ContextMenuSeparator,
-  ContextMenuSubmenu,
   ContextMenuTrigger,
 } from '@shared/ui/context-menu';
 
-const TREE_EDGE_GUTTER = 6;
 
 function getPopupOriginRect(target: HTMLElement): DOMRect {
   const rect = (target.closest('[role="menu"]') ?? target).getBoundingClientRect();
   return new DOMRect(rect.left, rect.top, 0, 0);
 }
-const INDENT_PER_LEVEL = 20;
 const TREE_ROW_HEIGHT = 32;
 const TREE_ROW_GAP = 2;
 const TREE_ROW_SIZE = TREE_ROW_HEIGHT + TREE_ROW_GAP;
 const TREE_HEADER_HEIGHT = 30;
-const TREE_VIRTUAL_OVERSCAN = 10;
+const TREE_VIRTUAL_OVERSCAN = 20;
 const TREE_DRAG_SCROLL_EDGE = 40;
 const TREE_DRAG_SCROLL_MAX_STEP = 18;
 const TREE_DRAG_EXPAND_DELAY_MS = 650;
@@ -432,403 +418,6 @@ function TreeSectionMoreMenu({
   );
 }
 
-function AgentRepositoryItem({
-  repository,
-  onOpenFile,
-  onRemoveRepository,
-  onExpandRepository,
-  onOpenInNewTab,
-}: {
-  repository: WorkspaceAgentRepository;
-  onOpenFile: (path: string, scopePath: string) => void;
-  onRemoveRepository: (repository: WorkspaceAgentRepository) => void;
-  onExpandRepository: (element: HTMLElement) => void;
-  onOpenInNewTab?: (path: string) => void;
-}) {
-  const { t } = useI18n();
-  const [expanded, setExpanded] = useState(false);
-  const repositoryRef = useRef<HTMLDivElement | null>(null);
-  const pendingExpandScrollRef = useRef(false);
-  const [renaming, setRenaming] = useState<{ item: DocTreeItem; value: string } | null>(null);
-  const [deleting, setDeleting] = useState<DocTreeItem | null>(null);
-  const tree = useFolderTree(repository.path, { enabled: expanded });
-  useLayoutEffect(() => {
-    if (!expanded || tree.loading || !pendingExpandScrollRef.current) return;
-    pendingExpandScrollRef.current = false;
-    const frame = window.requestAnimationFrame(() => {
-      if (repositoryRef.current) onExpandRepository(repositoryRef.current);
-    });
-    return () => window.cancelAnimationFrame(frame);
-  }, [expanded, onExpandRepository, tree.loading, tree.rootChildren.length]);
-  const activeFilePath = useWorkColumnStore((state) => {
-    const target = state.navigation.target;
-    if (target.kind === 'external') return target.path;
-    if (target.kind === 'media') return target.filePath;
-    return null;
-  });
-  const renameItem = async (item: DocTreeItem, value: string) => {
-    const name = value.trim();
-    setRenaming(null);
-    const isTableDocument = item.type === 'document' && isTableDocumentFilename(item.name);
-    const isMediaLibrary = item.type === 'document' && isMediaLibraryFilename(item.name);
-    const currentName = isTableDocument || isMediaLibrary ? displayTitleFromFilename(item.name) : item.name;
-    if (!name || name === currentName) return;
-    try {
-      if (item.type === 'folder') await files.renameFolder(item.fullPath, name, repository.path);
-      else {
-        const extension = isTableDocument ? tableDocumentExtension(item.name) : isMediaLibrary ? mediaLibraryExtension(item.name) : '';
-        await localDocumentOperations.rename({ path: item.fullPath, name: `${name}${extension}`, scopePath: repository.path });
-      }
-      await tree.refresh(parentDirectoryPath(item.fullPath, repository.path));
-      toast.success(t('memo.fileTree.renamed', { name }));
-    } catch (error) {
-      toast.error(t(String(error).includes('FILE_EXISTS') ? 'memo.fileTree.nameConflict' : 'memo.fileTree.renameFailed'));
-    }
-  };
-  const confirmDelete = async () => {
-    if (!deleting) return;
-    try {
-      const ok = deleting.type === 'folder'
-        ? await files.deleteFolder(deleting.fullPath, repository.path)
-        : await files.delete(deleting.fullPath, repository.path);
-      if (!ok) throw new Error('delete failed');
-      await tree.refresh(parentDirectoryPath(deleting.fullPath, repository.path));
-      toast.success(t('memo.fileTree.deleted', { name: deleting.name }));
-      setDeleting(null);
-    } catch (error) {
-      await tree.refresh(parentDirectoryPath(deleting.fullPath, repository.path)).catch(() => {});
-      toast.error(t(String(error).includes('FOLDER_DELETE_PARTIAL') ? 'memo.fileTree.deletePartialFailed' : 'memo.fileTree.deleteFailed'));
-    }
-  };
-  const importIntoRepository = async (targetDirectoryPath: string) => {
-    const selectedPaths = await dialogs.selectFiles({ multiple: true });
-    if (!selectedPaths?.length) return;
-    let failed = 0;
-    for (const sourcePath of selectedPaths) {
-      try {
-        await files.importFile(sourcePath, targetDirectoryPath, repository.path);
-      } catch (error) {
-        logger.warn('importing file into access space failed', { error, sourcePath, targetDirectoryPath });
-        failed += 1;
-      }
-    }
-    await tree.refresh(targetDirectoryPath);
-    if (failed) toast.error(t('memo.fileTree.movePartialFailed', { moved: selectedPaths.length - failed, failed }));
-  };
-  const renderRepositoryItems = (items: DocTreeItem[], depth: number): ReactNode[] => items.map((item) => {
-    const isFolder = item.type === 'folder';
-    const isActive = !isFolder && activeFilePath != null && samePath(item.fullPath, activeFilePath);
-    const key = canonicalPath(item.fullPath);
-    const itemExpanded = isFolder && tree.expanded.has(key);
-    const folderName = item.fullPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? item.name;
-    const isHiddenFolder = isFolder && folderName.startsWith('.');
-    const children = isFolder ? tree.nodes.get(key)?.children ?? [] : [];
-    return (
-      <ContextMenu key={item.id}>
-      <ContextMenuTrigger asChild>
-      <div className="folder-file-tree__group relative">
-        <button
-          type="button"
-          aria-expanded={isFolder ? itemExpanded : undefined}
-          aria-current={isActive ? 'page' : undefined}
-          title={item.fullPath}
-          onClick={() => renaming?.item.id === item.id ? undefined : isFolder
-            ? tree.toggle(item.fullPath)
-            : onOpenFile(item.fullPath, repository.path)}
-          className={cn(
-            'folder-file-tree__item group relative flex h-7 items-center rounded-lg px-1.5 text-left text-[13px] font-normal leading-[1.6] text-[var(--foreground)] transition-colors duration-150 cursor-pointer hover:bg-[var(--muted)]',
-            isActive && 'bg-[var(--muted)] text-[var(--foreground)]',
-          )}
-          style={{
-            marginLeft: TREE_EDGE_GUTTER + depth * INDENT_PER_LEVEL,
-            width: `calc(100% - ${TREE_EDGE_GUTTER * 2 + depth * INDENT_PER_LEVEL}px)`,
-          }}
-        >
-          {isFolder ? (
-            <span className="relative h-[18px] w-[18px] shrink-0">
-              <ChevronRight
-                aria-hidden="true"
-                className={cn(
-                  'absolute left-1/2 top-1/2 h-[15px] w-[15px] -translate-x-1/2 -translate-y-1/2 text-[color-mix(in_oklch,var(--foreground)_70%,black_30%)] [[data-theme="dark"]_&]:text-[var(--foreground)] opacity-0 transition-[opacity,transform] duration-150 group-hover:opacity-100 group-focus-visible:opacity-100',
-                  itemExpanded && 'rotate-90',
-                )}
-              />
-              <ResourceFolderIcon
-                expanded={itemExpanded}
-                hidden={isHiddenFolder}
-                className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 transition-opacity duration-150 group-hover:opacity-0 group-focus-visible:opacity-0"
-              />
-            </span>
-          ) : (
-            <ResourceFileIcon path={item.fullPath} size={18} className="h-[18px] w-[18px] shrink-0" />
-          )}
-          {renaming?.item.id === item.id ? (
-            <input
-              autoFocus
-              value={renaming.value}
-              onChange={(event) => setRenaming({ item, value: event.target.value })}
-              onBlur={() => void renameItem(item, renaming.value)}
-              onKeyDown={(event) => {
-                if (event.key === 'Enter') void renameItem(item, renaming.value);
-                if (event.key === 'Escape') setRenaming(null);
-              }}
-              onClick={(event) => event.stopPropagation()}
-              className="ml-1.5 h-5 min-w-0 flex-1 border-0 bg-transparent px-0 text-[13px] outline-none"
-            />
-          ) : (
-            <span className={cn(
-              'ml-1.5 min-w-0 flex-1 truncate',
-              isActive ? 'opacity-100' : 'opacity-[0.82]',
-            )}>
-              {item.type === 'document' && (isTableDocumentFilename(item.name) || isMediaLibraryFilename(item.name))
-                ? displayTitleFromFilename(item.name)
-                : item.name}
-            </span>
-          )}
-          {tree.loadingDirectories.has(key) && (
-            <ListSurfaceSpinner className="mr-1 h-3.5 w-3.5" ariaLabel={t('memo.fileTree.loading')} />
-          )}
-        </button>
-        {isFolder && (children.length > 0 || tree.directoryErrors.has(key) || tree.loadingDirectories.has(key)) && (
-          <div
-            className="folder-file-tree__subtree"
-            data-expanded={itemExpanded}
-            style={{
-              '--folder-file-tree-guide-left': `${TREE_EDGE_GUTTER + depth * INDENT_PER_LEVEL + 6 + 8}px`,
-            } as CSSProperties}
-          >
-            <div className="folder-file-tree__subtree-inner">
-              <div className="folder-file-tree__subtree-items">
-                {tree.directoryErrors.has(key) && (
-                  <div className="flex min-h-7 items-center gap-2 px-2 text-xs text-[var(--muted-foreground)]" style={{ marginLeft: depth * INDENT_PER_LEVEL }} role="alert">
-                    <span className="min-w-0 flex-1 truncate">{t('memo.fileTree.unreadableHint')}</span>
-                    <button type="button" className="shrink-0 rounded-lg px-1.5 py-0.5 text-[var(--foreground)] hover:bg-[var(--muted)]" onClick={() => void tree.retryDirectory(item.fullPath)}>
-                      {t('error.retry')}
-                    </button>
-                  </div>
-                )}
-                {itemExpanded ? renderRepositoryItems(children, depth + 1) : null}
-              </div>
-            </div>
-          </div>
-        )}
-      </div>
-      </ContextMenuTrigger>
-      <ContextMenuContent className="w-[180px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-        {!isFolder && onOpenInNewTab && <ContextMenuItem onClick={() => onOpenInNewTab(item.fullPath)} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><SquareSplitHorizontalIcon className="mr-2 h-4 w-4" aria-hidden="true" />{t('memo.fileTree.openInRight')}</ContextMenuItem>}
-        <ContextMenuSubmenu label={t('memo.create.more')} icon={<Plus className="h-4 w-4" aria-hidden="true" />}>
-          <ContextMenuItem onClick={() => { void importIntoRepository(isFolder ? item.fullPath : parentDirectoryPath(item.fullPath, repository.path)); }} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
-            {t('memo.fileTree.import')}
-          </ContextMenuItem>
-        </ContextMenuSubmenu>
-        <ContextMenuItem onClick={() => setRenaming({ item, value: item.type === 'document' && (isTableDocumentFilename(item.name) || isMediaLibraryFilename(item.name)) ? displayTitleFromFilename(item.name) : item.name })} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><PencilSimpleIcon className="mr-2 h-4 w-4" aria-hidden="true" />{t('memo.fileTree.rename')}</ContextMenuItem>
-        {!isFolder && <NotebookCopyContextMenu path={item.fullPath} isNote={(item.resourceKind ?? resourceKindFromPath(item.name)) === 'note'} />}
-        {isFolder && <ContextMenuItem onClick={async () => { try { await navigator.clipboard.writeText(item.fullPath); toast.success(t('memo.fileTree.pathCopied')); } catch { toast.error(t('memo.fileTree.copyFailed')); } }} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><CopyIcon className="mr-2 h-4 w-4" aria-hidden="true" />{t('memo.fileTree.copyPath')}</ContextMenuItem>}
-        <ContextMenuItem onClick={() => { void product.revealInFileManager(item.fullPath).catch(() => toast.error(t('memo.fileTree.openFailed'))); }} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><FolderOpenIcon className="mr-2 h-4 w-4" aria-hidden="true" />{t('memo.fileTree.reveal')}</ContextMenuItem>
-        {!isFolder && (item.resourceKind ?? resourceKindFromPath(item.name)) !== 'note' && <ContextMenuSeparator />}
-        <ContextMenuItem onClick={() => setDeleting(item)} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-transparent hover:text-[var(--destructive)]"><TrashSimpleIcon className="mr-2 h-4 w-4" aria-hidden="true" />{t('memo.fileTree.delete')}</ContextMenuItem>
-      </ContextMenuContent>
-      </ContextMenu>
-    );
-  });
-
-  return (
-    <>
-      <div className={cn(
-        'mx-[6px] overflow-hidden rounded-xl transition-colors',
-        expanded && 'mb-1 border border-[var(--border)] bg-[var(--card)] p-0.5 py-1',
-      )} ref={repositoryRef}>
-      <ContextMenu>
-        <ContextMenuTrigger asChild>
-          <button
-              type="button"
-              aria-expanded={expanded}
-              title={repository.path}
-              onClick={() => {
-                pendingExpandScrollRef.current = !expanded;
-                setExpanded(!expanded);
-              }}
-              className="group flex h-7 w-full items-center rounded-lg px-1.5 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--muted)]"
-            >
-              <span className="relative h-[18px] w-[18px] shrink-0">
-                <ChevronRight className={cn(
-                  'absolute left-1/2 top-1/2 h-[15px] w-[15px] -translate-x-1/2 -translate-y-1/2 text-[color-mix(in_oklch,var(--foreground)_70%,black_30%)] [[data-theme="dark"]_&]:text-[var(--foreground)] opacity-100 transition-[opacity,transform]',
-                  expanded && 'rotate-90',
-                )} aria-hidden="true" />
-              </span>
-              <span className="ml-1.5 min-w-0 flex-1 truncate opacity-[0.82]">
-                {repository.name}
-              </span>
-          </button>
-        </ContextMenuTrigger>
-        <ContextMenuContent className="w-[180px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-          <ContextMenuItem
-            onClick={() => onRemoveRepository(repository)}
-            className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-transparent hover:text-[var(--destructive)]"
-          >
-            <MinusCircleIcon className="mr-2 h-4 w-4" aria-hidden="true" />
-            {t('agent.workspace.removeRepository')}
-          </ContextMenuItem>
-        </ContextMenuContent>
-      </ContextMenu>
-      {expanded && (
-        <div className="folder-file-tree__items">
-          {tree.loading && tree.nodes.size === 0 && (
-            <div className="flex min-h-7 items-center px-2 text-xs text-[var(--muted-foreground)]" style={{ marginLeft: TREE_EDGE_GUTTER + 20 }}>
-              {t('memo.fileTree.loading')}
-            </div>
-          )}
-          {tree.error && (
-            <button
-              type="button"
-              onClick={() => void tree.reload()}
-              className="flex min-h-7 items-center rounded-lg px-2 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
-              style={{ marginLeft: TREE_EDGE_GUTTER + 20 }}
-            >
-              {t('error.retry')}
-            </button>
-          )}
-          {!tree.loading && !tree.error && tree.rootChildren.length === 0 && (
-            <div className="flex min-h-7 items-center px-2 text-xs text-[var(--muted-foreground)]" style={{ marginLeft: TREE_EDGE_GUTTER + 20 }}>
-              {t('memo.fileTree.empty')}
-            </div>
-          )}
-          {renderRepositoryItems(tree.rootChildren, 0)}
-        </div>
-      )}
-      </div>
-      <Dialog open={deleting !== null} onOpenChange={(open) => { if (!open) setDeleting(null); }}>
-        <DialogContent className="rounded-xl border border-[var(--border-popup)] bg-[var(--card)]">
-          <DialogHeader>
-            <DialogTitle>{deleting?.type === 'folder' ? t('memo.fileTree.deleteFolderTitle') : t('document.external.deleteFileTitle')}</DialogTitle>
-            <DialogDescription>{deleting?.type === 'folder' ? t('memo.fileTree.deleteFolderDescription') : t('document.external.deleteFileDescription', { name: deleting?.name ?? '' })}</DialogDescription>
-          </DialogHeader>
-          <div className="mt-4 flex justify-end gap-2">
-            <button type="button" onClick={() => setDeleting(null)} className="h-8 rounded-lg px-3 text-sm hover:bg-[var(--muted)]">{t('dialog.cancel')}</button>
-            <button type="button" onClick={() => void confirmDelete()} className="h-8 rounded-lg border border-[var(--border)] px-3 text-sm hover:border-[var(--destructive)] hover:bg-[var(--destructive)] hover:text-white">{t('dialog.delete')}</button>
-          </div>
-        </DialogContent>
-      </Dialog>
-    </>
-  );
-}
-
-function AgentRepositoriesSection({
-  repositories,
-  order,
-  onHeightChange,
-  canMoveUp,
-  canMoveDown,
-  onMoveUp,
-  onMoveDown,
-  onAddRepository,
-  onRemoveRepository,
-  onExpandRepository,
-  canAddRepository,
-  onOpenFile,
-  onOpenInNewTab,
-  onCustomizeDisplay,
-}: {
-  repositories: WorkspaceAgentRepository[];
-  order: number;
-  onHeightChange: (height: number) => void;
-  canMoveUp: boolean;
-  canMoveDown: boolean;
-  onMoveUp: () => void;
-  onMoveDown: () => void;
-  onAddRepository: () => void;
-  onRemoveRepository: (repository: WorkspaceAgentRepository) => void;
-  onExpandRepository: (element: HTMLElement) => void;
-  canAddRepository: boolean;
-  onOpenFile: (path: string, scopePath: string) => void;
-  onOpenInNewTab?: (path: string) => void;
-  onCustomizeDisplay?: (anchorRect: DOMRect) => void;
-}) {
-  const { t } = useI18n();
-  const sectionRef = useRef<HTMLElement | null>(null);
-  const [collapsed, setCollapsed] = useState(false);
-  useLayoutEffect(() => {
-    const section = sectionRef.current;
-    if (!section) return;
-    const reportHeight = () => onHeightChange(section.getBoundingClientRect().height);
-    reportHeight();
-    if (typeof ResizeObserver === 'undefined') return;
-    const observer = new ResizeObserver(reportHeight);
-    observer.observe(section);
-    return () => observer.disconnect();
-  }, [collapsed, onHeightChange, repositories]);
-
-  return (
-    <section
-      ref={sectionRef}
-      className="pb-3"
-      aria-label={t('memo.fileTree.repositoriesTitle')}
-      data-notebook-repositories-section="true"
-      style={{ order }}
-    >
-      <div
-        className="notebook-file-tree__section-header group mb-0.5 flex h-7 items-center rounded-lg px-1.5 transition-colors hover:bg-[var(--muted)]"
-        style={{ marginLeft: TREE_EDGE_GUTTER, width: `calc(100% - ${TREE_EDGE_GUTTER * 2}px)` }}
-      >
-        <button
-          type="button"
-          className="flex h-full items-center gap-0.5 text-[0.82rem] font-medium text-[var(--muted-foreground)] opacity-90 hover:text-[var(--foreground)] focus-visible:outline-none"
-          aria-label={t(collapsed ? 'memo.fileTree.expandRepositories' : 'memo.fileTree.collapseRepositories')}
-          title={t(collapsed ? 'memo.fileTree.expandRepositories' : 'memo.fileTree.collapseRepositories')}
-          onClick={() => setCollapsed((value) => !value)}
-        >
-          <span>{t('memo.fileTree.repositoriesTitle')}</span>
-          <ChevronRight className={cn(
-            'h-3.5 w-3.5 opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-within:opacity-100',
-            collapsed && 'opacity-100',
-            !collapsed && 'rotate-90',
-          )} aria-hidden="true" />
-        </button>
-        <div className="ml-auto flex items-center">
-          <TreeSectionMoreMenu
-            canMoveUp={canMoveUp}
-            canMoveDown={canMoveDown}
-            onMoveUp={onMoveUp}
-            onMoveDown={onMoveDown}
-            onCustomizeDisplay={onCustomizeDisplay}
-          />
-          <button
-            type="button"
-            className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
-            aria-label={t('agent.workspace.addRepository')}
-            title={t('agent.workspace.addRepository')}
-            disabled={!canAddRepository}
-            onClick={onAddRepository}
-          >
-            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-          </button>
-        </div>
-      </div>
-      {!collapsed && (
-        <>
-          {repositories.length > 0 ? repositories.map((repository) => (
-            <AgentRepositoryItem
-              key={repository.path}
-              repository={repository}
-              onOpenFile={onOpenFile}
-              onRemoveRepository={onRemoveRepository}
-              onExpandRepository={onExpandRepository}
-              onOpenInNewTab={onOpenInNewTab}
-            />
-          )) : (
-            <div
-              className="flex h-7 items-center justify-center px-1.5 text-xs text-[var(--muted-foreground)] opacity-50"
-              style={{ marginLeft: TREE_EDGE_GUTTER, width: `calc(100% - ${TREE_EDGE_GUTTER * 2}px)` }}
-            >
-              {t('memo.fileTree.repositoriesEmpty')}
-            </div>
-          )}
-        </>
-      )}
-    </section>
-  );
-}
-
 function relativeFolderPath(notebookPath: string, folderPath: string): string {
   const root = canonicalDirectoryPath(notebookPath);
   const folder = canonicalPath(folderPath);
@@ -1078,8 +667,20 @@ export function NotebookFileTree({
   );
   const [showScrollTopHint, setShowScrollTopHint] = useState(false);
   const [pinnedItems, setPinnedItems] = useState<DocTreeItem[]>([]);
-  const [tableDocuments, setTableDocuments] = useState<TableDocumentListItem[]>([]);
-  const [mediaLibraries, setMediaLibraries] = useState<MediaLibraryListItem[]>([]);
+  const {
+    tableDocuments,
+    mediaLibraries,
+    refreshTables,
+    refreshMediaLibraries,
+    updateTableIdentity,
+    updateMediaLibraryIdentity,
+  } = useNotebookViewData({
+    notebookId,
+    notebookPath,
+    isActive,
+    refreshTrigger,
+    ignoreCollectionPathEvents: tree.ignoreCollectionPathEvents,
+  });
   const [newTableDialogOpen, setNewTableDialogOpen] = useState(false);
   const [newTableName, setNewTableName] = useState('');
   const [newTableViewType, setNewTableViewType] = useState<TableViewType>('table');
@@ -1263,76 +864,6 @@ export function NotebookFileTree({
     return () => { cancelled = true; };
   }, [isActive, notebookId, notebookPath, refreshTrigger]);
 
-  useEffect(() => {
-    if (!isActive || !notebookId) {
-      setTableDocuments([]);
-      return;
-    }
-    let cancelled = false;
-    void files.listTableDocuments(notebookId).then((documents) => {
-      if (!cancelled) setTableDocuments(documents);
-    }).catch((error) => {
-      logger.warn('failed to load table documents', { error, notebookId });
-      if (!cancelled) setTableDocuments([]);
-    });
-    return () => { cancelled = true; };
-  }, [isActive, notebookId, refreshTrigger]);
-  useEffect(() => {
-    if (!isActive || !notebookId) {
-      setMediaLibraries([]);
-      return;
-    }
-    let cancelled = false;
-    void files.listMediaLibraries(notebookId).then((libraries) => {
-      if (!cancelled) setMediaLibraries(libraries);
-    }).catch((error) => {
-      logger.warn('failed to load media libraries', { error, notebookId });
-      if (!cancelled) setMediaLibraries([]);
-    });
-    return () => { cancelled = true; };
-  }, [isActive, notebookId, refreshTrigger]);
-  useEffect(() => {
-    const applied = new Map<string, number>();
-    return subscribe<{ notebookId: string; collectionId: string; relativePath: string; name: string; revision: number; indexSequence: number }>('collection-changed', (event) => {
-      if (event.notebookId !== notebookId || event.indexSequence < (applied.get(event.collectionId) ?? -1)) return;
-      applied.set(event.collectionId, event.indexSequence);
-      setTableDocuments((items) => items.map((item) => item.collectionId === event.collectionId ? { ...item, relativePath: event.relativePath, name: event.name, fileRevision: event.revision } : item));
-      setMediaLibraries((items) => items.map((item) => item.collectionId === event.collectionId ? { ...item, relativePath: event.relativePath, name: event.name } : item));
-    });
-  }, [notebookId]);
-  useEffect(() => subscribe<{ notebookId: string }>('file-management-changed', (event) => {
-    if (event.notebookId !== notebookId || !notebookId) return;
-    void files.listTableDocuments(notebookId).then(setTableDocuments).catch((error) => {
-      logger.warn('failed to refresh table documents', { error, notebookId });
-    });
-  }), [notebookId]);
-  useEffect(() => subscribe<{ notebookId: string }>('file-management-changed', (event) => {
-    if (event.notebookId !== notebookId || !notebookId) return;
-    void files.listMediaLibraries(notebookId).then(setMediaLibraries).catch((error) => {
-      logger.warn('failed to refresh media libraries', { error, notebookId });
-    });
-  }), [notebookId]);
-  useEffect(() => subscribe<FileBrowserDirectoriesChangedEvent>(
-    'file-browser-directories-changed',
-    (event) => {
-      if (!notebookId || canonicalPath(event.rootPath) !== canonicalPath(notebookPath)) return;
-      if (tree.ignoreCollectionPathEvents(event.paths)) return;
-      void files.listTableDocuments(notebookId).then(setTableDocuments).catch((error) => {
-        logger.warn('failed to refresh table documents after file change', { error, notebookId });
-      });
-    },
-  ), [notebookId, notebookPath]);
-  useEffect(() => subscribe<FileBrowserDirectoriesChangedEvent>(
-    'file-browser-directories-changed',
-    (event) => {
-      if (!notebookId || canonicalPath(event.rootPath) !== canonicalPath(notebookPath)) return;
-      if (tree.ignoreCollectionPathEvents(event.paths)) return;
-      void files.listMediaLibraries(notebookId).then(setMediaLibraries).catch((error) => {
-        logger.warn('failed to refresh media libraries after file change', { error, notebookId });
-      });
-    },
-  ), [notebookId, notebookPath]);
-
   const clearMoveFeedbackTimer = useCallback(() => {
     if (moveFeedbackTimerRef.current === null) return;
     window.clearTimeout(moveFeedbackTimerRef.current);
@@ -1396,7 +927,6 @@ export function NotebookFileTree({
   const {
     totalSize: virtualTreeSize,
     virtualItems: virtualTreeRows,
-    onScroll: onVirtualTreeScroll,
   } = useDynamicVirtualList({
     items: renderRows,
     getKey: getRenderRowKey,
@@ -1758,14 +1288,14 @@ export function NotebookFileTree({
         name: `${trimmed}${tableDocumentExtension(item.name)}`,
         scopePath: notebookPath,
       });
-      if (notebookId) setTableDocuments(await files.listTableDocuments(notebookId));
+      if (notebookId) await refreshTables();
       toast.success(t('memo.fileTree.renamed', { name: trimmed }));
     } catch (error) {
       toast.error(t(String(error).includes('FILE_EXISTS')
         ? 'memo.fileTree.nameConflict'
         : 'memo.fileTree.renameFailed'));
     }
-  }, [notebookId, notebookPath, t]);
+  }, [notebookId, notebookPath, t, refreshTables]);
 
   const handleDeleteTableDocument = useCallback(async (item: DocTreeItem) => {
     try {
@@ -1779,11 +1309,11 @@ export function NotebookFileTree({
         }
         toast.success(t('memo.fileTree.deleted', { name: displayTitleFromFilename(item.name) }));
       }
-      if (notebookId) setTableDocuments(await files.listTableDocuments(notebookId));
+      if (notebookId) await refreshTables();
     } catch {
       toast.error(t('memo.fileTree.deleteFailed'));
     }
-  }, [notebookId, notebookPath, onDeleteFile, t]);
+  }, [notebookId, notebookPath, onDeleteFile, t, refreshTables]);
   const handleDeleteMediaLibrary = useCallback(async (item: DocTreeItem) => {
     try {
       if (onDeleteFile) {
@@ -1796,11 +1326,11 @@ export function NotebookFileTree({
         }
         toast.success(t('memo.fileTree.deleted', { name: displayTitleFromFilename(item.name) }));
       }
-      if (notebookId) setMediaLibraries(await files.listMediaLibraries(notebookId));
+      if (notebookId) await refreshMediaLibraries();
     } catch {
       toast.error(t('memo.fileTree.deleteFailed'));
     }
-  }, [notebookId, notebookPath, onDeleteFile, t]);
+  }, [notebookId, notebookPath, onDeleteFile, t, refreshMediaLibraries]);
 
   const handleTogglePath = useCallback((path: string) => {
     if (suppressOpenPathsRef.current.has(canonicalPath(path))) return;
@@ -1841,31 +1371,35 @@ export function NotebookFileTree({
     if (!notebookId) return;
     try {
       await files.setTableDocumentInViews(notebookId, collectionId, inViews);
-      setTableDocuments(await files.listTableDocuments(notebookId));
+      await refreshTables();
     } catch (error) {
       logger.warn('failed to update table view-group visibility', { error, notebookId, collectionId });
       toast.error(t('multidimensionalTable.viewMembership.saveFailed'));
     }
-  }, [notebookId, t]);
+  }, [notebookId, t, refreshTables]);
   const handleSetMediaLibraryInViews = useCallback(async (collectionId: string, inViews: boolean) => {
     if (!notebookId) return;
     try {
       await files.setMediaLibraryInViews(notebookId, collectionId, inViews);
-      setMediaLibraries(await files.listMediaLibraries(notebookId));
+      await refreshMediaLibraries();
     } catch (error) {
       logger.warn('failed to update media library view-group visibility', { error, notebookId, collectionId });
       toast.error(t('mediaLibrary.viewMembership.saveFailed'));
     }
-  }, [notebookId, t]);
+  }, [notebookId, t, refreshMediaLibraries]);
+  const handleRetryDirectory = useCallback((path: string) => {
+    void tree.retryDirectory?.(path);
+  }, [tree.retryDirectory]);
+  const handleCreateViewAtPath = useCallback((parentPath: string, viewType?: TableViewType) => {
+    openNewTableDialog(false, parentPath, viewType);
+  }, [openNewTableDialog]);
   const handleMakeTableIdentityUnique = useCallback(async (relativePath: string) => {
     if (!notebookId) return;
     try {
       const collectionId = await files.makeViewDocumentIdentityUnique(notebookId, relativePath);
-      setTableDocuments((current) => current.map((table) => table.relativePath === relativePath
-        ? { ...table, collectionId, inViews: false, identityConflict: false }
-        : table));
+      updateTableIdentity(relativePath, collectionId);
       try {
-        setTableDocuments(await files.listTableDocuments(notebookId));
+        await refreshTables();
       } catch (error) {
         logger.warn('failed to reload table catalog after assigning identity', { error, notebookId, relativePath });
       }
@@ -1874,16 +1408,14 @@ export function NotebookFileTree({
       logger.warn('failed to regenerate copied table identity', { error, notebookId, relativePath });
       toast.error(t('multidimensionalTable.identityRegenerateFailed'));
     }
-  }, [notebookId, t]);
+  }, [notebookId, t, refreshTables, updateTableIdentity]);
   const handleMakeMediaLibraryIdentityUnique = useCallback(async (relativePath: string) => {
     if (!notebookId) return;
     try {
       const collectionId = await files.makeViewDocumentIdentityUnique(notebookId, relativePath);
-      setMediaLibraries((current) => current.map((library) => library.relativePath === relativePath
-        ? { ...library, collectionId, inViews: false, identityConflict: false }
-        : library));
+      updateMediaLibraryIdentity(relativePath, collectionId);
       try {
-        setMediaLibraries(await files.listMediaLibraries(notebookId));
+        await refreshMediaLibraries();
       } catch (error) {
         logger.warn('failed to reload media library catalog after assigning identity', { error, notebookId, relativePath });
       }
@@ -1892,7 +1424,32 @@ export function NotebookFileTree({
       logger.warn('failed to regenerate copied media library identity', { error, notebookId, relativePath });
       toast.error(t('mediaLibrary.identityRegenerateFailed'));
     }
-  }, [notebookId, t]);
+  }, [notebookId, t, refreshMediaLibraries, updateMediaLibraryIdentity]);
+  const tableViewVisibilityByPath = useMemo(() => new Map(
+    [...tableDocumentByPath].map(([path, tableDocument]) => [path, {
+      collectionId: tableDocument.collectionId,
+      inViews: tableDocument.inViews,
+      identityConflict: tableDocument.identityConflict ?? false,
+      onChange: (inViews: boolean) => {
+        void handleSetTableDocumentInViews(tableDocument.collectionId, inViews);
+      },
+      onMakeIdentityUnique: () => {
+        void handleMakeTableIdentityUnique(tableDocument.relativePath);
+      },
+    }] as const),
+  ), [handleMakeTableIdentityUnique, handleSetTableDocumentInViews, tableDocumentByPath]);
+  const mediaLibraryViewVisibilityByPath = useMemo(() => new Map(
+    [...mediaLibraryByPath].map(([path, mediaLibrary]) => [path, {
+      inViews: mediaLibrary.inViews,
+      identityConflict: mediaLibrary.identityConflict ?? false,
+      onChange: (inViews: boolean) => {
+        void handleSetMediaLibraryInViews(mediaLibrary.collectionId, inViews);
+      },
+      onMakeIdentityUnique: () => {
+        void handleMakeMediaLibraryIdentityUnique(mediaLibrary.relativePath);
+      },
+    }] as const),
+  ), [handleMakeMediaLibraryIdentityUnique, handleSetMediaLibraryInViews, mediaLibraryByPath]);
   const handleCreateTableDocument = useCallback(async () => {
     if (!notebookId || isCreatingTable) return;
     setIsCreatingTable(true);
@@ -1911,14 +1468,14 @@ export function NotebookFileTree({
       setNewTableViewType('table');
       setNewTableInViews(false);
       setNewTableParentFolder(null);
-      setTableDocuments(await files.listTableDocuments(notebookId));
+      await refreshTables();
       await openExternalTarget(filePath, { destination: 'main-third', scopePath: notebookPath, notebookId });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '创建多维表格失败');
     } finally {
       setIsCreatingTable(false);
     }
-  }, [defaultCreateFolder, isCreatingTable, newTableInViews, newTableName, newTableParentFolder, newTableViewType, notebookId, notebookPath]);
+  }, [defaultCreateFolder, isCreatingTable, newTableInViews, newTableName, newTableParentFolder, newTableViewType, notebookId, notebookPath, refreshTables]);
 
   const openNewMediaLibraryDialog = useCallback((inViews = false, parentFolderPath?: string) => {
     setNewLibraryInViews(inViews);
@@ -1926,6 +1483,9 @@ export function NotebookFileTree({
     setNewLibraryName(t('memo.create.mediaLibraryDefaultName'));
     setNewLibraryDialogOpen(true);
   }, [t]);
+  const handleCreateMediaLibraryAtPath = useCallback((parentPath: string) => {
+    openNewMediaLibraryDialog(false, parentPath);
+  }, [openNewMediaLibraryDialog]);
   const handleCreateMediaLibrary = useCallback(async () => {
     if (!notebookId || isCreatingLibrary) return;
     setIsCreatingLibrary(true);
@@ -1941,14 +1501,14 @@ export function NotebookFileTree({
       setNewLibraryName('');
       setNewLibraryInViews(false);
       setNewLibraryParentFolder(null);
-      setMediaLibraries(await files.listMediaLibraries(notebookId));
+      await refreshMediaLibraries();
       await openExternalTarget(filePath, { destination: 'main-third', scopePath: notebookPath, notebookId });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '创建媒体库失败');
     } finally {
       setIsCreatingLibrary(false);
     }
-  }, [defaultCreateFolder, isCreatingLibrary, newLibraryInViews, newLibraryName, newLibraryParentFolder, notebookId, notebookPath]);
+  }, [defaultCreateFolder, isCreatingLibrary, newLibraryInViews, newLibraryName, newLibraryParentFolder, notebookId, notebookPath, refreshMediaLibraries]);
   const handleAddRepository = useCallback(async () => {
     if (!notebookId) return;
     const result = await useAgentAccessStore.getState().addFolderFromPicker();
@@ -2097,8 +1657,9 @@ export function NotebookFileTree({
     posInSet?: number,
     setSize?: number,
   ) => {
-    const tableDocument = tableDocumentByPath.get(canonicalPath(item.fullPath));
-    const mediaLibrary = mediaLibraryByPath.get(canonicalPath(item.fullPath));
+    const itemPath = canonicalPath(item.fullPath);
+    const tableViewVisibility = tableViewVisibilityByPath.get(itemPath);
+    const mediaLibraryViewVisibility = mediaLibraryViewVisibilityByPath.get(itemPath);
     const expanded = item.type === 'folder' && tree.expanded.has(canonicalPath(item.fullPath));
     const isDropTarget = item.type === 'folder'
       && dragOverFolderPath !== null
@@ -2149,7 +1710,7 @@ export function NotebookFileTree({
           expanded={expanded}
           isLoadingChildren={tree.loadingDirectories?.has(canonicalDirectoryPath(item.fullPath)) ?? false}
           childrenError={tree.directoryErrors?.has(canonicalDirectoryPath(item.fullPath)) ?? false}
-          onRetryChildren={() => { void tree.retryDirectory?.(item.fullPath); }}
+          onRetryChildren={handleRetryDirectory}
           active={item.type === 'folder'
             ? Boolean(selectedFolderPath) && canonicalPath(item.fullPath) === canonicalPath(selectedFolderPath!)
             : !selectedFolderPath && Boolean(activeFilePath) && canonicalPath(item.fullPath) === canonicalPath(activeFilePath!)}
@@ -2161,24 +1722,11 @@ export function NotebookFileTree({
           onOpenInNewTab={onNoteOpenInNewTab ? handleOpenPathInNewTab : undefined}
           onCreateNote={handleCreateNoteAtPath}
           onCreateFolder={handleCreateFolderAtPath}
-          onImportFiles={(path) => { void handleImportFiles(path); }}
-          onCreateView={(parentPath, viewType) => {
-            openNewTableDialog(false, parentPath, viewType);
-          }}
-          onCreateMediaLibrary={(parentPath) => openNewMediaLibraryDialog(false, parentPath)}
-          tableViewVisibility={tableDocument ? {
-            collectionId: tableDocument.collectionId,
-            inViews: tableDocument.inViews,
-            identityConflict: tableDocument.identityConflict ?? false,
-            onChange: (inViews) => { void handleSetTableDocumentInViews(tableDocument.collectionId, inViews); },
-            onMakeIdentityUnique: () => { void handleMakeTableIdentityUnique(tableDocument.relativePath); },
-          } : undefined}
-          mediaLibraryViewVisibility={mediaLibrary ? {
-            inViews: mediaLibrary.inViews,
-            identityConflict: mediaLibrary.identityConflict ?? false,
-            onChange: (inViews) => { void handleSetMediaLibraryInViews(mediaLibrary.collectionId, inViews); },
-            onMakeIdentityUnique: () => { void handleMakeMediaLibraryIdentityUnique(mediaLibrary.relativePath); },
-          } : undefined}
+          onImportFiles={handleImportFiles}
+          onCreateView={handleCreateViewAtPath}
+          onCreateMediaLibrary={handleCreateMediaLibraryAtPath}
+          tableViewVisibility={tableViewVisibility}
+          mediaLibraryViewVisibility={mediaLibraryViewVisibility}
           onRename={handleRename}
           tabIndex={treeFocusPath && samePath(treeFocusPath, item.fullPath) ? 0 : -1}
           onFocus={handleFocusPath}
@@ -2518,7 +2066,6 @@ export function NotebookFileTree({
           scrollerClassName="h-full overflow-y-auto pt-1 pb-1"
           scrollerRef={treeScrollerRef}
           onScroll={(event) => {
-            onVirtualTreeScroll(event);
             setShowScrollTopHint(event.currentTarget.scrollTop > 0);
           }}
         >
@@ -2881,22 +2428,21 @@ export function NotebookFileTree({
               repositories={agentRepositories}
               order={sectionOrder.indexOf('repositories') + 1}
               onHeightChange={handleRepositorySectionHeightChange}
-              canMoveUp={visibleSectionOrder.indexOf('repositories') > 0}
-              canMoveDown={visibleSectionOrder.indexOf('repositories') < visibleSectionOrder.length - 1}
-              onMoveUp={() => moveTreeSection('repositories', -1)}
-              onMoveDown={() => moveTreeSection('repositories', 1)}
+              sectionActions={(
+                <TreeSectionMoreMenu
+                  canMoveUp={visibleSectionOrder.indexOf('repositories') > 0}
+                  canMoveDown={visibleSectionOrder.indexOf('repositories') < visibleSectionOrder.length - 1}
+                  onMoveUp={() => moveTreeSection('repositories', -1)}
+                  onMoveDown={() => moveTreeSection('repositories', 1)}
+                  onCustomizeDisplay={openCustomizeDisplay}
+                />
+              )}
               onAddRepository={() => { void handleAddRepository(); }}
               onRemoveRepository={(repository) => { void handleRemoveRepository(repository); }}
               onExpandRepository={handleRepositoryExpand}
               canAddRepository={Boolean(notebookId)}
               onOpenFile={handleOpenRepositoryFile}
               onOpenInNewTab={onNoteOpenInNewTab ? handleOpenPathInNewTab : undefined}
-              onCustomizeDisplay={(anchorRect) => {
-                setCustomizeAnchorRect(anchorRect);
-                setCustomizeOrder([...sectionOrder]);
-                setCustomizeHidden([...hiddenSections]);
-                setCustomizeOpen(true);
-              }}
             />
           )}
               </div>

@@ -53,6 +53,7 @@ import {
 import {
   listCodexSkills,
 } from '@features/agent/services/codex-slash-command-service';
+import { listPiSkills } from '@features/agent/services/pi-slash-command-service';
 import { isCodexGoalCommand } from '@features/agent/thread-card/agent-thread-card-selectors';
 import { acceptComposerSubmission, type ComposerConversationBinding } from '@features/agent/services/composer-submission-service';
 import { WorkspaceEmptyState } from '@shared/ui/workspace-empty-state';
@@ -237,21 +238,27 @@ function AgentConversationDetailContent({
     const currentInstance = instanceRef.current;
     const sourceThreadId = threadIdRef.current;
     const agentType = currentInstance?.agentType;
-    if (!currentInstance || !sourceThreadId || (agentType !== 'codex' && agentType !== 'deepseek-harness')) return;
+    if (!currentInstance || !sourceThreadId || (agentType !== 'codex' && agentType !== 'deepseek-harness' && agentType !== 'pi')) return;
     if (agentType === 'codex' && !message.codexTurnId) return;
     if (agentType === 'deepseek-harness' && message.sourceSequence === undefined) return;
+    if (agentType === 'pi' && !message.messageId) return;
 
     if (destroyedRef.current) return;
 
     try {
       const result = agentType === 'codex'
         ? await agent.forkCodexThread(sourceThreadId, message.codexTurnId!)
-        : await agent.forkDeepSeekHarnessThread(sourceThreadId, message.sourceSequence!);
+        : agentType === 'deepseek-harness'
+          ? await agent.forkDeepSeekHarnessThread(sourceThreadId, message.sourceSequence!)
+          : await agent.forkPiThread(sourceThreadId, message.messageId!);
       const fork = useAgentSessionStore.getState().createInstance({
         agentType,
         title: `${currentInstance.title || defaultThreadTitle(agentType)} (fork)`,
         threadId: result.thread.threadId,
-        runtimeConfig: currentInstance.runtimeConfig ?? buildInitialInstanceRuntimeConfig(agentType),
+        runtimeConfig: {
+          ...(currentInstance.runtimeConfig ?? buildInitialInstanceRuntimeConfig(agentType)),
+          ...(agentType === 'pi' && 'cwd' in result ? { cwd: result.cwd } : {}),
+        },
         source: { kind: 'dedicated', notebookId: currentInstance.source.notebookId ?? null },
       });
       await selectAndOpenAgentConversation(fork.instanceId);
@@ -566,6 +573,16 @@ function AgentConversationDetailContent({
           const ensured = await ensureCodexCommandConversation('/skill');
           const cwd = ensured.runtimeConfig.workspaceSnapshot?.cwd ?? ensured.runtimeConfig.cwd;
           return listCodexSkills(cwd ?? '');
+        },
+        listPiSkills: async () => {
+          if (typeKeyRef.current !== 'pi') return [];
+          const currentInstance = instanceRef.current;
+          if (!currentInstance) return [];
+          const runtimeConfig = ensureConversationWorkspaceSnapshot(currentInstance.instanceId);
+          const cwd = runtimeConfig.workspaceSnapshot?.notebookPath
+            ?? runtimeConfig.workspaceSnapshot?.cwd
+            ?? runtimeConfig.cwd;
+          return listPiSkills(cwd ?? '');
         },
         listFolders: () => getCurrentNotebookComposerFolders(),
         folderGroupLabel: tRef.current("agent.files.referenceLocal"),

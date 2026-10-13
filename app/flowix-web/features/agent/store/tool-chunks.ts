@@ -45,11 +45,12 @@ export function applyToolCallChunk(
   const toolMessage: ChatMessage = {
     id: metadata.id ?? `tool-${id || Date.now()}`,
     renderKey: metadata.id ?? id,
-    messageId: agentType === "pi" ? metadata.id ?? id : undefined,
+    messageId: agentType === "pi" || agentType === "codex" ? metadata.id ?? id : undefined,
     role: "tool",
     content: "",
     timestamp: toolMessageTimestamp(metadata.sourceTimestamp),
     sourceTimestamp: metadata.sourceTimestamp,
+    codexTurnId: metadata.codexTurnId,
     sourceSequence: metadata.sourceSequence,
     sourceSubsequence: metadata.sourceSubsequence,
     parentMessageId: metadata.parentMessageId,
@@ -82,6 +83,8 @@ export function applyToolCallChunk(
       toolDisplay: toolMessage.toolDisplay ?? existing.toolDisplay,
       timestamp: existing.timestamp || toolMessage.timestamp,
       sourceTimestamp: existing.sourceTimestamp ?? metadata.sourceTimestamp,
+      codexTurnId: existing.codexTurnId ?? metadata.codexTurnId,
+      messageId: toolMessage.messageId ?? existing.messageId,
       sourceSequence: existing.sourceSequence ?? metadata.sourceSequence,
       sourceSubsequence:
         existing.sourceSubsequence ?? metadata.sourceSubsequence,
@@ -96,7 +99,7 @@ export function applyToolCallChunk(
     };
   }
   return {
-    messages: agentType === "pi" ? orderPiMessageBlocks([...st.messages, toolMessage]) : insertAgentMessageBySourceOrder(st.messages, toolMessage),
+    messages: agentType === "pi" ? orderPiMessageBlocks([...st.messages, toolMessage]) : insertAgentMessageBySourceOrder(st.messages, toolMessage, agentType === "codex" && !!metadata.codexTurnId),
     pending: { assistantId: null, reasoningId: st.pending.reasoningId },
   };
 }
@@ -130,6 +133,7 @@ export function applyToolResultChunk(
           ? {
               ...m,
               content: resultContent,
+              codexTurnId: m.codexTurnId ?? metadata.codexTurnId,
               toolData: resultContent,
               // The started event owns the tool identity. Result sources in
               // external runtimes may use a generic/legacy name (for example
@@ -151,11 +155,12 @@ export function applyToolResultChunk(
     : insertAgentMessageBySourceOrder(st.messages, {
         id: metadata.id ?? `tool-${id || Date.now()}`,
         renderKey: metadata.id ?? id,
-        messageId: agentType === "pi" ? metadata.id ?? id : undefined,
+        messageId: agentType === "pi" || agentType === "codex" ? metadata.id ?? id : undefined,
         role: "tool" as const,
         content: resultContent,
         timestamp: toolMessageTimestamp(metadata.sourceTimestamp),
         sourceTimestamp: metadata.sourceTimestamp,
+        codexTurnId: metadata.codexTurnId,
         sourceSequence: metadata.sourceSequence,
         sourceSubsequence: metadata.sourceSubsequence,
         parentMessageId: metadata.parentMessageId,
@@ -170,7 +175,7 @@ export function applyToolResultChunk(
         }),
         toolData: resultContent,
         isLoading: false,
-      }, agentType === "pi");
+      }, agentType === "pi" || agentType === "codex" && !!metadata.codexTurnId);
   return {
     messages,
     pending: { assistantId: null, reasoningId: st.pending.reasoningId },

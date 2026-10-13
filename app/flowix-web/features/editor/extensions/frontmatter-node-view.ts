@@ -1,10 +1,17 @@
+import { PROPERTY_TYPES_KEY } from '@features/document/properties/property-type-metadata';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import type { EditorView, NodeView } from '@tiptap/pm/view';
 import { createElement as createReactElement, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
+import { PlusIcon } from '@phosphor-icons/react';
+import { MousePointerClick } from 'lucide-react';
 import { translate, type I18nKey } from '@/lib/i18n';
+import { toast } from '@/lib/toast';
 import { getPropertyTypeDefinition } from '@/lib/property-types';
+import { stableTextHue } from '@/lib/color';
 import { NOTE_COLORS, NOTE_COLOR_HEX } from '@features/memo/store/note-store';
+import { getWorkspaceMemoState } from '@features/memo/public/workspace-api';
+import { NotePropertyImageValue } from '@features/document/properties/image-value-input';
 import type { NoteColor } from '@/types/note-item';
 import {
   deleteVisibleFrontmatterProperty,
@@ -24,29 +31,26 @@ import {
   getPropertyIconOption,
 } from '@features/document/properties/property-icons';
 import {
-  CUSTOM_PROPERTY_KINDS,
   PROPERTY_KINDS,
-  getAllPresets,
   resolvePropertyDisplayName,
   resolvePropertyPreset,
   type PropertyKind,
 } from '@features/document/properties/presets';
 import {
-  FIXED_PROPERTY_KINDS,
   PROPERTY_DATE_RE,
   resolvePropertyType,
   type PropertyDisplayKind,
 } from '@features/document/properties/property-type';
 import { DateValueInput } from '@features/document/components/note-properties/date-value-input';
-import {
-  getCurrentAppLanguage,
-  getPropertyFieldPreferences,
-} from '@features/preferences/public/runtime-api';
-import { canonicalizePropertyKey } from '@features/document/properties/property-key';
+import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api';
+import { getPropertyPresets } from '@features/properties/public-api';
+import { canonicalizePropertyKey } from '@features/properties/property-key';
 import { createPropertySvgIcon } from '@features/document/properties/property-type-icon';
 import { isImeKeyboardEvent } from '@/lib/input-method';
 import { observeFrontmatterView } from './frontmatter-view-lifecycle';
+import { syncFrontmatterEditability } from './frontmatter-interactions';
 import { useSettingsStore } from '@/lib/store/settings-store';
+import { queryMentionTags, type MentionTagItem } from './tag-mention/tag-mention-data';
 
 function createElement<K extends keyof HTMLElementTagNameMap>(
   tag: K,
@@ -61,6 +65,8 @@ function createElement<K extends keyof HTMLElementTagNameMap>(
 
 const PROPERTY_EDIT_POPOVER_WIDTH = 320;
 const PROPERTY_EDIT_KINDS = PROPERTY_KINDS;
+const EDITOR_EDITABILITY_CHANGE_EVENT = 'flowix:editor-editability-change';
+let frontmatterTagSuggestionListId = 0;
 
 type PropertyEditKind = PropertyKind;
 
@@ -78,19 +84,21 @@ function getPropertyDisplayKind(
   key: string,
   value: unknown,
   isFlowSequence = false,
+  declaredTypes: unknown = {},
 ): PropertyDisplayKind {
   return resolvePropertyType(
     key,
     value,
     isFlowSequence,
-    getPropertyFieldPreferences(),
+    getPropertyPresets(),
+    declaredTypes,
   ).displayKind;
 }
 
 function resolveRuntimePropertyPreset(key: string) {
   return resolvePropertyPreset(
     key,
-    getPropertyFieldPreferences(),
+    getPropertyPresets(),
   );
 }
 
@@ -98,32 +106,9 @@ function getPropertyEditKind(
   key: string,
   value: unknown,
   isFlowSequence = false,
+  declaredTypes: unknown = {},
 ): PropertyEditKind {
-  const preset = resolveRuntimePropertyPreset(key);
-  if (preset) return preset.kind;
-  return resolvePropertyType(key, value, isFlowSequence).kind;
-}
-
-/**
- * The standard disclosure caret, matching `CaretRight` (weight="bold") from
- * `@phosphor-icons/react` that the menus use. Path data is copied verbatim so
- * the node view renders the same glyph without pulling React into a vanilla
- * DOM node view.
- */
-const CARET_RIGHT_BOLD_PATH = 'M184.49,136.49l-80,80a12,12,0,0,1-17-17L159,128,87.51,56.49a12,12,0,1,1,17-17l80,80A12,12,0,0,1,184.49,136.49Z';
-
-function createCaretRightIcon(className: string): SVGSVGElement {
-  const svg = document.createElementNS('http://www.w3.org/2000/svg', 'svg');
-  svg.setAttribute('viewBox', '0 0 256 256');
-  svg.setAttribute('aria-hidden', 'true');
-  svg.setAttribute('focusable', 'false');
-  svg.classList.add(className);
-  const path = document.createElementNS('http://www.w3.org/2000/svg', 'path');
-  path.setAttribute('fill', 'currentColor');
-  path.setAttribute('stroke', 'none');
-  path.setAttribute('d', CARET_RIGHT_BOLD_PATH);
-  svg.append(path);
-  return svg;
+  return resolvePropertyType(key, value, isFlowSequence, getPropertyPresets(), declaredTypes).kind;
 }
 
 function createPropertyTypeChevron(): SVGSVGElement {
@@ -147,6 +132,21 @@ function createPropertyCheckIcon(): SVGSVGElement {
   path.setAttribute('d', 'm5 12 4 4L19 6');
   svg.append(path);
   return svg;
+}
+
+function createOptionChip(label: string, nestedLabel = false): HTMLSpanElement {
+  const chip = createElement(
+    'span',
+    `multidimensional-table__option-chip min-w-0 max-w-full${nestedLabel ? '' : ' truncate'}`,
+  );
+  chip.style.setProperty('--multidimensional-table-option-hue', String(stableTextHue(label)));
+  chip.title = label;
+  if (nestedLabel) {
+    chip.append(createElement('span', 'min-w-0 truncate', label));
+  } else {
+    chip.textContent = label;
+  }
+  return chip;
 }
 
 function createTextValue(value: unknown): HTMLElement {
@@ -244,6 +244,10 @@ export class FrontmatterPropertyNodeView implements NodeView {
   private node: ProseMirrorNode;
   private readonly propertyTargetId?: string;
   private validationError: string | null = null;
+  private propertyRows = new Map<string, { signature: string; dom: HTMLElement }>();
+  private propertyActionRoots: Root[] = [];
+  private propertyImageRoots = new Map<HTMLElement, { root: Root; render: () => void }>();
+  private destroyed = false;
   private activePropertyEdit: ActivePropertyEdit | null = null;
   private activePropertyMenu: HTMLElement | null = null;
   private activePropertyMenuAnchor: HTMLElement | null = null;
@@ -275,10 +279,37 @@ export class FrontmatterPropertyNodeView implements NodeView {
     if (!this.propertyPointerDrag?.active) return;
     event.preventDefault();
   };
+  private readonly handleFlushDrafts = () => {
+    this.savePropertyEdit();
+  };
+  private readonly handleEditabilityChange = () => {
+    if (!this.view.editable) {
+      this.closePropertyMenu();
+      this.savePropertyEdit();
+      this.finishPropertyDrag(true);
+    }
+    this.syncPropertyEditability();
+  };
   private readonly handleAddPropertyRequest = (event: Event) => {
     const detail = (event as CustomEvent<{ propertyTargetId?: string; presetKey?: string }>).detail;
     if (detail?.propertyTargetId !== this.propertyTargetId || !this.view.editable) return;
     this.addEmptyProperty(detail?.presetKey);
+  };
+  private readonly handlePropertyActionsPopupState = (event: Event) => {
+    const detail = (event as CustomEvent<{ propertyTargetId?: string; open?: boolean }>).detail;
+    if (detail?.propertyTargetId !== this.propertyTargetId) return;
+    const actions = this.dom.querySelector<HTMLElement>('.frontmatter-property__actions');
+    if (actions) actions.dataset.popupOpen = String(Boolean(detail.open));
+  };
+
+  private readonly handleRemovePropertyRequest = (event: Event) => {
+    const detail = (event as CustomEvent<{ propertyTargetId?: string; propertyKey?: string }>).detail;
+    if (detail?.propertyTargetId !== this.propertyTargetId || !detail.propertyKey || !this.view.editable) return;
+    const parsed = parseVisibleFrontmatter(String(this.node.attrs.yamlContent ?? ''));
+    const property = parsed.properties.find(({ key }) =>
+      canonicalizePropertyKey(key) === canonicalizePropertyKey(detail.propertyKey!),
+    );
+    if (property) this.updatePropertyStructure(property.key, 'delete');
   };
 
   /**
@@ -300,16 +331,24 @@ export class FrontmatterPropertyNodeView implements NodeView {
     private readonly getPos: () => number | undefined,
     propertyTargetId?: string,
     private readonly onViewSourceMode?: () => void,
+    private readonly getAttachmentNotebookId?: () => string | undefined,
   ) {
     this.node = node;
     this.propertyTargetId = propertyTargetId;
     this.dom = createElement('div', 'frontmatter-property-node');
     this.dom.contentEditable = 'false';
+    this.view.dom.addEventListener('flowix:editor-flush-drafts', this.handleFlushDrafts);
+    this.view.dom.addEventListener(EDITOR_EDITABILITY_CHANGE_EVENT, this.handleEditabilityChange);
+    this.dom.ownerDocument.defaultView?.addEventListener(
+      'flowix:property-actions-popup-state',
+      this.handlePropertyActionsPopupState,
+    );
     this.disposeSubscriptions = observeFrontmatterView(this.dom.ownerDocument, {
       render: () => this.render(),
       pointerDown: this.handleDocumentPointerDown,
       selectStart: this.handleDocumentSelectStart,
       addProperty: this.handleAddPropertyRequest,
+      removeProperty: this.handleRemovePropertyRequest,
       occupiedKeys: this.handleOccupiedKeysRequest,
       pointerMove: this.handlePropertyPointerMove,
       pointerUp: this.handlePropertyPointerUp,
@@ -386,6 +425,79 @@ export class FrontmatterPropertyNodeView implements NodeView {
     this.dom.ownerDocument.defaultView?.getSelection()?.removeAllRanges();
   }
 
+  private syncPropertyEditability() {
+    syncFrontmatterEditability(this.dom, this.view.editable);
+    const actions = this.dom.querySelector<HTMLElement>('.frontmatter-property__actions');
+    if (actions) actions.hidden = !this.view.editable;
+    this.propertyImageRoots.forEach(({ render }) => render());
+  }
+
+  private disposePropertyImageRoots(all = false) {
+    this.propertyImageRoots.forEach(({ root }, container) => {
+      if (!all && this.dom.contains(container)) return;
+      root.unmount();
+      this.propertyImageRoots.delete(container);
+    });
+  }
+
+  private disposePropertyActionRoots() {
+    this.propertyActionRoots.forEach((root) => root.unmount());
+    this.propertyActionRoots = [];
+  }
+
+  private createPropertyActions(): HTMLElement | null {
+    if (!this.propertyTargetId) return null;
+    const actions = createElement('div', 'frontmatter-property__actions');
+    const select = createElement(
+      'button',
+      'frontmatter-property__action',
+    );
+    select.type = 'button';
+    select.title = this.t('document.properties.picker.triggerLabel');
+    select.setAttribute('aria-label', select.title);
+    const selectIcon = createElement('span', 'frontmatter-property__action-icon');
+    const selectIconRoot = createRoot(selectIcon);
+    selectIconRoot.render(createReactElement(MousePointerClick, {
+      className: 'h-4 w-4',
+      'aria-hidden': true,
+    }));
+    this.propertyActionRoots.push(selectIconRoot);
+    select.append(selectIcon);
+    select.addEventListener('click', () => {
+      if (!this.view.editable) return;
+      window.dispatchEvent(new CustomEvent('flowix:open-property-picker', {
+        detail: {
+          propertyTargetId: this.propertyTargetId,
+          anchorRect: select.getBoundingClientRect(),
+        },
+      }));
+    });
+    const add = createElement('button', 'frontmatter-property__action');
+    add.type = 'button';
+    add.title = this.t('document.properties.add');
+    add.setAttribute('aria-label', add.title);
+    const addIcon = createElement('span', 'frontmatter-property__action-icon');
+    const addIconRoot = createRoot(addIcon);
+    addIconRoot.render(createReactElement(PlusIcon, {
+      size: 16,
+      weight: 'bold',
+      'aria-hidden': true,
+    }));
+    this.propertyActionRoots.push(addIconRoot);
+    add.append(addIcon);
+    add.addEventListener('click', () => {
+      if (!this.view.editable) return;
+      window.dispatchEvent(new CustomEvent('flowix:open-add-property', {
+        detail: {
+          propertyTargetId: this.propertyTargetId,
+          anchorRect: add.getBoundingClientRect(),
+        },
+      }));
+    });
+    actions.append(select, add);
+    return actions;
+  }
+
   private updatePropertyStructure(
     propertyKey: string,
     action: 'up' | 'down' | 'delete',
@@ -395,36 +507,6 @@ export class FrontmatterPropertyNodeView implements NodeView {
       const nextYamlContent = action === 'delete'
         ? deleteVisibleFrontmatterProperty(yamlContent, propertyKey)
         : moveVisibleFrontmatterProperty(yamlContent, propertyKey, action);
-      const pos = this.getPos();
-      if (typeof pos !== 'number') return;
-      this.closePropertyMenu();
-      this.validationError = null;
-      this.view.dispatch(
-        this.view.state.tr.setNodeMarkup(pos, undefined, {
-          ...this.node.attrs,
-          yamlContent: nextYamlContent,
-        }),
-      );
-    } catch (error) {
-      this.closePropertyMenu();
-      this.validationError = this.errorMessage(error);
-      this.render();
-    }
-  }
-
-  private updatePropertyKey(
-    property: { key: string; value: unknown },
-    nextKey: string,
-  ) {
-    try {
-      const preset = resolveRuntimePropertyPreset(nextKey);
-      const nextYamlContent = updateVisibleFrontmatterProperty(
-        String(this.node.attrs.yamlContent ?? ''),
-        property.key,
-        nextKey,
-        getPropertyEditValue(property.value, property.key),
-        preset?.kind,
-      );
       const pos = this.getPos();
       if (typeof pos !== 'number') return;
       this.closePropertyMenu();
@@ -698,7 +780,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
     propertyKey: string,
     event: PointerEvent,
   ) {
-    if (event.button !== 0) return;
+    if (!this.view.editable || event.button !== 0) return;
     if (this.propertyPointerDrag) this.finishPropertyDrag();
     const list = row.parentElement;
     if (!list) return;
@@ -781,86 +863,12 @@ export class FrontmatterPropertyNodeView implements NodeView {
     dragSource: HTMLElement,
     propertyKey: string,
   ) {
-    if (!this.view.editable) return;
-
     // Sorting is intentionally pointer-driven. Keeping the icon non-draggable
     // avoids the browser's native drag image and its competing drag lifecycle.
     dragSource.draggable = false;
     dragSource.setAttribute('aria-grabbed', 'false');
     dragSource.addEventListener('pointerdown', (event) => {
       this.beginPropertyPointerDrag(row, dragSource, propertyKey, event);
-    });
-  }
-
-  /**
-   * Build one preset row. Occupied keys are rendered inert and keep any
-   * caller-supplied description in the tooltip, so the disabled row still
-   * explains which field it refers to.
-   */
-  private createPropertyKeyOption(
-    preset: { key: string; label: string },
-    occupiedKeys: ReadonlySet<string>,
-    describe: string | undefined,
-    onSelect: (key: string) => void,
-  ): HTMLButtonElement {
-    const option = createElement(
-      'button',
-      'frontmatter-property__edit-key-option',
-      preset.label,
-    );
-    const alreadyExists = occupiedKeys.has(canonicalizePropertyKey(preset.key));
-    option.type = 'button';
-    option.dataset.value = preset.key;
-    option.setAttribute('role', 'option');
-    option.disabled = alreadyExists;
-    // `aria-disabled` keeps the reason announced even where the native
-    // `disabled` attribute suppresses hover tooltips.
-    if (alreadyExists) option.setAttribute('aria-disabled', 'true');
-    // Compose instead of overwrite: dropping `describe` would hide the field's
-    // own key exactly when the user needs it to disambiguate the conflict.
-    option.title = alreadyExists
-      ? [describe, this.t('document.properties.commonKey.alreadyExists')]
-        .filter(Boolean)
-        .join(' · ')
-      : (describe ?? '');
-    option.addEventListener('click', (event) => {
-      event.preventDefault();
-      if (option.disabled) return;
-      onSelect(preset.key);
-    });
-    return option;
-  }
-
-  private appendCommonPropertyOptions(
-    menu: HTMLElement,
-    occupiedKeys: ReadonlySet<string>,
-    onSelect: (key: string) => void,
-  ) {
-    getAllPresets(
-      getPropertyFieldPreferences(),
-      (key) => this.t(key),
-    ).filter((preset) => preset.source === 'builtin' && preset.key !== 'flowix_favorited').forEach((preset) => {
-      menu.append(this.createPropertyKeyOption(preset, occupiedKeys, undefined, onSelect));
-    });
-  }
-
-  private appendCustomPropertyOptions(
-    menu: HTMLElement,
-    occupiedKeys: ReadonlySet<string>,
-    onSelect: (key: string) => void,
-  ) {
-    const customPresets = getAllPresets(
-      getPropertyFieldPreferences(),
-      (key) => this.t(key),
-    ).filter((preset) => preset.source === 'custom');
-    customPresets.forEach((preset) => {
-      // Custom fields use their key as both the visible label and tooltip.
-      menu.append(this.createPropertyKeyOption(
-        preset,
-        occupiedKeys,
-        preset.key,
-        onSelect,
-      ));
     });
   }
 
@@ -879,67 +887,6 @@ export class FrontmatterPropertyNodeView implements NodeView {
     const menu = createElement('div', 'frontmatter-property__item-menu');
     menu.setAttribute('role', 'menu');
     menu.setAttribute('aria-label', property.key);
-
-    // Every visible key is treated as occupied, including the row's own key:
-    // a preset that is already on the document cannot be added again.
-    const occupiedKeys = new Set(
-      parsed.properties.map(({ key }) => canonicalizePropertyKey(key)),
-    );
-    const presetItem = createElement('div', 'frontmatter-property__preset-item');
-    const presetButton = createElement(
-      'button',
-      'frontmatter-property__item-menu-button frontmatter-property__preset-button',
-    );
-    presetButton.append(
-      createElement('span', 'frontmatter-property__preset-button-label', this.t('document.properties.preset')),
-      // Standard disclosure caret instead of the previous `›` text glyph, so it
-      // matches the nested-menu carets used elsewhere.
-      createCaretRightIcon('frontmatter-property__preset-caret'),
-    );
-    const presetMenu = createElement('div', 'frontmatter-property__preset-menu');
-    presetButton.type = 'button';
-    presetButton.setAttribute('role', 'menuitem');
-    presetButton.setAttribute('aria-haspopup', 'listbox');
-    presetButton.setAttribute('aria-expanded', 'false');
-    presetMenu.setAttribute('role', 'listbox');
-    presetMenu.setAttribute('aria-label', this.t('document.properties.preset'));
-    this.appendCommonPropertyOptions(
-      presetMenu,
-      occupiedKeys,
-      (nextKey) => this.updatePropertyKey(property, nextKey),
-    );
-    this.appendCustomPropertyOptions(
-      presetMenu,
-      occupiedKeys,
-      (nextKey) => this.updatePropertyKey(property, nextKey),
-    );
-    const setPresetMenuOpen = (open: boolean) => {
-      presetItem.dataset.open = String(open);
-      presetButton.setAttribute('aria-expanded', String(open));
-    };
-    presetItem.addEventListener('mouseenter', () => {
-      const itemRect = presetItem.getBoundingClientRect();
-      const presetMenuRect = presetMenu.getBoundingClientRect();
-      const opensLeft = itemRect.right + presetMenuRect.width > ownerWindow.innerWidth - 8;
-      presetMenu.dataset.placement = opensLeft
-        ? 'left'
-        : 'right';
-      setPresetMenuOpen(true);
-    });
-    presetItem.addEventListener('mouseleave', () => setPresetMenuOpen(false));
-    presetItem.addEventListener('focusin', () => setPresetMenuOpen(true));
-    presetItem.addEventListener('focusout', (event) => {
-      const nextTarget = event.relatedTarget;
-      if (!(nextTarget instanceof globalThis.Node) || !presetItem.contains(nextTarget)) {
-        setPresetMenuOpen(false);
-      }
-    });
-    presetButton.addEventListener('click', (event) => {
-      event.preventDefault();
-      setPresetMenuOpen(presetItem.dataset.open !== 'true');
-    });
-    presetItem.append(presetButton, presetMenu);
-    menu.append(presetItem);
 
     const addAction = (
       action: 'up' | 'down' | 'delete',
@@ -1008,11 +955,6 @@ export class FrontmatterPropertyNodeView implements NodeView {
       ? activeEdit.control.storageKind
       : undefined;
     this.closePropertyEditor();
-    if (
-      activeEdit.target === 'key'
-        ? nextKeyInput === activeEdit.initialValue
-        : nextValueInput === activeEdit.initialValue && kind === activeEdit.initialKind
-    ) return;
 
     try {
       const nextYamlContent = updateVisibleFrontmatterProperty(
@@ -1021,7 +963,9 @@ export class FrontmatterPropertyNodeView implements NodeView {
         nextKeyInput,
         nextValueInput,
         storageKind,
+        kind,
       );
+      if (nextYamlContent === String(this.node.attrs.yamlContent ?? '')) return;
       const pos = this.getPos();
       if (typeof pos !== 'number') return;
       this.validationError = null;
@@ -1033,6 +977,11 @@ export class FrontmatterPropertyNodeView implements NodeView {
       );
     } catch (error) {
       this.validationError = this.errorMessage(error);
+      if (activeEdit.target === 'key'
+        && error instanceof FrontmatterPropertyError
+        && error.code === 'duplicate-key') {
+        toast.error(this.t('document.properties.duplicateKey'));
+      }
       this.render();
     }
   }
@@ -1041,6 +990,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
     property: { key: string; value: unknown },
     nextValue: boolean,
   ) {
+    if (!this.view.editable) return;
     try {
       const nextYamlContent = updateVisibleFrontmatterProperty(
         String(this.node.attrs.yamlContent ?? ''),
@@ -1082,7 +1032,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
       property.key,
     );
     const initialKind = target === 'value'
-      ? getPropertyEditKind(property.key, property.value, isFlowSequence)
+      ? getPropertyEditKind(property.key, property.value, isFlowSequence, this.getDeclaredPropertyTypes())
       : undefined;
     const initialValue = target === 'key'
       ? property.key
@@ -1166,6 +1116,10 @@ export class FrontmatterPropertyNodeView implements NodeView {
 
       const optionControl = createElement('div', 'frontmatter-property__edit-option-menu');
       const trigger = createElement('button', 'frontmatter-property__edit-input frontmatter-property__edit-option-trigger');
+      const triggerValue = createElement('span', 'frontmatter-property__edit-option-value');
+      const chevron = createElement('span', 'frontmatter-property__edit-option-chevron');
+      chevron.append(createPropertyTypeChevron());
+      trigger.append(triggerValue, chevron);
       const menu = createElement('div', 'frontmatter-property__edit-option-list');
       let selectedValue = value;
       trigger.type = 'button';
@@ -1176,13 +1130,16 @@ export class FrontmatterPropertyNodeView implements NodeView {
       menu.hidden = true;
 
       const renderOptions = () => {
-        trigger.textContent = selectedValue || this.t('document.properties.select.placeholder');
+        triggerValue.replaceChildren(selectedValue
+          ? createOptionChip(selectedValue)
+          : createElement('span', 'text-[var(--muted-foreground)]', this.t('document.properties.select.placeholder')));
         menu.replaceChildren();
         options.forEach((optionValue) => {
-          const option = createElement('button', 'frontmatter-property__edit-option-item', optionValue);
+          const option = createElement('button', 'frontmatter-property__edit-option-item');
           option.type = 'button';
           option.setAttribute('role', 'option');
           option.setAttribute('aria-selected', String(selectedValue === optionValue));
+          option.append(createOptionChip(optionValue));
           if (selectedValue === optionValue) {
             option.append(createPropertyCheckIcon());
           }
@@ -1190,6 +1147,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
             selectedValue = optionValue;
             menu.hidden = true;
             trigger.setAttribute('aria-expanded', 'false');
+            trigger.dataset.state = 'closed';
             renderOptions();
             trigger.focus();
           });
@@ -1199,6 +1157,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
       trigger.addEventListener('click', () => {
         menu.hidden = !menu.hidden;
         trigger.setAttribute('aria-expanded', String(!menu.hidden));
+        trigger.dataset.state = menu.hidden ? 'closed' : 'open';
       });
       trigger.addEventListener('keydown', handleKeyDown);
       menu.addEventListener('keydown', handleKeyDown);
@@ -1473,6 +1432,10 @@ export class FrontmatterPropertyNodeView implements NodeView {
         if (configuredOptions.length > 0) {
           const optionControl = createElement('div', 'frontmatter-property__edit-option-menu');
           const trigger = createElement('button', 'frontmatter-property__edit-input frontmatter-property__edit-option-trigger');
+          const triggerValue = createElement('span', 'frontmatter-property__edit-option-value frontmatter-property__edit-option-value--multiple');
+          const chevron = createElement('span', 'frontmatter-property__edit-option-chevron');
+          chevron.append(createPropertyTypeChevron());
+          trigger.append(triggerValue, chevron);
           const menu = createElement('div', 'frontmatter-property__edit-option-list');
           const selected = new Set(value.split(',').map((item) => item.trim()).filter(Boolean));
           trigger.type = 'button';
@@ -1483,15 +1446,19 @@ export class FrontmatterPropertyNodeView implements NodeView {
           menu.hidden = true;
 
           const renderOptions = () => {
-            trigger.textContent = selected.size > 0
-              ? [...selected].join(', ')
-              : this.t('document.properties.select.placeholder');
+            triggerValue.replaceChildren();
+            if (selected.size > 0) {
+              [...selected].forEach((optionValue) => triggerValue.append(createOptionChip(optionValue, true)));
+            } else {
+              triggerValue.append(createElement('span', 'text-[var(--muted-foreground)]', this.t('document.properties.select.placeholder')));
+            }
             menu.replaceChildren();
             configuredOptions.forEach((optionValue) => {
-              const option = createElement('button', 'frontmatter-property__edit-option-item', optionValue);
+              const option = createElement('button', 'frontmatter-property__edit-option-item');
               option.type = 'button';
               option.setAttribute('role', 'option');
               option.setAttribute('aria-selected', String(selected.has(optionValue)));
+              option.append(createOptionChip(optionValue));
               if (selected.has(optionValue)) {
                 option.append(createPropertyCheckIcon());
               }
@@ -1506,6 +1473,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
           trigger.addEventListener('click', () => {
             menu.hidden = !menu.hidden;
             trigger.setAttribute('aria-expanded', String(!menu.hidden));
+            trigger.dataset.state = menu.hidden ? 'closed' : 'open';
           });
           trigger.addEventListener('keydown', handleKeyDown);
           menu.addEventListener('keydown', handleKeyDown);
@@ -1522,6 +1490,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
 
       if (kind === 'Select') {
         const hasConfiguredOptions = (resolveRuntimePropertyPreset(property.key)?.options?.length ?? 0) > 0;
+        if (typeof property.value !== 'boolean' && !hasConfiguredOptions) return createPlainTextControl(value, 'Select');
         if (typeof property.value !== 'boolean' && hasConfiguredOptions) {
           return createSelectControl(value);
         }
@@ -1541,7 +1510,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
         };
       }
 
-      if (kind === 'MultiSelect' || kind === 'Tag' || kind === 'Tags') {
+      if (kind === 'MultiSelect' || kind === 'Tag') {
         const tagControl = createElement('div', 'frontmatter-property__edit-tags');
         const chips = createElement('div', 'frontmatter-property__edit-tags-chips');
         const input = createElement(
@@ -1549,11 +1518,92 @@ export class FrontmatterPropertyNodeView implements NodeView {
           'frontmatter-property__edit-input frontmatter-property__edit-tags-input',
         );
         const isNoteTags = canonicalizePropertyKey(property.key) === 'tags';
+        const suggestions = createElement('div', 'frontmatter-property__edit-tag-suggestions');
+        suggestions.hidden = true;
+        const suggestionListId = `frontmatter-tag-suggestions-${++frontmatterTagSuggestionListId}`;
         const normalizeInput = (item: string) => (
           isNoteTags ? normalizeTagInput(item) : item.trim()
         );
         let tags = value.split(',').map(normalizeInput).filter(Boolean);
         let activeTagIndex: number | null = null;
+        let mentionSuggestions: MentionTagItem[] = [];
+        let activeSuggestion = 0;
+        let suggestionRequest = 0;
+
+        const renderSuggestions = () => {
+          suggestions.replaceChildren();
+          suggestions.hidden = !isNoteTags || mentionSuggestions.length === 0;
+          input.setAttribute('aria-expanded', String(!suggestions.hidden));
+          if (suggestions.hidden) {
+            input.removeAttribute('aria-controls');
+            input.removeAttribute('aria-activedescendant');
+            return;
+          }
+          input.setAttribute('aria-controls', suggestionListId);
+          suggestions.id = suggestionListId;
+          mentionSuggestions.forEach((suggestion, index) => {
+            const option = createElement('button', 'frontmatter-property__edit-tag-suggestion');
+            option.type = 'button';
+            option.tabIndex = -1;
+            option.id = `${suggestionListId}-${index}`;
+            option.setAttribute('role', 'option');
+            option.setAttribute('aria-selected', String(index === activeSuggestion));
+            if (index === activeSuggestion) {
+              option.dataset.active = 'true';
+              input.setAttribute('aria-activedescendant', option.id);
+            }
+            option.append(
+              createElement('span', 'flowix-tag-icon flowix-tag-icon--prefix', '#'),
+              createElement('span', 'tag-node-content', suggestion.name),
+            );
+            option.addEventListener('mousedown', (event) => event.preventDefault());
+            option.addEventListener('mouseenter', () => {
+              activeSuggestion = index;
+              suggestions.querySelectorAll<HTMLElement>('[role="option"]').forEach((item, itemIndex) => {
+                item.setAttribute('aria-selected', String(itemIndex === activeSuggestion));
+                item.toggleAttribute('data-active', itemIndex === activeSuggestion);
+              });
+              input.setAttribute('aria-activedescendant', option.id);
+            });
+            option.addEventListener('click', () => selectSuggestion(suggestion.name));
+            suggestions.append(option);
+          });
+          suggestions.querySelector<HTMLElement>(`#${suggestionListId}-${activeSuggestion}`)
+            ?.scrollIntoView?.({ block: 'nearest' });
+        };
+
+        const updateSuggestions = () => {
+          const request = ++suggestionRequest;
+          const query = input.value;
+          if (!isNoteTags || locallyComposing || !query.trim().replace(/^#+/, '').trim()) {
+            mentionSuggestions = [];
+            activeSuggestion = 0;
+            renderSuggestions();
+            return;
+          }
+          mentionSuggestions = [];
+          activeSuggestion = 0;
+          renderSuggestions();
+          void queryMentionTags(query).then((items) => {
+            if (request !== suggestionRequest || locallyComposing) return;
+            mentionSuggestions = items.filter(
+              (item) => !item.create && !tags.includes(normalizeTagInput(item.name)),
+            );
+            activeSuggestion = 0;
+            renderSuggestions();
+          });
+        };
+
+        const selectSuggestion = (name: string) => {
+          const tag = normalizeTagInput(name);
+          if (tag && !tags.includes(tag)) tags = [...tags, tag];
+          input.value = '';
+          activeTagIndex = null;
+          activeSuggestion = 0;
+          renderTags();
+          updateSuggestions();
+          input.focus();
+        };
 
         const renderTags = () => {
           chips.replaceChildren();
@@ -1569,7 +1619,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
                 createElement('span', 'tag-node-content', tag),
               );
             } else {
-              chip.textContent = tag;
+              chip.append(createElement('span', 'tag-node-content', tag));
             }
             chips.append(chip);
           });
@@ -1579,18 +1629,43 @@ export class FrontmatterPropertyNodeView implements NodeView {
         input.spellcheck = false;
         input.setAttribute('aria-label', this.t('document.properties.tagInputPlaceholder'));
         input.setAttribute('data-property-key', property.key);
+        if (isNoteTags) {
+          input.setAttribute('role', 'combobox');
+          input.setAttribute('aria-autocomplete', 'list');
+          input.setAttribute('aria-haspopup', 'listbox');
+          suggestions.setAttribute('role', 'listbox');
+          suggestions.setAttribute('aria-label', this.t('document.properties.tagInputPlaceholder'));
+        }
         input.addEventListener('compositionstart', () => {
           locallyComposing = true;
+          suggestionRequest += 1;
+          mentionSuggestions = [];
+          activeSuggestion = 0;
+          renderSuggestions();
         });
         input.addEventListener('compositionend', () => {
           locallyComposing = false;
+          renderTags();
+          updateSuggestions();
         });
         input.addEventListener('input', () => {
           activeTagIndex = null;
           renderTags();
+          if (!locallyComposing) updateSuggestions();
         });
         input.addEventListener('keydown', (event) => {
           if (isImeKeyboardEvent(event, locallyComposing)) return;
+          if (mentionSuggestions.length > 0 && (event.key === 'ArrowDown' || event.key === 'ArrowUp')) {
+            event.preventDefault();
+            activeSuggestion = (activeSuggestion + (event.key === 'ArrowDown' ? 1 : -1) + mentionSuggestions.length) % mentionSuggestions.length;
+            renderSuggestions();
+            return;
+          }
+          if (event.key === 'Enter' && !event.ctrlKey && !event.metaKey && mentionSuggestions[activeSuggestion]) {
+            event.preventDefault();
+            selectSuggestion(mentionSuggestions[activeSuggestion].name);
+            return;
+          }
           if (event.key === 'ArrowLeft' && input.value.length === 0) {
             event.preventDefault();
             if (tags.length === 0) return;
@@ -1619,6 +1694,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
               ? null
               : Math.min(indexToRemove, tags.length - 1);
             renderTags();
+            updateSuggestions();
             return;
           }
           if (
@@ -1639,14 +1715,17 @@ export class FrontmatterPropertyNodeView implements NodeView {
           input.value = '';
           activeTagIndex = null;
           renderTags();
+          updateSuggestions();
         });
         renderTags();
         tagControl.append(chips, input);
+        if (isNoteTags) tagControl.append(suggestions);
         return {
           dom: tagControl,
           focusTarget: input,
           getValue: () => [...tags, normalizeInput(input.value)].filter(Boolean).join(', '),
           storageKind: kind,
+          destroy: () => { suggestionRequest += 1; },
         };
       }
 
@@ -1700,13 +1779,9 @@ export class FrontmatterPropertyNodeView implements NodeView {
       const typeTrigger = createElement('button', 'frontmatter-property__edit-type-trigger');
       const propertyPreset = resolvePropertyPreset(
         property.key,
-        getPropertyFieldPreferences(),
+        getPropertyPresets(),
       );
-      const isFixedPropertyKind = target === 'value'
-        && (
-          FIXED_PROPERTY_KINDS[canonicalizePropertyKey(property.key)] !== undefined
-          || propertyPreset !== null
-        );
+      const isFixedPropertyKind = target === 'value' && propertyPreset !== null;
       typeTrigger.type = 'button';
       typeTrigger.disabled = isFixedPropertyKind;
       typeTrigger.setAttribute('aria-haspopup', 'listbox');
@@ -1732,24 +1807,28 @@ export class FrontmatterPropertyNodeView implements NodeView {
       const typeMenu = createElement('div', 'frontmatter-property__edit-type-menu');
       typeMenu.hidden = true;
       typeMenu.setAttribute('role', 'listbox');
-      const availablePropertyEditKinds = propertyPreset?.source === 'builtin'
-        ? PROPERTY_EDIT_KINDS
-        : CUSTOM_PROPERTY_KINDS;
       const closeTypeMenu = () => {
         typeMenu.hidden = true;
         typeTrigger.setAttribute('aria-expanded', 'false');
       };
       control.focusTarget.addEventListener('focus', closeTypeMenu);
-      availablePropertyEditKinds.forEach((kind) => {
+      PROPERTY_EDIT_KINDS.forEach((kind) => {
         const option = createElement(
           'button',
           'frontmatter-property__edit-type-option',
-          this.t(getPropertyTypeDefinition(kind).labelKey),
         );
         option.type = 'button';
         option.dataset.value = kind;
         option.setAttribute('role', 'option');
         option.setAttribute('aria-selected', String(kind === initialKind));
+        const typeIcon = createElement('span', 'frontmatter-property__edit-type-option-icon');
+        typeIcon.append(createPropertySvgIcon(getPropertyTypeDefinition(kind).iconKind));
+        const typeOptionLabel = createElement(
+          'span',
+          'frontmatter-property__edit-type-option-label',
+          this.t(getPropertyTypeDefinition(kind).labelKey),
+        );
+        option.append(typeIcon, typeOptionLabel);
         option.addEventListener('click', () => {
           const activeEdit = this.activePropertyEdit;
           if (activeEdit?.popover !== popover || activeEdit.target !== 'value') return;
@@ -1809,12 +1888,58 @@ export class FrontmatterPropertyNodeView implements NodeView {
     focusControl(control);
   }
 
+  private propertyTypesSource: string | null = null;
+  private declaredPropertyTypes: unknown = {};
+
+  private getDeclaredPropertyTypes(): unknown {
+    const source = String(this.node.attrs.yamlContent ?? '');
+    if (source !== this.propertyTypesSource) {
+      this.propertyTypesSource = source;
+      this.declaredPropertyTypes = parseVisibleFrontmatter(source).data[PROPERTY_TYPES_KEY];
+    }
+    return this.declaredPropertyTypes;
+  }
+
   private renderPropertyValue(
     property: { key: string; value: unknown },
     isFlowSequence = false,
   ): HTMLElement {
     const valueContainer = createElement('div', 'frontmatter-property__display-value');
-    const kind = getPropertyDisplayKind(property.key, property.value, isFlowSequence);
+    const kind = getPropertyDisplayKind(property.key, property.value, isFlowSequence, this.getDeclaredPropertyTypes());
+    const propertyKind = getPropertyEditKind(property.key, property.value, isFlowSequence, this.getDeclaredPropertyTypes());
+
+    if (propertyKind === 'Image') {
+      valueContainer.dataset.propertyType = 'Image';
+      const root = createRoot(valueContainer);
+      const render = () => {
+        const notebookId = this.getAttachmentNotebookId?.();
+        const notebook = getWorkspaceMemoState().notebooks.find((item) => item.id === notebookId);
+        root.render(createReactElement(NotePropertyImageValue, {
+          value: property.value,
+          notebook,
+          disabled: !this.view.editable,
+          onChange: (path: string) => {
+            if (this.destroyed || !this.view.editable) return;
+            const yaml = String(this.node.attrs.yamlContent ?? '');
+            const current = parseVisibleFrontmatter(yaml).properties.find((item) => item.key === property.key);
+            if (!current || getPropertyEditKind(current.key, current.value, false, this.getDeclaredPropertyTypes()) !== 'Image') return;
+            const pos = this.getPos();
+            if (typeof pos !== 'number') return;
+            try {
+              const yamlContent = updateVisibleFrontmatterProperty(yaml, current.key, current.key, path, 'Image');
+              this.view.dispatch(this.view.state.tr.setNodeMarkup(pos, undefined, {
+                ...this.node.attrs,
+                yamlContent,
+              }));
+            } catch (error) {
+              toast.error(this.errorMessage(error));
+            }
+          },
+        }));
+      };
+      this.propertyImageRoots.set(valueContainer, { root, render });
+      return valueContainer;
+    }
 
     if (
       property.value === ''
@@ -1836,6 +1961,42 @@ export class FrontmatterPropertyNodeView implements NodeView {
       && !Array.isArray(property.value)
     ) {
       valueContainer.append(createTextValue(JSON.stringify(property.value)));
+      return valueContainer;
+    }
+
+    if (propertyKind === 'Select' && typeof property.value === 'string') {
+      valueContainer.append(createOptionChip(property.value));
+      return valueContainer;
+    }
+
+    if (propertyKind === 'MultiSelect') {
+      const values = Array.isArray(property.value)
+        ? property.value.map(String).filter(Boolean)
+        : String(property.value).split(',').map((item) => item.trim()).filter(Boolean);
+      const chips = createElement('div', 'frontmatter-property__value-chips');
+      values.forEach((value) => chips.append(createOptionChip(value, true)));
+      valueContainer.append(chips);
+      return valueContainer;
+    }
+
+    if (propertyKind === 'Tag' && canonicalizePropertyKey(property.key) !== 'tags') {
+      const values = Array.isArray(property.value)
+        ? property.value.map(String).filter(Boolean)
+        : String(property.value).split(',').map((item) => item.trim()).filter(Boolean);
+      const chips = createElement(
+        'div',
+        'frontmatter-property__value-chips frontmatter-property__value-chips--tag-values',
+      );
+      values.forEach((value) => {
+        const chip = createElement(
+          'span',
+          'frontmatter-property__value-chip frontmatter-property__value-chip--tag',
+        );
+        chip.append(createElement('span', 'tag-node-content', value));
+        chip.title = value;
+        chips.append(chip);
+      });
+      valueContainer.append(chips);
       return valueContainer;
     }
 
@@ -1946,10 +2107,8 @@ export class FrontmatterPropertyNodeView implements NodeView {
     property: { key: string; value: unknown },
     target: PropertyEditTarget,
   ) {
-    if (!this.view.editable) return;
-    cell.tabIndex = 0;
-    cell.setAttribute('role', 'button');
     cell.addEventListener('click', (event) => {
+      if (!this.view.editable) return;
       const eventTarget = event.target;
       if (
         eventTarget instanceof Element
@@ -1961,6 +2120,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
       this.openPropertyEditor(property, cell, target);
     });
     cell.addEventListener('keydown', (event) => {
+      if (!this.view.editable) return;
       if (event.key !== 'Enter' && event.key !== ' ') return;
       event.preventDefault();
       this.openPropertyEditor(property, cell, target);
@@ -1971,7 +2131,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
     property: { key: string; value: unknown },
     isFlowSequence = false,
   ): HTMLElement {
-    const kind = getPropertyDisplayKind(property.key, property.value, isFlowSequence);
+    const kind = getPropertyDisplayKind(property.key, property.value, isFlowSequence, this.getDeclaredPropertyTypes());
     const row = createElement('div', 'frontmatter-property__display');
     row.dataset.propertyKey = property.key;
 
@@ -1979,29 +2139,22 @@ export class FrontmatterPropertyNodeView implements NodeView {
       'span',
       `frontmatter-property__type-icon frontmatter-property__type-icon--${kind}`,
     );
-    if (this.view.editable) {
-      icon.tabIndex = 0;
-      icon.setAttribute('role', 'button');
-      icon.setAttribute('aria-haspopup', 'menu');
-      icon.setAttribute('aria-expanded', 'false');
-      icon.setAttribute('aria-label', property.key);
-      icon.addEventListener('click', () => {
-        if (this.consumeSuppressedPropertyIconClick()) return;
-        this.openPropertyMenu(property, icon);
-      });
-      icon.addEventListener('keydown', (event) => {
-        if (event.key !== 'Enter' && event.key !== ' ') return;
-        event.preventDefault();
-        this.openPropertyMenu(property, icon);
-      });
-    }
+    icon.addEventListener('click', () => {
+      if (!this.view.editable || this.consumeSuppressedPropertyIconClick()) return;
+      this.openPropertyMenu(property, icon);
+    });
+    icon.addEventListener('keydown', (event) => {
+      if (!this.view.editable || (event.key !== 'Enter' && event.key !== ' ')) return;
+      event.preventDefault();
+      this.openPropertyMenu(property, icon);
+    });
     icon.append(createPropertySvgIcon(kind));
 
     const key = createElement('span', 'frontmatter-property__display-key');
     key.title = property.key;
     const propertyLabel = resolvePropertyDisplayName(
       property.key,
-      getPropertyFieldPreferences(),
+      getPropertyPresets(),
       (labelKey) => this.t(labelKey),
     );
     key.append(createElement(
@@ -2012,7 +2165,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
     const value = this.renderPropertyValue(property, isFlowSequence);
 
     this.bindPropertyEdit(key, property, 'key');
-    this.bindPropertyEdit(value, property, 'value');
+    if (value.dataset.propertyType !== 'Image') this.bindPropertyEdit(value, property, 'value');
     this.bindPropertyDrag(row, icon, property.key);
 
     row.append(icon, key, value);
@@ -2033,9 +2186,11 @@ export class FrontmatterPropertyNodeView implements NodeView {
     let nextKey: string;
     let nextKind: PropertyKind | 'Boolean';
     if (preset) {
-      // A preset already present in the frontmatter is a no-op rather than a
-      // duplicate key, which the YAML writer would reject.
-      if (existingKeys.has(preset.key)) return;
+      const presetKey = canonicalizePropertyKey(preset.key);
+      if ([...existingKeys].some((key) => canonicalizePropertyKey(key) === presetKey)) {
+        toast.error(this.t('document.properties.duplicateKey'));
+        return;
+      }
       nextKey = preset.key;
       nextKind = preset.kind;
     } else {
@@ -2067,6 +2222,9 @@ export class FrontmatterPropertyNodeView implements NodeView {
       );
     } catch (error) {
       this.validationError = this.errorMessage(error);
+      if (error instanceof FrontmatterPropertyError && error.code === 'duplicate-key') {
+        toast.error(this.t('document.properties.duplicateKey'));
+      }
       this.render();
     }
   }
@@ -2094,17 +2252,25 @@ export class FrontmatterPropertyNodeView implements NodeView {
     this.view.dispatch(transaction);
   }
 
-  private render() {
+  private render(preserveRows = false) {
+    if (!preserveRows) {
+      this.propertyRows.clear();
+      this.disposePropertyActionRoots();
+    }
     this.closePropertyMenu();
     this.closePropertyEditor();
     const parsed = parseVisibleFrontmatter(String(this.node.attrs.yamlContent ?? ''));
-    if (!useSettingsStore.getState().propertiesVisible) {
-      this.dom.hidden = true;
-      this.dom.replaceChildren();
+    const propertiesVisible = useSettingsStore.getState().propertiesVisible;
+    this.dom.dataset.visible = String(propertiesVisible);
+    this.dom.inert = !propertiesVisible;
+    this.dom.setAttribute('aria-hidden', String(!propertiesVisible));
+    if (!propertiesVisible) {
       return;
     }
-    this.dom.hidden = false;
-    const container = createElement('div', 'frontmatter-property');
+    const existingList = preserveRows && !parsed.parseError && parsed.properties.length > 0
+      ? this.dom.querySelector<HTMLElement>('.frontmatter-property__list')
+      : null;
+    const container = existingList?.parentElement ?? createElement('div', 'frontmatter-property');
 
     if (parsed.parseError) {
       container.classList.add('frontmatter-property--error');
@@ -2139,13 +2305,27 @@ export class FrontmatterPropertyNodeView implements NodeView {
       }
     } else {
       if (parsed.properties.length > 0) {
-        const list = createElement('div', 'frontmatter-property__list');
+        const list = existingList ?? createElement('div', 'frontmatter-property__list');
+        let cursor = list.firstChild;
+        const nextRows = new Map<string, { signature: string; dom: HTMLElement }>();
         parsed.properties.forEach((property) => {
-          list.append(this.renderPropertyRow(
-            property,
-            isFrontmatterPropertyFlowSequence(String(this.node.attrs.yamlContent ?? ''), property.key),
-          ));
+          const flowSequence = isFrontmatterPropertyFlowSequence(String(this.node.attrs.yamlContent ?? ''), property.key);
+          const types = parsed.data[PROPERTY_TYPES_KEY] as Record<string, unknown> | undefined;
+          const signature = JSON.stringify([property.value, flowSequence, types?.[property.key]]);
+          const previous = this.propertyRows.get(property.key);
+          const row = previous?.signature === signature
+            ? previous
+            : { signature, dom: this.renderPropertyRow(property, flowSequence) };
+          nextRows.set(property.key, row);
+          if (row.dom !== cursor) list.insertBefore(row.dom, cursor);
+          cursor = row.dom.nextSibling;
         });
+        this.propertyRows = nextRows;
+        while (cursor) {
+          const next = cursor.nextSibling;
+          cursor.remove();
+          cursor = next;
+        }
         if (this.validationError) {
           const validation = createElement(
             'span',
@@ -2155,19 +2335,27 @@ export class FrontmatterPropertyNodeView implements NodeView {
           validation.title = this.validationError;
           list.append(validation);
         }
-        container.append(list);
+        if (list.parentElement !== container) container.append(list);
       }
     }
 
-    this.dom.replaceChildren(container);
+    let actions = container.querySelector<HTMLElement>('.frontmatter-property__actions');
+    if (!actions) actions = this.createPropertyActions();
+    if (actions && actions.parentElement !== container) container.append(actions);
+
+    if (container.parentElement !== this.dom) this.dom.replaceChildren(container);
+    this.disposePropertyImageRoots();
+    this.syncPropertyEditability();
   }
 
   update(node: ProseMirrorNode): boolean {
     if (node.type !== this.node.type) return false;
     const yamlChanged = node.attrs.yamlContent !== this.node.attrs.yamlContent;
     this.node = node;
-    if (yamlChanged) this.validationError = null;
-    this.render();
+    if (yamlChanged) {
+      this.validationError = null;
+      this.render(true);
+    }
     return true;
   }
 
@@ -2180,6 +2368,16 @@ export class FrontmatterPropertyNodeView implements NodeView {
   }
 
   destroy() {
+    this.destroyed = true;
+    this.view.dom.removeEventListener('flowix:editor-flush-drafts', this.handleFlushDrafts);
+    this.view.dom.removeEventListener(EDITOR_EDITABILITY_CHANGE_EVENT, this.handleEditabilityChange);
+    this.dom.ownerDocument.defaultView?.removeEventListener(
+      'flowix:property-actions-popup-state',
+      this.handlePropertyActionsPopupState,
+    );
+    this.propertyRows.clear();
+    this.disposePropertyActionRoots();
+    this.disposePropertyImageRoots(true);
     this.finishPropertyDrag();
     if (this.suppressPropertyIconClickTimer !== null) {
       this.dom.ownerDocument.defaultView?.clearTimeout(this.suppressPropertyIconClickTimer);

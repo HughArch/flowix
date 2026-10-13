@@ -96,6 +96,7 @@ const persistenceLog = createLogger('document:editor');
 
 export interface MarkdownEditorHandle {
   flushPendingChanges: () => string | null;
+  commitPropertyDraft?: () => void;
   getCurrentMarkdown: () => string;
   revealSourceLocation?: (location: { line: number; column?: number }) => { clamped: boolean } | null;
   revealSourceAnchor?: (anchor: string) => boolean | null;
@@ -921,6 +922,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 
   useImperativeHandle(ref, () => ({
     flushPendingChanges: () => serializePendingChanges({ force: true }),
+    commitPropertyDraft: () => {
+      editorRef.current?.view.dom.dispatchEvent(new Event('flowix:editor-flush-drafts'));
+    },
     getCurrentMarkdown: () => {
       if (pendingSerializeDirtyRef.current) {
         return serializePendingChanges({ force: true }) ?? contentRef.current;
@@ -1050,7 +1054,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         Tag,
         ManagedPasteRules.configure({ ownerPath }),
         MarkdownPaste,
-        Frontmatter.configure({ propertyTargetId, onViewSourceMode }),
+        Frontmatter.configure({ propertyTargetId, onViewSourceMode, getAttachmentNotebookId }),
         NoteReference,
         NoteMention,
         WikiNoteMention,
@@ -1250,6 +1254,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 
   useLayoutEffect(() => {
     if (editorRef.current) {
+      if (editorRef.current.isEditable !== editable) {
+        editorRef.current.view.dom.dispatchEvent(new Event('flowix:editor-flush-drafts'));
+      }
       editorRef.current.setEditable(editable, false);
       const editorDom = editorRef.current.view.dom;
       editorDom.dispatchEvent(new Event('flowix:editor-editability-change'));

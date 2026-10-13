@@ -83,7 +83,7 @@ export function ColorValueInput({
               </span>
             )}
           </span>
-          <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)]" />
+          {variant !== 'table' && <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)]" />}
         </button>
       </DropdownMenuTrigger>
       <DropdownMenuContent

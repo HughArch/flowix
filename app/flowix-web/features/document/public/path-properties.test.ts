@@ -1,5 +1,5 @@
 import { expect, it, vi } from 'vitest';
-import { patchDocumentProperties, setDocumentProperties } from './path-properties';
+import { compareAndPatchDocumentProperties, compareAndSetDocumentProperty, patchDocumentProperties, setDocumentProperties } from './path-properties';
 import { ensureFileDisplayIdentity, reconcileFileDisplays } from '@/lib/file-display-registry';
 import { documentIdentityFromFile } from '../store/document-identity';
 import { applyLoadedContent, getBuffer } from '../store/buffer-registry';
@@ -42,4 +42,60 @@ it('updates an empty frontmatter block and does not displace a UTF-8 BOM into th
   expect(patchDocumentProperties('---\n---\nbody', { flowix_favorited: true }).match(/---/g)).toHaveLength(2);
   expect(patchDocumentProperties('\uFEFFbody', { flowix_favorited: true })).not.toContain('\uFEFF');
   expect(patchDocumentProperties('body\n---\nstatus: prose\n---\n', { flowix_favorited: true })).toContain('body\n---\nstatus: prose\n---\n');
+});
+
+it('refuses to overwrite a property changed after the migration snapshot', async () => {
+  const identity = documentIdentityFromFile(ensureFileDisplayIdentity('/properties/concurrent.md'));
+  applyLoadedContent(identity, identity.path, '---\nstatus: new\n---\nbody', { setAsCurrent: false });
+  recordDocumentEdit(identity, '---\nstatus: user-edit\n---\nbody');
+  mocks.write.mockClear();
+  expect(await compareAndSetDocumentProperty(identity.path, 'status', { exists: true, value: 'new' }, { exists: true, value: 'old' })).toBe(false);
+  expect(mocks.write).not.toHaveBeenCalled();
+  expect(getBuffer(identity)?.content).toContain('user-edit');
+});
+
+it('checks property presence before restoring a removed value', async () => {
+  const identity = documentIdentityFromFile(ensureFileDisplayIdentity('/properties/removed.md'));
+  applyLoadedContent(identity, identity.path, '---\nother: keep\n---\nbody', { setAsCurrent: false });
+  mocks.write.mockClear();
+  mocks.write.mockImplementation(async request => ({ status: 'saved', path: request.path, content: request.content }));
+  expect(await compareAndSetDocumentProperty(identity.path, 'status', { exists: false }, { exists: true, value: 'old' })).toBe(true);
+  expect(mocks.write.mock.calls[0][0].content).toContain('status: old');
+});
+
+it('restores the buffer when a guarded write encounters a disk conflict', async () => {
+  const identity = documentIdentityFromFile(ensureFileDisplayIdentity('/properties/conflict.md'));
+  const content = '---\nstatus: old\n---\nbody';
+  applyLoadedContent(identity, identity.path, content, { setAsCurrent: false });
+  mocks.write.mockResolvedValue({ status: 'conflict', content: 'external content' });
+  expect(await compareAndSetDocumentProperty(identity.path, 'status', { exists: true, value: 'old' }, { exists: true, value: 'new' })).toBe(false);
+  expect(getBuffer(identity)?.content).toBe(content);
+});
+
+it('moves a key in one guarded write and preserves other properties and body', async () => {
+  const identity = documentIdentityFromFile(ensureFileDisplayIdentity('/properties/rename.md'));
+  applyLoadedContent(identity, identity.path, '---\nstatus: old\nother: keep\n---\nbody\n', { setAsCurrent: false });
+  mocks.write.mockClear();
+  mocks.write.mockImplementation(async request => ({ status: 'saved', path: request.path, content: request.content }));
+  expect(await compareAndPatchDocumentProperties(identity.path,
+    { status: { exists: true, value: 'old' }, renamed: { exists: false } },
+    { status: { exists: false }, renamed: { exists: true, value: 'old' } },
+  )).toBe(true);
+  expect(mocks.write).toHaveBeenCalledTimes(1);
+  const content = mocks.write.mock.calls[0][0].content;
+  expect(content).not.toContain('status:');
+  expect(content).toContain('renamed: old');
+  expect(content).toContain('other: keep');
+  expect(content.endsWith('body\n')).toBe(true);
+});
+
+it('refuses a key move if another edit has created its destination', async () => {
+  const identity = documentIdentityFromFile(ensureFileDisplayIdentity('/properties/rename-conflict.md'));
+  applyLoadedContent(identity, identity.path, '---\nstatus: old\nrenamed: user-value\n---\nbody', { setAsCurrent: false });
+  mocks.write.mockClear();
+  expect(await compareAndPatchDocumentProperties(identity.path,
+    { status: { exists: true, value: 'old' }, renamed: { exists: false } },
+    { status: { exists: false }, renamed: { exists: true, value: 'old' } },
+  )).toBe(false);
+  expect(mocks.write).not.toHaveBeenCalled();
 });

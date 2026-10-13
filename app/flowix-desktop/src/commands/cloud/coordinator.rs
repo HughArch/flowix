@@ -242,7 +242,7 @@ async fn sync_v2_account_pass(
     enabled: &[V2SyncedNotebook],
     activity: &SyncActivity,
 ) -> Result<V2AccountSyncReport, String> {
-    let generation = state.cloud_sync.session_restore_generation();
+    let generation = state.cloud_sync.session_generation();
     let notebook_scope = target.notebook_scope();
     let full_local_snapshot = should_run_full_local_snapshot(state, notebook_scope)?;
     let sync_lock = account_sync_lock();
@@ -326,7 +326,6 @@ async fn sync_v2_account_pass(
             other => break other,
         }
     };
-    persist_rotated_token(state)?;
     let report = report_result.map_err(cloud_error)?;
     emit_activity_status(
         app,

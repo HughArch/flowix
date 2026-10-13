@@ -85,7 +85,12 @@ export type WorkColumnTarget =
       resourceKind: 'image' | 'video';
     }
   | { kind: 'media-library'; filePath: string; notebookPath: string | null; notebookId: string | null }
-  | { kind: 'agent-conversation'; instanceId: string }
+  | {
+      kind: 'agent-conversation';
+      instanceId: string;
+      /** A temporary empty draft should restore as an empty work column if it has vanished. */
+      blankIfMissing?: true;
+    }
   /** View identity only. Plugin run state and artifacts live in host stores. */
   | { kind: 'plugin-workbench'; plugin: PluginDescriptor }
   | { kind: 'web'; url: string };

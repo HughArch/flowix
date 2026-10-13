@@ -3,6 +3,37 @@ import { addCalendarDateView, addTableView, canEditTableAutoCollectFilter, creat
 import { NOTE_CALENDAR_DATE_FIELD_ID, NOTE_ICON_FIELD_ID, NOTE_TAGS_FIELD_ID } from './builtin-fields';
 
 describe('table format v2', () => {
+  it.each(['Tags', 'noteTag'])('migrates legacy %s fields to Tag on load and save', (legacyType) => {
+    const table = createTableDocument();
+    table.dataset.schema.fields.push({
+      id: 'fld_' + 'a'.repeat(32), type: 'Tag', property_key: 'topics',
+    });
+    const source = serializeTableDocument(table).replace('type: Tag', `type: ${legacyType}`);
+    const parsed = parseTableDocument(source);
+    expect(parsed.dataset.schema.fields.find((field) => field.property_key === 'topics')?.type).toBe('Tag');
+    expect(serializeTableDocument(parsed)).not.toContain(`type: ${legacyType}`);
+  });
+
+  it('rejects duplicate option labels even when the option IDs differ', () => {
+    const table = createTableDocument();
+    table.dataset.schema.fields.push({
+      id: 'fld_' + 'a'.repeat(32), type: 'Select', property_key: 'status',
+      options: [
+        { id: 'opt_' + 'b'.repeat(32), label: 'done' },
+        { id: 'opt_' + 'c'.repeat(32), label: ' done ' },
+      ],
+    });
+    expect(() => validateTableDocument(table)).toThrow('选项名称重复');
+  });
+  it('drops legacy table tombstone copies on save and still validates old input', () => {
+    const table = createTableDocument();
+    table.dataset.schema.deleted_presets = [{
+      id: 'fld_' + 'a'.repeat(32), key: 'topics', type: 'Tag', revision: 2,
+    }];
+    expect(parseTableDocument(serializeTableDocument(table)).dataset.schema.deleted_presets).toBeUndefined();
+    table.dataset.schema.deleted_presets[0]!.id = 'invalid';
+    expect(() => validateTableDocument(table)).toThrow('已删除预设定义无效');
+  });
   it('creates normalized field state with only tags and icon as default presets', () => {
     const table = createTableDocument();
     expect(table.dataset.schema.preset_fields).toEqual([NOTE_TAGS_FIELD_ID, NOTE_ICON_FIELD_ID]);
@@ -15,6 +46,14 @@ describe('table format v2', () => {
     const table = createTableDocument();
     expect(table.collection.type).toBe('table');
     expect(parseTableDocument(serializeTableDocument(table))).toEqual(table);
+  });
+
+  it('can reopen files with widths saved by the previous manual-resize UI', () => {
+    const table = createTableDocument();
+    table.views.items[0].config.tag_column_width = 320;
+    expect(parseTableDocument(serializeTableDocument(table))).toEqual(table);
+    table.views.items[0].config.tag_column_width = 321;
+    expect(() => validateTableDocument(table)).toThrow('标签列宽度无效');
   });
 
   it('creates each view type over the shared records without requiring a data table view', () => {

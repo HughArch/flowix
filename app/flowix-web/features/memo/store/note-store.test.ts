@@ -3,6 +3,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 const mocks = vi.hoisted(() => ({
   list: vi.fn(),
   listByPath: vi.fn(),
+  loadNotebookFilters: vi.fn(),
   setSelectedTagId: vi.fn(),
 }));
 
@@ -28,14 +29,31 @@ vi.mock('@features/memo/store/tag-store', () => ({
   },
 }));
 
+vi.mock('@features/memo/store/custom-filter-store', () => ({
+  memoMatchesCustomFilter: vi.fn(() => true),
+  useCustomFilterStore: {
+    getState: () => ({
+      filtersByNotebook: {},
+      loadNotebookFilters: mocks.loadNotebookFilters,
+    }),
+  },
+}));
+
 import { useNoteStore } from '@features/memo/store/note-store';
 
 describe('note store list loading', () => {
   beforeEach(() => {
     mocks.list.mockReset();
     mocks.listByPath.mockReset();
+    mocks.loadNotebookFilters.mockReset().mockResolvedValue(undefined);
     mocks.setSelectedTagId.mockReset();
     useNoteStore.setState({
+      notes: [],
+      memoListQueryKey: null,
+      memoListQuery: null,
+      memoListNextCursor: null,
+      memoListHasMore: false,
+      memoListLoadingMore: false,
       selectedNote: { notebookId: 'notebook-1', relativePath: 'current.md' },
       selectedNotebook: null,
       middleColumnView: 'notes',
@@ -150,6 +168,8 @@ describe('note store list loading', () => {
       .mockResolvedValueOnce({ notes: [], nextCursor: null, hasMore: false });
 
     const older = useNoteStore.getState().loadNotes({ notebookId: 'notebook-1', filter: 'all' });
+    await Promise.resolve();
+    expect(mocks.listByPath).toHaveBeenCalledOnce();
     await useNoteStore.getState().loadNotes({ notebookId: 'notebook-1', filter: 'all' });
     resolveOld?.({ notes: [], nextCursor: null, hasMore: false });
 

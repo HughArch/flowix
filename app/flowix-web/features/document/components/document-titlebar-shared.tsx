@@ -59,6 +59,7 @@ import { normalizeAgentTypeKey } from '@/lib/agent-types';
 import type { AgentTypeKey } from '@/types/agent';
 import { ICON_FULLSCREEN_EXIT_PATH } from '@features/agent/thread-card/agent-thread-card-icons';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
+import { useAgentAccessStore } from '@features/agent/store/agent-access-store';
 import { BadgeHoverCard } from '@features/agent/thread-card/badge-hover-card';
 import { computeAgentThreadCardBadgeData } from '@features/agent/thread-card/runtime/run-status-presenter';
 import { createRuntimeInfoRequester } from '@features/agent/thread-card/runtime/runtime-info-requester';
@@ -747,6 +748,15 @@ export function AgentThreadCardFullscreenIdentity({
   const codexModel = useAgentSessionStore(
     (state) => state.sessionMeta.settings.agentCodexModel,
   );
+  const piCodeMode = useAgentAccessStore((state) =>
+    state.config.defaults?.runtime?.pi?.piCodeMode ?? false,
+  );
+  const projection = useAgentSessionStore((state) => {
+    const threadId = info?.threadId ?? (
+      info?.instanceId ? state.getInstance(info.instanceId)?.threadId : null
+    );
+    return threadId ? state.threadProjections[threadId] : undefined;
+  });
 
   if (!info) return null;
 
@@ -772,7 +782,11 @@ export function AgentThreadCardFullscreenIdentity({
     productThreadId ? getResolvedExternalSessionId(productThreadId) : null
   );
   const { model, usage } = computeAgentThreadCardBadgeData({
-    threadState: undefined,
+    threadState: projection ? {
+      lastRun: projection.runs.lastRun,
+      activeRunId: projection.runs.activeRunId,
+      runs: projection.runs.runs,
+    } : undefined,
     codexModel,
     typeKey: info.typeKey,
   });
@@ -795,6 +809,8 @@ export function AgentThreadCardFullscreenIdentity({
             () => providerSessionId,
           )}
           codex={info.typeKey === 'codex'}
+          pi={info.typeKey === 'pi'}
+          piMode={info.typeKey === 'pi' ? (piCodeMode ? 'code' : 'writing') : undefined}
           cwd={cwd}
         />
         <span className="agent-type-badge shrink-0" aria-hidden="true">

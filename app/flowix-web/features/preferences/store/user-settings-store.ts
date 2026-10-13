@@ -8,11 +8,8 @@ import {
   type FormatConfig,
   type MemoListView,
   type ProductUpdatesConfig,
-  type PropertiesConfig,
-  type PropertyFieldType,
   type UserSettings,
 } from '@/lib/constants';
-import { isPresetPropertyKind } from '@/lib/property-types';
 import { sanitizeTheme, type ThemeId } from '@features/theme';
 import type { ShortcutOverrides } from '@features/shortcuts';
 import {
@@ -24,8 +21,6 @@ import {
   type AppLanguage,
 } from '@/lib/i18n';
 import { createLogger } from '@/lib/logger';
-import { isBuiltinPresetKey } from '@features/document/properties/presets';
-import { canonicalizePropertyKey } from '@features/document/properties/property-key';
 
 const logger = createLogger('user-settings');
 
@@ -115,10 +110,6 @@ function mergeSettings(base: UserSettings, updates: UserSettingsUpdate): UserSet
     autoOpenCreatedNotesInBrowser:
       updates.autoOpenCreatedNotesInBrowser ?? base.autoOpenCreatedNotesInBrowser,
     shortcuts: { ...base.shortcuts, ...(updates.shortcuts ?? {}) },
-    properties: {
-      ...base.properties,
-      ...(updates.properties ?? {}),
-    },
     agents: {
       enabledByType: {
         ...base.agents.enabledByType,
@@ -130,37 +121,6 @@ function mergeSettings(base: UserSettings, updates: UserSettingsUpdate): UserSet
       ...(updates.productUpdates ?? {}),
     },
   };
-}
-
-function sanitizePropertiesConfig(properties: PropertiesConfig | undefined): PropertiesConfig {
-  const fields = Array.isArray(properties?.fields) ? properties.fields : [];
-  const deduped = new Map<string, PropertiesConfig['fields'][number]>();
-
-  fields.forEach((field) => {
-    const key = String(field?.key ?? '').trim();
-    const rawType = (field as { type?: unknown })?.type;
-    // `List` was the old name for an array-valued property. Keep existing
-    // preference files usable while ensuring the removed type never reaches
-    // the runtime catalog or any picker.
-    const normalizedType = rawType === 'List' ? 'MultiSelect' : rawType;
-    if (!key) return;
-    if (!isPresetPropertyKind(normalizedType)) return;
-    const type: PropertyFieldType = normalizedType;
-    // Built-in presets own their keys. Filtering them here keeps malformed or
-    // externally-written settings from shadowing the unified runtime catalog.
-    if (isBuiltinPresetKey(key)) return;
-    const comparableKey = canonicalizePropertyKey(key).toLowerCase();
-    if (deduped.has(comparableKey)) return;
-    deduped.set(comparableKey, {
-      key,
-      type,
-      options: (type === 'Select' || type === 'MultiSelect') && Array.isArray(field.options)
-        ? field.options.map((option) => String(option).trim()).filter(Boolean)
-        : undefined,
-    });
-  });
-
-  return { fields: [...deduped.values()] };
 }
 
 function sanitizeAgentsConfig(agents: AgentsConfig | undefined): AgentsConfig {
@@ -218,7 +178,6 @@ function sanitizeSettings(settings: UserSettings): UserSettings {
     memoListView: normalizeMemoListView(settings.memoListView),
     autoOpenCreatedNotesInBrowser: settings.autoOpenCreatedNotesInBrowser !== false,
     shortcuts: { ...DEFAULT_USER_SETTINGS.shortcuts, ...(settings.shortcuts ?? {}) },
-    properties: sanitizePropertiesConfig(settings.properties),
     agents: sanitizeAgentsConfig(settings.agents),
     productUpdates: sanitizeProductUpdatesConfig(settings.productUpdates),
   };
@@ -281,7 +240,6 @@ export interface UserSettingsUpdate {
   language?: AppLanguage;
   memoListView?: MemoListView;
   autoOpenCreatedNotesInBrowser?: boolean;
-  properties?: Partial<PropertiesConfig>;
   productUpdates?: Partial<ProductUpdatesConfig>;
   /**
    * 快捷键覆盖的浅合并 — 传入的字段会覆盖现有覆盖, 未提及的字段保留。
@@ -373,7 +331,7 @@ export const useUserSettingsStore = create<UserSettingsState>((set, get) => ({
 
   loadInitial: async () => {
     try {
-      const loaded = (await tauriPreferences.get()) as Partial<UserSettings> | null;
+      const loaded = await tauriPreferences.get() as Partial<UserSettings> | null;
       const theme = sanitizeTheme(loaded?.theme, DEFAULT_USER_SETTINGS.theme);
 
       // 首次安装: preference.json 里 language 是空串, 跟随系统语言。

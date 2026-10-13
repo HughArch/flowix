@@ -24,6 +24,7 @@ export type DocumentListHistoryEntry = {
 export type AgentConversationHistoryEntry = {
   kind: 'agent-conversation';
   instanceId: string;
+  blankIfMissing?: true;
   openedAt: number;
 };
 

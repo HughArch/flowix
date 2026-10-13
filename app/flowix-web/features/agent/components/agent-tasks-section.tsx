@@ -228,7 +228,7 @@ export function AgentTasksSection({
       source: { kind: 'dedicated', notebookId, documentPath: null },
       runtimeConfig: buildInitialInstanceRuntimeConfig(typeKey),
     });
-    void selectAndOpenAgentConversation(instance.instanceId);
+    void selectAndOpenAgentConversation(instance.instanceId, { blankIfMissing: true });
   }, [notebookId]);
 
   const width = `calc(100% - ${edgeGutter * 2}px)`;

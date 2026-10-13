@@ -7,6 +7,7 @@ use std::sync::RwLock;
 
 use crate::USER_CONFIG_DIR_NAME;
 use flowix_core::secret::{entry_name, SecretStore};
+use super::property_presets::{PropertyPresetChange, PropertyPresetRegistry, PropertyPresetStore};
 
 /// AI 模型配置文件�?── TOML 格式, 便于人手编辑与注释�?///
 /// TOML 格式便于用户手改磁盘配置时写注释 (TOML 原生 `# ...`), 避免�?��字�?�?/// �?Flowix 的其它配�?���?(`boot/preference.json` /
@@ -64,6 +65,18 @@ pub struct FormatConfig {
 #[serde(rename_all = "camelCase")]
 pub struct PropertyFieldConfig {
     #[serde(default)]
+    pub position: u32,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub name: Option<String>,
+    #[serde(default)]
+    pub revision: u64,
+    #[serde(default)]
+    pub option_ids: Vec<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub multiple: Option<bool>,
+    #[serde(default)]
     pub key: String,
     #[serde(default)]
     pub r#type: String,
@@ -75,7 +88,11 @@ pub struct PropertyFieldConfig {
 #[serde(rename_all = "camelCase")]
 pub struct PropertiesConfig {
     #[serde(default)]
+    pub system_fields: Vec<PropertyFieldConfig>,
+    #[serde(default)]
     pub fields: Vec<PropertyFieldConfig>,
+    #[serde(default)]
+    pub deleted_fields: Vec<PropertyFieldConfig>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -174,7 +191,8 @@ pub struct PreferenceFile {
     /// User shortcut overrides keyed by action id.
     #[serde(default)]
     pub shortcuts: HashMap<String, String>,
-    /// 鐢ㄦ埛涓诲姩閰嶇疆杩囩殑鑷畾涔夊睘鎬у瓧娈靛畾涔夈€傚墠绔敤浜庡睘鎬у脊绐楀洖鏄俱€?
+    /// 兼容 IPC 的属性预设投影；真源保存在 `local.db::property_presets`，
+    /// 写入 preference.json 时会剔除此字段。
     #[serde(default)]
     pub properties: PropertiesConfig,
     /// Agent visibility preferences. Missing values default to enabled in the frontend.
@@ -567,6 +585,8 @@ pub struct UserConfigStore {
     preference: RwLock<PreferenceFile>,
     ai_config: RwLock<AiConfigFile>,
     secrets: SecretStore,
+    property_presets: PropertyPresetStore,
+    property_presets_migration_complete: bool,
 }
 
 /// 用户配置 (boot/preference.json / agent-config.toml) 写盘错�?。`Io` �?���?/// `std::io::Error` �? `Json` �?`serde_json::Error` �?(preference.json
@@ -635,7 +655,32 @@ impl UserConfigStore {
         set_dir_owner_only_perms(&config_dir);
         migrate_dsh_layout(&config_dir);
 
-        let preference = Self::read_preference_from_disk(&config_dir).unwrap_or_default();
+        let mut preference = Self::read_preference_from_disk(&config_dir).unwrap_or_default();
+        let had_legacy_property_registry = !preference.properties.system_fields.is_empty()
+            || !preference.properties.fields.is_empty()
+            || !preference.properties.deleted_fields.is_empty();
+        let property_presets = PropertyPresetStore::new(config_dir.join("local.db"));
+        let property_presets_migration_complete = match property_presets.migrate_legacy_once(&PropertyPresetRegistry {
+                system_fields: preference.properties.system_fields.clone(),
+                fields: preference.properties.fields.clone(),
+                deleted_fields: preference.properties.deleted_fields.clone(),
+            }).and_then(|migrated| property_presets.initialize_system_presets().map(|_| migrated)) {
+            Ok(_) if had_legacy_property_registry => {
+                preference.properties = PropertiesConfig::default();
+                match preference_json_without_property_registry(&preference) {
+                    Ok(content) => if let Err(error) = atomic_write_json(&preference_file_path(&config_dir), &content) {
+                        tracing::warn!(%error, "property presets were migrated, but legacy preference data could not be removed");
+                    },
+                    Err(error) => tracing::warn!(%error, "property presets were migrated, but legacy preference data could not be serialized"),
+                }
+                true
+            }
+            Ok(_) => { preference.properties = PropertiesConfig::default(); true }
+            Err(error) => {
+                tracing::error!(%error, "property preset migration failed; legacy preference data was retained on disk");
+                false
+            }
+        };
         // Once the official DSH settings document exists, do not even load
         // the legacy TOML into the process. This makes the source-of-truth
         // boundary explicit: agent-config.toml is read only during the
@@ -651,6 +696,8 @@ impl UserConfigStore {
             preference: RwLock::new(preference),
             ai_config: RwLock::new(ai_config),
             secrets,
+            property_presets,
+            property_presets_migration_complete,
         }
     }
 
@@ -719,9 +766,23 @@ impl UserConfigStore {
         self.read_preference().clone()
     }
 
+    pub fn get_property_presets(&self) -> Result<PropertyPresetRegistry, UserConfigError> {
+        self.property_presets.get().map_err(UserConfigError::InvalidConfig)
+    }
+
+    pub fn patch_property_presets(&self, changes: &[PropertyPresetChange]) -> Result<PropertyPresetRegistry, UserConfigError> {
+        self.property_presets.patch(changes).map_err(UserConfigError::InvalidConfig)
+    }
+
     /// 先把 JSON 落盘 (tmp + fsync + rename, 0o600), 成功后才更新内存�?    /// 任一写�?骤失�?�?内存保持旧�? 磁盘保持旧文�? 不出�?内存新�?盘旧"�?    /// "半写�?��"的损坏状态�?
-    pub fn set_preference(&self, p: PreferenceFile) -> Result<(), UserConfigError> {
-        let content = serde_json::to_string_pretty(&p)?;
+    pub fn set_preference(&self, mut p: PreferenceFile) -> Result<(), UserConfigError> {
+        let content = if self.property_presets_migration_complete {
+            p.properties = PropertiesConfig::default();
+            preference_json_without_property_registry(&p)?
+        } else {
+            p.properties = self.read_preference().properties.clone();
+            serde_json::to_string_pretty(&p)?
+        };
         let path = preference_file_path(&self.config_dir);
         atomic_write_json(&path, &content)?;
         *self.write_preference() = p;
@@ -732,10 +793,20 @@ impl UserConfigStore {
     /// preference lock, so separate windows cannot overwrite unrelated fields.
     pub fn patch_preference(&self, patch: serde_json::Value) -> Result<(), UserConfigError> {
         let mut preference = self.write_preference();
+        let legacy_properties = preference.properties.clone();
         let mut value = serde_json::to_value(&*preference)?;
+        if self.property_presets_migration_complete {
+            value["properties"] = serde_json::to_value(PropertiesConfig::default())?;
+        }
         merge_preference_patch(&mut value, patch);
-        let next: PreferenceFile = serde_json::from_value(value)?;
-        let content = serde_json::to_string_pretty(&next)?;
+        let mut next: PreferenceFile = serde_json::from_value(value)?;
+        let content = if self.property_presets_migration_complete {
+            next.properties = PropertiesConfig::default();
+            preference_json_without_property_registry(&next)?
+        } else {
+            next.properties = legacy_properties;
+            serde_json::to_string_pretty(&next)?
+        };
         atomic_write_json(&preference_file_path(&self.config_dir), &content)?;
         *preference = next;
         Ok(())
@@ -752,7 +823,7 @@ impl UserConfigStore {
         let mut next = preference.clone();
         next.format.font_id = Some(font_id);
         next.format.font_family = font_family;
-        let content = serde_json::to_string_pretty(&next)?;
+        let content = preference_json_without_property_registry(&next)?;
         atomic_write_json(&preference_file_path(&self.config_dir), &content)?;
         *preference = next;
         Ok(())
@@ -1008,6 +1079,23 @@ impl UserConfigStore {
     }
 }
 
+impl flowix_sync::RefreshTokenStore for UserConfigStore {
+    fn load(&self) -> Result<Option<String>, String> {
+        self.load_cloud_refresh_token()
+            .map_err(|error| error.to_string())
+    }
+
+    fn save(&self, token: &str) -> Result<(), String> {
+        self.save_cloud_refresh_token(token)
+            .map_err(|error| error.to_string())
+    }
+
+    fn delete(&self) -> Result<(), String> {
+        self.delete_cloud_refresh_token()
+            .map_err(|error| error.to_string())
+    }
+}
+
 fn merge_preference_patch(target: &mut serde_json::Value, patch: serde_json::Value) {
     match patch {
         serde_json::Value::Object(patch_fields) => {
@@ -1065,6 +1153,14 @@ fn clear_ai_config_plaintext_secrets(config: &mut AiConfigFile) {
 
 fn preference_file_path(config_dir: &Path) -> PathBuf {
     config_dir.join(BOOT_DIR_NAME).join(PREFERENCE_FILE_NAME)
+}
+
+fn preference_json_without_property_registry(preference: &PreferenceFile) -> Result<String, UserConfigError> {
+    let mut value = serde_json::to_value(preference)?;
+    if let Some(object) = value.as_object_mut() {
+        object.remove("properties");
+    }
+    Ok(serde_json::to_string_pretty(&value)?)
 }
 
 fn dsh_settings_path(config_dir: &Path) -> PathBuf {
@@ -1307,6 +1403,32 @@ mod tests {
             home,
             SecretStore::with_backend(Box::new(TestSecretBackend::new())),
         )
+    }
+
+    #[test]
+    fn legacy_json_property_presets_migrate_to_local_database() {
+        let home = tempfile::tempdir().unwrap();
+        let config_dir = home.path().join(USER_CONFIG_DIR_NAME);
+        let boot_dir = config_dir.join(BOOT_DIR_NAME);
+        std::fs::create_dir_all(&boot_dir).unwrap();
+        let mut legacy = PreferenceFile::default();
+        legacy.properties.fields.push(PropertyFieldConfig {
+            key: "topics".into(),
+            r#type: "Tag".into(),
+            ..PropertyFieldConfig::default()
+        });
+        atomic_write_json(&preference_file_path(&config_dir), &serde_json::to_string(&legacy).unwrap()).unwrap();
+
+        let store = test_user_config_store(home.path().to_path_buf());
+        let migrated = store.get_property_presets().unwrap();
+        assert_eq!(migrated.fields.len(), 1);
+        assert!(migrated.fields[0].id.as_deref().is_some_and(|id| id.starts_with("fld_")));
+        assert!(config_dir.join("local.db").is_file());
+
+        store.patch_preference(serde_json::json!({"language": "zh-CN"})).unwrap();
+        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(preference_file_path(&config_dir)).unwrap()).unwrap();
+        assert!(saved.get("properties").is_none());
+        assert_eq!(store.get_property_presets().unwrap().fields[0].key, "topics");
     }
 
     #[test]

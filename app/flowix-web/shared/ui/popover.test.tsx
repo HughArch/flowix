@@ -111,7 +111,7 @@ describe('PopoverContent motion lifecycle', () => {
 });
 
 function TestFieldRowPopover() {
-  return createElement(Popover, { open: true },
+  return createElement(Popover, { open: true, children: null },
     createElement(PopoverTrigger, { asChild: true }, createElement('button', {}, 'Field')),
-    createElement(PopoverContent, { anchorSelector: '[data-table-field-item]', side: 'right', align: 'start', sideOffset: 0 }, 'Editor'));
+    createElement(PopoverContent, { anchorSelector: '[data-table-field-item]', side: 'right', align: 'start', sideOffset: 0, children: null }, 'Editor'));
 }

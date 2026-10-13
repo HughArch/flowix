@@ -15,6 +15,13 @@ test('repairs the exact wrapper/native version instead of the first pnpm candida
   await writePackage(join(store, 'node_modules/koffi'), wrapperManifest('3.1.1'))
   await writePackage(join(store, '@koromix+koffi-darwin-arm64@3.0.0/node_modules/@koromix/koffi-darwin-arm64'), nativeManifest('3.0.0'), 'arm64')
   await writePackage(join(store, '@koromix+koffi-darwin-arm64@3.1.1/node_modules/@koromix/koffi-darwin-arm64'), nativeManifest('3.1.1'), 'arm64')
+  const systemAddonName = '@deepseek-ai/node-addon-system-darwin-arm64'
+  const systemAddonSource = join(store, 'node_modules', systemAddonName)
+  await writeSimplePackage(systemAddonSource, {
+    name: systemAddonName,
+    version: '1.0.0',
+    main: './index.js',
+  })
   await writePackage(join(runtime, 'node_modules/koffi'), wrapperManifest('0.0.0'))
   await writePackage(join(runtime, 'node_modules/@koromix/koffi-darwin-arm64'), nativeManifest('3.0.0'), 'x64')
 
@@ -22,6 +29,10 @@ test('repairs the exact wrapper/native version instead of the first pnpm candida
   const result = await verifyDshNativePackages(runtime, { platform: 'darwin', arch: 'arm64' })
   assert.equal(result.nativeVersion, '3.1.1')
   assert.equal(JSON.parse(await readFile(join(runtime, 'node_modules/koffi/package.json'))).version, '3.1.1')
+  assert.equal(
+    JSON.parse(await readFile(join(runtime, 'node_modules', systemAddonName, 'package.json'))).version,
+    '1.0.0',
+  )
 })
 
 test('rejects placeholders, version mismatches, and wrong native architectures', async t => {
@@ -89,4 +100,10 @@ async function writePackage(directory, manifest, architecture) {
   binary.writeUInt32LE(architecture === 'arm64' ? 0x0100000c : 0x01000007, 4)
   await mkdir(join(directory, 'darwin_arm64'), { recursive: true })
   await writeFile(join(directory, 'darwin_arm64/koffi.node'), binary)
+}
+
+async function writeSimplePackage(directory, manifest) {
+  await mkdir(directory, { recursive: true })
+  await writeFile(join(directory, 'package.json'), `${JSON.stringify(manifest)}\n`)
+  await writeFile(join(directory, 'index.js'), 'module.exports = {}\n')
 }

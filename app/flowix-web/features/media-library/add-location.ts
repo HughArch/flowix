@@ -1,26 +1,19 @@
-import { canonicalDirectoryPath, canonicalPath, joinNotebookMemoPath, notebookRelativeDirectoryPath, parentDirectoryPath } from '@/lib/path';
+import { joinNotebookMemoPath } from '@/lib/path';
+import { resolveCollectionSaveDirectory } from '@features/collection/save-location';
+import { mediaLibraryFileCondition, type MediaLibraryDocument } from './model';
 
-/** Preferred import locations: active filter folder, library folder, then attachments/. */
-export function resolveMediaLibraryAddDirectories(
-  filePath: string,
-  notebookPath: string,
-  pathFilter?: string | null,
-): Array<string | null> {
-  const notebookRoot = canonicalDirectoryPath(notebookPath);
-  const configuredFolder = pathFilter?.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-  const libraryDirectory = parentDirectoryPath(filePath, notebookRoot);
-
-  const candidates: Array<string | null> = [];
-  if (configuredFolder) candidates.push(joinNotebookMemoPath(notebookRoot, configuredFolder));
-  if (notebookRelativeDirectoryPath(notebookRoot, libraryDirectory) !== null) {
-    candidates.push(libraryDirectory);
-  }
-  candidates.push(null); // Let the shared saver create/use the notebook's attachments/ directory.
-  const seen = new Set<string>();
-  return candidates.filter((path) => {
-    const key = path === null ? 'attachments' : canonicalPath(path);
-    if (seen.has(key)) return false;
-    seen.add(key);
-    return true;
+/** Null selects the shared saver's attachments default, including first-upload directory creation. */
+export function resolveMediaLibraryAddDirectory({ filePath, notebookPath, document }: {
+  filePath: string;
+  notebookPath: string;
+  document: MediaLibraryDocument;
+}): string | null {
+  const attachmentsDirectory = joinNotebookMemoPath(notebookPath, 'attachments');
+  if (!attachmentsDirectory) throw new Error('附件目录无效');
+  const configuredFolder = mediaLibraryFileCondition(document).path_contains;
+  const directory = resolveCollectionSaveDirectory({
+    filePath, notebookPath, placement: document.collection.placement, source: document.dataset.source,
+    configuredFolder, defaultDirectory: attachmentsDirectory,
   });
+  return document.collection.placement !== 'folder' && directory === attachmentsDirectory ? null : directory;
 }

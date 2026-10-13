@@ -446,7 +446,7 @@ describe("unified tool message rendering", () => {
     expect(toggle?.getAttribute("aria-expanded")).toBe("false");
 
     toggle?.click();
-    expect(setDisplayExpanded).toHaveBeenCalledWith("tool-1", true);
+    expect(setDisplayExpanded).toHaveBeenCalledWith("tool:tool-1", true);
     expect(content?.classList.contains(
       "agent-thread-card__message-tool-content--expanded",
     )).toBe(true);
@@ -456,7 +456,7 @@ describe("unified tool message rendering", () => {
     expect(toggle?.getAttribute("aria-expanded")).toBe("true");
 
     toggle?.click();
-    expect(setDisplayExpanded).toHaveBeenLastCalledWith("tool-1", false);
+    expect(setDisplayExpanded).toHaveBeenLastCalledWith("tool:tool-1", false);
     expect(content?.classList.contains(
       "agent-thread-card__message-tool-content--expanded",
     )).toBe(false);

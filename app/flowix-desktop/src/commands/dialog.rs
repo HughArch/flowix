@@ -11,10 +11,9 @@ use crate::app::state::AppState;
 
 // ==================== 鍩熷唴 helper ====================
 
-pub(crate) mod attachment_audit;
 mod attachments;
 mod base64_input;
-pub(crate) mod upload_journal;
+mod attachment_fingerprint;
 mod upload_quota;
 pub(crate) mod upload_sessions;
 
@@ -210,6 +209,7 @@ pub async fn save_notebook_asset(
     note_path: Option<String>,
     deduplicate: Option<bool>,
     reuse_notebook_file: Option<bool>,
+    reuse_existing_attachment: Option<bool>,
     target_directory_path: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<Option<attachments::SavedNotebookAsset>, String> {
@@ -267,6 +267,7 @@ pub async fn save_notebook_asset(
                 &mut reader,
                 deduplicate,
                 target_directory.as_deref(),
+                reuse_existing_attachment.unwrap_or(true),
             )
             .map_err(|error| error.to_string())?;
             Ok(Some(saved))

@@ -30,7 +30,7 @@ describe('attachment storage failures', () => {
         vi.mocked(invoke).mockResolvedValue({ path: '/notebook/attachments/fig.png', created: true });
         const result = await createAttachmentUploadFromPaths(['/selected/fig.png'], { notebookId: 'notebook-owner' });
         expect(invoke).toHaveBeenCalledWith('save_notebook_asset', {
-            sourcePath: '/selected/fig.png', notebookId: 'notebook-owner', deduplicate: false, reuseNotebookFile: true,
+            sourcePath: '/selected/fig.png', notebookId: 'notebook-owner', deduplicate: true, reuseNotebookFile: false, reuseExistingAttachment: true,
         });
         expect(result.assets[0].storageKey).toBe('/notebook/attachments/fig.png');
     });
@@ -72,7 +72,7 @@ describe('attachment storage failures', () => {
         const controller = new AbortController();
         vi.mocked(uploadInChunks).mockResolvedValue({ path: '/attachments/file.txt', created: true });
         const result = await createAttachmentUpload([file], undefined, undefined, 'memo-a', controller.signal);
-        expect(uploadInChunks).toHaveBeenCalledWith(file, 'file.txt', 'memo-a', controller.signal);
+        expect(uploadInChunks).toHaveBeenCalledWith(file, 'file.txt', 'memo-a', controller.signal, true);
         expect(invoke).not.toHaveBeenCalled();
         expect(result.assets[0].storageKey).toBe('/attachments/file.txt');
     });
@@ -80,8 +80,8 @@ describe('attachment storage failures', () => {
     it('sends the same note path for every file in a batch', async () => {
         vi.mocked(invoke).mockResolvedValue({ path: '/attachments/saved.txt', created: true });
         await createAttachmentUploadFromPaths(['/one.txt', '/two.txt'], { ownerPath: 'memo-a' });
-        expect(invoke).toHaveBeenNthCalledWith(1, 'save_notebook_asset', { sourcePath: '/one.txt', notePath: 'memo-a', deduplicate: false, reuseNotebookFile: true });
-        expect(invoke).toHaveBeenNthCalledWith(2, 'save_notebook_asset', { sourcePath: '/two.txt', notePath: 'memo-a', deduplicate: false, reuseNotebookFile: true });
+        expect(invoke).toHaveBeenNthCalledWith(1, 'save_notebook_asset', { sourcePath: '/one.txt', notePath: 'memo-a', deduplicate: true, reuseNotebookFile: false, reuseExistingAttachment: true });
+        expect(invoke).toHaveBeenNthCalledWith(2, 'save_notebook_asset', { sourcePath: '/two.txt', notePath: 'memo-a', deduplicate: true, reuseNotebookFile: false, reuseExistingAttachment: true });
     });
 
     it('does not mix note paths between overlapping uploads', async () => {
@@ -90,8 +90,8 @@ describe('attachment storage failures', () => {
             createAttachmentUploadFromPaths(['/one.txt'], { ownerPath: 'memo-a' }),
             createAttachmentUploadFromPaths(['/two.txt'], { ownerPath: 'memo-b' }),
         ]);
-        expect(invoke).toHaveBeenCalledWith('save_notebook_asset', { sourcePath: '/one.txt', notePath: 'memo-a', deduplicate: false, reuseNotebookFile: true });
-        expect(invoke).toHaveBeenCalledWith('save_notebook_asset', { sourcePath: '/two.txt', notePath: 'memo-b', deduplicate: false, reuseNotebookFile: true });
+        expect(invoke).toHaveBeenCalledWith('save_notebook_asset', { sourcePath: '/one.txt', notePath: 'memo-a', deduplicate: true, reuseNotebookFile: false, reuseExistingAttachment: true });
+        expect(invoke).toHaveBeenCalledWith('save_notebook_asset', { sourcePath: '/two.txt', notePath: 'memo-b', deduplicate: true, reuseNotebookFile: false, reuseExistingAttachment: true });
     });
 
     it('rejects oversized Base64 uploads before reading or invoking storage', async () => {

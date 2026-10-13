@@ -33,6 +33,17 @@ if (typeof window !== 'undefined' && typeof window.matchMedia !== 'function') {
   });
 }
 
+// jsdom has no ResizeObserver; layout tests only need construction and
+// observation to succeed unless they provide their own callback behavior.
+if (typeof globalThis.ResizeObserver === 'undefined') {
+  globalThis.ResizeObserver = class implements ResizeObserver {
+    constructor(_callback: ResizeObserverCallback) {}
+    observe(_target: Element) {}
+    unobserve(_target: Element) {}
+    disconnect() {}
+  };
+}
+
 // jsdom 缺少滚动 API；锚点定位等逻辑只关心调用不抛错，滚动位置无需断言。
 if (typeof Element !== 'undefined') {
   if (typeof Element.prototype.scrollTo !== 'function') {

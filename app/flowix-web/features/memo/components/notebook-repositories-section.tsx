@@ -1,0 +1,406 @@
+import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { ChevronRight, Plus } from 'lucide-react';
+import { CopyIcon, FolderOpenIcon, MinusCircleIcon, PencilSimpleIcon, SquareSplitHorizontalIcon, TrashSimpleIcon } from '@phosphor-icons/react';
+import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
+import type { WorkspaceAgentRepository } from '@features/agent/public/workspace-api';
+import { localDocumentOperations } from '@features/document/public/file-operations-api';
+import { ResourceFileIcon, ResourceFolderIcon } from '@features/surface/resource-file-icon';
+import { resourceKindFromPath } from '@features/editor/code-file';
+import { files, dialogs, product, type DocTreeItem } from '@platform/tauri/client';
+import { canonicalPath, parentDirectoryPath, samePath } from '@/lib/path';
+import { cn, displayTitleFromFilename, isMediaLibraryFilename, isTableDocumentFilename, mediaLibraryExtension, tableDocumentExtension } from '@/lib/utils';
+import { createLogger } from '@/lib/logger';
+import { toast } from '@/lib/toast';
+import { useI18n } from '@/lib/i18n';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
+import { ListSurfaceSpinner } from '@shared/ui/list-surface';
+import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSubmenu, ContextMenuTrigger } from '@shared/ui/context-menu';
+import { NotebookCopyContextMenu } from './notebook-copy-context-menu';
+import { useFolderTree } from './use-folder-tree';
+import { TREE_EDGE_GUTTER, INDENT_PER_LEVEL } from './notebook-tree-layout';
+
+const logger = createLogger('notebook-repositories');
+
+function AgentRepositoryItem({
+  repository,
+  onOpenFile,
+  onRemoveRepository,
+  onExpandRepository,
+  onOpenInNewTab,
+}: {
+  repository: WorkspaceAgentRepository;
+  onOpenFile: (path: string, scopePath: string) => void;
+  onRemoveRepository: (repository: WorkspaceAgentRepository) => void;
+  onExpandRepository: (element: HTMLElement) => void;
+  onOpenInNewTab?: (path: string) => void;
+}) {
+  const { t } = useI18n();
+  const [expanded, setExpanded] = useState(false);
+  const repositoryRef = useRef<HTMLDivElement | null>(null);
+  const pendingExpandScrollRef = useRef(false);
+  const [renaming, setRenaming] = useState<{ item: DocTreeItem; value: string } | null>(null);
+  const [deleting, setDeleting] = useState<DocTreeItem | null>(null);
+  const tree = useFolderTree(repository.path, { enabled: expanded });
+  useLayoutEffect(() => {
+    if (!expanded || tree.loading || !pendingExpandScrollRef.current) return;
+    pendingExpandScrollRef.current = false;
+    const frame = window.requestAnimationFrame(() => {
+      if (repositoryRef.current) onExpandRepository(repositoryRef.current);
+    });
+    return () => window.cancelAnimationFrame(frame);
+  }, [expanded, onExpandRepository, tree.loading, tree.rootChildren.length]);
+  const activeFilePath = useWorkColumnStore((state) => {
+    const target = state.navigation.target;
+    if (target.kind === 'external') return target.path;
+    if (target.kind === 'media') return target.filePath;
+    return null;
+  });
+  const renameItem = async (item: DocTreeItem, value: string) => {
+    const name = value.trim();
+    setRenaming(null);
+    const isTableDocument = item.type === 'document' && isTableDocumentFilename(item.name);
+    const isMediaLibrary = item.type === 'document' && isMediaLibraryFilename(item.name);
+    const currentName = isTableDocument || isMediaLibrary ? displayTitleFromFilename(item.name) : item.name;
+    if (!name || name === currentName) return;
+    try {
+      if (item.type === 'folder') await files.renameFolder(item.fullPath, name, repository.path);
+      else {
+        const extension = isTableDocument ? tableDocumentExtension(item.name) : isMediaLibrary ? mediaLibraryExtension(item.name) : '';
+        await localDocumentOperations.rename({ path: item.fullPath, name: `${name}${extension}`, scopePath: repository.path });
+      }
+      await tree.refresh(parentDirectoryPath(item.fullPath, repository.path));
+      toast.success(t('memo.fileTree.renamed', { name }));
+    } catch (error) {
+      toast.error(t(String(error).includes('FILE_EXISTS') ? 'memo.fileTree.nameConflict' : 'memo.fileTree.renameFailed'));
+    }
+  };
+  const confirmDelete = async () => {
+    if (!deleting) return;
+    try {
+      const ok = deleting.type === 'folder'
+        ? await files.deleteFolder(deleting.fullPath, repository.path)
+        : await files.delete(deleting.fullPath, repository.path);
+      if (!ok) throw new Error('delete failed');
+      await tree.refresh(parentDirectoryPath(deleting.fullPath, repository.path));
+      toast.success(t('memo.fileTree.deleted', { name: deleting.name }));
+      setDeleting(null);
+    } catch (error) {
+      await tree.refresh(parentDirectoryPath(deleting.fullPath, repository.path)).catch(() => {});
+      toast.error(t(String(error).includes('FOLDER_DELETE_PARTIAL') ? 'memo.fileTree.deletePartialFailed' : 'memo.fileTree.deleteFailed'));
+    }
+  };
+  const importIntoRepository = async (targetDirectoryPath: string) => {
+    const selectedPaths = await dialogs.selectFiles({ multiple: true });
+    if (!selectedPaths?.length) return;
+    let failed = 0;
+    for (const sourcePath of selectedPaths) {
+      try {
+        await files.importFile(sourcePath, targetDirectoryPath, repository.path);
+      } catch (error) {
+        logger.warn('importing file into access space failed', { error, sourcePath, targetDirectoryPath });
+        failed += 1;
+      }
+    }
+    await tree.refresh(targetDirectoryPath);
+    if (failed) toast.error(t('memo.fileTree.movePartialFailed', { moved: selectedPaths.length - failed, failed }));
+  };
+  const renderRepositoryItems = (items: DocTreeItem[], depth: number): ReactNode[] => items.map((item) => {
+    const isFolder = item.type === 'folder';
+    const isActive = !isFolder && activeFilePath != null && samePath(item.fullPath, activeFilePath);
+    const key = canonicalPath(item.fullPath);
+    const itemExpanded = isFolder && tree.expanded.has(key);
+    const folderName = item.fullPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? item.name;
+    const isHiddenFolder = isFolder && folderName.startsWith('.');
+    const children = isFolder ? tree.nodes.get(key)?.children ?? [] : [];
+    return (
+      <ContextMenu key={item.id}>
+      <ContextMenuTrigger asChild>
+      <div className="folder-file-tree__group relative">
+        <button
+          type="button"
+          aria-expanded={isFolder ? itemExpanded : undefined}
+          aria-current={isActive ? 'page' : undefined}
+          title={item.fullPath}
+          onClick={() => renaming?.item.id === item.id ? undefined : isFolder
+            ? tree.toggle(item.fullPath)
+            : onOpenFile(item.fullPath, repository.path)}
+          className={cn(
+            'folder-file-tree__item group relative flex h-7 items-center rounded-lg px-1.5 text-left text-[13px] font-normal leading-[1.6] text-[var(--foreground)] transition-colors duration-150 cursor-pointer hover:bg-[var(--muted)]',
+            isActive && 'bg-[var(--muted)] text-[var(--foreground)]',
+          )}
+          style={{
+            marginLeft: TREE_EDGE_GUTTER + depth * INDENT_PER_LEVEL,
+            width: `calc(100% - ${TREE_EDGE_GUTTER * 2 + depth * INDENT_PER_LEVEL}px)`,
+          }}
+        >
+          {isFolder ? (
+            <span className="relative h-[18px] w-[18px] shrink-0">
+              <ChevronRight
+                aria-hidden="true"
+                className={cn(
+                  'absolute left-1/2 top-1/2 h-[15px] w-[15px] -translate-x-1/2 -translate-y-1/2 text-[color-mix(in_oklch,var(--foreground)_70%,black_30%)] [[data-theme="dark"]_&]:text-[var(--foreground)] opacity-0 transition-[opacity,transform] duration-150 group-hover:opacity-100 group-focus-visible:opacity-100',
+                  itemExpanded && 'rotate-90',
+                )}
+              />
+              <ResourceFolderIcon
+                expanded={itemExpanded}
+                hidden={isHiddenFolder}
+                className="absolute left-1/2 top-1/2 h-4 w-4 -translate-x-1/2 -translate-y-1/2 transition-opacity duration-150 group-hover:opacity-0 group-focus-visible:opacity-0"
+              />
+            </span>
+          ) : (
+            <ResourceFileIcon path={item.fullPath} size={18} className="h-[18px] w-[18px] shrink-0" />
+          )}
+          {renaming?.item.id === item.id ? (
+            <input
+              autoFocus
+              value={renaming.value}
+              onChange={(event) => setRenaming({ item, value: event.target.value })}
+              onBlur={() => void renameItem(item, renaming.value)}
+              onKeyDown={(event) => {
+                if (event.key === 'Enter') void renameItem(item, renaming.value);
+                if (event.key === 'Escape') setRenaming(null);
+              }}
+              onClick={(event) => event.stopPropagation()}
+              className="ml-1.5 h-5 min-w-0 flex-1 border-0 bg-transparent px-0 text-[13px] outline-none"
+            />
+          ) : (
+            <span className={cn(
+              'ml-1.5 min-w-0 flex-1 truncate',
+              isActive ? 'opacity-100' : 'opacity-[0.82]',
+            )}>
+              {item.type === 'document' && (isTableDocumentFilename(item.name) || isMediaLibraryFilename(item.name))
+                ? displayTitleFromFilename(item.name)
+                : item.name}
+            </span>
+          )}
+          {tree.loadingDirectories.has(key) && (
+            <ListSurfaceSpinner className="mr-1 h-3.5 w-3.5" ariaLabel={t('memo.fileTree.loading')} />
+          )}
+        </button>
+        {isFolder && (children.length > 0 || tree.directoryErrors.has(key) || tree.loadingDirectories.has(key)) && (
+          <div
+            className="folder-file-tree__subtree"
+            data-expanded={itemExpanded}
+            style={{
+              '--folder-file-tree-guide-left': `${TREE_EDGE_GUTTER + depth * INDENT_PER_LEVEL + 6 + 8}px`,
+            } as CSSProperties}
+          >
+            <div className="folder-file-tree__subtree-inner">
+              <div className="folder-file-tree__subtree-items">
+                {tree.directoryErrors.has(key) && (
+                  <div className="flex min-h-7 items-center gap-2 px-2 text-xs text-[var(--muted-foreground)]" style={{ marginLeft: depth * INDENT_PER_LEVEL }} role="alert">
+                    <span className="min-w-0 flex-1 truncate">{t('memo.fileTree.unreadableHint')}</span>
+                    <button type="button" className="shrink-0 rounded-lg px-1.5 py-0.5 text-[var(--foreground)] hover:bg-[var(--muted)]" onClick={() => void tree.retryDirectory(item.fullPath)}>
+                      {t('error.retry')}
+                    </button>
+                  </div>
+                )}
+                {itemExpanded ? renderRepositoryItems(children, depth + 1) : null}
+              </div>
+            </div>
+          </div>
+        )}
+      </div>
+      </ContextMenuTrigger>
+      <ContextMenuContent className="w-[180px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+        {!isFolder && onOpenInNewTab && <ContextMenuItem onClick={() => onOpenInNewTab(item.fullPath)} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><SquareSplitHorizontalIcon className="mr-2 h-4 w-4" aria-hidden="true" />{t('memo.fileTree.openInRight')}</ContextMenuItem>}
+        <ContextMenuSubmenu label={t('memo.create.more')} icon={<Plus className="h-4 w-4" aria-hidden="true" />}>
+          <ContextMenuItem onClick={() => { void importIntoRepository(isFolder ? item.fullPath : parentDirectoryPath(item.fullPath, repository.path)); }} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
+            {t('memo.fileTree.import')}
+          </ContextMenuItem>
+        </ContextMenuSubmenu>
+        <ContextMenuItem onClick={() => setRenaming({ item, value: item.type === 'document' && (isTableDocumentFilename(item.name) || isMediaLibraryFilename(item.name)) ? displayTitleFromFilename(item.name) : item.name })} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><PencilSimpleIcon className="mr-2 h-4 w-4" aria-hidden="true" />{t('memo.fileTree.rename')}</ContextMenuItem>
+        {!isFolder && <NotebookCopyContextMenu path={item.fullPath} isNote={(item.resourceKind ?? resourceKindFromPath(item.name)) === 'note'} />}
+        {isFolder && <ContextMenuItem onClick={async () => { try { await navigator.clipboard.writeText(item.fullPath); toast.success(t('memo.fileTree.pathCopied')); } catch { toast.error(t('memo.fileTree.copyFailed')); } }} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><CopyIcon className="mr-2 h-4 w-4" aria-hidden="true" />{t('memo.fileTree.copyPath')}</ContextMenuItem>}
+        <ContextMenuItem onClick={() => { void product.revealInFileManager(item.fullPath).catch(() => toast.error(t('memo.fileTree.openFailed'))); }} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><FolderOpenIcon className="mr-2 h-4 w-4" aria-hidden="true" />{t('memo.fileTree.reveal')}</ContextMenuItem>
+        {!isFolder && (item.resourceKind ?? resourceKindFromPath(item.name)) !== 'note' && <ContextMenuSeparator />}
+        <ContextMenuItem onClick={() => setDeleting(item)} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-transparent hover:text-[var(--destructive)]"><TrashSimpleIcon className="mr-2 h-4 w-4" aria-hidden="true" />{t('memo.fileTree.delete')}</ContextMenuItem>
+      </ContextMenuContent>
+      </ContextMenu>
+    );
+  });
+
+  return (
+    <>
+      <div className={cn(
+        'mx-[6px] overflow-hidden rounded-xl transition-colors',
+        expanded && 'mb-1 border border-[var(--border)] bg-[var(--card)] p-0.5 py-1',
+      )} ref={repositoryRef}>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          <button
+              type="button"
+              aria-expanded={expanded}
+              title={repository.path}
+              onClick={() => {
+                pendingExpandScrollRef.current = !expanded;
+                setExpanded(!expanded);
+              }}
+              className="group flex h-7 w-full items-center rounded-lg px-1.5 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--muted)]"
+            >
+              <span className="relative h-[18px] w-[18px] shrink-0">
+                <ChevronRight className={cn(
+                  'absolute left-1/2 top-1/2 h-[15px] w-[15px] -translate-x-1/2 -translate-y-1/2 text-[color-mix(in_oklch,var(--foreground)_70%,black_30%)] [[data-theme="dark"]_&]:text-[var(--foreground)] opacity-100 transition-[opacity,transform]',
+                  expanded && 'rotate-90',
+                )} aria-hidden="true" />
+              </span>
+              <span className="ml-1.5 min-w-0 flex-1 truncate opacity-[0.82]">
+                {repository.name}
+              </span>
+          </button>
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-[180px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+          <ContextMenuItem
+            onClick={() => onRemoveRepository(repository)}
+            className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-transparent hover:text-[var(--destructive)]"
+          >
+            <MinusCircleIcon className="mr-2 h-4 w-4" aria-hidden="true" />
+            {t('agent.workspace.removeRepository')}
+          </ContextMenuItem>
+        </ContextMenuContent>
+      </ContextMenu>
+      {expanded && (
+        <div className="folder-file-tree__items">
+          {tree.loading && tree.nodes.size === 0 && (
+            <div className="flex min-h-7 items-center px-2 text-xs text-[var(--muted-foreground)]" style={{ marginLeft: TREE_EDGE_GUTTER + 20 }}>
+              {t('memo.fileTree.loading')}
+            </div>
+          )}
+          {tree.error && (
+            <button
+              type="button"
+              onClick={() => void tree.reload()}
+              className="flex min-h-7 items-center rounded-lg px-2 text-xs text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
+              style={{ marginLeft: TREE_EDGE_GUTTER + 20 }}
+            >
+              {t('error.retry')}
+            </button>
+          )}
+          {!tree.loading && !tree.error && tree.rootChildren.length === 0 && (
+            <div className="flex min-h-7 items-center px-2 text-xs text-[var(--muted-foreground)]" style={{ marginLeft: TREE_EDGE_GUTTER + 20 }}>
+              {t('memo.fileTree.empty')}
+            </div>
+          )}
+          {renderRepositoryItems(tree.rootChildren, 0)}
+        </div>
+      )}
+      </div>
+      <Dialog open={deleting !== null} onOpenChange={(open) => { if (!open) setDeleting(null); }}>
+        <DialogContent className="rounded-xl border border-[var(--border-popup)] bg-[var(--card)]">
+          <DialogHeader>
+            <DialogTitle>{deleting?.type === 'folder' ? t('memo.fileTree.deleteFolderTitle') : t('document.external.deleteFileTitle')}</DialogTitle>
+            <DialogDescription>{deleting?.type === 'folder' ? t('memo.fileTree.deleteFolderDescription') : t('document.external.deleteFileDescription', { name: deleting?.name ?? '' })}</DialogDescription>
+          </DialogHeader>
+          <div className="mt-4 flex justify-end gap-2">
+            <button type="button" onClick={() => setDeleting(null)} className="h-8 rounded-lg px-3 text-sm hover:bg-[var(--muted)]">{t('dialog.cancel')}</button>
+            <button type="button" onClick={() => void confirmDelete()} className="h-8 rounded-lg border border-[var(--border)] px-3 text-sm hover:border-[var(--destructive)] hover:bg-[var(--destructive)] hover:text-white">{t('dialog.delete')}</button>
+          </div>
+        </DialogContent>
+      </Dialog>
+    </>
+  );
+}
+
+export function AgentRepositoriesSection({
+  repositories,
+  order,
+  onHeightChange,
+  sectionActions,
+  onAddRepository,
+  onRemoveRepository,
+  onExpandRepository,
+  canAddRepository,
+  onOpenFile,
+  onOpenInNewTab,
+}: {
+  repositories: WorkspaceAgentRepository[];
+  order: number;
+  onHeightChange: (height: number) => void;
+  sectionActions?: ReactNode;
+  onAddRepository: () => void;
+  onRemoveRepository: (repository: WorkspaceAgentRepository) => void;
+  onExpandRepository: (element: HTMLElement) => void;
+  canAddRepository: boolean;
+  onOpenFile: (path: string, scopePath: string) => void;
+  onOpenInNewTab?: (path: string) => void;
+}) {
+  const { t } = useI18n();
+  const sectionRef = useRef<HTMLElement | null>(null);
+  const [collapsed, setCollapsed] = useState(false);
+  useLayoutEffect(() => {
+    const section = sectionRef.current;
+    if (!section) return;
+    const reportHeight = () => onHeightChange(section.getBoundingClientRect().height);
+    reportHeight();
+    if (typeof ResizeObserver === 'undefined') return;
+    const observer = new ResizeObserver(reportHeight);
+    observer.observe(section);
+    return () => observer.disconnect();
+  }, [collapsed, onHeightChange, repositories]);
+
+  return (
+    <section
+      ref={sectionRef}
+      className="pb-3"
+      aria-label={t('memo.fileTree.repositoriesTitle')}
+      data-notebook-repositories-section="true"
+      style={{ order }}
+    >
+      <div
+        className="notebook-file-tree__section-header group mb-0.5 flex h-7 items-center rounded-lg px-1.5 transition-colors hover:bg-[var(--muted)]"
+        style={{ marginLeft: TREE_EDGE_GUTTER, width: `calc(100% - ${TREE_EDGE_GUTTER * 2}px)` }}
+      >
+        <button
+          type="button"
+          className="flex h-full items-center gap-0.5 text-[0.82rem] font-medium text-[var(--muted-foreground)] opacity-90 hover:text-[var(--foreground)] focus-visible:outline-none"
+          aria-label={t(collapsed ? 'memo.fileTree.expandRepositories' : 'memo.fileTree.collapseRepositories')}
+          title={t(collapsed ? 'memo.fileTree.expandRepositories' : 'memo.fileTree.collapseRepositories')}
+          onClick={() => setCollapsed((value) => !value)}
+        >
+          <span>{t('memo.fileTree.repositoriesTitle')}</span>
+          <ChevronRight className={cn(
+            'h-3.5 w-3.5 opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-within:opacity-100',
+            collapsed && 'opacity-100',
+            !collapsed && 'rotate-90',
+          )} aria-hidden="true" />
+        </button>
+        <div className="ml-auto flex items-center">
+          {sectionActions}
+          <button
+            type="button"
+            className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
+            aria-label={t('agent.workspace.addRepository')}
+            title={t('agent.workspace.addRepository')}
+            disabled={!canAddRepository}
+            onClick={onAddRepository}
+          >
+            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
+        </div>
+      </div>
+      {!collapsed && (
+        <>
+          {repositories.length > 0 ? repositories.map((repository) => (
+            <AgentRepositoryItem
+              key={repository.path}
+              repository={repository}
+              onOpenFile={onOpenFile}
+              onRemoveRepository={onRemoveRepository}
+              onExpandRepository={onExpandRepository}
+              onOpenInNewTab={onOpenInNewTab}
+            />
+          )) : (
+            <div
+              className="flex h-7 items-center justify-center px-1.5 text-xs text-[var(--muted-foreground)] opacity-50"
+              style={{ marginLeft: TREE_EDGE_GUTTER, width: `calc(100% - ${TREE_EDGE_GUTTER * 2}px)` }}
+            >
+              {t('memo.fileTree.repositoriesEmpty')}
+            </div>
+          )}
+        </>
+      )}
+    </section>
+  );
+}
+

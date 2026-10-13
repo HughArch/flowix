@@ -47,7 +47,6 @@ import {
 } from '@features/agent/public/global-search-api';
 import { getAgentType } from '@/lib/agent-types';
 import {
-  memos,
   notes,
   tags,
   windows,
@@ -524,7 +523,7 @@ function StaticGroups({ onClose }: StaticGroupsProps) {
         .catch((err) => {
           if (!cancelled) logger.warn('load tags failed', { error: err });
         }),
-      memos
+      notes
         .listTemplates()
         .then((templates) => {
           if (!cancelled) setTemplateList(templates);

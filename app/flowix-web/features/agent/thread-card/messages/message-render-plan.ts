@@ -4,7 +4,8 @@ export type MessageRenderPlanKind =
   | "patch-last"
   | "append-tail"
   | "replace-empty"
-  | "replace-all";
+  | "replace-all"
+  | "reconcile-rows";
 
 export interface MessageRenderPlanStats {
   total: number;
@@ -14,6 +15,7 @@ export interface MessageRenderPlanStats {
   appendTail: number;
   replaceEmpty: number;
   replaceAll: number;
+  reconcileRows: number;
   last: {
     kind: MessageRenderPlanKind;
     messageCount: number;
@@ -34,6 +36,7 @@ function createStats(): MessageRenderPlanStats {
     appendTail: 0,
     replaceEmpty: 0,
     replaceAll: 0,
+    reconcileRows: 0,
     last: null,
   };
 }
@@ -58,6 +61,7 @@ export function recordMessageRenderPlan(
   else if (kind === "patch-last") stats.patchLast += 1;
   else if (kind === "append-tail") stats.appendTail += 1;
   else if (kind === "replace-empty") stats.replaceEmpty += 1;
+  else if (kind === "reconcile-rows") stats.reconcileRows += 1;
   else stats.replaceAll += 1;
 
   stats.last = {

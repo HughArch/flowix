@@ -1,7 +1,8 @@
 'use client';
 
 import { useCallback, useMemo, useState } from 'react';
-import { Pencil, RotateCcw, AlertTriangle } from 'lucide-react';
+import { RotateCcw, AlertTriangle } from 'lucide-react';
+import { PencilSimpleIcon } from '@phosphor-icons/react';
 import {
   type ActionDefinition,
   type ConflictReport,
@@ -197,7 +198,7 @@ function ShortcutRow({
 
   return (
     <div
-      className={`flex items-center justify-between gap-4 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2.5 transition-colors hover:bg-[var(--muted)] ${
+      className={`flex items-center justify-between gap-4 rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-2.5 ${
         isConflicting ? 'ring-1 ring-inset ring-[var(--destructive)]/40' : ''
       }`}
     >
@@ -235,13 +236,15 @@ function ShortcutRow({
           <span className="text-xs text-[var(--muted-foreground)]">{t('preferences.shortcuts.unbound')}</span>
         )}
         <Button
+          type="button"
           variant="ghost"
           size="sm"
           onClick={onEdit}
-          className="h-7 px-2 text-xs"
+          className="h-7 rounded-lg px-2 text-xs"
           aria-label={`${t('preferences.shortcuts.edit')} — ${actionTitle}`}
+          title={t('preferences.shortcuts.edit')}
         >
-          <Pencil className="mr-1 h-3 w-3" />
+          <PencilSimpleIcon className="h-3.5 w-3.5" aria-hidden="true" />
           {t('preferences.shortcuts.edit')}
         </Button>
         {hasOverride && (

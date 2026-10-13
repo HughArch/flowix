@@ -36,6 +36,7 @@ export interface AgentAccessState {
   notebookConfigs: Record<string, NotebookAgentConfig>;
   isLoading: boolean;
   hasLoaded: boolean;
+  loadError: string | null;
 
   /** 从磁盘拉整份 config ── 启动 / 跨窗口事件 / 写失败回滚都走它。 */
   loadInitial: () => Promise<void>;
@@ -73,6 +74,7 @@ export interface AgentAccessState {
 }
 
 const EMPTY_CONFIG: AgentAccessConfig = { version: 1, entries: [], defaults: {} };
+let loadGeneration = 0;
 
 function mergeConcurrentConfigWrite(
   loaded: AgentAccessConfig,
@@ -111,16 +113,20 @@ export const useAgentAccessStore = create<AgentAccessState>((set, get) => ({
   notebookConfigs: {},
   isLoading: false,
   hasLoaded: false,
+  loadError: null,
 
   loadInitial: async () => {
+    const generation = ++loadGeneration;
     const configAtStart = get().config;
-    set({ isLoading: true });
+    set({ isLoading: true, loadError: null });
     try {
       // Notebook-local config is the source of truth for add-dir roots.
       const [config, notebookConfigs] = await Promise.all([
         agentAccess.get(),
         agentAccess.getNotebookConfigs?.() ?? Promise.resolve({}),
       ]);
+      // Initial hydration and listener-ready reconciliation may overlap.
+      if (generation !== loadGeneration) return;
       // Preserve a local settings write made while this read was in flight.
       const latestConfig = get().config;
       set({
@@ -130,11 +136,9 @@ export const useAgentAccessStore = create<AgentAccessState>((set, get) => ({
         hasLoaded: true,
       });
     } catch (e) {
-      // 静默失败 ── 与 `user-settings-store.loadInitial` 同形, 把
-      // 错误信息留给后续用户操作触发。 UI 在 config.entries 为空时
-      // 会渲染空状态, 不会卡死。
+      if (generation !== loadGeneration) return;
       logger.error("agentAccess.loadInitial failed:", { error: e });
-      set({ isLoading: false });
+      set({ isLoading: false, loadError: e instanceof Error ? e.message : String(e) });
     }
   },  addFolder: async (path: string, name?: string) => {
     const entry = makeLocalFolderEntry(path, name);

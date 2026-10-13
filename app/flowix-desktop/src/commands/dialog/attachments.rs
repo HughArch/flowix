@@ -184,6 +184,7 @@ pub(super) fn save_for_owner(
         reader,
         deduplicate,
         None,
+        true,
     )
 }
 
@@ -196,16 +197,17 @@ pub(super) fn save_for_owner_in_directory(
     reader: &mut impl Read,
     deduplicate: bool,
     target_directory: Option<&Path>,
+    reuse_existing_attachment: bool,
 ) -> io::Result<SavedNotebookAsset> {
-    let (notebook_id, owner_note) = resolve_note_owner(store, notebook_id, note_path)?;
+    let (notebook_id, _owner_note) = resolve_note_owner(store, notebook_id, note_path)?;
     save_locked(
         store,
         Some(&notebook_id),
-        owner_note.as_deref(),
         name,
         reader,
         deduplicate,
         target_directory,
+        reuse_existing_attachment,
     )
 }
 
@@ -216,18 +218,18 @@ fn save(
     name: &str,
     reader: &mut impl Read,
 ) -> io::Result<PathBuf> {
-    save_locked(store, notebook_id, None, name, reader, false, None)
+    save_locked(store, notebook_id, name, reader, false, None, true)
         .map(|saved| PathBuf::from(saved.path))
 }
 
 fn save_locked(
     store: &MemoFile,
     notebook_id: Option<&str>,
-    owner_note: Option<&str>,
     name: &str,
     reader: &mut impl Read,
     deduplicate: bool,
     target_directory: Option<&Path>,
+    reuse_existing_attachment: bool,
 ) -> io::Result<SavedNotebookAsset> {
     let root = notebook_root(store, notebook_id)?;
     let lock_id = store
@@ -284,7 +286,7 @@ fn save_locked(
     temporary.as_ref().unwrap().as_file().sync_all()?;
     // Prefer an already stored attachment when a caller selected a custom
     // notebook folder. This lets the editor and media library share assets.
-    if deduplicate && directory != attachments_directory {
+    if deduplicate && reuse_existing_attachment && directory != attachments_directory {
         if let Ok(attachment_directory) = dunce::canonicalize(&attachments_directory) {
             if attachment_directory.starts_with(&root) {
                 let attachment = attachment_directory.join(&name);
@@ -333,27 +335,8 @@ fn save_locked(
                     Err(error) if error.kind() == io::ErrorKind::NotFound => {}
                     Err(error) => return Err(error),
                 }
-                let journal = if path_is_inside(locked_target, &attachments_directory) {
-                    Some(super::upload_journal::prepare(
-                        &root,
-                        locked_target,
-                        owner_note,
-                        &fingerprint,
-                    )?)
-                } else {
-                    None
-                };
                 match temporary.take().unwrap().persist_noclobber(locked_target) {
-                    Ok(_) => {
-                        if let Some(journal) = journal {
-                            if let Err(error) = journal.confirm() {
-                                tracing::warn!(
-                                    "Attachment saved; recovery confirmation failed: {error}"
-                                );
-                            }
-                        }
-                        Ok(TargetResult::Created)
-                    }
+                    Ok(_) => Ok(TargetResult::Created),
                     Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
                         temporary = Some(error.file);
                         Ok(TargetResult::Occupied)
@@ -412,7 +395,7 @@ fn matches_fingerprint(
         return Ok(false);
     }
     let mut existing = fs::File::open(path)?;
-    Ok(super::upload_journal::fingerprint(&mut existing)? == *fingerprint)
+    Ok(super::attachment_fingerprint::fingerprint(&mut existing)? == *fingerprint)
 }
 
 pub(super) fn authorized_attachment(store: &MemoFile, source: &Path) -> io::Result<PathBuf> {

@@ -1,3 +1,8 @@
+import { propertyImagePaths as imagePaths, selectPropertyImage } from '@features/document/properties/image-value-input';
+import { countPresetTableReferences, deletePresetEverywhere, ensureTableFieldPreset, migrateNotePropertyKey, updatePresetFromTable } from '@features/properties/property-preset-service';
+import { usePropertyPresetStore } from '@features/properties/property-preset-store';
+import { DeletePresetDialog } from '@features/properties/delete-preset-dialog';
+import { PROPERTY_TYPES_KEY, readPropertyTypes } from '@features/document/properties/property-type-metadata';
 import { NoteCreatePicker } from './note-create-picker';
 import { collectionSessionKey } from '@/lib/collection-session-key';
 'use client';
@@ -5,19 +10,21 @@ import { collectionSessionKey } from '@/lib/collection-session-key';
 import { mutateCollectionFile } from '@features/collection/mutations';
 import { FolderCollectionSwitchConfirmDialog } from '@features/collection/public/folder-api';
 import { reviseCollection, type CollectionSource } from '@features/collection/model';
+import { resolveCollectionSaveDirectory } from '@features/collection/save-location';
 import { collectionFilterUsesField, type CollectionRuleFilter } from '@features/collection/rule-filter';
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react';
-import { ChevronLeft, ChevronRight, LoaderCircle, Plus, Info, Table2 } from 'lucide-react';
+import { ChevronLeft, ChevronRight, LoaderCircle, Plus, MousePointerClick, Table2 } from 'lucide-react';
 import { DotsThreeIcon, EyeIcon, EyeSlashIcon, PencilSimpleIcon, TrashIcon } from '@phosphor-icons/react';
-import { notebookAssets, dialogs, collections, notes as notesClient, windows, type NoteEntry } from '@platform/tauri/client';
+import { collections, notes as notesClient, windows, type NoteEntry } from '@platform/tauri/client';
 import { canonicalDirectoryPath, canonicalPath, joinNotebookMemoPath, notebookRelativeDirectoryPath, parentDirectoryPath } from '@/lib/path';
 import { toast } from '@/lib/toast';
-import { canonicalizePropertyKey } from '@features/document/properties/property-key';
-import { removeDocumentProperty, setDocumentProperties } from '@features/document/public/path-properties';
+import { canonicalizePropertyKey, isSystemPropertyKey } from '@features/properties/property-key';
+import type { PropertyFieldConfig } from '@/lib/constants';
+import { compareAndPatchDocumentProperties, removeDocumentProperty, setDocumentProperties } from '@features/document/public/path-properties';
 import { PROPERTY_URL_RE } from '@features/document/properties/property-type';
 import { assetUrl, decodeStorageKey } from '@features/editor/extensions/attachment-link/utils';
-import { getAllPresets, resolvePropertyDisplayName, type PropertyPreset } from '@features/document/properties/presets';
-import { usePropertyFieldPreferences } from '@features/preferences/public/runtime-api';
+import { getAllPresets, resolvePropertyPreset, resolvePropertyDisplayName, type PropertyPreset } from '@features/document/properties/presets';
+import { usePropertyPresets } from '@features/properties/public-api';
 import { createFileBrowserTarget, openBrowserColumnTarget } from '@features/workspace/use-cases/browser-column-navigation';
 import { replaceExternalDocumentPath } from '@features/workspace/use-cases/workspace-navigation';
 import { NotebookTreeResourceIcon } from '@features/memo/components/file-type-icon';
@@ -50,7 +57,15 @@ import {
   withTableAutoCollect,
   canEditTableAutoCollectFilter,
 } from './model';
-import { BUILTIN_TABLE_FIELDS, NOTE_CALENDAR_DATE_FIELD_ID, builtinPresetTableField, builtinTableFieldLabel } from './builtin-fields';
+import {
+  BUILTIN_TABLE_FIELDS,
+  NOTE_CALENDAR_DATE_FIELD_ID,
+  builtinPresetValue,
+  builtinPresetTableField,
+  isBuiltinTableFieldId,
+  builtinTableFieldValue,
+  builtinTableFieldLabel,
+} from './builtin-fields';
 import { groupRecordsByValue, KANBAN_UNASSIGNED_GROUP_ID } from './view-index';
 import { noteMatchesCollectionFilter } from './record-filter';
 import { applyTableView } from './view-records';
@@ -60,8 +75,11 @@ import { TableCalendarView, TableGalleryView, TableKanbanView } from './table-se
 import { TableSortButton, cycleTableSort, tableSortDirection } from './table-sort-button';
 import { TableDatasetMenu } from './table-dataset-menu';
 import { sortFields } from './field-order';
+import { useAutoContentColumnWidths, type AutoColumnContent } from './use-auto-content-column-widths';
 import { TableFieldList } from './table-field-list';
 import { TableRecordRow } from './table-record-row';
+import { applyFieldMigrations, migratedOptionValue, planFieldMigrations, type FieldValueMigration } from './table-field-migration';
+import { bindTableField, presetFromTableField, retireTablePreset, tableFieldFromPreset } from './table-preset-bindings';
 import { NOTE_CALENDAR_DATE_FIELDS, useCalendarController } from './use-calendar-controller';
 import type { NoteListItem } from '@/types/note-item';
 import { TableFieldEditorForm, TableFieldHeader, TablePresetMenu } from './table-field-header';
@@ -69,7 +87,7 @@ import { useTableSession } from './use-table-session';
 import { useTableCellWriter, type TableCellSaveStatus } from './use-table-cell-writer';
 import { useTableViewSelection } from './use-table-view-selection';
 import { removeTableView, resolveTableView } from './view-selection';
-import { addPresetField, addTableField, toggleDatasetTableFieldVisibility, changeFieldType as changeFieldTypeInDocument, removeBuiltinField as removeBuiltinTableField, removeField, removePresetField, viewsIncompatibleWithFieldType, viewsRequiringField } from './table-commands';
+import { addPresetField, addTableField, toggleDatasetTableFieldVisibility, changeFieldType as changeFieldTypeInDocument, removeBuiltinField as removeBuiltinTableField, removeField, removePresetField, viewsRequiringField } from './table-commands';
 
 export interface TableDocumentViewProps {
   filePath: string;
@@ -136,14 +154,21 @@ function resolveTableNoteParentRelativePath(filePath: string, notebookPath: stri
   return relativePath ?? undefined;
 }
 
-// Column widths are fixed by type and applied only through the colgroup.
-const TABLE_FIELD_WIDTHS: Partial<Record<TableFieldType, number>> = {
+// Default column widths are selected by type and applied through the colgroup.
+const TABLE_FIELD_WIDTHS: Record<TableFieldType, number> = {
   primary: 240,
-  Text: 240,
+  Text: 120,
+  Boolean: 120,
   Number: 120,
-  Boolean: 80,
+  Date: 120,
+  URL: 120,
+  Select: 120,
+  MultiSelect: 120,
+  Tag: 120,
+  Color: 120,
+  Icon: 120,
+  Image: 120,
 };
-const DEFAULT_TABLE_FIELD_WIDTH = 160;
 function TableLoadingSkeleton() {
   return <div className="relative h-full min-h-0 overflow-hidden">
     <div className="h-full overflow-hidden p-5" aria-hidden="true">
@@ -160,6 +185,16 @@ function TableLoadingSkeleton() {
   </div>;
 }
 
+function IncompatibleViewEmptyState({ title, description, titleAction }: { title: string; description: string; titleAction?: ReactNode }) {
+  return <div className="flex min-h-0 flex-1 flex-col items-center justify-center gap-2 px-6 py-12 text-center">
+    <div className="flex items-center justify-center gap-3">
+      <div className="text-sm font-medium text-[var(--foreground)]">{title}</div>
+      {titleAction}
+    </div>
+    <p className="max-w-md text-sm leading-6 text-[var(--muted-foreground)]">{description}</p>
+  </div>;
+}
+
 function valueMatchesFieldType(value: unknown, type: TableFieldType, options: TableField['options'] = [], multiple = false): boolean {
   if (value == null || value === '') return true;
   switch (type) {
@@ -170,7 +205,7 @@ function valueMatchesFieldType(value: unknown, type: TableFieldType, options: Ta
     case 'Date': return typeof value === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(value);
     case 'Select': return typeof value === 'string' && options.some((option) => option.id === value || option.label === value);
     case 'MultiSelect': return Array.isArray(value) && value.every((item) => typeof item === 'string' && options.some((option) => option.id === item || option.label === item));
-    case 'Tag': case 'Tags': case 'Color': return Array.isArray(value) && value.every((item) => typeof item === 'string');
+    case 'Tag': case 'Color': return Array.isArray(value) && value.every((item) => typeof item === 'string');
     case 'Image': return multiple
       ? Array.isArray(value) && value.every((item) => typeof item === 'string')
       : typeof value === 'string';
@@ -188,17 +223,40 @@ function fieldTypeIconKind(type: TableFieldType): PropertyIconKind {
 
 function fieldLabel(
   field: TableField,
-  propertyFields: ReturnType<typeof usePropertyFieldPreferences>['fields'],
+  propertyFields: ReturnType<typeof usePropertyPresets>['fields'],
   t: (key: I18nKey) => string,
 ): string {
   if (field.type === 'primary') return '笔记名称';
-  return field.name ?? resolvePropertyDisplayName(field.property_key ?? '', propertyFields, t);
+  // A user preset's key IS its display name; only system presets resolve a
+  // separate localized label.
+  return resolvePropertyDisplayName(field.property_key ?? '', propertyFields, t);
 }
 
-function imagePaths(value: unknown): string[] {
-  if (typeof value === 'string' && value) return [value];
-  if (Array.isArray(value)) return value.filter((item): item is string => typeof item === 'string' && Boolean(item));
-  return [];
+/** Move a property key in an in-memory note (rename keeps values and its type declaration). */
+function renameNoteProperty(
+  note: NoteEntry,
+  previousKey: string,
+  nextKey: string,
+  field: TableField,
+  nextOptions: TableFieldOption[] | undefined,
+  propertyFields: readonly PropertyFieldConfig[],
+): NoteEntry {
+  if (!Object.prototype.hasOwnProperty.call(note.properties, previousKey)) return note;
+  const previousValue = note.properties[previousKey];
+  const update = nextOptions ? migratedOptionValue(field, nextOptions, previousValue) : null;
+  const properties = { ...note.properties };
+  delete properties[previousKey];
+  if (!update || !update.remove) properties[nextKey] = update ? update.value : previousValue;
+  const types = readPropertyTypes(properties[PROPERTY_TYPES_KEY]);
+  if (Object.prototype.hasOwnProperty.call(types, previousKey)) {
+    types[nextKey] = types[previousKey];
+    delete types[previousKey];
+  }
+  if (update?.remove || resolvePropertyPreset(nextKey, propertyFields)) delete types[nextKey];
+  else if (field.type !== 'primary') types[nextKey] = field.type;
+  if (Object.keys(types).length) properties[PROPERTY_TYPES_KEY] = types;
+  else delete properties[PROPERTY_TYPES_KEY];
+  return { ...note, properties };
 }
 
 function noteThumbnailUrl(thumbnail: string | null | undefined): string | null {
@@ -241,6 +299,7 @@ function notePropertyEditorValue(note: NoteEntry | undefined, field: TableField)
   if (field.type === 'Select') {
     return field.options?.find((option) => option.label === value)?.id
       ?? field.options?.find((option) => option.id === value)?.id
+      ?? value
       ?? '';
   }
   if (field.type === 'MultiSelect' && Array.isArray(value)) {
@@ -264,7 +323,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   const [currentFilePath, setCurrentFilePath] = useState(filePath);
   useEffect(() => setCurrentFilePath(filePath), [filePath]);
   const { t } = useI18n();
-  const { fields: propertyFields } = usePropertyFieldPreferences();
+  const { fields: propertyFields } = usePropertyPresets();
   const tablePresets = useMemo(() => {
     const presets = getAllPresets(propertyFields, (key) => t(key));
     return {
@@ -387,6 +446,8 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   const [datasetFilterOpen, setDatasetFilterOpen] = useState(false);
   const [viewAddStep, setViewAddStep] = useState<'kind' | 'field' | 'manage'>('kind');
   const [pendingViewType, setPendingViewType] = useState<'calendar' | 'kanban' | null>(null);
+  const [configuringViewId, setConfiguringViewId] = useState<string | null>(null);
+  const [viewFieldPickerAnchorRect, setViewFieldPickerAnchorRect] = useState<DOMRect | null>(null);
   const [calendarCursor, setCalendarCursor] = useState(() => new Date());
   const [tablePage, setTablePage] = useState(0);
   const [galleryPage, setGalleryPage] = useState(0);
@@ -402,7 +463,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     pendingNotePropertiesRef,
   });
   const [newFieldOpen, setNewFieldOpen] = useState(false);
-  const [newFieldAnchorRect, setNewFieldAnchorRect] = useState<DOMRect | null>(null);
+  const [newFieldAnchor, setNewFieldAnchor] = useState<{ rect: DOMRect; align: 'start' | 'end' } | null>(null);
   const [newFieldPropertyKey, setNewFieldPropertyKey] = useState('');
   const [newFieldType, setNewFieldType] = useState<TableFieldType>('Text');
   const [newFieldTypeMenuOpen, setNewFieldTypeMenuOpen] = useState(false);
@@ -411,6 +472,9 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   const [datasetPresetMenuOpen, setDatasetPresetMenuOpen] = useState(false);
   const [newFieldOptions, setNewFieldOptions] = useState<TableFieldOption[]>([]);
   const [headerMenuFieldId, setHeaderMenuFieldId] = useState<string | null>(null);
+  const [pendingDeleteTarget, setPendingDeleteTarget] = useState<{ field: TableField; preset: PropertyFieldConfig } | null>(null);
+  const [pendingDeleteTableCount, setPendingDeleteTableCount] = useState(0);
+  const [deletingFieldBusy, setDeletingFieldBusy] = useState(false);
   const [rowActionRecordId, setRowActionRecordId] = useState<string | null>(null);
   const [notePickerOpen, setNotePickerOpen] = useState(false);
   const [notePickerAnchorRect, setNotePickerAnchorRect] = useState<DOMRect | null>(null);
@@ -523,6 +587,101 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       : Math.max(page, Math.floor(recordIndex / tablePageSize)));
     setPendingTablePageRecordId(null);
   }, [activeView?.layout, embeddedInEditor, pendingTablePageRecordId, tablePageSize, visibleRecords]);
+  const tableElementRef = useRef<HTMLTableElement | null>(null);
+  const columnSizingRecords = useMemo(() => {
+    const pageCount = Math.max(1, Math.ceil(visibleRecords.length / tablePageSize));
+    const page = Math.min(tablePage, pageCount - 1);
+    return visibleRecords.slice(embeddedInEditor ? page * tablePageSize : 0, (page + 1) * tablePageSize);
+  }, [embeddedInEditor, tablePage, tablePageSize, visibleRecords]);
+  const autoSizedColumns = useMemo<AutoColumnContent[]>(() => {
+    if (!document || activeView?.layout !== 'table') return [];
+    const visibleIds = activeView.config.visible_fields as string[];
+    const fields = [
+      ...document.dataset.schema.fields.filter((field) => visibleIds.includes(field.id)),
+      ...BUILTIN_TABLE_FIELDS.filter((field) => visibleIds.includes(field.id)).flatMap((field) => {
+        const preset = builtinPresetTableField(field.id);
+        return [preset ?? { id: field.id, name: field.label, type: field.type, property_key: field.propertyKey ?? field.id }];
+      }),
+    ];
+    return fields.flatMap<AutoColumnContent>((field) => {
+      const label = fieldLabel(field, propertyFields, t);
+      if (field.type === 'Tag') return [{
+        id: field.id,
+        label,
+        type: 'tags' as const,
+        isNoteTags: canonicalizePropertyKey(field.property_key ?? '') === 'tags',
+        itemGapWidth: 4.8,
+        values: columnSizingRecords.map((record) => {
+          const note = noteForRecord(record);
+          const value = builtinPresetTableField(field.id) ? builtinPresetValue(field.id, note) : notePropertyEditorValue(note, field);
+          return Array.isArray(value) ? value.filter((tag): tag is string => typeof tag === 'string') : [];
+        }),
+      }];
+      if (field.type === 'primary') return [{
+        id: field.id,
+        label,
+        type: 'primary' as const,
+        textValues: columnSizingRecords.map((record) => {
+          const note = noteForRecord(record);
+          const text = note
+            ? displayTitleFromFilename(note.relativePath)
+            : !record.note_path ? '笔记不存在' : `未找到笔记 ${displayTitleFromFilename(record.note_path)}`;
+          return { text, extraWidth: note ? 24 + (conditionRecordIds.has(record.id) ? 15 : 0) : 0 };
+        }),
+      }];
+      if (field.type === 'Select' || field.type === 'MultiSelect') return [{
+        id: field.id,
+        label,
+        type: 'chips' as const,
+        extraWidth: 22,
+        itemGapWidth: 4,
+        values: columnSizingRecords.map((record) => {
+          const note = noteForRecord(record);
+          const value = builtinPresetTableField(field.id)
+            ? builtinPresetValue(field.id, note)
+            : notePropertyEditorValue(note, field);
+          const optionLabel = (item: unknown) => field.options?.find((option) => option.id === item || option.label === item)?.label ?? String(item);
+          if (field.type === 'Select') return value == null || value === '' ? [] : [optionLabel(value)];
+          const selected = Array.isArray(value)
+            ? value
+            : typeof value === 'string' ? value.split(',').map((item) => item.trim()).filter(Boolean) : [];
+          return selected.map(optionLabel);
+        }),
+      }];
+      return [{
+        id: field.id,
+        label,
+        type: 'text' as const,
+        textValues: columnSizingRecords.map((record) => {
+          const note = noteForRecord(record);
+          const builtinPreset = builtinPresetTableField(field.id);
+          const value = builtinPreset
+            ? builtinPresetValue(field.id, note)
+            : isBuiltinTableFieldId(field.id)
+              ? builtinTableFieldValue(field.id, note, notebookPath)
+              : notePropertyEditorValue(note, field);
+          if (field.type === 'Boolean') return { text: '', extraWidth: 16 };
+          if (field.type === 'Icon') return { text: '', extraWidth: value ? 48 : 20 };
+          if (field.type === 'Color') {
+            const colors = Array.isArray(value) ? value : typeof value === 'string' ? value.split(',') : [];
+            const count = colors.map(String).filter(Boolean).length;
+            return { text: '', extraWidth: count ? count * 15 - 6 : 0 };
+          }
+          if (field.type === 'Image') {
+            const hasImage = imagePaths(value).length > 0;
+            return { text: hasImage ? '' : t('document.properties.selectImage'), extraWidth: hasImage ? 36 : 0 };
+          }
+          return {
+            text: value == null ? '' : String(value),
+            extraWidth: field.type === 'Number'
+              ? isBuiltinTableFieldId(field.id) ? 0 : 24
+              : field.type === 'Date' && value && !isBuiltinTableFieldId(field.id) ? 20 : 0,
+          };
+        }),
+      }];
+    });
+  }, [conditionRecordIds, document, activeView, columnSizingRecords, noteForRecord, notebookPath, propertyFields, t]);
+  const autoColumnWidths = useAutoContentColumnWidths(tableElementRef, autoSizedColumns);
   const secondaryViewRecords = useMemo(() => activeView?.layout === 'table'
     ? visibleRecords
     : visibleRecords.filter((record) => record.note_path.trim().length > 0), [activeView?.layout, visibleRecords]);
@@ -721,7 +880,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     if (field?.type !== 'Date' || !field.property_key) return note;
     const path = notebookPath ? joinNotebookMemoPath(notebookPath, note.relativePath) : null;
     if (!path) throw new Error('无法确定笔记路径，未能设置日期');
-    if (!await setDocumentProperties(path, { [field.property_key]: calendarDate.date })) {
+    if (!await setDocumentProperties(path, { [field.property_key]: calendarDate.date }, { [field.property_key]: 'Date' })) {
       throw new Error('笔记日期未能保存');
     }
     return { ...note, updatedAt: Date.now(), properties: { ...note.properties, [field.property_key]: calendarDate.date } };
@@ -730,9 +889,14 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   const createNoteInNotebook = useCallback(async (title?: string) => {
     if (!editable) throw new Error('当前引用为只读，无法新建笔记');
     if (!resolvedNotebookId) throw new Error('无法确定当前笔记本');
-    const datasetPath = (document ? tableAutoCollectConfig(document) : null)?.condition.file_condition?.path_contains
-      ?.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '');
-    const parentRelativePath = datasetPath || resolveTableNoteParentRelativePath(currentFilePath, notebookPath);
+    if (!document || !notebookPath) throw new Error('无法确定当前多维表路径');
+    const directory = resolveCollectionSaveDirectory({
+      filePath: currentFilePath, notebookPath, placement: document.collection.placement,
+      source: document.dataset.source,
+      configuredFolder: tableAutoCollectConfig(document)?.condition.file_condition?.path_contains,
+      defaultDirectory: parentDirectoryPath(currentFilePath, notebookPath),
+    });
+    const parentRelativePath = notebookRelativeDirectoryPath(notebookPath, directory) ?? undefined;
     return notesClient.create(resolvedNotebookId, undefined, parentRelativePath, title);
   }, [currentFilePath, document, editable, notebookPath, resolvedNotebookId]);
 
@@ -751,11 +915,55 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         setViewAddOpen(false);
         setViewAddStep('kind');
         setPendingViewType(null);
+        setViewFieldPickerAnchorRect(null);
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '创建视图失败');
     }
   }, [document, isCurrentSession, loadSequenceRef, activateView, pendingViewType, save, saving]);
+
+  const saveConfiguredViewField = useCallback(async (
+    viewId: string,
+    viewType: 'calendar' | 'kanban',
+    fieldId: string,
+    dataset = document?.dataset,
+  ) => {
+    if (!document || !dataset || saving) return false;
+    const sequence = loadSequenceRef.current;
+    const configKey = viewType === 'calendar' ? 'date_field' : 'group_by';
+    const next: MultidimensionalTableDocument = {
+      ...document,
+      collection: reviseCollection(document.collection),
+      dataset,
+      views: { ...document.views, items: document.views.items.map((view) => view.id === viewId
+        ? { ...view, config: { ...view.config, [configKey]: fieldId } }
+        : view) },
+    };
+    return await save(next, false, sequence) && isCurrentSession(sequence);
+  }, [document, isCurrentSession, loadSequenceRef, save, saving]);
+
+  const selectViewField = useCallback(async (field: TableField | string) => {
+    if (!configuringViewId) return createViewForField(field);
+    if (!document || !pendingViewType || saving) return;
+    let fieldId = typeof field === 'string' ? field : field.id;
+    let dataset = document.dataset;
+    try {
+      if (pendingViewType === 'calendar' && fieldId === NOTE_CALENDAR_DATE_FIELD_ID) {
+        const added = addCalendarDateView(document);
+        fieldId = added.view.config.date_field as string;
+        dataset = added.document.dataset;
+      }
+      if (await saveConfiguredViewField(configuringViewId, pendingViewType, fieldId, dataset)) {
+        setViewAddOpen(false);
+        setViewAddStep('kind');
+        setPendingViewType(null);
+        setConfiguringViewId(null);
+        setViewFieldPickerAnchorRect(null);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '更新视图字段失败');
+    }
+  }, [configuringViewId, createViewForField, document, pendingViewType, saveConfiguredViewField, saving]);
 
   const createKanbanViewForStatus = useCallback(async () => {
     if (!document || pendingViewType !== 'kanban' || saving) return;
@@ -767,11 +975,29 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         setViewAddOpen(false);
         setViewAddStep('kind');
         setPendingViewType(null);
+        setViewFieldPickerAnchorRect(null);
       }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '创建看板失败');
     }
   }, [document, isCurrentSession, loadSequenceRef, activateView, pendingViewType, save, saving]);
+
+  const chooseKanbanStatusField = useCallback(async () => {
+    if (!configuringViewId) return createKanbanViewForStatus();
+    if (!document || saving) return;
+    try {
+      const added = addKanbanView(document);
+      if (await saveConfiguredViewField(configuringViewId, 'kanban', added.field.id, added.document.dataset)) {
+        setViewAddOpen(false);
+        setViewAddStep('kind');
+        setPendingViewType(null);
+        setConfiguringViewId(null);
+        setViewFieldPickerAnchorRect(null);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '更新看板分组字段失败');
+    }
+  }, [configuringViewId, createKanbanViewForStatus, document, saveConfiguredViewField, saving]);
 
   const createGalleryView = useCallback(async () => {
     if (!document || saving) return;
@@ -782,6 +1008,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       setViewAddOpen(false);
       setViewAddStep('kind');
       setPendingViewType(null);
+      setViewFieldPickerAnchorRect(null);
     }
   }, [document, isCurrentSession, loadSequenceRef, activateView, save, saving]);
 
@@ -1031,11 +1258,11 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     }
   }, [calendarAddDate, document, editable, isCurrentSession, loadSequenceRef, noteField, persistCalendarNote, saving, setSaving, reportSaveFailure]);
 
-  const addField = useCallback((preset?: PropertyPreset) => {
+  const addField = useCallback(async (preset?: PropertyPreset) => {
     if (!document || saving) return;
     try {
       if (preset) {
-        void save(addPresetField(document, preset));
+        await save(addPresetField(document, preset));
         return;
       }
       const propertyKey = newFieldPropertyKey.trim();
@@ -1047,13 +1274,23 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
           return result;
         }, [])
         : [];
-      const field: TableField = {
+      let field: TableField = {
         id: `fld_${createUuidV7()}`,
         type: newFieldType,
         property_key: propertyKey,
         ...(options.length ? { options } : {}),
+        ...(newFieldType === 'Image' ? { multiple: true } : {}),
       };
-      void save(addTableField(document, field));
+      const existing = propertyFields.find((item) => canonicalizePropertyKey(item.key).toLowerCase() === canonicalizePropertyKey(propertyKey).toLowerCase());
+      if (existing) {
+        if (existing.type !== field.type) throw new Error('此属性已有不同类型，请使用已有预设');
+        field = tableFieldFromPreset(existing);
+      } else field = { ...field, preset_pending: true };
+      if (!await save(addTableField(document, field))) return;
+      if (!existing) {
+        try { await ensureTableFieldPreset(field); }
+        catch (error) { toast.error(`当前表格已保存，预设待同步：${error instanceof Error ? error.message : '请稍后重试'}`); }
+      }
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '添加属性失败');
       return;
@@ -1061,7 +1298,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     setNewFieldOpen(false);
     setNewFieldPropertyKey('');
     setNewFieldOptions([]);
-  }, [document, newFieldOptions, newFieldPropertyKey, newFieldType, save, saving]);
+  }, [document, newFieldOptions, newFieldPropertyKey, newFieldType, propertyFields, save, saving]);
 
   const removePreset = useCallback((preset: PropertyPreset) => {
     if (!document || saving) return;
@@ -1084,83 +1321,156 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
 
   const saveHeaderFieldEdits = useCallback(async (field: TableField, nameDraft: string, optionsDraft: TableFieldOption[]): Promise<boolean> => {
     if (!document || saving || field.type === 'primary') return false;
+    const expectedRevision = field.preset_revision;
     field = document.dataset.schema.fields.find((item) => item.id === field.id) ?? field;
     const name = nameDraft.trim();
     const nextOptions = field.type === 'Select' || field.type === 'MultiSelect'
-      ? optionsDraft.reduce<TableFieldOption[]>((result, option) => {
-        const label = option.label.trim();
-        if (label && !result.some((item) => item.label === label)) result.push({ ...option, label });
-        return result;
-      }, [])
+      ? optionsDraft.map((option) => ({ ...option, label: option.label.trim() })).filter((option) => option.label)
       : undefined;
+    if (nextOptions && new Set(nextOptions.map((option) => option.label)).size !== nextOptions.length) {
+      toast.error('选项名称不能重复');
+      return false;
+    }
     const optionsChanged = nextOptions !== undefined
       && JSON.stringify(field.options ?? []) !== JSON.stringify(nextOptions);
-    const nameChanged = Boolean(name) && name !== fieldLabel(field, propertyFields, t);
-    if (!optionsChanged && !nameChanged) return true;
+    const propertyKey = field.property_key;
+    if (!propertyKey || !document.dataset.schema.fields.some((item) => item.id === field.id)) return false;
+    // A user preset's key IS the name typed in the header. System presets keep
+    // their fixed key and only resolve a display label.
+    const systemPreset = usePropertyPresetStore.getState().registry.systemFields?.some((item) => item.id === field.id)
+      || isSystemPropertyKey(propertyKey);
+    const keyChanged = !systemPreset && Boolean(name) && name !== propertyKey;
+    if (!optionsChanged && !keyChanged) return true;
+    if (keyChanged) {
+      const normalized = canonicalizePropertyKey(name).toLowerCase();
+      if (isSystemPropertyKey(propertyKey) || isSystemPropertyKey(name)
+        || !name || ['flowix_key', 'key', 'flowix_property_types', 'flowix_plugin'].includes(normalized)) {
+        toast.error('系统预设或保留名称不能修改属性名称');
+        return false;
+      }
+      if (document.dataset.schema.fields.some((item) => item.id !== field.id && item.property_key
+          && canonicalizePropertyKey(item.property_key).toLowerCase() === normalized)
+        || propertyFields.some((item) => item.id !== field.id && canonicalizePropertyKey(item.key).toLowerCase() === normalized)) {
+        toast.error('属性名称已存在');
+        return false;
+      }
+    }
+    if (optionsChanged && notesLoadError) { toast.error('当前表格的笔记尚未完整加载，请稍后重试'); return false; }
 
-    let nextField = nameChanged ? { ...field, name } : field;
+    const nextKey = keyChanged ? canonicalizePropertyKey(name) : propertyKey;
+    let nextField: TableField = { ...field, preset_revision: expectedRevision ?? field.preset_revision, preset_pending: true };
+    if (keyChanged) {
+      nextField = { ...nextField, property_key: nextKey };
+      delete nextField.name;
+    }
     if (nextOptions !== undefined) {
       nextField = { ...nextField, options: nextOptions };
       if (nextOptions.length === 0) delete nextField.options;
     }
-    const nextDocument = {
+
+    const nextDocument: MultidimensionalTableDocument = {
       ...document,
       collection: reviseCollection(document.collection),
       dataset: { ...document.dataset, schema: { ...document.dataset.schema, fields: document.dataset.schema.fields.map((item) => item.id === field.id ? nextField : item) } },
     };
-    if (!await save(nextDocument)) return false;
+    const sequence = loadSequenceRef.current;
 
-    if (nextOptions === undefined || !optionsChanged || !field.property_key) return true;
-    const migrated = new Map<string, { value: unknown; remove: boolean }>();
-    const oldOptions = field.options ?? [];
-    const nextOptionsById = new Map(nextOptions.map((option) => [option.id, option]));
-    for (const record of visibleRecords) {
-      const note = noteForRecord(record);
-      if (!note) continue;
-      const noteKey = note.relativePath.replace(/\\/g, '/');
-      if (migrated.has(noteKey) || !Object.prototype.hasOwnProperty.call(note.properties, field.property_key)) continue;
-      const value = note.properties[field.property_key];
-      if (field.type === 'Select' && typeof value === 'string') {
-        const oldOption = oldOptions.find((option) => option.label === value || option.id === value);
-        if (!oldOption) continue;
-        const nextOption = nextOptionsById.get(oldOption.id);
-        migrated.set(noteKey, nextOption ? { value: nextOption.label, remove: false } : { value: null, remove: true });
-      } else if (field.type === 'MultiSelect' && Array.isArray(value)) {
-        const nextValue = value.flatMap((item) => {
-          if (typeof item !== 'string') return [];
-          const oldOption = oldOptions.find((option) => option.label === item || option.id === item);
-          return oldOption ? nextOptionsById.has(oldOption.id) ? [nextOptionsById.get(oldOption.id)!.label] : [] : [];
-        });
-        if (JSON.stringify(value) !== JSON.stringify(nextValue)) migrated.set(noteKey, { value: nextValue, remove: false });
+    // Renaming a user preset renames its key everywhere: definition, current
+    // table and every note that carries the property.
+    if (keyChanged) {
+      setSaving(true);
+      try {
+        const savedNow = await save(nextDocument, true, sequence);
+        if (!savedNow) {
+          reportSaveFailure(sequence);
+          toast.error('当前表格未保存，可以重试');
+          return false;
+        }
+        try { await updatePresetFromTable(nextField, presetFromTableField(nextField)); }
+        catch (error) {
+          toast.error(`当前表格已保存，预设待同步：${error instanceof Error ? error.message : '请稍后重试'}`);
+          return true;
+        }
+        const transform = optionsChanged && nextOptions
+          ? (value: unknown) => migratedOptionValue(field, nextOptions, value) ?? { value, remove: false }
+          : undefined;
+        let keyResult: { moved: number; failed: number } = { moved: 0, failed: 0 };
+        try { keyResult = await migrateNotePropertyKey(propertyKey, nextKey, transform); }
+        catch (error) { toast.error(error instanceof Error ? error.message : '笔记属性改名失败'); }
+        if (keyResult.failed) toast.error(`${keyResult.failed} 个笔记未改名（目标属性名已存在），已保留原值`);
+        if (isCurrentSession(sequence)) {
+          setNotes((current) => current.map((note) => renameNoteProperty(note, propertyKey, nextKey, field, optionsChanged ? nextOptions : undefined, propertyFields)));
+        }
+        return savedNow;
+      } finally {
+        if (isCurrentSession(sequence)) setSaving(false);
       }
     }
-    if (migrated.size === 0) return true;
-    const migrationResults = await Promise.all([...migrated].map(async ([noteKey, update]) => {
-      const note = notes.find((item) => item.relativePath.replace(/\\/g, '/') === noteKey);
-      const path = note && notebookPath ? joinNotebookMemoPath(notebookPath, note.relativePath) : null;
-      if (!path) return { noteKey, update, success: false };
-      let success = false;
-      try {
-        success = update.remove
-          ? await removeDocumentProperty(path, field.property_key!)
-          : await setDocumentProperties(path, { [field.property_key!]: update.value });
-      } catch {
-        success = false;
+
+    let migrations: FieldValueMigration[];
+    try {
+      migrations = planFieldMigrations(
+        datasetRecords.flatMap((record) => {
+          const note = noteForRecord(record);
+          return note ? [note] : [];
+        }), field, propertyKey, optionsChanged ? nextOptions : undefined,
+      );
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '属性迁移失败');
+      return false;
+    }
+    if (migrations.some(({ noteKey }) => {
+      const pending = pendingNotePropertiesRef.current.get(noteKey);
+      return pending?.has(propertyKey);
+    })) {
+      toast.error('该属性正在保存，请稍后重试');
+      return false;
+    }
+    setSaving(true);
+    try {
+      const result = await applyFieldMigrations(migrations, async (migration) => {
+        const path = notebookPath ? joinNotebookMemoPath(notebookPath, migration.noteKey) : null;
+        if (!path) return false;
+        if (!isCurrentSession(sequence)) return false;
+        const before = {
+          [propertyKey]: { exists: true, value: migration.previousValue },
+        };
+        const after = {
+          [propertyKey]: { exists: !migration.remove, value: migration.value },
+        };
+        return compareAndPatchDocumentProperties(path, before, after, {
+          [propertyKey]: field.type === 'primary' ? undefined : field.type,
+        });
+      }, () => save(nextDocument, true, sequence));
+      if (result.saved) {
+        try { await updatePresetFromTable(nextField, presetFromTableField(nextField)); }
+        catch (error) { toast.error(error instanceof Error ? error.message : '同步用户预设失败'); }
       }
-      return { noteKey, update, success };
-    }));
-    const applied = new Map(migrationResults.filter((result) => result.success).map(({ noteKey, update }) => [noteKey, update]));
-    if (applied.size > 0) setNotes((current) => current.map((note) => {
-      const update = applied.get(note.relativePath.replace(/\\/g, '/'));
-      if (!update) return note;
-      const properties = { ...note.properties };
-      if (update.remove) delete properties[field.property_key!];
-      else properties[field.property_key!] = update.value;
-      return { ...note, properties };
-    }));
-    if (migrationResults.some((result) => !result.success)) toast.error('选项已更新，但部分笔记的选项值未能同步');
-    return true;
-  }, [document, noteForRecord, notes, notebookPath, propertyFields, save, saving, setNotes, t, visibleRecords]);
+      if (result.failed.length) toast.error(`当前表格已保存，${result.failed.length} 个笔记未同步，已保留原值`);
+      if (!isCurrentSession(sequence)) return result.saved;
+      const applied = new Map(result.retained.map((migration) => [migration.noteKey, migration]));
+      if (result.saved && applied.size) setNotes((current) => current.map((note) => {
+        const update = applied.get(note.relativePath.replace(/\\/g, '/'));
+        if (!update) return note;
+        const properties = { ...note.properties };
+        if (update.remove) delete properties[propertyKey];
+        if (!update.remove) properties[propertyKey] = update.value;
+        const types = readPropertyTypes(properties[PROPERTY_TYPES_KEY]);
+        if (update.remove || resolvePropertyPreset(propertyKey, propertyFields)) delete types[propertyKey];
+        else if (field.type !== 'primary') types[propertyKey] = field.type;
+        if (Object.keys(types).length) properties[PROPERTY_TYPES_KEY] = types;
+        else delete properties[PROPERTY_TYPES_KEY];
+        return { ...note, properties };
+      }));
+      if (!result.saved) {
+        reportSaveFailure(sequence);
+        toast.error('当前表格未保存，可以重试');
+      }
+      return result.saved;
+    } finally {
+      if (isCurrentSession(sequence)) setSaving(false);
+    }
+  }, [datasetRecords, document, isCurrentSession, loadSequenceRef, noteForRecord, notebookPath, notesLoadError, pendingNotePropertiesRef, propertyFields, reportSaveFailure, save, saving, setNotes, setSaving]);
 
   const headerEditsQueueRef = useRef<Promise<boolean>>(Promise.resolve(true));
   const latestHeaderSaverRef = useRef(saveHeaderFieldEdits);
@@ -1175,11 +1485,23 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     return write;
   }, []);
 
+  const saveFieldDefinition = useCallback(async (nextDocument: MultidimensionalTableDocument, field: TableField): Promise<boolean> => {
+    const pendingDocument = { ...nextDocument, dataset: { ...nextDocument.dataset, schema: {
+      ...nextDocument.dataset.schema,
+      fields: nextDocument.dataset.schema.fields.map((item) => item.id === field.id ? { ...item, preset_revision: field.preset_revision ?? item.preset_revision, preset_pending: true } : item),
+    } } };
+    if (!await save(pendingDocument)) return false;
+    const persistedField = pendingDocument.dataset.schema.fields.find((item) => item.id === field.id)!;
+    try { await updatePresetFromTable(persistedField, presetFromTableField(persistedField)); }
+    catch (error) { toast.error(`当前表格已保存，预设待同步：${error instanceof Error ? error.message : '请稍后重试'}`); }
+    return true;
+  }, [save]);
+
   const changeFieldType = useCallback(async (field: TableField, type: TableFieldType, optionsOverride?: TableField['options']): Promise<boolean> => {
     if (!document || saving || field.type === 'primary' || type === 'primary' || field.type === type) return false;
-    const dependentViews = viewsIncompatibleWithFieldType(document, field.id, type);
-    if (dependentViews.length) {
-      toast.error(`请先调整依赖此属性的视图：${dependentViews.map((view) => view.name).join('、')}`);
+    if (usePropertyPresetStore.getState().registry.systemFields?.some((item) => item.id === field.id)
+      || isSystemPropertyKey(field.property_key ?? '')) {
+      toast.error('系统预设字段不能修改类型');
       return false;
     }
     const options = type === 'Select' || type === 'MultiSelect'
@@ -1190,7 +1512,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         : ['选项 1', '选项 2', '选项 3'].map((label) => ({ id: `opt_${createUuidV7()}`, label }))
       : undefined;
     const multiple = type === 'Image' ? field.type === 'Image' ? Boolean(field.multiple) : true : undefined;
-    const incompatibleRecords = visibleRecords.filter((record) => {
+    const incompatibleRecords = datasetRecords.filter((record) => {
       const note = noteForRecord(record);
       const value = note && field.property_key && Object.prototype.hasOwnProperty.call(note.properties, field.property_key)
         ? note.properties[field.property_key] : null;
@@ -1200,34 +1522,28 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       toast.error(`${incompatibleRecords.length} 条记录的现有值与目标类型不兼容，请先修改值`);
       return false;
     }
-    return save(changeFieldTypeInDocument(document, field.id, type, options, multiple));
-  }, [document, noteForRecord, save, saving, visibleRecords]);
+    const nextDocument = changeFieldTypeInDocument(document, field.id, type, options, multiple);
+    return saveFieldDefinition(nextDocument, { ...field, type });
+  }, [datasetRecords, document, noteForRecord, saveFieldDefinition, saving]);
 
   const applyFieldPreset = useCallback(async (field: TableField, preset: PropertyPreset): Promise<boolean> => {
     if (!document || saving || field.type === 'primary') return false;
-    const dependentViews = viewsIncompatibleWithFieldType(document, field.id, preset.kind);
-    if (dependentViews.length) {
-      toast.error(`请先调整依赖此属性的视图：${dependentViews.map((view) => view.name).join('、')}`);
-      return false;
-    }
+    if (usePropertyPresetStore.getState().registry.systemFields?.some((item) => item.id === field.id)
+      || isSystemPropertyKey(field.property_key ?? '')) return false;
     const propertyKey = preset.key.trim();
     const normalizedKey = canonicalizePropertyKey(propertyKey).toLocaleLowerCase();
-    if (!propertyKey || normalizedKey === 'flowix_key' || normalizedKey === 'key'
+    if (!propertyKey || normalizedKey === 'flowix_key' || normalizedKey === 'key' || normalizedKey === 'flowix_property_types'
       || document.dataset.schema.fields.some((item) => item.id !== field.id && item.property_key
         && canonicalizePropertyKey(item.property_key).toLocaleLowerCase() === normalizedKey)) {
       toast.error('属性键已存在或属于保留名称');
       return false;
     }
-    const optionLabels = [...new Set((preset.options ?? []).map((label) => label.trim()).filter(Boolean))];
-    const options = (preset.kind === 'Select' || preset.kind === 'MultiSelect') && optionLabels.length > 0
-      ? optionLabels.map((label) => ({ id: `opt_${createUuidV7()}`, label }))
-      : undefined;
-    const nextField: TableField = { ...field, property_key: propertyKey, type: preset.kind };
-    delete nextField.name;
-    if (options) nextField.options = options;
-    else delete nextField.options;
-    delete nextField.multiple;
-    const incompatibleRecords = visibleRecords.filter((record) => {
+    const definition = propertyFields.find((item) => item.id === preset.id && item.id !== undefined)
+      ?? propertyFields.find((item) => canonicalizePropertyKey(item.key).toLowerCase() === normalizedKey);
+    if (!definition) { toast.error('预设尚未加载，请稍后重试'); return false; }
+    const nextField = tableFieldFromPreset(definition);
+    const options = nextField.options;
+    const incompatibleRecords = datasetRecords.filter((record) => {
       const note = noteForRecord(record);
       const value = note && Object.prototype.hasOwnProperty.call(note.properties, propertyKey)
         ? notePropertyEditorValue(note, nextField)
@@ -1238,27 +1554,48 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       toast.error(`${incompatibleRecords.length} 条记录的现有值与该属性预设不兼容，请先修改值`);
       return false;
     }
-    const next: MultidimensionalTableDocument = {
-      ...document,
-      collection: reviseCollection(document.collection),
-      dataset: { ...document.dataset, schema: { ...document.dataset.schema, fields: document.dataset.schema.fields.map((item) => item.id === field.id ? nextField : item) } },
-    };
-    return save(next);
-  }, [document, noteForRecord, save, saving, visibleRecords]);
+    const next = bindTableField(document, field.id, definition);
+    return save({ ...next, collection: reviseCollection(document.collection) });
+  }, [datasetRecords, document, noteForRecord, propertyFields, save, saving]);
 
   const deleteField = useCallback(async (field: TableField): Promise<boolean> => {
     if (!document || saving || field.type === 'primary' || field.id === document.dataset.schema.primary_field_id) return false;
-    const dependentViews = viewsRequiringField(document, field.id);
-    if (dependentViews.length) {
-      toast.error(`请先调整依赖此属性的视图：${dependentViews.map((view) => view.name).join('、')}`);
-      return false;
+    const registry = usePropertyPresetStore.getState().registry;
+    const systemPreset = registry.systemFields?.find((item) => item.id === field.id);
+    if (systemPreset) return false;
+    const preset = registry.fields.find((item) => item.id === field.id);
+    if (!preset) {
+      const dependentViews = viewsRequiringField(document, field.id);
+      if (dependentViews.length || collectionFilterUsesField(document.dataset.filter as unknown as CollectionRuleFilter | null, field.id)) {
+        toast.error('请先调整依赖此属性的视图或笔记数据集');
+        return false;
+      }
+      return save(removeField(document, field.id));
     }
-    if (collectionFilterUsesField(document.dataset.filter as unknown as CollectionRuleFilter | null, field.id)) {
-      toast.error('请先调整引用此属性的笔记数据集');
-      return false;
-    }
-    return save(removeField(document, field.id));
+    setPendingDeleteTarget({ field, preset });
+    setPendingDeleteTableCount(await countPresetTableReferences(field.id));
+    return true;
   }, [document, save, saving]);
+
+  const confirmDeleteField = useCallback(async () => {
+    const target = pendingDeleteTarget;
+    if (!document || !target) { setPendingDeleteTarget(null); return; }
+    setDeletingFieldBusy(true);
+    try {
+      const savedCurrentTable = await save(retireTablePreset(document, target.preset));
+      if (!savedCurrentTable) {
+        toast.error('当前表格未保存，属性尚未全局删除');
+        return;
+      }
+      const result = await deletePresetEverywhere(target.preset);
+      if (result.failed) toast.error(`${result.failed} 个笔记未同步删除，稍后可重试`);
+      setPendingDeleteTarget(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '删除属性失败');
+    } finally {
+      setDeletingFieldBusy(false);
+    }
+  }, [document, pendingDeleteTarget, save]);
 
   const deleteRecord = useCallback((recordId: string) => {
     if (!document || saving) return;
@@ -1302,29 +1639,8 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       toast.error(t('document.properties.imageUploadFailed'));
       return;
     }
-    try {
-      const selectedPaths = await dialogs.selectFiles({ accept: 'image/*', multiple: false });
-      const sourcePath = selectedPaths?.[0];
-      if (!sourcePath) return;
-      if (!/\.(png|jpe?g|gif|webp|svg|bmp|ico|avif|tif|tiff|heic|heif)$/i.test(sourcePath)) {
-        toast.error(t('document.properties.imageOnly'));
-        return;
-      }
-
-      const savedAttachment = await notebookAssets.saveFromPath(sourcePath, { notebookId });
-      if (!savedAttachment?.path) throw new Error('Attachment save returned no path');
-      const savedPath = savedAttachment.path;
-      const root = canonicalDirectoryPath(notebookPath);
-      const saved = canonicalPath(savedPath);
-      const rootPrefix = `${root}/`;
-      if (!saved.startsWith(rootPrefix)) throw new Error('Saved image is outside the notebook');
-      const relativePath = saved.slice(rootPrefix.length);
-      if (!relativePath.startsWith('attachments/')) throw new Error('Saved image is outside attachments');
-      updateCell(record, note, field, relativePath);
-    } catch (error) {
-      console.error('[MultidimensionalTable] Failed to save image:', error);
-      toast.error(t('document.properties.imageUploadFailed'));
-    }
+    const relativePath = await selectPropertyImage({ id: notebookId, path: notebookPath }, t);
+    if (relativePath) updateCell(record, note, field, relativePath);
   }, [editable, notebookId, notebookPath, saving, t, updateCell]);
 
   const handleRowActionOpenChange = useCallback((open: boolean, recordId: string) => {
@@ -1530,7 +1846,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       const noteKey = note.relativePath.replace(/\\/g, '/');
       if (targetOption) {
         const path = notebookPath ? joinNotebookMemoPath(notebookPath, note.relativePath) : null;
-        if (!path || !await setDocumentProperties(path, { [groupField.property_key!]: targetOption.label })) {
+        if (!path || !await setDocumentProperties(path, { [groupField.property_key!]: targetOption.label }, { [groupField.property_key!]: 'Select' })) {
           throw new Error('任务已创建，但无法设置状态');
         }
         note = { ...note, properties: { ...note.properties, [groupField.property_key!]: targetOption.label } };
@@ -1573,7 +1889,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       if (!propertyKey || !path) return false;
       return targetIsUnassigned
         ? removeDocumentProperty(path, propertyKey)
-        : setDocumentProperties(path, { [propertyKey]: targetOption!.label });
+        : setDocumentProperties(path, { [propertyKey]: targetOption!.label }, { [propertyKey]: 'Select' });
     };
     const updateLocalNoteGroupValue = (noteKey: string) => {
       setNotes((current) => current.map((item) => {
@@ -1689,7 +2005,9 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     : [];
   const statusField = findKanbanStatusField(document);
   const viewFieldChoices = pendingViewType === 'calendar'
-    ? document.dataset.schema.fields.filter((field) => field.type === 'Date')
+    ? document.dataset.schema.fields.filter((field) => field.type === 'Date'
+      && field.id !== NOTE_CALENDAR_DATE_FIELD_ID
+      && canonicalizePropertyKey(field.property_key ?? '').toLocaleLowerCase() !== 'calendar_date')
     : pendingViewType === 'kanban'
       ? [
         ...(statusField?.type === 'Select' ? [statusField] : []),
@@ -1722,8 +2040,8 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       onClick={() => void toggleTableFieldVisibility(fieldId)}
       className={`${className} inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-40`}
     >{checked || mixed
-      ? <EyeIcon size={16} weight="bold" aria-hidden="true" />
-      : <EyeSlashIcon size={16} weight="bold" aria-hidden="true" />}</button>;
+      ? <EyeIcon size={16} weight="bold" className="text-[var(--brand)]" aria-hidden="true" />
+      : <EyeSlashIcon size={16} weight="bold" className="text-[var(--muted-foreground)]" aria-hidden="true" />}</button>;
   };
   const presetAlreadyAdded = (preset: PropertyPreset) => {
     const propertyKey = canonicalizePropertyKey(preset.key).toLocaleLowerCase();
@@ -1732,6 +2050,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     const builtin = BUILTIN_TABLE_FIELDS.find((field) => builtinPresetTableField(field.id)?.property_key === propertyKey);
     return Boolean(builtin && document.dataset.schema.preset_fields.includes(builtin.id));
   };
+  const isSystemPresetField = (field: TableField) => tablePresets.system.some((preset) => preset.id === field.id);
   const datasetMenuProps = {
     defaultFieldId: document.dataset.schema.primary_field_id,
     fields: document.dataset.schema.fields.map((item) => ({ id: item.id, label: fieldLabel(item, propertyFields, t) })),
@@ -1744,6 +2063,30 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     t,
     onSave: (condition: TableAutoCollectCondition) => saveAutoCollectCondition(document.dataset.schema.fields[0], condition),
     onSavePath: saveAutoCollectPath,
+  };
+  const openNewFieldEditor = (button: HTMLButtonElement, source: 'dataset' | 'table') => {
+    setNewFieldType('Text');
+    setNewFieldTypeMenuOpen(false);
+    setNewFieldPresetMenuOpen(false);
+    setDatasetPresetMenuOpen(false);
+    setNewFieldPropertyKey('');
+    setNewFieldOptions([]);
+    // The dataset submenu grows upward; the table header editor grows downward.
+    setNewFieldAnchor({ rect: button.getBoundingClientRect(), align: source === 'dataset' ? 'end' : 'start' });
+    setNewFieldOpen(true);
+  };
+  const closeDatasetSubmenus = () => {
+    setDatasetFilterOpen(false);
+    setFieldPanelHeaderId(null);
+    setDatasetPresetMenuOpen(false);
+    setNewFieldTypeMenuOpen(false);
+    setNewFieldPresetMenuOpen(false);
+    if (newFieldOpen) {
+      // Closing the parent menu should discard an unfinished new-field draft.
+      skipNewFieldSaveOnCloseRef.current = true;
+      setNewFieldOpen(false);
+      setNewFieldAnchor(null);
+    }
   };
   const openDatasetFieldManager = () => {
     setHeaderMenuFieldId(null);
@@ -1774,7 +2117,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
       open={matchingOpen}
       onOpenChange={(open) => {
         setMatchingOpen(open);
-        if (!open) setDatasetFilterOpen(false);
+        if (!open) closeDatasetSubmenus();
       }}
       filterOpen={datasetFilterOpen}
       onFilterOpenChange={setDatasetFilterOpen}
@@ -1787,11 +2130,12 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
             return field ? fieldLabel(field, propertyFields, t) : BUILTIN_TABLE_FIELDS.find((item) => item.id === id)?.label ?? id;
           }} onReorder={saveFieldOrder} renderField={(id) => {
             const field = document.dataset.schema.fields.find((item) => item.id === id);
-            if (field) return <div key={field.id} className="flex h-full w-full min-w-0 items-center gap-2 overflow-hidden px-1.5">
+            if (field) return <div key={field.id} className="flex h-full w-full min-w-0 items-center gap-2 overflow-hidden pl-[3px] pr-1.5">
             <div className="min-w-0 flex-1 overflow-hidden">
               <TableFieldHeader
                 field={field}
                 label={fieldLabel(field, propertyFields, t)}
+                systemPreset={isSystemPresetField(field)}
                 compact
                 hideTypeIcon
                 saving={saving || !editable}
@@ -1811,9 +2155,9 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
                 onSaveEdits={queueHeaderFieldEdits}
                 onChangeType={changeFieldType}
                 onApplyPreset={applyFieldPreset}
-                onDelete={deleteField}
+                onHide={isSystemPresetField(field) ? () => hideTableField(field.id) : undefined}
+                onDelete={isSystemPresetField(field) ? undefined : deleteField}
                 onManagePresets={() => { void windows.openPreferences('noteSettings'); }}
-                datasetMenu={field.type === 'primary' ? datasetFieldManagerMenu : undefined}
               />
             </div>
                 {field.type !== 'primary' && datasetFieldVisibilityButton(field.id, fieldLabel(field, propertyFields, t), 'ml-auto')}
@@ -1825,7 +2169,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
               type: builtin.iconKind === 'date' ? 'Date' : builtin.iconKind === 'number' ? 'Number' : 'Text',
               property_key: builtin.propertyKey ?? builtin.id,
             };
-            return <div key={builtin.id} className="flex h-full w-full min-w-0 items-center gap-2 px-1.5 text-sm">
+            return <div key={builtin.id} className="flex h-full w-full min-w-0 items-center gap-2 pl-[3px] pr-1.5 text-sm">
             <div className="min-w-0 flex-1 overflow-hidden">
               <TableFieldHeader
                 field={builtinField}
@@ -1856,9 +2200,10 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         {canCreateFields && <>
           <div role="separator" aria-hidden="true" className="mx-2 h-px bg-[var(--border)]" />
           <TablePresetMenu
-            triggerLabel="预设属性"
-            triggerIcon={<Info className="h-4 w-4" aria-hidden="true" />}
+            triggerLabel="选择属性"
+            triggerIcon={<MousePointerClick className="h-4 w-4" aria-hidden="true" />}
             triggerPadding="px-1.5"
+            customGroupLabel={t('preferences.documentProperties.group.mine')}
             customPresets={tablePresets.custom}
             systemPresets={tablePresets.system}
             disabled={!editable || saving}
@@ -1875,13 +2220,8 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
             }}
           />
           <button type="button" data-state={newFieldOpen ? 'open' : 'closed'} disabled={!editable || saving} className="flex h-8 w-full items-center gap-1.5 rounded-lg px-1.5 text-left text-sm hover:bg-[var(--hover-bg)] data-[state=open]:bg-[var(--hover-bg)] disabled:opacity-50" onClick={(event) => {
-            setNewFieldType('Text');
-            setNewFieldTypeMenuOpen(false);
-            setNewFieldPropertyKey('');
-            setNewFieldOptions([]);
-            setNewFieldAnchorRect(event.currentTarget.getBoundingClientRect());
-            setNewFieldOpen(true);
-          }}><Plus className="h-4 w-4" />自定义属性</button>
+            openNewFieldEditor(event.currentTarget, 'dataset');
+          }}><Plus className="h-4 w-4" />新增属性</button>
         </>}
       </div>}
     />
@@ -1894,12 +2234,25 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
   const tableColumnCount = tableViewFields.length + visibleBuiltinFields.length + 1;
   const tableFieldWidths = tableViewFields.map((field) => ({
     fieldId: field.id,
-    width: TABLE_FIELD_WIDTHS[field.type] ?? DEFAULT_TABLE_FIELD_WIDTH,
+    width: TABLE_FIELD_WIDTHS[field.type],
   }));
-  tableFieldWidths.push(...visibleBuiltinFields.map((field) => ({ fieldId: field.id, width: field.width })));
+  tableFieldWidths.push(...visibleBuiltinFields.map((field) => ({
+    fieldId: field.id,
+    width: TABLE_FIELD_WIDTHS[field.type],
+  })));
+  for (const column of tableFieldWidths) {
+    if (autoColumnWidths[column.fieldId] !== undefined) column.width = autoColumnWidths[column.fieldId];
+  }
   const orderedTableWidths = sortFields(tableFieldWidths, (field) => field.fieldId, fieldOrder);
   const tableMinWidth = tableFieldWidths.reduce((total, { width }) => total + width, TABLE_ACTION_COLUMN_MIN_WIDTH);
   return <div className="multidimensional-table__surface flex h-full min-h-0 flex-col bg-transparent" aria-readonly={!editable}>
+    <DeletePresetDialog
+      preset={pendingDeleteTarget?.preset ?? null}
+      tableCount={pendingDeleteTableCount}
+      busy={deletingFieldBusy}
+      onCancel={() => { if (!deletingFieldBusy) setPendingDeleteTarget(null); }}
+      onConfirm={() => { void confirmDeleteField(); }}
+    />
     <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
       <nav className="multidimensional-table__view-nav sticky top-0 z-10 flex min-w-0 shrink-0 items-center gap-1 px-4 py-1" aria-label="表格视图">
         <div
@@ -1991,7 +2344,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
             </ContextMenu>
           ))}
           <div className="shrink-0">
-            <Popover open={viewAddOpen} onOpenChange={(open) => {
+            <Popover open={viewAddOpen} anchorRect={viewFieldPickerAnchorRect} onOpenChange={(open) => {
               setViewAddOpen(open);
               if (!open) {
                 if (managingViewId) {
@@ -2005,6 +2358,8 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
                 }
                 setViewAddStep('kind');
                 setPendingViewType(null);
+                setConfiguringViewId(null);
+                setViewFieldPickerAnchorRect(null);
                 setManagingViewId(null);
                 setManagingViewName('');
               }
@@ -2018,10 +2373,10 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
                 {viewAddStep === 'kind' ? <div className="space-y-0.5">
                   <div className="px-2 py-1 text-xs text-[var(--muted-foreground)]">添加笔记视图</div>
                   <button type="button" disabled={saving} onClick={() => void createDataTableView()} className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">表格</button>
-                  <button type="button" disabled={saving} onClick={() => { setPendingViewType('calendar'); setViewAddStep('field'); }} className="flex h-8 w-full items-center justify-between rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
+                  <button type="button" disabled={saving} onClick={() => { setConfiguringViewId(null); setPendingViewType('calendar'); setViewFieldPickerAnchorRect(null); setViewAddStep('field'); }} className="flex h-8 w-full items-center justify-between rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
                     日历<ChevronRight className="h-3.5 w-3.5 text-[var(--muted-foreground)]" aria-hidden="true" />
                   </button>
-                  <button type="button" disabled={saving} onClick={() => { setPendingViewType('kanban'); setViewAddStep('field'); }} className="flex h-8 w-full items-center justify-between rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
+                  <button type="button" disabled={saving} onClick={() => { setConfiguringViewId(null); setPendingViewType('kanban'); setViewFieldPickerAnchorRect(null); setViewAddStep('field'); }} className="flex h-8 w-full items-center justify-between rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
                     看板<ChevronRight className="h-3.5 w-3.5 text-[var(--muted-foreground)]" aria-hidden="true" />
                   </button>
                   <button type="button" disabled={saving} onClick={() => void createGalleryView()} className="flex h-8 w-full items-center justify-between rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
@@ -2079,26 +2434,38 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
                   </div>
                 </div> : <div className="space-y-0.5">
                   <div className="flex min-w-0 items-center gap-0.5 px-1.5 py-[0.35rem]">
-                    <button type="button" aria-label="返回视图类型" className="inline-flex min-h-4 shrink-0 items-center gap-0.5 rounded px-0 text-xs leading-[1.2] text-[var(--muted-foreground)] hover:text-[var(--foreground)] focus-visible:outline-none" onClick={() => { setViewAddStep('kind'); setPendingViewType(null); }}>
+                    {configuringViewId ? <span className="min-w-0 truncate px-0.5 text-xs leading-[1.2] text-[var(--muted-foreground)]">{pendingViewType === 'calendar' ? '选择日期字段' : '选择单选字段'}</span> : <button type="button" aria-label="返回视图类型" className="inline-flex min-h-4 shrink-0 items-center gap-0.5 rounded px-0 text-xs leading-[1.2] text-[var(--muted-foreground)] hover:text-[var(--foreground)] focus-visible:outline-none" onClick={() => { setViewAddStep('kind'); setPendingViewType(null); setViewFieldPickerAnchorRect(null); }}>
                       <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
                       <span className="min-w-0 truncate text-xs leading-[1.2] text-[var(--muted-foreground)]">{pendingViewType === 'calendar' ? '选择日期字段' : '选择单选字段'}</span>
-                    </button>
+                    </button>}
                   </div>
-                  {pendingViewType === 'kanban' && !statusField && <button type="button" disabled={saving} title="创建状态字段并建立看板视图" onClick={() => void createKanbanViewForStatus()} className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
+                  {pendingViewType === 'kanban' && !statusField && <button type="button" disabled={saving} title={configuringViewId ? '创建状态字段并设置为当前看板分组' : '创建状态字段并建立看板视图'} onClick={() => void chooseKanbanStatusField()} className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
                     状态
                   </button>}
                   {pendingViewType === 'kanban' && statusField && statusField.type !== 'Select' && <p className="px-2 py-2 text-xs leading-5 text-[var(--muted-foreground)]">状态字段不是单选类型，请先修改字段类型或选择其他单选属性</p>}
-                  {viewFieldChoices.map((field) => <button type="button" key={field.id} disabled={saving} onClick={() => void (field.property_key === 'status' ? createKanbanViewForStatus() : createViewForField(field))} className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
+                  {viewFieldChoices.map((field) => <button type="button" key={field.id} disabled={saving} onClick={() => void (field.property_key === 'status' && !configuringViewId ? createKanbanViewForStatus() : selectViewField(field))} className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
                     {fieldLabel(field, propertyFields, t)}
                   </button>)}
                   {pendingViewType === 'kanban' && viewFieldChoices.length === 0 && !statusField && <p className="px-2 py-2 text-xs leading-5 text-[var(--muted-foreground)]">可添加单选属性，作为看板分组</p>}
-                  {pendingViewType === 'calendar' && <button type="button" disabled={saving} onClick={() => void createViewForField(NOTE_CALENDAR_DATE_FIELD_ID)} className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
+                  {pendingViewType === 'calendar' && <button type="button" disabled={saving} onClick={() => void selectViewField(NOTE_CALENDAR_DATE_FIELD_ID)} className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
                     日期
                   </button>}
-                  {pendingViewType === 'calendar' && NOTE_CALENDAR_DATE_FIELDS.map((field) => <button type="button" key={field.id} disabled={saving} onClick={() => void createViewForField(field.id)} className="flex h-8 w-full items-center gap-1 rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
+                  {pendingViewType === 'calendar' && NOTE_CALENDAR_DATE_FIELDS.map((field) => <button type="button" key={field.id} disabled={saving} onClick={() => void selectViewField(field.id)} className="flex h-8 w-full items-center gap-1 rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
                     <span>{field.label}</span>
                     <span title="创建时间和更新时间由系统维护，不能通过拖动修改" className="shrink-0 rounded-md border border-[var(--border)] bg-[var(--muted)] px-1 py-px text-xs font-normal text-[var(--muted-foreground)]">只读</span>
                   </button>)}
+                  <div role="separator" aria-hidden="true" className="mx-2 my-1 h-px bg-[var(--border)]" />
+                  <button type="button" disabled={saving} onClick={() => {
+                    setViewAddOpen(false);
+                    setViewAddStep('kind');
+                    setPendingViewType(null);
+                    setConfiguringViewId(null);
+                    setViewFieldPickerAnchorRect(null);
+                    openDatasetFieldManager();
+                  }} className="flex h-8 w-full items-center justify-between rounded-lg px-2 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
+                    <span>字段管理</span>
+                    <ChevronRight className="h-3.5 w-3.5 text-[var(--muted-foreground)]" aria-hidden="true" />
+                  </button>
                 </div>}
               </PopoverContent>
             </Popover>
@@ -2109,11 +2476,11 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         {!embeddedInEditor && datasetAction}
         {trailingActions ? trailingActions(datasetAction) : embeddedInEditor ? datasetAction : null}
       </nav>
-      <OverlayScrollbar scrollerRef={recordsScrollerRef} horizontalScrollbar={activeView?.layout === 'table' || activeView?.layout === 'kanban'} className={`multidimensional-table__scrollbar--bottom-clearance min-h-0 ${activeView?.layout === 'table' && !embeddedInEditor ? 'flex flex-col flex-[0_1_auto]' : 'flex-1'}`} scrollerClassName={`min-h-0 flex flex-col ${activeView?.layout === 'table' && !embeddedInEditor ? 'flex-[0_1_auto]' : 'h-full'} ${activeView?.layout === 'kanban' ? 'pr-4' : ''}`} onScroll={() => {
+      <OverlayScrollbar scrollerRef={recordsScrollerRef} horizontalScrollbar={activeView?.layout === 'table' || activeView?.layout === 'kanban'} className={`multidimensional-table__scrollbar--bottom-clearance min-h-0 ${activeView?.layout === 'table' && !embeddedInEditor ? 'flex flex-col flex-[0_1_auto]' : 'flex-1'}`} scrollerClassName={`min-h-0 flex flex-col ${activeView?.layout === 'table' && !embeddedInEditor ? 'flex-[0_1_auto]' : 'h-full'}`} onScroll={() => {
         window.dispatchEvent(new Event('flowix:multidimensional-table-scroll'));
         setHeaderMenuFieldId(null);
         setNewFieldOpen(false);
-        setNewFieldAnchorRect(null);
+        setNewFieldAnchor(null);
         setNewFieldTypeMenuOpen(false);
         setNewFieldPresetMenuOpen(false);
         setDatasetPresetMenuOpen(false);
@@ -2124,7 +2491,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         closeCalendarAddPopover();
       }}>
       {activeView?.layout === 'table' && <div className={`min-w-0 w-full ${embeddedInEditor ? 'flex-1' : 'shrink-0'} pr-4 ${embeddedInEditor ? '' : 'pl-4'}`}>
-        <table className="multidimensional-table table-fixed border-collapse text-sm" style={{ width: '100%', minWidth: tableMinWidth }}>
+        <table ref={tableElementRef} className="multidimensional-table table-fixed border-collapse text-sm" style={{ width: '100%', minWidth: tableMinWidth }}>
           <colgroup>
             {orderedTableWidths.map(({ fieldId, width }) => <col key={fieldId} style={{ width }} />)}
             {/* The unsized action column absorbs remaining space; tableMinWidth reserves the action column’s minimum width. */}
@@ -2137,6 +2504,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
                   <TableFieldHeader
                     field={field}
                     label={fieldLabel(field, propertyFields, t)}
+                    systemPreset={isSystemPresetField(field)}
                     saving={saving || !editable}
                     open={headerMenuFieldId === field.id}
                     typeChoices={FIELD_TYPE_CHOICES}
@@ -2152,9 +2520,9 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
                     onChangeType={changeFieldType}
                     onApplyPreset={applyFieldPreset}
                     onHide={field.type === 'primary' ? undefined : () => hideTableField(field.id)}
-                    onDelete={deleteField}
+                    onDelete={isSystemPresetField(field) ? undefined : deleteField}
                     onManagePresets={() => { void windows.openPreferences('noteSettings'); }}
-                datasetMenu={field.type === 'primary' ? datasetFieldManagerMenu : undefined}
+                    datasetMenu={datasetFieldManagerMenu}
                   />
                 </div>
                 <TableSortButton label={fieldLabel(field, propertyFields, t)} direction={tableSortDirection(activeView.sort, field.id)} disabled={!editable || saving} onClick={() => void toggleColumnSort(field.id)} />
@@ -2163,7 +2531,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
             ...visibleBuiltinFields.map((field) => {
               const builtinSchemaField: TableField = builtinPresetTableField(field.id) ?? {
                 id: field.id,
-                type: field.iconKind === 'date' ? 'Date' : field.iconKind === 'number' ? 'Number' : 'Text',
+                type: field.type,
                 property_key: field.propertyKey ?? field.id,
               };
               return <th key={field.id} aria-sort={tableSortDirection(activeView.sort, field.id) === 'asc' ? 'ascending' : tableSortDirection(activeView.sort, field.id) === 'desc' ? 'descending' : 'none'} className="group/table-column border-r border-[var(--border)] bg-[var(--document-bg)] p-0 text-left font-normal">
@@ -2189,6 +2557,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
                     onHide={() => hideTableField(field.id)}
                     onDelete={deleteBuiltinField}
                     onManagePresets={() => { void windows.openPreferences('noteSettings'); }}
+                    datasetMenu={datasetFieldManagerMenu}
                   />
                 </div>
                 <TableSortButton label={builtinTableFieldLabel(field, t)} direction={tableSortDirection(activeView.sort, field.id)} disabled={!editable || saving} onClick={() => void toggleColumnSort(field.id)} />
@@ -2203,14 +2572,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
                 title="添加属性"
                 className="inline-flex h-7 w-7 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-40"
                 onClick={(event) => {
-                  setNewFieldType('Text');
-                  setNewFieldTypeMenuOpen(false);
-                  setNewFieldPresetMenuOpen(false);
-                  setDatasetPresetMenuOpen(false);
-                  setNewFieldPropertyKey('');
-                  setNewFieldOptions([]);
-                  setNewFieldAnchorRect(event.currentTarget.getBoundingClientRect());
-                  setNewFieldOpen(true);
+                  openNewFieldEditor(event.currentTarget, 'table');
                 }}
               ><Plus className="h-4 w-4" aria-hidden="true" /></button>}
             </th></tr>
@@ -2265,6 +2627,7 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         </table>
       </div>}
       {activeView?.layout === 'kanban' && groupField?.type === 'Select' && <TableKanbanView
+        embeddedInEditor={embeddedInEditor}
         groupField={groupField}
         titleField={titleField ?? document.dataset.schema.fields[0]}
         records={secondaryViewRecords}
@@ -2281,7 +2644,25 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
         canAddTask={editable && Boolean(noteField && resolvedNotebookId && notebookPath) && !saving}
         canAddLane={editable && !saving}
       />}
-      {activeView?.layout === 'calendar' && calendarDateFieldId && <TableCalendarView
+      {activeView?.layout === 'kanban' && groupField?.type !== 'Select' && <IncompatibleViewEmptyState
+        title={t('multidimensionalTable.view.incompatibleTitle')}
+        titleAction={editable && <button type="button" disabled={saving} onClick={(event) => {
+          setConfiguringViewId(activeView.id);
+          setPendingViewType('kanban');
+          setViewAddStep('field');
+          setViewFieldPickerAnchorRect(event.currentTarget.getBoundingClientRect());
+          setViewAddOpen(true);
+        }} className="inline-flex items-center gap-1 text-sm text-[var(--primary)] hover:underline disabled:opacity-50">
+          选择分组<ChevronRight className="size-4" aria-hidden="true" />
+        </button>}
+        description={groupField
+          ? t('multidimensionalTable.view.kanbanFieldTypeMismatch', {
+            field: fieldLabel(groupField, propertyFields, t),
+            type: groupField.type !== 'primary' ? t(getPropertyTypeDefinition(groupField.type).labelKey) : t('multidimensionalTable.view.missingField'),
+          })
+          : t('multidimensionalTable.view.kanbanMissingField')}
+      />}
+      {activeView?.layout === 'calendar' && calendarDateFieldId && (calendarDateMetadata || calendarField?.type === 'Date') && <TableCalendarView
         embeddedInEditor={embeddedInEditor}
         cursor={calendarCursor}
         onCursorChange={setCalendarCursor}
@@ -2316,6 +2697,24 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
           }
           openCalendarNotePopover(date, anchorRect, calendarDateFieldId);
         }}
+      />}
+      {activeView?.layout === 'calendar' && (!calendarDateFieldId || (!calendarDateMetadata && calendarField?.type !== 'Date')) && <IncompatibleViewEmptyState
+        title={t('multidimensionalTable.view.incompatibleTitle')}
+        titleAction={editable && <button type="button" disabled={saving} onClick={(event) => {
+          setConfiguringViewId(activeView.id);
+          setPendingViewType('calendar');
+          setViewAddStep('field');
+          setViewFieldPickerAnchorRect(event.currentTarget.getBoundingClientRect());
+          setViewAddOpen(true);
+        }} className="inline-flex items-center gap-1 text-sm text-[var(--primary)] hover:underline disabled:opacity-50">
+          选择日期<ChevronRight className="size-4" aria-hidden="true" />
+        </button>}
+        description={calendarField
+          ? t('multidimensionalTable.view.calendarFieldTypeMismatch', {
+            field: fieldLabel(calendarField, propertyFields, t),
+            type: calendarField.type !== 'primary' ? t(getPropertyTypeDefinition(calendarField.type).labelKey) : t('multidimensionalTable.view.missingField'),
+          })
+          : t('multidimensionalTable.view.calendarMissingField')}
       />}
       {activeView?.layout === 'gallery' && <TableGalleryView
         records={visibleGalleryRecords}
@@ -2403,14 +2802,14 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
     <Popover open={newFieldOpen} onOpenChange={(open) => {
       setNewFieldOpen(open);
       if (!open) {
-        setNewFieldAnchorRect(null);
+        setNewFieldAnchor(null);
         setNewFieldTypeMenuOpen(false);
         setNewFieldPresetMenuOpen(false);
         if (skipNewFieldSaveOnCloseRef.current) skipNewFieldSaveOnCloseRef.current = false;
         else addField();
       }
-      }} anchorRect={newFieldAnchorRect}>
-      <PopoverContent side="left" align="start" sideOffset={0} ignorePopoverOutside={newFieldTypeMenuOpen || newFieldPresetMenuOpen} style={{ zIndex: 160 }} className="max-h-[min(70vh,420px)] w-[213px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl p-1.5 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+      }} anchorRect={newFieldAnchor?.rect ?? null}>
+      <PopoverContent side="left" align={newFieldAnchor?.align ?? 'start'} sideOffset={0} ignorePopoverOutside={newFieldTypeMenuOpen || newFieldPresetMenuOpen} style={{ zIndex: 160 }} className="max-h-[min(70vh,420px)] w-[213px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl p-1.5 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
         <TableFieldEditorForm
           name={newFieldPropertyKey}
           onNameChange={setNewFieldPropertyKey}
@@ -2453,6 +2852,12 @@ function TableDocumentViewSession({ filePath, fileIdentity, notebookPath, notebo
             setNewFieldOpen(false);
             void windows.openPreferences('noteSettings');
           }}
+          afterFooter={<button
+            type="button"
+            disabled={!editable || saving || !newFieldPropertyKey.trim()}
+            onClick={() => { void addField(); }}
+            className="mt-1 flex h-8 w-full items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--muted)] px-2 text-sm text-[var(--foreground)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-50"
+          >保存</button>}
           disabled={!editable || saving}
           t={t}
           typeLabel={(type) => fieldTypeLabel(type, t)}

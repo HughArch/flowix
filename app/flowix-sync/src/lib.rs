@@ -15,9 +15,10 @@ pub use client::CloudClient;
 pub use error::SyncError;
 pub use manager::SyncManager;
 pub use models::{
-    AppleAuthChallenge, AppleAuthorization, AuthOutcome, CloudCheckout, CloudMembership,
+    AppleAuthChallenge, AppleAuthorization, CloudAuthStatus, CloudCheckout,
+    CloudMembership,
     CloudNotebook, CloudPrice, CloudProduct, CloudState, CloudUser, LocalChangeKind,
-    ProductDuration, ProductEntitlement,
+    ProductDuration, ProductEntitlement, RefreshTokenStore,
 };
 pub use store::SyncStore;
 pub use v2::{

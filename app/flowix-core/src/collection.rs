@@ -398,7 +398,7 @@ fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
     only_keys(
         schema,
         if document.collection.kind == CollectionType::Table {
-            &["primary_field_id", "fields", "field_order", "preset_fields"]
+            &["primary_field_id", "fields", "field_order", "preset_fields", "deleted_presets"]
         } else {
             &["fields"]
         },
@@ -423,6 +423,23 @@ fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
                 let id = id.as_str().ok_or("INVALID_PRESET_FIELDS")?;
                 if !allowed.contains(&id) || !seen.insert(id) {
                     return Err("INVALID_PRESET_FIELDS".into());
+                }
+            }
+        }
+        if let Some(deleted) = schema.get("deleted_presets") {
+            let deleted = deleted.as_array().ok_or("INVALID_DELETED_PRESETS")?;
+            let mut deleted_ids = HashSet::new();
+            for preset in deleted {
+                only_keys(preset, &["id", "name", "revision", "optionIds", "multiple", "key", "type", "options"])?;
+                let id = preset["id"].as_str().ok_or("INVALID_DELETED_PRESET_ID")?;
+                let key = preset["key"].as_str().filter(|key| !key.trim().is_empty()).ok_or("INVALID_DELETED_PRESET_KEY")?;
+                let kind = preset["type"].as_str().ok_or("INVALID_DELETED_PRESET_TYPE")?;
+                if !valid_id(id, "fld_") || !deleted_ids.insert(id.to_owned()) || key == "flowix_property_types"
+                    || !["Text", "URL", "Icon", "Boolean", "Number", "Date", "Select", "MultiSelect", "Tag", "Color", "Image"].contains(&kind)
+                    || preset.get("revision").and_then(Value::as_u64).is_none_or(|revision| revision == 0)
+                    || preset.get("options").is_some_and(|options| options.as_array().is_none_or(|values| values.iter().any(|value| !value.is_string())))
+                    || preset.get("optionIds").is_some_and(|ids| ids.as_array().is_none_or(|values| values.iter().any(|value| value.as_str().is_none_or(|id| !valid_id(id, "opt_"))))) {
+                    return Err("INVALID_DELETED_PRESET".into());
                 }
             }
         }
@@ -811,7 +828,7 @@ fn validate_table(payload: &Value) -> Result<(), String> {
     for field in field_values {
         only_keys(
             field,
-            &["id", "type", "name", "property_key", "options", "multiple"],
+            &["id", "type", "name", "property_key", "options", "multiple", "preset_revision", "preset_pending"],
         )?;
         id(field, "fld_", &mut fields)?;
         let kind = field["type"].as_str().ok_or("INVALID_FIELD_TYPE")?;
@@ -826,6 +843,8 @@ fn validate_table(payload: &Value) -> Result<(), String> {
             "Select",
             "MultiSelect",
             "Tag",
+            "noteTag",
+            // Legacy spelling retained so older saved tables remain valid.
             "Tags",
             "Color",
             "Image",
@@ -864,6 +883,9 @@ fn validate_table(payload: &Value) -> Result<(), String> {
                 }
             }
         }
+        if field.get("preset_pending").is_some_and(|v| !v.is_boolean()) {
+            return Err("INVALID_PRESET_PENDING".into());
+        }
         if field.get("multiple").is_some_and(|v| !v.is_boolean()) {
             return Err("INVALID_FIELD_MULTIPLE".into());
         }
@@ -890,7 +912,17 @@ fn validate_table(payload: &Value) -> Result<(), String> {
         let kind = view["type"].as_str().ok_or("INVALID_VIEW_TYPE")?;
         match kind {
             "table" | "gallery" => {
-                only_keys(config, &["visible_fields"])?;
+                // Accept widths persisted by the older manual-resize table UI.
+                if kind == "table" {
+                    only_keys(config, &["visible_fields", "tag_column_width"])?;
+                    if config.get("tag_column_width").is_some_and(|width| {
+                        width.as_f64().is_none_or(|width| !width.is_finite() || !(120.0..=320.0).contains(&width))
+                    }) {
+                        return Err("INVALID_TAG_COLUMN_WIDTH".into());
+                    }
+                } else {
+                    only_keys(config, &["visible_fields"])?;
+                }
                 if array(config, "visible_fields")?
                     .iter()
                     .any(|v| v.as_str().is_none_or(|id| {
@@ -903,28 +935,22 @@ fn validate_table(payload: &Value) -> Result<(), String> {
             }
             "kanban" => {
                 only_keys(config, &["group_by"])?;
-                if !field_values
-                    .iter()
-                    .any(|field| field["id"] == config["group_by"] && field["type"] == "Select")
-                {
+                if config.get("group_by").is_some_and(|value| {
+                    value.as_str().is_none_or(str::is_empty)
+                }) {
                     return Err("INVALID_KANBAN_FIELD".into());
                 }
             }
             "calendar" => {
                 only_keys(config, &["date_field", "title_field", "week_start"])?;
-                let date = config["date_field"].as_str().ok_or("INVALID_DATE_FIELD")?;
-                if !["__note_created_at__", "__note_updated_at__", "__note_calendar_date__"].contains(&date)
-                    && !field_values
-                        .iter()
-                        .any(|field| field["id"] == date && field["type"] == "Date")
-                {
+                if config.get("date_field").is_some_and(|value| {
+                    value.as_str().is_none_or(str::is_empty)
+                }) || config.get("title_field").is_some_and(|value| {
+                    value.as_str().is_none_or(str::is_empty)
+                }) {
                     return Err("INVALID_DATE_FIELD".into());
                 }
-                if config["title_field"]
-                    .as_str()
-                    .is_none_or(|id| !fields.contains(id))
-                    || config.get("week_start").is_some_and(|v| *v != 1)
-                {
+                if config.get("week_start").is_some_and(|v| *v != 1) {
                     return Err("INVALID_CALENDAR_CONFIG".into());
                 }
             }
@@ -999,6 +1025,26 @@ mod builtin_field_tests {
         assert_eq!(document.validate().unwrap_err(), "INVALID_VIEW_FIELD");
     }
 
+    #[test]
+    fn v2_secondary_views_allow_deleted_or_missing_referenced_fields() {
+        let source = include_str!("../../fixtures/collections/table-builtin-fields.yaml");
+        let mut document = CollectionDocument::parse(source).unwrap();
+        let views = document.payload["views"]["items"].as_array_mut().unwrap();
+        views[0]["layout"] = serde_json::json!("calendar");
+        views[0]["config"] = serde_json::json!({});
+        views[0]["id"] = serde_json::json!("view_cccccccccccccccccccccccccccccccc");
+        views[0]["name"] = serde_json::json!("日历");
+        views.push(serde_json::json!({
+            "id": "view_dddddddddddddddddddddddddddddddd",
+            "name": "看板",
+            "layout": "kanban",
+            "filter": { "all": [], "any": [] },
+            "sort": [],
+            "config": {}
+        }));
+        assert!(document.validate().is_ok());
+    }
+
     fn payload(layout: &str, visible: Value) -> Value {
         serde_json::json!({
             "table": {
@@ -1028,5 +1074,20 @@ mod builtin_field_tests {
         assert!(validate_table(&payload("table", visible.clone())).is_ok());
         assert_eq!(validate_table(&payload("gallery", visible)).unwrap_err(), "INVALID_VIEW_FIELD");
         assert_eq!(validate_table(&payload("table", serde_json::json!(["__unknown__"]))).unwrap_err(), "INVALID_VIEW_FIELD");
+    }
+
+    #[test]
+    fn table_reopens_persisted_tag_widths_and_validates_their_range() {
+        let source = include_str!("../../fixtures/collections/table-builtin-fields.yaml");
+        let mut document = CollectionDocument::parse(source).unwrap();
+        for width in [120, 245, 320] {
+            document.payload["views"]["items"][0]["config"]["tag_column_width"] = serde_json::json!(width);
+            let saved = document.serialize().unwrap();
+            assert!(CollectionDocument::parse(&saved).is_ok());
+        }
+        for width in [serde_json::json!(119), serde_json::json!(321), serde_json::json!("160"), Value::Null] {
+            document.payload["views"]["items"][0]["config"]["tag_column_width"] = width;
+            assert_eq!(document.validate().unwrap_err(), "INVALID_TAG_COLUMN_WIDTH");
+        }
     }
 }

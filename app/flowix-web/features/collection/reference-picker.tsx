@@ -8,7 +8,7 @@ export interface CollectionReferenceInsertRange {
 }
 
 export type CollectionReferencePickerAnchor =
-  | { kind: 'slash'; rect: Pick<DOMRect, 'left' | 'top' | 'bottom'> }
+  | { kind: 'slash'; rect: Pick<DOMRect, 'left' | 'top' | 'right' | 'bottom'> }
   | { kind: 'button'; element: HTMLElement; align?: 'left' | 'right' };
 
 export interface CollectionReferenceCandidate {

@@ -201,19 +201,21 @@ export function createProjectionSlice(
           if (event.kind === "stream_end" || event.kind === "error") {
             const cached = codexLiveTurns[event.threadId];
             if (cached?.runId === event.runId) {
-              codexLiveTurns[event.threadId] = { ...cached, status: "completed", updatedAt: Date.now() };
+              codexLiveTurns[event.threadId] = { ...cached, messages: liveTurnMessages(next.messages, event.runId, cached.turnId), status: "completed", updatedAt: Date.now() };
             }
-          } else {
+          } else if (event.kind !== "usage" &&
+            (!next.runs.activeRunId || next.runs.activeRunId === event.runId)) {
             // Tool events do not repeat the turn id; keep the last one seen
             // so the cache can anchor the run slice after the user row has
             // adopted its provider id.
-            const previous = codexLiveTurns[event.threadId];
+            const candidate = codexLiveTurns[event.threadId];
+            const previous = candidate?.runId === event.runId ? candidate : undefined;
             const turnId = event.codexTurnId ?? previous?.turnId;
             codexLiveTurns[event.threadId] = {
               runId: event.runId,
-              turnId: turnId ?? previous?.turnId,
+              turnId,
               messages: liveTurnMessages(next.messages, event.runId, turnId),
-              status: "running",
+              status: next.runs.lastRun?.runId === event.runId ? "completed" : "running",
               updatedAt: Date.now(),
             };
           }

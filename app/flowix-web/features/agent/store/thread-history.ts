@@ -480,7 +480,7 @@ function areMessagesRenderEquivalent(
   right: ChatMessage,
 ): boolean {
   if (left === right) return true;
-  if (left.id !== right.id || left.role !== right.role) return false;
+  if (left.id !== right.id || left.role !== right.role || left.codexTurnId !== right.codexTurnId) return false;
 
   return JSON.stringify({
     content: left.content,
@@ -530,7 +530,7 @@ function areMessagesRenderEquivalent(
  * whose visible form did not change.  Canonical external message ids make the
  * lookup exact for Codex and the other external runtimes.
  */
-function reuseRenderEquivalentMessageReferences(
+export function reuseRenderEquivalentMessageReferences(
   existing: ChatMessage[],
   next: ChatMessage[],
 ): ChatMessage[] {
@@ -589,10 +589,12 @@ export function areMessagesEquivalent(
 
   return left.every((message, index) => {
     const other = right[index];
+    if (message === other) return true;
     return JSON.stringify({
       id: message.id,
       messageId: message.messageId,
       piBlockIndex: message.piBlockIndex,
+      codexTurnId: message.codexTurnId,
       renderKey: message.renderKey,
       role: message.role,
       content: message.content,
@@ -616,6 +618,7 @@ export function areMessagesEquivalent(
       id: other.id,
       messageId: other.messageId,
       piBlockIndex: other.piBlockIndex,
+      codexTurnId: other.codexTurnId,
       renderKey: other.renderKey,
       role: other.role,
       content: other.content,

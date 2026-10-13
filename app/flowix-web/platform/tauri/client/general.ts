@@ -7,6 +7,7 @@ import type { AgentConfig, TestConnectionResult } from './agent';
 export const preferences = {
   get: () => invoke<UserSettings>('get_preference'),
   patch: (patch: Record<string, unknown>) => invoke<void>('patch_preference', { patch }),
+
 };
 
 export interface BootFeatures {
@@ -145,6 +146,11 @@ export interface PiProviderConfig {
 
 export interface PiFeatures { codeMode: boolean; toolSearch: boolean }
 
+export interface PiMcpServerConfig {
+  name: string;
+  config: Record<string, unknown>;
+}
+
 export interface PiModelCatalogProvider {
   id: string;
   displayName: string;
@@ -170,6 +176,13 @@ export const piModels = {
   delete: (providerId: string) => invoke<void>('delete_pi_model_config', { providerId }),
   test: (config: PiProviderConfig) => invoke<number>('test_pi_model_config', { config }),
   discover: (config: PiProviderConfig) => invoke<PiModelEntryConfig[]>('discover_pi_models', { config }),
+};
+
+export const piMcp = {
+  list: () => invoke<PiMcpServerConfig[]>('get_pi_mcp_servers'),
+  save: (name: string, config: Record<string, unknown>) =>
+    invoke<void>('save_pi_mcp_server', { name, config }),
+  delete: (name: string) => invoke<void>('delete_pi_mcp_server', { name }),
 };
 
 export interface DshIntegrationStatus {

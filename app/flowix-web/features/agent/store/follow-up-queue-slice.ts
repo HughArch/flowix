@@ -28,6 +28,8 @@ export interface PendingSteeringMessage {
   canDelete?: boolean;
   deliveryMode?: "steer" | "follow_up";
   deliveryStatus?: FollowUpDeliveryStatus;
+  /** A restored receipt is advanced by the runtime, not a webview RPC. */
+  runtimeOwned?: boolean;
 }
 
 export interface FollowUpQueueSlice {
@@ -117,16 +119,17 @@ function mergeServerQueue(
   const result = [...serverItems];
   for (const local of localItems) {
     const index = result.findIndex((item) => item.clientUserMessageId === local.clientUserMessageId);
-    const isOperationInFlight =
+    const isOperationInFlight = !local.runtimeOwned && (
       local.deliveryStatus === "submitting" ||
       local.deliveryStatus === "starting" ||
       local.deliveryStatus === "steering" ||
       local.deliveryStatus === "cleanup_failed" ||
-      local.deliveryMode === "steer";
+      local.deliveryMode === "steer");
     if (index >= 0) {
       result[index] = {
         ...result[index],
         id: local.id,
+        providerQueueId: result[index].providerQueueId ?? local.providerQueueId,
         content: local.content || result[index].content,
         llmContent: local.llmContent ?? result[index].llmContent,
         imagePaths: local.imagePaths ?? result[index].imagePaths,
@@ -144,7 +147,9 @@ function mergeServerQueue(
       result.push(local);
     }
   }
-  return result.sort((a, b) => a.queuedAt - b.queuedAt);
+  // Server queue order is authoritative. Local receipt timestamps must not
+  // move a known queue tail ahead of an earlier item restored from the server.
+  return result;
 }
 
 export function canActOnQueuedMessage(
@@ -159,41 +164,72 @@ export function createFollowUpQueueSlice(set: SessionSet, get: SessionGet): Foll
   const updateSteeringMessage = (threadId: string, messageId: string, patch: Partial<PendingSteeringMessage>) =>
     setMessage(set, threadId, messageId, patch);
 
+  // Receipts consumed while a snapshot RPC is in flight must not reappear.
+  const queueReads = new Map<string, Set<string>[]>();
+
   const refreshCodexQueueUnlocked = async (threadId: string, restore = false): Promise<void> => {
-    const result = restore
-      ? await agentClient.restoreCodexFollowUps(threadId)
-      : await agentClient.listCodexFollowUps(threadId);
-    const active = get().pendingSteeringMessages[threadId] ?? [];
-    const serverItems = result.data.map((submission, index): PendingSteeringMessage => {
-      const texts = submission.input
-        .filter((item): item is { type: string; text: string } =>
-          !!item && typeof item === "object" && (item as { type?: unknown }).type === "text" && typeof (item as { text?: unknown }).text === "string")
-        .map((item) => item.text);
-      const imagePaths = submission.input
-        .filter((item): item is { type: string; path: string } =>
-          !!item && typeof item === "object" && (item as { type?: unknown }).type === "localImage" && typeof (item as { path?: unknown }).path === "string")
-        .map((item) => item.path);
-      return {
-        id: `pending-${submission.clientUserMessageId}`,
-        threadId,
-        content: texts.join("\n"),
-        llmContent: texts.join("\n"),
-        imagePaths,
-        queuedAt: Date.now() + index,
-        clientUserMessageId: submission.clientUserMessageId,
-        providerQueueId: submission.id,
-        deliveryMode: "follow_up",
-        deliveryStatus: "queued",
-        canDelete: true,
-      };
-    });
-    const merged = mergeServerQueue(serverItems, active, isProjectionWorking(get().threadProjections[threadId]));
-    set((state) => {
-      const pendingSteeringMessages = { ...state.pendingSteeringMessages };
-      if (merged.length) pendingSteeringMessages[threadId] = merged;
-      else delete pendingSteeringMessages[threadId];
-      return { pendingSteeringMessages };
-    });
+    const consumed = new Set<string>();
+    const reads = queueReads.get(threadId) ?? [];
+    reads.push(consumed); queueReads.set(threadId, reads);
+    try {
+      const result = restore
+        ? await agentClient.restoreCodexFollowUps(threadId)
+        : await agentClient.listCodexFollowUps(threadId);
+      const active = get().pendingSteeringMessages[threadId] ?? [];
+      const serverItems = result.data.map((submission, index): PendingSteeringMessage => {
+        const texts = submission.input
+          .filter((item): item is { type: string; text: string } =>
+            !!item && typeof item === "object" && (item as { type?: unknown }).type === "text" && typeof (item as { text?: unknown }).text === "string")
+          .map((item) => item.text);
+        const imagePaths = submission.input
+          .filter((item): item is { type: string; path: string } =>
+            !!item && typeof item === "object" && (item as { type?: unknown }).type === "localImage" && typeof (item as { path?: unknown }).path === "string")
+          .map((item) => item.path);
+        return {
+          id: `pending-${submission.clientUserMessageId}`,
+          threadId,
+          content: texts.join("\n"),
+          llmContent: texts.join("\n"),
+          imagePaths,
+          queuedAt: Date.now() + index,
+          clientUserMessageId: submission.clientUserMessageId,
+          providerQueueId: submission.id,
+          deliveryMode: "follow_up",
+          deliveryStatus: "queued",
+          canDelete: true,
+        };
+      });
+      for (const receipt of [...(result.pendingDeliveries ?? [])].reverse()) {
+        if (receipt.runId && get().threadProjections[threadId]?.runs.lastRun?.runId === receipt.runId) continue;
+        const queuedIndex = serverItems.findIndex((item) => item.clientUserMessageId === receipt.clientUserMessageId);
+        const providerQueueId = queuedIndex >= 0 ? serverItems[queuedIndex].providerQueueId : undefined;
+        if (queuedIndex >= 0) serverItems.splice(queuedIndex, 1);
+        const text = receipt.input.filter((item): item is { type: "text"; text: string } =>
+          !!item && typeof item === "object" && (item as { type?: unknown }).type === "text")
+          .map((item) => item.text).join("\n");
+        serverItems.unshift({
+          id: `pending-${receipt.clientUserMessageId}`, threadId,
+          clientUserMessageId: receipt.clientUserMessageId, providerQueueId,
+          content: receipt.content ?? text, llmContent: text,
+          imagePaths: receipt.input.filter((item): item is { type: "localImage"; path: string } =>
+            !!item && typeof item === "object" && (item as { type?: unknown }).type === "localImage")
+            .map((item) => item.path),
+          queuedAt: receipt.queuedAt, deliveryMode: "steer", deliveryStatus: receipt.deliveryStatus, canDelete: false, runtimeOwned: true,
+        });
+      }
+      const merged = mergeServerQueue(serverItems.filter((item) => !consumed.has(item.clientUserMessageId ?? "")), active,
+        isProjectionWorking(get().threadProjections[threadId]));
+      set((state) => {
+        const pendingSteeringMessages = { ...state.pendingSteeringMessages };
+        if (merged.length) pendingSteeringMessages[threadId] = merged;
+        else delete pendingSteeringMessages[threadId];
+        return { pendingSteeringMessages };
+      });
+    } finally {
+      const remaining = (queueReads.get(threadId) ?? []).filter((read) => read !== consumed);
+      if (remaining.length) queueReads.set(threadId, remaining);
+      else queueReads.delete(threadId);
+    }
   };
 
   const hydrateCodexFollowUps = async (threadId: string): Promise<void> => {
@@ -230,6 +266,7 @@ export function createFollowUpQueueSlice(set: SessionSet, get: SessionGet): Foll
     updateSteeringMessage,
     removeSteeringMessage: (threadId, messageId) => removeMessage(set, threadId, messageId),
     removeSteeringMessageByClientId: (threadId, clientUserMessageId) => {
+      for (const read of queueReads.get(threadId) ?? []) read.add(clientUserMessageId);
       const match = (get().pendingSteeringMessages[threadId] ?? [])
         .find((message) => message.clientUserMessageId === clientUserMessageId);
       if (match) removeMessage(set, threadId, match.id);

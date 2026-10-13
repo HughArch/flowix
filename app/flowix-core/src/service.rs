@@ -12,7 +12,7 @@ use thiserror::Error;
 
 use crate::memo_file::{
     base_filename, normalize_search_tag_filter, notebook_path_from_relative,
-    resolve_filename_conflict, FileLockIntent, FileWriteGuard, Memo, MemoColor, MemoFile, MemoIndexEntry, MemoTodoEntry,
+    resolve_filename_conflict, FileLockIntent, FileWriteGuard, Memo, MemoColor, MemoFile, MemoIndexEntry,
     NoteEntry, NoteSearchHit, NoteWriteOutcome, NotebookConfig,
 };
 
@@ -1119,16 +1119,6 @@ impl MemoService<'_> {
     ) -> Result<TagUsageSummary, FlowixError> {
         self.memo_file
             .read_tag_usage_summary_for_notebook_id(notebook_id)
-            .map_err(FlowixError::Io)
-    }
-
-    pub fn todo_metadata(
-        &mut self,
-        notebook_id: Option<&str>,
-        sort: &str,
-    ) -> Result<Vec<MemoTodoEntry>, FlowixError> {
-        self.memo_file
-            .read_todo_metadata_entries_for_notebook_id(notebook_id, sort)
             .map_err(FlowixError::Io)
     }
 

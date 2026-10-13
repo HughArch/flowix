@@ -139,6 +139,8 @@ export function applyUserMessageChunk(
       messages[index] = {
         ...optimistic,
         id: metadata.id,
+        renderKey: optimistic.renderKey ?? optimistic.id,
+        messageId: metadata.nativeMessageId ?? metadata.id,
         // See the provider-id adoption path above: runtime context belongs to
         // the model prompt, never to the rendered user message.
         codexTurnId: metadata.codexTurnId,
@@ -249,7 +251,7 @@ function applyTextChunkInternal(
     // no-op instead of a fresh object graph.
     if (metadata.contentMode === "snapshot" && existing.content === text) {
       if (existing.messageType === metadata.messageType &&
-          (!metadata.adoptPendingId || (existing.isCompleted ?? false) === (metadata.phase === "completed"))) {
+          (existing.isCompleted ?? false) === (metadata.phase === "completed")) {
         return {
           messages: closedMessages,
           pending: { assistantId: metadata.phase === "completed" ? null : targetId, reasoningId: null },
@@ -269,6 +271,7 @@ function applyTextChunkInternal(
     const messages = [...closedMessages];
     messages[existingIndex] = {
       ...existing,
+      messageId: metadata.nativeMessageId ?? existing.messageId,
       isCompleted: metadata.phase === "completed",
       content:
         metadata.contentMode === "snapshot" ? text : existing.content + text,
@@ -324,7 +327,7 @@ function applyTextChunkInternal(
         renderKey: existing.renderKey ?? existing.id,
         messageId: metadata.nativeMessageId ?? metadata.id,
         piBlockIndex: metadata.blockIndex,
-        parentMessageId: metadata.nativeMessageId,
+        parentMessageId: metadata.adoptPendingId ? metadata.nativeMessageId : undefined,
         isCompleted: metadata.phase === "completed",
         content: text,
         messageType: metadata.messageType ?? existing.messageType,
@@ -346,9 +349,9 @@ function applyTextChunkInternal(
     const message = {
       id,
       renderKey: id,
-      messageId: metadata.adoptPendingId ? metadata.nativeMessageId ?? metadata.id ?? null : undefined,
+      messageId: metadata.nativeMessageId ?? (metadata.adoptPendingId ? metadata.id ?? null : undefined),
       piBlockIndex: metadata.blockIndex,
-      parentMessageId: metadata.nativeMessageId,
+      parentMessageId: metadata.adoptPendingId ? metadata.nativeMessageId : undefined,
       isCompleted: metadata.phase === "completed",
       role: "assistant" as const,
       content: text,
@@ -360,7 +363,7 @@ function applyTextChunkInternal(
       messageType: metadata.messageType,
     };
     return {
-      messages: insertAgentMessageBySourceOrder(closedMessages, message, metadata.adoptPendingId),
+      messages: insertAgentMessageBySourceOrder(closedMessages, message, metadata.adoptPendingId || !!metadata.codexTurnId),
       pending: { assistantId: id, reasoningId: null },
     };
   }
@@ -368,9 +371,9 @@ function applyTextChunkInternal(
   const message = {
     id: targetId,
     renderKey: targetId,
-    messageId: metadata.adoptPendingId ? metadata.nativeMessageId ?? metadata.id ?? null : undefined,
+    messageId: metadata.nativeMessageId ?? (metadata.adoptPendingId ? metadata.id ?? null : undefined),
       piBlockIndex: metadata.blockIndex,
-      parentMessageId: metadata.nativeMessageId,
+      parentMessageId: metadata.adoptPendingId ? metadata.nativeMessageId : undefined,
     isCompleted: metadata.phase === "completed",
     role: "assistant" as const,
     content: text,
@@ -382,7 +385,7 @@ function applyTextChunkInternal(
     messageType: metadata.messageType,
   };
   return {
-    messages: insertAgentMessageBySourceOrder(closedMessages, message, metadata.adoptPendingId),
+    messages: insertAgentMessageBySourceOrder(closedMessages, message, metadata.adoptPendingId || !!metadata.codexTurnId),
     pending: { assistantId: metadata.phase === "completed" ? null : targetId, reasoningId: null },
   };
 }
@@ -396,9 +399,9 @@ function applyTextSnapshotAsNewMessage(
   const message = {
     id,
     renderKey: id,
-    messageId: metadata.adoptPendingId ? metadata.nativeMessageId ?? metadata.id ?? null : undefined,
+    messageId: metadata.nativeMessageId ?? (metadata.adoptPendingId ? metadata.id ?? null : undefined),
       piBlockIndex: metadata.blockIndex,
-      parentMessageId: metadata.nativeMessageId,
+      parentMessageId: metadata.adoptPendingId ? metadata.nativeMessageId : undefined,
     isCompleted: metadata.phase === "completed",
     role: "assistant" as const,
     content: text,
@@ -410,7 +413,7 @@ function applyTextSnapshotAsNewMessage(
     messageType: metadata.messageType,
   };
   return {
-    messages: insertAgentMessageBySourceOrder(messages, message, metadata.adoptPendingId),
+    messages: insertAgentMessageBySourceOrder(messages, message, metadata.adoptPendingId || !!metadata.codexTurnId),
     pending: { assistantId: metadata.phase === "completed" ? null : id, reasoningId: null },
   };
 }
@@ -455,6 +458,8 @@ function applyReasoningChunkInternal(
     const messages = [...st.messages];
     messages[existingIndex] = {
       ...existing,
+      messageId: metadata.nativeMessageId ?? existing.messageId,
+      codexTurnId: existing.codexTurnId ?? metadata.codexTurnId,
       content:
         metadata.contentMode === "snapshot" ? text : existing.content + text,
       timestamp:
@@ -484,6 +489,7 @@ function applyReasoningChunkInternal(
           id,
           renderKey: id,
           messageId: metadata.adoptPendingId ? null : undefined,
+          codexTurnId: metadata.codexTurnId,
           piBlockIndex: metadata.blockIndex,
           role: "reasoning",
           content: text,
@@ -514,10 +520,11 @@ function applyReasoningChunkInternal(
         messages[pendingIndex] = {
           ...existing,
           id: metadata.id,
+          codexTurnId: existing.codexTurnId ?? metadata.codexTurnId,
           renderKey: existing.renderKey ?? existing.id,
           messageId: metadata.nativeMessageId ?? metadata.id,
         piBlockIndex: metadata.blockIndex,
-        parentMessageId: metadata.nativeMessageId,
+        parentMessageId: metadata.adoptPendingId ? metadata.nativeMessageId : undefined,
           content: text,
           isCompleted: metadata.phase === "completed",
           sourceTimestamp: existing.sourceTimestamp ?? metadata.sourceTimestamp,
@@ -535,19 +542,20 @@ function applyReasoningChunkInternal(
   const message = {
     id: targetId,
     renderKey: targetId,
-    messageId: metadata.adoptPendingId ? metadata.nativeMessageId ?? metadata.id ?? null : undefined,
+    messageId: metadata.nativeMessageId ?? (metadata.adoptPendingId ? metadata.id ?? null : undefined),
       piBlockIndex: metadata.blockIndex,
-      parentMessageId: metadata.nativeMessageId,
+      parentMessageId: metadata.adoptPendingId ? metadata.nativeMessageId : undefined,
     role: "reasoning" as const,
     content: text,
     timestamp: messageTimestamp(metadata.sourceTimestamp),
     sourceTimestamp: metadata.sourceTimestamp,
+    codexTurnId: metadata.codexTurnId,
     sourceSequence: metadata.sourceSequence,
     sourceSubsequence: metadata.sourceSubsequence,
     isCompleted: metadata.phase === "completed",
   };
   return {
-    messages: insertAgentMessageBySourceOrder(st.messages, message, metadata.adoptPendingId),
+    messages: insertAgentMessageBySourceOrder(st.messages, message, metadata.adoptPendingId || !!metadata.codexTurnId),
     pending: { assistantId: st.pending.assistantId, reasoningId: metadata.phase === "completed" ? null : targetId },
   };
 }
@@ -584,6 +592,7 @@ export function applyErrorChunk(
     messages[existingIndex] = {
       ...existing,
       content: existing.content || message,
+      isCompleted: true,
       errorDetails: existing.errorDetails ?? metadata.errorDetails,
     };
     return {
@@ -600,6 +609,7 @@ export function applyErrorChunk(
         role: "assistant",
         content: message,
         timestamp: new Date().toISOString(),
+        isCompleted: true,
         ...(metadata.notice ? { notice: metadata.notice } : {}),
         ...(metadata.errorDetails
           ? { errorDetails: metadata.errorDetails }

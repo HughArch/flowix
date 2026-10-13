@@ -5,6 +5,7 @@ import {
   CopyIcon,
   FolderOpenIcon,
   LinkSimpleIcon,
+  PencilSimpleIcon,
   PushPin,
   SquareSplitHorizontalIcon,
   TrashSimpleIcon,
@@ -56,6 +57,7 @@ interface MemoCardActionsProps<T extends NoteListItem> {
   /** Tree-specific copy submenu, placed directly before reveal. */
   copyMenuBeforeReveal?: React.ReactNode;
   onFavoriteToggle: (memo: T) => void;
+  onRename?: (memo: T) => void;
   onDelete: (memo: T) => void;
   onColorsChange?: (memo: T, colors: NoteColor[]) => void;
   /**
@@ -209,6 +211,7 @@ export function MemoCardActions<T extends NoteListItem>({
   memo,
   filePath,
   onFavoriteToggle,
+  onRename,
   onDelete,
   onColorsChange,
   onOpenInSplit,
@@ -273,6 +276,11 @@ export function MemoCardActions<T extends NoteListItem>({
             <SquareSplitHorizontalIcon className="w-4 h-4 mr-2" /> {t('memo.action.openInSplit')}
           </Item>
         </>
+      )}
+      {onRename && (
+        <Item onClick={() => onRename(memo)} className={ITEM_BASE}>
+          <PencilSimpleIcon className="mr-2 h-4 w-4" /> {t('memo.fileTree.rename')}
+        </Item>
       )}
       <Item onClick={() => onFavoriteToggle(memo)} className={ITEM_BASE}>
         {memo.favorited ? (

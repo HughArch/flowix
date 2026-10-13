@@ -1,5 +1,5 @@
-import { spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { spawn, spawnSync } from 'node:child_process'
+import { existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 
@@ -11,6 +11,8 @@ const args = process.argv.slice(2)
 const withPi = args.includes('--with-pi')
 const config = args.find(arg => arg !== '--with-pi') ?? 'app/flowix-desktop/tauri.conf.dev.json'
 const childEnv = { ...process.env }
+childEnv.CARGO_TARGET_DIR ??= resolve(repoRoot, '.build/cargo-target')
+if (config.includes('.dev.')) childEnv.FLOWIX_DEV_MODE = '1'
 
 // The dev config is an overlay on tauri.conf.json. Keep versions in the
 // overlay-free canonical files aligned so a stale app version fails early.
@@ -127,4 +129,43 @@ if (process.env.FLOWIX_BUILD_DSH === '1') {
   console.log('skipping local DSH build (set FLOWIX_BUILD_DSH=1 to enable)')
 }
 
-run(process.execPath, [tauriEntrypoint, 'dev', '--config', config])
+function runTauriDev() {
+  if (process.platform !== 'darwin' || childEnv.FLOWIX_DEV_MODE !== '1') {
+    run(process.execPath, [tauriEntrypoint, 'dev', '--config', config])
+    return
+  }
+
+  const executable = resolve(childEnv.CARGO_TARGET_DIR, 'debug/flowix-desktop')
+  const previousMtime = existsSync(executable) ? statSync(executable).mtimeMs : 0
+  const registerScript = resolve(repoRoot, 'scripts/register-macos-dev-app.mjs')
+  const child = spawn(process.execPath, [tauriEntrypoint, 'dev', '--config', config], {
+    cwd: repoRoot,
+    env: childEnv,
+    stdio: 'inherit',
+  })
+  let registered = false
+  const check = setInterval(() => {
+    if (registered || !existsSync(executable)) return
+    if (statSync(executable).mtimeMs <= previousMtime && !existsSync(resolve(repoRoot, '.build/macos-dev/Flowix Dev.app/Contents/Info.plist'))) return
+    registered = true
+    const result = spawnSync(process.execPath, [registerScript], {
+      cwd: repoRoot,
+      env: childEnv,
+      stdio: 'inherit',
+    })
+    if (result.error || result.status !== 0) {
+      console.error('Flowix Dev deep-link registration failed; Google login callbacks may open another installed Flowix app.')
+    }
+  }, 500)
+  child.on('error', (error) => {
+    clearInterval(check)
+    throw error
+  })
+  child.on('exit', (code, signal) => {
+    clearInterval(check)
+    if (signal) process.kill(process.pid, signal)
+    else process.exitCode = code ?? 1
+  })
+}
+
+runTauriDev()

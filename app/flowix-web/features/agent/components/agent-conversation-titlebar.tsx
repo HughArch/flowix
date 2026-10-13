@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useState, type MouseEvent as ReactMouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { ChevronLeft, ChevronRight, MoreHorizontal } from 'lucide-react';
 import {
   ArchiveIcon,
@@ -23,6 +23,7 @@ import {
 } from '@features/document/components/document-titlebar-shared';
 import { DEFAULT_AGENT_TYPE_KEY, getAgentType } from '@/lib/agent-types';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
+import { useAgentAccessStore } from '@features/agent/store/agent-access-store';
 import { openNoteByNotebookPath, openNoteByPhysicalPath } from '@features/memo/use-cases/open-by-target';
 import { openExternalTarget } from '@features/workspace/use-cases/workspace-navigation';
 import { getAgentConversationPresentation } from '@features/agent/conversation-presentation';
@@ -39,15 +40,6 @@ import {
   subscribeToFavoriteConversationChanges,
   toggleFavoriteConversation,
 } from '@features/agent/conversation-favorites';
-import { buildConversationContextMenuItems } from '@features/agent/menus/conversation-context-menu';
-import {
-  canUseNativeContextMenu,
-  logNativeContextMenuError,
-  nativeMenuWidth,
-  nativeMenuPositionBelowEnd,
-  popupNativeContextMenu,
-} from '@platform/tauri/native-context-menu';
-import { loadNativeMenuIcons } from '@platform/tauri/native-menu-icons';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -64,6 +56,9 @@ function AgentConversationHeader({ instanceId }: { instanceId: string }) {
     return threadId ? state.threadProjections[threadId] : undefined;
   });
   const codexModel = useAgentSessionStore((state) => state.sessionMeta.settings.agentCodexModel);
+  const piCodeMode = useAgentAccessStore((state) =>
+    state.config.defaults?.runtime?.pi?.piCodeMode ?? false,
+  );
   const [isEditingTitle, setIsEditingTitle] = useState(false);
   const { inputRef: titleInputRef, captureCaret: captureTitleCaret } = useTitleEditCaret(isEditingTitle);
   const [titleDraft, setTitleDraft] = useState('');
@@ -139,48 +134,6 @@ function AgentConversationHeader({ instanceId }: { instanceId: string }) {
     setIsEditingTitle(true);
   }, []);
 
-  const showNativeMoreMenu = useCallback(async (event: ReactMouseEvent<HTMLButtonElement>) => {
-    if (!instance) return;
-    const popupPosition = nativeMenuPositionBelowEnd(
-      event.currentTarget,
-      nativeMenuWidth('conversation'),
-    );
-    const loadedIcons = await loadNativeMenuIcons([
-      'split', 'star', 'pencil', 'archive', 'delete',
-    ]);
-    await popupNativeContextMenu(event, buildConversationContextMenuItems({
-      instance,
-      favorite: isFavorite,
-      icons: {
-        split: loadedIcons.split!,
-        star: loadedIcons.star!,
-        pencil: loadedIcons.pencil!,
-        archive: loadedIcons.archive!,
-        delete: loadedIcons.delete!,
-      },
-      labels: {
-        openInBrowserColumn: t('workColumn.context.openInBrowserColumn'),
-        favorite: t('agent.chat.conversation.favorite'),
-        unfavorite: t('agent.chat.conversation.unfavorite'),
-        rename: t('agent.chat.conversation.rename'),
-        archive: t('document.agent.archiveConversation'),
-        delete: t('document.agent.deleteConversation'),
-      },
-      actions: {
-        openInBrowserColumn: onOpenInBrowserColumn,
-        toggleFavorite: onToggleFavorite,
-        rename: onRename,
-        remove: (target, action) => void onRemove(target, action),
-      },
-    }), popupPosition);
-  }, [instance, isFavorite, onOpenInBrowserColumn, onRemove, onRename, onToggleFavorite, t]);
-
-  useEffect(() => {
-    if (!canUseNativeContextMenu()) return;
-    void loadNativeMenuIcons(['split', 'star', 'pencil', 'archive', 'delete'])
-      .catch((error) => logNativeContextMenuError('agent conversation titlebar menu icons', error));
-  }, []);
-
   const onOpenSourceDocument = useCallback(() => {
     if (!instance || !presentation?.hasSourceDocument) return;
     const { source } = presentation;
@@ -235,6 +188,8 @@ function AgentConversationHeader({ instanceId }: { instanceId: string }) {
             },
           )}
           codex={instance.agentType === 'codex'}
+          pi={instance.agentType === 'pi'}
+          piMode={instance.agentType === 'pi' ? (piCodeMode ? 'code' : 'writing') : undefined}
           cwd={runtimeCwd}
         />
         <span className="agent-type-badge" aria-hidden="true" title={agent.desc}>
@@ -288,22 +243,7 @@ function AgentConversationHeader({ instanceId }: { instanceId: string }) {
               <LinkBreakIcon className="agent-thread-card__fullscreen-icon" aria-hidden="true" />
             </span>
           )}
-        {canUseNativeContextMenu() ? (
-          <button
-            type="button"
-            aria-label={t('document.agent.moreActions')}
-            title={t('document.agent.moreActions')}
-            onClick={(event) => {
-              void showNativeMoreMenu(event).catch((error) => {
-                logNativeContextMenuError('agent conversation titlebar', error);
-              });
-            }}
-            className={`${actionButtonClass} [-webkit-app-region:no-drag]`}
-          >
-            <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-          </button>
-        ) : (
-          <DropdownMenu>
+        <DropdownMenu>
             <DropdownMenuTrigger asChild>
               <button type="button" aria-label={t('document.agent.moreActions')} title={t('document.agent.moreActions')}
                 className={`${actionButtonClass} [-webkit-app-region:no-drag]`}>
@@ -328,8 +268,7 @@ function AgentConversationHeader({ instanceId }: { instanceId: string }) {
                 <TrashSimpleIcon className="h-4 w-4" /> {t('document.agent.deleteConversation')}
               </DropdownMenuItem>
             </DropdownMenuContent>
-          </DropdownMenu>
-        )}
+        </DropdownMenu>
       </div>
     </div>
   );

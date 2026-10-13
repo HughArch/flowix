@@ -316,7 +316,8 @@ describe('NotebookFileTree pointer dragging', () => {
     const originalGetBoundingClientRect = HTMLElement.prototype.getBoundingClientRect;
     vi.spyOn(HTMLElement.prototype, 'getBoundingClientRect').mockImplementation(function (this: HTMLElement) {
       if (this === scroller) return new DOMRect(0, 50, 320, 204);
-      if (this.contains(repositoryButton)) return new DOMRect(0, 330, 300, 50);
+      // Viewport coordinates move with scrollTop, just as they do in the browser.
+      if (this.contains(repositoryButton)) return new DOMRect(0, 330 - (scrollTop - 10), 300, 50);
       return originalGetBoundingClientRect.call(this);
     });
 
@@ -336,7 +337,8 @@ describe('NotebookFileTree pointer dragging', () => {
       await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
     });
 
-    expect(scroller.scrollTop).toBe(244);
+    const repositoryTop = repositoryButton.parentElement!.getBoundingClientRect().top;
+    expect(repositoryTop - scroller.getBoundingClientRect().top).toBe(36);
     await act(async () => root.unmount());
   });
 
@@ -1158,7 +1160,7 @@ describe('NotebookFileTree pointer dragging', () => {
         onNoteSelect={vi.fn()} onCreateNote={vi.fn()} onMoveNote={successfulMove} />,
     ));
     await vi.waitFor(() => {
-      expect(host.querySelectorAll('[data-notebook-virtual-row]').length).toBeLessThan(40);
+      expect(host.querySelectorAll('[data-notebook-virtual-row]').length).toBeLessThan(80);
     });
     expect(host.querySelector('[title="/notes/item-000.md"]')).not.toBeNull();
     expect(host.querySelector('[title="/notes/item-300.md"]')).toBeNull();
@@ -1172,8 +1174,23 @@ describe('NotebookFileTree pointer dragging', () => {
     await vi.waitFor(() => {
       expect(host.querySelector('[title="/notes/item-300.md"]')).not.toBeNull();
     });
-    expect(host.querySelectorAll('[data-notebook-virtual-row]').length).toBeLessThan(40);
+    // Keep upcoming rows mounted before another ~680px touchpad scroll arrives.
+    expect(host.querySelector('[title="/notes/item-280.md"]')).not.toBeNull();
+    expect(host.querySelector('[title="/notes/item-320.md"]')).not.toBeNull();
+    expect(host.querySelectorAll('[data-notebook-virtual-row]').length).toBeLessThan(80);
     expect(host.querySelector('[title="/notes/item-000.md"]')).not.toBeNull();
+
+    // Exercise consecutive bursts and a direction change without waiting a frame.
+    for (const index of [320, 300, 280]) {
+      expect(host.querySelector(`[title="/notes/item-${index}.md"]`)).not.toBeNull();
+      await act(async () => {
+        scroller.scrollTop = index * 34;
+        scroller.dispatchEvent(new Event('scroll', { bubbles: true }));
+      });
+      expect(host.querySelector(`[title="/notes/item-${index - 20}.md"]`)).not.toBeNull();
+      expect(host.querySelector(`[title="/notes/item-${index + 20}.md"]`)).not.toBeNull();
+      expect(host.querySelectorAll('[data-notebook-virtual-row]').length).toBeLessThan(80);
+    }
 
     await act(async () => root.unmount());
   });

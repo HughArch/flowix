@@ -15,6 +15,7 @@ interface BlockActionMenuProps {
   onHover: (index: number) => void
   onKeyDown: (event: KeyboardEvent<HTMLDivElement>) => void
   ariaLabel?: string
+  itemHeightClassName?: string
 }
 
 /**
@@ -35,6 +36,7 @@ export function BlockActionMenu({
   onHover,
   onKeyDown,
   ariaLabel = 'Block actions',
+  itemHeightClassName = 'h-7 min-h-7',
 }: BlockActionMenuProps) {
   const { scrollerRef, itemRefs } = useSelectedItemScroll({
     items: actions,
@@ -182,7 +184,7 @@ export function BlockActionMenu({
                 aria-expanded={hasChildren ? submenuOpen : undefined}
                 onMouseMove={(event) => handleItemMouseMove(event, index, hasChildren)}
                 onClick={() => handleItemClick(action, hasChildren, index)}
-                className={`group relative flex h-7 min-h-7 w-full items-center justify-start gap-3 rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] transition-colors${mouseHoverEnabled ? ' hover:bg-[var(--hover-bg)]' : ''}${index === selectedIndex ? ' bg-[var(--hover-bg)] text-[var(--foreground)]' : ''}`}
+                className={`group relative flex ${itemHeightClassName} w-full items-center justify-start gap-3 rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] transition-colors${mouseHoverEnabled ? ' hover:bg-[var(--hover-bg)]' : ''}${index === selectedIndex ? ' bg-[var(--hover-bg)] text-[var(--foreground)]' : ''}`}
                 style={{ outline: 'none', boxShadow: 'none' }}
               >
                 {action.icon}

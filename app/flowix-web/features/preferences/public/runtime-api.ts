@@ -24,27 +24,6 @@ export function useEditorTypography() {
   return { fontSize, lineHeight };
 }
 
-export function usePropertyFieldPreferences() {
-  const fields = useUserSettingsStore((state) => state.settings.properties.fields);
-  const updateSettings = useUserSettingsStore((state) => state.updateSettings);
-  return {
-    fields,
-    saveFields: (nextFields: typeof fields) => updateSettings({ properties: { fields: nextFields } }),
-  };
-}
-
-/** Read property-field preferences from non-React runtime consumers. */
-export function getPropertyFieldPreferences() {
-  return useUserSettingsStore.getState().settings.properties.fields;
-}
-
-/** Subscribe non-React runtime consumers to property-field preference changes. */
-export function subscribePropertyFieldPreferences(listener: () => void): () => void {
-  return useUserSettingsStore.subscribe((state, previous) => {
-    if (state.settings.properties.fields !== previous.settings.properties.fields) listener();
-  });
-}
-
 export function useAgentVisibilityPreferences() {
   const enabledByType = useUserSettingsStore((state) => state.settings.agents.enabledByType);
   const updateSettings = useUserSettingsStore((state) => state.updateSettings);

@@ -87,14 +87,15 @@ pub(super) fn app_server_turn_messages_with_offset(
                 turn_id.as_deref(),
             ) {
                 if matches!(message.role.as_str(), "assistant" | "reasoning") {
-                    let item_terminal = item
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .is_some_and(is_terminal_native_status);
-                    let turn_terminal = turn
-                        .get("status")
-                        .and_then(Value::as_str)
-                        .is_some_and(is_terminal_native_status);
+                    let item_status = item.get("status").and_then(Value::as_str);
+                    let turn_status = turn.get("status").and_then(Value::as_str);
+                    let interrupted_turn = matches!(turn_status, Some("failed" | "interrupted" | "cancelled"));
+                    let interrupted_item = matches!(item_status, Some("inProgress" | "failed" | "interrupted" | "cancelled"));
+                    if interrupted_turn && interrupted_item {
+                        continue;
+                    }
+                    let item_terminal = item_status.is_some_and(is_terminal_native_status);
+                    let turn_terminal = turn_status.is_some_and(is_terminal_native_status);
                     message.is_completed = Some(item_terminal || turn_terminal);
                 }
                 messages.push(message);

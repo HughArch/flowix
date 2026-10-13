@@ -22,8 +22,9 @@ export function liveTurnMessages(
       message.id === anchorId ||
       message.id === `user-${runId}` ||
       // Once the provider userMessage item adopts the optimistic row, the
-      // run boundary is the turn-scoped user row, not the run-scoped id.
-      (!!turnId && message.role === "user" && message.codexTurnId === turnId),
+      // run boundary is its first turn-scoped row. Native commands can have
+      // tools/reasoning without a provider userMessage anchor.
+      (!!turnId && message.codexTurnId === turnId),
   );
   if (anchor >= 0) return messages.slice(anchor);
   // Native `/compact` and `/goal` operations have no provider userMessage

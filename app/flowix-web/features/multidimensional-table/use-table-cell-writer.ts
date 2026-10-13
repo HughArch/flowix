@@ -13,6 +13,7 @@ export interface TableCellSaveStatus {
 interface TableCellWriteRequest {
   path: string;
   propertyValue: unknown;
+  propertyType: Exclude<TableField['type'], 'primary'>;
 }
 
 interface TableCellWriteQueue {
@@ -94,7 +95,7 @@ export function useTableCellWriter({ enabled, loadGeneration, notebookPath, load
       queue.sequence = sequence;
       queue.cells.clear();
     }
-    queue.pending = { path, propertyValue };
+    queue.pending = { path, propertyValue, propertyType: field.type };
     queue.cells.set(cellKey, { recordId: record.id, fieldId: field.id });
     updateCellStatus(record.id, field.id, { saving: true });
     setNotes((current) => current.map((item) => item.relativePath.replace(/\\/g, '/') === notePathKey
@@ -108,7 +109,7 @@ export function useTableCellWriter({ enabled, loadGeneration, notebookPath, load
         const request = queue.pending;
         queue.pending = null;
         try {
-          if (!await setDocumentProperties(request.path, { [queue.propertyKey]: request.propertyValue })) {
+          if (!await setDocumentProperties(request.path, { [queue.propertyKey]: request.propertyValue }, { [queue.propertyKey]: request.propertyType })) {
             throw new Error('笔记属性未能保存');
           }
           queue.rollbackValueExists = true;

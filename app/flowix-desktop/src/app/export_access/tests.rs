@@ -161,7 +161,9 @@ fn failed_stream_preserves_existing_content_and_cleans_temporary_files() {
         .unwrap()
         .map(|entry| entry.unwrap().file_name())
         .collect();
-    assert_eq!(names.len(), 2);
+    assert!(names
+        .iter()
+        .all(|name| !name.to_string_lossy().starts_with(".tmp")));
     assert!(access
         .save("main", &target, &mut &b"retry"[..], &store)
         .is_err());

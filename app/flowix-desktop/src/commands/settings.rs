@@ -2,10 +2,11 @@
 //! 的 llm-pi-ai settings。文件读写由 `crate::config::UserConfigStore` 管理
 //! (原子写, 0o600)。写入成功后 emit `user-config-changed` 事件,
 //! 让各窗口 React 树重新 load。
+use crate::config::property_presets::{PropertyPresetCatalog, PropertyPresetMutation};
 use crate::events as dispatcher;
 use tauri::{AppHandle, Emitter, State};
 
-use crate::config::{AiConfigFile, AiModelConfig, PreferenceFile};
+use crate::config::{AiConfigFile, AiModelConfig, PreferenceFile, PropertyPresetChange};
 use crate::connection_probe::TestConnectionResult;
 
 use crate::agent_external::pi::config::{self as pi_model_config, PiProviderConfig};
@@ -33,6 +34,23 @@ pub fn patch_preference(
         .map(|_| {
             let _ = app.emit(USER_CONFIG_CHANGED_EVENT, "preference");
         })
+        .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn get_property_presets(state: State<AppState>) -> Result<PropertyPresetCatalog, String> {
+    state.user_config.get_property_presets().map(Into::into).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub fn patch_property_presets(
+    changes: Vec<PropertyPresetMutation>,
+    state: State<AppState>,
+    app: AppHandle,
+) -> Result<PropertyPresetCatalog, String> {
+    let changes: Vec<PropertyPresetChange> = changes.into_iter().map(Into::into).collect();
+    state.user_config.patch_property_presets(&changes)
+        .map(|registry| { let _ = app.emit(USER_CONFIG_CHANGED_EVENT, "property_presets"); registry.into() })
         .map_err(|error| error.to_string())
 }
 
@@ -130,38 +148,6 @@ pub async fn add_deepseek_harness_model(
     Ok(())
 }
 
-/// 文件监听�?黑名�?(PR2) —�?`preference.json::watcher` 字�?�?///
-/// 鎻愪緵鐙珛 IPC, 閬垮厤鍓嶇涓烘敼涓€涓瓧娈典紶瀹屾暣 PreferenceFile; 鍐欏悗
-/// emit `user-config-changed` 瑙﹀彂 `MemoWatcher::set_whitelist` 鐑洿鏂般€?
-#[tauri::command]
-pub fn get_watcher_config(state: State<AppState>) -> crate::watcher::WhitelistConfig {
-    state.user_config.get_preference().watcher
-}
-
-#[tauri::command]
-pub fn update_watcher_config(
-    config: crate::watcher::WhitelistConfig,
-    state: State<AppState>,
-    app: AppHandle,
-) -> Result<(), String> {
-    let previous = state.user_config.get_preference().watcher;
-    if config.skip_dirs != previous.skip_dirs
-        || config.skip_files != previous.skip_files
-        || config.allowed_filename_patterns != previous.allowed_filename_patterns
-        || config.watch_hidden != previous.watch_hidden
-    {
-        return Err("WATCHER_PATH_RULES_MOVED_TO_FILE_MANAGEMENT".to_string());
-    }
-    state
-        .user_config
-        .patch_preference(serde_json::json!({ "watcher": config }))
-        .map(|_| {
-            dispatcher::emit_to(&app, USER_CONFIG_CHANGED_EVENT, "watcher");
-            Ok(())
-        })
-        .map_err(|e| e.to_string())?
-}
-
 /// Harness-specific model probe used only by the DeepSeek Harness preferences
 /// page.
 #[tauri::command]
@@ -209,6 +195,21 @@ pub async fn discover_deepseek_harness_models(
 #[tauri::command]
 pub fn get_pi_model_configs() -> Result<Vec<PiProviderConfig>, String> {
     pi_model_config::list()
+}
+
+#[tauri::command]
+pub fn get_pi_mcp_servers() -> Result<Vec<crate::agent_external::pi::config::PiMcpServer>, String> {
+    pi_model_config::list_mcp_servers()
+}
+
+#[tauri::command]
+pub fn save_pi_mcp_server(name: String, config: serde_json::Value) -> Result<(), String> {
+    pi_model_config::save_mcp_server(&name, config)
+}
+
+#[tauri::command]
+pub fn delete_pi_mcp_server(name: String) -> Result<(), String> {
+    pi_model_config::delete_mcp_server(&name)
 }
 
 #[tauri::command]

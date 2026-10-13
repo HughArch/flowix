@@ -40,21 +40,6 @@ pub fn get_product_info() -> ProductInfo {
 }
 
 #[tauri::command]
-pub fn get_diagnostics() -> String {
-    let info = product_info();
-    format!(
-        "Product: {}\nVersion: {}\nOS: {}\nArch: {}\nConfig dir: {}\nData dir: {}\nLog dir: {}",
-        info.product_name,
-        info.version,
-        info.os,
-        info.arch,
-        info.config_dir,
-        info.data_dir,
-        info.log_dir
-    )
-}
-
-#[tauri::command]
 pub fn open_log_dir(app: AppHandle) -> Result<(), String> {
     let dir = runtime_log::ensure_log_dir().map_err(|err| err.to_string())?;
     runtime_log::record_event("info", "logs.opened", "User opened the log directory");

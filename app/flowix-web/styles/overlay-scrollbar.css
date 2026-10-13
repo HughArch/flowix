@@ -45,10 +45,6 @@
 	scrollbar-color: auto;
 }
 
-html[data-platform="mac"] .heading-outline-navigation__popover-list {
-	scrollbar-width: auto;
-}
-
 html[data-platform="mac"]::-webkit-scrollbar,
 html[data-platform="mac"] *::-webkit-scrollbar {
 	width: 6px;

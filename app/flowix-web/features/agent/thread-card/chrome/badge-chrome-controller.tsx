@@ -6,6 +6,7 @@ import { type ThreadState } from "@features/agent/store/thread-runtime-state";
 import { useAgentRuntimeStore } from "@features/agent/store/agent-runtime-store";
 import { normalizeAgentRuntimeStatus } from "@features/agent/runtime/agent-runtime-status";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
+import { useAgentAccessStore } from "@features/agent/store/agent-access-store";
 import { BadgeHoverCard } from "@features/agent/thread-card/badge-hover-card";
 import { computeAgentThreadCardBadgeData } from "@features/agent/thread-card/runtime/run-status-presenter";
 import { createRuntimeInfoRequester } from "@features/agent/thread-card/runtime/runtime-info-requester";
@@ -169,6 +170,8 @@ export class AgentThreadCardBadgeChromeController {
       this.getSessionId() ??
       (threadId ? getResolvedExternalSessionId(threadId) : null);
     const typeKey = this.getTypeKey();
+    const piCodeMode = useAgentAccessStore.getState().config.defaults
+      ?.runtime?.pi?.piCodeMode ?? false;
     const { model, usage } =
       computeAgentThreadCardBadgeData({
         threadState: this.getThreadState(),
@@ -193,6 +196,8 @@ export class AgentThreadCardBadgeChromeController {
               : null),
         ),
         codex: typeKey === "codex",
+        pi: typeKey === "pi",
+        piMode: typeKey === "pi" ? (piCodeMode ? "code" : "writing") : undefined,
         cwd: this.getCwd() ?? undefined,
       }),
     );

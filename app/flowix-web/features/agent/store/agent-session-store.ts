@@ -194,7 +194,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
           // End/error is a fallback when its correlated user event was lost;
           // ordinary follow-ups and operations still awaiting RPC stay intact.
           for (const message of state.pendingSteeringMessages[canonicalThreadId] ?? []) {
-            if (message.deliveryStatus === "steering") {
+            if (message.deliveryStatus === "steering" || message.runtimeOwned) {
               state.removeSteeringMessage(canonicalThreadId, message.id);
             }
           }

@@ -5,6 +5,7 @@ const mocks = vi.hoisted(() => ({
   getCodexSessionId: vi.fn(),
   getCodexRuntimeInfo: vi.fn(),
   getDeepSeekHarnessSessionId: vi.fn(),
+  getPiSessionPage: vi.fn(),
   getPiSessionId: vi.fn(),
   getOpenCodeSessionId: vi.fn(),
   sessionUsage: vi.fn(),
@@ -15,6 +16,7 @@ vi.mock("@platform/tauri/client", () => ({
     getCodexSessionId: mocks.getCodexSessionId,
     getCodexRuntimeInfo: mocks.getCodexRuntimeInfo,
     getDeepSeekHarnessSessionId: mocks.getDeepSeekHarnessSessionId,
+    getPiSessionPage: mocks.getPiSessionPage,
     getPiSessionId: mocks.getPiSessionId,
     getOpenCodeSessionId: mocks.getOpenCodeSessionId,
   },
@@ -30,19 +32,44 @@ describe("createRuntimeInfoRequester", () => {
     expect(createRuntimeInfoRequester("claude", () => "thread-1")).toBeUndefined();
   });
 
-  it("loads the persisted Pi session id after the conversation is restored", async () => {
-    mocks.getPiSessionId.mockResolvedValue("pi-session-1");
+  it("loads persisted Pi session metadata after the conversation is restored", async () => {
+    mocks.getPiSessionPage.mockResolvedValue({
+      messages: [{
+        role: "assistant",
+        provider: "openai",
+        model: "gpt-5",
+        usage: { input: 12, cacheRead: 4, output: 3, totalTokens: 19 },
+      }],
+      revision: { sessionId: "pi-session-1", appendCursor: null, leafId: null },
+      beforeEntryId: null,
+      oldestSequence: null,
+      snapshotSequence: 1,
+      hasMore: false,
+    });
     const request = createRuntimeInfoRequester("pi", () => "thread-1");
 
     await expect(request?.()).resolves.toEqual({
       sessionId: "pi-session-1",
-      usage: {},
+      model: "openai/gpt-5",
+      usage: {
+        input_tokens: 12,
+        cached_input_tokens: 4,
+        output_tokens: 3,
+        total_tokens: 19,
+      },
     });
-    expect(mocks.getPiSessionId).toHaveBeenCalledWith("thread-1");
+    expect(mocks.getPiSessionPage).toHaveBeenCalledWith("thread-1", null, 1);
   });
 
   it("does not expose the Flowix thread id as a Pi session id", async () => {
-    mocks.getPiSessionId.mockResolvedValue("native-pi-session");
+    mocks.getPiSessionPage.mockResolvedValue({
+      messages: [],
+      revision: { sessionId: "native-pi-session", appendCursor: null, leafId: null },
+      beforeEntryId: null,
+      oldestSequence: null,
+      snapshotSequence: 0,
+      hasMore: false,
+    });
     const request = createRuntimeInfoRequester(
       "pi",
       () => "thread-1",

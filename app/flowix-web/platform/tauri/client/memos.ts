@@ -1,34 +1,6 @@
 import { invokeDocumentMutation } from './document-mutation';
 import { invoke } from '@tauri-apps/api/core';
-import type { MemoItem } from '@/types/memo-item';
 import type { NotebookImportStatus } from './agent';
-import { notes } from './notes';
-import type {
-  FilterType,
-  NoteColorFilter,
-  NotePathStatus,
-  SortType,
-} from './notes';
-
-export { notes };
-export type {
-  CreatedNoteDocument,
-  FilterType,
-  MarkdownLocation,
-  MatchField,
-  NoteColorFilter,
-  NoteDeleteOutcome,
-  NoteEntry,
-  NoteListPage,
-  NotePathStatus,
-  NoteSearchHit,
-  NoteTemplate,
-  NoteVersionSource,
-  PathArchiveSummary,
-  PathVersionMeta,
-  PruneMissingNoteOutcome,
-  SortType,
-} from './notes';
 
 export interface NotebookTemplateRecord {
   id: string;
@@ -40,23 +12,8 @@ export interface NotebookTemplateRecord {
   coverUrl?: string;
 }
 
-/** Legacy Memo-ID operations and compatibility IPC. */
+/** Memo-ID tag summary and compatibility IPC. Path-based note operations live in `notes`. */
 export const memos = {
-  /** @deprecated Use `notes.resolveLocation`. */
-  resolveMarkdownLocation: (filePath: string) =>
-    notes.resolveLocation(filePath),
-  /** @deprecated Use `notes.list`. */
-  listNotesByPath: notes.list,
-  /** @deprecated Use `notes.getPage`. */
-  getPathNotes: (params: {
-    notebookId: string;
-    filter?: FilterType;
-    sort?: SortType;
-    tagId?: string;
-    color?: NoteColorFilter;
-    cursor?: string;
-    limit?: number;
-  }) => notes.getPage(params),
   getUsedTagIds: (notebookId?: string) =>
     invoke<{
       usedTagIds: string[];
@@ -65,54 +22,7 @@ export const memos = {
       agentMemoCount: number;
       todoMemoCount: number;
     }>('get_used_memo_tag_ids', { notebookId }),
-  getTodoCount: (notebookId?: string) =>
-    invoke<number>('get_memo_todo_count', { notebookId }),
-  /** @deprecated Use `notes.readDocument`. */
-  readDocument: notes.readDocument,
-  /** @deprecated Use `notes.pathStatus`. */
-  notePathStatus: (filePath: string) => invoke<NotePathStatus>('note_path_status', { filePath }),
-  /** @deprecated Use `notes.modifiedAt`. */
-  getDocumentModifiedAt: notes.modifiedAt,
-  // Save by notebook path with content CAS. Memo IDs are not part of note writes.
-  /** @deprecated Use `notes.writeDocument`. */
-  writeDocument: notes.writeDocument,
   getLaunchOpenFiles: () => invoke<string[]>('get_launch_open_files'),
-  /** @deprecated Use `notes.create`. */
-  addPathDocument: notes.create,
-  /** @deprecated Use `notes.moveToDirectory`. */
-  moveMemoToDirectory: notes.moveToDirectory,
-  /** @deprecated Use `notes.renameTitle`. */
-  renameMemoTitle: (params: { filePath: string; title: string; expectedFilename?: string; expectedContent: string }) =>
-    invokeDocumentMutation<{ memo: MemoItem | null; path: string; filename: string }>('rename_memo_title', {
-      filePath: params.filePath,
-      title: params.title,
-      expectedFilename: params.expectedFilename,
-      expectedContent: params.expectedContent,
-    }),
-  /** @deprecated Use `notes.listTemplates`. */
-  listTemplates: notes.listTemplates,
-  /** @deprecated Use `notes.saveTemplate`. */
-  saveTemplate: notes.saveTemplate,
-  /** @deprecated Use `notes.deleteTemplate`. */
-  deleteTemplate: notes.deleteTemplate,
-  /** @deprecated Use `notes.createFromTemplate`. */
-  createPathFromTemplate: notes.createFromTemplate,
-  /** @deprecated Use `notes.importDocument`. */
-  importExternalDocumentByPath: notes.importDocument,
-  /** @deprecated Use `notes.listVersions`. */
-  listPathVersions: notes.listVersions,
-  /** @deprecated Use `notes.createVersion`. */
-  createPathVersion: notes.createVersion,
-  /** @deprecated Use `notes.restoreVersion`. */
-  restorePathVersion: notes.restoreVersion,
-  /** @deprecated Use `notes.search`. */
-  searchPathNotes: notes.search,
-  // 鍏ㄥ眬"閫氳繃閾炬帴鎵撳紑绗旇"鍏ュ彛 鈹€鈹€ 鎺ユ敹浠绘剰褰㈠紡鐨?`flowix://` URL / 鐗╃悊璺緞,
-  // 鍚庣璧?parser + resolver, 杩斿洖 ResolvedOpenTarget銆?null 琛ㄧず瑙ｆ瀽澶辫触
-  // (id 涓嶅瓨鍦?/ 璺緞涓嶅湪 notebook 鍐?/ 鐗╃悊璺緞鎸囧悜宸插垹绗旇)銆?閰嶅悎
-  // `lib/openByTarget/listener.ts` 鐩戝惉 `flowix:open-target` 浜嬩欢 鈹€鈹€ 涓诲姩
-  // 璋冪敤 (noteReference 鍙屽嚮 / Agent 宸ュ叿) 璧?await, 琚姩娲惧彂 (澶栭儴娣遍摼 /
-  // single-instance 浜屾鍚姩) 璧颁簨浠躲€?涓ゆ潯璺緞姹囧悎鍒板悓涓€ `openNoteByTarget`銆?
 };
 
 export type ExternalDocumentWriteOutcome =
@@ -264,7 +174,8 @@ export const notebooks = {
     invoke<NotebookImportStatus | null>('get_notebook_import_status', { notebookId }),
   update: (id: string, name?: string, icon?: string | null) =>
     invoke<NotebookRecord | null>('update_notebook', { id, name, icon }),
-  delete: (id: string) => invoke<boolean>('delete_notebook', { id }),
+  delete: (id: string, deleteLocalFiles = false) =>
+    invoke<boolean>('delete_notebook', { id, deleteLocalFiles }),
   clearAll: () => invoke<boolean>('clear_notebooks'),
   setCurrent: (notebookId: string | null) => invoke<void>('set_current_notebook', { notebookId }),
   /**

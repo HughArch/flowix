@@ -20,13 +20,12 @@ import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
 import { useI18n } from '@/lib/i18n';
 import { NotebookTreeResourceIcon } from '@features/memo/components/file-type-icon';
 import { openMediaLibraryReferencePicker } from './media-library-reference-picker';
-import { resolveMediaLibraryAddDirectories } from './add-location';
-import { saveMediaFile } from './media-import';
+import { importMediaLibraryFiles } from './media-import';
 import { renameMediaLibrary } from './rename-media-library';
 import { MediaLibraryPhotoWall } from './media-library-photo-wall';
 import { PHOTO_WALL_CANDIDATE_LIMIT } from './photo-wall-layout';
 import { MediaLibraryFilterPanel } from './media-library-filter-panel';
-import { createMediaLibraryRecord, mediaCollectionFilterFromCondition, mediaLibraryFileCondition, matchesMediaCollectionFilter, normalizeMediaLibraryFileCondition, parseMediaLibrary, serializeMediaLibrary, type MediaLibraryDocument, type MediaLibraryKind, type MediaLibraryRecord } from './model';
+import { mediaCollectionFilterFromCondition, mediaLibraryFileCondition, matchesMediaCollectionFilter, normalizeMediaLibraryFileCondition, parseMediaLibrary, serializeMediaLibrary, type MediaLibraryDocument, type MediaLibraryKind, type MediaLibraryRecord } from './model';
 
 const MEDIA_LIBRARY_REFERENCE_MARKER = 'flowix:media-library-reference';
 const MEDIA_LIBRARY_REFERENCE_VERSION = 1;
@@ -452,10 +451,13 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
     addMediaInFlightRef.current = true;
     setAddingMedia(true);
     try {
-      const selectedPaths = await dialogs.selectFiles({ accept: 'image/*', multiple: true });
+      const selectedPaths = await dialogs.selectFiles({ accept: 'media/*', multiple: true });
       if (!selectedPaths?.length) return;
 
-      const validPaths = selectedPaths.filter((path) => resourceKindFromPath(path) === 'image');
+      const validPaths = selectedPaths.filter((path) => {
+        const kind = resourceKindFromPath(path);
+        return kind === 'image' || kind === 'video';
+      });
       if (!validPaths.length) {
         toast.error(t('mediaLibrary.addMediaNoSupported'));
         return;
@@ -468,82 +470,44 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
       const latestDocument = parseMediaLibrary(sourceContent);
       if (latestDocument.collection.id !== attrs.collectionId) throw new Error('媒体库身份已变化，请重新插入引用');
 
-      const root = canonicalDirectoryPath(notebook.path);
-      const targetDirectories = resolveMediaLibraryAddDirectories(
-        resolved.filePath,
-        notebook.path,
-        mediaLibraryFileCondition(latestDocument).path_contains,
-      );
-      const recordsToAppend = [] as ReturnType<typeof createMediaLibraryRecord>[];
-      const completed: string[] = [];
-      let failed = 0;
-      for (const sourcePath of validPaths) {
-        try {
-          const saved = await saveMediaFile(sourcePath, notebook.id, targetDirectories);
-          const importedPath = saved.path;
-          const canonicalImported = canonicalPath(importedPath);
-          if (!canonicalImported.startsWith(`${root}/`)) throw new Error('导入媒体路径不在当前笔记本');
-          const resource = await mediaResources.get(importedPath, notebook.path).catch(() => null);
-          recordsToAppend.push(createMediaLibraryRecord(canonicalImported.slice(root.length + 1).replace(/\\/g, '/'), resource?.resource.id));
-          completed.push(importedPath);
-        } catch (reason) {
-          console.error('[MediaLibraryReference] Failed to import image:', reason);
-          failed += 1;
-        }
-      }
-
       let savedDocument = latestDocument;
-      if (recordsToAppend.length) {
-        let expectedContent = sourceContent;
-        let baseline = latestDocument;
-        let saved = false;
-        for (let attempt = 0; attempt < 2; attempt += 1) {
-          const linked = new Set(baseline.dataset.records.include.map((record) => canonicalPath(record.relative_path).toLocaleLowerCase()));
-          const additions = recordsToAppend.filter((record) => {
-            const key = canonicalPath(record.relative_path).toLocaleLowerCase();
-            if (linked.has(key)) return false;
-            linked.add(key);
-            return true;
-          });
-          const next = {
-            ...baseline,
-            collection: { ...baseline.collection, revision: baseline.collection.revision + 1, updated_at: new Date().toISOString() },
-            dataset: { ...baseline.dataset, records: { ...baseline.dataset.records, include: [...baseline.dataset.records.include, ...additions] } },
-          };
-          const result = await externalDocuments.write({
-            filePath: resolved.filePath,
-            content: serializeMediaLibrary(next),
-            expectedContent,
-            scopePath: notebook.path,
-          });
-          if (result.status === 'saved') {
-            savedDocument = next;
-            saved = true;
-            break;
+      const result = await importMediaLibraryFiles({
+        paths: validPaths, notebookId: notebook.id, notebookPath: notebook.path,
+        filePath: resolved.filePath, document: latestDocument,
+        persist: async (mutate) => {
+          let expectedContent = sourceContent;
+          let baseline = latestDocument;
+          for (let attempt = 0; attempt < 2; attempt += 1) {
+            const next = mutate(baseline);
+            const write = await externalDocuments.write({
+              filePath: resolved.filePath, content: serializeMediaLibrary(next),
+              expectedContent, scopePath: notebook.path,
+            });
+            if (write.status === 'saved') {
+              savedDocument = next;
+              return true;
+            }
+            if (write.status !== 'conflict') {
+              throw new Error(write.status === 'error' ? write.message : '媒体库文件已不存在');
+            }
+            expectedContent = write.diskContent;
+            baseline = parseMediaLibrary(write.diskContent);
+            savedDocument = baseline;
           }
-          if (result.status === 'conflict' && attempt === 0) {
-            expectedContent = result.diskContent;
-            baseline = parseMediaLibrary(result.diskContent);
-            if (baseline.collection.id !== attrs.collectionId) throw new Error('媒体库身份已变化，请重新插入引用');
-            continue;
-          }
-          if (result.status === 'conflict') {
-            savedDocument = parseMediaLibrary(result.diskContent);
-            toast.error('媒体库配置再次发生变化，已载入最新版本，请重试');
-            break;
-          }
-          throw new Error(result.status === 'error' ? result.message : '媒体库文件已不存在');
-        }
-        if (!saved) toast.error(t('mediaLibrary.addMediaRecordFailed'));
-      }
+          return false;
+        },
+        readLatest: async () => parseMediaLibrary(await externalDocuments.read(resolved.filePath, notebook.path)),
+      });
       setDocument(savedDocument);
-      if (completed.length) setResourceRevision((revision) => revision + 1);
+      if (result.completed.length) setResourceRevision((revision) => revision + 1);
+      if (result.recordSaveFailed) toast.error(result.cleanupFailed
+        ? t('mediaLibrary.addMediaCleanupFailed', { count: result.cleanupFailed })
+        : t('mediaLibrary.addMediaRecordFailed'));
       if (selectedPaths.length > validPaths.length) {
         toast.error(t('mediaLibrary.addMediaSkipped', { count: selectedPaths.length - validPaths.length }));
       }
-      if (failed) toast.error(t('mediaLibrary.addMediaImportFailed', { count: failed }));
-      if (completed.length) toast.success(t('mediaLibrary.addMediaSuccess', { count: completed.length }));
-      if (!completed.length && !failed) toast.error(t('mediaLibrary.addMediaFailed'));
+      if (result.failed) toast.error(t('mediaLibrary.addMediaImportFailed', { count: result.failed }));
+      if (result.completed.length) toast.success(t('mediaLibrary.addMediaSuccess', { count: result.completed.length }));
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : t('mediaLibrary.addMediaFailed'));
     } finally {
@@ -647,17 +611,20 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
       </div>
     </div>
     {!attrs.notebookId || !attrs.collectionId
-      ? <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">媒体库引用信息不完整。</div>
+      ? <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">媒体库引用信息不完整</div>
       : !notebook || reference.error
-        ? <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">{reference.error ?? '找不到媒体库所属的笔记本。'}</div>
+        ? <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">{reference.error ?? '找不到媒体库所属的笔记本'}</div>
         : !nearViewport || loadingLibrary || loadingResources
           ? <div className="grid grid-cols-2 gap-2 sm:grid-cols-3">{Array.from({ length: 6 }, (_, index) => <div key={index} className="aspect-video animate-pulse rounded-md bg-[var(--muted)]" />)}</div>
           : error
             ? <div className="py-8 text-center text-sm text-[var(--muted-foreground)]">{error}</div>
             : resources.length === 0
             ? <div className="flex items-center justify-center gap-1 py-8 text-sm text-[var(--muted-foreground)]">
-                <span>未设置数据集合，</span>
+                <span>未添加图片或视频，</span>
                 <button type="button" disabled={!editable || !document || !notebook || !filePath || addingMedia || renaming || editingName} onClick={() => setDatasetMenuOpen(true)} className="inline-flex items-center gap-0.5 text-[var(--foreground)] hover:text-[var(--brand)] disabled:opacity-50">
+                  选择数据<ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                </button>
+                <button type="button" disabled={!editable || !document || !notebook || !filePath || addingMedia || renaming || editingName} onClick={() => void addMedia()} className="inline-flex items-center gap-0.5 text-[var(--foreground)] hover:text-[var(--brand)] disabled:opacity-50">
                   添加<ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
                 </button>
               </div>

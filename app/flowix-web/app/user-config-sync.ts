@@ -1,4 +1,6 @@
-export type UserConfigChangeKind = 'preference' | 'ai_config' | 'dsh_config' | 'pi_config';
+import { usePropertyPresetStore } from '@features/properties/property-preset-store';
+
+export type UserConfigChangeKind = 'preference' | 'property_presets' | 'ai_config' | 'dsh_config' | 'pi_config';
 
 interface UserConfigSyncActions {
   reloadPreferences: () => void | Promise<void>;
@@ -15,6 +17,10 @@ export function syncUserConfigChange(
   kind: UserConfigChangeKind,
   actions: UserConfigSyncActions,
 ): void {
+  if (kind === 'property_presets') {
+    void usePropertyPresetStore.getState().load().catch(console.error);
+    return;
+  }
   if (kind === 'preference') {
     void actions.reloadPreferences();
     return;

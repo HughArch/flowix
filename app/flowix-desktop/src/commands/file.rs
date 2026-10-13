@@ -239,6 +239,14 @@ fn read_dir_single_level(
     read_dir_single_level_with_policy(dir_path, memo_metadata, None)
 }
 
+fn is_legacy_media_property_sidecar(path: &Path) -> bool {
+    path.extension()
+        .is_some_and(|extension| extension.eq_ignore_ascii_case("yaml"))
+        && path.file_stem().is_some_and(|stem| {
+            media_kind_for_path(Path::new(stem)).is_some()
+        })
+}
+
 fn read_dir_single_level_with_policy(
     dir_path: &Path,
     memo_metadata: Option<&HashMap<std::path::PathBuf, MemoTreeMetadata>>,
@@ -276,6 +284,13 @@ fn read_dir_single_level_with_policy(
             // Non-notebook file browser roots use the same default visibility
             // for AGENTS.md; notebook roots are filtered by FileManagementPolicy.
             if policy.is_none() && name == "AGENTS.md" {
+                continue;
+            }
+
+            // External file-browser roots do not have a FileManagementPolicy;
+            // hide legacy media-property sidecars here as notebook roots do
+            // through that policy.
+            if policy.is_none() && is_legacy_media_property_sidecar(&path) {
                 continue;
             }
 

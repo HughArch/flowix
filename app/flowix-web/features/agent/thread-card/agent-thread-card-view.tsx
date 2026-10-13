@@ -38,6 +38,7 @@ import {
 import {
   listCodexSkills,
 } from "@features/agent/services/codex-slash-command-service";
+import { listPiSkills } from "@features/agent/services/pi-slash-command-service";
 import {
   createArrowBendDownRightIcon,
   createFullscreenIcon,
@@ -574,6 +575,10 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
         const cwd = ensured.runtimeConfig.workspaceSnapshot?.cwd ?? ensured.runtimeConfig.cwd;
         return listCodexSkills(cwd ?? "");
       },
+      listPiSkills: async () => {
+        if (this.typeKey !== "pi") return [];
+        return listPiSkills(this.notebookPath ?? "");
+      },
       listFolders: () => getCurrentNotebookComposerFolders(),
       folderGroupLabel: this.t("agent.files.referenceLocal"),
       noteGroupLabel: this.t("agent.files.projectNotes"),
@@ -638,23 +643,30 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
     if (!this.threadId) return;
     const isCodex = this.typeKey === "codex";
     const isDsh = this.typeKey === "deepseek-harness";
-    if (!isCodex && !isDsh) return;
+    const isPi = this.typeKey === "pi";
+    if (!isCodex && !isDsh && !isPi) return;
     if (isCodex && !message.codexTurnId) return;
     if (isDsh && message.sourceSequence === undefined) return;
+    if (isPi && !message.messageId) return;
     if (this.isDestroyed) return;
     try {
       const source = this.instance;
       const result = isCodex
         ? await agent.forkCodexThread(this.threadId, message.codexTurnId!)
-        : await agent.forkDeepSeekHarnessThread(
+        : isDsh
+          ? await agent.forkDeepSeekHarnessThread(
             this.threadId,
             message.sourceSequence!,
-          );
+          )
+          : await agent.forkPiThread(this.threadId, message.messageId!);
       const fork = useAgentSessionStore.getState().createInstance({
         agentType: this.typeKey,
         title: `${source?.title || defaultThreadTitle(this.typeKey)} (fork)`,
         threadId: result.thread.threadId,
-        runtimeConfig: source?.runtimeConfig ?? buildInitialInstanceRuntimeConfig(this.typeKey),
+        runtimeConfig: {
+          ...(source?.runtimeConfig ?? buildInitialInstanceRuntimeConfig(this.typeKey)),
+          ...(isPi && "cwd" in result ? { cwd: result.cwd } : {}),
+        },
         source: { kind: "dedicated", notebookId: source?.source.notebookId ?? null },
       });
       await selectAndOpenAgentConversation(fork.instanceId);

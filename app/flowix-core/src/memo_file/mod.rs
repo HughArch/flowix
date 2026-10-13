@@ -87,7 +87,7 @@ pub use types::{
     MemoMetadataFile, MemoTag, MemoTodoEntry, MoveTagReport, NoteColor,
     Notebook, NotebookConfig, NotebookManifest, NotebookSetupJob, NotebookSetupJobStatus,
     NotebookSetupReport,
-    PathTodoEntry, ReconcileReport, TodoItem,
+    ReconcileReport, TodoItem,
 };
 pub use versions::{
     MemoVersionSource, PathArchiveSummary, PathVersionMeta, MEMO_AUTO_VERSION_INTERVAL_MS,

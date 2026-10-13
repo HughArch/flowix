@@ -1,7 +1,7 @@
 {
   "name": "flowix",
   "private": true,
-  "version": "1.5.5",
+  "version": "1.5.6",
   "type": "module",
   "packageManager": "npm@10.8.2",
   "scripts": {
@@ -50,6 +50,7 @@
     "@lezer/highlight": "^1.2.3",
     "@phosphor-icons/react": "^2.1.10",
     "@radix-ui/react-hover-card": "^1.1.18",
+    "@tanstack/react-virtual": "^3.14.17",
     "@tauri-apps/api": "^2",
     "@tauri-apps/plugin-opener": "^2",
     "@tauri-apps/plugin-process": "^2.3.1",

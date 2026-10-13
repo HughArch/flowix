@@ -12,6 +12,7 @@ const { getMemos, getFeaturedNoteFilter, setFeaturedNoteFilter } = vi.hoisted(()
 vi.mock("@platform/tauri/client", () => ({
   agent: {},
   dshIntegration: { checkUpdate: vi.fn() },
+  files: { listTableDocuments: vi.fn(async () => []) },
   notes: { list: vi.fn(async () => {
     const notes: Array<Record<string, unknown>> = [];
     let cursor: string | undefined;
@@ -39,7 +40,10 @@ vi.mock("@platform/tauri/event-bus", () => ({
 
 vi.mock("@features/memo/store/note-store", () => ({
   useNoteStore: {
-    getState: () => ({ selectedNotebook: { id: "notebook-1" } }),
+    getState: () => ({
+      selectedNotebook: { id: "notebook-1" },
+      notebooks: [{ id: "notebook-1", missing: false }],
+    }),
   },
 }));
 

@@ -1,9 +1,9 @@
 'use client';
 
-import { memo, useEffect, useState, type MouseEvent, type ReactNode } from 'react';
+import { memo, useEffect, useState, type FormEvent, type ReactNode } from 'react';
 import { ChevronRight, ListTodo } from 'lucide-react';
 import { PushPin } from '@phosphor-icons/react';
-import { NOTE_COLORS, NOTE_COLOR_HEX, useNoteStore } from '@features/memo/store/note-store';
+import { NOTE_COLOR_HEX, useNoteStore } from '@features/memo/store/note-store';
 import {
   noteListItemRelativePath,
   type NoteColor,
@@ -21,21 +21,18 @@ import {
   ContextMenuContent,
   ContextMenuItem,
 } from '@shared/ui/context-menu';
-import { getNoteColorLabel, MemoCardActions } from '@features/memo/components/memo-card-actions';
-import { buildMemoCardContextMenuItems } from '@features/memo/menus/memo-card-context-menu';
+import { MemoCardActions } from '@features/memo/components/memo-card-actions';
 import { assetUrl, decodeStorageKey } from '@features/editor/extensions/attachment-link/utils';
 import { TagIcon } from '@shared/ui/tag-icon';
-import { product } from '@platform/tauri/client';
-import { memoDocumentOperations } from '@features/document/public/file-operations-api';
-import { toast } from '@/lib/toast';
-import { buildNoteOpenLinkFromPath } from '@platform/open-target/path-link';
 import { joinNotebookMemoPath } from '@/lib/path';
-import { canUseNativeContextMenu, logNativeContextMenuError, popupNativeContextMenu } from '@platform/tauri/native-context-menu';
-import { loadNativeMenuIcons } from '@platform/tauri/native-menu-icons';
-
-const MEMO_CARD_NATIVE_ICON_NAMES = [
-  'split', 'pin', 'unpin', 'info', 'link', 'copy', 'folder-open', 'palette', 'delete',
-] as const;
+import { ensureFileDisplayIdentity } from '@/lib/file-display-registry';
+import { renameMarkdownTitle } from '@features/document/public/file-operations-api';
+import { replaceExternalDocumentPath } from '@features/workspace/use-cases/workspace-navigation';
+import { toast } from '@/lib/toast';
+import { Button } from '@shared/ui/button';
+import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@shared/ui/dialog';
+import { Input } from '@shared/ui/input';
+import { NotebookCopyContextMenu } from '@features/memo/components/notebook-copy-context-menu';
 
 interface MemoCardProps {
   memo: NoteListItem;
@@ -154,111 +151,57 @@ function MemoCardShell({
   onDelete,
   onColorsChange,
 }: MemoCardShellProps) {
-  const { t, language } = useI18n();
+  const { t } = useI18n();
+  const [renameOpen, setRenameOpen] = useState(false);
+  const [renameDraft, setRenameDraft] = useState('');
+  const [renameSaving, setRenameSaving] = useState(false);
 
-  useEffect(() => {
-    if (!canUseNativeContextMenu()) return;
-    void loadNativeMenuIcons(MEMO_CARD_NATIVE_ICON_NAMES)
-      .catch((error) => logNativeContextMenuError('memo card icon preload', error));
-  }, [memo.favorited]);
-
-  const resolvePath = () => {
-    const notebook = useNoteStore.getState().selectedNotebook;
-    const relativePath = noteListItemRelativePath(memo);
-    return notebook?.path
-      ? joinNotebookMemoPath(notebook.path, relativePath)
-      : relativePath;
-  };
-  const openProperties = () => {
-    const path = resolvePath();
-    window.dispatchEvent(new CustomEvent('flowix:open-note-properties', {
-      detail: { path, scopePath: useNoteStore.getState().selectedNotebook?.path ?? null },
-    }));
+  const openRename = () => {
+    setRenameDraft(displayTitleFromFilename(memo.filename));
+    setRenameOpen(true);
   };
 
-  const writeClipboardText = async (text: string) => {
-    if (navigator.clipboard?.writeText) {
-      await navigator.clipboard.writeText(text);
-    } else {
-      const textarea = document.createElement('textarea');
-      textarea.value = text;
-      textarea.setAttribute('readonly', '');
-      textarea.style.position = 'fixed';
-      textarea.style.opacity = '0';
-      document.body.appendChild(textarea);
-      textarea.select();
-      document.execCommand('copy');
-      textarea.remove();
-    }
-    toast.success(t('document.command.copySuccess'));
-  };
-
-  const showNativeMenu = async (event: MouseEvent<HTMLDivElement>) => {
-    if (!canUseNativeContextMenu()) return;
+  const submitRename = async (event: FormEvent<HTMLFormElement>) => {
     event.preventDefault();
-    event.stopPropagation();
+    const title = renameDraft.trim();
+    const notebook = useNoteStore.getState().selectedNotebook;
+    if (!title || !notebook?.path) return;
 
+    const relativePath = noteListItemRelativePath(memo);
+    const path = joinNotebookMemoPath(notebook.path, relativePath);
+    if (!path) return;
+    const identity = ensureFileDisplayIdentity(path);
     try {
-      const loadedIcons = await loadNativeMenuIcons(MEMO_CARD_NATIVE_ICON_NAMES);
-      await popupNativeContextMenu(event, buildMemoCardContextMenuItems({
-        memo,
-        icons: {
-          split: loadedIcons.split!,
-          pin: loadedIcons.pin!,
-          unpin: loadedIcons.unpin!,
-          info: loadedIcons.info!,
-          link: loadedIcons.link!,
-          copy: loadedIcons.copy!,
-          folderOpen: loadedIcons['folder-open']!,
-          palette: loadedIcons.palette!,
-          delete: loadedIcons.delete!,
-        },
-        labels: {
-          openInSplit: t('memo.action.openInSplit'),
-          pin: t('memo.action.pin'),
-          unpin: t('memo.action.unpin'),
-          properties: t('document.action.properties'),
-          copyLink: t('document.action.copyLink'),
-          copyFullText: t('document.action.copyFullText'),
-          reveal: t('memo.fileTree.reveal'),
-          colorGroup: t('memo.list.filterColorGroup'),
-          clearColor: t('document.color.clear'),
-          delete: t('memo.action.delete'),
-          colors: Object.fromEntries(NOTE_COLORS.map((color) => [color, getNoteColorLabel(color, language)])) as Record<NoteColor, string>,
-        },
-        onOpenInSplit: onOpenInWindow ? () => onOpenInWindow(memo) : undefined,
-        onFavoriteToggle: () => onFavoriteToggle(memo),
-        onOpenProperties: openProperties,
-        onCopyLink: () => {
-          const path = resolvePath();
-          const link = path ? buildNoteOpenLinkFromPath(path, useNoteStore.getState().notebooks) : null;
-          if (link) void writeClipboardText(link).catch(() => toast.error(t('document.command.copyFailed')));
-          else toast.error(t('document.command.copyFailed'));
-        },
-        onCopyFullText: () => {
-          const path = resolvePath();
-          if (!path) return;
-          void memoDocumentOperations.read({ path, scopePath: null })
-            .then((content) => writeClipboardText(content ?? ''))
-            .catch(() => toast.error(t('document.command.copyFailed')));
-        },
-        onReveal: () => {
-          const path = resolvePath();
-          if (path) void product.revealInFileManager(path);
-        },
-        onColorsChange: onColorsChange ? (colors) => onColorsChange(memo, colors) : undefined,
-        onDelete: () => onDelete(memo),
-      }));
+      setRenameSaving(true);
+      const result = await renameMarkdownTitle({
+        path,
+        title,
+        scopePath: notebook.path,
+        displayId: identity.displayId,
+        onPathChanged: (oldPath, newPath) => replaceExternalDocumentPath(identity.displayId, oldPath, newPath),
+      });
+      if (result?.changed) {
+        useNoteStore.getState().triggerRefresh();
+        toast.success(t('memo.fileTree.renamed', { name: title }));
+      }
+      setRenameOpen(false);
     } catch (error) {
-      logNativeContextMenuError('memo card', error);
-      toast.error(t('memo.fileTree.openFailed'));
+      const message = String(error);
+      toast.error(t(message.includes('FILE_EXISTS') ? 'memo.fileTree.nameConflict' : 'memo.fileTree.renameFailed'));
+    } finally {
+      setRenameSaving(false);
     }
   };
+
+  const notebook = useNoteStore.getState().selectedNotebook;
+  const relativePath = noteListItemRelativePath(memo);
+  const filePath = notebook?.path
+    ? joinNotebookMemoPath(notebook.path, relativePath) ?? relativePath
+    : relativePath;
 
   const card = (
     <div
       onClick={() => onSelect(memo)}
-      onContextMenu={showNativeMenu}
       className={cn(
         'group memo-card relative min-w-0 w-full cursor-pointer rounded-lg px-2 transition-all',
         'py-3',
@@ -273,24 +216,51 @@ function MemoCardShell({
     </div>
   );
 
-  if (canUseNativeContextMenu()) return card;
-
   return (
-    <ContextMenu>
-      <ContextMenuTrigger asChild>
-        {card}
-      </ContextMenuTrigger>
-      <ContextMenuContent className="w-[180px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-        <MemoCardActions
-          memo={memo}
-          onFavoriteToggle={onFavoriteToggle}
-          onDelete={onDelete}
-          onColorsChange={onColorsChange}
-          onOpenInSplit={onOpenInWindow}
-          Item={ContextMenuItem}
-        />
-      </ContextMenuContent>
-    </ContextMenu>
+    <>
+      <ContextMenu>
+        <ContextMenuTrigger asChild>
+          {card}
+        </ContextMenuTrigger>
+        <ContextMenuContent className="w-[180px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+          <MemoCardActions
+            memo={memo}
+            filePath={filePath}
+            onFavoriteToggle={onFavoriteToggle}
+            onRename={openRename}
+            onDelete={onDelete}
+            onColorsChange={onColorsChange}
+            onOpenInSplit={onOpenInWindow}
+            hideCopyActions
+            copyMenuBeforeReveal={<NotebookCopyContextMenu path={filePath} isNote />}
+            Item={ContextMenuItem}
+          />
+        </ContextMenuContent>
+      </ContextMenu>
+      <Dialog open={renameOpen} onOpenChange={(open) => !renameSaving && setRenameOpen(open)}>
+        <DialogContent className="rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+          <DialogHeader>
+            <DialogTitle>{t('memo.fileTree.rename')}</DialogTitle>
+          </DialogHeader>
+          <form onSubmit={(event) => void submitRename(event)} className="space-y-4">
+            <Input
+              autoFocus
+              value={renameDraft}
+              onChange={(event) => setRenameDraft(event.target.value)}
+              disabled={renameSaving}
+            />
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" onClick={() => setRenameOpen(false)} disabled={renameSaving}>
+                {t('common.cancel')}
+              </Button>
+              <Button type="submit" disabled={renameSaving || !renameDraft.trim()}>
+                {t('document.version.confirm')}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+    </>
   );
 }
 

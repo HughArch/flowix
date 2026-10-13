@@ -149,7 +149,7 @@ function validateV2Envelope(value: Record<string, unknown>): { collection: Colle
     throw new Error('独立集合的数据范围无效');
   }
   if (source.scope !== 'folder' && source.path !== undefined) throw new Error('集合数据范围不应包含 path');
-  if (!hasOnlyKeys(dataset.schema, collection.type === 'table' ? ['primary_field_id', 'fields', 'field_order', 'preset_fields'] : ['fields'])) throw new Error('集合字段定义包含未知字段');
+  if (!hasOnlyKeys(dataset.schema, collection.type === 'table' ? ['primary_field_id', 'fields', 'field_order', 'preset_fields', 'deleted_presets'] : ['fields'])) throw new Error('集合字段定义包含未知字段');
   if (collection.type === 'table' && (typeof dataset.schema.primary_field_id !== 'string' || !dataset.schema.primary_field_id.trim())) throw new Error('笔记集合缺少主字段');
   if (dataset.schema.preset_fields !== undefined && (!Array.isArray(dataset.schema.preset_fields)
     || (dataset.schema.preset_fields as unknown[]).some((id) => typeof id !== 'string'))) throw new Error('预设属性列表无效');

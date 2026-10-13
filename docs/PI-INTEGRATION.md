@@ -43,6 +43,15 @@ and base installations on separate update channels.
 
 ## Models and permissions
 
+Flowix explicitly passes each enabled skill directory from the working
+directory's `.agents/skills` collection to Pi with `--skill`. This makes
+notebook skills available in RPC mode even without a saved Pi project-trust
+decision. It does not grant trust to other project-local Pi settings,
+extensions, or MCP configuration.
+Pi discovers skills at process startup and advertises their descriptions to
+the model; `/skill:name` explicitly loads a skill. Start a new conversation
+or restart Flowix to discover newly added skills in a fresh Pi process.
+
 The model picker reads Pi's `get_available_models` RPC response and stores the
 selected provider ID and model ID together. The reasoning selector uses Pi's
 `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` levels. Pi RPC
