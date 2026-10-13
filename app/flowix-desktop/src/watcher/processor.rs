@@ -285,6 +285,12 @@ impl PathNoteEventProcessor {
                 .zip(notebook_relative_path(&ctx.root, &event.path).ok());
             let cloud_move = rebase.as_ref().is_some_and(|(old, new)|
                 record_confirmed_cloud_move(app, &ctx.notebook_id, old, new));
+            if event.path.is_dir() && rebase.as_ref().is_some_and(|(old, new)|
+                crate::commands::collection::consume_local_folder_move(&ctx.notebook_id, old, new)) {
+                // The collection operation already updated all derived indexes and
+                // references before publishing its completion event.
+                return;
+            }
             if let Err(error) = memo_file.reconcile_note_index(&ctx.notebook_id) {
                 tracing::warn!(notebook_id = %ctx.notebook_id, "path rename reconciliation failed: {error}");
             }
@@ -296,7 +302,7 @@ impl PathNoteEventProcessor {
                     notebook_relative_path(&ctx.root, old_path),
                     notebook_relative_path(&ctx.root, &event.path),
                 ) {
-                    crate::commands::document_list::rebase_table_note_paths(
+                    crate::commands::document_list::rebase_collection_paths(
                         &memo_file,
                         &ctx.notebook_id,
                         &old_relative,
@@ -372,7 +378,15 @@ impl PathNoteEventProcessor {
         }
         emit_path_changed(app, ctx, "", false);
         match memo_file.reconcile_media_resources(&ctx.notebook_id) {
-            Ok(count) => tracing::debug!(notebook_id = %ctx.notebook_id, count, "media catalog reconciliation completed"),
+            Ok(count) => {
+                tracing::debug!(notebook_id = %ctx.notebook_id, count, "media catalog reconciliation completed");
+                // Directory notifications can reach the UI before a large media scan
+                // finishes. Publish completion so an empty early query is refreshed.
+                let _ = app.emit(
+                    "file-management-changed",
+                    serde_json::json!({ "notebookId": ctx.notebook_id, "notebookPath": ctx.root.to_string_lossy() }),
+                );
+            }
             Err(error) => tracing::warn!(notebook_id = %ctx.notebook_id, "media catalog reconciliation failed: {error}"),
         }
     }

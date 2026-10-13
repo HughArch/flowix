@@ -145,6 +145,9 @@ export interface CollectionMutationResult {
   indexSequence: number;
   content: string;
   errorCode: string | null;
+  previousRelativePath: string;
+  notebookPath: string;
+  directoryMove: { previousRelativePath: string; relativePath: string } | null;
 }
 export const collections = {
   list: (notebookId: string, collectionType?: CollectionIndexItem['collectionType']) =>
@@ -152,7 +155,7 @@ export const collections = {
   resolve: (notebookId: string, collectionId: string) =>
     invoke<CollectionIndexItem>('resolve_collection', { notebookId, collectionId }),
   mutate: (request: CollectionMutationRequest) =>
-    invoke<CollectionMutationResult>('mutate_collection', { request }),
+    invokeDocumentMutation<CollectionMutationResult>('mutate_collection', { request }),
   setInViews: (notebookId: string, collectionId: string, inViews: boolean) =>
     invoke<void>('set_collection_display_state', { notebookId, collectionId, inViews }),
   makeIdentityUnique: (notebookId: string, relativePath: string) =>
@@ -234,7 +237,7 @@ export const files = {
   importFile: (filePath: string, targetDirectoryPath: string, spacePath: string) =>
     invoke<string>('import_file', { filePath, targetDirectoryPath, spacePath }),
   renameFolder: (folderPath: string, name: string, spacePath: string) =>
-    invoke<string>('rename_folder', { folderPath, name, spacePath }),
+    invokeDocumentMutation<string>('rename_folder', { folderPath, name, spacePath }),
   createFolder: (spacePath: string, name: string, parentId?: string) =>
     invoke<DocTreeItem | null>('create_folder', { spacePath, name, parentId }),
   createDocument: (spacePath: string, name: string, parentId?: string) =>

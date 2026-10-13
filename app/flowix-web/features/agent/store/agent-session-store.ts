@@ -109,6 +109,8 @@ export interface AgentSessionStore
       imagePaths?: string[];
       attachments?: AgentMessageAttachment[];
       runId?: string;
+      /** Composer transactions must distinguish rejection from acceptance. */
+      rejectOnFailure?: boolean;
     },
   ) => Promise<void>;
   stopStream: () => Promise<void>;
@@ -188,6 +190,14 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
         if (activeRunId && event.runId && activeRunId !== event.runId) return;
         const eventType = normalizeAgentTypeKey(event.agentType ?? state.sessionMeta.threadTypes[canonicalThreadId]);
         if (eventType === "codex") {
+          // Accepted manual steering is no longer in the provider queue.
+          // End/error is a fallback when its correlated user event was lost;
+          // ordinary follow-ups and operations still awaiting RPC stay intact.
+          for (const message of state.pendingSteeringMessages[canonicalThreadId] ?? []) {
+            if (message.deliveryStatus === "steering") {
+              state.removeSteeringMessage(canonicalThreadId, message.id);
+            }
+          }
           // Codex drains its persistent queue itself after a turn completes.
           // Starting it again from Flowix races the server and can target an
           // already-consumed queued submission id.
@@ -208,13 +218,22 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
 
         sendMessageToThread: async (threadId, content, typeKey, options) => {
           const trimmed = content.trim();
-          if (!threadId || (!trimmed && !options?.imagePaths?.length)) return;
+          if (!threadId || (!trimmed && !options?.imagePaths?.length)) {
+            if (options?.rejectOnFailure) throw new Error("Agent message is empty or has no thread");
+            return;
+          }
           const state = get();
           const type = getAgentType(typeKey ?? state.sessionMeta.threadTypes[threadId] ?? state.sessionMeta.activeAgentTypeKey);
           const productThreadId = resolveCommandThreadId(state, threadId, type.key);
-          if (!productThreadId) return;
+          if (!productThreadId) {
+            if (options?.rejectOnFailure) throw new Error("Agent thread was not found");
+            return;
+          }
           if (productThreadId !== threadId) return get().sendMessageToThread(productThreadId, content, type.key, options);
-          if (state.threadTombstones[threadId] || state.threadMutationGuards[threadId]) return;
+          if (state.threadTombstones[threadId] || state.threadMutationGuards[threadId]) {
+            if (options?.rejectOnFailure) throw new Error("Agent thread is unavailable");
+            return;
+          }
           state.bindThreadType(threadId, type.key);
           const isFirstMessage = options?.isFirstMessage ?? (state.threadProjections[threadId]?.messages.length ?? 0) === 0;
           const conversationTitle = normalizeThreadTitle(options?.conversationTitle);
@@ -303,6 +322,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
                 timestamp: Date.now(),
                 message: String(err),
               });
+              if (options?.rejectOnFailure) throw err;
             }
             return;
           }
@@ -363,6 +383,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
               timestamp: Date.now(),
               message: errorMessage.content,
             });
+            if (options?.rejectOnFailure) throw err;
           }
         },
         stopStream: async () => {

@@ -1,7 +1,16 @@
 import { describe, expect, it } from 'vitest';
-import { addTableView, canEditTableAutoCollectFilter, createTableDocument, parseTableDocument, serializeTableDocument, validateTableDocument, withTableAutoCollect } from './model';
+import { addCalendarDateView, addTableView, canEditTableAutoCollectFilter, createTableDocument, parseTableDocument, serializeTableDocument, validateTableDocument, withTableAutoCollect } from './model';
+import { NOTE_CALENDAR_DATE_FIELD_ID, NOTE_ICON_FIELD_ID, NOTE_TAGS_FIELD_ID } from './builtin-fields';
 
 describe('table format v2', () => {
+  it('creates normalized field state with only tags and icon as default presets', () => {
+    const table = createTableDocument();
+    expect(table.dataset.schema.preset_fields).toEqual([NOTE_TAGS_FIELD_ID, NOTE_ICON_FIELD_ID]);
+    expect(table.dataset.schema.field_order[0]).toBe(table.dataset.schema.primary_field_id);
+    expect(table.dataset.schema.field_order).toContain(NOTE_TAGS_FIELD_ID);
+    expect(table.dataset.schema.field_order).toContain(NOTE_ICON_FIELD_ID);
+  });
+
   it('round trips a new table', () => {
     const table = createTableDocument();
     expect(table.collection.type).toBe('table');
@@ -67,4 +76,29 @@ describe('table format v2', () => {
     expect(canEditTableAutoCollectFilter({ ...table, dataset: { ...table.dataset, filter } })).toBe(false);
     expect(canEditTableAutoCollectFilter(table)).toBe(true);
   });
+});
+
+
+it('creates calendars with the editable date preset and round trips the shared backend fixture', async () => {
+  const calendar = createTableDocument('calendar');
+  expect(calendar.views.items[0].config.date_field).toBe(NOTE_CALENDAR_DATE_FIELD_ID);
+  expect(calendar.dataset.schema.preset_fields).toContain(NOTE_CALENDAR_DATE_FIELD_ID);
+  const fixture = (await import('../../../fixtures/collections/table-calendar-preset.yaml?raw')).default;
+  const parsed = parseTableDocument(fixture);
+  expect(parseTableDocument(serializeTableDocument(parsed))).toEqual(parsed);
+  expect(parsed.views.items[0].config.date_field).toBe(calendar.views.items[0].config.date_field);
+});
+
+it('reuses existing date fields and rejects conflicting types across calendar creation paths', () => {
+  const document = createTableDocument();
+  const existing = { id: 'fld_dddddddddddddddddddddddddddddddd', type: 'Date' as const, property_key: 'calendar_date' };
+  document.dataset.schema.fields.push(existing);
+  const reused = addCalendarDateView(document);
+  expect(reused.view.config.date_field).toBe(existing.id);
+  expect(reused.document.dataset.schema.preset_fields).not.toContain(NOTE_CALENDAR_DATE_FIELD_ID);
+  document.dataset.schema.fields[1] = { ...existing, type: 'Text' };
+  expect(() => addCalendarDateView(document)).toThrow('不是日期类型');
+  const first = addCalendarDateView(createTableDocument());
+  const second = addCalendarDateView(first.document);
+  expect(second.document.dataset.schema.preset_fields.filter((id) => id === NOTE_CALENDAR_DATE_FIELD_ID)).toHaveLength(1);
 });

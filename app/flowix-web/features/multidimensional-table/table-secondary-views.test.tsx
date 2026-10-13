@@ -36,6 +36,26 @@ afterEach(() => {
 });
 
 describe('TableKanbanView pointer movement', () => {
+  it('opens a linked note when a card is clicked without dragging', () => {
+    container = document.createElement('div');
+    root = createRoot(container);
+    const onOpenRecord = vi.fn();
+    act(() => root?.render(<TableKanbanView
+      groupField={groupField}
+      titleField={titleField}
+      groups={new Map([['todo', [first]], ['done', []]])}
+      renderValue={(record) => record.note_path}
+      recordStatus={() => 'linked'}
+      onDropRecord={vi.fn()}
+      onReorderLane={vi.fn()}
+      onOpenRecord={onOpenRecord}
+    />));
+    const card = container.querySelector<HTMLElement>('[data-kanban-record="first"]')!;
+    pointer(card, 'pointerdown', 10, 10);
+    pointer(card, 'pointerup', 10, 10);
+    expect(onOpenRecord).toHaveBeenCalledWith('first');
+  });
+
   it('resolves another lane and passes its select option to the move handler', () => {
     container = document.createElement('div');
     root = createRoot(container);

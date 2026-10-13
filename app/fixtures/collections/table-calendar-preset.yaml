@@ -1,0 +1,34 @@
+format: flowix.collection
+schema_version: 2
+collection:
+  id: col_cccccccccccccccccccccccccccccccc
+  type: notes
+  placement: standalone
+  name: 日期日历契约样例
+  revision: 1
+  created_at: 2026-10-11T00:00:00Z
+  updated_at: 2026-10-11T00:00:00Z
+  properties: {}
+payload:
+  schema_version: 2
+  dataset:
+    source: { scope: notebook, depth: descendants }
+    schema:
+      primary_field_id: fld_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa
+      fields:
+        - { id: fld_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, type: primary, property_key: note }
+      preset_fields: [__note_tags__, __note_icon__, __note_calendar_date__]
+      field_order: [fld_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa, __note_tags__, __note_icon__, __note_calendar_date__]
+    filter: null
+    records: { include: [], exclude: [] }
+  views:
+    default_id: view_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+    items:
+      - id: view_bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb
+        name: 日历
+        layout: calendar
+        filter: { all: [], any: [] }
+        sort: []
+        config:
+          date_field: __note_calendar_date__
+          title_field: fld_aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa

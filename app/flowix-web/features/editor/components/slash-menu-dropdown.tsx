@@ -466,7 +466,12 @@ export const SlashMenuDropdown = ({
               const showSectionHeader = !prevItem || prevSectionLabel !== sectionLabel;
               const displayLabel = getSlashMenuItemLabel(item, language);
               const agentTypeKey = item.id.slice('agent-thread-'.length) as AgentTypeKey;
-              const renderIcon = typeof Icon === 'string'
+              const hideTableViewIcon = item.id === 'table-kanban-view'
+                || item.id === 'table-calendar-view'
+                || item.id === 'table-gallery-view';
+              const renderIcon = hideTableViewIcon
+                ? <span className="h-4 w-4 shrink-0" aria-hidden="true" />
+                : typeof Icon === 'string'
                 ? isAgentThreadItem ? (
                     <span className="slash-menu-agent-icon flex h-5 w-5 shrink-0 items-center justify-center rounded-full p-0.5">
                       <AgentIcon typeKey={agentTypeKey} alt="" className="h-[15px] w-[15px] object-contain" />

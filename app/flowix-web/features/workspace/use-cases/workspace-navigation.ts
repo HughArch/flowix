@@ -5,7 +5,7 @@ import { createFolderCollectionContent } from '@features/collection/folder-colle
 import { toast } from '@/lib/toast';
 import { captureFileBrowserContext } from './file-browser-context';
 import { notes as notesClient, type PluginDescriptor, type MarkdownLocation } from '@platform/tauri/client';
-import { canonicalDirectoryPath, canonicalPath } from '@/lib/path';
+import { canonicalDirectoryPath, canonicalPath, samePath } from '@/lib/path';
 import { resourceKindFromPath } from '@features/editor/public/code-file';
 import { canonicalUrl } from '@features/workspace/store/workspace-content-identity';
 import {
@@ -28,7 +28,7 @@ import {
   type Notebook,
 } from '@features/memo/public/workspace-api';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
-import { EMPTY_WORK_COLUMN_TARGET } from '@features/workspace/store/work-column-target';
+import { EMPTY_WORK_COLUMN_TARGET, workColumnTargetFilePath } from '@features/workspace/store/work-column-target';
 import type { DocumentListTarget, WorkColumnTarget } from '@features/workspace/store/work-column-target';
 import {
   useWorkspaceFocusStore,
@@ -246,13 +246,16 @@ export async function openCollectionTarget(
   try { item = await collections.resolve(notebookId, collectionId); }
   catch (error) { unavailableReason = String(error).includes('IDENTITY_CONFLICT') ? '集合身份冲突，请先为副本生成新 ID' : '集合不存在或暂时无法读取'; }
   const filePath = item ? `${canonicalDirectoryPath(notebook.path)}/${item.relativePath}` : reference.relativePathHint ? `${canonicalDirectoryPath(notebook.path)}/${reference.relativePathHint}` : '';
+  if (item?.identityConflict) unavailableReason = '集合身份冲突，请先为副本生成新 ID';
   if (item && item.parseState !== 'valid') unavailableReason = item.parseState === 'unsupported' ? '此集合版本暂不支持' : '集合文件格式无效';
   if (item && !unavailableReason && descriptor.viewId) {
     try {
       const envelope = parseCollectionDocumentV2(await externalDocuments.read(filePath, notebook.path));
       const payload = envelope.payload;
       const views = payload.views.items as Array<{ id: string }>;
-      if (!views.some((view) => view.id === descriptor.viewId)) unavailableReason = '此视图已不存在，请重新选择视图';
+      // Tables resolve stale embedded/history view IDs against the file's
+      // remembered view, then document order, in their shared selection policy.
+      if (envelope.collection.type !== 'table' && !views.some((view) => view.id === descriptor.viewId)) unavailableReason = '此视图已不存在，请重新选择视图';
     } catch { unavailableReason = '无法读取集合视图'; }
   }
   if (useWorkColumnStore.getState().navigation.requestId !== requestId) return;
@@ -873,6 +876,14 @@ export async function clearWorkspaceDocument(): Promise<void> {
     },
     () => clearWorkspaceDocument(),
   );
+}
+
+/** Clear the active work-column view when its backing file has been deleted. */
+export async function clearWorkspaceTargetForDeletedFile(filePath: string): Promise<boolean> {
+  const targetPath = workColumnTargetFilePath(useWorkColumnStore.getState().navigation.target);
+  if (!targetPath || !samePath(targetPath, filePath)) return false;
+  await clearWorkspaceDocument();
+  return true;
 }
 
 /** Update every live reference to an external file after an in-place rename. */

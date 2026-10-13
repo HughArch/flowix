@@ -1,4 +1,5 @@
-import { collectionDisplayDescriptor, findCollectionDisplayPath, ensureCollectionDisplay } from '@/lib/collection-display-registry';
+import { setCollectionActiveView } from '@features/workspace/use-cases/collection-view-state';
+import { collectionDisplayDescriptor, findCollectionDisplayPath, type CollectionDisplayDescriptor } from '@/lib/collection-display-registry';
 'use client';
 
 import { FileBrowserView, type FileBrowserViewSurface } from './file-browser-view';
@@ -64,7 +65,7 @@ export interface BrowserMediaSurface extends FileSurfaceBase {
 
 export type BrowserFileBrowserSurface = SurfaceBase
   & FileBrowserViewSurface
-  & { collectionUnavailableReason?: string; documentProps: Omit<ComponentProps<typeof DocumentContainer>, 'fileIdentity'> }
+  & { collectionType?: 'table' | 'media_library'; collectionUnavailableReason?: string; collectionDisplay?: CollectionDisplayDescriptor; documentProps: Omit<ComponentProps<typeof DocumentContainer>, 'fileIdentity'> }
   & (
     | { activeFilePath: string; fileIdentity: FileDisplayIdentity }
     | { activeFilePath: null; fileIdentity?: never }
@@ -370,16 +371,15 @@ function BrowserFileBrowserSurfaceView({ surface }: { surface: BrowserFileBrowse
     );
   }
   const fileKind = externalFileViewKind(surface.activeFilePath, mimeType);
-  if (/\.lib\.ya?ml$/i.test(surface.activeFilePath)) {
+  if (surface.collectionType === 'media_library' || (!surface.collectionType && /\.lib\.ya?ml$/i.test(surface.activeFilePath))) {
     return <MediaLibraryView filePath={surface.activeFilePath} fileIdentity={surface.fileIdentity} expectedCollectionId={collectionDisplayDescriptor(surface.fileIdentity.displayId)?.collectionId} notebookPath={surface.scopePath} notebookId={surface.notebookId ?? null} />;
   }
-  if (/\.table\.ya?ml$/i.test(surface.activeFilePath)) {
-    return <TableDocumentView initialViewId={collectionDisplayDescriptor(surface.fileIdentity.displayId)?.viewId} onActiveViewChange={(viewId) => {
+  if (surface.collectionType === 'table' || (!surface.collectionType && /\.table\.ya?ml$/i.test(surface.activeFilePath))) {
+    return <TableDocumentView initialViewId={surface.collectionDisplay?.viewId} onActiveViewChange={(viewId) => {
       const tab = useBrowserColumnStore.getState().tabs.find((candidate) => candidate.id === surface.tabId);
       if (tab?.target.kind !== 'file-browser' || !tab.target.collectionDisplay) return;
       const { notebookId, collectionId } = tab.target.collectionDisplay;
-      const collectionDisplay = ensureCollectionDisplay({ notebookId, collectionId, viewId });
-      void openBrowserColumnTarget({ ...tab.target, collectionDisplay }, 'replace-active');
+      setCollectionActiveView({ host: 'browser-column', tabId: surface.tabId }, { notebookId, collectionId }, viewId);
     }} filePath={surface.activeFilePath} fileIdentity={surface.fileIdentity} expectedCollectionId={collectionDisplayDescriptor(surface.fileIdentity.displayId)?.collectionId} notebookPath={surface.scopePath} notebookId={surface.notebookId ?? null} />;
   }
   switch (fileKind) {
@@ -520,6 +520,7 @@ export function resolveBrowserColumnSurface(
         ? {
             ...surface,
             activeFilePath: target.activeFilePath,
+            collectionType: target.collectionType,
             collectionUnavailableReason: target.collectionUnavailableReason,
             fileIdentity: target.collectionDisplay ? { path: target.activeFilePath, displayId: target.collectionDisplay.displayId } : requireFileDisplayIdentity(target.activeFilePath),
           }

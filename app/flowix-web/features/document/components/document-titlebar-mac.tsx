@@ -59,6 +59,7 @@ export function DocumentTitlebarMac({
       },
   mediaActions,
   folderCollectionViewType,
+  showEditorFontSwitcher = false,
 }: DocumentTitlebarProps) {
   const { t } = useI18n();
   const isAgentThreadCardFullscreen = useAgentThreadCardFullscreenActive();
@@ -154,6 +155,7 @@ export function DocumentTitlebarMac({
             canSaveAsTemplate={canSaveAsTemplate}
             canViewVersionHistory={canViewVersionHistory}
             folderCollectionViewType={folderCollectionViewType}
+            showEditorFontSwitcher={showEditorFontSwitcher}
           />
         )}
         {isMediaSurface && mediaActions && (

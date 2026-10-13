@@ -1,12 +1,14 @@
 'use client';
 
-import { useMemo, useState } from 'react';
-import { Check, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type PointerEvent as ReactPointerEvent } from 'react';
+import { Check, GripVertical, Plus, X } from 'lucide-react';
+import { PencilSimpleIcon, TrashSimpleIcon } from '@phosphor-icons/react';
 import { toast } from '@/lib/toast';
 import type { PropertyFieldConfig, PropertyFieldType } from '@/lib/constants';
 import { getPropertyTypeDefinition } from '@/lib/property-types';
 import { cn } from '@/lib/utils';
 import {
+  getBuiltinPresets,
   isBuiltinPresetKey,
   PROPERTY_KINDS,
 } from '@features/document/properties/presets';
@@ -39,6 +41,23 @@ function fieldToDraft(field: PropertyFieldConfig): DraftField {
     type: field.type,
     optionsText: field.options?.join(', ') ?? '',
   };
+}
+
+function movePropertyField(
+  fields: PropertyFieldConfig[],
+  sourceKey: string,
+  targetKey: string,
+  insertAfter: boolean,
+): PropertyFieldConfig[] | null {
+  const sourceIndex = fields.findIndex((field) => field.key === sourceKey);
+  if (sourceIndex < 0 || sourceKey === targetKey || !fields.some((field) => field.key === targetKey)) return null;
+  const next = [...fields];
+  const [moved] = next.splice(sourceIndex, 1);
+  if (!moved) return null;
+  let insertIndex = next.findIndex((field) => field.key === targetKey);
+  if (insertAfter) insertIndex += 1;
+  next.splice(insertIndex, 0, moved);
+  return next;
 }
 
 function parseOptionTags(value: string): string[] {
@@ -120,14 +139,136 @@ function OptionTagsInput({
 export function DocumentPropertiesSection() {
   const { t } = useI18n();
   const fields = useUserSettingsStore((store) => store.settings.properties.fields);
+  const systemPresets = getBuiltinPresets(t);
   const updateSettings = useUserSettingsStore((store) => store.updateSettings);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftField | null>(null);
   const [isAdding, setIsAdding] = useState(false);
+  const [draggedFieldKey, setDraggedFieldKey] = useState<string | null>(null);
+  const [dragOverField, setDragOverField] = useState<{ key: string; insertAfter: boolean } | null>(null);
+  const fieldListRef = useRef<HTMLDivElement | null>(null);
+  const dragSessionRef = useRef<{ key: string; pointerId: number; startX: number; startY: number; active: boolean } | null>(null);
+  const dragOverFieldRef = useRef<{ key: string; insertAfter: boolean } | null>(null);
+  const previousRectsRef = useRef<Map<string, DOMRect> | null>(null);
+  const visibleFields = (() => {
+    if (!draggedFieldKey || !dragOverField) return fields;
+    return movePropertyField(fields, draggedFieldKey, dragOverField.key, dragOverField.insertAfter) ?? fields;
+  })();
 
   const fieldsByKey = useMemo(() => {
     return new Map(fields.map((field) => [field.key, field]));
   }, [fields]);
+
+  const captureFieldPositions = () => {
+    const rows = fieldListRef.current?.querySelectorAll<HTMLElement>('[data-property-field-key]');
+    previousRectsRef.current = new Map(
+      [...(rows ?? [])].map((row) => [row.dataset.propertyFieldKey ?? '', row.getBoundingClientRect()]),
+    );
+  };
+
+  const setDropPreview = (target: { key: string; insertAfter: boolean } | null) => {
+    const current = dragOverFieldRef.current;
+    if (current?.key === target?.key && current?.insertAfter === target?.insertAfter) return;
+    captureFieldPositions();
+    dragOverFieldRef.current = target;
+    setDragOverField(target);
+  };
+
+  useLayoutEffect(() => {
+    const previousRects = previousRectsRef.current;
+    previousRectsRef.current = null;
+    if (!previousRects || window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const rows = fieldListRef.current?.querySelectorAll<HTMLElement>('[data-property-field-key]');
+    rows?.forEach((row) => {
+      const key = row.dataset.propertyFieldKey;
+      const previous = key ? previousRects.get(key) : null;
+      if (!previous) return;
+      const next = row.getBoundingClientRect();
+      const deltaY = previous.top - next.top;
+      if (Math.abs(deltaY) < 1) return;
+      row.getAnimations().forEach((animation) => animation.cancel());
+      row.animate([{ transform: `translateY(${deltaY}px)` }, { transform: 'translateY(0)' }], {
+        duration: 180,
+        easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)',
+      });
+    });
+  }, [dragOverField, fields]);
+
+  const getFieldDropTarget = (x: number, y: number, sourceKey: string) => {
+    const bounds = fieldListRef.current?.getBoundingClientRect();
+    if (!bounds || x < bounds.left || x > bounds.right || y < bounds.top || y > bounds.bottom) return null;
+    const rows = [...(fieldListRef.current?.querySelectorAll<HTMLElement>('[data-property-field-key]') ?? [])]
+      .filter((row) => row.dataset.propertyFieldKey !== sourceKey);
+    for (const row of rows) {
+      const key = row.dataset.propertyFieldKey;
+      if (!key) continue;
+      const rowBounds = row.getBoundingClientRect();
+      if (y < rowBounds.top + rowBounds.height / 2) return { key, insertAfter: false };
+    }
+    const lastKey = rows[rows.length - 1]?.dataset.propertyFieldKey;
+    return lastKey ? { key: lastKey, insertAfter: true } : null;
+  };
+
+  const onHandlePointerDown = (event: ReactPointerEvent<HTMLButtonElement>, key: string) => {
+    if (event.button !== 0 || isAdding || editingKey !== null) return;
+    event.preventDefault();
+    dragSessionRef.current = { key, pointerId: event.pointerId, startX: event.clientX, startY: event.clientY, active: false };
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* Window listeners finish the drag. */ }
+  };
+
+  useEffect(() => {
+    const cancelActiveDrag = () => {
+      if (!dragSessionRef.current) return;
+      dragSessionRef.current = null;
+      captureFieldPositions();
+      dragOverFieldRef.current = null;
+      setDraggedFieldKey(null);
+      setDragOverField(null);
+    };
+    const onPointerMove = (event: PointerEvent) => {
+      const session = dragSessionRef.current;
+      if (!session || session.pointerId !== event.pointerId) return;
+      if (!session.active) {
+        if (Math.hypot(event.clientX - session.startX, event.clientY - session.startY) < 6) return;
+        session.active = true;
+        setDraggedFieldKey(session.key);
+      }
+      setDropPreview(getFieldDropTarget(event.clientX, event.clientY, session.key));
+    };
+    const finishPointerDrag = (event: PointerEvent) => {
+      const session = dragSessionRef.current;
+      if (!session || session.pointerId !== event.pointerId) return;
+      const target = session.active ? getFieldDropTarget(event.clientX, event.clientY, session.key) : null;
+      dragSessionRef.current = null;
+      if (target) {
+        const next = movePropertyField(fields, session.key, target.key, target.insertAfter);
+        if (next) {
+          captureFieldPositions();
+          void updateSettings({ properties: { fields: next } });
+        }
+      } else {
+        captureFieldPositions();
+      }
+      dragOverFieldRef.current = null;
+      setDraggedFieldKey(null);
+      setDragOverField(null);
+    };
+    const cancelPointerDrag = (event: PointerEvent) => {
+      if (dragSessionRef.current?.pointerId === event.pointerId) cancelActiveDrag();
+    };
+    window.addEventListener('pointermove', onPointerMove);
+    window.addEventListener('pointerup', finishPointerDrag);
+    window.addEventListener('pointercancel', cancelPointerDrag);
+    window.addEventListener('lostpointercapture', cancelPointerDrag);
+    window.addEventListener('blur', cancelActiveDrag);
+    return () => {
+      window.removeEventListener('pointermove', onPointerMove);
+      window.removeEventListener('pointerup', finishPointerDrag);
+      window.removeEventListener('pointercancel', cancelPointerDrag);
+      window.removeEventListener('lostpointercapture', cancelPointerDrag);
+      window.removeEventListener('blur', cancelActiveDrag);
+    };
+  }, [fields, updateSettings]);
 
   const startEdit = (field: PropertyFieldConfig) => {
     setEditingKey(field.key);
@@ -174,7 +315,7 @@ export function DocumentPropertiesSection() {
       options: normalizeOptions(draft.type, draft.optionsText),
     };
     const nextFields = isAdding
-      ? [...fields, nextField]
+      ? [nextField, ...fields]
       : fields.map((item) => (item.key === editingKey ? nextField : item));
     await updateSettings({ properties: { fields: nextFields } });
     if (isAdding) {
@@ -203,20 +344,20 @@ export function DocumentPropertiesSection() {
 
   return (
     <div className="space-y-4 pt-2">
-      <SectionHeader title={t('preferences.documentProperties.title')} />
-      <p className="text-sm text-[var(--muted-foreground)]">
-        {t('preferences.documentProperties.description')}
-      </p>
+      <SectionHeader
+        title={t('preferences.documentProperties.title')}
+        description={t('preferences.documentProperties.description')}
+      />
 
       <div className="flex justify-start">
-        <Button type="button" variant="outline" size="sm" className="rounded-lg px-3" onClick={startAdd} disabled={isAdding}>
-          <Plus />
+        <Button type="button" variant="outline" className="h-8 gap-0.5" onClick={startAdd} disabled={isAdding}>
+          <Plus className="size-3.5" />
           {t('preferences.documentProperties.add')}
         </Button>
       </div>
 
       {isAdding && draft ? (
-        <div className="rounded-lg border border-[var(--primary)] bg-[var(--card)] p-3">
+        <div className="rounded-xl border border-[var(--primary)] bg-[var(--card)] p-3">
           <div className="grid gap-2 sm:grid-cols-[136px_1fr]">
             <Select value={draft.type} onValueChange={(value) => setDraft({ ...draft, type: value as PropertyFieldType })}>
               <SelectTrigger className="bg-[var(--background)]"><SelectValue>{t(getPropertyTypeDefinition(draft.type).labelKey)}</SelectValue></SelectTrigger>
@@ -244,13 +385,9 @@ export function DocumentPropertiesSection() {
         </div>
       ) : null}
 
-      {fields.length === 0 && !isAdding ? (
-        <div className="flex min-h-24 items-center justify-center rounded-lg border border-dashed border-[var(--border)] px-4 text-center text-sm text-[var(--muted-foreground)]">
-          {t('preferences.documentProperties.empty')}
-        </div>
-      ) : (
-        <div className="space-y-3">
-          {fields.map((field) => {
+      <div className="space-y-2">
+        {fields.length > 0 && <div ref={fieldListRef} className="space-y-2">
+          {visibleFields.map((field) => {
             const isEditing = editingKey === field.key;
             const currentDraft = isEditing ? draft : null;
             const typeLabel = t(getPropertyTypeDefinition(field.type).labelKey);
@@ -259,11 +396,12 @@ export function DocumentPropertiesSection() {
             return (
               <div
                 key={field.key}
-                className="rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2.5"
+                data-property-field-key={field.key}
+                className={`rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-[5px] transition-all ${dragOverField?.key === field.key ? 'border-[var(--brand)] bg-[var(--brand)]/5' : ''} ${draggedFieldKey === field.key ? 'opacity-50' : ''}`}
               >
                 {isEditing && currentDraft ? (
                   <div className="space-y-2">
-                    <div className="grid grid-cols-[136px_1fr] gap-2">
+                    <div className="mt-2 grid grid-cols-[136px_1fr] gap-2">
                       <Select
                         value={currentDraft.type}
                         onValueChange={(value) => setDraft({
@@ -308,46 +446,52 @@ export function DocumentPropertiesSection() {
                         <Button
                           type="button"
                           variant="ghost"
-                          size="icon-sm"
-                          tooltip={t('preferences.documentProperties.cancel')}
-                          aria-label={t('preferences.documentProperties.cancel')}
-                          onClick={cancelEdit}
-                          className="rounded-lg"
+                          size="sm"
+                          aria-label={t('preferences.documentProperties.save')}
+                          onClick={() => void saveDraft()}
+                          className="h-8 gap-1 rounded-lg px-2 text-[var(--primary)]"
                         >
-                          <X />
+                          <Check className="h-4 w-4" />
+                          {t('preferences.documentProperties.save')}
                         </Button>
                         <Button
                           type="button"
                           variant="ghost"
-                          size="icon-sm"
-                          tooltip={t('preferences.documentProperties.save')}
-                          aria-label={t('preferences.documentProperties.save')}
-                          onClick={() => void saveDraft()}
-                          className="rounded-lg text-[var(--primary)]"
+                          size="sm"
+                          aria-label={t('preferences.documentProperties.cancel')}
+                          onClick={cancelEdit}
+                          className="h-8 gap-1 rounded-lg px-2"
                         >
-                          <Check />
+                          <X className="h-4 w-4" />
+                          {t('preferences.documentProperties.cancel')}
                         </Button>
                       </div>
-                      <span className="min-w-0 truncate font-mono text-xs text-[var(--muted-foreground)]">
+                      <span className="ml-auto min-w-0 truncate text-right font-mono text-xs text-[var(--muted-foreground)]">
                         {t('preferences.documentProperties.keyLabel')}: {field.key}
                       </span>
                     </div>
                   </div>
                 ) : (
-                  <div className="flex min-h-10 items-center gap-3">
+                  <div className="flex min-h-8 items-center gap-3">
+                    <button
+                      type="button"
+                      title={t('preferences.documentProperties.dragToReorder')}
+                      aria-label={`${t('preferences.documentProperties.dragToReorder')} ${field.key}`}
+                      disabled={isAdding || editingKey !== null}
+                      onPointerDown={(event) => onHandlePointerDown(event, field.key)}
+                      className="flex h-7 w-5 shrink-0 touch-none cursor-grab select-none items-center justify-center rounded text-[var(--muted-foreground)] hover:bg-[var(--muted)] active:cursor-grabbing disabled:cursor-not-allowed disabled:opacity-50"
+                    >
+                      <GripVertical className="h-4 w-4" aria-hidden="true" />
+                    </button>
                     <div className="min-w-0 flex-1">
                       <div className="flex min-w-0 items-center gap-2">
-                        <span className="truncate text-sm text-[var(--foreground)]">
-                          {field.key}
-                        </span>
+                        <span className="truncate text-sm text-[var(--foreground)]">{field.key}</span>
                         <span className="shrink-0 rounded-md bg-[var(--muted)] px-1.5 py-0.5 text-[10px] text-[var(--muted-foreground)]">
                           {typeLabel}
                         </span>
                       </div>
                       <div className="mt-0.5 flex min-w-0 items-center gap-2 text-xs text-[var(--muted-foreground)]">
-                        {optionsLabel ? (
-                          <span className="truncate">{optionsLabel}</span>
-                        ) : null}
+                        {optionsLabel ? <span className="truncate">{optionsLabel}</span> : null}
                       </div>
                     </div>
                     <div className={cn('flex shrink-0 items-center gap-1', !fieldsByKey.has(field.key) && 'hidden')}>
@@ -360,18 +504,18 @@ export function DocumentPropertiesSection() {
                         onClick={() => startEdit(field)}
                         className="rounded-lg"
                       >
-                        <Pencil />
+                        <PencilSimpleIcon className="h-4 w-4" aria-hidden="true" />
                       </Button>
                       <Button
                         type="button"
                         variant="ghost"
-                        size="icon-sm"
+                        size="icon"
                         tooltip={t('preferences.documentProperties.delete')}
                         aria-label={`${t('preferences.documentProperties.delete')} ${field.key}`}
                         onClick={() => void deleteField(field)}
-                        className="text-[var(--muted-foreground)] hover:bg-transparent hover:text-[var(--destructive)]"
+                        className="size-7 hover:text-[var(--destructive)]"
                       >
-                        <Trash2 />
+                        <TrashSimpleIcon className="h-4 w-4" aria-hidden="true" />
                       </Button>
                     </div>
                   </div>
@@ -379,8 +523,24 @@ export function DocumentPropertiesSection() {
               </div>
             );
           })}
-        </div>
-      )}
+        </div>}
+        {systemPresets.map((preset) => (
+          <div key={preset.key} className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-[5px]">
+            <div className="flex min-h-8 items-center gap-3">
+              <div className="min-w-0 flex-1">
+                <div className="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap">
+                  <span className="truncate text-sm text-[var(--foreground)]">{preset.label}</span>
+                  <span className="shrink-0 font-mono text-xs text-[var(--muted-foreground)]">{preset.key}</span>
+                  <span className="shrink-0 rounded-md bg-[var(--muted)] px-1.5 py-0.5 text-[10px] text-[var(--muted-foreground)]">
+                    {t(getPropertyTypeDefinition(preset.kind).labelKey)}
+                  </span>
+                </div>
+              </div>
+              <span className="shrink-0 text-xs text-[var(--muted-foreground)]">{t('document.properties.category.system')}</span>
+            </div>
+          </div>
+        ))}
+      </div>
     </div>
   );
 }

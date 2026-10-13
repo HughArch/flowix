@@ -129,8 +129,6 @@ export function useTableCellWriter({ enabled, loadGeneration, notebookPath, load
           return { ...item, properties };
         }));
         toast.error(failure);
-      } else if (!failure && queue.sequence === loadSequenceRef.current) {
-        toast.success('保存完成');
       }
 
       if (queue.sequence === loadSequenceRef.current) for (const cell of queue.cells.values()) {

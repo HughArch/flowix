@@ -1,4 +1,5 @@
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { ColumnResizeHandle } from './column-resize-handle';
+import { useCallback, useEffect, useState } from 'react';
 import {
   closeAllBrowserColumnTabs,
   closeBrowserColumnTab,
@@ -183,27 +184,6 @@ export function BrowserColumn({
   const activeSurfaceChrome = activeSurface
     ? getBrowserColumnSurfaceDefinition(activeSurface).chrome
     : 'document';
-  const [isResizing, setIsResizing] = useState(false);
-  const resizeStartRef = useRef({ x: 0, width });
-
-  useEffect(() => {
-    if (!isResizing) return;
-    const handlePointerMove = (event: PointerEvent) => {
-      const delta = resizeStartRef.current.x - event.clientX;
-      onResize(resizeStartRef.current.width + delta);
-    };
-    const stopResizing = () => setIsResizing(false);
-    window.addEventListener('pointermove', handlePointerMove);
-    window.addEventListener('pointerup', stopResizing, { once: true });
-    window.addEventListener('pointercancel', stopResizing, { once: true });
-    return () => {
-      window.removeEventListener('pointermove', handlePointerMove);
-      window.removeEventListener('pointerup', stopResizing);
-      window.removeEventListener('pointercancel', stopResizing);
-    };
-  }, [isResizing, onResize]);
-
-
   return (
     <section
       data-workspace-host="browser-column"
@@ -214,25 +194,7 @@ export function BrowserColumn({
       className={'relative flex h-full min-w-0 shrink-0 flex-col border-l border-[var(--divider)] bg-[var(--document-bg)]'}
       style={{ width }}
     >
-      <div
-        role="separator"
-        aria-label="调整浏览器列宽度"
-        aria-orientation="vertical"
-        tabIndex={0}
-        aria-valuenow={Math.round(width)}
-        onKeyDown={(event) => {
-          if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return;
-          event.preventDefault();
-          onResize(width + (event.key === 'ArrowLeft' ? 20 : -20));
-        }}
-        onPointerDown={(event) => {
-          event.preventDefault();
-          event.stopPropagation();
-          resizeStartRef.current = { x: event.clientX, width };
-          setIsResizing(true);
-        }}
-        className="absolute inset-y-0 -left-[5px] z-20 w-[11px] cursor-col-resize focus-visible:outline-none focus-visible:bg-[var(--brand)]"
-      />
+      <ColumnResizeHandle label="调整浏览器列宽度" width={width} direction={-1} onResize={onResize} />
       <BrowserColumnHeader
         tabs={tabs}
         activeTabId={activeTabId}

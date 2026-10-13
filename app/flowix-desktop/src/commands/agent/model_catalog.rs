@@ -40,6 +40,15 @@ pub async fn agent_supported_models(
     }
 }
 
+/// Return the Codex model catalog with the reasoning levels advertised by the
+/// running App Server so the composer can show only supported slider stops.
+#[tauri::command]
+pub async fn codex_supported_model_catalog(
+    state: State<'_, crate::app::state::AppState>,
+) -> Result<Vec<serde_json::Value>, String> {
+    state.codex_app_server.supported_model_catalog().await
+}
+
 /// Snapshot used by the Codex agent badge popover. The app-server owns the
 /// account and rate-limit data; the optional thread id selects cached usage.
 #[tauri::command]

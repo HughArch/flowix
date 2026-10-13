@@ -1,6 +1,8 @@
 'use client';
 
+import { collectionSessionKey } from '@/lib/collection-session-key';
 import { reuseCollectionValue } from '@features/collection/content-equality';
+import { FolderCollectionSwitchConfirmDialog } from '@features/collection/public/folder-api';
 import { isLegacyCollectionSource } from '@features/collection/model';
 import { collectionDisplayDescriptor } from '@/lib/collection-display-registry';
 import { subscribe } from '@platform/tauri/event-bus';
@@ -10,14 +12,12 @@ import { canonicalDirectoryPath, canonicalPath } from '@/lib/path';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { DocumentListView } from '@features/surface/document-list-view';
 import type { DocumentListSurface } from '@features/surface/types';
-import { ensureFileDisplayIdentity, findFileDisplayIdentity, findFileDisplayPath, type FileDisplayIdentity } from '@/lib/file-display-registry';
-import { displayTitleFromFilename, mediaLibraryExtension } from '@/lib/utils';
-import { replaceExternalDocumentPath } from '@features/workspace/use-cases/workspace-navigation';
+import { findFileDisplayPath, type FileDisplayIdentity } from '@/lib/file-display-registry';
+import { displayTitleFromFilename } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
-import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
 import { mediaCollectionFilterFromCondition, mediaLibraryDefaultView, mediaLibraryFileCondition, parseMediaLibrary, serializeMediaLibrary, type MediaLibraryDocument, type MediaLibraryFileCondition, type MediaLibraryKind } from './model';
-import { renameMediaLibraryFile } from './rename-media-library';
+import { renameMediaLibrary } from './rename-media-library';
 import { useMediaLibraryActions } from './use-media-library-actions';
 
 export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNotebookPath, notebookId = null, expectedCollectionId }: { filePath: string; fileIdentity?: FileDisplayIdentity; notebookPath: string | null; notebookId?: string | null; expectedCollectionId?: string | null }) {
@@ -30,11 +30,46 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [saving, setSaving] = useState(false);
-  const [confirmDeleteLibrary, setConfirmDeleteLibrary] = useState(false);
+  const [confirmFolderSwitch, setConfirmFolderSwitch] = useState(false);
   const sourceContentRef = useRef<string | null>(null);
   const saveInFlightRef = useRef(false);
   const displayId = fileIdentity?.displayId;
   const currentFilePath = (displayId ? findFileDisplayPath(displayId) : null) ?? renamedFilePath ?? filePath;
+
+  const sessionKey = collectionSessionKey({ filePath, fileIdentity, notebookPath, notebookId, expectedCollectionId });
+  const currentSessionKeyRef = useRef(sessionKey);
+  currentSessionKeyRef.current = sessionKey;
+  const pendingRefreshRef = useRef<{ key: string; path: string } | null>(null);
+  const acceptContent = useCallback((content: string) => {
+    if (currentSessionKeyRef.current !== sessionKey) return false;
+    const next = parseMediaLibrary(content);
+    const current = sourceContentRef.current ? parseMediaLibrary(sourceContentRef.current) : null;
+    const expectedId = expectedCollectionId ?? (displayId ? collectionDisplayDescriptor(displayId)?.collectionId : null);
+    if ((expectedId && next.collection.id !== expectedId) || (current && (current.collection.id !== next.collection.id
+      || current.collection.revision > next.collection.revision))) return false;
+    sourceContentRef.current = content;
+    setDocument((current) => current ? { ...next,
+      dataset: { ...next.dataset, records: reuseCollectionValue(current.dataset.records, next.dataset.records) },
+      views: reuseCollectionValue(current.views, next.views),
+    } : next);
+    return true;
+  }, [displayId, expectedCollectionId, sessionKey]);
+  const refreshContent = useCallback((path: string) => {
+    void externalDocuments.read(path, notebookPath).then((content) => {
+      if (currentSessionKeyRef.current !== sessionKey) return;
+      if (saveInFlightRef.current) {
+        pendingRefreshRef.current ??= { key: sessionKey, path };
+        return;
+      }
+      acceptContent(content);
+    }).catch(() => undefined);
+  }, [acceptContent, notebookPath, sessionKey]);
+  useEffect(() => {
+    if (saving) return;
+    const pending = pendingRefreshRef.current;
+    pendingRefreshRef.current = null;
+    if (pending?.key === sessionKey) refreshContent(pending.path);
+  }, [refreshContent, saving, sessionKey]);
 
   useEffect(() => setRenamedFilePath(null), [filePath]);
 
@@ -79,19 +114,24 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
     return () => { cancelled = true; };
   }, [displayId ?? currentFilePath, notebookPath]);
 
-  useEffect(() => subscribe<{ notebookId: string; collectionId: string; relativePath: string }>('collection-changed', (event) => {
-    if (event.notebookId !== (notebookId ?? notebook?.id) || event.collectionId !== document?.collection.id || !notebookPath || saveInFlightRef.current) return;
-    void externalDocuments.read(`${canonicalDirectoryPath(notebookPath)}/${event.relativePath}`, notebookPath).then((content) => {
-      if (saveInFlightRef.current) return;
-      const next = parseMediaLibrary(content);
-      if (next.collection.id !== event.collectionId) return;
-      sourceContentRef.current = content;
-      setDocument((current) => current ? { ...next,
-        dataset: { ...next.dataset, records: reuseCollectionValue(current.dataset.records, next.dataset.records) },
-        views: reuseCollectionValue(current.views, next.views),
-      } : next);
-    }).catch(() => undefined);
-  }), [document?.collection.id, notebook?.id, notebookId, notebookPath]);
+  useEffect(() => {
+    const refresh = (event: { notebookId: string; collectionId?: string; relativePath?: string }) => {
+      const collectionId = document?.collection.id;
+      if (event.notebookId !== (notebookId ?? notebook?.id) || !collectionId
+        || (event.collectionId && event.collectionId !== collectionId) || !notebookPath) return;
+      const path = event.relativePath ? `${canonicalDirectoryPath(notebookPath)}/${event.relativePath}`
+        : (displayId ? findFileDisplayPath(displayId) : null) ?? currentFilePath;
+      if (saveInFlightRef.current) {
+        // A readiness event must not replace a confirmed destination with the old display path.
+        if (event.relativePath || !pendingRefreshRef.current) pendingRefreshRef.current = { key: sessionKey, path };
+        return;
+      }
+      refreshContent(path);
+    };
+    const stopCollection = subscribe<{ notebookId: string; collectionId: string; relativePath: string }>('collection-changed', refresh);
+    const stopCatalog = subscribe<{ notebookId: string }>('file-management-changed', refresh);
+    return () => { stopCollection(); stopCatalog(); };
+  }, [currentFilePath, displayId, document?.collection.id, notebook?.id, notebookId, notebookPath, refreshContent, sessionKey]);
 
   const persistMutation = useCallback(async (
     mutate: (current: MediaLibraryDocument) => MediaLibraryDocument,
@@ -166,65 +206,40 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
     }));
   }, [persistMutation, saving]);
 
-  const renameLibraryFile = useCallback(async (rawTitle: string) => {
+  const renameLibrary = useCallback(async (rawTitle: string) => {
     const title = rawTitle.trim();
     const previousPath = canonicalPath(displayId ? findFileDisplayPath(displayId) ?? currentFilePath : currentFilePath);
-    const currentTitle = displayTitleFromFilename(previousPath);
-    const extension = mediaLibraryExtension(previousPath);
+    const isFolderCollection = document?.collection.placement === 'folder';
+    const currentTitle = isFolderCollection
+      ? previousPath.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '').split(/[\\/]/).pop() ?? ''
+      : displayTitleFromFilename(previousPath);
     if (!title || title === currentTitle || saving || !notebookPath || !document || saveInFlightRef.current) return;
     if (/[\\/]/.test(title)) {
       toast.error('文件名不能包含路径分隔符');
       return;
     }
-    if (!extension) {
-      toast.error('无法识别媒体库文件后缀');
-      return;
-    }
-
     try {
-      const identity = fileIdentity ?? findFileDisplayIdentity(previousPath) ?? ensureFileDisplayIdentity(previousPath);
       saveInFlightRef.current = true;
       setSaving(true);
-      const result = await renameMediaLibraryFile({
-        filePath: previousPath, notebookPath, notebookId: notebookId ?? notebook?.id, collectionId: document.collection.id, title,
-        onRenamed: (nextPath) => {
-          replaceExternalDocumentPath(identity.displayId, previousPath, nextPath);
-          setRenamedFilePath(nextPath);
-        },
+      const result = await renameMediaLibrary({
+        notebookPath, notebookId: notebookId ?? notebook?.id,
+        collectionId: document.collection.id, title,
       });
-      sourceContentRef.current = result.content;
-      setDocument((current) => current ? { ...result.document,
-        dataset: { ...result.document.dataset, records: reuseCollectionValue(current.dataset.records, result.document.dataset.records) },
-        views: reuseCollectionValue(current.views, result.document.views),
-      } : result.document);
-      if (result.metadataError) toast.error(`文件已重命名，配置名称未能保存：${result.metadataError}`);
+      if (!acceptContent(result.content)) return;
+      setRenamedFilePath(result.filePath);
+      if (result.errorCode) toast.error(`集合已更新，后续操作待恢复：${result.errorCode}`);
     } catch (reason) {
       toast.error(reason instanceof Error ? reason.message : '重命名媒体库失败');
     } finally {
       saveInFlightRef.current = false;
       setSaving(false);
     }
-  }, [currentFilePath, displayId, document, fileIdentity, notebookPath, saving]);
+  }, [acceptContent, currentFilePath, displayId, document, notebook?.id, notebookId, notebookPath, saving]);
 
   const { addMedia, deleteMedia } = useMediaLibraryActions({
     document, setDocument, notebookPath, notebookId: notebookId ?? notebook?.id ?? null, currentFilePath, saving, setSaving,
     sourceContentRef, saveInFlightRef, persistMutation, t,
   });
-
-  const deleteLibraryFile = useCallback(() => {
-    if (!currentFilePath || !notebookPath || saving || saveInFlightRef.current) return;
-    setConfirmDeleteLibrary(true);
-  }, [currentFilePath, notebookPath, saving]);
-
-  const confirmDeleteLibraryFile = useCallback(() => {
-    if (!currentFilePath || !notebookPath || saving || saveInFlightRef.current) return;
-    setConfirmDeleteLibrary(false);
-    window.dispatchEvent(new CustomEvent('flowix:request-delete-external-file', {
-      detail: { filePath: currentFilePath, notebookPath },
-    }));
-  }, [currentFilePath, notebookPath, saving]);
-
-
 
   const selectedKind = document ? mediaLibraryFileCondition(document).file_type : undefined;
   const resourceKinds = useMemo<MediaLibraryKind[]>(() => selectedKind ? [selectedKind] : ['image', 'video'], [selectedKind]);
@@ -242,7 +257,7 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
     if (folder === root) return { relativePath: '', depth: source.depth };
     if (!folder.startsWith(`${root}/`)) return undefined;
     return { relativePath: folder.slice(root.length + 1).replace(/\\/g, '/'), depth: source.depth };
-  }, [currentFilePath, document, notebookPath]);
+  }, [currentFilePath, document?.dataset.source.scope, document?.dataset.source.path, document?.dataset.source.depth, notebookPath]);
   const mediaLibraryRecords = useMemo(() => {
     const records = document?.dataset.records.include ?? [];
     if (!mediaScope) return records;
@@ -253,7 +268,7 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
       if (!path.startsWith(`${base}/`)) return false;
       return mediaScope.depth === 'descendants' || !path.slice(base.length + 1).includes('/');
     });
-  }, [document, mediaScope]);
+  }, [document?.dataset.records.include, mediaScope]);
   const mediaLibraryExcludedPaths = useMemo(() => (document?.dataset.records.exclude ?? [])
     .map((record) => record.relative_path)
     .filter((path): path is string => typeof path === 'string'), [document?.dataset.records.exclude]);
@@ -261,6 +276,7 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
     const resolvedNotebookId = notebookId ?? notebook?.id;
     if (!resolvedNotebookId || !notebookPath || !activeCollectionId) return null;
     const libraryIdentity = `media-library:${resolvedNotebookId}:${activeCollectionId}`;
+    const browseCondition = mediaLibraryFileCondition(document);
     return {
       kind: 'document-list',
       instanceKey: libraryIdentity,
@@ -270,7 +286,8 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
       notebookId: resolvedNotebookId,
       filters: { resourceKinds },
       ...(mediaScope ? { mediaScope } : {}),
-      ...(document.dataset.filter !== null ? { mediaDatasetActive: true } : {}),
+      ...((mediaScope || browseCondition.path_scope === 'all' || browseCondition.path_contains)
+        ? { mediaDatasetActive: true } : {}),
     };
   }, [activeCollectionId, displayId, document?.dataset.filter, mediaScope, notebook?.id, notebookId, notebookPath, resourceKinds]);
 
@@ -286,33 +303,29 @@ export function MediaLibraryView({ filePath, fileIdentity, notebookPath: rawNote
       mediaLibrary
       libraryName={libraryDisplayName}
       libraryFilePath={currentFilePath}
+      mediaLibraryFolderPath={document.collection.placement === 'folder'
+        ? mediaScope?.relativePath || notebook?.name || ''
+        : undefined}
       mediaLibraryFilter={mediaLibraryFileCondition(document)}
       mediaLibraryRecords={mediaLibraryRecords}
       mediaLibraryExcludedPaths={mediaLibraryExcludedPaths}
       mediaLibraryDatasetFilter={document.dataset.filter}
       mediaLibraryViewFilter={mediaLibraryDefaultView(document).filter}
       onAddMedia={addMedia}
-      onDeleteLibrary={document.collection.placement === 'folder' ? undefined : deleteLibraryFile}
       onDeleteMedia={deleteMedia}
       libraryActionsDisabled={saving}
+      refreshPaused={saving}
       onMediaLibraryFilterChange={updateFilterCondition}
-      onRenameLibrary={document.collection.placement === 'folder' ? undefined : renameLibraryFile}
+      onRenameLibrary={renameLibrary}
+      onSwitchToTable={document.collection.placement === 'folder' ? () => setConfirmFolderSwitch(true) : undefined}
     />
-    <Dialog open={confirmDeleteLibrary} onOpenChange={(open) => { if (!open && !saving) setConfirmDeleteLibrary(false); }}>
-      <DialogContent className="rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-        <DialogHeader>
-          <DialogTitle>{t('document.external.deleteFileTitle')}</DialogTitle>
-          <DialogDescription>{t('document.external.deleteFileDescription', { name: currentFilePath.split(/[\\/]/).pop() ?? currentFilePath })}</DialogDescription>
-        </DialogHeader>
-        <div className="mt-4 flex justify-end gap-2">
-          <button type="button" disabled={saving} onClick={() => setConfirmDeleteLibrary(false)} className="h-8 rounded-lg px-3 text-sm hover:bg-[var(--muted)] disabled:opacity-50">
-            {t('dialog.cancel')}
-          </button>
-          <button type="button" disabled={saving} onClick={confirmDeleteLibraryFile} className="h-8 rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-sm text-[var(--foreground)] hover:border-[var(--destructive)] hover:bg-[var(--destructive)] hover:text-white disabled:opacity-50">
-            {t('dialog.delete')}
-          </button>
-        </div>
-      </DialogContent>
-    </Dialog>
+    <FolderCollectionSwitchConfirmDialog open={confirmFolderSwitch} onOpenChange={setConfirmFolderSwitch} confirmDisabled={saving} onConfirm={() => {
+      setConfirmFolderSwitch(false);
+      const resolvedNotebookId = notebookId ?? notebook?.id;
+      if (!notebookPath || !resolvedNotebookId) return;
+      window.dispatchEvent(new CustomEvent('flowix:request-switch-folder-collection-type', {
+        detail: { filePath: currentFilePath, notebookPath, notebookId: resolvedNotebookId, type: 'table' },
+      }));
+    }} />
   </div>;
 }

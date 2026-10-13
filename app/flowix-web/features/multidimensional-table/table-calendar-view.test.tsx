@@ -2,6 +2,7 @@ import { act } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TableField, TableRecord } from './model';
+import { NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID } from './model';
 import { TableCalendarView } from './table-secondary-views';
 
 const titleField: TableField = { id: 'note', type: 'primary', property_key: 'note' };
@@ -28,7 +29,67 @@ afterEach(() => {
   Reflect.deleteProperty(document, 'elementFromPoint');
 });
 
-describe('TableCalendarView pointer movement', () => {
+describe('TableCalendarView interactions', () => {
+  it('opens a note card when clicked in a read-only calendar', () => {
+    container = document.createElement('div');
+    root = createRoot(container);
+    const onOpenRecord = vi.fn();
+    const days = [{ date: new Date(2026, 9, 12), iso: '2026-10-12', inMonth: true }];
+    act(() => root?.render(<TableCalendarView
+      cursor={new Date(2026, 9, 1)}
+      onCursorChange={vi.fn()}
+      days={days}
+      groups={new Map([['2026-10-12', [first]]])}
+      dateFieldId="created"
+      titleField={titleField}
+      renderValue={(record) => record.note_path}
+      onMoveRecord={vi.fn()}
+      onOpenRecord={onOpenRecord}
+      canMoveRecords={false}
+    />));
+    const card = container.querySelector<HTMLElement>('[data-calendar-record="first"]')!;
+    act(() => card.click());
+    expect(onOpenRecord).toHaveBeenCalledWith('first');
+  });
+
+  it.each(['due', NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID])('opens a %s day on native double click inside an embedded editor and ignores note cards', (dateFieldId) => {
+    container = document.createElement('div');
+    const editor = document.createElement('div');
+    editor.setAttribute('contenteditable', 'true');
+    container.setAttribute('contenteditable', 'false');
+    editor.appendChild(container);
+    root = createRoot(container);
+    const onDoubleClickDate = vi.fn();
+    const days = [12, 13, 14, 15, 16, 17, 18].map((day) => ({
+      date: new Date(2026, 9, day),
+      iso: `2026-10-${String(day).padStart(2, '0')}`,
+      inMonth: true,
+    }));
+    act(() => root?.render(<TableCalendarView
+      cursor={new Date(2026, 9, 1)}
+      onCursorChange={vi.fn()}
+      days={days}
+      groups={new Map([['2026-10-12', [first]]])}
+      dateFieldId={dateFieldId}
+      canMoveRecords={dateFieldId === 'due'}
+      titleField={titleField}
+      renderValue={(record) => record.note_path}
+      onMoveRecord={vi.fn()}
+      onDoubleClickDate={onDoubleClickDate}
+    />));
+
+    const firstDay = container.querySelector<HTMLElement>('[data-calendar-date="2026-10-12"]')!;
+    act(() => firstDay.dispatchEvent(new MouseEvent('click', { bubbles: true })));
+    expect(onDoubleClickDate).not.toHaveBeenCalled();
+    act(() => firstDay.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+    expect(onDoubleClickDate).toHaveBeenCalledTimes(1);
+    expect(onDoubleClickDate).toHaveBeenCalledWith('2026-10-12', expect.anything());
+
+    const card = firstDay.querySelector<HTMLElement>('[data-calendar-record="first"]')!;
+    act(() => card.dispatchEvent(new MouseEvent('dblclick', { bubbles: true })));
+    expect(onDoubleClickDate).toHaveBeenCalledTimes(1);
+  });
+
   it('moves a note between day cells and keeps its time value', () => {
     container = document.createElement('div');
     root = createRoot(container);

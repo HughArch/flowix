@@ -2200,6 +2200,11 @@ fn rename_path_and_notify(
             if let Err(error) = mf.reconcile_note_index(&config.id) {
                 tracing::warn!(notebook_id = %config.id, "V2 index refresh after folder move failed: {error}");
             }
+            // The caller switches its folder scope when this command returns.
+            // Keep media queries on the new scope consistent with the filesystem.
+            if let Err(error) = mf.reconcile_media_resources(&config.id) {
+                tracing::warn!(notebook_id = %config.id, "media index refresh after folder move failed: {error}");
+            }
             if let Ok(root) = dunce::canonicalize(&config.path) {
                 crate::commands::document_list::refresh_view_document_catalog(
                     &mf, &config.id, &root,
@@ -2219,7 +2224,7 @@ fn rename_path_and_notify(
             matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
         });
     if source_was_directory || (source_was_markdown && target_is_markdown) {
-        crate::commands::document_list::rebase_table_note_paths_for_move(&mf, source, target);
+        crate::commands::document_list::rebase_collection_paths_for_move(&mf, source, target);
         if let Some((notebook_id, relative_path, previous_path)) = mf
             .read_notebook_configs()
             .unwrap_or_default()
@@ -2562,46 +2567,64 @@ pub async fn import_file(
 }
 
 #[tauri::command]
-pub fn rename_folder(
+pub async fn rename_folder(
+    operation_id: Option<String>,
+    window: tauri::WebviewWindow,
     folder_path: String,
     name: String,
     space_path: String,
-    state: State<AppState>,
     app: tauri::AppHandle,
 ) -> Result<String, String> {
-    validate_file_name(&name)?;
-    let source = Path::new(&folder_path);
-    let scope = Path::new(&space_path);
-    let parent = source.parent().ok_or("INVALID_FILE_PATH")?;
-    let target = parent.join(name);
+    crate::commands::document_operations::run(
+        "rename_folder",
+        operation_id,
+        window.label().to_owned(),
+        move || {
+            let state = app.state::<AppState>();
+            validate_file_name(&name)?;
+            let source = Path::new(&folder_path);
+            let scope = Path::new(&space_path);
+            let parent = source.parent().ok_or("INVALID_FILE_PATH")?;
+            let target = parent.join(&name);
 
-    // A notebook root is the scope boundary and must never be renamed from
-    // inside the tree. Both paths are checked so a symlink cannot escape the
-    // registered notebook/access-folder scope during the mutation.
-    if source == scope
-        || !path_is_inside(source, scope)
-        || !path_is_inside(&target, scope)
-        || is_internal_notebook_path(source, &state)
-        || is_internal_notebook_path(&target, &state)
-        || !is_browsable_scope(scope, &state)
-    {
-        return Err("FILE_PERMISSION_DENIED".to_string());
-    }
-    start_security_bookmark_access(&state, source);
-    if !fs::symlink_metadata(source)
-        .map_err(file_mutation_error)?
-        .is_dir()
-    {
-        return Err("SOURCE_NOT_DIRECTORY".to_string());
-    }
-    if fs::symlink_metadata(&target).is_ok() {
-        return Err(file_mutation_error(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "target already exists",
-        )));
-    }
-    rename_path_and_notify(source, &target, state.inner(), &app)?;
-    Ok(target.to_string_lossy().into_owned())
+            // A notebook root is the scope boundary and must never be renamed from
+            // inside the tree. Both paths are checked so a symlink cannot escape the
+            // registered notebook/access-folder scope during the mutation.
+            if source == scope
+                || !path_is_inside(source, scope)
+                || !path_is_inside(&target, scope)
+                || is_internal_notebook_path(source, &state)
+                || is_internal_notebook_path(&target, &state)
+                || !is_browsable_scope(scope, &state)
+            {
+                return Err("FILE_PERMISSION_DENIED".to_string());
+            }
+            start_security_bookmark_access(&state, source);
+            if !fs::symlink_metadata(source)
+                .map_err(file_mutation_error)?
+                .is_dir()
+            {
+                return Err("SOURCE_NOT_DIRECTORY".to_string());
+            }
+            let collection_move = {
+                let memo = read_lock(&state.memo_file, "memo_file");
+                crate::commands::collection::rename_folder_collection_at_path(&memo, source, &name, &app)?
+            };
+            if let Some((_notebook_id, result)) = collection_move {
+                let path = Path::new(&result.notebook_path).join(&result.actual_relative_path);
+                return Ok(path.parent().ok_or("INVALID_COLLECTION_PATH")?.to_string_lossy().into_owned());
+            }
+            if fs::symlink_metadata(&target).is_ok() {
+                return Err(file_mutation_error(std::io::Error::new(
+                    std::io::ErrorKind::AlreadyExists,
+                    "target already exists",
+                )));
+            }
+            rename_path_and_notify(source, &target, state.inner(), &app)?;
+            Ok(target.to_string_lossy().into_owned())
+        },
+    )
+    .await
 }
 
 #[tauri::command]

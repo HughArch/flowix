@@ -40,6 +40,7 @@ export function noteMatchesCollectionFilter(
       if (operator !== 'contains') return false;
       if (typeof expected !== 'string') return false;
       if (field === 'path') {
+        if (expected === '') return true;
         const prefix = expected.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLocaleLowerCase();
         const directory = normalized.toLocaleLowerCase();
         return directory === prefix || directory.startsWith(`${prefix}/`);

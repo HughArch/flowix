@@ -3,6 +3,9 @@ import type { ThreadState } from '@features/agent/store/thread-runtime-state';
 import { isAgentThreadWorking } from '@features/agent/store/thread-runtime-state';
 import { getAgentType } from '@/lib/agent-types';
 
+export type AgentThreadCardRuntimeState = Pick<ThreadState,
+  'messages' | 'isLoading' | 'activeRunId' | 'runs' | 'dshCommand' | 'codexCommand'>;
+
 export interface AgentThreadCardRunStatusView {
   activeRun: AgentRunState | undefined;
   latestRun: AgentRunState | undefined;
@@ -30,7 +33,7 @@ export function isCodexGoalCommand(command: string | undefined): boolean {
 }
 
 export function selectAgentThreadCardRunStatus(input: {
-  state: ThreadState | undefined;
+  state: AgentThreadCardRuntimeState | undefined;
   isCreating: boolean;
   isLoading: boolean;
   typeKey: AgentTypeKey;
@@ -71,7 +74,7 @@ export function selectAgentThreadCardRunStatus(input: {
 }
 
 export function selectAgentThreadCardRuntimeView(input: {
-  state: ThreadState | undefined;
+  state: AgentThreadCardRuntimeState | undefined;
   isCreating: boolean;
   isLoading: boolean;
   typeKey: AgentTypeKey;
@@ -124,21 +127,5 @@ export function selectAgentThreadCardRuntimeView(input: {
     // current turn is running. The composer decides whether there is input;
     // this base value remains the stop state for an empty composer.
     sendButtonWantsStop: (isModelRunning && activeRun?.phase !== 'stopping') || isCodexCommandStoppable,
-  };
-}
-
-export function selectAgentThreadCardSendButtonState(input: {
-  wantStop: boolean;
-  inputValue: string;
-  isRunning?: boolean;
-  hasAttachments?: boolean;
-  hasPendingAttachments?: boolean;
-}): { wantStop: boolean; disabled: boolean } {
-  const hasInput = !!input.inputValue.trim() || !!input.hasAttachments;
-  return {
-    wantStop: input.wantStop,
-    disabled:
-      (!!input.isRunning && !input.wantStop) ||
-      (!input.wantStop && (!hasInput || !!input.hasPendingAttachments)),
   };
 }

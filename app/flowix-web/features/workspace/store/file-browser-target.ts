@@ -15,6 +15,7 @@ export interface FileBrowserTarget extends FileBrowserContext {
   kind: 'file-browser';
   activeFilePath: string | null;
   collectionDisplay?: CollectionDisplayDescriptor;
+  collectionType?: 'table' | 'media_library';
   collectionUnavailableReason?: string;
 }
 

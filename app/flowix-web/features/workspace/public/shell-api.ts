@@ -1,4 +1,5 @@
 import { useCallback } from 'react';
+import { toast } from 'sonner';
 import { useShallow } from 'zustand/react/shallow';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import { useBrowserColumnStore } from '@features/workspace/store/browser-column-store';
@@ -7,6 +8,7 @@ import { openWorkColumnTargetInBrowserColumn } from '@features/workspace/use-cas
 
 export { selectNotebook } from '@features/workspace/use-cases/workspace-navigation';
 export {
+  clearWorkspaceTargetForDeletedFile,
   historyEntryFromWorkColumnTarget,
   openDocumentListTarget,
   openExternalTarget,
@@ -52,7 +54,10 @@ export function useWorkColumnTransferViewModel() {
     && target.kind !== 'plugin-workbench';
   const openInBrowserColumn = useCallback(() => {
     if (!canOpenInBrowserColumn) return Promise.resolve(null);
-    return openWorkColumnTargetInBrowserColumn(target);
+    return openWorkColumnTargetInBrowserColumn(target).catch((error: unknown) => {
+      toast.error('无法在右栏打开', { description: error instanceof Error ? error.message : String(error) });
+      return null;
+    });
   }, [canOpenInBrowserColumn, target]);
   return { canOpenInBrowserColumn, openInBrowserColumn };
 }

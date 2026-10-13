@@ -1056,7 +1056,14 @@ export function NotebookFileTree({
   onSetDefaultCreateFolder,
 }: NotebookFileTreeProps) {
   const { t } = useI18n();
-  const selectedFolderPath = useWorkColumnStore((state) => state.navigation.target.kind === 'document-list' ? state.navigation.target.scope.path : null);
+  const selectedFolderPath = useWorkColumnStore((state) => {
+    const target = state.navigation.target;
+    if (target.kind === 'document-list') return target.scope.path;
+    if (target.kind === 'collection' && canonicalPath(target.filePath).endsWith('/.index.yaml')) {
+      return parentDirectoryPath(target.filePath, target.notebookPath);
+    }
+    return null;
+  });
   const refreshTrigger = useNoteStore((state) => state.refreshTrigger);
   const notebookIdFromStore = useNoteStore((state) => (
     state.notebooks.find((notebook) => samePath(notebook.path, notebookPath))?.id ?? null

@@ -9,6 +9,7 @@ vi.mock('@features/document/public/path-properties', () => ({ setDocumentPropert
 vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 import { useTableCellWriter } from './use-table-cell-writer';
+import { builtinPresetTableField, builtinPresetValue } from './builtin-fields';
 
 interface Deferred<T> {
   promise: Promise<T>;
@@ -25,7 +26,7 @@ function deferred<T>(): Deferred<T> {
 
 const record: TableRecord = { id: `rec_${'a'.repeat(32)}`, updated_at: '', note_path: 'note.md' };
 const field: TableField = { id: `fld_${'b'.repeat(32)}`, type: 'Text', property_key: 'status' };
-const note = { relativePath: 'note.md', properties: { status: 'old' } } as unknown as NoteEntry;
+const note = { relativePath: 'note.md', icon: null, tags: [], colors: [], favorited: false, properties: { status: 'old' } } as unknown as NoteEntry;
 
 let root: Root | null = null;
 let container: HTMLDivElement | null = null;
@@ -42,9 +43,11 @@ function Probe({ generation }: { generation: number }) {
     setNotes,
   });
   latestWriter = writer;
+  latestNotes = notes;
   return <output>{String(notes[0]?.properties.status ?? '')}</output>;
 }
 
+let latestNotes: NoteEntry[] = [];
 let latestWriter: ReturnType<typeof useTableCellWriter> | null = null;
 
 afterEach(async () => {
@@ -86,4 +89,26 @@ describe('useTableCellWriter', () => {
 
     expect(container.textContent).toBe('first');
   });
+});
+
+it.each([
+  ['__note_icon__', 'flowix_icon', 'star'],
+  ['__note_tags__', 'tags', ['项目']],
+  ['__note_colors__', 'flowix_colors', ['blue']],
+  ['__note_pinned__', 'flowix_favorited', true],
+  ['__note_description__', 'description', '说明'],
+])('writes preset %s to its canonical note property and rolls back failed saves', async (id, key, value) => {
+  const request = deferred<boolean>();
+  mocks.writeProperty.mockReturnValueOnce(request.promise);
+  container = document.createElement('div');
+  root = createRoot(container);
+  await act(async () => root?.render(<Probe generation={1} />));
+  const field = builtinPresetTableField(id)!;
+  const previous = builtinPresetValue(id, latestNotes[0]);
+  await act(async () => { latestWriter?.updateCell(record, latestNotes[0], field, value); });
+  expect(mocks.writeProperty).toHaveBeenCalledWith('/notebook/note.md', { [key]: value });
+  expect(builtinPresetValue(id, latestNotes[0])).toEqual(value);
+  await act(async () => { request.resolve(false); await request.promise; });
+  expect(builtinPresetValue(id, latestNotes[0])).toEqual(previous);
+  expect(latestWriter?.cellStatusesByRecord.get(record.id)?.get(id)?.error).toBeTruthy();
 });

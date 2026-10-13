@@ -1,6 +1,78 @@
 use super::*;
+use rusqlite::{params, TransactionBehavior};
 
 impl MemoFile {
+    /// Reject derived-index collisions before a directory operation changes disk.
+    /// Inactive media records retain user properties and must not be discarded.
+    pub fn validate_directory_index_rebase(&self, notebook_id: &str, previous: &str, next: &str) -> std::io::Result<()> {
+        let conn = self.open_note_index_connection(notebook_id)?;
+        drop(self.open_notebook_db(notebook_id)?);
+        let previous_prefix = format!("{previous}/");
+        let next_prefix = format!("{next}/");
+        let upper_bound = format!("{previous}0");
+        let conflict: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM notes source JOIN notes target
+             ON target.relative_path=?2 || substr(source.relative_path,length(?1)+1)
+             WHERE source.relative_path>=?1 AND source.relative_path<?3)
+             OR EXISTS(SELECT 1 FROM note_content_revisions source JOIN note_content_revisions target
+             ON target.notebook_id=source.notebook_id AND target.relative_path=?2 || substr(source.relative_path,length(?1)+1)
+             WHERE source.notebook_id=?4 AND source.relative_path>=?1 AND source.relative_path<?3)
+             OR EXISTS(SELECT 1 FROM media_resources source JOIN media_resources target
+             ON target.notebook_id=source.notebook_id AND target.relative_path=?2 || substr(source.relative_path,length(?1)+1)
+             WHERE source.notebook_id=?4 AND source.relative_path>=?1 AND source.relative_path<?3
+             AND source.missing_since IS NULL AND source.deleted_at IS NULL)",
+            params![previous_prefix, next_prefix, upper_bound, notebook_id], |row| row.get(0),
+        ).map_err(sqlite_to_io)?;
+        if conflict {
+            return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "DIRECTORY_INDEX_PATH_CONFLICT"));
+        }
+        Ok(())
+    }
+    /// Rebase derived note/media rows without reading every file in the notebook.
+    /// The caller must hold the notebook structural lock and have moved the directory.
+    /// Repeating the same confirmed move is safe during journal recovery.
+    pub fn rebase_directory_indexes(
+        &self,
+        notebook_id: &str,
+        previous: &str,
+        next: &str,
+    ) -> std::io::Result<()> {
+        if previous.is_empty() || next.is_empty()
+            || [previous, next].iter().any(|path| path.starts_with('/') || path.contains('\\')
+                || path.split('/').any(|part| part.is_empty() || part == "." || part == ".."))
+        {
+            return Err(std::io::Error::new(std::io::ErrorKind::InvalidInput, "invalid directory rebase"));
+        }
+        if previous == next { return Ok(()); }
+        let mut conn = self.open_note_index_connection(notebook_id)?;
+        // Both projections live in the same notebook DB; initialize the media schema too.
+        drop(self.open_notebook_db(notebook_id)?);
+        let tx = conn.transaction_with_behavior(TransactionBehavior::Immediate).map_err(sqlite_to_io)?;
+        tx.execute_batch("PRAGMA defer_foreign_keys=ON;").map_err(sqlite_to_io)?;
+        let previous_prefix = format!("{previous}/");
+        let next_prefix = format!("{next}/");
+        // '/' sorts immediately before '0': this range selects only descendants
+        // and lets path indexes bound the update, including '%' or '_' in names.
+        let upper_bound = format!("{previous}0");
+        for table in ["notes", "note_tags", "note_todos", "note_agents", "note_search_fts"] {
+            tx.execute(
+                &format!("UPDATE {table} SET relative_path=?2 || substr(relative_path,length(?1)+1) WHERE relative_path>=?1 AND relative_path<?3"),
+                params![previous_prefix, next_prefix, upper_bound],
+            ).map_err(sqlite_to_io)?;
+        }
+        tx.execute(
+            "UPDATE note_content_revisions SET relative_path=?2 || substr(relative_path,length(?1)+1)
+             WHERE notebook_id=?4 AND relative_path>=?1 AND relative_path<?3",
+            params![previous_prefix, next_prefix, upper_bound, notebook_id],
+        ).map_err(sqlite_to_io)?;
+        tx.execute(
+            "UPDATE media_resources SET relative_path=?2 || substr(relative_path,length(?1)+1)
+             WHERE notebook_id=?4 AND relative_path>=?1 AND relative_path<?3 AND missing_since IS NULL AND deleted_at IS NULL",
+            params![previous_prefix, next_prefix, upper_bound, notebook_id],
+        ).map_err(sqlite_to_io)?;
+        tx.commit().map_err(sqlite_to_io)
+    }
+
     /// Move a file or directory and rebase every indexed child before releasing
     /// the write lock. Return before/after pairs for desktop path notifications.
     pub fn rename_indexed_path(

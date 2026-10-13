@@ -149,8 +149,10 @@ function validateV2Envelope(value: Record<string, unknown>): { collection: Colle
     throw new Error('独立集合的数据范围无效');
   }
   if (source.scope !== 'folder' && source.path !== undefined) throw new Error('集合数据范围不应包含 path');
-  if (!hasOnlyKeys(dataset.schema, collection.type === 'table' ? ['primary_field_id', 'fields'] : ['fields'])) throw new Error('集合字段定义包含未知字段');
+  if (!hasOnlyKeys(dataset.schema, collection.type === 'table' ? ['primary_field_id', 'fields', 'field_order', 'preset_fields'] : ['fields'])) throw new Error('集合字段定义包含未知字段');
   if (collection.type === 'table' && (typeof dataset.schema.primary_field_id !== 'string' || !dataset.schema.primary_field_id.trim())) throw new Error('笔记集合缺少主字段');
+  if (dataset.schema.preset_fields !== undefined && (!Array.isArray(dataset.schema.preset_fields)
+    || (dataset.schema.preset_fields as unknown[]).some((id) => typeof id !== 'string'))) throw new Error('预设属性列表无效');
   if (collection.type === 'media_library' && (!Array.isArray(dataset.schema.fields) || dataset.schema.fields.length > 0)) throw new Error('媒体集合不支持自定义字段');
   for (const kind of ['include', 'exclude'] as const) {
     const seenIds = new Set<string>();
@@ -182,7 +184,8 @@ function validateV2Envelope(value: Record<string, unknown>): { collection: Colle
     || (Array.isArray(view.sort) && view.sort.some((sort) => !isRecord(sort) || !hasOnlyKeys(sort, ['field', 'direction'])
       || typeof sort.field !== 'string' || !sort.field || (sort.direction !== 'asc' && sort.direction !== 'desc')
       || (collection.type === 'media_library' && (sort.field !== 'created_at' || sort.direction !== 'desc')))))) throw new Error('集合视图筛选、排序或布局无效');
-  if (!viewItems.some((view) => isRecord(view) && view.id === views.default_id)) throw new Error('默认集合视图不存在');
+  // A deleted remembered table view is recoverable; the table model selects the first view.
+  if (collection.type !== 'table' && !viewItems.some((view) => isRecord(view) && view.id === views.default_id)) throw new Error('默认集合视图不存在');
   if (value.payload.dataset.filter !== null && value.payload.dataset.filter !== undefined && !ruleFilterMatchesCollectionType(value.payload.dataset.filter, collection.type)) {
     throw new Error('集合规则筛选格式无效');
   }
@@ -236,19 +239,21 @@ function tableFilterFromLegacyRuntime(condition: unknown): { all: Record<string,
   const file = isRecord(condition.file_condition) ? condition.file_condition : {};
   const criteria: Record<string, unknown>[] = [];
   if (typeof file.file_name_contains === 'string' && file.file_name_contains) criteria.push({ field: 'file_name', op: 'contains', value: file.file_name_contains });
-  if (typeof file.path_contains === 'string' && file.path_contains) criteria.push({ field: 'path', op: 'contains', value: file.path_contains });
   if (file.file_type === 'markdown') criteria.push({ field: 'kind', op: 'eq', value: 'note' });
+  const pathRules = typeof file.path_contains === 'string' && file.path_contains
+    ? [{ field: 'path', op: 'contains', value: file.path_contains }]
+    : [];
   const properties = Array.isArray(condition.property_conditions) ? condition.property_conditions.filter(isRecord).map((property) => ({
     field: typeof property.field_id === 'string' ? property.field_id.trim() : property.field_id,
     op: property.operator === 'contains' ? 'contains' : 'eq',
     value: typeof property.value === 'string' ? property.value.trim() : property.value,
   })) : [];
-  if (!properties.length && !criteria.length) return null;
+  if (!properties.length && !criteria.length && !pathRules.length) return null;
   if (condition.property_match === 'intersection' && properties.length) {
-    if (criteria.length) return { all: [], any: [{ all: properties, any: [] }, ...criteria] };
-    return { all: properties, any: [] };
+    if (criteria.length) return { all: pathRules, any: [{ all: properties, any: [] }, ...criteria] };
+    return { all: [...pathRules, ...properties], any: [] };
   }
-  return { all: [], any: [...properties, ...criteria] };
+  return { all: pathRules, any: [...properties, ...criteria] };
 }
 
 function mediaFilterFromLegacyRuntime(condition: unknown): { all: Record<string, unknown>[]; any: Record<string, unknown>[] } {

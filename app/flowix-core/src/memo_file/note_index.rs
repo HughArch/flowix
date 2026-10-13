@@ -106,6 +106,8 @@ fn is_markdown_note_path(path: &Path) -> bool {
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct NoteEntry {
+    #[serde(default)]
+    pub size_bytes: u64,
     pub relative_path: String,
     pub title: String,
     pub preview: String,
@@ -714,13 +716,13 @@ impl MemoFile {
         relative_path: &str,
     ) -> io::Result<Option<NoteEntry>> {
         let conn = self.open_note_index_connection(notebook_id)?;
-        let row: Option<(String, String, String, Option<String>, i64, i64, i64, Option<String>, String, String)> = conn
+        let row: Option<(String, String, String, Option<String>, i64, i64, i64, Option<String>, String, String, u64)> = conn
             .query_row(
-                "SELECT relative_path, title, preview, thumbnail, created_at, updated_at, favorited, icon, colors_json, properties_json \
+                "SELECT relative_path, title, preview, thumbnail, created_at, updated_at, favorited, icon, colors_json, properties_json, size_bytes \
                  FROM notes WHERE relative_path=?1",
                 params![relative_path],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
-                    row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?)),
+                    row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?)),
             )
             .optional()
             .map_err(io::Error::other)?;
@@ -735,11 +737,13 @@ impl MemoFile {
             icon,
             colors,
             properties,
+            size_bytes,
         )) = row
         else {
             return Ok(None);
         };
         let mut entry = NoteEntry {
+            size_bytes,
             relative_path,
             title,
             preview,
@@ -841,6 +845,7 @@ impl MemoFile {
         super::apply_derived_memo_fields(&mut derived, &content);
         let title = display_title_from_relative_path(relative_path);
         Ok(NoteEntry {
+            size_bytes: metadata.len(),
             relative_path: derived.relative_path,
             title,
             preview: derived.preview,
@@ -867,7 +872,7 @@ impl MemoFile {
         }
         let conn = self.open_note_index_connection(notebook_id)?;
         let mut stmt = conn.prepare(
-            "SELECT relative_path, title, preview, thumbnail, created_at, updated_at, favorited, icon, colors_json, properties_json \
+            "SELECT relative_path, title, preview, thumbnail, created_at, updated_at, favorited, icon, colors_json, properties_json, size_bytes \
              FROM notes ORDER BY created_at ASC, relative_path ASC"
         ).map_err(io::Error::other)?;
         let rows = stmt
@@ -883,6 +888,7 @@ impl MemoFile {
                     row.get::<_, Option<String>>(7)?,
                     row.get::<_, String>(8)?,
                     row.get::<_, String>(9)?,
+                    row.get::<_, u64>(10)?,
                 ))
             })
             .map_err(io::Error::other)?;
@@ -899,8 +905,10 @@ impl MemoFile {
                 icon,
                 colors,
                 properties,
+                size_bytes,
             ) = row.map_err(io::Error::other)?;
             entries.push(NoteEntry {
+                size_bytes,
                 relative_path,
                 title,
                 preview,
@@ -2641,6 +2649,10 @@ mod tests {
         let entries = store.read_note_entries("nb_test").unwrap();
         assert_eq!(entries.len(), 1);
         assert_eq!(entries[0].relative_path, "new.md");
+        let expected_size = fs::metadata(root.join("new.md")).unwrap().len();
+        assert_eq!(entries[0].size_bytes, expected_size);
+        assert_eq!(store.read_indexed_note_entry_by_path("nb_test", "new.md").unwrap().unwrap().size_bytes, expected_size);
+        assert_eq!(store.derive_note_entry_from_disk("nb_test", "new.md").unwrap().size_bytes, expected_size);
     }
 
     #[test]

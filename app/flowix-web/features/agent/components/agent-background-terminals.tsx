@@ -142,7 +142,10 @@ function QueuedMessages({ messages, label, onPromoteFollowUp, onDeleteQueuedMess
               {message.deliveryStatus === 'submitting' && (
                 <span className="agent-background-terminals__queue-soon" role="status">{t('agent.queue.adding')}</span>
               )}
-              {message.deliveryMode === 'follow_up' && onPromoteFollowUp && (
+              {message.deliveryStatus === 'starting' && (
+                <span className="agent-background-terminals__queue-soon" role="status">{t('agent.queue.sendingSoon')}</span>
+              )}
+              {message.deliveryMode === 'follow_up' && message.deliveryStatus !== 'starting' && onPromoteFollowUp && (
                 <button type="button" className="agent-background-terminals__queue-steer" disabled={message.actionsDisabled} onClick={() => onPromoteFollowUp(message.id)}>
                   {t('agent.queue.steerNow')}
                 </button>

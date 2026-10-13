@@ -1,3 +1,4 @@
+import { setCollectionActiveView } from './collection-view-state';
 import {
   useBrowserColumnStore,
   browserColumnTargetIdentity,
@@ -38,6 +39,16 @@ export function workColumnTargetIdentity(target: WorkColumnTarget): ContentIdent
 
 export { browserColumnTargetIdentity };
 
+function currentCollectionView(location: WorkspaceContentLocation): string | null {
+  if (location.host === 'main-third') {
+    const target = getWorkColumnContentState();
+    if (target.status === 'empty' || target.status === 'transitioning') return null;
+    return target.target.kind === 'collection' ? target.target.viewId : null;
+  }
+  const tab = useBrowserColumnStore.getState().tabs.find((candidate) => candidate.id === location.tabId);
+  return tab?.target.kind === 'file-browser' ? tab.target.collectionDisplay?.viewId ?? null : null;
+}
+
 /**
  * Focus an already-open workspace target without opening a second surface.
  * The third column wins when legacy state already contains the target in both
@@ -49,6 +60,11 @@ export function activateExistingWorkspaceContent(
   const location = findExistingWorkspaceContent(identity);
   if (!location) return null;
 
+  if (identity.kind === 'collection') {
+    // Start a new transaction for pending requests; requestId makes the latest win.
+    if (location.host === 'main-third' && location.state === 'pending') return null;
+    if (!setCollectionActiveView(location, identity, identity.viewId ?? currentCollectionView(location))) return null;
+  }
   if (location.host === 'main-third') {
     useWorkspaceFocusStore.getState().focusHost('main-third');
   } else {
@@ -68,6 +84,10 @@ export async function activateExistingWorkspaceContentAsync(
   if (!location) return null;
 
   if (location.host === 'main-third') {
+    if (identity.kind === 'collection') {
+      if (location.state === 'pending') return null;
+      if (!setCollectionActiveView(location, identity, identity.viewId ?? currentCollectionView(location))) return null;
+    }
     useWorkspaceFocusStore.getState().focusHost('main-third');
     return location;
   }
@@ -76,6 +96,8 @@ export async function activateExistingWorkspaceContentAsync(
   if (activated === null) {
     throw new Error('BrowserColumn navigation cancelled because saving did not complete');
   }
+  if (activated && identity.kind === 'collection'
+    && !setCollectionActiveView(location, identity, identity.viewId ?? currentCollectionView(location))) return null;
   return activated ? location : null;
 }
 

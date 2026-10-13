@@ -191,7 +191,7 @@ fn native_stream_limits_are_checked_without_silently_truncating() {
     assert!(copy_bounded(&mut &b"abcd"[..], &mut output, 3).is_err());
     assert!(output.len() <= 4);
     let mut exact = Vec::new();
-    assert_eq!(copy_bounded(&mut &b"abc"[..], &mut exact, 3).unwrap(), 3);
+    assert_eq!(copy_bounded(&mut &b"abc"[..], &mut exact, 3).unwrap().1, 3);
     assert_eq!(exact, b"abc");
 }
 

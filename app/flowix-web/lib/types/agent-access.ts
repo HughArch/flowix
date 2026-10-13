@@ -46,6 +46,7 @@ export interface AgentAccessDefaultRuntime {
   model?: { key: string; providerId?: string };
   access?: { sandbox: AgentPermissionMode };
   reasoningEffort?: AgentCodexReasoningEffort;
+  serviceTier?: "auto" | "priority";
   /** DeepSeek Harness tool presentation mode. */
   mode?: AgentHarnessPreset;
   /** Default Pi codemode setting for newly created conversations. */

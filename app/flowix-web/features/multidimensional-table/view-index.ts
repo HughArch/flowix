@@ -1,5 +1,7 @@
 import type { TableRecord } from './model';
 
+export const KANBAN_UNASSIGNED_GROUP_ID = '__kanban_unassigned__';
+
 /** Build a view index once per data change instead of scanning every record per lane/day. */
 export function groupRecordsByValue(
   records: TableRecord[],

@@ -1,6 +1,7 @@
 import type {
   AgentCodexModel,
   AgentCodexReasoningEffort,
+  AgentCodexServiceTier,
   AgentPermissionMode,
   AgentRuntimeConfig,
   AgentTypeKey,
@@ -37,6 +38,7 @@ export interface BuildAgentRuntimeConfigInput {
   permissionMode: AgentPermissionMode;
   codexModel: AgentCodexModel;
   codexReasoningEffort: AgentCodexReasoningEffort;
+  codexServiceTier?: AgentCodexServiceTier;
   /** Shared Pi extension mode; legacy conversation values are ignored. */
   piCodeMode?: boolean;
   instanceRuntimeConfig?: RuntimeConfig;
@@ -120,6 +122,7 @@ const AGENT_RUNTIME_SPECS: Record<AgentTypeKey, AgentRuntimeSpec> = {
       permissionMode,
       codexModel,
       codexReasoningEffort,
+      codexServiceTier,
     }) => ({
       codex: {
         cwd,
@@ -127,6 +130,7 @@ const AGENT_RUNTIME_SPECS: Record<AgentTypeKey, AgentRuntimeSpec> = {
         permissionMode: normalizeCodexPermissionMode(permissionMode),
         model: codexModel,
         reasoningEffort: codexReasoningEffort,
+        ...(codexServiceTier ? { serviceTier: codexServiceTier } : {}),
       },
     }),
   },
@@ -254,6 +258,7 @@ export function buildAgentRuntimeConfig({
   permissionMode,
   codexModel,
   codexReasoningEffort,
+  codexServiceTier,
   piCodeMode,
   instanceRuntimeConfig,
   defaultFiles,
@@ -293,6 +298,8 @@ export function buildAgentRuntimeConfig({
     permissionMode: effectivePermissionMode,
     codexModel: effectiveModel ?? "",
     codexReasoningEffort: effectiveReasoningEffort,
+    codexServiceTier:
+      instanceRuntimeConfig?.serviceTier ?? codexServiceTier,
   });
   if (typeKey === "deepseek-harness" && runtimeConfig.deepseekHarness) {
     runtimeConfig.deepseekHarness.mode =

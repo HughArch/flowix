@@ -1,6 +1,8 @@
+import { sortFields } from './field-order';
+import { builtinTableFieldValue, builtinPresetTableField, builtinPresetValue, type BuiltinTableField } from './builtin-fields';
 import { memo, useCallback, useEffect, useRef, useState, useSyncExternalStore } from 'react';
-import { ChevronDown, ChevronUp, FileText, ImagePlus, MoreHorizontal, Plus } from 'lucide-react';
-import { ArrowUpRightIcon, ArrowsLeftRightIcon, LightningIcon, MinusCircleIcon } from '@phosphor-icons/react';
+import { ChevronDown, ChevronUp, FileText, ImagePlus, MoreHorizontal } from 'lucide-react';
+import { ArrowUpRightIcon, ArrowsLeftRightIcon, LightningIcon, MinusCircleIcon, TrashSimpleIcon } from '@phosphor-icons/react';
 import type { NoteEntry } from '@platform/tauri/client';
 import { joinNotebookMemoPath } from '@/lib/path';
 import { displayTitleFromFilename } from '@/lib/utils';
@@ -15,6 +17,7 @@ import { MultiSelectValueInput } from '@features/document/properties/multi-selec
 import { SelectValueInput } from '@features/document/properties/select-value-input';
 import { TableTagValueInput } from './table-tag-value-input';
 import { TableTextValueInput } from './table-text-value-input';
+import { NoteCreatePicker } from './note-create-picker';
 import type { TableField, TableRecord } from './model';
 import type { TableCellSaveStatus } from './use-table-cell-writer';
 
@@ -145,9 +148,11 @@ interface TableRecordRowProps {
   record: TableRecord;
   showBottomBorder?: boolean;
   imagePaths: (value: unknown) => string[];
-  fieldColumnWidth: (type: TableField['type']) => string;
   notePropertyEditorValue: (note: NoteEntry | undefined, field: TableField) => unknown;
   fields: TableField[];
+  builtinFields?: readonly BuiltinTableField[];
+  fieldOrder?: readonly string[];
+  allowSwitchNote?: boolean;
   titleField?: TableField;
   note?: NoteEntry;
   isRuleLinked: boolean;
@@ -160,13 +165,13 @@ interface TableRecordRowProps {
   saving: boolean;
   cellStatuses: ReadonlyMap<string, TableCellSaveStatus>;
   rowActionOpen: boolean;
-  onOpenNotePicker: (anchorRect: DOMRect, recordId: string | null) => void;
   onRetryNoteLookup: () => void;
   onReplaceNote: (recordId: string, noteKey: string) => void;
   onCreateAndLinkRecordNote: (recordId: string, title: string) => Promise<boolean>;
   onAutoOpenHandled: () => void;
   onRenameNote: (recordId: string, note: NoteEntry, title: string) => Promise<NoteEntry | null>;
   onOpenNote: (note: NoteEntry) => void;
+  onDeleteNote: (note: NoteEntry) => void;
   onSelectImage: (record: TableRecord, note: NoteEntry, field: TableField) => Promise<void>;
   onUpdateCell: (record: TableRecord, note: NoteEntry | undefined, field: TableField, value: unknown) => void;
   onDeleteRecord: (recordId: string) => void;
@@ -177,9 +182,11 @@ export const TableRecordRow = memo(function TableRecordRow({
   record,
   showBottomBorder = true,
   imagePaths,
-  fieldColumnWidth,
   notePropertyEditorValue,
   fields,
+  builtinFields = [],
+  fieldOrder,
+  allowSwitchNote = true,
   titleField,
   note,
   isRuleLinked,
@@ -192,13 +199,13 @@ export const TableRecordRow = memo(function TableRecordRow({
   saving,
   cellStatuses,
   rowActionOpen,
-  onOpenNotePicker,
   onRetryNoteLookup,
   onReplaceNote,
   onCreateAndLinkRecordNote,
   onAutoOpenHandled,
   onRenameNote,
   onOpenNote,
+  onDeleteNote,
   onSelectImage,
   onUpdateCell,
   onDeleteRecord,
@@ -214,13 +221,13 @@ export const TableRecordRow = memo(function TableRecordRow({
   const [uploadingImageFieldId, setUploadingImageFieldId] = useState<string | null>(null);
   const primaryTitleInputRef = useRef<HTMLTextAreaElement>(null);
   const creatingDraftNoteRef = useRef(false);
-  const cancelDraftEditRef = useRef(false);
+  const shouldLoadAvailableNotes = switchNoteOpen || (editingPrimary && !note && allowSwitchNote);
   const subscribeToAvailableNotes = useCallback((listener: () => void) => (
-    switchNoteOpen ? subscribeAvailableNotes(listener) : () => {}
-  ), [subscribeAvailableNotes, switchNoteOpen]);
+    shouldLoadAvailableNotes ? subscribeAvailableNotes(listener) : () => {}
+  ), [shouldLoadAvailableNotes, subscribeAvailableNotes]);
   const getAvailableNotesSnapshot = useCallback(() => (
-    switchNoteOpen ? getAvailableNotes() : EMPTY_AVAILABLE_NOTES
-  ), [getAvailableNotes, switchNoteOpen]);
+    shouldLoadAvailableNotes ? getAvailableNotes() : EMPTY_AVAILABLE_NOTES
+  ), [getAvailableNotes, shouldLoadAvailableNotes]);
   const availableNotes = useSyncExternalStore(
     subscribeToAvailableNotes,
     getAvailableNotesSnapshot,
@@ -238,14 +245,14 @@ export const TableRecordRow = memo(function TableRecordRow({
     input.style.height = `${Math.min(input.scrollHeight, window.innerHeight * 0.5)}px`;
   }, [editingPrimary, primaryTitleDraft]);
 
+
   useEffect(() => {
     if (!autoOpenPrimaryEditor) return;
-    cancelDraftEditRef.current = false;
     setPrimaryTitleDraft('');
     setEditingPrimary(true);
-    setSwitchNoteOpen(true);
+    setSwitchNoteOpen(false);
     onAutoOpenHandled();
-  }, [autoOpenPrimaryEditor, onAutoOpenHandled]);
+  }, [allowSwitchNote, autoOpenPrimaryEditor, onAutoOpenHandled]);
 
   const finishPrimaryEdit = async (keepOpen = false): Promise<NoteEntry | null> => {
     if (!note) return null;
@@ -268,7 +275,7 @@ export const TableRecordRow = memo(function TableRecordRow({
 
   const createDraftPrimary = async () => {
     const title = primaryTitleDraft.trim();
-    if (noteStatus !== 'draft' || !title || saving || creatingDraftNoteRef.current) return false;
+    if ((noteStatus !== 'draft' && noteStatus !== 'missing') || !title || saving || creatingDraftNoteRef.current) return false;
     creatingDraftNoteRef.current = true;
     try {
       const created = await onCreateAndLinkRecordNote(record.id, title);
@@ -282,25 +289,34 @@ export const TableRecordRow = memo(function TableRecordRow({
     }
   };
 
+  const selectDraftAvailableNote = (relativePath: string) => {
+    onReplaceNote(record.id, relativePath.replace(/\\/g, '/'));
+    setEditingPrimary(false);
+    setSwitchNoteOpen(false);
+  };
+
   const handlePrimaryEditorOpenChange = (open: boolean) => {
     if (open) {
-      cancelDraftEditRef.current = false;
       setPrimaryTitleDraft(note ? displayTitleFromFilename(note.relativePath) : '');
+      setSwitchNoteOpen(false);
       setEditingPrimary(true);
     } else if (!open && editingPrimary) {
       if (note) void finishPrimaryEdit();
       else {
-        if (!cancelDraftEditRef.current) void createDraftPrimary();
-        cancelDraftEditRef.current = false;
         setEditingPrimary(false);
         setSwitchNoteOpen(false);
+        if (primaryTitleDraft.trim()) void createDraftPrimary();
       }
     }
   };
 
   return <tr className="hover:bg-[var(--muted)]/25">
-    {fields.map((field) => {
-      const value = notePropertyEditorValue(note, field);
+    {sortFields([...[...fields, ...builtinFields.flatMap((field) => {
+      const preset = builtinPresetTableField(field.id);
+      return preset ? [preset] : [];
+    })].map((field) => {
+      if (!note && builtinPresetTableField(field.id)) return <td key={field.id} className={`${showBottomBorder ? 'border-b' : ''} border-r border-[var(--border)] p-0 align-middle`} />;
+      const value = builtinPresetTableField(field.id) ? builtinPresetValue(field.id, note) : notePropertyEditorValue(note, field);
       const inputClass = 'h-8 w-full rounded-md border-0 bg-transparent px-0 text-sm outline-none placeholder:text-[var(--muted-foreground)] placeholder:opacity-80 focus:border-0 focus:bg-transparent focus:ring-0 disabled:cursor-not-allowed disabled:opacity-50';
       const isWrappingContent = field.type === 'primary' || field.type === 'Text' || field.type === 'Tag' || field.type === 'Tags';
       const cellStatus = cellStatuses.get(field.id);
@@ -317,7 +333,7 @@ export const TableRecordRow = memo(function TableRecordRow({
       return <td
         key={field.id}
         title={cellStatus?.error}
-        className={`${fieldColumnWidth(field.type)} ${showBottomBorder ? 'border-b' : ''} border-r border-[var(--border)] p-0 ${isWrappingContent ? 'overflow-visible align-middle' : 'h-10 max-h-10 overflow-hidden align-middle'} ${cellStatus?.error ? 'ring-1 ring-inset ring-[var(--destructive)]' : ''}`}
+        className={`${showBottomBorder ? 'border-b' : ''} border-r border-[var(--border)] p-0 ${isWrappingContent ? 'overflow-visible align-middle' : 'h-10 max-h-10 overflow-hidden align-middle'} ${cellStatus?.error ? 'ring-1 ring-inset ring-[var(--destructive)]' : ''}`}
       >
         <div className={`multidimensional-table__cell-content${field.type === 'primary' ? ' multidimensional-table__primary-cell group' : ''}`}>
           {field.type === 'primary' ? (() => {
@@ -364,7 +380,7 @@ export const TableRecordRow = memo(function TableRecordRow({
                         }}>
                           <ArrowUpRightIcon size={14} weight="bold" aria-hidden="true" />
                         </button>
-                        <button type="button" aria-label="切换文档" aria-expanded={switchNoteOpen} title="切换文档" disabled={renamingPrimary || saving} onMouseDown={(event) => event.preventDefault()} onClick={async () => {
+                        <button type="button" aria-label="切换文档" aria-expanded={switchNoteOpen} title="切换文档" disabled={!allowSwitchNote || renamingPrimary || saving} onMouseDown={(event) => event.preventDefault()} onClick={async () => {
                           const renamed = await finishPrimaryEdit(true);
                           if (renamed) setSwitchNoteOpen((open) => {
                             const next = !open;
@@ -381,7 +397,7 @@ export const TableRecordRow = memo(function TableRecordRow({
                           <MinusCircleIcon size={14} weight="bold" aria-hidden="true" />
                         </button>
                       </div>
-                      {switchNoteOpen && <div className="min-w-0">
+                      {allowSwitchNote && switchNoteOpen && <div className="min-w-0">
                         <input
                           autoFocus
                           type="search"
@@ -427,96 +443,30 @@ export const TableRecordRow = memo(function TableRecordRow({
                   <ArrowUpRightIcon className="h-3.5 w-3.5" weight="bold" aria-hidden="true" />
                 </button>
               </>
-                : noteStatus === 'draft'
+                : noteStatus === 'draft' || noteStatus === 'missing'
                 ? <Popover open={editingPrimary} onOpenChange={handlePrimaryEditorOpenChange} cellPopup>
                   <PopoverTrigger asChild anchorToCell>
-                    <button type="button" disabled={saving} className="multidimensional-table__primary-title multidimensional-table__primary-title--placeholder !py-1" title="新建或选择笔记">新建或选择笔记</button>
+                    <button type="button" disabled={saving} className="multidimensional-table__primary-title multidimensional-table__primary-title--placeholder !py-1" title={noteStatus === 'missing' ? `未找到笔记 ${displayTitleFromFilename(record.note_path)}` : allowSwitchNote ? "新建或选择笔记" : "新建笔记"}>
+                      {noteStatus === 'missing' ? `未找到笔记 ${displayTitleFromFilename(record.note_path)}` : allowSwitchNote ? "新建或选择笔记" : "新建笔记"}
+                    </button>
                   </PopoverTrigger>
                   <PopoverContent align="start" side="bottom" sideOffset={4} fitViewport className="w-[240px] max-w-[calc(100vw-1rem)] rounded-xl px-2 py-2 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-                    <div className="multidimensional-table__primary-editor">
-                      <textarea
-                        ref={primaryTitleInputRef}
-                        autoFocus
-                        aria-label="新笔记标题"
-                        placeholder="输入笔记标题"
-                        rows={1}
-                        value={primaryTitleInput.value}
-                        disabled={saving}
-                        className="multidimensional-table__primary-title-input"
-                        onChange={primaryTitleInput.onChange}
-                        onCompositionStart={primaryTitleInput.onCompositionStart}
-                        onCompositionEnd={primaryTitleInput.onCompositionEnd}
-                        onKeyDown={(event) => {
-                          if (primaryTitleInput.isComposingKeyboardEvent(event.nativeEvent)) {
-                            if (event.key === 'Escape' || event.key === 'Enter') event.stopPropagation();
-                            return;
-                          }
-                          if (event.key === 'Escape') {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            cancelDraftEditRef.current = true;
-                            setPrimaryTitleDraft('');
-                            setEditingPrimary(false);
-                          }
-                          if (event.key === 'Enter' && !event.shiftKey) {
-                            event.preventDefault();
-                            event.stopPropagation();
-                            void createDraftPrimary();
-                          }
-                        }}
-                        onBlur={() => {
-                          if (cancelDraftEditRef.current) return;
-                          void createDraftPrimary();
-                        }}
-                      />
-                      <div className="multidimensional-table__primary-editor-actions">
-                        <button type="button" aria-label="创建并关联笔记" title="创建并关联笔记" disabled={!primaryTitleDraft.trim() || saving} onMouseDown={(event) => event.preventDefault()} onClick={() => void createDraftPrimary()}>
-                          <Plus size={14} aria-hidden="true" />
-                        </button>
-                        <button type="button" aria-label="切换笔记" aria-expanded={switchNoteOpen} title="切换笔记" disabled={saving} onMouseDown={(event) => event.preventDefault()} onClick={() => setSwitchNoteOpen((open) => {
-                          const next = !open;
-                          if (next) setSwitchNoteSearch('');
-                          return next;
-                        })}>
-                          <ArrowsLeftRightIcon size={14} weight="bold" aria-hidden="true" />
-                        </button>
-                        <button type="button" aria-label="从表格移除此行" title="从表格移除此行" disabled={saving} onMouseDown={(event) => event.preventDefault()} onClick={() => onDeleteRecord(record.id)}>
-                          <MinusCircleIcon size={14} weight="bold" aria-hidden="true" />
-                        </button>
-                      </div>
-                      {switchNoteOpen && <div className="min-w-0">
-                        <input
-                          type="search"
-                          aria-label="搜索并添加笔记"
-                          placeholder={availableNotes.length ? '搜索并添加笔记' : '没有可更换的文档'}
-                          value={switchNoteSearch}
-                          disabled={saving || availableNotes.length === 0}
-                          onChange={(event) => setSwitchNoteSearch(event.target.value)}
-                          className="h-8 w-full border-0 bg-transparent px-0 text-sm outline-none placeholder:text-[var(--muted-foreground)]"
-                        />
-                        <div role="listbox" aria-label="新文档" className="-mx-1 max-h-48 overflow-y-auto">
-                          {filteredAvailableNotes.map((availableNote) => <button
-                            key={availableNote.relativePath}
-                            type="button"
-                            role="option"
-                            aria-selected={false}
-                            disabled={saving}
-                            onMouseDown={(event) => event.preventDefault()}
-                            onClick={() => {
-                              onReplaceNote(record.id, availableNote.relativePath.replace(/\\/g, '/'));
-                              setSwitchNoteOpen(false);
-                              setEditingPrimary(false);
-                            }}
-                            className="flex h-8 w-full cursor-pointer items-center gap-2 rounded-md px-1 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--hover-bg)] disabled:opacity-50"
-                            title={availableNote.relativePath}
-                          >
-                            <FileText className="h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
-                            <span className="truncate">{availableNote.title || availableNote.relativePath}</span>
-                          </button>)}
-                          {availableNotes.length > 0 && filteredAvailableNotes.length === 0 && <p className="px-1 py-2 text-sm text-[var(--muted-foreground)]">没有匹配的文档</p>}
-                        </div>
-                      </div>}
-                    </div>
+                    <NoteCreatePicker
+                      value={primaryTitleDraft}
+                      onChange={setPrimaryTitleDraft}
+                      notes={availableNotes}
+                      allowSelect={allowSwitchNote}
+                      disabled={saving}
+                      onCreate={createDraftPrimary}
+                      onSelect={(selectedNote) => selectDraftAvailableNote(selectedNote.relativePath)}
+                      onCancel={() => {
+                        setPrimaryTitleDraft('');
+                        setEditingPrimary(false);
+                      }}
+                      actions={<button type="button" aria-label="从表格移除此行" title="从表格移除此行" disabled={saving} onMouseDown={(event) => event.preventDefault()} onClick={() => onDeleteRecord(record.id)}>
+                        <MinusCircleIcon size={14} weight="bold" aria-hidden="true" />
+                      </button>}
+                    />
                   </PopoverContent>
                 </Popover>
                 : noteStatus === 'unknown'
@@ -527,13 +477,7 @@ export const TableRecordRow = memo(function TableRecordRow({
                     className="max-w-full truncate px-0 text-left text-sm text-[var(--muted-foreground)] opacity-80 hover:opacity-100 disabled:opacity-50"
                     onClick={onRetryNoteLookup}
                   >无法确认关联状态，点击重试</button>
-                  : <button
-                    type="button"
-                    disabled={saving}
-                    title={record.note_path}
-                    className="max-w-full truncate px-0 text-left text-sm text-[var(--muted-foreground)] opacity-80 hover:opacity-100 disabled:opacity-50"
-                    onClick={(event) => onOpenNotePicker(event.currentTarget.closest('td')?.getBoundingClientRect() ?? event.currentTarget.getBoundingClientRect(), record.id)}
-                  >未在笔记列表找到，关联失效：{record.note_path} · 点击更换</button>;
+                  : null;
           })()
             : field.type === 'Image' ? (() => {
               const path = imagePaths(value)[0];
@@ -624,17 +568,39 @@ export const TableRecordRow = memo(function TableRecordRow({
                                 }} defaultValue={Array.isArray(value) ? value.join(', ') : value == null ? '' : String(value)} />}
         </div>
       </td>;
-    })}
+    }),
+    ...builtinFields.filter((field) => !builtinPresetTableField(field.id)).map((field) => {
+      const value = builtinTableFieldValue(field.id, note, notebookPath);
+      return <td key={field.id} className={`${showBottomBorder ? 'border-b' : ''} border-r border-[var(--border)] p-0 align-middle`}>
+        <div className="multidimensional-table__cell-content">
+          <span className="truncate" title={value}>{value}</span>
+        </div>
+      </td>;
+    })], (cell) => String(cell.key), fieldOrder ?? [...fields.map((field) => field.id), ...builtinFields.map((field) => field.id)])}
     <td className={`multidimensional-table__row-action-cell px-2 text-left${showBottomBorder ? ' multidimensional-table__row-action-cell--bordered' : ''}`}>
       <Popover open={rowActionOpen} onOpenChange={(open) => onRowActionOpenChange(open, record.id)}>
         <PopoverTrigger asChild>
-          <button type="button" disabled={saving} aria-label="更多行操作" title="更多行操作" className="rounded-md p-1 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] data-[state=open]:bg-[var(--muted)] disabled:opacity-40">
+          <button type="button" disabled={saving} aria-label="更多行操作" title="更多行操作" className="ml-0.5 rounded-md p-1 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] data-[state=open]:bg-[var(--muted)] disabled:opacity-40">
             <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
           </button>
         </PopoverTrigger>
         <PopoverContent align="end" side="bottom" sideOffset={4} ignoreSelectOutside={false} className="w-36 rounded-xl p-1">
-          <button type="button" disabled={saving} onClick={() => onDeleteRecord(record.id)} className="flex h-7 w-full items-center justify-start rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-transparent hover:text-[var(--destructive)] disabled:opacity-50">
-            <MinusCircleIcon className="mr-2 h-4 w-4" aria-hidden="true" />从表格移除
+          <button type="button" disabled={saving || !note} onClick={() => {
+            if (!note) return;
+            onRowActionOpenChange(false, record.id);
+            onOpenNote(note);
+          }} className="flex h-7 w-full items-center justify-start rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] disabled:opacity-50">
+            <ArrowUpRightIcon className="mr-2 h-4 w-4" aria-hidden="true" />打开笔记
+          </button>
+          <button type="button" disabled={saving || !note} onClick={() => {
+            if (!note) return;
+            onRowActionOpenChange(false, record.id);
+            onDeleteNote(note);
+          }} className="flex h-7 w-full items-center justify-start rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--destructive)] disabled:opacity-50">
+            <TrashSimpleIcon className="mr-2 h-4 w-4" aria-hidden="true" />删除笔记
+          </button>
+          <button type="button" disabled={saving} onClick={() => onDeleteRecord(record.id)} className="flex h-7 w-full items-center justify-start rounded-lg px-2 py-0 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--destructive)] disabled:opacity-50">
+            <MinusCircleIcon className="mr-2 h-4 w-4" aria-hidden="true" />移除记录
           </button>
         </PopoverContent>
       </Popover>

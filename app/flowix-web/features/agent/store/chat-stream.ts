@@ -73,6 +73,7 @@ export async function dispatchChatStream({
     permissionMode,
     codexModel,
     codexReasoningEffort,
+    codexServiceTier: accessState.config.defaults?.runtime?.codex?.serviceTier,
     instanceRuntimeConfig,
     defaultFiles,
     piCodeMode: accessState.config.defaults?.runtime?.pi?.piCodeMode,

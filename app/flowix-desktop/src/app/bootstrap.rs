@@ -708,6 +708,7 @@ pub fn run() {
             commands::thread::codex_thread_fork,
             commands::agent::model_catalog::codex_default_model,
             commands::agent::model_catalog::agent_supported_models,
+            commands::agent::model_catalog::codex_supported_model_catalog,
             commands::agent::model_catalog::codex_runtime_info,
             commands::agent::codex_catalog::codex_project_capabilities,
             commands::agent::codex_catalog::codex_project_config_write,

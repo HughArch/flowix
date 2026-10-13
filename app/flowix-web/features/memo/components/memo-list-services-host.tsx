@@ -24,6 +24,7 @@ import {
   notebookCreateErrorMessage,
 } from '@platform/tauri/errors';
 import { useCreateNotebookFlow } from '@features/memo/hooks/use-create-notebook-flow';
+import { useEmptyNotebookPrompt } from '@features/memo/hooks/use-empty-notebook-prompt';
 import { clearActionableNotice, upsertActionableNotice } from '@features/notifications/actionable-notice-store';
 import { noteRepository, notebookRepository } from '@features/memo/services/note-repository';
 import { getVisibleCreateFilter, useNoteStore, useTagStore, type NoteListItem, type Notebook } from '@features/memo/store';
@@ -277,9 +278,11 @@ function ExternalMarkdownOpenDialog() {
 export function MemoListServicesHost({
   notebookCreateRequest,
   onRefresh,
+  suppressEmptyNotebookPrompt = false,
 }: {
   notebookCreateRequest: number;
   onRefresh: () => void;
+  suppressEmptyNotebookPrompt?: boolean;
 }) {
   const { request } = useTauriRpc();
   const { t } = useI18n();
@@ -333,7 +336,6 @@ export function MemoListServicesHost({
   const [dismissedNotebookSetupKey, setDismissedNotebookSetupKey] = useState<string | null>(null);
   const notebookSetupJobRef = useRef<NotebookSetupJob | null>(null);
   const activeSetupNoticeIdRef = useRef<string | null>(null);
-  const emptyNotebookPromptedRef = useRef(false);
 
   const { creationState, createNotebook } = useCreateNotebookFlow({
     onMemoListReloadNeeded: onRefresh,
@@ -516,16 +518,12 @@ export function MemoListServicesHost({
     if (notebookCreateRequest > 0) openCreate();
   }, [notebookCreateRequest, openCreate]);
 
-  useEffect(() => {
-    if (startupPhase !== 'ready') return;
-    if (selectedNotebook) {
-      emptyNotebookPromptedRef.current = false;
-      return;
-    }
-    if (emptyNotebookPromptedRef.current) return;
-    emptyNotebookPromptedRef.current = true;
-    openCreate();
-  }, [openCreate, selectedNotebook, startupPhase]);
+  useEmptyNotebookPrompt({
+    startupReady: startupPhase === 'ready',
+    hasSelectedNotebook: Boolean(selectedNotebook),
+    suppressed: suppressEmptyNotebookPrompt,
+    openCreate,
+  });
 
   useEffect(() => {
     if (!editOpen || !editingNotebook) return;
@@ -679,14 +677,16 @@ export function MemoListServicesHost({
     const memo = deleteMemo;
     setDeleteMemo(null);
     void (async () => {
-      const path = selectedNotebook
-        ? joinNotebookMemoPath(selectedNotebook.path, noteListItemRelativePath(memo))
+      const targetNotebook = useNoteStore.getState().notebooks.find((notebook) => notebook.id === memo.notebookId)
+        ?? (selectedNotebook?.id === memo.notebookId ? selectedNotebook : null);
+      const path = targetNotebook
+        ? joinNotebookMemoPath(targetNotebook.path, noteListItemRelativePath(memo))
         : null;
       if (!path) return;
       const flushed = await flushWorkspaceDocumentPath(
         documentIdentityFromFile(ensureFileDisplayIdentity(path)),
         path,
-        selectedNotebook?.path ?? null,
+        targetNotebook?.path ?? null,
       );
       if (flushed === false) {
         const status = await notes.pathStatus(path);

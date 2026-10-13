@@ -20,6 +20,8 @@ import {
 } from '@features/agent/thread-card/messages';
 import {
   ComposerController,
+  ComposerSubmissionController,
+  getComposerRuntimeState,
   ComposerDraftController,
   ComposerImageController,
   ComposerAddMenuController,
@@ -34,34 +36,25 @@ import { NotebookAgentSettingsDialogController } from '@features/agent/thread-ca
 import { AgentConversationSurfaceController } from '@features/agent/thread-card/surface/agent-conversation-surface-controller';
 import { createExternalAgentRuntimeHandle } from '@features/agent/services/external-agent-runtime-service';
 import { ensureAgentConversationDetailThread } from '@features/agent/components/agent-conversation-detail-submit';
-import { markConversationWorkspaceStarted } from '@features/agent/runtime/workspace-snapshot';
-import { ensureConversationWorkspaceSnapshot } from '@features/agent/runtime/workspace-snapshot';
+import { ensureConversationWorkspaceSnapshot, markConversationWorkspaceStarted } from '@features/agent/runtime/workspace-snapshot';
 import { AgentBackgroundTerminals } from '@features/agent/components/agent-background-terminals';
 import { CodexApprovalQueue } from '@features/agent/components/codex-approval-queue';
 import { buildInitialInstanceRuntimeConfig } from '@features/agent/store/initial-runtime-config';
 import { defaultThreadTitle } from '@features/agent/store/thread-titles';
 import { selectAndOpenAgentConversation } from '@features/workspace/use-cases/agent-conversation-navigation';
-import { dialogs } from '@platform/tauri/client/desktop';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import {
   agentFileScopePathForRuntime,
   handleAgentLinkClick,
 } from '@features/agent/thread-card/link-navigation';
 import {
-  runDshCommand,
-  hasPendingDshCommand,
   listDshSkills,
 } from '@features/agent/services/dsh-command-service';
 import {
-  beginCodexSlashCommand,
-  createCodexCommandLifecycle,
-  executeCodexSlashCommand,
-  finishCodexSlashCommand,
-  hasPendingCodexCommand,
   listCodexSkills,
 } from '@features/agent/services/codex-slash-command-service';
 import { isCodexGoalCommand } from '@features/agent/thread-card/agent-thread-card-selectors';
-import { getAgentConversationRuntimeCwd } from '@features/agent/conversation-presentation';
+import { acceptComposerSubmission, type ComposerConversationBinding } from '@features/agent/services/composer-submission-service';
 import { WorkspaceEmptyState } from '@shared/ui/workspace-empty-state';
 import { Button } from '@shared/ui/button';
 
@@ -229,14 +222,12 @@ function AgentConversationDetailContent({
   const typeKeyRef = useRef<AgentTypeKey>(instance?.agentType ?? DEFAULT_AGENT_TYPE_KEY);
   const messagesRef = useRef(messages);
   const isLoadingRef = useRef(isLoading);
-  const isStoppingRef = useRef(isStopping);
   const isDshCommandRunningRef = useRef(isDshCommandRunning);
   const isCodexCommandRunningRef = useRef(isCodexCommandRunning);
-  const isCodexCommandStoppableRef = useRef(isCodexCommandStoppable);
   const instanceRef = useRef(instance);
   const threadIdRef = useRef(threadId);
   const runtimeHandleRef = useRef<string | null>(null);
-  const submittingRef = useRef(false);
+  const submissionRef = useRef(new ComposerSubmissionController());
   const languageRef = useRef(language);
   const tRef = useRef(t);
   const submitRef = useRef<() => void>(() => undefined);
@@ -274,19 +265,16 @@ function AgentConversationDetailContent({
   typeKeyRef.current = instance?.agentType ?? DEFAULT_AGENT_TYPE_KEY;
   messagesRef.current = messages;
   isLoadingRef.current = isLoading;
-  isStoppingRef.current = isStopping;
   isDshCommandRunningRef.current = isDshCommandRunning;
   isCodexCommandRunningRef.current = isCodexCommandRunning;
-  isCodexCommandStoppableRef.current = isCodexCommandStoppable;
   instanceRef.current = instance;
   threadIdRef.current = threadId;
   languageRef.current = language;
   tRef.current = t;
 
-  const clearComposerAfterSlashCommand = useCallback(() => {
+  const clearComposerAfterSettingsCommand = useCallback(() => {
     composerControllerRef.current?.clear();
     composerControllerRef.current?.clearDraft();
-    composerImagesControllerRef.current?.clearAfterSubmit();
     persistDetailDraft(instanceId, null);
     composerControllerRef.current?.updateMultiLineState();
   }, [instanceId]);
@@ -348,161 +336,55 @@ function AgentConversationDetailContent({
     return { threadId: currentThreadId, runtimeConfig };
   }, []);
 
-  const runDshCommandFromDetail = useCallback(async (command: string, imagePaths: string[] = []) => {
-    if (destroyedRef.current || typeKeyRef.current !== 'deepseek-harness') return;
-    await runDshCommand({
-      command,
-      imagePaths,
-      ensureConversation: ensureDshCommandConversation,
-      onError: (message) => toast.error(message),
-      onLogError: (message, error) => logger.error(message, { error }),
-      onSaveExport: async (filename, content) => {
-        const target = await dialogs.saveFile(
-          filename,
-          [{ name: 'JSON', extensions: ['json'] }],
-        );
-        if (!target) return;
-        const written = await dialogs.writeExportFile(target, content);
-        toast[written ? 'success' : 'error'](
-          written ? 'DSH 会话已导出。' : 'DSH 会话导出失败。',
-        );
-      },
-      onFocus: () => {
-        if (!destroyedRef.current) composerControllerRef.current?.focus();
-      },
-      sendFailedText: tRef.current('agent.chat.sendFailed'),
-    });
-  }, [ensureDshCommandConversation]);
-
-  const runCodexSlashCommandFromDetail = useCallback(async (command: string) => {
-    if (destroyedRef.current || typeKeyRef.current !== 'codex') return;
-    if (hasPendingCodexCommand(threadIdRef.current)) return;
-    let lifecycle: ReturnType<typeof createCodexCommandLifecycle> | undefined;
-    let commandThreadId: string | null = null;
-    try {
-      let currentThreadId = threadIdRef.current;
-      let cwd = getAgentConversationRuntimeCwd(instanceRef.current);
-      if (!currentThreadId) {
-        const currentInstance = instanceRef.current;
-        if (!currentInstance) throw new Error('Agent session instance was not found');
-        if (!runtimeHandleRef.current) {
-          runtimeHandleRef.current = createExternalAgentRuntimeHandle();
-        }
-        const ensured = await ensureAgentConversationDetailThread({
-          instanceId: currentInstance.instanceId,
-          typeKey: 'codex',
-          prompt: command,
-          runtimeHandleId: runtimeHandleRef.current,
-        });
-        currentThreadId = ensured.threadId;
-        threadIdRef.current = currentThreadId;
-        cwd = ensured.runtimeConfig.workspaceSnapshot?.cwd ?? ensured.runtimeConfig.cwd ?? cwd;
-      }
-      commandThreadId = currentThreadId;
-      lifecycle = createCodexCommandLifecycle(currentThreadId);
-      beginCodexSlashCommand(currentThreadId, command, lifecycle);
-      await executeCodexSlashCommand(currentThreadId, command, cwd, lifecycle);
-      await useAgentSessionStore.getState().loadMessages('codex', currentThreadId);
-    } catch (error) {
-      if (lifecycle && commandThreadId) {
-        finishCodexSlashCommand(
-          commandThreadId,
-          command,
-          lifecycle,
-          'error',
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-      logger.error('Failed to execute Codex slash command', { error });
-      toast.error(error instanceof Error ? error.message : String(error));
-    } finally {
-      if (!destroyedRef.current) composerControllerRef.current?.focus();
-    }
+  const composerRuntimeState = useCallback(() => {
+    const id = threadIdRef.current;
+    return getComposerRuntimeState(typeKeyRef.current,
+      id ? useAgentSessionStore.getState().threadProjections[id] : undefined,
+      submissionRef.current.isSubmitting, !destroyedRef.current && !!instanceRef.current);
   }, []);
 
   const submit = useCallback(async () => {
-    // 线程绑定是异步的; submittingRef 挡住"创建中"期间的重入。Codex
-    // Pi 的运行中消息进入 Follow-up；Codex 和 DSH 进入当前运行的队列。
-    const isSteerable = typeKeyRef.current === 'codex' || typeKeyRef.current === 'deepseek-harness' || typeKeyRef.current === 'pi';
-    if (submittingRef.current || (isLoadingRef.current && !isSteerable)) return;
-    const composerController = composerControllerRef.current;
+    const composer = composerControllerRef.current;
+    const images = composerImagesControllerRef.current;
     const currentInstance = instanceRef.current;
-    if (
-      (typeKeyRef.current === 'deepseek-harness' && hasPendingDshCommand(currentInstance?.threadId)) ||
-      (typeKeyRef.current === 'codex' && hasPendingCodexCommand(currentInstance?.threadId))
-    ) return;
-    const content = composerController?.getPrompt().trim() ?? '';
-    const imagePaths = composerImagesControllerRef.current?.readyImages.map((image) => image.path) ?? [];
-    if (!composerController || (!content && imagePaths.length === 0) || !currentInstance) return;
-
-    if (
-      typeKeyRef.current === 'deepseek-harness' &&
-      /^\/(?:goal|plan)(?:\s|$)/iu.test(content)
-    ) {
-      clearComposerAfterSlashCommand();
-      void runDshCommandFromDetail(content, imagePaths);
-      return;
-    }
-    if (typeKeyRef.current === 'codex' && /^\/(?:compact|goal|plan)(?:\s|$)/iu.test(content)) {
-      clearComposerAfterSlashCommand();
-      void runCodexSlashCommandFromDetail(content);
-      return;
-    }
-
-    submittingRef.current = true;
-    try {
-      let targetThreadId = threadIdRef.current;
-      let conversationTitle = currentInstance.title;
-      let runtimeConfig = currentInstance.runtimeConfig ?? null;
-      const isFirstMessage = !targetThreadId;
-
-      if (!targetThreadId) {
-        // 空独立对话的首条消息: 先绑定产品线程 (flowix -> createThread;
-        // 外部 CLI -> local thread id), 再冻结 workspace snapshot, 最后才 dispatch。
-        if (!runtimeHandleRef.current) {
-          runtimeHandleRef.current = createExternalAgentRuntimeHandle();
-        }
+    if (!composer || !images || !currentInstance) return;
+    const isDisposed = () => destroyedRef.current || composerControllerRef.current !== composer;
+    await submissionRef.current.submit({
+      composer, images, getRuntime: composerRuntimeState, isDisposed,
+      bind: async (snapshot): Promise<ComposerConversationBinding> => {
+        const targetThreadId = threadIdRef.current;
+        if (targetThreadId) return {
+          instanceId: currentInstance.instanceId,
+          threadId: targetThreadId,
+          typeKey: currentInstance.agentType,
+          title: currentInstance.title,
+          runtimeConfig: ensureConversationWorkspaceSnapshot(currentInstance.instanceId),
+          isFirstMessage: false,
+        };
+        runtimeHandleRef.current ??= createExternalAgentRuntimeHandle();
         const ensured = await ensureAgentConversationDetailThread({
           instanceId: currentInstance.instanceId,
           typeKey: currentInstance.agentType,
-          prompt: content || 'Analyze the attached image(s).',
+          prompt: snapshot.prompt,
           runtimeHandleId: runtimeHandleRef.current,
         });
-        targetThreadId = ensured.threadId;
-        conversationTitle = ensured.title;
-        runtimeConfig = ensured.runtimeConfig;
-      }
-
-      composerController.clear();
-      persistDetailDraft(currentInstance.instanceId, null);
-      composerController.resetHistoryNavigation();
-      composerController.clearDraft();
-      composerController.updateMultiLineState();
-      composerImagesControllerRef.current?.clearAfterSubmit();
-      await useAgentSessionStore.getState().sendMessageToThread(
-        targetThreadId,
-        content || 'Analyze the attached image(s).',
-        currentInstance.agentType,
-        {
-          instanceId: currentInstance.instanceId,
-          conversationTitle,
-          isFirstMessage,
-          runtimeConfig,
-          imagePaths,
-        },
-      );
-      // Keep desired/applied revision bookkeeping correct on follow-up turns.
-      // The send action has accepted the request at this point; runtime errors
-      // are still represented by the normal stream error event.
-      markConversationWorkspaceStarted(currentInstance.instanceId);
-    } catch (err) {
-      // 仅线程创建/绑定失败会走到这里; 输入与草稿保持原样以便重试。
-      logger.error('Failed to create conversation thread', { error: String(err) });
-      toast.error(tRef.current('agent.chat.sendFailed'));
-    } finally {
-      submittingRef.current = false;
-    }
-  }, [clearComposerAfterSlashCommand, runCodexSlashCommandFromDetail, runDshCommandFromDetail]);
+        if (!isDisposed()) threadIdRef.current = ensured.threadId;
+        return { ...ensured, instanceId: currentInstance.instanceId,
+          typeKey: currentInstance.agentType, isFirstMessage: true };
+      },
+      accept: acceptComposerSubmission,
+      clearPersistedDraft: () => {
+        draftRef.current = null;
+        persistDetailDraft(currentInstance.instanceId, null);
+      },
+      onPhaseChange: () => composer.setSendButtonState(),
+      onError: (error) => {
+        logger.error('Failed to submit Agent message', { error });
+        toast.error(error instanceof Error ? error.message : tRef.current('agent.chat.sendFailed'));
+      },
+    });
+    if (!isDisposed()) composer.focus();
+  }, [composerRuntimeState]);
   submitRef.current = submit;
 
   useEffect(() => {
@@ -562,7 +444,7 @@ function AgentConversationDetailContent({
       getLanguage: () => languageRef.current,
       t: (key, params) => tRef.current(key, params),
       isDestroyed: () => destroyedRef.current,
-      isRunning: () => isLoadingRef.current || isDshCommandRunningRef.current || isCodexCommandRunningRef.current || submittingRef.current,
+      isRunning: () => isLoadingRef.current || isDshCommandRunningRef.current || isCodexCommandRunningRef.current || submissionRef.current.isSubmitting,
       // 常用笔记卡片 → 注入 composer 输入框。
       onSelectFeaturedNote: (ref) => {
         composerControllerRef.current?.insertMemoReference(ref);
@@ -666,25 +548,8 @@ function AgentConversationDetailContent({
         inputDraftMaxChars: INPUT_DRAFT_MAX_CHARS,
         getCurrentInputDraft: () => draftRef.current ?? '',
         getUserHistoryMessages: () => getAgentThreadCardUserHistoryMessagesFromMessages(messagesRef.current),
-        getSendLabel: (wantStop, isRunning) => isStoppingRef.current
-          ? tRef.current('editor.threadCard.stopping')
-          : isRunning
-          ? tRef.current('editor.threadCard.running')
-          : tRef.current(wantStop ? 'editor.threadCard.stop' : 'editor.threadCard.send'),
-        getSendButtonWantsStop: () => {
-          // `/goal` is the one native Codex command that exposes a real stop
-          // action. It must win over the draft/steering condition below.
-          if (isCodexCommandStoppableRef.current) return true;
-          return isLoadingRef.current && !isStoppingRef.current &&
-            !isDshCommandRunningRef.current &&
-            !isCodexCommandRunningRef.current &&
-            !((typeKeyRef.current === 'codex' || typeKeyRef.current === 'deepseek-harness' || typeKeyRef.current === 'pi') &&
-              (!!composerControllerRef.current?.getPrompt().trim() || composerImagesControllerRef.current?.hasImages));
-        },
-        getSendButtonRunning: () => {
-          return isStoppingRef.current || isDshCommandRunningRef.current ||
-            (isCodexCommandRunningRef.current && !isCodexCommandStoppableRef.current);
-        },
+        getSendLabel: (label) => tRef.current(`editor.threadCard.${label}`),
+        getRuntimeState: composerRuntimeState,
         getHasAttachments: () => composerImagesController.hasImages,
         getHasPendingAttachments: () => composerImagesController.hasPending,
         agentType: typeKeyRef.current,
@@ -706,21 +571,14 @@ function AgentConversationDetailContent({
         folderGroupLabel: tRef.current("agent.files.referenceLocal"),
         noteGroupLabel: tRef.current("agent.files.projectNotes"),
         onModelSelect: () => {
-          clearComposerAfterSlashCommand();
+          clearComposerAfterSettingsCommand();
           externalSettings.openComposerModelPicker();
         },
         onPermissionSelect: () => {
-          clearComposerAfterSlashCommand();
+          clearComposerAfterSettingsCommand();
           externalSettings.openComposerPermissionPicker();
         },
-        onDirectCommand: (command) => {
-          clearComposerAfterSlashCommand();
-          if (typeKeyRef.current === 'codex') {
-            void runCodexSlashCommandFromDetail(`/${command.name}`);
-            return;
-          }
-          void runDshCommandFromDetail(`/${command.name}`);
-        },
+        onDirectCommand: () => submitRef.current(),
         submit: () => submitRef.current(),
         stop: () => {
           const id = renderThreadIdRef.current;
@@ -820,8 +678,11 @@ function AgentConversationDetailContent({
       shouldRenderMessages: true,
       isInitialHistoryLoading,
     });
-    composerControllerRef.current?.setSendButtonState();
   }, [isInitialHistoryLoading, isLoading, isCommandRunning, messages]);
+
+  useEffect(() => {
+    composerControllerRef.current?.setSendButtonState();
+  }, [isLoading, isStopping, isDshCommandRunning, isCodexCommandRunning, isCodexCommandStoppable]);
 
   useEffect(() => {
     if (!threadId || !latestCompletedRunId || isLoading || isCommandRunning) return;

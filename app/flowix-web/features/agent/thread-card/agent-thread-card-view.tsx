@@ -1,4 +1,3 @@
-import { dialogs } from "@platform/tauri/client/desktop";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import { GapCursor } from "@tiptap/pm/gapcursor";
 import { NodeSelection, TextSelection } from "@tiptap/pm/state";
@@ -32,19 +31,11 @@ import {
 } from "@features/agent/services/external-agent-runtime-service";
 import {
   ensureAgentThreadCardConversation,
-  submitAgentThreadCardConversation,
 } from "@features/agent/thread-card/agent-thread-card-submit-controller";
 import {
-  runDshCommand,
-  hasPendingDshCommand,
   listDshSkills,
 } from "@features/agent/services/dsh-command-service";
 import {
-  beginCodexSlashCommand,
-  createCodexCommandLifecycle,
-  executeCodexSlashCommand,
-  finishCodexSlashCommand,
-  hasPendingCodexCommand,
   listCodexSkills,
 } from "@features/agent/services/codex-slash-command-service";
 import {
@@ -60,6 +51,8 @@ import { NotePickerController, type MemoRef } from "@features/agent/thread-card/
 import { FullscreenLayoutController } from "@features/agent/thread-card/fullscreen/fullscreen-layout-controller";
 import {
   ComposerController,
+  ComposerSubmissionController,
+  getComposerRuntimeState,
   ComposerDraftController,
   ComposerImageController,
   ComposerAddMenuController,
@@ -75,6 +68,8 @@ import {
 import { AgentConversationSurfaceController } from "@features/agent/thread-card/surface/agent-conversation-surface-controller";
 import { getAgentConversationRuntimeCwd } from "@features/agent/conversation-presentation";
 import { selectAndOpenAgentConversation } from "@features/workspace/use-cases/agent-conversation-navigation";
+
+import { acceptComposerSubmission } from "@features/agent/services/composer-submission-service";
 
 const logger = createLogger("agent-thread-card");
 import {
@@ -183,9 +178,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
   private isCreating = false;
   private isDestroyed = false;
   private disposeBodyScrollbar: () => void = () => {};
-  // Guards late async completions (thread creation) from
-  // writing attrs after a newer submit or a document lifecycle change.
-  private submitGeneration = 0;
+  private readonly submission = new ComposerSubmissionController();
   private interestedThreadId: string | null = null;
   private hydratingInstanceId: string | null = null;
   private releaseThreadInterest: (() => void) | null = null;
@@ -562,29 +555,8 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
         inputDraftMaxChars: AGENT_THREAD_CARD_INPUT_DRAFT_MAX_CHARS,
       getCurrentInputDraft: () => this.inputDraft,
       getUserHistoryMessages: () => this.getUserHistoryMessages(),
-      getSendLabel: (wantStop, isRunning) =>
-        this.currentRuntimeView().status === "stopping"
-          ? this.t("editor.threadCard.stopping")
-          : isRunning
-          ? this.t("editor.threadCard.running")
-          : wantStop
-            ? this.t("editor.threadCard.stop")
-            : this.t("editor.threadCard.send"),
-      getSendButtonWantsStop: () => {
-        const runtime = this.currentRuntimeView();
-        // A running Codex `/goal` owns the stop button. Keep this branch ahead
-        // of the draft check so typing a follow-up prompt cannot turn the
-        // termination control back into Send.
-        if (runtime.isCodexCommandStoppable) return true;
-        return runtime.isModelRunning && runtime.status !== "stopping" &&
-          !((this.typeKey === "codex" || this.typeKey === "deepseek-harness" || this.typeKey === "pi") &&
-            (!!this.composerController?.getPrompt().trim() || this.composerImages.hasImages));
-      },
-      getSendButtonRunning: () => {
-        const runtime = this.currentRuntimeView();
-        return runtime.status === "stopping" || runtime.isDshCommandRunning ||
-          (runtime.isCodexCommandRunning && !runtime.isCodexCommandStoppable);
-      },
+      getSendLabel: (label) => this.t(`editor.threadCard.${label}`),
+      getRuntimeState: () => this.composerRuntimeState(),
       getHasAttachments: () => this.composerImages.hasImages,
       getHasPendingAttachments: () => this.composerImages.hasPending,
       agentType: this.typeKey,
@@ -606,21 +578,14 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       folderGroupLabel: this.t("agent.files.referenceLocal"),
       noteGroupLabel: this.t("agent.files.projectNotes"),
       onModelSelect: () => {
-        this.clearComposerAfterSlashCommand();
+        this.clearComposerAfterSettingsCommand();
         this.externalAgentSettings.openComposerModelPicker();
       },
       onPermissionSelect: () => {
-        this.clearComposerAfterSlashCommand();
+        this.clearComposerAfterSettingsCommand();
         this.externalAgentSettings.openComposerPermissionPicker();
       },
-      onDirectCommand: (command) => {
-        this.clearComposerAfterSlashCommand();
-        if (this.typeKey === "codex") {
-          void this.runCodexSlashCommandFromCard(`/${command.name}`);
-          return;
-        }
-        void this.runDshCommandFromCard(`/${command.name}`);
-      },
+      onDirectCommand: () => { void this.submit(); },
       submit: () => {
         void this.submit();
       },
@@ -1535,7 +1500,13 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
             adding.textContent = this.t("agent.queue.adding");
             actions.append(adding);
           }
-          if (message.deliveryMode === "follow_up") {
+          if (message.deliveryStatus === "starting") {
+            const soon = document.createElement("span");
+            soon.className = "agent-background-terminals__queue-soon";
+            soon.setAttribute("role", "status");
+            soon.textContent = this.t("agent.queue.sendingSoon");
+            actions.append(soon);
+          } else if (message.deliveryMode === "follow_up") {
             const steer = document.createElement("button");
             steer.type = "button";
             steer.className = "agent-background-terminals__queue-steer";
@@ -1664,10 +1635,9 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
     return undefined;
   }
 
-  private clearComposerAfterSlashCommand(): void {
+  private clearComposerAfterSettingsCommand(): void {
     this.composerController.clear();
     this.composerController.clearDraft();
-    this.composerImages.clearAfterSubmit();
     this.updateAttrs({ inputDraft: null });
     this.composerController.updateMultiLineState();
   }
@@ -1722,165 +1692,53 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
     });
   }
 
-  private async runDshCommandFromCard(command: string, imagePaths: string[] = []): Promise<void> {
-    if (this.isDestroyed || this.typeKey !== "deepseek-harness") return;
-    await runDshCommand({
-      command,
-      imagePaths,
-      ensureConversation: (value) => this.ensureDshCommandConversation(value),
-      onError: (message) => toast.error(message),
-      onLogError: (message, error) => logger.error(message, { error }),
-      onSaveExport: async (filename, content) => {
-        const target = await dialogs.saveFile(
-          filename,
-          [{ name: "JSON", extensions: ["json"] }],
-        );
-        if (!target) return;
-        const written = await dialogs.writeExportFile(target, content);
-        toast[written ? "success" : "error"](
-          written ? "DSH 会话已导出。" : "DSH 会话导出失败。",
-        );
-      },
-      onFocus: () => {
-        if (!this.isDestroyed) focusWithoutScroll(this.input);
-      },
-      sendFailedText: this.t("editor.threadCard.sendFailed"),
-    });
-  }
-
-  private async runCodexSlashCommandFromCard(command: string): Promise<void> {
-    let lifecycle: ReturnType<typeof createCodexCommandLifecycle> | undefined;
-    let commandThreadId: string | null = null;
-    try {
-      if (this.isDestroyed || this.typeKey !== "codex") return;
-      if (hasPendingCodexCommand(this.threadId)) return;
-      const ensured = await this.ensureCodexCommandConversation(command);
-      const cwd = ensured.runtimeConfig.workspaceSnapshot?.cwd ?? ensured.runtimeConfig.cwd;
-      commandThreadId = ensured.threadId;
-      lifecycle = createCodexCommandLifecycle(ensured.threadId);
-      beginCodexSlashCommand(ensured.threadId, command, lifecycle);
-      await executeCodexSlashCommand(ensured.threadId, command, cwd, lifecycle);
-      // The command row is a Flowix live event. Reading the provider snapshot
-      // and rendering it directly here would replace that row because Codex
-      // does not persist `/compact` or `/goal` as ordinary userMessage items.
-      // Merge through the session store so the live command overlay survives
-      // the history refresh (and is reconciled when a provider turn exists).
-      await useAgentSessionStore.getState().loadMessages("codex", ensured.threadId);
-    } catch (error) {
-      if (lifecycle && commandThreadId) {
-        finishCodexSlashCommand(
-          commandThreadId,
-          command,
-          lifecycle,
-          "error",
-          error instanceof Error ? error.message : String(error),
-        );
-      }
-      toast.error(error instanceof Error ? error.message : String(error));
-      logger.error("Failed to execute Codex slash command", { error });
-    }
+  private composerRuntimeState() {
+    const projection = this.renderThreadId
+      ? useAgentSessionStore.getState().threadProjections[this.renderThreadId]
+      : undefined;
+    return getComposerRuntimeState(this.typeKey, projection,
+      this.submission.isSubmitting, !this.isDestroyed);
   }
 
   private async submit(): Promise<void> {
-    // 落盘待写草稿 ── 提交时 input 即将被清空, 之前的 debounce 必须
-    // 立刻写入 ProseMirror attr, 否则卡片重新挂载会丢稿。
-    this.flushPendingDraft();
-    const rawPrompt = this.composerController.getPrompt().trim();
-    const imagePaths = this.composerImages.readyImages.map((image) => image.path);
-    if ((!rawPrompt && imagePaths.length === 0) || this.composerImages.hasPending) return;
-
-    // Human DSH commands are handled by the command registry. Keep them out
-    // of chat_stream so `/goal` and `/plan` retain their upstream semantics.
-    if (
-      this.typeKey === "deepseek-harness" &&
-      /^\/(?:goal|plan)(?:\s|$)/iu.test(rawPrompt)
-    ) {
-      this.clearComposerAfterSlashCommand();
-      void this.runDshCommandFromCard(rawPrompt, imagePaths);
-      return;
-    }
-    if (
-      this.typeKey === "codex" &&
-      /^\/(?:compact|goal|plan)(?:\s|$)/iu.test(rawPrompt)
-    ) {
-      if (hasPendingCodexCommand(this.threadId)) return;
-      this.clearComposerAfterSlashCommand();
-      void this.runCodexSlashCommandFromCard(rawPrompt);
-      return;
-    }
-
-    // 支持运行中排队的 agent 可继续发送；其它 agent 在 busy 时保留草稿。
-    if (
-      this.currentRuntimeView().isBusy &&
-      this.typeKey !== "codex" &&
-      this.typeKey !== "deepseek-harness" &&
-      this.typeKey !== "pi"
-    ) return;
-    if (this.typeKey === "deepseek-harness" && hasPendingDshCommand(this.threadId)) return;
-    if (this.typeKey === "codex" && hasPendingCodexCommand(this.threadId)) return;
-
-    // 提取全文档作为隐藏 LLM 上下文 ── 跳过本卡 (agentThreadCard), 避免把
-    // LLM 自己之前的回答 / 工具结果当成'笔记内容'再喂回去造成循环。
-    // 空文档 / 全部是 card 的笔记会得到空上下文。
     const documentContext = extractDocumentContext(this.view);
-    const submitGeneration = ++this.submitGeneration;
-
-    this.composerController.resetHistoryNavigation();
-    // 清空草稿是"已知终态", 不必走 debounce ── 直接 updateAttrs 同步
-    // 落 ProseMirror attr, 避免后续 reload / 跨卡片挂载时拿到旧 draft。
-    // 同时把 pending draft 清掉 (若之前有未触发的 debounce), 防止空 input
-    // 被旧 snapshot 误保护。
-    this.composerController.clearDraft();
-    this.composerController.clear();
-    this.composerImages.clearAfterSubmit();
-    this.updateAttrs({ inputDraft: null, inputImages: [] });
-    this.composerController.updateMultiLineState();
-
-    const source = getCurrentThreadCardSource();
-    try {
-      if (!this.threadId) {
-        this.isCreating = true;
-        this.renderThreadState();
-      }
-      await submitAgentThreadCardConversation({
-        prompt: rawPrompt || "Analyze the attached image(s).",
-        imagePaths,
+    const isFirstMessage = this.currentMessages().length === 0;
+    await this.submission.submit({
+      composer: this.composerController,
+      images: this.composerImages,
+      getRuntime: () => this.composerRuntimeState(),
+      isDisposed: () => this.isDestroyed,
+      bind: (snapshot) => ensureAgentThreadCardConversation({
+        prompt: snapshot.prompt,
         fallbackTitle: this.t("editor.threadCard.title"),
         typeKey: this.typeKey,
         currentThreadId: this.threadId,
         currentInstanceId: this.instanceId,
         currentTitle: this.instance?.title ?? "",
         runtimeHandleId: this.runtimeHandleId,
-        source,
-        isFirstMessage: this.currentMessages().length === 0,
-        documentContext,
+        source: getCurrentThreadCardSource(),
         buildTitle,
         onThreadBound: (binding) => {
-          if (
-            this.isDestroyed ||
-            submitGeneration !== this.submitGeneration
-          ) {
-            return;
-          }
-          // Persist the card binding only after the optimistic user message has
-          // entered the store. Otherwise the node attr update schedules history
-          // cache loading while the message list is still empty, producing a
-          // visible delay before the just-sent message appears.
-          this.updateAttrs({
+          if (!this.isDestroyed) this.updateAttrs({
             instanceId: binding.instanceId,
             threadId: binding.threadId,
             typeKey: binding.typeKey,
           });
         },
-      });
-    } catch (err) {
-      const message = errorMessage(err).trim();
-      toast.error(message || this.t("editor.threadCard.sendFailed"));
-    } finally {
-      this.isCreating = false;
-      this.renderThreadState();
-      focusWithoutScroll(this.input);
-    }
+      }),
+      accept: (bound, snapshot, kind) => acceptComposerSubmission(
+        { ...bound, isFirstMessage }, snapshot, kind, documentContext,
+      ),
+      clearPersistedDraft: () => this.updateAttrs({ inputDraft: null }),
+      onPhaseChange: () => {
+        this.isCreating = this.submission.phase === "binding" && !this.threadId;
+        this.renderThreadState();
+      },
+      onError: (error) => {
+        toast.error(errorMessage(error).trim() || this.t("editor.threadCard.sendFailed"));
+      },
+    });
+    if (!this.isDestroyed) focusWithoutScroll(this.input);
   }
 
   update(node: ProseMirrorNode): boolean {

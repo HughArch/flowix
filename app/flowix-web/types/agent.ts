@@ -80,7 +80,8 @@ export type AgentPermissionMode =
   | "danger-full-access"
   | "yolo";
 export type AgentCodexModel = "inherit" | string;
-export type AgentCodexReasoningEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max";
+export type AgentCodexReasoningEffort = "off" | "minimal" | "low" | "medium" | "high" | "xhigh" | "max" | "ultra";
+export type AgentCodexServiceTier = "auto" | "priority";
 /** DeepSeek Harness Agent preset / conversation mode. */
 export type AgentHarnessPreset = "standard" | "code" | "minimal" | "cordis";
 
@@ -93,6 +94,7 @@ export interface CodexRuntimeConfig extends AgentRuntimeConfigBase {
   model?: AgentCodexModel;
   permissionMode?: AgentPermissionMode;
   reasoningEffort?: AgentCodexReasoningEffort;
+  serviceTier?: AgentCodexServiceTier;
 }
 
 export interface DeepSeekHarnessRuntimeConfig extends CodexRuntimeConfig {
@@ -200,6 +202,8 @@ export interface RuntimeConfig {
    * 三态语义同 model / access：缺失或 null = 走全局；非空 = 锁定。
    */
   reasoningEffort?: AgentCodexReasoningEffort;
+  /** Codex service tier, sent with each App Server turn when explicitly set. */
+  serviceTier?: AgentCodexServiceTier;
   /** DeepSeek Harness Agent preset, locked per thread card. */
   deepseekHarness?: Pick<DeepSeekHarnessRuntimeConfig, "mode">;
   /** Pi coding-agent presentation mode, locked per thread card. */

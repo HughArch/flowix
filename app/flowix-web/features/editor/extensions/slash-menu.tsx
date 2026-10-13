@@ -25,6 +25,7 @@ import { isAgentTypeComingSoon } from '@/lib/agent-types';
 import { applyListType } from './list-transforms';
 import { openTableReferencePicker } from '@features/multidimensional-table/table-reference-picker';
 import { openMediaLibraryReferencePicker } from '@features/media-library/media-library-reference-picker';
+import type { TableViewType } from '@features/multidimensional-table/model';
 
 export const slashMenuPluginKey = new PluginKey('slashMenu');
 
@@ -70,6 +71,13 @@ const AGENT_THREAD_TYPE_BY_SLASH_ID: Record<AgentThreadSlashMenuItemId, AgentTyp
   'agent-thread-openclaw': 'openclaw',
   'agent-thread-opencode': 'opencode',
   'agent-thread-deepseek-harness': 'deepseek-harness',
+};
+
+const TABLE_VIEW_TYPE_BY_SLASH_ID: Partial<Record<SlashMenuItem['id'], TableViewType>> = {
+  'table-reference': 'table',
+  'table-kanban-view': 'kanban',
+  'table-calendar-view': 'calendar',
+  'table-gallery-view': 'gallery',
 };
 
 function isAgentThreadSlashMenuItemId(id: SlashMenuItem['id']): id is AgentThreadSlashMenuItemId {
@@ -507,6 +515,23 @@ async function createChildNoteReference(editor: Editor): Promise<void> {
   }
 }
 
+function getSlashReferencePickerContext(editor: Editor, blockRange: { from: number; to: number } | null) {
+  const slashMenuRect = menuContainer?.getBoundingClientRect();
+  const cursorCoords = editor.view.coordsAtPos(editor.state.selection.from);
+  const anchor = {
+    kind: 'slash' as const,
+    rect: slashMenuRect ?? {
+      left: cursorCoords.left,
+      top: cursorCoords.bottom + 6,
+      bottom: cursorCoords.bottom + 6,
+    },
+  };
+  const replaceRange = isBlockStartTrigger(editor)
+    ? blockRange ?? undefined
+    : prepareSlashBlockTarget(editor);
+  return { anchor, replaceRange };
+}
+
 function handleSelect(item: SlashMenuItem): void {
   if (!activeEditor || !menuState) return;
 
@@ -536,48 +561,16 @@ function handleSelect(item: SlashMenuItem): void {
     return;
   }
 
-  if (item.id === 'media-library-reference') {
-    const slashMenuRect = menuContainer?.getBoundingClientRect();
-    const cursorCoords = editor.view.coordsAtPos(editor.state.selection.from);
-    const pickerAnchor = {
-      kind: 'slash' as const,
-      rect: slashMenuRect ?? {
-        left: cursorCoords.left,
-        top: cursorCoords.bottom + 6,
-        bottom: cursorCoords.bottom + 6,
-      },
-    };
-    const replaceRange = isBlockStartTrigger(editor)
-      ? slashBlockRange ?? undefined
-      : prepareSlashBlockTarget(editor);
+  const preferredViewType = TABLE_VIEW_TYPE_BY_SLASH_ID[item.id];
+  if (item.id === 'media-library-reference' || preferredViewType) {
+    const { anchor, replaceRange } = getSlashReferencePickerContext(editor, slashBlockRange);
     closeMenu();
-    if (replaceRange) openMediaLibraryReferencePicker(editor, replaceRange, pickerAnchor);
-    return;
-  }
-
-  if (item.id === 'table-reference' || item.id === 'table-kanban-view' || item.id === 'table-calendar-view' || item.id === 'table-gallery-view') {
-    const slashMenuRect = menuContainer?.getBoundingClientRect();
-    const cursorCoords = editor.view.coordsAtPos(editor.state.selection.from);
-    const pickerAnchor = {
-      kind: 'slash' as const,
-      rect: slashMenuRect ?? {
-        left: cursorCoords.left,
-        top: cursorCoords.bottom + 6,
-        bottom: cursorCoords.bottom + 6,
-      },
-    };
-    const replaceRange = isBlockStartTrigger(editor)
-      ? slashBlockRange ?? undefined
-      : prepareSlashBlockTarget(editor);
-    closeMenu();
-    const preferredViewType = item.id === 'table-kanban-view'
-      ? 'kanban'
-      : item.id === 'table-calendar-view'
-        ? 'calendar'
-        : item.id === 'table-gallery-view'
-          ? 'gallery'
-          : 'table';
-    if (replaceRange) openTableReferencePicker(editor, replaceRange, pickerAnchor, preferredViewType);
+    if (!replaceRange) return;
+    if (item.id === 'media-library-reference') {
+      openMediaLibraryReferencePicker(editor, replaceRange, anchor);
+    } else {
+      openTableReferencePicker(editor, replaceRange, anchor, preferredViewType);
+    }
     return;
   }
 

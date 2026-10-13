@@ -112,6 +112,7 @@ function removeMessage(set: SessionSet, threadId: string, messageId: string): vo
 function mergeServerQueue(
   serverItems: PendingSteeringMessage[],
   localItems: PendingSteeringMessage[],
+  isWorking: boolean,
 ): PendingSteeringMessage[] {
   const result = [...serverItems];
   for (const local of localItems) {
@@ -137,7 +138,7 @@ function mergeServerQueue(
           canDelete: local.canDelete,
         } : {}),
       };
-    } else if (isOperationInFlight) {
+    } else if (isOperationInFlight && !(local.deliveryStatus === "steering" && !isWorking)) {
       // Preserve optimistic submissions and steering/cleanup operations that
       // have not reached a stable server snapshot yet.
       result.push(local);
@@ -186,7 +187,7 @@ export function createFollowUpQueueSlice(set: SessionSet, get: SessionGet): Foll
         canDelete: true,
       };
     });
-    const merged = mergeServerQueue(serverItems, active);
+    const merged = mergeServerQueue(serverItems, active, isProjectionWorking(get().threadProjections[threadId]));
     set((state) => {
       const pendingSteeringMessages = { ...state.pendingSteeringMessages };
       if (merged.length) pendingSteeringMessages[threadId] = merged;
@@ -253,15 +254,18 @@ export function createFollowUpQueueSlice(set: SessionSet, get: SessionGet): Foll
       }
       if (type.key !== "codex" || !canActOnQueuedMessage(pending, "codex")) return;
 
-      await refreshCodexQueueUnlocked(threadId);
-      const current = get().pendingSteeringMessages[threadId]?.find((message) => message.id === messageId);
-      if (!current || current.deliveryMode !== "follow_up" || !current.providerQueueId ||
-        !canActOnQueuedMessage(current, "codex")) return;
+      // Lock immediately, including the queue refresh, so the UI can show
+      // pending delivery and repeated clicks cannot submit the same item.
       updateSteeringMessage(threadId, messageId, { deliveryStatus: "starting" });
+      let current = pending;
       try {
+        await refreshCodexQueueUnlocked(threadId);
+        const refreshed = get().pendingSteeringMessages[threadId]?.find((message) => message.id === messageId);
+        if (!refreshed || refreshed.deliveryMode !== "follow_up" || !refreshed.providerQueueId) return;
+        current = refreshed;
         await agentClient.deliverCodexFollowUpNow(
           threadId,
-          current.providerQueueId,
+          refreshed.providerQueueId,
           {
             content: current.content,
             llmContent: current.llmContent,
@@ -272,7 +276,17 @@ export function createFollowUpQueueSlice(set: SessionSet, get: SessionGet): Foll
           },
           current.clientUserMessageId!,
         );
-        removeMessage(set, threadId, messageId);
+        // RPC acceptance can precede actual delivery at the next tool boundary.
+        // The matching user_message event removes the row when Codex consumes it.
+        if (isProjectionWorking(get().threadProjections[threadId])) {
+          updateSteeringMessage(threadId, messageId, {
+            deliveryMode: "steer", deliveryStatus: "steering", canDelete: false,
+          });
+        } else {
+          // The run may have ended before the RPC returned, without a
+          // correlated user message. Acceptance must not leave an orphan row.
+          removeMessage(set, threadId, messageId);
+        }
       } catch (error) {
         const message = String(error);
         if (message.includes("Codex Follow-up was steered but")) {

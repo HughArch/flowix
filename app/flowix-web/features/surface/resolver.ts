@@ -1,3 +1,4 @@
+import { collectionSessionKey } from '@/lib/collection-session-key';
 import { canonicalPath } from '@/lib/path';
 import { externalFileViewKind } from '@features/editor/public/code-file';
 import type {
@@ -152,7 +153,7 @@ function resolveWorkColumnTarget(
       if (target.collectionType === 'media_library') {
         return surfaceContent({ kind: 'media-library-file', instanceKey: target.displayId, fileIdentity, notebookId: target.notebookId, notebookPath: target.notebookPath });
       }
-      return surfaceContent({ kind: 'table-file', instanceKey: target.displayId, fileIdentity,
+      return surfaceContent({ kind: 'table-file', instanceKey: collectionSessionKey({ ...target, expectedCollectionId: target.collectionId }), fileIdentity,
         props: { filePath: target.filePath, fileIdentity, notebookId: target.notebookId, notebookPath: target.notebookPath,
           expectedCollectionId: target.collectionId, initialViewId: target.viewId ?? undefined } });
     }

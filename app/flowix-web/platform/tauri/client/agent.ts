@@ -490,6 +490,8 @@ export const agent = {
   }),
   listSupportedModels: (agentType: AgentTypeKey) =>
     invoke<string[]>('agent_supported_models', { agentType }),
+  listCodexModelCatalog: () =>
+    invoke<Array<{ id: string; reasoningEfforts?: string[] }>>('codex_supported_model_catalog'),
   listClaudeThreads: () =>
     invoke<ThreadInfo[]>('claude_thread_list'),
   getClaudeThread: (threadId: string) =>

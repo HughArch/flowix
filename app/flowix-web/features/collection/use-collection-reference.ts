@@ -35,7 +35,8 @@ export function useCollectionReference(notebook: { id: string; path: string } | 
         const content = await externalDocuments.read(path, root);
         const envelope = parseCollectionDocumentV2(content);
         if (envelope.collection.id !== collectionId || envelope.collection.type !== type) throw new Error('集合身份已变化');
-        if (viewId) {
+        // A stale table reference still opens; its selection policy applies the file/first-view fallback.
+        if (viewId && type !== 'table') {
           const views = envelope.payload.views.items as Array<{ id: string }>;
           if (!views.some((view) => view.id === viewId)) throw new Error('此集合视图已不存在');
         }
@@ -49,11 +50,12 @@ export function useCollectionReference(notebook: { id: string; path: string } | 
     void refresh();
     const matches = (event: { notebookId: string; collectionId?: string }) => event.notebookId === notebook.id && (!event.collectionId || event.collectionId === collectionId);
     const stopCollection = subscribe<{ notebookId: string; collectionId: string }>('collection-changed', (event) => { if (matches(event)) void refresh(); });
-    const stopPath = subscribe<{ notebookId: string; relativePath?: string }>('flowix:path-note-changed', (event) => {
-      if (matches(event) && (!event.relativePath || /\.(table|lib)\.ya?ml$/i.test(event.relativePath))) void refresh();
+    const stopPath = subscribe<{ notebookId: string; relativePath?: string; directory?: boolean }>('flowix:path-note-changed', (event) => {
+      if (matches(event) && (event.directory || !event.relativePath || /(?:\.(table|lib)\.ya?ml|\.index\.yaml)$/i.test(event.relativePath))) void refresh();
     });
+    const stopCatalog = subscribe<{ notebookId: string }>('file-management-changed', (event) => { if (matches(event)) void refresh(); });
     const stopLocal = subscribeLocalCollectionChanges((event) => { if (matches({ notebookId: event.notebookId, collectionId: event.item.collectionId ?? undefined })) void refresh(); });
-    return () => { active = false; stopCollection(); stopPath(); stopLocal(); release?.(); };
+    return () => { active = false; stopCollection(); stopPath(); stopCatalog(); stopLocal(); release?.(); };
   }, [enabled, notebook?.id, root, collectionId, type, viewId, key]);
   return state.key === key ? state : { key, item: null, content: null, fileIdentity: undefined, error: null };
 }

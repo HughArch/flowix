@@ -2,11 +2,11 @@ import { createTableDocument, serializeTableDocument } from '@features/multidime
 import { createMediaLibrary, serializeMediaLibrary } from '@features/media-library/model';
 import { parseCollectionDocumentV2, serializeCollectionDocumentV2, type CollectionType } from './model';
 import { externalDocuments } from '@platform/tauri/client';
+import { canonicalPath } from '@/lib/path';
 
 export function createFolderCollectionContent(kind: 'notes' | 'media', folderName: string): string {
   if (kind === 'notes') {
-    const document = createTableDocument('table', folderName);
-    document.collection.placement = 'folder';
+    const document = createTableDocument('table', folderName, 'folder');
     document.dataset.source = { scope: 'containing_folder', depth: 'descendants' };
     document.dataset.filter = { all: [{ field: 'kind', op: 'eq', value: 'note' }], any: [] };
     return serializeTableDocument(document);
@@ -21,7 +21,7 @@ export function createFolderCollectionContent(kind: 'notes' | 'media', folderNam
 export async function switchFolderCollectionType(filePath: string, notebookPath: string, type: CollectionType): Promise<string> {
   const source = await externalDocuments.read(filePath, notebookPath);
   const current = parseCollectionDocumentV2(source);
-  if (current.collection.placement !== 'folder' || !filePath.endsWith('/.index.yaml')) {
+  if (current.collection.placement !== 'folder' || !canonicalPath(filePath).endsWith('/.index.yaml')) {
     throw new Error('仅文件夹集合支持切换视图类型');
   }
   if (current.collection.type === type) return current.collection.id;

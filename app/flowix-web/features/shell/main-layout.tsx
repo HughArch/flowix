@@ -1,6 +1,9 @@
 'use client';
 
+import { ColumnResizeHandle } from './components/column-resize-handle';
+
 import { createLogger } from '@/lib/logger';
+import { canonicalPath } from '@/lib/path';
 import {
   setMemoListViewPreference,
   useMemoListViewPreference,
@@ -27,7 +30,6 @@ import {
   NoteNavigationDrawer,
   useShellMemoViewModel,
   useShellDocumentListTitle,
-  startNotebookImportWithMonitoring,
   type Notebook,
 } from '@features/memo/public/shell-api';
 import { AgentConversationTitlebar } from '@features/agent/public/shell-api';
@@ -41,8 +43,6 @@ import {
   type DshDownloadProgress,
 } from '@platform/tauri/client';
 import { files } from '@platform/tauri/client/desktop';
-import { switchFolderCollectionType } from '@features/collection/folder-collection';
-import { openCollectionTarget } from '@features/workspace/use-cases/workspace-navigation';
 import { WindowsTitlebarControls } from '@shared/window-titlebar-controls';
 import { NotebookDeleteDialog } from '@features/shell/components/notebook-delete-dialog';
 import { ExternalFileDropOverlay } from '@features/shell/components/drag-overlay/external-file-drop-overlay';
@@ -64,7 +64,6 @@ import {
 import type { PluginDescriptor } from '@platform/tauri/client';
 import {
   useShellWorkspaceViewModel,
-  selectNotebook as selectNotebookInWorkspace,
   BROWSER_COLUMN_MIN_WIDTH,
   clearBrowserColumnExternalPath,
   type WorkColumnTarget,
@@ -74,8 +73,9 @@ import { CenteredLoadingSpinner } from '@shared/ui/centered-loading-spinner';
 import { MainPromptHost } from '@features/shell/components/main-prompt-host';
 import type { Editor } from '@tiptap/core';
 import { OnboardingScreen } from '@features/onboarding';
+import { finishOnboardingNotebook } from '@features/shell/use-cases/finish-onboarding';
 import { documentHistoryEntryKey } from '@features/document/public/shell-api';
-import { deleteMainExternalDocument, historyEntryFromWorkColumnTarget } from '@features/workspace/public/shell-api';
+import { clearWorkspaceTargetForDeletedFile, deleteMainExternalDocument, historyEntryFromWorkColumnTarget } from '@features/workspace/public/shell-api';
 
 const DOCUMENT_PANEL_MIN_WIDTH = BROWSER_COLUMN_MIN_WIDTH;
 const PRODUCT_INTRO_AUTO_SHOWN_KEY = 'flowix:product-intro:auto-shown';
@@ -113,6 +113,11 @@ export interface MainLayoutBusinessController {
   deleteNotebook(notebook: Notebook): void;
   editNotebook(notebook: Notebook): void;
   openPlugin(plugin: PluginDescriptor): Promise<void>;
+  switchFolderCollectionType(target: {
+    filePath: string;
+    notebookPath: string;
+    notebookId: string;
+  }, type: 'table' | 'media_library'): Promise<void>;
   selectNotebook(notebook: Notebook): void;
 }
 
@@ -120,6 +125,7 @@ export interface MainLayoutSystemController {
   dshDownload: DshDownloadProgress | null;
   dshInstallPromptOpen: boolean;
   onboardingOpen: boolean;
+  onboardingLoading: boolean;
   updater: AppUpdaterState;
   dshInstaller: DshRuntimeInstallerState;
   closeDshInstallPrompt(): void;
@@ -148,12 +154,14 @@ export function MainLayout({
     deleteNotebook: handleDeleteNotebook,
     editNotebook: handleEditNotebook,
     openPlugin: handleOpenPlugin,
+    switchFolderCollectionType: handleSwitchFolderCollectionType,
     selectNotebook: handleSelectNotebook,
   } = business;
   const {
     dshDownload,
     dshInstallPromptOpen,
     onboardingOpen,
+    onboardingLoading,
     updater,
     dshInstaller,
     closeDshInstallPrompt: handleDshPromptClose,
@@ -289,7 +297,8 @@ export function MainLayout({
     browserColumnLayoutKey,
     collapseMemoList,
     handleBrowserColumnResize,
-    handleListDividerMouseDown,
+    resizeMemoList,
+    setIsDraggingListDivider,
     handleToggleMemoList,
     handleToggleNoteNavigation,
     openNoteNavigation,
@@ -385,7 +394,16 @@ export function MainLayout({
         }
         const deleted = await files.delete(expectedFilePath, notebookPath);
         if (!deleted) throw new Error('删除多维表格失败');
-        clearBrowserColumnExternalPath(expectedFilePath);
+        try {
+          clearBrowserColumnExternalPath(expectedFilePath);
+          await clearWorkspaceTargetForDeletedFile(expectedFilePath);
+        } catch (cleanupError) {
+          logger.warn('[MainLayout] File deleted, but workspace display cleanup failed:', {
+            error: cleanupError,
+            filePath: expectedFilePath,
+          });
+          toast.error(t('document.external.deleteFileViewCleanupFailed'));
+        }
       }
     } catch (error) {
       logger.warn('[MainLayout] Failed to delete external file:', { error: error });
@@ -567,6 +585,8 @@ export function MainLayout({
   const documentTitlebarProps = {
     reserveWindowsControls: !browserColumnVisible,
     surfaceChrome: workColumnPresentation.chrome === 'media' ? 'media' as const : 'document' as const,
+    showEditorFontSwitcher: workColumnPresentation.content.status === 'surface'
+      && workColumnPresentation.content.surface.kind === 'md',
     document: {
       // An artifact is allowed to sit above an existing editable session.
       // Do not expose that underlying memo's actions in the artifact chrome;
@@ -614,16 +634,18 @@ export function MainLayout({
       onRequestDelete: handleRequestDeleteMedia,
     } : undefined,
     folderCollectionViewType: navigationState.target.kind === 'collection'
-      && navigationState.target.filePath.endsWith('/.index.yaml')
+      && canonicalPath(navigationState.target.filePath).endsWith('/.index.yaml')
       && navigationState.target.notebookId
       ? {
           current: navigationState.target.collectionType,
           onSelect: (type: 'table' | 'media_library') => {
             const target = navigationState.target;
             if (target.kind !== 'collection' || target.collectionType === type) return;
-            void switchFolderCollectionType(target.filePath, target.notebookPath, type)
-              .then((collectionId) => openCollectionTarget({ notebookId: target.notebookId, collectionId, viewId: null }, { destination: 'main-third', history: 'skip' }))
-              .catch((error) => { toast.error(error instanceof Error ? error.message : '切换视图类型失败'); });
+            void handleSwitchFolderCollectionType({
+              filePath: target.filePath,
+              notebookPath: target.notebookPath,
+              notebookId: target.notebookId,
+            }, type);
           },
         }
       : undefined,
@@ -716,8 +738,8 @@ export function MainLayout({
           </ListColumn>
           {/* List <-> Memo detail divider */}
           {!isMemoListHidden && (
-            <div className="relative z-10 h-full w-px shrink-0 cursor-col-resize bg-[var(--divider)]" onMouseDown={handleListDividerMouseDown}>
-              <div className="absolute inset-y-0 left-0 w-[11px] bg-transparent" />
+            <div className="relative z-[60] h-full w-px shrink-0 bg-[var(--divider)]">
+              <ColumnResizeHandle label="调整列表列宽度" width={memoColWidth} onResize={resizeMemoList} onDraggingChange={setIsDraggingListDivider} />
             </div>
           )}
           <div
@@ -871,6 +893,7 @@ export function MainLayout({
       <MemoListServicesHost
         notebookCreateRequest={notebookCreateRequest}
         onRefresh={triggerRefresh}
+        suppressEmptyNotebookPrompt={onboardingLoading || onboardingOpen}
       />
 
       <NotePropertiesHost />
@@ -906,17 +929,12 @@ export function MainLayout({
 
       {onboardingOpen && (
         <OnboardingScreen
-          dshInstaller={dshInstaller}
           onFinish={async (notebook, { startImport }) => {
-            await selectNotebookInWorkspace(notebook);
-            if (startImport) {
-              await startNotebookImportWithMonitoring(notebook.id, (status) => {
-                if (status.status === 'failed') {
-                  toast.error(status.message ?? '笔记本导入失败，请重试。');
-                }
-              });
-            }
-            await completeOnboarding();
+            await finishOnboardingNotebook(notebook, { startImport }, {
+              completeOnboarding,
+              failureTitle: t('notebook.setup.failed'),
+              retryLabel: t('error.retry'),
+            });
             showProductIntroAfterOnboarding();
           }}
         />

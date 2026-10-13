@@ -9,6 +9,7 @@ import { getWorkspaceAgentRepositories } from "@features/agent/public/workspace-
 import type {
   AgentCodexModel,
   AgentCodexReasoningEffort,
+  AgentCodexServiceTier,
   AgentHarnessPreset,
   AgentPermissionMode,
   AgentTypeKey,
@@ -114,6 +115,7 @@ function createPermissionModeIcon(
 type AgentModelOption = {
   id: AgentCodexModel;
   label: string;
+  reasoningEfforts?: AgentCodexReasoningEffort[];
   /** DeepSeek Harness llm-pi-ai route; absent for legacy/Codex options. */
   providerId?: string;
   providerName?: string;
@@ -220,6 +222,7 @@ export class ExternalAgentSettingsController {
   private dshDefaultProviderId: string | undefined;
   private piDefaultModel = "";
   private piDefaultProviderId: string | undefined;
+  private codexServiceTier: AgentCodexServiceTier = "auto";
   private piModelsLoadFailed = false;
   private localSupportedModelsTypeKey: AgentTypeKey | null = null;
   private localSupportedModels: AgentModelOption[] = [];
@@ -623,42 +626,57 @@ export class ExternalAgentSettingsController {
         ? agent.listSupportedModels.bind(agent)
         : async () => [];
 
-    void listSupportedModels(typeKey)
-      .then((models) => {
-        if (this.isDestroyed() || this.getTypeKey() !== typeKey) return;
-        const seen = new Set<string>();
-        this.localSupportedModelsTypeKey = typeKey;
-        this.localSupportedModels = models
-          .map((model) => model.trim())
-          .filter((model) => model.length > 0)
-          .filter((model) => {
-            if (seen.has(model)) return false;
-            seen.add(model);
-            return true;
-          })
-          .map((model) => {
-            const providerId = undefined;
-            const piModelId = model;
-            return {
-            id: piModelId,
-            // 后端拉取的 model key 同样按展示规则美化 label;
-            // 不匹配规则的 key (例如 "inherit") 原样返回。
-            label: providerId
-              ? `${providerId} · ${formatModelDisplayLabel(piModelId)}`
-              : formatModelDisplayLabel(piModelId),
-            ...(providerId ? { providerId, providerName: providerId } : {}),
-          }; });
-        this.refreshEmptySettings();
-        if (this.open && this.kind === "model") {
-          this.renderPopover();
-          this.schedulePosition();
-        }
-      })
-      .catch(() => {
-        if (this.isDestroyed() || this.getTypeKey() !== typeKey) return;
-        this.localSupportedModelsTypeKey = typeKey;
-        this.localSupportedModels = [];
-      });
+    const applySupportedModels = (
+      models: string[],
+      effortsByModel = new Map<string, AgentCodexReasoningEffort[]>(),
+    ) => {
+      if (this.isDestroyed() || this.getTypeKey() !== typeKey) return;
+      const seen = new Set<string>();
+      this.localSupportedModelsTypeKey = typeKey;
+      this.localSupportedModels = models
+        .map((model) => model.trim())
+        .filter((model) => model.length > 0)
+        .filter((model) => {
+          if (seen.has(model)) return false;
+          seen.add(model);
+          return true;
+        })
+        .map((model) => ({
+          id: model,
+          label: formatModelDisplayLabel(model),
+          ...(effortsByModel.has(model)
+            ? { reasoningEfforts: effortsByModel.get(model) }
+            : {}),
+        }));
+      this.refreshEmptySettings();
+      if (this.open && this.kind === "model") {
+        this.renderPopover();
+        this.schedulePosition();
+      }
+    };
+
+    if (
+      typeKey === "codex"
+      && "listCodexModelCatalog" in agent
+      && typeof agent.listCodexModelCatalog === "function"
+    ) {
+      void agent.listCodexModelCatalog()
+        .then((catalog) => {
+          const effortsByModel = new Map<string, AgentCodexReasoningEffort[]>();
+          for (const model of catalog) {
+            const efforts = model.reasoningEfforts?.filter((effort): effort is AgentCodexReasoningEffort =>
+              ["low", "medium", "high", "xhigh", "max", "ultra"].includes(effort),
+            );
+            if (efforts?.length) effortsByModel.set(model.id, efforts);
+          }
+          applySupportedModels(catalog.map((model) => model.id), effortsByModel);
+        })
+        .catch(() => applySupportedModels([]));
+    } else {
+      void listSupportedModels(typeKey)
+        .then((models) => applySupportedModels(models))
+        .catch(() => applySupportedModels([]));
+    }
   }
 
   createEmptySettings(options: { showControls?: boolean } = {}): HTMLElement {
@@ -2050,8 +2068,23 @@ export class ExternalAgentSettingsController {
       this.readRuntimeSetting("reasoning") ??
       useAgentSessionStore.getState().sessionMeta.settings.agentCodexReasoningEffort;
     return (
-      CODEX_REASONING_OPTIONS.find((option) => option.id === effort)?.label ??
+      this.getCodexReasoningOptions().find((option) => option.id === effort)?.label ??
       "Medium"
+    );
+  }
+
+  private getCodexReasoningOptions(): typeof CODEX_REASONING_OPTIONS {
+    const selectedModel = this.resolveCurrentSelection().id;
+    const model = this.getLoadedModelOptions().find((option) => option.id === selectedModel);
+    const supported = model?.reasoningEfforts;
+    const defaultEfforts = ["low", "medium", "high", "xhigh"];
+    const options = CODEX_REASONING_OPTIONS.filter((option) =>
+      supported?.length
+        ? supported.includes(option.id)
+        : defaultEfforts.includes(option.id),
+    );
+    return options.length ? options : CODEX_REASONING_OPTIONS.filter((option) =>
+      defaultEfforts.includes(option.id),
     );
   }
 
@@ -2108,8 +2141,10 @@ export class ExternalAgentSettingsController {
       const modelList = document.createElement("div");
       modelList.className = "agent-thread-card__codex-settings-model-list";
       const modelSection = document.createElement("div");
-      modelSection.className = "agent-thread-card__codex-settings-section";
+      modelSection.className =
+        "agent-thread-card__codex-settings-section agent-thread-card__codex-settings-section--model";
       modelSection.textContent = this.t("agent.model.title");
+      modelSection.append(this.createCodexSpeedToggle());
       modelList.append(modelSection);
 
       options.forEach((option) => {
@@ -2126,7 +2161,7 @@ export class ExternalAgentSettingsController {
           ),
         );
       });
-      this.popover.append(modelList, this.createCodexReasoningTabs());
+      this.popover.append(modelList, this.createCodexReasoningSlider());
       return;
     }
 
@@ -2208,41 +2243,115 @@ export class ExternalAgentSettingsController {
     this.renderReasoningOptions();
   }
 
-  private createCodexReasoningTabs(): HTMLElement {
+  private createCodexReasoningSlider(): HTMLElement {
     const footer = document.createElement("div");
     footer.className = "agent-thread-card__codex-settings-reasoning-footer";
-    footer.setAttribute("role", "tablist");
-    footer.setAttribute("aria-orientation", "horizontal");
-    footer.setAttribute("aria-label", this.t("agent.reasoningDepth.title"));
 
     const current =
       this.readRuntimeSetting("reasoning") ??
       useAgentSessionStore.getState().sessionMeta.settings.agentCodexReasoningEffort;
-    const tabOptions = CODEX_REASONING_OPTIONS.map((option) => ({
+    const reasoningOptions = this.getCodexReasoningOptions().map((option) => ({
       ...option,
       label: this.t(`agent.reasoningDepth.${option.id}` as I18nKey),
     }));
-
-    tabOptions.forEach((option) => {
-      const tab = document.createElement("button");
-      tab.type = "button";
-      tab.className = "agent-thread-card__codex-settings-reasoning-tab";
-      tab.setAttribute("role", "tab");
-      tab.setAttribute("aria-selected", option.id === current ? "true" : "false");
-      tab.tabIndex = option.id === current ? 0 : -1;
-      tab.textContent = option.label;
-      tab.addEventListener("click", (event) => {
-        event.stopPropagation();
-        this.writeRuntimeSetting("reasoning", option.id);
-        footer.querySelectorAll<HTMLElement>("[role='tab']").forEach((item) => {
-          const selected = item === tab;
-          item.setAttribute("aria-selected", selected ? "true" : "false");
-          item.tabIndex = selected ? 0 : -1;
-        });
-      });
-      footer.append(tab);
+    const currentIndex = reasoningOptions.findIndex((option) => option.id === current);
+    const mediumIndex = reasoningOptions.findIndex((option) => option.id === "medium");
+    const selectedIndex = currentIndex >= 0
+      ? currentIndex
+      : Math.max(0, mediumIndex);
+    const track = document.createElement("div");
+    track.className = "agent-thread-card__codex-settings-reasoning-track";
+    track.setAttribute("aria-hidden", "true");
+    reasoningOptions.forEach((_, index) => {
+      const tick = document.createElement("span");
+      tick.className = "agent-thread-card__codex-settings-reasoning-tick";
+      const fraction = reasoningOptions.length > 1 ? index / (reasoningOptions.length - 1) : 0;
+      const percent = fraction * 100;
+      const offset = 12 - fraction * 24;
+      tick.style.left = `calc(${percent}% + ${offset}px)`;
+      track.append(tick);
     });
+
+    const slider = document.createElement("input");
+    slider.type = "range";
+    slider.className = "agent-thread-card__codex-settings-reasoning-slider";
+    slider.min = "0";
+    slider.max = String(reasoningOptions.length - 1);
+    slider.step = "1";
+    slider.value = String(selectedIndex);
+    slider.setAttribute("aria-label", this.t("agent.reasoningDepth.title"));
+    const syncSlider = () => {
+      const index = Number(slider.value);
+      const option = reasoningOptions[index] ?? reasoningOptions[0];
+      const progress = reasoningOptions.length > 1
+        ? (index / (reasoningOptions.length - 1)) * 100
+        : 100;
+      footer.style.setProperty("--reasoning-progress", `${progress}%`);
+      slider.setAttribute("aria-valuetext", option.label);
+      slider.title = option.label;
+    };
+    syncSlider();
+    slider.addEventListener("input", (event) => {
+      event.stopPropagation();
+      const option = reasoningOptions[Number(slider.value)];
+      if (!option) return;
+      syncSlider();
+      this.writeRuntimeSetting("reasoning", option.id);
+    });
+    footer.append(track, slider);
     return footer;
+  }
+
+  private createCodexSpeedToggle(): HTMLButtonElement {
+    const button = document.createElement("button");
+    button.type = "button";
+    button.className = "agent-thread-card__codex-speed-toggle";
+    const instanceId = this.getInstanceId();
+    const instanceServiceTier = instanceId
+      ? useAgentSessionStore.getState().getInstance(instanceId)?.runtimeConfig?.serviceTier
+      : undefined;
+    this.codexServiceTier = instanceServiceTier
+      ?? useAgentAccessStore.getState().config.defaults?.runtime?.codex?.serviceTier
+      ?? "auto";
+
+    const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
+    icon.setAttribute("viewBox", "0 0 12 12");
+    icon.setAttribute("aria-hidden", "true");
+    icon.setAttribute("focusable", "false");
+    icon.classList.add("agent-thread-card__codex-speed-icon");
+    const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
+    path.setAttribute("d", "M3 3l6 6M9 3L3 9");
+    icon.append(path);
+
+    const value = document.createElement("span");
+    value.className = "agent-thread-card__codex-speed-value";
+    const updateValue = () => {
+      const multiplier = this.codexServiceTier === "priority" ? 1.5 : 1;
+      value.textContent = String(multiplier);
+      const accessibleValue = `${this.t("agent.speed.title")} ×${multiplier}`;
+      button.setAttribute("aria-label", accessibleValue);
+      button.setAttribute("aria-pressed", this.codexServiceTier === "priority" ? "true" : "false");
+      button.dataset.serviceTier = this.codexServiceTier;
+      button.title = accessibleValue;
+    };
+    updateValue();
+
+    button.append(icon, value);
+    button.addEventListener("click", (event) => {
+      event.stopPropagation();
+      this.codexServiceTier = this.codexServiceTier === "auto" ? "priority" : "auto";
+      const instanceId = this.getInstanceId();
+      if (instanceId) {
+        useAgentSessionStore.getState().setRuntimeConfig(instanceId, {
+          serviceTier: this.codexServiceTier,
+        });
+      }
+      void useAgentAccessStore.getState().setDefaultRuntime("codex", {
+        serviceTier: this.codexServiceTier,
+      });
+      updateValue();
+    });
+    return button;
   }
 
   private createModelSettingsItem(
@@ -2271,7 +2380,14 @@ export class ExternalAgentSettingsController {
       useAgentSessionStore.getState().sessionMeta.settings.agentCodexReasoningEffort;
     const reasoningOptions = this.getTypeKey() === "pi"
       ? PI_THINKING_OPTIONS
-      : CODEX_REASONING_OPTIONS;
+      : this.getTypeKey() === "codex"
+        ? this.getCodexReasoningOptions().map((option) => ({
+            ...option,
+            label: this.t(`agent.reasoningDepth.${option.id}` as I18nKey),
+          }))
+        : CODEX_REASONING_OPTIONS.filter((option) =>
+            ["low", "medium", "high", "xhigh"].includes(option.id),
+          );
     reasoningOptions.forEach((option) => {
       this.popover.append(
         createCodexSettingsItem(option.label, option.id === current, () => {

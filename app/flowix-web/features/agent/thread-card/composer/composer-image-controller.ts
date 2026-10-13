@@ -69,6 +69,7 @@ export class ComposerImageController {
   private readonly previews = new Map<string, string>();
   private pending = 0;
   private disposed = false;
+  private locked = false;
 
   constructor(private readonly options: ComposerImageControllerOptions) {
     this.images = options.initialImages.slice(0, MAX_COMPOSER_IMAGE_COUNT);
@@ -93,6 +94,7 @@ export class ComposerImageController {
 
   /** Add picker-selected attachments through the same cache path as pasted images. */
   addFiles(files: File[]): void {
+    if (this.locked || this.disposed) return;
     const eligibleFiles = files.filter((file) => {
       if (!isSupportedAttachment(file)) return false;
       if (file.size <= MAX_COMPOSER_IMAGE_BYTES) return true;
@@ -117,6 +119,13 @@ export class ComposerImageController {
     this.options.onChange([]);
     this.render();
     this.options.onStateChange();
+  }
+
+  /** Keep in-flight request files available until the request is accepted. */
+  setLocked(locked: boolean): void {
+    if (this.disposed || this.locked === locked) return;
+    this.locked = locked;
+    this.render();
   }
 
   dispose(): void {
@@ -166,6 +175,7 @@ export class ComposerImageController {
     image: AgentThreadCardInputImage,
     deleteCachedFile: boolean = true,
   ): void {
+    if (this.locked && deleteCachedFile) return;
     this.images = this.images.filter((candidate) => candidate.path !== image.path);
     this.previews.delete(image.path);
     this.options.onChange(this.readyImages);
@@ -211,6 +221,7 @@ export class ComposerImageController {
 
       const remove = document.createElement("button");
       remove.type = "button";
+      remove.disabled = this.locked;
       remove.className = "agent-thread-card__composer-image-remove";
       remove.setAttribute("aria-label", "Remove image");
       remove.textContent = "×";

@@ -9,7 +9,7 @@ import {
   type NoteColor,
   type NoteListItem,
 } from '@/types/note-item';
-import { cn } from '@/lib/utils';
+import { cn, displayTitleFromFilename } from '@/lib/utils';
 import { getAgentType } from '@/lib/agent-types';
 import type { AgentTypeKey } from '@/types/agent';
 import { useI18n } from '@/lib/i18n';
@@ -60,7 +60,7 @@ interface MemoCardBodyProps {
   thumbnail: string | null;
   thumbnailFailed: boolean;
   onThumbnailFailed: () => void;
-  emptyPreviewLabel: string;
+  description: string;
 }
 
 interface MemoCardShellProps {
@@ -304,7 +304,7 @@ function DetailedMemoCardBody({
   thumbnail,
   thumbnailFailed,
   onThumbnailFailed,
-  emptyPreviewLabel,
+  description,
 }: MemoCardBodyProps) {
   const folderDisplayPath = memoFolderDisplayPath(memo);
 
@@ -337,27 +337,18 @@ function DetailedMemoCardBody({
             />
           </div>
         ) : null}
-        <p className="line-clamp-2 text-sm">
-          {folderDisplayPath && (
-            <>
-              {folderDisplayPath.map((segment, index) => (
-                <span key={`${index}-${segment}`} className="text-[var(--muted-foreground)]">
-                  {index > 0 && (
-                    <ChevronRight
-                      aria-hidden="true"
-                      className="mx-0.5 inline-block h-3 w-3 align-[-2px] opacity-70"
-                    />
-                  )}
-                  {segment}
-                </span>
-              ))}
-              {' '}
-            </>
-          )}
-          <span className="text-[var(--foreground)] opacity-50">
-            {memo.preview || emptyPreviewLabel}
-          </span>
-        </p>
+        {description && <p className="line-clamp-2 text-sm">
+          {folderDisplayPath && <>
+            {folderDisplayPath.map((segment, index) => (
+              <span key={`${index}-${segment}`} className="text-[var(--muted-foreground)]">
+                {index > 0 && <ChevronRight aria-hidden="true" className="mx-0.5 inline-block h-3 w-3 align-[-2px] opacity-70" />}
+                {segment}
+              </span>
+            ))}
+            {' '}
+          </>}
+          <span className="text-[var(--foreground)] opacity-50">{description}</span>
+        </p>}
       </div>
       <div className="flex w-full items-center justify-between gap-2 pt-2">
         <div className="flex shrink-0 items-center gap-1">
@@ -424,7 +415,10 @@ export function MemoCardImpl({
   const hasAgents = (memo.agents?.length ?? 0) > 0;
   const hasTodos = (memo.todos?.length ?? 0) > 0;
   const timeLabel = formatTimeAgo(memo.updatedAt || memo.createdAt, t);
-  const title = memo.title || t('memo.untitled');
+  const propertyTitle = typeof memo.properties.name === 'string' ? memo.properties.name.trim() : '';
+  const title = propertyTitle || displayTitleFromFilename(memo.filename || memo.relativePath).trim() || t('memo.untitled');
+  const propertyDescription = typeof memo.properties.description === 'string' ? memo.properties.description.trim() : '';
+  const description = propertyDescription || memo.preview.trim();
   const bodyProps: MemoCardBodyProps = {
     memo,
     tagMap,
@@ -436,7 +430,7 @@ export function MemoCardImpl({
     thumbnail,
     thumbnailFailed,
     onThumbnailFailed: () => setThumbnailFailed(true),
-    emptyPreviewLabel: t('memo.empty.preview'),
+    description,
   };
 
   useEffect(() => {

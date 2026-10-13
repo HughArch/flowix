@@ -1,128 +1,45 @@
 import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
-import { createRoot, type Root } from 'react-dom/client';
 import type { Editor } from '@tiptap/core';
 import { Plus, Table2 } from 'lucide-react';
 import { files, externalDocuments } from '@platform/tauri/client';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { joinNotebookMemoPath } from '@/lib/path';
-import { Input } from '@shared/ui/input';
 import { toast } from '@/lib/toast';
 import { createTableDocumentFile } from './create-table-file';
 import { parseTableDocumentAsync } from './parse-table-document';
-import { type TableViewType } from './model';
+import { addCalendarDateView, addKanbanView, addTableView, serializeTableDocument, type TableViewType } from './model';
+import {
+  closeCollectionReferencePicker,
+  collectionCandidateFolderLabel,
+  filterCollectionCandidates,
+  isCollectionReferencePickerCurrent,
+  openCollectionReferencePicker,
+  useCollectionPickerListNavigation,
+  type CollectionReferenceCandidate,
+  type CollectionReferenceInsertRange,
+  type CollectionReferencePickerAnchor,
+} from '@features/collection/reference-picker';
 
-interface InsertRange {
-  from: number;
-  to: number;
-}
-
-interface TableCandidate {
-  notebookId: string;
-  notebookName: string;
-  notebookPath: string;
-  relativePath: string;
-  collectionId: string;
-  name: string;
-}
-
-export type TableReferencePickerAnchor =
-  | { kind: 'slash'; rect: Pick<DOMRect, 'left' | 'top' | 'bottom'> }
-  | { kind: 'button'; element: HTMLElement };
-
-let pickerRoot: Root | null = null;
-let pickerHost: HTMLDivElement | null = null;
-let pickerGeneration = 0;
-const PICKER_WIDTH = 272;
-const VIEWPORT_PADDING = 8;
-
-function isCurrentPicker(generation: number): boolean {
-  return pickerGeneration === generation && pickerRoot !== null;
-}
-
-function closePicker(generation?: number) {
-  if (generation !== undefined && generation !== pickerGeneration) return;
-  pickerGeneration += 1;
-  const root = pickerRoot;
-  const host = pickerHost;
-  pickerRoot = null;
-  pickerHost = null;
-  if (!root || !host) return;
-  root.unmount();
-  host.remove();
-}
-
-function updatePickerPosition(editor: Editor, position: number, anchor: TableReferencePickerAnchor) {
-  const host = pickerHost;
-  if (!host || editor.isDestroyed) return;
-  try {
-    const coords = editor.view.coordsAtPos(position);
-    const anchorRect = anchor.kind === 'button' && anchor.element.isConnected
-      ? anchor.element.getBoundingClientRect()
-      : anchor.kind === 'slash'
-        ? anchor.rect
-        : coords;
-    const width = Math.min(PICKER_WIDTH, window.innerWidth - VIEWPORT_PADDING * 2);
-    host.style.width = `${width}px`;
-    host.style.maxHeight = `${Math.min(320, Math.max(160, window.innerHeight - VIEWPORT_PADDING * 2))}px`;
-    const menuHeight = Math.min(host.offsetHeight || 320, window.innerHeight - VIEWPORT_PADDING * 2);
-    const requestedTop = anchor.kind === 'button' ? anchorRect.bottom : anchorRect.top;
-    const top = Math.min(
-      Math.max(requestedTop, VIEWPORT_PADDING),
-      Math.max(VIEWPORT_PADDING, window.innerHeight - menuHeight - VIEWPORT_PADDING),
-    );
-    const left = Math.min(
-      Math.max(anchorRect.left, VIEWPORT_PADDING),
-      Math.max(VIEWPORT_PADDING, window.innerWidth - width - VIEWPORT_PADDING),
-    );
-    host.style.top = `${top}px`;
-    host.style.left = `${left}px`;
-  } catch {
-    closePicker();
-  }
-}
-
-function TableReferencePicker({ editor, replaceRange, anchor, generation, preferredViewType, onClose }: {
+function TableReferencePicker({ editor, replaceRange, generation, preferredViewType }: {
   editor: Editor;
-  replaceRange: InsertRange;
-  anchor: TableReferencePickerAnchor;
+  replaceRange: CollectionReferenceInsertRange;
   generation: number;
   preferredViewType?: TableViewType;
-  onClose: () => void;
 }) {
   const notebookItems = useNoteStore((state) => state.notebooks);
   const selectedNotebook = useNoteStore((state) => state.selectedNotebook);
   const notebooks = useMemo(() => notebookItems.filter((notebook) => !notebook.missing), [notebookItems]);
-  const [candidates, setCandidates] = useState<TableCandidate[]>([]);
+  const [candidates, setCandidates] = useState<CollectionReferenceCandidate[]>([]);
   const [loading, setLoading] = useState(true);
   const [query, setQuery] = useState('');
   const [openingPath, setOpeningPath] = useState<string | null>(null);
   const [creatingTable, setCreatingTable] = useState(false);
   const [loadError, setLoadError] = useState<string | null>(null);
-  const searchRef = useRef<HTMLInputElement | null>(null);
+  const searchRef = useRef<HTMLTextAreaElement | null>(null);
 
   useEffect(() => {
     searchRef.current?.focus();
-    const handleOutsidePointer = (event: MouseEvent) => {
-      if (event.target instanceof Node && !pickerHost?.contains(event.target)) onClose();
-    };
-    const handleKeyDown = (event: KeyboardEvent) => {
-      if (event.key === 'Escape') {
-        event.preventDefault();
-        onClose();
-      }
-    };
-    const reposition = () => updatePickerPosition(editor, replaceRange.from, anchor);
-    document.addEventListener('mousedown', handleOutsidePointer, true);
-    document.addEventListener('keydown', handleKeyDown, true);
-    window.addEventListener('resize', reposition);
-    window.addEventListener('scroll', reposition, true);
-    return () => {
-      document.removeEventListener('mousedown', handleOutsidePointer, true);
-      document.removeEventListener('keydown', handleKeyDown, true);
-      window.removeEventListener('resize', reposition);
-      window.removeEventListener('scroll', reposition, true);
-    };
-  }, [anchor, editor, onClose, replaceRange.from]);
+  }, []);
 
   useEffect(() => {
     let active = true;
@@ -167,22 +84,20 @@ function TableReferencePicker({ editor, replaceRange, anchor, generation, prefer
     return () => { active = false; };
   }, [notebooks]);
 
-  const filteredCandidates = useMemo(() => {
-    const normalized = query.trim().toLocaleLowerCase();
-    if (!normalized) return candidates;
-    return candidates.filter((candidate) => (
-      `${candidate.name} ${candidate.notebookName} ${candidate.relativePath}`.toLocaleLowerCase().includes(normalized)
-    ));
-  }, [candidates, query]);
+  const filteredCandidates = useMemo(() => filterCollectionCandidates(candidates, query), [candidates, query]);
+  const navigation = useCollectionPickerListNavigation(filteredCandidates.length, query);
 
   useLayoutEffect(() => {
-    updatePickerPosition(editor, replaceRange.from, anchor);
-  }, [anchor, editor, replaceRange.from, loading, loadError, filteredCandidates.length]);
+    const textarea = searchRef.current;
+    if (!textarea) return;
+    textarea.style.height = '0px';
+    textarea.style.height = `${Math.min(textarea.scrollHeight + 2, window.innerHeight * 0.5)}px`;
+  }, [query]);
 
-  const attachReference = (candidate: TableCandidate, collectionId: string, viewId: string | null) => {
-    if (!isCurrentPicker(generation)) return;
+  const attachReference = (candidate: CollectionReferenceCandidate, collectionId: string, viewId: string | null) => {
+    if (!isCollectionReferencePickerCurrent(generation)) return;
     if (editor.isDestroyed || !editor.isEditable) {
-      closePicker(generation);
+      closeCollectionReferencePicker(generation);
       if (!editor.isDestroyed) toast.error('当前笔记为只读，无法插入多维表格引用');
       return;
     }
@@ -196,27 +111,51 @@ function TableReferencePicker({ editor, replaceRange, anchor, generation, prefer
       },
     }).run();
     if (!inserted) throw new Error('无法在当前位置插入多维表格引用');
-    closePicker(generation);
+    closeCollectionReferencePicker(generation);
   };
 
-  const openCandidate = async (candidate: TableCandidate) => {
-    if (openingPath || !isCurrentPicker(generation)) return;
+  const openCandidate = async (candidate: CollectionReferenceCandidate) => {
+    if (openingPath || !isCollectionReferencePickerCurrent(generation)) return;
     setOpeningPath(candidate.relativePath);
     try {
       const filePath = joinNotebookMemoPath(candidate.notebookPath, candidate.relativePath);
       if (!filePath) throw new Error('多维表格路径无效');
       const source = await externalDocuments.read(filePath, candidate.notebookPath);
-      if (!isCurrentPicker(generation)) return;
+      if (!isCollectionReferencePickerCurrent(generation)) return;
       const document = await parseTableDocumentAsync(source);
       if (document.collection.id !== candidate.collectionId) {
         throw new Error('表格文件已更新，请重新打开选择器后选择');
       }
-      const view = document.views.items.find((entry) => entry.layout === preferredViewType)
-        ?? document.views.items[0];
+      let targetDocument = document;
+      let view = preferredViewType
+        ? targetDocument.views.items.find((entry) => entry.layout === preferredViewType)
+        : targetDocument.views.items.find((entry) => entry.id === targetDocument.views.default_id) ?? targetDocument.views.items[0];
+      if (preferredViewType && !view) {
+        if (preferredViewType === 'kanban') {
+          const addedView = addKanbanView(targetDocument);
+          targetDocument = addedView.document;
+          view = addedView.view;
+        } else if (preferredViewType === 'calendar') {
+          const addedView = addCalendarDateView(targetDocument);
+          targetDocument = addedView.document;
+          view = addedView.view;
+        } else {
+          const addedView = addTableView(targetDocument, preferredViewType);
+          targetDocument = addedView.document;
+          view = addedView.view;
+        }
+        const result = await externalDocuments.write({
+          filePath,
+          content: serializeTableDocument(targetDocument),
+          expectedContent: source,
+          scopePath: candidate.notebookPath,
+        });
+        if (result.status !== 'saved') throw new Error(result.status === 'conflict' ? '多维表格已被其他操作修改，请重新选择' : '多维表格文件已不存在');
+      }
       if (!view) throw new Error('多维表格没有可用视图');
       attachReference(candidate, document.collection.id, view.id);
     } catch (error) {
-      if (!isCurrentPicker(generation)) return;
+      if (!isCollectionReferencePickerCurrent(generation)) return;
       toast.error(error instanceof Error ? error.message : '读取多维表格失败');
       setOpeningPath(null);
     }
@@ -224,13 +163,13 @@ function TableReferencePicker({ editor, replaceRange, anchor, generation, prefer
 
   const createTable = async () => {
     const name = query.trim();
-    if (!name || creatingTable || !isCurrentPicker(generation)) return;
+    if (!name || creatingTable || !isCollectionReferencePickerCurrent(generation)) return;
     if (!selectedNotebook || selectedNotebook.missing) {
       toast.error('请先选择可用的笔记本');
       return;
     }
     if (editor.isDestroyed || !editor.isEditable) {
-      closePicker(generation);
+      closeCollectionReferencePicker(generation);
       if (!editor.isDestroyed) toast.error('当前笔记为只读，无法插入多维表格引用');
       return;
     }
@@ -244,7 +183,7 @@ function TableReferencePicker({ editor, replaceRange, anchor, generation, prefer
         name,
         preferredViewType ?? 'table',
       );
-      if (!isCurrentPicker(generation)) return;
+      if (!isCollectionReferencePickerCurrent(generation)) return;
       attachReference({
         notebookId: selectedNotebook.id,
         notebookName: selectedNotebook.name,
@@ -254,28 +193,35 @@ function TableReferencePicker({ editor, replaceRange, anchor, generation, prefer
         name: created.name,
       }, created.table.collection.id, created.table.views.items[0]?.id ?? null);
     } catch (error) {
-      if (!isCurrentPicker(generation)) return;
+      if (!isCollectionReferencePickerCurrent(generation)) return;
       toast.error(error instanceof Error ? error.message : '创建多维表格失败');
       setCreatingTable(false);
     }
   };
 
-  const viewTypeLabel = preferredViewType === 'kanban' ? '看板' : preferredViewType === 'calendar' ? '日历' : preferredViewType === 'gallery' ? '画廊列表' : '数据表';
+  const viewTypeLabel = preferredViewType === 'kanban' ? '看板' : preferredViewType === 'calendar' ? '日历' : preferredViewType === 'gallery' ? '画廊' : '表格';
 
-  return <div className="slash-menu-dropdown table-reference-picker" role="dialog" aria-label="选择或新建多维表格">
-    <label className="table-reference-picker__search">
-      <Input
+  return <div className={`slash-menu-dropdown table-reference-picker${navigation.keyboardNavigation ? ' is-keyboard-navigation' : ''}`} role="dialog" aria-label="选择或新建多维表格">
+    <div className="table-reference-picker__search flex shrink-0 items-start gap-1">
+      <textarea
         ref={searchRef}
+        rows={1}
         value={query}
-        onChange={(event) => setQuery(event.currentTarget.value)}
+        onChange={(event) => {
+          setQuery(event.currentTarget.value);
+        }}
         onKeyDown={(event) => {
-          if (event.key === 'Enter' && !event.nativeEvent.isComposing) {
+          navigation.onInputKeyDown(event);
+          if (event.key === 'Enter' && !event.nativeEvent.isComposing && !event.shiftKey) {
             event.preventDefault();
-            if (preferredViewType !== 'kanban') void createTable();
+            const candidate = filteredCandidates[navigation.activeIndex];
+            if (candidate) {
+              void openCandidate(candidate);
+            } else void createTable();
           }
         }}
-        placeholder="输入名称新建 或 下方选择"
-        className="h-7 min-w-0 flex-1 border-0 bg-transparent px-2 text-sm shadow-none focus-visible:border-0 focus-visible:ring-0"
+        placeholder="输入名称搜索 或 新建"
+        className="min-h-8 max-h-[50vh] min-w-0 flex-1 shrink-0 resize-none overflow-y-auto border-0 bg-transparent px-2 py-2 text-sm leading-5 shadow-none focus-visible:border-0 focus-visible:ring-0"
       />
       {query.trim() && <button
         type="button"
@@ -284,30 +230,31 @@ function TableReferencePicker({ editor, replaceRange, anchor, generation, prefer
         disabled={creatingTable}
         onMouseDown={(event) => event.preventDefault()}
         onClick={() => void createTable()}
-        className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-50"
+        className="flex h-8 w-10 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-50"
       ><Plus className="h-4 w-4" aria-hidden="true" /></button>}
-    </label>
+    </div>
     {preferredViewType === 'kanban' && query.trim() && <div className="px-2 pb-1 text-xs text-[var(--muted-foreground)]">点击 + 创建表格时，会同时新增共享的“状态”单选属性。</div>}
     <div className="slash-menu-items-frame">
       <div className="slash-menu-items" role="listbox" aria-label="多维表格列表">
+        <div className="slash-menu-header" role="presentation"><span>选择已创建集合插入</span></div>
         {loading ? <div className="slash-menu-empty">正在读取多维表格…</div>
           : loadError ? <div className="slash-menu-empty text-[var(--destructive)]">{loadError}</div>
             : filteredCandidates.length === 0 ? <div className="slash-menu-empty">{candidates.length ? '没有匹配的多维表格' : '当前没有多维表格'}</div>
-              : filteredCandidates.map((candidate) => <button
+              : filteredCandidates.map((candidate, index) => <button
                 key={`${candidate.notebookId}:${candidate.relativePath}`}
+                ref={(element) => { navigation.optionRefs.current[index] = element; }}
                 type="button"
                 role="option"
-                aria-selected="false"
+                aria-selected={navigation.isSelected(index)}
+                className={`slash-menu-item disabled:opacity-50${navigation.isSelected(index) ? ' is-selected' : ''}`}
                 disabled={openingPath !== null || creatingTable}
+                onMouseMove={() => navigation.onOptionMouseMove(index)}
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => void openCandidate(candidate)}
-                className="slash-menu-item disabled:opacity-50"
               >
                 <Table2 className="h-4 w-4 shrink-0" aria-hidden="true" />
-                <span className="slash-menu-item-label min-w-0 flex-1">
-                  <span className="block truncate">{candidate.name}</span>
-                  <span className="block truncate text-xs text-[var(--muted-foreground)]">{candidate.notebookName} / {candidate.relativePath.split('/').pop()}</span>
-                </span>
+                <span className="slash-menu-item-label min-w-0 flex-1">{candidate.name}</span>
+                <span className="slash-menu-item-description max-w-[42%]">{collectionCandidateFolderLabel(candidate)}</span>
                 {openingPath === candidate.relativePath && <span className="text-xs text-[var(--muted-foreground)]">读取中</span>}
               </button>)}
       </div>
@@ -315,23 +262,11 @@ function TableReferencePicker({ editor, replaceRange, anchor, generation, prefer
   </div>;
 }
 
-export function openTableReferencePicker(editor: Editor, replaceRange: InsertRange, anchor: TableReferencePickerAnchor, preferredViewType?: TableViewType) {
-  closePicker();
-  const generation = pickerGeneration;
-  pickerHost = document.createElement('div');
-  pickerHost.dataset.tableReferencePicker = 'true';
-  pickerHost.style.position = 'fixed';
-  pickerHost.style.zIndex = '2147483647';
-  pickerHost.style.width = `${PICKER_WIDTH}px`;
-  document.body.appendChild(pickerHost);
-  pickerRoot = createRoot(pickerHost);
-  pickerRoot.render(<TableReferencePicker
+export function openTableReferencePicker(editor: Editor, replaceRange: CollectionReferenceInsertRange, anchor: CollectionReferencePickerAnchor, preferredViewType?: TableViewType) {
+  openCollectionReferencePicker(editor, replaceRange, anchor, 'table', (generation) => <TableReferencePicker
     editor={editor}
     replaceRange={replaceRange}
-    anchor={anchor}
     generation={generation}
     preferredViewType={preferredViewType}
-    onClose={() => closePicker(generation)}
   />);
-  requestAnimationFrame(() => updatePickerPosition(editor, replaceRange.from, anchor));
 }

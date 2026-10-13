@@ -9,6 +9,7 @@ export interface MediaLibraryFileCondition {
   file_name_contains?: string;
   file_type?: MediaLibraryKind;
   path_contains?: string;
+  path_scope?: 'all';
 }
 
 export interface MediaLibraryRecord {
@@ -24,6 +25,7 @@ export function normalizeMediaLibraryFileCondition(condition?: MediaLibraryFileC
     file_name_contains: condition?.file_name_contains?.trim() ?? '',
     file_type: condition?.file_type ?? '',
     path_contains: condition?.path_contains?.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') ?? '',
+    path_scope: condition?.path_scope === 'all' ? 'all' : '',
   };
   return Object.fromEntries(Object.entries(normalized).filter(([, value]) => value)) as MediaLibraryFileCondition;
 }
@@ -32,7 +34,8 @@ export function mediaCollectionFilterFromCondition(condition?: MediaLibraryFileC
   const normalized = normalizeMediaLibraryFileCondition(condition);
   const all: Record<string, unknown>[] = [];
   if (normalized.file_name_contains) all.push({ field: 'file_name', op: 'contains', value: normalized.file_name_contains });
-  if (normalized.path_contains) all.push({ field: 'path', op: 'contains', value: normalized.path_contains });
+  if (normalized.path_scope === 'all') all.push({ field: 'path', op: 'contains', value: '' });
+  else if (normalized.path_contains) all.push({ field: 'path', op: 'contains', value: normalized.path_contains });
   if (normalized.file_type) all.push({ field: 'kind', op: 'eq', value: normalized.file_type });
   return { all, any: [] };
 }
@@ -50,6 +53,7 @@ export function matchesMediaCollectionFilter(relativePath: string, kind: MediaLi
     if (rule.op !== 'contains' || typeof rule.value !== 'string') return false;
     const expected = rule.value.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLocaleLowerCase();
     const value = actual.toLocaleLowerCase();
+    if (rule.field === 'path' && expected === '') return true;
     return rule.field === 'path' ? value === expected || value.startsWith(`${expected}/`) : value.includes(expected);
   });
 }
@@ -86,7 +90,10 @@ export function mediaLibraryFileCondition(document: MediaLibraryDocument): Media
   for (const entry of filter.all) {
     if (!entry || typeof entry !== 'object' || Array.isArray(entry)) continue;
     if (entry.field === 'file_name' && entry.op === 'contains' && typeof entry.value === 'string') condition.file_name_contains = entry.value;
-    if (entry.field === 'path' && entry.op === 'contains' && typeof entry.value === 'string') condition.path_contains = entry.value;
+    if (entry.field === 'path' && entry.op === 'contains' && typeof entry.value === 'string') {
+      if (entry.value === '') condition.path_scope = 'all';
+      else condition.path_contains = entry.value;
+    }
     if (entry.field === 'kind' && entry.op === 'eq' && (entry.value === 'image' || entry.value === 'video')) condition.file_type = entry.value;
   }
   return condition;

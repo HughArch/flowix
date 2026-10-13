@@ -16,12 +16,14 @@
 
 import type { Icon } from '@phosphor-icons/react';
 import {
+  CalendarDotsIcon,
   PaletteIcon,
   PushPinIcon,
   SmileyIcon,
   TagIcon,
   TextAlignLeftIcon,
   TextTIcon,
+  CheckSquareIcon,
 } from '@phosphor-icons/react';
 import type { I18nKey } from '@/lib/i18n';
 import type { PropertyFieldConfig } from '@/lib/constants';
@@ -44,6 +46,7 @@ export type PropertyCategory =
   | 'color'
   | 'icon'
   | 'favorite'
+  | 'date'
   | 'custom';
 
 export type PropertyPresetSource = 'builtin' | 'custom';
@@ -125,6 +128,23 @@ export const BUILTIN_PRESETS: readonly BuiltinPropertyPreset[] = [
     labelKey: 'document.action.pin',
     kind: 'Boolean',
     icon: PushPinIcon,
+  },
+  {
+    source: 'builtin',
+    category: 'name',
+    key: 'status',
+    labelKey: 'document.properties.commonKey.status',
+    kind: 'Select',
+    options: ['未开始', '进行中', '完成'],
+    icon: CheckSquareIcon,
+  },
+  {
+    source: 'builtin',
+    category: 'date',
+    key: 'calendar_date',
+    labelKey: 'document.properties.commonKey.calendarDate',
+    kind: 'Date',
+    icon: CalendarDotsIcon,
   },
 ];
 

@@ -1229,7 +1229,7 @@ pub fn move_memo_to_directory(
     };
     {
         let memo_file = read_lock(&state.memo_file, "memo_file");
-        crate::commands::document_list::rebase_table_note_paths(
+        crate::commands::document_list::rebase_collection_paths(
             &memo_file,
             &notebook_id,
             &old_relative,
@@ -1352,7 +1352,7 @@ fn rename_memo_title_blocking(
     };
     {
         let memo_file = read_lock(&state.memo_file, "memo_file");
-        crate::commands::document_list::rebase_table_note_paths(
+        crate::commands::document_list::rebase_collection_paths(
             &memo_file,
             &renamed.notebook.id,
             &old_relative,
