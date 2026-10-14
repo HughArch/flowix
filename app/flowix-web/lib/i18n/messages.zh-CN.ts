@@ -1473,7 +1473,7 @@ const zhCN = {
     "document.font.label": "字体",
     "document.font.standard": "标准",
     "document.font.serif": "衬线",
-    "document.font.wenkai": "雾霞",
+    "document.font.wenkai": "霞鹜",
     "document.external.changeWarning": "文档已被外部修改",
     "document.cloud.updateAvailable": "云端有更新版本，已保留你的本地编辑",
     "document.external.saveToMemoFailed": "保存到 Memo 失败",
