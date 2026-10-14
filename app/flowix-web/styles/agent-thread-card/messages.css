@@ -794,6 +794,26 @@
   overflow-wrap: anywhere;
 }
 
+.markdown-editor .agent-thread-card__message-tool-payload {
+  display: none;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.markdown-editor .agent-thread-card__message-tool-payload-label {
+  display: block;
+  padding-top: 4px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.markdown-editor
+  .agent-thread-card__message-tool-content--expanded
+  .agent-thread-card__message-tool-payload {
+  display: block;
+}
+
 .markdown-editor
   .agent-thread-card__message-tool-content--expanded
   .agent-thread-card__message-tool-input {

@@ -58,6 +58,7 @@ describe("BadgeHoverCard", () => {
     await act(async () => {
       root.render(
         createElement(BadgeHoverCard, {
+          agentType: "deepseek-harness",
           sessionId: "provider-session-1",
           model: "deepseek-chat",
           usage: {
@@ -94,6 +95,7 @@ describe("BadgeHoverCard", () => {
     await act(async () => {
       root.render(
         createElement(BadgeHoverCard, {
+          agentType: "claude",
           model: "gpt-5",
           usage: { input_tokens: 10, output_tokens: 2 },
         }),
@@ -132,7 +134,7 @@ describe("BadgeHoverCard", () => {
       root.render(
         createElement(BadgeHoverCard, {
           threadId: "codex-local-thread",
-          codex: true,
+          agentType: "codex",
           onRequestRuntimeInfo: requestRuntimeInfo,
         }),
       );
@@ -170,7 +172,7 @@ describe("BadgeHoverCard", () => {
     await act(async () => {
       root.render(
         createElement(BadgeHoverCard, {
-          codex: true,
+          agentType: "codex",
           onRequestRuntimeInfo: requestRuntimeInfo,
         }),
       );
@@ -196,7 +198,7 @@ describe("BadgeHoverCard", () => {
     await act(async () => {
       root.render(
         createElement(BadgeHoverCard, {
-          codex: true,
+          agentType: "codex",
           onRequestRuntimeInfo: requestRuntimeInfo,
         }),
       );

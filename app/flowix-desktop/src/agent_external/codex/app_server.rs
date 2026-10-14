@@ -5,7 +5,12 @@
 //! separately from the per-thread run registry.
 
 mod history_projection;
+mod tool_items;
 use history_projection::*;
+use tool_items::{
+    codex_custom_tool_message_type, codex_tool_call_identity, codex_tool_call_input,
+    codex_tool_result_identity, codex_tool_result_value, is_custom_tool_call_item,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -3474,19 +3479,16 @@ async fn dispatch_notification_inner(inner: &Arc<Inner>, message: &Value) {
         }
         "item/started" => {
             if let Some(item) = params.get("item") {
-                if let Some((id, name)) = tool_identity(item) {
+                if let Some((chunk, metadata)) =
+                    tool_call_notification_chunk(&flowix_thread_id, item, turn_id)
+                {
                     emit_notification_chunk_with_metadata(
                         inner,
                         &flowix_thread_id,
                         &run_id,
                         &app,
-                        AgentChunk::ToolCall {
-                            thread_id: flowix_thread_id.clone(),
-                            id,
-                            name,
-                            input: item.clone(),
-                        },
-                        with_turn_id(item_metadata(item), turn_id),
+                        chunk,
+                        metadata,
                     )
                     .await;
                 }
@@ -3512,19 +3514,47 @@ async fn dispatch_notification_inner(inner: &Arc<Inner>, message: &Value) {
                         )
                         .await;
                     }
-                } else if let Some((id, name)) = tool_identity(item) {
+                } else if is_custom_tool_call_item(item) {
+                    // Some App Server versions only expose the completed
+                    // snapshot for custom tools. Replaying the call is
+                    // idempotent with item/started and preserves a visible
+                    // row when that notification was absent.
+                    if let Some((chunk, metadata)) =
+                        tool_call_notification_chunk(&flowix_thread_id, item, turn_id)
+                    {
+                        emit_notification_chunk_with_metadata(
+                            inner,
+                            &flowix_thread_id,
+                            &run_id,
+                            &app,
+                            chunk,
+                            metadata,
+                        )
+                        .await;
+                    }
+                    if let Some((chunk, metadata)) =
+                        tool_result_notification_chunk(&flowix_thread_id, item, turn_id)
+                    {
+                        emit_notification_chunk_with_metadata(
+                            inner,
+                            &flowix_thread_id,
+                            &run_id,
+                            &app,
+                            chunk,
+                            metadata,
+                        )
+                        .await;
+                    }
+                } else if let Some((chunk, metadata)) =
+                    tool_result_notification_chunk(&flowix_thread_id, item, turn_id)
+                {
                     emit_notification_chunk_with_metadata(
                         inner,
                         &flowix_thread_id,
                         &run_id,
                         &app,
-                        AgentChunk::ToolResult {
-                            thread_id: flowix_thread_id.clone(),
-                            id,
-                            name,
-                            result: item.clone(),
-                        },
-                        with_turn_id(item_metadata(item), turn_id),
+                        chunk,
+                        metadata,
                     )
                     .await;
                 }
@@ -3822,6 +3852,45 @@ fn with_turn_id(mut metadata: AgentChunkMetadata, turn_id: Option<&str>) -> Agen
     metadata
 }
 
+fn tool_call_notification_chunk(
+    thread_id: &str,
+    item: &Value,
+    turn_id: Option<&str>,
+) -> Option<(AgentChunk, AgentChunkMetadata)> {
+    let (id, name) = codex_tool_call_identity(item)?;
+    let mut metadata = with_turn_id(item_metadata(item), turn_id);
+    metadata.message_type = codex_custom_tool_message_type(item);
+    Some((
+        AgentChunk::ToolCall {
+            thread_id: thread_id.to_string(),
+            id,
+            name,
+            input: codex_tool_call_input(item),
+        },
+        metadata,
+    ))
+}
+
+fn tool_result_notification_chunk(
+    thread_id: &str,
+    item: &Value,
+    turn_id: Option<&str>,
+) -> Option<(AgentChunk, AgentChunkMetadata)> {
+    let (id, name) = codex_tool_result_identity(item)?;
+    let result = codex_tool_result_value(item)?;
+    let mut metadata = with_turn_id(item_metadata(item), turn_id);
+    metadata.message_type = codex_custom_tool_message_type(item);
+    Some((
+        AgentChunk::ToolResult {
+            thread_id: thread_id.to_string(),
+            id,
+            name,
+            result,
+        },
+        metadata,
+    ))
+}
+
 fn completed_message_chunk(
     thread_id: &str,
     item: &Value,
@@ -4019,28 +4088,6 @@ fn annotate_goal_turn(turns: &mut [Value], response: &Value) {
     );
 }
 
-fn tool_identity(item: &Value) -> Option<(String, String)> {
-    let kind = item.get("type").and_then(Value::as_str)?;
-    let name = canonical_codex_tool_name(kind)?;
-    let id = item.get("id").and_then(Value::as_str)?.to_string();
-    Some((id, name.to_string()))
-}
-
-fn canonical_codex_tool_name(kind: &str) -> Option<&'static str> {
-    match kind {
-        "commandExecution" => Some("command_execution"),
-        "fileChange" => Some("file_change"),
-        "mcpToolCall" => Some("mcp_tool_call"),
-        "dynamicToolCall" => Some("dynamic_tool_call"),
-        // `collabToolCall` is current; retain the older spelling as an alias.
-        "collabToolCall" | "collabAgentToolCall" => Some("collab_agent_tool_call"),
-        "webSearch" => Some("web_search"),
-        "imageView" => Some("view_image"),
-        "imageGeneration" => Some("image_generation"),
-        _ => None,
-    }
-}
-
 /// Translate Flowix permission names into the App Server sandbox object.
 /// Keep this separate from the App Server v2 `permissions` profile API.
 fn app_server_sandbox(permission: Option<&str>) -> Value {
@@ -4227,7 +4274,7 @@ mod tests {
             "command": "git status --short"
         });
         assert_eq!(
-            tool_identity(&item),
+            codex_tool_call_identity(&item),
             Some(("item-1".to_string(), "command_execution".to_string()))
         );
     }
@@ -4240,15 +4287,15 @@ mod tests {
         let image_generation = json!({ "id": "item-generation", "type": "imageGeneration" });
 
         assert_eq!(
-            tool_identity(&collab),
+            codex_tool_call_identity(&collab),
             Some(("item-c".to_string(), "collab_agent_tool_call".to_string()))
         );
         assert_eq!(
-            tool_identity(&image_view),
+            codex_tool_call_identity(&image_view),
             Some(("item-view".to_string(), "view_image".to_string()))
         );
         assert_eq!(
-            tool_identity(&image_generation),
+            codex_tool_call_identity(&image_generation),
             Some((
                 "item-generation".to_string(),
                 "image_generation".to_string()
@@ -4333,7 +4380,7 @@ mod tests {
     #[test]
     fn ignores_non_tool_items() {
         assert_eq!(
-            tool_identity(&json!({ "id": "message-1", "type": "agentMessage" })),
+            codex_tool_call_identity(&json!({ "id": "message-1", "type": "agentMessage" })),
             None
         );
     }

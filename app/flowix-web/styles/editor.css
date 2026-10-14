@@ -62,6 +62,8 @@ html[data-platform="mac"] .markdown-editor .editor-content-frame > .overlay-scro
   box-sizing: border-box;
   height: 100%;
   overflow-y: auto;
+  /* Prevent frontmatter height changes from shifting the editor viewport. */
+  overflow-anchor: none;
   /* 固定滚动条 gutter 宽度, 避免 ProseMirror 内容区在滚动条出现/隐藏时抖动 */
   scrollbar-gutter: stable;
 }

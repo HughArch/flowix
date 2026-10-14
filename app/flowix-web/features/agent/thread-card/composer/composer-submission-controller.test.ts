@@ -20,7 +20,9 @@ function setup() {
   const composer = {
     getPrompt: () => "$review hello", getDraftMarkdown: () => markdown,
     flushPendingDraft: vi.fn(), clearDraft: vi.fn(),
-    clear: vi.fn(() => { markdown = ""; }), resetHistoryNavigation: vi.fn(), updateMultiLineState: vi.fn(),
+    clear: vi.fn(() => { markdown = ""; }),
+    setHistoryValue: vi.fn((value: string) => { markdown = value; }),
+    resetHistoryNavigation: vi.fn(), updateMultiLineState: vi.fn(),
   };
   const images = {
     hasImages: true, hasPending: false,
@@ -39,7 +41,7 @@ function setup() {
 }
 
 describe("composer submission transaction", () => {
-  it("retains rich text and attachments through binding and acceptance, then clears them", async () => {
+  it("retains input through binding, clears on dispatch, and clears attachments on acceptance", async () => {
     const { controller, options, composer, images, phases } = setup();
     const bound = deferred();
     const accepted = deferred();
@@ -52,7 +54,8 @@ describe("composer submission transaction", () => {
     expect(images.setLocked).toHaveBeenCalledWith(true);
     bound.resolve();
     await vi.waitFor(() => expect(controller.phase).toBe("accepting"));
-    expect(composer.clear).not.toHaveBeenCalled();
+    expect(composer.clear).toHaveBeenCalledOnce();
+    expect(composer.getDraftMarkdown()).toBe("");
     accepted.resolve();
     await submit;
     expect(phases).toEqual(["preparing", "binding", "accepting", "accepted"]);
@@ -71,10 +74,20 @@ describe("composer submission transaction", () => {
       markdown: "[Review](flowix://skill/codex/review) hello", prompt: "$review hello",
       images: [{ path: "/tmp/file.png" }],
     });
-    expect(composer.clear).not.toHaveBeenCalled();
-    expect(composer.clearDraft).not.toHaveBeenCalled();
-    expect(images.clearAfterSubmit).not.toHaveBeenCalled();
-    expect(options.clearPersistedDraft).not.toHaveBeenCalled();
+    if (stage === "bind") {
+      expect(composer.clear).not.toHaveBeenCalled();
+      expect(composer.clearDraft).not.toHaveBeenCalled();
+      expect(images.clearAfterSubmit).not.toHaveBeenCalled();
+      expect(options.clearPersistedDraft).not.toHaveBeenCalled();
+    } else {
+      expect(composer.clear).toHaveBeenCalledOnce();
+      expect(composer.setHistoryValue).toHaveBeenCalledWith(
+        "[Review](flowix://skill/codex/review) hello", { persistDraft: true },
+      );
+      expect(composer.getDraftMarkdown()).toBe("[Review](flowix://skill/codex/review) hello");
+      expect(images.clearAfterSubmit).not.toHaveBeenCalled();
+      expect(options.clearPersistedDraft).toHaveBeenCalledOnce();
+    }
     expect(options.onError).toHaveBeenCalledOnce();
     expect(images.setLocked).toHaveBeenLastCalledWith(false);
     await controller.submit(options);

@@ -173,6 +173,7 @@ function AgentConversationHeader({ instanceId }: { instanceId: string }) {
         <BadgeHoverCard
           threadId={productThreadId || undefined}
           sessionId={providerSessionId ?? undefined}
+          runId={badgeData.runId}
           model={badgeData.model}
           usage={badgeData.usage}
           onRequestRuntimeInfo={createRuntimeInfoRequester(
@@ -187,8 +188,7 @@ function AgentConversationHeader({ instanceId }: { instanceId: string }) {
               );
             },
           )}
-          codex={instance.agentType === 'codex'}
-          pi={instance.agentType === 'pi'}
+          agentType={instance.agentType}
           piMode={instance.agentType === 'pi' ? (piCodeMode ? 'code' : 'writing') : undefined}
           cwd={runtimeCwd}
         />

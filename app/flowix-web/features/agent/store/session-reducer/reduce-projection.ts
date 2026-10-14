@@ -89,9 +89,13 @@ function applyUserMessageToProjection(
   // well so the live view matches history before the turn finishes.
   if (isLiveDshPlanPrompt(p, event.text)) return p;
 
+  const isOptimisticPiUser = event.agentType === "pi" &&
+    event.id === completedRunUserMessageId(event.agentType, event.runId);
   const next = applyUserMessageChunk(p, event.text, {
     id: event.id,
-    nativeMessageId: event.agentType === "pi" || event.agentType === "codex" ? event.id : undefined,
+    nativeMessageId: !isOptimisticPiUser && (event.agentType === "pi" || event.agentType === "codex")
+      ? event.id : undefined,
+    isOptimistic: isOptimisticPiUser,
     messageType: event.messageType,
     phase: "completed",
     contentMode: "snapshot",
@@ -261,6 +265,7 @@ function applyToolCallToProjection(
     event.agentType,
     {
       id: event.messageId,
+      messageType: event.messageType,
       phase: event.messagePhase,
       sourceTimestamp: event.sourceTimestamp,
       sourceSequence: event.sourceSequence,
@@ -301,6 +306,7 @@ function applyToolResultToProjection(
     event.agentType,
     {
       id: event.messageId,
+      messageType: event.messageType,
       phase: event.messagePhase,
       sourceTimestamp: event.sourceTimestamp,
       sourceSequence: event.sourceSequence,

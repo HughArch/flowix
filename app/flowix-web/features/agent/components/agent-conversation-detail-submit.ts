@@ -47,6 +47,15 @@ export async function ensureAgentConversationDetailThread(input: {
   });
   if (!ensured) throw new Error("Agent thread id was not created");
 
+  // A newly created thread has no history. Publish that known-empty state
+  // before binding the instance, so the detail page never treats it as unknown.
+  if (!useAgentSessionStore.getState().threadProjections[ensured.threadId]) {
+    session.updateThreadHistory(ensured.threadId, (projection) => ({
+      ...projection,
+      pagination: { ...projection.pagination, initialStatus: "ready" },
+    }));
+  }
+
   await session.initializeThread(input.instanceId, {
     agentType: ensured.typeKey,
     title: ensured.title,

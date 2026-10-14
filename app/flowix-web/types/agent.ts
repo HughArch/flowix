@@ -307,7 +307,9 @@ export type AgentMessageType =
   /** Legacy classification for older `/plan` history projections. */
   | "dsh-command-prompt"
   /** Product-owned row for Codex-native `/compact` and `/goal` operations. */
-  | "codex-command";
+  | "codex-command"
+  /** Raw custom tool payloads that use the generic input/output presentation. */
+  | "codex-custom-tool";
 
 // Tool call definition
 export interface ToolCall {
@@ -412,6 +414,7 @@ export interface AgentChunkToolCall {
   message_id?: string;
   source_message_id?: string;
   parent_message_id?: string;
+  message_type?: AgentMessageType;
   message_phase?: "started" | "updated" | "completed";
   source_timestamp?: number;
   source_sequence?: number;
@@ -430,6 +433,7 @@ export interface AgentChunkToolResult {
   message_id?: string;
   source_message_id?: string;
   parent_message_id?: string;
+  message_type?: AgentMessageType;
   message_phase?: "started" | "updated" | "completed";
   source_timestamp?: number;
   source_sequence?: number;

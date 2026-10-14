@@ -932,6 +932,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
 
   private shouldLoadThreadMessages(): boolean {
     return (
+      !this.submission.isSubmitting &&
       (!this.collapsed || this.isFullscreen) &&
       this.messages.canLoadForViewport(this.isFullscreen)
     );
@@ -1744,6 +1745,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       clearPersistedDraft: () => this.updateAttrs({ inputDraft: null }),
       onPhaseChange: () => {
         this.isCreating = this.submission.phase === "binding" && !this.threadId;
+        this.requestThreadMessagesIfNeeded();
         this.renderThreadState();
       },
       onError: (error) => {

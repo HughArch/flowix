@@ -781,7 +781,7 @@ export function AgentThreadCardFullscreenIdentity({
   const providerSessionId = instance?.providerSessionId ?? (
     productThreadId ? getResolvedExternalSessionId(productThreadId) : null
   );
-  const { model, usage } = computeAgentThreadCardBadgeData({
+  const { runId, model, usage } = computeAgentThreadCardBadgeData({
     threadState: projection ? {
       lastRun: projection.runs.lastRun,
       activeRunId: projection.runs.activeRunId,
@@ -801,6 +801,7 @@ export function AgentThreadCardFullscreenIdentity({
         <BadgeHoverCard
           threadId={productThreadId || undefined}
           sessionId={providerSessionId ?? undefined}
+          runId={runId}
           model={model}
           usage={usage}
           onRequestRuntimeInfo={createRuntimeInfoRequester(
@@ -808,8 +809,7 @@ export function AgentThreadCardFullscreenIdentity({
             () => productThreadId || null,
             () => providerSessionId,
           )}
-          codex={info.typeKey === 'codex'}
-          pi={info.typeKey === 'pi'}
+          agentType={info.typeKey}
           piMode={info.typeKey === 'pi' ? (piCodeMode ? 'code' : 'writing') : undefined}
           cwd={cwd}
         />

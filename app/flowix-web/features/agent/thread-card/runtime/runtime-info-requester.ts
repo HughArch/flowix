@@ -1,6 +1,6 @@
 import { agent, deepseekHarness } from "@platform/tauri/client";
 import type { AgentTypeKey } from "@/types/agent";
-import type { BadgeHoverCardRuntimeInfo } from "../badge-hover-card";
+import type { BadgeHoverCardRuntimeInfo } from "./use-badge-runtime-info";
 
 /**
  * 按 agent 类型构造 BadgeHoverCard 的 runtime info 懒加载请求器。

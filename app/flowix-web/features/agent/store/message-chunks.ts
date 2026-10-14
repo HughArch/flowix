@@ -55,7 +55,7 @@ function generatedAssistantMessageId(scope?: string, role = "assistant"): string
 export function applyUserMessageChunk(
   st: MessageProjection,
   text: string,
-  metadata: MessageChunkMetadata & { id: string },
+  metadata: MessageChunkMetadata & { id: string; isOptimistic?: boolean },
 ): MessageProjection {
   // DSH goal rounds and terminal wrap-up prompts are provider-owned control
   // messages. Keep them in the timeline as compact system rows, never as a
@@ -161,7 +161,7 @@ export function applyUserMessageChunk(
     const messages = [...st.messages];
     messages[existingIndex] = {
       ...existing,
-      messageId: metadata.nativeMessageId ?? existing.messageId,
+      messageId: metadata.isOptimistic ? null : metadata.nativeMessageId ?? existing.messageId,
       content: text,
       timestamp:
         existing.sourceTimestamp === undefined &&
@@ -192,7 +192,9 @@ export function applyUserMessageChunk(
     messages: [...st.messages, {
       id: metadata.id,
       renderKey: metadata.id,
-      messageId: metadata.nativeMessageId,
+      // Null marks an unconfirmed local row; native history cannot remove it
+      // until the provider acknowledges it with its own message identity.
+      messageId: metadata.isOptimistic ? null : metadata.nativeMessageId,
       role: "user",
       content: text,
       timestamp: messageTimestamp(metadata.sourceTimestamp),

@@ -7,32 +7,25 @@ import {
 } from "@shared/ui/hover-card";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import type { UsageInfo } from "@/types/agent";
-import type { CodexRuntimeInfo } from "@platform/tauri/client/agent";
+import type { AgentTypeKey, UsageInfo } from "@/types/agent";
+import { useBadgeRuntimeInfo, type BadgeHoverCardRuntimeInfo } from "./runtime/use-badge-runtime-info";
 
 interface BadgeHoverCardProps {
   /** Internal identity only; never rendered. */
   threadId?: string;
   /** Provider session id already loaded with the conversation instance. */
   sessionId?: string;
+  /** Latest or active run identity; scopes fetched data to one run. */
+  runId?: string;
   /** 当前 run 锁定的 LLM model id(由通用 metadata 协议填入) */
   model?: string;
   /** 当前 run 累计 token 用量(undefined 表示未上报) */
   usage?: UsageInfo;
   onRequestRuntimeInfo?: () => Promise<BadgeHoverCardRuntimeInfo | null>;
-  codex?: boolean;
-  pi?: boolean;
+  agentType: AgentTypeKey;
   piMode?: "code" | "writing";
   cwd?: string;
   onOpenChange?: (open: boolean) => void;
-}
-
-export interface BadgeHoverCardRuntimeInfo {
-  model?: string;
-  usage: UsageInfo;
-  codex?: CodexRuntimeInfo;
-  /** Provider-owned session id; the local Flowix thread id is never displayed. */
-  sessionId?: string;
 }
 
 function formatTokens(n: number): string {
@@ -56,13 +49,6 @@ function formatTokenCount(value: number | null | undefined): string {
 function lastPathSegment(path: string): string {
   const segments = path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
   return segments[segments.length - 1] ?? "";
-}
-
-function hasUsageContent(usage: UsageInfo | undefined): boolean {
-  if (!usage) return false;
-  return [usage.input_tokens, usage.cached_input_tokens, usage.output_tokens].some(
-    (value) => typeof value === "number" && Number.isFinite(value) && value > 0,
-  );
 }
 
 function HoverCardSkeleton({ width }: { width: string }) {
@@ -121,103 +107,34 @@ function percentageFromRate(rate: number | undefined): string {
 export function BadgeHoverCard({
   threadId,
   sessionId,
+  runId,
   model,
   usage,
   onRequestRuntimeInfo,
-  codex = false,
-  pi = false,
+  agentType,
   piMode,
   cwd,
   onOpenChange,
 }: BadgeHoverCardProps) {
   const { t, language } = useI18n();
+  const pi = agentType === "pi";
+  const codex = agentType === "codex";
   const [copied, setCopied] = React.useState(false);
-  const [displayModel, setDisplayModel] = React.useState(model);
-  const [displayUsage, setDisplayUsage] = React.useState(usage);
-  const [displaySessionId, setDisplaySessionId] = React.useState<string | null>(
-    sessionId ?? null,
-  );
-  const [codexInfo, setCodexInfo] = React.useState<CodexRuntimeInfo>();
-  const [runtimeInfoPending, setRuntimeInfoPending] = React.useState(
-    Boolean(onRequestRuntimeInfo),
-  );
-  const runtimeInfoLoadedRef = React.useRef(hasUsageContent(usage));
-  const sessionIdLoadedRef = React.useRef(Boolean(sessionId));
-  const accountLoadedRef = React.useRef(false);
-  const runtimeInfoRequestRef = React.useRef<Promise<BadgeHoverCardRuntimeInfo | null> | null>(null);
-  const residentIdentityRef = React.useRef(`${threadId ?? ""}:${sessionId ?? ""}`);
-
-  React.useEffect(() => {
-    const nextIdentity = `${threadId ?? ""}:${sessionId ?? ""}`;
-    const nextSessionId = sessionId ?? null;
-    if (residentIdentityRef.current !== nextIdentity) {
-      residentIdentityRef.current = nextIdentity;
-      runtimeInfoLoadedRef.current = hasUsageContent(usage);
-      sessionIdLoadedRef.current = Boolean(sessionId);
-      accountLoadedRef.current = false;
-      runtimeInfoRequestRef.current = null;
-      setCodexInfo(undefined);
-      setRuntimeInfoPending(Boolean(onRequestRuntimeInfo));
-      setDisplayModel(model);
-      setDisplayUsage(usage);
-      setDisplaySessionId(nextSessionId);
-      return;
-    }
-    if (!runtimeInfoLoadedRef.current || hasUsageContent(usage)) {
-      setDisplayModel(model);
-      setDisplayUsage(usage);
-    }
-    if (hasUsageContent(usage)) runtimeInfoLoadedRef.current = true;
-    if (sessionId && !displaySessionId) {
-      sessionIdLoadedRef.current = true;
-      setDisplaySessionId(sessionId);
-    }
-  }, [displaySessionId, model, onRequestRuntimeInfo, sessionId, threadId, usage]);
-
-  const requestRuntimeInfo = React.useCallback(() => {
-    if (
-      (runtimeInfoLoadedRef.current && sessionIdLoadedRef.current &&
-        (!codex || accountLoadedRef.current)) ||
-      runtimeInfoRequestRef.current !== null ||
-      !onRequestRuntimeInfo
-    ) {
-      return;
-    }
-    let request: Promise<BadgeHoverCardRuntimeInfo | null>;
-    try {
-      request = onRequestRuntimeInfo();
-    } catch {
-      return;
-    }
-    runtimeInfoRequestRef.current = request;
-    setRuntimeInfoPending(true);
-    void request
-      .then((info) => {
-        if (info === null) return;
-        if (hasUsageContent(info.usage)) runtimeInfoLoadedRef.current = true;
-        setDisplayModel(info.model ?? model);
-        setDisplayUsage(hasUsageContent(info.usage) || !hasUsageContent(usage)
-          ? info.usage
-          : usage);
-        if (info.sessionId) {
-          sessionIdLoadedRef.current = true;
-          setDisplaySessionId(info.sessionId);
-        }
-        if (info.codex) {
-          accountLoadedRef.current = true;
-          setCodexInfo(info.codex);
-        }
-      })
-      .catch(() => {
-        // 保留现有快照，下一次 hover 允许重试。
-      })
-      .finally(() => {
-        if (runtimeInfoRequestRef.current === request) {
-          runtimeInfoRequestRef.current = null;
-          setRuntimeInfoPending(false);
-        }
-      });
-  }, [codex, model, onRequestRuntimeInfo]);
+  const runtimeInfo = useBadgeRuntimeInfo({
+    identity: `${threadId ?? ""}:${sessionId ?? ""}:${runId ?? ""}`,
+    model,
+    usage,
+    sessionId,
+    onRequest: onRequestRuntimeInfo,
+  });
+  const {
+    displayModel,
+    displayUsage,
+    displaySessionId,
+    codexInfo,
+    runtimeInfoPending,
+    requestRuntimeInfo,
+  } = runtimeInfo;
 
   const handleOpenChange = React.useCallback(
     (open: boolean) => {
@@ -349,12 +266,12 @@ export function BadgeHoverCard({
           {/* Token 明细: Harness 的 inputTokens 不包含 cacheReadTokens。 */}
           <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 text-[11px]">
             <span className="text-[var(--muted-foreground)]">
-              {t(pi ? "editor.threadCard.inputOutputTotalTokens" : "editor.threadCard.inputOutputTokens")}
+              {t("editor.threadCard.inputOutputTokens")}
             </span>
             <span className="text-right font-mono tabular-nums text-[var(--foreground)]">
               {tokensPending ? <HoverCardSkeleton width="3.5rem" /> : <>
                 {formatTokenCount(displayUsage?.input_tokens) || "-"} /{" "}
-                {formatTokenCount(displayUsage?.output_tokens) || "-"}{pi ? <> /{" "}{formatTokenCount(displayUsage?.total_tokens) || "-"}</> : null} tok
+                {formatTokenCount(displayUsage?.output_tokens) || "-"} tok
               </>}
             </span>
           </div>

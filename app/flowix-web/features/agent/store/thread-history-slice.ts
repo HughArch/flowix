@@ -142,7 +142,8 @@ export function createThreadHistorySlice(
       const historyReadVersion = requests.begin(threadId);
       const requestProjection = get().threadProjections[threadId]?.messages ?? [];
       const isInitialLoad =
-        (get().threadProjections[threadId]?.messages.length ?? 0) === 0;
+        (get().threadProjections[threadId]?.messages.length ?? 0) === 0 &&
+        get().threadProjections[threadId]?.pagination.initialStatus !== "ready";
       // Refresh/reconciliation is stale-while-revalidate: an already rendered
       // conversation must not enter loading or invalidate its projection just
       // because a silent snapshot request started.

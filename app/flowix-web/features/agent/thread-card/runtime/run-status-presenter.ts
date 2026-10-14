@@ -16,6 +16,7 @@ export interface AgentThreadCardBadgeRuntimeState {
 }
 
 export interface AgentThreadCardBadgeData {
+  runId: string | undefined;
   model: string | undefined;
   /** Full nested token usage breakdown — see [`UsageInfo`]. */
   usage?: UsageInfo;
@@ -29,49 +30,24 @@ export function computeAgentThreadCardBadgeData(options: {
   typeKey: AgentTypeKey;
 }): AgentThreadCardBadgeData {
   const { threadState, codexModel, typeKey } = options;
-  let model: string | undefined;
-  let usage: UsageInfo | undefined;
-  let statusInfo: StatusInfo | undefined;
-
-  const snapshot = threadState?.lastRun;
-  if (snapshot) {
-    if (!model && (snapshot.modelId || snapshot.model)) {
-      model = snapshot.modelId ?? snapshot.model;
-    }
-    if (!usage && snapshot.usage) {
-      usage = snapshot.usage;
-    }
-    if (!statusInfo && snapshot.statusInfo) statusInfo = snapshot.statusInfo;
-  }
-
-  if (!snapshot && threadState?.activeRunId && threadState.runs[threadState.activeRunId]) {
-    const run = threadState.runs[threadState.activeRunId];
-    if (!model && (run.modelId || run.model)) {
-      model = run.modelId ?? run.model;
-    }
-    if (!usage && run.usage) usage = run.usage;
-    if (!statusInfo && run.statusInfo) statusInfo = run.statusInfo;
-  }
-
-  if (!snapshot) {
-    const runs = Object.values(threadState?.runs ?? {});
-    if (runs.length > 0) {
-      const latest = runs.reduce((acc, run) =>
-        run.startedAt > acc.startedAt ? run : acc,
-      );
-      if (!model && (latest.modelId || latest.model)) {
-        model = latest.modelId ?? latest.model;
-      }
-      if (!usage && latest.usage) usage = latest.usage;
-      if (!statusInfo && latest.statusInfo) statusInfo = latest.statusInfo;
-    }
-  }
+  const activeRun = threadState?.activeRunId
+    ? threadState.runs[threadState.activeRunId]
+    : undefined;
+  const latestRun = activeRun ?? (threadState?.lastRun
+    ? undefined
+    : Object.values(threadState?.runs ?? {}).reduce<typeof activeRun>((latest, run) =>
+        !latest || run.startedAt > latest.startedAt ? run : latest,
+      undefined));
+  const run = activeRun ?? threadState?.lastRun ?? latestRun;
+  let model = run?.modelId ?? run?.model;
+  const usage = run?.usage;
+  const statusInfo = run?.statusInfo;
 
   if (!model && typeKey === "codex" && codexModel && codexModel !== "inherit") {
     model = codexModel;
   }
 
-  return { model, usage, statusInfo };
+  return { runId: run?.runId, model, usage, statusInfo };
 }
 
 export function renderAgentThreadCardMetaState(options: {

@@ -172,7 +172,7 @@ export class AgentThreadCardBadgeChromeController {
     const typeKey = this.getTypeKey();
     const piCodeMode = useAgentAccessStore.getState().config.defaults
       ?.runtime?.pi?.piCodeMode ?? false;
-    const { model, usage } =
+    const { runId, model, usage } =
       computeAgentThreadCardBadgeData({
         threadState: this.getThreadState(),
         // Phase 4 (2026-08-02): 真源是 session-store.sessionMeta.settings.
@@ -184,6 +184,7 @@ export class AgentThreadCardBadgeChromeController {
       React.createElement(BadgeHoverCard, {
         threadId: threadId || undefined,
         sessionId: sessionId ?? undefined,
+        runId,
         model,
         usage,
         onRequestRuntimeInfo: createRuntimeInfoRequester(
@@ -195,8 +196,7 @@ export class AgentThreadCardBadgeChromeController {
               ? getResolvedExternalSessionId(this.getThreadId()!)
               : null),
         ),
-        codex: typeKey === "codex",
-        pi: typeKey === "pi",
+        agentType: typeKey,
         piMode: typeKey === "pi" ? (piCodeMode ? "code" : "writing") : undefined,
         cwd: this.getCwd() ?? undefined,
       }),

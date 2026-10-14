@@ -1,4 +1,12 @@
 //! Conversion of persisted Codex threads and items into Flowix history.
+use std::collections::{HashMap, HashSet};
+
+use super::tool_items::{
+    codex_custom_tool_message_type, codex_custom_tool_output, codex_tool_call_identity,
+    codex_tool_call_input, codex_tool_payload_text, custom_tool_call_id, custom_tool_name,
+    custom_tool_output_call_id, is_custom_tool_call_item, is_custom_tool_output_item,
+    is_terminal_native_status, CODEX_CUSTOM_TOOL_MESSAGE_TYPE,
+};
 use super::*;
 
 pub(super) fn app_server_thread_info(thread: &Value) -> Option<ThreadInfo> {
@@ -59,13 +67,41 @@ pub(super) fn app_server_turn_messages_with_offset(
         }
         let is_manual_compact_turn = is_manual_compact_turn(turn);
         let mut compact_command_emitted = false;
-        for (item_index, item) in turn
+        let turn_items = turn
             .get("items")
             .and_then(Value::as_array)
-            .into_iter()
-            .flatten()
-            .enumerate()
-        {
+            .map(Vec::as_slice)
+            .unwrap_or_default();
+        let custom_tool_call_ids: HashSet<String> = turn_items
+            .iter()
+            .filter(|item| is_custom_tool_call_item(item))
+            .filter_map(|item| custom_tool_call_id(item).map(str::to_string))
+            .collect();
+        let custom_tool_outputs: HashMap<String, Value> = turn_items
+            .iter()
+            .filter(|item| is_custom_tool_output_item(item))
+            .filter_map(|item| {
+                Some((
+                    custom_tool_output_call_id(item)?.to_string(),
+                    codex_custom_tool_output(item)?.clone(),
+                ))
+            })
+            .collect();
+        for (item_index, item) in turn_items.iter().enumerate() {
+            if is_custom_tool_output_item(item) {
+                if let Some(call_id) = custom_tool_output_call_id(item) {
+                    if !custom_tool_call_ids.contains(call_id) {
+                        messages.push(app_server_orphan_custom_tool_output_message(
+                            item,
+                            &timestamp,
+                            turn_index,
+                            item_index,
+                            turn_id.as_deref(),
+                        ));
+                    }
+                }
+                continue;
+            }
             if is_manual_compact_turn
                 && !compact_command_emitted
                 && item.get("type").and_then(Value::as_str) == Some("contextCompaction")
@@ -79,8 +115,24 @@ pub(super) fn app_server_turn_messages_with_offset(
                 ));
                 compact_command_emitted = true;
             }
+            let projected_item = if is_custom_tool_call_item(item) {
+                let output =
+                    custom_tool_call_id(item).and_then(|call_id| custom_tool_outputs.get(call_id));
+                output.map_or_else(
+                    || (*item).clone(),
+                    |output| {
+                        let mut call = (*item).clone();
+                        if let Some(object) = call.as_object_mut() {
+                            object.insert("output".to_string(), output.clone());
+                        }
+                        call
+                    },
+                )
+            } else {
+                (*item).clone()
+            };
             if let Some(mut message) = app_server_item_message(
-                item,
+                &projected_item,
                 &timestamp,
                 turn_index,
                 item_index,
@@ -115,10 +167,6 @@ pub(super) fn app_server_turn_messages_with_offset(
         }
     }
     messages
-}
-
-fn is_terminal_native_status(status: &str) -> bool {
-    matches!(status, "completed" | "failed" | "interrupted" | "cancelled")
 }
 
 /// A manual `/compact` is represented by Codex as a standalone turn whose
@@ -230,6 +278,35 @@ pub(super) fn app_server_turn_error_message(
     Some(message)
 }
 
+fn app_server_orphan_custom_tool_output_message(
+    item: &Value,
+    timestamp: &str,
+    turn_index: usize,
+    item_index: usize,
+    turn_id: Option<&str>,
+) -> ChatMessage {
+    let call_id = custom_tool_output_call_id(item).unwrap_or("unknown-call");
+    let output = codex_custom_tool_output(item)
+        .map(codex_tool_payload_text)
+        .unwrap_or_default();
+    let mut message = app_server_base_message(
+        format!(
+            "codex-custom-tool-output-{}-{turn_index}-{item_index}",
+            call_id
+        ),
+        timestamp,
+    );
+    message.role = "tool".to_string();
+    message.message_type = Some(CODEX_CUSTOM_TOOL_MESSAGE_TYPE.to_string());
+    message.tool_call_id = Some(call_id.to_string());
+    message.tool_name = Some(custom_tool_name(item).unwrap_or("unknown_tool").to_string());
+    message.tool_data = Some(output.clone());
+    message.content = output;
+    message.is_completed = Some(true);
+    message.codex_turn_id = turn_id.map(str::to_string);
+    message
+}
+
 pub(super) fn app_server_item_message(
     item: &Value,
     timestamp: &str,
@@ -284,27 +361,30 @@ pub(super) fn app_server_item_message(
             message.role = "system".to_string();
             message.message_type = Some(CONTEXT_COMPACTION_MESSAGE_TYPE.to_string());
         }
-        "commandExecution"
-        | "fileChange"
-        | "mcpToolCall"
-        | "dynamicToolCall"
-        | "collabToolCall"
-        | "collabAgentToolCall"
-        | "webSearch"
-        | "imageView"
-        | "imageGeneration" => {
+        _ => {
+            let (call_id, tool_name) = codex_tool_call_identity(item)?;
             message.role = "tool".to_string();
-            message.tool_call_id = item.get("id").and_then(Value::as_str).map(str::to_string);
-            message.tool_name = Some(app_server_tool_name(kind, item));
-            message.tool_input = Some(item.clone());
-            message.tool_data = serde_json::to_string(item).ok();
+            let custom_tool_message_type = codex_custom_tool_message_type(item);
+            message.message_type = custom_tool_message_type
+                .map(str::to_string)
+                .or_else(|| codex_message_type(item).map(str::to_string));
+            message.tool_call_id = Some(call_id);
+            message.tool_name = Some(tool_name);
+            message.tool_input = Some(codex_tool_call_input(item));
+            let custom_output =
+                custom_tool_message_type.and_then(|_| codex_custom_tool_output(item));
+            message.tool_data = if custom_tool_message_type.is_some() {
+                custom_output.map(codex_tool_payload_text)
+            } else {
+                serde_json::to_string(item).ok()
+            };
             message.content = app_server_tool_content(kind, item);
-            message.is_completed = item
-                .get("status")
-                .and_then(Value::as_str)
-                .map(|status| status != "inProgress");
+            message.is_completed = custom_output.map(|_| true).or_else(|| {
+                item.get("status")
+                    .and_then(Value::as_str)
+                    .map(|status| status != "inProgress")
+            });
         }
-        _ => return None,
     }
     Some(message)
 }
@@ -446,15 +526,12 @@ pub(super) fn app_server_content_text(value: Option<&Value>) -> String {
     }
 }
 
-pub(super) fn app_server_tool_name(kind: &str, _item: &Value) -> String {
-    // Keep history projection in lockstep with `tool_identity`, which is used
-    // by live item/* notifications. The command itself is input data, not the
-    // tool name: using `/bin/zsh -lc pwd` here makes history choose a different
-    // formatter from the live `command_execution` row.
-    canonical_codex_tool_name(kind).unwrap_or(kind).to_string()
-}
-
 pub(super) fn app_server_tool_content(kind: &str, item: &Value) -> String {
+    if codex_custom_tool_message_type(item).is_some() {
+        return codex_custom_tool_output(item)
+            .map(codex_tool_payload_text)
+            .unwrap_or_default();
+    }
     match kind {
         "commandExecution" => item
             .get("aggregatedOutput")
