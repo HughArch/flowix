@@ -1,4 +1,4 @@
-import type { AgentTypeKey, StatusInfo, UsageInfo } from "@/types/agent";
+import type { AgentRunState, AgentTypeKey, StatusInfo, UsageInfo } from "@/types/agent";
 import type { I18nKey } from "@/lib/i18n";
 import type { ThreadState } from "@features/agent/store/thread-runtime-state";
 import { selectAgentThreadCardRunStatus } from "@features/agent/thread-card/agent-thread-card-selectors";
@@ -35,7 +35,7 @@ export function computeAgentThreadCardBadgeData(options: {
     : undefined;
   const latestRun = activeRun ?? (threadState?.lastRun
     ? undefined
-    : Object.values(threadState?.runs ?? {}).reduce<typeof activeRun>((latest, run) =>
+    : Object.values(threadState?.runs ?? {}).reduce<AgentRunState | undefined>((latest, run) =>
         !latest || run.startedAt > latest.startedAt ? run : latest,
       undefined));
   const run = activeRun ?? threadState?.lastRun ?? latestRun;
