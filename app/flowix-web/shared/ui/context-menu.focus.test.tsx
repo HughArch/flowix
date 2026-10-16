@@ -1,4 +1,5 @@
-import { act, type ReactNode } from 'react';
+import { act, useState, type ReactNode } from 'react';
+import { createPortal } from 'react-dom';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi, type Mock } from 'vitest';
 import {
@@ -114,6 +115,21 @@ describe('context menu focus and scroll ownership', () => {
     expect(cardFocus).not.toHaveBeenCalled();
   });
 
+  it('hands focus to a rename dialog mounted by the same action that closes the menu', async () => {
+    // Keep the dialog owner mounted outside ContextMenuContent's conditional DOM.
+    function RenameHarness() {
+      const [renaming, setRenaming] = useState(false);
+      return <><ContextMenu><ContextMenuTrigger asChild><div data-testid="card">Card</div></ContextMenuTrigger>
+        <ContextMenuContent><ContextMenuItem onClick={() => setRenaming(true)}>Rename</ContextMenuItem></ContextMenuContent>
+      </ContextMenu>{renaming && createPortal(<input autoFocus data-testid="rename" />, document.body)}</>;
+    }
+    await act(async () => root.render(<RenameHarness />));
+    await open();
+    await act(async () => menu().querySelector<HTMLButtonElement>('button')!.click());
+    expect(menu()).toBeNull();
+    expect(document.activeElement).toBe(element('[data-testid="rename"]'));
+  });
+
   it('navigates enabled items and submenus without scrolling or closing the parent', async () => {
     await render(<>
       <ContextMenuItem disabled>Disabled</ContextMenuItem>
@@ -146,5 +162,22 @@ describe('context menu focus and scroll ownership', () => {
     await act(async () => menu().querySelector<HTMLButtonElement>('button')!.click());
     expect(action).toHaveBeenCalledTimes(1);
     expect(menu()).not.toBeNull();
+  });
+
+  it('executes the first nested copy action once while the sibling editor scrolls', async () => {
+    await render(<ContextMenuSubmenu label="Copy"><ContextMenuItem onClick={action}>Copy link</ContextMenuItem></ContextMenuSubmenu>);
+    await open();
+    await key(menu(), 'ArrowDown');
+    await key(document.activeElement as HTMLElement, 'ArrowRight');
+    const item = element('[data-context-menu-submenu] [role="menuitem"]');
+    await act(async () => {
+      item.dispatchEvent(new MouseEvent('mousedown', { bubbles: true, cancelable: true }));
+      element('[data-testid="editor"]').dispatchEvent(new Event('scroll'));
+    });
+    expect(item.isConnected).toBe(true);
+    await act(async () => item.click());
+    expect(action).toHaveBeenCalledOnce();
+    expect(menu()).toBeNull();
+    expect(document.activeElement).toBe(element('[data-testid="card"]'));
   });
 });
