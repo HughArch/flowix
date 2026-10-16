@@ -141,3 +141,23 @@ it('reuses existing date fields and rejects conflicting types across calendar cr
   const second = addCalendarDateView(first.document);
   expect(second.document.dataset.schema.preset_fields.filter((id) => id === NOTE_CALENDAR_DATE_FIELD_ID)).toHaveLength(1);
 });
+
+
+describe('dataset editor preservation', () => {
+  it.each(['all', 'any'])('rejects duplicate legacy file conditions in %s', (match) => {
+    const document = createTableDocument();
+    document.dataset.filter = { all: [], any: [], [match]: [
+      { field: 'file_name', op: 'contains', value: 'release' },
+      { field: 'file_name', op: 'contains', value: 'draft' },
+    ] };
+    expect(canEditTableAutoCollectFilter(parseTableDocument(serializeTableDocument(document)))).toBe(false);
+  });
+  it('accepts condition reordering but still rejects lost duplicate rules', () => {
+    const document = createTableDocument();
+    const file = { field: 'file_name', op: 'contains', value: 'draft' };
+    document.dataset.filter = { path: null, match: 'any', conditions: [file, { field: 'status', op: 'eq', value: 'ready' }] };
+    expect(canEditTableAutoCollectFilter(document)).toBe(true);
+    document.dataset.filter.conditions = [file, file];
+    expect(canEditTableAutoCollectFilter(document)).toBe(false);
+  });
+});

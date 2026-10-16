@@ -48,7 +48,7 @@ pub async fn chat_with_agent_stream(
     tracing::info!(
         "[Command] chat_with_agent_stream called for thread: {}, agent_type: {}",
         threadId,
-        runtime.key()
+        runtime.id()
     );
 
     if let Some(title) = message
@@ -61,46 +61,18 @@ pub async fn chat_with_agent_stream(
         manager
             .ensure_thread(
                 &threadId,
-                crate::agent_types::AgentId::new(runtime.key()),
+                crate::agent_types::AgentId::new(runtime.id()),
                 title,
             )
             .await
             .map_err(|error| error.to_string())?;
     }
 
-    // Refresh security-scoped access at every run, not only at startup. Start
-    // access before validating because a macOS bookmark may be what makes the
-    // directory visible to this process. Explicit runtime paths must never
-    // silently fall back to the application cwd when a frozen path disappears.
-    let runtime_cwd = message
-        .cwd_for_runtime(runtime.key())
-        .map(str::trim)
-        .filter(|path| !path.is_empty())
-        .map(str::to_string);
-    let runtime_workspace_paths = message.workspace_paths_for_runtime(runtime.key());
-    if let Some(path) = runtime_cwd.as_deref() {
-        state
-            .security_bookmarks
-            .start_accessing_for_path(Path::new(path));
-    }
-    for path in &runtime_workspace_paths {
-        state
-            .security_bookmarks
-            .start_accessing_for_path(Path::new(path));
-    }
-    if let Some(path) = runtime_cwd.as_deref() {
-        if !Path::new(path).is_dir() {
-            return Err(format!("Agent working directory is unavailable: {path}"));
-        }
-    }
-    for path in &runtime_workspace_paths {
-        if !Path::new(path).is_dir() {
-            return Err(format!("Agent workspace directory is unavailable: {path}"));
-        }
-    }
+    let (runtime_cwd, runtime_workspace_paths) =
+        validate_runtime_workspace(&message, runtime.id(), &state)?;
 
     if let Some(path) = runtime_cwd.as_deref() {
-        sync_native_agent_instructions(Path::new(path), runtime.key(), &runtime_workspace_paths)?;
+        sync_native_agent_instructions(Path::new(path), runtime.id(), &runtime_workspace_paths)?;
     }
 
     // runtime 的 `chat_stream` 内部已经 `tokio::spawn` ── IPC 立即返回,
@@ -113,10 +85,101 @@ pub async fn chat_with_agent_stream(
         .await;
     tracing::info!(
         "[Command] {} chat_with_agent_stream result: {:?}",
-        runtime.key(),
+        runtime.id(),
         result.is_ok()
     );
     result.map(|response| AgentChatResponse { response })
+}
+
+fn validate_runtime_workspace(
+    message: &AgentUserMessage,
+    runtime: &str,
+    state: &AppState,
+) -> Result<(Option<String>, Vec<String>), String> {
+    // Explicit runtime paths must never silently fall back to the application
+    // cwd when a frozen path disappears.
+    let runtime_cwd = message
+        .cwd_for_runtime(runtime)
+        .map(str::trim)
+        .filter(|path| !path.is_empty())
+        .map(str::to_string);
+    let runtime_workspace_paths = message.workspace_paths_for_runtime(runtime);
+    {
+        let memo = state
+            .memo_file
+            .read()
+            .map_err(|_| "memo file lock poisoned")?;
+        let workspace = memo.read_notebook_workspace().map_err(|e| e.to_string())?;
+        let scope = message
+            .runtime_config
+            .as_ref()
+            .and_then(|config| config.notebook_id.as_deref());
+        check_workspace_paths(
+            &workspace,
+            scope,
+            runtime_cwd
+                .iter()
+                .chain(runtime_workspace_paths.iter())
+                .map(String::as_str),
+        )?;
+    }
+    if let Some(path) = runtime_cwd.as_deref() {
+        if !Path::new(path).is_dir() {
+            return Err(format!("Agent working directory is unavailable: {path}"));
+        }
+    }
+    for path in &runtime_workspace_paths {
+        if !Path::new(path).is_dir() {
+            return Err(format!("Agent workspace directory is unavailable: {path}"));
+        }
+    }
+
+    Ok((runtime_cwd, runtime_workspace_paths))
+}
+
+fn check_workspace_paths<'a>(
+    workspace: &flowix_core::memo_file::NotebookWorkspaceSnapshot,
+    scope: Option<&str>,
+    paths: impl Iterator<Item = &'a str>,
+) -> Result<(), String> {
+    let mut roots = Vec::new();
+    for notebook in &workspace.notebooks {
+        if scope.is_some_and(|id| id != notebook.id) {
+            continue;
+        }
+        roots.push(notebook.path.as_str());
+        if let Some(config) = workspace.notebook_configs.get(&notebook.id) {
+            roots.extend(
+                config
+                    .add_dirs
+                    .iter()
+                    .filter(|d| d.enabled && !d.missing)
+                    .map(|d| d.path.as_str()),
+            );
+        }
+    }
+    for path in paths {
+        let path = Path::new(path);
+        if !roots
+            .iter()
+            .any(|root| crate::config::path_is_inside(path, Path::new(root)))
+        {
+            return Err(format!(
+                "Agent workspace directory is no longer mounted: {}",
+                path.display()
+            ));
+        }
+        if workspace.notebooks.iter().any(|notebook| {
+            crate::config::path_is_inside_reserved_directory(
+                path,
+                Path::new(&notebook.path),
+                ".flowix",
+            )
+        }) {
+            return Err("Agent workspace cannot use notebook internal storage".into());
+        }
+    }
+    Ok(())
 }
 
 /// Append input to the currently active steerable turn without creating a new run.
@@ -130,6 +193,7 @@ pub async fn steer_agent_stream(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
+    validate_runtime_workspace(&message, runtime_from_message(&message)?.id(), &state)?;
     match message.agent_type.as_deref() {
         Some("codex") => {
             state
@@ -137,7 +201,7 @@ pub async fn steer_agent_stream(
                 .steer_codex(&threadId, message, clientUserMessageId, &app_handle)
                 .await
         }
-        Some("deepseek-harness") | Some("deepseek_harness") | Some("dsh") => {
+        Some("dsh") => {
             state
                 .external_runtimes
                 .steer_deepseek_harness(&threadId, message, clientUserMessageId, &app_handle)
@@ -276,10 +340,11 @@ pub async fn execute_deepseek_harness_command(
         .await?;
     if !matches!(
         message.agent_type.as_deref(),
-        Some("deepseek-harness") | Some("deepseek_harness") | Some("dsh") | None
+        Some("dsh") | None
     ) {
         return Err("DSH slash commands require the deepseek-harness agent".to_string());
     }
+    validate_runtime_workspace(&message, "dsh", &state)?;
     state
         .deepseek_harness
         .execute_command(&threadId, &command, &message, &app_handle)
@@ -296,7 +361,7 @@ pub async fn deepseek_harness_skill_catalog(
 ) -> Result<serde_json::Value, String> {
     if !matches!(
         message.agent_type.as_deref(),
-        Some("deepseek-harness") | Some("deepseek_harness") | Some("dsh") | None
+        Some("dsh") | None
     ) {
         return Err("DSH skills require the deepseek-harness agent".to_string());
     }
@@ -333,7 +398,7 @@ pub async fn stop_agent_stream(
     tracing::info!(
         "[Command] stop_agent_stream called for thread: {}, agent_type: {}, run_id: {}",
         threadId,
-        runtime.map(AgentRuntime::key).unwrap_or("unknown"),
+        runtime.map(AgentRuntime::id).unwrap_or("unknown"),
         runId.as_deref().unwrap_or("<any>")
     );
     let signalled = match runtime {
@@ -462,4 +527,74 @@ pub async fn codex_slash_command(
             &app,
         )
         .await
+}
+
+#[cfg(test)]
+mod workspace_tests {
+    use super::*;
+    use flowix_core::memo_file::{
+        NotebookAddDir, NotebookConfig, NotebookWorkspaceConfig, NotebookWorkspaceSnapshot,
+    };
+    #[test]
+    fn runtime_paths_follow_notebook_mounts_and_protect_internal_storage() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("notes");
+        let repo = temp.path().join("repo");
+        std::fs::create_dir_all(root.join(".flowix")).unwrap();
+        std::fs::create_dir(&repo).unwrap();
+        let root = root.to_string_lossy().into_owned();
+        let repo = repo.to_string_lossy().into_owned();
+        let mut workspace = NotebookWorkspaceSnapshot {
+            notebooks: vec![NotebookConfig {
+                id: "one".into(),
+                name: "One".into(),
+                icon: None,
+                path: root.clone(),
+                is_default: true,
+                sort: 0,
+                created_at: 0,
+                updated_at: 0,
+            }],
+            notebook_configs: HashMap::from([(
+                "one".into(),
+                NotebookWorkspaceConfig {
+                    version: 1,
+                    revision: 1,
+                    add_dirs: vec![NotebookAddDir {
+                        id: "repo".into(),
+                        path: repo.clone(),
+                        label: "Repo".into(),
+                        enabled: true,
+                        missing: false,
+                    }],
+                },
+            )]),
+        };
+        assert!(check_workspace_paths(
+            &workspace,
+            Some("one"),
+            [root.as_str(), repo.as_str()].into_iter()
+        )
+        .is_ok());
+        assert!(
+            check_workspace_paths(&workspace, Some("other"), [repo.as_str()].into_iter()).is_err()
+        );
+        let internal = Path::new(&root)
+            .join(".flowix")
+            .to_string_lossy()
+            .into_owned();
+        assert!(
+            check_workspace_paths(&workspace, Some("one"), [internal.as_str()].into_iter())
+                .is_err()
+        );
+        workspace
+            .notebook_configs
+            .get_mut("one")
+            .unwrap()
+            .add_dirs
+            .clear();
+        assert!(
+            check_workspace_paths(&workspace, Some("one"), [repo.as_str()].into_iter()).is_err()
+        );
+    }
 }

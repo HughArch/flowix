@@ -1,7 +1,13 @@
 import { messageRenderKey } from "@features/agent/message/render-identity";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { Check, Copy, GitBranch, Image as ImageIcon } from "lucide-react";
+import {
+  Check,
+  Copy,
+  GitBranch,
+  Image as ImageIcon,
+  LoaderCircle,
+} from "lucide-react";
 import { translate, type AppLanguage } from "@/lib/i18n";
 import { createLogger } from "@/lib/logger";
 import { agent } from "@platform/tauri/client";
@@ -83,6 +89,28 @@ function getMessageDurationText(
   return `Duration ${minutes}m${seconds}s`;
 }
 
+function getCommandModeLabel(message: AgentMessage, language: AppLanguage): string | null {
+  if (
+    message.messageType !== "dsh-command" &&
+    message.messageType !== "dsh-command-prompt" &&
+    message.messageType !== "codex-command"
+  ) {
+    return null;
+  }
+
+  const command = message.content.trim();
+  if (
+    message.messageType === "dsh-command-prompt" ||
+    /^\/plan(?:\s|$)/iu.test(command)
+  ) {
+    return translate(language, "editor.threadCard.commandMode.plan");
+  }
+  if (/^\/goal(?:\s|$)/iu.test(command)) {
+    return translate(language, "editor.threadCard.commandMode.goal");
+  }
+  return null;
+}
+
 function createUserMessageAttachments(
   message: AgentMessage,
   language: AppLanguage,
@@ -111,21 +139,25 @@ function createUserMessageAttachments(
     const icon = document.createElement("span");
     icon.className = "agent-thread-card__message-attachment-icon";
     icon.append(createLucideIcon(ImageIcon));
-    card.append(icon);
+    const label = document.createElement("span");
+    label.className = "agent-thread-card__message-attachment-label";
+    label.textContent = attachment.name;
+    label.title = attachment.name;
+    card.append(icon, label);
     container.append(card);
 
     if (
       attachment.type === "input_image" ||
       attachment.mimeType.toLowerCase().startsWith("image/")
     ) {
-      void agent.readCachedImage(attachment.path).then((previewUrl) => {
+      void agent.readCachedAttachment(attachment.path).then((previewUrl) => {
         if (!previewUrl) return;
         const preview = document.createElement("img");
         preview.className = "agent-thread-card__message-attachment-preview";
         preview.src = previewUrl;
         preview.alt = attachment.name;
         preview.draggable = false;
-        card.replaceChildren(preview);
+        icon.replaceChildren(preview);
       }).catch(() => {
         // Keep the image icon when the cached file is no longer available.
       });
@@ -237,7 +269,14 @@ export function attachMessageActions(
         // the only visible state made a successful click look like a no-op.
         confirmButton.disabled = true;
         cancelButton.disabled = true;
-        confirmButton.textContent = language === "zh-CN" ? "分叉中…" : "Forking…";
+        const loadingIcon = createLucideIcon(LoaderCircle);
+        loadingIcon.classList.add(
+          "agent-thread-card__message-fork-loading-icon",
+          "flowix-spin",
+        );
+        const loadingLabel = document.createElement("span");
+        loadingLabel.textContent = language === "zh-CN" ? "分叉中…" : "Forking…";
+        confirmButton.replaceChildren(loadingIcon, loadingLabel);
         let result: void | Promise<void>;
         try {
           result = onFork?.(message);
@@ -634,6 +673,14 @@ export function createAgentThreadCardMessageElement(options: {
       const content = document.createElement("div");
       content.className =
         "agent-thread-card__message-content agent-thread-card__message-content--user-preview";
+      const commandModeLabel = getCommandModeLabel(message, language);
+      if (commandModeLabel) {
+        const modeTag = document.createElement("span");
+        modeTag.className =
+          "agent-thread-card__message-attachment agent-thread-card__message-mode-tag";
+        modeTag.textContent = commandModeLabel;
+        item.append(modeTag);
+      }
       if (skillMarkup.names.length > 0) {
         const skillTags = document.createElement("div");
         skillTags.className = "agent-thread-card__message-pi-skill-tags";
@@ -646,19 +693,21 @@ export function createAgentThreadCardMessageElement(options: {
         });
         bubble.append(skillTags);
       }
-      if (
-        message.messageType === "dsh-command" ||
-        message.messageType === "dsh-command-prompt"
-      ) {
-        const badge = document.createElement("span");
-        badge.className = "agent-thread-card__message-dsh-badge";
-        badge.textContent = message.messageType === "dsh-command-prompt" ? "DSH /plan" : "DSH";
-        bubble.append(badge);
-      } else if (message.messageType === "codex-command") {
-        const badge = document.createElement("span");
-        badge.className = "agent-thread-card__message-codex-badge";
-        badge.textContent = "Codex";
-        bubble.append(badge);
+      if (!commandModeLabel) {
+        if (
+          message.messageType === "dsh-command" ||
+          message.messageType === "dsh-command-prompt"
+        ) {
+          const badge = document.createElement("span");
+          badge.className = "agent-thread-card__message-dsh-badge";
+          badge.textContent = message.messageType === "dsh-command-prompt" ? "DSH /plan" : "DSH";
+          bubble.append(badge);
+        } else if (message.messageType === "codex-command") {
+          const badge = document.createElement("span");
+          badge.className = "agent-thread-card__message-codex-badge";
+          badge.textContent = "Codex";
+          bubble.append(badge);
+        }
       }
       bubble.append(content);
       item.append(bubble);
@@ -672,7 +721,7 @@ export function createAgentThreadCardMessageElement(options: {
         isStreaming: options.isStreaming,
       });
       const attachments = createUserMessageAttachments(message, language);
-      if (attachments) item.append(attachments);
+      if (attachments) bubble.append(attachments);
     } else if (message.role === "reasoning") {
       const header = document.createElement("button");
       header.type = "button";

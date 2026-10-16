@@ -9,6 +9,7 @@ import { createLogger } from '@/lib/logger';
 
 const logger = createLogger('folder-tree');
 const REFRESH_DEDUP_WINDOW_MS = 350;
+const WATCHER_REFRESH_DEBOUNCE_MS = 250;
 
 function deleteCachedSubtree(nodes: Map<string, DocTreeItem>, path: string): void {
   const key = canonicalPath(path);
@@ -19,6 +20,19 @@ function deleteCachedSubtree(nodes: Map<string, DocTreeItem>, path: string): voi
     }
   }
   nodes.delete(key);
+}
+
+function pruneExpandedSubtrees(expanded: Set<string>, removedFolderPaths: string[]): Set<string> {
+  if (removedFolderPaths.length === 0) return expanded;
+  const removedKeys = removedFolderPaths.map(canonicalDirectoryPath);
+  let changed = false;
+  const next = new Set<string>();
+  for (const path of expanded) {
+    const isRemoved = removedKeys.some((root) => path === root || path.startsWith(`${root}/`));
+    if (isRemoved) changed = true;
+    else next.add(path);
+  }
+  return changed ? next : expanded;
 }
 
 function reconcileDirectoryChildren(
@@ -116,6 +130,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [dirtyDirectories, setDirtyDirectories] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
+  const [loadedRootPath, setLoadedRootPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingDirectories, setLoadingDirectories] = useState<Set<string>>(() => new Set());
   const [directoryErrors, setDirectoryErrors] = useState<Set<string>>(() => new Set());
@@ -125,6 +140,8 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
   const directoryRefreshesRef = useRef(new Map<string, Promise<void>>());
   const directoryRefreshSequenceRef = useRef(new Map<string, number>());
   const lastRefreshAtRef = useRef(new Map<string, number>());
+  const pendingWatcherDirectoriesRef = useRef(new Set<string>());
+  const watcherRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rootRefreshRef = useRef<Promise<void> | null>(null);
   const rootRefreshSequenceRef = useRef(0);
   const rootChildrenRef = useRef(rootChildren);
@@ -192,8 +209,19 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (watcherRefreshTimerRef.current) {
+        clearTimeout(watcherRefreshTimerRef.current);
+        watcherRefreshTimerRef.current = null;
+      }
+      pendingWatcherDirectoriesRef.current.clear();
+    };
+  }, [folderPath]);
+
   const loadRoot = useCallback(async () => {
     const generation = ++generationRef.current;
+    setLoadedRootPath(null);
     setLoading(true);
     setError(null);
     setLoadingDirectories(new Set());
@@ -223,6 +251,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
     } finally {
       if (mountedRef.current && generation === generationRef.current) {
         setLoading(false);
+        setLoadedRootPath(canonicalDirectoryPath(folderPath));
       }
     }
   }, [folderPath]);
@@ -261,6 +290,16 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
           || generation !== generationRef.current
           || directoryRefreshSequenceRef.current.get(key) !== requestSequence
         ) return;
+        const previousChildren = nodesRef.current.get(key)?.children ?? [];
+        const nextChildKeys = new Set(children.map((child) => canonicalPath(child.fullPath)));
+        const removedFolders = previousChildren
+          .filter((child) => child.type === 'folder' && !nextChildKeys.has(canonicalPath(child.fullPath)))
+          .map((child) => child.fullPath);
+        if (removedFolders.length > 0) {
+          // Expansion state is path-based. Drop removed folder paths as well as
+          // cached nodes so a later same-name import starts collapsed.
+          setExpanded((previous) => pruneExpandedSubtrees(previous, removedFolders));
+        }
         // Preserve loaded descendants that still exist, but remove deleted or
         // moved-away children (and their cached subtrees) from the flat node
         // table. Without pruning, long-running watcher refreshes retain stale
@@ -394,6 +433,13 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
           setError('unreadable');
           return;
         }
+        const nextChildKeys = new Set(items.map((item) => canonicalPath(item.fullPath)));
+        const removedFolders = rootChildrenRef.current
+          .filter((item) => item.type === 'folder' && !nextChildKeys.has(canonicalPath(item.fullPath)))
+          .map((item) => item.fullPath);
+        if (removedFolders.length > 0) {
+          setExpanded((previous) => pruneExpandedSubtrees(previous, removedFolders));
+        }
         setRootChildren(items);
         setNodes((prev) => reconcileRootChildren(prev, rootChildrenRef.current, items));
         setError(null);
@@ -438,10 +484,10 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
 
   /**
    * Reconcile native watcher notifications without throwing away expansion
-   * state. Expanded directories are refreshed immediately; collapsed ones are
-   * marked dirty and reread on their next expand.
+   * state. Expanded directories are refreshed; collapsed ones are marked dirty
+   * and reread on their next expand.
    */
-  const refreshDirectories = useCallback(async (dirPaths: string[]) => {
+  const refreshDirectoriesNow = useCallback(async (dirPaths: string[]) => {
     const keys = [...new Set(dirPaths.map((path) => canonicalDirectoryPath(path)))];
     if (keys.length === 0) return;
 
@@ -469,7 +515,21 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
 
       await refreshDirectory(key);
     }));
-  }, [expanded, refresh, refreshRootPreservingExpansion, rootKey]);
+  }, [expanded, refreshRootPreservingExpansion, rootKey]);
+
+  /** Merge a burst of native watcher events and refresh after it settles. */
+  const refreshDirectories = useCallback((dirPaths: string[]) => {
+    for (const path of dirPaths) {
+      pendingWatcherDirectoriesRef.current.add(canonicalDirectoryPath(path));
+    }
+    if (watcherRefreshTimerRef.current) clearTimeout(watcherRefreshTimerRef.current);
+    watcherRefreshTimerRef.current = setTimeout(() => {
+      watcherRefreshTimerRef.current = null;
+      const pending = [...pendingWatcherDirectoriesRef.current];
+      pendingWatcherDirectoriesRef.current.clear();
+      void refreshDirectoriesNow(pending);
+    }, WATCHER_REFRESH_DEBOUNCE_MS);
+  }, [refreshDirectoriesNow]);
 
   const state: FolderTreeState = useMemo(
     () => ({ rootChildren, nodes, expanded, loading, error, loadingDirectories, directoryErrors }),
@@ -478,6 +538,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
 
   return useMemo(() => ({
     ...state,
+    loadedRootPath,
     toggle,
     expandTo,
     collapseAll,
@@ -486,7 +547,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
     reload: loadRoot,
     retryDirectory,
     ignoreCollectionPathEvents,
-  }), [ignoreCollectionPathEvents, state, toggle, expandTo, collapseAll, refresh, refreshDirectories, loadRoot, retryDirectory]);
+  }), [ignoreCollectionPathEvents, loadedRootPath, state, toggle, expandTo, collapseAll, refresh, refreshDirectories, loadRoot, retryDirectory]);
 }
 
 export type FolderTreeController = ReturnType<typeof useFolderTree>;
@@ -537,8 +598,10 @@ function compareTreeItems(sort: FolderTreeSort, a: DocTreeItem, b: DocTreeItem):
     return sort === 'filenameDesc' ? -order : order;
   }
 
-  const aTime = sort === 'updatedAt' ? a.modifiedMs : a.createdMs;
-  const bTime = sort === 'updatedAt' ? b.modifiedMs : b.createdMs;
+  // Notebook notes have an indexed creation timestamp that survives atomic
+  // file replacement. Prefer it over filesystem birth time for created sorting.
+  const aTime = sort === 'updatedAt' ? a.modifiedMs : (a.memoCreatedMs ?? a.createdMs);
+  const bTime = sort === 'updatedAt' ? b.modifiedMs : (b.memoCreatedMs ?? b.createdMs);
   if (aTime === null && bTime !== null) return 1;
   if (aTime !== null && bTime === null) return -1;
   if (aTime !== null && bTime !== null && aTime !== bTime) return bTime - aTime;

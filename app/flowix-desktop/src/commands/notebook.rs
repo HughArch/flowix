@@ -1,9 +1,4 @@
-//! Notebook IPC —增删改查 + 切换当前 notebook�?//!
-//! `set_current_notebook` �?`switch_notebook_and_rebuild` helper, 触发
-//! watcher rebind + 磁盘对账 + 后台索引 rebuild�?//!
-//! �?/ �?/ �?/ 清空 四个写操作都会同步更�?`agent_access` store
-//! (`~/.flowix/agent-access.json`), 任何 entry 真改了之�?emit
-//! `agent-access-changed` 事件, 其它窗口 React 树收到后从�?盘重�?load�?
+//! Notebook lifecycle and device-local registration in db/local.db.
 use crate::events as dispatcher;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
@@ -16,7 +11,7 @@ use flowix_core::memo_file::{
 use flowix_core::MemoService;
 use flowix_sync::V2LocalNotebook;
 
-use super::agent_access::AGENT_ACCESS_CHANGED_EVENT;
+use super::agent_workspace::AGENT_WORKSPACE_CHANGED_EVENT;
 use super::helpers::{
     refresh_watcher_roots, switch_notebook_trusting_index, watch_created_notebook,
 };
@@ -256,7 +251,9 @@ fn create_notebook_registry_with_id_and_template(
 
     // 创建顺序: 1) 先�?现有 configs 验证�?��不冲�? 2) �?next sort;
     // 3) 组�? NotebookConfig 写盘。sort �?MAX(sort)+10 让新行落到末�?    // (ORDER BY sort ASC), 不取 len �?���?reorder �?sort �?��疏的�?
-    let mut configs = memo_file.read_notebook_configs().unwrap_or_default();
+    let mut configs = memo_file
+        .read_notebook_configs()
+        .map_err(|error| format!("INDEX_READ_FAILED: {error}"))?;
     if configs
         .iter()
         .any(|notebook| comparable_notebook_path(&notebook.path) == comparable_path)
@@ -358,11 +355,8 @@ fn cloud_restore_directory_is_empty(path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-fn sync_notebook_agent_access(config: &NotebookConfig, state: &AppState, app: &AppHandle) {
-    // 同�?往 agent_access 列表里加一�?(默�? enabled), 写盘后才�?    // 同�?完成 ── store 内部走原子写, 失败会回滚内存�?
-    if state.agent_access.add_or_update_notebook(config) {
-        dispatcher::emit_to(app, AGENT_ACCESS_CHANGED_EVENT, ());
-    }
+fn notify_notebook_workspace_changed(app: &AppHandle) {
+    dispatcher::emit_to(app, AGENT_WORKSPACE_CHANGED_EVENT, ());
 }
 
 fn set_current_notebook_inner(
@@ -382,8 +376,8 @@ fn set_current_notebook_inner(
 
     // Fast path for ordinary switching: trust memo index and avoid synchronous
     // disk reconciliation. Search index rebuild is lazy, triggered by search.
-    if let Err(error) = switch_notebook_trusting_index(state, app, notebook_id.clone()) {
-        if let Err(restore_error) = switch_notebook_trusting_index(state, app, previous_id) {
+    if let Err(error) = switch_notebook_trusting_index(state, notebook_id.clone()) {
+        if let Err(restore_error) = switch_notebook_trusting_index(state, previous_id) {
             tracing::error!(
                 "[set_current_notebook] failed to restore previous notebook after switch error: {restore_error}"
             );
@@ -397,7 +391,7 @@ fn set_current_notebook_inner(
     {
         // Keep the process-local and persisted selection aligned if the second
         // half of the switch fails. The original error remains authoritative.
-        if let Err(restore_error) = switch_notebook_trusting_index(state, app, previous_id) {
+        if let Err(restore_error) = switch_notebook_trusting_index(state, previous_id) {
             tracing::error!(
                 "[set_current_notebook] failed to restore previous notebook after persistence error: {restore_error}"
             );
@@ -437,9 +431,15 @@ fn run_notebook_import(app: AppHandle, notebook_id: String, seed_onboarding_docs
         let mut onboarding_docs_seeded = false;
         {
             let memo_file = read_lock(&app_state.memo_file, "memo_file");
-            memo_file
-                .ensure_notebook_migrations(&notebook_id)
-                .map_err(|error| format!("notebook import migration failed: {error}"))?;
+            match memo_file.has_legacy_notebook_internal_data(&notebook_id) {
+                Ok(true) => {
+                    if let Err(error) = memo_file.ensure_notebook_structure_migration(&notebook_id) {
+                        tracing::warn!(notebook = %notebook_id, %error, "legacy plugin artifact migration deferred");
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => tracing::warn!(notebook = %notebook_id, %error, "legacy plugin artifact check deferred"),
+            }
             tracing::info!(
                 "[create_notebook] import/reconcile start id={}",
                 notebook_id
@@ -747,9 +747,6 @@ pub async fn create_notebook(
                     .ok_or_else(|| "PATH_INVALID_UTF8".to_string())?
             }
         };
-        let has_bookmark_access = state
-            .security_bookmarks
-            .start_accessing_for_path(Path::new(trimmed_path));
         if !Path::new(trimmed_path).is_dir() {
             return Err("PATH_MISSING".to_string());
         }
@@ -772,13 +769,8 @@ pub async fn create_notebook(
         {
             return Err("NOTEBOOK_PRESET_OVERWRITE_CONFIRM_REQUIRED".to_string());
         }
-        if !has_bookmark_access {
-            state
-                .security_bookmarks
-                .record_directory(Path::new(trimmed_path))
-                .map_err(|e| format!("BOOKMARK_WRITE_FAILED: {e}"))?;
-        }
-
+        // Also handles dependency deletion while the window stayed open.
+        state.user_config.ensure_runtime_storage()?;
         let config = {
             let memo_file = write_lock(&state.memo_file, "memo_file");
             create_notebook_registry_with_id_and_template(
@@ -791,7 +783,7 @@ pub async fn create_notebook(
                 &memo_file,
             )?
         };
-        sync_notebook_agent_access(&config, state.inner(), &app);
+        notify_notebook_workspace_changed(&app);
         if activate.unwrap_or(true) {
             activate_created_notebook(&config, state.inner(), &app)?;
         } else {
@@ -805,6 +797,9 @@ pub async fn create_notebook(
     })
     .await
     .map_err(|error| format!("notebook creation task failed: {error}"))?;
+    if let Err(error) = &result {
+        crate::runtime_log::record_event("error", "notebook.create.failed", error);
+    }
     crate::runtime_log::record_event(
         "info",
         "notebook.create.timing",
@@ -879,6 +874,7 @@ pub fn create_notebook_from_cloud(
     name: String,
     path: String,
     icon: Option<String>,
+    activate: Option<bool>,
     state: State<AppState>,
     app: AppHandle,
 ) -> Result<Notebook, String> {
@@ -895,26 +891,22 @@ pub fn create_notebook_from_cloud(
     }
 
     let directory = Path::new(trimmed_path);
-    let has_bookmark_access = state.security_bookmarks.start_accessing_for_path(directory);
     if !directory.is_dir() {
         return Err("PATH_MISSING".to_string());
     }
     if !cloud_restore_directory_is_empty(directory)? {
         return Err("PATH_NOT_EMPTY".to_string());
     }
-    if !has_bookmark_access {
-        state
-            .security_bookmarks
-            .record_directory(directory)
-            .map_err(|e| format!("BOOKMARK_WRITE_FAILED: {e}"))?;
-    }
-
     let config = {
         let memo_file = write_lock(&state.memo_file, "memo_file");
         create_notebook_registry_with_id(trimmed_name, trimmed_path, icon, Some(&id), &memo_file)?
     };
-    sync_notebook_agent_access(&config, state.inner(), &app);
-    activate_created_notebook(&config, state.inner(), &app)?;
+    notify_notebook_workspace_changed(&app);
+    if activate.unwrap_or(true) {
+        activate_created_notebook(&config, state.inner(), &app)?;
+    } else {
+        watch_created_notebook(state.inner(), &app, &config);
+    }
     dispatcher::emit_to(&app, NOTEBOOKS_CHANGED_EVENT, ());
 
     Ok(notebook_from_config(config))
@@ -946,10 +938,7 @@ pub fn update_notebook(
     let updated = configs[index].clone();
     drop(memo_file);
 
-    // 名字 / �?��变更都同步到 agent_access ── store �?��判定�?��真改�?
-    if state.agent_access.add_or_update_notebook(&updated) {
-        dispatcher::emit_to(&app, AGENT_ACCESS_CHANGED_EVENT, ());
-    }
+    notify_notebook_workspace_changed(&app);
     refresh_watcher_roots(state.inner(), &app);
     record_notebook_metadata_change(state.inner(), &app, &updated);
 
@@ -1064,10 +1053,7 @@ pub fn delete_notebook(
         crate::commands::cloud::schedule_notebook_sync(app.clone(), id.clone());
     }
 
-    // 同�?把�?应的 agent_access entry 也删�? 状态栏�?文件权限"子菜�?    // 会少一�?── 用户没主动去勾�? 不应该留�??儿在那里�?
-    if state.agent_access.remove_notebook(&id) {
-        dispatcher::emit_to(&app, AGENT_ACCESS_CHANGED_EVENT, ());
-    }
+    notify_notebook_workspace_changed(&app);
     refresh_watcher_roots(state.inner(), &app);
     dispatcher::emit_to(&app, NOTEBOOKS_CHANGED_EVENT, ());
     Ok(true)
@@ -1170,20 +1156,14 @@ pub fn clear_notebooks(state: State<AppState>, app: AppHandle) -> Result<bool, S
     drop(setup_guard);
 
     // 把�?清掉的非默�? notebook �?access 列表里也清掉, 然后 emit 一欰�?
-    let mut any_removed = false;
     for id in before_ids {
         if let Err(error) = state.cloud_sync.record_v2_notebook_delete(&id) {
             tracing::warn!("failed to persist cleared cloud notebook {id}: {error}");
         } else {
             crate::commands::cloud::schedule_notebook_sync(app.clone(), id.clone());
         }
-        if state.agent_access.remove_notebook(&id) {
-            any_removed = true;
-        }
     }
-    if any_removed {
-        dispatcher::emit_to(&app, AGENT_ACCESS_CHANGED_EVENT, ());
-    }
+    notify_notebook_workspace_changed(&app);
     refresh_watcher_roots(state.inner(), &app);
     Ok(ok)
 }
@@ -1316,6 +1296,32 @@ mod tests {
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].id, config.id);
         assert_eq!(configs[0].path, config.path);
+    }
+
+    #[test]
+    fn missing_runtime_dependencies_allow_notebook_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join("config");
+        let memo = MemoFile::new(config_dir.clone());
+        memo.initialize_registry_storage().unwrap();
+        memo.mark_local_migration_completed("config_local_migrations_v1")
+            .unwrap();
+        fs::create_dir_all(config_dir.join("boot")).unwrap();
+        fs::write(
+            config_dir.join("boot/boot.json"),
+            "{\"versionInitialization\":{\"completed\":true}}",
+        )
+        .unwrap();
+        fs::remove_dir_all(config_dir.join("db")).unwrap();
+        // Keep the same in-memory MemoFile, as with an already open Dev window.
+        assert!(memo.read_notebook_configs().unwrap().is_empty());
+        assert!(memo.read_selected_notebook_id().unwrap().is_none());
+        assert!(memo.read_notebook_workspace().unwrap().notebooks.is_empty());
+        let path = temp.path().join("new-notebook");
+        fs::create_dir_all(&path).unwrap();
+        let created = create_notebook_registry("New", path.to_str().unwrap(), None, &memo).unwrap();
+        assert_eq!(memo.read_notebook_configs().unwrap()[0].id, created.id);
+        assert!(config_dir.join("boot/boot.json").exists());
     }
 
     #[test]

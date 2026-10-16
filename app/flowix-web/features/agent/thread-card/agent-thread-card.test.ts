@@ -1,3 +1,4 @@
+import type { AgentAccessConfig } from "@/lib/types/agent-workspace.test-support";
 import { Editor } from "@tiptap/core";
 import { NodeSelection } from "@tiptap/pm/state";
 import { closeHistory } from "@tiptap/pm/history";
@@ -24,15 +25,7 @@ const memoStateMock = vi.hoisted(() => ({
 }));
 
 const agentAccessState = vi.hoisted(() => ({
-  config: { entries: [] as Array<Record<string, unknown>> } as {
-    entries: Array<Record<string, unknown>>;
-    defaults?: {
-      files?: Record<
-        string,
-        { workspace?: string; folders: string[]; notebooks: string[] }
-      >;
-    };
-  },
+  config: { version: 1, entries: [] } as AgentAccessConfig,
 }));
 
 const toastMock = vi.hoisted(() => ({
@@ -47,6 +40,9 @@ vi.mock("@features/workspace/use-cases/browser-column-navigation", () => ({
     host: 'browser-column',
     tabId: 'file-browser:/Users/rop/Desktop/vibe/flowix-main',
     alreadyOpen: false,
+  })),
+  openBrowserColumnNotebookNote: vi.fn(() => ({
+    host: 'browser-column', tabId: 'file:external-note', alreadyOpen: false,
   })),
   openBrowserColumnText: vi.fn(() => ({
     host: 'browser-column', tabId: 'file:external-text', alreadyOpen: false,
@@ -71,19 +67,22 @@ vi.mock("@platform/tauri/client", () => ({
   agent: {
     ...createAgentClientMock(),
     listSupportedModels: vi.fn(async () => []),
-    cacheImage: vi.fn(async () => ({
+    cacheAttachment: vi.fn(async () => ({
       path: "/tmp/cached-agent-image.png",
       mimeType: "image/png",
       name: "cached-agent-image.png",
     })),
-    deleteCachedImage: vi.fn(async () => true),
-    readCachedImage: vi.fn(async () => null),
+    deleteCachedAttachment: vi.fn(async () => true),
+    readCachedAttachment: vi.fn(async () => null),
     getDeepSeekHarnessSessionId: vi.fn(async () => null),
     getCodexSessionId: vi.fn(async () => null),
     getClaudeSessionId: vi.fn(async () => null),
     getCodexDefaultModel: vi.fn(async () => "gpt-5.5"),
   },
+  agentWorkspace: { getLegacyPreferences: vi.fn(async () => null) },
   piModels: {
+    getFeatures: vi.fn(async () => ({ toolSearch: false })),
+    clearLegacyCodeMode: vi.fn(async () => undefined),
     list: vi.fn(async () => []),
   },
   notes: {
@@ -121,20 +120,28 @@ vi.mock("@platform/tauri/client", () => ({
   listenToAgentStream: vi.fn(),
 }));
 
-vi.mock("@features/agent/store/agent-access-store", () => ({
-  useAgentAccessStore: {
-    getState: () => ({
-      config: agentAccessState.config,
-      isLoading: false,
-      toggle: vi.fn(),
-      setWorkspace: vi.fn(),
+vi.mock("@features/agent/store/agent-data-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@features/agent/store/agent-data-store")>();
+  return { ...actual, ensureAgentWorkspaceReady: vi.fn(async () => {}), useAgentDataStore: Object.assign(
+    (selector: Parameters<typeof actual.useAgentDataStore>[0]) => actual.useAgentDataStore(selector),
+    actual.useAgentDataStore,
+    { getState: () => ({ ...actual.useAgentDataStore.getState(), workspace: {
+      ...actual.useAgentDataStore.getState().workspace,
+      ...actual.projectAgentWorkspace({ notebooks: agentAccessState.config.entries.filter(e => e.kind === "notebook"), notebookConfigs: Object.fromEntries(
+        Object.entries(agentAccessState.config.defaults?.files ?? {}).map(([id, files]) => [id, {
+          version: 1, revision: 1, addDirs: files.folders.map((path) => ({ id: path, path, label: path, enabled: true })),
+        }]),
+      ) }),
+    }, workspaceActions: {
+      ...actual.useAgentDataStore.getState().workspaceActions,
       addFolderFromPicker: vi.fn(async () => ({ ok: true })),
-      removeFolder: vi.fn(),
-      loadInitial: vi.fn(),
-    }),
-    subscribe: vi.fn(() => () => undefined),
-  },
-}));
+      attachFolderToNotebook: vi.fn(async () => "saved" as const),
+      detachFolderFromNotebook: vi.fn(async () => "saved" as const),
+      getNotebookFiles: (id: string | null | undefined) => id ? agentAccessState.config.defaults?.files?.[id] : undefined,
+      loadInitial: vi.fn(async () => true),
+    } }) },
+  ) };
+});
 
 vi.mock("@features/agent/store/agent-runtime-store", () => ({
   useAgentRuntimeStore: {
@@ -180,7 +187,7 @@ vi.mock("@features/document/store/document-store", () => ({
   },
 }));
 
-vi.mock("@features/memo/use-cases/open-by-target", () => ({
+vi.mock("@features/memo/public/note-navigation-api", () => ({
   openNoteByDeepLink: vi.fn(),
 }));
 
@@ -212,7 +219,7 @@ type ComposerInput = HTMLDivElement & { editor?: Editor };
 
 function getComposerInput(root: ParentNode): ComposerInput {
   const input = root.querySelector<HTMLDivElement>(
-    ".agent-thread-card__composer-input",
+    ".agent-composer__input",
   ) as ComposerInput | null;
   if (!input) throw new Error("Composer input not found");
   return input;
@@ -262,7 +269,7 @@ async function waitForEnabledSendButton(
   let button: HTMLButtonElement | null = null;
   await vi.waitFor(() => {
     button = root.querySelector<HTMLButtonElement>(
-      "button.agent-thread-card__send",
+      "button.agent-composer__send",
     );
     expect(button).not.toBeNull();
     expect(button!.disabled).toBe(false);
@@ -271,7 +278,7 @@ async function waitForEnabledSendButton(
 }
 
 async function seedRenderableMessages(
-  _typeKey: "deepseek-harness" | "codex" | "claude" | "gemini" | "hermes" | "openclaw",
+  _typeKey: "deepseek-harness" | "codex" | "claude" | "hermes" | "opencode",
   threadId: string,
   messages: ChatMessage[],
 ): Promise<void> {
@@ -387,7 +394,7 @@ describe("AgentThreadCard NodeView streaming", () => {
     const parsed = parseAgentThreadCardMarkdown({ attrs: markdown }).attrs;
     expect(parsed.title).toBe("");
     expect(parsed.fullscreen).toBe(true);
-    expect(parsed.inputImages).toEqual([{
+    expect(parsed.inputAttachments).toEqual([{
       path: "/tmp/pasted.png",
       mimeType: "image/png",
       name: "pasted.png",
@@ -524,7 +531,7 @@ describe("AgentThreadCard NodeView streaming", () => {
       true,
     );
     useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true);
-    agentAccessState.config = { entries: [] };
+    agentAccessState.config = { version: 1, entries: [] };
   });
 
   afterEach(() => {
@@ -1568,19 +1575,20 @@ describe("AgentThreadCard NodeView streaming", () => {
       element: host, extensions: [StarterKit, AgentThreadCard],
       content: { type: "doc", content: [{ type: "agentThreadCard", attrs: {
         threadId: "thread-rejected-send", typeKey: "deepseek-harness", collapsed: false,
-        inputDraft: "please review", inputImages: images,
+        inputDraft: "please review", inputAttachments: images,
       } }] },
     });
     const input = getComposerInput(host);
+    const draftBeforeSend = getComposerValue(input);
     (await waitForEnabledSendButton(host)).click();
     await vi.waitFor(() => expect(toastMock.error).toHaveBeenCalledWith("backend rejected request"));
-    expect(getComposerValue(input)).toBe("please review");
-    expect(editor.getJSON().content?.[0]?.attrs?.inputImages).toEqual(images);
-    expect(host.querySelector<HTMLButtonElement>(".agent-thread-card__composer-image-remove")?.disabled).toBe(false);
-    expect(agent.deleteCachedImage).not.toHaveBeenCalled();
+    expect(getComposerValue(input)).toBe(draftBeforeSend);
+    expect(editor.getJSON().content?.[0]?.attrs?.inputAttachments).toEqual(images);
+    expect(host.querySelector(".agent-composer__attachment-token-label")?.textContent).toBe("retry.pdf");
+    expect(agent.deleteCachedAttachment).not.toHaveBeenCalled();
     (await waitForEnabledSendButton(host)).click();
     await vi.waitFor(() => expect(getComposerValue(input)).toBe(""));
-    expect(editor.getJSON().content?.[0]?.attrs?.inputImages).toEqual([]);
+    expect(editor.getJSON().content?.[0]?.attrs?.inputAttachments).toEqual([]);
   });
 
   it("persists short Thread Card composer drafts in node attrs", async () => {
@@ -1724,12 +1732,13 @@ describe("AgentThreadCard NodeView streaming", () => {
       path: "D:\\workspace\\main",
     };
     agentAccessState.config = {
+      version: 1,
       // defaults.folders 里的每个 folder 必须在 entries 里有对应的
       // enabled && !missing 授权条目, 否则 resolveAuthorizedDefaultFiles
       // 会把它收窄掉 (防越权)。
       entries: [
-        { id: "e-main", kind: "folder", path: "D:\\workspace\\main", name: "main", enabled: true, missing: false },
-        { id: "e-extra", kind: "folder", path: "D:\\workspace\\extra", name: "extra", enabled: true, missing: false },
+        { id: "e-main", kind: "folder", path: "D:\\workspace\\main", name: "main", enabled: true, missing: false, addedAt: 0, updatedAt: 0 },
+        { id: "e-extra", kind: "folder", path: "D:\\workspace\\extra", name: "extra", enabled: true, missing: false, addedAt: 0, updatedAt: 0 },
       ],
       defaults: {
         files: {
@@ -1779,6 +1788,7 @@ describe("AgentThreadCard NodeView streaming", () => {
         content: "check workspace",
         agentType: "codex",
         runtimeConfig: {
+          notebookId: "nb-current",
           codex: expect.objectContaining({
             cwd: "D:\\workspace\\main",
             workspacePaths: ["D:\\workspace\\extra"],
@@ -2457,7 +2467,7 @@ describe("AgentThreadCard NodeView streaming", () => {
 
     editor = new Editor({
       element: host,
-      extensions: [StarterKit, AgentThreadCard],
+      extensions: [StarterKit, AgentThreadCard.configure({ workspaceHost: "browser-column" })],
       content: {
         type: "doc",
         content: [
@@ -2625,6 +2635,48 @@ describe("AgentThreadCard NodeView streaming", () => {
     );
     expect(editor.state.doc.child(0).attrs.fullscreen).toBe(false);
     expect(editor.state.doc.child(1).attrs.fullscreen).toBe(true);
+  });
+
+  it("keeps a persisted fullscreen card inline in the browser column", async () => {
+    const { AgentThreadCard } =
+      await import("@features/agent/thread-card");
+    const workspaceHost = document.createElement("section");
+    workspaceHost.dataset.workspaceHost = "browser-column";
+    const host = document.createElement("div");
+    workspaceHost.append(host);
+    document.body.append(workspaceHost);
+
+    editor = new Editor({
+      element: host,
+      extensions: [StarterKit, AgentThreadCard.configure({ workspaceHost: "browser-column" })],
+      content: {
+        type: "doc",
+        content: [
+          {
+            type: "agentThreadCard",
+            attrs: {
+              instanceId: "instance-browser-column-restore",
+              threadId: "thread-browser-column-restore",
+              title: "Note conversation",
+              typeKey: "deepseek-harness",
+              collapsed: false,
+              fullscreen: true,
+            },
+          },
+        ],
+      },
+    });
+
+    await flushPromises();
+    await flushAnimationFrame();
+
+    const card = host.querySelector<HTMLElement>(".agent-thread-card");
+    // A secondary browser-column copy must not duplicate the conversation in
+    // fullscreen and hide the surrounding note content.
+    expect(card?.classList.contains("agent-thread-card--fullscreen")).toBe(false);
+    expect(host.querySelector(".agent-thread-card--restoring-fullscreen")).toBeNull();
+    // The persisted marker stays untouched so the primary surface can restore it.
+    expect(editor.state.doc.firstChild?.attrs.fullscreen).toBe(true);
   });
 
   it("defaults cached messages to the bottom after restoring fullscreen", async () => {
@@ -2933,8 +2985,8 @@ describe("AgentThreadCard NodeView streaming", () => {
 
     const input = getComposerInput(host);
     const row = input.parentElement;
-    expect(row?.classList.contains("agent-thread-card__composer-input-row")).toBe(true);
-    expect(input.closest(".agent-thread-card__composer")?.classList.contains("agent-composer--expanded")).toBe(true);
+    expect(row?.classList.contains("agent-composer__input-row")).toBe(true);
+    expect(input.closest(".agent-composer")?.classList.contains("agent-composer--expanded")).toBe(true);
 
     input.blur();
     row?.dispatchEvent(
@@ -2952,7 +3004,7 @@ describe("AgentThreadCard NodeView streaming", () => {
       .querySelector<HTMLButtonElement>(".agent-thread-card__fullscreen")
       ?.click();
     await flushAnimationFrame();
-    expect(input.closest(".agent-thread-card__composer")?.classList.contains("agent-composer--expanded")).toBe(false);
+    expect(input.closest(".agent-composer")?.classList.contains("agent-composer--expanded")).toBe(false);
   });
 
   it("does not refocus the editor when clicking non-interactive card content", async () => {
@@ -3416,7 +3468,7 @@ describe("AgentThreadCard input history navigation", () => {
 
     const { useChatStore } = await import("@features/agent/store/agent-session-test-facade");
     useChatStore.setState(useChatStore.getInitialState(), true);
-    agentAccessState.config = { entries: [] };
+    agentAccessState.config = { version: 1, entries: [] };
   });
 
   afterEach(() => {
@@ -4005,7 +4057,7 @@ describe("AgentThreadCard input latency optimizations", () => {
 
     const { useChatStore } = await import("@features/agent/store/agent-session-test-facade");
     useChatStore.setState(useChatStore.getInitialState(), true);
-    agentAccessState.config = { entries: [] };
+    agentAccessState.config = { version: 1, entries: [] };
   });
 
   afterEach(() => {
@@ -4155,7 +4207,7 @@ describe("AgentThreadCard composer during agent run", () => {
 
     const { useChatStore } = await import("@features/agent/store/agent-session-test-facade");
     useChatStore.setState(useChatStore.getInitialState(), true);
-    agentAccessState.config = { entries: [] };
+    agentAccessState.config = { version: 1, entries: [] };
   });
 
   afterEach(() => {

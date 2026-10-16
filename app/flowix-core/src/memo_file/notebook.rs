@@ -1,19 +1,17 @@
 //! Notebook registry storage.
 //!
-//! The authoritative notebook registry lives in `index.db` under the user
-//! config directory (`~/.flowix/index.db` in production). Notebook-owned note
+//! The authoritative notebook registry lives in `db/local.db` under the user
+//! config directory (`~/.flowix/db/local.db` in production). Notebook-owned note
 //! and media data live separately in `<notebook>/.flowix/notebook.db`.
 
+use rusqlite::{params, Connection, OptionalExtension, Row};
 use std::collections::HashSet;
 use std::fs;
 use std::path::PathBuf;
-use rusqlite::{params, Connection, OptionalExtension, Row};
 
 use super::file_io::atomic_write_bytes;
-use super::types::{
-    NotebookConfig, NotebookManifest, NotebookSetupJob, NotebookSetupJobStatus,
-};
 use super::types::NotebookSetupReport;
+use super::types::{NotebookConfig, NotebookManifest, NotebookSetupJob, NotebookSetupJobStatus};
 use super::MemoFile;
 
 pub(super) fn sqlite_to_io(error: rusqlite::Error) -> std::io::Error {
@@ -51,7 +49,8 @@ fn map_notebook_setup_job(row: &Row<'_>) -> rusqlite::Result<NotebookSetupJob> {
         completed_files: completed_files.max(0) as usize,
         total_files: total_files.max(0) as usize,
         message: row.get(6)?,
-        report: report_json.and_then(|json| serde_json::from_str::<NotebookSetupReport>(&json).ok()),
+        report: report_json
+            .and_then(|json| serde_json::from_str::<NotebookSetupReport>(&json).ok()),
         updated_at: row.get(7)?,
         overwrite_existing: row.get::<_, i64>(9)? != 0,
     })
@@ -164,11 +163,7 @@ impl MemoFile {
         scene_id: &str,
     ) -> std::io::Result<()> {
         Self::ensure_notebook_manifest(config)?;
-        Self::set_notebook_scene_id(
-            std::path::Path::new(&config.path),
-            &config.id,
-            scene_id,
-        )?;
+        Self::set_notebook_scene_id(std::path::Path::new(&config.path), &config.id, scene_id)?;
         Ok(())
     }
 
@@ -189,8 +184,7 @@ impl MemoFile {
         Ok(flowix_dir.join("notebook.db"))
     }
 
-    /// Device-local notebook registry database. The on-disk name remains
-    /// `index.db` for compatibility; it stores registry state, not the active
+    /// Device-local notebook registry database. It stores registry state, not the active
     /// notebook's note catalog.
     pub fn registry_db_path(&self) -> PathBuf {
         self.registry.db_path()
@@ -216,6 +210,71 @@ impl MemoFile {
         fs::create_dir_all(self.get_flowix_dir())?;
         fs::create_dir_all(self.get_memo_base().join("attachments"))?;
         Ok(())
+    }
+
+    /// Explicit upgrade entry point; regular registry reads never import old databases.
+    pub fn initialize_registry_storage(&self) -> std::io::Result<()> {
+        super::database_layout::prepare_database_directory(
+            &self.registry.config_dir,
+            &["local.db", "index.db"],
+        )?;
+        let mut connection = super::with_database_rebuild(&self.registry_db_path(), || {
+            let connection = self.registry.open_for_initialization()?;
+            self.workspace_connection()?;
+            self.read_notebook_configs()?;
+            self.read_selected_notebook_id()?;
+            Ok(connection)
+        })?;
+        if let Err(error) = self.registry.import_legacy_registry(&mut connection) {
+            if !super::is_rebuildable_storage_error(&error)
+                && error.kind() != std::io::ErrorKind::AlreadyExists
+            {
+                return Err(error);
+            }
+            // A bad legacy input must not prevent use of a healthy canonical registry.
+            drop(connection);
+            super::backup_database(&self.registry.config_dir.join("db/index.db"))?;
+            connection = self.registry.open_for_initialization()?;
+            self.registry.import_legacy_registry(&mut connection)?;
+        }
+        Ok(())
+    }
+
+    /// Read a completion marker from the device-local migration journal.
+    pub fn local_migration_completed(&self, key: &str) -> std::io::Result<bool> {
+        let connection = self.registry.open()?;
+        connection
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM local_migrations WHERE migration_key = ?1)",
+                [key],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_to_io)
+    }
+
+    /// Record a completed device-local migration step.
+    pub fn mark_local_migration_completed(&self, key: &str) -> std::io::Result<()> {
+        let connection = self.registry.open()?;
+        connection
+            .execute(
+                "INSERT OR IGNORE INTO local_migrations (migration_key, completed_at) VALUES (?1, CAST(strftime('%s','now') AS INTEGER) * 1000)",
+                [key],
+            )
+            .map_err(sqlite_to_io)?;
+        Ok(())
+    }
+
+    /// Whether a registered notebook still needs its legacy storage decision.
+    /// Offline notebooks remain pending until their paths can be inspected.
+    pub fn has_pending_notebook_storage_initialization(&self) -> std::io::Result<bool> {
+        for notebook in self.read_notebook_configs()? {
+            for job in super::NotebookInitializationJob::ALL {
+                if !self.local_migration_completed(&job.key(&notebook.id))? {
+                    return Ok(true);
+                }
+            }
+        }
+        Ok(false)
     }
 
     pub(super) fn open_registry_db(&self) -> std::io::Result<Connection> {
@@ -345,11 +404,87 @@ impl MemoFile {
             .collect()
     }
 
-    /// Synchronize notebook rows in `index.db` without deleting unchanged
+    /// Synchronize notebook rows in `local.db` without deleting unchanged
     /// notebook ids. Deleting and reinserting every row would trigger
     /// `ON DELETE CASCADE` on memo rows for notebooks that still exist.
     pub fn write_notebook_configs(&self, notebooks: &[NotebookConfig]) -> std::io::Result<()> {
         self.write_notebook_configs_with_setup_job(notebooks, None)
+    }
+
+    /// Drop legacy notebook display, setup, and external-directory settings
+    /// while keeping the registry identities and their filesystem paths.
+    /// The folder name becomes the display name, icons are cleared, and order
+    /// is rebuilt from the stable path order.
+    pub fn reset_legacy_notebook_settings_for_initialization(&self) -> std::io::Result<()> {
+        let mut conn = self.open_registry_db()?;
+        let tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(sqlite_to_io)?;
+        tx.execute_batch(
+            "DROP TABLE IF EXISTS notebook_add_dirs;
+             DROP TABLE IF EXISTS notebook_workspace_state;
+             CREATE TABLE notebook_workspace_state (
+                 notebook_id TEXT PRIMARY KEY REFERENCES notebooks(id) ON DELETE CASCADE,
+                 revision INTEGER NOT NULL DEFAULT 0
+             );
+             CREATE TABLE notebook_add_dirs (
+                 id TEXT NOT NULL,
+                 notebook_id TEXT NOT NULL REFERENCES notebooks(id) ON DELETE CASCADE,
+                 path TEXT NOT NULL,
+                 path_key TEXT NOT NULL,
+                 label TEXT NOT NULL,
+                 enabled INTEGER NOT NULL,
+                 sort INTEGER NOT NULL,
+                 created_at INTEGER NOT NULL,
+                 updated_at INTEGER NOT NULL,
+                 PRIMARY KEY(notebook_id,id),
+                 UNIQUE(notebook_id,path_key)
+             );",
+        )
+        .map_err(sqlite_to_io)?;
+        let mut notebooks = {
+            let mut statement = tx
+                .prepare("SELECT id, path FROM notebooks")
+                .map_err(sqlite_to_io)?;
+            let rows = statement
+                .query_map([], |row| {
+                    Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
+                })
+                .map_err(sqlite_to_io)?;
+            rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_to_io)?
+        };
+        notebooks.sort_by_key(|(_, path)| path.to_lowercase());
+        for (index, (id, path)) in notebooks.iter().enumerate() {
+            let display_name = std::path::Path::new(path)
+                .file_name()
+                .and_then(|name| name.to_str())
+                .filter(|name| !name.is_empty())
+                .unwrap_or("笔记本");
+            tx.execute(
+                "UPDATE notebooks SET name=?1, icon=NULL, sort=?2 WHERE id=?3",
+                rusqlite::params![display_name, (index as i64 + 1) * 10, id],
+            )
+            .map_err(sqlite_to_io)?;
+        }
+
+        tx.execute("DELETE FROM notebook_setup_jobs", [])
+            .map_err(sqlite_to_io)?;
+        tx.execute(
+            "INSERT INTO notebook_workspace_state (notebook_id, revision)
+             SELECT id, 1 FROM notebooks",
+            [],
+        )
+        .map_err(sqlite_to_io)?;
+        tx.execute("DROP TABLE IF EXISTS data_migration_state", [])
+            .map_err(sqlite_to_io)?;
+        tx.commit().map_err(sqlite_to_io)?;
+
+        *self
+            .registry
+            .configs_cache
+            .write()
+            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        Ok(())
     }
 
     /// Atomically persist notebook registration and its optional first-open
@@ -478,7 +613,10 @@ impl MemoFile {
         Ok(())
     }
 
-    pub fn get_notebook_setup_job(&self, notebook_id: &str) -> std::io::Result<Option<NotebookSetupJob>> {
+    pub fn get_notebook_setup_job(
+        &self,
+        notebook_id: &str,
+    ) -> std::io::Result<Option<NotebookSetupJob>> {
         let conn = self.open_registry_db()?;
         conn.query_row(
             r#"SELECT notebook_id, template_id, status, stage, completed_files,

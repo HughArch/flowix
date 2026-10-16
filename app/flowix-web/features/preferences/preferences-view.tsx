@@ -1,100 +1,57 @@
 'use client';
 
-import { lazy, Suspense, useState, useEffect, useMemo } from 'react';
+import { Suspense, useState, useEffect, useMemo } from 'react';
 import { Loader2 } from 'lucide-react';
 import {
-	useUserSettings,
-	useUserSettingsActions,
-} from '@features/preferences/hooks/use-user-settings';
-import {
-	GeneralSection,
-	ThemeSection,
-	NoteSettingsSection,
-	AgentsSection,
-	DshSettingsSection,
-	PiSettingsSection,
-	ShortcutsSection,
-	CliSection,
-	McpSection,
-	ConnectionsSection,
-	CloudSyncSection,
-	HistorySection,
-	PluginsSection,
-	SectionHeader,
-	type SettingsTab,
-} from '@features/preferences/sections';
-import { PREFERENCE_TAB_GROUPS, PREFERENCE_TABS } from '@features/preferences/preferences-tab-config';
+	DEVELOPMENT_PREFERENCE_TAB_GROUP,
+	PREFERENCE_TAB_BY_ID,
+	PREFERENCE_TAB_GROUPS,
+	type ActiveSettingsTab,
+	type PreferencesTabGroup,
+} from '@features/preferences/preferences-tab-config';
 import { cn } from '@/lib/utils';
 import { Button } from '@shared/ui/button';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
+import { ErrorBoundary } from '@shared/error-boundary';
 import { WindowsTitlebarControls } from '@shared/window-titlebar-controls';
 import { PreferencesTitlebarMac } from '@features/preferences/preferences-titlebar-mac';
 import { PreferencesTitlebarWin } from '@features/preferences/preferences-titlebar-win';
 import { useI18n } from '@/lib/i18n';
 import { getCurrentWindow } from '@platform/tauri/window';
 import { useExperimentalMode } from '@platform/tauri/use-experimental-mode';
-import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
+import { product, type ProductInfo } from '@platform/tauri/client';
 
 function isWindowsPlatform(): boolean {
 	return /Windows/i.test(navigator.userAgent) || /Win/i.test(navigator.platform);
 }
 
-const TABS = PREFERENCE_TABS;
-const FormatSection = lazy(() =>
-	import('@features/preferences/sections/format').then((module) => ({ default: module.FormatSection })),
-);
+const LEGACY_TAB_REDIRECTS: Readonly<Record<string, ActiveSettingsTab>> = {
+	templates: 'noteSettings',
+	documentProperties: 'noteSettings',
+	fileDisplayRules: 'noteSettings',
+	theme: 'general',
+	cli: 'mcp',
+	agent: 'aiAgent',
+	modelConfig: 'aiAgent',
+	agents: 'aiAgent',
+};
 
-function normalizeInitialTab(tab: string): SettingsTab | null {
-	if (tab === 'templates' || tab === 'documentProperties' || tab === 'fileDisplayRules') return 'noteSettings';
-	if (tab === 'theme') return 'general';
-	if (tab === 'cli') return 'mcp';
-	// 老 URL: `agent` / `modelConfig` 都是模型配置, 落到合并后的 `aiAgent`。
-	if (tab === 'agent' || tab === 'modelConfig' || tab === 'agents') return 'aiAgent';
-	// 老 URL: 图片 / 视频生成合并到 `tools`。
-	if (tab === 'imageGeneration' || tab === 'videoGeneration') return 'tools';
-	return TABS.some(item => item.id === tab) ? tab as SettingsTab : null;
+function normalizeInitialTab(tab: string): ActiveSettingsTab | null {
+	const redirected = LEGACY_TAB_REDIRECTS[tab];
+	if (redirected) return redirected;
+	return PREFERENCE_TAB_BY_ID.has(tab as ActiveSettingsTab) ? tab as ActiveSettingsTab : null;
 }
 
-function PlaceholderSection({ title, emptyText }: { title: string; emptyText: string }) {
-	return (
-		<div className="space-y-6">
-			<SectionHeader title={title} />
-			<p className="text-sm text-[var(--muted-foreground)]">{emptyText}</p>
-		</div>
-	);
-}
-
-function GeneralSettingsSection() {
-	const language = useUserSettings((settings) => settings.language);
-	const { updateSettings } = useUserSettingsActions();
-	return <GeneralSection language={language} updateSettings={updateSettings} afterGeneral={<ThemeSettingsSection />} />;
-}
-
-function FormatSettingsSection() {
-	const { t } = useI18n();
-	const format = useUserSettings((settings) => settings.format);
-	const { updateSettings } = useUserSettingsActions();
-	return (
-		<Suspense
-			fallback={(
-				<div className="space-y-6" aria-busy="true">
-					<SectionHeader title={t('preferences.format.title')} />
-					<div className="flex h-48 items-center justify-center" role="status" aria-label={t('preferences.general.loading')}>
-						<Loader2 className="size-6 animate-spin text-[var(--muted-foreground)]" />
-						<span className="sr-only">{t('preferences.general.loading')}</span>
-					</div>
-				</div>
-			)}
-		>
-			<FormatSection settings={format} updateSettings={updateSettings} />
-		</Suspense>
-	);
-}
-
-function ThemeSettingsSection() {
-	const theme = useUserSettings((settings) => settings.theme);
-	const { updateSettings } = useUserSettingsActions();
-	return <ThemeSection settings={{ theme }} updateSettings={updateSettings} />;
+function getVisibleTabGroups({ isDevBuild, experimental }: { isDevBuild: boolean; experimental: boolean }) {
+	const groups: readonly PreferencesTabGroup<ActiveSettingsTab>[] = isDevBuild
+		? [...PREFERENCE_TAB_GROUPS, DEVELOPMENT_PREFERENCE_TAB_GROUP]
+		: PREFERENCE_TAB_GROUPS;
+	return groups
+		.map((group) => ({
+			...group,
+			tabs: group.tabs.filter((tab) => experimental || !tab.experimentalOnly),
+		}))
+		.filter((group) => group.tabs.length > 0);
 }
 
 interface PreferencesViewProps {
@@ -104,41 +61,45 @@ interface PreferencesViewProps {
 export function PreferencesView({ initialTab }: PreferencesViewProps) {
 	const { t } = useI18n();
 	const experimental = useExperimentalMode();
-	const refreshRuntimeStatus = useAgentRuntimeStore((state) => state.refreshIfStale);
-	const [activeTab, setActiveTab] = useState<SettingsTab>('general');
+	const [activeTab, setActiveTab] = useState<ActiveSettingsTab>('general');
+	const [tabRetryVersion, setTabRetryVersion] = useState(0);
+	const [productInfo, setProductInfo] = useState<ProductInfo | null>(null);
 	const title = t('preferences.title');
 	const initialTabName = initialTab?.split('?')[0];
 	const autoUpdateDsh = initialTab?.includes('autoUpdate=1') ?? false;
 
 	useEffect(() => {
-		void refreshRuntimeStatus();
-	}, [refreshRuntimeStatus]);
+		product.getInfo().then(setProductInfo).catch(() => setProductInfo(null));
+	}, []);
 
 	const visibleTabGroups = useMemo(
-		() => PREFERENCE_TAB_GROUPS.map((group) => ({
-			...group,
-			tabs: experimental
-				? group.tabs
-				: group.tabs.filter((tab) => !['cloudSync', 'connections', 'tools', 'history'].includes(tab.id)),
-		})),
-		[experimental],
+		() => getVisibleTabGroups({ isDevBuild: productInfo?.isDevBuild ?? false, experimental }),
+		[experimental, productInfo?.isDevBuild],
 	);
-	const tabsWithRuntimeAvailability = visibleTabGroups;
+	const visibleTabIds = useMemo(
+		() => new Set(visibleTabGroups.flatMap((group) => group.tabs.map((tab) => tab.id))),
+		[visibleTabGroups],
+	);
+	const activeTabDefinition = PREFERENCE_TAB_BY_ID.get(activeTab);
+	const ActiveTabComponent = useMemo(
+		() => activeTabDefinition?.createComponent() ?? null,
+		[activeTabDefinition, tabRetryVersion],
+	);
 
 	useEffect(() => {
 		if (initialTab) {
 			const normalizedTab = normalizeInitialTab(initialTabName ?? initialTab);
-			if (normalizedTab && (normalizedTab !== 'cloudSync' || experimental)) {
+				if (normalizedTab && visibleTabIds.has(normalizedTab)) {
 				setActiveTab(normalizedTab);
 			}
 		}
-	}, [experimental, initialTab]);
+	}, [experimental, initialTab, initialTabName, visibleTabIds]);
 
 	useEffect(() => {
-		if (!experimental && ['cloudSync', 'connections', 'tools', 'history'].includes(activeTab)) {
+		if (!visibleTabIds.has(activeTab)) {
 			setActiveTab('general');
 		}
-	}, [activeTab, experimental]);
+	}, [activeTab, visibleTabIds]);
 
 	useEffect(() => {
 		document.title = title;
@@ -157,8 +118,8 @@ export function PreferencesView({ initialTab }: PreferencesViewProps) {
 					className="flex h-full w-[204px] min-h-0 shrink-0 border-r border-solid border-[var(--divider)] bg-[var(--card)]"
 					scrollerClassName="h-full min-h-0 px-2 pt-5 pb-2"
 				>
-					<div className="flex min-h-full flex-col gap-4">
-						{tabsWithRuntimeAvailability.map((group) => (
+					<nav aria-label={title} className="flex min-h-full flex-col gap-4">
+						{visibleTabGroups.map((group) => (
 							<div key={group.labelKey} className="space-y-1">
 								<div className="px-2 pb-1 text-xs font-medium text-[var(--muted-foreground)]">
 									{t(group.labelKey)}
@@ -171,12 +132,13 @@ export function PreferencesView({ initialTab }: PreferencesViewProps) {
 											// 同色, 在 light/dark 主题下都保持视觉一致。
 											variant="ghost"
 											size="sm"
+											aria-current={activeTab === tab.id ? 'page' : undefined}
 											className={cn(
 												'w-full justify-start gap-1.5 py-4 rounded-lg',
 												activeTab === tab.id &&
 													'bg-muted hover:bg-muted dark:bg-[color-mix(in_oklch,var(--muted)_50%,transparent)] dark:hover:bg-[color-mix(in_oklch,var(--muted)_50%,transparent)]'
 											)}
-											onClick={() => setActiveTab(tab.id)}
+												onClick={() => setActiveTab(tab.id)}
 										>
 											{tab.icon}
 											<span className="text-sm font-normal">{t(tab.labelKey)}</span>
@@ -185,51 +147,46 @@ export function PreferencesView({ initialTab }: PreferencesViewProps) {
 								</div>
 							</div>
 						))}
-					</div>
+					</nav>
 				</OverlayScrollbar>
 				{/* Right content */}
-				<div className="h-full min-w-0 min-h-0 flex-1">
-					<OverlayScrollbar className="h-full w-full min-h-0" scrollerClassName="h-full min-h-0">
-						<div className="min-h-full">
-							<div className="flex justify-center p-6 pb-0">
-								{/* DSH 页信息密度更高(模型/插件/预设卡片), 放宽到 760px, 其余 tab 保持 500px。 */}
-								<div className={cn('w-full', ['dsh', 'codex', 'pi'].includes(activeTab) ? 'max-w-[760px]' : 'max-w-[500px]')}>
-									{activeTab === 'general' && <GeneralSettingsSection />}
-									{activeTab === 'format' && <FormatSettingsSection />}
-									{activeTab === 'noteSettings' && <NoteSettingsSection />}
-									{activeTab === 'aiAgent' && <AgentsSection />}
-									{activeTab === 'dsh' && <DshSettingsSection autoUpdate={autoUpdateDsh} />}
-									{activeTab === 'pi' && <PiSettingsSection />}
-									{activeTab === 'shortcuts' && <ShortcutsSection />}
-									{activeTab === 'mcp' && (
-										<div className="space-y-8">
-											<McpSection />
-											<CliSection />
-										</div>
+				<main aria-label={title} className="h-full min-w-0 min-h-0 flex-1">
+					<OverlayScrollbar className="h-full w-full min-h-0" scrollerClassName="flex h-full min-h-0 flex-col">
+						<div className="flex min-h-full flex-1 flex-col">
+							<div className="flex flex-1 justify-center p-6 pb-0">
+								<div className={cn('flex w-full flex-1 flex-col', activeTabDefinition?.contentWidth === 'wide' ? 'max-w-[760px]' : 'max-w-[500px]')}>
+									{activeTabDefinition && (
+										<ErrorBoundary
+											key={`${activeTab}:${tabRetryVersion}`}
+											fallback={(
+												<div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-[color-mix(in_oklch,var(--destructive)_10%,transparent)] p-3" role="alert">
+													<p className="text-sm text-[var(--destructive)]">{t('preferences.sectionLoadFailed')}</p>
+													<Button type="button" size="sm" variant="outline" onClick={() => setTabRetryVersion((version) => version + 1)}>
+														{t('error.retry')}
+													</Button>
+												</div>
+											)}
+										>
+											<Suspense fallback={(
+												<div className="flex flex-1 items-center justify-center" role="status" aria-label={t('preferences.general.loading')}>
+													<Loader2 className="size-6 flowix-spin text-[var(--muted-foreground)]" />
+													<span className="sr-only">{t('preferences.general.loading')}</span>
+												</div>
+											)}>
+												{ActiveTabComponent && <ActiveTabComponent
+													productInfo={productInfo}
+													autoUpdate={autoUpdateDsh}
+												/>}
+											</Suspense>
+										</ErrorBoundary>
 									)}
-									{activeTab === 'connections' && <ConnectionsSection />}
-									{experimental && activeTab === 'cloudSync' && <CloudSyncSection />}
-									{activeTab === 'tools' && (
-										<div className="space-y-8">
-											<PlaceholderSection
-												title={t('preferences.imageGeneration.title')}
-												emptyText={t('preferences.emptySettings')}
-											/>
-											<PlaceholderSection
-												title={t('preferences.videoGeneration.title')}
-												emptyText={t('preferences.emptySettings')}
-											/>
-										</div>
-									)}
-									{activeTab === 'history' && <HistorySection />}
-									{activeTab === 'plugins' && <PluginsSection />}
-								</div>
+									</div>
 							</div>
+							{/* 独立尾部块确保 WebKit 将留白计入 scrollHeight。 */}
+							<div aria-hidden="true" className="h-10 shrink-0" />
 						</div>
-						{/* 独立尾部块确保 WebKit 将留白计入 scrollHeight。 */}
-						<div aria-hidden="true" style={{ height: '2.5rem' }} />
 					</OverlayScrollbar>
-				</div>
+				</main>
 			</div>
 		</div>
 	);

@@ -33,11 +33,11 @@ export async function ensureAgentThreadCardThread(
   return {
     threadId: beginExternalAgentThreadCardRun(
       input.runtimeHandleId,
-      type.key,
+      type.id,
       input.currentThreadId,
       input.instanceId,
     ),
     title: nextTitle,
-    typeKey: type.key,
+    typeKey: type.id,
   };
 }

@@ -7,7 +7,7 @@ use crate::agent_external::runtime_registry::ExternalRuntimeRegistry;
 use crate::agent_external_config::AgentExternalConfig;
 use crate::agent_session::ThreadManager;
 use crate::app::startup::StartupCoordinator;
-use crate::config::{AgentAccessStore, SecurityBookmarkStore, UserConfigStore};
+use crate::config::{SecurityBookmarkStore, UserConfigStore};
 use crate::plugin::PluginRunCoordinator;
 use crate::system_data::SystemData;
 use flowix_core::memo_file::MemoFile;
@@ -39,9 +39,12 @@ pub struct NotebookImportStatus {
 pub struct AppState {
     pub upload_sessions: Arc<crate::commands::dialog::upload_sessions::UploadSessions>,
     pub document_access: crate::app::document_access::DocumentAccess,
+    pub security_bookmarks: Arc<SecurityBookmarkStore>,
     pub export_access: crate::app::export_access::ExportAccess,
     pub user_config: Arc<UserConfigStore>,
     pub cloud_sync: Arc<flowix_sync::SyncManager>,
+    /// Effective Cloud target selected at startup. Release builds always use prod.
+    pub cloud_environment: flowix_sync::CloudEnvironment,
     /// Legacy system metadata reader used to migrate notebook tag state into
     /// each notebook's `.flowix/system.json`.
     pub system_data: SystemData,
@@ -66,11 +69,6 @@ pub struct AppState {
     /// Runtimes without a lifecycle adapter keep Flowix-local semantics.
     pub agent_lifecycle: Arc<crate::agent_lifecycle::AgentLifecycleService>,
     pub thread_manager: Arc<ThreadManager>,
-    /// Agent 可访问目录 (notebook + 用户额外 folder), 持久化在
-    /// `~/.flowix/agent-access.json`。驱动 external agent 的
-    /// 工作区 / 资料目录过滤。
-    pub agent_access: Arc<AgentAccessStore>,
-    pub security_bookmarks: Arc<SecurityBookmarkStore>,
     pub plugin_runs: PluginRunCoordinator,
     /// Last known state for background notebook imports. Keeping the state in
     /// AppState lets a Webview recover when it subscribes after an event was

@@ -1,5 +1,6 @@
 ﻿'use client';
 
+import type { SurfacePresentationUpdate } from '@features/workspace/public/surface-api';
 import { getDocumentSession } from '../store/document-runtime-session';
 
 import { useEffect, useCallback, useRef, useMemo, useState } from 'react';
@@ -54,6 +55,7 @@ import { useI18n } from '@/lib/i18n';
 import { CenteredLoadingSpinner } from '@shared/ui/centered-loading-spinner';
 import { WorkspaceEmptyState } from '@shared/ui/workspace-empty-state';
 import { useWorkspaceFocusStore } from '@features/workspace/store/workspace-focus-store';
+import { focusWorkspaceHostFromEvent } from '@features/workspace/public/host-api';
 import { getBuffer, subscribeDocumentBufferChanges } from '@features/document/store/buffer-registry';
 import { documentIdentityKey } from '@features/document/store/document-identity';
 import {
@@ -83,16 +85,19 @@ export function DocumentContainer({
   toolbarCollapsed = false,
   onToolbarCollapsedChange,
   documentSessionMode = 'main',
+  workspaceHost,
   navigationViewId,
   readOnly: forcedReadOnly = false,
   initialFocus,
   onEditorReady,
+  onSurfaceLifecycleReady,
+  onContentStateChange,
   onFlushReady,
 }: DocumentContainerProps) {
   const filePath = fileIdentity.path;
   const displayId = fileIdentity.displayId;
   const { t } = useI18n();
-  const hostId = documentSessionMode === 'isolated' ? 'browser-column' : 'main-third';
+  const hostId = workspaceHost ?? (documentSessionMode === 'isolated' ? 'browser-column' : 'main-third');
   const locationViewId = navigationViewId ?? hostId;
   const focusedHostId = useWorkspaceFocusStore((store) => store.focusedHostId);
   const readOnly = forcedReadOnly || focusedHostId !== hostId;
@@ -134,6 +139,18 @@ export function DocumentContainer({
     transitionId,
     isolatedSession: documentSessionMode === 'isolated',
   });
+
+  useEffect(() => {
+    if (!onContentStateChange) return;
+    if (state.error) {
+      onContentStateChange({ status: 'error', message: state.error,
+        retry: () => reloadDocument(filePath, { showLoading: true }) });
+    } else if (state.isLoading || !state.isLoaded) {
+      onContentStateChange({ status: 'loading', retainContent: true });
+    } else {
+      onContentStateChange({ status: 'ready' });
+    }
+  }, [filePath, onContentStateChange, reloadDocument, state.error, state.isLoaded, state.isLoading]);
 
   useEffect(() => {
     if (!filePath) return;
@@ -390,6 +407,33 @@ export function DocumentContainer({
     return () => onFlushReady?.(null, null);
   }, [discardDocument, flushDocument, onFlushReady]);
   useEffect(() => {
+    if (!state.isLoaded || state.isLoading || state.error) return;
+    let active = true;
+    onSurfaceLifecycleReady?.({
+      status: 'ready', flush: flushDocument, discard: discardDocument,
+      focus: (target = 'body') => {
+        if (!active || !containerRef.current?.getClientRects().length) return false;
+        const focus = target === 'title'
+          ? titleEditorRef.current?.focusEnd
+          : editorHandleRef.current?.focusStart;
+        if (!focus) return false;
+        useWorkspaceFocusStore.getState().focusHost(hostId);
+        requestAnimationFrame(() => {
+          if (active && containerRef.current?.isConnected
+            && useWorkspaceFocusStore.getState().focusedHostId === hostId) {
+            if (target === 'title') titleEditorRef.current?.focusEnd();
+            else editorHandleRef.current?.focusStart?.();
+          }
+        });
+        return true;
+      },
+    });
+    return () => {
+      active = false;
+      onSurfaceLifecycleReady?.(null);
+    };
+  }, [discardDocument, flushDocument, hostId, onSurfaceLifecycleReady, state.error, state.isLoaded, state.isLoading]);
+  useEffect(() => {
     if (!filePath) {
       useDocumentMetricsStore.getState().clear(documentInstanceKey);
       return;
@@ -492,8 +536,8 @@ export function DocumentContainer({
     <div
       ref={containerRef}
       data-document-session-mode={documentSessionMode}
-      onFocusCapture={() => useWorkspaceFocusStore.getState().focusHost(hostId)}
-      onPointerDownCapture={() => useWorkspaceFocusStore.getState().focusHost(hostId)}
+      onFocusCapture={(event) => focusWorkspaceHostFromEvent(event, hostId)}
+      onPointerDownCapture={(event) => focusWorkspaceHostFromEvent(event, hostId)}
       className="document-container h-full w-full min-w-0 flex flex-col bg-transparent relative overflow-hidden"
     >
       <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
@@ -518,7 +562,9 @@ export function DocumentContainer({
         )}
         {!state.isLoading && state.isLoaded && !usesCodeEditor && (
           <LazyDocumentEditor
+            ownerPath={documentIdentity.path}
             getAttachmentNotebookId={getAttachmentNotebookId}
+            workspaceHost={hostId}
             propertyTargetId={propertyTargetId}
             onViewSourceMode={handleToggleEditorMode}
             transitionId={transitionId}
@@ -566,13 +612,31 @@ export function UnavailableFileView({
   filePath,
   openContainingFolder = false,
   scopePath,
+  reportPresentation,
 }: {
   filePath: string;
   openContainingFolder?: boolean;
   scopePath?: string | null;
+  reportPresentation?: (update: SurfacePresentationUpdate) => void;
 }) {
   const { t } = useI18n();
   const filename = filePath.split(/[\\/]/).filter(Boolean).pop() ?? filePath;
+  const reveal = useCallback(async () => {
+    try { await product.revealInFileManager(filePath); }
+    catch { toast.error(t('memo.fileTree.openFailed')); }
+  }, [filePath, t]);
+  const openDefault = useCallback(async () => {
+    try { await externalDocuments.openWithDefaultApp(filePath, scopePath); }
+    catch { toast.error(t('memo.fileTree.openFailed')); }
+  }, [filePath, scopePath, t]);
+  useEffect(() => {
+    const actions = [{ id: 'reveal', label: { key: openContainingFolder ? 'document.file.openContainingFolder' : 'document.file.reveal' }, enabled: true, run: reveal }];
+    if (openContainingFolder) actions.push({ id: 'open-default', label: { key: 'document.file.openWithDefaultApp' }, enabled: true, run: openDefault });
+    reportPresentation?.({ title: filename, actions,
+      state: { status: 'unavailable', reason: 'unsupported', message: { key: 'document.file.unavailable', fallbackText: filename }, actions } });
+  }, [filename, openContainingFolder, openDefault, reportPresentation, reveal]);
+  if (reportPresentation) return null;
+
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-sm text-[var(--muted-foreground)]">
       <span className="max-w-full truncate text-[var(--foreground)]" title={filename}>{filename}</span>
@@ -580,25 +644,16 @@ export function UnavailableFileView({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => {
-            const action = product.revealInFileManager(filePath);
-            void action.catch(() => {
-              toast.error(t('memo.fileTree.openFailed'));
-            });
-          }}
-          className="inline-flex h-8 items-center rounded-lg border border-[var(--border)] px-3 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--muted)]"
+          onClick={() => { void reveal(); }}
+          className="inline-flex h-8 items-center rounded-lg border border-[var(--border)] px-3 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
         >
           {t(openContainingFolder ? 'document.file.openContainingFolder' : 'document.file.reveal')}
         </button>
         {openContainingFolder && (
           <button
             type="button"
-            onClick={() => {
-              void externalDocuments.openWithDefaultApp(filePath, scopePath).catch(() => {
-                toast.error(t('memo.fileTree.openFailed'));
-              });
-            }}
-            className="inline-flex h-8 items-center rounded-lg border border-[var(--border)] px-3 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--muted)]"
+            onClick={() => { void openDefault(); }}
+            className="inline-flex h-8 items-center rounded-lg border border-[var(--border)] px-3 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
           >
             {t('document.file.openWithDefaultApp')}
           </button>

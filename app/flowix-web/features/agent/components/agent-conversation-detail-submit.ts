@@ -1,3 +1,4 @@
+import { ensureAgentWorkspaceReady } from "@features/agent/store/agent-data-store";
 import type { AgentTypeKey, RuntimeConfig } from "@/types/agent";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
 import { buildInitialInstanceRuntimeConfig } from "@features/agent/store/initial-runtime-config";
@@ -64,6 +65,7 @@ export async function ensureAgentConversationDetailThread(input: {
     runtimeConfig:
       instance.runtimeConfig ?? buildInitialInstanceRuntimeConfig(ensured.typeKey),
   });
+  await ensureAgentWorkspaceReady();
   const runtimeConfig = ensureConversationWorkspaceSnapshot(input.instanceId);
   markConversationWorkspaceStarted(input.instanceId);
   return { threadId: ensured.threadId, title: ensured.title, runtimeConfig };

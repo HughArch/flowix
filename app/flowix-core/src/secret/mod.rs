@@ -3,9 +3,8 @@
 //!
 //! ## 存储
 //!
-//! - 数据库文件: `<config_dir>/default.db` (生产环境 `~/.flowix/default.db`),
-//!   与 `index.db` 同目录, 受 `~/.flowix` 目录 `0o700` 权限保护; unix 下
-//!   db 文件本身再设一次 `0o600`。
+//! - 数据库文件: `<config_dir>/db/default.db` (生产环境 `~/.flowix/db/default.db`),
+//!   Unix 下 db 文件权限为 `0o600`。
 //! - 表 `secret_kv (key TEXT PRIMARY KEY, value TEXT NOT NULL)`, 通用
 //!   key-value 形态, 未来可承载其它敏感 / 关键配置, 不止 API key。
 //!
@@ -167,18 +166,14 @@ impl DbBackend {
         if self.db_path.exists() {
             set_file_owner_only_perms(&self.db_path)?;
         }
-        let conn = Connection::open(&self.db_path)
-            .map_err(|e| SecretStoreError::Platform(format!("open db: {e}")))?;
-        conn.execute_batch(
-            r#"
-            PRAGMA secure_delete = ON;
-            CREATE TABLE IF NOT EXISTS secret_kv (
-                key   TEXT PRIMARY KEY,
-                value TEXT NOT NULL
-            );
-            "#,
-        )
-        .map_err(|e| SecretStoreError::Platform(format!("init table: {e}")))?;
+        let conn = crate::memo_file::with_database_rebuild(&self.db_path, || {
+            let conn = Connection::open(&self.db_path).map_err(std::io::Error::other)?;
+            conn.execute_batch("PRAGMA secure_delete = ON;
+                CREATE TABLE IF NOT EXISTS secret_kv (key TEXT PRIMARY KEY, value TEXT NOT NULL);
+                SELECT key, value FROM secret_kv LIMIT 0;")
+                .map_err(std::io::Error::other)?;
+            Ok(conn)
+        }).map_err(|error| SecretStoreError::Platform(format!("initialize secret database: {error}")))?;
         set_file_owner_only_perms(&self.db_path)?;
         Ok(conn)
     }
@@ -225,7 +220,7 @@ impl SecretBackend for DbBackend {
 ///
 /// 用法:
 /// ```ignore
-/// let store = SecretStore::new("~/.flowix/default.db");
+/// let store = SecretStore::new("~/.flowix/db/default.db");
 /// store.save("openai_responses::default", "sk-...")?;
 /// let key = store.load("openai_responses::default")?.unwrap();
 /// ```
@@ -235,7 +230,7 @@ pub struct SecretStore {
 
 impl SecretStore {
     /// 构造真实 SQLite 后端的 SecretStore ── db 路径由调用方 (UserConfigStore)
-    /// 按 config_dir 派生 (`~/.flowix/default.db`), desktop / CLI 共用。
+    /// 按 config_dir 派生 (`~/.flowix/db/default.db`), desktop / CLI 共用。
     pub fn new(db_path: impl AsRef<Path>) -> Self {
         Self {
             backend: Box::new(DbBackend::new(db_path)),
@@ -358,5 +353,22 @@ impl SecretBackend for MockBackend {
 
     fn backend_name(&self) -> KeyBackend {
         self.backend_kind
+    }
+}
+
+#[cfg(test)]
+mod storage_rebuild_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_secret_database_is_preserved_before_creating_empty_credentials() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("default.db");
+        std::fs::write(&path, b"invalid credential database").unwrap();
+        let backend = DbBackend::new(path);
+        assert!(backend.load("missing-account").unwrap().is_none());
+        backend.save("new-account", "new-value").unwrap();
+        assert!(backend.load("new-account").unwrap().is_some());
+        assert!(temp.path().join("rebuild-backups").exists());
     }
 }

@@ -2,6 +2,9 @@
 
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import { AgentTasksSection } from '@features/agent/public/shell-api';
+import { beginDragSession, cancelDragSession, endDragSession, moveDragSession } from '@shared/drag-drop/drag-drop-coordinator';
+import type { DragPayload } from '@shared/drag-drop/drag-drop-coordinator';
+import type { NotebookDragResource } from '@features/memo/public/drag-resource-api';
 
 import {
   useCallback,
@@ -17,6 +20,7 @@ import {
 } from 'react';
 import {
   Check,
+  ChevronLeft,
   ChevronRight,
   ArrowDownUp,
   MoreHorizontal,
@@ -38,7 +42,9 @@ import {
 import {
   canonicalDirectoryPath,
   canonicalPath,
+  fileNameFromPath,
   joinNotebookMemoPath,
+  notebookRelativeDirectoryPath,
   parentDirectoryPath,
   pathInDirectory,
   samePath,
@@ -50,6 +56,7 @@ import { cn, displayTitleFromFilename, isMediaLibraryFilename, isTableDocumentFi
 import { useI18n } from '@/lib/i18n';
 import { useComposingValue } from '@shared/hooks/use-composing-value';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
+import { FlowixCheckbox } from '@shared/ui/flowix-checkbox';
 import { ListSurfaceLoadingState, ListSurfaceViewport } from '@shared/ui/list-surface';
 import { Button } from '@shared/ui/button';
 import { Popover, PopoverContent } from '@shared/ui/popover';
@@ -68,7 +75,8 @@ import { useCustomFilterStore } from '@features/memo/store/custom-filter-store';
 import { noteRepository } from '@features/memo/services/note-repository';
 import { createMediaLibraryFile } from '@features/media-library/model';
 import { updateNoteLinksAfterMove } from '@features/memo/services/note-link-rewriter';
-import { openExternalTarget, replaceExternalDocumentPath } from '@features/workspace/use-cases/workspace-navigation';
+import { replaceExternalDocumentPath } from '@features/workspace/use-cases/workspace-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { ensureFileDisplayIdentity } from '@/lib/file-display-registry';
 import {
   EXTERNAL_FILE_DROP_EVENT,
@@ -76,7 +84,6 @@ import {
 } from '@features/document/public/shell-api';
 import { localDocumentOperations, renameMarkdownTitle } from '@features/document/public/file-operations-api';
 import folderIcon from '@/assets/folder-outline.svg?raw';
-import { resolveNotebookAgentFiles } from '@/lib/agent-access-defaults';
 import {
   flattenLoadedTree,
   flattenVisibleTree,
@@ -85,8 +92,7 @@ import {
 } from '@features/memo/components/use-folder-tree';
 import { NotebookTreeRow } from '@features/memo/components/notebook-tree-row';
 import { getWorkspaceAgentRepositories, type WorkspaceAgentRepository } from '@features/agent/public/workspace-api';
-import { useAgentAccessStore } from '@features/agent/store/agent-access-store';
-import { normalizeWorkspacePath } from '@features/agent/runtime/workspace-path';
+import { useAgentDataStore } from '@features/agent/store/agent-data-store';
 import {
   files,
   dialogs,
@@ -101,6 +107,12 @@ import { useDynamicVirtualList } from '@features/memo/hooks/use-dynamic-virtual-
 import { useNotebookViewData } from './use-notebook-view-data';
 import { AgentRepositoriesSection } from './notebook-repositories-section';
 import { TREE_EDGE_GUTTER, INDENT_PER_LEVEL } from './notebook-tree-layout';
+import {
+  normalizeNotebookMoveFailure,
+  showNotebookMoveFailureToasts,
+  type NotebookMoveFailure,
+} from './notebook-move-failure-toast';
+import { getNotebookFolderImportErrorKey } from './notebook-folder-import';
 import { createTableDocumentFile, type TableViewType } from '@features/multidimensional-table/public/create-api';
 import {
   ContextMenu,
@@ -239,6 +251,7 @@ function TreeSectionMoreMenu({
   onCreateTable,
   onCreateMediaLibrary,
   onImportFiles,
+  onImportFolder,
   sort,
   onSort,
   onCustomizeDisplay,
@@ -252,6 +265,7 @@ function TreeSectionMoreMenu({
   onCreateTable?: (viewType?: TableViewType) => void;
   onCreateMediaLibrary?: () => void;
   onImportFiles?: () => void;
+  onImportFolder?: () => void;
   sort?: FolderTreeSort;
   onSort?: (sort: FolderTreeSort) => void;
   onCustomizeDisplay?: (anchorRect: DOMRect) => void;
@@ -259,14 +273,22 @@ function TreeSectionMoreMenu({
   const { t } = useI18n();
   const [sortSubmenuOpen, setSortSubmenuOpen] = useState(false);
   const [createSubmenuOpen, setCreateSubmenuOpen] = useState(false);
+  const [importSubmenuOpen, setImportSubmenuOpen] = useState(false);
   const createSubmenuPosition = useViewportSubmenuPosition(createSubmenuOpen);
+  const importSubmenuPosition = useViewportSubmenuPosition(importSubmenuOpen);
   const sortSubmenuPosition = useViewportSubmenuPosition(sortSubmenuOpen);
   const itemClassName = 'group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)] disabled:cursor-not-allowed disabled:opacity-40';
   const hasActionsAfterMovement = Boolean(
-    onCreateNote || onCreateFolder || onCreateTable || onCreateMediaLibrary || onImportFiles || (sort && onSort),
+    onCreateNote || onCreateFolder || onCreateTable || onCreateMediaLibrary || onImportFiles || onImportFolder || (sort && onSort),
   );
   return (
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={(open) => {
+      if (!open) {
+        setCreateSubmenuOpen(false);
+        setImportSubmenuOpen(false);
+        setSortSubmenuOpen(false);
+      }
+    }}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -351,11 +373,30 @@ function TreeSectionMoreMenu({
             )}
           </div>
         )}
-        {onImportFiles && (
-          <DropdownMenuItem onClick={onImportFiles} className={itemClassName}>
-            <DownloadSimpleIcon className="h-3.5 w-3.5" aria-hidden="true" />
-            {t('memo.fileTree.import')}
-          </DropdownMenuItem>
+        {(onImportFiles || onImportFolder) && (
+          <div className="relative" onMouseEnter={() => setImportSubmenuOpen(true)} onMouseLeave={() => setImportSubmenuOpen(false)}>
+            <button
+              type="button"
+              ref={importSubmenuPosition.triggerRef}
+              onClick={() => setImportSubmenuOpen((open) => !open)}
+              onMouseDown={(event) => event.preventDefault()}
+              className={cn(itemClassName, 'flex w-full items-center text-sm')}
+            >
+              <DownloadSimpleIcon className="h-3.5 w-3.5" aria-hidden="true" />
+              {t('memo.fileTree.import')}
+              <ChevronRight className="ml-auto h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+            {importSubmenuOpen && (
+              <div
+                ref={importSubmenuPosition.contentRef}
+                style={importSubmenuPosition.style}
+                className="absolute z-50 w-[156px] space-y-0.5 rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]"
+              >
+                {onImportFiles && <DropdownMenuItem onClick={onImportFiles} className={itemClassName}>{t('memo.fileTree.importFiles')}</DropdownMenuItem>}
+                {onImportFolder && <DropdownMenuItem onClick={onImportFolder} className={itemClassName}>{t('memo.fileTree.importFolder')}</DropdownMenuItem>}
+              </div>
+            )}
+          </div>
         )}
         {sort && onSort && (
           <div
@@ -405,7 +446,7 @@ function TreeSectionMoreMenu({
         )}
         {hasActionsAfterMovement && onCustomizeDisplay && <DropdownMenuSeparator />}
         {onCustomizeDisplay && (
-          <DropdownMenuItem onClick={(event) => {
+          <DropdownMenuItem keepOpenOnClick onClick={(event) => {
             const rect = getPopupOriginRect(event.currentTarget);
             onCustomizeDisplay(rect);
           }} className={itemClassName}>
@@ -458,6 +499,7 @@ export interface NotebookNoteCreateRequest {
 export interface NotebookMoveResult {
   movedPaths: string[];
   failedPaths: string[];
+  failures?: NotebookMoveFailure[];
 }
 
 export interface NotebookMoveSource {
@@ -495,6 +537,7 @@ interface PointerNoteDrag {
   sourcePath: string;
   sourcePaths: string[];
   sourceItems: NotebookMoveSource[];
+  dragPayload: DragPayload<NotebookDragResource>;
   preserveSelectionAfterMove: boolean;
   sourceName: string;
   pointerId: number;
@@ -647,9 +690,8 @@ export function NotebookFileTree({
   const { t } = useI18n();
   const selectedFolderPath = useWorkColumnStore((state) => {
     const target = state.navigation.target;
-    if (target.kind === 'document-list') return target.scope.path;
-    if (target.kind === 'collection' && canonicalPath(target.filePath).endsWith('/.index.yaml')) {
-      return parentDirectoryPath(target.filePath, target.notebookPath);
+    if ((target.kind === 'collection' || target.kind === 'table' || target.kind === 'media-library') && canonicalPath(target.filePath).endsWith('/.index.yaml')) {
+      return parentDirectoryPath(target.filePath, target.notebookPath ?? '');
     }
     return null;
   });
@@ -659,11 +701,12 @@ export function NotebookFileTree({
   ));
   const notebookId = notebookIdProp ?? notebookIdFromStore;
   const loadNotebookFilters = useCustomFilterStore((state) => state.loadNotebookFilters);
-  const agentAccessConfig = useAgentAccessStore((state) => state.config);
-  const agentNotebookConfigs = useAgentAccessStore((state) => state.notebookConfigs);
+  const agentWorkspaceNotebook = useAgentDataStore((state) =>
+    notebookId ? state.workspace.byNotebookId[notebookId] : undefined,
+  );
   const agentRepositories = useMemo(
     () => getWorkspaceAgentRepositories(notebookId),
-    [agentAccessConfig, agentNotebookConfigs, notebookId],
+    [agentWorkspaceNotebook, notebookId],
   );
   const [showScrollTopHint, setShowScrollTopHint] = useState(false);
   const [pinnedItems, setPinnedItems] = useState<DocTreeItem[]>([]);
@@ -1336,12 +1379,36 @@ export function NotebookFileTree({
     if (suppressOpenPathsRef.current.has(canonicalPath(path))) return;
     tree.toggle(path);
   }, [tree.toggle]);
+  const openMediaLibraryPath = useCallback((path: string, host: 'main-third' | 'browser-column') => {
+    const mediaLibrary = mediaLibraryByPath.get(canonicalPath(path));
+    if (!mediaLibrary || !notebookId) return false;
+    void openWorkspaceSurface({
+      ...(host === 'browser-column'
+        ? { host, options: { browserDisposition: 'open-in-column' as const } }
+        : { host }),
+      target: {
+        kind: 'collection-reference',
+        notebookId,
+        collectionId: mediaLibrary.collectionId,
+        collectionKind: 'media_library',
+        relativePathHint: mediaLibrary.relativePath,
+      },
+    }).catch((error) => {
+      logger.warn('failed to open media library', { error, path, host });
+      toast.error(t('memo.fileTree.openFailed'));
+    });
+    return true;
+  }, [mediaLibraryByPath, notebookId, t]);
   const handleOpenPath = useCallback((path: string, event?: ReactMouseEvent<HTMLDivElement>) => {
     if (suppressOpenPathsRef.current.has(canonicalPath(path))) return;
+    if (openMediaLibraryPath(path, 'main-third')) return;
     selectNote(path, event);
-  }, [selectNote]);
+  }, [openMediaLibraryPath, selectNote]);
   const handleOpenRepositoryFile = useCallback((path: string, scopePath: string) => {
-    void openExternalTarget(path, { destination: 'main-third', scopePath }).catch((error) => {
+    void openWorkspaceSurface({
+      host: 'main-third',
+      target: { kind: 'external', path, scopePath, transitionId: null },
+    }).catch((error) => {
       logger.warn('failed to open repository file', { error, path });
       toast.error(t('memo.fileTree.openFailed'));
     });
@@ -1349,7 +1416,11 @@ export function NotebookFileTree({
   const handleOpenTableDocument = useCallback((relativePath: string) => {
     const path = joinNotebookMemoPath(notebookPath, relativePath);
     if (!path) return;
-    void openExternalTarget(path, { destination: 'main-third', scopePath: notebookPath, notebookId }).catch((error) => {
+    void openWorkspaceSurface({
+      host: 'main-third',
+      target: { kind: 'external', path, scopePath: notebookPath, transitionId: null },
+      options: { notebookId },
+    }).catch((error) => {
       logger.warn('failed to open table document', { error, path });
       toast.error(t('memo.fileTree.openFailed'));
     });
@@ -1469,7 +1540,11 @@ export function NotebookFileTree({
       setNewTableInViews(false);
       setNewTableParentFolder(null);
       await refreshTables();
-      await openExternalTarget(filePath, { destination: 'main-third', scopePath: notebookPath, notebookId });
+      await openWorkspaceSurface({
+        host: 'main-third',
+        target: { kind: 'external', path: filePath, scopePath: notebookPath, transitionId: null },
+        options: { notebookId },
+      });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '创建多维表格失败');
     } finally {
@@ -1502,7 +1577,11 @@ export function NotebookFileTree({
       setNewLibraryInViews(false);
       setNewLibraryParentFolder(null);
       await refreshMediaLibraries();
-      await openExternalTarget(filePath, { destination: 'main-third', scopePath: notebookPath, notebookId });
+      await openWorkspaceSurface({
+        host: 'main-third',
+        target: { kind: 'external', path: filePath, scopePath: notebookPath, transitionId: null },
+        options: { notebookId },
+      });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '创建媒体库失败');
     } finally {
@@ -1511,48 +1590,30 @@ export function NotebookFileTree({
   }, [defaultCreateFolder, isCreatingLibrary, newLibraryInViews, newLibraryName, newLibraryParentFolder, notebookId, notebookPath, refreshMediaLibraries]);
   const handleAddRepository = useCallback(async () => {
     if (!notebookId) return;
-    const result = await useAgentAccessStore.getState().addFolderFromPicker();
+    const result = await useAgentDataStore.getState().workspaceActions.addFolderFromPicker(notebookId);
     if (!result.ok) {
       if (result.code === 'already-tracked') toast.error(t('agent.access.alreadyTracked'));
       else if (result.code === 'save-failed') toast.error(t('agent.access.saveFailed'));
       return;
     }
 
-    const access = useAgentAccessStore.getState();
-    const notebookFiles = resolveNotebookAgentFiles(access.config, access.notebookConfigs, notebookId);
-    const folders = notebookFiles?.folders ?? [];
-    const addedPath = normalizeWorkspacePath(result.entry.path).toLowerCase();
-    if (folders.some((path) => normalizeWorkspacePath(path).toLowerCase() === addedPath)) {
-      toast.info(t('agent.access.folderExists'));
-      return;
-    }
-    const saved = await access.setDefaultFiles(notebookId, {
-      folders: [...folders, result.entry.path],
-      notebooks: notebookFiles?.notebooks ?? [],
-    });
-    if (!saved) toast.error(t('agent.access.saveFailed'));
+
   }, [notebookId, t]);
   const handleRemoveRepository = useCallback(async (repository: WorkspaceAgentRepository) => {
     if (!notebookId) return;
-    const access = useAgentAccessStore.getState();
-    const notebookFiles = resolveNotebookAgentFiles(access.config, access.notebookConfigs, notebookId);
-    const folders = notebookFiles?.folders ?? [];
-    const removedPath = normalizeWorkspacePath(repository.path).toLowerCase();
-    const nextFolders = folders.filter((path) => normalizeWorkspacePath(path).toLowerCase() !== removedPath);
-    if (nextFolders.length === folders.length) return;
-    const saved = await access.setDefaultFiles(notebookId, {
-      folders: nextFolders,
-      notebooks: notebookFiles?.notebooks ?? [],
-    });
-    if (!saved) {
+    const access = useAgentDataStore.getState().workspaceActions;
+    const saved = await access.detachFolderFromNotebook(notebookId, repository.path);
+    if (saved === false) {
       toast.error(t('agent.access.saveFailed'));
       return;
     }
+    if (saved === 'not-attached') return;
     toast.success(t('agent.access.folderDeleted', { name: repository.name }));
   }, [notebookId, t]);
   const handleOpenPathInNewTab = useCallback((path: string) => {
+    if (openMediaLibraryPath(path, 'browser-column')) return;
     onNoteOpenInNewTab?.(path);
-  }, [onNoteOpenInNewTab]);
+  }, [onNoteOpenInNewTab, openMediaLibraryPath]);
   const handleCreateNoteAtPath = useCallback((parentPath: string) => {
     requestCreateDraft(parentPath, 'note');
   }, [requestCreateDraft]);
@@ -1576,6 +1637,11 @@ export function NotebookFileTree({
         sourcePath: item.fullPath,
         sourcePaths: [item.fullPath],
         sourceItems: [{ path: item.fullPath, isFolder: true }],
+        dragPayload: {
+          sessionId: crypto.randomUUID(),
+          sourceId: `notebook-file-tree:${notebookId ?? canonicalPath(notebookPath)}`,
+          items: [{ kind: 'folder', absolutePath: item.fullPath, name: item.name }],
+        },
         preserveSelectionAfterMove: false,
         sourceName: item.name,
         pointerId: event.pointerId,
@@ -1597,6 +1663,20 @@ export function NotebookFileTree({
         : {};
       return { path, ...resourceMetadata };
     });
+    const resources = sourcePaths.map((path): NotebookDragResource => {
+      const sourceItem = samePath(path, item.fullPath) ? item : treeItemByPath.get(canonicalPath(path));
+      const name = sourceItem?.name ?? fileNameFromPath(path);
+      const relativeParent = notebookRelativeDirectoryPath(notebookPath, parentDirectoryPath(path, notebookPath));
+      if (sourceItem?.type === 'document' && notebookId && relativeParent !== null && /\.(?:md|markdown)$/i.test(name)) {
+        return {
+          kind: 'note',
+          notebookId,
+          relativePath: [relativeParent, fileNameFromPath(path)].filter(Boolean).join('/'),
+          title: displayTitleFromFilename(name),
+        };
+      }
+      return { kind: 'file', absolutePath: path, name, resourceKind: sourceItem?.resourceKind };
+    });
     // Capture on the row that started the gesture. Capturing on the tree root
     // retargets the browser's follow-up click to the root. Selection stays a
     // click concern: starting a drag must not select an unselected document.
@@ -1609,6 +1689,11 @@ export function NotebookFileTree({
       sourcePath: item.fullPath,
       sourcePaths,
       sourceItems,
+      dragPayload: {
+        sessionId: crypto.randomUUID(),
+        sourceId: `notebook-file-tree:${notebookId ?? canonicalPath(notebookPath)}`,
+        items: resources,
+      },
       preserveSelectionAfterMove: isSelected,
       sourceName: displayTitleFromFilename(item.name),
       pointerId: event.pointerId,
@@ -1618,7 +1703,7 @@ export function NotebookFileTree({
       active: false,
       targetDirectoryPath: null,
     };
-  }, [treeItemByPath]);
+  }, [notebookId, notebookPath, treeItemByPath]);
 
   const renderDraft = (draftState: NotebookTreeDraftState, depth: number) => (
     <NotebookTreeDraft
@@ -1634,20 +1719,51 @@ export function NotebookFileTree({
   const handleImportFiles = useCallback(async (targetDirectoryPath: string) => {
     const selectedPaths = await dialogs.selectFiles({ multiple: true });
     if (!selectedPaths?.length) return;
-    let failed = 0;
+    const failures: NotebookMoveFailure[] = [];
     for (const sourcePath of selectedPaths) {
       try {
         await files.importFile(sourcePath, targetDirectoryPath, notebookPath);
       } catch (error) {
         logger.warn('importing file into notebook tree failed', { error, sourcePath, targetDirectoryPath });
-        failed += 1;
+        failures.push(normalizeNotebookMoveFailure(error));
       }
     }
     await tree.refresh(targetDirectoryPath);
-    if (failed) toast.error(t('memo.fileTree.movePartialFailed', {
-      moved: selectedPaths.length - failed,
-      failed,
-    }));
+    if (failures.length > 0) {
+      showNotebookMoveFailureToasts(
+        t,
+        selectedPaths.length - failures.length,
+        failures.length,
+        failures,
+      );
+    }
+  }, [notebookPath, t, tree.refresh]);
+
+  const handleImportFolder = useCallback(async (targetDirectoryPath: string) => {
+    let sourceDirectoryPath: string | null | undefined;
+    let progressToastId: string | number | undefined;
+    try {
+      sourceDirectoryPath = await dialogs.selectImportDirectory();
+      if (!sourceDirectoryPath) return;
+      progressToastId = toast.info(t('memo.fileTree.importFolderInProgress'), { duration: Number.POSITIVE_INFINITY });
+      await files.importFolder(sourceDirectoryPath, targetDirectoryPath, notebookPath);
+      await tree.refresh(targetDirectoryPath);
+      toast.dismiss(progressToastId);
+      progressToastId = undefined;
+      toast.success(t('memo.fileTree.importFolderSuccess'));
+    } catch (error) {
+      logger.warn('importing folder into notebook tree failed', { error, sourceDirectoryPath, targetDirectoryPath });
+      if (sourceDirectoryPath) {
+        try {
+          await tree.refresh(targetDirectoryPath);
+        } catch (refreshError) {
+          logger.warn('refreshing notebook tree after folder import failed', { refreshError, targetDirectoryPath });
+        }
+      }
+      toast.error(t(getNotebookFolderImportErrorKey(error)));
+    } finally {
+      if (progressToastId !== undefined) toast.dismiss(progressToastId);
+    }
   }, [notebookPath, t, tree.refresh]);
 
   const renderTreeItem = (
@@ -1723,6 +1839,7 @@ export function NotebookFileTree({
           onCreateNote={handleCreateNoteAtPath}
           onCreateFolder={handleCreateFolderAtPath}
           onImportFiles={handleImportFiles}
+          onImportFolder={handleImportFolder}
           onCreateView={handleCreateViewAtPath}
           onCreateMediaLibrary={handleCreateMediaLibraryAtPath}
           tableViewVisibility={tableViewVisibility}
@@ -1834,17 +1951,17 @@ export function NotebookFileTree({
         setMoveFeedback(null);
       }
       if (moveResult.failedPaths.length > 0) {
-        toast.error(t('memo.fileTree.movePartialFailed', {
-          moved: moveResult.movedPaths.length,
-          failed: moveResult.failedPaths.length,
-        }));
+        showNotebookMoveFailureToasts(
+          t,
+          moveResult.movedPaths.length,
+          moveResult.failedPaths.length,
+          moveResult.failures ?? [],
+        );
       }
     } catch (error) {
       clearMoveFeedbackTimer();
       setMoveFeedback(null);
-      toast.error(t(String(error).includes('FILE_EXISTS')
-        ? 'memo.fileTree.nameConflict'
-        : 'memo.fileTree.moveFailed'));
+      showNotebookMoveFailureToasts(t, 0, 1, [normalizeNotebookMoveFailure(error)]);
     } finally {
       dropPendingRef.current = false;
     }
@@ -1958,6 +2075,11 @@ export function NotebookFileTree({
 
     dragScrollFrameRef.current = window.requestAnimationFrame(tick);
   }, [updatePointerDropTarget]);
+
+  useEffect(() => () => {
+    const drag = pointerDragRef.current;
+    if (drag?.active) cancelDragSession(drag.dragPayload.sessionId);
+  }, []);
 
   useEffect(() => () => {
     stopDragAutoScroll();
@@ -2138,6 +2260,7 @@ export function NotebookFileTree({
                   onCreateNote={handleCreateNoteAtPath}
                   onCreateFolder={handleCreateFolderAtPath}
           onImportFiles={(path) => { void handleImportFiles(path); }}
+          onImportFolder={(path) => { void handleImportFolder(path); }}
                   onCreateView={(parentPath, viewType) => {
                     openNewTableDialog(false, parentPath, viewType);
                   }}
@@ -2306,6 +2429,7 @@ export function NotebookFileTree({
                 onCreateTable={(viewType) => openNewTableDialog(false, undefined, viewType)}
                 onCreateMediaLibrary={() => openNewMediaLibraryDialog()}
                 onImportFiles={() => { void handleImportFiles(notebookPath); }}
+                onImportFolder={() => { void handleImportFolder(notebookPath); }}
                 sort={fileTreeSort}
                 onSort={setFileTreeSort}
                 onCustomizeDisplay={openCustomizeDisplay}
@@ -2335,10 +2459,23 @@ export function NotebookFileTree({
                   path: drag.sourcePath,
                   count: drag.sourcePaths.length,
                 });
+                beginDragSession(drag.dragPayload, { x: event.clientX, y: event.clientY }, () => {
+                  const active = pointerDragRef.current;
+                  if (!active || active.pointerId !== drag.pointerId) return;
+                  stopDragAutoScroll();
+                  clearDragExpandTimer();
+                  if (active.captureElement.hasPointerCapture(active.pointerId)) {
+                    active.captureElement.releasePointerCapture(active.pointerId);
+                  }
+                  pointerDragRef.current = null;
+                  setDragOverFolderPath(null);
+                  setDragPreview(null);
+                });
               }
               event.preventDefault();
               updateDragPreviewPosition(event.clientX + 12, event.clientY + 12);
               updatePointerDropTarget(event.clientX, event.clientY);
+              moveDragSession(drag.dragPayload.sessionId, { x: event.clientX, y: event.clientY });
               scheduleDragAutoScroll(event.clientX, event.clientY);
             }}
             onPointerUp={(event) => {
@@ -2363,6 +2500,8 @@ export function NotebookFileTree({
                   suppressOpenPathsRef.current = new Set();
                 }
               }, 0);
+              const handledByDropTarget = endDragSession(drag.dragPayload.sessionId, { x: event.clientX, y: event.clientY });
+              if (handledByDropTarget) return;
               if (!drag.targetDirectoryPath) return;
               void handleDrop(
                 drag.targetDirectoryPath,
@@ -2373,6 +2512,7 @@ export function NotebookFileTree({
             onPointerCancel={(event) => {
               const drag = pointerDragRef.current;
               if (!drag || event.pointerId !== drag.pointerId) return;
+              cancelDragSession(drag.dragPayload.sessionId);
               stopDragAutoScroll();
               clearDragExpandTimer();
               pointerDragRef.current = null;
@@ -2453,15 +2593,11 @@ export function NotebookFileTree({
                 onCreateFolder={() => handleCreateFolderAtPath(notebookPath)}
                 onCreateTable={(viewType) => openNewTableDialog(false, notebookPath, viewType)}
                 onCreateMediaLibrary={() => openNewMediaLibraryDialog(false, notebookPath)}
-                onImport={() => { void handleImportFiles(notebookPath); }}
+                onImportFiles={() => { void handleImportFiles(notebookPath); }}
+                onImportFolder={() => { void handleImportFolder(notebookPath); }}
               />
-              <ContextMenuItem
-                onClick={(event) => {
-                  setCustomizeAnchorRect(getPopupOriginRect(event.currentTarget));
-                  setCustomizeOrder([...sectionOrder]);
-                  setCustomizeHidden([...hiddenSections]);
-                  setCustomizeOpen(true);
-                }}
+              <ContextMenuItem keepOpenOnClick
+                onClick={(event) => openCustomizeDisplay(getPopupOriginRect(event.currentTarget))}
                 className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left transition-colors hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
               >
                 <SquaresFourIcon className="mr-2 h-4 w-4" aria-hidden="true" />
@@ -2531,7 +2667,7 @@ export function NotebookFileTree({
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" size="sm" className="h-8 rounded-lg text-sm" onClick={() => setNewTableDialogOpen(false)}>{t('dialog.cancel')}</Button>
               <Button type="submit" size="sm" className="h-8 rounded-lg text-sm" disabled={!newTableName.trim() || isCreatingTable}>
-                {isCreatingTable ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+                {isCreatingTable ? <Loader2 className="mr-1.5 h-4 w-4 flowix-spin" aria-hidden="true" /> : null}
                 {isCreatingTable ? t('memo.create.creating') : t('memo.create.confirm')}
               </Button>
             </div>
@@ -2549,7 +2685,7 @@ export function NotebookFileTree({
             <div className="flex justify-end gap-2">
               <Button type="button" variant="outline" size="sm" className="rounded-lg" onClick={() => setNewLibraryDialogOpen(false)}>{t('dialog.cancel')}</Button>
               <Button type="submit" size="sm" className="rounded-lg" disabled={!newLibraryName.trim() || isCreatingLibrary}>
-                {isCreatingLibrary ? <Loader2 className="mr-1.5 h-4 w-4 animate-spin" aria-hidden="true" /> : null}
+                {isCreatingLibrary ? <Loader2 className="mr-1.5 h-4 w-4 flowix-spin" aria-hidden="true" /> : null}
                 {isCreatingLibrary ? t('memo.create.creating') : t('memo.create.confirm')}
               </Button>
             </div>
@@ -2557,9 +2693,13 @@ export function NotebookFileTree({
         </DialogContent>
       </Dialog>
       <Popover open={customizeOpen} onOpenChange={setCustomizeOpen} anchorRect={customizeAnchorRect}>
-        <PopoverContent side="bottom" align="start" sideOffset={0} className="w-[190px] max-w-[calc(100vw-16px)] rounded-2xl p-[5px] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-          <DialogHeader className="mb-0 flex min-h-8 items-center justify-between px-1">
-            <DialogTitle className="text-sm">{t('memo.fileTree.customizeDisplay')}</DialogTitle>
+        <PopoverContent side="bottom" align="start" sideOffset={0} alignToAnchorOrigin keepParentMenuOpen className="w-[190px] max-w-[calc(100vw-16px)] rounded-2xl p-[5px] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+          <DialogHeader className="mb-0 flex min-h-8 flex-row items-center justify-between px-1">
+            <button type="button" aria-label="返回上一级菜单" title="返回上一级菜单" onClick={() => setCustomizeOpen(false)} className="inline-flex min-w-0 shrink-0 items-center gap-0.5 rounded px-0 text-xs leading-[1.2] text-[var(--muted-foreground)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]">
+              <ChevronLeft className="h-3.5 w-3.5" aria-hidden="true" />
+              <span className="min-w-0 truncate text-xs leading-[1.2]">{t('memo.fileTree.customizeDisplay')}</span>
+            </button>
+            <DialogTitle className="sr-only">{t('memo.fileTree.customizeDisplay')}</DialogTitle>
             <button type="button" className="rounded-md px-2 py-1 text-xs font-medium text-[var(--primary)] transition-colors hover:bg-[var(--muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]" onClick={() => {
               setSectionOrder(customizeOrder);
               setHiddenSections(customizeHidden);
@@ -2581,10 +2721,6 @@ export function NotebookFileTree({
               const selected = !customizeHidden.includes(section);
               return <div key={section} data-customize-section={section} className={cn('group relative flex h-8 items-center gap-2 rounded-lg px-2 transition-colors hover:bg-[var(--muted)]', draggedSection.current === section && 'opacity-50')}>
                 {sectionDropTarget?.section === section && draggedSection.current !== section && <span aria-hidden="true" className={cn('pointer-events-none absolute inset-x-1 z-10 h-0.5 rounded-full bg-[var(--primary)]', sectionDropTarget.after ? '-bottom-0.5' : '-top-0.5')} />}
-                <button type="button" role="checkbox" aria-checked={selected} aria-label={`展示${labels[section]}`} onClick={() => setCustomizeHidden((current) => selected ? [...current, section] : current.filter((item) => item !== section))} className={cn('notebook-file-tree__display-checkbox focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]', selected && 'notebook-file-tree__display-checkbox--checked')}>
-                  {selected && <span className="notebook-file-tree__display-checkbox-mark" aria-hidden="true" />}
-                </button>
-                <span className="min-w-0 flex-1 truncate text-xs font-medium text-[var(--foreground)]">{labels[section]}</span>
                 <button type="button" onPointerDown={(event) => {
                   if (event.button !== 0) return;
                   draggedSection.current = section;
@@ -2637,6 +2773,12 @@ export function NotebookFileTree({
                 }} aria-label={`排序${labels[section]}，使用上下方向键调整`} className="flex h-7 w-7 shrink-0 cursor-grab touch-none items-center justify-center rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] active:cursor-grabbing">
                   <GripVertical className="h-4 w-4" aria-hidden="true" />
                 </button>
+                <span className="min-w-0 flex-1 truncate text-sm font-medium text-[var(--foreground)]">{labels[section]}</span>
+                <FlowixCheckbox
+                  checked={selected}
+                  aria-label={`展示${labels[section]}`}
+                  onCheckedChange={(checked) => setCustomizeHidden((current) => checked ? current.filter((item) => item !== section) : [...current, section])}
+                />
               </div>;
             })}
           </div>

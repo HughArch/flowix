@@ -3,19 +3,6 @@ use std::sync::{LazyLock, Mutex};
 
 static MEMO_RELATIVE_PATH_MIGRATION_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
 
-/// Legacy global indexes predate several optional tables and columns.
-/// Importing from an absent source is a no-op, not an error; anything else
-/// still fails.
-fn tolerate_missing_legacy_table(error: std::io::Error) -> std::io::Result<usize> {
-    if error.to_string().contains("no such table")
-        || error.to_string().contains("no such column")
-    {
-        Ok(0)
-    } else {
-        Err(error)
-    }
-}
-
 impl MemoFile {
     pub fn storage_title_from_filename(filename: &str) -> String {
         let stem = filename.strip_suffix(".md").unwrap_or(filename).to_string();
@@ -52,7 +39,7 @@ impl MemoFile {
             .unwrap_or_else(|| self.get_default_notebook_path())
     }
 
-    fn ensure_memo_tables(&self, conn: &Connection) -> std::io::Result<()> {
+    fn ensure_memo_tables(&self, conn: &Connection, run_legacy_migrations: bool) -> std::io::Result<()> {
         conn.execute_batch(
             r#"
             PRAGMA foreign_keys = ON;
@@ -197,35 +184,49 @@ impl MemoFile {
             "#,
         )
         .map_err(sqlite_to_io)?;
-        self.migrate_memo_relative_paths(conn)?;
-        self.migrate_memo_todo_ids(conn)?;
-        self.migrate_memo_lifecycles(conn)?;
-        conn.execute_batch(
-            r#"
-            INSERT OR IGNORE INTO notebook_tags
-                (notebook_id, path, created_at, updated_at)
-            SELECT DISTINCT
-                m.notebook_id,
-                mt.tag,
-                CAST(strftime('%s', 'now') AS INTEGER) * 1000,
-                CAST(strftime('%s', 'now') AS INTEGER) * 1000
-            FROM memo_tags mt
-            JOIN memos m ON m.id = mt.memo_id
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM schema_migrations
-                WHERE migration_key = 'notebook_tags_v1'
-            );
+        if run_legacy_migrations {
+            self.migrate_memo_relative_paths(conn)?;
+            self.migrate_memo_todo_ids(conn)?;
+            self.migrate_memo_lifecycles(conn)?;
+            conn.execute_batch(
+                r#"
+                INSERT OR IGNORE INTO notebook_tags
+                    (notebook_id, path, created_at, updated_at)
+                SELECT DISTINCT
+                    m.notebook_id,
+                    mt.tag,
+                    CAST(strftime('%s', 'now') AS INTEGER) * 1000,
+                    CAST(strftime('%s', 'now') AS INTEGER) * 1000
+                FROM memo_tags mt
+                JOIN memos m ON m.id = mt.memo_id
+                WHERE NOT EXISTS (
+                    SELECT 1
+                    FROM schema_migrations
+                    WHERE migration_key = 'notebook_tags_v1'
+                );
 
-            INSERT OR IGNORE INTO schema_migrations (migration_key, completed_at)
-            VALUES (
-                'notebook_tags_v1',
-                CAST(strftime('%s', 'now') AS INTEGER) * 1000
-            );
-            "#,
-        )
-        .map_err(sqlite_to_io)?;
+                INSERT OR IGNORE INTO schema_migrations (migration_key, completed_at)
+                VALUES (
+                    'notebook_tags_v1',
+                    CAST(strftime('%s', 'now') AS INTEGER) * 1000
+                );
+                "#,
+            )
+            .map_err(sqlite_to_io)?;
+        }
         Ok(())
+    }
+
+    /// Upgrade an existing memo index during version initialization. Ordinary
+    /// database access creates the current schema but never rewrites legacy rows.
+    pub fn initialize_memo_index_schema(&self, notebook_id: &str) -> std::io::Result<()> {
+        let path = self.notebook_db_path(notebook_id)?;
+        super::super::with_database_rebuild(&path, || {
+            let conn = self.open_notebook_db(notebook_id)?;
+            self.ensure_memo_tables(&conn, true)?;
+            self.ensure_local_notebook_row(&conn, notebook_id)?;
+            Ok(())
+        })
     }
 
     /// Upgrade the v3 index where filename was the notebook-relative
@@ -590,209 +591,6 @@ impl MemoFile {
         transaction.and(restore)
     }
 
-    fn import_legacy_global_memo_index(
-        &self,
-        conn: &Connection,
-        notebook_id: &str,
-    ) -> std::io::Result<()> {
-        let already_imported: Option<String> = conn
-            .query_row(
-                "SELECT value FROM notebook_index_meta WHERE key = 'legacy_global_index_import_v1'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sqlite_to_io)?;
-        if already_imported.is_some() {
-            return Ok(());
-        }
-
-        let legacy_path = self.registry_db_path();
-        if !legacy_path.is_file() {
-            conn.execute(
-                "INSERT OR REPLACE INTO notebook_index_meta (key, value) VALUES ('legacy_global_index_import_v1', ?1)",
-                ["missing"],
-            )
-            .map_err(sqlite_to_io)?;
-            return Ok(());
-        }
-
-        let legacy = self.open_registry_db()?;
-        let has_memos: bool = legacy
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memos')",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(sqlite_to_io)?;
-        if !has_memos {
-            conn.execute(
-                "INSERT OR REPLACE INTO notebook_index_meta (key, value) VALUES ('legacy_global_index_import_v1', ?1)",
-                ["empty"],
-            )
-            .map_err(sqlite_to_io)?;
-            return Ok(());
-        }
-
-        let legacy_path_string = legacy_path.to_string_lossy().to_string();
-        conn.execute("ATTACH DATABASE ?1 AS legacy_index", [&legacy_path_string])
-            .map_err(sqlite_to_io)?;
-        // Pre-relative-path global indexes kept the notebook-relative location
-        // in `filename` and had no `relative_path` column; pre-todo-id todo
-        // tables had no stable `todo_id`. Detect both and adapt the import.
-        let legacy_has = |table: &str, column: &str| -> std::io::Result<bool> {
-            let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM pragma_table_info(?1, 'legacy_index') WHERE name = ?2",
-                [table, column],
-                |row| row.get(0),
-            )
-            .map_err(sqlite_to_io)?;
-            Ok(count > 0)
-        };
-        let legacy_relative_path_expr = if legacy_has("memos", "relative_path")? {
-            "relative_path"
-        } else {
-            "filename"
-        };
-        let legacy_todo_id_expr = if legacy_has("memo_todos", "todo_id")? {
-            "mt.todo_id"
-        } else {
-            "'todo-legacy-' || mt.rowid"
-        };
-        let result = (|| -> std::io::Result<()> {
-            let tx = conn.unchecked_transaction().map_err(sqlite_to_io)?;
-
-            // Global indexes written before the lifecycle refactor predate the
-            // memo_lifecycles table. Skipping the import is safe: the primary
-            // copy stays valid and migrate_memo_lifecycles backfills lifecycle
-            // rows from the imported memos.
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_lifecycles
-                    (memo_id, notebook_id, relative_path, generation, is_deleted, created_at, updated_at, deleted_at)
-                 SELECT memo_id, notebook_id, relative_path, generation, is_deleted, created_at, updated_at, deleted_at
-                 FROM legacy_index.memo_lifecycles WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_lifecycles
-                    (memo_id, notebook_id, relative_path, generation, is_deleted, created_at, updated_at, deleted_at)
-                 SELECT memo_id, notebook_id, '', 1, 1, updated_at, updated_at, NULL
-                 FROM legacy_index.memo_content_revisions
-                 WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-                // Older global indexes did not have revisions yet. The
-                // primary copy remains valid when that optional table is absent.
-                .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                &format!(
-                    "INSERT OR IGNORE INTO memos
-                        (id, notebook_id, filename, relative_path, preview, thumbnail, thumbnail_checked, agents_checked, created_at, updated_at, favorited, icon, properties)
-                     SELECT id, notebook_id, filename, {legacy_relative_path_expr}, COALESCE(preview, ''), thumbnail, thumbnail_checked, agents_checked, created_at, updated_at, favorited, icon, COALESCE(properties, '{{}}')
-                     FROM legacy_index.memos WHERE notebook_id = ?1"
-                ),
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)?;
-            // The ensure_memo_tables lifecycle backfill ran before this import,
-            // so imported memos have no lifecycle rows yet. Backfill now: later
-            // revision imports reference these rows under FK RESTRICT.
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_lifecycles
-                    (memo_id, notebook_id, relative_path, generation, is_deleted, created_at, updated_at)
-                 SELECT id, notebook_id, relative_path, 1, 0, created_at, updated_at
-                 FROM memos WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_content_revisions
-                    (memo_id, notebook_id, content_hash, local_revision, change_id, updated_at)
-                 SELECT memo_id, notebook_id, content_hash, local_revision, change_id, updated_at
-                 FROM legacy_index.memo_content_revisions WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_tags (memo_id, tag)
-                 SELECT mt.memo_id, mt.tag FROM legacy_index.memo_tags mt
-                 JOIN legacy_index.memos m ON m.id = mt.memo_id
-                 WHERE m.notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_colors (memo_id, color, position)
-                 SELECT mc.memo_id, mc.color, mc.position FROM legacy_index.memo_colors mc
-                 JOIN legacy_index.memos m ON m.id = mc.memo_id
-                 WHERE m.notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                &format!(
-                    "INSERT OR IGNORE INTO memo_todos
-                        (memo_id, todo_id, content, status, priority, time_range, owner, assignee, created_at, updated_at, position)
-                     SELECT mt.memo_id, {legacy_todo_id_expr}, mt.content, mt.status, mt.priority, mt.time_range, mt.owner, mt.assignee, mt.created_at, mt.updated_at, mt.position
-                     FROM legacy_index.memo_todos mt
-                     JOIN legacy_index.memos m ON m.id = mt.memo_id
-                     WHERE m.notebook_id = ?1"
-                ),
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_agents (memo_id, thread_id, title, agent_type, position)
-                 SELECT ma.memo_id, ma.thread_id, ma.title, ma.agent_type, ma.position
-                 FROM legacy_index.memo_agents ma
-                 JOIN legacy_index.memos m ON m.id = ma.memo_id
-                 WHERE m.notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO notebook_tags (notebook_id, path, created_at, updated_at)
-                 SELECT notebook_id, path, created_at, updated_at
-                 FROM legacy_index.notebook_tags WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_index_state (notebook_id, version, last_updated, migrated_at)
-                 SELECT notebook_id, version, last_updated, migrated_at
-                 FROM legacy_index.memo_index_state WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO notebook_data_migrations (notebook_id, migration_key, version, completed_at)
-                 SELECT notebook_id, migration_key, version, completed_at
-                 FROM legacy_index.notebook_data_migrations WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR REPLACE INTO notebook_index_meta (key, value) VALUES ('legacy_global_index_import_v1', ?1)",
-                ["complete"],
-            )
-            .map_err(sqlite_to_io)?;
-            tx.commit().map_err(sqlite_to_io)
-        })();
-        let detach = conn.execute_batch("DETACH DATABASE legacy_index;");
-        result.and(detach.map_err(sqlite_to_io))
-    }
-
     fn ensure_local_notebook_row(
         &self,
         conn: &Connection,
@@ -831,9 +629,8 @@ impl MemoFile {
         notebook_id: &str,
     ) -> std::io::Result<Connection> {
         let conn = self.open_notebook_db(notebook_id)?;
-        self.ensure_memo_tables(&conn)?;
+        self.ensure_memo_tables(&conn, false)?;
         self.ensure_local_notebook_row(&conn, notebook_id)?;
-        self.import_legacy_global_memo_index(&conn, notebook_id)?;
         Ok(conn)
     }
 
@@ -1439,7 +1236,7 @@ impl MemoFile {
         version: u32,
     ) -> std::io::Result<()> {
         let conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
-        self.ensure_memo_tables(&conn)?;
+        self.ensure_memo_tables(&conn, false)?;
         conn.execute(
             "INSERT INTO notebook_data_migrations
                 (notebook_id, migration_key, version, completed_at)

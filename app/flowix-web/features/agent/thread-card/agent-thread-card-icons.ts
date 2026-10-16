@@ -30,12 +30,12 @@ const ICON_ALERT_PATH =
   "M12 9v4M12 17h.01M10.29 3.86 1.82 18a2 2 0 0 0 1.71 3h16.94a2 2 0 0 0 1.71-3L13.71 3.86a2 2 0 0 0-3.42 0Z";
 const ICON_LOADER_PATH = "M21 12a9 9 0 1 1-6.219-8.56";
 
-function createSvg(viewBox: string, className: string): SVGSVGElement {
+function createSvg(viewBox: string, ...classNames: string[]): SVGSVGElement {
   const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
   svg.setAttribute("viewBox", viewBox);
   svg.setAttribute("aria-hidden", "true");
   svg.setAttribute("focusable", "false");
-  svg.classList.add(className);
+  svg.classList.add(...classNames);
   return svg;
 }
 
@@ -92,7 +92,7 @@ export function createArrowBendDownRightIcon(): SVGSVGElement {
 
 export function createTrashIcon(): SVGSVGElement {
   return appendFillPath(
-    createSvg("0 0 256 256", "agent-thread-card__trash-icon"),
+    createSvg("0 0 256 256", "agent-icon__trash"),
     ICON_TRASH_PATH,
   );
 }
@@ -109,7 +109,7 @@ export function createTrashSimpleIcon(): SVGSVGElement {
   if (!(icon instanceof SVGSVGElement)) {
     throw new Error("Failed to render TrashSimpleIcon");
   }
-  icon.classList.add("agent-thread-card__trash-icon");
+  icon.classList.add("agent-icon__trash");
   return icon;
 }
 
@@ -132,42 +132,46 @@ export function createToolIcon(
 
 export function createFolderIcon(): SVGSVGElement {
   return appendFillPath(
-    createSvg("0 0 256 256", "agent-thread-card__access-row-icon"),
+    createSvg("0 0 256 256", "agent-composer__access-row-icon"),
     ICON_FOLDER_PATH,
   );
 }
 
 export function createLaptopIcon(): SVGSVGElement {
   return appendFillPath(
-    createSvg("0 0 256 256", "agent-thread-card__access-workspace-icon"),
+    createSvg("0 0 256 256", "agent-composer__access-workspace-icon"),
     ICON_LAPTOP_PATH,
   );
 }
 
 export function createPlusIcon(): SVGSVGElement {
   return appendFillPath(
-    createSvg("0 0 24 24", "agent-thread-card__access-add-icon"),
+    createSvg("0 0 24 24", "agent-composer__access-add-icon"),
     ICON_PLUS_PATH,
   );
 }
 
 export function createComposerAddIcon(): SVGSVGElement {
   return appendFillPath(
-    createSvg("0 0 24 24", "agent-thread-card__composer-add-button-empty"),
+    createSvg("0 0 24 24", "agent-composer__add-button-empty"),
     ICON_PLUS_PATH,
   );
 }
 
 export function createAlertIcon(): SVGSVGElement {
   return appendStrokePath(
-    createSvg("0 0 24 24", "agent-thread-card__access-alert-icon"),
+    createSvg("0 0 24 24", "agent-composer__access-alert-icon"),
     ICON_ALERT_PATH,
   );
 }
 
 export function createToolRunningLoadingIcon(): SVGSVGElement {
   return appendStrokePath(
-    createSvg("0 0 24 24", "agent-thread-card__tool-group-running-loading-icon"),
+    createSvg(
+      "0 0 24 24",
+      "agent-thread-card__tool-group-running-loading-icon",
+      "flowix-spin",
+    ),
     ICON_LOADER_PATH,
   );
 }

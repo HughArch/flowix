@@ -31,6 +31,7 @@ mod runtime_log;
 #[cfg(windows)]
 mod runtime_state;
 mod system_data;
+mod storage_initialization;
 mod template_store;
 mod update_security;
 mod watcher;

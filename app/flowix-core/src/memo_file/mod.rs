@@ -30,12 +30,15 @@ pub const MEMO_ID_ALPHABET: [char; 36] = [
 pub const MEMO_ID_LENGTH: usize = 8;
 
 mod content;
+mod database_layout;
+mod storage_repair;
 mod derivation;
 mod file_management;
 mod file_io;
 pub(crate) mod frontmatter;
 mod index_store;
 mod internal_migration;
+mod local_migrations;
 mod media_resource;
 mod migration;
 mod notebook;
@@ -74,7 +77,10 @@ pub use frontmatter::{
     LEGACY_FRONTMATTER_KEY, SYSTEM_FRONTMATTER_KEYS,
 };
 pub use index_store::{MemoContentCommit, MemoContentRevision, NoteContentCommit, NoteContentRevision};
+pub use local_migrations::{initialize_local_migration_table, NotebookInitializationJob};
 pub use internal_migration::{NotebookInternalMigrationReport, NOTEBOOK_INTERNAL_MIGRATION_KEY};
+pub use storage_repair::{ensure_storage_directory, read_or_create_json, backup_database, backup_storage_file, is_rebuildable_storage_error, with_database_rebuild};
+pub use database_layout::{prepare_database_directory, DATABASE_DIRECTORY_NAME};
 pub use media_resource::{media_kind_for_path, MediaResource, MediaResourceKind, MediaResourcePage};
 pub use migration::{DataMigrationReport, NotebookMigrationReport, LATEST_DATA_MIGRATION_VERSION};
 pub use ops::{
@@ -340,3 +346,6 @@ impl MemoFile {
 
 #[cfg(test)]
 mod tests;
+
+mod workspace;
+pub use workspace::{NotebookAddDir, NotebookWorkspaceConfig, NotebookWorkspaceSnapshot};

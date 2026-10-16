@@ -90,7 +90,7 @@ export function MemoListNavigationDrawer({
       >
         <div className="relative z-[1] h-full min-h-0 flex-1 overflow-y-auto overscroll-contain px-2 pb-2">
           <div className="pt-3">
-            <div className="agent-thread-card__access-section-label">
+            <div className="agent-composer__access-section-label">
               {t('memo.navigation.notebookNavigation')}
             </div>
             <div className="space-y-0.5">

@@ -13,6 +13,7 @@ use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::lock_utils::read_lock;
+use crate::commands::helpers::FileOperationFailure;
 use crate::memo_events::{self, MemoChangeSource, MemoDerivedChanged, MemoEvent};
 use crate::USER_CONFIG_DIR_NAME;
 use flowix_core::memo_file::{
@@ -315,7 +316,7 @@ const MAX_NOTEBOOK_TEMPLATE_FILES: usize = 2_000;
 const MAX_NOTEBOOK_TEMPLATE_BYTES: usize = 10 * 1024 * 1024;
 const NOTEBOOK_TEMPLATE_INIT_MARKER: &str = ".flowix/notebook-template-initializing.json";
 
-fn validate_notebook_template(template: &NotebookTemplate) -> Result<(), String> {
+pub(crate) fn validate_notebook_template(template: &NotebookTemplate) -> Result<(), String> {
     if template.id.trim().is_empty()
         || template.id.len() > 128
         || template.id.chars().any(char::is_control)
@@ -334,6 +335,8 @@ fn validate_notebook_template(template: &NotebookTemplate) -> Result<(), String>
 }
 
 fn read_notebook_template_index() -> Result<Vec<NotebookTemplate>, String> {
+    let home = dirs::home_dir().ok_or_else(|| "template directory not available".to_string())?;
+    template_store::initialize_notebook_templates(&home.join(USER_CONFIG_DIR_NAME))?;
     let directory =
         notebook_template_dir().ok_or_else(|| "template directory not available".to_string())?;
     let path = directory.join("index.json");
@@ -355,8 +358,6 @@ fn read_notebook_template_index() -> Result<Vec<NotebookTemplate>, String> {
 
 #[tauri::command]
 pub fn list_notebook_templates() -> Result<Vec<NotebookTemplate>, String> {
-    let home = dirs::home_dir().ok_or_else(|| "template directory not available".to_string())?;
-    template_store::initialize_notebook_templates(&home.join(USER_CONFIG_DIR_NAME))?;
     read_notebook_template_index()
 }
 
@@ -936,9 +937,6 @@ pub async fn initialize_notebook_template(
         let index_report = {
             let memo_file = read_lock(&state.memo_file, "memo_file");
             memo_file
-                .ensure_notebook_migrations(&notebook_id)
-                .map_err(|error| format!("notebook import migration failed: {error}"))?;
-            memo_file
                 .reconcile_note_index(&notebook_id)
                 .map_err(|error| format!("notebook path reconciliation failed: {error}"))?
         };
@@ -1190,7 +1188,7 @@ pub fn move_memo_to_directory(
     parent_relative_path: String,
     state: State<AppState>,
     app: AppHandle,
-) -> Result<MoveMemoResult, String> {
+) -> Result<MoveMemoResult, FileOperationFailure> {
     let requested_path = Path::new(&file_path);
     if !requested_path.is_absolute() {
         return Err("absolute document path required".into());
@@ -1209,11 +1207,11 @@ pub fn move_memo_to_directory(
         let mut service = NoteService::new(&memo_file);
         let original = service
             .get(&source_notebook_id, &relative_path)
-            .map_err(|error| error.to_string())?;
+            .map_err(FileOperationFailure::from)?;
         mark_self_write_for(&app, &original.path);
         let moved = service
             .move_to(&source_notebook_id, &relative_path, &parent_relative_path)
-            .map_err(|error| error.to_string())?;
+            .map_err(FileOperationFailure::from)?;
         drop(service);
         mark_self_write_for(&app, &moved.path);
         let compatibility_memo = before.as_ref().and_then(|_| {

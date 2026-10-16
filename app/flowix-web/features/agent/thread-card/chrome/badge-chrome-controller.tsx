@@ -5,8 +5,7 @@ import { getAgentType } from "@/lib/agent-types";
 import { type ThreadState } from "@features/agent/store/thread-runtime-state";
 import { useAgentRuntimeStore } from "@features/agent/store/agent-runtime-store";
 import { normalizeAgentRuntimeStatus } from "@features/agent/runtime/agent-runtime-status";
-import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
-import { useAgentAccessStore } from "@features/agent/store/agent-access-store";
+import { useAgentDataStore } from "@features/agent/store/agent-data-store";
 import { BadgeHoverCard } from "@features/agent/thread-card/badge-hover-card";
 import { computeAgentThreadCardBadgeData } from "@features/agent/thread-card/runtime/run-status-presenter";
 import { createRuntimeInfoRequester } from "@features/agent/thread-card/runtime/runtime-info-requester";
@@ -66,13 +65,13 @@ export class AgentThreadCardBadgeChromeController {
     this.badgeIcon.style.setProperty("--agent-icon-src", `url("${type.icon}")`);
     this.badgeIcon.classList.toggle(
       "agent-icon--masked",
-      isThemeAdaptiveAgentIcon(type.key),
+      isThemeAdaptiveAgentIcon(type.id),
     );
     this.badgeIcon.classList.toggle(
       "agent-type-badge__icon--image",
-      !isThemeAdaptiveAgentIcon(type.key),
+      !isThemeAdaptiveAgentIcon(type.id),
     );
-    this.badgeIcon.classList.toggle("agent-icon--pi", type.key === "pi");
+    this.badgeIcon.classList.toggle("agent-icon--pi", type.id === "pi");
     this.badgeName.textContent = type.name;
     this.syncRuntimeState();
     // Conversation instances may hydrate after the NodeView is mounted. Repaint
@@ -85,7 +84,7 @@ export class AgentThreadCardBadgeChromeController {
     const type = getAgentType(this.getTypeKey());
     const runtime = useAgentRuntimeStore.getState();
     const status = normalizeAgentRuntimeStatus(
-      runtime.statusByType[type.key],
+      runtime.statusByType[type.id],
       runtime.isChecking,
     );
     const unavailable = status.state === "not-installed" || status.state === "not-ready";
@@ -170,14 +169,14 @@ export class AgentThreadCardBadgeChromeController {
       this.getSessionId() ??
       (threadId ? getResolvedExternalSessionId(threadId) : null);
     const typeKey = this.getTypeKey();
-    const piCodeMode = useAgentAccessStore.getState().config.defaults
-      ?.runtime?.pi?.piCodeMode ?? false;
+    const preferredPiMode = useAgentDataStore.getState().agents.pi.user.mode;
+    const piCodeMode = preferredPiMode === "code";
     const { runId, model, usage } =
       computeAgentThreadCardBadgeData({
         threadState: this.getThreadState(),
         // Phase 4 (2026-08-02): 真源是 session-store.sessionMeta.settings.
         codexModel:
-          useAgentSessionStore.getState().sessionMeta.settings.agentCodexModel,
+          useAgentDataStore.getState().agents.codex.user.model?.id ?? "inherit",
         typeKey: this.getTypeKey(),
       });
     this.hoverCardRoot.render(

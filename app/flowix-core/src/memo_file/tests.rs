@@ -247,16 +247,14 @@ fn pending_data_migrations_run_once_and_persist_version() {
     );
 }
 
-/// Global indexes written before the lifecycle refactor have `memos` but no
-/// `memo_lifecycles`. The legacy import must skip the missing table instead of
-/// failing startup data migrations (regression for
-/// "no such table: legacy_index.memo_lifecycles").
+/// Global index rows are deliberately not imported into the rebuilt notebook
+/// database. Markdown files remain the note source of truth.
 #[test]
-fn legacy_global_index_without_memo_lifecycles_imports_cleanly() {
+fn legacy_global_index_memo_rows_are_discarded() {
     let (mf, base) = fresh_memo_file();
     // Seed the registry db with a pre-lifecycle global index: `memos` exists,
     // `memo_lifecycles` does not.
-    let legacy_path = mf.registry_db_path();
+    let legacy_path = mf.registry_db_path().with_file_name("index.db");
     let legacy = rusqlite::Connection::open(&legacy_path).unwrap();
     legacy
         .execute_batch(
@@ -286,8 +284,7 @@ fn legacy_global_index_without_memo_lifecycles_imports_cleanly() {
     let report = mf.run_pending_data_migrations().unwrap();
     assert_eq!(report.to_version, super::LATEST_DATA_MIGRATION_VERSION);
 
-    // The legacy memo row is imported into the notebook-local index, and the
-    // lifecycle table is backfilled from the imported memos.
+    // The legacy memo row is discarded instead of copied into the fresh index.
     let notebook_db = mf.notebook_db_path("nb_test").unwrap();
     let conn = rusqlite::Connection::open(&notebook_db).unwrap();
     let memos: i64 = conn
@@ -297,7 +294,7 @@ fn legacy_global_index_without_memo_lifecycles_imports_cleanly() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(memos, 1);
+    assert_eq!(memos, 0);
     let lifecycles: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM memo_lifecycles WHERE memo_id = 'memo-legacy-1'",
@@ -305,19 +302,16 @@ fn legacy_global_index_without_memo_lifecycles_imports_cleanly() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(lifecycles, 1);
+    assert_eq!(lifecycles, 0);
     assert!(base.join(".flowix/notebook.json").is_file());
 }
 
-/// Real-world pre-refactor global indexes (observed in the field) lack
-/// `memos.relative_path`, lack `memo_todos.todo_id`, and lack
-/// `memo_lifecycles` entirely. The import must adapt: filename becomes the
-/// relative path, todo ids are synthesized from rowids, and lifecycle rows
-/// are backfilled.
+/// Real-world pre-refactor memo rows are discarded even when the old global
+/// schema differs from the current notebook index schema.
 #[test]
-fn legacy_global_index_with_pre_relative_path_schema_imports_cleanly() {
+fn legacy_global_index_pre_relative_path_memo_rows_are_discarded() {
     let (mf, _tmp) = fresh_memo_file();
-    let legacy_path = mf.registry_db_path();
+    let legacy_path = mf.registry_db_path().with_file_name("index.db");
     let legacy = rusqlite::Connection::open(&legacy_path).unwrap();
     legacy
         .execute_batch(
@@ -372,23 +366,14 @@ fn legacy_global_index_with_pre_relative_path_schema_imports_cleanly() {
 
     let notebook_db = mf.notebook_db_path("nb_test").unwrap();
     let conn = rusqlite::Connection::open(&notebook_db).unwrap();
-    let (imported_relative_path, imported_preview): (String, String) = conn
+    let imported_memos: i64 = conn
         .query_row(
-            "SELECT relative_path, preview FROM memos WHERE id = 'memo-legacy-1'",
-            [],
-            |row| Ok((row.get(0)?, row.get(1)?)),
-        )
-        .unwrap();
-    assert_eq!(imported_relative_path, "Old.md");
-    assert_eq!(imported_preview, "# Old");
-    let todo_id: String = conn
-        .query_row(
-            "SELECT todo_id FROM memo_todos WHERE memo_id = 'memo-legacy-1'",
+            "SELECT COUNT(*) FROM memos WHERE id = 'memo-legacy-1'",
             [],
             |row| row.get(0),
         )
         .unwrap();
-    assert!(todo_id.starts_with("todo-legacy-"));
+    assert_eq!(imported_memos, 0);
     let lifecycles: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM memo_lifecycles WHERE memo_id = 'memo-legacy-1'",
@@ -396,8 +381,7 @@ fn legacy_global_index_with_pre_relative_path_schema_imports_cleanly() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(lifecycles, 1);
-    // The revision row survives: its lifecycle FK target was backfilled.
+    assert_eq!(lifecycles, 0);
     let revisions: i64 = conn
         .query_row(
             "SELECT COUNT(*) FROM memo_content_revisions WHERE memo_id = 'memo-legacy-1'",
@@ -405,7 +389,7 @@ fn legacy_global_index_with_pre_relative_path_schema_imports_cleanly() {
             |row| row.get(0),
         )
         .unwrap();
-    assert_eq!(revisions, 1);
+    assert_eq!(revisions, 0);
 }
 
 #[test]
@@ -3458,7 +3442,7 @@ fn open_index_db_upgrades_legacy_schema_and_normalizes_sort() {
     });
     mf.write_notebook_configs(&next_configs).unwrap();
 
-    let conn = rusqlite::Connection::open(config_dir.join("index.db")).unwrap();
+    let conn = rusqlite::Connection::open(config_dir.join("db/local.db")).unwrap();
     let sort_alpha: i64 = conn
         .query_row(
             "SELECT sort FROM notebooks WHERE id = 'nb_alpha'",

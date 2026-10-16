@@ -308,20 +308,20 @@ mod tests {
         let manager = ThreadManager::for_tests();
         let first = manager
             .ensure_thread(
-                "gemini-local-1",
-                AgentId("gemini".to_string()),
+                "codex-local-1",
+                AgentId("codex".to_string()),
                 "first title".to_string(),
             )
             .await
             .unwrap();
-        assert_eq!(first.thread_id, "gemini-local-1");
-        assert_eq!(first.agent_id.0, "gemini");
+        assert_eq!(first.thread_id, "codex-local-1");
+        assert_eq!(first.agent_id.0, "codex");
         assert_eq!(first.title, "first title");
 
         let second = manager
             .ensure_thread(
-                "gemini-local-1",
-                AgentId("gemini".to_string()),
+                "codex-local-1",
+                AgentId("codex".to_string()),
                 "second title".to_string(),
             )
             .await
@@ -1438,7 +1438,7 @@ mod tests {
     }
 
     #[test]
-    fn newer_thread_schema_is_rejected() {
+    fn newer_thread_schema_is_preserved_before_rebuild() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("thread.db");
         let conn = rusqlite::Connection::open(&db_path).expect("open database");
@@ -1450,17 +1450,13 @@ mod tests {
         .expect("set future schema version");
         drop(conn);
 
-        let error = match ThreadManager::new(db_path) {
-            Ok(_) => panic!("future schema must be rejected"),
-            Err(error) => error,
-        };
-        assert!(matches!(
-            error,
-            crate::agent_session::error::ThreadError::UnsupportedSchemaVersion {
-                found,
-                supported
-            } if found == supported + 1
-        ));
+        let manager = ThreadManager::new(db_path).expect("recreate a usable current database");
+        manager.initialize_storage().unwrap();
+        assert!(dir.path().join("rebuild-backups").exists());
+        let backup = std::fs::read_dir(dir.path().join("rebuild-backups")).unwrap().next().unwrap().unwrap().path().join("thread.db");
+        let preserved = rusqlite::Connection::open(backup).unwrap();
+        let version: i64 = preserved.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, crate::agent_session::migrations::THREAD_DB_SCHEMA_VERSION + 1);
     }
 
     #[tokio::test]

@@ -171,11 +171,11 @@ function createCodexHistoryAdapter(): AgentHistoryAdapter {
 
 function createClaudeHistoryAdapter(): AgentHistoryAdapter {
   return {
-    typeKey: "claude",
+    typeKey: "claudecode",
     externalSessionBacked: true,
     listThreads: () => agentClient.listClaudeThreads(),
     async getFullHistory(threadId) {
-      return readAllHistoryPages("claude", threadId);
+      return readAllHistoryPages("claudecode", threadId);
     },
     getInitialHistory: (threadId, limit) =>
       agentClient.getClaudeThreadPage(threadId, null, limit),
@@ -280,7 +280,7 @@ function createPiHistoryAdapter(): AgentHistoryAdapter {
 
 function createDeepSeekHarnessHistoryAdapter(): AgentHistoryAdapter {
   return {
-    typeKey: "deepseek-harness",
+    typeKey: "dsh",
     externalSessionBacked: true,
     listThreads: () => agentClient.listDeepSeekHarnessThreads(),
     async getFullHistory(threadId) {
@@ -306,7 +306,7 @@ const historyAdapters: Partial<Record<AgentTypeKey, AgentHistoryAdapter>> = {
   hermes: createHermesHistoryAdapter(),
   // OpenCode reads its provider session through the ACP session/load path.
   opencode: createOpenCodeHistoryAdapter(),
-  "deepseek-harness": createDeepSeekHarnessHistoryAdapter(),
+  dsh: createDeepSeekHarnessHistoryAdapter(),
 };
 
 export function getAgentHistoryAdapter(typeKey: AgentTypeKey): AgentHistoryAdapter {

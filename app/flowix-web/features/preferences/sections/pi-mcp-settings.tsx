@@ -10,6 +10,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Field, FIELD_INPUT_CLASS, SectionHeader } from '@features/preferences/sections/primitives';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
+import { FlowixCheckbox } from '@shared/ui/flowix-checkbox';
 
 type Transport = 'stdio' | 'http';
 type Draft = {
@@ -118,37 +119,37 @@ export function PiMcpSettings() {
   const form = draft && (
     <fieldset disabled={busy} className="m-0 min-w-0 space-y-3 rounded-xl border border-[var(--divider)] bg-[var(--card)] p-3">
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Field title={t('preferences.pi.mcp.name')}>
-          <Input className={fieldClass} value={draft.name} disabled={Boolean(draft.original.command || draft.original.url)} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="filesystem" />
+        <Field title={t('preferences.pi.mcp.name')} controlId="pi-mcp-name">
+          <Input id="pi-mcp-name" className={fieldClass} value={draft.name} disabled={Boolean(draft.original.command || draft.original.url)} onChange={(event) => setDraft({ ...draft, name: event.target.value })} placeholder="filesystem" />
         </Field>
-        <Field title={t('preferences.pi.mcp.transport')}>
+        <Field title={t('preferences.pi.mcp.transport')} controlId="pi-mcp-transport">
           <Select value={draft.transport} onValueChange={(transport) => setDraft({ ...draft, transport: transport as Transport })}>
-            <SelectTrigger className={fieldClass}><SelectValue /></SelectTrigger>
+            <SelectTrigger id="pi-mcp-transport" className={fieldClass}><SelectValue /></SelectTrigger>
             <SelectContent><SelectItem value="stdio">stdio</SelectItem><SelectItem value="http">Streamable HTTP</SelectItem></SelectContent>
           </Select>
         </Field>
       </div>
       {draft.transport === 'stdio' ? <>
-        <Field title={t('preferences.pi.mcp.command')}><Input className={fieldClass} value={draft.command} onChange={(event) => setDraft({ ...draft, command: event.target.value })} placeholder="npx" /></Field>
-        <Field title={t('preferences.pi.mcp.args')} description={t('preferences.pi.mcp.argsHint')}><textarea className={`${fieldClass} min-h-20 w-full resize-y rounded-md p-2 font-mono text-xs`} value={draft.args} onChange={(event) => setDraft({ ...draft, args: event.target.value })} placeholder={'-y\n@modelcontextprotocol/server-filesystem\n.'} /></Field>
+        <Field title={t('preferences.pi.mcp.command')} controlId="pi-mcp-command"><Input id="pi-mcp-command" className={fieldClass} value={draft.command} onChange={(event) => setDraft({ ...draft, command: event.target.value })} placeholder="npx" /></Field>
+        <Field title={t('preferences.pi.mcp.args')} controlId="pi-mcp-args" description={t('preferences.pi.mcp.argsHint')}><textarea id="pi-mcp-args" className={`${fieldClass} min-h-20 w-full resize-y rounded-md p-2 font-mono text-xs`} value={draft.args} onChange={(event) => setDraft({ ...draft, args: event.target.value })} placeholder={'-y\n@modelcontextprotocol/server-filesystem\n.'} /></Field>
         <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-          <Field title={t('preferences.pi.mcp.env')}><textarea className={`${fieldClass} min-h-20 w-full resize-y rounded-md p-2 font-mono text-xs`} value={draft.env} onChange={(event) => setDraft({ ...draft, env: event.target.value })} placeholder={t('preferences.pi.mcp.envHint')} /></Field>
-          <Field title={t('preferences.pi.mcp.cwd')}><Input className={fieldClass} value={draft.cwd} onChange={(event) => setDraft({ ...draft, cwd: event.target.value })} placeholder="/path/to/project" /></Field>
+          <Field title={t('preferences.pi.mcp.env')} controlId="pi-mcp-env"><textarea id="pi-mcp-env" className={`${fieldClass} min-h-20 w-full resize-y rounded-md p-2 font-mono text-xs`} value={draft.env} onChange={(event) => setDraft({ ...draft, env: event.target.value })} placeholder={t('preferences.pi.mcp.envHint')} /></Field>
+          <Field title={t('preferences.pi.mcp.cwd')} controlId="pi-mcp-cwd"><Input id="pi-mcp-cwd" className={fieldClass} value={draft.cwd} onChange={(event) => setDraft({ ...draft, cwd: event.target.value })} placeholder="/path/to/project" /></Field>
         </div>
       </> : <>
-        <Field title={t('preferences.pi.mcp.url')}><Input className={fieldClass} value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="https://example.com/mcp" /></Field>
-        <Field title={t('preferences.pi.mcp.headers')} description={t('preferences.pi.mcp.headersHint')}><textarea className={`${fieldClass} min-h-20 w-full resize-y rounded-md p-2 font-mono text-xs`} value={draft.headers} onChange={(event) => setDraft({ ...draft, headers: event.target.value })} /></Field>
+        <Field title={t('preferences.pi.mcp.url')} controlId="pi-mcp-url"><Input id="pi-mcp-url" className={fieldClass} value={draft.url} onChange={(event) => setDraft({ ...draft, url: event.target.value })} placeholder="https://example.com/mcp" /></Field>
+        <Field title={t('preferences.pi.mcp.headers')} controlId="pi-mcp-headers" description={t('preferences.pi.mcp.headersHint')}><textarea id="pi-mcp-headers" className={`${fieldClass} min-h-20 w-full resize-y rounded-md p-2 font-mono text-xs`} value={draft.headers} onChange={(event) => setDraft({ ...draft, headers: event.target.value })} /></Field>
       </>}
       <div className="grid grid-cols-1 gap-3 sm:grid-cols-2">
-        <Field title={t('preferences.pi.mcp.exposure')}>
+        <Field title={t('preferences.pi.mcp.exposure')} controlId="pi-mcp-exposure">
           <Select value={draft.exposure} onValueChange={(exposure) => setDraft({ ...draft, exposure })}>
-            <SelectTrigger className={fieldClass}><SelectValue /></SelectTrigger>
+            <SelectTrigger id="pi-mcp-exposure" className={fieldClass}><SelectValue /></SelectTrigger>
             <SelectContent><SelectItem value="codemode">codemode</SelectItem><SelectItem value="deferred">deferred</SelectItem><SelectItem value="direct">direct</SelectItem><SelectItem value="hidden">hidden</SelectItem></SelectContent>
           </Select>
         </Field>
-        <Field title={t('preferences.pi.mcp.serverDescription')}><Input className={fieldClass} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></Field>
+        <Field title={t('preferences.pi.mcp.serverDescription')} controlId="pi-mcp-server-description"><Input id="pi-mcp-server-description" className={fieldClass} value={draft.description} onChange={(event) => setDraft({ ...draft, description: event.target.value })} /></Field>
       </div>
-      <label className="flex items-center gap-2 text-sm text-[var(--foreground)]"><input type="checkbox" checked={draft.enabled} onChange={(event) => setDraft({ ...draft, enabled: event.target.checked })} />{t('preferences.pi.mcp.enabled')}</label>
+      <div className="flex items-center gap-2 text-sm text-[var(--foreground)]"><FlowixCheckbox checked={draft.enabled} disabled={busy} aria-label={t('preferences.pi.mcp.enabled')} onCheckedChange={(enabled) => setDraft({ ...draft, enabled })} /><span className={busy ? 'cursor-not-allowed opacity-50' : 'cursor-pointer'} onClick={() => { if (!busy) setDraft({ ...draft, enabled: !draft.enabled }); }}>{t('preferences.pi.mcp.enabled')}</span></div>
       <div className="flex justify-end gap-2"><Button type="button" variant="outline" className="h-8" onClick={() => setDraft(null)}>{t('preferences.pi.cancel')}</Button><Button type="button" className="h-8" disabled={busy} onClick={() => void save()}>{t('preferences.pi.save')}</Button></div>
     </fieldset>
   );
@@ -160,7 +161,7 @@ export function PiMcpSettings() {
         <Button type="button" variant="outline" className="h-8 shrink-0 gap-1" disabled={busy || Boolean(draft)} onClick={() => setDraft(draftFrom())}><Plus className="size-3.5" />{t('preferences.pi.mcp.add')}</Button>
       </div>
       {error && <p role="alert" className="text-sm text-[var(--destructive)]">{error}</p>}
-      {loading && <div className="flex justify-center py-5"><Loader2 className="size-5 animate-spin" /></div>}
+      {loading && <div className="flex justify-center py-5"><Loader2 className="size-5 flowix-spin" /></div>}
       {!loading && !error && servers.length === 0 && !draft && <div className="rounded-lg border border-dashed border-[var(--divider)] px-4 py-5 text-center text-sm text-[var(--muted-foreground)]">{t('preferences.pi.mcp.empty')}</div>}
       <div className="space-y-2">
         {servers.map((server) => <article key={server.name} className="flex items-center gap-2 rounded-xl border border-[var(--divider)] bg-[var(--card)] p-3">

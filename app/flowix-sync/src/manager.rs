@@ -6,7 +6,8 @@ use crate::client::CloudClient;
 use crate::error::SyncError;
 use crate::models::{
     AppleAuthChallenge, AppleAuthorization, CloudAuthStatus, CloudCheckout, CloudMembership,
-    CloudProduct, CloudState, LocalChangeKind, RefreshTokenStore, RuntimeSession,
+    CloudOrder, CloudOrderCheck, CloudProduct, CloudState, LocalChangeKind, RefreshTokenStore,
+    RuntimeSession,
 };
 use crate::store::SyncStore;
 use crate::v2::{

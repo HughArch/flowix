@@ -10,39 +10,78 @@ import { artifacts, type ArtifactSession } from '@platform/tauri/client';
 import { useDocumentStore } from '@features/document/store/document-store';
 import { PluginArtifactRenderer, type PluginArtifactRendererHandle } from './plugin-artifact-renderer';
 import { PluginMarkmapControls } from './plugin-markmap-controls';
+import type { SurfacePresentationUpdate } from '@features/workspace/public/surface-api';
 
 export function PluginDocumentView({
   notePath,
   transitionId,
+  reportPresentation,
 }: {
   notePath: string;
   transitionId?: number;
+  reportPresentation?: (update: SurfacePresentationUpdate) => void;
 }) {
   const [artifact, setArtifact] = useState<ArtifactSession | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [fullscreen, setFullscreen] = useState(false);
   const canvasRef = useRef<HTMLDivElement>(null);
   const rendererRef = useRef<PluginArtifactRendererHandle>(null);
+  const requestSequenceRef = useRef(0);
+  const currentNotePathRef = useRef(notePath);
+  currentNotePathRef.current = notePath;
+  const retryPresentation = useCallback(() => {
+    // Re-mount the renderer; its effect starts a fresh artifact resolution.
+    reportPresentation?.({ state: { status: 'ready' } });
+  }, [reportPresentation]);
 
   const load = useCallback(async () => {
+    const requestSequence = ++requestSequenceRef.current;
+    const isCurrentRequest = () => requestSequence === requestSequenceRef.current
+      && currentNotePathRef.current === notePath;
     setError(null);
+    reportPresentation?.({
+      state: { status: 'loading', phase: 'content', message: { key: 'memo.navigation.loading' }, retainContent: true },
+    });
     try {
-      setArtifact(await artifacts.resolve(notePath));
+      const resolved = await artifacts.resolve(notePath);
+      if (!isCurrentRequest()) return;
+      setArtifact(resolved);
+      reportPresentation?.({
+        title: resolved.name,
+        state: resolved.content?.length
+          ? { status: 'ready' }
+          : {
+              status: 'unavailable', reason: 'unsupported',
+              message: { key: 'error.unexpected', fallbackText: resolved.error ?? '插件产物内容不可读' },
+              actions: [{ id: 'retry', label: { key: 'error.retry' }, enabled: true, run: retryPresentation }],
+            },
+      });
     } catch (loadError) {
+      if (!isCurrentRequest()) return;
       setArtifact(null);
       setError(loadError instanceof Error ? loadError.message : String(loadError));
+      reportPresentation?.({
+        state: {
+          status: 'error',
+          message: { key: 'error.unexpected', fallbackText: loadError instanceof Error ? loadError.message : String(loadError) },
+          actions: [{ id: 'retry', label: { key: 'error.retry' }, enabled: true, run: retryPresentation }],
+        },
+      });
     } finally {
       // Plugin pointer notes bypass DocumentContainer, which normally owns
       // the document transition completion callback. Complete the same
       // transition after the pointer/artifact has been resolved, otherwise
       // MainLayout's document loading overlay remains visible forever.
-      if (transitionId !== undefined) {
+      if (isCurrentRequest() && transitionId !== undefined) {
         useDocumentStore.getState().finishDocumentTransition(transitionId);
       }
     }
-  }, [notePath, transitionId]);
+  }, [notePath, reportPresentation, retryPresentation, transitionId]);
 
-  useEffect(() => { void load(); }, [load]);
+  useEffect(() => {
+    void load();
+    return () => { requestSequenceRef.current += 1; };
+  }, [load]);
   useEffect(() => {
     const onFullscreenChange = () => setFullscreen(document.fullscreenElement === canvasRef.current);
     document.addEventListener('fullscreenchange', onFullscreenChange);

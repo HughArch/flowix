@@ -32,6 +32,8 @@ export interface PrepareUserMessageOptions {
   attachments?: AgentMessageAttachment[];
 }
 
+type AgentMessageAttachmentSource = Pick<AgentMessageAttachment, "path" | "name" | "mimeType">;
+
 function attachmentMimeType(path: string): string {
   const extension = path.split(/[\\/]/u).pop()?.split(".").pop()?.toLowerCase();
   switch (extension) {
@@ -48,17 +50,20 @@ function attachmentMimeType(path: string): string {
   }
 }
 
-/** Build display metadata from the authorized cache paths used by the IPC. */
+/** Build image display metadata from cached paths or their existing metadata. */
 export function createAgentMessageAttachments(
-  paths: readonly string[] | undefined,
+  attachments: readonly (string | AgentMessageAttachmentSource)[] | undefined,
 ): AgentMessageAttachment[] {
-  return (paths ?? []).map((path, index) => {
-    const name = path.split(/[\\/]/u).pop() || `image-${index + 1}`;
+  return (attachments ?? []).map((attachment, index) => {
+    const path = typeof attachment === "string" ? attachment : attachment.path;
+    const name = typeof attachment === "string"
+      ? path.split(/[\\/]/u).pop() || `image-${index + 1}`
+      : attachment.name;
     return {
       type: "input_image",
       path,
       name,
-      mimeType: attachmentMimeType(path),
+      mimeType: typeof attachment === "string" ? attachmentMimeType(path) : attachment.mimeType,
       detail: "high",
     };
   });

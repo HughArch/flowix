@@ -2,11 +2,11 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Notebook } from '@features/memo/store/note-store';
 
 const mocks = vi.hoisted(() => ({
-  openExternalTarget: vi.fn(),
+  openWorkspaceSurface: vi.fn(),
 }));
 
-vi.mock('@features/workspace/use-cases/workspace-navigation', () => ({
-  openExternalTarget: mocks.openExternalTarget,
+vi.mock('@features/workspace/public/open-surface-api', () => ({
+  openWorkspaceSurface: mocks.openWorkspaceSurface,
 }));
 
 import { openNotebookNote } from './open-notebook-note';
@@ -15,16 +15,21 @@ const notebook = { id: 'book-1', path: '/notes' } as Notebook;
 
 describe('openNotebookNote', () => {
   it('opens ordinary Markdown by path without requiring a memo ID', async () => {
-    mocks.openExternalTarget.mockClear();
+    mocks.openWorkspaceSurface.mockClear();
     await openNotebookNote('/notes/a.md', notebook);
-    expect(mocks.openExternalTarget).toHaveBeenCalledWith('/notes/a.md', {
-      scopePath: '/notes', destination: undefined, history: undefined, initialFocus: undefined,
+    expect(mocks.openWorkspaceSurface).toHaveBeenCalledWith({
+      host: 'main-third',
+      target: { kind: 'external', path: '/notes/a.md', scopePath: '/notes', transitionId: null },
+      options: { history: undefined, initialFocus: undefined },
     });
   });
 
   it('opens plugin Markdown through the path document surface', async () => {
-    mocks.openExternalTarget.mockClear();
+    mocks.openWorkspaceSurface.mockClear();
     await openNotebookNote('/notes/map.md', notebook);
-    expect(mocks.openExternalTarget).toHaveBeenCalledWith('/notes/map.md', expect.objectContaining({ scopePath: '/notes' }));
+    expect(mocks.openWorkspaceSurface).toHaveBeenCalledWith(expect.objectContaining({
+      host: 'main-third',
+      target: { kind: 'external', path: '/notes/map.md', scopePath: '/notes', transitionId: null },
+    }));
   });
 });

@@ -1,7 +1,7 @@
 import type { AgentTypeKey } from "@/types/agent";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
 import { useAgentRuntimeStore } from "@features/agent/store/agent-runtime-store";
-import { useAgentAccessStore } from "@features/agent/store/agent-access-store";
+import { useAgentDataStore } from "@features/agent/store/agent-data-store";
 import type { ThreadProjection } from "@features/agent/store/session-reducer";
 import {
   isLocalExternalThreadId,
@@ -43,8 +43,7 @@ export class AgentThreadCardSubscriptionsController {
     this.unsubscribes = [
       this.subscribeThreadState(),
       this.subscribeTitle(),
-      this.subscribeSettings(),
-      this.subscribeAgentAccess(),
+      this.subscribeAgentData(),
       ...this.subscribeConversation(),
       this.subscribeRuntime(),
     ];
@@ -124,7 +123,7 @@ export class AgentThreadCardSubscriptionsController {
     const options = this.options;
     const typeKey = options.getTypeKey();
     if (
-      (typeKey === "codex" || typeKey === "claude") &&
+      (typeKey === "codex" || typeKey === "claudecode") &&
       next.localThreadId &&
       next.resolvedSessionId
     ) {
@@ -134,7 +133,7 @@ export class AgentThreadCardSubscriptionsController {
         typeKey,
       );
     } else if (
-      (typeKey === "codex" || typeKey === "claude") &&
+      (typeKey === "codex" || typeKey === "claudecode") &&
       next.threadId &&
       isLocalExternalThreadId(next.threadId, typeKey) &&
       next.projection &&
@@ -154,31 +153,6 @@ export class AgentThreadCardSubscriptionsController {
         },
       );
     }
-  }
-
-  private subscribeSettings(): Unsubscribe {
-    const options = this.options;
-    // Phase 4 (2026-08-02): 真源切到 session-store.sessionMeta.settings.
-    return useAgentSessionStore.subscribe(
-      (state) => ({
-        agentPermissionMode: state.sessionMeta.settings.agentPermissionMode,
-        agentCodexModel: state.sessionMeta.settings.agentCodexModel,
-        agentCodexReasoningEffort:
-          state.sessionMeta.settings.agentCodexReasoningEffort,
-      }),
-      () => {
-        options.refreshExternalAgentEmptySettings();
-        if (options.isExternalSettingsOpen()) {
-          options.renderCodexSettingsPopover();
-        }
-      },
-      {
-        equalityFn: (a, b) =>
-          a.agentPermissionMode === b.agentPermissionMode &&
-          a.agentCodexModel === b.agentCodexModel &&
-          a.agentCodexReasoningEffort === b.agentCodexReasoningEffort,
-      },
-    );
   }
 
   private subscribeConversation(): Unsubscribe[] {
@@ -227,15 +201,20 @@ export class AgentThreadCardSubscriptionsController {
     });
   }
 
-  private subscribeAgentAccess(): Unsubscribe {
-    return useAgentAccessStore.subscribe((state, previous) => {
-      if (
-        state.config.defaults?.runtime?.pi?.piCodeMode ===
-        previous.config.defaults?.runtime?.pi?.piCodeMode
-      ) {
-        return;
-      }
-      if (this.options.getTypeKey() !== "pi") return;
+  private subscribeAgentData(): Unsubscribe {
+    return useAgentDataStore.subscribe((state, previous) => {
+      const typeKey = this.options.getTypeKey();
+      const current = state.agents[typeKey];
+      const prior = previous.agents[typeKey];
+      const preferenceChanged = current.user.model !== prior.user.model
+        || current.user.permission !== prior.user.permission
+        || current.user.mode !== prior.user.mode
+        || current.user.reasoningEffort !== prior.user.reasoningEffort
+        || current.user.reasoningByModel !== prior.user.reasoningByModel
+        || current.user.serviceTier !== prior.user.serviceTier;
+      const modelCatalogChanged = current.catalog.models !== prior.catalog.models;
+      const workspaceChanged = state.workspace !== previous.workspace;
+      if (!preferenceChanged && !modelCatalogChanged && !workspaceChanged) return;
       this.options.refreshAttrs();
       this.options.refreshExternalAgentEmptySettings();
       if (this.options.isExternalSettingsOpen()) {

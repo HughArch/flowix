@@ -14,6 +14,15 @@ import {
 const logger = createLogger('conversation-list-data');
 const CONVERSATION_PAGE_SIZE = 30;
 
+function firstPageQueryKey(
+  notebookId: string | null,
+  agentType: AgentTypeKey | null,
+  lifecycleVersion: number,
+  retry: number,
+): string {
+  return `${notebookId ?? ''}\u001f${agentType ?? ''}\u001f${lifecycleVersion}\u001f${retry}`;
+}
+
 interface ConversationListDataOptions {
   notebookId: string | null;
   agentType: AgentTypeKey | null;
@@ -31,6 +40,7 @@ export function useConversationListData({
   );
   const [isLoading, setIsLoading] = useState(true);
   const [loadError, setLoadError] = useState(false);
+  const [settledQueryKey, setSettledQueryKey] = useState<string | null>(null);
   const [firstPageRetry, setFirstPageRetry] = useState(0);
   const [isLoadingMore, setIsLoadingMore] = useState(false);
   const [loadMoreError, setLoadMoreError] = useState(false);
@@ -46,7 +56,24 @@ export function useConversationListData({
   // hydrated wholesale just to render the sidebar.
   useEffect(() => {
     let active = true;
-    const queryKey = `${notebookId ?? ''}\u001f${agentType ?? ''}`;
+    const queryKey = firstPageQueryKey(notebookId, agentType, lifecycleVersion, firstPageRetry);
+    if (!notebookId) {
+      requestSequenceRef.current += 1;
+      loadingMoreRef.current = false;
+      listQueryKeyRef.current = queryKey;
+      nextCursorRef.current = null;
+      setConversationPage(EMPTY_CONVERSATION_PAGE_STATE);
+      setHasMore(false);
+      setLoadError(false);
+      setLoadMoreError(false);
+      setIsLoadingMore(false);
+      setAgentTypeCounts({});
+      setIsLoading(false);
+      setSettledQueryKey(queryKey);
+      return () => {
+        active = false;
+      };
+    }
     const query = { notebookId, agentType, cursor: null } as const;
     const queryChanged = listQueryKeyRef.current !== queryKey;
     // Invalidate any in-flight page request before starting a new first page.
@@ -62,6 +89,7 @@ export function useConversationListData({
       setLoadMoreError(false);
     }
     setLoadError(false);
+    setSettledQueryKey(null);
     // Lifecycle changes can trigger a fresh first page after the view is
     // mounted, keeping deletion/archive state aligned with the backend.
     setIsLoading(true);
@@ -80,7 +108,10 @@ export function useConversationListData({
         if (active) setLoadError(true);
       })
       .finally(() => {
-        if (active) setIsLoading(false);
+        if (active) {
+          setIsLoading(false);
+          setSettledQueryKey(queryKey);
+        }
       });
     return () => {
       active = false;
@@ -92,6 +123,12 @@ export function useConversationListData({
   // rows themselves remain cursor-paginated.
   useEffect(() => {
     let active = true;
+    if (!notebookId) {
+      setAgentTypeCounts({});
+      return () => {
+        active = false;
+      };
+    }
     void agentClient.listConversationTypeCountsByNotebook(notebookId)
       .then((counts) => {
         if (!active) return;
@@ -108,11 +145,11 @@ export function useConversationListData({
   }, [notebookId, lifecycleVersion]);
 
   const loadMoreConversations = useCallback(async (retry = false) => {
-    if (loadingMoreRef.current || !hasMore || isLoading || loadError || (loadMoreError && !retry)) return;
+    if (!notebookId || loadingMoreRef.current || !hasMore || isLoading || loadError || (loadMoreError && !retry)) return;
     loadingMoreRef.current = true;
     setIsLoadingMore(true);
     setLoadMoreError(false);
-    const queryKey = `${notebookId ?? ''}\u001f${agentType ?? ''}`;
+    const queryKey = firstPageQueryKey(notebookId, agentType, lifecycleVersion, firstPageRetry);
     const requestSequence = ++requestSequenceRef.current;
     try {
       const query = { notebookId, agentType, cursor: nextCursorRef.current };
@@ -142,7 +179,16 @@ export function useConversationListData({
         setIsLoadingMore(false);
       }
     }
-  }, [notebookId, agentType, hasMore, isLoading, loadError, loadMoreError]);
+  }, [
+    notebookId,
+    agentType,
+    lifecycleVersion,
+    firstPageRetry,
+    hasMore,
+    isLoading,
+    loadError,
+    loadMoreError,
+  ]);
 
   const retryFirstPage = useCallback(() => {
     setFirstPageRetry((value) => value + 1);
@@ -160,6 +206,8 @@ export function useConversationListData({
     loadMoreError,
     hasMore,
     agentTypeCounts,
+    settledQueryKey,
+    queryKey: firstPageQueryKey(notebookId, agentType, lifecycleVersion, firstPageRetry),
     loadMore: loadMoreConversations,
     retryFirstPage,
     updateTitle,

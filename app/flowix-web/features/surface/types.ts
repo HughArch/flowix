@@ -1,6 +1,5 @@
 import type { ComponentProps } from 'react';
 import type { AgentConversationDetail } from '@features/agent/components/agent-conversation-detail';
-import type { DocumentContainer } from '@features/document/components/document-container';
 import type {
   PluginDocumentViewProps,
   PluginWorkbenchProps,
@@ -10,31 +9,16 @@ import type { PluginDescriptor } from '@platform/tauri/client';
 import type { WorkColumnNavigationState } from '@features/workspace/store/work-column-target';
 import type { FileDisplayIdentity } from '@/lib/file-display-registry';
 import type { TableDocumentViewProps } from '@features/multidimensional-table/public/surface-api';
+import type { WorkspaceSurfaceCapability, SurfaceHeaderStyle, SurfaceEmptyReason } from '@features/workspace/public/surface-api';
 
-export type WorkColumnSurfaceCapability =
-  | 'edit'
-  | 'search'
-  | 'memo-colors'
-  | 'properties'
-  | 'copy-content'
-  | 'export-content'
-  | 'save-template'
-  | 'version-history'
-  | 'fit'
-  | 'zoom'
-  | 'fullscreen'
-  | 'open-source'
-  | 'run-agent'
-  | 'stream-conversation';
+import type { ExternalDocumentProps } from './workspace-surface-renderer-contract';
+
+export type WorkColumnSurfaceCapability = WorkspaceSurfaceCapability;
 
 /** Visual chrome owned by the currently mounted surface. */
-export type WorkColumnSurfaceChrome = 'document' | 'agent' | 'media';
+export type WorkColumnSurfaceChrome = SurfaceHeaderStyle;
 
-export type WorkColumnEmptyReason =
-  | 'no-target'
-  | 'stale-context'
-  | 'invalid-target'
-  | 'invalid-artifact';
+export type WorkColumnEmptyReason = Exclude<SurfaceEmptyReason, 'no-content'>;
 
 export type WorkColumnEmptyStateTone = 'document' | 'agent';
 
@@ -47,9 +31,7 @@ interface FileSurfaceBase extends SurfaceBase {
   fileIdentity: FileDisplayIdentity;
 }
 
-export type ExternalDocumentProps = Omit<ComponentProps<typeof DocumentContainer>, 'isExternalDocument' | 'fileIdentity'> & {
-  isExternalDocument: true;
-};
+export type { ExternalDocumentProps } from './workspace-surface-renderer-contract';
 
 /** Markdown documents opened through their file path, including notebook notes. */
 export interface MDSurface extends FileSurfaceBase {
@@ -90,6 +72,14 @@ export interface MediaLibraryFileSurface extends FileSurfaceBase {
   kind: 'media-library-file';
   notebookPath: string | null;
   notebookId: string | null;
+}
+
+export interface FolderCollectionSurface extends SurfaceBase {
+  kind: 'folder-collection';
+  notebookId: string;
+  notebookPath: string;
+  folderPath: string;
+  folderName: string;
 }
 
 export interface HtmlFileSurface extends FileSurfaceBase {
@@ -155,17 +145,6 @@ export interface WebSurface extends SurfaceBase {
   url: string;
 }
 
-export interface DocumentListSurface extends SurfaceBase {
-  kind: 'document-list';
-  displayId: string;
-  folderPath: string;
-  notebookPath: string;
-  notebookId: string | null;
-  filters: { resourceKinds?: string[]; tags?: string[]; customFilterId?: string };
-  mediaScope?: { relativePath: string; depth: 'direct_children' | 'descendants' };
-  mediaDatasetActive?: boolean;
-}
-
 export type WorkColumnSurface =
   | MDSurface
   | CodeSurface
@@ -174,6 +153,7 @@ export type WorkColumnSurface =
   | VideoFileSurface
   | TableFileSurface
   | MediaLibraryFileSurface
+  | FolderCollectionSurface
   | HtmlFileSurface
   | UnavailableFileSurface
   | MediaResourceSurface
@@ -184,7 +164,6 @@ export type WorkColumnSurface =
   | PluginArtifactSurface
   | AgentConversationSurface
   | PluginWorkbenchSurface
-  | DocumentListSurface
   | WebSurface;
 
 export type WorkColumnSurfaceKind = WorkColumnSurface['kind'];
@@ -199,6 +178,7 @@ export type WorkColumnContentPresentation =
       reason: WorkColumnEmptyReason;
       tone: WorkColumnEmptyStateTone;
       message: string;
+      actions?: readonly import('@features/workspace/model/surface-contract').SurfaceAction[];
     };
 
 export type DocumentSurfaceIdentity =

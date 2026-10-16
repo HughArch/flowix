@@ -32,7 +32,7 @@ function resolveTextMessageId(
   // on every delta. Dropping only that known-bad delta id lets pendingAssistantId
   // join contiguous text while tool calls still form an explicit boundary.
   if (
-    agentType === "claude" &&
+    agentType === "claudecode" &&
     contentMode === "delta" &&
     messageId &&
     CLAUDE_ENVELOPE_TEXT_MESSAGE_ID.test(messageId)
@@ -127,7 +127,7 @@ export function mapAgentChunkToEvent(
           base.agentType,
           base.runId,
           "reasoning",
-          base.agentType === "claude" &&
+          base.agentType === "claudecode" &&
             !base.messageId?.startsWith("msg:")
             ? `reasoning-${base.runId}`
             : base.messageId,

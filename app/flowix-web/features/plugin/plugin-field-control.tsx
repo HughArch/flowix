@@ -3,6 +3,7 @@
 import type { AgentTypeKey } from '@/types/agent';
 import { AGENT_TYPES } from '@/lib/agent-types';
 import type { PluginField } from '@platform/tauri/client';
+import { FlowixCheckbox } from '@shared/ui/flowix-checkbox';
 
 export type PluginFieldValue = string | boolean;
 
@@ -70,16 +71,14 @@ export function PluginFieldControl({
 
   if (field.type === 'checkbox') {
     return (
-      <label className="flex items-center gap-2 text-sm text-[var(--foreground)]" htmlFor={id}>
-        <input
-          id={id}
-          type="checkbox"
+      <div className="flex items-center gap-2 text-sm text-[var(--foreground)]">
+        <FlowixCheckbox
           checked={value === true}
-          onChange={(event) => onChange(event.target.checked)}
-          className="h-4 w-4 accent-[var(--brand)]"
+          aria-label={field.placeholder || pluginFieldLabel(field)}
+          onCheckedChange={onChange}
         />
-        <span>{field.placeholder || pluginFieldLabel(field)}</span>
-      </label>
+        <span className="cursor-pointer" onClick={() => onChange(value !== true)}>{field.placeholder || pluginFieldLabel(field)}</span>
+      </div>
     );
   }
 

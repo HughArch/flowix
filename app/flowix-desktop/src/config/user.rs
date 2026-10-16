@@ -3,11 +3,12 @@ use std::collections::{BTreeMap, HashMap};
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::RwLock;
+use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::{Arc, RwLock};
 
+use super::property_presets::{PropertyPresetChange, PropertyPresetRegistry, PropertyPresetStore};
 use crate::USER_CONFIG_DIR_NAME;
 use flowix_core::secret::{entry_name, SecretStore};
-use super::property_presets::{PropertyPresetChange, PropertyPresetRegistry, PropertyPresetStore};
 
 /// AI 模型配置文件�?── TOML 格式, 便于人手编辑与注释�?///
 /// TOML 格式便于用户手改磁盘配置时写注释 (TOML 原生 `# ...`), 避免�?��字�?�?/// �?Flowix 的其它配�?���?(`boot/preference.json` /
@@ -27,6 +28,8 @@ const PREFERENCE_FILE_NAME: &str = "preference.json";
 const DEFAULT_SECRET_DB_NAME: &str = "default.db";
 const SECRET_ACCOUNT_NAME: &str = "default";
 const CLOUD_SECRET_PROVIDER: &str = "flowix_cloud_refresh";
+const CLOUD_DEV_STAGING_SECRET_PROVIDER: &str = "flowix_cloud_dev_staging_refresh";
+const CLOUD_DEV_PRODUCTION_SECRET_PROVIDER: &str = "flowix_cloud_dev_production_refresh";
 
 /// ~/.flowix/boot/preference.json —用户偏好设置
 /// 瀛楁鍏ㄩ儴 #[serde(default)], 鏂囦欢鎹熷潖鎴栫己澶辨椂鍥為€€鍒伴粯璁ゅ€笺€?
@@ -179,6 +182,10 @@ pub struct PreferenceFile {
     /// Installation region detected by the frontend on first launch.
     #[serde(default)]
     pub region: String,
+    /// Saved Cloud target name for development builds. Unknown legacy values
+    /// fall back to the build default; release builds always use production.
+    #[serde(default)]
+    pub cloud_environment: String,
     /// Memo list card presentation ("detailed" | "compact").
     #[serde(default)]
     pub memo_card_variant: String,
@@ -219,6 +226,7 @@ impl Default for PreferenceFile {
             theme: Theme::default(),
             language: String::default(),
             region: String::default(),
+            cloud_environment: String::default(),
             memo_card_variant: String::default(),
             memo_list_view: String::default(),
             auto_open_created_notes_in_browser: true,
@@ -586,7 +594,7 @@ pub struct UserConfigStore {
     ai_config: RwLock<AiConfigFile>,
     secrets: SecretStore,
     property_presets: PropertyPresetStore,
-    property_presets_migration_complete: bool,
+    property_presets_migration_complete: Arc<AtomicBool>,
 }
 
 /// 用户配置 (boot/preference.json / agent-config.toml) 写盘错�?。`Io` �?���?/// `std::io::Error` �? `Json` �?`serde_json::Error` �?(preference.json
@@ -640,10 +648,11 @@ impl UserConfigStore {
     }
 
     pub fn new(home_dir: PathBuf) -> Self {
-        // 鍑嵁 db 钀藉湪 config_dir/default.db (鐢熶骇鐜 ~/.flowix/default.db),
+        // 凭据数据库位于 config_dir/db/default.db (生产环境 ~/.flowix/db/default.db),
         // �?index.db 同目�?── �?0o700 �?�� + 0o600 文件权限保护�?
         let db_path = home_dir
             .join(USER_CONFIG_DIR_NAME)
+            .join("db")
             .join(DEFAULT_SECRET_DB_NAME);
         Self::new_with_secret_store(home_dir, SecretStore::new(db_path))
     }
@@ -653,39 +662,19 @@ impl UserConfigStore {
         let _ = fs::create_dir_all(&config_dir);
         // Restrict the configuration directory to its owner.
         set_dir_owner_only_perms(&config_dir);
-        migrate_dsh_layout(&config_dir);
-
-        let mut preference = Self::read_preference_from_disk(&config_dir).unwrap_or_default();
-        let had_legacy_property_registry = !preference.properties.system_fields.is_empty()
-            || !preference.properties.fields.is_empty()
-            || !preference.properties.deleted_fields.is_empty();
-        let property_presets = PropertyPresetStore::new(config_dir.join("local.db"));
-        let property_presets_migration_complete = match property_presets.migrate_legacy_once(&PropertyPresetRegistry {
-                system_fields: preference.properties.system_fields.clone(),
-                fields: preference.properties.fields.clone(),
-                deleted_fields: preference.properties.deleted_fields.clone(),
-            }).and_then(|migrated| property_presets.initialize_system_presets().map(|_| migrated)) {
-            Ok(_) if had_legacy_property_registry => {
-                preference.properties = PropertiesConfig::default();
-                match preference_json_without_property_registry(&preference) {
-                    Ok(content) => if let Err(error) = atomic_write_json(&preference_file_path(&config_dir), &content) {
-                        tracing::warn!(%error, "property presets were migrated, but legacy preference data could not be removed");
-                    },
-                    Err(error) => tracing::warn!(%error, "property presets were migrated, but legacy preference data could not be serialized"),
-                }
-                true
-            }
-            Ok(_) => { preference.properties = PropertiesConfig::default(); true }
-            Err(error) => {
-                tracing::error!(%error, "property preset migration failed; legacy preference data was retained on disk");
-                false
-            }
-        };
+        let preference = flowix_core::memo_file::read_or_create_json(
+            &preference_file_path(&config_dir),
+            PreferenceFile::default,
+        )
+        .unwrap_or_else(|error| {
+            tracing::warn!(%error, "preferences unavailable; using defaults");
+            PreferenceFile::default()
+        });
+        let property_presets = PropertyPresetStore::new(config_dir.join("db").join("local.db"));
         // Once the official DSH settings document exists, do not even load
-        // the legacy TOML into the process. This makes the source-of-truth
-        // boundary explicit: agent-config.toml is read only during the
-        // one-time migration performed by
-        // read_or_migrate_deepseek_harness_settings().
+        // the legacy TOML into the compatibility accessor. If it does not
+        // exist, this accessor may still expose the old standalone AI config;
+        // DSH settings reads themselves never migrate from it.
         let ai_config = if dsh_settings_path(&config_dir).is_file() {
             AiConfigFile::default()
         } else {
@@ -697,8 +686,92 @@ impl UserConfigStore {
             ai_config: RwLock::new(ai_config),
             secrets,
             property_presets,
-            property_presets_migration_complete,
+            property_presets_migration_complete: Arc::new(AtomicBool::new(false)),
         }
+    }
+
+    /// Run local configuration imports during the explicit version
+    /// initialization phase, before settings IPC is enabled.
+    pub fn initialize_legacy_config_migrations(&self) -> Result<(), String> {
+        self.with_runtime_storage_rebuild(|| self.initialize_legacy_config_migrations_inner())
+    }
+
+    fn initialize_legacy_config_migrations_inner(&self) -> Result<(), String> {
+        let mut preference = self.write_preference();
+        let had_legacy_properties = !preference.properties.system_fields.is_empty()
+            || !preference.properties.fields.is_empty()
+            || !preference.properties.deleted_fields.is_empty();
+        let registry = PropertyPresetRegistry {
+            system_fields: preference.properties.system_fields.clone(),
+            fields: preference.properties.fields.clone(),
+            deleted_fields: preference.properties.deleted_fields.clone(),
+        };
+        self.property_presets
+            .migrate_legacy_once(&registry)
+            .and_then(|_| self.property_presets.initialize_system_presets())
+            .map_err(|error| format!("initialize property presets failed: {error}"))?;
+        if had_legacy_properties {
+            preference.properties = PropertiesConfig::default();
+            let content = preference_json_without_property_registry(&preference)
+                .map_err(|error| format!("serialize cleaned preferences failed: {error}"))?;
+            atomic_write_json(&preference_file_path(&self.config_dir), &content)
+                .map_err(|error| format!("write cleaned preferences failed: {error}"))?;
+        }
+        preference.properties = PropertiesConfig::default();
+        Ok(())
+    }
+
+    /// Ensure current runtime defaults even when one-time migrations already ran.
+    /// Opening the store recreates a missing database/tables; existing presets
+    /// retain their identities and user values.
+    pub fn ensure_runtime_storage(&self) -> Result<(), String> {
+        self.with_runtime_storage_rebuild(|| {
+            self.property_presets.initialize_legacy_schema()?;
+            self.property_presets.initialize_system_presets()
+        })
+    }
+
+    fn with_runtime_storage_rebuild(
+        &self,
+        mut operation: impl FnMut() -> Result<(), String>,
+    ) -> Result<(), String> {
+        flowix_core::memo_file::with_database_rebuild(&self.config_dir.join("db/local.db"), || {
+            operation().map_err(|message| {
+                let invalid_data = [
+                    "no such",
+                    "has no column",
+                    "malformed",
+                    "not a database",
+                    "Invalid column",
+                    "invalid column",
+                    "datatype mismatch",
+                ]
+                .iter()
+                .any(|pattern| message.contains(pattern));
+                std::io::Error::new(
+                    if invalid_data {
+                        std::io::ErrorKind::InvalidData
+                    } else {
+                        std::io::ErrorKind::Other
+                    },
+                    message,
+                )
+            })
+        })
+        .map_err(|error| error.to_string())
+    }
+
+    /// Restore process-local state after persistent migration completion.
+    /// This runs on every startup, including when migration jobs are skipped.
+    pub fn prepare_initialized_runtime(&self) {
+        self.write_preference().properties = PropertiesConfig::default();
+        self.property_presets_migration_complete
+            .store(true, Ordering::Release);
+    }
+
+    /// Migrate the old Flowix DSH directory layout in its own retryable step.
+    pub fn initialize_legacy_dsh_layout(&self) -> Result<(), String> {
+        migrate_dsh_layout(&self.config_dir)
     }
 
     #[allow(dead_code)]
@@ -766,17 +839,34 @@ impl UserConfigStore {
         self.read_preference().clone()
     }
 
-    pub fn get_property_presets(&self) -> Result<PropertyPresetRegistry, UserConfigError> {
-        self.property_presets.get().map_err(UserConfigError::InvalidConfig)
+    pub fn has_legacy_watcher_exclusions(&self) -> bool {
+        let preference = self.read_preference();
+        let defaults = crate::watcher::WhitelistConfig::default();
+        preference.watcher.skip_dirs != defaults.skip_dirs
+            || preference.watcher.skip_files != defaults.skip_files
     }
 
-    pub fn patch_property_presets(&self, changes: &[PropertyPresetChange]) -> Result<PropertyPresetRegistry, UserConfigError> {
-        self.property_presets.patch(changes).map_err(UserConfigError::InvalidConfig)
+    pub fn get_property_presets(&self) -> Result<PropertyPresetRegistry, UserConfigError> {
+        self.property_presets
+            .get()
+            .map_err(UserConfigError::InvalidConfig)
+    }
+
+    pub fn patch_property_presets(
+        &self,
+        changes: &[PropertyPresetChange],
+    ) -> Result<PropertyPresetRegistry, UserConfigError> {
+        self.property_presets
+            .patch(changes)
+            .map_err(UserConfigError::InvalidConfig)
     }
 
     /// 先把 JSON 落盘 (tmp + fsync + rename, 0o600), 成功后才更新内存�?    /// 任一写�?骤失�?�?内存保持旧�? 磁盘保持旧文�? 不出�?内存新�?盘旧"�?    /// "半写�?��"的损坏状态�?
     pub fn set_preference(&self, mut p: PreferenceFile) -> Result<(), UserConfigError> {
-        let content = if self.property_presets_migration_complete {
+        let content = if self
+            .property_presets_migration_complete
+            .load(Ordering::Acquire)
+        {
             p.properties = PropertiesConfig::default();
             preference_json_without_property_registry(&p)?
         } else {
@@ -789,18 +879,72 @@ impl UserConfigStore {
         Ok(())
     }
 
+    /// Clear the legacy global watcher name exclusions. New file-management
+    /// rules are notebook-local and are initialized from their current defaults.
+    pub fn clear_legacy_watcher_exclusions(&self) -> Result<(), UserConfigError> {
+        let mut preference = self.write_preference();
+        let defaults = crate::watcher::WhitelistConfig::default();
+        if preference.watcher.skip_dirs == defaults.skip_dirs
+            && preference.watcher.skip_files == defaults.skip_files
+        {
+            return Ok(());
+        }
+
+        // Patch the raw document so unknown or newer preference fields survive
+        // this one-time cleanup as well.
+        let path = preference_file_path(&self.config_dir);
+        let mut document = match fs::read(&path) {
+            Ok(bytes) => serde_json::from_slice::<serde_json::Value>(&bytes)?,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                serde_json::to_value(&*preference)?
+            }
+            Err(error) => return Err(error.into()),
+        };
+        let root = document.as_object_mut().ok_or_else(|| {
+            UserConfigError::InvalidConfig("preference.json must contain a JSON object".into())
+        })?;
+        let watcher = root
+            .entry("watcher")
+            .or_insert_with(|| serde_json::json!({}));
+        let watcher = watcher.as_object_mut().ok_or_else(|| {
+            UserConfigError::InvalidConfig(
+                "preference.json watcher must contain a JSON object".into(),
+            )
+        })?;
+        watcher.insert(
+            "skip_dirs".into(),
+            serde_json::to_value(&defaults.skip_dirs)?,
+        );
+        watcher.insert(
+            "skip_files".into(),
+            serde_json::to_value(&defaults.skip_files)?,
+        );
+        let content = serde_json::to_string_pretty(&document)?;
+        atomic_write_json(&path, &content)?;
+
+        preference.watcher.skip_dirs = defaults.skip_dirs;
+        preference.watcher.skip_files = defaults.skip_files;
+        Ok(())
+    }
+
     /// Merge a partial JSON preference patch with the current value under the
     /// preference lock, so separate windows cannot overwrite unrelated fields.
     pub fn patch_preference(&self, patch: serde_json::Value) -> Result<(), UserConfigError> {
         let mut preference = self.write_preference();
         let legacy_properties = preference.properties.clone();
         let mut value = serde_json::to_value(&*preference)?;
-        if self.property_presets_migration_complete {
+        if self
+            .property_presets_migration_complete
+            .load(Ordering::Acquire)
+        {
             value["properties"] = serde_json::to_value(PropertiesConfig::default())?;
         }
         merge_preference_patch(&mut value, patch);
         let mut next: PreferenceFile = serde_json::from_value(value)?;
-        let content = if self.property_presets_migration_complete {
+        let content = if self
+            .property_presets_migration_complete
+            .load(Ordering::Acquire)
+        {
             next.properties = PropertiesConfig::default();
             preference_json_without_property_registry(&next)?
         } else {
@@ -838,12 +982,10 @@ impl UserConfigStore {
         config
     }
 
-    /// Load the DeepSeek Harness model configuration from the llm-pi-ai
-    /// settings document. Existing installations are migrated lazily from
-    /// agent-config.toml on first access; after that, the legacy document is
-    /// not consulted again.
+    /// Load DeepSeek Harness model configuration from the official settings
+    /// document. Missing settings start empty; retired Flowix TOML is ignored.
     pub fn get_deepseek_harness_config(&self) -> Result<AiConfigFile, UserConfigError> {
-        let settings = self.read_or_migrate_deepseek_harness_settings()?;
+        let settings = self.read_deepseek_harness_settings()?.unwrap_or_default();
         Ok(settings.to_ai_config())
     }
 
@@ -852,7 +994,7 @@ impl UserConfigStore {
     /// independent routes and their model cards carry different endpoints
     /// and credentials.
     pub fn get_deepseek_harness_configs(&self) -> Result<Vec<AiConfigFile>, UserConfigError> {
-        let settings = self.read_or_migrate_deepseek_harness_settings()?;
+        let settings = self.read_deepseek_harness_settings()?.unwrap_or_default();
         Ok(settings.to_ai_configs())
     }
 
@@ -916,24 +1058,6 @@ impl UserConfigStore {
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
             Err(error) => Err(error.into()),
         }
-    }
-
-    /// Read the official DSH settings document, or create it once from the
-    /// legacy Flowix TOML when upgrading an older installation. After this
-    /// write succeeds, subsequent reads never consult `agent-config.toml`.
-    fn read_or_migrate_deepseek_harness_settings(
-        &self,
-    ) -> Result<DeepSeekHarnessSettingsFile, UserConfigError> {
-        if let Some(settings) = self.read_deepseek_harness_settings()? {
-            return Ok(settings);
-        }
-
-        let mut legacy = self.read_ai_config().clone();
-        self.hydrate_ai_config_secrets(&mut legacy);
-        let settings = DeepSeekHarnessSettingsFile::from_ai_config(&legacy);
-        let content = serde_yaml::to_string(&settings)?;
-        atomic_write_yaml(&self.dsh_settings_path(), &content)?;
-        Ok(settings)
     }
 
     /// Render a standalone Harness settings document for a one-shot probe.
@@ -1025,23 +1149,6 @@ impl UserConfigStore {
             .map_err(|err| UserConfigError::SecretStore(err.to_string()))
     }
 
-    /// Read a pre-DSH-owned credential for one route during the one-time
-    /// migration. New DSH settings code must not use this as a runtime source.
-    pub(crate) fn legacy_dsh_secret(
-        &self,
-        provider: &str,
-    ) -> Result<Option<String>, UserConfigError> {
-        let account = entry_name(provider, SECRET_ACCOUNT_NAME);
-        self.secrets
-            .load(&account)
-            .map(|value| value.map(|secret| secret.into_inner()))
-            .map_err(|err| UserConfigError::SecretStore(err.to_string()))
-    }
-
-    pub(crate) fn delete_legacy_dsh_secret(&self, provider: &str) -> Result<(), UserConfigError> {
-        self.delete_provider_secret(provider)
-    }
-
     pub fn save_cloud_refresh_token(&self, token: &str) -> Result<(), UserConfigError> {
         self.save_provider_secret(CLOUD_SECRET_PROVIDER, token)
     }
@@ -1058,24 +1165,59 @@ impl UserConfigStore {
         self.delete_provider_secret(CLOUD_SECRET_PROVIDER)
     }
 
-    fn read_preference_from_disk(dir: &PathBuf) -> Option<PreferenceFile> {
-        let path = preference_file_path(dir);
-        if !path.exists() {
-            return None;
+    fn cloud_dev_secret_provider(environment: flowix_sync::CloudEnvironment) -> &'static str {
+        match environment {
+            flowix_sync::CloudEnvironment::Staging => CLOUD_DEV_STAGING_SECRET_PROVIDER,
+            flowix_sync::CloudEnvironment::Prod => CLOUD_DEV_PRODUCTION_SECRET_PROVIDER,
         }
-        fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| serde_json::from_str(&s).ok())
+    }
+
+    pub fn save_cloud_dev_refresh_token(
+        &self,
+        environment: flowix_sync::CloudEnvironment,
+        token: &str,
+    ) -> Result<(), UserConfigError> {
+        self.save_provider_secret(Self::cloud_dev_secret_provider(environment), token)
+    }
+
+    pub fn load_cloud_dev_refresh_token(
+        &self,
+        environment: flowix_sync::CloudEnvironment,
+    ) -> Result<Option<String>, UserConfigError> {
+        let provider = Self::cloud_dev_secret_provider(environment);
+        let account = entry_name(provider, SECRET_ACCOUNT_NAME);
+        self.secrets
+            .load(&account)
+            .map(|value| value.map(|secret| secret.into_inner()))
+            .map_err(|err| UserConfigError::SecretStore(err.to_string()))
+    }
+
+    pub fn delete_cloud_dev_refresh_token(
+        &self,
+        environment: flowix_sync::CloudEnvironment,
+    ) -> Result<(), UserConfigError> {
+        self.delete_provider_secret(Self::cloud_dev_secret_provider(environment))
     }
 
     fn read_ai_config_from_disk(dir: &PathBuf) -> Option<AiConfigFile> {
         let path = dir.join(AI_CONFIG_FILE_NAME);
-        if !path.exists() {
-            return None;
+        match fs::read(&path) {
+            Ok(bytes) => match std::str::from_utf8(&bytes)
+                .ok()
+                .and_then(|text| toml::from_str(text).ok())
+            {
+                Some(config) => return Some(config),
+                None => {
+                    flowix_core::memo_file::backup_storage_file(&path).ok()?;
+                }
+            },
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(_) => return None,
         }
-        fs::read_to_string(&path)
-            .ok()
-            .and_then(|s| toml::from_str(&s).ok())
+        let config = AiConfigFile::default();
+        let text = toml::to_string_pretty(&config).ok()?;
+        flowix_core::memo_file::atomic_write_bytes(&path, text.as_bytes()).ok()?;
+        Some(config)
     }
 }
 
@@ -1092,6 +1234,43 @@ impl flowix_sync::RefreshTokenStore for UserConfigStore {
 
     fn delete(&self) -> Result<(), String> {
         self.delete_cloud_refresh_token()
+            .map_err(|error| error.to_string())
+    }
+}
+
+pub struct CloudDevRefreshTokenStore {
+    user_config: std::sync::Arc<UserConfigStore>,
+    environment: flowix_sync::CloudEnvironment,
+}
+
+impl CloudDevRefreshTokenStore {
+    pub fn new(
+        user_config: std::sync::Arc<UserConfigStore>,
+        environment: flowix_sync::CloudEnvironment,
+    ) -> Self {
+        Self {
+            user_config,
+            environment,
+        }
+    }
+}
+
+impl flowix_sync::RefreshTokenStore for CloudDevRefreshTokenStore {
+    fn load(&self) -> Result<Option<String>, String> {
+        self.user_config
+            .load_cloud_dev_refresh_token(self.environment)
+            .map_err(|error| error.to_string())
+    }
+
+    fn save(&self, token: &str) -> Result<(), String> {
+        self.user_config
+            .save_cloud_dev_refresh_token(self.environment, token)
+            .map_err(|error| error.to_string())
+    }
+
+    fn delete(&self) -> Result<(), String> {
+        self.user_config
+            .delete_cloud_dev_refresh_token(self.environment)
             .map_err(|error| error.to_string())
     }
 }
@@ -1155,7 +1334,9 @@ fn preference_file_path(config_dir: &Path) -> PathBuf {
     config_dir.join(BOOT_DIR_NAME).join(PREFERENCE_FILE_NAME)
 }
 
-fn preference_json_without_property_registry(preference: &PreferenceFile) -> Result<String, UserConfigError> {
+fn preference_json_without_property_registry(
+    preference: &PreferenceFile,
+) -> Result<String, UserConfigError> {
     let mut value = serde_json::to_value(preference)?;
     if let Some(object) = value.as_object_mut() {
         object.remove("properties");
@@ -1172,7 +1353,7 @@ fn dsh_settings_path(config_dir: &Path) -> PathBuf {
 }
 
 /// 原子�?JSON: �?.tmp �?fsync �?0o600 �?rename 到目标�?/// 失败�?.tmp 残留由下次启动�?�? 不影响主文件�?///
-/// `pub(crate)` —`agent_access` 等同形态的 JSON 配置文件 (�?boot/preference.json)
+/// `pub(crate)` —其他同形态的 JSON 配置文件 (�?boot/preference.json)
 /// 同目�? 复用这个落盘逻辑, 不�?制�?二份�?
 pub(crate) fn atomic_write_json(path: &Path, content: &str) -> std::io::Result<()> {
     if let Some(parent) = path.parent() {
@@ -1241,89 +1422,134 @@ pub(crate) fn atomic_write_yaml(path: &Path, content: &str) -> std::io::Result<(
 /// `~/.dsh/` home without overwriting anything already created there. The
 /// old `~/.flowix/dsh/` directory is moved as one unit when possible; the
 /// older flat files are handled individually. Nothing is deleted.
-fn migrate_dsh_layout(config_dir: &Path) {
+fn migrate_dsh_layout(config_dir: &Path) -> Result<(), String> {
     let old_dsh_dir = config_dir.join("dsh");
     let dsh_dir = config_dir.parent().unwrap_or(config_dir).join(DSH_DIR_NAME);
     let legacy_settings = config_dir.join("dsh-settings.yaml");
     let legacy_plugin_settings = config_dir.join("dsh-plugin-settings.json");
     let legacy_sessions = config_dir.join("dsh-sessions");
 
-    if old_dsh_dir.is_dir() && !dsh_dir.exists() {
-        if fs::rename(&old_dsh_dir, &dsh_dir).is_ok() {
-            set_dir_owner_only_perms(&dsh_dir);
-        }
-    }
-
-    if legacy_settings.exists() || legacy_plugin_settings.exists() || legacy_sessions.exists() {
-        let _ = fs::create_dir_all(&dsh_dir);
+    if path_is_directory(&old_dsh_dir)? && !path_exists(&dsh_dir)? {
+        fs::rename(&old_dsh_dir, &dsh_dir)
+            .map_err(|error| format!("move legacy DSH directory failed: {error}"))?;
         set_dir_owner_only_perms(&dsh_dir);
     }
 
-    migrate_into(&legacy_settings, &dsh_dir.join(DSH_SETTINGS_FILE_NAME));
+    if path_exists(&legacy_settings)?
+        || path_exists(&legacy_plugin_settings)?
+        || path_exists(&legacy_sessions)?
+    {
+        fs::create_dir_all(&dsh_dir)
+            .map_err(|error| format!("create DSH directory failed: {error}"))?;
+        set_dir_owner_only_perms(&dsh_dir);
+    }
+
+    migrate_into(&legacy_settings, &dsh_dir.join(DSH_SETTINGS_FILE_NAME))?;
     migrate_into(
         &legacy_plugin_settings,
         &dsh_dir.join(DSH_PLUGIN_SETTINGS_FILE_NAME),
-    );
-    migrate_into(&legacy_sessions, &dsh_dir.join(DSH_SESSIONS_DIR_NAME));
-    flatten_dsh_session_wrappers(&dsh_dir.join(DSH_SESSIONS_DIR_NAME));
+    )?;
+    migrate_into(&legacy_sessions, &dsh_dir.join(DSH_SESSIONS_DIR_NAME))?;
+    flatten_dsh_session_wrappers(&dsh_dir.join(DSH_SESSIONS_DIR_NAME))?;
+    Ok(())
+}
+
+fn path_exists(path: &Path) -> Result<bool, String> {
+    match fs::symlink_metadata(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("inspect {} failed: {error}", path.display())),
+    }
+}
+
+fn path_is_directory(path: &Path) -> Result<bool, String> {
+    match fs::metadata(path) {
+        Ok(metadata) => Ok(metadata.is_dir()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(false),
+        Err(error) => Err(format!("inspect {} failed: {error}", path.display())),
+    }
 }
 
 /// Rename `source` to `target` when the source exists and the target is
 /// absent, then reapply owner-only permissions. Never overwrites an existing
 /// target; the directory case keeps the execute bit so it stays traversable.
-fn migrate_into(source: &Path, target: &Path) {
-    if !source.exists() || target.exists() {
-        return;
+fn migrate_into(source: &Path, target: &Path) -> Result<(), String> {
+    if !path_exists(source)? || path_exists(target)? {
+        return Ok(());
     }
     if let Some(parent) = target.parent() {
-        let _ = fs::create_dir_all(parent);
+        fs::create_dir_all(parent)
+            .map_err(|error| format!("create DSH migration target directory failed: {error}"))?;
         set_dir_owner_only_perms(parent);
     }
-    if fs::rename(source, target).is_ok() {
-        if target.is_dir() {
-            set_dir_owner_only_perms(target);
-        } else {
-            set_file_owner_only_perms(target);
-        }
+    fs::rename(source, target)
+        .map_err(|error| format!("move DSH migration source failed: {error}"))?;
+    if path_is_directory(target)? {
+        set_dir_owner_only_perms(target);
+    } else {
+        set_file_owner_only_perms(target);
     }
+    Ok(())
 }
 
 /// Remove the temporary Flowix-owned `<session-id>/` wrapper that was used
 /// before the persistence root matched Harness' official layout. Only
 /// directories that clearly contain project directories are flattened; other
 /// entries such as `.runtime` are left untouched.
-fn flatten_dsh_session_wrappers(sessions_dir: &Path) {
-    let Ok(entries) = fs::read_dir(sessions_dir) else {
-        return;
+fn flatten_dsh_session_wrappers(sessions_dir: &Path) -> Result<(), String> {
+    let entries = match fs::read_dir(sessions_dir) {
+        Ok(entries) => entries,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("read DSH sessions directory failed: {error}")),
     };
-    for entry in entries.flatten() {
+    for entry in entries {
+        let entry = entry.map_err(|error| format!("read DSH session entry failed: {error}"))?;
         let wrapper = entry.path();
-        if !wrapper.is_dir() || entry.file_name() == ".runtime" {
+        let file_type = entry
+            .file_type()
+            .map_err(|error| format!("inspect DSH session entry failed: {error}"))?;
+        if !file_type.is_dir() || entry.file_name() == ".runtime" {
             continue;
         }
-        let Ok(projects) = fs::read_dir(&wrapper) else {
-            continue;
-        };
-        let projects = projects
-            .flatten()
-            .filter(|project| {
-                let project_name = project.file_name().to_string_lossy().into_owned();
-                project.path().is_dir()
-                    && (project_name == "_no-cwd"
-                        || (project_name.starts_with("--") && project_name.ends_with("--")))
-            })
-            .collect::<Vec<_>>();
+        let candidates = fs::read_dir(&wrapper)
+            .map_err(|error| format!("read DSH session wrapper failed: {error}"))?
+            .collect::<Result<Vec<_>, _>>()
+            .map_err(|error| format!("read DSH wrapped session entry failed: {error}"))?;
+        let mut projects = Vec::new();
+        for project in candidates {
+            let project_name = project.file_name().to_string_lossy().into_owned();
+            if (project_name == "_no-cwd"
+                || (project_name.starts_with("--") && project_name.ends_with("--")))
+                && path_is_directory(&project.path())?
+            {
+                projects.push(project);
+            }
+        }
         if projects.is_empty() {
             continue;
         }
         for project in projects {
             let target = sessions_dir.join(project.file_name());
-            if !target.exists() {
-                let _ = fs::rename(project.path(), target);
+            if !path_exists(&target)? {
+                fs::rename(project.path(), &target)
+                    .map_err(|error| format!("flatten DSH session wrapper failed: {error}"))?;
             }
         }
-        let _ = fs::remove_dir(&wrapper);
+        let mut remaining = fs::read_dir(&wrapper)
+            .map_err(|error| format!("inspect DSH session wrapper failed: {error}"))?;
+        let is_empty = match remaining.next() {
+            None => true,
+            Some(Ok(_)) => false,
+            Some(Err(error)) => {
+                return Err(format!("inspect DSH session wrapper entry failed: {error}"));
+            }
+        };
+        if is_empty {
+            fs::remove_dir(&wrapper)
+                .map_err(|error| format!("remove empty DSH session wrapper failed: {error}"))?;
+        }
     }
+    Ok(())
 }
 
 #[cfg(unix)]
@@ -1406,6 +1632,43 @@ mod tests {
     }
 
     #[test]
+    fn storage_rebuild_replaces_invalid_preferences_and_toml() {
+        let home = tempfile::tempdir().unwrap();
+        let config = home.path().join(USER_CONFIG_DIR_NAME);
+        std::fs::create_dir_all(config.join("boot")).unwrap();
+        std::fs::write(config.join("boot/preference.json"), b"invalid json").unwrap();
+        std::fs::write(config.join(AI_CONFIG_FILE_NAME), [0xff, 0xfe]).unwrap();
+        let _store = test_user_config_store(home.path().to_path_buf());
+        let json = std::fs::read(config.join("boot/preference.json")).unwrap();
+        serde_json::from_slice::<PreferenceFile>(&json).unwrap();
+        let toml = std::fs::read_to_string(config.join(AI_CONFIG_FILE_NAME)).unwrap();
+        toml::from_str::<AiConfigFile>(&toml).unwrap();
+        assert!(config.join("boot/rebuild-backups").exists());
+        assert!(config.join("rebuild-backups").exists());
+    }
+
+    #[test]
+    fn missing_runtime_dependencies_recreate_defaults_after_initialization() {
+        let home = tempfile::tempdir().unwrap();
+        let store = test_user_config_store(home.path().to_path_buf());
+        store.initialize_legacy_config_migrations().unwrap();
+        store.prepare_initialized_runtime();
+        let expected = store.get_property_presets().unwrap().system_fields.len();
+        assert!(expected > 0);
+        std::fs::remove_dir_all(store.config_dir().join("db")).unwrap();
+        store.ensure_runtime_storage().unwrap();
+        assert_eq!(
+            store.get_property_presets().unwrap().system_fields.len(),
+            expected
+        );
+        store.ensure_runtime_storage().unwrap();
+        assert_eq!(
+            store.get_property_presets().unwrap().system_fields.len(),
+            expected
+        );
+    }
+
+    #[test]
     fn legacy_json_property_presets_migrate_to_local_database() {
         let home = tempfile::tempdir().unwrap();
         let config_dir = home.path().join(USER_CONFIG_DIR_NAME);
@@ -1417,18 +1680,32 @@ mod tests {
             r#type: "Tag".into(),
             ..PropertyFieldConfig::default()
         });
-        atomic_write_json(&preference_file_path(&config_dir), &serde_json::to_string(&legacy).unwrap()).unwrap();
+        atomic_write_json(
+            &preference_file_path(&config_dir),
+            &serde_json::to_string(&legacy).unwrap(),
+        )
+        .unwrap();
 
         let store = test_user_config_store(home.path().to_path_buf());
         let migrated = store.get_property_presets().unwrap();
         assert_eq!(migrated.fields.len(), 1);
-        assert!(migrated.fields[0].id.as_deref().is_some_and(|id| id.starts_with("fld_")));
-        assert!(config_dir.join("local.db").is_file());
+        assert!(migrated.fields[0]
+            .id
+            .as_deref()
+            .is_some_and(|id| id.starts_with("fld_")));
+        assert!(config_dir.join("db/local.db").is_file());
 
-        store.patch_preference(serde_json::json!({"language": "zh-CN"})).unwrap();
-        let saved: serde_json::Value = serde_json::from_slice(&std::fs::read(preference_file_path(&config_dir)).unwrap()).unwrap();
+        store
+            .patch_preference(serde_json::json!({"language": "zh-CN"}))
+            .unwrap();
+        let saved: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(preference_file_path(&config_dir)).unwrap())
+                .unwrap();
         assert!(saved.get("properties").is_none());
-        assert_eq!(store.get_property_presets().unwrap().fields[0].key, "topics");
+        assert_eq!(
+            store.get_property_presets().unwrap().fields[0].key,
+            "topics"
+        );
     }
 
     #[test]
@@ -1538,7 +1815,7 @@ mod tests {
     }
 
     #[test]
-    fn first_dsh_read_migrates_legacy_toml_once() {
+    fn dsh_read_ignores_legacy_toml() {
         let home = tempfile::tempdir().unwrap();
         let config_dir = home.path().join(USER_CONFIG_DIR_NAME);
         std::fs::create_dir_all(&config_dir).unwrap();
@@ -1558,31 +1835,13 @@ mod tests {
 
         let store = test_user_config_store(home.path().to_path_buf());
         let loaded = store.get_deepseek_harness_config().unwrap();
-        assert_eq!(loaded.model.provider, "legacy-provider");
-        assert_eq!(loaded.model.model, "legacy-model");
-
-        // A later change to the old file must not affect the already-created
-        // DSH settings document.
-        let replacement = AiConfigFile {
-            model: AiModelConfig {
-                provider: "replacement-provider".into(),
-                model: "replacement-model".into(),
-                api_url: "https://replacement.example/v1".into(),
-                ..AiModelConfig::default()
-            },
-        };
-        std::fs::write(
-            config_dir.join(AI_CONFIG_FILE_NAME),
-            toml::to_string_pretty(&replacement).unwrap(),
-        )
-        .unwrap();
-        let loaded_again = store.get_deepseek_harness_config().unwrap();
-        assert_eq!(loaded_again.model.provider, "legacy-provider");
-        assert!(home
+        assert!(loaded.model.provider.is_empty());
+        assert!(loaded.model.model.is_empty());
+        assert!(!home
             .path()
             .join(DSH_DIR_NAME)
             .join(DSH_SETTINGS_FILE_NAME)
-            .is_file());
+            .exists());
     }
 
     #[test]
@@ -1690,6 +1949,28 @@ apiKey = "k"
         let cfg: AiConfigFile = toml::from_str(toml_content).unwrap();
         assert_eq!(cfg.model.max_total_tokens, 180_000);
         assert_eq!(cfg.model.model, "gpt-4o");
+    }
+
+    #[test]
+    fn initialization_runtime_preparation_survives_process_restart() {
+        let home = tempfile::tempdir().unwrap();
+        {
+            let store = test_user_config_store(home.path().to_path_buf());
+            store.initialize_legacy_config_migrations().unwrap();
+        }
+        // The persistent migration is already complete; the new process only
+        // restores runtime state before saving ordinary preferences.
+        let store = test_user_config_store(home.path().to_path_buf());
+        store.prepare_initialized_runtime();
+        store
+            .patch_preference(serde_json::json!({"language": "en"}))
+            .unwrap();
+        let document: serde_json::Value = serde_json::from_slice(
+            &std::fs::read(preference_file_path(&store.config_dir)).unwrap(),
+        )
+        .unwrap();
+        assert!(document.get("properties").is_none());
+        assert_eq!(document["language"], "en");
     }
 
     #[test]

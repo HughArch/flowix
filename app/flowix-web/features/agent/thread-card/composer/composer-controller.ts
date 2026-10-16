@@ -37,7 +37,10 @@ import type {
   ComposerSlashSkill,
 } from "@features/agent/thread-card/composer/composer-slash-command-controller";
 import type { AgentTypeKey } from "@/types/agent";
-import { NoteReference } from "@features/editor/extensions/note-link";
+import { ComposerNoteReference } from "@features/editor/extensions/note-link";
+import { ComposerStableCaret } from "@features/editor/extensions/stable-caret";
+import { ComposerAttachmentToken, composerAttachmentMarkdownToPrompt } from "./composer-attachment-token";
+import { ComposerInlineAtomCaret } from "./composer-inline-atom-caret";
 import type { MemoRef } from "@features/agent/thread-card/note/note-picker-controller";
 import type { Root } from "react-dom/client";
 
@@ -66,6 +69,7 @@ export interface ComposerControllerOptions {
   getHasAttachments: () => boolean;
   getHasPendingAttachments: () => boolean;
   agentType?: AgentTypeKey;
+  getSkillsScopeId?: () => string | undefined;
   listDshSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   listCodexSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   listPiSkills?: () => Promise<readonly ComposerSlashSkill[]>;
@@ -136,12 +140,15 @@ export class ComposerController {
         Text,
         HardBreak,
         UndoRedo,
+        ComposerStableCaret,
+        ComposerInlineAtomCaret,
         Markdown.configure({
           markedOptions: { gfm: true, breaks: true },
         }),
-        NoteReference,
+        ComposerNoteReference,
         ComposerSkillToken,
         ComposerFolderToken,
+        ComposerAttachmentToken,
         ComposerSlashToken.configure({
           onRemove: () => removeSlashToken?.(),
         }),
@@ -150,7 +157,7 @@ export class ComposerController {
       contentType: "markdown",
       editorProps: {
         attributes: {
-          class: "agent-thread-card__composer-editor",
+          class: "agent-composer__input-content",
           spellcheck: "true",
           "aria-label": this.input.dataset.placeholder ?? "",
         },
@@ -171,8 +178,8 @@ export class ComposerController {
     // Restore the composer-owned hooks after initialization so document
     // editor styles can explicitly exclude this nested editor.
     this.input.classList.add(
-      "agent-thread-card__composer-input",
-      "agent-thread-card__composer-editor",
+      "agent-composer__input",
+      "agent-composer__input-content",
     );
 
     this.slashCommands = new ComposerSlashCommandController({
@@ -180,6 +187,7 @@ export class ComposerController {
       input: this.input,
       composer: this.composer,
       agentType: options.agentType,
+      getSkillsScopeId: options.getSkillsScopeId,
       listDshSkills: options.listDshSkills,
       listCodexSkills: options.listCodexSkills,
       listPiSkills: options.listPiSkills,
@@ -238,6 +246,7 @@ export class ComposerController {
     // Capture before ProseMirror's own keymap so plain Enter submits without
     // first inserting an empty paragraph into the composer document.
     this.input.addEventListener("keydown", this.handleKeydown, true);
+    this.composer.addEventListener("pointermove", this.handleComposerPointerMove);
     this.input.addEventListener("beforeinput", this.handleBeforeInput, true);
     this.input.addEventListener("compositionstart", this.handleCompositionStart);
     this.input.addEventListener("compositionend", this.handleCompositionEnd);
@@ -258,9 +267,9 @@ export class ComposerController {
     // hardBreak. Markdown serializes that node as `  \n`; the agent protocol
     // should receive the same newline the user entered, without Markdown's
     // visual line-break marker becoming part of the prompt.
-    return composerFolderMarkdownToPrompt(
+    return composerAttachmentMarkdownToPrompt(composerFolderMarkdownToPrompt(
       composerSkillMarkdownToPrompt(composerSlashMarkdownToPrompt(this.getDraftMarkdown())),
-    )
+    ))
       .replace(/ {2}\n/g, "\n");
   }
 
@@ -297,6 +306,7 @@ export class ComposerController {
 
   clear(): void {
     if (this.editor.isDestroyed) return;
+    this.disableComposerHoverUntilPointerMove();
     this.editor
       .chain()
       .setContent("", { contentType: "markdown", emitUpdate: false })
@@ -315,11 +325,14 @@ export class ComposerController {
     options: { persistDraft?: boolean } = {},
   ): void {
     if (this.editor.isDestroyed) return;
+    this.disableComposerHoverUntilPointerMove();
     this.editor
       .chain()
       .setContent(content, { contentType: "markdown", emitUpdate: false })
       .focus("end", { scrollIntoView: false })
       .run();
+    // setContent intentionally suppresses editor updates for history navigation;
+    // keep inline attachments in sync with the newly loaded draft explicitly.
     if (options.persistDraft) this.persistInputDraft(content);
     this.updateMultiLineState();
   }
@@ -364,14 +377,14 @@ export class ComposerController {
   updateMultiLineState(): void {
     const prompt = this.getPrompt();
     if (prompt === "") {
-      this.composer.classList.remove("agent-thread-card__composer--multi-line");
+      this.composer.classList.remove("agent-composer--multi-line");
       this.setSendButtonState("");
       return;
     }
 
     const isMulti = this.input.scrollHeight > 30;
     this.composer.classList.toggle(
-      "agent-thread-card__composer--multi-line",
+      "agent-composer--multi-line",
       isMulti,
     );
     this.setSendButtonState(prompt.trim());
@@ -415,6 +428,7 @@ export class ComposerController {
     this.removeUndoHandler();
     this.removeRedoHandler();
     this.input.removeEventListener("keydown", this.handleKeydown, true);
+    this.composer.removeEventListener("pointermove", this.handleComposerPointerMove);
     this.input.removeEventListener("beforeinput", this.handleBeforeInput, true);
     this.input.removeEventListener("compositionstart", this.handleCompositionStart);
     this.input.removeEventListener("compositionend", this.handleCompositionEnd);
@@ -433,6 +447,7 @@ export class ComposerController {
 
   private readonly handleEditorUpdate = (): void => {
     if (this.suppressUpdates || this.disposed) return;
+    this.disableComposerHoverUntilPointerMove();
     if (!this.isCurrentHistoryEntryUnmodified()) this.resetHistoryNavigation();
     if (!this.isComposing) this.persistInputDraft();
     this.updateMultiLineState();
@@ -446,6 +461,17 @@ export class ComposerController {
   private readonly handleSelectionUpdate = (): void => {
     if (!this.disposed) this.slashCommands.refresh();
   };
+
+  private readonly handleComposerPointerMove = (event: PointerEvent): void => {
+    // Re-arm CSS hover only after physical mouse movement. The OS can hide the
+    // cursor while typing, but its stationary hit-test position remains active.
+    if (event.pointerType !== "mouse") return;
+    this.composer.classList.add("agent-composer--pointer-hover-ready");
+  };
+
+  private disableComposerHoverUntilPointerMove(): void {
+    this.composer.classList.remove("agent-composer--pointer-hover-ready");
+  }
 
   /**
    * Keep the caret visible when a hard break grows the editor past its
@@ -500,6 +526,7 @@ export class ComposerController {
   }
 
   private readonly handleKeydown = (event: KeyboardEvent): void => {
+    this.disableComposerHoverUntilPointerMove();
     if (this.isComposing || event.isComposing || event.keyCode === 229) return;
 
     // The composer is a nested contenteditable inside the document editor.
@@ -592,7 +619,7 @@ export class ComposerController {
 
     if (direction === "up") {
       if (this.historyCursor === null && this.preNavDraft === null) {
-        this.preNavDraft = this.getPrompt();
+        this.preNavDraft = this.getDraftMarkdown();
       }
       const next = this.historyCursor === null
         ? messages.length - 1

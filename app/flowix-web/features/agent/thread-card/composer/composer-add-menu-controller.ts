@@ -1,14 +1,14 @@
 import type { I18nKey } from "@/lib/i18n";
 import type { NotePickerController } from "@features/agent/thread-card/note/note-picker-controller";
-import type { ComposerImageController } from "./composer-image-controller";
-import { COMPOSER_ATTACHMENT_ACCEPT } from "./composer-image-controller";
+import type { ComposerAttachmentController } from "./composer-attachment-controller";
+import { COMPOSER_ATTACHMENT_ACCEPT } from "./composer-attachment-controller";
 
 export interface ComposerAddMenuControllerOptions {
   trigger: HTMLButtonElement;
   popover: HTMLDivElement;
   notePopover: HTMLDivElement;
   notePicker: NotePickerController;
-  images: ComposerImageController;
+  attachments: ComposerAttachmentController;
   t: (key: I18nKey) => string;
   isDestroyed: () => boolean;
   openNotebookAgentSettings: () => void;
@@ -49,7 +49,7 @@ export class ComposerAddMenuController {
     this.open = open;
     this.options.popover.hidden = !open;
     this.options.trigger.setAttribute("aria-expanded", String(open));
-    this.options.trigger.classList.toggle("agent-thread-card__composer-add-button--open", open);
+    this.options.trigger.classList.toggle("agent-composer__add-button--open", open);
     if (open) {
       this.render();
       this.position();
@@ -88,7 +88,7 @@ export class ComposerAddMenuController {
     item.type = "button";
     // Reuse the permission/model dropdown item contract so copy and controls
     // keep exactly the same typography, spacing and hover treatment.
-    item.className = "agent-thread-card__codex-settings-item agent-thread-card__composer-add-item";
+    item.className = "agent-thread-card__codex-settings-item agent-composer__add-item";
     item.setAttribute("role", "menuitem");
     item.textContent = label;
     if (isNote) {
@@ -136,13 +136,18 @@ export class ComposerAddMenuController {
   };
 
   private pickAttachments(): void {
+    this.options.attachments.captureInsertionAnchor();
     const input = document.createElement("input");
     input.type = "file";
     input.accept = COMPOSER_ATTACHMENT_ACCEPT;
     input.multiple = true;
     input.hidden = true;
     input.addEventListener("change", () => {
-      this.options.images.addFiles(Array.from(input.files ?? []));
+      this.options.attachments.addFiles(Array.from(input.files ?? []));
+      input.remove();
+    }, { once: true });
+    input.addEventListener("cancel", () => {
+      this.options.attachments.cancelInsertionAnchor();
       input.remove();
     }, { once: true });
     document.body.append(input);
@@ -169,7 +174,7 @@ export class ComposerAddMenuController {
     const svg = document.createElementNS("http://www.w3.org/2000/svg", "svg");
     svg.setAttribute("viewBox", "0 0 24 24");
     svg.setAttribute("aria-hidden", "true");
-    svg.classList.add("agent-thread-card__composer-add-chevron");
+    svg.classList.add("agent-composer__add-chevron");
     const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
     path.setAttribute("d", "m9 6 6 6-6 6");
     path.setAttribute("fill", "none");

@@ -36,11 +36,22 @@ export type {
 
 export {
   BrowserColumnSurfaceHost,
-  browserColumnSurfaceRegistry,
   browserColumnSurfaceSupports,
   getBrowserColumnSurfaceDefinition,
   resolveBrowserColumnSurface,
 } from './browser-column-registry';
+export {
+  WorkspaceSurfaceRendererView,
+  getWorkspaceSurfaceRendererDefinition,
+  workspaceSurfaceRendererRegistry,
+  workspaceSurfaceRendererSupportsHost,
+} from './workspace-surface-renderer-registry';
+export type {
+  WorkspaceSurfaceRendererData,
+  WorkspaceSurfaceRendererDefinition,
+  WorkspaceSurfaceRenderContext,
+} from './workspace-surface-renderer-registry';
+export { WorkspaceSurfaceStateView } from './workspace-surface-state-view';
 export type {
   BrowserColumnSurface,
   BrowserColumnSurfaceCapability,

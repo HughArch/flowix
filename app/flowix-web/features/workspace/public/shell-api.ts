@@ -4,16 +4,16 @@ import { useShallow } from 'zustand/react/shallow';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import { useBrowserColumnStore } from '@features/workspace/store/browser-column-store';
 import { useWorkspaceFocusStore } from '@features/workspace/store/workspace-focus-store';
-import { openWorkColumnTargetInBrowserColumn } from '@features/workspace/use-cases/browser-column-navigation';
+import { openWorkspaceSurface } from './open-surface-api';
 
 export { selectNotebook } from '@features/workspace/use-cases/workspace-navigation';
 export {
   clearWorkspaceTargetForDeletedFile,
+  clearWorkspaceTargetsForDeletedDirectory,
   historyEntryFromWorkColumnTarget,
-  openDocumentListTarget,
-  openExternalTarget,
 } from '@features/workspace/use-cases/workspace-navigation';
-export { openBrowserColumnDroppedFile } from '@features/workspace/use-cases/browser-column-navigation';
+export { openWorkspaceSurface } from './open-surface-api';
+export type { OpenWorkspaceSurfaceRequest } from './open-surface-api';
 export { deleteMainExternalDocument } from '@features/workspace/use-cases/delete-main-external-document';
 
 export function clearBrowserColumnExternalPath(path: string): void {
@@ -25,6 +25,19 @@ export {
   BROWSER_COLUMN_MIN_WIDTH,
 } from '@features/workspace/store/browser-column-store';
 export type { WorkColumnTarget } from '@features/workspace/store/work-column-target';
+
+/** Hosts with content visible in the current workspace layout. */
+export function getVisibleWorkspaceSurfaceHosts(): ('main-third' | 'browser-column')[] {
+  const hosts: ('main-third' | 'browser-column')[] = ['main-third'];
+  const browser = useBrowserColumnStore.getState();
+  if (browser.visible && browser.activeTabId
+    && browser.tabs.some((tab) => tab.id === browser.activeTabId)) hosts.push('browser-column');
+  return hosts;
+}
+
+export function getWorkColumnStartupIdentity(): string {
+  return JSON.stringify(useWorkColumnStore.getState().navigation.target);
+}
 
 export function useShellWorkspaceViewModel() {
   const { navigation, notebookSwitchesInFlight } = useWorkColumnStore(useShallow((state) => ({
@@ -53,11 +66,13 @@ export function useWorkColumnTransferViewModel() {
   const canOpenInBrowserColumn = target.kind !== 'empty'
     && target.kind !== 'plugin-workbench';
   const openInBrowserColumn = useCallback(() => {
-    if (!canOpenInBrowserColumn) return Promise.resolve(null);
-    return openWorkColumnTargetInBrowserColumn(target).catch((error: unknown) => {
+    if (target.kind === 'empty' || target.kind === 'plugin-workbench') {
+      return Promise.resolve(null);
+    }
+    return openWorkspaceSurface({ host: 'browser-column', target }).catch((error: unknown) => {
       toast.error('无法在右栏打开', { description: error instanceof Error ? error.message : String(error) });
       return null;
     });
-  }, [canOpenInBrowserColumn, target]);
+  }, [target]);
   return { canOpenInBrowserColumn, openInBrowserColumn };
 }

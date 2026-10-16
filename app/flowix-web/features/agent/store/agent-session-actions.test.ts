@@ -138,13 +138,18 @@ vi.mock("@features/document/store/document-store", () => ({
   },
 }));
 
-vi.mock("@features/agent/store/agent-access-store", () => ({
-  useAgentAccessStore: {
-    getState: () => ({
-      config: agentAccessMock.config,
-    }),
-  },
-}));
+vi.mock("@features/agent/store/agent-data-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@features/agent/store/agent-data-store")>();
+  return { ...actual, ensureAgentWorkspaceReady: vi.fn(async () => {}), useAgentDataStore: Object.assign(
+    (selector: Parameters<typeof actual.useAgentDataStore>[0]) => actual.useAgentDataStore(selector),
+    actual.useAgentDataStore,
+    { getState: () => ({ ...actual.useAgentDataStore.getState(), workspaceActions: {
+      ...actual.useAgentDataStore.getState().workspaceActions,
+      getNotebookFiles: (notebookId: string | null | undefined) => notebookId
+        ? agentAccessMock.config.defaults?.files?.[notebookId] : undefined,
+    } }) },
+  ) };
+});
 
 vi.mock("@features/preferences/store/user-settings-store", () => ({
   useUserSettingsStore: {
@@ -2674,6 +2679,18 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     expect(payload).not.toHaveProperty("codexModel");
   });
 
+  it("sends using canonical Agent preferences instead of stale session settings", async () => {
+    const { useAgentDataStore } = await import("./agent-data-store");
+    const { useAgentSessionStore } = await import("./agent-session-store");
+    const { agent } = await import("@platform/tauri/client");
+    const store = useAgentDataStore.getState();
+    store.setUserPreference("codex", { model: { id: "new-model" }, permission: "read-only" });
+    store.rememberModelReasoning("codex", { id: "new-model" }, "low");
+    useAgentSessionStore.getState().setSessionMeta((meta) => ({ ...meta, settings: { ...meta.settings, agentCodexModel: "stale-model", agentPermissionMode: "danger-full-access" } }));
+    await useAgentSessionStore.getState().sendMessageToThread("canonical-preferences", "hello", "codex");
+    expect(vi.mocked(agent.chatStream).mock.lastCall?.[1].runtimeConfig?.codex).toMatchObject({ model: "new-model", permissionMode: "read-only", reasoningEffort: "low" });
+  });
+
   it("derives Codex cwd and workspacePaths from notebook folder defaults + current notebook", async () => {
     const { agent } = await import("@platform/tauri/client");
     const { useChatStore } = await import("@features/agent/store/agent-session-test-facade");
@@ -2683,9 +2700,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
       path: "D:\\projects\\flowix",
     };
     agentAccessMock.config = {
-      // defaults.folders 里的每个 folder 必须在 entries 里有对应的
-      // enabled && !missing 授权条目, 否则 resolveAuthorizedDefaultFiles
-      // 会把它收窄掉 (防越权)。
+      // The workspace adapter intersects notebook add-dirs with enabled access entries.
       entries: [
         { id: "e-notes-main", kind: "folder", path: "D:\\notes\\main", name: "main", enabled: true, missing: false },
         { id: "e-flowix", kind: "folder", path: "D:\\projects\\flowix", name: "deepseek-harness", enabled: true, missing: false },
@@ -2839,30 +2854,30 @@ describe("chat-store Agent Thread Card streaming flow", () => {
   it("renames local agent threads through the standard action", async () => {
     const { agent } = await import("@platform/tauri/client");
     const { useChatStore } = await import("@features/agent/store/agent-session-test-facade");
-    const threadId = "thread-card-rename-gemini";
+    const threadId = "thread-card-rename-codex";
     vi.mocked(agent.listLocalAgentThreads).mockResolvedValueOnce([
       { threadId, title: "New title", createdAt: 1, updatedAt: 2 },
     ]);
 
     useChatStore.setState((state) => ({
-      threadTypes: { ...state.threadTypes, [threadId]: "gemini" },
+      threadTypes: { ...state.threadTypes, [threadId]: "codex" },
       threadLists: {
         ...state.threadLists,
-        gemini: [{ threadId, title: "Old title", createdAt: 1, updatedAt: 1 }],
+        codex: [{ threadId, title: "Old title", createdAt: 1, updatedAt: 1 }],
       },
     }));
 
     await useChatStore
       .getState()
-      .renameThread(threadId, "  New   title  ", "gemini");
+      .renameThread(threadId, "  New   title  ", "codex");
 
     const state = useChatStore.getState();
     expect(state.currentThreadTitles[threadId]).toBe("New title");
-    expect(state.threadLists.gemini?.[0]?.title).toBe("New title");
+    expect(state.threadLists.codex?.[0]?.title).toBe("New title");
     expect(agent.updateThreadTitle).toHaveBeenCalledWith(
       threadId,
       "New title",
-      "gemini",
+      "codex",
     );
   });
 
@@ -2882,17 +2897,17 @@ describe("chat-store Agent Thread Card streaming flow", () => {
       },
     ]);
     const instance = useAgentConversationStore.getState().createInstance({
-      agentType: "gemini",
+      agentType: "codex",
       title: "Old conversation title",
       threadId,
       source: { kind: "thread-card" },
     });
 
     useChatStore.setState((state) => ({
-      threadTypes: { ...state.threadTypes, [threadId]: "gemini" },
+      threadTypes: { ...state.threadTypes, [threadId]: "codex" },
       threadLists: {
         ...state.threadLists,
-        gemini: [
+        codex: [
           {
             threadId,
             title: "Old conversation title",
@@ -2912,13 +2927,13 @@ describe("chat-store Agent Thread Card streaming flow", () => {
       useAgentConversationStore.getState().getInstance(instance.instanceId)
         ?.title,
     ).toBe("New conversation title");
-    expect(useChatStore.getState().threadLists.gemini?.[0]?.title).toBe(
+    expect(useChatStore.getState().threadLists.codex?.[0]?.title).toBe(
       "New conversation title",
     );
     expect(agent.updateThreadTitle).toHaveBeenCalledWith(
       threadId,
       "New conversation title",
-      "gemini",
+      "codex",
     );
   });
 

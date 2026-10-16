@@ -6,6 +6,7 @@ import type { PropertyPreset } from '@features/document/properties/presets';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
 import { POPUP_SEPARATOR_CLASS } from '@shared/ui/popup-separator';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
+import { FlowixCheckbox } from '@shared/ui/flowix-checkbox';
 import type { I18nKey } from '@/lib/i18n';
 import { getPropertyTypeDefinition } from '@/lib/property-types';
 
@@ -87,7 +88,7 @@ export function PropertyPresetMenu({
         <span className="shrink-0 text-right text-xs text-[var(--muted-foreground)]">
           {t(getPropertyTypeDefinition(preset.kind).labelKey)}
         </span>
-        <input type="checkbox" checked={added} readOnly aria-hidden="true" tabIndex={-1} className="pointer-events-none h-4 w-4 shrink-0 accent-[var(--brand)]" />
+        <FlowixCheckbox checked={added} interactive={false} className="pointer-events-none shrink-0" />
       </button>;
     })}</section>;
 
@@ -117,7 +118,7 @@ export function PropertyPresetMenu({
         }}
         placeholder={t('document.properties.picker.search')}
         aria-label={t('document.properties.picker.search')}
-        className="agent-thread-card__composer-note-search multidimensional-table__preset-search shrink-0"
+        className="agent-composer__note-search multidimensional-table__preset-search shrink-0"
       />
       <div role="separator" aria-hidden="true" className={`${POPUP_SEPARATOR_CLASS} shrink-0`} />
       <OverlayScrollbar className="min-h-0 max-h-[calc(60vh-60px)] flex-1" scrollerClassName="min-h-0 max-h-[calc(60vh-60px)] overflow-y-auto overflow-x-hidden">
@@ -125,7 +126,7 @@ export function PropertyPresetMenu({
           {renderGroup(t('preferences.documentProperties.group.presets'), visibleSystemPresets)}
           {renderGroup(customGroupLabel ?? t('preferences.documentProperties.group.mine'), visibleCustomPresets)}
           {normalizedQuery && visibleSystemPresets.length === 0 && visibleCustomPresets.length === 0 && (
-            <div className="agent-thread-card__composer-note-empty">{t('document.properties.picker.empty')}</div>
+            <div className="agent-composer__note-empty">{t('document.properties.picker.empty')}</div>
           )}
           <button type="button" disabled={disabled} onClick={onManage} className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm text-[var(--foreground)] hover:bg-[var(--hover-bg)] disabled:opacity-50">
             预设属性管理

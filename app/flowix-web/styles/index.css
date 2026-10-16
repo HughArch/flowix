@@ -1,4 +1,5 @@
 @import './fonts.css';
+@import './checkbox.css';
 
 /* Tiptap 编辑器相关样式集中收口:
  *   - editor.css            容器/排版基础 (ProseMirror 排版 / 基础 markdown 节点)
@@ -15,6 +16,9 @@
 @import './editor-frontmatter.css';
 @import './multidimensional-table.css';
 @import './editor-agent-thread-card.css';
+/* Shared composer styles used by standalone and embedded Agent conversations. */
+@import './agent-conversation/titlebar.css';
+@import './agent-conversation/composer.css';
 @import './editor-note-reference.css';
 @import './editor-code-block.css';
 @import './editor-mermaid.css';
@@ -50,12 +54,37 @@
 
 @import "shadcn/tailwind.css";
 
+/* Keep drag gestures from selecting page text while a shared drop session is active. */
+html.flowix-drag-drop-active,
+html.flowix-drag-drop-active * {
+	-webkit-user-select: none !important;
+	user-select: none !important;
+}
+
 /* shadcn/ui variable convention: --[role]-[property]
  * Roles: background, foreground, primary, secondary, muted, accent, border, ring */
 
 @tailwind base;
 @tailwind components;
 @tailwind utilities;
+
+/* Shared rotation for loading indicators. Keep dimensions and colors local to
+ * each spinner; callers may override the duration with --flowix-spin-duration. */
+.flowix-spin {
+	animation: flowix-spin var(--flowix-spin-duration, 1s) linear infinite;
+}
+
+@keyframes flowix-spin {
+	to {
+		transform: rotate(360deg);
+	}
+}
+
+@media (prefers-reduced-motion: reduce) {
+	.flowix-spin {
+		animation: none;
+	}
+}
 
 /* Browser column 的激活 tab 顶部指示线从中心向两侧展开，避免切换时
  * 线条瞬间出现。 */
@@ -391,13 +420,7 @@
 	border: 1.5px solid color-mix(in srgb, var(--brand) 34%, transparent);
 	border-top-color: var(--brand);
 	border-radius: 999px;
-	animation: notebook-file-tree-move-spin 700ms linear infinite;
-}
-
-@keyframes notebook-file-tree-move-spin {
-	to {
-		transform: rotate(360deg);
-	}
+	--flowix-spin-duration: 700ms;
 }
 
 @keyframes notebook-file-tree-move-success {
@@ -510,9 +533,9 @@
 	mask: var(--flowix-hand-check-mask) center / contain no-repeat;
 }
 
-@layer base {
+	@layer base {
 	/* 颜色 token 全部由 css/theme/*.css 提供, 这里只放不参与主题的非颜色 token
-	 * (radius / font-* / app-font-*)。
+	 * (radius / font-* / editor-font-*)。
 	 *
 	 * 注意: 绝不能在这里定义 --destructive / --warning 等会被 [data-theme="..."]
 	 * 覆盖的色 token —— 因为 Vite/esbuild 的 CSS 压缩会剥掉 @layer 包装,
@@ -524,18 +547,14 @@
 		--font-heading: var(--font-sans);
 		--font-sans: 'Flowix Small Emoji', 'Inter', -apple-system, BlinkMacSystemFont, 'Segoe UI', 'PingFang SC', 'Microsoft YaHei', sans-serif;
 		--font-nav: 'SF Mono';
+		--font-size: 15px;
+		--font-line-height: 1.8;
 
-		/* User-configurable typography (Preferences → Format).
-		 * Tiptap 正文及其嵌入内容消费 --app-font-family;
-		 * Agent 对话和产品 UI 继续使用 --font-sans。字号/行高也被部分
-		 * 编辑器和 Thread Card 尺寸规则消费。
-		 * 不再写到 body / html, 避免影响 MemoList、Agent 面板等其它
-		 * UI 文本。默认值需与 constants.ts 的 DEFAULT_USER_SETTINGS
-		 * 保持同步。由 useApplyFontSettings 运行时覆盖。 */
-		--app-font-family: var(--font-sans);
-		--app-font-size: 15px;
-		--app-line-height: 1.8;
-		--app-document-width: 700px;
+		/* Preferences → Format controls editor content only. */
+		--editor-font-family: var(--font-sans);
+		--editor-font-size: 16px;
+		--editor-line-height: 1.8;
+		--editor-document-width: 700px;
 
 		/* Shared code typography for rendered code blocks and CodeMirror. */
 		--code-text-font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, 'Liberation Mono', 'DengXian', '等线', 'Microsoft YaHei', '微软雅黑', monospace;
@@ -552,6 +571,10 @@
 		--agent-font: 'Flowix Small Emoji', 'Anonymous Pro', 'PingFang SC', 'Microsoft YaHei', 'Inter', -apple-system, monospace;
 	}
 
+	html {
+		font-size: 16px;
+	}
+
 	/* Markdown viewer & Tiptap 编辑器: 跟随主题背景色,
 	 * 否则 dark/rock 下会出现白底与背景不同步。 */
 	.markdown-body {
@@ -560,7 +583,7 @@
 		--bgColor-muted: var(--muted);
 	}
 
-	.tiptap {
+	.tiptap:not(.agent-composer__input-content) {
 		background: var(--background) !important;
 		overflow: hidden;
 	}
@@ -1115,30 +1138,4 @@
     animation: none;
     border-color: color-mix(in oklch, var(--brand) 50%, transparent);
   }
-}
-/* Match the editor task checkbox in the file tree display popover. */
-.notebook-file-tree__display-checkbox {
-  position: relative;
-  display: inline-flex;
-  width: 16px;
-  height: 16px;
-  flex: 0 0 16px;
-  align-items: center;
-  justify-content: center;
-  border: 1px solid var(--brand);
-  border-radius: 6px;
-  background: transparent;
-  cursor: pointer;
-  padding: 0;
-}
-
-.notebook-file-tree__display-checkbox--checked {
-  border-color: var(--muted-foreground);
-}
-
-.notebook-file-tree__display-checkbox-mark {
-  width: 11px;
-  height: 9px;
-  background: var(--muted-foreground);
-  mask: var(--flowix-hand-check-mask) center / contain no-repeat;
 }

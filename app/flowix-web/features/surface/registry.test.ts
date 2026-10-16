@@ -2,9 +2,10 @@ import { describe, expect, it } from 'vitest';
 import {
   getWorkColumnSurfaceDefinition,
   surfaceSupports,
-  workColumnSurfaceRegistry,
 } from './registry';
 import type { WorkColumnSurface, WorkColumnSurfaceKind } from './types';
+import { workspaceSurfaceRendererRegistry } from './workspace-surface-renderer-registry';
+import { workspaceSurfaceRegistry } from '@features/workspace/public/surface-api';
 
 function fileIdentity(path: string) {
   return { path, displayId: `display:${path}` };
@@ -12,8 +13,8 @@ function fileIdentity(path: string) {
 
 function surface(kind: WorkColumnSurfaceKind): WorkColumnSurface {
   switch (kind) {
-    case 'document-list':
-      return { kind, displayId: 'document-list:/notebook', instanceKey: 'document-list:/notebook', folderPath: '/notebook', notebookPath: '/notebook', notebookId: 'notebook-1', filters: {} };
+    case 'folder-collection':
+      return { kind, instanceKey: 'folder-collection:1', notebookId: 'notebook-1', notebookPath: '/notebook', folderPath: '/notebook/folder', folderName: 'folder' };
     case 'md':
       return { kind, instanceKey: 'md:1', fileIdentity: fileIdentity('/workspace/readme.md'), props: { isExternalDocument: true } };
     case 'code':
@@ -103,29 +104,9 @@ function surface(kind: WorkColumnSurfaceKind): WorkColumnSurface {
   }
 }
 
-describe('workColumnSurfaceRegistry', () => {
-  it('registers every supported product-level surface kind', () => {
-    expect(Object.keys(workColumnSurfaceRegistry).sort()).toEqual([
-      'agent-conversation',
-      'code',
-      'csv-file',
-      'document-list',
-      'html',
-      'html-file',
-      'image-file',
-      'json',
-      'md',
-      'media',
-      'media-library-file',
-      'mindmap',
-      'plugin-artifact',
-      'plugin-workbench',
-      'table-file',
-      'text',
-      'unavailable-file',
-      'video-file',
-      'web',
-    ]);
+describe('Work surface adapter', () => {
+  it('provides one renderer registration for every canonical surface kind', () => {
+    expect(Object.keys(workspaceSurfaceRendererRegistry).sort()).toEqual(Object.keys(workspaceSurfaceRegistry).sort());
   });
 
   it('exposes Markdown editing actions on the path surface', () => {

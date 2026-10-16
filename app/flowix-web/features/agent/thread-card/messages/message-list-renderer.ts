@@ -323,13 +323,15 @@ export function patchLastRenderedAgentMessage(
     const content = item.querySelector<HTMLElement>(
       ".agent-thread-card__message-content",
     );
-    if (!content) return null;
+    if (!content?.parentElement) return null;
     renderAgentThreadCardBudgetedMarkdown({
       message,
       role: message.role,
       visibleContent: messageView.visibleContent,
       content,
-      toggleParent: item,
+      // The toggle is a sibling of the content for both user bubbles and
+      // assistant messages.
+      toggleParent: content.parentElement,
       context,
       isStreaming: context.isStreaming(message),
     });

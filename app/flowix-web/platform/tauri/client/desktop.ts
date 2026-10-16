@@ -236,6 +236,8 @@ export const files = {
     invoke<string>('move_folder', { folderPath, targetDirectoryPath, spacePath }),
   importFile: (filePath: string, targetDirectoryPath: string, spacePath: string) =>
     invoke<string>('import_file', { filePath, targetDirectoryPath, spacePath }),
+  importFolder: (sourceDirectoryPath: string, targetDirectoryPath: string, spacePath: string) =>
+    invoke<string>('import_folder', { sourceDirectoryPath, targetDirectoryPath, spacePath }),
   renameFolder: (folderPath: string, name: string, spacePath: string) =>
     invokeDocumentMutation<string>('rename_folder', { folderPath, name, spacePath }),
   createFolder: (spacePath: string, name: string, parentId?: string) =>
@@ -282,6 +284,7 @@ export interface SaveFileFilter {
 
 export const dialogs = {
   selectDirectory: () => invoke<string | null>('select_directory'),
+  selectImportDirectory: () => invoke<string | null>('select_import_directory'),
   selectFiles: (options?: { accept?: string; multiple?: boolean }) => invoke<string[] | null>('select_files', {
     accept: options?.accept ?? null,
     multiple: options?.multiple ?? true,
@@ -352,6 +355,8 @@ export const windows = {
     invoke<void>('unwatch_external_document', { leaseId }),
 };
 
+export type CloudEnvironment = 'staging' | 'prod';
+
 export interface ProductInfo {
   productName: string;
   version: string;
@@ -360,10 +365,14 @@ export interface ProductInfo {
   logDir: string;
   os: string;
   arch: string;
+  isDevBuild: boolean;
+  cloudEnvironment: CloudEnvironment;
 }
 
 export const product = {
   getInfo: () => invoke<ProductInfo>('get_product_info'),
+  setCloudEnvironment: (environment: CloudEnvironment) =>
+    invoke<void>('set_cloud_environment', { environment }),
   openLogDir: () => invoke<void>('open_log_dir'),
   revealInFileManager: (filePath: string) => invoke<void>('reveal_in_file_manager', { filePath }),
 };

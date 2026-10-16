@@ -543,7 +543,7 @@ function clearUnfinishedAssistantDrafts(messages: ChatMessage[]): ChatMessage[] 
 function shouldUseDeepSeekHarnessReconnectNotice(
   event: AgentEvent & { kind: "error" },
 ): boolean {
-  if (event.agentType !== "deepseek-harness") return false;
+  if (event.agentType !== "dsh") return false;
 
   // A classified provider error has its own user-facing guidance. It must not
   // be presented as a transport/reconnect failure.

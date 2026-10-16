@@ -68,6 +68,14 @@ export function samePath(left: string, right: string): boolean {
   return canonicalPath(left) === canonicalPath(right);
 }
 
+/** Whether a path is the directory itself or one of its descendants. */
+export function isPathInDirectory(path: string, directoryPath: string): boolean {
+  const candidate = canonicalDirectoryPath(path);
+  const directory = canonicalDirectoryPath(directoryPath);
+  return candidate === directory
+    || candidate.startsWith(directory === '/' ? '/' : `${directory}/`);
+}
+
 export function uniquePaths(paths: string[]): string[] {
   const seen = new Set<string>();
   return paths.filter((path) => {

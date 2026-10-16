@@ -2,11 +2,11 @@ import type { AgentTypeKey } from "@/types/agent";
 
 const CANONICAL_EXTERNAL_AGENTS = new Set<AgentTypeKey>([
   "codex",
-  "claude",
+  "claudecode",
   "hermes",
   "pi",
   "opencode",
-  "deepseek-harness",
+  "dsh",
 ]);
 
 export function canonicalAgentMessageId(

@@ -27,6 +27,7 @@ export interface MemoListDataLoaderProps {
   onLoadError: (error: unknown) => void;
   onLoadStart?: (queryKey: string) => void;
   onLoadSuccess?: (queryKey: string) => void;
+  onStartupLoadSettled?: (queryKey: string, outcome: 'ready' | 'failed') => void;
 }
 
 /**
@@ -53,6 +54,7 @@ export function MemoListDataLoader({
   onLoadError,
   onLoadStart,
   onLoadSuccess,
+  onStartupLoadSettled,
 }: MemoListDataLoaderProps) {
   const startupQuerySkippedRef = useRef<string | null>(null);
 
@@ -73,6 +75,7 @@ export function MemoListDataLoader({
     if (!selectedNotebookId) {
       setIsMemoListLoading(false);
       setLoadedMemoListQueryKey(null);
+      onStartupLoadSettled?.('', 'ready');
       return () => {
         cancelled = true;
       };
@@ -101,6 +104,7 @@ export function MemoListDataLoader({
         setLoadedMemoListQueryKey(queryKey);
         setIsMemoListLoading(false);
         onLoadSuccess?.(queryKey);
+        onStartupLoadSettled?.(queryKey, 'ready');
         return;
       }
       setIsMemoListLoading(true);
@@ -111,11 +115,25 @@ export function MemoListDataLoader({
           sort: activeSort,
           tagId: activeTagId ?? undefined,
         });
-        if (cancelled || !applied) return;
+        if (cancelled) return;
+        if (!applied) {
+          // Another request may have loaded the same query while this one was
+          // superseded. Accept only that exact applied query; otherwise the
+          // rerendered current query owns the next readiness report.
+          if (memoListQueryKey === queryKey) {
+            setLoadedMemoListQueryKey(queryKey);
+            onStartupLoadSettled?.(queryKey, 'ready');
+          }
+          return;
+        }
         setLoadedMemoListQueryKey(queryKey);
         onLoadSuccess?.(queryKey);
+        onStartupLoadSettled?.(queryKey, 'ready');
       } catch (error) {
-        if (!cancelled) onLoadError(error);
+        if (!cancelled) {
+          onLoadError(error);
+          onStartupLoadSettled?.(queryKey, 'failed');
+        }
       } finally {
         if (!cancelled) {
           setIsMemoListLoading(false);
@@ -142,6 +160,7 @@ export function MemoListDataLoader({
     onLoadError,
     onLoadStart,
     onLoadSuccess,
+    onStartupLoadSettled,
     refreshTrigger,
     selectedNotebookId,
     setIsMemoListLoading,

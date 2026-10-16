@@ -70,17 +70,17 @@ export function MediaLibraryFilterPanel({
     onFolderPickerOpenChange(false);
   };
   const folderPathLabel = fixedFolderPath !== undefined
-    ? '固定'
-    : (path || pathIsAll) ? (pathIsAll ? t('mediaLibrary.anyFolder') : path) : undefined;
+    ? fixedFolderPath || '笔记本根目录'
+    : (path || pathIsAll) ? (pathIsAll ? t('mediaLibrary.anyFolder') : path) : '空';
   const canClearFolderPath = fixedFolderPath === undefined && Boolean(path || pathIsAll);
 
   const locationMenu = <Popover open={folderPickerOpen} onOpenChange={onFolderPickerOpenChange}>
-        <div data-media-library-location-menu className={`flex min-w-0 items-center gap-0.5 rounded-lg transition-colors ${busy || !notebookAvailable || fixedFolderPath !== undefined ? '' : 'hover:bg-[var(--hover-bg)]'}`}>
+        <div data-media-library-location-menu className={`flex min-w-0 items-center gap-0.5 rounded-lg transition-colors ${busy || !notebookAvailable || fixedFolderPath !== undefined ? '' : folderPickerOpen ? 'bg-[var(--hover-bg)]' : 'hover:bg-[var(--hover-bg)]'}`}>
           <PopoverTrigger asChild>
             <button type="button" disabled={busy || !notebookAvailable || fixedFolderPath !== undefined} className="flex h-8 min-w-0 flex-1 items-center justify-between gap-2 rounded-lg pl-1.5 text-left text-sm disabled:opacity-50">
               <span className="min-w-0 truncate">浏览和保存</span>
               <span className="flex min-w-0 flex-1 items-center justify-end gap-1 text-[var(--muted-foreground)]">
-                {folderPathLabel && <span title={folderPathLabel} className="max-w-[150px] truncate text-right text-xs">{folderPathLabel}</span>}
+                {folderPathLabel && <span title={fixedFolderPath !== undefined ? `固定：${folderPathLabel}` : folderPathLabel} className="max-w-[150px] truncate text-right text-sm">{folderPathLabel}</span>}
               </span>
             </button>
           </PopoverTrigger>
@@ -158,8 +158,8 @@ export function MediaLibraryFilterPanel({
   return <>
     <div className="space-y-1">
       {showLocationMenu && locationMenu}
-      <p className="agent-thread-card__codex-settings-title px-2">{t('multidimensionalTable.autoCollect.file')}</p>
-      <label className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
+      <p className="agent-thread-card__codex-settings-title">{t('multidimensionalTable.autoCollect.file')}</p>
+      <label className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2">
         <span className="px-0.5 text-sm text-[var(--foreground)]">{t('mediaLibrary.filterFileName')}</span>
         <input
           autoFocus={autoFocus}
@@ -171,7 +171,7 @@ export function MediaLibraryFilterPanel({
           className="h-8 w-full rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm outline-none focus:border-[var(--brand)] disabled:opacity-50"
         />
       </label>
-      <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2 px-2">
+      <div className="grid min-w-0 grid-cols-[64px_minmax(0,1fr)] items-center gap-2">
         <span className="px-0.5 text-sm text-[var(--foreground)]">{t('mediaLibrary.filterType')}</span>
         <Select value={fileType} disabled={busy} onValueChange={(value) => onFileTypeChange(value as 'any' | MediaLibraryKind)}>
           <SelectTrigger className="h-8 min-w-0 w-full rounded-lg bg-transparent px-2 text-left text-sm">
@@ -185,9 +185,9 @@ export function MediaLibraryFilterPanel({
         </Select>
       </div>
     </div>
-    <div className="mx-2 mt-2 flex gap-2">
-      <button type="button" disabled={busy} className="flex h-8 flex-1 items-center justify-center rounded-lg border border-[var(--border)] bg-transparent text-sm text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-50" onClick={onReset}>{t('mediaLibrary.reset')}</button>
-      <button type="button" disabled={busy} className="flex h-8 flex-1 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] text-sm text-[var(--foreground)] hover:bg-[var(--muted)] disabled:opacity-50" onClick={onApply}>{applying ? t('mediaLibrary.saveProgress') : t('mediaLibrary.apply')}</button>
+    <div className="mt-2 flex gap-2">
+      <button type="button" disabled={busy} className="flex h-8 flex-1 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--muted)] px-2 text-sm text-[var(--foreground)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-50" onClick={onReset}>{t('mediaLibrary.reset')}</button>
+      <button type="button" disabled={busy} className="flex h-8 flex-1 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--muted)] px-2 text-sm text-[var(--foreground)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-50" onClick={onApply}>{applying ? t('mediaLibrary.saveProgress') : t('mediaLibrary.apply')}</button>
     </div>
   </>;
 }

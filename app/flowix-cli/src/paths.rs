@@ -12,7 +12,7 @@ use std::path::{Path, PathBuf};
 
 use crate::errors::CliError;
 
-/// 用户配置目录名 (~/.<NAME>/ 下放 index.db / boot/preference.json /
+/// 用户配置目录名 (~/.<NAME>/ 下放 db/local.db / boot/preference.json /
 /// agent-config.toml / boot/system.json 等)。
 pub const USER_CONFIG_DIR_NAME: &str = ".flowix";
 
@@ -26,7 +26,7 @@ pub struct Resolved {
     /// 或 `$XDG_DATA_HOME/flowix` (Linux)
     #[allow(dead_code)]
     pub app_data: PathBuf,
-    /// `~/.flowix/`. 笔记本注册表就存在这里 (`<config_dir>/index.db`).
+    /// `~/.flowix/`. 笔记本注册表位于 `<config_dir>/db/local.db`.
     #[allow(dead_code)]
     pub config_dir: PathBuf,
 }

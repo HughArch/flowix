@@ -20,7 +20,7 @@ import type { DshRuntimeInstallerState } from '@features/preferences/public/syst
 
 const LOCAL_AGENT_INTRO_OPTIONS = [
   { key: 'codex', nameKey: 'agent.types.codex.name', icon: iconCodex },
-  { key: 'claude', nameKey: 'agent.types.claude.name', icon: iconClaudeCode },
+  { key: 'claudecode', nameKey: 'agent.types.claude.name', icon: iconClaudeCode },
   { key: 'opencode', nameKey: 'agent.types.opencode.name', icon: iconOpenCode },
 ] as const;
 type LocalAgentIntroOption = (typeof LOCAL_AGENT_INTRO_OPTIONS)[number];
@@ -73,7 +73,7 @@ export function DshInstallPrompt({
     void getLocalAgentRuntimeStatus()
       .then((status) => {
         if (cancelled) return;
-        const detected = LOCAL_AGENT_INTRO_OPTIONS.find(({ key }) => status[key]?.available);
+        const detected = LOCAL_AGENT_INTRO_OPTIONS.find(({ key }) => status[key]?.readiness === 'ready');
         setLocalAgent(detected ?? null);
       })
       .catch(() => {
@@ -116,29 +116,26 @@ export function DshInstallPrompt({
         <div className="px-5 py-5 text-left">
           <div
             className="mb-5 flex items-center gap-1.5"
-            role="tablist"
+            role="group"
             aria-label={t('preferences.dsh.setup.carousel')}
           >
             <button
               type="button"
-              role="tab"
-              aria-selected={slide === 'mcp'}
+              aria-pressed={slide === 'mcp'}
               aria-label={t('preferences.dsh.setup.mcp.slide')}
               onClick={() => setSlide('mcp')}
               className={`h-1.5 rounded-full transition-[width,background-color] ${slide === 'mcp' ? 'w-7 bg-[var(--primary)]' : 'w-3 bg-[var(--muted)]'}`}
             />
             <button
               type="button"
-              role="tab"
-              aria-selected={slide === 'intro'}
+              aria-pressed={slide === 'intro'}
               aria-label={t('preferences.dsh.setup.intro.slide')}
               onClick={() => setSlide('intro')}
               className={`h-1.5 rounded-full transition-[width,background-color] ${slide === 'intro' ? 'w-7 bg-[var(--primary)]' : 'w-3 bg-[var(--muted)]'}`}
             />
             <button
               type="button"
-              role="tab"
-              aria-selected={slide === 'download'}
+              aria-pressed={slide === 'download'}
               aria-label={t('preferences.dsh.setup.download.slide')}
               onClick={() => setSlide('download')}
               className={`h-1.5 rounded-full transition-[width,background-color] ${slide === 'download' ? 'w-7 bg-[var(--primary)]' : 'w-3 bg-[var(--muted)]'}`}
@@ -204,7 +201,7 @@ export function DshInstallPrompt({
               <section className="w-1/3 shrink-0" aria-hidden={slide !== 'download'}>
                 <DialogHeader className="mb-0">
                   <div className="flex h-12 w-12 items-center justify-center rounded-xl bg-[color-mix(in_oklch,var(--primary)_12%,transparent)]">
-                    <AgentIcon typeKey="deepseek-harness" alt="" className="h-7 w-7" />
+                    <AgentIcon typeKey="dsh" alt="" className="h-7 w-7" />
                   </div>
                   <DialogTitle className="mt-3 text-base">
                     {t('preferences.dsh.setup.promptTitle')}
@@ -259,7 +256,7 @@ export function DshInstallPrompt({
                 {t('preferences.dsh.setup.previous')}
               </Button>
               <Button type="button" onClick={() => void handleInstall()} disabled={busy}>
-                {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+                {busy && <Loader2 className="h-4 w-4 flowix-spin" />}
                 {busy ? t(progress?.phase === 'installing' ? 'preferences.dsh.setup.installing' : 'preferences.dsh.setup.downloading') : t('preferences.dsh.setup.install')}
               </Button>
               {canCancel && (

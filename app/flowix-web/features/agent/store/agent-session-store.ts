@@ -224,17 +224,17 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
           }
           const state = get();
           const type = getAgentType(typeKey ?? state.sessionMeta.threadTypes[threadId] ?? state.sessionMeta.activeAgentTypeKey);
-          const productThreadId = resolveCommandThreadId(state, threadId, type.key);
+          const productThreadId = resolveCommandThreadId(state, threadId, type.id);
           if (!productThreadId) {
             if (options?.rejectOnFailure) throw new Error("Agent thread was not found");
             return;
           }
-          if (productThreadId !== threadId) return get().sendMessageToThread(productThreadId, content, type.key, options);
+          if (productThreadId !== threadId) return get().sendMessageToThread(productThreadId, content, type.id, options);
           if (state.threadTombstones[threadId] || state.threadMutationGuards[threadId]) {
             if (options?.rejectOnFailure) throw new Error("Agent thread is unavailable");
             return;
           }
-          state.bindThreadType(threadId, type.key);
+          state.bindThreadType(threadId, type.id);
           const isFirstMessage = options?.isFirstMessage ?? (state.threadProjections[threadId]?.messages.length ?? 0) === 0;
           const conversationTitle = normalizeThreadTitle(options?.conversationTitle);
           if (isFirstMessage && conversationTitle) {
@@ -251,7 +251,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
                 : {}),
               threadLists: {
                 ...meta.threadLists,
-                [type.key]: (meta.threadLists[type.key] ?? []).map((item) =>
+                [type.id]: (meta.threadLists[type.id] ?? []).map((item) =>
                   item.threadId === threadId
                     ? { ...item, title: conversationTitle }
                     : item,
@@ -262,7 +262,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
           const { userPayload, llmContent, userMessage } = prepareUserMessage({
             content: trimmed,
             isFirstMessage,
-            agentType: type.key,
+            agentType: type.id,
             currentNoteContent: options?.currentNoteContent,
             systemReminderDirectory:
               options?.runtimeConfig?.workspaceSnapshot?.notebookPath,
@@ -270,7 +270,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
               options?.attachments ?? createAgentMessageAttachments(options?.imagePaths),
           });
           if (
-            (type.key === "codex" || type.key === "deepseek-harness" || type.key === "pi") &&
+            (type.id === "codex" || type.id === "dsh" || type.id === "pi") &&
             isProjectionWorking(get().threadProjections[threadId])
           ) {
             const clientUserMessageId = `flowix-${createRunId(threadId)}`;
@@ -284,7 +284,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
               queuedAt: Date.now(),
               clientUserMessageId,
               llmContent,
-              deliveryMode: type.key === 'pi' || type.key === 'codex' ? 'follow_up' : 'steer',
+              deliveryMode: type.id === 'pi' || type.id === 'codex' ? 'follow_up' : 'steer',
               deliveryStatus: "submitting",
             });
             try {
@@ -292,10 +292,10 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
                 content: trimmed,
                 llmContent,
                 imagePaths: options?.imagePaths,
-                agentType: type.key,
+                agentType: type.id,
                 runtimeConfig: options?.runtimeConfig ?? undefined,
               };
-              if (type.key === "codex") {
+              if (type.id === "codex") {
                 await get().queueCodexFollowUp(
                   threadId,
                   activeTurnMessage,
@@ -307,16 +307,16 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
                   threadId,
                   activeTurnMessage,
                   clientUserMessageId,
-                  type.key === 'pi' ? 'follow_up' : 'steer',
+                  type.id === 'pi' ? 'follow_up' : 'steer',
                 );
                 get().updateSteeringMessage(threadId, pendingId, { deliveryStatus: "queued" });
               }
             } catch (err) {
               get().removeSteeringMessage(threadId, pendingId);
-              logger.error("Failed to queue active-turn message", { error: String(err), agentType: type.key });
+              logger.error("Failed to queue active-turn message", { error: String(err), agentType: type.id });
               get().dispatch({
                 kind: "error",
-                agentType: type.key,
+                agentType: type.id,
                 threadId,
                 runId: get().threadProjections[threadId]?.runs.activeRunId ?? createRunId(threadId),
                 timestamp: Date.now(),
@@ -327,20 +327,20 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
             return;
           }
           const runId = options?.runId ?? createRunId(threadId);
-          userMessage.id = completedRunUserMessageId(type.key, runId);
+          userMessage.id = completedRunUserMessageId(type.id, runId);
           userMessage.renderKey = userMessage.id;
-          if (type.key === "pi") userMessage.messageId = null;
+          if (type.id === "pi") userMessage.messageId = null;
           const startedAt = Date.now();
           state.dispatch({
             kind: "stream_start",
-            agentType: type.key,
+            agentType: type.id,
             threadId,
             runId,
             timestamp: startedAt,
           });
           state.dispatch({
             kind: "user_message",
-            agentType: type.key,
+            agentType: type.id,
             threadId,
             runId,
             timestamp: startedAt,
@@ -349,9 +349,8 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
             attachments: userMessage.attachments,
           });
           if (options?.instanceId) {
-            state.updateThread(options.instanceId, { threadId, agentType: type.key });
+            state.updateThread(options.instanceId, { threadId, agentType: type.id });
           }
-          const settings = get().sessionMeta.settings;
           try {
             await dispatchChatStream({
               threadId,
@@ -360,10 +359,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
               llmContent,
               runId,
               userPayload,
-              agentType: type.key,
-              permissionMode: settings.agentPermissionMode,
-              codexModel: settings.agentCodexModel,
-              codexReasoningEffort: settings.agentCodexReasoningEffort,
+              agentType: type.id,
               runtimeConfig: options?.runtimeConfig ?? undefined,
               imagePaths: options?.imagePaths,
               conversationTitle:
@@ -377,7 +373,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
             );
             get().dispatchAgentEvent({
               kind: "error",
-              agentType: type.key,
+              agentType: type.id,
               threadId,
               runId,
               timestamp: Date.now(),
@@ -389,7 +385,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
         stopStream: async () => {
           const meta = get().sessionMeta;
           const type = getAgentType(meta.activeAgentTypeKey);
-          const activeId = meta.activeThreadIds[type.key];
+          const activeId = meta.activeThreadIds[type.id];
           if (activeId) await get().stopThreadRun(activeId);
         },
         stopThreadRun: async (threadId, runId) => {
@@ -427,17 +423,17 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
               meta.threadTypes[threadId] ?? meta.activeAgentTypeKey,
             );
             let stopRunId = targetRunId ??
-              (type.key === "codex" ? pendingCodexCommandRunId : undefined);
+              (type.id === "codex" ? pendingCodexCommandRunId : undefined);
             if (!stopRunId) {
               const running = await agentClient.runningThreads();
               const candidate = Object.entries(running).find(([reportedThreadId, info]) =>
                 (reportedThreadId === threadId || info.pendingThreadId === threadId) &&
-                (!info.agentType || info.agentType === type.key));
+                (!info.agentType || info.agentType === type.id));
               stopRunId = candidate?.[1].runId;
               if (!stopRunId) return;
             }
-            accepted = await agentClient.stopChatStream(threadId, type.key, stopRunId);
-            if (accepted && type.key !== "codex" && (!runId || !activeRunIdBeforeStop || runId === activeRunIdBeforeStop)) {
+            accepted = await agentClient.stopChatStream(threadId, type.id, stopRunId);
+            if (accepted && type.id !== "codex" && (!runId || !activeRunIdBeforeStop || runId === activeRunIdBeforeStop)) {
               get().clearPendingSteeringMessages(threadId);
             }
           } catch (err) {
@@ -615,7 +611,12 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
     },
     {
       name: STORAGE_KEYS.AGENT_SESSION,
+      version: 2,
       storage: createJSONStorage(() => createAgentSessionStateStorage()),
+      migrate: (persisted) => ({
+        ...(persisted as Record<string, unknown>),
+        sessionMeta: rehydrateSessionMeta(persisted),
+      }),
       partialize: (state) => ({
         sessionMeta: {
           ...state.sessionMeta,

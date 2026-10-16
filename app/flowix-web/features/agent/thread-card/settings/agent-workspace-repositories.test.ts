@@ -1,17 +1,20 @@
 // @vitest-environment jsdom
 
-import type { AgentAccessConfig, AgentAccessEntry, NotebookAgentConfig } from "@/lib/types/agent-access";
+import type { AgentAccessConfig, AgentAccessEntry } from "@/lib/types/agent-workspace.test-support";
+import type { NotebookWorkspaceConfig } from "@/lib/types/agent-workspace";
 
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
 
 const {
   addFolderFromPicker,
-  setDefaultFiles,
+  attachFolderToNotebook,
+  detachFolderFromNotebook,
   openBrowserColumnFileBrowser,
   accessState,
 } = vi.hoisted(() => ({
   addFolderFromPicker: vi.fn(),
-  setDefaultFiles: vi.fn(),
+  attachFolderToNotebook: vi.fn(async () => "saved" as const),
+  detachFolderFromNotebook: vi.fn(async () => "saved" as const),
   openBrowserColumnFileBrowser: vi.fn(),
   // 可变 store 快照 ── 增删用例需要"写盘后重新读到新列表"这条链路成立。
   accessState: {
@@ -19,7 +22,7 @@ const {
     notebookConfigs: {},
   } as {
     config: AgentAccessConfig;
-    notebookConfigs: Record<string, NotebookAgentConfig>;
+    notebookConfigs: Record<string, NotebookWorkspaceConfig>;
   },
 }));
 
@@ -44,28 +47,47 @@ vi.mock("@features/memo/store/note-store", () => ({
   },
 }));
 
-vi.mock("@features/memo/use-cases/open-by-target", () => ({
+vi.mock("@features/memo/public/note-navigation-api", () => ({
   openNoteByMemoId: vi.fn(),
 }));
 
 vi.mock("@features/workspace/use-cases/browser-column-navigation", () => ({
   openBrowserColumnFileBrowser,
+  openBrowserColumnNotebookNote: vi.fn(),
 }));
 
-vi.mock("@features/agent/store/agent-access-store", () => ({
-  useAgentAccessStore: {
-    getState: () => ({
-      config: accessState.config,
-      notebookConfigs: accessState.notebookConfigs,
-      addFolderFromPicker,
-      setDefaultFiles,
-    }),
-  },
-}));
+vi.mock("@features/agent/store/agent-data-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@features/agent/store/agent-data-store")>();
+  return { ...actual, useAgentDataStore: Object.assign(
+    (selector: Parameters<typeof actual.useAgentDataStore>[0]) => actual.useAgentDataStore(selector),
+    actual.useAgentDataStore,
+    { getState: () => ({
+      ...actual.useAgentDataStore.getState(),
+      workspace: actual.projectAgentWorkspace({
+        notebooks: [{ id: "notebook-1", name: "项目", path: "/repo/project" }],
+        notebookConfigs: Object.fromEntries(Object.entries(accessState.notebookConfigs).map(([id, config]) => [id, {
+          ...config, addDirs: config.addDirs.map(directory => ({ ...directory, missing: accessState.config.entries.find(e => e.path === directory.path)?.missing ?? false })),
+        }])),
+      }),
+      workspaceActions: {
+        ...actual.useAgentDataStore.getState().workspaceActions,
+        addFolderFromPicker,
+        attachFolderToNotebook,
+        detachFolderFromNotebook,
+        getNotebookFiles: () => undefined,
+      },
+    }) },
+  ) };
+});
 
 vi.mock("@features/agent/store/agent-session-store", () => ({
   useAgentSessionStore: {
-    getState: () => ({ getInstance: () => undefined, sessionMeta: { settings: {} } }),
+    subscribe: vi.fn(() => vi.fn()),
+    getState: () => ({
+      getInstance: (id: string) => id === "mode-conversation"
+        ? { runtimeConfig: { deepseekHarness: { mode: "standard" } } } : undefined,
+      sessionMeta: { settings: {} },
+    }),
   },
 }));
 
@@ -74,6 +96,8 @@ vi.mock("@features/agent/store/dsh-model-config-store", () => ({
 }));
 
 import { ExternalAgentSettingsController } from "./external-agent-settings-controller";
+import { AgentThreadCardSubscriptionsController } from "../runtime/thread-card-subscriptions-controller";
+import { useAgentDataStore } from "@features/agent/store/agent-data-store";
 
 function folderEntry(path: string, name: string, missing = false): AgentAccessEntry {
   return {
@@ -112,7 +136,8 @@ describe("agent workspace popover repositories page", () => {
   beforeEach(() => {
     document.body.replaceChildren();
     addFolderFromPicker.mockReset();
-    setDefaultFiles.mockReset().mockResolvedValue(true);
+    attachFolderToNotebook.mockReset().mockResolvedValue("saved");
+    detachFolderFromNotebook.mockReset().mockResolvedValue("saved");
     openBrowserColumnFileBrowser.mockReset();
     toast = vi.fn();
     setupAccess(
@@ -168,6 +193,37 @@ describe("agent workspace popover repositories page", () => {
       ),
     ).map((node) => node.textContent ?? "");
   }
+
+  it("keeps the DSH mode button and open picker subscribed to the user's choice", () => {
+    useAgentDataStore.getState().setUserPreference("deepseek-harness", { mode: "code" });
+    const modeController = new ExternalAgentSettingsController({
+      popover, getTypeKey: () => "deepseek-harness", getInstanceId: () => "mode-conversation",
+      getLanguage: () => "zh-CN", t: (key) => key, isDestroyed: () => false,
+    });
+    const button = modeController.createComposerModeButton()!;
+    document.body.append(button);
+    const subscriptions = new AgentThreadCardSubscriptionsController({
+      getRuntimeThreadId: () => null, getRenderThreadId: () => null, getStoredThreadId: () => null,
+      getTypeKey: () => "deepseek-harness", getInstanceId: () => "mode-conversation",
+      getResolvedSessionId: () => null, renderThreadState: vi.fn(), refreshAttrs: vi.fn(),
+      refreshExternalAgentEmptySettings: () => modeController.refreshEmptySettings(),
+      isExternalSettingsOpen: () => true,
+      renderCodexSettingsPopover: () => modeController.renderPopover(),
+      applyResolvedExternalSessionId: vi.fn(), syncRuntimeBadge: vi.fn(),
+    });
+    subscriptions.subscribe();
+    try {
+      expect(button.textContent).toContain("agent.mode.code");
+      button.click();
+      expect(popover.querySelector('[aria-checked="true"]')?.textContent).toContain("agent.mode.code");
+      useAgentDataStore.getState().setUserPreference("deepseek-harness", { mode: "minimal" });
+      expect(button.textContent).toContain("agent.mode.minimal");
+      expect(popover.querySelector('[aria-checked="true"]')?.textContent).toContain("agent.mode.minimal");
+    } finally {
+      subscriptions.dispose();
+      modeController.dispose();
+    }
+  });
 
   it("首先渲染只读的「可访问」页, 不跳转文件浏览器", () => {
     openAccessPopover();
@@ -236,7 +292,7 @@ describe("agent workspace popover repositories page", () => {
     expect(pageTitles()).toContain("agent.workspace.manageRepositories");
   });
 
-  it("删除仓库会写回当前笔记本的 add-dir 列表", async () => {
+  it("删除仓库只从当前笔记本移除对应路径", async () => {
     openAccessPopover();
     (popover.querySelector(".agent-thread-card__codex-settings-settings") as HTMLButtonElement).click();
 
@@ -247,12 +303,9 @@ describe("agent workspace popover repositories page", () => {
     removeButtons[0].click();
 
     await vi.waitFor(() => {
-      expect(setDefaultFiles).toHaveBeenCalledTimes(1);
+      expect(detachFolderFromNotebook).toHaveBeenCalledTimes(1);
     });
-    expect(setDefaultFiles).toHaveBeenCalledWith(
-      "notebook-1",
-      expect.objectContaining({ folders: ["/repo/assets"] }),
-    );
+    expect(detachFolderFromNotebook).toHaveBeenCalledWith("notebook-1", "/repo/docs");
     expect(toast).toHaveBeenCalledWith(
       "success",
       expect.stringContaining("agent.access.folderDeleted"),
@@ -274,12 +327,9 @@ describe("agent workspace popover repositories page", () => {
     add.click();
 
     await vi.waitFor(() => {
-      expect(setDefaultFiles).toHaveBeenCalledTimes(1);
+      expect(addFolderFromPicker).toHaveBeenCalledWith("notebook-1");
     });
-    expect(setDefaultFiles).toHaveBeenCalledWith(
-      "notebook-1",
-      expect.objectContaining({ folders: ["/repo/docs", "/repo/assets", "/repo/new"] }),
-    );
+    expect(attachFolderToNotebook).not.toHaveBeenCalled();
   });
 
   it("关闭弹窗后重新打开会回到「可访问」页", () => {

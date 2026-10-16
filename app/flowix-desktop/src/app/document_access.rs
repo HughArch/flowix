@@ -5,6 +5,7 @@ use std::sync::RwLock;
 #[derive(Default)]
 pub struct DocumentAccess {
     paths: RwLock<HashSet<(String, PathBuf)>>,
+    directories: RwLock<HashSet<(String, PathBuf)>>,
     generations: RwLock<HashMap<String, u64>>,
 }
 
@@ -37,16 +38,43 @@ impl DocumentAccess {
         true
     }
 
+    pub fn grant_directory_for_generation(
+        &self,
+        window: &str,
+        generation: u64,
+        path: &Path,
+    ) -> bool {
+        let Ok(generations) = self.generations.read() else {
+            return false;
+        };
+        if *generations.get(window).unwrap_or(&0) != generation {
+            return false;
+        }
+        let Some(path) = existing_directory(path) else {
+            return false;
+        };
+        let Ok(mut directories) = self.directories.write() else {
+            return false;
+        };
+        directories.insert((window.to_string(), path));
+        true
+    }
+
     pub fn contains(&self, window: &str, path: &Path) -> bool {
         if self.generations.read().is_err() {
             return false;
         }
-        let Some(path) = existing_file(path) else {
+        let Some(path) = existing_path(path) else {
             return false;
         };
-        self.paths
+        let file_granted = path.is_file() && self.paths
             .read()
-            .is_ok_and(|paths| paths.contains(&(window.to_string(), path)))
+            .is_ok_and(|paths| paths.contains(&(window.to_string(), path.clone())));
+        file_granted || self.directories.read().is_ok_and(|directories| {
+            directories.iter().any(|(owner, directory)| {
+                owner == window && path.starts_with(directory)
+            })
+        })
     }
 
     pub fn revoke(&self, window: &str) {
@@ -58,6 +86,9 @@ impl DocumentAccess {
         if let Ok(mut paths) = self.paths.write() {
             paths.retain(|(owner, _)| owner != window);
         }
+        if let Ok(mut directories) = self.directories.write() {
+            directories.retain(|(owner, _)| owner != window);
+        }
     }
 }
 
@@ -67,6 +98,21 @@ fn existing_file(path: &Path) -> Option<PathBuf> {
     }
     let canonical = dunce::canonicalize(path).ok()?;
     canonical.is_file().then_some(canonical)
+}
+
+fn existing_directory(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    let canonical = dunce::canonicalize(path).ok()?;
+    canonical.is_dir().then_some(canonical)
+}
+
+fn existing_path(path: &Path) -> Option<PathBuf> {
+    if !path.is_absolute() {
+        return None;
+    }
+    dunce::canonicalize(path).ok()
 }
 
 #[cfg(test)]

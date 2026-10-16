@@ -1,0 +1,1701 @@
+/* Shared Agent conversation composer. Compact and expanded surfaces use the
+ * same component; state-specific sizing lives in --agent-composer-input-min-height.
+ * Rounded capsule container uses content-driven grid rows.
+ * 子元素隐藏时自动收缩，折叠态不会留下空白区域。
+ * 外层 max-height: 15rem; 输入区内容超出时在输入区内部滚动,
+ * composer 容器不被撑破。
+ *
+ * 背景使用 var(--input-bg) ── 输入面与文档背景解耦, 浅色模式统一为白色;
+ * 1px border 保留, 仍能围出胶囊形状; 输入内容透明, 直接
+ * 透出 composer 背景。多行状态由 .--multi-line 修饰类切到 flex-end。 */
+.agent-conversation-surface .agent-composer {
+  --agent-composer-input-min-height: 1.6em;
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+  align-self: end;
+  width: calc(100% - 24px);
+  /* Allow the composer to shrink within its grid track, even when the input
+   * contains a long unbroken string. */
+  min-width: 0;
+  max-width: calc(100% - 24px);
+  margin: 0 0.8rem 0.6rem;
+  padding: 0 0.4rem 0 0.8rem;
+  border: 1px solid var(--border);
+  border-radius: 1rem;
+  background: var(--input-bg, var(--document-bg));
+  /* Keep the composer lighter than the Slash menu while
+   * keeping a shorter offset for the composer sitting against the canvas edge. */
+  box-shadow: 0 2px 24px -3px rgb(0 0 0 / 3%);
+  box-sizing: border-box;
+  max-height: 15rem;
+  user-select: none;
+  /* Empty composer space also focuses the input, so show a text cursor.
+   *
+   * 用 :where() 选非交互后代让优先级保持在 0, 不压过下面的 button /
+   * image-remove 等子选择器 ── 按钮仍是 pointer 光标。 */
+  cursor: text;
+}
+
+/* Compact composer keeps its existing single-line outer height. */
+.agent-conversation-surface .agent-composer:not(.agent-composer--expanded) {
+  min-height: 42px;
+  padding-top: 6px;
+  padding-bottom: 6px;
+}
+
+.agent-conversation-surface .agent-composer :where(
+  button,
+  a,
+  [role='button'],
+  .agent-composer__add-button,
+  .agent-composer__model,
+  .agent-composer__mode,
+  .agent-composer__permission,
+  .agent-composer__workspace
+) {
+  cursor: pointer;
+}
+
+.agent-conversation-surface .agent-composer--expanded {
+  width: calc(100% - 3rem);
+  max-width: 780px;
+  margin: 0 auto 0.6rem;
+  /* 全屏态: 宽度 / margin 与基线不同; 背景由基线 var(--document-bg) 提供,
+   * 不再覆盖, 全屏 / 非全屏视觉一致。 */
+}
+
+.agent-conversation-surface .agent-composer--multi-line {
+  align-items: flex-end;
+}
+
+/* As compact input grows, keep side actions vertically centered.
+ * 仍应相对整个 composer 上下居中；底部对齐只保留给 expanded composer
+ * 的独立操作行布局。 */
+.agent-conversation-surface
+  .agent-composer:not(.agent-composer--expanded)
+  .agent-composer--multi-line {
+  align-items: center;
+}
+
+/* 非全屏态的 actions 也要建立自己的 flex 行。
+ * 如果保持默认 block 行盒，Add 按钮会按文字基线布局，视觉上贴在
+ * actions 的上沿；显式居中后，按钮始终在 actions 的内容高度内垂直居中。 */
+.agent-conversation-surface
+  .agent-composer:not(.agent-composer--expanded)
+  .agent-composer__actions {
+  display: flex;
+  align-items: center;
+  flex: 0 0 auto;
+  gap: 0.1rem;
+}
+
+.agent-conversation-surface .agent-composer__model {
+  display: none;
+}
+
+.agent-conversation-surface .agent-composer__mode {
+  display: none;
+}
+
+.agent-conversation-surface .agent-composer__workspace {
+  display: none;
+}
+
+.agent-conversation-surface .agent-composer__permission {
+  display: none;
+}
+
+.agent-conversation-surface .agent-composer__workspace:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: auto;
+}
+
+.agent-conversation-surface .agent-composer__permission:disabled,
+.agent-conversation-surface .agent-composer__mode:disabled,
+.agent-conversation-surface .agent-conversation__control[data-kind='permission']:disabled {
+  opacity: 0.45;
+  cursor: not-allowed;
+  pointer-events: auto;
+}
+
+.agent-conversation-surface .agent-composer__workspace:disabled:hover {
+  background: transparent;
+}
+
+.agent-conversation-surface .agent-composer__permission:disabled:hover,
+.agent-conversation-surface .agent-composer__mode:disabled:hover,
+.agent-conversation-surface .agent-conversation__control[data-kind='permission']:disabled:hover {
+  background: transparent;
+}
+
+/* Setup controls share one neutral conversation-control style wherever the
+ * conversation starts without messages. */
+.agent-conversation-surface .agent-conversation__controls {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+}
+
+.agent-conversation-surface .agent-conversation__control {
+  display: inline-flex;
+  align-items: center;
+  max-width: 190px;
+  min-width: 0;
+  height: 28px;
+  gap: 5px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.agent-conversation-surface .agent-conversation__control[data-kind='model'] {
+  max-width: 240px;
+}
+
+.agent-conversation-surface .agent-conversation__workspace {
+  display: inline-flex;
+  align-items: center;
+  max-width: 190px;
+  min-width: 0;
+  height: 28px;
+  gap: 5px;
+  padding: 0 8px;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  line-height: 1;
+  font-family: inherit;
+  cursor: pointer;
+  user-select: none;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.agent-conversation-surface .agent-conversation__workspace-value,
+.agent-conversation-surface .agent-conversation__control-value {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.6;
+}
+
+.agent-conversation-surface .agent-conversation__control-label {
+  flex: 0 0 auto;
+}
+
+.agent-conversation-surface
+  :is(.agent-conversation__control, .agent-conversation__workspace):is(
+    :hover,
+    :focus-visible,
+    .agent-conversation__control--open,
+    .agent-conversation__workspace--open
+  ) {
+  background: var(--muted);
+  color: var(--foreground);
+  outline: none;
+}
+
+  /* Expanded conversation composer: the input occupies the upper row and the
+ * role/add + send controls share a dedicated bottom row. Both fullscreen
+ * surfaces opt in through .agent-composer--expanded. */
+.agent-conversation-surface .agent-composer--expanded {
+  --agent-composer-input-min-height: 2.6rem;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) auto;
+  align-items: end;
+  row-gap: 0.35rem;
+  /* Keep the top breathing room inside the scrollable input area. */
+  padding: 0.55rem 0.6rem 0.55rem 0.8rem;
+  grid-template-areas:
+    "input input"
+    "actions send";
+  grid-template-rows: minmax(var(--agent-composer-input-min-height), auto) auto;
+  max-height: none;
+}
+
+.agent-conversation-surface .agent-composer--expanded .agent-composer__actions {
+  grid-area: actions;
+  display: flex;
+  align-items: center;
+  gap: 0.1rem;
+  align-self: end;
+}
+
+.agent-conversation-surface
+  .agent-composer--expanded
+  :is(.agent-composer__model, .agent-composer__mode) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 0;
+  max-width: 12rem;
+  height: 24px;
+  flex: 0 1 auto;
+  padding: 0 0.45rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font: inherit;
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  line-height: 1;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+.agent-conversation-surface
+  .agent-composer--expanded
+  .agent-composer__model {
+  max-width: 240px;
+}
+
+/* hover / open 态背景与 add (+) 按钮的默认背景 (var(--muted)) 对齐,
+ * 同空状态 __empty-control 的 hover 规格, 不再单独加深。 */
+.agent-conversation-surface
+  .agent-composer--expanded
+  :is(.agent-composer__model:hover, .agent-composer__model--open) {
+  background: var(--muted);
+  color: var(--foreground);
+  outline: none;
+}
+
+.agent-conversation-surface
+  .agent-composer--expanded
+  :is(
+    .agent-composer__mode,
+    .agent-composer__permission,
+    .agent-composer__workspace
+  ) {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.2rem;
+  min-width: 0;
+  max-width: 12rem;
+  height: 24px;
+  flex: 0 1 auto;
+  padding: 0 0.45rem;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  /* 与空状态的空间信息保持同一套文字规格（text-xs / muted）。 */
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font: inherit;
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  line-height: 1;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+.agent-conversation-surface
+  .agent-composer--expanded
+  :is(
+    .agent-composer__mode:hover,
+    .agent-composer__mode--open,
+    .agent-composer__permission:hover,
+    .agent-composer__permission--open,
+    .agent-composer__workspace:hover,
+    .agent-composer__workspace--open
+  ) {
+  background: var(--muted);
+  color: var(--foreground);
+  outline: none;
+}
+
+.agent-conversation-surface .agent-composer__workspace-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.6;
+}
+
+.agent-conversation-surface .agent-composer__model-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.6;
+}
+
+.agent-conversation-surface .agent-composer__mode-value {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  line-height: 1.6;
+}
+
+.agent-conversation-surface .agent-composer__workspace .agent-conversation__control-chevron {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  opacity: 0.72;
+}
+
+.agent-conversation-surface .agent-composer__workspace-icon {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.agent-conversation-surface .agent-composer__permission .agent-conversation__control-chevron {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  opacity: 0.72;
+}
+
+.agent-conversation-surface .agent-composer__model .agent-conversation__control-chevron {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  opacity: 0.72;
+}
+
+.agent-conversation-surface .agent-composer__mode .agent-conversation__control-chevron {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  opacity: 0.72;
+}
+
+.agent-conversation-surface .agent-composer--expanded .agent-composer__send-tooltip {
+  grid-area: send;
+  align-self: end;
+  justify-self: end;
+}
+
+.agent-conversation-surface .agent-composer__add-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  flex: 0 0 auto;
+  align-self: center;
+  /* Add 略小于发送按钮, 但仍通过 align-self: center 保持上下居中。
+   * 额外呼吸位叠加在 __composer-actions 行 gap 之上。 */
+  margin-right: 0.2rem;
+  overflow: hidden;
+  border: 0;
+  padding: 0;
+  border-radius: 6px;
+  background: var(--muted);
+  color: var(--secondary-foreground);
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  font-weight: 600;
+  text-transform: uppercase;
+  cursor: pointer;
+  transition:
+    background-color 150ms ease,
+    color 150ms ease;
+}
+
+/* 之前 `hidden` 时 display: none ── 现在 composerRoleIcon 永远是 button,
+ * 不再设 hidden 属性, 这条规则保留作兜底, 防止后续调用方误设 hidden 时
+ * 留下按钮空白 (auto 行高 collapse 已处理, 但显式更稳)。 */
+.agent-conversation-surface .agent-composer__add-button[hidden] {
+  display: none;
+}
+
+.agent-conversation-surface .agent-composer__add-button img,
+.agent-conversation-surface .agent-composer__add-button svg {
+  display: block;
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+  /* 子元素 SVG / img 不接收 pointer events ── 点击落到底层 button,
+   * 走统一的 click handler。 否则某些浏览器 (尤其带 ::after 高亮的
+   * svg) 会把事件吞掉, 让 button 的 onclick 不触发。 */
+  pointer-events: none;
+}
+
+/* 空态 Plus 图标 ── 14×14, 复用 access popover 新增资料夹按钮
+ * (`.agent-composer__access-add-icon`) 的尺寸。 20×20 对 Plus
+ * filled cross 来说偏大, 与按钮 24×24 容器几乎填满, 视觉上比 memo
+ * 文档图标更"重", 与"未设置"的轻量占位语义不符。 缩到 14×14 后,
+ * 与 access popover 新增资料夹视觉同源, "次级 indicator" 这一类
+ * UI 元素有统一节奏。 */
+.agent-conversation-surface
+  .agent-composer__add-button
+  svg.agent-composer__add-button-empty {
+  width: 14px;
+  height: 14px;
+}
+
+/* hover / open 态 ── 与文件内 __icon-btn 的 hover 风格同源, 用 var(--muted)
+ * 与 var(--foreground) 混合色 + transition 150ms。 popover 打开时挂
+ * --open 修饰类, 视觉上"按钮被按下"。 */
+.agent-conversation-surface .agent-composer__add-button:hover,
+.agent-conversation-surface .agent-composer__add-button--open,
+.agent-conversation-surface .agent-composer__add-button:focus-visible {
+  background: color-mix(in oklch, var(--muted) 80%, var(--foreground) 12%);
+  color: var(--foreground);
+  outline: none;
+}
+
+.agent-composer-slash-menu {
+  position: fixed;
+  z-index: 1000;
+  max-height: min(22rem, 48vh);
+  overflow-y: auto;
+  padding: 0.25rem;
+  border: 1px solid var(--border-popup);
+  border-radius: 0.75rem;
+  background: var(--card);
+  color: var(--agent-foreground);
+  /* Slash menu shadow is intentionally 1/4 of the standard popover weight. */
+  box-shadow: 0 4px 24px -3px rgb(0 0 0 / 6%);
+  box-sizing: border-box;
+}
+
+.agent-composer-slash-menu--folder {
+  max-height: min(16.5rem, 36vh);
+}
+
+.agent-composer-slash-menu__item {
+  display: flex;
+  width: 100%;
+  min-width: 0;
+  align-items: center;
+  gap: 0.75rem;
+  min-height: 1.75rem;
+  padding: 0.125rem 0.5rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  line-height: 1.25;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-composer-slash-menu__section {
+  margin: 0.25rem 0.5rem 0.125rem;
+  padding: 0.35rem 0 0.125rem;
+  color: var(--muted-foreground);
+  font-size: calc(var(--font-size, 16px) * 0.75);
+  line-height: 1.2;
+}
+
+.agent-composer-slash-menu__item--back {
+  margin-bottom: 0.2rem;
+  border-radius: 0;
+  color: var(--muted-foreground);
+}
+
+.agent-composer-slash-menu__empty {
+  padding: 0.5rem;
+  color: var(--muted-foreground);
+  font-size: calc(var(--font-size, 16px) * 0.85);
+  text-align: center;
+}
+
+.agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:hover,
+.agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:focus-visible,
+.agent-composer-slash-menu__item--active {
+  background: var(--hover-bg);
+  color: var(--foreground);
+}
+
+.agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:hover
+  .agent-composer-slash-menu__name,
+.agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:hover
+  .agent-composer-slash-menu__description,
+.agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:hover
+  .agent-composer-slash-menu__scope,
+.agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:focus-visible
+  .agent-composer-slash-menu__name,
+.agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:focus-visible
+  .agent-composer-slash-menu__description,
+.agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:focus-visible
+  .agent-composer-slash-menu__scope,
+.agent-composer-slash-menu__item--active
+  .agent-composer-slash-menu__name,
+.agent-composer-slash-menu__item--active
+  .agent-composer-slash-menu__description,
+.agent-composer-slash-menu__item--active
+  .agent-composer-slash-menu__scope {
+  color: var(--foreground);
+}
+
+/* The skill picker has a navigation row, not a selectable command. Keep
+ * hovering/focusing that row to a text-color change, without the command
+ * highlight background. */
+.agent-composer-slash-menu:not(.is-keyboard-navigation)
+  .agent-composer-slash-menu__item--back:hover,
+.agent-composer-slash-menu:not(.is-keyboard-navigation)
+  .agent-composer-slash-menu__item--back:focus-visible {
+  background: transparent;
+  color: var(--foreground);
+}
+
+.agent-composer-slash-menu__name {
+  flex: 0 0 6.6rem;
+  color: var(--foreground);
+  font-weight: 400;
+}
+
+.agent-composer-slash-menu__item--skill .agent-composer-slash-menu__name {
+  flex: 0 1 auto;
+  min-width: 10em;
+  max-width: 34%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-composer-slash-menu__item--skill .agent-composer-slash-menu__description {
+  flex: 1 1 auto;
+}
+
+.agent-composer-slash-menu__scope {
+  flex: 0 0 auto;
+  padding: 0.1rem 0.4rem;
+  border-radius: 999px;
+  background: color-mix(in oklch, var(--foreground) 6%, transparent);
+  color: var(--muted-foreground);
+  font-size: calc(var(--font-size, 16px) * 0.72);
+  line-height: 1.3;
+  white-space: nowrap;
+}
+
+.agent-composer-slash-menu__item--folder .agent-composer-slash-menu__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 40%;
+  overflow: hidden;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  font-weight: 400;
+  white-space: nowrap;
+}
+
+.agent-composer-slash-menu__item--folder .agent-composer-slash-menu__description {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: inherit;
+  text-overflow: ellipsis;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.agent-composer-slash-menu__item--folder:hover .agent-composer-slash-menu__name,
+.agent-composer-slash-menu__item--folder:hover .agent-composer-slash-menu__description,
+.agent-composer-slash-menu__item--folder:focus-visible .agent-composer-slash-menu__name,
+.agent-composer-slash-menu__item--folder:focus-visible .agent-composer-slash-menu__description {
+  color: var(--foreground);
+}
+
+.agent-composer-slash-menu__item--folder.agent-composer-slash-menu__item--active
+  .agent-composer-slash-menu__name {
+  color: var(--foreground);
+}
+
+.agent-composer-slash-menu__item--note .agent-composer-slash-menu__name {
+  flex: 0 1 auto;
+  min-width: 0;
+  max-width: 62%;
+  overflow: hidden;
+  color: var(--foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-composer-slash-menu__item--note .agent-composer-slash-menu__description {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: inherit;
+  text-align: right;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-composer-slash-menu__item--note:hover .agent-composer-slash-menu__name,
+.agent-composer-slash-menu__item--note:hover .agent-composer-slash-menu__description,
+.agent-composer-slash-menu__item--note:focus-visible .agent-composer-slash-menu__name,
+.agent-composer-slash-menu__item--note:focus-visible .agent-composer-slash-menu__description,
+.agent-composer-slash-menu__item--note.agent-composer-slash-menu__item--active
+  .agent-composer-slash-menu__name,
+.agent-composer-slash-menu__item--note.agent-composer-slash-menu__item--active
+  .agent-composer-slash-menu__description {
+  color: var(--foreground);
+}
+
+.agent-composer-slash-menu__description {
+  min-width: 0;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* 发送按钮 ── 28×28 圆形, 内嵌 16×16 Phosphor 图标。
+ * 尺寸取自 --atc-send-size, 与输入区 min-height 公式联动。 */
+.agent-composer__access-trigger {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: var(--atc-send-size);
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 9999px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  padding: 0 0.5rem;
+  font: inherit;
+  font-size: calc(var(--font-size, 16px) * 0.9); /* text-xs */
+  line-height: 1;
+  white-space: nowrap;
+}
+
+.agent-composer__access-trigger:hover,
+.agent-composer__access-trigger--open {
+  color: var(--foreground);
+}
+/* Shared input, inline token and caret rules for Agent conversation composer. */
+
+/* The surface sets `cursor: default` on descendants. Keep the input surface
+ * text-like; buttons and other controls restore their own pointer cursor. */
+.agent-conversation-surface .agent-composer__input,
+.agent-conversation-surface .agent-composer__input :where(*) {
+  cursor: text;
+}
+
+.agent-conversation-surface .agent-composer__input {
+  display: block;
+  width: 0;
+  min-width: 0;
+  max-width: 100%;
+  min-height: var(--agent-composer-input-min-height, 1.6em);
+  max-height: calc(var(--atc-composer-max-h) - 8px - var(--atc-bottom-pad));
+  height: auto;
+  flex: 1 1 0;
+  overflow-x: hidden;
+  overflow-y: auto;
+  overflow-wrap: anywhere;
+  word-break: break-word;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  outline: none;
+  background: transparent;
+  color: var(--foreground);
+  caret-color: var(--brand);
+  font: inherit;
+  font-size: var(--font-size, 15px);
+  line-height: 1.6;
+  user-select: text;
+  white-space: pre-wrap;
+}
+
+.agent-conversation-surface .agent-composer__input-content {
+  background: transparent;
+  font-family: var(--font-sans);
+}
+
+.agent-conversation-surface .agent-composer__input:focus {
+  box-shadow: none;
+}
+
+.agent-conversation-surface .agent-composer__input-row {
+  display: flex;
+  min-width: 0;
+  flex: 1 1 0;
+  align-items: center;
+  gap: 0.35rem;
+  cursor: text;
+  user-select: text;
+}
+
+.agent-conversation-surface .agent-composer--expanded .agent-composer__input-row {
+  grid-area: input;
+  align-self: stretch;
+}
+
+.agent-conversation-surface
+  .agent-composer--expanded
+  .agent-composer__input-row
+  .agent-composer__input {
+  box-sizing: border-box;
+  width: 100%;
+  height: auto;
+  max-height: calc(10 * 1.35em);
+  flex: 1 1 auto;
+  align-self: stretch;
+  padding-top: 0;
+  text-align: left;
+}
+
+.agent-conversation-surface
+  .agent-composer--expanded
+  .agent-composer__input-row
+  .agent-composer__input
+  > p:first-of-type {
+  padding-top: 0.25rem;
+}
+
+.agent-conversation-surface .agent-composer__input > p {
+  min-height: 1rem;
+  margin-top: 0 !important;
+  margin-bottom: 0 !important;
+  white-space: pre-wrap;
+}
+
+.agent-conversation-surface .agent-composer__input > p:empty::before,
+.agent-conversation-surface
+  .agent-composer__input
+  > p:has(> br.ProseMirror-trailingBreak:only-child)::before {
+  content: "\00a0";
+}
+
+/* Composer-specific appearance for inline cards and input tokens. */
+
+.agent-conversation-surface .agent-composer {
+  --agent-composer-inline-card-max-width: 16rem;
+  --agent-composer-card-border: color-mix(in oklch, var(--border) 95%, var(--input-bg, var(--document-bg)) 5%);
+  --agent-composer-caret-width: 2px;
+  --agent-composer-caret-gap: 1px;
+  --agent-composer-action-inset: calc(var(--agent-composer-caret-width) + var(--agent-composer-caret-gap) + 0.18rem);
+}
+
+/* ── Composer caret ─────────────────────────────────────────────────────── */
+
+.agent-conversation-surface .agent-composer__input-content.has-composer-stable-caret,
+.agent-conversation-surface .agent-composer__input-content.has-composer-stable-caret :where(*) {
+  caret-color: transparent !important;
+}
+
+.agent-composer__stable-caret {
+  position: fixed;
+  z-index: 1000;
+  width: var(--agent-composer-caret-width, 2px);
+  border-radius: 999px;
+  background: var(--brand);
+  pointer-events: none;
+  animation: agent-composer-caret-blink 1.05s steps(1, end) infinite;
+}
+
+.agent-composer__stable-caret[hidden] {
+  display: none;
+}
+
+@keyframes agent-composer-caret-blink {
+  0%, 52% { opacity: 1; }
+  53%, 100% { opacity: 0; }
+}
+
+/* ── Shared composer card surface ───────────────────────────────────────── */
+
+.agent-conversation-surface .agent-composer .agent-composer__inline-card {
+  display: inline-flex;
+  box-sizing: border-box;
+  height: 1.6em;
+  max-width: var(--agent-composer-inline-card-max-width);
+  min-width: 0;
+  align-items: center;
+  padding: 0 0.45rem;
+  border: 1px solid var(--agent-composer-card-border);
+  border-radius: 0.35rem;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 92%;
+  font-weight: 300;
+  line-height: inherit;
+  vertical-align: top;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background-color 0.15s ease;
+}
+
+.agent-conversation-surface .agent-composer .agent-composer__inline-card:focus-visible {
+  border-color: color-mix(in oklch, var(--border) 95%, var(--foreground) 5%);
+  background: transparent;
+  color: var(--foreground);
+  outline: none;
+}
+
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__inline-atom-wrapper.is-selected
+  > .agent-composer__inline-card,
+.agent-conversation-surface .agent-composer .agent-composer__inline-card.ProseMirror-selectednode {
+  background-color: color-mix(in oklch, var(--foreground) 8%, transparent);
+}
+
+.agent-conversation-surface
+  .agent-composer.agent-composer--pointer-hover-ready
+  .agent-composer__inline-atom-wrapper:hover
+  > .agent-composer__inline-card {
+  border-color: var(--agent-composer-card-border);
+  background-color: var(--hover-bg);
+}
+
+/* ── Shared atom shell and remove action ─────────────────────────────────── */
+
+.agent-conversation-surface .agent-composer .agent-composer__inline-atom-wrapper {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  max-width: var(--agent-composer-inline-card-max-width);
+  box-sizing: border-box;
+  padding-inline: calc(var(--agent-composer-caret-width) + var(--agent-composer-caret-gap));
+  white-space: nowrap;
+  vertical-align: top;
+}
+
+.agent-conversation-surface .agent-composer .agent-inline-atom__actions {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  inset-inline-end: var(--agent-composer-action-inset);
+  display: inline-flex;
+  align-items: center;
+  transform: translateY(-50%);
+  opacity: 0;
+  visibility: hidden;
+  transition: opacity 0.12s ease, visibility 0.12s ease;
+}
+
+.agent-conversation-surface
+  .agent-composer.agent-composer--pointer-hover-ready
+  .agent-composer__inline-atom-wrapper:hover
+  .agent-inline-atom__actions,
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__inline-atom-wrapper:focus-within
+  .agent-inline-atom__actions,
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__inline-atom-wrapper.is-selected
+  .agent-inline-atom__actions {
+  opacity: 1;
+  visibility: visible;
+}
+
+.agent-conversation-surface .agent-composer .agent-inline-atom__action {
+  display: inline-flex;
+  width: 1.1rem;
+  height: 1.1rem;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: var(--hover-bg);
+  color: var(--muted-foreground);
+  cursor: pointer;
+}
+
+.agent-conversation-surface
+  .agent-composer.agent-composer--pointer-hover-ready
+  .agent-inline-atom__action:hover,
+.agent-conversation-surface .agent-composer .agent-inline-atom__action:focus-visible {
+  color: var(--foreground);
+  outline: none;
+}
+
+.agent-conversation-surface .agent-composer .agent-inline-atom__action > svg {
+  width: 0.8rem;
+  height: 0.8rem;
+}
+
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__input
+  .agent-composer__inline-atom-wrapper,
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__input
+  .agent-composer__inline-atom-wrapper
+  * {
+  cursor: pointer;
+}
+
+/* ── Attachment, skill and slash token details ───────────────────────────── */
+
+.agent-conversation-surface .agent-composer .agent-composer__attachment-token {
+  gap: 0.3rem;
+}
+
+.agent-conversation-surface .agent-composer .agent-composer__attachment-token-preview,
+.agent-conversation-surface .agent-composer .agent-composer__attachment-token-icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+}
+
+.agent-conversation-surface .agent-composer .agent-composer__attachment-token-preview {
+  object-fit: cover;
+  border-radius: 0.16rem;
+}
+
+.agent-conversation-surface .agent-composer .agent-composer__attachment-token-label,
+.agent-conversation-surface .agent-composer .agent-composer__folder-token-label,
+.agent-conversation-surface .agent-composer .agent-composer__skill-token-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-conversation-surface .agent-composer .agent-composer__skill-token {
+  gap: 0.08rem;
+}
+
+.agent-conversation-surface .agent-composer .agent-composer__folder-token {
+  gap: 0.25rem;
+}
+
+.agent-conversation-surface .agent-composer .agent-composer__folder-token-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.agent-conversation-surface .agent-composer .agent-composer__skill-token-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+/* ── Note-reference token details ───────────────────────────────────────── */
+
+.agent-conversation-surface .agent-composer .agent-composer__note-reference {
+  max-width: 100%;
+}
+
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__note-reference
+  .note-reference__icon {
+  display: inline-flex;
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  align-items: center;
+  margin: 0 0.06rem 0 0;
+  color: var(--muted-foreground);
+}
+
+.agent-conversation-surface .agent-composer .agent-composer__note-reference :is(
+    .note-reference__name,
+    .note-reference__title
+  ) {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  color: var(--foreground);
+  font-weight: 300;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-conversation-surface
+  .agent-composer.agent-composer--pointer-hover-ready
+  .agent-composer__note-reference
+  .note-reference__card:hover
+  :is(.note-reference__name, .note-reference__title) {
+  color: var(--foreground);
+}
+
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__note-reference
+  .note-reference__stale-mark {
+  margin-left: 4px;
+  color: var(--muted-foreground);
+  font-weight: 300;
+  white-space: nowrap;
+}
+
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__note-reference
+  .note-reference__card[data-stale="true"] {
+  opacity: 0.5;
+}
+
+.agent-conversation-surface .agent-composer .agent-composer__note-reference,
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__note-reference
+  .note-reference__card,
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__note-reference
+  .note-reference__card
+  * {
+  -webkit-user-drag: none;
+  -moz-user-drag: none;
+  -ms-user-drag: none;
+  user-drag: none;
+}
+
+/* 整体外框 ── position: fixed, 不写 max-height 也不写 overflow。
+ *
+ * 关键设计 ── overflow: visible (默认) ── 让内嵌子节点越界时不被裁
+ * 剪 (例如 future inline submenu)。 max-height 不写 ── 由 JS 写到内层
+ * .access-popover-scroll 上, 控制整个滚动区高度。
+ *
+ * 副作用 ── overflow visible 配合 box-shadow: shadow 仍按 outer 矩形
+ * 渲染, 不会因 visible 失效; border-radius 8px 配合 children 圆角 ──
+ * children 在 rounded 边缘内时被裁, 在外时不被裁。 */
+.agent-composer__access-popover {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 105;
+  width: 208px;
+  border: 1px solid var(--border-popup);
+  border-radius: 0.75rem;
+  background: var(--card);
+  color: var(--agent-foreground);
+  box-shadow: 0 4px 24px -3px rgb(0 0 0 / 24%);
+  padding: 0.25rem;
+}
+
+/* 滚动容器 ── 装整个可滚动内容: notebook section、folder section、
+ * 末尾的"添加文件夹"按钮。 max-height 由 JS 动态计算 (= 可用空间)。
+ * 内容超出时整体滚动, 不再有 sticky footer ── 按钮作为列表最后一项
+ * 跟随内容滚动, 长列表下滚到底才能看到, 避免按钮在视觉上"凭空"出现
+ * 在分隔很远的列表底部, 维持"按钮属于 folder 区域"的归属感。 */
+.agent-composer__access-popover-scroll {
+  overflow-y: auto;
+  margin-right: -0.25rem;
+  padding-right: 0.25rem;
+}
+
+/* "添加文件夹"按钮容器 ── 挂在 folder 列表末尾 (folderEntries 非空
+ * 时), 或作为空态时唯一的引导 (folderEntries 空时)。 视觉上是 folder
+ * section 的自然延伸, 不是独立的全局操作 ── 用户打开弹窗扫到 folder
+ * 列表就能立刻看到"加一个"。
+ *
+ * 仅 margin-top: 4px 给一个柔和的呼吸空间, 不加 border-top 或 padding-
+ * top, 让按钮与 folder row 视觉连续。 长列表下跟随内容滚动, 不再被钉
+ * 在弹窗底部固定可见 ── 配合自定义 overlay scrollbar, Windows 下滚
+ * 动条体验与 mention 下拉同源。
+ *
+ * 演变: 顶部 actions → 底部 sticky footer → folder 区域末尾
+ *   - 顶部 actions: 用户先看到按钮再看列表, 视觉重音错位。
+ *   - 底部 sticky footer: 列表滚动时按钮被钉在弹窗底部固定可见, 长列
+ *     表下按钮与列表末尾分隔很远, 与 folder 语义割裂。
+ *   - 现在: 紧贴 folder 列表末尾, notebook section 之前, 按钮与 folder
+ *     section 视觉归属一致 ── 用户读完 folder 列表, 续上"加一个"再
+ *     去翻 notebook, 路径自然。 */
+.agent-composer__access-popover-footer {
+  margin-top: 4px;
+}
+
+.agent-composer__access-popover[hidden] {
+  display: none;
+}
+
+/* ── 笔记搜索下拉弹窗 ────────────────────────
+ * 独立挂在 document.body, 通过 JS 算 position: fixed 坐标 (top/left)
+ * 锚定到 composerRoleIcon button 上方/下方。 视觉与文档标题栏 "…more"
+ * 下拉菜单 (DropdownMenuContent) 同源 ── border / radius / box-shadow /
+ * padding / animation 全部对齐, 让"产品图标点击的下拉"在不同入口呈现
+ * 同一套容器视觉。
+ *
+ * 容器自身不写 max-height / overflow ── 由内层
+ * `.agent-composer__doc-search-list` 承担滚动, 让外层
+ * 跟随内容自然高, 弹窗 pop-in 动画 (fade + zoom-in) 不被裁切。
+ *
+ * composer add popover 是一级菜单；悬停「添加笔记」后，
+ * 笔记搜索弹窗在其右侧作为二级菜单。 */
+.agent-composer__note-popover {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 105;
+  width: 280px;
+  padding: 0.25rem;
+  border: 1px solid var(--border-popup);
+  border-radius: 0.75rem;
+  background: var(--card);
+  color: var(--agent-foreground);
+  /* 与消息输入框的模型 / 权限 / 空间设置弹窗使用同一套容器投影。 */
+  box-shadow: 0 4px 24px -3px rgb(0 0 0 / 24%);
+  /* 弹窗入场动画 ── 与 DropdownMenuContent 的 animate-in fade-in-0
+   * zoom-in-95 同源: opacity 0→1 + scale 0.95→1, transform-origin
+   * top left (从 trigger 右上角弹出)。 */
+  opacity: 0;
+  transform: scale(0.95);
+  transform-origin: top left;
+  transition:
+    opacity 120ms ease,
+    transform 120ms ease;
+}
+
+.agent-composer__add-popover {
+  position: fixed;
+  z-index: 105;
+  width: 168px;
+  padding: 0.25rem;
+  border: 1px solid var(--border-popup);
+  border-radius: 0.75rem;
+  background: var(--card);
+  color: var(--agent-foreground);
+  box-shadow: 0 4px 24px -3px rgb(0 0 0 / 24%);
+}
+
+.agent-composer__add-popover[hidden] { display: none; }
+
+.agent-composer__add-item {
+  /* Layout, type, color and states come from the settings item above. */
+  gap: 8px;
+}
+
+.agent-composer__add-chevron {
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+.agent-composer__note-popover:not([hidden]) {
+  opacity: 1;
+  transform: scale(1);
+}
+
+.agent-composer__note-popover[hidden] {
+  display: none;
+}
+
+.agent-composer__note-popover-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  /* 对齐笔记列表下拉窗里 DropdownMenuLabel 的 padding
+   * (`memo-list.tsx` 里 sortLabel / filterLabel 的
+   * `px-[0.375rem] pb-[0.35rem] pt-[0.15rem]`) ── 让两个下拉窗
+   * 的 group label 视觉间距一致。 */
+  padding: 0.35rem 0.375rem 0.35rem;
+}
+
+.agent-composer__note-popover-title {
+  color: var(--muted-foreground);
+  /* 对齐 memo-list 的 sort label: text-xs font-normal leading-[1.2]
+   * ── 让笔记搜索弹窗的 group label 跟其它下拉窗
+   * 的 label 视觉密度一致。 */
+  font-size: 0.75rem;
+  font-weight: 400;
+  line-height: 1.2;
+}
+
+.agent-composer__note-popover-meta {
+  color: var(--muted-foreground);
+  font-size: 0.7rem;
+  line-height: 1.2;
+  font-variant-numeric: tabular-nums;
+  opacity: 0.75;
+}
+
+.agent-composer__access-empty {
+  padding: 12px 8px;
+  text-align: center;
+  color: var(--muted-foreground);
+  font-size: calc(var(--font-size, 16px) * 0.9); /* text-xs */
+}
+
+.agent-composer__access-section-label {
+  padding: 0.35rem 0.375rem 0.35rem;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  line-height: 1.2;
+  letter-spacing: 0;
+}
+
+.agent-composer__access-row {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 36px;
+  border-radius: 6px;
+  padding: 6px 8px;
+  transition: background-color 120ms ease;
+}
+
+/* row 整体不再 clickable ── 改用 cursor: default 让用户视觉上知道这块不是
+ * 按钮。 真正的交互入口只有 checkbox / star / remove, 鼠标移上去会自然
+ * 触发对应 button 的 hover 高亮 (CSS 已经处理)。 这里不再让整行 hover
+ * 也染色, 避免"整行像 button 但点了没反应"的误判。 */
+.agent-composer__access-row:hover {
+  background: transparent;
+}
+
+.agent-composer__access-row--disabled {
+  cursor: default;
+  opacity: 0.6;
+}
+
+.agent-composer__access-row--disabled:hover {
+  background: transparent;
+}
+
+.agent-composer__access-avatar {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  background: var(--muted);
+  color: var(--secondary-foreground);
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  font-weight: 600;
+}
+
+.agent-composer__access-avatar--icon {
+  background: var(--muted);
+  color: var(--secondary-foreground);
+}
+
+.agent-composer__access-avatar--icon svg {
+  display: block;
+  width: 72%;
+  height: 72%;
+  opacity: 0.9;
+}
+
+.agent-composer__access-row-icon {
+  width: 14px;
+  height: 14px;
+  color: var(--muted-foreground);
+}
+
+.agent-composer__access-name-wrap {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.agent-composer__access-name {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: calc(var(--font-size, 16px) * 0.9);
+}
+
+.agent-composer__access-alert-icon {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 auto;
+  color: var(--warning);
+}
+
+.agent-composer__access-default-badge {
+  display: inline-flex;
+  align-items: center;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 8px;
+  background: var(--accent);
+  color: var(--primary);
+  padding: 0 6px;
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  line-height: 1;
+}
+
+.agent-composer__access-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  opacity: 0;
+  padding: 0;
+}
+
+.agent-composer__access-row:hover .agent-composer__access-remove,
+.agent-composer__access-remove:focus {
+  opacity: 1;
+}
+
+.agent-composer__access-remove:hover {
+  color: var(--destructive);
+}
+
+.agent-composer__access-remove .agent-icon__trash {
+  width: 14px;
+  height: 14px;
+}
+
+/* Workspace row 视觉 ── workspace entry (folder 或 notebook) 的 avatar 渲染
+ * 原图标 + 左侧竖长条标记 (.access-workspace-mark) 作为 "主空间" 标记
+ * (workspace 全局唯一), 不可点击。 非 workspace + 非 missing 的 entry
+ * (folder 或 notebook) 整个 avatar 就是一个 button, 点击直接 setWorkspace ──
+ * 不再 hover 出 star 按钮覆盖, 交互入口即图标本身。 */
+
+/* workspace avatar 不做特殊背景/颜色覆盖 ── 直接走基类 `.agent-composer__access-avatar`
+ * (背景 `var(--muted)` + 颜色 `var(--secondary-foreground)`); folder 图标走
+ * `.access-row-icon` 的 `var(--muted-foreground)`, notebook 图标走
+ * `.access-avatar--icon` ── 与同 kind 的普通 entry 视觉重量完全一致, "workspace"
+ * 这个角色标记只靠左侧竖长条体现, 不靠图标形状或颜色暗示。 avatar 设
+ * position/overflow, 让长条能贴左边缘定位; 长条自带全圆角呈胶囊形。 (不再用
+ * `--workspace svg` 统一 14px ── 那会误把 notebook 的 20px 图标也缩小;
+ * folder 图标尺寸由 `.access-row-icon` 自带, notebook 由 `--icon svg` 自带。) */
+
+.agent-composer__access-avatar--workspace {
+  position: relative;
+  overflow: hidden;
+  /* 已是主空间的 avatar 虽不可点击 (没有 set-workspace 入口), 也用 hand cursor ──
+   * 与同列其它 avatar 视觉一致, 避免 "选中后变箭头" 的突兀感。 */
+  cursor: pointer;
+}
+
+/* workspace 侧边标记 ── 贴 avatar 左边缘的竖长条, 用 var(--primary) 实色
+ * 填充, 作为 "主空间" 的标记。 3px 宽 × 12px 高, 上下居中 (top:50% +
+ * translateY(-50%)); 仅右侧上下圆角 (border-radius:0 9999px 9999px 0, 受
+ * 3px 宽限制实际半径 1.5px 呈右半圆), 左侧贴 avatar 边缘保持直角, 既能
+ * 一眼识别又不喧宾夺主。 pointer-events:none 让标记不挡 avatar 上的点击。 */
+.agent-composer__access-workspace-mark {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  width: 3px;
+  height: 12px;
+  transform: translateY(-50%);
+  background: var(--primary);
+  border-radius: 0 9999px 9999px 0;
+  pointer-events: none;
+}
+
+/* The notebook sidebar uses a right-aligned star, which is a different
+ * affordance from the legacy avatar-side workspace mark above. Keep it in the
+ * row's flex flow so it stays at the far right after the flexible name cell. */
+.agent-composer__access-workspace-star {
+  position: static;
+  flex: 0 0 auto;
+  color: var(--primary);
+}
+
+/* 可点击 avatar ── 非 workspace + 非 missing 的 entry (folder 或 notebook)
+ * avatar 本身是 <button>, 点击 setWorkspace。 不再有 star 按钮覆盖层: hover
+ * 只给一层 primary 薄底提示 "这个图标可点", 视觉重量与普通 avatar 一致。
+ * button 重置 (border/padding) 走这里; 背景/颜色/尺寸/圆角都复用基类
+ * `.agent-composer__access-avatar`。 */
+.agent-composer__access-avatar--set-workspace {
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+  transition: background-color 120ms ease;
+}
+
+.agent-composer__access-avatar--set-workspace:hover {
+  background: color-mix(in oklch, var(--primary) 14%, var(--muted));
+}
+
+.agent-composer__access-checkbox {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border: 1px solid var(--muted-foreground);
+  border-radius: 4px;
+  background: transparent;
+  color: var(--primary-foreground);
+  cursor: pointer;
+  padding: 0;
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  line-height: 1;
+}
+
+.agent-composer__access-checkbox--checked {
+  border-color: var(--primary);
+  background: var(--primary);
+}
+
+.agent-composer__access-checkbox-mark {
+  width: 11px;
+  height: 9px;
+  color: var(--primary-foreground);
+}
+
+.agent-composer__access-checkbox:disabled {
+  cursor: not-allowed;
+}
+
+.agent-composer__access-add {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  width: 100%;
+  min-width: 0;
+  margin: 0;
+  min-height: 28px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  font: inherit;
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  line-height: 1;
+  text-align: left;
+  box-sizing: border-box;
+  user-select: none;
+  transition:
+    background-color 120ms ease,
+    color 120ms ease;
+}
+
+.agent-composer__access-add:hover {
+  background: var(--brand);
+  color: var(--primary-foreground);
+}
+
+.agent-composer__access-add-icon-wrap {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 24px;
+  height: 24px;
+  flex: 0 0 auto;
+  border-radius: 6px;
+  background: var(--muted);
+  color: var(--secondary-foreground);
+}
+
+.agent-composer__access-add-label {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.agent-composer__access-add-icon {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+/* Note search menu and shared composer badge styles. */
+
+.agent-composer__note-result {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  width: 100%;
+  min-width: 0;
+  min-height: 28px;
+  padding: 2px 8px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--agent-foreground);
+  cursor: pointer;
+  font: inherit;
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  line-height: 1.2;
+  text-align: left;
+  box-sizing: border-box;
+  user-select: none;
+  transition: background-color 120ms ease;
+}
+
+.agent-composer__note-result
+  + .agent-composer__note-result {
+  margin-top: 2px;
+}
+
+.agent-composer__note-result:hover {
+  background: var(--brand);
+  color: var(--primary-foreground);
+}
+
+.agent-composer__note-empty {
+  padding: 6px 8px;
+  color: var(--muted-foreground);
+  font-size: calc(var(--font-size, 16px) * 0.9);
+}
+
+/* Search field for indexed notebook notes. */
+.agent-composer__note-search {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+  padding: 6px 8px 8px;
+  margin: 4px 0 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: var(--agent-foreground);
+  font: inherit;
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  line-height: 1.2;
+  outline: none;
+}
+
+.agent-composer__note-search::placeholder {
+  color: var(--muted-foreground);
+  opacity: 0.85;
+}
+.agent-composer__note-search:focus::placeholder {
+  opacity: 0.6;
+}
+
+/* 列表容器 — 仅承担垂直 padding, 不画外框; 水平方向不加 padding,
+ * 让 item 自身的 6px 8px padding 与菜单项对齐。容器自身
+ * 设置 max-height + overflow-y, 当 hits 数量过多时弹窗内部可滚动,
+ * 而外层容器 pop-in 动画 (fade + zoom-in) 不被裁切。
+ *
+ * 不再保留底部 4px padding ── 跟弹窗自身的 padding-bottom (4px) 重复,
+ * 视觉上等于"列表底部"出现了 8px 空档, 与 DropdownMenuContent
+ * (`py-1` = 4px 上下) 的紧凑节奏不一致。 改为 padding-top: 2px 即可,
+ * 顶部留 2px 让第一项与上方分隔线之间有呼吸感。 */
+.agent-composer__note-search-list {
+  display: block;
+  max-height: 320px;
+  overflow-y: auto;
+  margin-right: -0.25rem;
+  padding: 2px 0.25rem 0 0;
+}
+/* 容器内第一组 header 紧贴其上方分隔线, 但标签自身上下 padding 保持对称。 */
+.agent-composer__note-search-list
+  > .agent-composer__note-popover-header {
+  padding-top: 0.35rem;
+  margin-top: 4px;
+}
+.agent-composer__note-search-list
+  > .agent-composer__note-popover-header:first-child {
+  padding-top: 0.35rem;
+  margin-top: 0;
+}
+
+.agent-conversation-surface .agent-composer__send {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: var(--atc-send-size);
+  height: var(--atc-send-size);
+  flex: 0 0 auto;
+  border: 0;
+  border-radius: 9999px;
+  background: var(--primary);
+  color: var(--primary-foreground);
+  cursor: pointer;
+}
+
+.agent-conversation-surface .agent-composer__send:hover:not(:disabled) {
+  background: color-mix(in oklch, var(--primary) 88%, var(--foreground) 12%);
+}
+
+.agent-conversation-surface .agent-composer__send-tooltip {
+  display: inline-flex;
+  flex: 0 0 auto;
+  line-height: 0;
+}
+
+.agent-conversation-surface .agent-composer__send:disabled {
+  cursor: not-allowed;
+}
+
+/* 未输入内容时: 跟 inputbox 同步, 走 muted 色变, 不再依赖 opacity 半透明。
+ * --stop 变体由 :not() 排除, 保持 warning 全亮 ── 停止按钮在 loading 期间
+ * 仍需"亮"以传达"这是可点击的停止动作", 与 inputbox 中 isLoading 时强制
+ * canSend=false 但视觉走 dim 的逻辑不同, 这里停止按钮是 dim→亮态的逆例。
+ *
+ * 图标色用 muted-foreground ── 与 muted 背景同色系, 形成'暗底 + 灰图标'
+ * 的纯灰 dim 关系, 不再保留 primary 色相。 */
+.agent-conversation-surface
+  .agent-composer__send:disabled:not(.agent-composer__send--stop) {
+  background: var(--muted);
+  color: var(--muted-foreground);
+}
+
+/* Send icon stays legible inside the compact composer action button. */
+.agent-conversation-surface .agent-composer__send-icon {
+  display: block;
+  width: 15px;
+  height: 15px;
+  flex: 0 0 auto;
+  color: currentColor;
+}
+
+.agent-conversation-surface .agent-composer__send--stop {
+  background: var(--warning);
+  color: var(--floating-foreground);
+}
+
+.agent-conversation-surface .agent-composer__send--running {
+  background: var(--muted);
+  color: var(--muted-foreground);
+  cursor: wait;
+}
+
+.agent-conversation-surface .agent-composer__send--running.agent-composer__send--stop {
+  background: var(--warning);
+  color: var(--floating-foreground);
+  cursor: pointer;
+}
+
+.agent-conversation-surface .agent-composer__send-spinner {
+  display: block;
+  width: 13px;
+  height: 13px;
+  border: 2px solid color-mix(in srgb, currentColor 28%, transparent);
+  border-top-color: currentColor;
+  border-radius: 50%;
+  --flowix-spin-duration: 0.8s;
+}
+
+.agent-conversation-surface
+  .agent-composer__send.agent-composer__send--stop:hover:not(:disabled) {
+  background: var(--warning);
+  filter: brightness(1.08);
+}

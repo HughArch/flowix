@@ -43,6 +43,7 @@ interface StatusBarProps {
   onOpenDshPreferences: () => void;
   dshDownload: DshDownloadProgress | null;
   updater: AppUpdaterState;
+  onOpenAppUpdatePrompt: () => void;
 }
 
 function DshDownloadProgressIcon({ percent }: { percent: number | null | undefined }) {
@@ -53,7 +54,7 @@ function DshDownloadProgressIcon({ percent }: { percent: number | null | undefin
   return (
     <svg
       aria-hidden="true"
-      className={`h-3.5 w-3.5 shrink-0${percent == null ? ' animate-spin' : ''}`}
+      className={`h-3.5 w-3.5 shrink-0${percent == null ? ' flowix-spin' : ''}`}
       viewBox="0 0 12 12"
     >
       <circle
@@ -143,6 +144,7 @@ export function StatusBar({
   onOpenDshPreferences,
   dshDownload,
   updater,
+  onOpenAppUpdatePrompt,
 }: StatusBarProps) {
   const { t } = useI18n();
   const [notebookPopupOpen, setNotebookPopupOpen] = useState(false);
@@ -294,7 +296,7 @@ export function StatusBar({
             <span>{t('preferences.dsh.runtime.downloading')}</span>
           </button>
         )}
-        <ProductUpdatePill updater={updater} />
+        <ProductUpdatePill updater={updater} onClick={onOpenAppUpdatePrompt} />
         {cloudSyncInProgress && (
           <div
             className="inline-flex h-[22px] items-center gap-1 px-1.5 text-xs leading-none text-[var(--muted-foreground)]"

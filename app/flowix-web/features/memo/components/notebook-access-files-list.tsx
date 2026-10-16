@@ -4,21 +4,21 @@ import { useCallback } from 'react';
 import { Folder } from '@phosphor-icons/react';
 import { Plus } from 'lucide-react';
 import { toast } from '@/lib/toast';
-import { useAgentAccessStore } from '@features/agent/store/agent-access-store';
-import { resolveNotebookAgentFiles } from '@/lib/agent-access-defaults';
+import { useAgentDataStore } from '@features/agent/store/agent-data-store';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { Tooltip } from '@shared/ui/tooltip';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@shared/ui/context-menu';
 import { NotebookIcon } from '@features/memo/components/notebook-icon';
 import type { Notebook } from '@features/memo/store/note-store';
-import { openBrowserColumnFileBrowser } from '@features/workspace/use-cases/browser-column-navigation';
+import { createFileBrowserTarget } from '@features/workspace/public/browser-column-api';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { canUseNativeContextMenu, logNativeContextMenuError, popupNativeContextMenu } from '@platform/tauri/native-context-menu';
 import { loadNativeMenuIcons } from '@platform/tauri/native-menu-icons';
 
 /**
  * Shows add-dir entries for the selected notebook.  The notebook itself is
- * the workspace/cwd; this list only edits notebook-local `.flowix/agent.json`
+ * the workspace/cwd; this list edits that notebook’s mounts in `local.db`
  * and never selects a primary folder.
  */
 interface NotebookAccessFilesListProps {
@@ -32,11 +32,6 @@ interface ResolvedItem {
   missing: boolean;
 }
 
-// Agent-access paths can come from older config files or different platform
-// path spellings. Use the same comparison semantics as the access-defaults
-// resolver so the visual badge follows the persisted workspace value.
-const comparablePath = (path: string): string =>
-  path.trim().replace(/[\\/]+$/, '').toLowerCase();
 const ACCESS_MENU_CLASS =
   'w-[160px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]';
 const ACCESS_MENU_ITEM_CLASS =
@@ -49,38 +44,19 @@ export function NotebookAccessFilesList({
 }: NotebookAccessFilesListProps) {
   const { t } = useI18n();
   const notebookId = notebook?.id;
-  const config = useAgentAccessStore((s) => s.config);
-  const notebookConfigs = useAgentAccessStore((s) => s.notebookConfigs);
-  const addFolderFromPicker = useAgentAccessStore((s) => s.addFolderFromPicker);
-  const setDefaultFiles = useAgentAccessStore((s) => s.setDefaultFiles);
+  const workspaceNotebook = useAgentDataStore((state) =>
+    notebookId ? state.workspace.byNotebookId[notebookId] : undefined,
+  );
+  const addFolderFromPicker = useAgentDataStore((s) => s.workspaceActions.addFolderFromPicker);
+  const detachFolderFromNotebook = useAgentDataStore((s) => s.workspaceActions.detachFolderFromNotebook);
 
-  // Only the selected notebook's `.flowix/agent.json` add-dirs are shown;
-  // global entries merely authorize paths and are never displayed as defaults.
-  const defaultFiles = resolveNotebookAgentFiles(config, notebookConfigs, notebookId);
-  // Keep stale local paths visible (as missing) so users can remove them. The
-  // runtime resolver still intersects with the global authorization registry.
-  const folderPaths = notebookId && notebookConfigs?.[notebookId]
-    ? notebookConfigs[notebookId].addDirs
-        .filter((directory) => directory.enabled)
-        .map((directory) => directory.path)
-    : defaultFiles?.folders ?? [];
-  const entries = config.entries;
-  const resolveItem = (path: string): ResolvedItem => {
-    const found = entries.find(
-      (e) => e.kind === 'folder' && comparablePath(e.path) === comparablePath(path),
-    );
-    if (found) return { path, name: found.name, missing: found.missing };
-    // 默认里存了 path 但全局 entries 已没有 (folder 被删): 按缺失处理,
-    // name 用路径末段兜底, 让用户仍能认出是哪个目录。
-    const trimmed = path.replace(/[\\/]+$/, '');
-    const derived = trimmed.split(/[\\/]/).pop() || trimmed;
-    return { path, name: derived, missing: true };
-  };
-
-  const folderItems = folderPaths.map(resolveItem);
+  // Show the selected notebook's mounts, including missing paths for removal.
+  const folderItems: ResolvedItem[] = (workspaceNotebook?.addDirs ?? [])
+    .filter(directory => directory.enabled)
+    .map(directory => ({ path: directory.path, name: directory.label, missing: directory.missing }));
 
   const handleAddFolder = useCallback(async () => {
-    const result = await addFolderFromPicker();
+    const result = await addFolderFromPicker(notebookId);
     if (!result.ok) {
       if (result.code === 'already-tracked') {
         toast.error(t('agent.access.alreadyTracked'));
@@ -89,56 +65,29 @@ export function NotebookAccessFilesList({
       }
       return;
     }
-    // Attach the picked folder to this notebook's local add-dir list. Without
-    // a selected notebook, the global authorization entry is still retained.
-    if (!notebookId) return;
-    // The picker reloads the global config before returning. Resolve the
-    // latest notebook defaults instead of appending to a stale render closure.
-    const latestState = useAgentAccessStore.getState();
-    const latestFiles = resolveNotebookAgentFiles(
-      latestState.config,
-      latestState.notebookConfigs,
-      notebookId,
-    );
-    if (
-      (latestFiles?.folders ?? []).some(
-        (path) => comparablePath(path) === comparablePath(result.entry.path),
-      )
-    ) {
-      toast.info(t('agent.access.folderExists'));
-      return;
-    }
-    const nextFolders = Array.from(new Set([...(latestFiles?.folders ?? []), result.entry.path]));
-    const saved = await setDefaultFiles(notebookId, {
-      folders: nextFolders,
-      notebooks: latestFiles?.notebooks ?? [],
-    });
-    if (!saved) toast.error(t('agent.access.saveFailed'));
-  }, [addFolderFromPicker, setDefaultFiles, notebookId, t]);
 
-  // 删除资料文件夹只修改当前 notebook 的 add-dir 列表。
+  }, [addFolderFromPicker, notebookId, t]);
+
+  // Removing a folder deletes only this notebook’s mount.
   const handleRemoveFolder = useCallback(
     async (path: string) => {
       if (!notebookId) return;
-      const nextFolders = folderPaths.filter((p) => p !== path);
-      const saved = await setDefaultFiles(notebookId, {
-        folders: nextFolders,
-        notebooks: defaultFiles?.notebooks ?? [],
-      });
-      if (!saved) {
+      const saved = await detachFolderFromNotebook(notebookId, path);
+      if (saved === false) {
         toast.error(t('agent.access.saveFailed'));
         return;
       }
+      if (saved === 'not-attached') return;
       const item = folderItems.find((it) => it.path === path);
       toast.success(t('agent.access.folderDeleted', { name: item?.name ?? path }));
     },
-    [notebookId, folderPaths, defaultFiles, folderItems, setDefaultFiles, t],
+    [notebookId, folderItems, detachFolderFromNotebook, t],
   );
 
   // 资料组 ── 外侧容器, pt-1 提供组上方留白; pb-2 将滚动列表末尾底部留白缩小一半。
   return (
     <div className="pt-1 pb-2">
-      <div className="agent-thread-card__access-section-label">
+      <div className="agent-composer__access-section-label">
         {t('memo.navigation.files')}
       </div>
       <div className="space-y-0.5">
@@ -171,7 +120,10 @@ export function NotebookAccessFilesList({
                 onClick={
                   canBrowse
                     ? () => {
-                        void openBrowserColumnFileBrowser(item.path);
+                        void openWorkspaceSurface({
+                          host: 'browser-column',
+                          target: createFileBrowserTarget(null, item.path, item.path),
+                        });
                         onOpenFile?.(item.path);
                       }
                     : undefined
@@ -181,7 +133,10 @@ export function NotebookAccessFilesList({
                     ? (event) => {
                         if (event.key === 'Enter' || event.key === ' ') {
                           event.preventDefault();
-                          void openBrowserColumnFileBrowser(item.path);
+                          void openWorkspaceSurface({
+                            host: 'browser-column',
+                            target: createFileBrowserTarget(null, item.path, item.path),
+                          });
                           onOpenFile?.(item.path);
                         }
                       }
@@ -236,6 +191,7 @@ export function NotebookAccessFilesList({
           <button
             type="button"
             onClick={handleAddFolder}
+            disabled={!notebookId}
             className="group relative flex h-8 w-full cursor-pointer select-none items-center gap-0 rounded-md pr-2 text-left text-sm transition-colors text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
             style={{ paddingLeft: 6 }}
           >

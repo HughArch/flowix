@@ -1,10 +1,10 @@
+import { resolveAgentPreferenceRuntimeConfig } from "@features/agent/store/agent-user-preferences";
 import cursorOutlineSvg from "@/assets/cursor-outline.svg?raw";
 import folderOutlineSvg from "@/assets/folder-outline.svg?raw";
 import shieldAlertOutlineSvg from "@/assets/shield-alert-outline.svg?raw";
 import shieldCheckOutlineSvg from "@/assets/shield-check-outline.svg?raw";
 import type { AppLanguage, I18nKey, I18nParams } from "@/lib/i18n";
 import { translate } from "@/lib/i18n";
-import { resolveNotebookAgentFiles } from "@/lib/agent-access-defaults";
 import { getWorkspaceAgentRepositories } from "@features/agent/public/workspace-api";
 import type {
   AgentCodexModel,
@@ -30,25 +30,25 @@ const PI_THINKING_OPTIONS = [
   { id: "max", label: "Max" },
 ] as const;
 import {
-  getAgentAccessOptions,
   supportsAgentRuntimeSetting,
   type AgentAccessOption,
   type AgentRuntimeSettingKind,
 } from "@features/agent/runtime/agent-runtime-spec";
-import { useAgentAccessStore } from "@features/agent/store/agent-access-store";
+import { modelPreferenceKey, useAgentDataStore, type AgentModelCatalog } from "@features/agent/store/agent-data-store";
+import { loadAgentModelCatalog } from "@features/agent/services/agent-catalog-service";
 import { useAgentRuntimeStore } from "@features/agent/store/agent-runtime-store";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
-import { loadDshModelConfigs } from "@features/agent/store/dsh-model-config-store";
 import { useNoteStore } from "@features/memo/store/note-store";
 import { FeaturedNotesController } from './featured-notes-controller';
 import { resolvePrimaryWorkspace } from "@features/agent/runtime/primary-workspace";
 import { normalizeWorkspacePath } from "@features/agent/runtime/workspace-path";
+import { normalizeAgentRuntimeStatus } from "@features/agent/runtime/agent-runtime-status";
 import {
   normalizeConversationWorkspaceState,
   selectDesiredWorkspace,
 } from "@features/agent/runtime/conversation-workspace";
 import { ensureConversationWorkspaceSnapshot } from "@features/agent/runtime/workspace-snapshot";
-import { agent, dshIntegration, piModels, windows } from "@platform/tauri/client";
+import { agent, dshIntegration, windows } from "@platform/tauri/client";
 import { POPUP_SEPARATOR_CLASS } from "@shared/ui/popup-separator";
 import { subscribe, type UnlistenFn } from "@platform/tauri/event-bus";
 import {
@@ -81,7 +81,7 @@ function createComposerWorkspaceIcon(): SVGSVGElement | null {
   template.innerHTML = folderOutlineSvg.trim();
   const icon = template.content.firstElementChild as SVGSVGElement | null;
   if (!icon) return null;
-  icon.classList.add("agent-thread-card__composer-workspace-icon");
+  icon.classList.add("agent-composer__workspace-icon");
   icon.setAttribute("aria-hidden", "true");
   icon.setAttribute("focusable", "false");
   return icon;
@@ -125,33 +125,6 @@ const CLAUDE_MODEL_OPTIONS: AgentModelOption[] = [
   { id: "claude-opus-4-8", label: "claude-opus-4-8" },
   { id: "claude-sonnet-5", label: "claude-sonnet-5" },
   { id: "claude-haiku-4-5", label: "claude-haiku-4-5" },
-];
-
-const DEEPSEEK_HARNESS_MODE_OPTIONS: readonly {
-  id: AgentHarnessPreset;
-  labelKey: I18nKey;
-  descriptionKey: I18nKey;
-}[] = [
-  {
-    id: "standard",
-    labelKey: "agent.mode.standard",
-    descriptionKey: "agent.mode.standard.description",
-  },
-  {
-    id: "code",
-    labelKey: "agent.mode.code",
-    descriptionKey: "agent.mode.code.description",
-  },
-  {
-    id: "minimal",
-    labelKey: "agent.mode.minimal",
-    descriptionKey: "agent.mode.minimal.description",
-  },
-  {
-    id: "cordis",
-    labelKey: "agent.mode.cordis",
-    descriptionKey: "agent.mode.cordis.description",
-  },
 ];
 
 export interface ExternalAgentSettingsControllerOptions {
@@ -282,9 +255,9 @@ export class ExternalAgentSettingsController {
 
   /**
    * 读 model/permission/reasoning 控件的当前值 ── 优先 instance 快照；
-   * Pi Codemode 是全局偏好，始终读取共享默认值。
+   * 模式按钮始终显示当前 Agent 的 user.mode；执行时再解析会话覆盖。
    *  - instanceId 存在 + runtimeConfig 对应字段非空 → 用 instance 值
-   *  - 否则 → fallback 到全局 useAgentSessionStore 对应字段
+   *  - 否则 → 当前 Agent 的 user 偏好与内建默认值
    *
    * 注意：fallback 不写回 instance.runtimeConfig ── 仅"显示"，不修改快照。
    * 发消息时若 instance 没显式设置，也会走全局 fallback。
@@ -295,63 +268,21 @@ export class ExternalAgentSettingsController {
     kind: K,
   ): string | undefined {
     const instanceId = this.getInstanceId();
-    // Phase 4 (2026-08-02): 真源切到 session-store.sessionMeta.settings.
-    const settings = useAgentSessionStore.getState().sessionMeta.settings;
-    if (kind === "mode" && this.getTypeKey() === "pi") {
-      const sharedCodeMode = useAgentAccessStore.getState().config.defaults
-        ?.runtime?.pi?.piCodeMode;
-      return sharedCodeMode ? "code" : "writing";
-    }
-    if (instanceId) {
-      const runtimeConfig =
-        useAgentSessionStore.getState().getInstance(instanceId)
-          ?.runtimeConfig;
-      if (runtimeConfig) {
-        if (kind === "model" && runtimeConfig.model?.key) {
-          return runtimeConfig.model.key;
-        }
-        if (kind === "permission" && runtimeConfig.access?.sandbox) {
-          return runtimeConfig.access.sandbox;
-        }
-        if (kind === "reasoning" && runtimeConfig.reasoningEffort) {
-          return runtimeConfig.reasoningEffort;
-        }
-        if (kind === "mode" && runtimeConfig.deepseekHarness?.mode) {
-          return runtimeConfig.deepseekHarness.mode;
-        }
-      }
-    }
-    const typeDefault =
-      useAgentAccessStore.getState().config.defaults?.runtime?.[this.getTypeKey()];
-    if (typeDefault) {
-      if (kind === "model" && typeDefault.model?.key) return typeDefault.model.key;
-      if (kind === "permission" && typeDefault.access?.sandbox) {
-        return typeDefault.access.sandbox;
-      }
-      if (kind === "reasoning" && typeDefault.reasoningEffort) {
-        return typeDefault.reasoningEffort;
-      }
-      if (kind === "mode" && typeDefault.mode) return typeDefault.mode;
-      if (kind === "mode" && this.getTypeKey() === "pi") {
-        return typeDefault.piCodeMode ? "code" : "writing";
-      }
-    }
-    // DSH 不继承 Codex 系全局模型选择 (用户在 Codex 卡片选过的模型对 DSH
-    // 无意义) —— 无 instance / 类型默认时等待全局 dsh-settings 的真实默认值。
-    if (kind === "model") {
-      return this.getTypeKey() === "deepseek-harness"
-        ? undefined
-        : settings.agentCodexModel;
-    }
-    // 权限默认与所有 agent 统一 (danger-full-access / 完全访问), 无特殊分支。
-    if (kind === "permission") return settings.agentPermissionMode;
-    if (kind === "reasoning") return settings.agentCodexReasoningEffort;
-    return undefined;
+    const typeKey = this.getTypeKey();
+    const runtimeConfig = instanceId
+      ? useAgentSessionStore.getState().getInstance(instanceId)?.runtimeConfig
+      : undefined;
+    const resolved = resolveAgentPreferenceRuntimeConfig(typeKey, runtimeConfig ?? undefined);
+    if (kind === "model") return resolved.model?.key;
+    if (kind === "permission") return resolved.access?.sandbox ?? "danger-full-access";
+    if (kind === "reasoning") return resolved.reasoningEffort ?? "medium";
+    return useAgentDataStore.getState().agents[typeKey].user.mode
+      ?? (typeKey === "pi" ? "writing" : "standard");
   }
 
   /**
    * 写 model/permission/reasoning 控件 → 路由到 instance.runtimeConfig。
-   * instanceId 不存在（编辑器临时态）时退化为全局 setAgent*, 保持现有 fallback 行为。
+   * 无 instanceId 时直接更新当前 Agent 的 user 偏好。
    */
   private writeRuntimeSetting(
     kind: "model" | "permission" | "reasoning" | "mode",
@@ -363,20 +294,15 @@ export class ExternalAgentSettingsController {
     if (instanceId) {
       const instanceStore = useAgentSessionStore.getState();
       if (kind === "model") {
+        const selectedModel = { id: value, ...(providerId?.trim() ? { providerId: providerId.trim() } : {}) };
+        const userPreference = useAgentDataStore.getState().agents[typeKey].user;
+        const modelReasoning = userPreference.reasoningByModel?.[modelPreferenceKey(selectedModel)]
+          ?? (typeKey === "codex" ? this.defaultReasoningForModel(value) : undefined);
         instanceStore.setRuntimeConfig(instanceId, {
-          model: {
-            key: value,
-            ...(providerId?.trim() ? { providerId: providerId.trim() } : {}),
-          },
+          model: { key: value, ...(providerId?.trim() ? { providerId: providerId.trim() } : {}) },
+          reasoningEffort: modelReasoning,
         });
-        void useAgentAccessStore
-          .getState()
-          .setDefaultRuntime(typeKey, {
-            model: {
-              key: value,
-              ...(providerId?.trim() ? { providerId: providerId.trim() } : {}),
-            },
-          });
+        useAgentDataStore.getState().setUserPreference(typeKey, { model: selectedModel });
         this.syncCodexThreadSetting(instanceId, kind, value);
         return;
       }
@@ -384,20 +310,16 @@ export class ExternalAgentSettingsController {
         instanceStore.setRuntimeConfig(instanceId, {
           access: { sandbox: value as AgentPermissionMode },
         });
+        useAgentDataStore.getState().setUserPreference(typeKey, { permission: value as AgentPermissionMode });
         return;
       }
       if (kind === "mode") {
+        useAgentDataStore.getState().setUserPreference(typeKey, { mode: value });
         if (typeKey === "pi") {
-          void useAgentAccessStore.getState().setDefaultRuntime(typeKey, {
-            piCodeMode: value === "code",
-          });
           return;
         }
         instanceStore.setRuntimeConfig(instanceId, {
           deepseekHarness: { mode: value as AgentHarnessPreset },
-        });
-        void useAgentAccessStore.getState().setDefaultRuntime(typeKey, {
-          mode: value as AgentHarnessPreset,
         });
         return;
       }
@@ -405,67 +327,49 @@ export class ExternalAgentSettingsController {
       instanceStore.setRuntimeConfig(instanceId, {
         reasoningEffort: value as AgentCodexReasoningEffort,
       });
-      void useAgentAccessStore.getState().setDefaultRuntime(typeKey, {
-        reasoningEffort: value as AgentCodexReasoningEffort,
-      });
+      const instanceModel = instanceStore.getInstance(instanceId)?.runtimeConfig?.model;
+      const preferenceModel = useAgentDataStore.getState().agents[typeKey].user.model;
+      useAgentDataStore.getState().rememberModelReasoning(
+        typeKey,
+        instanceModel?.key
+          ? { id: instanceModel.key, providerId: instanceModel.providerId }
+          : preferenceModel,
+        value as AgentCodexReasoningEffort,
+      );
       this.syncCodexThreadSetting(instanceId, kind, value);
       return;
     }
-    // 无 instanceId (编辑器临时态) ── 退化到全局, 保留兼容。
-    // Update canonical global settings when no instance override exists.
+    // Without a conversation, update this Agent's global preference directly.
     if (kind === "model") {
-      useAgentSessionStore.getState().setSessionMeta((meta) => ({
-        ...meta,
-        settings: {
-          ...meta.settings,
-          agentCodexModel: value as AgentCodexModel,
-        },
-      }));
-      void useAgentAccessStore
-        .getState()
-        .setDefaultRuntime(typeKey, {
-          model: {
-            key: value,
-            ...(providerId?.trim() ? { providerId: providerId.trim() } : {}),
-          },
+      const selectedModel = { id: value, ...(providerId?.trim() ? { providerId: providerId.trim() } : {}) };
+      useAgentDataStore.getState().setUserPreference(typeKey, {
+        model: selectedModel,
+      });
+      if (typeKey === "codex") {
+        useAgentDataStore.getState().setUserPreference(typeKey, {
+          reasoningEffort: useAgentDataStore.getState().agents.codex.user.reasoningByModel?.[modelPreferenceKey(selectedModel)]
+            ?? this.defaultReasoningForModel(value),
         });
+      }
       return;
     }
     if (kind === "permission") {
-      useAgentSessionStore.getState().setSessionMeta((meta) => ({
-        ...meta,
-        settings: {
-          ...meta.settings,
-          agentPermissionMode: value as AgentPermissionMode,
-        },
-      }));
-      void useAgentAccessStore.getState().setDefaultRuntime(typeKey, {
-        access: { sandbox: value as AgentPermissionMode },
-      });
+      useAgentDataStore.getState().setUserPreference(typeKey, { permission: value as AgentPermissionMode });
       return;
     }
     if (kind === "mode") {
+      useAgentDataStore.getState().setUserPreference(typeKey, { mode: value });
       if (typeKey === "pi") {
-        void useAgentAccessStore.getState().setDefaultRuntime(typeKey, {
-          piCodeMode: value === "code",
-        });
         return;
       }
-      void useAgentAccessStore.getState().setDefaultRuntime(typeKey, {
-        mode: value as AgentHarnessPreset,
-      });
       return;
     }
-    useAgentSessionStore.getState().setSessionMeta((meta) => ({
-      ...meta,
-      settings: {
-        ...meta.settings,
-        agentCodexReasoningEffort: value as AgentCodexReasoningEffort,
-      },
-    }));
-    void useAgentAccessStore.getState().setDefaultRuntime(typeKey, {
-      reasoningEffort: value as AgentCodexReasoningEffort,
-    });
+    const model = useAgentDataStore.getState().agents[typeKey].user.model;
+    useAgentDataStore.getState().rememberModelReasoning(
+      typeKey,
+      model,
+      value as AgentCodexReasoningEffort,
+    );
   }
 
   private syncCodexThreadSetting(
@@ -489,6 +393,14 @@ export class ExternalAgentSettingsController {
     });
   }
 
+  private defaultReasoningForModel(modelId: string): AgentCodexReasoningEffort {
+    const model = useAgentDataStore.getState().agents.codex.catalog.models.items
+      .find((option) => option.id === modelId);
+    return model?.reasoningEfforts?.includes("medium")
+      ? "medium"
+      : model?.reasoningEfforts?.[0] ?? "medium";
+  }
+
   get isOpen(): boolean {
     return this.open;
   }
@@ -501,181 +413,46 @@ export class ExternalAgentSettingsController {
     return this.anchor;
   }
 
-  loadDefaultModel(): void {
+  loadDefaultModel(force = false): void {
     const typeKey = this.getTypeKey();
-    if (typeKey === "pi") {
-      this.piModelsLoadFailed = false;
-      void Promise.all([piModels.list(), agent.listSupportedModels("pi")])
-        .then(([providers, models]) => {
-          if (this.isDestroyed() || this.getTypeKey() !== typeKey) return;
-          const configuredDefault = providers.find((provider) => provider.defaultModelId);
-          this.piDefaultModel = configuredDefault?.defaultModelId ?? "";
-          this.piDefaultProviderId = configuredDefault?.id;
-          const providerNames = new Map(providers.map((provider) => [provider.id, provider.displayName]));
-          const seen = new Set<string>();
-          this.localSupportedModelsTypeKey = typeKey;
-          this.localSupportedModels = models.flatMap((model) => {
-            const separator = model.indexOf("::");
-            if (separator < 1) return [];
-            const providerId = model.slice(0, separator);
-            const id = model.slice(separator + 2);
-            const key = `${providerId}\u0000${id}`;
-            if (!id || seen.has(key)) return [];
-            seen.add(key);
-            return [{
-              id,
-              label: formatModelDisplayLabel(id),
-              providerId,
-              providerName: providerNames.get(providerId) ?? providerId,
-            }];
-          });
-          this.refreshEmptySettings();
-          if (this.open && this.kind === "model") {
-            this.renderPopover();
-            this.schedulePosition();
-          }
-        })
-        .catch(() => {
-          if (this.isDestroyed() || this.getTypeKey() !== typeKey) return;
-          this.piModelsLoadFailed = true;
-          this.localSupportedModelsTypeKey = typeKey;
-          this.localSupportedModels = [];
-          this.refreshEmptySettings();
-          if (this.open && this.kind === "model") {
-            this.renderPopover();
-            this.schedulePosition();
-          }
-        });
-      return;
-    }
-    const isDeepseekHarness = typeKey === "deepseek-harness";
-    if (isDeepseekHarness) {
-      void loadDshModelConfigs()
-        .then((configs) => {
-          if (this.isDestroyed() || this.getTypeKey() !== typeKey) return;
-          const configuredDefault = useAgentAccessStore
-            .getState()
-            .config.defaults?.runtime?.['deepseek-harness']?.model;
-          const firstConfig = configs[0]?.model;
-          this.dshDefaultModel = configuredDefault?.key
-            && configuredDefault.key !== 'inherit'
-            ? configuredDefault.key.trim()
-            : firstConfig?.model.trim() ?? "";
-          this.dshDefaultProviderId = configuredDefault?.key
-            && configuredDefault.key !== 'inherit'
-            ? configuredDefault.providerId?.trim() || undefined
-            : firstConfig?.providerId?.trim() || undefined;
+    const cached = useAgentDataStore.getState().agents[typeKey].catalog.models;
+    if (cached.items.length) this.applyModelCatalog(typeKey, cached);
 
-          const seen = new Set<string>();
-          this.localSupportedModelsTypeKey = typeKey;
-          this.localSupportedModels = configs.flatMap((file) => {
-            const config = file.model;
-            const providerId = config.providerId?.trim() || undefined;
-            const providerName = config.displayName?.trim() || config.provider;
-            const models = config.models?.length
-              ? config.models
-              : config.model.trim()
-                ? [{ id: config.model, name: "" }]
-                : [];
-            return models
-              .map((model) => ({
-                id: model.id.trim(),
-                label: formatModelDisplayLabel(model.id),
-                providerId,
-                providerName,
-              }))
-              .filter((model) => model.id.length > 0)
-              .filter((model) => {
-                const key = `${model.providerId ?? model.providerName}\u0000${model.id}`;
-                if (seen.has(key)) return false;
-                seen.add(key);
-                return true;
-              });
-          });
-          this.refreshEmptySettings();
-          if (this.open && this.kind === "model") {
-            this.renderPopover();
-            this.schedulePosition();
-          }
-        })
-        .catch(() => {
-          if (this.isDestroyed() || this.getTypeKey() !== typeKey) return;
+    void loadAgentModelCatalog(typeKey, { force })
+      .then((catalog) => this.applyModelCatalog(typeKey, catalog))
+      .catch(() => {
+        if (this.isDestroyed() || this.getTypeKey() !== typeKey) return;
+        if (typeKey === "pi") this.piModelsLoadFailed = !cached.items.length;
+        if (!cached.items.length) {
           this.localSupportedModelsTypeKey = typeKey;
           this.localSupportedModels = [];
-        });
-      return;
-    }
-    void agent
-      .getCodexDefaultModel()
-      .then((model) => {
-        if (this.isDestroyed()) return;
-        this.codexDefaultModel = model.trim();
+        }
         this.refreshEmptySettings();
         if (this.open && this.kind === "model") {
           this.renderPopover();
           this.schedulePosition();
         }
-      })
-      .catch(() => {
-        // Keep the generic default label when Codex has no configured default.
       });
+  }
 
-    const listSupportedModels =
-      "listSupportedModels" in agent &&
-      typeof agent.listSupportedModels === "function"
-        ? agent.listSupportedModels.bind(agent)
-        : async () => [];
-
-    const applySupportedModels = (
-      models: string[],
-      effortsByModel = new Map<string, AgentCodexReasoningEffort[]>(),
-    ) => {
-      if (this.isDestroyed() || this.getTypeKey() !== typeKey) return;
-      const seen = new Set<string>();
-      this.localSupportedModelsTypeKey = typeKey;
-      this.localSupportedModels = models
-        .map((model) => model.trim())
-        .filter((model) => model.length > 0)
-        .filter((model) => {
-          if (seen.has(model)) return false;
-          seen.add(model);
-          return true;
-        })
-        .map((model) => ({
-          id: model,
-          label: formatModelDisplayLabel(model),
-          ...(effortsByModel.has(model)
-            ? { reasoningEfforts: effortsByModel.get(model) }
-            : {}),
-        }));
-      this.refreshEmptySettings();
-      if (this.open && this.kind === "model") {
-        this.renderPopover();
-        this.schedulePosition();
-      }
-    };
-
-    if (
-      typeKey === "codex"
-      && "listCodexModelCatalog" in agent
-      && typeof agent.listCodexModelCatalog === "function"
-    ) {
-      void agent.listCodexModelCatalog()
-        .then((catalog) => {
-          const effortsByModel = new Map<string, AgentCodexReasoningEffort[]>();
-          for (const model of catalog) {
-            const efforts = model.reasoningEfforts?.filter((effort): effort is AgentCodexReasoningEffort =>
-              ["low", "medium", "high", "xhigh", "max", "ultra"].includes(effort),
-            );
-            if (efforts?.length) effortsByModel.set(model.id, efforts);
-          }
-          applySupportedModels(catalog.map((model) => model.id), effortsByModel);
-        })
-        .catch(() => applySupportedModels([]));
-    } else {
-      void listSupportedModels(typeKey)
-        .then((models) => applySupportedModels(models))
-        .catch(() => applySupportedModels([]));
+  private applyModelCatalog(typeKey: AgentTypeKey, catalog: AgentModelCatalog): void {
+    if (this.isDestroyed() || this.getTypeKey() !== typeKey) return;
+    this.localSupportedModelsTypeKey = typeKey;
+    this.localSupportedModels = catalog.items as AgentModelOption[];
+    if (typeKey === "codex") this.codexDefaultModel = catalog.defaultModel ?? "";
+    if (typeKey === "pi") {
+      this.piDefaultModel = catalog.defaultModel ?? "";
+      this.piDefaultProviderId = catalog.defaultProviderId;
+      this.piModelsLoadFailed = false;
+    }
+    if (typeKey === "dsh") {
+      this.dshDefaultModel = catalog.defaultModel ?? "";
+      this.dshDefaultProviderId = catalog.defaultProviderId;
+    }
+    this.refreshEmptySettings();
+    if (this.open && this.kind === "model") {
+      this.renderPopover();
+      this.schedulePosition();
     }
   }
 
@@ -728,13 +505,14 @@ export class ExternalAgentSettingsController {
         if (this.isDestroyed()) return;
         const status = useAgentRuntimeStore.getState().statusByType.pi;
         if (!status) return;
-        unavailableNotice.hidden = status.available;
-        if (!status.available && status.reason) {
-          unavailableNotice.title = status.reason;
+        const runtimeStatus = normalizeAgentRuntimeStatus(status);
+        unavailableNotice.hidden = runtimeStatus.state === "ready";
+        if (runtimeStatus.state !== "ready" && runtimeStatus.reason) {
+          unavailableNotice.title = runtimeStatus.reason;
         }
       });
     }
-    if (this.getTypeKey() === "deepseek-harness") {
+    if (this.getTypeKey() === "dsh") {
       const updateNotice = document.createElement("button");
       updateNotice.type = "button";
       updateNotice.className = "agent-thread-card__dsh-update-notice";
@@ -827,7 +605,7 @@ export class ExternalAgentSettingsController {
     }
     if (showControls) {
       const controls = document.createElement("div");
-      controls.className = "agent-thread-card__empty-controls";
+      controls.className = "agent-conversation__controls";
       empty.append(controls);
 
       this.workspaceDisplay = createExternalAgentWorkspaceDisplay(
@@ -895,15 +673,15 @@ export class ExternalAgentSettingsController {
       (anchor) => this.toggleSettingsPopover("model", anchor),
     );
     button.classList.replace(
-      "agent-thread-card__composer-workspace",
-      "agent-thread-card__composer-model",
+      "agent-composer__workspace",
+      "agent-composer__model",
     );
     const value = button.querySelector<HTMLElement>(
-      ".agent-thread-card__composer-workspace-value",
+      ".agent-composer__workspace-value",
     );
     value?.classList.replace(
-      "agent-thread-card__composer-workspace-value",
-      "agent-thread-card__composer-model-value",
+      "agent-composer__workspace-value",
+      "agent-composer__model-value",
     );
     this.composerModelButton = button;
     this.refreshComposerModelButton();
@@ -928,7 +706,7 @@ export class ExternalAgentSettingsController {
       "",
       (anchor) => this.toggleWorkspacePopover(anchor),
     );
-    button.querySelector(".agent-thread-card__composer-workspace-value")?.remove();
+    button.querySelector(".agent-composer__workspace-value")?.remove();
     this.composerWorkspaceButton = button;
     this.refreshComposerWorkspaceButton();
     return button;
@@ -944,15 +722,15 @@ export class ExternalAgentSettingsController {
       (anchor) => this.toggleSettingsPopover("mode", anchor),
     );
     button.classList.replace(
-      "agent-thread-card__composer-workspace",
-      "agent-thread-card__composer-mode",
+      "agent-composer__workspace",
+      "agent-composer__mode",
     );
     const value = button.querySelector<HTMLElement>(
-      ".agent-thread-card__composer-workspace-value",
+      ".agent-composer__workspace-value",
     );
     value?.classList.replace(
-      "agent-thread-card__composer-workspace-value",
-      "agent-thread-card__composer-mode-value",
+      "agent-composer__workspace-value",
+      "agent-composer__mode-value",
     );
     this.composerModeButton = button;
     this.refreshComposerModeButton();
@@ -969,11 +747,11 @@ export class ExternalAgentSettingsController {
       (anchor) => this.toggleSettingsPopover("permission", anchor),
     );
     button.classList.replace(
-      "agent-thread-card__composer-workspace",
-      "agent-thread-card__composer-permission",
+      "agent-composer__workspace",
+      "agent-composer__permission",
     );
     const value = button.querySelector<HTMLElement>(
-      ".agent-thread-card__composer-workspace-value",
+      ".agent-composer__workspace-value",
     );
     value?.remove();
     this.composerPermissionButton = button;
@@ -985,7 +763,7 @@ export class ExternalAgentSettingsController {
     if (!this.composerModelButton) return;
     const label = this.getComposerModelDisplayLabel();
     const valueEl = this.composerModelButton.querySelector<HTMLElement>(
-      ".agent-thread-card__composer-model-value",
+      ".agent-composer__model-value",
     );
     if (valueEl) valueEl.textContent = label;
     this.composerModelButton.title = `${this.t("agent.model.title")}: ${label}`;
@@ -999,7 +777,7 @@ export class ExternalAgentSettingsController {
     if (!this.composerModeButton) return;
     const value = this.getCurrentModeLabel();
     const valueEl = this.composerModeButton.querySelector<HTMLElement>(
-      ".agent-thread-card__composer-mode-value",
+      ".agent-composer__mode-value",
     );
     if (valueEl) valueEl.textContent = value;
     const label = this.t("agent.mode.title");
@@ -1017,11 +795,11 @@ export class ExternalAgentSettingsController {
   private refreshComposerWorkspaceButton(): void {
     if (!this.composerWorkspaceButton) return;
     const currentIcon = this.composerWorkspaceButton.querySelector(
-      ".agent-thread-card__composer-workspace-icon",
+      ".agent-composer__workspace-icon",
     );
     const nextIcon = createComposerWorkspaceIcon();
     const chevron = this.composerWorkspaceButton.querySelector(
-      ".agent-thread-card__empty-control-chevron",
+      ".agent-conversation__control-chevron",
     );
     currentIcon?.remove();
     if (nextIcon && chevron) {
@@ -1049,7 +827,7 @@ export class ExternalAgentSettingsController {
     );
     const nextIcon = createPermissionModeIcon(mode);
     const chevron = this.composerPermissionButton.querySelector(
-      ".agent-thread-card__empty-control-chevron",
+      ".agent-conversation__control-chevron",
     );
     currentIcon?.remove();
     if (nextIcon && chevron) {
@@ -1082,7 +860,7 @@ export class ExternalAgentSettingsController {
     this.refreshComposerWorkspaceButton();
     if (this.workspaceDisplay) {
       const value = this.workspaceDisplay.querySelector<HTMLElement>(
-        ".agent-thread-card__empty-workspace-value",
+        ".agent-conversation__workspace-value",
       );
       const nextValue = this.getCurrentWorkspaceLabel();
       if (value) value.textContent = nextValue;
@@ -1122,13 +900,11 @@ export class ExternalAgentSettingsController {
     const path = this.getCurrentWorkspacePath();
     if (!path) return this.t("agent.workspace.unset");
 
-    const normalize = (value: string): string =>
-      value.replace(/[\\/]+$/, "").toLowerCase();
-    const entry = useAgentAccessStore
-      .getState()
-      .config.entries.find(
-        (item) => item.kind === "folder" && normalize(item.path) === normalize(path),
-      );
+    const normalize = (value: string): string => value.replace(/[\\/]+$/, "").toLowerCase();
+    const workspaceState = useAgentDataStore.getState().workspace;
+    const entry = workspaceState.resources.find(
+      (item) => normalize(item.path) === normalize(path),
+    );
     const instance = this.getInstanceId()
       ? useAgentSessionStore.getState().getInstance(this.getInstanceId()!)
       : undefined;
@@ -1138,6 +914,12 @@ export class ExternalAgentSettingsController {
         ? useNoteStore.getState().notebooks.find((item) => item.id === configuredNotebookId)
         : null) ?? useNoteStore.getState().selectedNotebook;
     if (entry?.name?.trim()) return entry.name.trim();
+    const notebookEntry = configuredNotebookId
+      ? workspaceState.byNotebookId[configuredNotebookId]?.notebook
+      : undefined;
+    if (notebookEntry && normalize(notebookEntry.path) === normalize(path) && notebookEntry.name.trim()) {
+      return notebookEntry.name.trim();
+    }
     if (notebook && normalize(notebook.path) === normalize(path) && notebook.name?.trim()) {
       return notebook.name.trim();
     }
@@ -1148,7 +930,7 @@ export class ExternalAgentSettingsController {
     const instance = this.getInstanceId()
       ? useAgentSessionStore.getState().getInstance(this.getInstanceId()!)
       : undefined;
-    const runtimeConfig = instance?.runtimeConfig;
+    const runtimeConfig = instance?.runtimeConfig ?? undefined;
     const snapshot = runtimeConfig?.workspaceSnapshot;
     const snapshotPath =
       snapshot && typeof snapshot === "object" && typeof snapshot.cwd === "string"
@@ -1161,13 +943,7 @@ export class ExternalAgentSettingsController {
         ? memoState.notebooks.find((item) => item.id === configuredNotebookId)
         : null) ?? memoState.selectedNotebook;
     const notebookPath = notebook?.path?.trim();
-    const accessState = useAgentAccessStore.getState();
-    const defaultFiles = resolveNotebookAgentFiles(
-      accessState.config,
-      accessState.notebookConfigs,
-      configuredNotebookId ?? notebook?.id,
-    );
-    const primary = resolvePrimaryWorkspace({ defaultFiles, notebookPath });
+    const primary = resolvePrimaryWorkspace({ notebookPath });
     const path = snapshotPath || (primary.kind === "empty" ? "" : primary.path);
     return path;
   }
@@ -1179,7 +955,7 @@ export class ExternalAgentSettingsController {
     const instance = this.getInstanceId()
       ? useAgentSessionStore.getState().getInstance(this.getInstanceId()!)
       : undefined;
-    const runtimeConfig = instance?.runtimeConfig;
+    const runtimeConfig = instance?.runtimeConfig ?? undefined;
     const state = normalizeConversationWorkspaceState(runtimeConfig);
     const snapshot = state?.desired ?? runtimeConfig?.workspaceSnapshot;
     const cwdPath = normalizeWorkspacePath(snapshot?.cwd ?? this.getCurrentWorkspacePath());
@@ -1189,25 +965,19 @@ export class ExternalAgentSettingsController {
       (configuredNotebookId
         ? memoState.notebooks.find((item) => item.id === configuredNotebookId)
         : null) ?? memoState.selectedNotebook;
-    const accessState = useAgentAccessStore.getState();
-    const fallbackFiles = resolveNotebookAgentFiles(
-      accessState.config,
-      accessState.notebookConfigs,
-      configuredNotebookId ?? notebook?.id,
-    );
+    const workspace = useAgentDataStore.getState().workspace.byNotebookId[configuredNotebookId ?? notebook?.id ?? ""];
+    const workspaceState = useAgentDataStore.getState().workspace;
     const addDirPaths = snapshot
       ? snapshot.workspacePaths
-      : (fallbackFiles?.folders ?? []);
-    const notebookAddDirs = configuredNotebookId
-      ? accessState.notebookConfigs[configuredNotebookId]?.addDirs ?? []
-      : [];
+      : (workspace?.addDirs.filter((directory) => directory.enabled && !directory.missing).map((directory) => directory.path) ?? []);
+    const notebookAddDirs = workspace?.addDirs ?? [];
     const notebookPath = normalizeWorkspacePath(notebook?.path ?? "").toLowerCase();
     const labelForPath = (path: string): string => {
       const key = normalizeWorkspacePath(path).toLowerCase();
       const local = notebookAddDirs.find(
         (item) => normalizeWorkspacePath(item.path).toLowerCase() === key,
       );
-      const entry = accessState.config.entries.find(
+      const entry = workspaceState.resources.find(
         (item) => normalizeWorkspacePath(item.path).toLowerCase() === key,
       );
       if (local?.label?.trim()) return local.label.trim();
@@ -1293,10 +1063,9 @@ export class ExternalAgentSettingsController {
     );
     this.syncControlOpenState(open, kind);
 
-    // Pi's model directory is edited from Preferences in another window. Refresh
-    // it whenever the composer picker opens so newly saved providers/models are
-    // immediately available without recreating the conversation card.
-    if (open && kind === "model" && this.getTypeKey() === "pi") {
+    // Recheck the shared catalog when a model picker opens. Fresh cached data
+    // renders immediately; expired or invalidated data refreshes in the background.
+    if (open && kind === "model") {
       this.loadDefaultModel();
     }
 
@@ -1456,7 +1225,7 @@ export class ExternalAgentSettingsController {
   }
 
   /**
-   * 第二页 ── 仓库列表, 可增删。 这里编辑的是当前笔记本 `.flowix/agent.json`
+   * 第二页 ── 仓库列表, 可增删。 这里编辑的是当前笔记本 `local.db`
    * 的 add-dirs (与笔记侧「资料文件夹」同一份数据), 所以增删后第一页的快照会
    * 在下次会话启动时同步反映出来。
    */
@@ -1504,6 +1273,7 @@ export class ExternalAgentSettingsController {
     // 「添加仓库」用第一页「管理仓库」同款的 settings 行契约, 加号放在文字左侧。
     const addButton = document.createElement("button");
     addButton.type = "button";
+    addButton.disabled = !this.getRepositoryScopeNotebookId();
     addButton.className =
       "agent-thread-card__codex-settings-item agent-thread-card__codex-settings-settings";
     addButton.setAttribute("role", "menuitem");
@@ -1527,7 +1297,7 @@ export class ExternalAgentSettingsController {
     const instance = this.getInstanceId()
       ? useAgentSessionStore.getState().getInstance(this.getInstanceId()!)
       : undefined;
-    const runtimeConfig = instance?.runtimeConfig;
+    const runtimeConfig = instance?.runtimeConfig ?? undefined;
     const memoState = useNoteStore.getState();
     const configuredNotebookId = runtimeConfig?.notebookId;
     const notebook =
@@ -1594,7 +1364,9 @@ export class ExternalAgentSettingsController {
   }
 
   private async addRepository(): Promise<void> {
-    const result = await useAgentAccessStore.getState().addFolderFromPicker();
+    const notebookId = this.getRepositoryScopeNotebookId();
+    if (!notebookId) return;
+    const result = await useAgentDataStore.getState().workspaceActions.addFolderFromPicker(notebookId);
     if (!result.ok) {
       if (result.code === "already-tracked") {
         this.toast?.("error", this.t("agent.access.alreadyTracked"));
@@ -1603,41 +1375,9 @@ export class ExternalAgentSettingsController {
       }
       return;
     }
-    const notebookId = this.getRepositoryScopeNotebookId();
-    if (!notebookId) {
-      // 没有笔记本作用域时, 全局授权条目仍然保留, 但没有 add-dir 列表可写。
-      this.rerenderRepositories();
-      return;
-    }
-    // picker 返回前已经 loadInitial 过一次, 所以要用最新 store 状态解析, 而不
-    // 是复用这次渲染的闭包快照。
-    const latest = useAgentAccessStore.getState();
-    const latestFiles = resolveNotebookAgentFiles(
-      latest.config,
-      latest.notebookConfigs,
-      notebookId,
-    );
-    const key = normalizeWorkspacePath(result.entry.path).toLowerCase();
-    if (
-      (latestFiles?.folders ?? []).some(
-        (path) => normalizeWorkspacePath(path).toLowerCase() === key,
-      )
-    ) {
-      this.toast?.("info", this.t("agent.access.folderExists"));
-      this.rerenderRepositories();
-      return;
-    }
-    const saved = await latest.setDefaultFiles(notebookId, {
-      folders: [...(latestFiles?.folders ?? []), result.entry.path],
-      notebooks: latestFiles?.notebooks ?? [],
-    });
-    if (!saved) {
-      this.toast?.("error", this.t("agent.access.saveFailed"));
-      return;
-    }
+    const latestFiles = useAgentDataStore.getState().workspaceActions.getNotebookFiles(notebookId);
     this.updateCurrentConversationWorkspaceFolders([
       ...(latestFiles?.folders ?? []),
-      result.entry.path,
     ]);
     this.rerenderRepositories();
   }
@@ -1645,17 +1385,18 @@ export class ExternalAgentSettingsController {
   private async removeRepository(path: string, name: string): Promise<void> {
     const notebookId = this.getRepositoryScopeNotebookId();
     if (!notebookId) return;
-    const state = useAgentAccessStore.getState();
-    const files = resolveNotebookAgentFiles(state.config, state.notebookConfigs, notebookId);
-    const nextFolders = (files?.folders ?? []).filter((item) => item !== path);
-    const saved = await state.setDefaultFiles(notebookId, {
-      folders: nextFolders,
-      notebooks: files?.notebooks ?? [],
-    });
-    if (!saved) {
+    const state = useAgentDataStore.getState().workspaceActions;
+    const saved = await state.detachFolderFromNotebook(notebookId, path);
+    if (saved === false) {
       this.toast?.("error", this.t("agent.access.saveFailed"));
       return;
     }
+    if (saved === "not-attached") {
+      this.rerenderRepositories();
+      return;
+    }
+    const files = useAgentDataStore.getState().workspaceActions.getNotebookFiles(notebookId);
+    const nextFolders = files?.folders ?? [];
     this.updateCurrentConversationWorkspaceFolders(nextFolders);
     this.toast?.("success", this.t("agent.access.folderDeleted", { name }));
     this.rerenderRepositories();
@@ -1691,7 +1432,7 @@ export class ExternalAgentSettingsController {
     const instance = this.getInstanceId()
       ? useAgentSessionStore.getState().getInstance(this.getInstanceId()!)
       : undefined;
-    const runtimeConfig = instance?.runtimeConfig;
+    const runtimeConfig = instance?.runtimeConfig ?? undefined;
     const state = normalizeConversationWorkspaceState(runtimeConfig);
     const snapshot = state?.desired ?? runtimeConfig?.workspaceSnapshot;
     const configuredNotebookId = runtimeConfig?.notebookId ?? snapshot?.notebookId;
@@ -1749,7 +1490,7 @@ export class ExternalAgentSettingsController {
       open && kind === "reasoning" ? "true" : "false",
     );
     this.modelButton?.classList.toggle(
-      "agent-thread-card__empty-control--open",
+      "agent-conversation__control--open",
       modelExpanded,
     );
     this.composerModelButton?.setAttribute(
@@ -1757,7 +1498,7 @@ export class ExternalAgentSettingsController {
       modelExpanded ? "true" : "false",
     );
     this.composerModelButton?.classList.toggle(
-      "agent-thread-card__composer-model--open",
+      "agent-composer__model--open",
       modelExpanded,
     );
     this.composerPermissionButton?.setAttribute(
@@ -1765,7 +1506,7 @@ export class ExternalAgentSettingsController {
       open && kind === "permission" ? "true" : "false",
     );
     this.composerPermissionButton?.classList.toggle(
-      "agent-thread-card__composer-permission--open",
+      "agent-composer__permission--open",
       open && kind === "permission",
     );
     this.composerWorkspaceButton?.setAttribute(
@@ -1773,7 +1514,7 @@ export class ExternalAgentSettingsController {
       this.workspacePopoverOpen && open ? "true" : "false",
     );
     this.composerWorkspaceButton?.classList.toggle(
-      "agent-thread-card__composer-workspace--open",
+      "agent-composer__workspace--open",
       this.workspacePopoverOpen && open,
     );
     this.workspaceDisplay?.setAttribute(
@@ -1781,19 +1522,19 @@ export class ExternalAgentSettingsController {
       this.workspacePopoverOpen && open ? "true" : "false",
     );
     this.workspaceDisplay?.classList.toggle(
-      "agent-thread-card__empty-workspace--open",
+      "agent-conversation__workspace--open",
       this.workspacePopoverOpen && open,
     );
     this.permissionButton?.classList.toggle(
-      "agent-thread-card__empty-control--open",
+      "agent-conversation__control--open",
       open && kind === "permission",
     );
     this.modeButton?.classList.toggle(
-      "agent-thread-card__empty-control--open",
+      "agent-conversation__control--open",
       open && kind === "mode",
     );
     this.reasoningButton?.classList.toggle(
-      "agent-thread-card__empty-control--open",
+      "agent-conversation__control--open",
       open && kind === "reasoning",
     );
   }
@@ -1805,7 +1546,7 @@ export class ExternalAgentSettingsController {
   }
 
   private getAccessOptionsForType(): readonly AgentAccessOption[] {
-    return getAgentAccessOptions(this.getTypeKey());
+    return useAgentDataStore.getState().agents[this.getTypeKey()].catalog.capabilities.permissions;
   }
 
   private accessOptionLabel(option: AgentAccessOption): string {
@@ -1813,12 +1554,11 @@ export class ExternalAgentSettingsController {
   }
 
   private getExternalAgentModel(): AgentCodexModel {
-    // Claude 仍走 local state (per-controller); codex/claude-other
-    // 改为走 instance.runtimeConfig 优先, fallback 全局 agentCodexModel.
+    // Conversation overrides take precedence over this Agent's preferences.
     const fromThread = this.readRuntimeSetting("model");
     if (
       fromThread &&
-      !(this.getTypeKey() === "deepseek-harness" && fromThread === "inherit")
+      !(this.getTypeKey() === "dsh" && fromThread === "inherit")
     ) {
       return fromThread as AgentCodexModel;
     }
@@ -1827,11 +1567,10 @@ export class ExternalAgentSettingsController {
     }
     // DSH 不提供 inherit 选项，未单独设置时直接选中全局 dsh-settings
     // 中的真实默认模型。配置异步加载完成后 refreshEmptySettings 会更新选中项。
-    if (this.getTypeKey() === "deepseek-harness") {
+    if (this.getTypeKey() === "dsh") {
       return (this.dshDefaultModel || "inherit") as AgentCodexModel;
     }
-    // Phase 4 (2026-08-02): 真源切到 session-store.sessionMeta.settings.
-    return useAgentSessionStore.getState().sessionMeta.settings.agentCodexModel;
+    return "inherit";
   }
 
   private getExternalAgentModelProviderId(): string | undefined {
@@ -1843,12 +1582,9 @@ export class ExternalAgentSettingsController {
         ?.runtimeConfig?.model?.providerId;
       if (providerId?.trim()) return providerId.trim();
     }
-    const typeDefault = useAgentAccessStore
-      .getState()
-      .config.defaults?.runtime?.[this.getTypeKey()]
-      ?.model?.providerId;
-    if (typeDefault?.trim()) return typeDefault.trim();
-    if (this.getTypeKey() === "deepseek-harness") return this.dshDefaultProviderId;
+    const preferenceProvider = useAgentDataStore.getState().agents[this.getTypeKey()].user.model?.providerId;
+    if (preferenceProvider?.trim()) return preferenceProvider.trim();
+    if (this.getTypeKey() === "dsh") return this.dshDefaultProviderId;
     if (this.getTypeKey() === "pi") return this.piDefaultProviderId;
     return undefined;
   }
@@ -1870,7 +1606,7 @@ export class ExternalAgentSettingsController {
       }
       return formatModelDisplayLabel(model);
     }
-    if (this.getTypeKey() === "claude" || this.getTypeKey() === "opencode") {
+    if (this.getTypeKey() === "claudecode" || this.getTypeKey() === "opencode") {
       return this.t("agent.permission.default");
     }
     return this.codexDefaultModel
@@ -1891,15 +1627,17 @@ export class ExternalAgentSettingsController {
       }));
     // DSH 无硬编码 fallback —— 列表完全来自后端 (用户目录 / llm-pi-ai
     // catalog); 拉取失败时仅显示当前值, 不显示 Codex 的模型。
-    if (this.getTypeKey() === "deepseek-harness" || this.getTypeKey() === "opencode" || this.getTypeKey() === "pi") {
+    if (this.getTypeKey() === "dsh" || this.getTypeKey() === "opencode" || this.getTypeKey() === "pi") {
       return [];
     }
-    return this.getTypeKey() === "claude"
+    return this.getTypeKey() === "claudecode"
       ? mapLabel(CLAUDE_MODEL_OPTIONS)
       : mapLabel(CODEX_MODEL_OPTIONS);
   }
 
   private getLoadedModelOptions(): AgentModelOption[] {
+    const catalogOptions = useAgentDataStore.getState().agents[this.getTypeKey()].catalog.models.items;
+    if (catalogOptions.length > 0) return catalogOptions as AgentModelOption[];
     const localOptions =
       this.localSupportedModelsTypeKey === this.getTypeKey()
         ? this.localSupportedModels
@@ -1969,17 +1707,17 @@ export class ExternalAgentSettingsController {
     const piDefaultProvider = this.getTypeKey() === "pi"
       ? modelOptions.find((option) => option.providerId === this.piDefaultProviderId)
       : undefined;
-    const inheritLabel = this.getTypeKey() === "deepseek-harness"
+    const inheritLabel = this.getTypeKey() === "dsh"
       ? ""
       : this.getExternalModelDefaultLabel();
     const showInheritOption =
-      this.getTypeKey() !== "deepseek-harness" && this.getTypeKey() !== "codex" && this.getTypeKey() !== "pi";
+      this.getTypeKey() !== "dsh" && this.getTypeKey() !== "codex" && this.getTypeKey() !== "pi";
     const options: AgentModelOption[] = [
       ...(showInheritOption && inheritLabel
         ? [{
             id: "inherit" as AgentCodexModel,
             label: inheritLabel,
-            providerId: this.getTypeKey() === "deepseek-harness"
+            providerId: this.getTypeKey() === "dsh"
               ? this.dshDefaultProviderId
               : this.getTypeKey() === "pi"
                 ? this.piDefaultProviderId
@@ -2032,7 +1770,7 @@ export class ExternalAgentSettingsController {
     );
     if (match) return match.label;
     // DSH 没有 Default 选项，等待默认模型异步加载期间不伪造一个选中值。
-    if (this.getTypeKey() === "deepseek-harness" && model === "inherit") {
+    if (this.getTypeKey() === "dsh" && model === "inherit") {
       return "";
     }
     // 未知模型仍然回退到列表中的第一个真实模型，避免控件显示空 label。
@@ -2066,7 +1804,7 @@ export class ExternalAgentSettingsController {
   private getCurrentCodexReasoningLabel(): string {
     const effort =
       this.readRuntimeSetting("reasoning") ??
-      useAgentSessionStore.getState().sessionMeta.settings.agentCodexReasoningEffort;
+      "medium";
     return (
       this.getCodexReasoningOptions().find((option) => option.id === effort)?.label ??
       "Medium"
@@ -2102,7 +1840,8 @@ export class ExternalAgentSettingsController {
 
   private getCurrentHarnessMode(): AgentHarnessPreset {
     const mode = this.readRuntimeSetting("mode");
-    return DEEPSEEK_HARNESS_MODE_OPTIONS.some((option) => option.id === mode)
+    const options = useAgentDataStore.getState().agents[this.getTypeKey()].catalog.capabilities.modes;
+    return options.some((option) => option.id === mode)
       ? (mode as AgentHarnessPreset)
       : "standard";
   }
@@ -2116,10 +1855,11 @@ export class ExternalAgentSettingsController {
       );
     }
     const mode = this.getCurrentHarnessMode();
+    const modeOption = useAgentDataStore.getState().agents[this.getTypeKey()].catalog.capabilities.modes
+      .find((option) => option.id === mode);
     return (
       this.t(
-        DEEPSEEK_HARNESS_MODE_OPTIONS.find((option) => option.id === mode)
-          ?.labelKey ?? "agent.mode.standard",
+        modeOption?.labelKey ?? "agent.mode.standard",
       )
     );
   }
@@ -2165,7 +1905,7 @@ export class ExternalAgentSettingsController {
       return;
     }
 
-    if (this.getTypeKey() === "deepseek-harness" || this.getTypeKey() === "pi") {
+    if (this.getTypeKey() === "dsh" || this.getTypeKey() === "pi") {
       if (this.getTypeKey() === "pi" && this.shouldShowPiModelEmptyState()) {
         const modelSection = document.createElement("div");
         modelSection.className = "agent-thread-card__codex-settings-section";
@@ -2249,7 +1989,7 @@ export class ExternalAgentSettingsController {
 
     const current =
       this.readRuntimeSetting("reasoning") ??
-      useAgentSessionStore.getState().sessionMeta.settings.agentCodexReasoningEffort;
+      "medium";
     const reasoningOptions = this.getCodexReasoningOptions().map((option) => ({
       ...option,
       label: this.t(`agent.reasoningDepth.${option.id}` as I18nKey),
@@ -2311,7 +2051,7 @@ export class ExternalAgentSettingsController {
       ? useAgentSessionStore.getState().getInstance(instanceId)?.runtimeConfig?.serviceTier
       : undefined;
     this.codexServiceTier = instanceServiceTier
-      ?? useAgentAccessStore.getState().config.defaults?.runtime?.codex?.serviceTier
+      ?? useAgentDataStore.getState().agents.codex.user.serviceTier
       ?? "auto";
 
     const icon = document.createElementNS("http://www.w3.org/2000/svg", "svg");
@@ -2346,7 +2086,7 @@ export class ExternalAgentSettingsController {
           serviceTier: this.codexServiceTier,
         });
       }
-      void useAgentAccessStore.getState().setDefaultRuntime("codex", {
+      useAgentDataStore.getState().setUserPreference("codex", {
         serviceTier: this.codexServiceTier,
       });
       updateValue();
@@ -2377,7 +2117,7 @@ export class ExternalAgentSettingsController {
   private renderReasoningOptions(): void {
     const current =
       this.readRuntimeSetting("reasoning") ??
-      useAgentSessionStore.getState().sessionMeta.settings.agentCodexReasoningEffort;
+      "medium";
     const reasoningOptions = this.getTypeKey() === "pi"
       ? PI_THINKING_OPTIONS
       : this.getTypeKey() === "codex"
@@ -2399,17 +2139,14 @@ export class ExternalAgentSettingsController {
   }
 
   private renderModeSettings(): void {
+    const options = useAgentDataStore.getState().agents[this.getTypeKey()].catalog.capabilities.modes;
+    const current = this.readRuntimeSetting("mode")
+      ?? (this.getTypeKey() === "pi" ? "writing" : "standard");
     if (this.getTypeKey() === "pi") {
-      const current =
-        this.readRuntimeSetting("mode") === "code" ? "code" : "writing";
-      const options = [
-        { id: "writing", labelKey: "agent.mode.writing" as const },
-        { id: "code", labelKey: "agent.mode.piCode" as const },
-      ];
       options.forEach((option) => {
         this.popover.append(
           createCodexSettingsItem(
-            this.t(option.labelKey),
+            option.labelKey ? this.t(option.labelKey) : option.label,
             option.id === current,
             () => {
               this.writeRuntimeSetting("mode", option.id);
@@ -2420,20 +2157,19 @@ export class ExternalAgentSettingsController {
       });
       return;
     }
-    const current = this.getCurrentHarnessMode();
     // DSH 模式选择器使用田字格双列布局, 每个 cell 垂直堆叠标题+副标题。
     const grid = document.createElement("div");
     grid.className = "agent-thread-card__codex-settings-grid";
-    DEEPSEEK_HARNESS_MODE_OPTIONS.forEach((option) => {
+    options.forEach((option) => {
       grid.append(
         createCodexSettingsItem(
-          this.t(option.labelKey),
+          option.labelKey ? this.t(option.labelKey) : option.label,
           option.id === current,
           () => {
             this.writeRuntimeSetting("mode", option.id);
             this.setSettingsPopoverOpen(false);
           },
-          this.t(option.descriptionKey),
+          option.descriptionKey ? this.t(option.descriptionKey) : undefined,
           { layout: "grid" },
         ),
       );

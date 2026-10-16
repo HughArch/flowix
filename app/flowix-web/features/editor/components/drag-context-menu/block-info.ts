@@ -96,7 +96,7 @@ export function getFocusedAgentThreadCardInfo(editor: Editor): CurrentBlockInfo 
   const activeElement = view.dom.ownerDocument.activeElement
   if (!(activeElement instanceof HTMLElement)) return null
 
-  const composer = activeElement.closest<HTMLElement>('.agent-thread-card__composer')
+  const composer = activeElement.closest<HTMLElement>('.agent-composer')
   if (!composer || !view.dom.contains(composer)) return null
 
   const card = composer.closest<HTMLElement>('[data-agent-thread-card="true"]')

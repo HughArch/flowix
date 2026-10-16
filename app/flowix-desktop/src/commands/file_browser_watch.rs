@@ -19,8 +19,7 @@ use tauri::{Emitter, Manager};
 
 use crate::app::state::AppState;
 use crate::commands::helpers::{
-    is_agent_access_folder_with_state, is_registered_notebook_path_with_state,
-    start_security_bookmark_access,
+    is_attached_notebook_directory_with_state, is_registered_notebook_path_with_state,
 };
 use crate::config::path_is_inside;
 
@@ -354,6 +353,11 @@ fn emit_directory_changes(
         return;
     };
 
+    // A mounted tab can outlive the mount itself; stop publishing revoked roots.
+    let Some(state) = app.try_state::<AppState>() else { return; };
+    if !is_registered_notebook_path_with_state(&root_path, &state)
+        && !is_attached_notebook_directory_with_state(&root_path, &state) { return; }
+
     let mut directories = directories.into_iter().collect::<Vec<_>>();
     directories.sort();
     let mut paths = paths.into_iter().collect::<Vec<_>>();
@@ -390,10 +394,9 @@ pub fn watch_file_browser_root(
     root_path: String,
 ) -> Result<String, String> {
     let path = PathBuf::from(&root_path);
-    start_security_bookmark_access(&app_state, &path);
     if !path.is_dir()
         || (!is_registered_notebook_path_with_state(&path, &app_state)
-            && !is_agent_access_folder_with_state(&path, &app_state))
+            && !is_attached_notebook_directory_with_state(&path, &app_state))
     {
         return Err(format!(
             "file browser root is not accessible: {}",

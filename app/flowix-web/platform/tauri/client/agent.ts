@@ -7,6 +7,7 @@ import type {
   AgentCodexReasoningEffort,
   AgentPermissionMode,
   AgentRuntimeConfig,
+  AgentRuntimeStatusById,
   AgentTypeKey,
   ChatMessage,
   RunInfo,
@@ -90,7 +91,7 @@ export interface AgentConversationCursor {
 }
 
 export interface AgentConversationListQuery {
-  notebookId: string | null;
+  notebookId: string;
   agentType: AgentTypeKey | null;
   cursor: AgentConversationCursor | null;
 }
@@ -217,23 +218,9 @@ export type AgentConversationInstanceUpsert = Omit<AgentConversationInstance, 't
   runtimeConfig?: string | null;
 };
 
-export interface AgentRuntimeAvailability {
-  available: boolean;
-  /** Executable/runtime presence, independent from model or dependency setup. */
-  installed?: boolean;
-  reasonCode?: string | null;
-  reason?: string | null;
-}
-
+/** Complete six-agent runtime snapshot returned by the desktop host. */
 export interface AgentRuntimeStatus {
-  codex: AgentRuntimeAvailability;
-  claude: AgentRuntimeAvailability;
-  gemini: AgentRuntimeAvailability;
-  hermes: AgentRuntimeAvailability;
-  openclaw: AgentRuntimeAvailability;
-  opencode: AgentRuntimeAvailability;
-  pi: AgentRuntimeAvailability;
-  'deepseek-harness': AgentRuntimeAvailability;
+  agents: AgentRuntimeStatusById;
 }
 
 export interface CodexRateLimitWindow {
@@ -287,6 +274,13 @@ export interface AgentExternalEntry {
   available: boolean;
 }
 
+const cacheAgentAttachment = (content: string, mimeType: string) =>
+  invoke<CachedAgentAttachment>('cache_agent_image', { content, mimeType });
+const deleteCachedAgentAttachment = (path: string) =>
+  invoke<boolean>('delete_cached_agent_image', { path });
+const readCachedAgentAttachment = (path: string) =>
+  invoke<string | null>('read_cached_agent_image', { path });
+
 export const agent = {
   runtimeStatus: () =>
     invoke<AgentRuntimeStatus>('agent_runtime_status'),
@@ -304,12 +298,17 @@ export const agent = {
     invoke<AgentExternalEntry>('redetect_agent_external', { agentType }),
   selectExternalCliPath: () =>
     invoke<string | null>('select_external_cli_path'),
-  cacheImage: (content: string, mimeType: string) =>
-    invoke<CachedAgentImage>('cache_agent_image', { content, mimeType }),
-  deleteCachedImage: (path: string) =>
-    invoke<boolean>('delete_cached_agent_image', { path }),
-  readCachedImage: (path: string) =>
-    invoke<string | null>('read_cached_agent_image', { path }),
+  // Frontend uses attachment terminology; the IPC names stay stable for older
+  // desktop builds and persisted agent data.
+  cacheAttachment: cacheAgentAttachment,
+  deleteCachedAttachment: deleteCachedAgentAttachment,
+  readCachedAttachment: readCachedAgentAttachment,
+  /** @deprecated Use cacheAttachment. */
+  cacheImage: cacheAgentAttachment,
+  /** @deprecated Use deleteCachedAttachment. */
+  deleteCachedImage: deleteCachedAgentAttachment,
+  /** @deprecated Use readCachedAttachment. */
+  readCachedImage: readCachedAgentAttachment,
   chatStream: (threadId: string, message: AgentUserMessage) =>
     invoke<ChatResponse>('chat_with_agent_stream', { threadId, message }),
   steerChat: (threadId: string, message: AgentUserMessage, clientUserMessageId: string, deliveryMode: 'steer' | 'follow_up' = 'steer') =>
@@ -403,9 +402,9 @@ export const agent = {
     invoke<AgentConversationInstance[]>('agent_conversation_list'),
   listConversationInstancesPage: (query: AgentConversationListQuery, limit: number) =>
     invoke<AgentConversationListPage>('agent_conversation_list_page', { ...query, limit }),
-  countConversationInstancesByNotebook: (notebookId: string | null) =>
+  countConversationInstancesByNotebook: (notebookId: string) =>
     invoke<number>('agent_conversation_count_by_notebook', { notebookId }),
-  listConversationTypeCountsByNotebook: (notebookId: string | null) =>
+  listConversationTypeCountsByNotebook: (notebookId: string) =>
     invoke<AgentConversationTypeCount[]>('agent_conversation_type_counts_by_notebook', { notebookId }),
   getConversationInstance: (instanceId: string) =>
     invoke<AgentConversationInstance | null>('agent_conversation_get', {
@@ -625,11 +624,14 @@ export const agent = {
   codexApprovalPending: () => invoke<CodexApprovalRequest[]>('codex_approval_pending'),
 };
 
-export interface CachedAgentImage {
+export interface CachedAgentAttachment {
   path: string;
   mimeType: string;
   name: string;
 }
+
+/** @deprecated Legacy payload name retained for existing integrations. */
+export type CachedAgentImage = CachedAgentAttachment;
 
 // Stream event handling
 //
@@ -704,16 +706,16 @@ export function stopListeningToUserConfigChanges(): void {
   // subscribe 杩斿洖鐨?unlisten 璧?useEffect cleanup, 涓嶈鎵嬪伐璋?stopXxx銆?
 }
 
-// Agent 鍙闂洰褰曞彉鏇翠簨浠?鈹€鈹€ 鍚庣 set_agent_access / notebook CRUD
+// Agent 鍙闂洰褰曞彉鏇翠簨浠?鈹€鈹€ 鍚庣 notebook workspace / notebook CRUD
 // 閽╁瓙浠讳竴鎴愬姛閮?emit, payload 鏄?`()` (鏃?payload), 鐩戝惉鑰呯洿鎺?
 // `loadInitial()` 鎷夋暣浠?config銆?涓?`user-config-changed` 鍚屽舰銆?
 type AgentAccessChangeHandler = () => void;
 
-export function listenToAgentAccessChanges(
+export function listenToAgentWorkspaceChanges(
   handler: AgentAccessChangeHandler,
   options?: SubscribeOptions,
 ): UnlistenFn {
-  return subscribe<unknown>('agent-access-changed', () => handler(), options);
+  return subscribe<unknown>('agent-workspace-changed', () => handler(), options);
 }
 
 export function listenToNotebookImportComplete(

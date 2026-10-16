@@ -29,8 +29,11 @@ export interface MainWindowSystemController {
   onboardingOpen: boolean;
   onboardingLoading: boolean;
   updater: AppUpdaterState;
+  appUpdatePromptOpen: boolean;
   dshInstaller: DshRuntimeInstallerState;
   closeDshInstallPrompt(): void;
+  openAppUpdatePrompt(): void;
+  closeAppUpdatePrompt(): void;
   markDshIntroDisplayed(): void;
   completeDshInstallPrompt(): void;
   completeOnboarding(): Promise<void>;
@@ -41,6 +44,7 @@ export function useMainWindowSystemController(): MainWindowSystemController {
   const [dshInstallPromptOpen, setDshInstallPromptOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingLoading, setOnboardingLoading] = useState(true);
+  const [appUpdatePromptOpen, setAppUpdatePromptOpen] = useState(false);
   const { t } = useI18n();
   const updatePreferences = useAppUpdatePreferences();
   const updater = useAppUpdater({
@@ -116,8 +120,11 @@ export function useMainWindowSystemController(): MainWindowSystemController {
     onboardingOpen,
     onboardingLoading,
     updater,
+    appUpdatePromptOpen,
     dshInstaller,
     closeDshInstallPrompt,
+    openAppUpdatePrompt: () => setAppUpdatePromptOpen(true),
+    closeAppUpdatePrompt: () => setAppUpdatePromptOpen(false),
     markDshIntroDisplayed,
     completeDshInstallPrompt: () => setDshInstallPromptOpen(false),
     completeOnboarding,

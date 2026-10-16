@@ -12,12 +12,18 @@ import { useWorkspaceFocusStore } from '@features/workspace/store/workspace-focu
 import { getWorkColumnContentState } from '@features/workspace/store/work-column-content-state';
 import { activateBrowserColumnTab } from './browser-column-coordinator';
 
-export type WorkspaceContentLocation =
-  | { host: 'main-third'; state: 'active' | 'pending' }
-  | { host: 'browser-column'; tabId: string };
+import type { WorkspaceContentLocation } from '../model/surface-opening';
+export type { WorkspaceContentLocation } from '../model/surface-opening';
+
+export interface WorkspaceContentLocations {
+  workColumn: Extract<WorkspaceContentLocation, { host: 'main-third' }> | null;
+  browserColumn: Extract<WorkspaceContentLocation, { host: 'browser-column' }> | null;
+}
 
 export function workColumnTargetIdentity(target: WorkColumnTarget): ContentIdentity | null {
   switch (target.kind) {
+    case 'folder-collection':
+      return { kind: 'folder-collection', notebookId: target.notebookId, folderPath: target.folderPath };
     case 'media':
       return { kind: 'media', path: target.filePath };
     case 'external':
@@ -50,14 +56,20 @@ function currentCollectionView(location: WorkspaceContentLocation): string | nul
 }
 
 /**
- * Focus an already-open workspace target without opening a second surface.
- * The third column wins when legacy state already contains the target in both
- * columns; normal opens prevent that ambiguous state from being created.
+ * Focus a target in the requested host. Without a host preference, Work is
+ * preferred for legacy callers; callers that care about placement should pass
+ * the host explicitly because the same content may exist in both columns.
  */
 export function activateExistingWorkspaceContent(
   identity: ContentIdentity,
+  host?: WorkspaceContentLocation['host'],
 ): WorkspaceContentLocation | null {
-  const location = findExistingWorkspaceContent(identity);
+  const locations = findWorkspaceContentLocations(identity);
+  const location = host === 'main-third'
+    ? locations.workColumn
+    : host === 'browser-column'
+      ? locations.browserColumn
+      : locations.workColumn ?? locations.browserColumn;
   if (!location) return null;
 
   if (identity.kind === 'collection') {
@@ -79,8 +91,14 @@ export function activateExistingWorkspaceContent(
  */
 export async function activateExistingWorkspaceContentAsync(
   identity: ContentIdentity,
+  host?: WorkspaceContentLocation['host'],
 ): Promise<WorkspaceContentLocation | null> {
-  const location = findExistingWorkspaceContent(identity);
+  const locations = findWorkspaceContentLocations(identity);
+  const location = host === 'main-third'
+    ? locations.workColumn
+    : host === 'browser-column'
+      ? locations.browserColumn
+      : locations.workColumn ?? locations.browserColumn;
   if (!location) return null;
 
   if (location.host === 'main-third') {
@@ -101,20 +119,18 @@ export async function activateExistingWorkspaceContentAsync(
   return activated ? location : null;
 }
 
-/** Read the existing location without changing focus or active tab. */
-export function findExistingWorkspaceContent(
+/** Find matching content independently in each workspace host. */
+export function findWorkspaceContentLocations(
   identity: ContentIdentity,
-): WorkspaceContentLocation | null {
+): WorkspaceContentLocations {
   const key = contentIdentityKey(identity);
-  if (!key) return null;
+  if (!key) return { workColumn: null, browserColumn: null };
 
   const workColumn = getWorkColumnContentState();
   const pendingIdentity = workColumn.status === 'transitioning'
     ? workColumnTargetIdentity(workColumn.to)
     : null;
-  if (pendingIdentity && contentIdentityKey(pendingIdentity) === key) {
-    return { host: 'main-third', state: 'pending' };
-  }
+  const pendingMatch = pendingIdentity && contentIdentityKey(pendingIdentity) === key;
 
   const workTarget = workColumn.status === 'empty'
     ? null
@@ -122,9 +138,7 @@ export function findExistingWorkspaceContent(
       ? workColumn.from
       : workColumn.target;
   const workIdentity = workTarget ? workColumnTargetIdentity(workTarget) : null;
-  if (workIdentity && contentIdentityKey(workIdentity) === key) {
-    return { host: 'main-third', state: 'active' };
-  }
+  const activeMatch = workIdentity && contentIdentityKey(workIdentity) === key;
 
   const browserColumn = useBrowserColumnStore.getState();
   const matchingTabs = browserColumn.tabs.filter(
@@ -132,6 +146,29 @@ export function findExistingWorkspaceContent(
   );
   const tab = matchingTabs.find((candidate) => candidate.id === browserColumn.activeTabId)
     ?? matchingTabs[0];
-  if (!tab) return null;
-  return { host: 'browser-column', tabId: tab.id };
+  return {
+    workColumn: pendingMatch
+      ? { host: 'main-third', state: 'pending' }
+      : activeMatch ? { host: 'main-third', state: 'active' } : null,
+    browserColumn: tab ? { host: 'browser-column', tabId: tab.id } : null,
+  };
+}
+
+/** Legacy single-location lookup. Prefer host-specific location queries. */
+export function findExistingWorkspaceContent(
+  identity: ContentIdentity,
+): WorkspaceContentLocation | null {
+  const locations = findWorkspaceContentLocations(identity);
+  return locations.workColumn ?? locations.browserColumn;
+}
+
+/** Resolve an existing location in the requested host; unspecified opens target Work. */
+export function findWorkspaceContentForNavigation(
+  identity: ContentIdentity,
+  destination?: WorkspaceContentLocation['host'],
+): WorkspaceContentLocation | null {
+  const locations = findWorkspaceContentLocations(identity);
+  if (destination === 'main-third') return locations.workColumn;
+  if (destination === 'browser-column') return locations.browserColumn;
+  return locations.workColumn;
 }

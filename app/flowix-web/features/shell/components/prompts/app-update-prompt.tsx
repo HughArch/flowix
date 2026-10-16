@@ -9,9 +9,16 @@ import { UpdateProgress } from '@shared/ui/update-progress';
 import { FloatingPrompt } from '@features/shell/components/floating-prompt';
 import type { AppUpdaterState } from '@features/shell/public/system-api';
 
-export function AppUpdatePrompt({ updater }: { updater: AppUpdaterState }) {
+export function AppUpdatePrompt({
+  updater,
+  open,
+  onClose,
+}: {
+  updater: AppUpdaterState;
+  open: boolean;
+  onClose: () => void;
+}) {
   const { t } = useI18n();
-  const [dismissedVersion, setDismissedVersion] = useState<string | null>(null);
   const [installError, setInstallError] = useState(false);
   const [isCancelling, setIsCancelling] = useState(false);
   const update = updater.update;
@@ -20,10 +27,10 @@ export function AppUpdatePrompt({ updater }: { updater: AppUpdaterState }) {
   const isUpdating = isDownloading || isInstalling;
 
   useEffect(() => {
-    if (update?.version && update.version !== dismissedVersion) setInstallError(false);
-  }, [dismissedVersion, update?.version]);
+    if (update?.version) setInstallError(false);
+  }, [update?.version]);
 
-  if (!update || !update.notify || (updater.status !== 'available' && !isUpdating) || update.version === dismissedVersion) {
+  if (!open || !update || !update.notify || (updater.status !== 'available' && !isUpdating)) {
     return null;
   }
 
@@ -40,8 +47,8 @@ export function AppUpdatePrompt({ updater }: { updater: AppUpdaterState }) {
     if (isCancelling) return;
     setIsCancelling(true);
     try {
-      if (isUpdating) await updater.cancelNow();
-      setDismissedVersion(update.version);
+      if (isDownloading) await updater.cancelNow();
+      onClose();
     } finally {
       setIsCancelling(false);
     }
@@ -92,7 +99,7 @@ export function AppUpdatePrompt({ updater }: { updater: AppUpdaterState }) {
             {t('dialog.cancel')}
           </Button>
           <Button type="button" onClick={() => void handleInstall()} disabled={isUpdating}>
-            {isUpdating && <Loader2 className="h-4 w-4 animate-spin" />}
+            {isUpdating && <Loader2 className="h-4 w-4 flowix-spin" />}
             {isDownloading ? t('appUpdates.downloading') : isInstalling ? t('appUpdates.installing') : t('appUpdates.install')}
           </Button>
         </div>

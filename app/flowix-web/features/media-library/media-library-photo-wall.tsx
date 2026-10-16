@@ -4,7 +4,7 @@ import type { MediaResource } from '@platform/tauri/client';
 import { joinNotebookMemoPath } from '@/lib/path';
 import { toast } from '@/lib/toast';
 import { Button } from '@shared/ui/button';
-import { openMediaTarget } from '@features/workspace/use-cases/workspace-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { requestMediaPreview } from '@features/surface/media-preview-tasks';
 import imagePlaceholder from '@/assets/placeholder-image-card.jpg';
 import videoPlaceholder from '@/assets/placeholder-video-card.jpg';
@@ -38,7 +38,11 @@ function PhotoWallItem({ item, height, notebookId, notebookPath }: { item: Prepa
   const filePath = joinNotebookMemoPath(notebookPath, resource.relativePath);
   const title = resource.relativePath.split(/[\\/]/).pop() ?? resource.relativePath;
   return <button type="button" title={title} aria-label={`打开：${title}`} onClick={() => {
-    if (filePath) void openMediaTarget({ filePath, notebookId, notebookPath, resourceKind: resource.kind }).catch((reason) => toast.error(reason instanceof Error ? reason.message : '无法打开媒体资源'));
+    if (filePath) void openWorkspaceSurface({
+      host: 'browser-column',
+      target: { kind: 'media', filePath, notebookId, notebookPath, resourceKind: resource.kind },
+      options: { browserDisposition: 'focus-existing' },
+    }).catch((reason) => toast.error(reason instanceof Error ? reason.message : '无法打开媒体资源'));
   }} style={{ flexGrow: ratio, flexBasis: 0, height }} className="group relative min-w-0 overflow-hidden rounded-md bg-[var(--card)] text-left">
     <img src={!failed && preview ? preview : resource.kind === 'video' ? videoPlaceholder : imagePlaceholder} alt="" onError={() => setFailed(true)} className="absolute inset-0 h-full w-full object-contain" />
     {resource.kind === 'video' && <span className="pointer-events-none absolute inset-0 flex items-center justify-center"><span className="flex h-9 w-9 items-center justify-center rounded-full bg-black/40 text-white"><Play className="ml-0.5 h-4 w-4 fill-current" /></span></span>}

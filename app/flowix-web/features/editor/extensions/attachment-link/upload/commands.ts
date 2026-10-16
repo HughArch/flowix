@@ -35,13 +35,17 @@ function pickBrowserFiles(params: OpenFileDialogParams | undefined, signal: Abor
     });
 }
 
-export function createAttachmentCommands(ownerPath?: string, getNotebookId?: () => string | undefined): Partial<RawCommands> {
+export function createAttachmentCommands(
+    ownerPath?: string,
+    getNotebookId?: () => string | undefined,
+    getOwnerPath?: () => string | undefined,
+): Partial<RawCommands> {
+    const resolveOwnerPath = () => getOwnerPath ? getOwnerPath() : ownerPath;
     return {
         openFileDialog:
             (params?: OpenFileDialogParams) =>
             ({ editor }: { editor: Editor }) => {
                 if (editor.isDestroyed || !editor.isEditable) return false;
-                const notebookId = getNotebookId?.();
                 void runTrackedUpload(editor.view, async (signal) => {
                     if (isTauriApp()) {
                         const paths = await invoke<string[] | null>('select_files', {
@@ -49,12 +53,17 @@ export function createAttachmentCommands(ownerPath?: string, getNotebookId?: () 
                             multiple: params?.multiple ?? true,
                         });
                         if (!paths?.length || signal.aborted) return [];
-                        return (await createAttachmentUploadFromPaths(paths, { ownerPath, notebookId, signal, deduplicate: true })).assets;
+                        return (await createAttachmentUploadFromPaths(paths, {
+                            ownerPath: resolveOwnerPath(),
+                            notebookId: getNotebookId?.(),
+                            signal,
+                            deduplicate: true,
+                        })).assets;
                     }
                     const files = await pickBrowserFiles(params, signal);
                     if (signal.aborted) return [];
-                    return (await createAttachmentUpload(files, undefined, undefined, ownerPath, signal, true)).assets;
-                }, undefined, params?.replaceRange, ownerPath);
+                    return (await createAttachmentUpload(files, undefined, undefined, resolveOwnerPath(), signal, true)).assets;
+                }, undefined, params?.replaceRange, resolveOwnerPath());
                 return true;
             },
 
@@ -62,7 +71,7 @@ export function createAttachmentCommands(ownerPath?: string, getNotebookId?: () 
             (params: { files: File[]; position?: number }) =>
             ({ editor }: { editor: Editor }) => {
                 if (editor.isDestroyed || !editor.isEditable) return false;
-                void handleFileUpload(editor.view, params.files, params.position, undefined, ownerPath);
+                void handleFileUpload(editor.view, params.files, params.position, undefined, resolveOwnerPath());
                 return true;
             },
     };

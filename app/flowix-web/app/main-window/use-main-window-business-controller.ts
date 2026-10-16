@@ -15,13 +15,12 @@ import {
 import {
   clearPluginWorkbenchTarget,
   flushWorkspaceDocument,
-  openCollectionTarget,
-  openPluginWorkbench,
   reconcileDeletedNotebook,
   selectNotebook,
   useWorkspaceNavigationPhase,
   useWorkspaceTargetKind,
 } from '@features/workspace/public/main-window-api';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { switchFolderCollectionType, type CollectionType } from '@features/collection/public/folder-api';
 
 const logger = createLogger('main-window-business-controller');
@@ -132,7 +131,7 @@ export function useMainWindowBusinessController(): MainWindowBusinessController 
       return;
     }
     try {
-      await openPluginWorkbench(plugin);
+      await openWorkspaceSurface({ host: 'main-third', target: { kind: 'plugin-workbench', plugin } });
       setMemoListVisible(true);
     } catch (error) {
       logger.warn('open plugin failed to clear document', { error });
@@ -145,10 +144,11 @@ export function useMainWindowBusinessController(): MainWindowBusinessController 
   ) => {
     try {
       const collectionId = await switchFolderCollectionType(target.filePath, target.notebookPath, type);
-      await openCollectionTarget(
-        { notebookId: target.notebookId, collectionId, viewId: null },
-        { destination: 'main-third', history: 'skip' },
-      );
+      await openWorkspaceSurface({
+        host: 'main-third',
+        target: { kind: 'collection-reference', notebookId: target.notebookId, collectionId, viewId: null, collectionKind: type },
+        options: { history: 'skip', refresh: true },
+      });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '切换视图类型失败');
     }

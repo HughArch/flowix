@@ -10,7 +10,6 @@ use crate::lock_utils::read_lock;
 use flowix_core::memo_file::{atomic_write_bytes, FileLockIntent, IsMd, MemoVersionSource, PathVersionMeta};
 
 use crate::app::state::AppState;
-use crate::commands::helpers::start_security_bookmark_access;
 use crate::watcher::runtime::mark_self_write_for;
 
 
@@ -35,7 +34,6 @@ pub fn list_path_versions(notebook_id: String, relative_path: String, state: Sta
 #[tauri::command]
 pub fn create_path_version(notebook_id: String, relative_path: String, source: Option<MemoVersionSource>, state: State<AppState>) -> Option<PathVersionMeta> {
     let path = path_archive_document(&state, &notebook_id, &relative_path)?;
-    start_security_bookmark_access(&state, &path);
     let memo_file = read_lock(&state.memo_file, "memo_file");
     memo_file.with_file_write(&notebook_id, &path, FileLockIntent::Existing,
         "create_path_version", |locked_path| {
@@ -49,7 +47,6 @@ pub fn create_path_version(notebook_id: String, relative_path: String, source: O
 pub fn restore_path_version(notebook_id: String, relative_path: String, version_id: String,
     expected_content: Option<String>, state: State<AppState>, app: AppHandle) -> Option<String> {
     let path = path_archive_document(&state, &notebook_id, &relative_path)?;
-    start_security_bookmark_access(&state, &path);
     let memo_file = read_lock(&state.memo_file, "memo_file");
     let target = memo_file.read_path_version(&notebook_id, &relative_path, &version_id)?;
     let restored = memo_file.with_file_write(&notebook_id, &path, FileLockIntent::Existing,

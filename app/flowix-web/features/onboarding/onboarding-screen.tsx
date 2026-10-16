@@ -231,7 +231,7 @@ export function OnboardingScreen({ onFinish }: OnboardingScreenProps) {
             disabled={isCreatingNotebook || isFinishing || !notebookName.trim() || (!createdNotebook && !notebookPath && !defaultPath)}
           >
             {isCreatingNotebook || isFinishing
-              ? <><LoaderCircle size={17} className="animate-spin" aria-hidden="true" /> 正在进入</>
+              ? <><LoaderCircle size={17} className="flowix-spin" aria-hidden="true" /> 正在进入</>
               : <>{createdNotebook ? t('error.retry') : '创建并开始使用'} <ChevronRight size={14} className="-ml-1" aria-hidden="true" /></>}
           </button>
         </div>

@@ -11,6 +11,8 @@ const mocks = vi.hoisted(() => ({
   hydrateInstance: vi.fn(),
   selectAgentConversation: vi.fn(),
   setDesiredTarget: vi.fn(),
+  clearAgentConversation: vi.fn(),
+  clearDocument: vi.fn(),
   agentRestore: {
     selectedInstanceId: 'conversation-a' as string | null,
     detailOpen: true,
@@ -28,6 +30,7 @@ vi.mock('@features/document/store/document-store', () => ({
   useDocumentStore: {
     getState: () => ({
       openAgentConversation: mocks.openAgentConversation,
+      clearDocument: mocks.clearDocument,
       activeAgentConversationId: mocks.activeAgentConversationId,
     }),
   },
@@ -51,6 +54,7 @@ vi.mock('@features/workspace/store/workspace-restore-store', () => ({
         : null,
       selectAgentConversation: mocks.selectAgentConversation,
       setDesiredTarget: mocks.setDesiredTarget,
+      clearAgentConversation: mocks.clearAgentConversation,
     }),
   },
 }));
@@ -75,6 +79,8 @@ describe('agent conversation navigation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.activeFilter = 'all';
+    mocks.activeAgentConversationId = 'conversation-a';
+    mocks.clearDocument.mockImplementation(async () => { mocks.activeAgentConversationId = ''; });
     mocks.hydrateInstance.mockResolvedValue({ instanceId: 'conversation-a' });
     mocks.agentRestore = {
       selectedInstanceId: 'conversation-a',
@@ -95,7 +101,7 @@ describe('agent conversation navigation', () => {
     expect(mocks.selectAgentConversation).toHaveBeenCalledWith('conversation-a', true);
   });
 
-  it('activates an existing browser-column conversation without reopening it in the third column', async () => {
+  it('opens an existing browser-column conversation in Work for a default Work request', async () => {
     useBrowserColumnStore.getState().openTab({
       id: 'agent:conversation-a',
       title: 'Conversation A',
@@ -106,13 +112,22 @@ describe('agent conversation navigation', () => {
 
     await selectAndOpenAgentConversation('conversation-a');
 
-    expect(mocks.openAgentConversation).not.toHaveBeenCalled();
+    expect(mocks.openAgentConversation).toHaveBeenCalledWith('conversation-a');
     expect(useBrowserColumnStore.getState()).toMatchObject({
       visible: true,
       activeTabId: 'agent:conversation-a',
     });
-    expect(useWorkspaceFocusStore.getState().focusedHostId).toBe('browser-column');
-    expect(mocks.selectAgentConversation).toHaveBeenCalledWith('conversation-a', false);
+    expect(useWorkspaceFocusStore.getState().focusedHostId).toBe('main-third');
+    expect(mocks.selectAgentConversation).toHaveBeenCalledWith('conversation-a', true);
+  });
+
+  it('clears an absent persisted conversation after session database rebuild', async () => {
+    mocks.hydrateInstance.mockResolvedValue(null);
+    const { restoreAgentConversationWorkspace } = await import('./agent-conversation-navigation');
+    await restoreAgentConversationWorkspace();
+    expect(mocks.clearDocument).toHaveBeenCalledOnce();
+    expect(mocks.clearAgentConversation).toHaveBeenCalledOnce();
+    expect(mocks.openAgentConversation).not.toHaveBeenCalled();
   });
 
   it('restores the work-column conversation even when the middle column is on notes', async () => {

@@ -32,8 +32,8 @@ export type ExternalDocumentWriteOutcome =
   | { status: 'error'; message: string };
 
 export const externalDocuments = {
-  mimeType: (filePath: string) =>
-    invoke<string>('get_external_document_mime_type', { filePath }),
+  detectTextContent: (filePath: string, scopePath?: string | null) =>
+    invoke<boolean>('detect_external_document_text', { filePath, scopePath: scopePath ?? null }),
   openWithDefaultApp: (filePath: string, scopePath?: string | null) =>
     invoke<void>('open_file_with_default_app', { filePath, scopePath: scopePath ?? null }),
   read: (filePath: string, scopePath?: string | null, maxBytes?: number) =>
@@ -166,8 +166,8 @@ export const notebooks = {
     invoke<NotebookSetupJob | null>('get_notebook_template_setup_status', { notebookId }),
   startTemplateSetup: (notebookId: string, retry = false) =>
     invoke<NotebookSetupJob | null>('start_notebook_template_setup', { notebookId, retry }),
-  createFromCloud: (id: string, name: string, path: string, icon?: string | null) =>
-    invoke<NotebookRecord>('create_notebook_from_cloud', { id, name, path, icon }),
+  createFromCloud: (id: string, name: string, path: string, icon?: string | null, activate = true) =>
+    invoke<NotebookRecord>('create_notebook_from_cloud', { id, name, path, icon, activate }),
   startImport: (notebookId: string) =>
     invoke<void>('start_notebook_import', { notebookId }),
   getImportStatus: (notebookId: string) =>

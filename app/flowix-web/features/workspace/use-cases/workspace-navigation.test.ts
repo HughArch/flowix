@@ -1,6 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PluginDescriptor } from '@platform/tauri/client';
 import type { WorkColumnTarget } from '@features/workspace/store/work-column-target';
+import { registerWorkspaceSurfaceLifecycle, registerWorkspaceSurfaceHostView } from '@features/workspace/public/surface-lifecycle-api';
 
 function pluginWorkbenchTarget(id: string): Extract<WorkColumnTarget, { kind: 'plugin-workbench' }> {
   return {
@@ -88,11 +89,23 @@ vi.mock('@features/memo/store/note-store', () => ({
 }));
 
 import {
+  captureWorkspaceRestoreTarget,
   closePluginWorkbench,
+  flushWorkspaceDocument,
   openPluginWorkbench,
 } from './workspace-navigation';
 
 describe('workspace navigation', () => {
+  it('clears a restored notebook target after registry rebuild', async () => {
+    const { useWorkspaceRestoreStore } = await import('../store/workspace-restore-store');
+    useWorkspaceRestoreStore.getState().setDesiredTarget({
+      kind: 'table', notebookId: 'removed-notebook', notebookPath: '/old', filePath: '/old/table.csv',
+    });
+    mocks.memoState.notebooks = [];
+    expect(captureWorkspaceRestoreTarget()).toBeNull();
+    expect(useWorkspaceRestoreStore.getState().desiredTarget).toBeNull();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.clearDocument.mockResolvedValue(undefined);
@@ -115,6 +128,36 @@ describe('workspace navigation', () => {
     mocks.memoState.setMemos.mockClear();
     mocks.memoState.loadNotebooks.mockResolvedValue(undefined);
     mocks.memoState.loadMemos.mockResolvedValue(undefined);
+  });
+
+  it('flushes the Work view through its registered surface lifecycle', async () => {
+    const flush = vi.fn().mockResolvedValue(true);
+    mocks.documentState.activeExternalSession = {
+      fileIdentity: { displayId: 'work-view:one', path: '/notes/one.md' },
+      scopePath: null,
+      transitionId: 1,
+    };
+    registerWorkspaceSurfaceLifecycle('work-view:one', { status: 'ready', flush });
+
+    await expect(flushWorkspaceDocument()).resolves.toBeUndefined();
+
+    expect(flush).toHaveBeenCalledOnce();
+    expect(mocks.flushDocumentPath).not.toHaveBeenCalled();
+    registerWorkspaceSurfaceLifecycle('work-view:one', null);
+  });
+
+  it('flushes a mounted collection surface without a DocumentContainer session', async () => {
+    const flush = vi.fn().mockResolvedValue(false);
+    const release = registerWorkspaceSurfaceHostView('main-third', 'collection-session');
+    registerWorkspaceSurfaceLifecycle('collection-session', { status: 'ready', flush });
+    try {
+      await expect(flushWorkspaceDocument()).rejects.toThrow('Document flush did not complete');
+      expect(flush).toHaveBeenCalledOnce();
+      expect(mocks.flushDocumentPath).not.toHaveBeenCalled();
+    } finally {
+      release();
+      registerWorkspaceSurfaceLifecycle('collection-session', null);
+    }
   });
 
   it('opens a plugin workbench after the document has been cleared', async () => {

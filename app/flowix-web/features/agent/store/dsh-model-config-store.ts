@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { AgentConfig } from "@platform/tauri/client/agent";
 import { deepseekHarness } from "@platform/tauri/client";
+import { useAgentDataStore } from "@features/agent/store/agent-data-store";
 
 export interface DshModelConfigSnapshot {
   model: AgentConfig;
@@ -37,4 +38,5 @@ export function loadDshModelConfigs(): Promise<DshModelConfigSnapshot[]> {
 
 export function invalidateDshModelConfigs(): void {
   useDshModelConfigStore.getState().setConfigs(null);
+  useAgentDataStore.getState().invalidateModelCatalog("dsh");
 }

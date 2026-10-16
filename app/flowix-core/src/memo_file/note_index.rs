@@ -2297,13 +2297,44 @@ impl MemoFile {
     }
 
     pub(crate) fn open_note_index_connection(&self, notebook_id: &str) -> io::Result<Connection> {
+        self.open_note_index_connection_inner(notebook_id, false)
+    }
+
+    /// Upgrade an existing note index only from the version-initialization worker.
+    pub fn initialize_note_index_schema(&self, notebook_id: &str) -> io::Result<()> {
+        self.open_note_index_connection_inner(notebook_id, true)?;
+        Ok(())
+    }
+
+    fn open_note_index_connection_inner(
+        &self,
+        notebook_id: &str,
+        run_legacy_migrations: bool,
+    ) -> io::Result<Connection> {
+        let path = self.notebook_db_path(notebook_id)?;
+        if run_legacy_migrations {
+            super::with_database_rebuild(&path, || {
+                self.open_note_index_connection_unchecked(notebook_id, true)
+            })
+        } else {
+            self.open_note_index_connection_unchecked(notebook_id, false)
+        }
+    }
+
+    fn open_note_index_connection_unchecked(
+        &self,
+        notebook_id: &str,
+        run_legacy_migrations: bool,
+    ) -> io::Result<Connection> {
         let path = self.notebook_db_path(notebook_id)?;
         let mut conn = Connection::open(path).map_err(io::Error::other)?;
         conn.busy_timeout(std::time::Duration::from_secs(10))
             .map_err(io::Error::other)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(io::Error::other)?;
-        discard_legacy_v2_note_projection(&mut conn)?;
+        if run_legacy_migrations {
+            discard_legacy_v2_note_projection(&mut conn)?;
+        }
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; \
             CREATE TABLE IF NOT EXISTS note_index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); \
             CREATE TABLE IF NOT EXISTS notes (relative_path TEXT PRIMARY KEY, \
@@ -2315,8 +2346,6 @@ impl MemoFile {
             CREATE TABLE IF NOT EXISTS note_tags (relative_path TEXT NOT NULL REFERENCES notes(relative_path) ON DELETE CASCADE, \
               tag TEXT NOT NULL, PRIMARY KEY(relative_path, tag)); \
             CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag); \
-            CREATE INDEX IF NOT EXISTS idx_notes_created_page ON notes(favorited DESC, created_at DESC, relative_path DESC); \
-            CREATE INDEX IF NOT EXISTS idx_notes_updated_page ON notes(favorited DESC, updated_at DESC, relative_path DESC); \
             CREATE TABLE IF NOT EXISTS note_todos (relative_path TEXT NOT NULL REFERENCES notes(relative_path) ON DELETE CASCADE, \
               position INTEGER NOT NULL, todo_id TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL, \
               priority TEXT NOT NULL DEFAULT '', time_range TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT '', \
@@ -2336,55 +2365,59 @@ impl MemoFile {
             );",
         )
         .map_err(io::Error::other)?;
-        for (column, definition) in [
-            ("priority", "TEXT NOT NULL DEFAULT ''"),
-            ("time_range", "TEXT NOT NULL DEFAULT ''"),
-            ("owner", "TEXT NOT NULL DEFAULT ''"),
-            ("assignee", "TEXT NOT NULL DEFAULT ''"),
-            ("created_at", "INTEGER NOT NULL DEFAULT 0"),
-            ("updated_at", "INTEGER NOT NULL DEFAULT 0"),
-        ] {
-            let mut statement = conn
-                .prepare("PRAGMA table_info(note_todos)")
-                .map_err(io::Error::other)?;
-            let names = statement
-                .query_map([], |row| row.get::<_, String>(1))
-                .map_err(io::Error::other)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(io::Error::other)?;
-            if !names.iter().any(|name| name == column) {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE note_todos ADD COLUMN {column} {definition}"
-                ))
-                .map_err(io::Error::other)?;
+        if run_legacy_migrations {
+            for (column, definition) in [
+                ("priority", "TEXT NOT NULL DEFAULT ''"),
+                ("time_range", "TEXT NOT NULL DEFAULT ''"),
+                ("owner", "TEXT NOT NULL DEFAULT ''"),
+                ("assignee", "TEXT NOT NULL DEFAULT ''"),
+                ("created_at", "INTEGER NOT NULL DEFAULT 0"),
+                ("updated_at", "INTEGER NOT NULL DEFAULT 0"),
+            ] {
+                let mut statement = conn
+                    .prepare("PRAGMA table_info(note_todos)")
+                    .map_err(io::Error::other)?;
+                let names = statement
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .map_err(io::Error::other)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(io::Error::other)?;
+                if !names.iter().any(|name| name == column) {
+                    conn.execute_batch(&format!(
+                        "ALTER TABLE note_todos ADD COLUMN {column} {definition}"
+                    ))
+                    .map_err(io::Error::other)?;
+                }
+            }
+            for (column, definition) in [
+                ("thumbnail", "TEXT"),
+                ("created_at", "INTEGER NOT NULL DEFAULT 0"),
+                ("updated_at", "INTEGER NOT NULL DEFAULT 0"),
+                ("favorited", "INTEGER NOT NULL DEFAULT 0"),
+                ("icon", "TEXT"),
+                ("colors_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("filename", "TEXT NOT NULL DEFAULT ''"),
+                ("filename_lower", "TEXT NOT NULL DEFAULT ''"),
+            ] {
+                let mut statement = conn
+                    .prepare("PRAGMA table_info(notes)")
+                    .map_err(io::Error::other)?;
+                let names = statement
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .map_err(io::Error::other)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(io::Error::other)?;
+                if !names.iter().any(|name| name == column) {
+                    conn.execute_batch(&format!(
+                        "ALTER TABLE notes ADD COLUMN {column} {definition}"
+                    ))
+                    .map_err(io::Error::other)?;
+                }
             }
         }
-        for (column, definition) in [
-            ("thumbnail", "TEXT"),
-            ("created_at", "INTEGER NOT NULL DEFAULT 0"),
-            ("updated_at", "INTEGER NOT NULL DEFAULT 0"),
-            ("favorited", "INTEGER NOT NULL DEFAULT 0"),
-            ("icon", "TEXT"),
-            ("colors_json", "TEXT NOT NULL DEFAULT '[]'"),
-            ("filename", "TEXT NOT NULL DEFAULT ''"),
-            ("filename_lower", "TEXT NOT NULL DEFAULT ''"),
-        ] {
-            let mut statement = conn
-                .prepare("PRAGMA table_info(notes)")
-                .map_err(io::Error::other)?;
-            let names = statement
-                .query_map([], |row| row.get::<_, String>(1))
-                .map_err(io::Error::other)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(io::Error::other)?;
-            if !names.iter().any(|name| name == column) {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE notes ADD COLUMN {column} {definition}"
-                ))
-                .map_err(io::Error::other)?;
-            }
-        }
-        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_notes_filename_page ON notes(favorited DESC, filename_lower ASC, filename ASC, relative_path ASC);")
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_notes_created_page ON notes(favorited DESC, created_at DESC, relative_path DESC); \
+            CREATE INDEX IF NOT EXISTS idx_notes_updated_page ON notes(favorited DESC, updated_at DESC, relative_path DESC); \
+            CREATE INDEX IF NOT EXISTS idx_notes_filename_page ON notes(favorited DESC, filename_lower ASC, filename ASC, relative_path ASC);")
             .map_err(io::Error::other)?;
         conn.execute(
             "INSERT INTO note_index_meta (key, value) VALUES ('schema_version', ?1) \
@@ -2400,10 +2433,18 @@ impl MemoFile {
             )
             .map_err(io::Error::other)?;
         if stored_version != SCHEMA_VERSION.to_string() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unsupported Note index schema version: {stored_version}"),
-            ));
+            let legacy_version = stored_version.parse::<i64>().unwrap_or(i64::MAX);
+            if !run_legacy_migrations || legacy_version > SCHEMA_VERSION {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unsupported Note index schema version: {stored_version}"),
+                ));
+            }
+            conn.execute(
+                "UPDATE note_index_meta SET value = ?1 WHERE key = 'schema_version'",
+                params![SCHEMA_VERSION.to_string()],
+            )
+            .map_err(io::Error::other)?;
         }
         let stored_notebook: Option<String> = conn
             .query_row(

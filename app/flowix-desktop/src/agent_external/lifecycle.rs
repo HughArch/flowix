@@ -233,7 +233,7 @@ mod tests {
             image_paths: Vec::new(),
             run_id: None,
             system_reminder_directory: None,
-            agent_type: Some("claude".to_string()),
+            agent_type: Some("claudecode".to_string()),
             runtime_config: None,
             permission_mode: None,
             codex_model: None,

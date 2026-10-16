@@ -120,9 +120,15 @@ function asCatalogItem(value: unknown): CodexSkillCatalogItem | null {
 /** Read project-scoped Codex skills without creating a model turn. */
 export async function listCodexSkills(cwd: string): Promise<readonly ComposerSlashSkill[]> {
   if (!cwd.trim()) return [];
+  return parseCodexSkills(await listCodexSkillCatalog(cwd));
+}
+
+/** Read the full Codex skill catalog, including source metadata used by settings. */
+export async function listCodexSkillCatalog(cwd: string): Promise<readonly CodexSkillCatalogItem[]> {
+  if (!cwd.trim()) return [];
   const capabilities = await agent.getCodexProjectCapabilities(cwd);
   if (!capabilities.skills.ok) throw new Error(capabilities.skills.error ?? "Failed to load Codex skills");
-  return parseCodexSkills(capabilities.skills.value);
+  return parseCodexSkillCatalog(capabilities.skills.value);
 }
 
 /** Native Codex commands occupy the same thread as model turns and must keep

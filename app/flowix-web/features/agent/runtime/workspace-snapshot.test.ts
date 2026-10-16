@@ -63,9 +63,24 @@ vi.mock("@features/memo/store/note-store", () => ({
   },
 }));
 
-vi.mock("@features/agent/store/agent-access-store", () => ({
-  useAgentAccessStore: { getState: () => ({ config: state.accessConfig }) },
-}));
+vi.mock("@features/agent/store/agent-data-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@features/agent/store/agent-data-store")>();
+  return { ...actual, useAgentDataStore: Object.assign(
+    (selector: Parameters<typeof actual.useAgentDataStore>[0]) => actual.useAgentDataStore(selector),
+    actual.useAgentDataStore,
+    { getState: () => ({
+      ...actual.useAgentDataStore.getState(),
+      workspaceActions: {
+        ...actual.useAgentDataStore.getState().workspaceActions,
+        getNotebookFiles: () => ({
+          workspace: null,
+          folders: state.accessConfig.defaults.files["nb-1"].folders,
+          notebooks: [],
+        }),
+      },
+    }) },
+  ) };
+});
 
 describe("conversation workspace snapshot", () => {
   beforeEach(() => {

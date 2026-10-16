@@ -92,3 +92,5 @@ export async function installAppUpdate(
 export async function cancelAppUpdate(): Promise<boolean> {
   return await invoke<boolean>('cancel_app_update');
 }
+
+export { relaunch };

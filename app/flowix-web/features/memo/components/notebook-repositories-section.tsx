@@ -16,6 +16,13 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import { ListSurfaceSpinner } from '@shared/ui/list-surface';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuSeparator, ContextMenuSubmenu, ContextMenuTrigger } from '@shared/ui/context-menu';
 import { NotebookCopyContextMenu } from './notebook-copy-context-menu';
+import {
+  normalizeNotebookMoveFailure,
+  showNotebookMoveFailureToasts,
+  type NotebookMoveFailure,
+} from './notebook-move-failure-toast';
+import { getNotebookFolderImportErrorKey } from './notebook-folder-import';
+import { clearWorkspaceTargetsForDeletedDirectory } from '@features/workspace/public/shell-api';
 import { useFolderTree } from './use-folder-tree';
 import { TREE_EDGE_GUTTER, INDENT_PER_LEVEL } from './notebook-tree-layout';
 
@@ -81,6 +88,14 @@ function AgentRepositoryItem({
         ? await files.deleteFolder(deleting.fullPath, repository.path)
         : await files.delete(deleting.fullPath, repository.path);
       if (!ok) throw new Error('delete failed');
+      if (deleting.type === 'folder') {
+        try {
+          await clearWorkspaceTargetsForDeletedDirectory(deleting.fullPath);
+        } catch (cleanupError) {
+          logger.warn('folder deleted, but workspace targets could not be fully cleared', { cleanupError, folderPath: deleting.fullPath });
+          toast.error(t('memo.fileTree.deleteFolderViewCleanupFailed'));
+        }
+      }
       await tree.refresh(parentDirectoryPath(deleting.fullPath, repository.path));
       toast.success(t('memo.fileTree.deleted', { name: deleting.name }));
       setDeleting(null);
@@ -92,17 +107,50 @@ function AgentRepositoryItem({
   const importIntoRepository = async (targetDirectoryPath: string) => {
     const selectedPaths = await dialogs.selectFiles({ multiple: true });
     if (!selectedPaths?.length) return;
-    let failed = 0;
+    const failures: NotebookMoveFailure[] = [];
     for (const sourcePath of selectedPaths) {
       try {
         await files.importFile(sourcePath, targetDirectoryPath, repository.path);
       } catch (error) {
         logger.warn('importing file into access space failed', { error, sourcePath, targetDirectoryPath });
-        failed += 1;
+        failures.push(normalizeNotebookMoveFailure(error));
       }
     }
     await tree.refresh(targetDirectoryPath);
-    if (failed) toast.error(t('memo.fileTree.movePartialFailed', { moved: selectedPaths.length - failed, failed }));
+    if (failures.length > 0) {
+      showNotebookMoveFailureToasts(
+        t,
+        selectedPaths.length - failures.length,
+        failures.length,
+        failures,
+      );
+    }
+  };
+  const importFolderIntoRepository = async (targetDirectoryPath: string) => {
+    let sourceDirectoryPath: string | null | undefined;
+    let progressToastId: string | number | undefined;
+    try {
+      sourceDirectoryPath = await dialogs.selectImportDirectory();
+      if (!sourceDirectoryPath) return;
+      progressToastId = toast.info(t('memo.fileTree.importFolderInProgress'), { duration: Number.POSITIVE_INFINITY });
+      await files.importFolder(sourceDirectoryPath, targetDirectoryPath, repository.path);
+      await tree.refresh(targetDirectoryPath);
+      toast.dismiss(progressToastId);
+      progressToastId = undefined;
+      toast.success(t('memo.fileTree.importFolderSuccess'));
+    } catch (error) {
+      logger.warn('importing folder into access space failed', { error, sourceDirectoryPath, targetDirectoryPath });
+      if (sourceDirectoryPath) {
+        try {
+          await tree.refresh(targetDirectoryPath);
+        } catch (refreshError) {
+          logger.warn('refreshing access space after folder import failed', { refreshError, targetDirectoryPath });
+        }
+      }
+      toast.error(t(getNotebookFolderImportErrorKey(error)));
+    } finally {
+      if (progressToastId !== undefined) toast.dismiss(progressToastId);
+    }
   };
   const renderRepositoryItems = (items: DocTreeItem[], depth: number): ReactNode[] => items.map((item) => {
     const isFolder = item.type === 'folder';
@@ -205,9 +253,12 @@ function AgentRepositoryItem({
       </ContextMenuTrigger>
       <ContextMenuContent className="w-[180px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
         {!isFolder && onOpenInNewTab && <ContextMenuItem onClick={() => onOpenInNewTab(item.fullPath)} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><SquareSplitHorizontalIcon className="mr-2 h-4 w-4" aria-hidden="true" />{t('memo.fileTree.openInRight')}</ContextMenuItem>}
-        <ContextMenuSubmenu label={t('memo.create.more')} icon={<Plus className="h-4 w-4" aria-hidden="true" />}>
+        <ContextMenuSubmenu label={t('memo.fileTree.import')} icon={<Plus className="h-4 w-4" aria-hidden="true" />}>
           <ContextMenuItem onClick={() => { void importIntoRepository(isFolder ? item.fullPath : parentDirectoryPath(item.fullPath, repository.path)); }} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
-            {t('memo.fileTree.import')}
+            {t('memo.fileTree.importFiles')}
+          </ContextMenuItem>
+          <ContextMenuItem onClick={() => { void importFolderIntoRepository(isFolder ? item.fullPath : parentDirectoryPath(item.fullPath, repository.path)); }} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
+            {t('memo.fileTree.importFolder')}
           </ContextMenuItem>
         </ContextMenuSubmenu>
         <ContextMenuItem onClick={() => setRenaming({ item, value: item.type === 'document' && (isTableDocumentFilename(item.name) || isMediaLibraryFilename(item.name)) ? displayTitleFromFilename(item.name) : item.name })} className="h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><PencilSimpleIcon className="mr-2 h-4 w-4" aria-hidden="true" />{t('memo.fileTree.rename')}</ContextMenuItem>
@@ -403,4 +454,3 @@ export function AgentRepositoriesSection({
     </section>
   );
 }
-

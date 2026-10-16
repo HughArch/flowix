@@ -105,12 +105,11 @@ describe("createAgentComposerDom click-to-focus delegation", () => {
     disposeAgentComposerDom(parts);
   });
 
-  it("focuses the textarea when clicking inside composer-images container", () => {
+  it("focuses the editor when clicking inside the factory-owned input row", () => {
     const parts = createAgentComposerDom({ t: noopT });
     document.body.append(parts.composer);
-    parts.composerImages.hidden = false;
     const imageSlot = document.createElement("span");
-    parts.composerImages.append(imageSlot);
+    parts.inputRow.append(imageSlot);
 
     dispatchPointerDown(imageSlot);
 

@@ -1,6 +1,6 @@
+use sha2::{Digest, Sha256};
 use std::fs::File;
 use std::io::{self, Read, Seek, SeekFrom};
-use sha2::{Digest, Sha256};
 
 pub(super) fn fingerprint(file: &mut File) -> io::Result<(String, u64)> {
     file.seek(SeekFrom::Start(0))?;

@@ -5,7 +5,7 @@ import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import type { EditorView, NodeView as ProseMirrorNodeView } from '@tiptap/pm/view';
 import { X } from 'lucide-react';
 import { ArrowUpRightIcon, ArrowsLeftRightIcon } from '@phosphor-icons/react';
-import { openCollectionTarget } from '@features/workspace/use-cases/workspace-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { useAppLanguage } from '@features/preferences/public/runtime-api';
 import { I18nProvider } from '@/lib/i18n/provider';
@@ -168,7 +168,10 @@ function TableReferenceSurface({ attrs, editable, onViewChange, onRelativePathCh
   const openOriginal = useCallback(async () => {
     if (!notebook || !attrs.collectionId) return;
     try {
-      await openCollectionTarget({ notebookId: notebook.id, collectionId: attrs.collectionId, viewId: attrs.viewId });
+      await openWorkspaceSurface({
+        host: 'main-third',
+        target: { kind: 'collection-reference', notebookId: notebook.id, collectionId: attrs.collectionId, viewId: attrs.viewId, collectionKind: 'table' },
+      });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '无法打开多维表格');
     }

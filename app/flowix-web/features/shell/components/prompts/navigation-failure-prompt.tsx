@@ -46,7 +46,7 @@ export function NavigationFailurePrompt() {
           </div>
         </div>
         <Button type="button" size="sm" disabled={retrying} onClick={() => void handleRetry()}>
-          {retrying ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : null}
+          {retrying ? <Loader2 className="h-3.5 w-3.5 flowix-spin" /> : null}
           {t('error.retry')}
         </Button>
       </div>

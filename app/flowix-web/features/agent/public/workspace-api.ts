@@ -1,7 +1,5 @@
-import { resolveNotebookAgentFiles } from '@/lib/agent-access-defaults';
-import { useAgentAccessStore } from '@features/agent/store/agent-access-store';
+import { useAgentDataStore } from '@features/agent/store/agent-data-store';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
-import { normalizeWorkspacePath } from '@features/agent/runtime/workspace-path';
 
 export interface WorkspaceAgentRepository {
   path: string;
@@ -21,12 +19,10 @@ export function hasWorkspaceAgentConversation(instanceId: string): boolean {
 
 /** Resolve resource roots without exposing Agent access configuration stores. */
 export function getWorkspaceAgentResourceFolders(notebookId: string | null): string[] {
-  const access = useAgentAccessStore.getState();
-  return resolveNotebookAgentFiles(
-    access.config,
-    access.notebookConfigs,
-    notebookId,
-  )?.folders ?? [];
+  if (!notebookId) return [];
+  return useAgentDataStore.getState().workspace.byNotebookId[notebookId]
+    ?.addDirs.filter((directory) => directory.enabled && !directory.missing)
+    .map((directory) => directory.path) ?? [];
 }
 
 /** Resolve the same notebook-scoped repository list used by Agent access settings. */
@@ -34,29 +30,12 @@ export function getWorkspaceAgentRepositories(
   notebookId: string | null,
 ): WorkspaceAgentRepository[] {
   if (!notebookId) return [];
-  const access = useAgentAccessStore.getState();
-  const paths = resolveNotebookAgentFiles(
-    access.config,
-    access.notebookConfigs,
-    notebookId,
-  )?.folders ?? [];
-  const localDirectories = access.notebookConfigs[notebookId]?.addDirs ?? [];
-  return paths.map((path) => {
-    const key = normalizeWorkspacePath(path).toLowerCase();
-    const local = localDirectories.find(
-      (item) => normalizeWorkspacePath(item.path).toLowerCase() === key,
-    );
-    const entry = access.config.entries.find(
-      (item) => normalizeWorkspacePath(item.path).toLowerCase() === key,
-    );
-    const trimmed = path.replace(/[\\/]+$/, '');
-    return {
-      path,
-      name: local?.label?.trim()
-        || entry?.name?.trim()
-        || trimmed.split(/[\\/]/).pop()
-        || trimmed,
-      missing: entry ? entry.missing === true : true,
-    };
-  });
+  const notebook = useAgentDataStore.getState().workspace.byNotebookId[notebookId];
+  return (notebook?.addDirs ?? [])
+    .filter((directory) => directory.enabled && !directory.missing)
+    .map((directory) => ({
+      path: directory.path,
+      name: directory.label,
+      missing: directory.missing,
+    }));
 }

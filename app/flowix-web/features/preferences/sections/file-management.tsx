@@ -9,6 +9,7 @@ import { NotebookTreeResourceIcon } from '@features/memo/components/file-type-ic
 import { ResourceFolderIcon } from '@features/surface/resource-file-icon';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { FIELD_TITLE_CLASS, SectionHeader } from '@features/preferences/sections/primitives';
+import { FlowixCheckbox } from '@shared/ui/flowix-checkbox';
 
 type NotebookOption = Awaited<ReturnType<typeof notebooks.getAll>>[number];
 type NotebookSettingsTreeEntry = Awaited<ReturnType<typeof files.getNotebookSettingsTree>>[number];
@@ -357,13 +358,13 @@ export function FileManagementSection({ hideSectionHeader = false }: { hideSecti
                   </div>
                   <span className="w-16 truncate text-center text-xs text-[var(--muted-foreground)]">{t(typeLabel)}</span>
                   <div className="flex w-20 justify-center">
-                    {entry.isDirectory && !entry.hidden && !entry.defaultHidden && !entry.locked && <input type="checkbox" aria-label={`${t('preferences.fileManagement.noteLocationTitle')}: ${entry.relativePath || notebookDirectoryName}`} className="h-4 w-4 accent-[var(--brand)]" checked={isDefaultLocation} disabled={!preferences || locationDisabled || savingFolderSettings} onChange={() => updateNotebookPreferences({ defaultCreateFolder: isDefaultLocation ? null : entry.relativePath || null })} />}
+                    {entry.isDirectory && !entry.hidden && !entry.defaultHidden && !entry.locked && <FlowixCheckbox aria-label={`${t('preferences.fileManagement.noteLocationTitle')}: ${entry.relativePath || notebookDirectoryName}`} checked={isDefaultLocation} disabled={!preferences || locationDisabled || savingFolderSettings} onCheckedChange={(checked) => updateNotebookPreferences({ defaultCreateFolder: checked ? entry.relativePath || null : null })} />}
                   </div>
                   <div className="flex w-16 justify-center">
-                    {!isFlowixDirectory && (isRootAgents || (!entry.defaultHidden && entry.isDirectory)) && <input type="checkbox" aria-label={`${t('preferences.fileManagement.noteIndexTitle')}: ${entry.relativePath || notebookDirectoryName}`} className="h-4 w-4 accent-[var(--brand)]" checked={!excluded} disabled={!preferences || entry.locked || savingFolderSettings || (entry.relativePath !== '' && parentExcluded)} onChange={(event) => updateIndexExclusion(entry.relativePath, !event.currentTarget.checked)} />}
+                    {!isFlowixDirectory && (isRootAgents || (!entry.defaultHidden && entry.isDirectory)) && <FlowixCheckbox aria-label={`${t('preferences.fileManagement.noteIndexTitle')}: ${entry.relativePath || notebookDirectoryName}`} checked={!excluded} disabled={!preferences || entry.locked || savingFolderSettings || (entry.relativePath !== '' && parentExcluded)} onCheckedChange={(checked) => updateIndexExclusion(entry.relativePath, !checked)} />}
                   </div>
                   <div className="flex w-16 justify-center">
-                    {!isFlowixDirectory && <input type="checkbox" aria-label={`${t('preferences.fileManagement.hiddenColumn')}: ${entry.relativePath || notebookDirectoryName}`} className="h-4 w-4 accent-[var(--brand)]" checked={!entry.hidden} disabled={!preferences || entry.locked || !entry.relativePath || pendingPaths.includes(entry.relativePath)} onChange={() => toggleTreeDisplay(entry)} />}
+                    {!isFlowixDirectory && <FlowixCheckbox aria-label={`${t('preferences.fileManagement.hiddenColumn')}: ${entry.relativePath || notebookDirectoryName}`} checked={!entry.hidden} disabled={!preferences || entry.locked || !entry.relativePath || pendingPaths.includes(entry.relativePath)} onCheckedChange={() => toggleTreeDisplay(entry)} />}
                   </div>
                 </div>;
               })}

@@ -63,7 +63,7 @@ export function createRuntimeInfoRequester(
           },
         };
       };
-    case "deepseek-harness":
+    case "dsh":
       return async () => {
         const threadId = getThreadId();
         if (!threadId) return null;

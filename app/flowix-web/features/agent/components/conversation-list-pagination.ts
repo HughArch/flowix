@@ -59,8 +59,6 @@ function isFallbackTitle(instance: AgentConversationInstance): boolean {
     'hermes 会话',
     'opencode session',
     'opencode 会话',
-    'openclaw session',
-    'openclaw 会话',
   ]).has(title);
 }
 

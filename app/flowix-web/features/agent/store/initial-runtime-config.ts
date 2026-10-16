@@ -6,36 +6,19 @@
  * 避免插入阶段 store 尚未 hydrate 的 race，也保证后续 turn 不随全局配置变化。
  *
  * 这里只种子 model / access / reasoningEffort 的全局默认, 以及创建时所属
- * notebookId ── 提交时据此读取该笔记本 `.flowix/agent.json` 中的 add-dir
+ * notebookId ── 提交时据此读取该笔记本 `local.db` 中的 add-dir
  * 配置。未选笔记本时 notebookId 为 undefined，提交侧不会附加资料目录。
  */
 import type { AgentTypeKey, RuntimeConfig } from "@/types/agent";
 import { DEFAULT_AGENT_TYPE_KEY } from "@/lib/agent-types";
-import { useAgentAccessStore } from "@features/agent/store/agent-access-store";
+import { resolveAgentPreferenceRuntimeConfig } from "./agent-user-preferences";
 import { useNoteStore } from "@features/memo/store/note-store";
 
 export function buildInitialInstanceRuntimeConfig(
   agentType: AgentTypeKey = DEFAULT_AGENT_TYPE_KEY,
 ): RuntimeConfig {
-  const accessState = useAgentAccessStore.getState();
-  const notebookId = useNoteStore.getState().selectedNotebook?.id ?? undefined;
-  const defaultRuntime = accessState.config.defaults?.runtime?.[agentType];
-
   return {
-    ...(defaultRuntime?.model ? { model: defaultRuntime.model } : {}),
-    ...(defaultRuntime?.access ? { access: defaultRuntime.access } : {}),
-    ...(defaultRuntime?.reasoningEffort
-      ? { reasoningEffort: defaultRuntime.reasoningEffort }
-      : {}),
-    ...(defaultRuntime?.serviceTier
-      ? { serviceTier: defaultRuntime.serviceTier }
-      : {}),
-    ...(defaultRuntime?.mode
-      ? { deepseekHarness: { mode: defaultRuntime.mode } }
-      : {}),
-    ...(defaultRuntime?.piCodeMode !== undefined
-      ? { pi: { codeMode: defaultRuntime.piCodeMode } }
-      : {}),
-    notebookId,
+    ...resolveAgentPreferenceRuntimeConfig(agentType),
+    notebookId: useNoteStore.getState().selectedNotebook?.id ?? undefined,
   };
 }

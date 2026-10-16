@@ -37,13 +37,27 @@ interface TableCellWriterOptions {
 
 export function useTableCellWriter({ enabled, loadGeneration, notebookPath, loadSequenceRef, setNotes, pendingNotePropertiesRef }: TableCellWriterOptions) {
   const [cellStatusesByRecord, setCellStatusesByRecord] = useState<Map<string, ReadonlyMap<string, TableCellSaveStatus>>>(() => new Map());
+  const writesRef = useRef(new Set<Promise<void>>());
+  const errorsRef = useRef(new Set<string>());
+  const flush = useCallback(async () => {
+    const sequence = loadSequenceRef.current;
+    while (writesRef.current.size) {
+      try { await Promise.all([...writesRef.current]); }
+      catch { return false; }
+    }
+    return sequence === loadSequenceRef.current && errorsRef.current.size === 0;
+  }, [loadSequenceRef]);
   const cellWriteQueuesRef = useRef(new Map<string, TableCellWriteQueue>());
 
   useEffect(() => {
+    errorsRef.current.clear();
     setCellStatusesByRecord(new Map());
   }, [loadGeneration]);
 
   const updateCellStatus = useCallback((recordId: string, fieldId: string, status: TableCellSaveStatus | null) => {
+    const key = `${recordId}\u0000${fieldId}`;
+    if (status?.error) errorsRef.current.add(key);
+    else errorsRef.current.delete(key);
     setCellStatusesByRecord((current) => {
       const rowStatuses = new Map(current.get(recordId) ?? []);
       if (status) rowStatuses.set(fieldId, status);
@@ -103,7 +117,7 @@ export function useTableCellWriter({ enabled, loadGeneration, notebookPath, load
       : item));
 
     if (!isNewQueue) return;
-    void (async () => {
+    const write = (async () => {
       let failure: string | null = null;
       while (queue.pending) {
         const request = queue.pending;
@@ -142,7 +156,9 @@ export function useTableCellWriter({ enabled, loadGeneration, notebookPath, load
         if (pendingProperties?.size === 0) pendingNotePropertiesRef?.current.delete(notePathKey);
       }
     })();
+    writesRef.current.add(write);
+    void write.then(() => writesRef.current.delete(write), () => writesRef.current.delete(write));
   }, [enabled, loadSequenceRef, notebookPath, pendingNotePropertiesRef, setNotes, updateCellStatus]);
 
-  return { cellStatusesByRecord, updateCell };
+  return { cellStatusesByRecord, updateCell, flush };
 }

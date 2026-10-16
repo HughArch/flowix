@@ -15,6 +15,7 @@ export interface MainStatusBarHostProps {
   onProductIntroOpenChange(open: boolean): void;
   dshDownload: DshDownloadProgress | null;
   updater: AppUpdaterState;
+  onOpenAppUpdatePrompt(): void;
 }
 
 export function MainStatusBarHost(props: MainStatusBarHostProps) {

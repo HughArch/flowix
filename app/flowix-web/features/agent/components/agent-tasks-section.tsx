@@ -17,8 +17,7 @@ import { agentClient } from '@features/agent/store/agent-client';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
 import { isAgentConversationRunning } from '@features/agent/store/conversation-run-index';
-import { selectAndOpenAgentConversation } from '@features/workspace/use-cases/agent-conversation-navigation';
-import { openBrowserColumnAgentConversation } from '@features/workspace/use-cases/browser-column-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import { showAgentConversationsView } from '@features/memo/public/shell-api';
 import { useI18n } from '@/lib/i18n';
@@ -131,7 +130,7 @@ export function AgentTasksSection({
         activeAgentTypeKey: instance.agentType,
       }));
     }
-    await selectAndOpenAgentConversation(instance.instanceId);
+    await openWorkspaceSurface({ target: { kind: 'agent-conversation', instanceId: instance.instanceId } });
   }, []);
 
   const prepareConversation = useCallback((instance: AgentConversationInstance) => {
@@ -150,7 +149,7 @@ export function AgentTasksSection({
 
   const openConversationInBrowserColumn = useCallback((instance: AgentConversationInstance) => {
     prepareConversation(instance);
-    void openBrowserColumnAgentConversation(instance.instanceId).catch((error) => {
+    void openWorkspaceSurface({ host: 'browser-column', target: { kind: 'agent-conversation', instanceId: instance.instanceId } }).catch((error) => {
       logger.error('Failed to open conversation in browser column', { error });
       toast.error(error instanceof Error ? error.message : String(error));
     });
@@ -210,10 +209,10 @@ export function AgentTasksSection({
 
   const newConversationAgentTypes = useMemo(
     () => AGENT_TYPES.filter((type) => {
-      if (!isAgentTypeSelectable(type.key)) return false;
-      if (isAlwaysVisibleNewConversationAgent(type.key)) return true;
+      if (!isAgentTypeSelectable(type.id)) return false;
+      if (isAlwaysVisibleNewConversationAgent(type.id)) return true;
       return isAgentRuntimeInstalledState(normalizeAgentRuntimeStatus(
-        agentRuntimeStatusByType[type.key],
+        agentRuntimeStatusByType[type.id],
         agentRuntimeIsChecking,
       ));
     }),
@@ -228,7 +227,9 @@ export function AgentTasksSection({
       source: { kind: 'dedicated', notebookId, documentPath: null },
       runtimeConfig: buildInitialInstanceRuntimeConfig(typeKey),
     });
-    void selectAndOpenAgentConversation(instance.instanceId, { blankIfMissing: true });
+    void openWorkspaceSurface({
+      target: { kind: 'agent-conversation', instanceId: instance.instanceId, blankIfMissing: true },
+    });
   }, [notebookId]);
 
   const width = `calc(100% - ${edgeGutter * 2}px)`;
@@ -280,19 +281,19 @@ export function AgentTasksSection({
               </DropdownMenuLabel>
               {newConversationAgentTypes.map((type) => {
                 const runtimeStatus = normalizeAgentRuntimeStatus(
-                  agentRuntimeStatusByType[type.key],
+                  agentRuntimeStatusByType[type.id],
                   agentRuntimeIsChecking,
                 );
-                const showNotInstalled = isAlwaysVisibleNewConversationAgent(type.key)
+                const showNotInstalled = isAlwaysVisibleNewConversationAgent(type.id)
                   && runtimeStatus.state === 'not-installed';
                 const name = type.nameKey ? t(type.nameKey as Parameters<typeof t>[0]) : type.name;
                 return (
                   <DropdownMenuItem
-                    key={type.key}
-                    onClick={() => createConversation(type.key)}
+                    key={type.id}
+                    onClick={() => createConversation(type.id)}
                     className="agent-conversation-new-agent-item group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
                   >
-                    <AgentIcon typeKey={type.key} alt="" className="h-4 w-4 shrink-0 object-contain" />
+                    <AgentIcon typeKey={type.id} alt="" className="h-4 w-4 shrink-0 object-contain" />
                     <span className="min-w-0 flex-1 truncate">{name}</span>
                     {showNotInstalled && (
                       <span className="shrink-0 text-xs text-[var(--muted-foreground)] group-hover:text-[var(--primary-foreground)]">

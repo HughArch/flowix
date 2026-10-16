@@ -655,7 +655,7 @@ export function TagTree({
       <div className={cn('tag-tree-list', !hideSectionHeader && 'pt-1')}>
         {/* 标签分类标题 ── 过滤器 (全部/对话/待办) 在上, 真正的标签树在此标题之下。 */}
         {!hideSectionHeader && (
-          <div className="agent-thread-card__access-section-label flex items-center justify-between">
+          <div className="agent-composer__access-section-label flex items-center justify-between">
             <span>{t('memo.navigation.tags')}</span>
             {batchMode ? (
               <button

@@ -1,148 +1,124 @@
 'use client';
 
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState, type ReactNode } from 'react';
 
-import { useI18n } from '@/lib/i18n';
 import { files, mediaResources } from '@platform/tauri/client';
+import type { SurfacePresentationUpdate, SurfaceState } from '@features/workspace/model/surface-contract';
+import { workspaceSurfaceAppearance } from '@features/workspace/public/surface-api';
 import videoCardPlaceholder from '@/assets/placeholder-video-card.jpg';
 import { getNotebookVideoPreview } from './video-preview-cache';
+import { WorkspaceSurfaceStateView } from './workspace-surface-state-view';
 
 type MediaKind = 'image' | 'video';
+type ReportPresentation = (update: SurfacePresentationUpdate) => void;
+type PreviewProps = {
+  filePath: string;
+  notebookPath: string;
+  retry: () => void;
+  reportPresentation?: ReportPresentation;
+};
+const LOADING: SurfaceState = {
+  status: 'loading', phase: 'content', message: { key: 'document.file.loading' }, retainContent: false,
+};
 
 function filenameFromPath(filePath: string): string {
   return filePath.split(/[\\/]/).filter(Boolean).pop() ?? filePath;
 }
 
-function MediaUnavailable({ filePath }: { filePath: string }) {
-  const { t } = useI18n();
-  return (
-    <div className="flex h-full flex-col items-center justify-center gap-2 px-8 text-center text-sm text-[var(--muted-foreground)]">
-      <span>{t('document.file.unavailable')}</span>
-      <span className="max-w-full truncate text-xs" title={filePath}>{filenameFromPath(filePath)}</span>
-    </div>
-  );
+function mediaError(filePath: string, retry: () => void, error?: unknown): SurfaceState {
+  return {
+    status: 'error',
+    message: { key: 'document.file.unavailable', fallbackText: error instanceof Error ? error.message : filenameFromPath(filePath) },
+    actions: [{ id: 'retry', label: { key: 'error.retry' }, enabled: true, run: retry }],
+  };
 }
 
-function ImageResourcePreview({ filePath, notebookPath }: { filePath: string; notebookPath: string }) {
-  const { t } = useI18n();
-  const [src, setSrc] = useState<string | null>(null);
-  const [loading, setLoading] = useState(true);
-  const [failed, setFailed] = useState(false);
+/** Standalone previews use the same state UI; workspace hosts own its presentation. */
+function MediaPreviewState({ filePath, state, reportPresentation, children }: {
+  filePath: string; state: SurfaceState; reportPresentation?: ReportPresentation; children?: ReactNode;
+}) {
+  useEffect(() => {
+    reportPresentation?.({ title: filenameFromPath(filePath), state });
+  }, [filePath, reportPresentation, state]);
+  return reportPresentation ? children : <WorkspaceSurfaceStateView
+    state={state} appearance={workspaceSurfaceAppearance('media')} keepContentMounted>
+    {children}
+  </WorkspaceSurfaceStateView>;
+}
 
+function ImageResourcePreview({ filePath, notebookPath, retry, reportPresentation }: PreviewProps) {
+  const [src, setSrc] = useState<string | null>(null);
+  const [state, setState] = useState<SurfaceState>(LOADING);
   useEffect(() => {
     let cancelled = false;
-    setLoading(true);
-    setFailed(false);
-    setSrc(null);
     void files.readImage(filePath, notebookPath).then((dataUrl) => {
       if (cancelled) return;
-      setSrc(dataUrl);
-      setFailed(!dataUrl);
-      setLoading(false);
-    }).catch(() => {
-      if (cancelled) return;
-      setFailed(true);
-      setLoading(false);
+      if (dataUrl) setSrc(dataUrl);
+      else setState(mediaError(filePath, retry));
+    }).catch((error: unknown) => {
+      if (!cancelled) setState(mediaError(filePath, retry, error));
     });
-    return () => {
-      cancelled = true;
-    };
-  }, [filePath, notebookPath]);
+    return () => { cancelled = true; };
+  }, [filePath, notebookPath, retry]);
 
-  if (loading) {
-    return <div className="flex h-full items-center justify-center text-sm text-[var(--muted-foreground)]">{t('document.file.loading')}</div>;
-  }
-  if (failed || !src) return <MediaUnavailable filePath={filePath} />;
-
-  return (
-    <div className="flex h-full w-full items-center justify-center overflow-auto bg-[var(--agent-bg,var(--document-bg))] p-6">
-      <img
-        src={src}
-        alt={filenameFromPath(filePath)}
-        className="block max-h-full max-w-full rounded-lg object-contain"
-        onError={() => setFailed(true)}
-      />
-    </div>
-  );
+  return <MediaPreviewState filePath={filePath} state={state} reportPresentation={reportPresentation}>
+    {src && <div className="flex h-full w-full items-center justify-center overflow-auto p-6">
+      <img src={src} alt={filenameFromPath(filePath)} className="block max-h-full max-w-full rounded-lg object-contain"
+        onLoad={() => setState({ status: 'ready' })} onError={() => setState(mediaError(filePath, retry))} />
+    </div>}
+  </MediaPreviewState>;
 }
 
-function VideoResourcePreview({ filePath, notebookPath }: { filePath: string; notebookPath: string }) {
-  const { t } = useI18n();
-  const [failed, setFailed] = useState(false);
+function VideoResourcePreview({ filePath, notebookPath, retry, reportPresentation }: PreviewProps) {
+  const [state, setState] = useState<SurfaceState>(LOADING);
   const [authorized, setAuthorized] = useState(false);
   const [poster, setPoster] = useState(videoCardPlaceholder);
   const src = useMemo(() => files.toAssetUrl(filePath), [filePath]);
 
-  // The media command establishes the notebook-scoped security access before
-  // the native asset URL is mounted. It does not create a document session.
+  // Establish notebook access before mounting the native asset URL.
   useEffect(() => {
     let cancelled = false;
     const requestId = crypto.randomUUID();
-    setAuthorized(false);
-    setFailed(false);
-    setPoster(videoCardPlaceholder);
     void mediaResources.get(filePath, notebookPath).then(() => {
       if (cancelled) return;
       setAuthorized(true);
-      void getNotebookVideoPreview(
-        filePath,
-        notebookPath,
-        requestId,
-      ).then((preview) => {
+      void getNotebookVideoPreview(filePath, notebookPath, requestId).then((preview) => {
         if (!cancelled && preview) setPoster(preview);
-      });
-    }).catch(() => {
-      if (!cancelled) setFailed(true);
+      }).catch(() => undefined);
+    }).catch((error: unknown) => {
+      if (!cancelled) setState(mediaError(filePath, retry, error));
     });
     return () => {
       cancelled = true;
       void mediaResources.cancelThumbnail(requestId).catch(() => undefined);
     };
-  }, [filePath, notebookPath, src]);
+  }, [filePath, notebookPath, retry]);
 
-  if (failed) return <MediaUnavailable filePath={filePath} />;
-  if (!authorized) {
-    return <div className="flex h-full items-center justify-center text-sm text-[var(--muted-foreground)]">{t('document.file.loading')}</div>;
-  }
-
-  return (
-    <div className="flex h-full w-full items-center justify-center overflow-auto bg-[var(--agent-bg,var(--document-bg))] p-6">
-      <video
-        src={src}
-        poster={poster}
-        controls
-        preload="metadata"
-        playsInline
+  return <MediaPreviewState filePath={filePath} state={state} reportPresentation={reportPresentation}>
+    {authorized && <div className="flex h-full w-full items-center justify-center overflow-auto p-6">
+      <video src={src} poster={poster} controls preload="metadata" playsInline
         className="media-resource-video block h-auto max-h-full max-w-full rounded-lg object-contain"
-        aria-label={filenameFromPath(filePath)}
-        onError={() => setFailed(true)}
-      />
-    </div>
-  );
+        aria-label={filenameFromPath(filePath)} onLoadedMetadata={() => setState({ status: 'ready' })}
+        onError={() => setState(mediaError(filePath, retry))} />
+    </div>}
+  </MediaPreviewState>;
 }
 
-export function MediaResourceView({
-  filePath,
-  notebookPath,
-  resourceKind,
-}: {
-  filePath: string;
-  notebookPath: string | null;
-  resourceKind: MediaKind;
+export function MediaResourceView({ filePath, notebookPath, resourceKind, reportPresentation }: {
+  filePath: string; notebookPath: string | null; resourceKind: MediaKind; reportPresentation?: ReportPresentation;
 }) {
-  const preview = notebookPath ? (
-    resourceKind === 'image'
-      ? <ImageResourcePreview filePath={filePath} notebookPath={notebookPath} />
-      : <VideoResourcePreview filePath={filePath} notebookPath={notebookPath} />
-  ) : (
-    <MediaUnavailable filePath={filePath} />
-  );
-
-  return (
-    <div className="flex h-full min-w-0 flex-col bg-[var(--agent-bg,var(--document-bg))]">
-      <div className="relative flex min-h-0 flex-1">
-        <div className="min-w-0 flex-1">{preview}</div>
-      </div>
-    </div>
-  );
+  const [retryCount, setRetryCount] = useState(0);
+  const retry = useCallback(() => setRetryCount((count) => count + 1), []);
+  const unavailableState = useMemo<SurfaceState>(() => ({
+    status: 'unavailable', reason: 'unsupported',
+    message: { key: 'document.file.unavailable', fallbackText: filenameFromPath(filePath) },
+  }), [filePath]);
+  const props = { filePath, notebookPath: notebookPath ?? '', retry, reportPresentation };
+  const key = `${filePath}:${notebookPath}:${resourceKind}:${retryCount}`;
+  return <div className="flex h-full min-w-0 flex-col bg-[var(--agent-bg,var(--document-bg))]">
+    <div className="relative flex min-h-0 flex-1"><div className="min-w-0 flex-1">
+      {!notebookPath ? <MediaPreviewState filePath={filePath} state={unavailableState} reportPresentation={reportPresentation} />
+        : resourceKind === 'image' ? <ImageResourcePreview key={key} {...props} /> : <VideoResourcePreview key={key} {...props} />}
+    </div></div>
+  </div>;
 }

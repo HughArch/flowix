@@ -17,35 +17,9 @@ pub struct FileManagementPolicy {
     /// the Markdown note index.
     #[serde(default)]
     pub excluded_index_paths: Vec<String>,
-    #[serde(default)]
-    pub legacy_skip_dirs: Vec<String>,
-    #[serde(default)]
-    pub legacy_skip_files: Vec<String>,
-    #[serde(default)]
-    pub legacy_watcher_migrated: bool,
-}
-
-fn wildcard_match(pattern: &str, name: &str) -> bool {
-    let (pattern, name) = (pattern.as_bytes(), name.as_bytes());
-    let (mut p, mut n, mut star, mut retry) = (0, 0, None, 0);
-    while n < name.len() {
-        if p < pattern.len() && pattern[p] == name[n] { p += 1; n += 1; }
-        else if p < pattern.len() && pattern[p] == b'*' { star = Some(p); p += 1; retry = n; }
-        else if let Some(position) = star { p = position + 1; retry += 1; n = retry; }
-        else { return false; }
-    }
-    while p < pattern.len() && pattern[p] == b'*' { p += 1; }
-    p == pattern.len()
 }
 
 impl FileManagementPolicy {
-    pub fn matches_legacy_entry(&self, absolute: &Path) -> bool {
-        let Some(name) = absolute.file_name().map(|name| name.to_string_lossy()) else { return false; };
-        self.legacy_skip_dirs.iter().any(|skip| skip == name.as_ref())
-            || std::fs::symlink_metadata(absolute).is_ok_and(|metadata| metadata.is_file())
-                && self.legacy_skip_files.iter().any(|pattern| wildcard_match(pattern, &name))
-    }
-
     pub fn is_locked_name(name: &str) -> bool {
         matches!(name, ".flowix" | ".plugin-output") || name.eq_ignore_ascii_case(".index.yaml")
     }
@@ -89,7 +63,6 @@ impl FileManagementPolicy {
             let ignored_name = notebook_agents_file
                 || name.starts_with('.')
                 || matches!(name.as_ref(), "attachments" | "attachments-cache" | "node_modules" | "bower_components" | "__pycache__")
-                || self.legacy_skip_dirs.iter().any(|skip| skip == name.as_ref())
                 || legacy_media_sidecar
                 || (is_last && (matches!(name.as_ref(), "Thumbs.db" | "ehthumbs.db" | "desktop.ini")
                     || name.ends_with(".tmp") || name.ends_with(".swp") || name.ends_with(".bak")
@@ -105,14 +78,6 @@ impl FileManagementPolicy {
     /// as names. The relative path is always scoped to `root`.
     pub fn is_ignored_at(&self, root: &Path, relative: &Path) -> bool {
         if self.is_ignored(relative) { return true; }
-        let key = relative.to_string_lossy().replace('\\', "/");
-        let file = root.join(relative);
-        if !self.included_paths.iter().any(|included| included == &key)
-            && std::fs::symlink_metadata(&file).is_ok_and(|metadata| metadata.is_file())
-        {
-            let name = relative.file_name().unwrap_or_default().to_string_lossy();
-            if self.legacy_skip_files.iter().any(|pattern| wildcard_match(pattern, &name)) { return true; }
-        }
         let mut current = root.to_path_buf();
         let mut key = String::new();
         for component in relative.components() {
@@ -144,8 +109,7 @@ impl FileManagementPolicy {
             && relative.file_name().is_some_and(|name| name.to_string_lossy() == "AGENTS.md");
         let default_policy = FileManagementPolicy::default();
         if !is_root_agents
-            && (default_policy.is_ignored_at(root, relative)
-                || self.matches_legacy_entry(&root.join(relative)))
+            && default_policy.is_ignored_at(root, relative)
         {
             return true;
         }

@@ -4,7 +4,7 @@ import { reviseCollection } from '@features/collection/model';
 import { canonicalizePropertyKey } from '@features/properties/property-key';
 import type { PropertyPreset } from '@features/document/properties/presets';
 import { type MultidimensionalTableDocument, type TableField, type TableFieldType, type TableView } from './model';
-import { collectionFilterUsesField, type CollectionRuleFilter } from '@features/collection/rule-filter';
+import { collectionFilterUsesField, type DatasetFilter } from '@features/collection/rule-filter';
 import { BUILTIN_TABLE_FIELDS, builtinPresetTableField } from './builtin-fields';
 
 export function viewsRequiringField(document: MultidimensionalTableDocument, fieldId: string): TableView[] {
@@ -51,7 +51,7 @@ export function removeField(document: MultidimensionalTableDocument, fieldId: st
   const field = document.dataset.schema.fields.find((item) => item.id === fieldId);
   if (!field || field.type === 'primary') throw new Error('不能移除主字段');
   if (viewsRequiringField(document, fieldId).length) throw new Error('请先调整依赖此属性的视图');
-  if (collectionFilterUsesField(document.dataset.filter as unknown as CollectionRuleFilter | null, fieldId)) {
+  if (collectionFilterUsesField(document.dataset.filter as unknown as DatasetFilter | null, fieldId)) {
     throw new Error('请先调整引用此属性的笔记条件匹配');
   }
   const views = document.views.items.map((view) => {

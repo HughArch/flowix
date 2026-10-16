@@ -2,7 +2,9 @@ import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 
 import { STORAGE_KEYS } from '@/lib/constants';
-import type { CollectionWorkspaceTarget, DocumentListTarget } from './work-column-target';
+import type { CollectionWorkspaceTarget } from './work-column-target';
+import type { FolderCollectionSurfaceTarget } from '../model/surface-target';
+import type { LegacyFolderListTarget } from '../model/legacy-folder-list';
 
 interface AgentConversationRestoreState {
   selectedInstanceId: string | null;
@@ -11,7 +13,8 @@ interface AgentConversationRestoreState {
 
 export type PersistedWorkspaceTarget =
   | CollectionWorkspaceTarget
-  | DocumentListTarget
+  | FolderCollectionSurfaceTarget
+  | LegacyFolderListTarget
   | { kind: 'external'; path: string; scopePath: string | null }
   | { kind: 'table'; filePath: string; notebookPath: string | null; notebookId: string | null }
   | {

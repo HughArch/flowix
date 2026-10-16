@@ -30,7 +30,7 @@ import {
   type FolderTreeController,
   type VisibleTreeNode,
 } from '@features/memo/components/use-folder-tree';
-import { FileTypeIcon } from '@features/memo/components/file-type-icon';
+import { ContentIcon } from '@features/content/public/content-api';
 import { useI18n } from '@/lib/i18n';
 
 const TREE_EDGE_GUTTER = 6;
@@ -43,6 +43,9 @@ const FOLDER_MENU_ITEM_CLASS =
   'h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]';
 
 type FileTreeFileIcon = ComponentType<{ path: string; className?: string }>;
+function ContentFileIcon({ path, className }: { path: string; className?: string }) {
+  return <ContentIcon content={{ kind: 'file', path }} className={className} />;
+}
 type FileTreeFolderIcon = ComponentType<{
   expanded: boolean;
   hidden?: boolean;
@@ -84,7 +87,7 @@ export function FolderFileTree({
   onFileSelect,
   onFileOpenInNewTab,
   tree,
-  fileIcon: FileIcon = FileTypeIcon,
+  fileIcon: FileIcon = ContentFileIcon,
   folderIcon: FolderIcon,
 }: {
   folderPath: string;

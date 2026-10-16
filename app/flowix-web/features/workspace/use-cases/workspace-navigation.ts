@@ -1,11 +1,11 @@
-import { ensureCollectionDisplay, bindCollectionDisplayPath } from '@/lib/collection-display-registry';
-import { collections, externalDocuments, files } from '@platform/tauri/client';
+import { ensureCollectionDisplay, bindCollectionDisplayPath, findCollectionDisplayPath } from '@/lib/collection-display-registry';
+import { collections, externalDocuments, files, notebooks } from '@platform/tauri/client';
 import { parseCollectionDocumentV2 } from '@features/collection/model';
 import { createFolderCollectionContent } from '@features/collection/folder-collection';
-import { toast } from '@/lib/toast';
+import { repairCollectionFile, inspectCollectionRecoveryType } from '@features/collection/recovery';
 import { captureFileBrowserContext } from './file-browser-context';
 import { notes as notesClient, type PluginDescriptor, type MarkdownLocation } from '@platform/tauri/client';
-import { canonicalDirectoryPath, canonicalPath, samePath } from '@/lib/path';
+import { canonicalDirectoryPath, canonicalPath, isPathInDirectory, notebookRelativeDirectoryPath, samePath } from '@/lib/path';
 import { resourceKindFromPath } from '@features/editor/public/code-file';
 import { canonicalUrl } from '@features/workspace/store/workspace-content-identity';
 import {
@@ -19,6 +19,7 @@ import {
   useBrowserColumnStore,
 } from '@features/workspace/store/browser-column-store';
 import { documentIdentityFromFile } from '@features/document/public/workspace-api';
+import { getWorkspaceSurfaceLifecycle, getWorkspaceHostSurfaceLifecycle } from '@features/workspace/public/surface-lifecycle-api';
 import {
   suspendFileDisplayReconciliation,
 } from '@/lib/file-display-registry';
@@ -29,7 +30,9 @@ import {
 } from '@features/memo/public/workspace-api';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import { EMPTY_WORK_COLUMN_TARGET, workColumnTargetFilePath } from '@features/workspace/store/work-column-target';
-import type { DocumentListTarget, WorkColumnTarget } from '@features/workspace/store/work-column-target';
+import type { WorkColumnTarget } from '@features/workspace/store/work-column-target';
+import type { FolderCollectionSurfaceTarget } from '../model/surface-target';
+import type { LegacyFolderListTarget } from '../model/legacy-folder-list';
 import {
   useWorkspaceFocusStore,
   type WorkspaceHostId,
@@ -37,7 +40,7 @@ import {
 import {
   activateExistingWorkspaceContent,
   activateExistingWorkspaceContentAsync,
-  findExistingWorkspaceContent,
+  findWorkspaceContentForNavigation,
   type WorkspaceContentLocation,
 } from './workspace-content-activation';
 import type { ContentIdentity } from '@features/workspace/store/workspace-content-identity';
@@ -88,14 +91,15 @@ let retrySequence = 0;
  */
 function activateExistingContentForNavigation(
   identity: ContentIdentity,
+  destination?: WorkspaceContentLocation['host'],
 ): WorkspaceContentLocation | null | Promise<WorkspaceContentLocation | null> {
-  const existing = findExistingWorkspaceContent(identity);
+  const existing = findWorkspaceContentForNavigation(identity, destination);
   if (!existing) return null;
   if (existing.host === 'main-third') {
-    activateExistingWorkspaceContent(identity);
+    activateExistingWorkspaceContent(identity, existing.host);
     return existing;
   }
-  return activateExistingWorkspaceContentAsync(identity);
+  return activateExistingWorkspaceContentAsync(identity, existing.host);
 }
 
 function pendingExternalTarget(
@@ -161,9 +165,9 @@ function commitNavigation(
         historyEntryFromWorkColumnTarget(target),
       );
     }
-    const desiredTarget: PersistedWorkspaceTarget | null = target.kind === 'collection'
+    const desiredTarget: PersistedWorkspaceTarget | null = target.kind === 'folder-collection'
       ? target
-      : target.kind === 'document-list'
+      : target.kind === 'collection'
       ? target
       : target.kind === 'table'
         ? { kind: 'table', filePath: canonicalPath(target.filePath), notebookPath: target.notebookPath ? canonicalPath(target.notebookPath) : null, notebookId: target.notebookId }
@@ -191,17 +195,16 @@ function commitNavigation(
   return committed;
 }
 
-/** Open a folder/filter list as a first-class work-column history destination. */
-export function openDocumentListTarget(
-  target: DocumentListTarget,
-  options?: { history?: 'push' | 'skip' },
-): void {
-  const requestId = beginNavigation(target, null, false, false);
-  commitNavigation(requestId, target, options?.history ?? 'push');
-}
-
 export function captureWorkspaceRestoreTarget(): PersistedWorkspaceTarget | null {
-  return useWorkspaceRestoreStore.getState().desiredTarget;
+  const target = useWorkspaceRestoreStore.getState().desiredTarget;
+  // Notebook context has loaded before startup captures this target. A rebuilt
+  // registry must not restore a view owned by a notebook that no longer exists.
+  if (target && 'notebookId' in target && target.notebookId
+    && !getWorkspaceMemoState().notebooks.some((notebook) => notebook.id === target.notebookId)) {
+    useWorkspaceRestoreStore.getState().setDesiredTarget(null);
+    return null;
+  }
+  return target;
 }
 
 export async function restoreExternalDocumentWorkspace(
@@ -221,21 +224,33 @@ export function restoreTableWorkspace(
 }
 
 export async function openCollectionTarget(
-  reference: { notebookId: string; collectionId: string; viewId?: string | null; displayId?: string; relativePathHint?: string },
-  options?: { history?: 'push' | 'skip'; destination?: 'main-third' },
+  reference: { notebookId: string; collectionId: string; viewId?: string | null; displayId?: string; relativePathHint?: string; filePath?: string },
+  options?: { history?: 'push' | 'skip'; destination?: 'main-third'; refresh?: boolean },
 ): Promise<void> {
   const { notebookId, collectionId } = reference;
   const identity: ContentIdentity = { kind: 'collection', notebookId, collectionId, viewId: reference.viewId ?? null };
-  if (options?.destination !== 'main-third') {
-    const existing = await activateExistingWorkspaceContentAsync(identity);
+  const navigation = useWorkColumnStore.getState().navigation;
+  const liveTarget = [navigation.pendingTarget, navigation.target].find((target) => target?.kind === 'collection'
+    && target.notebookId === notebookId && target.collectionId === collectionId);
+  const needsResolution = options?.refresh || options?.destination === 'main-third'
+    || (liveTarget?.kind === 'collection' && (liveTarget.unavailableReason || liveTarget.viewId !== identity.viewId));
+  if (!needsResolution) {
+    const existing = await activateExistingContentForNavigation(identity, options?.destination);
     if (existing) return;
   }
   const notebook = getWorkspaceMemoState().notebooks.find((item) => item.id === notebookId)
-    ?? (getWorkspaceMemoState().selectedNotebook?.id === notebookId ? getWorkspaceMemoState().selectedNotebook : null);
+    ?? (getWorkspaceMemoState().selectedNotebook?.id === notebookId ? getWorkspaceMemoState().selectedNotebook : null)
+    ?? (await notebooks.getAll()).find((item) => item.id === notebookId);
   if (!notebook) throw new Error('集合所属笔记本不存在');
   const descriptor = ensureCollectionDisplay({ notebookId, collectionId, viewId: reference.viewId ?? null }, reference.displayId);
+  const previousTarget = useWorkColumnStore.getState().navigation.target;
+  const knownPath = reference.filePath || (reference.relativePathHint
+    ? `${canonicalDirectoryPath(notebook.path)}/${reference.relativePathHint}` : null)
+    || findCollectionDisplayPath(descriptor.displayId)
+    || (previousTarget.kind === 'collection' && previousTarget.notebookId === notebookId && previousTarget.collectionId === collectionId
+      ? previousTarget.filePath : '');
   const placeholder: Extract<WorkColumnTarget, { kind: 'collection' }> = {
-    kind: 'collection', ...descriptor, filePath: '', notebookPath: canonicalDirectoryPath(notebook.path), collectionType: 'table', name: '正在打开集合',
+    kind: 'collection', ...descriptor, filePath: knownPath, notebookPath: canonicalDirectoryPath(notebook.path), collectionType: 'table', name: '正在打开集合',
   };
   const requestId = beginNavigation(placeholder, null, false, false);
   try {
@@ -249,7 +264,7 @@ export async function openCollectionTarget(
   let unavailableReason: string | undefined;
   try { item = await collections.resolve(notebookId, collectionId); }
   catch (error) { unavailableReason = String(error).includes('IDENTITY_CONFLICT') ? '集合身份冲突，请先为副本生成新 ID' : '集合不存在或暂时无法读取'; }
-  const filePath = item ? `${canonicalDirectoryPath(notebook.path)}/${item.relativePath}` : reference.relativePathHint ? `${canonicalDirectoryPath(notebook.path)}/${reference.relativePathHint}` : '';
+  const filePath = item ? `${canonicalDirectoryPath(notebook.path)}/${item.relativePath}` : knownPath;
   if (item?.identityConflict) unavailableReason = '集合身份冲突，请先为副本生成新 ID';
   if (item && item.parseState !== 'valid') unavailableReason = item.parseState === 'unsupported' ? '此集合版本暂不支持' : '集合文件格式无效';
   if (item && !unavailableReason && descriptor.viewId) {
@@ -282,51 +297,222 @@ export async function openCollectionTarget(
   useWorkspaceFocusStore.getState().focusHost('main-third');
 }
 
-async function openCollectionFile(filePath: string, notebookPath: string | null, notebookId: string | null, options?: { history?: 'push' | 'skip'; destination?: 'main-third' }): Promise<void> {
-  const root = canonicalPath(notebookPath ?? '');
+async function resolveCollectionFileNotebook(
+  filePath: string,
+  notebookPath: string | null,
+  notebookId: string | null,
+): Promise<Notebook> {
+  if (!filePath.trim()) throw new Error('集合文件路径已丢失，请从文件树重新打开此文件');
   const workspace = getWorkspaceMemoState();
-  const resolvedId = notebookId ?? workspace.notebooks.find((item) => canonicalPath(item.path) === root)?.id
-    ?? (workspace.selectedNotebook && canonicalPath(workspace.selectedNotebook.path) === root ? workspace.selectedNotebook.id : null);
-  if (!resolvedId || !root) throw new Error('无法确定集合所属笔记本');
-  const envelope = parseCollectionDocumentV2(await externalDocuments.read(filePath, root));
-  await openCollectionTarget({ notebookId: resolvedId, collectionId: envelope.collection.id }, options);
+  const fileDirectory = canonicalDirectoryPath(canonicalPath(filePath).replace(/[\\/][^\\/]*$/, ''));
+  const containsFile = (item: Notebook) => notebookRelativeDirectoryPath(item.path, fileDirectory) !== null;
+  // File browser surfaces can be restored before the memo library has loaded
+  // its notebook list. Refresh it here so nested notebooks and stale cached
+  // paths resolve to the actual owner of this collection file.
+  let candidates: Notebook[];
+  try { candidates = (await notebooks.getAll()).filter(containsFile); }
+  catch { candidates = [...workspace.notebooks, ...(workspace.selectedNotebook ? [workspace.selectedNotebook] : [])].filter(containsFile); }
+  const requestedNotebook = notebookId
+    ? candidates.find((item) => item.id === notebookId)
+    : null;
+  const hintedPathNotebook = notebookPath
+    ? candidates.find((item) => canonicalPath(item.path) === canonicalPath(notebookPath))
+    : null;
+  const notebook = requestedNotebook ?? hintedPathNotebook
+    ?? candidates.sort((left, right) => canonicalPath(right.path).length - canonicalPath(left.path).length)[0];
+  if (!notebook) throw new Error('无法确定集合所属笔记本');
+  return notebook;
 }
-export async function openFolderCollectionOrList(target: DocumentListTarget): Promise<void> {
-  const notebookId = target.scope.notebookId;
-  const notebook = notebookId ? getWorkspaceMemoState().notebooks.find((item) => item.id === notebookId) : null;
-  if (!notebook || !notebookId) {
-    await openDocumentListTarget(target);
+
+/** Reopen a collection from its file and return to its configured default view. */
+export async function resetCurrentCollectionView(
+  filePath: string,
+  notebookPath: string | null,
+  notebookId: string | null,
+  location: { host: 'main-third' } | { host: 'browser-column'; tabId: string } = { host: 'main-third' },
+): Promise<void> {
+  const notebook = await resolveCollectionFileNotebook(filePath, notebookPath, notebookId);
+  const root = canonicalDirectoryPath(notebook.path);
+  const resolvedId = notebook.id;
+  const repaired = await repairCollectionFile(filePath, root);
+  if (location.host === 'browser-column') {
+    let display: ReturnType<typeof ensureCollectionDisplay> | undefined;
+    try {
+      const item = await collections.resolve(resolvedId, repaired.collectionId);
+      if (!item.identityConflict && item.parseState === 'valid' && item.collectionType === repaired.collectionType) {
+        const descriptor = ensureCollectionDisplay({ notebookId: resolvedId, collectionId: repaired.collectionId, viewId: null });
+        if (bindCollectionDisplayPath(descriptor.displayId, filePath, item.indexSequence)) display = descriptor;
+      }
+    } catch { /* The direct file view below does not depend on catalog readiness. */ }
+    useBrowserColumnStore.getState().selectFileBrowserFile(
+      location.tabId, filePath, display, repaired.collectionType,
+    );
     return;
   }
-  const folderPath = canonicalDirectoryPath(target.scope.path);
-  const indexPath = `${folderPath}/.index.yaml`;
-  let source = await files.read(indexPath, notebook.path);
-  let loadingToastId: string | number | undefined;
+
   try {
-    if (source === null) {
-      loadingToastId = toast.info('正在创建并打开笔记集合…', { duration: 60_000 });
-      const folderName = folderPath.split('/').filter(Boolean).pop() ?? notebook.name;
-      const content = createFolderCollectionContent('notes', folderName);
-      try {
-        await files.create(indexPath, content, notebook.path);
-        source = content;
-      } catch (error) {
-        // Another click may have created the same index while this one was waiting.
-        source = await files.read(indexPath, notebook.path);
-        if (source === null) throw error;
-      }
-    }
-    const envelope = parseCollectionDocumentV2(source);
-    if (envelope.collection.placement !== 'folder') throw new Error('文件夹 .index.yaml 必须声明 placement: folder');
-    await openCollectionTarget({
-      notebookId,
-      collectionId: envelope.collection.id,
-      viewId: (envelope.payload.views as { default_id?: string }).default_id,
-    });
-  } finally {
-    if (loadingToastId !== undefined) toast.dismiss(loadingToastId);
+    await openCollectionTarget({ notebookId: resolvedId, collectionId: repaired.collectionId, filePath }, { refresh: true });
+  } catch {
+    await openCollectionFileDirectly(filePath, root, resolvedId, repaired.collectionType);
+    return;
+  }
+  const active = useWorkColumnStore.getState().navigation.target;
+  if (active.kind !== 'collection' || active.collectionId !== repaired.collectionId || active.unavailableReason) {
+    await openCollectionFileDirectly(filePath, root, resolvedId, repaired.collectionType);
   }
 }
+
+async function openCollectionFileDirectly(
+  filePath: string,
+  notebookPath: string,
+  notebookId: string,
+  type: 'table' | 'media_library',
+  unavailableReason?: string,
+  history: 'push' | 'skip' = 'skip',
+): Promise<void> {
+  const target: WorkColumnTarget = type === 'table'
+    ? { kind: 'table', filePath, notebookPath, notebookId, ...(unavailableReason ? { unavailableReason } : {}) }
+    : { kind: 'media-library', filePath, notebookPath, notebookId, ...(unavailableReason ? { unavailableReason } : {}) };
+  await runNavigation(target, async (requestId) => {
+    await flushWorkspaceDocument();
+    if (!isCurrentNavigation(requestId)) return;
+    await getWorkspaceDocumentState().clearDocument();
+    if (!isCurrentNavigation(requestId)) return;
+    commitNavigation(requestId, target, history);
+    useWorkspaceFocusStore.getState().focusHost('main-third');
+  }, async () => { await openCollectionFileDirectly(filePath, notebookPath, notebookId, type, unavailableReason, history); });
+}
+
+async function openCollectionFile(filePath: string, notebookPath: string | null, notebookId: string | null, options?: { history?: 'push' | 'skip'; destination?: 'main-third' }): Promise<void> {
+  const notebook = await resolveCollectionFileNotebook(filePath, notebookPath, notebookId);
+  const root = canonicalDirectoryPath(notebook.path);
+  const source = await externalDocuments.read(filePath, root);
+  let envelope: ReturnType<typeof parseCollectionDocumentV2>;
+  try { envelope = parseCollectionDocumentV2(source); }
+  catch {
+    // Invalid content still owns a selectable file surface with a recovery
+    // action. Never roll the navigation back merely because parsing failed.
+    await openCollectionFileDirectly(filePath, root, notebook.id, inspectCollectionRecoveryType(source), '集合文件格式无效', options?.history ?? 'push');
+    return;
+  }
+  await openCollectionTarget({ notebookId: notebook.id, collectionId: envelope.collection.id, filePath }, options);
+}
+export async function openFolderCollection(
+  notebookId: string,
+  path: string,
+  options?: { history?: 'push' | 'skip'; initialType?: 'notes' | 'media'; destination?: 'main-third' | 'browser-column'; browserDisposition?: 'focus-existing' | 'replace-active' | 'open-in-column' },
+): Promise<void> {
+  const workspace = getWorkspaceMemoState();
+  const folderPath = canonicalDirectoryPath(path);
+  const notebook = notebookId
+    ? workspace.notebooks.find((item) => item.id === notebookId)
+    : workspace.notebooks.find((item) => notebookRelativeDirectoryPath(item.path, folderPath) !== null);
+  if (!notebook) {
+    throw new Error('无法确定文件夹所属笔记本');
+  }
+  const relativeFolder = notebookRelativeDirectoryPath(notebook.path, folderPath);
+  if (relativeFolder === null) throw new Error('文件夹不属于当前笔记本');
+  const indexPath = `${folderPath}/.index.yaml`;
+  let source = await files.read(indexPath, notebook.path);
+  if (source === null) {
+    const folderName = folderPath.split('/').filter(Boolean).pop() ?? notebook.name;
+    const content = createFolderCollectionContent(options?.initialType ?? 'notes', folderName, relativeFolder);
+    try {
+      await files.create(indexPath, content, notebook.path);
+      source = content;
+    } catch (error) {
+      // Another click may have created the same index while this one was waiting.
+      source = await files.read(indexPath, notebook.path);
+      if (source === null) throw error;
+    }
+  }
+  let envelope: ReturnType<typeof parseCollectionDocumentV2>;
+  try { envelope = parseCollectionDocumentV2(source); }
+  catch {
+    await openCollectionFileDirectly(indexPath, notebook.path, notebook.id, inspectCollectionRecoveryType(source), '集合文件格式无效', options?.history ?? 'push');
+    return;
+  }
+  if (envelope.collection.placement !== 'folder') throw new Error('文件夹 .index.yaml 必须声明 placement: folder');
+  if (options?.destination === 'browser-column') {
+    const viewId = (envelope.payload.views as { default_id?: string }).default_id ?? null;
+    const descriptor = ensureCollectionDisplay({ notebookId: notebook.id, collectionId: envelope.collection.id, viewId });
+    bindCollectionDisplayPath(descriptor.displayId, indexPath);
+    const { openWorkspaceSurface } = await import('@features/workspace/public/open-surface-api');
+    await openWorkspaceSurface({
+      host: 'browser-column',
+      target: {
+        kind: 'collection',
+        ...descriptor,
+        filePath: indexPath,
+        notebookPath: canonicalDirectoryPath(notebook.path),
+        collectionType: envelope.collection.type,
+        name: envelope.collection.name,
+      },
+      options: { browserDisposition: options?.browserDisposition ?? 'replace-active' },
+    });
+    return;
+  }
+  await openCollectionTarget({
+    notebookId: notebook.id,
+    collectionId: envelope.collection.id,
+    viewId: (envelope.payload.views as { default_id?: string }).default_id,
+    filePath: indexPath,
+  }, { history: options?.history });
+}
+
+export async function openFolderCollectionChooserTarget(target: FolderCollectionSurfaceTarget): Promise<void> {
+  const notebook = getWorkspaceMemoState().notebooks.find((item) => item.id === target.notebookId);
+  if (!notebook || notebookRelativeDirectoryPath(notebook.path, target.folderPath) === null) {
+    throw new Error('文件夹不属于当前笔记本');
+  }
+  const requestId = beginNavigation(target, null, false, false);
+  try {
+    await flushWorkspaceDocument();
+  } catch (error) {
+    if (isCurrentNavigation(requestId)) useWorkColumnStore.getState().failNavigation(requestId, error);
+    throw error;
+  }
+  if (isCurrentNavigation(requestId)) commitNavigation(requestId, target, 'skip');
+}
+
+export async function openFolderCollectionFromFolder(
+  notebookId: string,
+  path: string,
+  host: WorkspaceHostId = 'main-third',
+): Promise<void> {
+  const folderPath = canonicalDirectoryPath(path);
+  const notebook = getWorkspaceMemoState().notebooks.find((item) => item.id === notebookId);
+  if (!notebook) throw new Error('无法确定文件夹所属笔记本');
+  const indexPath = `${folderPath}/.index.yaml`;
+  const source = await files.read(indexPath, notebook.path);
+  let hasReadableFolderCollection = false;
+  if (source !== null) {
+    try {
+      const envelope = parseCollectionDocumentV2(source);
+      hasReadableFolderCollection = envelope.collection.placement === 'folder';
+    } catch {
+      // Unreadable or malformed folder metadata falls through to the chooser.
+    }
+  }
+  if (hasReadableFolderCollection) {
+    await openFolderCollection(notebookId, folderPath, {
+      destination: host,
+      ...(host === 'browser-column' ? { browserDisposition: 'replace-active' as const } : {}),
+    });
+    return;
+  }
+  const folderName = folderPath.split(/[\\/]/).filter(Boolean).pop() ?? notebook.name;
+  const target: FolderCollectionSurfaceTarget = {
+    kind: 'folder-collection', folderPath, notebookId, notebookPath: notebook.path, folderName,
+  };
+  if (host === 'browser-column') {
+    const { openWorkspaceSurface } = await import('@features/workspace/public/open-surface-api');
+    await openWorkspaceSurface({ host, target, options: { browserDisposition: 'replace-active' } });
+  } else {
+    await openFolderCollectionChooserTarget(target);
+  }
+}
+
 export function openTableTarget(filePath: string, notebookPath: string | null, notebookId: string | null, options?: { history?: 'push' | 'skip'; destination?: 'main-third' }): Promise<void> {
   return openCollectionFile(filePath, notebookPath, notebookId, options);
 }
@@ -335,6 +521,9 @@ export function openMediaLibraryTarget(filePath: string, notebookPath: string | 
 }
 export function restoreCollectionWorkspace(restored: Extract<PersistedWorkspaceTarget, { kind: 'collection' }>): Promise<void> {
   return openCollectionTarget(restored, { history: 'skip' });
+}
+export function restoreFolderCollectionWorkspace(restored: FolderCollectionSurfaceTarget): Promise<void> {
+  return openFolderCollectionChooserTarget(restored);
 }
 
 export async function restoreMediaWorkspace(
@@ -349,10 +538,10 @@ export async function restoreMediaWorkspace(
   });
 }
 
-export function restoreDocumentListWorkspace(
-  restored: DocumentListTarget,
-): void {
-  openDocumentListTarget(restored, { history: 'skip' });
+export async function restoreLegacyFolderListWorkspace(
+  restored: LegacyFolderListTarget,
+): Promise<void> {
+  await openFolderCollection(restored.scope.notebookId ?? '', restored.scope.path, { history: 'skip' });
 }
 
 function isCurrentNavigation(requestId: number): boolean {
@@ -426,14 +615,6 @@ export function historyEntryFromWorkColumnTarget(
   switch (target.kind) {
     case 'collection':
       return { kind: 'collection', displayId: target.displayId, notebookId: target.notebookId, collectionId: target.collectionId, viewId: target.viewId, relativePathHint: target.filePath.startsWith(`${target.notebookPath}/`) ? target.filePath.slice(target.notebookPath.length + 1) : undefined, openedAt: Date.now() };
-    case 'document-list':
-      return {
-        kind: 'document-list',
-        displayId: target.displayId,
-        scope: target.scope,
-        filters: target.filters,
-        openedAt: Date.now(),
-      };
     case 'external': {
       if (!target.path) return null;
       return {
@@ -523,7 +704,11 @@ export function dismissNavigationFailure(): void {
 }
 
 /** Switch the main workspace notebook as one navigation transaction. */
-export async function selectNotebook(notebook: Notebook): Promise<void> {
+export async function selectNotebook(
+  notebook: Notebook,
+  options: { workColumnTarget?: 'preserve' | 'clear' } = {},
+): Promise<void> {
+  const shouldClearTarget = options.workColumnTarget === 'clear';
   const previousNotebook = getWorkspaceMemoState().selectedNotebook;
   const previousDocument = captureDocumentSnapshot();
   const previousWorkColumnTarget = targetToPreserveOnNotebookSwitch(
@@ -532,7 +717,7 @@ export async function selectNotebook(notebook: Notebook): Promise<void> {
   );
   const clearPreviousTarget = previousWorkColumnTarget.kind === 'media'
     && previousWorkColumnTarget.notebookId !== notebook.id;
-  const nextWorkColumnTarget = clearPreviousTarget
+  const nextWorkColumnTarget = shouldClearTarget || clearPreviousTarget
     ? EMPTY_WORK_COLUMN_TARGET
     : previousWorkColumnTarget;
   let switchedNotebook = false;
@@ -554,26 +739,24 @@ export async function selectNotebook(notebook: Notebook): Promise<void> {
         if (!useWorkColumnStore.getState().isCurrentNavigation(requestId)) return;
 
         getWorkspaceMemoState().setSelectedNotebook(notebook);
-        await getWorkspaceMemoState().loadNotes({ notebookId: notebook.id });
-        if (!useWorkColumnStore.getState().isCurrentNavigation(requestId)) return;
-        if (clearPreviousTarget) {
+        if (shouldClearTarget || clearPreviousTarget) {
           await getWorkspaceDocumentState().clearDocument();
           if (!useWorkColumnStore.getState().isCurrentNavigation(requestId)) return;
         }
         commitNavigation(requestId, nextWorkColumnTarget);
       },
-      () => selectNotebook(notebook),
+      () => selectNotebook(notebook, options),
       async (requestId) => {
         if (!useWorkColumnStore.getState().isCurrentNavigation(requestId)) return;
-        if (switchedNotebook && previousNotebook?.id) {
-          await setCurrentWorkspaceNotebook(previousNotebook);
+        if (switchedNotebook) {
+          await setCurrentWorkspaceNotebook(previousNotebook?.id ?? null);
         }
         if (!useWorkColumnStore.getState().isCurrentNavigation(requestId)) return;
         getWorkspaceMemoState().setSelectedNotebook(previousNotebook);
         await restoreDocumentSnapshot(previousDocument);
       },
       true,
-      clearPreviousTarget,
+      shouldClearTarget || clearPreviousTarget,
     );
   } finally {
     useWorkColumnStore.getState().endNotebookSwitch?.();
@@ -655,8 +838,11 @@ export async function openExternalTarget(
     markdownLocation,
     scopePath: options?.scopePath ?? markdownLocation?.notebookPath ?? fileBrowser.scopePath,
   };
-  const existing = path && options?.destination !== 'main-third'
-    ? activateExistingContentForNavigation({ kind: 'external', path })
+  const existing = path
+    ? activateExistingContentForNavigation(
+        { kind: 'external', path },
+        options?.destination ?? undefined,
+      )
     : null;
   if (existing instanceof Promise) {
     const activated = await existing;
@@ -743,9 +929,10 @@ export async function openMediaTarget(
   const filePath = params.filePath.trim();
   if (!filePath || !params.notebookPath?.trim()) return null;
   const target = pendingMediaTarget({ ...params, filePath });
-  const existing = params.destination === 'main-third'
-    ? null
-    : activateExistingContentForNavigation({ kind: 'media', path: filePath });
+  const existing = activateExistingContentForNavigation(
+    { kind: 'media', path: filePath },
+    params.destination,
+  );
   if (existing instanceof Promise) {
     const activated = await existing;
     if (activated) return activated;
@@ -782,9 +969,10 @@ export async function openWebTarget(
   const normalized = canonicalUrl(url);
   if (!normalized) throw new Error(`Unsupported webpage URL: ${url}`);
 
-  const existing = options?.destination === 'main-third'
-    ? null
-    : activateExistingContentForNavigation({ kind: 'web', url: normalized });
+  const existing = activateExistingContentForNavigation(
+    { kind: 'web', url: normalized },
+    options?.destination,
+  );
   if (existing instanceof Promise) {
     const activated = await existing;
     if (activated) return activated;
@@ -808,15 +996,28 @@ export async function openWebTarget(
 
 /** Flush the active editable document without clearing its session or target. */
 export async function flushWorkspaceDocument(): Promise<void> {
+  const mountedLifecycle = getWorkspaceHostSurfaceLifecycle('main-third');
+  if (mountedLifecycle?.flush) {
+    if (!await mountedLifecycle.flush()) throw new Error('Document flush did not complete');
+    return;
+  }
   const document = getWorkspaceDocumentState();
   let flushed = true;
 
   if (document.activeExternalSession) {
-    flushed = await flushWorkspaceDocumentPath(
-      documentIdentityFromFile(document.activeExternalSession.fileIdentity),
-      document.activeExternalSession.fileIdentity.path,
-      document.activeExternalSession.scopePath,
-    );
+    const active = document.activeExternalSession;
+    const lifecycle = getWorkspaceSurfaceLifecycle(active.fileIdentity.displayId);
+    try {
+      flushed = lifecycle?.status === 'ready' && lifecycle.flush
+        ? await lifecycle.flush()
+        : await flushWorkspaceDocumentPath(
+            documentIdentityFromFile(active.fileIdentity),
+            active.fileIdentity.path,
+            active.scopePath,
+          );
+    } catch {
+      flushed = false;
+    }
   }
 
   if (!flushed) {
@@ -830,12 +1031,10 @@ export async function openAgentTarget(
 ): Promise<WorkspaceHostId | WorkspaceContentLocation> {
   const normalized = instanceId.trim();
   if (!normalized) return 'main-third';
-  const existing = options?.destination === 'main-third'
-    ? null
-    : activateExistingContentForNavigation({
-        kind: 'agent-conversation',
-        instanceId: normalized,
-      });
+  const existing = activateExistingContentForNavigation(
+    { kind: 'agent-conversation', instanceId: normalized },
+    options?.destination ?? undefined,
+  );
   if (existing instanceof Promise) {
     const activated = await existing;
     if (activated) return activated;
@@ -858,7 +1057,7 @@ export async function openAgentTarget(
       }
       getWorkspaceMemoState().setActivePluginId(null);
       if (!isCurrentNavigation(requestId)) return;
-      commitNavigation(
+      const committed = commitNavigation(
         requestId,
         {
           kind: 'agent-conversation',
@@ -867,6 +1066,7 @@ export async function openAgentTarget(
         },
         options?.history ?? 'push',
       );
+      if (committed) useWorkspaceFocusStore.getState().focusHost('main-third');
     },
     async () => {
       await openAgentTarget(normalized, options);
@@ -897,6 +1097,41 @@ export async function clearWorkspaceTargetForDeletedFile(filePath: string): Prom
   if (!targetPath || !samePath(targetPath, filePath)) return false;
   await clearWorkspaceDocument();
   return true;
+}
+
+/** Clear work and browser targets that would become valid again after a same-path folder import. */
+export async function clearWorkspaceTargetsForDeletedDirectory(directoryPath: string): Promise<void> {
+  const isInsideDeletedDirectory = (path: string | null | undefined) => (
+    Boolean(path && isPathInDirectory(path, directoryPath))
+  );
+  const navigation = useWorkColumnStore.getState().navigation;
+  const workTargetIsInside = (target: WorkColumnTarget | null) => {
+    if (!target) return false;
+    if (target.kind === 'folder-collection') return isInsideDeletedDirectory(target.folderPath);
+    return isInsideDeletedDirectory(workColumnTargetFilePath(target));
+  };
+  const clearWorkTarget = workTargetIsInside(navigation.target)
+    || workTargetIsInside(navigation.pendingTarget)
+    || workTargetIsInside(navigation.previousTarget);
+
+  useBrowserColumnStore.getState().clearTargetsUnderDirectory(directoryPath);
+
+  const restoreStore = useWorkspaceRestoreStore.getState();
+  const desiredTarget = restoreStore.desiredTarget;
+  const desiredPath = desiredTarget
+    ? desiredTarget.kind === 'external'
+      ? desiredTarget.path
+      : desiredTarget.kind === 'agent-conversation'
+        ? null
+        : 'filePath' in desiredTarget
+          ? desiredTarget.filePath
+          : 'folderPath' in desiredTarget
+            ? typeof desiredTarget.folderPath === 'string' ? desiredTarget.folderPath : null
+            : null
+    : null;
+  if (isInsideDeletedDirectory(desiredPath)) restoreStore.setDesiredTarget(null);
+
+  if (clearWorkTarget) await clearWorkspaceDocument();
 }
 
 /** Update every live reference to an external file after an in-place rename. */

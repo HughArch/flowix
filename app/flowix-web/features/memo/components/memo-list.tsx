@@ -50,10 +50,11 @@ import {
   shouldShowMemoListLoading,
 } from '@features/memo/components/memo-list-loading-state';
 import { MemoListDataLoader } from '@features/memo/components/memo-list-data-loader';
+import { useWorkspaceStartupStore } from '@/lib/store/workspace-startup-store';
 import { noteRepository } from '@features/memo/services/note-repository';
 import { initializeMainWindowStartup } from '@app/main-window-startup';
-import { clearWorkspaceDocument, openExternalTarget } from '@features/workspace/use-cases/workspace-navigation';
-import { openBrowserColumnText } from '@features/workspace/use-cases/browser-column-navigation';
+import { clearWorkspaceDocument } from '@features/workspace/use-cases/workspace-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { useI18n } from '@/lib/i18n';
 import {
   useMemoListViewPreference,
@@ -177,7 +178,9 @@ export function MemoList({
   const [newLibraryName, setNewLibraryName] = useState('');
   const [isCreatingLibrary, setIsCreatingLibrary] = useState(false);
   const [createTemplates, setCreateTemplates] = useState<NoteTemplate[]>([]);
-  const agentRuntimeStatusByType = useAgentRuntimeStore((s) => s.statusByType);
+  // A stale Zustand snapshot can survive a Vite HMR update with this field
+  // missing even though the current store initializer provides an empty map.
+  const agentRuntimeStatusByType = useAgentRuntimeStore((s) => s.statusByType ?? {});
   const agentRuntimeIsChecking = useAgentRuntimeStore((s) => s.isChecking);
   const refreshAgentRuntimeIfStale = useAgentRuntimeStore((s) => s.refreshIfStale);
   const refreshTrigger = useNoteStore((s) => s.refreshTrigger);
@@ -213,10 +216,10 @@ export function MemoList({
     return () => window.removeEventListener('flowix:open-create-table-dialog', handleOpenCreateTableDialog);
   }, [t]);
   const newConversationAgentTypes = AGENT_TYPES.filter((type) => {
-    if (!isAgentTypeSelectable(type.key)) return false;
-    if (isAlwaysVisibleNewConversationAgent(type.key)) return true;
+    if (!isAgentTypeSelectable(type.id)) return false;
+    if (isAlwaysVisibleNewConversationAgent(type.id)) return true;
     return isAgentRuntimeInstalledState(normalizeAgentRuntimeStatus(
-      agentRuntimeStatusByType[type.key],
+      agentRuntimeStatusByType[type.id],
       agentRuntimeIsChecking,
     ));
   });
@@ -417,6 +420,9 @@ export function MemoList({
   }, []);
   const handleMemoListLoadSuccess = useCallback((queryKey: string) => {
     setMemoListError((current) => current?.queryKey === queryKey ? null : current);
+  }, []);
+  const handleStartupMemoListSettled = useCallback((_queryKey: string, outcome: 'ready' | 'failed') => {
+    useWorkspaceStartupStore.getState().setStartupTask('memo-list', outcome);
   }, []);
 
   const handleLoadMoreMemos = useCallback(() => {
@@ -651,7 +657,10 @@ export function MemoList({
     const notebook = useNoteStore.getState().selectedNotebook;
     if (!notebook?.path) return;
     const path = joinNotebookMemoPath(notebook.path, memo.relativePath) ?? memo.relativePath;
-    const open = openBrowserColumnText(path, notebook.path);
+    const open = openWorkspaceSurface({
+      host: 'browser-column',
+      target: { kind: 'external', path, scopePath: notebook.path, transitionId: null },
+    });
     void open
       .catch((error) => {
         logger.warn('open memo in browser column failed', {
@@ -951,7 +960,11 @@ export function MemoList({
       setCreateTypeMenuOpen(false);
       setCreateTableDialogNotebookId(null);
       createTableOnCreatedRef.current = null;
-      await openExternalTarget(created.filePath, { scopePath: targetNotebook.path, notebookId: targetNotebook.id, destination: 'main-third' });
+      await openWorkspaceSurface({
+        host: 'main-third',
+        target: { kind: 'external', path: created.filePath, scopePath: targetNotebook.path, transitionId: null },
+        options: { notebookId: targetNotebook.id },
+      });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '创建多维表格失败');
     } finally {
@@ -969,7 +982,11 @@ export function MemoList({
       const { filePath } = await createMediaLibraryFile(selectedNotebook.path, parentRelativePath, newLibraryName);
       setNewLibraryDialogOpen(false);
       setCreateTypeMenuOpen(false);
-      await openExternalTarget(filePath, { scopePath: selectedNotebook.path, notebookId: selectedNotebook.id, destination: 'main-third' });
+      await openWorkspaceSurface({
+        host: 'main-third',
+        target: { kind: 'external', path: filePath, scopePath: selectedNotebook.path, transitionId: null },
+        options: { notebookId: selectedNotebook.id },
+      });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : '创建媒体库失败');
     } finally {
@@ -1126,22 +1143,22 @@ export function MemoList({
           </DropdownMenuLabel>
           {newConversationAgentTypes.map((type) => {
             const runtimeStatus = normalizeAgentRuntimeStatus(
-              agentRuntimeStatusByType[type.key],
+              agentRuntimeStatusByType[type.id],
               agentRuntimeIsChecking,
             );
-            const showNotInstalled = isAlwaysVisibleNewConversationAgent(type.key)
+            const showNotInstalled = isAlwaysVisibleNewConversationAgent(type.id)
               && runtimeStatus.state === 'not-installed';
             const name = type.nameKey
               ? t(type.nameKey as Parameters<typeof t>[0])
               : type.name;
             return (
               <DropdownMenuItem
-                key={type.key}
+                key={type.id}
                 disabled={!selectedNotebook}
-                onClick={() => handleCreateAgentConversation(type.key)}
+                onClick={() => handleCreateAgentConversation(type.id)}
                 className="agent-conversation-new-agent-item group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
               >
-                <AgentIcon typeKey={type.key} alt="" className="h-4 w-4 shrink-0 object-contain" />
+                <AgentIcon typeKey={type.id} alt="" className="h-4 w-4 shrink-0 object-contain" />
                 <span className="min-w-0 flex-1 truncate">{name}</span>
                 {showNotInstalled && (
                   <span className="shrink-0 text-xs text-[var(--muted-foreground)] group-hover:text-[var(--primary-foreground)]">
@@ -1176,6 +1193,7 @@ export function MemoList({
         onLoadError={handleMemoListLoadError}
         onLoadStart={handleMemoListLoadStart}
         onLoadSuccess={handleMemoListLoadSuccess}
+        onStartupLoadSettled={handleStartupMemoListSettled}
       />
       <div className="flex min-w-0 items-center gap-2 pb-2 pl-[100px] pr-3">
         <div className="min-w-0 flex-1">
@@ -1344,7 +1362,7 @@ export function MemoList({
                   className="h-[30px] w-[25px] justify-start rounded-none border-0 bg-transparent pl-[7px] pr-[2px] text-[var(--primary-foreground)] hover:bg-white/10"
                 >
                   {isCreatingMemo || isCreatingTable
-                    ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                    ? <Loader2 className="h-4 w-4 flowix-spin" aria-hidden="true" />
                     : <SquarePen className="h-4 w-4" aria-hidden="true" />}
                 </Button>
               </Tooltip>
@@ -1377,7 +1395,7 @@ export function MemoList({
                     className="h-[30px] w-[30px] justify-center rounded-xl border border-transparent bg-[var(--primary)] p-0 text-[var(--primary-foreground)] hover:opacity-90"
                   >
                     {isCreatingMemo || isCreatingTable
-                      ? <Loader2 className="h-4 w-4 animate-spin" aria-hidden="true" />
+                      ? <Loader2 className="h-4 w-4 flowix-spin" aria-hidden="true" />
                       : <SquarePen className="h-4 w-4" aria-hidden="true" />}
                   </Button>
                 </DropdownMenuTrigger>
@@ -1482,7 +1500,7 @@ export function MemoList({
               onCreateFolder={handleCreateFolder}
               defaultCreateFolder={defaultCreateFolder}
               onSetDefaultCreateFolder={(folderPath) => { void handleSetDefaultCreateFolder(folderPath); }}
-              isActive={isActive && dataLoadingEnabled && showFolderView}
+              isActive={isActive && dataLoadingEnabled && showFolderView && defaultCreateFolderReady}
               onCreateNote={handleCreateNoteInFolder}
             />
           </div>

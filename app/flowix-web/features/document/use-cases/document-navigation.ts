@@ -4,15 +4,11 @@ import {
   type DocumentHistoryEntry,
 } from '@features/document/store/document-history-store';
 import { useDocumentStore } from '@features/document/store/document-store';
-import { selectAndOpenAgentConversation } from '@features/workspace/use-cases/agent-conversation-navigation';
 import {
-  openExternalTarget,
-  openCollectionTarget,
-  openMediaTarget,
-  openWebTarget,
-  openDocumentListTarget,
   historyEntryFromWorkColumnTarget,
 } from '@features/workspace/use-cases/workspace-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
+import { openFolderCollection } from '@features/workspace/public/main-window-api';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 
 export type DocumentHistoryDirection = 'back' | 'forward';
@@ -43,45 +39,53 @@ function currentHistoryEntry(): DocumentHistoryEntry | null {
 
 async function openHistoryEntry(entry: DocumentHistoryEntry): Promise<DocumentHistoryEntry> {
   if (entry.kind === 'collection') {
-    await openCollectionTarget(entry, { history: 'skip', destination: 'main-third' });
+    await openWorkspaceSurface({
+      host: 'main-third',
+      target: { ...entry, kind: 'collection-reference' },
+      options: { history: 'skip' },
+    });
     return entry;
   }
   if (entry.kind === 'document-list') {
-    openDocumentListTarget({
-      kind: 'document-list',
-      displayId: entry.displayId,
-      scope: entry.scope,
-      filters: entry.filters,
-    }, { history: 'skip' });
-    return entry;
+    await openFolderCollection(entry.scope.notebookId ?? '', entry.scope.path, { history: 'skip' });
+    const openedEntry = historyEntryFromWorkColumnTarget(useWorkColumnStore.getState().navigation.target);
+    if (!openedEntry) throw new Error('无法恢复旧文件夹历史记录');
+    return openedEntry;
   }
   if (entry.kind === 'agent-conversation') {
-    await selectAndOpenAgentConversation(entry.instanceId, {
-      history: 'skip',
-      destination: 'main-third',
-      ...(entry.blankIfMissing ? { blankIfMissing: true as const } : {}),
+    await openWorkspaceSurface({
+      host: 'main-third',
+      target: {
+        kind: 'agent-conversation',
+        instanceId: entry.instanceId,
+        ...(entry.blankIfMissing ? { blankIfMissing: true as const } : {}),
+      },
+      options: { history: 'skip' },
     });
     return entry;
   }
   if (entry.kind === 'web') {
-    await openWebTarget(entry.url, { history: 'skip', destination: 'main-third' });
+    await openWorkspaceSurface({ host: 'main-third', target: { kind: 'web', url: entry.url }, options: { history: 'skip' } });
     return entry;
   }
   if (entry.kind === 'media') {
-    await openMediaTarget({
-      filePath: entry.filePath,
-      notebookId: entry.notebookId,
-      notebookPath: entry.notebookPath,
-      resourceKind: entry.resourceKind,
-      history: 'skip',
-      destination: 'main-third',
+    await openWorkspaceSurface({
+      host: 'main-third',
+      target: {
+        kind: 'media',
+        filePath: entry.filePath,
+        notebookId: entry.notebookId,
+        notebookPath: entry.notebookPath,
+        resourceKind: entry.resourceKind,
+      },
+      options: { history: 'skip' },
     });
     return entry;
   }
-  await openExternalTarget(entry.path, {
-    history: 'skip',
-    scopePath: entry.scopePath,
-    destination: 'main-third',
+  await openWorkspaceSurface({
+    host: 'main-third',
+    target: { kind: 'external', path: entry.path, scopePath: entry.scopePath, transitionId: null },
+    options: { history: 'skip' },
   });
   return entry;
 }
@@ -122,7 +126,7 @@ export async function navigateDocumentHistory(direction: DocumentHistoryDirectio
     ? useDocumentHistoryStore.getState().backStack
     : useDocumentHistoryStore.getState().forwardStack;
   if (documentHistoryEntryKey(currentStack[currentStack.length - discardCount] ?? null)
-    !== documentHistoryEntryKey(openedTarget)) return false;
+    !== documentHistoryEntryKey(target)) return false;
 
   if (direction === 'back') {
     useDocumentHistoryStore.getState().commitBackNavigation(current, discardCount);

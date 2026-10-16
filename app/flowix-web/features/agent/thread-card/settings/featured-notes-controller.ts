@@ -1,6 +1,6 @@
 import type { I18nKey, I18nParams } from '@/lib/i18n';
 import { notes as notesClient, files, externalDocuments } from '@platform/tauri/client';
-import { openNoteByNotebookPath } from '@features/memo/use-cases/open-by-target';
+import { openNoteByNotebookPath } from '@features/memo/public/note-navigation-api';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { joinNotebookMemoPath } from '@/lib/path';
 import { parseTableDocumentAsync } from '@features/multidimensional-table/parse-table-document';

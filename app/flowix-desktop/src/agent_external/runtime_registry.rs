@@ -45,7 +45,7 @@ impl ExternalRuntimeKind {
         Self::DeepSeekHarness,
     ];
 
-    pub const fn key(self) -> &'static str {
+    pub const fn id(self) -> &'static str {
         match self {
             Self::Codex => CODEX_AGENT_TYPE,
             Self::Claude => CLAUDE_AGENT_TYPE,
@@ -59,11 +59,11 @@ impl ExternalRuntimeKind {
     pub fn parse(value: &str) -> Result<Self, String> {
         match value.trim().to_ascii_lowercase().as_str() {
             "codex" => Ok(Self::Codex),
-            "claude" => Ok(Self::Claude),
+            "claudecode" | "claude" => Ok(Self::Claude),
             "hermes" => Ok(Self::Hermes),
             "opencode" => Ok(Self::OpenCode),
             "pi" => Ok(Self::Pi),
-            "deepseek-harness" | "deepseek_harness" | "dsh" => Ok(Self::DeepSeekHarness),
+            "dsh" | "deepseek-harness" | "deepseek_harness" => Ok(Self::DeepSeekHarness),
             other => Err(format!("unsupported agent type: {other}")),
         }
     }
@@ -73,8 +73,8 @@ impl ExternalRuntimeKind {
 pub trait ExternalCliRuntime: Send + Sync {
     fn kind(&self) -> ExternalRuntimeKind;
 
-    fn key(&self) -> &'static str {
-        self.kind().key()
+    fn id(&self) -> &'static str {
+        self.kind().id()
     }
 
     async fn chat_stream(
@@ -669,7 +669,7 @@ impl ExternalRuntimeRegistry {
             if registry.insert(kind, runtime).is_some() {
                 return Err(format!(
                     "external runtime is registered more than once for {}",
-                    kind.key()
+                    kind.id()
                 ));
             }
         }
@@ -1052,7 +1052,7 @@ fn merge_run_snapshot(target: &mut HashMap<String, RunInfo>, snapshot: RuntimeRu
             if snapshot.info.started_at > existing.started_at {
                 tracing::warn!(
                     thread_id = %snapshot.thread_id,
-                    kept_runtime = snapshot.runtime.key(),
+                    kept_runtime = snapshot.runtime.id(),
                     dropped_runtime = existing.agent_type.as_deref().unwrap_or("unknown"),
                     "multiple runtimes reported the same running thread; keeping the newest run"
                 );
@@ -1061,7 +1061,7 @@ fn merge_run_snapshot(target: &mut HashMap<String, RunInfo>, snapshot: RuntimeRu
                 tracing::warn!(
                     thread_id = %snapshot.thread_id,
                     kept_runtime = existing.agent_type.as_deref().unwrap_or("unknown"),
-                    dropped_runtime = snapshot.runtime.key(),
+                    dropped_runtime = snapshot.runtime.id(),
                     "multiple runtimes reported the same running thread; keeping the newest run"
                 );
             }

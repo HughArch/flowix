@@ -9,7 +9,7 @@ export interface AgentComposerDomFactoryOptions {
 
 export interface AgentComposerDomParts {
   composer: HTMLElement;
-  composerImages: HTMLDivElement;
+  inputRow: HTMLDivElement;
   composerActions: HTMLDivElement;
   composerRoleIcon: HTMLButtonElement;
   composerAddPopover: HTMLDivElement;
@@ -87,7 +87,7 @@ function handleComposerPointerDown(event: PointerEvent): void {
   // 所以不会影响发送、添加内容、模型选择等按钮的 click 行为。
   event.preventDefault();
   event.stopPropagation();
-  const input = composer.querySelector<HTMLDivElement>('.agent-thread-card__composer-input');
+  const input = composer.querySelector<HTMLDivElement>('.agent-composer__input');
   if (!input) return;
   focusComposerInput(composer, input);
 }
@@ -98,7 +98,7 @@ function handleComposerClick(event: MouseEvent): void {
   const target = event.target as Element | null;
   if (!target || isComposerInteractiveTarget(composer, target)) return;
   event.stopPropagation();
-  const input = composer.querySelector<HTMLDivElement>('.agent-thread-card__composer-input');
+  const input = composer.querySelector<HTMLDivElement>('.agent-composer__input');
   if (!input) return;
   focusComposerInput(composer, input);
 }
@@ -108,16 +108,15 @@ export function createAgentComposerDom(
   options: AgentComposerDomFactoryOptions,
 ): AgentComposerDomParts {
   const composer = document.createElement('div');
-  composer.className = 'agent-thread-card__composer';
+  composer.className = 'agent-composer';
   if (options.variant === 'expanded') {
     composer.classList.add('agent-composer--expanded');
   }
-  const composerImages = document.createElement('div');
-  composerImages.className = 'agent-thread-card__composer-images';
-  composerImages.hidden = true;
+  const inputRow = document.createElement('div');
+  inputRow.className = 'agent-composer__input-row';
   const composerRoleIcon = document.createElement('button');
   composerRoleIcon.type = 'button';
-  composerRoleIcon.className = 'agent-thread-card__composer-add-button';
+  composerRoleIcon.className = 'agent-composer__add-button';
   composerRoleIcon.setAttribute('aria-haspopup', 'menu');
   composerRoleIcon.setAttribute('aria-expanded', 'false');
   composerRoleIcon.setAttribute('aria-label', options.t('editor.threadCard.addContent'));
@@ -127,7 +126,7 @@ export function createAgentComposerDom(
   // point as a plain div lets the same imperative DOM contract work for both
   // the note-embedded NodeView and the standalone conversation surface.
   const input = document.createElement('div');
-  input.className = 'agent-thread-card__composer-input';
+  input.className = 'agent-composer__input';
   input.contentEditable = 'true';
   // Explicitly tabbable so the mount point remains focusable before Tiptap
   // initializes (and in embedded WebViews/jsdom where contenteditable alone
@@ -138,19 +137,19 @@ export function createAgentComposerDom(
   input.dataset.composerInitialDraft = options.inputDraft ?? '';
   input.spellcheck = true;
   const sendButtonMount = document.createElement('span');
-  sendButtonMount.className = 'agent-thread-card__send-tooltip';
+  sendButtonMount.className = 'agent-composer__send-tooltip';
   const composerActions = document.createElement('div');
-  composerActions.className = 'agent-thread-card__composer-actions';
+  composerActions.className = 'agent-composer__actions';
   const codexSettingsPopover = document.createElement('div');
   codexSettingsPopover.className = 'agent-thread-card__codex-settings-popover';
   codexSettingsPopover.setAttribute('role', 'menu');
   codexSettingsPopover.hidden = true;
   const composerRolePopover = document.createElement('div');
-  composerRolePopover.className = 'agent-thread-card__composer-note-popover';
+  composerRolePopover.className = 'agent-composer__note-popover';
   composerRolePopover.setAttribute('role', 'menu');
   composerRolePopover.hidden = true;
   const composerAddPopover = document.createElement('div');
-  composerAddPopover.className = 'agent-thread-card__composer-add-popover';
+  composerAddPopover.className = 'agent-composer__add-popover';
   composerAddPopover.setAttribute('role', 'menu');
   composerAddPopover.hidden = true;
   composerActions.append(composerRoleIcon);
@@ -158,7 +157,8 @@ export function createAgentComposerDom(
   // flex (默认 row, DOM 顺序 = 视觉顺序) 状态下添加按钮显示在 input
   // 左侧, 跟全屏态 grid 布局 `grid-column: 1` 把 actions 显式钉在第一列
   // ── 视觉位置对齐。 send button 仍以 sendButtonMount 收尾, 留在最右。
-  composer.append(composerImages, composerActions, input, sendButtonMount);
+  inputRow.append(input);
+  composer.append(composerActions, inputRow, sendButtonMount);
   document.body.append(codexSettingsPopover, composerAddPopover, composerRolePopover);
   // 空区域点击聚焦 ── 见上方 COMPOSER_FOCUS_INTERACTIVE_SELECTOR 注释。
   // 优先使用 pointerdown，避免 click 时浏览器先把焦点移到 body；
@@ -168,7 +168,7 @@ export function createAgentComposerDom(
   composer.addEventListener('click', handleComposerClick);
   return {
     composer,
-    composerImages,
+    inputRow,
     composerActions,
     composerRoleIcon,
     input,

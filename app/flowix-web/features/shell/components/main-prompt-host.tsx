@@ -7,6 +7,8 @@ import { NavigationFailurePrompt } from '@features/shell/components/prompts/navi
 
 export interface MainPromptHostProps {
   updater: AppUpdaterState;
+  appUpdatePromptOpen: boolean;
+  onCloseAppUpdatePrompt(): void;
   dshInstallPromptOpen: boolean;
   dshInstaller: DshRuntimeInstallerState;
   onCloseDshInstallPrompt(): void;
@@ -16,6 +18,8 @@ export interface MainPromptHostProps {
 
 export function MainPromptHost({
   updater,
+  appUpdatePromptOpen,
+  onCloseAppUpdatePrompt,
   dshInstallPromptOpen,
   dshInstaller,
   onCloseDshInstallPrompt,
@@ -25,7 +29,7 @@ export function MainPromptHost({
   return (
     <FloatingPromptStack>
       <NavigationFailurePrompt />
-      <AppUpdatePrompt updater={updater} />
+      <AppUpdatePrompt updater={updater} open={appUpdatePromptOpen} onClose={onCloseAppUpdatePrompt} />
       <DshInstallPrompt
         open={dshInstallPromptOpen}
         installer={dshInstaller}
@@ -36,4 +40,3 @@ export function MainPromptHost({
     </FloatingPromptStack>
   );
 }
-

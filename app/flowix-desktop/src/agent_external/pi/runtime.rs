@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -715,20 +715,6 @@ impl ExternalLifecycleEmitter for PiRpcManager {
 
 impl PiRpcManager {
     pub fn new(thread_manager: Arc<ThreadManager>) -> Self {
-        #[cfg(windows)]
-        {
-            static INITIALIZE_SESSIONS: std::sync::Once = std::sync::Once::new();
-            INITIALIZE_SESSIONS.call_once(|| {
-                if let Some(local) = std::env::var_os("LOCALAPPDATA") {
-                    if let Err(error) =
-                        crate::runtime_state::migrate_pi_sessions(std::path::Path::new(&local))
-                    {
-                        // Legacy conversations remain accessible in place.
-                        tracing::warn!("Pi session migration deferred: {error}");
-                    }
-                }
-            });
-        }
         Self {
             thread_manager,
             sessions: Mutex::new(HashMap::new()),
@@ -989,13 +975,11 @@ impl PiRpcManager {
             session.shutdown(thread_id).await;
         }
         let mut deleted = false;
-        for candidate in pi_session_candidates(thread_id)? {
-            match std::fs::remove_dir_all(candidate) {
-                Ok(()) => deleted = true,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-                Err(error) => {
-                    return Err(format!("could not delete Pi conversation session: {error}"));
-                }
+        match std::fs::remove_dir_all(pi_session_dir(thread_id)?) {
+            Ok(()) => deleted = true,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!("could not delete Pi conversation session: {error}"));
             }
         }
         Ok(deleted)
@@ -1836,7 +1820,7 @@ impl PiRpcManager {
             tools: pi_tools_for_permission_mode(permission_mode).into(),
             code_mode: message
                 .code_mode_for_runtime(AGENT_TYPE)
-                .unwrap_or(pi_features.code_mode),
+                .unwrap_or(false),
             tool_search: pi_features.tool_search,
             provider: provider.clone().filter(|value| !value.trim().is_empty()),
             model: runtime_model.clone(),
@@ -3006,14 +2990,6 @@ fn pi_session_dir(thread_id: &str) -> Result<PathBuf, String> {
     Ok(root.join(stable_name))
 }
 
-fn legacy_pi_session_dir(thread_id: &str) -> Result<PathBuf, String> {
-    let root = pi_session_root()?;
-    use std::hash::{Hash, Hasher};
-    let mut hasher = std::collections::hash_map::DefaultHasher::new();
-    thread_id.hash(&mut hasher);
-    Ok(root.join(format!("{:016x}", hasher.finish())))
-}
-
 fn pi_session_root() -> Result<PathBuf, String> {
     #[cfg(windows)]
     {
@@ -3026,57 +3002,8 @@ fn pi_session_root() -> Result<PathBuf, String> {
         .ok_or_else(|| "user data directory is unavailable".to_string())
 }
 
-fn pi_session_candidates(thread_id: &str) -> Result<Vec<PathBuf>, String> {
-    #[allow(unused_mut)]
-    let mut candidates = vec![
-        pi_session_dir(thread_id)?,
-        legacy_pi_session_dir(thread_id)?,
-    ];
-    #[cfg(windows)]
-    {
-        let local = std::env::var_os("LOCALAPPDATA").ok_or("LOCALAPPDATA is unavailable")?;
-        let old_root = PathBuf::from(local).join("Flowix").join("pi-sessions");
-        candidates.push(
-            old_root.join(
-                candidates[0]
-                    .file_name()
-                    .ok_or("Pi session path has no name")?,
-            ),
-        );
-        candidates.push(
-            old_root.join(
-                candidates[1]
-                    .file_name()
-                    .ok_or("Pi session path has no name")?,
-            ),
-        );
-    }
-    Ok(candidates)
-}
-
 fn resolve_pi_session_dir(thread_id: &str, create: bool) -> Result<PathBuf, String> {
-    #[cfg(windows)]
-    let path =
-        crate::runtime_state::resolve_pi_session_candidates(&pi_session_candidates(thread_id)?)?;
-    #[cfg(not(windows))]
-    let path = {
-        let stable = pi_session_dir(thread_id)?;
-        let legacy = legacy_pi_session_dir(thread_id)?;
-        if !stable.exists() && legacy.exists() {
-            std::fs::create_dir_all(stable.parent().ok_or("Pi session path has no parent")?)
-                .map_err(|error| format!("cannot create Pi session directory: {error}"))?;
-            match std::fs::rename(&legacy, &stable) {
-                Ok(()) => {}
-                Err(_) if stable.exists() => {}
-                Err(error) => {
-                    return Err(format!(
-                        "could not migrate Pi conversation session: {error}"
-                    ))
-                }
-            }
-        }
-        stable
-    };
+    let path = pi_session_dir(thread_id)?;
     if create {
         std::fs::create_dir_all(&path)
             .map_err(|error| format!("cannot create Pi session directory: {error}"))?;

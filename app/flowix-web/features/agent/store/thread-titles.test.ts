@@ -30,9 +30,7 @@ describe("thread-titles helpers", () => {
     expect(isExternalAgentType("codex")).toBe(true);
     expect(isExternalAgentType("claude")).toBe(true);
     expect(isExternalAgentType("deepseek-harness")).toBe(true);
-    expect(isExternalAgentType("gemini")).toBe(true);
     expect(isExternalAgentType("hermes")).toBe(true);
-    expect(isExternalAgentType("openclaw")).toBe(true);
   });
 
   it("persists every agent title in the product database", () => {
@@ -41,8 +39,6 @@ describe("thread-titles helpers", () => {
     expect(canPersistThreadTitle("claude")).toBe(true);
     expect(canPersistThreadTitle("deepseek-harness")).toBe(true);
     expect(canPersistThreadTitle("hermes")).toBe(true);
-    expect(canPersistThreadTitle("gemini")).toBe(true);
-    expect(canPersistThreadTitle("openclaw")).toBe(true);
   });
 
   it("defaultExternalThreadTitle returns type-specific translated text", () => {
@@ -55,9 +51,7 @@ describe("thread-titles helpers", () => {
     );
     // Session fallback titles are localized per agent type.
     expect(defaultExternalThreadTitle("hermes")).toBe("Hermes session");
-    expect(defaultExternalThreadTitle("gemini")).toBe("Gemini CLI session");
     expect(defaultExternalThreadTitle("opencode")).toBe("OpenCode session");
-    expect(defaultExternalThreadTitle("openclaw")).toBe("OpenClaw session");
   });
 
   it("defaultThreadTitle falls back per agent family", () => {
@@ -68,8 +62,6 @@ describe("thread-titles helpers", () => {
     expect(defaultThreadTitle("deepseek-harness")).toBe("DeepSeek Harness session");
     expect(defaultThreadTitle("opencode")).toBe("OpenCode session");
     expect(defaultThreadTitle("hermes")).toBe("Hermes session");
-    expect(defaultThreadTitle("gemini")).toBe("Gemini CLI session");
-    expect(defaultThreadTitle("openclaw")).toBe("OpenClaw session");
   });
 
   it("localizes DeepSeek Harness card and session titles", () => {
@@ -82,8 +74,6 @@ describe("thread-titles helpers", () => {
     );
     expect(defaultThreadTitle("opencode")).toBe("OpenCode 会话");
     expect(defaultThreadTitle("hermes")).toBe("Hermes 会话");
-    expect(defaultThreadTitle("gemini")).toBe("Gemini CLI 会话");
-    expect(defaultThreadTitle("openclaw")).toBe("OpenClaw 会话");
   });
 
   it("deriveThreadTitleFromPrompt strips system block, collapses whitespace, truncates", () => {

@@ -65,12 +65,10 @@ function disposeMenuRoot(root: Root, container: HTMLDivElement) {
 const AGENT_THREAD_TYPE_BY_SLASH_ID: Record<AgentThreadSlashMenuItemId, AgentTypeKey> = {
   'agent-thread-pi': 'pi',
   'agent-thread-codex': 'codex',
-  'agent-thread-claude': 'claude',
-  'agent-thread-gemini': 'gemini',
+  'agent-thread-claude': 'claudecode',
   'agent-thread-hermes': 'hermes',
-  'agent-thread-openclaw': 'openclaw',
   'agent-thread-opencode': 'opencode',
-  'agent-thread-deepseek-harness': 'deepseek-harness',
+  'agent-thread-deepseek-harness': 'dsh',
 };
 
 const TABLE_VIEW_TYPE_BY_SLASH_ID: Partial<Record<SlashMenuItem['id'], TableViewType>> = {
@@ -606,7 +604,7 @@ function handleSelect(item: SlashMenuItem): void {
     // DSH is always discoverable in the slash menu. Until availability is
     // positively confirmed (including while status is still loading), guide
     // the user to installation/model setup instead of inserting a dead card.
-    if (agentThreadType === 'deepseek-harness' && runtimeState !== 'ready') {
+    if (agentThreadType === 'dsh' && runtimeState !== 'ready') {
       closeMenu();
       void windows.openPreferences('dsh');
       return;

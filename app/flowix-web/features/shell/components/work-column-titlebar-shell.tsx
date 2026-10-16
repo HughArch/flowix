@@ -1,12 +1,11 @@
 'use client';
 
-import type { CSSProperties, MouseEvent, ReactNode } from 'react';
+import type { CSSProperties, ReactNode } from 'react';
 import { isMac } from '@features/shortcuts';
 import { useI18n } from '@/lib/i18n';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@shared/ui/context-menu';
 import { useWorkColumnTransferViewModel } from '@features/workspace/public/shell-api';
-import { canUseNativeContextMenu, logNativeContextMenuError, popupNativeContextMenu } from '@platform/tauri/native-context-menu';
-import { buildWorkColumnContextMenuItems } from '@features/shell/menus/work-column-context-menu';
+import { hideBrowserColumn } from '@features/workspace/public/browser-column-api';
 
 /** Shared titlebar fade used by the work column and browser-column tabs. */
 export const WORK_COLUMN_TITLEBAR_GRADIENT =
@@ -32,30 +31,12 @@ export function WorkColumnTitlebarShell({
 }: WorkColumnTitlebarShellProps) {
   const { t } = useI18n();
   const { canOpenInBrowserColumn, openInBrowserColumn } = useWorkColumnTransferViewModel();
-  const useNativeMenu = canUseNativeContextMenu();
-
-  const showNativeContextMenu = async (event: MouseEvent<HTMLDivElement>) => {
-    if (!canUseNativeContextMenu()) return;
-    try {
-      await popupNativeContextMenu(event, buildWorkColumnContextMenuItems({
-        label: t('workColumn.context.openInBrowserColumn'),
-        enabled: canOpenInBrowserColumn,
-        openInBrowserColumn: () => void openInBrowserColumn(),
-      }));
-    } catch (error) {
-      logNativeContextMenuError('work-column titlebar', error);
-    }
-  };
 
   return (
     <ContextMenu>
       <ContextMenuTrigger asChild>
         <div
           data-tauri-drag-region
-          // On Windows the shared ContextMenuTrigger must receive the event
-          // directly so it can open the web menu. Installing a no-op native
-          // handler here can prevent that fallback in the drag-region titlebar.
-          onContextMenu={useNativeMenu ? (event) => void showNativeContextMenu(event) : undefined}
           className={`z-[50] flex shrink-0 select-none items-center pl-2 ${
             isWindows
               ? `h-9 ${reserveWindowsControls ? 'pr-[126px]' : 'pr-0'}`
@@ -69,7 +50,7 @@ export function WorkColumnTitlebarShell({
           {children}
         </div>
       </ContextMenuTrigger>
-      <ContextMenuContent className="w-[180px] space-y-0.5 rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+      <ContextMenuContent className="w-[176px] space-y-0.5 rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
         <ContextMenuItem
           disabled={!canOpenInBrowserColumn}
           onClick={() => {
@@ -79,7 +60,13 @@ export function WorkColumnTitlebarShell({
           }}
           className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
         >
-          <span className="leading-5">{t('workColumn.context.openInBrowserColumn')}</span>
+          <span className="leading-5">{t('workColumn.context.alsoOpenInBrowserColumn')}</span>
+        </ContextMenuItem>
+        <ContextMenuItem
+          onClick={hideBrowserColumn}
+          className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
+        >
+          <span className="leading-5">{t('tabWindow.closeColumn')}</span>
         </ContextMenuItem>
       </ContextMenuContent>
     </ContextMenu>

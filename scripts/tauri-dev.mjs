@@ -1,5 +1,5 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { homedir } from 'node:os'
 import { delimiter, join, resolve } from 'node:path'
 
@@ -9,10 +9,39 @@ const npmEntrypoint = process.env.npm_execpath
 const tauriEntrypoint = resolve(repoRoot, 'node_modules/@tauri-apps/cli/tauri.js')
 const args = process.argv.slice(2)
 const withPi = args.includes('--with-pi')
-const config = args.find(arg => arg !== '--with-pi') ?? 'app/flowix-desktop/tauri.conf.dev.json'
+const cloudEnvIndex = args.findIndex(arg => arg === '--cloud-env' || arg.startsWith('--cloud-env='))
+const hasCloudEnvFlag = cloudEnvIndex >= 0
+const cloudEnvValue = cloudEnvIndex < 0
+  ? undefined
+  : args[cloudEnvIndex] === '--cloud-env'
+    ? args[cloudEnvIndex + 1]
+    : args[cloudEnvIndex].slice('--cloud-env='.length)
+const configArgs = [...args]
+if (cloudEnvIndex >= 0) {
+  configArgs.splice(cloudEnvIndex, args[cloudEnvIndex] === '--cloud-env' ? 2 : 1)
+}
+const config = configArgs.find(arg => arg !== '--with-pi') ?? 'app/flowix-desktop/tauri.conf.dev.json'
 const childEnv = { ...process.env }
 childEnv.CARGO_TARGET_DIR ??= resolve(repoRoot, '.build/cargo-target')
-if (config.includes('.dev.')) childEnv.FLOWIX_DEV_MODE = '1'
+const devMode = config.includes('.dev.')
+if (devMode) childEnv.FLOWIX_DEV_MODE = '1'
+else delete childEnv.FLOWIX_DEV_MODE
+
+if (hasCloudEnvFlag && !['staging', 'prod'].includes(cloudEnvValue)) {
+  throw new Error(`Unsupported or missing --cloud-env value: ${cloudEnvValue ?? '<missing>'}. Use staging or prod.`)
+}
+if (hasCloudEnvFlag && !devMode) {
+  throw new Error('--cloud-env can only be used with a development Tauri config.')
+}
+if (process.env.FLOWIX_CLOUD_API_BASE) {
+  throw new Error('FLOWIX_CLOUD_API_BASE has been removed. Use --cloud-env=staging or --cloud-env=prod.')
+}
+if (devMode) {
+  childEnv.FLOWIX_CLOUD_ENVIRONMENT = cloudEnvValue ?? 'prod'
+} else {
+  childEnv.FLOWIX_CLOUD_ENVIRONMENT = 'prod'
+}
+console.log(`Cloud build default: ${childEnv.FLOWIX_CLOUD_ENVIRONMENT} (saved app preference takes precedence)`)
 
 // The dev config is an overlay on tauri.conf.json. Keep versions in the
 // overlay-free canonical files aligned so a stale app version fails early.
@@ -135,34 +164,23 @@ function runTauriDev() {
     return
   }
 
-  const executable = resolve(childEnv.CARGO_TARGET_DIR, 'debug/flowix-desktop')
-  const previousMtime = existsSync(executable) ? statSync(executable).mtimeMs : 0
-  const registerScript = resolve(repoRoot, 'scripts/register-macos-dev-app.mjs')
-  const child = spawn(process.execPath, [tauriEntrypoint, 'dev', '--config', config], {
+  const runner = resolve(repoRoot, 'scripts/run-macos-dev-app.mjs')
+  const child = spawn(process.execPath, [
+    tauriEntrypoint,
+    'dev',
+    '--config',
+    config,
+    '--runner',
+    runner,
+  ], {
     cwd: repoRoot,
     env: childEnv,
     stdio: 'inherit',
   })
-  let registered = false
-  const check = setInterval(() => {
-    if (registered || !existsSync(executable)) return
-    if (statSync(executable).mtimeMs <= previousMtime && !existsSync(resolve(repoRoot, '.build/macos-dev/Flowix Dev.app/Contents/Info.plist'))) return
-    registered = true
-    const result = spawnSync(process.execPath, [registerScript], {
-      cwd: repoRoot,
-      env: childEnv,
-      stdio: 'inherit',
-    })
-    if (result.error || result.status !== 0) {
-      console.error('Flowix Dev deep-link registration failed; Google login callbacks may open another installed Flowix app.')
-    }
-  }, 500)
   child.on('error', (error) => {
-    clearInterval(check)
     throw error
   })
   child.on('exit', (code, signal) => {
-    clearInterval(check)
     if (signal) process.kill(process.pid, signal)
     else process.exitCode = code ?? 1
   })

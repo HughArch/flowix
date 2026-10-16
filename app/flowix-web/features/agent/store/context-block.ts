@@ -67,7 +67,7 @@ const FLOWIX_CLI_PROMPT_BLOCK = [
 
 const NATIVE_AGENTS_INSTRUCTION_AGENT_TYPES = new Set<AgentTypeKey>([
   "codex",
-  "deepseek-harness",
+  "dsh",
 ]);
 
 export function appendFirstMessageContext(

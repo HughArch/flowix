@@ -30,7 +30,12 @@ export async function selectAndOpenAgentConversation(
     }
   }
 
-  const host = await openAgentTarget(normalized, options);
+  // A list click targets Work. Browser placement is a separate explicit
+  // openWorkspaceSurface request.
+  const host = await openAgentTarget(normalized, {
+    ...options,
+    destination: options?.destination ?? 'main-third',
+  });
   useWorkspaceRestoreStore.getState().selectAgentConversation(
     normalized,
     host === 'main-third',
@@ -73,12 +78,15 @@ export async function restoreAgentConversationWorkspace(): Promise<void> {
     || useWorkColumnStore.getState().navigation.phase === 'loading'
   ) return;
 
-  if (blankIfMissing && !restoreFailed && restored === null) {
-    // Empty drafts are intentionally memory-only. Their stale restore target
-    // should become the ordinary empty work column, not a missing-session page.
+  if (!restoreFailed && restored === null) {
+    // A rebuilt session store also invalidates formerly persisted selections.
+    // Confirmed absence returns to the ordinary empty work column.
     try {
       await clearWorkspaceDocument();
-      useWorkspaceRestoreStore.getState().clearAgentConversation(instanceId);
+      const latest = useWorkspaceRestoreStore.getState().desiredTarget;
+      if (latest?.kind === 'agent-conversation' && latest.instanceId.trim() === instanceId) {
+        useWorkspaceRestoreStore.getState().clearAgentConversation();
+      }
       return;
     } catch (error) {
       console.error('Failed to clear missing empty conversation target:', error);

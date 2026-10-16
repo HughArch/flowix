@@ -47,7 +47,7 @@ export function ListSurfaceSpinner({
   return (
     <span
       className={cn(
-        'shrink-0 animate-spin rounded-full border-2 border-[color-mix(in_oklch,var(--muted-foreground)_26%,transparent)] border-t-[var(--brand)]',
+        'shrink-0 flowix-spin rounded-full border-2 border-[color-mix(in_oklch,var(--muted-foreground)_26%,transparent)] border-t-[var(--brand)]',
         className,
       )}
       role={ariaLabel ? 'status' : undefined}

@@ -32,9 +32,10 @@ import { noteListItemRelativePath } from '@/types/note-item';
 import { getNotebookIconOption } from '@features/memo/components/notebook-icon';
 import { openNotebookNote } from '@features/memo/use-cases/open-notebook-note';
 import { clearWorkspaceDocument } from '@features/workspace/use-cases/workspace-navigation';
+import { selectNotebook } from '@features/workspace/public/main-window-api';
 import {
   removeBrowserColumnTabsByPath,
-} from '@features/workspace/use-cases/browser-column-navigation';
+} from '@features/workspace/public/browser-column-api';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { joinNotebookMemoPath } from '@/lib/path';
@@ -44,7 +45,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger } from '@shared/ui/sel
 import { LazyGlobalSearchCommand } from '@features/memo/components/lazy-global-search-command';
 import { subscribe } from '@platform/tauri/event-bus';
 import { externalDocuments } from '@platform/tauri/client';
-import { openExternalTarget } from '@features/workspace/use-cases/workspace-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { documentIdentityFromFile, flushWorkspaceDocumentPath } from '@features/document/public/workspace-api';
 import { ensureFileDisplayIdentity } from '@/lib/file-display-registry';
 import {
@@ -139,7 +140,7 @@ function BlockingOperationStatus({ text, stacked }: { text: string; stacked: boo
   return (
     <div className="pointer-events-auto fixed inset-0 z-[140] flex items-center justify-center bg-[color-mix(in_oklch,var(--card)_82%,transparent)] backdrop-blur-[1px]">
       <div className={cn('flex items-center gap-2 px-3 py-2 text-sm text-[var(--foreground)]', stacked && 'flex-col')} role="status" aria-live="polite">
-        <Loader2 className="h-4 w-4 animate-spin text-[var(--primary)]" />
+        <Loader2 className="h-4 w-4 flowix-spin text-[var(--primary)]" />
         <span>{text}</span>
       </div>
     </div>
@@ -210,9 +211,9 @@ function ExternalMarkdownOpenDialog() {
     setOpening(true);
     try {
       for (const filePath of request.filePaths) {
-        await openExternalTarget(filePath, {
-          destination: 'main-third',
-          scopePath: selectedNotebook?.path ?? null,
+        await openWorkspaceSurface({
+          host: 'main-third',
+          target: { kind: 'external', path: filePath, scopePath: selectedNotebook?.path ?? null, transitionId: null },
         });
       }
       setRequest(null);
@@ -339,8 +340,6 @@ export function MemoListServicesHost({
 
   const { creationState, createNotebook } = useCreateNotebookFlow({
     onMemoListReloadNeeded: onRefresh,
-    onMemoListQueryReset: () => undefined,
-    onMemoListLoadingChange: () => undefined,
   });
 
   useEffect(() => {
@@ -775,6 +774,12 @@ export function MemoListServicesHost({
         }) ?? undefined;
       }
       if (!local) return;
+      if (useNoteStore.getState().selectedNotebook?.id !== local.id) {
+        await selectNotebook(local, { workColumnTarget: 'clear' });
+        if (useNoteStore.getState().selectedNotebook?.id !== local.id) {
+          throw new Error(t('memo.navigation.workspacePreparationFailed'));
+        }
+      }
       setCloudImporting(true);
       await cloud.linkNotebook(local.id, remote.id);
       await cloud.syncNow(local.id);
@@ -861,7 +866,7 @@ export function MemoListServicesHost({
           role="status"
           aria-live="polite"
         >
-          <Loader2 className="h-4 w-4 shrink-0 animate-spin text-[var(--primary)]" aria-hidden="true" />
+          <Loader2 className="h-4 w-4 shrink-0 flowix-spin text-[var(--primary)]" aria-hidden="true" />
           <span>
             {notebookSetupJob.stage === 'indexing'
               ? t('notebook.setup.indexing')

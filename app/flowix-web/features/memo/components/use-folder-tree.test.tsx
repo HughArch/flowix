@@ -224,6 +224,40 @@ describe('flattenVisibleTree', () => {
     ]);
     expect(flattened[1].depth).toBe(1);
   });
+
+  it('按笔记索引时间与文件创建时间混排同级文档', () => {
+    const folder = { ...dir('/root/folder', 'folder'), createdMs: 999 };
+    const replacedOlderNote = {
+      ...file('/root/older-note.md', 'older-note.md'),
+      createdMs: 100,
+      memoCreatedMs: 10,
+    };
+    const newerFile = {
+      ...file('/root/image.png', 'image.png'),
+      createdMs: 20,
+    };
+    const newerNote = {
+      ...file('/root/newer-note.md', 'newer-note.md'),
+      createdMs: 30,
+      memoCreatedMs: 30,
+    };
+    const state: FolderTreeState = {
+      rootChildren: [replacedOlderNote, folder, newerFile, newerNote],
+      nodes: new Map(),
+      expanded: new Set(),
+      loading: false,
+      loadingDirectories: new Set(),
+      directoryErrors: new Set(),
+      error: null,
+    };
+
+    expect(flattenVisibleTree(state).map(({ item }) => item.name)).toEqual([
+      'folder',
+      'newer-note.md',
+      'image.png',
+      'older-note.md',
+    ]);
+  });
 });
 
 describe('flattenLoadedTree', () => {

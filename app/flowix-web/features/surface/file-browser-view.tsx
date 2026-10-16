@@ -5,8 +5,7 @@ import { FolderFileTree } from '@features/memo/components/folder-file-tree';
 import { useFolderTree } from '@features/memo/components/use-folder-tree';
 import { useNoteStore } from '@features/memo/store';
 import type { FileBrowserContext } from '@features/workspace/store/file-browser-target';
-import { useAgentAccessStore } from '@features/agent/store/agent-access-store';
-import { resolveNotebookAgentFiles } from '@/lib/agent-access-defaults';
+import { useAgentDataStore } from '@features/agent/store/agent-data-store';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
 import { openPath } from '@platform/tauri/opener';
@@ -322,67 +321,57 @@ function BrowserBreadcrumbs({
 
 export function FileBrowserView({ surface: input }: { surface: FileBrowserViewSurface }) {
   const { t } = useI18n();
-  const config = useAgentAccessStore((state) => state.config);
-  const notebookConfigs = useAgentAccessStore((state) => state.notebookConfigs);
-  const addFolderFromPicker = useAgentAccessStore((state) => state.addFolderFromPicker);
-  const setDefaultFiles = useAgentAccessStore((state) => state.setDefaultFiles);
+  const addFolderFromPicker = useAgentDataStore((state) => state.workspaceActions.addFolderFromPicker);
+  const detachFolderFromNotebook = useAgentDataStore((state) => state.workspaceActions.detachFolderFromNotebook);
   const selectedNotebookId = useNoteStore((state) => state.selectedNotebookId ?? state.selectedNotebook?.id ?? null);
   const legacyNotebookRef = useRef<string | null>(null);
   if (input.restoreNotebookContext && !legacyNotebookRef.current && selectedNotebookId) {
     legacyNotebookRef.current = selectedNotebookId;
   }
   const notebookId = input.restoreNotebookContext ? legacyNotebookRef.current : input.notebookId;
+  const workspaceNotebook = useAgentDataStore((state) =>
+    notebookId ? state.workspace.byNotebookId[notebookId] : undefined,
+  );
   useEffect(() => {
     if (input.restoreNotebookContext && notebookId) {
       input.onContextChange({ notebookId, restoreNotebookContext: false });
     }
   }, [input.restoreNotebookContext, input.onContextChange, notebookId]);
-  const defaultFiles = resolveNotebookAgentFiles(config, notebookConfigs, notebookId);
+  const availableFolders = workspaceNotebook?.addDirs
+    .filter((directory) => directory.enabled && !directory.missing)
+    .map((directory) => directory.path) ?? [];
   const root = input.activeFilePath
-    ? resolveFileBrowserRoot(input.activeFilePath, defaultFiles?.folders ?? [])
+    ? resolveFileBrowserRoot(input.activeFilePath, availableFolders)
     : input.folderPath;
   const surface = { ...input, folderPath: root ?? '' };
   const breadcrumbs = root ? resolveFileBrowserBreadcrumbItems(root, input.activeFilePath) : [];
   const currentPath = input.activeFilePath ?? input.folderPath ?? '';
-  const folderItems = (defaultFiles?.folders ?? []).map((path) => {
-    const entry = config.entries.find(
-      (candidate) => candidate.kind === 'folder'
-        && candidate.path.trim().replace(/[\\/]+$/, '').toLowerCase()
-          === path.trim().replace(/[\\/]+$/, '').toLowerCase(),
-    );
-    const trimmed = path.replace(/[\\/]+$/, '');
-    return {
-      path,
-      name: entry?.name ?? trimmed.split(/[\\/]/).pop() ?? trimmed,
-      missing: entry?.missing ?? true,
-    };
-  });
+  const folderItems = (workspaceNotebook?.addDirs ?? [])
+    .filter((directory) => directory.enabled && !directory.missing)
+    .map((directory) => {
+      const path = directory.path;
+      return {
+        path,
+        name: directory.label,
+        missing: directory.missing,
+      };
+    });
 
   const handleRemoveFolder = useCallback(async (path: string) => {
     if (!notebookId) return;
-    const latestConfig = useAgentAccessStore.getState().config;
-    const latestFiles = resolveNotebookAgentFiles(
-      latestConfig,
-      useAgentAccessStore.getState().notebookConfigs,
-      notebookId,
-    );
-    const latestFolders = latestFiles?.folders ?? [];
-    const comparable = (value: string) => value.trim().replace(/[\\/]+$/, '').toLowerCase();
-    const nextFolders = latestFolders.filter((candidate) => comparable(candidate) !== comparable(path));
-    const saved = await setDefaultFiles(notebookId, {
-      folders: nextFolders,
-      notebooks: latestFiles?.notebooks ?? [],
-    });
-    if (!saved) {
+    const saved = await detachFolderFromNotebook(notebookId, path);
+    if (saved === false) {
       toast.error(t('agent.access.saveFailed'));
       return;
     }
+    if (saved === 'not-attached') return;
+    const comparable = (value: string) => value.trim().replace(/[\\/]+$/, '').toLowerCase();
     const item = folderItems.find((candidate) => comparable(candidate.path) === comparable(path));
     toast.success(t('agent.access.folderDeleted', { name: item?.name ?? path }));
-  }, [folderItems, notebookId, setDefaultFiles, t]);
+  }, [detachFolderFromNotebook, folderItems, notebookId, t]);
 
   const handleAddFolder = useCallback(async () => {
-    const result = await addFolderFromPicker();
+    const result = await addFolderFromPicker(notebookId);
     if (!result.ok) {
       if (result.code === 'already-tracked') {
         toast.error(t('agent.access.alreadyTracked'));
@@ -391,30 +380,8 @@ export function FileBrowserView({ surface: input }: { surface: FileBrowserViewSu
       }
       return;
     }
-    if (!notebookId) return;
 
-    const latestConfig = useAgentAccessStore.getState().config;
-    const latestFiles = resolveNotebookAgentFiles(
-      latestConfig,
-      useAgentAccessStore.getState().notebookConfigs,
-      notebookId,
-    );
-    if (
-      (latestFiles?.folders ?? []).some(
-        (path) => path.trim().replace(/[\\/]+$/, '').toLowerCase()
-          === result.entry.path.trim().replace(/[\\/]+$/, '').toLowerCase(),
-      )
-    ) {
-      toast.info(t('agent.access.folderExists'));
-      return;
-    }
-    const nextFolders = Array.from(new Set([...(latestFiles?.folders ?? []), result.entry.path]));
-    const saved = await setDefaultFiles(notebookId, {
-      folders: nextFolders,
-      notebooks: latestFiles?.notebooks ?? [],
-    });
-    if (!saved) toast.error(t('agent.access.saveFailed'));
-  }, [addFolderFromPicker, notebookId, setDefaultFiles, t]);
+  }, [addFolderFromPicker, notebookId, t]);
 
   const handleCopyPath = useCallback(async () => {
     try {
@@ -479,6 +446,7 @@ export function FileBrowserView({ surface: input }: { surface: FileBrowserViewSu
             {folderItems.length > 0 && <DropdownMenuSeparator />}
             <DropdownMenuItem
               onClick={() => void handleAddFolder()}
+              disabled={!notebookId}
               className="h-7 gap-2 rounded-lg px-2 py-0 text-left text-sm text-[var(--muted-foreground)] hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
             >
               <PlusIcon size={15} weight="regular" aria-hidden="true" />

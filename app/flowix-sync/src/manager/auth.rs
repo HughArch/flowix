@@ -426,7 +426,6 @@ mod tests {
                         id: token.into(),
                         email: "test@example.test".into(),
                         display_name: "Test".into(),
-                        system_role: "user".into(),
                     },
                     protocol_epoch: crate::v2::PROTOCOL_EPOCH,
                 },

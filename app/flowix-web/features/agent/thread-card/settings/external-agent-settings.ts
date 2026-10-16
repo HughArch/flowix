@@ -41,16 +41,16 @@ export function createExternalAgentWorkspaceDisplay(
 ): HTMLButtonElement {
   const display = document.createElement("button");
   display.type = "button";
-  display.className = "agent-thread-card__empty-workspace";
+  display.className = "agent-conversation__workspace";
   display.setAttribute("aria-haspopup", "menu");
   display.setAttribute("aria-expanded", "false");
   display.setAttribute("aria-label", `${label}: ${value}`);
 
   const labelEl = document.createElement("span");
-  labelEl.className = "agent-thread-card__empty-workspace-label";
+  labelEl.className = "agent-conversation__workspace-label";
   labelEl.textContent = label;
   const valueEl = document.createElement("span");
-  valueEl.className = "agent-thread-card__empty-workspace-value";
+  valueEl.className = "agent-conversation__workspace-value";
   valueEl.textContent = value;
   display.append(labelEl, valueEl, createDropdownChevron());
   display.title = `${label}: ${value}`;
@@ -70,12 +70,12 @@ export function createExternalAgentWorkspaceControl(
 ): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "agent-thread-card__composer-workspace";
+  button.className = "agent-composer__workspace";
   button.setAttribute("aria-haspopup", "menu");
   button.setAttribute("aria-expanded", "false");
   button.setAttribute("aria-label", `${label}: ${value}`);
   const valueEl = document.createElement("span");
-  valueEl.className = "agent-thread-card__composer-workspace-value";
+  valueEl.className = "agent-composer__workspace-value";
   valueEl.textContent = value;
   button.append(valueEl, createDropdownChevron());
   button.title = `${label}: ${value}`;
@@ -95,7 +95,7 @@ export function createDropdownChevron(): SVGSVGElement {
   svg.setAttribute("stroke-width", "2");
   svg.setAttribute("stroke-linecap", "round");
   svg.setAttribute("stroke-linejoin", "round");
-  svg.classList.add("agent-thread-card__empty-control-chevron");
+  svg.classList.add("agent-conversation__control-chevron");
   const path = document.createElementNS("http://www.w3.org/2000/svg", "path");
   path.setAttribute("d", "m6 9 6 6 6-6");
   svg.append(path);
@@ -110,17 +110,17 @@ export function createExternalAgentEmptyControl(
 ): HTMLButtonElement {
   const button = document.createElement("button");
   button.type = "button";
-  button.className = "agent-thread-card__empty-control";
+  button.className = "agent-conversation__control";
   button.dataset.kind = kind;
   button.setAttribute("aria-haspopup", "menu");
   button.setAttribute("aria-expanded", "false");
   button.setAttribute("aria-label", label);
 
   const labelEl = document.createElement("span");
-  labelEl.className = "agent-thread-card__empty-control-label";
+  labelEl.className = "agent-conversation__control-label";
   labelEl.textContent = label;
   const valueEl = document.createElement("span");
-  valueEl.className = "agent-thread-card__empty-control-value";
+  valueEl.className = "agent-conversation__control-value";
   valueEl.textContent = value;
   button.append(labelEl, valueEl, createDropdownChevron());
 
@@ -137,7 +137,7 @@ export function updateExternalAgentEmptyControl(
   value: string,
 ): void {
   const valueEl = button?.querySelector<HTMLElement>(
-    ".agent-thread-card__empty-control-value",
+    ".agent-conversation__control-value",
   );
   if (valueEl) valueEl.textContent = value;
 }

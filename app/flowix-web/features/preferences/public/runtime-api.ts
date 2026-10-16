@@ -39,6 +39,10 @@ export function useMemoListViewPreference() {
   return useUserSettingsStore((state) => state.settings.memoListView);
 }
 
+export function getMemoListViewPreference() {
+  return useUserSettingsStore.getState().settings.memoListView;
+}
+
 export function setMemoListViewPreference(
   view: UserSettings['memoListView'],
 ): Promise<void> {

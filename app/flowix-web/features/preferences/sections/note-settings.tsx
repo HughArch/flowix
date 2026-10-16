@@ -3,7 +3,7 @@
 import { Component, lazy, Suspense, useState, type ReactNode } from 'react';
 import { Loader2 } from 'lucide-react';
 import { useI18n } from '@/lib/i18n';
-import { cn } from '@/lib/utils';
+import { SettingsTabGroup } from '@features/preferences/components/settings-tab-group';
 
 type NoteSettingsTab = 'templates' | 'properties' | 'documentManagement';
 
@@ -65,62 +65,40 @@ export function NoteSettingsSection() {
   ];
 
   return (
-    <div className="space-y-6">
-      <div
-        className="flex gap-6 border-b border-[var(--divider)]"
-        role="tablist"
-        aria-label={t('preferences.tabs.noteSettings')}
+    <div className="flex min-h-0 flex-1 flex-col space-y-6">
+      <SettingsTabGroup
+        tabs={tabs}
+        activeTab={activeTab}
+        onActiveTabChange={(id) => setActiveTab(id as NoteSettingsTab)}
+        ariaLabel={t('preferences.tabs.noteSettings')}
+        listClassName="flex gap-6 border-b border-[var(--divider)]"
+        tabClassName="relative -mb-px min-w-0 border-b-2 px-0.5 py-2.5 text-base font-medium transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        activeTabClassName="border-[var(--primary)] text-[var(--primary)]"
+        inactiveTabClassName="border-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]"
       >
-        {tabs.map(({ id, label }) => {
-          const selected = activeTab === id;
-          return (
-            <button
-              key={id}
-              id={`note-settings-tab-${id}`}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              aria-controls={`note-settings-panel-${id}`}
-              className={cn(
-                'relative -mb-px min-w-0 border-b-2 px-0.5 py-2.5 text-base font-medium transition-colors',
-                selected
-                  ? 'border-[var(--primary)] text-[var(--primary)]'
-                  : 'border-transparent text-[var(--muted-foreground)] hover:text-[var(--foreground)]',
-              )}
-              onClick={() => setActiveTab(id)}
-            >
-              <span className="block truncate">{label}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      <div
-        id={`note-settings-panel-${activeTab}`}
-        role="tabpanel"
-        aria-labelledby={`note-settings-tab-${activeTab}`}
-      >
-        <SectionErrorBoundary
-          key={activeTab}
-          errorText={t('preferences.noteSettings.loadFailed')}
-          retryText={t('preferences.noteSettings.retry')}
-        >
-          <Suspense
-            fallback={(
-              <div className="space-y-6" aria-busy="true">
-                <div className="flex h-48 items-center justify-center" role="status" aria-label={t('preferences.general.loading')}>
-                  <Loader2 className="size-6 animate-spin text-[var(--muted-foreground)]" />
-                  <span className="sr-only">{t('preferences.general.loading')}</span>
-                </div>
-              </div>
-            )}
+        <div className={activeTab === 'properties' ? undefined : 'pt-2'}>
+          <SectionErrorBoundary
+            key={activeTab}
+            errorText={t('preferences.noteSettings.loadFailed')}
+            retryText={t('preferences.noteSettings.retry')}
           >
-            {activeTab === 'templates' && <TemplatesSection hideSectionHeader />}
-            {activeTab === 'properties' && <DocumentPropertiesSection hideSectionHeader />}
-            {activeTab === 'documentManagement' && <FileDisplayRulesSection hideSectionHeader />}
-          </Suspense>
-        </SectionErrorBoundary>
-      </div>
+            <Suspense
+              fallback={(
+                <div className="flex min-h-0 flex-1 flex-col space-y-6" aria-busy="true">
+                  <div className="flex flex-1 items-center justify-center" role="status" aria-label={t('preferences.general.loading')}>
+                    <Loader2 className="size-6 flowix-spin text-[var(--muted-foreground)]" />
+                    <span className="sr-only">{t('preferences.general.loading')}</span>
+                  </div>
+                </div>
+              )}
+            >
+              {activeTab === 'templates' && <TemplatesSection hideSectionHeader />}
+              {activeTab === 'properties' && <DocumentPropertiesSection hideSectionHeader />}
+              {activeTab === 'documentManagement' && <FileDisplayRulesSection hideSectionHeader />}
+            </Suspense>
+          </SectionErrorBoundary>
+        </div>
+      </SettingsTabGroup>
     </div>
   );
 }

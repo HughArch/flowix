@@ -53,6 +53,14 @@ for (const file of files) {
   }
 
   for (const spec of specs) {
+    // Public surface models must remain usable without host stores or React renderers.
+    if (
+      !isTest(file)
+      && r.startsWith('features/workspace/model/')
+      && (/(?:^|\/)(?:store|use-cases|components)(?:\/|$)/.test(spec) || spec === 'react')
+    ) {
+      violations.push(`${r}: 公共 surface 模型不得依赖宿主状态或渲染实现 ${spec}`);
+    }
     // Rule A: 低层不得反向依赖 features / app
     if (isLowLayer(layer) && (spec.startsWith('@features/') || spec.startsWith('@app/'))) {
       violations.push(`${r}: 反向依赖 ${spec}  (低层 ${layer} 不得 import features/app)`);
@@ -71,6 +79,33 @@ for (const file of files) {
       && !/^@features\/(agent|document|editor|memo|plugin|preferences|shell|surface)\/public\//.test(spec)
     ) {
       violations.push(`${r}: 跨模块依赖必须走公开入口，禁止 import ${spec}`);
+    }
+    // Workspace host identity is a UI contract. Consumers may still use the
+    // focus store for reactive focus state, but must not import that Store
+    // module to name the host type.
+    if (
+      !isTest(file)
+      && !r.startsWith('features/workspace/')
+      && spec === '@features/workspace/store/workspace-focus-store'
+      && /\bWorkspaceHostId\b/.test(src)
+    ) {
+      violations.push(`${r}: WorkspaceHostId 必须从 host-api 公开类型入口导入`);
+    }
+    // The Editor's note-link extension opens Memo targets through Memo's
+    // stable navigation seam, not its implementation use case.
+    if (
+      !isTest(file)
+      && r.startsWith('features/editor/')
+      && spec === '@features/memo/use-cases/open-by-target'
+    ) {
+      violations.push(`${r}: 笔记导航必须走 Memo 公开入口`);
+    }
+    if (
+      !isTest(file)
+      && r.startsWith('features/agent/')
+      && spec === '@features/document/use-cases/heading-anchor-publish'
+    ) {
+      violations.push(`${r}: 文档标题导航必须走 Document 公开入口`);
     }
     if (
       !isTest(file)

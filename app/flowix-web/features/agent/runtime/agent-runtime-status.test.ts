@@ -17,10 +17,10 @@ describe('normalizeAgentRuntimeStatus', () => {
     });
   });
 
-  it('maps an unavailable runtime without installation to not-installed', () => {
+  it('maps a missing installation to not-installed', () => {
     expect(normalizeAgentRuntimeStatus({
-      available: false,
-      installed: false,
+      installation: 'missing',
+      readiness: 'unknown',
       reason: 'CLI not configured',
     })).toEqual({
       state: 'not-installed',
@@ -30,8 +30,8 @@ describe('normalizeAgentRuntimeStatus', () => {
 
   it('keeps installed-but-unready distinct from not-installed', () => {
     expect(normalizeAgentRuntimeStatus({
-      available: false,
-      installed: true,
+      installation: 'installed',
+      readiness: 'blocked',
       reason: 'No model configured',
     })).toEqual({
       state: 'not-ready',
@@ -39,23 +39,27 @@ describe('normalizeAgentRuntimeStatus', () => {
     });
   });
 
-  it('supports legacy payloads that only contain available', () => {
-    expect(normalizeAgentRuntimeStatus({ available: true })).toEqual({
-      state: 'ready',
-      reason: null,
+  it('keeps unknown detection separate from a missing installation', () => {
+    expect(normalizeAgentRuntimeStatus({
+      installation: 'unknown',
+      readiness: 'unknown',
+      reason: 'Detection pending',
+    })).toEqual({
+      state: 'unknown',
+      reason: 'Detection pending',
     });
-    expect(normalizeAgentRuntimeStatus({ available: false })).toEqual({
-      state: 'not-installed',
-      reason: null,
-    });
+    expect(normalizeAgentRuntimeStatus({
+      installation: 'installed',
+      readiness: 'ready',
+    })).toEqual({ state: 'ready', reason: null });
   });
 });
 
 describe('normalizeAgentRuntimeStatusByType', () => {
   it('normalizes the known entries without inventing missing entries', () => {
     expect(normalizeAgentRuntimeStatusByType({
-      codex: { available: true, installed: true },
-      claude: { available: false, installed: true, reason: 'Needs setup' },
+      codex: { installation: 'installed', readiness: 'ready' },
+      claude: { installation: 'installed', readiness: 'blocked', reason: 'Needs setup' },
     })).toEqual({
       codex: { state: 'ready', reason: null },
       claude: { state: 'not-ready', reason: 'Needs setup' },

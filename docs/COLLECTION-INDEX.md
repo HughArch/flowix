@@ -49,9 +49,10 @@ payload:
       include: []
       exclude: []
     filter:
-      all:
+      path: null
+      match: all
+      conditions:
         - { field: kind, op: eq, value: note }
-      any: []
   views:
     default_id: view_01900000000070008000000000000001
     items:
@@ -71,7 +72,11 @@ payload:
 
 `dataset.schema` 描述笔记属性字段；笔记属性值仍保存在各笔记 frontmatter。`records.include` 和 `records.exclude` 保存显式记录引用；笔记记录使用 `note_path`，媒体记录使用 `resource_id` 和 `relative_path`。尚未关联笔记的表格草稿行允许 `include.note_path: ""`。`dataset.filter` 保存规则取数条件。媒体集合当前不开放自定义字段，`schema.fields` 应为空；图片和视频身份仍由 `media_resources` 管理。
 
-`dataset.filter: null` 表示不按规则自动收集，仅展示显式记录。启用规则取数后，`{ all: [], any: [] }` 表示对来源范围不增加条件。媒体筛选面板修改 `dataset.filter`；`views.items[].filter` 仅用于视图级筛选，不再重复执行旧版 `file_condition`。
+`dataset.filter: null` 表示不按规则自动收集，仅展示显式记录。数据集筛选使用 `{ path, match, conditions }`：`path` 是必须满足的笔记本相对目录前缀，`null` 表示不追加路径限制，空字符串表示显式选择全部目录；`match: all` 要求 `conditions` 全部满足，`match: any` 要求至少一项满足。整体逻辑固定为 `source 范围 AND path 匹配 AND 条件组匹配`。路径规则不放入条件数组，因此不会随交集 / 并集切换而失效。`path: null` 且空条件数组表示对来源范围自动收集全部记录。
+
+文件夹集合的固定目录由 `.index.yaml` 所在文件夹决定，使用 `source.scope: containing_folder`，并将该目录相对笔记本根目录的路径写入 `dataset.filter.path`；路径选择在文件夹集合中禁用。这样表格、媒体库主视图和媒体库引用都按同一个固定目录筛选，移动 `.index.yaml` 时该路径随集合位置重定位；读取执行时也按当前位置解析有效路径，因此通过系统文件管理器移动后不会继续受旧路径限制，下一次保存会同步更新路径。独立集合的“浏览和保存”目录也写入 `dataset.filter.path`，同时用于保存新建笔记或媒体的目标目录。独立集合若另有 `source.scope: folder`，其来源边界仍由 `source.path` 定义。
+
+读取时兼容旧版数据集规则筛选。可无损转换的简单旧规则会在用户下次保存时写成新结构；混有非空 `all` 和 `any`、或含嵌套分组的旧规则无法由单一 `match` 表达，编辑器会保留原规则并阻止覆盖。旧的路径规则会提升为独立的必需路径。`views.items[].filter` 仍使用视图筛选的 `all` / `any` 格式。
 
 筛选器使用 `all`（全部满足）与 `any`（至少满足一项）；规则项允许再包含一层 `all`/`any` 分组。旧表格中“多个属性同时满足，或命中文件条件”转换为 `any: [{ all: [属性规则…], any: [] }, 文件规则…]`，保留原有匹配结果。
 
@@ -98,9 +103,9 @@ payload:
           relative_path: 图片/参考.png
       exclude: []
     filter:
-      all:
-        - { field: kind, op: in, value: [image, video] }
-      any: []
+      path: null
+      match: all
+      conditions: []
   views:
     default_id: view_01900000000070008000000000000004
     items:

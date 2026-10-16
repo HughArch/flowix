@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
 import {
   Check,
   Database,
@@ -14,21 +14,26 @@ import {
 import type { LucideIcon } from 'lucide-react';
 import { Input } from '@shared/ui/input';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@shared/ui/select';
-import { AgentSection } from '@features/preferences/sections/agent';
 import { SectionHeader } from '@features/preferences/sections/primitives';
 import { useI18n, type I18nKey } from '@/lib/i18n';
 import { errorMessage } from '@/lib/error-message';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { AgentIcon } from '@features/agent/components/agent-icon';
+import { DEEPSEEK_HARNESS_MODE_OPTIONS } from '@features/agent/runtime/agent-runtime-spec';
 import { deepseekHarness } from '@platform/tauri/client';
 import type { DeepSeekHarnessPlugin, DeepSeekHarnessPluginCatalog } from '@platform/tauri/client';
 import { dshIntegration, type DshIntegrationStatus } from '@platform/tauri/client';
 import { subscribe } from '@platform/tauri/event-bus';
 import { Button } from '@shared/ui/button';
 import { useDshRuntimeInstaller } from '@features/preferences/hooks/use-dsh-runtime-installer';
+import { SettingsTabGroup } from '@features/preferences/components/settings-tab-group';
 
 type DshTab = 'models' | 'general' | 'plugins' | 'presets';
+
+const AgentSection = lazy(() =>
+  import('@features/preferences/sections/agent').then((module) => ({ default: module.AgentSection })),
+);
 
 const DSH_TABS: readonly {
   id: DshTab;
@@ -41,32 +46,11 @@ const DSH_TABS: readonly {
   { id: 'presets', labelKey: 'preferences.dsh.tabs.presets', icon: PanelsTopLeft },
 ];
 
-const DSH_PRESETS: readonly {
-  id: 'standard' | 'code' | 'minimal' | 'cordis';
-  titleKey: I18nKey;
-  descriptionKey: I18nKey;
-}[] = [
-  {
-    id: 'standard',
-    titleKey: 'agent.mode.standard',
-    descriptionKey: 'agent.mode.standard.description',
-  },
-  {
-    id: 'code',
-    titleKey: 'agent.mode.code',
-    descriptionKey: 'agent.mode.code.description',
-  },
-  {
-    id: 'minimal',
-    titleKey: 'agent.mode.minimal',
-    descriptionKey: 'agent.mode.minimal.description',
-  },
-  {
-    id: 'cordis',
-    titleKey: 'agent.mode.cordis',
-    descriptionKey: 'agent.mode.cordis.description',
-  },
-];
+const DSH_PRESETS = DEEPSEEK_HARNESS_MODE_OPTIONS.map(({ id, labelKey, descriptionKey }) => ({
+  id,
+  titleKey: labelKey,
+  descriptionKey,
+}));
 
 const PRESET_TITLE_KEYS: Record<string, I18nKey> = {
   standard: 'preferences.dsh.plugins.presetStandard',
@@ -81,7 +65,6 @@ export function DshSettingsSection({ autoUpdate = false }: { autoUpdate?: boolea
   const [useLocalDevRuntime, setUseLocalDevRuntime] = useState(false);
   const [status, setStatus] = useState<DshIntegrationStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
-  const activeTabLabelKey = DSH_TABS.find((tab) => tab.id === activeTab)?.labelKey ?? DSH_TABS[0].labelKey;
 
   const refreshStatus = useCallback(async () => {
     setStatusError(null);
@@ -106,7 +89,7 @@ export function DshSettingsSection({ autoUpdate = false }: { autoUpdate?: boolea
 
   if (status === null) {
     return (
-      <div className="flex min-h-[min(560px,calc(100vh-220px))] flex-col">
+      <div className="flex min-h-0 flex-1 flex-col">
         <SectionHeader
           title={t('preferences.dsh.title')}
           description={t('preferences.dsh.description')}
@@ -114,7 +97,7 @@ export function DshSettingsSection({ autoUpdate = false }: { autoUpdate?: boolea
         <div className="flex flex-1 items-center justify-center px-8 py-12 text-center">
           <div className="space-y-3">
             {!statusError && (
-              <Loader2 className="mx-auto h-7 w-7 animate-spin text-[var(--primary)]" />
+              <Loader2 className="mx-auto h-7 w-7 flowix-spin text-[var(--primary)]" />
             )}
             <p className="text-sm text-[var(--muted-foreground)]">
               {statusError ?? t('preferences.dsh.setup.loading')}
@@ -150,54 +133,46 @@ export function DshSettingsSection({ autoUpdate = false }: { autoUpdate?: boolea
     : status;
 
   return (
-    <div className="space-y-5">
+    <div className="flex min-h-0 flex-1 flex-col space-y-5">
       <SectionHeader
         title={t('preferences.dsh.title')}
         description={t('preferences.dsh.description')}
       />
 
-      <div
-        className="grid grid-cols-4 gap-1 rounded-lg border border-[var(--divider)] bg-[var(--muted)]/40 p-1"
-        role="tablist"
-        aria-label={t('preferences.dsh.title')}
+      <SettingsTabGroup
+        tabs={DSH_TABS.map(({ id, labelKey, icon: Icon }) => ({
+          id,
+          label: t(labelKey),
+          icon: <Icon className="h-3.5 w-3.5 shrink-0" />,
+        }))}
+        activeTab={activeTab}
+        onActiveTabChange={(id) => setActiveTab(id as DshTab)}
+        ariaLabel={t('preferences.dsh.title')}
+        listClassName="grid grid-cols-4 gap-1 rounded-lg border border-[var(--divider)] bg-[var(--muted)]/40 p-1"
+        tabClassName="flex min-w-0 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-xs transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]"
+        activeTabClassName="bg-[var(--card)] font-medium text-[var(--primary)] shadow-sm"
+        inactiveTabClassName="text-[var(--muted-foreground)] hover:bg-[var(--card)]/70 hover:text-[var(--foreground)]"
       >
-        {DSH_TABS.map(({ id, labelKey, icon: Icon }) => {
-          const selected = activeTab === id;
-          return (
-            <button
-              key={id}
-              type="button"
-              role="tab"
-              aria-selected={selected}
-              className={cn(
-                'flex min-w-0 items-center justify-center gap-1.5 rounded-md px-2 py-2 text-xs transition-colors',
-                selected
-                  ? 'bg-[var(--card)] font-medium text-[var(--primary)] shadow-sm'
-                  : 'text-[var(--muted-foreground)] hover:bg-[var(--card)]/70 hover:text-[var(--foreground)]',
-              )}
-              onClick={() => setActiveTab(id)}
-            >
-              <Icon className="h-3.5 w-3.5 shrink-0" />
-              <span className="truncate">{t(labelKey)}</span>
-            </button>
-          );
-        })}
-      </div>
-
-      <div role="tabpanel" aria-label={t(activeTabLabelKey)}>
         {activeTab === 'models' && (
-          <AgentSection
-            configStore={deepseekHarness}
-            configChangeKind="dsh_config"
-            testConnection={deepseekHarness.testConnection}
-            modelDirectory={deepseekHarness}
-            hideSectionDivider
-          />
+          <Suspense fallback={(
+            <div className="flex flex-1 items-center justify-center" role="status" aria-busy="true">
+              <Loader2 className="size-6 flowix-spin text-[var(--muted-foreground)]" />
+              <span className="sr-only">{t('preferences.general.loading')}</span>
+            </div>
+          )}>
+            <AgentSection
+              configStore={deepseekHarness}
+              configChangeKind="dsh_config"
+              testConnection={deepseekHarness.testConnection}
+              modelDirectory={deepseekHarness}
+              hideSectionDivider
+            />
+          </Suspense>
         )}
         {activeTab === 'general' && <GeneralTab initialStatus={displayedStatus} onUninstalled={handleUninstalled} autoUpdate={autoUpdate} />}
         {activeTab === 'plugins' && <PluginsTab />}
         {activeTab === 'presets' && <PresetsTab />}
-      </div>
+      </SettingsTabGroup>
     </div>
   );
 }
@@ -207,7 +182,7 @@ function DshDevRuntimeNotice({ onContinue }: { onContinue: () => void }) {
     <div className="flex flex-1 items-start justify-center px-1 py-2">
       <div className="flex h-[420px] w-full max-w-xl flex-col rounded-2xl border border-[var(--divider)] bg-[var(--card)] p-8 text-center shadow-sm">
         <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-[color-mix(in_oklch,var(--primary)_12%,transparent)] text-[var(--primary)]">
-          <AgentIcon typeKey="deepseek-harness" alt="" className="h-8 w-8" />
+          <AgentIcon typeKey="dsh" alt="" className="h-8 w-8" />
         </div>
         <h3 className="mt-5 text-lg font-semibold text-[var(--foreground)]">Dev 本地 DSH</h3>
         <p className="mt-2 text-sm text-[var(--muted-foreground)]">
@@ -260,7 +235,7 @@ function DshInstallPage({
     <div className="flex flex-1 items-start justify-center px-1 py-2">
       <div className="flex h-[420px] w-full max-w-xl flex-col rounded-2xl border border-[var(--divider)] bg-[var(--card)] p-8 text-center shadow-sm">
         <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-[color-mix(in_oklch,var(--primary)_12%,transparent)] text-[var(--primary)]">
-          <AgentIcon typeKey="deepseek-harness" alt="" className="h-8 w-8" />
+          <AgentIcon typeKey="dsh" alt="" className="h-8 w-8" />
         </div>
         <h3 className="mt-5 text-lg font-semibold text-[var(--foreground)]">
           {t('preferences.dsh.setup.title')}
@@ -276,7 +251,7 @@ function DshInstallPage({
 
         <div className="mt-auto flex justify-center gap-2 pt-8">
           <Button type="button" onClick={() => void startInstall()} disabled={busy}>
-            {busy && <Loader2 className="h-4 w-4 animate-spin" />}
+            {busy && <Loader2 className="h-4 w-4 flowix-spin" />}
             {busy ? t(progress?.phase === 'installing' ? 'preferences.dsh.setup.installing' : 'preferences.dsh.setup.downloading') : t('preferences.dsh.setup.install')}
           </Button>
           {canCancel && (
@@ -428,7 +403,7 @@ function GeneralTab({
             disabled={busy || !status?.installed}
             onClick={() => void checkForUpdates()}
           >
-            {checkingUpdate && <Loader2 className="h-4 w-4 animate-spin" />}
+            {checkingUpdate && <Loader2 className="h-4 w-4 flowix-spin" />}
             {checkingUpdate
               ? t('preferences.dsh.runtime.checking')
               : busy
@@ -442,7 +417,7 @@ function GeneralTab({
             disabled={busy || !status?.installed}
             onClick={() => void startUninstall()}
           >
-            {uninstalling && <Loader2 className="h-4 w-4 animate-spin" />}
+            {uninstalling && <Loader2 className="h-4 w-4 flowix-spin" />}
             {uninstalling
               ? t('preferences.dsh.runtime.uninstalling')
               : t('preferences.dsh.runtime.uninstallButton')}

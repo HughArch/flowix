@@ -304,7 +304,15 @@ impl CollectionDocument {
                 changed = true;
             }
         }
-        if let Some(filter) = dataset.get_mut("filter") { changed |= rules(filter, previous, next); }
+        if let Some(filter) = dataset.get_mut("filter") {
+            if let Some(path) = filter.get("path").and_then(Value::as_str) {
+                if let Some(path) = rebase(path, previous, next) {
+                    filter["path"] = Value::String(path);
+                    changed = true;
+                }
+            }
+            changed |= rules(filter, previous, next);
+        }
         if let Some(views) = self.payload.get_mut("views").and_then(|views| views.get_mut("items")).and_then(Value::as_array_mut) {
             for view in views {
                 if let Some(filter) = view.get_mut("filter") { changed |= rules(filter, previous, next); }
@@ -506,7 +514,7 @@ fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
     }
     if let Some(filter) = dataset.get("filter") {
         if !filter.is_null() {
-            validate_rule_filter(filter, document.collection.kind)?;
+            validate_dataset_filter(filter, document.collection.kind)?;
         }
     }
     let views = payload.get("views").ok_or("MISSING_COLLECTION_VIEWS")?;
@@ -582,7 +590,31 @@ fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
     Ok(())
 }
 fn validate_rule_filter(filter: &Value, collection_type: CollectionType) -> Result<(), String> {
-    validate_rule_filter_depth(filter, collection_type, 0)
+  validate_rule_filter_depth(filter, collection_type, 0)
+}
+fn validate_dataset_filter(filter: &Value, collection_type: CollectionType) -> Result<(), String> {
+    if filter.get("conditions").is_none() && filter.get("match").is_none() {
+        return validate_rule_filter(filter, collection_type);
+    }
+    only_keys(filter, &["path", "match", "conditions"])?;
+    match filter.get("path") {
+        Some(Value::Null) => {}
+        Some(Value::String(path)) if path.is_empty() => {}
+        Some(Value::String(path)) => validate_relative_resource_path(Some(path), "filter.path")?,
+        _ => return Err("INVALID_COLLECTION_FILTER_PATH".into()),
+    }
+    if !matches!(filter["match"].as_str(), Some("all" | "any")) {
+        return Err("INVALID_COLLECTION_FILTER_MATCH".into());
+    }
+    if collection_type == CollectionType::MediaLibrary && filter["match"] != "all" {
+        return Err("INVALID_COLLECTION_FILTER_MATCH".into());
+    }
+    for rule in array(filter, "conditions")? {
+        if rule.get("all").is_some() || rule.get("any").is_some() || rule["field"] == "path" {
+            return Err("INVALID_COLLECTION_FILTER_CONDITION".into());
+        }
+    }
+    validate_rule_filter(&serde_json::json!({"all":array(filter, "conditions")?,"any":[]}), collection_type)
 }
 fn validate_rule_filter_depth(filter: &Value, collection_type: CollectionType, depth: usize) -> Result<(), String> {
     only_keys(filter, &["all", "any"])?;

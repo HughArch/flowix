@@ -2,19 +2,24 @@ import { createTableDocument, serializeTableDocument } from '@features/multidime
 import { createMediaLibrary, serializeMediaLibrary } from '@features/media-library/model';
 import { parseCollectionDocumentV2, serializeCollectionDocumentV2, type CollectionType } from './model';
 import { externalDocuments } from '@platform/tauri/client';
-import { canonicalPath } from '@/lib/path';
+import { canonicalPath, notebookRelativeDirectoryPath } from '@/lib/path';
 
-export function createFolderCollectionContent(kind: 'notes' | 'media', folderName: string): string {
+export function createFolderCollectionContent(kind: 'notes' | 'media', folderName: string, folderPath: string | null = null): string {
   if (kind === 'notes') {
     const document = createTableDocument('table', folderName, 'folder');
     document.dataset.source = { scope: 'containing_folder', depth: 'descendants' };
-    document.dataset.filter = { all: [{ field: 'kind', op: 'eq', value: 'note' }], any: [] };
+    document.dataset.filter = {
+      path: folderPath,
+      match: 'all',
+      conditions: [{ field: 'kind', op: 'eq', value: 'note' }],
+    };
     return serializeTableDocument(document);
   }
 
   const document = createMediaLibrary(folderName);
   document.collection.placement = 'folder';
   document.dataset.source = { scope: 'containing_folder', depth: 'descendants' };
+  document.dataset.filter = { path: folderPath, match: 'all', conditions: [] };
   return serializeMediaLibrary(document);
 }
 
@@ -25,7 +30,9 @@ export async function switchFolderCollectionType(filePath: string, notebookPath:
     throw new Error('仅文件夹集合支持切换视图类型');
   }
   if (current.collection.type === type) return current.collection.id;
-  const template = parseCollectionDocumentV2(createFolderCollectionContent(type === 'table' ? 'notes' : 'media', current.collection.name));
+  const folderPath = canonicalPath(filePath).replace(/[\\/][^\\/]*$/, '');
+  const relativeFolder = notebookRelativeDirectoryPath(notebookPath, folderPath) ?? '';
+  const template = parseCollectionDocumentV2(createFolderCollectionContent(type === 'table' ? 'notes' : 'media', current.collection.name, relativeFolder));
   const next = {
     ...template.collection,
     id: current.collection.id,

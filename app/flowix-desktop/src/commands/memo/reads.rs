@@ -15,7 +15,6 @@ use flowix_core::service::NoteSaveOutcome;
 use flowix_core::{FlowixError, MemoPage, MemoService, NoteService};
 
 use crate::app::state::AppState;
-use crate::commands::helpers::start_security_bookmark_access;
 use crate::watcher::runtime::mark_self_write_for;
 
 use super::helpers::*;
@@ -217,7 +216,6 @@ pub async fn read_document(
             return None;
         }
         let requested_path = Path::new(&file_path);
-        start_security_bookmark_access(&state, requested_path);
         let memo_file = read_lock(&state.memo_file, "memo_file");
         match notebook_note_address(&memo_file, requested_path) {
             Ok(Some((notebook_id, relative_path))) => {
@@ -257,7 +255,6 @@ pub async fn get_document_modified_at(
         if !crate::commands::helpers::can_access_document_path(path, window.label(), &state) {
             return None;
         }
-        start_security_bookmark_access(&state, path);
         fs::metadata(path).ok()?.modified().ok()?
             .duration_since(std::time::UNIX_EPOCH).ok()
             .map(|duration| duration.as_millis() as u64)
@@ -317,7 +314,6 @@ fn write_document_internal(
     if !Path::new(file_path).is_absolute() {
         return Err("absolute document path required".into());
     }
-    start_security_bookmark_access(state.inner(), Path::new(file_path));
     let requested_path = Path::new(file_path);
     let (notebook_id, relative_path) =
         notebook_note_address(&read_lock(&state.memo_file, "memo_file"), requested_path)?

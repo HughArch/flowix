@@ -18,10 +18,11 @@ use flowix_core::memo_file::{
     notebook_path_from_relative, IsMd,
 };
 use flowix_sync::{
-    v2_content_hash, v2_local_content_diverged, CloudCheckout,
-    CloudMembership, CloudNotebook, CloudProduct, CloudState, SyncError, V2AccountSyncReport,
+    v2_content_hash, v2_local_content_diverged, CloudCheckout, CloudMembership,
+    CloudNotebook, CloudOrder, CloudOrderCheck, CloudProduct, CloudState, SyncError, V2AccountSyncReport,
     V2LocalNote, V2LocalNotebook, V2RemoteApply, V2SyncedNotebook,
 };
+use crate::agent_external::pi::config::{self as pi_model_config, PiModelEntry, PiProviderConfig};
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tokio::sync::{mpsc, oneshot};
@@ -163,7 +164,9 @@ pub async fn cloud_start_google_sign_in(app: AppHandle) -> Result<(), String> {
     use base64::Engine;
     use sha2::{Digest, Sha256};
 
-    let generation = app.state::<AppState>().cloud_sync.begin_google_sign_in();
+    let app_state = app.state::<AppState>();
+    let generation = app_state.cloud_sync.begin_google_sign_in();
+    let cloud_api_base = app_state.cloud_environment.api_base();
     let state = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
     let code_verifier = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
     let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
@@ -172,8 +175,7 @@ pub async fn cloud_start_google_sign_in(app: AppHandle) -> Result<(), String> {
             Some(PendingGoogleLogin::new(state.clone(), code_verifier, generation));
     }
     let mut url = url::Url::parse(&format!(
-        "{}/v1/auth/google/start",
-        flowix_sync::DEFAULT_CLOUD_API_BASE
+        "{cloud_api_base}/v1/auth/google/start"
     ))
     .map_err(|error| error.to_string())?;
     url.query_pairs_mut()
@@ -199,12 +201,19 @@ pub(crate) async fn complete_google_deep_link(
                 attempt.claim(&oauth_state).map_err(str::to_string)?
             };
             let Some((code_verifier, generation)) = claimed else { return Ok(()); };
-            let state = app.state::<AppState>();
-            state.cloud_sync
+            let app_state = app.state::<AppState>();
+            app_state.cloud_sync
                 .sign_in_with_google_desktop(&code, &oauth_state, &code_verifier, generation)
                 .await
-                .map_err(sync_error)
-                .map(|_| ())
+                .map_err(sync_error)?;
+            if let Err(error) = crate::commands::window::open_preferences_window_inner(
+                &app,
+                &app_state,
+                Some("cloudSync"),
+            ) {
+                tracing::warn!("Google sign-in succeeded but account preferences could not open: {error}");
+            }
+            Ok(())
         }
         GoogleCallback::Failure { error, state: oauth_state } => {
             let accepted = {
@@ -239,10 +248,15 @@ pub async fn cloud_link_apple(
 
 #[tauri::command]
 pub async fn cloud_logout(
+    app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<CloudState, String> {
     let logout_result = state.cloud_sync.logout().await.map_err(sync_error);
     let next_state = state.cloud_sync.state().map_err(sync_error)?;
+    if let Err(error) = pi_model_config::delete_cloud_provider(state.cloud_environment.api_base()) {
+        tracing::warn!("failed to remove the local Flowix Cloud Pi credential: {error}");
+    }
+    let _ = app.emit(crate::commands::settings::USER_CONFIG_CHANGED_EVENT, "pi_config");
     logout_result?;
     Ok(next_state)
 }
@@ -345,8 +359,114 @@ pub async fn cloud_refresh_membership(
 }
 
 #[tauri::command]
+pub async fn cloud_connect_pi_model_provider(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    let api_base = state.cloud_environment.api_base().trim_end_matches('/');
+    let providers = pi_model_config::list()?;
+    let legacy_cloud_id = pi_model_config::legacy_cloud_provider_id(api_base)?;
+    let credential = state.cloud_sync.create_ai_credential().await.map_err(sync_error)?;
+    let catalog = if credential.models.is_empty() {
+        vec![credential.model.clone()]
+    } else {
+        credential.models.clone()
+    };
+    let model_ids: Vec<String> = catalog.iter().map(|model| model.id.clone()).collect();
+    let current_cloud = providers
+        .iter()
+        .find(|provider| provider.source.as_deref() == Some("flowix-cloud"))
+        .or_else(|| {
+            legacy_cloud_id
+                .as_deref()
+                .and_then(|id| providers.iter().find(|provider| provider.id == id))
+        });
+    let saved_default = current_cloud
+        .and_then(|provider| provider.default_model_id.clone())
+        .filter(|id| model_ids.iter().any(|model_id| model_id == id));
+    let default_model_id = saved_default
+        .or_else(|| model_ids.iter().find(|id| **id == credential.model.id).cloned())
+        .or_else(|| model_ids.first().cloned());
+    let provider_id = current_cloud
+        .map(|provider| provider.id.clone())
+        .unwrap_or_else(|| {
+            let existing_ids: std::collections::HashSet<&str> =
+                providers.iter().map(|provider| provider.id.as_str()).collect();
+            let base_id = "flowix-cloud-member";
+            if !existing_ids.contains(base_id) {
+                return base_id.to_string();
+            }
+            let mut suffix = 2;
+            loop {
+                let candidate = format!("{base_id}-{suffix}");
+                if !existing_ids.contains(candidate.as_str()) {
+                    return candidate;
+                }
+                suffix += 1;
+            }
+        });
+    let save_result = pi_model_config::save(PiProviderConfig {
+        id: provider_id,
+        display_name: "Flowix Cloud".into(),
+        api: "openai-completions".into(),
+        base_url: format!("{api_base}/v1/ai"),
+        source: Some("flowix-cloud".into()),
+        api_key: Some(credential.api_key),
+        credential_configured: true,
+        default_model_id,
+        models: catalog.into_iter().map(|model| PiModelEntry {
+            id: model.id.clone(),
+            name: model.id,
+            api: None,
+            reasoning: false,
+            vision: false,
+            context_window: None,
+            max_tokens: None,
+        }).collect(),
+    }, &app);
+    if let Err(error) = save_result {
+        if let Err(revoke_error) = state.cloud_sync.revoke_ai_credential().await {
+            tracing::warn!("failed to revoke an unconfigured Flowix Cloud Pi credential: {}", sync_error(revoke_error));
+        }
+        return Err(error);
+    }
+    let _ = app.emit(crate::commands::settings::USER_CONFIG_CHANGED_EVENT, "pi_config");
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn cloud_disconnect_pi_model_provider(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.cloud_sync.revoke_ai_credential().await.map_err(sync_error)?;
+    pi_model_config::delete_cloud_provider(state.cloud_environment.api_base())?;
+    let _ = app.emit(crate::commands::settings::USER_CONFIG_CHANGED_EVENT, "pi_config");
+    Ok(())
+}
+
+#[tauri::command]
 pub async fn cloud_list_products(state: State<'_, AppState>) -> Result<Vec<CloudProduct>, String> {
     state.cloud_sync.products().await.map_err(sync_error)
+}
+
+#[tauri::command]
+pub async fn cloud_list_billing_orders(
+    state: State<'_, AppState>,
+) -> Result<Vec<CloudOrder>, String> {
+    state.cloud_sync.billing_orders().await.map_err(sync_error)
+}
+
+#[tauri::command]
+pub async fn cloud_check_billing_order(
+    order_id: String,
+    state: State<'_, AppState>,
+) -> Result<CloudOrderCheck, String> {
+    state
+        .cloud_sync
+        .check_billing_order(&order_id)
+        .await
+        .map_err(sync_error)
 }
 
 #[tauri::command]
@@ -360,6 +480,19 @@ pub async fn cloud_create_checkout(
         .create_checkout(&product_id, &idempotency_key)
         .await;
     checkout_result.map_err(sync_error)
+}
+
+#[tauri::command]
+pub async fn cloud_submit_feedback(
+    device_id: String,
+    kind: String,
+    content: String,
+    app_version: String,
+    platform: String,
+    attachments: Vec<serde_json::Value>,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state.cloud_sync.submit_feedback(&device_id, &kind, &content, &app_version, &platform, &attachments).await.map_err(sync_error)
 }
 
 #[tauri::command]

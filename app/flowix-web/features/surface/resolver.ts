@@ -1,6 +1,9 @@
 import { collectionSessionKey } from '@/lib/collection-session-key';
 import { canonicalPath } from '@/lib/path';
-import { externalFileViewKind } from '@features/editor/public/code-file';
+import {
+  resolveWorkspaceFileSurfaceKind,
+  workspaceFileSurfaceSupportsHost,
+} from '@features/workspace/public/surface-api';
 import type {
   DocumentSurfaceContext,
   PluginWorkbenchContext,
@@ -12,6 +15,8 @@ import type {
 } from './types';
 import type { WorkColumnTarget } from '@features/workspace/store/work-column-target';
 import { requireFileDisplayIdentity } from '@/lib/file-display-registry';
+import { resetCurrentCollectionView } from '@features/workspace/use-cases/workspace-navigation';
+import { toast } from '@/lib/toast';
 
 function assertNever(value: never): never {
   throw new Error(`Unsupported plugin artifact renderer: ${String(value)}`);
@@ -21,7 +26,7 @@ function emptyContent(
   message: string,
   reason: WorkColumnEmptyReason,
   tone: WorkColumnEmptyStateTone = 'document',
-): WorkColumnContentPresentation {
+): Extract<WorkColumnContentPresentation, { status: 'empty' }> {
   return { status: 'empty', message, reason, tone };
 }
 
@@ -36,21 +41,12 @@ function resolveExternalDocumentSurface(
   const { fileIdentity } = document.identity;
   const filePath = fileIdentity.path;
   const scopePath = document.identity.scopePath;
-
-  if (/\.lib\.ya?ml$/i.test(filePath)) {
-    return { kind: 'media-library-file', instanceKey, fileIdentity, notebookPath: scopePath, notebookId: null };
+  const fileSurfaceKind = resolveWorkspaceFileSurfaceKind(filePath);
+  if (!workspaceFileSurfaceSupportsHost(fileSurfaceKind, 'main-third')) {
+    throw new Error(`Work column does not support file surface '${fileSurfaceKind}'`);
   }
 
-  if (/\.table\.ya?ml$/i.test(filePath)) {
-    return {
-      kind: 'table-file',
-      instanceKey,
-      fileIdentity,
-      props: { filePath, fileIdentity, notebookPath: scopePath, notebookId: null },
-    };
-  }
-
-  switch (externalFileViewKind(filePath)) {
+  switch (fileSurfaceKind) {
     case 'markdown':
       return { kind: 'md', instanceKey, fileIdentity, props: document.documentProps };
     case 'html':
@@ -67,6 +63,15 @@ function resolveExternalDocumentSurface(
       return { kind: 'unavailable-file', instanceKey, fileIdentity, scopePath, props: document.documentProps };
     case 'unavailable':
       return { kind: 'unavailable-file', instanceKey, fileIdentity, scopePath, props: document.documentProps };
+    case 'table':
+      return {
+        kind: 'table-file',
+        instanceKey,
+        fileIdentity,
+        props: { filePath, fileIdentity, notebookPath: scopePath, notebookId: null },
+      };
+    case 'media-library':
+      return { kind: 'media-library-file', instanceKey, fileIdentity, notebookPath: scopePath, notebookId: null };
   }
 }
 
@@ -123,11 +128,26 @@ function resolveWorkColumnTarget(
   target: WorkColumnTarget,
   input: Pick<ResolveWorkColumnContentInput, 'document' | 'pluginWorkbench' | 'emptyMessage'>,
 ): WorkColumnContentPresentation {
+  if ((target.kind === 'collection' || target.kind === 'table' || target.kind === 'media-library') && target.unavailableReason) {
+    return {
+      ...emptyContent(target.unavailableReason, 'invalid-target'),
+      actions: [{
+        id: 'reset-current-collection-view',
+        label: { key: 'collection.resetCurrentView' },
+        enabled: Boolean(target.filePath),
+        run: async () => {
+          try { await resetCurrentCollectionView(target.filePath, target.notebookPath, target.notebookId); }
+          catch (error) { toast.error(error instanceof Error ? error.message : '重置当前视图失败'); }
+        },
+      }],
+    };
+  }
   switch (target.kind) {
+    case 'folder-collection':
+      return surfaceContent({ kind: 'folder-collection', instanceKey: `${target.notebookId}:${target.folderPath}`,
+        notebookId: target.notebookId, notebookPath: target.notebookPath, folderPath: target.folderPath, folderName: target.folderName });
     case 'empty':
       return emptyContent(input.emptyMessage, 'no-target');
-    case 'document-list':
-      return surfaceContent({ kind: 'document-list', displayId: target.displayId, instanceKey: target.displayId, folderPath: target.scope.path, notebookPath: target.scope.notebookPath, notebookId: target.scope.notebookId, filters: target.filters });
     case 'web':
       return surfaceContent({ kind: 'web', instanceKey: target.url, url: target.url });
     case 'agent-conversation':
@@ -148,7 +168,6 @@ function resolveWorkColumnTarget(
     case 'media':
       return resolveMediaTargetContent(target);
     case 'collection': {
-      if (target.unavailableReason) return emptyContent(target.unavailableReason, 'invalid-target');
       const fileIdentity = { path: target.filePath, displayId: target.displayId };
       if (target.collectionType === 'media_library') {
         return surfaceContent({ kind: 'media-library-file', instanceKey: target.displayId, fileIdentity, notebookId: target.notebookId, notebookPath: target.notebookPath });

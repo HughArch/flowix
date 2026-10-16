@@ -47,7 +47,7 @@ export function ActionableNoticeHost() {
           >
             <div className="flex items-start gap-3">
               {working
-                ? <Loader2 className="mt-0.5 h-4 w-4 shrink-0 animate-spin text-[var(--primary)]" aria-hidden="true" />
+                ? <Loader2 className="mt-0.5 h-4 w-4 shrink-0 flowix-spin text-[var(--primary)]" aria-hidden="true" />
                 : <Icon className={`mt-0.5 h-4 w-4 shrink-0 ${notice.tone === 'error' ? 'text-destructive' : notice.tone === 'warning' ? 'text-[var(--warning)]' : 'text-[var(--muted-foreground)]'}`} aria-hidden="true" />}
               <div className="min-w-0 flex-1">
                 <strong className="block font-semibold">{notice.title}</strong>

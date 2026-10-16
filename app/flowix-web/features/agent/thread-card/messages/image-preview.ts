@@ -39,7 +39,7 @@ function showImagePreview(image: HTMLImageElement, language: AppLanguage): void 
   loading.setAttribute("role", "status");
   loading.setAttribute("aria-live", "polite");
   const spinner = document.createElement("span");
-  spinner.className = "agent-thread-card__image-preview-spinner";
+  spinner.className = "agent-thread-card__image-preview-spinner flowix-spin";
   spinner.setAttribute("aria-hidden", "true");
   const loadingText = document.createElement("span");
   loadingText.textContent = language === "zh-CN" ? "图片加载中…" : "Loading image…";

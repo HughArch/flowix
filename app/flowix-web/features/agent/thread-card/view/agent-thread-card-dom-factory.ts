@@ -44,7 +44,7 @@ export interface AgentThreadCardDomParts {
   loadingIndicator: HTMLDivElement;
   queuedMessages: HTMLDivElement;
   composer: HTMLElement;
-  composerImages: HTMLDivElement;
+  inputRow: HTMLDivElement;
   composerActions: HTMLDivElement;
   composerRoleIcon: HTMLButtonElement;
   composerAddPopover: HTMLDivElement;
@@ -58,7 +58,7 @@ export function createAgentThreadCardDom(
   options: AgentThreadCardDomFactoryOptions,
 ): AgentThreadCardDomParts {
   const dom = document.createElement("section");
-  dom.className = "agent-thread-card";
+  dom.className = "agent-thread-card agent-conversation-surface";
   dom.contentEditable = "false";
   dom.tabIndex = -1;
   dom.dataset.agentThreadCard = "true";
@@ -203,7 +203,7 @@ export function createAgentThreadCardDom(
   });
   const {
     composer,
-    composerImages,
+    inputRow,
     composerActions,
     composerRoleIcon,
     composerAddPopover,
@@ -263,7 +263,7 @@ export function createAgentThreadCardDom(
     loadingIndicator,
     queuedMessages,
     composer,
-    composerImages,
+    inputRow,
     composerActions,
     composerRoleIcon,
     composerAddPopover,

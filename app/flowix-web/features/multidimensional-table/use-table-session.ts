@@ -1,9 +1,10 @@
+import { createSaveBarrier } from '@/lib/save-barrier';
 import { hydrateTablePresets } from './table-preset-bindings';
 import { subscribePropertyPresets } from '@features/properties/public-api';
 import { collectionSessionKey } from '@/lib/collection-session-key';
 import { canonicalDirectoryPath } from '@/lib/path';
 import { reuseCollectionValue } from '@features/collection/content-equality';
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { externalDocuments, notes as notesClient, type NoteEntry } from '@platform/tauri/client';
 import { subscribe } from '@platform/tauri/event-bus';
 import { toast } from '@/lib/toast';
@@ -55,13 +56,26 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
   const [document, setDocument] = useState<MultidimensionalTableDocument | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
   const [saving, setSavingState] = useState(false);
-  const [saveFailed, setSaveFailed] = useState(false);
+  const [saveFailed, setSaveFailedState] = useState(false);
+  const saveBarrier = useMemo(createSaveBarrier, [sessionKey]);
+  const setSaveFailed = useCallback((failed: boolean) => {
+    if (failed) saveBarrier.fail();
+    else saveBarrier.resetFailure();
+    setSaveFailedState(failed);
+  }, [saveBarrier]);
+  useEffect(() => () => saveBarrier.cancel(), [saveBarrier]);
+  const flush = useCallback(async () => {
+    const sequence = loadSequenceRef.current;
+    const saved = await saveBarrier.flush();
+    return saved && sequence === loadSequenceRef.current && currentSessionKeyRef.current === sessionKey;
+  }, [saveBarrier, sessionKey]);
   const savingRef = useRef(false);
   const setSaving = useCallback((next: boolean) => {
     if (next && !savingRef.current) setSaveFailed(false);
     savingRef.current = next;
+    saveBarrier.setSaving(next);
     setSavingState(next);
-  }, []);
+  }, [saveBarrier, setSaveFailed]);
   const [notes, setNotes] = useState<NoteEntry[]>([]);
   useEffect(() => subscribePropertyPresets(() => {
     setDocument((current) => current ? hydrateTablePresets(current) : current);
@@ -91,7 +105,7 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
       setSaveFailed(true);
       pendingTableSyncRef.current = true;
     }
-  }, [isCurrentSession, sessionKey]);
+  }, [isCurrentSession, sessionKey, setSaveFailed]);
 
   const load = useCallback(async () => {
     syncSequenceRef.current += 1;
@@ -172,7 +186,7 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
     } catch (error) {
       if (isCurrentSession(sequence, key)) setLoadError(error instanceof Error ? error.message : String(error));
     }
-  }, [getCurrentFilePath, isCurrentSession, notebookId, notebookPath, sessionKey]);
+  }, [getCurrentFilePath, isCurrentSession, notebookId, notebookPath, sessionKey, setSaveFailed, setSaving]);
 
   // A rename changes the path prop, not the live table session. Read the latest
   // loader when the file identity or notebook scope changes, while keeping the
@@ -324,8 +338,6 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
     }
 
     writeLocksRef.current.add(lockKey);
-    savingRef.current = true;
-    setSaveFailed(false);
     setSaving(true);
     try {
       validateTableDocument(next);
@@ -362,7 +374,7 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
       writeLocksRef.current.delete(lockKey);
       if (!keepSaving && isCurrentSession(sequence, key)) setSaving(false);
     }
-  }, [getCurrentFilePath, isCurrentSession, load, notebookPath, resolvedNotebookId, sessionKey, syncNotes]);
+  }, [getCurrentFilePath, isCurrentSession, load, notebookPath, resolvedNotebookId, sessionKey, setSaveFailed, setSaving, syncNotes]);
 
   const acceptContent = useCallback((content: string) => {
     if (currentSessionKeyRef.current !== sessionKey) return false;
@@ -425,6 +437,7 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
     notesLoadError: stateIsCurrent ? notesLoadError : null,
     load,
     save,
+    flush,
     acceptContent,
     isCurrentSession: isCurrentSessionForKey,
     loadSequenceRef,

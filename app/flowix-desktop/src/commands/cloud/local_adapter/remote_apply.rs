@@ -410,16 +410,7 @@ pub(crate) fn apply_v2_report(
             let deleted = notebook_metadata
                 .get(&config.id)
                 .is_some_and(|(_, _, _, deleted)| *deleted);
-            if deleted {
-                changed = true;
-                if state.agent_access.remove_notebook(&config.id) {
-                    crate::events::emit_to(
-                        app,
-                        crate::commands::agent_access::AGENT_ACCESS_CHANGED_EVENT,
-                        (),
-                    );
-                }
-            }
+            if deleted { changed = true; }
             !deleted
         });
         for config in &mut configs {
@@ -451,6 +442,7 @@ pub(crate) fn apply_v2_report(
                 .write_notebook_configs(&configs)
                 .map_err(sync_error)?;
             drop(memo_file);
+            crate::events::emit_to(app, crate::commands::agent_workspace::AGENT_WORKSPACE_CHANGED_EVENT, ());
             crate::events::emit_to(app, crate::commands::notebook::NOTEBOOKS_CHANGED_EVENT, ());
             crate::commands::helpers::refresh_watcher_roots(state, app);
         }

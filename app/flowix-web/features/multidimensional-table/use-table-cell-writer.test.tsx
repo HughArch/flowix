@@ -73,6 +73,9 @@ describe('useTableCellWriter', () => {
     await act(async () => root?.render(<Probe generation={2} />));
     await act(async () => { latestWriter?.updateCell(record, note, field, 'second'); });
     expect(container.textContent).toBe('second');
+    const flush = latestWriter!.flush();
+    let completed = false;
+    void flush.then(() => { completed = true; });
 
     await act(async () => {
       firstWrite.resolve(true);
@@ -80,6 +83,7 @@ describe('useTableCellWriter', () => {
       await Promise.resolve();
     });
     expect(mocks.writeProperty).toHaveBeenCalledTimes(2);
+    expect(completed).toBe(false);
 
     await act(async () => {
       secondWrite.reject(new Error('write failed'));
@@ -88,6 +92,7 @@ describe('useTableCellWriter', () => {
     });
 
     expect(container.textContent).toBe('first');
+    await expect(flush).resolves.toBe(false);
   });
 });
 

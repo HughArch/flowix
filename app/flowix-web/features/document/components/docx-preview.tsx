@@ -2,6 +2,8 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { AlertCircle, ArrowDownToLine, FolderOpen, LoaderCircle } from 'lucide-react';
+import type { SurfaceMessage, SurfaceNotice, SurfacePresentationUpdate, SurfaceState } from '@features/workspace/public/surface-api';
+import type { I18nKey } from '@/lib/i18n/locales';
 import { files, product } from '@platform/tauri/client';
 import { Button } from '@shared/ui/button';
 import { useI18n } from '@/lib/i18n';
@@ -36,32 +38,38 @@ function errorText(error: unknown): string {
   return String(error);
 }
 
-function userFacingError(
-  error: unknown,
-  fallback: string,
-  t: ReturnType<typeof useI18n>['t'],
-): string {
+function userFacingError(error: unknown, fallback: 'docx.previewFailed' | 'docx.conversionFailed'): SurfaceMessage {
   const message = errorText(error);
-  if (message.includes('DOCX_TOO_LARGE')) return t('docx.tooLarge');
-  if (message.includes('DOCX_IMAGE_TOO_LARGE')) return t('docx.imagesTooLarge');
-  if (message.includes('DOCX_IMAGE_UNSUPPORTED')) return t('docx.imageUnsupported');
-  if (message.includes('DOCX_FORBIDDEN')) return t('docx.forbidden');
-  if (message.includes('DOCX_NAME_CONFLICT')) return t('docx.nameConflict');
-  return `${fallback}: ${message.replace(/^DOCX_[A-Z_]+:\s*/, '')}`;
+  if (message.includes('DOCX_TOO_LARGE')) return { key: 'docx.tooLarge' };
+  if (message.includes('DOCX_IMAGE_TOO_LARGE')) return { key: 'docx.imagesTooLarge' };
+  if (message.includes('DOCX_IMAGE_UNSUPPORTED')) return { key: 'docx.imageUnsupported' };
+  if (message.includes('DOCX_FORBIDDEN')) return { key: 'docx.forbidden' };
+  if (message.includes('DOCX_NAME_CONFLICT')) return { key: 'docx.nameConflict' };
+  return { key: fallback, fallbackText: message.replace(/^DOCX_[A-Z_]+:\s*/, '') };
 }
 
-export function DocxPreview({ filePath, scopePath }: { filePath: string; scopePath: string | null }) {
+function translatedMessage(message: SurfaceMessage | null, t: ReturnType<typeof useI18n>['t']): string | null {
+  if (!message) return null;
+  const translated = t(message.key as I18nKey, message.params);
+  return message.fallbackText ? `${translated}: ${message.fallbackText}` : translated;
+}
+
+export function DocxPreview({ filePath, scopePath, reportPresentation }: {
+  filePath: string; scopePath: string | null; reportPresentation?: (update: SurfacePresentationUpdate) => void;
+}) {
   const { t } = useI18n();
   const bodyRef = useRef<HTMLDivElement>(null);
   const stylesRef = useRef<HTMLDivElement>(null);
   const requestRef = useRef(0);
   const bytesRef = useRef<Uint8Array | null>(null);
   const [previewState, setPreviewState] = useState<PreviewState>('loading');
-  const [previewError, setPreviewError] = useState<string | null>(null);
+  const [previewError, setPreviewError] = useState<SurfaceMessage | null>(null);
   const [conversionState, setConversionState] = useState<ConversionState>('idle');
-  const [conversionError, setConversionError] = useState<string | null>(null);
+  const [conversionError, setConversionError] = useState<SurfaceMessage | null>(null);
   const [warningCount, setWarningCount] = useState(0);
   const [generatedName, setGeneratedName] = useState<string | null>(null);
+  const [retryCount, setRetryCount] = useState(0);
+  const retry = useCallback(() => setRetryCount((count) => count + 1), []);
 
   useEffect(() => {
     const requestId = ++requestRef.current;
@@ -97,7 +105,7 @@ export function DocxPreview({ filePath, scopePath }: { filePath: string; scopePa
         setPreviewState('ready');
       } catch (error) {
         if (cancelled || requestRef.current !== requestId) return;
-        setPreviewError(userFacingError(error, t('docx.previewFailed'), t));
+        setPreviewError(userFacingError(error, 'docx.previewFailed'));
         setPreviewState('failed');
       }
     })();
@@ -109,7 +117,7 @@ export function DocxPreview({ filePath, scopePath }: { filePath: string; scopePa
       bodyRef.current?.replaceChildren();
       stylesRef.current?.replaceChildren();
     };
-  }, [filePath, scopePath, t]);
+  }, [filePath, retryCount, scopePath, t]);
 
   const convertToMarkdown = useCallback(async () => {
     const bytes = bytesRef.current;
@@ -159,11 +167,39 @@ export function DocxPreview({ filePath, scopePath }: { filePath: string; scopePa
       if (requestRef.current !== requestId) return;
       const message = errorText(error);
       setConversionError(message.includes('DOCX_EMPTY')
-        ? t('docx.emptyResult')
-        : userFacingError(error, t('docx.conversionFailed'), t));
+        ? { key: 'docx.emptyResult' }
+        : userFacingError(error, 'docx.conversionFailed'));
       setConversionState('failed');
     }
   }, [conversionState, filePath, scopePath, t]);
+
+  const revealContainingFolder = useCallback(async () => {
+    try { await product.revealInFileManager(filePath); }
+    catch { toast.error(t('memo.fileTree.openFailed')); }
+  }, [filePath, t]);
+
+  useEffect(() => {
+    const reveal = { id: 'reveal', label: { key: 'document.file.openContainingFolder' }, enabled: true, run: revealContainingFolder };
+    const convert = { id: 'convert', label: { key: 'docx.convert' },
+      enabled: previewState === 'ready' && conversionState !== 'converting' && Boolean(scopePath), run: convertToMarkdown };
+    const notices: SurfaceNotice[] = [];
+    if (conversionState === 'converting') notices.push({ id: 'conversion', severity: 'info', message: { key: 'docx.converting' } });
+    if (conversionState === 'failed' && conversionError) notices.push({
+      id: 'conversion', severity: 'error', message: conversionError, actions: [convert],
+    });
+    if (conversionState === 'success' && generatedName) {
+      notices.push({ id: 'conversion', severity: 'success', message: { key: 'docx.generated', params: { name: generatedName } } });
+      if (warningCount) notices.push({ id: 'conversion-warnings', severity: 'warning', message: { key: 'docx.warnings', params: { count: warningCount } } });
+    }
+    const state: SurfaceState = previewState === 'loading'
+      ? { status: 'loading', phase: 'content', message: { key: 'docx.loading' }, retainContent: false }
+      : previewState === 'failed'
+        ? { status: 'error', message: previewError ?? { key: 'docx.previewFailed' },
+            actions: [{ id: 'retry', label: { key: 'error.retry' }, enabled: true, run: retry }, reveal] }
+        : { status: 'ready', notices };
+    reportPresentation?.({ title: fileName(filePath), actions: [reveal, convert], state });
+  }, [conversionError, conversionState, convertToMarkdown, filePath, generatedName, previewError,
+    previewState, reportPresentation, retry, revealContainingFolder, scopePath, warningCount]);
 
   return (
     <section className="flowix-docx-preview relative flex h-full min-h-0 flex-col">
@@ -184,11 +220,7 @@ export function DocxPreview({ filePath, scopePath }: { filePath: string; scopePa
             className="h-7 w-7 rounded-lg p-0"
             aria-label={t('document.file.openContainingFolder')}
             title={t('document.file.openContainingFolder')}
-            onClick={() => {
-              void product.revealInFileManager(filePath).catch(() => {
-                toast.error(t('memo.fileTree.openFailed'));
-              });
-            }}
+            onClick={() => { void revealContainingFolder(); }}
           >
             <FolderOpen className="h-3.5 w-3.5" aria-hidden="true" />
           </Button>
@@ -201,36 +233,36 @@ export function DocxPreview({ filePath, scopePath }: { filePath: string; scopePa
             className="h-7 gap-1.5 rounded-lg px-2 text-xs"
           >
             {conversionState === 'converting'
-              ? <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              ? <LoaderCircle className="h-3.5 w-3.5 flowix-spin" aria-hidden="true" />
               : <ArrowDownToLine className="h-3.5 w-3.5" aria-hidden="true" />}
             {conversionState === 'converting' ? t('docx.converting') : t('docx.convert')}
           </Button>
         </div>
       </header>
 
-      {previewState === 'loading' && (
+      {!reportPresentation && previewState === 'loading' && (
         <div className="flex min-h-0 flex-1 items-center justify-center gap-2 text-sm text-[var(--muted-foreground)]" role="status">
-          <LoaderCircle className="h-4 w-4 animate-spin" aria-hidden="true" />
+          <LoaderCircle className="h-4 w-4 flowix-spin" aria-hidden="true" />
           {t('docx.loading')}
         </div>
       )}
-      {previewState === 'failed' && (
+      {!reportPresentation && previewState === 'failed' && (
         <div className="flex min-h-0 flex-1 items-center justify-center p-6">
           <div className="max-w-lg text-center text-sm text-[var(--destructive)]" role="alert">
             <AlertCircle className="mx-auto mb-2 h-5 w-5" aria-hidden="true" />
-            {previewError}
+            {translatedMessage(previewError, t)}
           </div>
         </div>
       )}
-      {conversionState === 'success' && generatedName && (
+      {!reportPresentation && conversionState === 'success' && generatedName && (
         <p className="shrink-0 border-b border-[var(--border)] px-4 py-2 text-xs text-[var(--muted-foreground)]" role="status">
           {t('docx.generated', { name: generatedName })}
           {warningCount > 0 && ` · ${t('docx.warnings', { count: warningCount })}`}
         </p>
       )}
-      {conversionState === 'failed' && conversionError && (
+      {!reportPresentation && conversionState === 'failed' && conversionError && (
         <p className="shrink-0 border-b border-[var(--border)] px-4 py-2 text-xs text-[var(--destructive)]" role="alert">
-          {conversionError}
+          {translatedMessage(conversionError, t)}
         </p>
       )}
       <div className="flowix-docx-scroll min-h-0 flex-1" style={{ display: previewState === 'ready' ? undefined : 'none' }}>

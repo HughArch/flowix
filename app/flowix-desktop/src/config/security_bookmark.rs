@@ -1,7 +1,7 @@
-//! macOS security-scoped bookmarks for user-selected directories.
+//! macOS security-scoped bookmarks for authorized directories and selected files.
 //!
-//! The app stores bookmark data separately from notebook / agent-access config
-//! because both features can point at the same directory.
+//! OS grants are persisted separately from Flowix notebook and document grants.
+//! A file bookmark never authorizes its parent directory.
 
 use std::collections::BTreeMap;
 use std::io;
@@ -13,7 +13,14 @@ use serde::{Deserialize, Serialize};
 use crate::config::user::{atomic_write_json, UserConfigError};
 
 const BOOT_DIR_NAME: &str = "boot";
-const BOOKMARKS_FILE_NAME: &str = "security-bookmarks.json";
+
+fn bookmarks_file_name() -> &'static str {
+    if option_env!("FLOWIX_DEV_MODE") == Some("1") {
+        "bookmark.dev.json"
+    } else {
+        "bookmark.json"
+    }
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
@@ -21,9 +28,11 @@ struct BookmarkEntry {
     path: String,
     bookmark: String,
     updated_at: i64,
+    #[serde(default = "directory_default")]
+    directory: bool,
 }
 
-#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct BookmarkConfig {
     #[serde(default = "default_version")]
@@ -32,14 +41,33 @@ struct BookmarkConfig {
     entries: BTreeMap<String, BookmarkEntry>,
 }
 
+impl Default for BookmarkConfig {
+    fn default() -> Self {
+        Self {
+            version: 1,
+            entries: BTreeMap::new(),
+        }
+    }
+}
+
+fn directory_default() -> bool {
+    true
+}
+
 fn default_version() -> u32 {
     1
 }
 
 fn normalize_path(path: &Path) -> String {
-    path.to_string_lossy()
-        .trim_end_matches(|c| c == '/' || c == '\\')
-        .to_string()
+    let path = dunce::canonicalize(path).unwrap_or_else(|_| path.to_path_buf());
+    let normalized = path.to_string_lossy().to_string();
+    if normalized.len() > 1 {
+        normalized
+            .trim_end_matches(|c| c == '/' || c == '\\')
+            .to_string()
+    } else {
+        normalized
+    }
 }
 
 pub struct SecurityBookmarkStore {
@@ -56,7 +84,6 @@ impl SecurityBookmarkStore {
             .ok()
             .flatten()
             .unwrap_or_default();
-        migrate_legacy_bookmarks_if_needed(&config_dir, &config);
         let store = Self {
             config_dir,
             inner: RwLock::new(config),
@@ -86,12 +113,82 @@ impl SecurityBookmarkStore {
         Ok(())
     }
 
+    pub fn record_file(&self, path: &Path) -> Result<(), UserConfigError> {
+        #[cfg(target_os = "macos")]
+        {
+            let url = objc2_foundation::NSURL::from_file_path(path).ok_or_else(|| {
+                io::Error::new(io::ErrorKind::InvalidInput, "invalid selected file URL")
+            })?;
+            let bookmark = macos::bookmark_for_url(&url).ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::PermissionDenied,
+                    "cannot bookmark selected file",
+                )
+            })?;
+            self.upsert(path, bookmark, false)?;
+            self.start_accessing_path(path);
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = path;
+        Ok(())
+    }
+
+    /// Called only for a directory already authorized by Flowix. Successful
+    /// enumeration means macOS has allowed access (including a TCC prompt).
+    pub fn record_accessible_directory(&self, path: &Path) {
+        #[cfg(target_os = "macos")]
+        {
+            if self.start_accessing_for_path(path) {
+                return;
+            }
+            if std::fs::read_dir(path).is_ok() {
+                if let Err(error) = self.record_directory(path) {
+                    tracing::warn!(%error, path = %path.display(), "cannot persist granted directory access");
+                }
+            }
+        }
+        #[cfg(not(target_os = "macos"))]
+        let _ = path;
+    }
+
+    #[cfg(target_os = "macos")]
+    fn refresh_stale(&self, old_path: &str, directory: bool, access: &macos::ScopedAccess) {
+        if !access.is_stale() {
+            return;
+        }
+        let Some(bookmark) = access.refreshed_bookmark() else {
+            return;
+        };
+        let mut current = self.inner.write().unwrap_or_else(|p| p.into_inner());
+        let mut next = current.clone();
+        next.entries.remove(old_path);
+        let path = access.path_key().to_string();
+        next.entries.insert(
+            path.clone(),
+            BookmarkEntry {
+                path,
+                bookmark,
+                directory,
+                updated_at: chrono::Utc::now().timestamp_millis(),
+            },
+        );
+        match serde_json::to_string_pretty(&next) {
+            Ok(content) => {
+                match atomic_write_json(&bookmarks_file_path(&self.config_dir), &content) {
+                    Ok(()) => *current = next,
+                    Err(error) => tracing::warn!(%error, "cannot refresh stale bookmark"),
+                }
+            }
+            Err(error) => tracing::warn!(%error, "cannot serialize refreshed bookmark"),
+        }
+    }
+
     pub fn record_directory_bookmark(
         &self,
         path: &Path,
         bookmark: String,
     ) -> Result<(), UserConfigError> {
-        self.upsert(path, bookmark)?;
+        self.upsert(path, bookmark, true)?;
         self.start_accessing_path(path);
         Ok(())
     }
@@ -111,7 +208,10 @@ impl SecurityBookmarkStore {
             active.clear();
             for entry in entries {
                 match macos::resolve_bookmark(&entry.bookmark) {
-                    Some(access) => active.push(access),
+                    Some(access) => {
+                        self.refresh_stale(&entry.path, entry.directory, &access);
+                        active.push(access);
+                    }
                     None => tracing::warn!(
                         "[security_bookmark] failed to resolve bookmark for {}",
                         entry.path
@@ -158,10 +258,27 @@ impl SecurityBookmarkStore {
 
     #[cfg(target_os = "macos")]
     fn activate_bookmark(&self, key: String, bookmark: String, requested_path: &Path) -> bool {
+        if self
+            .active
+            .read()
+            .is_ok_and(|active| active.iter().any(|existing| existing.path_key() == key))
+        {
+            return true;
+        }
         if let Some(access) = macos::resolve_bookmark(&bookmark) {
+            let directory = self
+                .inner
+                .read()
+                .unwrap_or_else(|p| p.into_inner())
+                .entries
+                .get(&key)
+                .map(|entry| entry.directory)
+                .unwrap_or(true);
+            self.refresh_stale(&key, directory, &access);
             let mut active = self.active.write().unwrap_or_else(|p| p.into_inner());
-            active.retain(|existing| existing.path_key() != key);
-            active.push(access);
+            if !active.iter().any(|existing| existing.path_key() == key) {
+                active.push(access);
+            }
             return true;
         }
         tracing::warn!(
@@ -179,64 +296,48 @@ impl SecurityBookmarkStore {
             .unwrap_or_else(|p| p.into_inner())
             .entries
             .iter()
-            .filter(|(_, entry)| super::path_scope::path_is_inside(path, Path::new(&entry.path)))
+            .filter(|(_, entry)| {
+                if entry.directory {
+                    super::path_scope::path_is_inside(path, Path::new(&entry.path))
+                } else {
+                    normalize_path(path) == entry.path
+                }
+            })
             .max_by_key(|(key, _)| key.len())
             .map(|(key, entry)| (key.clone(), entry.bookmark.clone()))
     }
 
-    fn upsert(&self, path: &Path, bookmark: String) -> Result<(), UserConfigError> {
+    fn upsert(
+        &self,
+        path: &Path,
+        bookmark: String,
+        directory: bool,
+    ) -> Result<(), UserConfigError> {
         let key = normalize_path(path);
-        let mut next = self.inner.read().unwrap_or_else(|p| p.into_inner()).clone();
+        let mut current = self.inner.write().unwrap_or_else(|p| p.into_inner());
+        let mut next = current.clone();
         next.entries.insert(
             key,
             BookmarkEntry {
                 path: normalize_path(path),
                 bookmark,
                 updated_at: chrono::Utc::now().timestamp_millis(),
+                directory,
             },
         );
         let content = serde_json::to_string_pretty(&next)?;
         atomic_write_json(&bookmarks_file_path(&self.config_dir), &content)?;
-        *self.inner.write().unwrap_or_else(|p| p.into_inner()) = next;
+        *current = next;
         Ok(())
     }
 }
 
 fn bookmarks_file_path(config_dir: &Path) -> PathBuf {
-    config_dir.join(BOOT_DIR_NAME).join(BOOKMARKS_FILE_NAME)
-}
-
-fn legacy_bookmarks_file_path(config_dir: &Path) -> PathBuf {
-    config_dir.join(BOOKMARKS_FILE_NAME)
-}
-
-fn migrate_legacy_bookmarks_if_needed(config_dir: &Path, config: &BookmarkConfig) {
-    let path = bookmarks_file_path(config_dir);
-    if path.exists() || !legacy_bookmarks_file_path(config_dir).exists() {
-        return;
-    }
-    match serde_json::to_string_pretty(config) {
-        Ok(content) => {
-            if let Err(e) = atomic_write_json(&path, &content) {
-                tracing::warn!(
-                    "[security_bookmark] failed to migrate bookmarks to {}: {e}",
-                    path.display()
-                );
-            }
-        }
-        Err(e) => tracing::warn!("[security_bookmark] failed to serialize bookmarks: {e}"),
-    }
+    config_dir.join(BOOT_DIR_NAME).join(bookmarks_file_name())
 }
 
 fn read_from_disk(config_dir: &Path) -> std::io::Result<Option<BookmarkConfig>> {
-    let path = bookmarks_file_path(config_dir);
-    if !path.exists() {
-        let legacy_path = legacy_bookmarks_file_path(config_dir);
-        if legacy_path.exists() {
-            return read_bookmark_config_file(&legacy_path);
-        }
-    }
-    read_bookmark_config_file(&path)
+    read_bookmark_config_file(&bookmarks_file_path(config_dir))
 }
 
 fn read_bookmark_config_file(path: &Path) -> std::io::Result<Option<BookmarkConfig>> {
@@ -266,11 +367,20 @@ mod macos {
         url: Retained<NSURL>,
         path_key: String,
         active: bool,
+        stale: bool,
     }
 
     impl ScopedAccess {
         pub fn path_key(&self) -> &str {
             &self.path_key
+        }
+
+        pub fn refreshed_bookmark(&self) -> Option<String> {
+            bookmark_for_url(&self.url)
+        }
+
+        pub fn is_stale(&self) -> bool {
+            self.stale
         }
     }
 
@@ -284,6 +394,10 @@ mod macos {
 
     pub fn bookmark_for_directory(path: &Path) -> Option<String> {
         let url = NSURL::from_directory_path(path)?;
+        bookmark_for_url(&url)
+    }
+
+    pub fn bookmark_for_url(url: &NSURL) -> Option<String> {
         let data = url
             .bookmarkDataWithOptions_includingResourceValuesForKeys_relativeToURL_error(
                 NSURLBookmarkCreationOptions::WithSecurityScope,
@@ -292,8 +406,8 @@ mod macos {
             )
             .map_err(|e| {
                 tracing::warn!(
-                    "[security_bookmark] failed to create bookmark for {}: {:?}",
-                    path.display(),
+                    "[security_bookmark] failed to create bookmark for {:?}: {:?}",
+                    url,
                     e
                 );
             })
@@ -323,36 +437,18 @@ mod macos {
             tracing::warn!("[security_bookmark] resolved stale bookmark");
         }
         let active = unsafe { url.startAccessingSecurityScopedResource() };
+        if !active {
+            tracing::warn!("[security_bookmark] macOS refused scoped access for resolved bookmark");
+            return None;
+        }
         let path = url.to_file_path().unwrap_or_else(PathBuf::new);
         Some(ScopedAccess {
             path_key: normalize_path(&path),
             url,
             active,
+            stale: stale.as_bool(),
         })
     }
-}
-
-#[cfg(target_os = "macos")]
-pub fn pick_directory_with_bookmark(title: &str) -> Option<(String, String)> {
-    use objc2::MainThreadMarker;
-    use objc2_app_kit::{NSModalResponseOK, NSOpenPanel};
-
-    let mtm = MainThreadMarker::new()?;
-    let panel = NSOpenPanel::openPanel(mtm);
-    panel.setCanChooseDirectories(true);
-    panel.setCanChooseFiles(false);
-    panel.setCanCreateDirectories(true);
-    panel.setAllowsMultipleSelection(false);
-    let title = objc2_foundation::NSString::from_str(title);
-    panel.setTitle(Some(&title));
-    let ok = panel.runModal();
-    if ok != NSModalResponseOK {
-        return None;
-    }
-    let url = panel.URL()?;
-    let path = url.to_file_path()?;
-    let bookmark = macos::bookmark_for_directory(&path)?;
-    Some((path.to_string_lossy().to_string(), bookmark))
 }
 
 #[cfg(test)]
@@ -367,6 +463,7 @@ mod tests {
                 path: "/tmp/flowix-bookmark-test".to_string(),
                 bookmark: "bookmark-data".to_string(),
                 updated_at: 1,
+                directory: true,
             },
         );
         config
@@ -383,33 +480,5 @@ mod tests {
 
         assert_eq!(loaded.entries.len(), 1);
         assert!(loaded.entries.contains_key("/tmp/flowix-bookmark-test"));
-    }
-
-    #[test]
-    fn migrates_legacy_bookmarks_to_boot_dir() {
-        let tmp = tempfile::tempdir().unwrap();
-        let config = sample_config();
-        let content = serde_json::to_string_pretty(&config).unwrap();
-        atomic_write_json(&legacy_bookmarks_file_path(tmp.path()), &content).unwrap();
-
-        migrate_legacy_bookmarks_if_needed(tmp.path(), &config);
-
-        assert!(bookmarks_file_path(tmp.path()).exists());
-        let migrated = read_bookmark_config_file(&bookmarks_file_path(tmp.path()))
-            .unwrap()
-            .unwrap();
-        assert_eq!(migrated.entries.len(), 1);
-    }
-
-    #[cfg(target_os = "macos")]
-    #[test]
-    fn macos_bookmark_round_trips() {
-        let tmp = tempfile::tempdir().unwrap();
-        let bookmark = macos::bookmark_for_directory(tmp.path())
-            .expect("a temporary directory should produce bookmark data");
-        let access = macos::resolve_bookmark(&bookmark)
-            .expect("newly created bookmark data should resolve immediately");
-        let canonical = std::fs::canonicalize(tmp.path()).unwrap();
-        assert_eq!(access.path_key(), normalize_path(&canonical));
     }
 }

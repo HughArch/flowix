@@ -43,6 +43,16 @@ const DEFAULT_SUPABASE_ANON_KEY: &str = "sb_publishable_l6AmH0K0Uq8_roThQHSnnQ_2
 pub struct BootFile {
     pub schema_version: u32,
     #[serde(default)]
+    pub version_initialization: VersionInitializationState,
+    /// Most recent app version whose one-time version initialization completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_successful_app_version: Option<String>,
+    /// Version of the one-time on-disk storage reset already completed.
+    /// This is separate from app-version initialization so later releases do
+    /// not repeatedly discard derived indexes or user-created plugin files.
+    #[serde(default)]
+    pub notebook_storage_reset_version: u32,
+    #[serde(default)]
     pub experimental: bool,
     /// Whether the first-run DeepSeek Harness introduction has been shown.
     /// Keep the on-disk key in snake_case for the boot.json contract.
@@ -55,6 +65,16 @@ pub struct BootFile {
     pub is_onboarding_completed: bool,
     #[serde(default)]
     pub user_info: UserInfo,
+}
+
+/// Completion state for the one-time initialization associated with an app version.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionInitializationState {
+    #[serde(default)]
+    pub app_version: Option<String>,
+    #[serde(default)]
+    pub completed: bool,
 }
 
 /// 设备登记子对象：保存随机设备 ID 和登记尝试状态。
@@ -91,20 +111,32 @@ impl DeviceRegistry {
         let app_version = app_version.into();
         if let Some(parent) = path.parent() {
             // best-effort, 文件已存在就能�?常�?�? 不存在时 `read_from_disk` 返回 None
-            let _ = std::fs::create_dir_all(parent);
+            let _ = flowix_core::memo_file::ensure_storage_directory(parent);
         }
-        let boot = Self::read_from_disk(&path).unwrap_or_else(|| {
+        let loaded = Self::read_from_disk(&path);
+        let mut save_defaults = loaded.is_none();
+        let boot = loaded.unwrap_or_else(|| {
+            if let Err(error) = flowix_core::memo_file::backup_storage_file(&path) {
+                save_defaults = false;
+                tracing::warn!(%error, "could not preserve invalid boot configuration");
+            }
             tracing::info!(
                 "[device-reg] no boot.json at {}; creating a fresh registration record",
                 path.display()
             );
             Self::fresh()
         });
-        Self {
+        let registry = Self {
             path,
             app_version,
             inner: RwLock::new(boot),
+        };
+        if save_defaults {
+            if let Err(error) = registry.flush(&registry.read()) {
+                tracing::warn!(%error, "could not persist boot configuration");
+            }
         }
+        registry
     }
 
     /// 异�?上报入口�?Fire-and-forget: �?�� `tauri::async_runtime::spawn`,
@@ -120,6 +152,61 @@ impl DeviceRegistry {
     /// Missing `experimental` in an existing v2 boot.json deserializes as false.
     pub fn experimental(&self) -> bool {
         self.read().experimental
+    }
+
+    /// App version whose one-time version initialization most recently completed.
+    pub fn last_successful_app_version(&self) -> Option<String> {
+        self.read().last_successful_app_version.clone()
+    }
+
+    /// Whether the current app version has completed its one-time initialization.
+    pub fn is_version_initialization_complete(&self) -> bool {
+        let boot = self.read();
+        boot.version_initialization.app_version.as_deref() == Some(self.app_version.as_str())
+            && boot.version_initialization.completed
+    }
+
+    /// Update the current app version's initialization flag from dev settings.
+    pub fn set_version_initialization_completed(&self, completed: bool) -> Result<(), String> {
+        let mut boot = self.write();
+        boot.version_initialization.app_version = Some(self.app_version.clone());
+        boot.version_initialization.completed = completed;
+        self.flush(&boot)
+            .map_err(|error| format!("persist boot.json: {error}"))
+    }
+
+    /// Persist an incomplete marker before running version-specific migrations.
+    pub fn begin_version_initialization(&self) -> Result<(), String> {
+        let mut boot = self.write();
+        boot.version_initialization.app_version = Some(self.app_version.clone());
+        boot.version_initialization.completed = false;
+        self.flush(&boot)
+            .map_err(|error| format!("persist boot.json: {error}"))
+    }
+
+    /// Mark the current app version initialized after all one-time steps succeed.
+    /// The same atomic boot.json write advances the previous successful version
+    /// so it remains available until this initialization has fully completed.
+    pub fn complete_version_initialization(&self) -> Result<(), String> {
+        let mut boot = self.write();
+        if boot.version_initialization.app_version.as_deref() != Some(self.app_version.as_str()) {
+            return Err("version initialization marker changed while running".to_string());
+        }
+        boot.version_initialization.completed = true;
+        boot.last_successful_app_version = Some(self.app_version.clone());
+        self.flush(&boot)
+            .map_err(|error| format!("persist boot.json: {error}"))
+    }
+
+    pub fn notebook_storage_reset_version(&self) -> u32 {
+        self.read().notebook_storage_reset_version
+    }
+
+    pub fn complete_notebook_storage_reset_version(&self, version: u32) -> Result<(), String> {
+        let mut boot = self.write();
+        boot.notebook_storage_reset_version = boot.notebook_storage_reset_version.max(version);
+        self.flush(&boot)
+            .map_err(|error| format!("persist boot.json: {error}"))
     }
 
     /// Whether the DeepSeek Harness introduction has already been displayed.
@@ -296,6 +383,9 @@ impl DeviceRegistry {
     fn fresh() -> BootFile {
         BootFile {
             schema_version: BOOT_SCHEMA_VERSION,
+            version_initialization: VersionInitializationState::default(),
+            last_successful_app_version: None,
+            notebook_storage_reset_version: 0,
             experimental: false,
             is_introduct_displayed: false,
             is_onboarding_completed: false,

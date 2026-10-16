@@ -1,18 +1,12 @@
 'use client';
 
-import { useEffect, useState, type ReactNode } from 'react';
+import { useState, type ReactNode } from 'react';
 import { Check, Copy } from 'lucide-react';
 import { useAppUpdater } from '@features/shell/hooks/use-app-updater';
-import {
-  Select,
-  SelectTrigger,
-  SelectContent,
-  SelectItem,
-} from '@shared/ui/select';
+import { Select, SelectTrigger, SelectContent, SelectItem } from '@shared/ui/select';
 import { Button } from '@shared/ui/button';
 import { UpdateProgress } from '@shared/ui/update-progress';
-import { Tooltip } from '@shared/ui/tooltip';
-import { product, type ProductInfo } from '@platform/tauri/client';
+import type { ProductInfo } from '@platform/tauri/client';
 import { toast } from '@/lib/toast';
 import {
   FieldRow,
@@ -23,6 +17,7 @@ import { LANGUAGE_OPTIONS, useI18n, type AppLanguage } from '@/lib/i18n';
 
 interface GeneralSectionProps {
   language: AppLanguage;
+  productInfo: ProductInfo | null;
   afterGeneral?: ReactNode;
   updateSettings: (updates: {
     language?: AppLanguage;
@@ -30,27 +25,12 @@ interface GeneralSectionProps {
   }) => Promise<void>;
 }
 
-export function GeneralSection({ language, afterGeneral, updateSettings }: GeneralSectionProps) {
+export function GeneralSection({ language, productInfo, afterGeneral, updateSettings }: GeneralSectionProps) {
   const { t } = useI18n();
-  const [productInfo, setProductInfo] = useState<ProductInfo | null>(null);
   const [versionCopied, setVersionCopied] = useState(false);
   const updater = useAppUpdater();
   const currentLanguageLabel =
     LANGUAGE_OPTIONS.find((option) => option.value === language)?.label ?? language;
-
-  useEffect(() => {
-    product.getInfo()
-      .then(setProductInfo)
-      .catch(() => setProductInfo(null));
-  }, []);
-
-  const handleOpenLogDir = async () => {
-    try {
-      await product.openLogDir();
-    } catch {
-      toast.error(t('preferences.general.runtimeLogs.openFailed'));
-    }
-  };
 
   const handleCheckProductUpdates = async () => {
     try {
@@ -104,12 +84,13 @@ export function GeneralSection({ language, afterGeneral, updateSettings }: Gener
 
       <FieldRow
         title={t('preferences.general.language.title')}
+        controlId="preferences-language"
       >
         <Select
           value={language}
           onValueChange={(value) => updateSettings({ language: value as AppLanguage })}
         >
-          <SelectTrigger className="w-40">
+          <SelectTrigger id="preferences-language" className="w-40">
             <span>{currentLanguageLabel}</span>
           </SelectTrigger>
           <SelectContent className="flowix-preferences-select-content">
@@ -196,22 +177,6 @@ export function GeneralSection({ language, afterGeneral, updateSettings }: Gener
         </div>
       )}
 
-      {import.meta.env.DEV && (
-        <FieldRow
-          title={t('preferences.general.runtimeLogs.title')}
-          description={productInfo?.logDir ?? t('preferences.general.runtimeLogs.description')}
-        >
-          <Tooltip content={t('preferences.general.runtimeLogs.openFolder')}>
-            <Button
-              variant="outline"
-              className="px-3"
-              onClick={handleOpenLogDir}
-            >
-              {t('preferences.general.runtimeLogs.open')}
-            </Button>
-          </Tooltip>
-        </FieldRow>
-      )}
     </div>
   );
 }

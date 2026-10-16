@@ -91,6 +91,19 @@ function ruleFilterMatchesCollectionType(filter: unknown, type: CollectionType):
     return false;
   });
 }
+function datasetFilterMatchesCollectionType(filter: unknown, type: CollectionType): boolean {
+  if (!isRecord(filter) || !hasOnlyKeys(filter, ['path', 'match', 'conditions'])) {
+    return ruleFilterMatchesCollectionType(filter, type);
+  }
+  if (!(filter.path === null || filter.path === '' || isNotebookRelativePath(filter.path))
+    || (filter.match !== 'all' && filter.match !== 'any')
+    || !Array.isArray(filter.conditions)
+    || filter.conditions.some((condition) => !isRecord(condition) || 'all' in condition || 'any' in condition)) return false;
+  if (type === 'media_library' && filter.match !== 'all') return false;
+  const legacyShape = { all: filter.conditions, any: [] };
+  if (!filter.conditions.every((condition) => isRecord(condition) && condition.field !== 'path')) return false;
+  return ruleFilterMatchesCollectionType(legacyShape, type);
+}
 export function hasOnlyKeys(value: object, keys: readonly string[]): boolean {
   return Object.keys(value).every((key) => keys.includes(key));
 }
@@ -186,7 +199,7 @@ function validateV2Envelope(value: Record<string, unknown>): { collection: Colle
       || (collection.type === 'media_library' && (sort.field !== 'created_at' || sort.direction !== 'desc')))))) throw new Error('集合视图筛选、排序或布局无效');
   // A deleted remembered table view is recoverable; the table model selects the first view.
   if (collection.type !== 'table' && !viewItems.some((view) => isRecord(view) && view.id === views.default_id)) throw new Error('默认集合视图不存在');
-  if (value.payload.dataset.filter !== null && value.payload.dataset.filter !== undefined && !ruleFilterMatchesCollectionType(value.payload.dataset.filter, collection.type)) {
+  if (value.payload.dataset.filter !== null && value.payload.dataset.filter !== undefined && !datasetFilterMatchesCollectionType(value.payload.dataset.filter, collection.type)) {
     throw new Error('集合规则筛选格式无效');
   }
 

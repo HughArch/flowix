@@ -269,16 +269,18 @@ describe('NotebookFileTree pointer dragging', () => {
     await act(async () => root.unmount());
   });
 
-  it('highlights the folder owning the active collection with the file selection background', async () => {
+  it.each(['collection', 'table', 'media-library'] as const)('highlights the folder owning an active %s including damaged file surfaces', async (kind) => {
     const previousNavigation = useWorkColumnStore.getState().navigation;
     const { root } = await mount(successfulMove);
     try {
       await act(async () => useWorkColumnStore.setState({ navigation: {
         ...previousNavigation,
-        target: {
+        target: kind === 'collection' ? {
           kind: 'collection', displayId: 'collection:projects', notebookId: 'notes',
           collectionId: 'projects', viewId: null, collectionType: 'table',
           filePath: '/notes/projects/.index.yaml', notebookPath: '/notes', name: 'Projects',
+        } : {
+          kind, filePath: '/notes/projects/.index.yaml', notebookPath: '/notes', notebookId: 'notes', unavailableReason: '集合文件格式无效',
         },
       } }));
       const folderRow = host.querySelector<HTMLElement>('[data-notebook-tree-kind="folder"]')!;

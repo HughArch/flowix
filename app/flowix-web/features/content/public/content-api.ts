@@ -1,0 +1,17 @@
+export { ContentIcon, getFileIconKind } from '../components/content-icon';
+export type { ContentDescription, ContentKind, ContentFileIconKind } from '../components/content-icon';
+
+export {
+  classifyFileContent,
+  fileExtension,
+  isCodeTextFilePath,
+  isEditableTextFilePath,
+  isHtmlFilePath,
+  isImageFilePath,
+  isMarkdownFilePath,
+  isNotebookResourcePath,
+  isTextMimeType,
+  isVideoFilePath,
+  resourceKindFromPath,
+} from '../model/content-kind';
+export type { FileContentKind, ResourceKind } from '../model/content-kind';

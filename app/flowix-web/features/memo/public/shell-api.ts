@@ -1,6 +1,4 @@
-import { useEffect } from 'react';
 import { useShallow } from 'zustand/react/shallow';
-import { useCustomFilterStore } from '@features/memo/store/custom-filter-store';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { noteRepository } from '@features/memo/services/note-repository';
 
@@ -52,24 +50,4 @@ export function showAgentConversationsView(): void {
   useNoteStore.getState().setMiddleColumnView('conversations');
 }
 
-export function useShellDocumentListTitle(input: {
-  notebookId: string | null;
-  folderPath: string;
-  customFilterId: string | null;
-} | null): string | null {
-  const loadNotebookFilters = useCustomFilterStore((state) => state.loadNotebookFilters);
-  const customFilter = useCustomFilterStore((state) => (
-    input && input.notebookId && input.customFilterId
-      ? state.filtersByNotebook[input.notebookId]?.find((filter) => filter.id === input.customFilterId) ?? null
-      : null
-  ));
-
-  useEffect(() => {
-    if (input?.notebookId) void loadNotebookFilters(input.notebookId);
-  }, [input?.notebookId, loadNotebookFilters]);
-
-  if (!input) return null;
-  return customFilter?.name
-    || input.folderPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop()
-    || input.folderPath;
-}
+/** The one list data source that must be ready before the workspace is shown. */

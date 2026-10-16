@@ -77,7 +77,7 @@ impl AgentHistoryService {
             if registry.insert(runtime, adapter).is_some() {
                 return Err(format!(
                     "history adapter is registered more than once for {}",
-                    runtime.key()
+                    runtime.id()
                 ));
             }
         }
@@ -136,13 +136,13 @@ impl AgentHistoryService {
             let before = page.oldest_sequence.ok_or_else(|| {
                 format!(
                     "{} history reported more pages without a cursor",
-                    runtime.key()
+                    runtime.id()
                 )
             })?;
             if previous_cursor == Some(before) {
                 return Err(format!(
                     "{} history cursor did not advance at {before}",
-                    runtime.key()
+                    runtime.id()
                 ));
             }
             previous_cursor = Some(before);
@@ -164,7 +164,7 @@ impl AgentHistoryService {
     fn adapter(&self, runtime: ExternalRuntimeKind) -> Result<&Arc<dyn HistoryAdapter>, String> {
         self.adapters
             .get(&runtime)
-            .ok_or_else(|| format!("history adapter is not registered for {}", runtime.key()))
+            .ok_or_else(|| format!("history adapter is not registered for {}", runtime.id()))
     }
 }
 

@@ -32,6 +32,10 @@ pub struct PiProviderConfig {
     pub display_name: String,
     pub api: String,
     pub base_url: String,
+    /// Flowix-owned provider source, surfaced for settings UI classification.
+    /// Stored in Pi settings.json so Pi's native models.json stays provider-only.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source: Option<String>,
     #[serde(default)]
     pub api_key: Option<String>,
     #[serde(default)]
@@ -65,8 +69,10 @@ pub struct PiModelCatalog {
 #[derive(Clone, Debug, Default, Deserialize, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PiFeatures {
-    pub code_mode: bool,
     pub tool_search: bool,
+    /// Read-only input for the one-time frontend preference migration.
+    #[serde(skip_deserializing, skip_serializing_if = "Option::is_none")]
+    pub legacy_code_mode: Option<bool>,
 }
 
 #[derive(Clone, Debug, Deserialize, Serialize)]
@@ -79,9 +85,9 @@ pub struct PiMcpServer {
 pub fn features() -> Result<PiFeatures, String> {
     let dir = pi_config_dir()?;
     let settings = read_json(&dir.join("settings.json"))?;
-    let features: PiFeatures =
-        serde_json::from_value(settings.get("flowixFeatures").cloned().unwrap_or_default())
-            .unwrap_or_default();
+    let value = settings.get("flowixFeatures").cloned().unwrap_or_default();
+    let mut features: PiFeatures = serde_json::from_value(value.clone()).unwrap_or_default();
+    features.legacy_code_mode = value.get("codeMode").and_then(Value::as_bool);
     Ok(features)
 }
 
@@ -90,9 +96,24 @@ pub fn save_features(features: PiFeatures) -> Result<(), String> {
     fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
     let path = dir.join("settings.json");
     let mut settings = read_json(&path)?;
-    settings["flowixFeatures"] =
-        serde_json::to_value(features).map_err(|error| error.to_string())?;
+    if !settings["flowixFeatures"].is_object() {
+        settings["flowixFeatures"] = json!({});
+    }
+    settings["flowixFeatures"]["toolSearch"] = json!(features.tool_search);
     write_json(&path, &settings)
+}
+
+pub fn clear_legacy_code_mode() -> Result<(), String> {
+    let path = pi_config_dir()?.join("settings.json");
+    let mut settings = read_json(&path)?;
+    let removed = settings
+        .get_mut("flowixFeatures")
+        .and_then(Value::as_object_mut)
+        .and_then(|features| features.remove("codeMode"));
+    if removed.is_some() {
+        write_json(&path, &settings)?;
+    }
+    Ok(())
 }
 
 fn mcp_config_path() -> Result<std::path::PathBuf, String> {
@@ -343,6 +364,9 @@ pub fn list() -> Result<Vec<PiProviderConfig>, String> {
     let settings = read_json(&dir.join("settings.json"))?;
     let default_provider = settings.get("defaultProvider").and_then(Value::as_str);
     let default_model = settings.get("defaultModel").and_then(Value::as_str);
+    let cloud_provider_id = settings
+        .get("flowixCloudProviderId")
+        .and_then(Value::as_str);
     let providers = models
         .get("providers")
         .and_then(Value::as_object)
@@ -400,6 +424,8 @@ pub fn list() -> Result<Vec<PiProviderConfig>, String> {
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_string(),
+                source: (cloud_provider_id == Some(id.as_str()))
+                    .then(|| "flowix-cloud".to_string()),
                 api_key: None,
                 credential_configured: auth
                     .get(&id)
@@ -495,6 +521,7 @@ pub fn save(mut config: PiProviderConfig, app: &AppHandle) -> Result<(), String>
 
     let settings_path = dir.join("settings.json");
     let mut settings = read_json(&settings_path)?;
+    let mut settings_changed = false;
     if let Some(default_model) = config
         .default_model_id
         .as_deref()
@@ -502,12 +529,19 @@ pub fn save(mut config: PiProviderConfig, app: &AppHandle) -> Result<(), String>
     {
         settings["defaultProvider"] = json!(id);
         settings["defaultModel"] = json!(default_model);
-        write_json(&settings_path, &settings)?;
+        settings_changed = true;
     } else if settings.get("defaultProvider").and_then(Value::as_str) == Some(id.as_str()) {
         if let Some(settings) = settings.as_object_mut() {
             settings.remove("defaultProvider");
             settings.remove("defaultModel");
         }
+        settings_changed = true;
+    }
+    if config.source.as_deref() == Some("flowix-cloud") {
+        settings["flowixCloudProviderId"] = json!(id);
+        settings_changed = true;
+    }
+    if settings_changed {
         write_json(&settings_path, &settings)?;
     }
 
@@ -539,11 +573,21 @@ pub fn delete(provider_id: &str) -> Result<(), String> {
     write_json(&models_path, &models)?;
     let settings_path = dir.join("settings.json");
     let mut settings = read_json(&settings_path)?;
+    let mut settings_changed = false;
     if settings.get("defaultProvider").and_then(Value::as_str) == Some(id) {
         if let Some(settings) = settings.as_object_mut() {
             settings.remove("defaultProvider");
             settings.remove("defaultModel");
         }
+        settings_changed = true;
+    }
+    if settings.get("flowixCloudProviderId").and_then(Value::as_str) == Some(id) {
+        if let Some(settings) = settings.as_object_mut() {
+            settings.remove("flowixCloudProviderId");
+        }
+        settings_changed = true;
+    }
+    if settings_changed {
         write_json(&settings_path, &settings)?;
     }
     let auth_path = dir.join("auth.json");
@@ -552,6 +596,49 @@ pub fn delete(provider_id: &str) -> Result<(), String> {
         auth.remove(id);
     }
     write_json(&auth_path, &auth)
+}
+
+pub fn legacy_cloud_provider_id(api_base: &str) -> Result<Option<String>, String> {
+    let dir = pi_config_dir()?;
+    let models = read_json(&dir.join("models.json"))?;
+    let auth = read_json(&dir.join("auth.json"))?;
+    let provider_id = "flowix-cloud";
+    let expected_base_url = format!("{}/v1/ai", api_base.trim_end_matches('/'));
+    let provider = models
+        .get("providers")
+        .and_then(Value::as_object)
+        .and_then(|providers| providers.get(provider_id));
+    let looks_like_cloud_provider = provider.is_some_and(|provider| {
+        provider.get("name").and_then(Value::as_str) == Some("Flowix Cloud")
+            && provider.get("api").and_then(Value::as_str) == Some("openai-completions")
+            && provider.get("baseUrl").and_then(Value::as_str) == Some(&expected_base_url)
+    });
+    let has_cloud_credential = auth
+        .get(provider_id)
+        .and_then(|entry| entry.get("key"))
+        .and_then(Value::as_str)
+        .is_some_and(|key| key.starts_with("fai_"));
+    Ok((looks_like_cloud_provider && has_cloud_credential).then(|| provider_id.to_string()))
+}
+
+pub fn delete_cloud_provider(api_base: &str) -> Result<(), String> {
+    let dir = pi_config_dir()?;
+    let settings = read_json(&dir.join("settings.json"))?;
+    let marked_provider_id = settings
+        .get("flowixCloudProviderId")
+        .and_then(Value::as_str)
+        .map(str::to_string);
+    let legacy_provider_id = legacy_cloud_provider_id(api_base)?;
+    if let Some(provider_id) = marked_provider_id {
+        delete(&provider_id)?;
+        if legacy_provider_id.as_deref() == Some(provider_id.as_str()) {
+            return Ok(());
+        }
+    }
+    if let Some(provider_id) = legacy_provider_id {
+        delete(&provider_id)?;
+    }
+    Ok(())
 }
 
 pub async fn test_connection(config: PiProviderConfig) -> Result<u64, String> {

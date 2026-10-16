@@ -6,7 +6,7 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::app::state::AppState;
 use crate::commands::helpers::{
-    can_access_document_path, can_access_scoped_file, start_security_bookmark_access,
+    can_access_document_path, can_access_scoped_file,
 };
 use crate::runtime_log;
 
@@ -20,9 +20,15 @@ pub struct ProductInfo {
     pub log_dir: String,
     pub os: &'static str,
     pub arch: &'static str,
+    pub is_dev_build: bool,
+    pub cloud_environment: &'static str,
 }
 
-fn product_info() -> ProductInfo {
+pub(crate) fn is_dev_build() -> bool {
+    option_env!("FLOWIX_DEV_MODE") == Some("1")
+}
+
+fn product_info(cloud_environment: flowix_sync::CloudEnvironment) -> ProductInfo {
     ProductInfo {
         product_name: runtime_log::PRODUCT_NAME,
         version: runtime_log::APP_VERSION,
@@ -31,12 +37,37 @@ fn product_info() -> ProductInfo {
         log_dir: runtime_log::log_dir().display().to_string(),
         os: std::env::consts::OS,
         arch: std::env::consts::ARCH,
+        is_dev_build: is_dev_build(),
+        cloud_environment: cloud_environment.name(),
     }
 }
 
 #[tauri::command]
-pub fn get_product_info() -> ProductInfo {
-    product_info()
+pub fn get_product_info(state: State<AppState>) -> ProductInfo {
+    product_info(state.cloud_environment)
+}
+
+#[tauri::command]
+pub fn set_cloud_environment(
+    environment: String,
+    state: State<AppState>,
+) -> Result<(), String> {
+    if !is_dev_build() {
+        return Err("Cloud environment can only be changed in a development build".to_string());
+    }
+    let Some(target) = flowix_sync::CloudEnvironment::parse(&environment) else {
+        return Err(format!("unsupported Cloud environment: {environment}"));
+    };
+
+    let saved_environment = state.user_config.get_preference().cloud_environment;
+    if saved_environment == target.name() {
+        return Ok(());
+    }
+
+    state
+        .user_config
+        .patch_preference(serde_json::json!({ "cloudEnvironment": target.name() }))
+        .map_err(|error| error.to_string())
 }
 
 #[tauri::command]
@@ -70,7 +101,6 @@ pub fn open_file_with_default_app(
         return Err("File is outside its authorized scope".to_string());
     }
 
-    start_security_bookmark_access(state.inner(), &path);
     let mut command = if cfg!(target_os = "macos") {
         Command::new("open")
     } else if cfg!(target_os = "windows") {

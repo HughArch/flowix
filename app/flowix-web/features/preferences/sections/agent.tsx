@@ -24,7 +24,7 @@ import { Loader2, Plus, Trash2, Pencil } from 'lucide-react';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-import { useAgentAccessStore } from '@features/agent/store/agent-access-store';
+import { useAgentDataStore } from '@features/agent/store/agent-data-store';
 import { catalogProviderForConfiguredModel } from './model-provider';
 import { useRegionStore } from '@/lib/i18n';
 import iconMinimax from '@/assets/icon-minimax.svg';
@@ -347,7 +347,7 @@ const PROVIDER_ICONS: Record<string, ProviderIconSpec> = {
   Anthropic: { icon: iconClaude },
   Gemini: { icon: iconGemini },
   Ollama: { icon: iconOllama },
-  DeepSeek: { icon: iconDeepseek, agentTypeKey: 'deepseek-harness' },
+  DeepSeek: { icon: iconDeepseek, agentTypeKey: 'dsh' },
   OpenRouter: { icon: iconOpenrouter },
   Kimi: { icon: iconKimi },
   Moonshot: { icon: iconKimi },
@@ -430,8 +430,8 @@ export function AgentSection({
 	// Legacy single-route settings keep their regional provider visibility;
 	// DeepSeek Harness's catalog does not apply a regional filter.
 	const isMainland = useRegionStore((s) => s.region === 'mainland');
-  const dshDefaultModel = useAgentAccessStore(
-    (state) => state.config.defaults?.runtime?.['deepseek-harness']?.model,
+  const dshDefaultModel = useAgentDataStore(
+    (state) => state.agents.dsh.user.model,
   );
   /** 编辑中的草稿 — 所有 onChange 只更新这里, 不会写盘。 */
   const [localConfig, setLocalConfig] = useState<AgentConfig | null>(null);
@@ -1431,10 +1431,10 @@ export function AgentSection({
         });
       })
     : [];
-  const activeModelId = dshDefaultModel?.key && dshDefaultModel.key !== 'inherit'
-    ? dshDefaultModel.key
+  const activeModelId = dshDefaultModel?.id && dshDefaultModel.id !== 'inherit'
+    ? dshDefaultModel.id
     : modelListConfig.model;
-  const activeProviderId = dshDefaultModel?.key && dshDefaultModel.key !== 'inherit'
+  const activeProviderId = dshDefaultModel?.id && dshDefaultModel.id !== 'inherit'
     ? dshDefaultModel.providerId
     : modelListConfig.providerId;
   // DeepSeek Harness model management is card-driven: the form is opened by
@@ -1457,7 +1457,7 @@ export function AgentSection({
         </Button>
       )}
       <Button type="button" onClick={() => void handleSave()} disabled={isBusy}>
-        {isSaving ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t('preferences.agent.save')}
+        {isSaving ? <Loader2 className="h-3.5 w-3.5 flowix-spin" /> : t('preferences.agent.save')}
       </Button>
       <Button
         type="button"
@@ -1465,7 +1465,7 @@ export function AgentSection({
         onClick={() => void handleTest()}
         disabled={isBusy}
       >
-        {isTesting ? <Loader2 className="h-3.5 w-3.5 animate-spin" /> : t('preferences.agent.test')}
+        {isTesting ? <Loader2 className="h-3.5 w-3.5 flowix-spin" /> : t('preferences.agent.test')}
       </Button>
       <div className="flex items-center gap-1 text-xs" aria-live="polite">
         {isTesting && <span className="text-[var(--muted-foreground)]">{t('preferences.agent.testing')}</span>}
@@ -1477,12 +1477,12 @@ export function AgentSection({
 
   const renderModelConfiguration = () => (
     <div className="space-y-4">
-      {(showCustomProviderForm || showGenericModelConfiguration) && <Field title={t('preferences.agent.provider.title')} className={modelFieldClass}>
+      {(showCustomProviderForm || showGenericModelConfiguration) && <Field title={t('preferences.agent.provider.title')} controlId="ai-provider" className={modelFieldClass}>
         <Select
           value={showCustomProviderForm ? CUSTOM_PROVIDER_VALUE : localConfig.provider}
           onValueChange={updateProvider}
         >
-          <SelectTrigger className={modelFormOnly ? 'h-10 w-full' : 'w-[16rem]'}>
+          <SelectTrigger id="ai-provider" className={modelFormOnly ? 'h-10 w-full' : 'w-[16rem]'}>
             {showCustomProviderForm ? (
               <span className="truncate">{t('preferences.agent.provider.custom')}</span>
             ) : localConfig.provider.trim() ? (
@@ -1530,7 +1530,7 @@ export function AgentSection({
         />
       ) : showGenericModelConfiguration ? (
         <>
-          <Field title={t('preferences.agent.modelId.title')} className={modelFieldClass}>
+          <Field title={t('preferences.agent.modelId.title')} controlId="ai-model-id" className={modelFieldClass}>
             {modelOptions || dynamicModelOptions ? (
               <Select
                 value={localConfig.model}
@@ -1539,6 +1539,7 @@ export function AgentSection({
                 <SelectTrigger asChild>
                   <div className="relative">
                     <Input
+                      id="ai-model-id"
                       value={localConfig.model}
                       onChange={(e) => updateField('model', e.target.value)}
                       placeholder={modelPlaceholder}
@@ -1559,6 +1560,7 @@ export function AgentSection({
               </Select>
             ) : (
               <Input
+                id="ai-model-id"
                 value={localConfig.model}
                 onChange={(e) => updateField('model', e.target.value)}
                 placeholder={modelPlaceholder}
@@ -1580,7 +1582,7 @@ export function AgentSection({
                   onClick={() => void discoverModels()}
                   disabled={modelDiscoveryBusy}
                 >
-                  {modelDiscoveryBusy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                  {modelDiscoveryBusy ? <Loader2 className="mr-1 h-3 w-3 flowix-spin" /> : null}
                   {t('preferences.agent.modelId.discover')}
                 </Button>
               )}
@@ -1593,8 +1595,9 @@ export function AgentSection({
           </Field>
 
           {!hideBaseUrlField && (
-            <Field title={t('preferences.agent.baseUrl.title')} className={modelFieldClass}>
+            <Field title={t('preferences.agent.baseUrl.title')} controlId="ai-base-url" className={modelFieldClass}>
               <Input
+                id="ai-base-url"
                 value={localConfig.apiUrl}
                 onChange={(e) => updateField('apiUrl', e.target.value)}
                 placeholder={baseUrlPlaceholder}
@@ -1605,8 +1608,9 @@ export function AgentSection({
             </Field>
           )}
 
-          <Field title={t('preferences.agent.apiKey.title')} description={apiKeyDescription} className={modelFieldClass}>
+          <Field title={t('preferences.agent.apiKey.title')} controlId="ai-api-key" description={apiKeyDescription} className={modelFieldClass}>
             <Input
+              id="ai-api-key"
               type="password"
               value={localConfig.apiKeys[apiKeyBucket] ?? ''}
               onChange={(e) => updateApiKey(e.target.value)}
@@ -1657,12 +1661,12 @@ export function AgentSection({
         )}
 
         {/* 1. 供应商 */}
-        {!modelDirectory && (showCustomProviderForm || showGenericModelConfiguration) && <Field title={t('preferences.agent.provider.title')}>
+        {!modelDirectory && (showCustomProviderForm || showGenericModelConfiguration) && <Field title={t('preferences.agent.provider.title')} controlId="ai-provider">
           <Select
             value={showCustomProviderForm ? CUSTOM_PROVIDER_VALUE : localConfig.provider}
             onValueChange={updateProvider}
           >
-            <SelectTrigger className="w-[16rem]">
+            <SelectTrigger id="ai-provider" className="w-[16rem]">
               {showCustomProviderForm ? (
                 <span className="truncate">{t('preferences.agent.provider.custom')}</span>
               ) : localConfig.provider.trim() ? (
@@ -1710,7 +1714,7 @@ export function AgentSection({
 
         {/* 2. 模型 ID(原"模型"字段,语义改为 API 调用时的模型标识符)
               有目录时支持自由输入，并提供当前供应商的模型列表提示。 */}
-        <Field title={t('preferences.agent.modelId.title')}>
+        <Field title={t('preferences.agent.modelId.title')} controlId="ai-model-id">
           {modelOptions || dynamicModelOptions ? (
             <Select
               value={localConfig.model}
@@ -1719,6 +1723,7 @@ export function AgentSection({
               <SelectTrigger asChild>
                 <div className="relative">
                   <Input
+                    id="ai-model-id"
                     value={localConfig.model}
                     onChange={(e) => updateField('model', e.target.value)}
                     placeholder={modelPlaceholder}
@@ -1736,6 +1741,7 @@ export function AgentSection({
             </Select>
           ) : (
             <Input
+              id="ai-model-id"
               value={localConfig.model}
               onChange={(e) => updateField('model', e.target.value)}
               placeholder={modelPlaceholder}
@@ -1757,7 +1763,7 @@ export function AgentSection({
                 onClick={() => void discoverModels()}
                 disabled={modelDiscoveryBusy}
               >
-                {modelDiscoveryBusy ? <Loader2 className="mr-1 h-3 w-3 animate-spin" /> : null}
+                {modelDiscoveryBusy ? <Loader2 className="mr-1 h-3 w-3 flowix-spin" /> : null}
                 {t('preferences.agent.modelId.discover')}
               </Button>
             )}
@@ -1777,8 +1783,9 @@ export function AgentSection({
             `optionalDescription` 暗示"留空走默认", 但 DeepSeek 等
             locked 供应商不允许留空; 与其显示容易误解的提示, 不如不显示。 */}
         {hideBaseUrlField ? null : (
-          <Field title={t('preferences.agent.baseUrl.title')}>
+          <Field title={t('preferences.agent.baseUrl.title')} controlId="ai-base-url">
             <Input
+              id="ai-base-url"
               value={localConfig.apiUrl}
               onChange={(e) => updateField('apiUrl', e.target.value)}
               placeholder={baseUrlPlaceholder}
@@ -1790,8 +1797,9 @@ export function AgentSection({
         )}
 
         {/* 4. 模型密钥(原"API 密钥") */}
-        <Field title={t('preferences.agent.apiKey.title')} description={apiKeyDescription}>
+        <Field title={t('preferences.agent.apiKey.title')} controlId="ai-api-key" description={apiKeyDescription}>
           <Input
+            id="ai-api-key"
             type="password"
             value={localConfig.apiKeys[apiKeyBucket] ?? ''}
             onChange={(e) => updateApiKey(e.target.value)}
@@ -1986,23 +1994,26 @@ function CustomProviderInlineForm({
         <div className="space-y-4">
           <Field
             title={t('preferences.agent.provider.customId')}
+            controlId="custom-provider-id"
           >
             <Input
+              id="custom-provider-id"
               value={draft.id}
               onChange={(event) => onDraftChange({ ...draft, id: event.target.value })}
               placeholder="acme-gateway"
               className={FIELD_INPUT_CLASS}
             />
           </Field>
-          <Field title={t('preferences.agent.provider.customDisplayName')}>
+          <Field title={t('preferences.agent.provider.customDisplayName')} controlId="custom-provider-display-name">
             <Input
+              id="custom-provider-display-name"
               value={draft.displayName}
               onChange={(event) => onDraftChange({ ...draft, displayName: event.target.value })}
               placeholder={t('preferences.agent.provider.customDisplayName')}
               className={FIELD_INPUT_CLASS}
             />
           </Field>
-          <Field title={t('preferences.agent.provider.customProtocol')}>
+          <Field title={t('preferences.agent.provider.customProtocol')} controlId="custom-provider-protocol">
             <Select
               value={draft.apiProtocol}
               onValueChange={(apiProtocol) => onDraftChange({
@@ -2010,7 +2021,7 @@ function CustomProviderInlineForm({
                 apiProtocol: apiProtocol as CustomProviderDraft['apiProtocol'],
               })}
             >
-              <SelectTrigger className="w-full" />
+              <SelectTrigger id="custom-provider-protocol" className="w-full" />
               <SelectContent align="start" fitViewport className="flowix-preferences-select-content">
                 {CUSTOM_PROVIDER_PROTOCOLS.map((protocol) => (
                   <SelectItem key={protocol} value={protocol}>{protocol}</SelectItem>
@@ -2018,16 +2029,18 @@ function CustomProviderInlineForm({
               </SelectContent>
             </Select>
           </Field>
-          <Field title={t('preferences.agent.baseUrl.title')}>
+          <Field title={t('preferences.agent.baseUrl.title')} controlId="custom-provider-base-url">
             <Input
+              id="custom-provider-base-url"
               value={draft.apiUrl}
               onChange={(event) => onDraftChange({ ...draft, apiUrl: event.target.value })}
               placeholder="https://gateway.example/v1"
               className={FIELD_INPUT_CLASS}
             />
           </Field>
-          <Field title={t('preferences.agent.apiKey.title')}>
+          <Field title={t('preferences.agent.apiKey.title')} controlId="custom-provider-api-key">
             <Input
+              id="custom-provider-api-key"
               type="password"
               value={draft.apiKey}
               onChange={(event) => onDraftChange({ ...draft, apiKey: event.target.value })}
@@ -2092,7 +2105,7 @@ function CustomProviderInlineForm({
               {t('common.cancel')}
             </Button>
             <Button type="button" onClick={() => void submit()} disabled={submitting}>
-              {submitting && <Loader2 className="mr-1.5 h-4 w-4 animate-spin" />}
+              {submitting && <Loader2 className="mr-1.5 h-4 w-4 flowix-spin" />}
               {t(isEditing
                 ? 'preferences.agent.provider.customSave'
                 : 'preferences.agent.provider.customCreate')}

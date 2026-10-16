@@ -7,10 +7,15 @@
   container-type: inline-size;
 }
 
-.agent-thread-card__composer-note-search.multidimensional-table__preset-search {
+.agent-composer__note-search.multidimensional-table__preset-search {
   padding-top: 3px;
   padding-bottom: 4px;
   margin-top: 2px;
+}
+
+.multidimensional-table__view-nav[data-title-visible="false"] .multidimensional-table__view-title,
+.multidimensional-table__view-nav[data-title-visible="false"] .multidimensional-table__view-nav-separator {
+  display: none;
 }
 
 @container multidimensional-table (max-width: 499px) {
@@ -204,21 +209,42 @@ html[data-platform="mac"] .multidimensional-table__scrollbar--bottom-clearance.o
   background-color: color-mix(in srgb, var(--card) 50%, var(--hover-bg) 50%);
 }
 
+.multidimensional-table__kanban-drop-target {
+  background-color: color-mix(in srgb, var(--brand) 8%, var(--background));
+  transition: background-color 120ms ease;
+}
+
+.multidimensional-table__kanban-lane[data-kanban-unassigned='true'].multidimensional-table__kanban-drop-target {
+  background-color: color-mix(in srgb, var(--brand) 8%, var(--background));
+}
+
 .multidimensional-table__calendar-card,
 .multidimensional-table__calendar-card * {
   -webkit-user-select: none;
   user-select: none;
 }
 
+.multidimensional-table__calendar-card {
+  cursor: pointer;
+  background-color: var(--multidimensional-table-calendar-card-background, color-mix(in oklch, var(--brand) 10%, var(--background)));
+  transition: background-color 120ms ease;
+}
+
+.multidimensional-table__calendar-card:hover {
+  background-color: var(--multidimensional-table-calendar-card-hover-background, color-mix(in oklch, var(--brand) 28%, color-mix(in oklch, var(--foreground) 16%, var(--background))));
+}
+
 .multidimensional-table__calendar {
   --multidimensional-table-calendar-weekend-bg: color-mix(in srgb, var(--foreground) 1.6%, var(--background));
   --multidimensional-table-calendar-today-bg: color-mix(in srgb, var(--brand) 8%, var(--background));
+  --multidimensional-table-calendar-drop-bg: color-mix(in srgb, var(--brand) 16%, var(--background));
   --multidimensional-table-calendar-active-bg: color-mix(in srgb, var(--foreground) 3.2%, var(--background));
   box-sizing: border-box;
 }
 
 .multidimensional-table__calendar-drop-target {
-  box-shadow: inset 0 0 0 2px var(--brand);
+  background-color: var(--multidimensional-table-calendar-drop-bg);
+  transition: background-color 120ms ease;
 }
 
 .multidimensional-table__cell-content {
@@ -322,10 +348,49 @@ button.multidimensional-table__primary-title--placeholder {
   outline: none;
 }
 
+.calendar-note-create-popover .multidimensional-table__primary-title-input {
+  max-height: none;
+  font-size: var(--font-size, 16px);
+  line-height: var(--font-line-height, 1.8);
+}
+
+.calendar-note-create-fields {
+  font-size: var(--font-size, 16px);
+  line-height: var(--font-line-height, 1.8);
+}
+
+.calendar-note-create-fields :is(input, textarea, button, [role='combobox']) {
+  color: var(--foreground);
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.calendar-note-create-fields .text-sm {
+  font-size: inherit;
+  line-height: inherit;
+}
+
+.calendar-note-create-field-input {
+  border-radius: 0.5rem;
+  transition: background-color 150ms ease;
+}
+
+.calendar-note-create-field-input:hover {
+  background-color: var(--hover-bg);
+}
+
 .multidimensional-table__primary-editor-actions {
   display: flex;
   justify-content: flex-end;
   gap: 0.5rem;
+}
+
+.multidimensional-table__icon-value {
+  filter: brightness(0.88) saturate(1.08);
+}
+
+.multidimensional-table__icon-placeholder {
+  border-color: color-mix(in oklch, var(--border) 80%, var(--foreground));
 }
 
 .multidimensional-table__note-picker-option {

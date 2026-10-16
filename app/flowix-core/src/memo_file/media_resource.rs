@@ -3,7 +3,7 @@
 //! Media files remain on disk, while their user properties and resource
 //! identity are stored in the notebook-local database at
 //! `<notebook>/.flowix/notebook.db`. It is deliberately separate from the
-//! global notebook registry database (`~/.flowix/index.db`).
+//! global notebook registry database (`~/.flowix/db/local.db`).
 
 use std::collections::{HashMap, HashSet};
 use std::fs;
@@ -158,6 +158,35 @@ pub fn media_kind_for_path(path: &Path) -> Option<MediaResourceKind> {
 
 impl MemoFile {
     pub(crate) fn open_notebook_db(&self, notebook_id: &str) -> std::io::Result<Connection> {
+        self.open_notebook_db_inner(notebook_id, false)
+    }
+
+    /// Upgrade the notebook media catalog during version initialization.
+    pub fn initialize_media_resource_schema(&self, notebook_id: &str) -> std::io::Result<()> {
+        self.open_notebook_db_inner(notebook_id, true)?;
+        Ok(())
+    }
+
+    fn open_notebook_db_inner(
+        &self,
+        notebook_id: &str,
+        run_legacy_migrations: bool,
+    ) -> std::io::Result<Connection> {
+        let path = self.notebook_db_path(notebook_id)?;
+        if run_legacy_migrations {
+            super::with_database_rebuild(&path, || {
+                self.open_notebook_db_unchecked(notebook_id, true)
+            })
+        } else {
+            self.open_notebook_db_unchecked(notebook_id, false)
+        }
+    }
+
+    fn open_notebook_db_unchecked(
+        &self,
+        notebook_id: &str,
+        run_legacy_migrations: bool,
+    ) -> std::io::Result<Connection> {
         let path = self.notebook_db_path(notebook_id)?;
         let mut conn = Connection::open(path).map_err(sqlite_to_io)?;
         conn.busy_timeout(std::time::Duration::from_secs(10))
@@ -196,6 +225,9 @@ impl MemoFile {
             "#,
         )
         .map_err(sqlite_to_io)?;
+        if !run_legacy_migrations {
+            return Ok(conn);
+        }
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sqlite_to_io)?;

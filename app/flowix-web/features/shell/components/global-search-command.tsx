@@ -34,10 +34,8 @@ import {
   type Notebook,
 } from '@features/memo/public/global-search-api';
 import { joinNotebookMemoPath } from '@/lib/path';
-import {
-  selectAndOpenAgentConversation,
-  selectNotebook,
-} from '@features/workspace/public/search-navigation-api';
+import { selectNotebook } from '@features/workspace/public/search-navigation-api';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import {
   AgentIcon,
   getConversationRunSummary,
@@ -359,7 +357,7 @@ function RunningAgentConversationsGroup({ onClose }: RunningAgentConversationsGr
 
   const openRunningInstance = async (instance: AgentConversationInstance) => {
     prepareAgentConversationSelection(instance);
-    await selectAndOpenAgentConversation(instance.instanceId);
+    await openWorkspaceSurface({ target: { kind: 'agent-conversation', instanceId: instance.instanceId } });
     onClose();
   };
 
@@ -380,7 +378,7 @@ function RunningAgentConversationsGroup({ onClose }: RunningAgentConversationsGr
           >
             <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--border)] p-0.5 agent-runtime-list__icon--running">
               <AgentIcon
-                typeKey={agent.key}
+                typeKey={agent.id}
                 alt=""
                 className="h-full w-full object-contain"
               />

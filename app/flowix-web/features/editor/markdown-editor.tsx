@@ -51,10 +51,14 @@ import { StableCaret } from '@features/editor/extensions/stable-caret';
 import { useI18n } from '@/lib/i18n';
 import { markDocumentOpenTrace } from '@/lib/document-open-perf';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
+import { focusEditorOnPointer } from './components/focus-editor-on-pointer';
+import type { WorkspaceHostId } from '@features/workspace/public/host-api';
 
 interface MarkdownEditorProps {
   /** Absolute or notebook-relative path of the note owning editor uploads. */
   ownerPath?: string;
+  /** Workspace surface hosting this editor, passed to surface-aware NodeViews. */
+  workspaceHost?: WorkspaceHostId;
   getAttachmentNotebookId?: () => string | undefined;
   propertyTargetId?: string;
   onViewSourceMode?: () => void;
@@ -558,6 +562,7 @@ function focusEmptyParagraphAfterMedia(
 
 export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorProps>(function MarkdownEditor({
   ownerPath,
+  workspaceHost = 'main-third',
   getAttachmentNotebookId,
   propertyTargetId,
   onViewSourceMode,
@@ -590,6 +595,15 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   // 运行时通过下面的同步 effect dispatch meta 触发重新装饰。
   const resolvedPlaceholderRef = useRef(resolvedPlaceholder);
   resolvedPlaceholderRef.current = resolvedPlaceholder;
+  const attachmentOwnerPathRef = useRef(ownerPath);
+  const attachmentNotebookIdResolverRef = useRef(getAttachmentNotebookId);
+  attachmentOwnerPathRef.current = ownerPath;
+  attachmentNotebookIdResolverRef.current = getAttachmentNotebookId;
+  const getCurrentAttachmentOwnerPath = useCallback(() => attachmentOwnerPathRef.current, []);
+  const getCurrentAttachmentNotebookId = useCallback(
+    () => attachmentNotebookIdResolverRef.current?.(),
+    [],
+  );
   const elementRef = useRef<HTMLDivElement>(null);
   const editorMountRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<Editor | null>(null);
@@ -854,8 +868,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       editor.view.dispatch(editor.state.tr.setSelection(selection));
     }
 
-    return pasteClipboardSnapshot(editor, snapshot, ownerPath);
-  }, [ownerPath]);
+    return pasteClipboardSnapshot(editor, snapshot, getCurrentAttachmentOwnerPath());
+  }, [getCurrentAttachmentOwnerPath]);
 
   const handleBackspaceAtBodyStart = useCallback(() => {
     const editor = editorRef.current;
@@ -965,7 +979,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           return content.content.textBetween(0, content.content.size, '\n', '\n');
         },
         handleDOMEvents: {
-          mousedown: (view, event) => focusEmptyParagraphAfterMedia(view, event),
+          mousedown: (view, event) => {
+            if (focusEmptyParagraphAfterMedia(view, event)) return true;
+            focusEditorOnPointer(view, event);
+            return false;
+          },
         },
         handleKeyDown: (_view, event) => {
           if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey) {
@@ -1012,7 +1030,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         MarkdownEscape,
         HTMLStrongFallback,
         LegacyAdjacentStrongMarkdown,
-        AttachmentLink.configure({ ownerPath, getNotebookId: getAttachmentNotebookId }),
+        AttachmentLink.configure({
+          ownerPath,
+          getOwnerPath: getCurrentAttachmentOwnerPath,
+          getNotebookId: getCurrentAttachmentNotebookId,
+        }),
         MarkdownLink,
         LinkSelectionHighlight,
         CodeBlockShiki.configure({ traceId: transitionId }),
@@ -1052,15 +1074,19 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           },
         }),
         Tag,
-        ManagedPasteRules.configure({ ownerPath }),
+        ManagedPasteRules.configure({ ownerPath, getOwnerPath: getCurrentAttachmentOwnerPath }),
         MarkdownPaste,
-        Frontmatter.configure({ propertyTargetId, onViewSourceMode, getAttachmentNotebookId }),
+        Frontmatter.configure({
+          propertyTargetId,
+          onViewSourceMode,
+          getAttachmentNotebookId: getCurrentAttachmentNotebookId,
+        }),
         NoteReference,
         NoteMention,
         WikiNoteMention,
         TagMention,
         StableCaret,
-        AgentThreadCard,
+        AgentThreadCard.configure({ workspaceHost }),
         SlashMenu,
         TabCharacter,
         TabAgentRun,
@@ -1169,6 +1195,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   }, [
     applyExternalContent,
     findScrollable,
+    getCurrentAttachmentOwnerPath,
+    getCurrentAttachmentNotebookId,
     handleBackspaceAtBodyStart,
     schedulePendingSerialization,
     serializePendingChanges,

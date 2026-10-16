@@ -1,4 +1,13 @@
-export { useAgentAccessStore } from '@features/agent/store/agent-access-store';
+export { modelPreferenceKey, useAgentDataStore } from '@features/agent/store/agent-data-store';
+export type {
+  AgentCatalogModel,
+  AgentCatalogSkill,
+  AgentCapabilities,
+  AgentModelCatalog,
+  AgentUserPreference,
+  AgentWorkspaceNotebook,
+  AgentWorkspaceState,
+} from '@features/agent/store/agent-data-store';
 export { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
 export type {
   AgentConversationInstance,

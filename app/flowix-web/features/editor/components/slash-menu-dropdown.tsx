@@ -57,9 +57,7 @@ export type SlashMenuItemId =
   | 'file'
   | 'agent-thread-codex'
   | 'agent-thread-claude'
-  | 'agent-thread-gemini'
   | 'agent-thread-hermes'
-  | 'agent-thread-openclaw'
   | 'agent-thread-opencode'
   | 'agent-thread-deepseek-harness'
   | 'agent-thread-pi'
@@ -133,10 +131,10 @@ export const SLASH_MENU_ITEMS: SlashMenuItem[] = [
   },
   {
     id: 'agent-thread-deepseek-harness',
-    label: getAgentType('deepseek-harness').name,
+    label: getAgentType('dsh').name,
     description: 'AI Agent',
     keywords: ['dsh', 'deepseek', 'harness', 'agent', 'code', 'bianma', '任务', 'renwu', 'task'],
-    icon: getAgentType('deepseek-harness').icon,
+    icon: getAgentType('dsh').icon,
     sectionKey: 'editor.slash.section.agent',
     // Keep DSH discoverable before the runtime and model are configured.
     // Selection performs the availability check and routes setup to Preferences.
@@ -152,10 +150,10 @@ export const SLASH_MENU_ITEMS: SlashMenuItem[] = [
   },
   {
     id: 'agent-thread-claude',
-    label: getAgentType('claude').name,
+    label: getAgentType('claudecode').name,
     description: 'AI Agent',
     keywords: ['claude', 'anthropic', 'code', 'bianma', '任务', 'renwu', 'task'],
-    icon: getAgentType('claude').icon,
+    icon: getAgentType('claudecode').icon,
     sectionKey: 'editor.slash.section.agent',
   },
   {
@@ -167,27 +165,11 @@ export const SLASH_MENU_ITEMS: SlashMenuItem[] = [
     sectionKey: 'editor.slash.section.agent',
   },
   {
-    id: 'agent-thread-gemini',
-    label: getAgentType('gemini').name,
-    description: 'AI Agent',
-    keywords: ['gemini', 'google', 'cli', 'code', 'bianma', '任务', 'renwu', 'task'],
-    icon: getAgentType('gemini').icon,
-    sectionKey: 'editor.slash.section.agent',
-  },
-  {
     id: 'agent-thread-hermes',
     label: getAgentType('hermes').name,
     description: 'AI Agent',
     keywords: ['hermes', 'nous', 'agent', 'code', 'bianma', '任务', 'renwu', 'task'],
     icon: getAgentType('hermes').icon,
-    sectionKey: 'editor.slash.section.agent',
-  },
-  {
-    id: 'agent-thread-openclaw',
-    label: getAgentType('openclaw').name,
-    description: 'AI Agent',
-    keywords: ['openclaw', 'claw', 'agent', 'code', 'bianma', '任务', 'renwu', 'task'],
-    icon: getAgentType('openclaw').icon,
     sectionKey: 'editor.slash.section.agent',
   },
   {

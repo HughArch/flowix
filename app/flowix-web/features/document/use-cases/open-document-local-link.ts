@@ -1,4 +1,4 @@
-import { openExternalTarget } from '@features/workspace/use-cases/workspace-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { publishHeadingAnchorRequest } from '@features/document/use-cases/heading-anchor-publish';
 import type { ResolvedEditorLocalLink } from '@features/editor/editor-link-resolution';
 
@@ -17,6 +17,9 @@ export async function openDocumentLocalLink(
   target: ResolvedEditorLocalLink,
   scopePath: string | null,
 ): Promise<void> {
-  const opened = await openExternalTarget(target.path, { scopePath });
-  publishHeadingAnchorRequest(target.path, opened, target.anchor);
+  const opened = await openWorkspaceSurface({
+    host: 'main-third',
+    target: { kind: 'external', path: target.path, scopePath, transitionId: null },
+  });
+  publishHeadingAnchorRequest(target.path, opened.status === 'cancelled' ? null : opened.location, target.anchor);
 }

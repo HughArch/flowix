@@ -1,6 +1,8 @@
+import type { BrowserColumnNavigationResult } from '../model/surface-opening';
 import { collections, externalDocuments, notebooks } from '@platform/tauri/client';
 import { collectionNotebookId } from '@features/collection/mutations';
 import { parseCollectionDocumentV2 } from '@features/collection/model';
+import { inspectCollectionRecoveryType } from '@features/collection/recovery';
 import { ensureCollectionDisplay, bindCollectionDisplayPath } from '@/lib/collection-display-registry';
 import { captureFileBrowserContext } from './file-browser-context';
 import type { FileBrowserTarget } from '../store/file-browser-target';
@@ -8,17 +10,15 @@ import { canonicalDirectoryPath, canonicalPath, fileLocatorKey } from '@/lib/pat
 import { displayTitleFromFilename } from '@/lib/utils';
 import { canonicalUrl, contentIdentityKey } from '@features/workspace/store/workspace-content-identity';
 import {
-  canMoveBrowserColumnTargetToWorkColumn,
   useBrowserColumnStore,
   type BrowserColumnOpenDisposition,
-  type BrowserColumnTab,
   type BrowserColumnTarget,
 } from '@features/workspace/store/browser-column-store';
 import type { WorkColumnTarget } from '@features/workspace/store/work-column-target';
 import {
   activateExistingWorkspaceContent,
   activateExistingWorkspaceContentAsync,
-  findExistingWorkspaceContent,
+  findWorkspaceContentLocations,
   browserColumnTargetIdentity,
   workColumnTargetIdentity,
 } from './workspace-content-activation';
@@ -26,36 +26,20 @@ import {
   enqueueBrowserColumnNavigation,
 } from './browser-column-coordinator';
 import {
-  openCollectionTarget,
-  openAgentTarget,
-  openExternalTarget,
-  openMediaTarget,
-  openWebTarget,
-  closeAgentTarget,
-  clearWorkspaceDocument,
   flushWorkspaceDocument,
 } from './workspace-navigation';
-import { useWorkspaceFocusStore } from '@features/workspace/store/workspace-focus-store';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import type { ContentIdentity } from '@features/workspace/store/workspace-content-identity';
 
-export type BrowserColumnOpenResult =
-  | { host: 'main-third'; alreadyOpen: true }
-  | { host: 'browser-column'; tabId: string; alreadyOpen: boolean };
-
-function openResult(
-  location: ReturnType<typeof activateExistingWorkspaceContent>,
-): BrowserColumnOpenResult | null {
-  if (!location) return null;
-  return location.host === 'main-third'
-    ? { host: 'main-third', alreadyOpen: true }
-    : { host: 'browser-column', tabId: location.tabId, alreadyOpen: true };
-}
+export type BrowserColumnOpenResult = NonNullable<BrowserColumnNavigationResult>;
+export type BrowserTargetOpenResult = BrowserColumnOpenResult;
 
 function targetTabTitle(target: BrowserColumnTarget): string {
   const filenameFromPath = (path: string) => path.split(/[\\/]/).pop() ?? path;
 
   switch (target.kind) {
+    case 'folder-collection':
+      return target.folderName || target.folderPath.split(/[\\/]/).filter(Boolean).pop() || '文件夹集合';
     case 'media':
       return filenameFromPath(target.filePath);
     case 'file-browser':
@@ -81,86 +65,56 @@ function targetTabIcon(target: BrowserColumnTarget): string | null {
   }
 }
 
+function targetTabId(target: BrowserColumnTarget): string {
+  if (target.kind === 'folder-collection') return `folder-collection:${target.notebookId}:${canonicalPath(target.folderPath)}`;
+  if (target.kind === 'agent_conversation') return `agent:${target.instanceId}`;
+  if (target.kind === 'web') return `web:${canonicalUrl(target.url) ?? target.url}`;
+  if (target.kind === 'file-browser') {
+    return target.collectionDisplay
+      ? target.collectionDisplay.displayId
+      : target.activeFilePath
+        ? fileLocatorKey(target.activeFilePath)
+        : `file-browser:${target.folderPath}`;
+  }
+  if (target.kind === 'media') return fileLocatorKey(target.filePath);
+  return 'empty';
+}
+
 export function openBrowserColumnTarget(
   target: BrowserColumnTarget,
   disposition: BrowserColumnOpenDisposition = 'focus-existing',
-): Promise<BrowserColumnOpenResult | null> {
-  let id = target.kind === 'agent_conversation'
-      ? `agent:${target.instanceId}`
-      : target.kind === 'web'
-        ? `web:${canonicalUrl(target.url) ?? target.url}`
-    : target.kind === 'file-browser'
-          ? target.activeFilePath ? fileLocatorKey(target.activeFilePath) : `file-browser:${target.folderPath}`
-        : target.kind === 'media'
-            ? fileLocatorKey(target.filePath)
-          : 'empty';
-
+): Promise<BrowserColumnNavigationResult> {
   return enqueueBrowserColumnNavigation(async () => {
     target = await prepareCollectionBrowserTarget(target);
-    if (target.kind === 'file-browser' && target.collectionDisplay) id = target.collectionDisplay.displayId;
-    let moveWorkColumnTarget = false;
-    if (disposition === 'focus-existing') {
-      const existing = findExistingWorkspaceContent(browserColumnTargetIdentity(target));
-      if (existing?.host === 'main-third') {
-        const workTarget = useWorkColumnStore.getState().navigation.target;
-        const workIdentity = workColumnTargetIdentity(workTarget);
-        const requestedIdentity = browserColumnTargetIdentity(target);
-        moveWorkColumnTarget = !!workIdentity
-          && contentIdentityKey(workIdentity) === contentIdentityKey(requestedIdentity);
-        if (!moveWorkColumnTarget) {
-          activateExistingWorkspaceContent(browserColumnTargetIdentity(target));
-          return openResult(existing);
-        }
-        // List-column "open in right" is a move when the same content is
-        // already in the work column. Save before mounting the right-side copy.
-        if (target.kind !== 'agent_conversation') await flushWorkspaceDocument();
-        if (moveWorkColumnTarget) {
-          const currentIdentity = workColumnTargetIdentity(useWorkColumnStore.getState().navigation.target);
-          if (!currentIdentity || contentIdentityKey(currentIdentity) !== contentIdentityKey(requestedIdentity)) {
-            return null;
-          }
-        }
-      }
-      if (existing?.host === 'browser-column') {
+    // Browser opens are scoped to Browser: a matching Work target may
+    // coexist, while a matching Browser tab is always reused.
+    if (disposition !== 'replace-active') {
+      const existingTab = findWorkspaceContentLocations(
+        browserColumnTargetIdentity(target),
+      ).browserColumn;
+      if (existingTab) {
         const store = useBrowserColumnStore.getState();
-        const existingTab = store.tabs.find((candidate) => candidate.id === existing.tabId);
         if (target.kind === 'file-browser') {
-          if (existingTab?.target.kind === 'file-browser') {
+          const existingTarget = store.tabs.find((tab) => tab.id === existingTab.tabId)?.target;
+          if (existingTarget?.kind === 'file-browser') {
             // Upgrade a standalone file tab to a file-browser tab in place.
             // The tab identity stays stable while the resource context and
             // tree preferences are added.
-            store.updateFileBrowserContext(existing.tabId, {
+            store.updateFileBrowserContext(existingTab.tabId, {
               folderPath: target.folderPath,
               notebookId: target.notebookId,
               scopePath: target.scopePath,
             });
             if (target.activeFilePath) {
-              store.selectFileBrowserFile(existing.tabId, target.activeFilePath, target.collectionDisplay, target.collectionType);
+              store.selectFileBrowserFile(existingTab.tabId, target.activeFilePath, target.collectionDisplay, target.collectionType, target.collectionUnavailableReason);
             }
           }
         }
-        store.commitTab(existing.tabId);
-        if (moveWorkColumnTarget) {
-          if (target.kind === 'agent_conversation') closeAgentTarget();
-          else await clearWorkspaceDocument();
-        }
-        return { host: 'browser-column', tabId: existing.tabId, alreadyOpen: true };
+        store.commitTab(existingTab.tabId);
+        return { host: 'browser-column', tabId: existingTab.tabId, alreadyOpen: true };
       }
     }
 
-    if (disposition === 'open-in-column') {
-      const store = useBrowserColumnStore.getState();
-      const key = contentIdentityKey(browserColumnTargetIdentity(target));
-      const existing = store.tabs.find((tab) => contentIdentityKey(browserColumnTargetIdentity(tab.target)) === key);
-      if (existing) {
-        store.commitTab(existing.id);
-        if (moveWorkColumnTarget) {
-          if (target.kind === 'agent_conversation') closeAgentTarget();
-          else await clearWorkspaceDocument();
-        }
-        return { host: 'browser-column', tabId: existing.id, alreadyOpen: true };
-      }
-    }
     // Directory opens reuse their browsing tab after file-identity lookup.
     // Independent file opens keep their own stable tabs.
     if (target.kind === 'file-browser' && target.folderPath && disposition !== 'replace-active') {
@@ -170,24 +124,18 @@ export function openBrowserColumnTarget(
         && tab.target.folderPath && canonicalPath(tab.target.folderPath) === canonicalPath(folderTarget.folderPath!)
         && tab.target.notebookId === folderTarget.notebookId);
       if (folderTab) {
-        if (target.activeFilePath) store.selectFileBrowserFile(folderTab.id, target.activeFilePath, target.collectionDisplay, target.collectionType);
+        if (target.activeFilePath) store.selectFileBrowserFile(folderTab.id, target.activeFilePath, target.collectionDisplay, target.collectionType, target.collectionUnavailableReason);
         store.commitTab(folderTab.id);
-        if (moveWorkColumnTarget) {
-          await clearWorkspaceDocument();
-        }
         return { host: 'browser-column', tabId: folderTab.id, alreadyOpen: true };
       }
     }
+    const id = targetTabId(target);
     const tabId = useBrowserColumnStore.getState().openTab({
       id,
       title: targetTabTitle(target),
       icon: targetTabIcon(target),
       target,
     }, disposition);
-    if (moveWorkColumnTarget) {
-      if (target.kind === 'agent_conversation') closeAgentTarget();
-      else await clearWorkspaceDocument();
-    }
     return { host: 'browser-column', tabId, alreadyOpen: false };
   });
 }
@@ -208,19 +156,24 @@ export function selectBrowserColumnFile(tabId: string, filePath: string | null, 
     if (existing) { state.commitTab(existing.id); return true; }
     if (folderPath !== undefined) state.switchFileBrowserFolder(tabId, folderPath);
     const prepared = await prepareCollectionBrowserTarget({ ...tab.target, activeFilePath: filePath, collectionDisplay: undefined, collectionType: undefined });
-    const location = findExistingWorkspaceContent(browserColumnTargetIdentity(prepared));
-    if (location && !(location.host === 'browser-column' && location.tabId === tabId)) { activateExistingWorkspaceContent(browserColumnTargetIdentity(prepared)); return true; }
-    state.selectFileBrowserFile(tabId, prepared.kind === 'file-browser' ? prepared.activeFilePath : filePath, prepared.kind === 'file-browser' ? prepared.collectionDisplay : undefined, prepared.kind === 'file-browser' ? prepared.collectionType : undefined);
+    const existingBrowser = findWorkspaceContentLocations(
+      browserColumnTargetIdentity(prepared),
+    ).browserColumn;
+    if (existingBrowser && existingBrowser.tabId !== tabId) {
+      activateExistingWorkspaceContent(browserColumnTargetIdentity(prepared), 'browser-column');
+      return true;
+    }
+    if (prepared.kind === 'file-browser') state.selectFileBrowserFile(tabId, prepared.activeFilePath, prepared.collectionDisplay, prepared.collectionType, prepared.collectionUnavailableReason);
     return true;
   });
   if (!filePath) return select();
 
   const documentIdentity: ContentIdentity = { kind: 'external', path: filePath };
-  const existing = findExistingWorkspaceContent(documentIdentity);
-  if (!existing || (existing.host === 'browser-column' && existing.tabId === tabId)) {
+  const existingBrowser = findWorkspaceContentLocations(documentIdentity).browserColumn;
+  if (!existingBrowser || existingBrowser.tabId === tabId) {
     return select();
   }
-  return activateExistingWorkspaceContentAsync(documentIdentity)
+  return activateExistingWorkspaceContentAsync(documentIdentity, 'browser-column')
     .then((location) => location ? true : select());
 }
 
@@ -237,15 +190,20 @@ export function openBrowserColumnNotebookNote(
   filePath: string,
   notebookId: string,
   notebookPath: string,
+  disposition: BrowserColumnOpenDisposition = 'focus-existing',
 ): Promise<BrowserColumnOpenResult | null> {
   return openBrowserColumnTarget({
     ...createFileBrowserTarget(filePath, notebookPath),
     notebookId,
-  });
+  }, disposition);
 }
 
-export function openBrowserColumnText(filePath: string, scopePath: string | null): Promise<BrowserColumnOpenResult | null> {
-  return openBrowserColumnTarget(createFileBrowserTarget(filePath, scopePath));
+export function openBrowserColumnText(
+  filePath: string,
+  scopePath: string | null,
+  disposition: BrowserColumnOpenDisposition = 'focus-existing',
+): Promise<BrowserColumnOpenResult | null> {
+  return openBrowserColumnTarget(createFileBrowserTarget(filePath, scopePath), disposition);
 }
 
 export function openBrowserColumnMedia(
@@ -280,12 +238,14 @@ export function openBrowserColumnAgentConversation(instanceId: string): Promise<
   return openBrowserColumnTarget({ kind: 'agent_conversation', instanceId });
 }
 
-/** Move the currently displayed work-column target into the right browser column. */
+/** Open the currently displayed work-column target in the right browser column. */
 export function openWorkColumnTargetInBrowserColumn(
   target: WorkColumnTarget,
 ): Promise<BrowserColumnOpenResult | null> {
   const browserTarget: BrowserColumnTarget | null = (() => {
-    switch (target.kind) {
+  switch (target.kind) {
+    case 'folder-collection': return { kind: 'folder-collection', notebookId: target.notebookId,
+      notebookPath: target.notebookPath, folderPath: target.folderPath, folderName: target.folderName };
       case 'media':
         return {
           kind: 'media',
@@ -323,108 +283,24 @@ export function openWorkColumnTargetInBrowserColumn(
       return null;
     }
 
-    // Flush the work-column editor before the BrowserColumn mounts its own
-    // document surface. This action moves the document; it must not leave two
-    // independently editable copies open in separate columns.
+    // This legacy transfer opens the current Work content as a second view.
     if (target.kind !== 'agent-conversation') await flushWorkspaceDocument();
     if (!isStillCurrentTarget()) return null;
 
     const preparedTarget = await prepareCollectionBrowserTarget(browserTarget);
     if (!isStillCurrentTarget()) return null;
 
-    const id = preparedTarget.kind === 'agent_conversation'
-        ? `agent:${preparedTarget.instanceId}`
-        : preparedTarget.kind === 'web'
-          ? `web:${canonicalUrl(preparedTarget.url) ?? preparedTarget.url}`
-          : preparedTarget.kind === 'file-browser' ? preparedTarget.collectionDisplay ? preparedTarget.collectionDisplay.displayId : preparedTarget.activeFilePath ? fileLocatorKey(preparedTarget.activeFilePath) : `file-browser:${preparedTarget.folderPath}` : 'empty';
+    const id = targetTabId(preparedTarget);
+    const existingTab = findWorkspaceContentLocations(
+      browserColumnTargetIdentity(preparedTarget),
+    ).browserColumn;
     const tabId = useBrowserColumnStore.getState().openTab({
       id,
       title: targetTabTitle(preparedTarget),
       icon: targetTabIcon(preparedTarget),
       target: preparedTarget,
     });
-    if (target.kind === 'agent-conversation') {
-      closeAgentTarget();
-    } else {
-      await clearWorkspaceDocument();
-    }
-    return { host: 'browser-column', tabId, alreadyOpen: false };
-  });
-}
-
-function restoreBrowserColumnTab(
-  tab: BrowserColumnTab,
-  originalIndex: number,
-  originalActiveTabId: string | null,
-): void {
-  const store = useBrowserColumnStore.getState();
-  if (!store.tabs.some((candidate) => candidate.id === tab.id)) {
-    store.openTab(tab);
-  }
-
-  const restored = useBrowserColumnStore.getState();
-  const currentIndex = restored.tabs.findIndex((candidate) => candidate.id === tab.id);
-  if (currentIndex >= 0 && currentIndex !== originalIndex) {
-    const beforeTabId = restored.tabs[originalIndex]?.id ?? null;
-    restored.reorderTab(tab.id, beforeTabId === tab.id ? null : beforeTabId);
-  }
-
-  const activeTabStillExists = originalActiveTabId !== null
-    && useBrowserColumnStore.getState().tabs.some((candidate) => candidate.id === originalActiveTabId);
-  if (activeTabStillExists) {
-    useBrowserColumnStore.getState().commitTab(originalActiveTabId);
-  }
-}
-
-/** Move a BrowserColumn tab to the left work column. */
-export function openBrowserColumnTabInWorkColumn(tabId: string): Promise<boolean | null> {
-  return enqueueBrowserColumnNavigation(async () => {
-    const before = useBrowserColumnStore.getState();
-    const originalIndex = before.tabs.findIndex((tab) => tab.id === tabId);
-    if (originalIndex < 0) return false;
-    const tab = before.tabs[originalIndex];
-    if (!canMoveBrowserColumnTargetToWorkColumn(tab.target)) return false;
-    const originalActiveTabId = before.activeTabId;
-
-    // Remove the tab before invoking the normal work-column navigation
-    // facade. Its duplicate detection must see the target as no longer owned
-    // by the BrowserColumn, otherwise it would simply reactivate this tab.
-    useBrowserColumnStore.getState().closeTab(tabId);
-
-    try {
-      switch (tab.target.kind) {
-        case 'file-browser':
-          if (tab.target.collectionDisplay) {
-            await openCollectionTarget(tab.target.collectionDisplay);
-          } else if (tab.target.activeFilePath) {
-            await openExternalTarget(tab.target.activeFilePath, {
-              destination: 'main-third',
-              scopePath: tab.target.scopePath,
-              fileBrowser: tab.target,
-            });
-          }
-          break;
-        case 'media':
-          await openMediaTarget({
-            filePath: tab.target.filePath,
-            notebookId: tab.target.notebookId,
-            notebookPath: tab.target.notebookPath,
-            resourceKind: tab.target.resourceKind,
-          });
-          break;
-        case 'web':
-          await openWebTarget(tab.target.url);
-          break;
-        case 'agent_conversation':
-          await openAgentTarget(tab.target.instanceId);
-          break;
-      }
-      useWorkspaceFocusStore.getState().focusHost('main-third');
-      return true;
-    } catch (error) {
-      restoreBrowserColumnTab(tab, originalIndex, originalActiveTabId);
-      throw error;
-    }
+    return { host: 'browser-column', tabId, alreadyOpen: !!existingTab };
   });
 }
 
@@ -442,15 +318,27 @@ export function removeBrowserColumnTabsByPath(path: string): string[] {
 
 /** Resolve identity before a browser surface can mount. */
 async function prepareCollectionBrowserTarget(target: BrowserColumnTarget): Promise<BrowserColumnTarget> {
-  if (target.kind !== 'file-browser' || !target.activeFilePath || (!target.collectionDisplay && !/(?:\.(table|lib)\.ya?ml|\.index\.yaml)$/i.test(target.activeFilePath))) return target.kind === 'file-browser' ? { ...target, collectionType: undefined } : target;
+  if (target.kind !== 'file-browser' || !target.activeFilePath || (!target.collectionDisplay && !/(?:\.(table|lib)\.ya?ml|\.index\.yaml)$/i.test(target.activeFilePath))) return target.kind === 'file-browser' ? { ...target, collectionType: undefined, collectionUnavailableReason: undefined } : target;
   const registered = (await notebooks.getAll()).find((notebook) => target.notebookId ? notebook.id === target.notebookId : canonicalPath(target.activeFilePath!).startsWith(`${canonicalDirectoryPath(notebook.path)}/`));
   const root = registered ? canonicalDirectoryPath(registered.path) : null;
   if (!root) throw new Error('集合需要笔记本上下文');
   const notebookId = await collectionNotebookId(root, target.notebookId);
-  const envelope = target.collectionDisplay ? null : parseCollectionDocumentV2(await externalDocuments.read(target.activeFilePath, root));
+  let envelope: ReturnType<typeof parseCollectionDocumentV2> | null = null;
+  if (!target.collectionDisplay) {
+    const source = await externalDocuments.read(target.activeFilePath, root);
+    try { envelope = parseCollectionDocumentV2(source); }
+    catch {
+      return { ...target, notebookId, scopePath: root, collectionType: inspectCollectionRecoveryType(source), collectionUnavailableReason: '集合文件格式无效' };
+    }
+  }
   const collectionId = target.collectionDisplay?.collectionId ?? envelope!.collection.id;
-  const item = await collections.resolve(notebookId, collectionId);
-  if (item.identityConflict || item.parseState !== 'valid') throw new Error('集合身份冲突或格式暂不可用');
+  let item: Awaited<ReturnType<typeof collections.resolve>>;
+  try { item = await collections.resolve(notebookId, collectionId); }
+  catch {
+    return { ...target, notebookId, scopePath: root, collectionType: target.collectionType ?? envelope?.collection.type ?? 'table', collectionUnavailableReason: '集合不存在或暂时无法读取' };
+  }
+  if (item.identityConflict) throw new Error('集合身份冲突或格式暂不可用');
+  if (item.parseState !== 'valid') return { ...target, notebookId, scopePath: root, collectionType: item.collectionType, collectionUnavailableReason: '集合文件格式无效' };
   const display = ensureCollectionDisplay({ notebookId, collectionId, viewId: target.collectionDisplay?.viewId ?? null }, target.collectionDisplay?.displayId);
   const path = `${root.replace(/\/$/, '')}/${item.relativePath}`;
   bindCollectionDisplayPath(display.displayId, path, item.indexSequence);

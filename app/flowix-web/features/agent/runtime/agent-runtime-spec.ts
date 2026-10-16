@@ -4,6 +4,7 @@ import type {
   AgentCodexServiceTier,
   AgentPermissionMode,
   AgentRuntimeConfig,
+  AgentId,
   AgentTypeKey,
   FilesConfig,
   RuntimeConfig,
@@ -16,6 +17,7 @@ import {
 } from "@features/agent/config/codex-options";
 import { resolvePrimaryWorkspace } from "@features/agent/runtime/primary-workspace";
 import { normalizeWorkspacePath } from "@features/agent/runtime/workspace-path";
+import { normalizeAgentId } from "@/lib/agent-types";
 
 export type AgentRuntimeSettingKind =
   | "model"
@@ -30,6 +32,25 @@ export interface AgentAccessOption {
   /** Preferred i18n label key; translated by the UI before display. */
   labelKey?: I18nKey;
 }
+
+export interface AgentModeOption {
+  id: string;
+  label: string;
+  labelKey?: I18nKey;
+  descriptionKey?: I18nKey;
+}
+
+export const DEEPSEEK_HARNESS_MODE_OPTIONS = [
+  { id: "standard", label: "Standard", labelKey: "agent.mode.standard", descriptionKey: "agent.mode.standard.description" },
+  { id: "code", label: "Code", labelKey: "agent.mode.code", descriptionKey: "agent.mode.code.description" },
+  { id: "minimal", label: "Minimal", labelKey: "agent.mode.minimal", descriptionKey: "agent.mode.minimal.description" },
+  { id: "cordis", label: "Cordis", labelKey: "agent.mode.cordis", descriptionKey: "agent.mode.cordis.description" },
+] as const satisfies readonly AgentModeOption[];
+
+export const PI_MODE_OPTIONS = [
+  { id: "writing", label: "Writing", labelKey: "agent.mode.writing" },
+  { id: "code", label: "Code", labelKey: "agent.mode.piCode" },
+] as const satisfies readonly AgentModeOption[];
 
 export interface BuildAgentRuntimeConfigInput {
   typeKey: AgentTypeKey;
@@ -52,6 +73,7 @@ export interface AgentRuntimeSpec {
   typeKey: AgentTypeKey;
   emptySettings: readonly AgentRuntimeSettingKind[];
   accessOptions: readonly AgentAccessOption[];
+  modeOptions: readonly AgentModeOption[];
   workspace: {
     selectBeforeFirstRun: boolean;
     /** Whether selection remains editable while the current run is active. */
@@ -82,8 +104,6 @@ const DSH_ACCESS_OPTIONS: readonly AgentAccessOption[] = [
 
 const CLAUDE_ACCESS_OPTIONS = SHARED_ACCESS_OPTIONS;
 
-const NO_ACCESS_OPTIONS: readonly AgentAccessOption[] = [];
-
 export function normalizeCodexPermissionMode(
   mode: AgentPermissionMode | undefined,
 ): AgentPermissionMode {
@@ -109,11 +129,12 @@ export function normalizeDshPermissionMode(
     : "danger-full-access";
 }
 
-const AGENT_RUNTIME_SPECS: Record<AgentTypeKey, AgentRuntimeSpec> = {
+const AGENT_RUNTIME_SPECS: Record<AgentId, AgentRuntimeSpec> = {
   codex: {
     typeKey: "codex",
     emptySettings: ["model", "reasoning", "permission"],
     accessOptions: CODEX_APP_SERVER_ACCESS_OPTIONS,
+    modeOptions: [],
     // The notebook owns cwd; conversation snapshots freeze it at first send.
     workspace: { selectBeforeFirstRun: false, switchWhileRunning: false, switchBetweenRuns: false, switchRequiresRuntimeRestart: false, preservesConversationSession: true },
     buildRuntimeConfig: ({
@@ -134,10 +155,11 @@ const AGENT_RUNTIME_SPECS: Record<AgentTypeKey, AgentRuntimeSpec> = {
       },
     }),
   },
-  claude: {
-    typeKey: "claude",
+  claudecode: {
+    typeKey: "claudecode",
     emptySettings: ["model", "permission"],
     accessOptions: CLAUDE_ACCESS_OPTIONS,
+    modeOptions: [],
     workspace: { selectBeforeFirstRun: false, switchWhileRunning: false, switchBetweenRuns: false, switchRequiresRuntimeRestart: false, preservesConversationSession: false },
     buildRuntimeConfig: ({ cwd, workspacePaths, permissionMode, codexModel }) => ({
       // 统一归一化: 持久化或历史数据中的 yolo 视作 danger-full-access,
@@ -145,37 +167,21 @@ const AGENT_RUNTIME_SPECS: Record<AgentTypeKey, AgentRuntimeSpec> = {
       claude: { cwd, workspacePaths, permissionMode: normalizeCodexPermissionMode(permissionMode), model: codexModel },
     }),
   },
-  gemini: {
-    typeKey: "gemini",
-    emptySettings: [],
-    accessOptions: NO_ACCESS_OPTIONS,
-    workspace: { selectBeforeFirstRun: false, switchWhileRunning: false, switchBetweenRuns: false, switchRequiresRuntimeRestart: false, preservesConversationSession: false },
-    buildRuntimeConfig: ({ cwd, workspacePaths }) => ({
-      gemini: { cwd, workspacePaths },
-    }),
-  },
   hermes: {
     typeKey: "hermes",
     emptySettings: ["permission"],
     accessOptions: HERMES_ACCESS_OPTIONS,
+    modeOptions: [],
     workspace: { selectBeforeFirstRun: false, switchWhileRunning: false, switchBetweenRuns: false, switchRequiresRuntimeRestart: false, preservesConversationSession: false },
     buildRuntimeConfig: ({ cwd, workspacePaths, permissionMode }) => ({
       hermes: { cwd, workspacePaths, permissionMode },
-    }),
-  },
-  openclaw: {
-    typeKey: "openclaw",
-    emptySettings: [],
-    accessOptions: NO_ACCESS_OPTIONS,
-    workspace: { selectBeforeFirstRun: false, switchWhileRunning: false, switchBetweenRuns: false, switchRequiresRuntimeRestart: false, preservesConversationSession: false },
-    buildRuntimeConfig: ({ cwd, workspacePaths }) => ({
-      openclaw: { cwd, workspacePaths },
     }),
   },
   opencode: {
     typeKey: "opencode",
     emptySettings: ["model", "permission"],
     accessOptions: SHARED_ACCESS_OPTIONS,
+    modeOptions: [],
     workspace: { selectBeforeFirstRun: false, switchWhileRunning: false, switchBetweenRuns: false, switchRequiresRuntimeRestart: false, preservesConversationSession: false },
     buildRuntimeConfig: ({ cwd, workspacePaths, permissionMode, codexModel }) => ({
       opencode: { cwd, workspacePaths, permissionMode, model: codexModel },
@@ -188,6 +194,7 @@ const AGENT_RUNTIME_SPECS: Record<AgentTypeKey, AgentRuntimeSpec> = {
     // codemode follows the shared Pi preference across conversations.
     emptySettings: ["model", "mode", "permission"],
     accessOptions: SHARED_ACCESS_OPTIONS,
+    modeOptions: PI_MODE_OPTIONS,
     workspace: { selectBeforeFirstRun: false, switchWhileRunning: false, switchBetweenRuns: false, switchRequiresRuntimeRestart: true, preservesConversationSession: true },
     buildRuntimeConfig: ({ cwd, workspacePaths, permissionMode, codexModel }) => ({
       pi: {
@@ -199,14 +206,15 @@ const AGENT_RUNTIME_SPECS: Record<AgentTypeKey, AgentRuntimeSpec> = {
       },
     }),
   },
-  "deepseek-harness": {
-    typeKey: "deepseek-harness",
+  dsh: {
+    typeKey: "dsh",
     // DSH follows the native llm-pi-ai provider configuration but allows a per-card
     // model override (runtime_config.deepseek_harness.model, "inherit" falls
     // back to the global dsh-settings model). Its tool Agent preset and
     // per-card permission mode are configurable here as well.
     emptySettings: ["model", "mode", "permission"],
     accessOptions: DSH_ACCESS_OPTIONS,
+    modeOptions: DEEPSEEK_HARNESS_MODE_OPTIONS,
     // Harness session resume restores the session's original cwd. Until DSH
     // exposes a resume-with-cwd capability, changing workspace would be
     // misleading, even if Flowix can restart the transport.
@@ -229,7 +237,7 @@ const AGENT_RUNTIME_SPECS: Record<AgentTypeKey, AgentRuntimeSpec> = {
 };
 
 export function getAgentRuntimeSpec(typeKey: AgentTypeKey): AgentRuntimeSpec {
-  return AGENT_RUNTIME_SPECS[typeKey];
+  return AGENT_RUNTIME_SPECS[normalizeAgentId(typeKey) ?? "codex"];
 }
 
 export function supportsAgentRuntimeSetting(
@@ -252,6 +260,12 @@ export function getAgentAccessOptions(
   return getAgentRuntimeSpec(typeKey).accessOptions;
 }
 
+export function getAgentModeOptions(
+  typeKey: AgentTypeKey,
+): readonly AgentModeOption[] {
+  return getAgentRuntimeSpec(typeKey).modeOptions;
+}
+
 export function buildAgentRuntimeConfig({
   typeKey,
   notebookPath,
@@ -265,7 +279,7 @@ export function buildAgentRuntimeConfig({
   workspaceSnapshot,
 }: BuildAgentRuntimeConfigInput): AgentRuntimeConfig {
   // cwd is always the selected notebook path.  `defaultFiles.folders` are
-  // notebook-local add-dir roots from `.flowix/agent.json`; they are sent as
+  // notebook add-dir roots from local.db; they are sent as
   // workspacePaths and are kept separate from cwd.  Once a run starts, the
   // persisted workspace snapshot remains authoritative for later turns.
   const frozenPaths = (workspaceSnapshot?.workspacePaths ?? [])
@@ -301,7 +315,8 @@ export function buildAgentRuntimeConfig({
     codexServiceTier:
       instanceRuntimeConfig?.serviceTier ?? codexServiceTier,
   });
-  if (typeKey === "deepseek-harness" && runtimeConfig.deepseekHarness) {
+  runtimeConfig.notebookId = workspaceSnapshot?.notebookId ?? instanceRuntimeConfig?.notebookId;
+  if (normalizeAgentId(typeKey) === "dsh" && runtimeConfig.deepseekHarness) {
     runtimeConfig.deepseekHarness.mode =
       instanceRuntimeConfig?.deepseekHarness?.mode ?? "standard";
     runtimeConfig.deepseekHarness.providerId =

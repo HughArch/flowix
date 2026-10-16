@@ -8,17 +8,35 @@ use crate::app::state::AppState;
 use crate::commands::external_document_watch::ExternalDocumentWatchState;
 use crate::commands::helpers::{
     can_access_document_path, can_access_scoped_file, refresh_notebook_note_index,
-    start_security_bookmark_access,
 };
 use crate::lock_utils::read_lock;
 use flowix_core::memo_file::{FileWriteOutcome, MergedFileWriteOutcome};
 
 #[tauri::command]
-pub fn get_external_document_mime_type(file_path: String) -> String {
-    mime_guess::from_path(file_path)
-        .first_or_octet_stream()
-        .essence_str()
-        .to_string()
+pub async fn detect_external_document_text(
+    window: tauri::WebviewWindow,
+    file_path: String,
+    #[allow(non_snake_case)] scopePath: Option<String>,
+    app: tauri::AppHandle,
+) -> Result<bool, String> {
+    let window_label = window.label().to_string();
+    crate::document_io::run("external_document_text_detection", move || {
+        let state = app.state::<AppState>();
+        let path = PathBuf::from(file_path);
+        if !path.is_absolute() || !path.is_file() {
+            return Err("external document is unavailable".to_string());
+        }
+        if !can_access_document_path(&path, &window_label, &state)
+            && !can_access_scoped_file(&path, scopePath.as_deref(), &state)
+        {
+            return Err("external document is outside its authorized scope".to_string());
+        }
+
+        // A local file has no HTTP Content-Type header. This is only a text
+        // readability probe for unknown paths, not a MIME type resolver.
+        Ok(looks_like_utf8_text_file(&path))
+    })
+    .await?
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -185,7 +203,6 @@ pub(crate) fn exact_existing_external_path(
     {
         return Err("external document is outside its authorized scope".to_string());
     }
-    start_security_bookmark_access(state.inner(), &requested);
     if !supported_text_document_path(&requested) {
         return Err("external document is not a supported text file".to_string());
     }

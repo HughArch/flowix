@@ -1,7 +1,7 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import { NotePickerController } from './note-picker-controller';
 import { ComposerAddMenuController } from '../composer/composer-add-menu-controller';
-import type { ComposerImageController } from '../composer/composer-image-controller';
+import type { ComposerAttachmentController } from '../composer/composer-attachment-controller';
 
 const mocks = vi.hoisted(() => ({
   searchPathNotes: vi.fn(),
@@ -45,7 +45,7 @@ describe('NotePickerController', () => {
       popover: addPopover,
       notePopover: popover,
       notePicker: picker,
-      images: { addFiles: vi.fn() } as unknown as ComposerImageController,
+      attachments: { addFiles: vi.fn() } as unknown as ComposerAttachmentController,
       t: (key) => key,
       isDestroyed: () => false,
       openNotebookAgentSettings: vi.fn(),
@@ -59,7 +59,7 @@ describe('NotePickerController', () => {
     expect(mocks.searchPathNotes).toHaveBeenCalledWith('notebook-1', '', 10);
     expect(popover.textContent).toContain('Plan');
     expect(popover.textContent).not.toContain('selectRole');
-    popover.querySelector<HTMLButtonElement>('.agent-thread-card__composer-note-item')?.click();
+    popover.querySelector<HTMLButtonElement>('.agent-composer__note-item')?.click();
     expect(injectMemoReference).toHaveBeenCalledWith(expect.objectContaining({
       notebookId: 'notebook-1',
       relativePath: 'Projects/Plan.md',

@@ -1,6 +1,6 @@
 import { invoke } from '@tauri-apps/api/core';
 import type { UserSettings } from '@/lib/constants';
-import type { AgentAccessConfig, AgentAccessEntry } from '@/lib/types/agent-access';
+import type { AgentWorkspaceSnapshot } from '@/lib/types/agent-workspace';
 import type { UsageInfo } from '@/types/agent';
 import type { AgentConfig, TestConnectionResult } from './agent';
 
@@ -20,6 +20,10 @@ export const boot = {
   getFeatures: () => invoke<BootFeatures>('get_boot_features'),
   setIntroDisplayed: () => invoke<void>('set_boot_intro_displayed'),
   setOnboardingCompleted: () => invoke<void>('set_boot_onboarding_completed'),
+  getVersionInitializationCompleted: () => invoke<boolean>('get_version_initialization_completed'),
+  setVersionInitializationCompleted: (completed: boolean) =>
+    invoke<void>('set_version_initialization_completed', { completed }),
+  retryStartup: () => invoke<void>('retry_startup'),
   getStartupStatus: () => invoke<StartupStatus>('get_startup_status'),
   getStartupNotebookId: () => invoke<string | null>('get_startup_notebook_id'),
   notifyStartupInteractive: () => invoke<void>('notify_startup_interactive'),
@@ -32,8 +36,11 @@ export type StartupPhase = 'pending' | 'running' | 'ready' | 'failed';
 
 export interface StartupStatus {
   phase: StartupPhase;
+  /** Optional only for compatibility with older native shells. */
+  stage?: 'initialization' | 'workspacePreparation';
   step: string;
   error: string | null;
+  progress?: { percent: number; completed: number; total: number; task: string } | null;
 }
 
 export interface FontCacheStatus {
@@ -137,6 +144,8 @@ export interface PiProviderConfig {
   displayName: string;
   api: string;
   baseUrl: string;
+  /** Set for providers managed by Flowix Cloud. */
+  source?: string;
   /** Write-only. Empty preserves the credential already saved for this provider. */
   apiKey?: string;
   credentialConfigured: boolean;
@@ -144,7 +153,7 @@ export interface PiProviderConfig {
   models: PiModelEntryConfig[];
 }
 
-export interface PiFeatures { codeMode: boolean; toolSearch: boolean }
+export interface PiFeatures { toolSearch: boolean; legacyCodeMode?: boolean }
 
 export interface PiMcpServerConfig {
   name: string;
@@ -169,7 +178,8 @@ export interface PiModelCatalog {
 
 export const piModels = {
   getFeatures: () => invoke<PiFeatures>('get_pi_features'),
-  saveFeatures: (features: PiFeatures) => invoke<void>('save_pi_features', { features }),
+  saveFeatures: (features: Pick<PiFeatures, 'toolSearch'>) => invoke<void>('save_pi_features', { features }),
+  clearLegacyCodeMode: () => invoke<void>('clear_pi_legacy_code_mode'),
   list: () => invoke<PiProviderConfig[]>('get_pi_model_configs'),
   catalog: () => invoke<PiModelCatalog>('get_pi_model_catalog'),
   save: (config: PiProviderConfig) => invoke<void>('save_pi_model_config', { config }),
@@ -303,27 +313,13 @@ export interface DeepSeekHarnessPluginCatalog {
   profile: DeepSeekHarnessPlugin[];
 }
 
-// Agent access roots (backend ~/.flowix/agent-access.json).
-// Source of truth is `agent_access::AgentAccessStore`; it mirrors notebooks and user-added folders.
-// 鏁翠唤 set 鏇夸唬閫愭潯 patch, 閬垮厤鍓嶇瀵瑰崟鏉?entry 绠?diff; 鍐欐椂璧颁箰瑙傛洿鏂?
-// (鏈湴鍏堟敼, 澶辫触 `loadInitial` 鍥炴粴)銆?
-export const agentAccess = {
-  get: () => invoke<AgentAccessConfig>('get_agent_access'),
-  set: (config: AgentAccessConfig) => invoke<void>('set_agent_access', { config }),
-  addFolderFromPicker: () =>
-    invoke<AgentAccessEntry | null>('add_agent_access_folder_from_picker'),
-  getNotebookConfigs: () =>
-    invoke<Record<string, import('@/lib/types/agent-access').NotebookAgentConfig>>(
-      'get_notebook_agent_configs',
-    ),
-  setNotebookConfig: (
-    notebookId: string,
-    expectedRevision: number,
-    config: import('@/lib/types/agent-access').NotebookAgentConfig,
-  ) => invoke<import('@/lib/types/agent-access').NotebookAgentConfig>(
-    'set_notebook_agent_config',
-    { notebookId, expectedRevision, config },
-  ),
+// Device-local notebook workspaces. Mutations change one attachment atomically.
+export const agentWorkspace = {
+  get: () => invoke<AgentWorkspaceSnapshot>('get_agent_workspace'),
+  getLegacyPreferences: () => invoke<import('@/lib/types/agent-workspace').LegacyAgentRuntimePreferences | null>('get_legacy_agent_preferences'),
+  pickDirectory: (notebookId: string) => invoke<AgentWorkspaceSnapshot | null>('pick_notebook_directory', { notebookId }),
+  attachDirectory: (notebookId: string, path: string) => invoke<AgentWorkspaceSnapshot>('attach_notebook_directory', { notebookId, path }),
+  detachDirectory: (notebookId: string, path: string) => invoke<AgentWorkspaceSnapshot>('detach_notebook_directory', { notebookId, path }),
 };
 
 export interface SystemTagLayoutItem {

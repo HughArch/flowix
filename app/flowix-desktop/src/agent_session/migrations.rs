@@ -10,7 +10,7 @@ use rusqlite::{params, Connection};
 
 use super::error::ThreadError;
 
-pub(super) const THREAD_DB_SCHEMA_VERSION: i64 = 13;
+pub(super) const THREAD_DB_SCHEMA_VERSION: i64 = 14;
 pub(super) const WAL_AUTOCHECKPOINT_PAGES: i64 = 4000;
 pub(super) const WAL_JOURNAL_SIZE_LIMIT_BYTES: i64 = 64 * 1024 * 1024;
 
@@ -34,6 +34,12 @@ impl super::store::ThreadManager {
         let current_version: i64 =
             conn.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if current_version == THREAD_DB_SCHEMA_VERSION {
+            // A version marker can survive manual table deletion. Validate only
+            // the essential schema; this does not scan conversation contents.
+            conn.execute_batch("SELECT thread_id FROM threads LIMIT 0;
+                SELECT id, thread_id, content FROM thread_messages LIMIT 0;
+                SELECT instance_id FROM agent_conversation_instances LIMIT 0;
+                SELECT id FROM threads_index LIMIT 0;")?;
             return Ok(());
         }
         if current_version > THREAD_DB_SCHEMA_VERSION {
@@ -156,6 +162,7 @@ impl super::store::ThreadManager {
         Self::ensure_simplified_thread_schema(conn)?;
         Self::ensure_pi_thread_metadata_columns(conn)?;
         Self::ensure_path_and_legacy_role_columns(conn)?;
+        Self::migrate_agent_identity_ids(conn)?;
         // Role files are no longer part of conversations. Clear values from
         // historical columns before marking the schema current.
         conn.execute_batch(
@@ -175,6 +182,55 @@ impl super::store::ThreadManager {
         )?;
         conn.pragma_update(None, "user_version", THREAD_DB_SCHEMA_VERSION)?;
 
+        Ok(())
+    }
+
+    /// Move persisted provider identities to the stable product IDs. This is
+    /// deliberately data-only: messages, provider session IDs, and runtime
+    /// configuration snapshots are left untouched.
+    fn migrate_agent_identity_ids(conn: &mut Connection) -> Result<(), ThreadError> {
+        let tx = conn.transaction()?;
+        tx.execute_batch(
+            "
+            UPDATE threads SET agent_id = 'claudecode' WHERE agent_id = 'claude';
+            UPDATE threads SET agent_id = 'dsh' WHERE agent_id = 'deepseek-harness';
+
+            UPDATE agent_conversation_instances SET agent_type = 'claudecode' WHERE agent_type = 'claude';
+            UPDATE agent_conversation_instances SET agent_type = 'dsh' WHERE agent_type = 'deepseek-harness';
+
+            UPDATE agent_instances SET agent = 'claudecode' WHERE agent = 'claude';
+            UPDATE agent_instances SET agent = 'dsh' WHERE agent = 'deepseek-harness';
+
+            -- A canonical row wins if both old and new runtime bindings exist.
+            DELETE FROM thread_external_sessions
+             WHERE runtime IN ('claude', 'deepseek-harness')
+               AND EXISTS (
+                   SELECT 1 FROM thread_external_sessions current
+                   WHERE (current.thread_id = thread_external_sessions.thread_id
+                          OR current.external_session_id = thread_external_sessions.external_session_id)
+                     AND current.runtime = CASE thread_external_sessions.runtime
+                         WHEN 'claude' THEN 'claudecode' ELSE 'dsh' END
+               );
+            UPDATE thread_external_sessions SET runtime = 'claudecode' WHERE runtime = 'claude';
+            UPDATE thread_external_sessions SET runtime = 'dsh' WHERE runtime = 'deepseek-harness';
+
+            -- Event journals can contain idempotency keys. Remove only exact
+            -- old/new key collisions before changing the runtime discriminator.
+            DELETE FROM agent_external_events
+             WHERE runtime IN ('claude', 'deepseek-harness')
+               AND event_key IS NOT NULL AND trim(event_key) <> ''
+               AND EXISTS (
+                   SELECT 1 FROM agent_external_events current
+                   WHERE current.thread_id = agent_external_events.thread_id
+                     AND current.event_key = agent_external_events.event_key
+                     AND current.runtime = CASE agent_external_events.runtime
+                         WHEN 'claude' THEN 'claudecode' ELSE 'dsh' END
+               );
+            UPDATE agent_external_events SET runtime = 'claudecode' WHERE runtime = 'claude';
+            UPDATE agent_external_events SET runtime = 'dsh' WHERE runtime = 'deepseek-harness';
+            ",
+        )?;
+        tx.commit()?;
         Ok(())
     }
 

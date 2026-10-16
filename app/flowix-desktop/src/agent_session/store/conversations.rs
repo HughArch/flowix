@@ -3,8 +3,8 @@
 use super::ThreadManager;
 use crate::agent_session::error::ThreadError;
 use crate::agent_session::types::{
-    AgentConversationCursor, AgentConversationInstance,
-    AgentConversationSource, AgentConversationTypeCount, UpsertAgentConversationInstance,
+    AgentConversationCursor, AgentConversationInstance, AgentConversationSource,
+    AgentConversationTypeCount, UpsertAgentConversationInstance,
 };
 use rusqlite::{params, OptionalExtension};
 use std::path::PathBuf;
@@ -41,21 +41,44 @@ impl ThreadManager {
         let new_relative = new_relative.replace('\\', "/");
         let old_absolute = old_absolute.replace('\\', "/");
         let new_absolute = new_absolute.replace('\\', "/");
-        if old_notebook_id == new_notebook_id && old_relative == new_relative && old_absolute == new_absolute { return Ok(()); }
+        if old_notebook_id == new_notebook_id
+            && old_relative == new_relative
+            && old_absolute == new_absolute
+        {
+            return Ok(());
+        }
         let mut conn = self.lock_conn();
         let tx = conn.transaction()?;
         for (table, notebook_col, relative_col, document_col) in [
-            ("agent_instances", "notebook_id", "relative_path", "document_path"),
-            ("agent_conversation_instances", "source_notebook_id", "source_relative_path", "source_document_path"),
+            (
+                "agent_instances",
+                "notebook_id",
+                "relative_path",
+                "document_path",
+            ),
+            (
+                "agent_conversation_instances",
+                "source_notebook_id",
+                "source_relative_path",
+                "source_document_path",
+            ),
         ] {
             tx.execute(
-                &format!("UPDATE {table} SET
+                &format!(
+                    "UPDATE {table} SET
                     {notebook_col} = ?5,
                     {relative_col} = ?1 || substr({relative_col}, length(?2) + 1),
                     {document_col} = ?3 || substr({relative_col}, length(?2) + 1)
                   WHERE {notebook_col} = ?4 AND
-                    ({relative_col} = ?2 OR substr({relative_col}, 1, length(?2) + 1) = ?2 || '/')"),
-                params![new_relative, old_relative, new_absolute, old_notebook_id, new_notebook_id],
+                    ({relative_col} = ?2 OR substr({relative_col}, 1, length(?2) + 1) = ?2 || '/')"
+                ),
+                params![
+                    new_relative,
+                    old_relative,
+                    new_absolute,
+                    old_notebook_id,
+                    new_notebook_id
+                ],
             )?;
             tx.execute(
                 &format!("UPDATE {table} SET
@@ -108,10 +131,10 @@ impl ThreadManager {
                 COALESCE(
                     CASE i.agent
                         WHEN 'codex' THEN (SELECT external_id FROM threads_codex WHERE thread_id = ti.id)
-                        WHEN 'deepseek-harness' THEN (SELECT external_id FROM threads_dsh WHERE thread_id = ti.id)
+                        WHEN 'dsh' THEN (SELECT external_id FROM threads_dsh WHERE thread_id = ti.id)
                         WHEN 'opencode' THEN (SELECT external_id FROM threads_opencode WHERE thread_id = ti.id)
                         WHEN 'hermes' THEN (SELECT external_id FROM threads_hermes WHERE thread_id = ti.id)
-                        WHEN 'claude' THEN (SELECT external_id FROM threads_claude WHERE thread_id = ti.id)
+                        WHEN 'claudecode' THEN (SELECT external_id FROM threads_claude WHERE thread_id = ti.id)
                         WHEN 'pi' THEN (SELECT external_id FROM threads_pi WHERE thread_id = ti.id)
                     END,
                     (SELECT external_session_id FROM thread_external_sessions
@@ -192,10 +215,10 @@ impl ThreadManager {
                 COALESCE(
                     CASE i.agent
                         WHEN 'codex' THEN (SELECT external_id FROM threads_codex WHERE thread_id = ti.id)
-                        WHEN 'deepseek-harness' THEN (SELECT external_id FROM threads_dsh WHERE thread_id = ti.id)
+                        WHEN 'dsh' THEN (SELECT external_id FROM threads_dsh WHERE thread_id = ti.id)
                         WHEN 'opencode' THEN (SELECT external_id FROM threads_opencode WHERE thread_id = ti.id)
                         WHEN 'hermes' THEN (SELECT external_id FROM threads_hermes WHERE thread_id = ti.id)
-                        WHEN 'claude' THEN (SELECT external_id FROM threads_claude WHERE thread_id = ti.id)
+                        WHEN 'claudecode' THEN (SELECT external_id FROM threads_claude WHERE thread_id = ti.id)
                         WHEN 'pi' THEN (SELECT external_id FROM threads_pi WHERE thread_id = ti.id)
                     END,
                     (SELECT external_session_id FROM thread_external_sessions
@@ -275,10 +298,10 @@ impl ThreadManager {
                 COALESCE(
                     CASE i.agent
                         WHEN 'codex' THEN (SELECT external_id FROM threads_codex WHERE thread_id = ti.id)
-                        WHEN 'deepseek-harness' THEN (SELECT external_id FROM threads_dsh WHERE thread_id = ti.id)
+                        WHEN 'dsh' THEN (SELECT external_id FROM threads_dsh WHERE thread_id = ti.id)
                         WHEN 'opencode' THEN (SELECT external_id FROM threads_opencode WHERE thread_id = ti.id)
                         WHEN 'hermes' THEN (SELECT external_id FROM threads_hermes WHERE thread_id = ti.id)
-                        WHEN 'claude' THEN (SELECT external_id FROM threads_claude WHERE thread_id = ti.id)
+                        WHEN 'claudecode' THEN (SELECT external_id FROM threads_claude WHERE thread_id = ti.id)
                         WHEN 'pi' THEN (SELECT external_id FROM threads_pi WHERE thread_id = ti.id)
                     END,
                     (SELECT external_session_id FROM thread_external_sessions
@@ -317,10 +340,10 @@ impl ThreadManager {
                 COALESCE(
                     CASE i.agent
                         WHEN 'codex' THEN (SELECT external_id FROM threads_codex WHERE thread_id = ti.id)
-                        WHEN 'deepseek-harness' THEN (SELECT external_id FROM threads_dsh WHERE thread_id = ti.id)
+                        WHEN 'dsh' THEN (SELECT external_id FROM threads_dsh WHERE thread_id = ti.id)
                         WHEN 'opencode' THEN (SELECT external_id FROM threads_opencode WHERE thread_id = ti.id)
                         WHEN 'hermes' THEN (SELECT external_id FROM threads_hermes WHERE thread_id = ti.id)
-                        WHEN 'claude' THEN (SELECT external_id FROM threads_claude WHERE thread_id = ti.id)
+                        WHEN 'claudecode' THEN (SELECT external_id FROM threads_claude WHERE thread_id = ti.id)
                         WHEN 'pi' THEN (SELECT external_id FROM threads_pi WHERE thread_id = ti.id)
                     END,
                     (SELECT external_session_id FROM thread_external_sessions
@@ -528,10 +551,10 @@ impl ThreadManager {
                     COALESCE(
                         CASE i.agent
                             WHEN 'codex' THEN (SELECT external_id FROM threads_codex WHERE thread_id = ti.id)
-                            WHEN 'deepseek-harness' THEN (SELECT external_id FROM threads_dsh WHERE thread_id = ti.id)
+                            WHEN 'dsh' THEN (SELECT external_id FROM threads_dsh WHERE thread_id = ti.id)
                             WHEN 'opencode' THEN (SELECT external_id FROM threads_opencode WHERE thread_id = ti.id)
                             WHEN 'hermes' THEN (SELECT external_id FROM threads_hermes WHERE thread_id = ti.id)
-                            WHEN 'claude' THEN (SELECT external_id FROM threads_claude WHERE thread_id = ti.id)
+                            WHEN 'claudecode' THEN (SELECT external_id FROM threads_claude WHERE thread_id = ti.id)
                             WHEN 'pi' THEN (SELECT external_id FROM threads_pi WHERE thread_id = ti.id)
                         END,
                         (SELECT external_session_id FROM thread_external_sessions

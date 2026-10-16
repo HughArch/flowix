@@ -36,10 +36,10 @@ import { resumePendingNoteLinkUpdates } from '@features/memo/public/app-api';
 import { subscribeWorkspaceDocumentSaves } from '@features/document/public/workspace-api';
 import {
   syncAppAgentConversationRestore,
-  openBrowserColumnNotebookNote,
   removeBrowserColumnTabsByPath,
   applyNotebookPathMove,
 } from '@features/workspace/public/app-api';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 
 const logger = createLogger('main-window-effects');
 
@@ -137,7 +137,11 @@ export function MainWindowEffects() {
             const notebookPath = await getAppNotebookPath(notebookId);
             const path = notebookPath && joinNotebookMemoPath(notebookPath, relativePath);
             if (!path) throw new Error('Created note path is unavailable');
-            await openBrowserColumnNotebookNote(path, notebookId, notebookPath);
+            await openWorkspaceSurface({
+              host: 'browser-column',
+              target: { kind: 'external', path, scopePath: notebookPath, transitionId: null },
+              options: { notebookId },
+            });
           },
           reportOpenFailure: (error) => {
             logger.warn('open created note in browser column failed', { error });

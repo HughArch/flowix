@@ -2,7 +2,7 @@
   openNotebookById,
   openNoteByPhysicalPath,
   openNoteByNotebookPath,
-} from '@features/memo/use-cases/open-by-target';
+} from '@features/memo/public/note-navigation-api';
 
 // 鐗╃悊璺緞绮樿创 鈫?noteReference 鍗＄墖銆?//
 // 鐢ㄦ埛浠?Finder / 缁堢澶嶅埗涓€浠?`~/Documents/flowix/<notebook>/<title>.md`
@@ -87,7 +87,7 @@ export function prewarmNotebookCache(): Promise<void> {
 }
 
 /**
- * notebook 澧炲垹鏀?/ memo 澧炲垹鏀瑰悕鏃惰皟 鈥?鎶婄紦瀛樻竻鎺? 涓嬫绮樿创浼氳Е鍙? * 閲嶆柊鎷夊彇銆備笂娓稿彲鎸傚湪 `agent-access-changed` / `memo-event` 浜嬩欢
+ * notebook 澧炲垹鏀?/ memo 澧炲垹鏀瑰悕鏃惰皟 鈥?鎶婄紦瀛樻竻鎺? 涓嬫绮樿创浼氳Е鍙? * 閲嶆柊鎷夊彇銆備笂娓稿彲鎸傚湪 `agent-workspace-changed` / `memo-event` 浜嬩欢
  * (notebook CRUD 涓?memo CRUD 鏃朵細 emit)銆? */
 export function invalidateNotebookCache(): void {
   cached = null;

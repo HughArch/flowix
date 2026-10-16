@@ -10,7 +10,8 @@ import {
 import { joinNotebookMemoPath } from '@/lib/path';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { notes, type PluginDescriptor } from '@platform/tauri/client';
-import { openBrowserColumnMarkdown } from '@features/workspace/use-cases/browser-column-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
+import type { SurfacePresentationUpdate, SurfaceNotice } from '@features/workspace/public/surface-api';
 import { AgentPluginWorkbench } from './plugin-agent-workbench';
 import { normalizePluginId } from './plugin-note';
 
@@ -19,6 +20,7 @@ interface PluginWorkbenchProps {
   notebookPath: string | undefined;
   currentNotePath: string | null;
   currentNoteContent: string;
+  reportPresentation?: (update: SurfacePresentationUpdate) => void;
 }
 
 export function PluginWorkbench(props: PluginWorkbenchProps) {
@@ -35,6 +37,7 @@ export function PluginWorkbench(props: PluginWorkbenchProps) {
 function ArtifactToolWorkbench({
   plugin,
   notebookPath,
+  reportPresentation,
 }: PluginWorkbenchProps) {
   const selectedNotebook = useNoteStore((state) => state.selectedNotebook);
   const [documents, setDocuments] = useState<{ relativePath: string; title: string }[]>([]);
@@ -63,6 +66,15 @@ function ArtifactToolWorkbench({
     void load();
   }, [load]);
 
+  useEffect(() => {
+    const notices: SurfaceNotice[] = error ? [{
+      id: 'artifact-list', severity: 'error',
+      message: { key: 'error.unexpected', fallbackText: error },
+      actions: [{ id: 'retry', label: { key: 'error.retry' }, enabled: true, run: load }],
+    }] : [];
+    reportPresentation?.({ state: { status: 'ready', notices } });
+  }, [error, load, reportPresentation]);
+
   if (!notebookPath || !selectedNotebook) {
     return <div className="flex h-full items-center justify-center text-sm text-[var(--muted-foreground)]">请先选择一个笔记本</div>;
   }
@@ -86,7 +98,7 @@ function ArtifactToolWorkbench({
           title="刷新"
           aria-label={`刷新${plugin.manifest.name}列表`}
         >
-          <ArrowClockwiseIcon size={16} weight="bold" className={loading ? 'animate-spin' : undefined} />
+          <ArrowClockwiseIcon size={16} weight="bold" className={loading ? 'flowix-spin' : undefined} />
         </button>
       </div>
 
@@ -107,7 +119,7 @@ function ArtifactToolWorkbench({
             </div>
           </div>
 
-          {error && <p className="rounded-lg bg-[color-mix(in_oklch,var(--destructive)_10%,transparent)] p-3 text-sm text-[var(--destructive)]">{error}</p>}
+          {error && !reportPresentation && <p className="rounded-lg bg-[color-mix(in_oklch,var(--destructive)_10%,transparent)] p-3 text-sm text-[var(--destructive)]">{error}</p>}
 
           <section>
             <div className="mb-2 flex items-center justify-between">
@@ -120,7 +132,10 @@ function ArtifactToolWorkbench({
                   className="flex w-full items-center gap-3 border-b border-[var(--divider)] px-4 py-3 text-left last:border-b-0 hover:bg-[var(--muted)]"
                   onClick={() => {
                     const path = joinNotebookMemoPath(selectedNotebook.path, note.relativePath);
-                    if (path) void openBrowserColumnMarkdown(path);
+                    if (path) void openWorkspaceSurface({
+                      host: 'browser-column',
+                      target: { kind: 'external', path, scopePath: null, transitionId: null },
+                    });
                   }}>
                   <TreeStructureIcon size={16} weight="bold" className="shrink-0 text-[var(--muted-foreground)]" />
                   <span className="min-w-0 flex-1 truncate text-sm text-[var(--foreground)]">{note.title}</span>

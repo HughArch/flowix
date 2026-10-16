@@ -59,19 +59,24 @@ export function Field({
   title,
   description,
   hint,
+  controlId,
   children,
   className,
 }: {
   title: string;
   description?: string;
   hint?: string;
+  /** Connects the visible field title to its input, select, or custom control. */
+  controlId?: string;
   children: ReactNode;
   className?: string;
 }) {
   return (
     <div className={cn('space-y-1.5', className)}>
       <div className="space-y-0.5">
-        <label className={FIELD_TITLE_CLASS}>{title}</label>
+        {controlId
+          ? <label htmlFor={controlId} className={FIELD_TITLE_CLASS}>{title}</label>
+          : <span className={FIELD_TITLE_CLASS}>{title}</span>}
         {description && <p className={FIELD_DESC_CLASS}>{description}</p>}
       </div>
       {children}
@@ -84,18 +89,23 @@ export function Field({
 export function FieldRow({
   title,
   description,
+  controlId,
   children,
   className,
 }: {
   title: string;
   description?: string;
+  /** Connects the visible row title to its input, select, or custom control. */
+  controlId?: string;
   children: ReactNode;
   className?: string;
 }) {
   return (
     <div className={cn('flex items-center justify-between gap-4', className)}>
       <div className="space-y-0.5 min-w-0">
-        <label className={FIELD_TITLE_CLASS}>{title}</label>
+        {controlId
+          ? <label htmlFor={controlId} className={FIELD_TITLE_CLASS}>{title}</label>
+          : <span className={FIELD_TITLE_CLASS}>{title}</span>}
         {description && <p className={FIELD_DESC_CLASS}>{description}</p>}
       </div>
       <div className="shrink-0">{children}</div>

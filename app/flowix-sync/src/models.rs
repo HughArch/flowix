@@ -6,7 +6,6 @@ pub struct CloudUser {
     pub id: String,
     pub email: String,
     pub display_name: String,
-    pub system_role: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
@@ -121,6 +120,20 @@ pub struct CloudMembership {
     pub read_only: bool,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAiCredential {
+    pub api_key: String,
+    pub model: CloudAiModel,
+    #[serde(default)]
+    pub models: Vec<CloudAiModel>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct CloudAiModel {
+    pub id: String,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudProduct {
@@ -158,6 +171,27 @@ pub struct CloudCheckout {
     pub status: String,
     pub checkout_url: String,
     pub expires_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudOrder {
+    pub id: String,
+    pub product_id: String,
+    pub product_name: String,
+    pub amount: i64,
+    pub currency: String,
+    pub status: String,
+    pub created_at: i64,
+    pub paid_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudOrderCheck {
+    pub status: String,
+    pub confirmed: bool,
+    pub check_status: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

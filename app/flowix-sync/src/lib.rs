@@ -6,6 +6,7 @@
 
 mod client;
 mod error;
+mod environment;
 mod manager;
 mod models;
 mod store;
@@ -13,12 +14,13 @@ mod v2;
 
 pub use client::CloudClient;
 pub use error::SyncError;
+pub use environment::{default_cloud_environment, CloudEnvironment};
 pub use manager::SyncManager;
 pub use models::{
-    AppleAuthChallenge, AppleAuthorization, CloudAuthStatus, CloudCheckout,
+    AppleAuthChallenge, AppleAuthorization, CloudAiCredential, CloudAiModel, CloudAuthStatus, CloudCheckout,
     CloudMembership,
     CloudNotebook, CloudPrice, CloudProduct, CloudState, CloudUser, LocalChangeKind,
-    ProductDuration, ProductEntitlement, RefreshTokenStore,
+    CloudOrder, CloudOrderCheck, ProductDuration, ProductEntitlement, RefreshTokenStore,
 };
 pub use store::SyncStore;
 pub use v2::{
@@ -35,5 +37,4 @@ pub use v2::{
     V2SyncedNotebook, PROTOCOL_EPOCH,
 };
 
-pub const DEFAULT_CLOUD_API_BASE: &str = "https://cloud.flowix.cc";
 pub mod text_merge;

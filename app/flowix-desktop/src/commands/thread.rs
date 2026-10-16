@@ -256,20 +256,28 @@ pub async fn agent_conversation_list(
 
 #[tauri::command]
 pub async fn agent_conversation_list_page(
-    notebook_id: Option<String>,
+    notebook_id: String,
     agent_type: Option<String>,
     cursor: Option<AgentConversationCursor>,
     limit: usize,
     state: State<'_, AppState>,
 ) -> Result<AgentConversationPage, String> {
     let page_size = limit.clamp(1, 100);
-    let notebook_id = notebook_id.filter(|value| !value.trim().is_empty());
+    let notebook_id = notebook_id.trim();
+    if notebook_id.is_empty() {
+        return Err("NOTEBOOK_ID_REQUIRED".to_string());
+    }
     let agent_type = agent_type
         .map(|value| value.trim().to_ascii_lowercase())
         .filter(|value| !value.is_empty());
     let manager = &state.thread_manager;
     let items = manager
-        .list_agent_conversation_instances_page(notebook_id, agent_type, cursor, page_size + 1)
+        .list_agent_conversation_instances_page(
+            Some(notebook_id.to_string()),
+            agent_type,
+            cursor,
+            page_size + 1,
+        )
         .await
         .map_err(|e| e.to_string())?;
     let has_more = items.len() > page_size;
@@ -287,24 +295,32 @@ pub async fn agent_conversation_list_page(
 
 #[tauri::command]
 pub async fn agent_conversation_count_by_notebook(
-    notebook_id: Option<String>,
+    notebook_id: String,
     state: State<'_, AppState>,
 ) -> Result<usize, String> {
+    let notebook_id = notebook_id.trim();
+    if notebook_id.is_empty() {
+        return Err("NOTEBOOK_ID_REQUIRED".to_string());
+    }
     let manager = &state.thread_manager;
     manager
-        .count_agent_conversation_instances_by_notebook(notebook_id)
+        .count_agent_conversation_instances_by_notebook(Some(notebook_id.to_string()))
         .await
         .map_err(|e| e.to_string())
 }
 
 #[tauri::command]
 pub async fn agent_conversation_type_counts_by_notebook(
-    notebook_id: Option<String>,
+    notebook_id: String,
     state: State<'_, AppState>,
 ) -> Result<Vec<AgentConversationTypeCount>, String> {
+    let notebook_id = notebook_id.trim();
+    if notebook_id.is_empty() {
+        return Err("NOTEBOOK_ID_REQUIRED".to_string());
+    }
     state
         .thread_manager
-        .list_agent_conversation_type_counts_by_notebook(notebook_id)
+        .list_agent_conversation_type_counts_by_notebook(Some(notebook_id.to_string()))
         .await
         .map_err(|e| e.to_string())
 }
@@ -507,7 +523,7 @@ pub async fn claude_thread_session_id(
 
     let manager = &state.thread_manager;
     manager
-        .get_external_session(&thread_id, "claude")
+        .get_external_session(&thread_id, "claudecode")
         .await
         .map_err(|e| e.to_string())
 }
@@ -617,7 +633,7 @@ pub async fn deepseek_harness_thread_session_id(
 ) -> Result<Option<String>, String> {
     state
         .thread_manager
-        .get_external_session(&thread_id, "deepseek-harness")
+        .get_external_session(&thread_id, "dsh")
         .await
         .map_err(|error| error.to_string())
 }
@@ -637,7 +653,7 @@ pub async fn deepseek_harness_thread_fork(
     let child = state
         .thread_manager
         .create_thread(
-            crate::agent_types::AgentId("deepseek-harness".to_string()),
+            crate::agent_types::AgentId("dsh".to_string()),
             format!("{} (fork)", source.info.title),
         )
         .await

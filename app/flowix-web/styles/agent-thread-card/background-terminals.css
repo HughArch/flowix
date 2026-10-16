@@ -1,0 +1,183 @@
+/* Codex background terminals sit in the small layer immediately above the
+ * composer.  Keep the collapsed row monospace and single-line so it reads as
+ * process status rather than another chat message. */
+.agent-conversation-surface .agent-background-terminals {
+  --background-terminal-overlap: 1.15rem;
+  /* Status surface: one restrained step darker than the paper composer.
+   * Keep this in OKLCH so the same perceived contrast survives theme changes. */
+  --agent-status-bg: var(--agent-status-surface, color-mix(in oklch, var(--document-bg) 94%, var(--foreground) 6%));
+  position: relative;
+  z-index: 0;
+  align-self: end;
+  width: calc(100% - 3rem);
+  max-width: 780px;
+  /* The terminal strip is a back plate for the composer. Its padded lower
+   * edge slides underneath the composer so the two controls read as one
+   * connected surface, matching the reference layout. */
+  margin: 0 auto calc(-1 * var(--background-terminal-overlap));
+  padding-bottom: var(--background-terminal-overlap);
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 1rem 1rem 0.75rem 0.75rem;
+  background: var(--agent-status-bg);
+  color: var(--muted-foreground);
+  font-family: var(--code-font-family);
+  font-size: 0.75rem;
+  box-sizing: border-box;
+}
+
+.agent-conversation-detail__composer-stack > div:last-child {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  width: 100%;
+}
+
+.agent-background-terminals__summary {
+  display: flex;
+  align-items: center;
+  width: 100%;
+  min-width: 0;
+  height: 2rem;
+  gap: 0.5rem;
+  padding: 0 0.75rem;
+  border: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  cursor: pointer;
+}
+
+.agent-background-terminals__summary:hover { background: color-mix(in oklch, var(--accent) 54%, transparent); }
+.agent-background-terminals__summary:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: -2px;
+}
+.agent-background-terminals__dot,
+.agent-background-terminals__status { width: 0.4rem; height: 0.4rem; flex: 0 0 auto; border-radius: 999px; background: var(--success); }
+.agent-background-terminals__label { flex: 0 0 auto; color: var(--foreground); }
+.agent-background-terminals__command { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.72; }
+.agent-background-terminals__chevron { width: 1rem; height: 1rem; flex: 0 0 auto; margin-left: auto; transition: transform 160ms ease; }
+.agent-background-terminals[data-expanded='true'] .agent-background-terminals__chevron { transform: rotate(180deg); }
+.agent-background-terminals__details {
+  border-top: 0;
+  padding: 0 0.75rem;
+  background: transparent;
+}
+.agent-background-terminals__row {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 0.5rem;
+  height: 2rem;
+  line-height: 1.25;
+}
+.agent-background-terminals__row code {
+  overflow: hidden;
+  color: var(--foreground);
+  opacity: 0.72;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-background-terminals__cwd { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; opacity: 0.55; }
+.agent-background-terminals__state { margin-left: auto; opacity: 0.65; }
+.agent-background-terminals__queue {
+  display: grid;
+  gap: 0;
+  padding: 0 0.75rem;
+  background: transparent;
+}
+.agent-background-terminals__queue-row {
+  display: flex;
+  min-width: 0;
+  gap: 0.38rem;
+  align-items: center;
+  height: 2rem;
+  padding: 0;
+  line-height: 1.25;
+}
+.agent-background-terminals__queue-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  color: var(--foreground);
+  opacity: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.agent-background-terminals__queue-mark {
+  display: inline-flex;
+  flex: 0 0 auto;
+  color: var(--primary);
+}
+.agent-background-terminals__queue-mark svg {
+  display: block;
+  width: 0.75rem;
+  height: 0.75rem;
+}
+.agent-background-terminals__queue-actions {
+  display: inline-flex;
+  flex: 0 0 auto;
+  align-items: center;
+  gap: 0.2rem;
+  margin-left: auto;
+}
+.agent-background-terminals__queue-steer,
+.agent-background-terminals__queue-delete {
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  height: 1.32rem;
+  border-radius: 0.55rem;
+  padding: 0 0.4rem;
+  font-size: 0.7rem;
+  line-height: 1;
+  color: var(--primary);
+  background: transparent;
+}
+.agent-background-terminals__queue-steer:not(:disabled):hover,
+.agent-background-terminals__queue-delete:not(:disabled):hover {
+  background: color-mix(in srgb, var(--primary) 18%, transparent);
+}
+.agent-background-terminals__queue-steer:focus-visible,
+.agent-background-terminals__queue-delete:focus-visible {
+  outline: 2px solid var(--primary);
+  outline-offset: 2px;
+}
+.agent-background-terminals__queue-delete {
+  display: inline-flex;
+  width: auto;
+  align-items: center;
+  justify-content: center;
+}
+.agent-background-terminals__queue-soon {
+  flex: 0 0 auto;
+  color: var(--primary);
+  font-size: 0.7rem;
+}
+.agent-thread-card__queued-messages { margin: 0 0 -1.15rem; }
+
+/* Approval uses the same process strip and the same composer stack slot. The
+ * approval modifier intentionally adds no outer-surface styles: border,
+ * radius, background, width, overlap and stacking all come from the process
+ * strip above. */
+.agent-background-terminals__approval { display: flex; align-items: center; min-width: 0; gap: 0.6rem; padding: 0.6rem 0.75rem; }
+.agent-background-terminals__approval-dot { width: 0.45rem; height: 0.45rem; flex: 0 0 auto; border-radius: 999px; background: var(--primary); box-shadow: 0 0 0 3px color-mix(in srgb, var(--primary) 14%, transparent); }
+.agent-background-terminals__approval-copy { display: flex; min-width: 0; flex: 1; align-items: baseline; gap: 0.55rem; overflow: hidden; font-size: 0.72rem; }
+.agent-background-terminals__approval-copy strong { flex: 0 0 auto; color: var(--foreground); font-size: 0.78rem; }
+.agent-background-terminals__approval-copy span { flex: 0 0 auto; color: var(--muted-foreground); }
+.agent-background-terminals__approval-copy code { min-width: 0; overflow: hidden; color: var(--foreground); text-overflow: ellipsis; white-space: nowrap; opacity: 0.78; }
+.agent-background-terminals__approval-error { flex-basis: 100%; color: var(--destructive); font-size: 0.68rem; }
+.agent-background-terminals__approval-actions { display: flex; flex: 0 0 auto; gap: 0.35rem; }
+.agent-background-terminals__approval-actions button { min-height: 1.27rem; border: 1px solid var(--border); border-radius: 0.6rem; padding: 0.15rem 0.2rem; background: transparent; color: var(--muted-foreground); font-size: 0.72rem; font-weight: 600; cursor: pointer; }
+.agent-background-terminals__approval-actions button:hover { background: var(--muted); color: var(--foreground); }
+.agent-background-terminals__approval-actions button:last-child { border-color: var(--primary); background: var(--primary); color: var(--primary-foreground); }
+.agent-background-terminals__approval-actions button:last-child:hover { opacity: 0.88; }
+
+@media (max-width: 560px) {
+  .agent-background-terminals__approval { align-items: flex-start; flex-wrap: wrap; }
+  .agent-background-terminals__approval-copy { flex-basis: calc(100% - 1.2rem); flex-wrap: wrap; gap: 0.2rem 0.45rem; }
+  .agent-background-terminals__approval-copy code { flex-basis: 100%; }
+  .agent-background-terminals__approval-actions { width: 100%; margin-left: 1.05rem; }
+  .agent-background-terminals__approval-actions button { flex: 1; }
+}
+

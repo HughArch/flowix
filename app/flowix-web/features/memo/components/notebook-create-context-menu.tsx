@@ -12,13 +12,15 @@ export function NotebookCreateContextMenuItems({
   onCreateFolder,
   onCreateTable,
   onCreateMediaLibrary,
-  onImport,
+  onImportFiles,
+  onImportFolder,
 }: {
   onCreateNote: () => void;
   onCreateFolder: () => void;
   onCreateTable: (viewType?: TableViewType) => void;
   onCreateMediaLibrary: () => void;
-  onImport?: () => void;
+  onImportFiles?: () => void;
+  onImportFolder?: () => void;
 }) {
   const { t } = useI18n();
 
@@ -57,10 +59,10 @@ export function NotebookCreateContextMenuItems({
           </span>
         </ContextMenuItem>
       </ContextMenuSubmenu>
-      {onImport && <ContextMenuItem onClick={onImport} className={MENU_ITEM_CLASS}>
-        <DownloadSimpleIcon className="mr-2 h-4 w-4" aria-hidden="true" />
-        {t('memo.fileTree.import')}
-      </ContextMenuItem>}
+      {(onImportFiles || onImportFolder) && <ContextMenuSubmenu label={t('memo.fileTree.import')} icon={<DownloadSimpleIcon className="h-4 w-4" aria-hidden="true" />}>
+        {onImportFiles && <ContextMenuItem onClick={onImportFiles} className={MENU_ITEM_CLASS}>{t('memo.fileTree.importFiles')}</ContextMenuItem>}
+        {onImportFolder && <ContextMenuItem onClick={onImportFolder} className={MENU_ITEM_CLASS}>{t('memo.fileTree.importFolder')}</ContextMenuItem>}
+      </ContextMenuSubmenu>}
       <ContextMenuSeparator />
     </>
   );

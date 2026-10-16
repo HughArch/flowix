@@ -74,6 +74,15 @@ function cloudErrorDetails(message: string): Record<string, unknown> {
 
 export function cloudSyncErrorMessage(error: unknown, t: Translate): string {
   const message = tauriErrorMessage(error);
+  if (['CHECKOUT_IN_PROGRESS', 'CHECKOUT_CREATION_IN_PROGRESS', 'CHECKOUT_PAYMENT_PROCESSING'].some((code) => hasTauriErrorCode(error, code))) {
+    return t('preferences.cloud.order.pendingCheckout');
+  }
+  if (hasTauriErrorCode(error, 'BILLING_RATE_LIMITED')) {
+    return t('preferences.cloud.order.rateLimited');
+  }
+  if (hasTauriErrorCode(error, 'BILLING_RATE_LIMIT_NOT_CONFIGURED')) {
+    return t('preferences.cloud.order.checkUnavailable');
+  }
   if (message.includes('MEMBERSHIP_REQUIRED')) {
     return t('preferences.cloud.membershipRequired');
   }

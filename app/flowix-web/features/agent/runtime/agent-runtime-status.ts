@@ -1,13 +1,10 @@
-import type { AgentRuntimeAvailability } from '@platform/tauri/client';
-import type { AgentTypeKey } from '@/types/agent';
+import type { AgentTypeKey, AgentRuntimeSnapshot } from '@/types/agent';
 
 /**
  * Small, UI-facing state model for one local Agent runtime.
  *
- * `AgentRuntimeAvailability` is the IPC shape and intentionally stays close
- * to the backend. Consumers should eventually depend on this normalized state
- * instead of reconstructing meaning from `available`, `installed`, and
- * free-form `reason` independently.
+ * Runtime status is split into installation presence and launch readiness.
+ * UI state is derived here so consumers don't reinterpret those facts.
  */
 export type AgentRuntimeState =
   | 'unknown'
@@ -27,14 +24,9 @@ export function isAgentRuntimeInstalledState(status: AgentRuntimeStatusView): bo
   return status.state === 'ready' || status.state === 'not-ready';
 }
 
-/**
- * Convert the backend availability shape into the shared UI vocabulary.
- *
- * The optional `installed` field keeps this compatible with older IPC payloads:
- * before the field exists, `available` is the best available installation hint.
- */
+/** Convert the backend installation/readiness protocol into shared UI states. */
 export function normalizeAgentRuntimeStatus(
-  status: AgentRuntimeAvailability | undefined,
+  status: AgentRuntimeSnapshot | undefined,
   isChecking = false,
 ): AgentRuntimeStatusView {
   if (!status) {
@@ -44,11 +36,14 @@ export function normalizeAgentRuntimeStatus(
     };
   }
 
-  const installed = status.installed ?? status.available;
+  if (status.installation === 'unknown' || status.readiness === 'unknown') {
+    return { state: isChecking ? 'checking' : 'unknown', reason: status.reason ?? null };
+  }
+
   return {
-    state: !installed
+    state: status.installation === 'missing'
       ? 'not-installed'
-      : status.available
+      : status.readiness === 'ready'
         ? 'ready'
         : 'not-ready',
     reason: status.reason ?? null,
@@ -56,7 +51,7 @@ export function normalizeAgentRuntimeStatus(
 }
 
 export function normalizeAgentRuntimeStatusByType(
-  statusByType: Partial<Record<AgentTypeKey, AgentRuntimeAvailability>>,
+  statusByType: Partial<Record<AgentTypeKey, AgentRuntimeSnapshot>>,
   isChecking = false,
 ): AgentRuntimeStatusViewByType {
   return Object.fromEntries(

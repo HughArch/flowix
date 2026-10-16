@@ -22,11 +22,12 @@ use super::error::ThreadError;
 
 pub struct ThreadManager {
     conn: Mutex<Connection>,
+    db_path: Option<PathBuf>,
 }
 
 fn external_default_title(runtime: &str) -> &'static str {
     match runtime {
-        "claude" => "Claude Code session",
+        "claudecode" => "Claude Code session",
         "hermes" => "Hermes session",
         "opencode" => "OpenCode session",
         _ => "Codex session",
@@ -42,11 +43,43 @@ impl ThreadManager {
     }
 
     pub fn new(db_path: PathBuf) -> Result<Self, ThreadError> {
-        let mut conn = Connection::open(db_path)?;
-        Self::run_migrations(&mut conn)?;
+        let manager = Self::new_uninitialized(db_path)?;
+        manager.initialize_storage()?;
+        Ok(manager)
+    }
+
+    /// Defer disk access and schema initialization to the startup worker.
+    pub fn new_uninitialized(db_path: PathBuf) -> Result<Self, ThreadError> {
+        // Disk initialization belongs to the startup worker, including repair.
+        let conn = Connection::open_in_memory()?;
         Ok(Self {
             conn: Mutex::new(conn),
+            db_path: Some(db_path),
         })
+    }
+
+    pub fn initialize_storage(&self) -> Result<(), ThreadError> {
+        let mut connection = self.lock_conn();
+        let Some(path) = self.db_path.as_ref() else {
+            return Self::run_migrations(&mut connection);
+        };
+        // Always reopen the disk path on retry. A failed attempt must never
+        // turn the temporary connection into a successful in-memory store.
+        let old = std::mem::replace(&mut *connection, Connection::open_in_memory()?);
+        drop(old);
+        let initialized = flowix_core::memo_file::with_database_rebuild(path, || {
+            let mut conn = Connection::open(path).map_err(std::io::Error::other)?;
+            Self::run_migrations(&mut conn).map_err(|error| {
+                if matches!(error, ThreadError::UnsupportedSchemaVersion { .. }) {
+                    std::io::Error::new(std::io::ErrorKind::InvalidData, error)
+                } else {
+                    std::io::Error::other(error)
+                }
+            })?;
+            Ok(conn)
+        }).map_err(|error| ThreadError::Join(format!("initialize thread database: {error}")))?;
+        *connection = initialized;
+        Ok(())
     }
 
     pub fn new_in_memory() -> Result<Self, ThreadError> {
@@ -54,6 +87,7 @@ impl ThreadManager {
         Self::run_migrations(&mut conn)?;
         Ok(Self {
             conn: Mutex::new(conn),
+            db_path: None,
         })
     }
 
@@ -161,5 +195,42 @@ impl ThreadManager {
             params![thread_id, instance_id, title, created_at, updated_at],
         )?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod storage_rebuild_tests {
+    use super::*;
+
+    #[test]
+    fn invalid_thread_database_is_backed_up_and_recreated() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("thread.db");
+        std::fs::write(&path, b"invalid thread database").unwrap();
+        let manager = ThreadManager::new(path).unwrap();
+        manager.initialize_storage().unwrap();
+        let count: i64 = manager
+            .lock_conn()
+            .query_row("SELECT COUNT(*) FROM threads", [], |r| r.get(0))
+            .unwrap();
+        assert_eq!(count, 0);
+        assert!(temp.path().join("rebuild-backups").exists());
+    }
+
+    #[test]
+    fn completed_schema_marker_does_not_hide_missing_tables() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("thread.db");
+        let manager = ThreadManager::new(path).unwrap();
+        manager
+            .lock_conn()
+            .execute_batch("PRAGMA foreign_keys=OFF; DROP TABLE thread_messages;")
+            .unwrap();
+        manager.initialize_storage().unwrap();
+        manager
+            .lock_conn()
+            .execute_batch("SELECT id FROM thread_messages LIMIT 0;")
+            .unwrap();
+        assert!(temp.path().join("rebuild-backups").exists());
     }
 }

@@ -6,14 +6,13 @@ use tauri_plugin_opener::OpenerExt;
 
 use crate::lock_utils::read_lock;
 
-use super::helpers::start_security_bookmark_access;
 use crate::app::state::AppState;
 
 // ==================== 鍩熷唴 helper ====================
 
+mod attachment_fingerprint;
 mod attachments;
 mod base64_input;
-mod attachment_fingerprint;
 mod upload_quota;
 pub(crate) mod upload_sessions;
 
@@ -21,60 +20,56 @@ pub(crate) mod upload_sessions;
 
 #[tauri::command]
 pub async fn select_directory(app: tauri::AppHandle) -> Option<String> {
-    use std::sync::mpsc;
-    #[cfg(not(target_os = "macos"))]
     use tauri_plugin_dialog::DialogExt;
-    #[cfg(not(target_os = "macos"))]
-    use tokio::task;
-
-    let (tx, rx) = mpsc::channel();
-
-    #[cfg(target_os = "macos")]
-    {
-        let handle = app.clone();
-        let state_handle = handle.clone();
-        handle
-            .run_on_main_thread(move || {
-                let result = crate::config::pick_directory_with_bookmark("选择笔记本文件夹").map(
-                    |(path, bookmark)| {
-                        let state = state_handle.state::<AppState>();
-                        if let Err(e) = state
-                            .security_bookmarks
-                            .record_directory_bookmark(Path::new(&path), bookmark)
-                        {
-                            tracing::warn!("[select_directory] failed to persist bookmark: {e}");
-                        }
-                        path
-                    },
-                );
-                tx.send(result).ok();
-            })
-            .ok()?;
-        return tokio::task::spawn_blocking(move || rx.recv().ok().flatten())
-            .await
-            .ok()
-            .flatten();
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    // Run blocking dialog in a background thread to avoid freezing the UI
-    let handle = app.clone();
-    #[cfg(not(target_os = "macos"))]
-    task::spawn_blocking(move || {
-        let result = handle
-            .dialog()
+    tokio::task::spawn_blocking(move || {
+        app.dialog()
             .file()
             .set_title("选择笔记本文件夹")
             .blocking_pick_folder()
-            .map(|p| p.to_string());
-        tx.send(result).ok();
-    });
+            .map(|p| {
+                let path = Path::new(&p.to_string()).to_path_buf();
+                record_bookmark_directory(&app, &path);
+                path.to_string_lossy().into_owned()
+            })
+    })
+    .await
+    .ok()
+    .flatten()
+}
 
-    #[cfg(not(target_os = "macos"))]
-    tokio::task::spawn_blocking(move || rx.recv().ok().flatten())
-        .await
-        .ok()
-        .flatten()
+#[tauri::command]
+pub async fn select_import_directory(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+) -> Option<String> {
+    let generation = app
+        .state::<AppState>()
+        .document_access
+        .generation(window.label());
+    use tauri_plugin_dialog::DialogExt;
+    let handle = app.clone();
+    let window_label = window.label().to_owned();
+    tokio::task::spawn_blocking(move || {
+        handle
+            .dialog()
+            .file()
+            .set_title("选择要导入的文件夹")
+            .blocking_pick_folder()
+            .and_then(|path| {
+                let path = Path::new(&path.to_string()).to_path_buf();
+                let granted = handle
+                    .state::<AppState>()
+                    .document_access
+                    .grant_directory_for_generation(&window_label, generation, &path);
+                if granted {
+                    record_bookmark_directory(&handle, &path);
+                }
+                granted.then(|| path.to_string_lossy().into_owned())
+            })
+    })
+    .await
+    .ok()
+    .flatten()
 }
 
 #[tauri::command]
@@ -133,11 +128,22 @@ pub async fn select_files(
                 .into_iter()
                 .filter_map(|path| {
                     let path = path.to_string();
-                    handle
+                    let granted = handle
                         .state::<AppState>()
                         .document_access
-                        .grant_for_generation(window.label(), generation, Path::new(&path))
-                        .then_some(path)
+                        .grant_for_generation(window.label(), generation, Path::new(&path));
+                    if granted {
+                        if let Err(error) = handle
+                            .state::<AppState>()
+                            .security_bookmarks
+                            .record_file(Path::new(&path))
+                        {
+                            tracing::warn!(%error, "cannot persist selected file bookmark");
+                        }
+                        Some(path)
+                    } else {
+                        None
+                    }
                 })
                 .collect::<Vec<String>>()
         });
@@ -146,6 +152,22 @@ pub async fn select_files(
     .await
     .ok()
     .flatten()
+}
+
+fn record_bookmark_directory(app: &tauri::AppHandle, path: &Path) {
+    #[cfg(target_os = "macos")]
+    if let Err(error) = app
+        .state::<AppState>()
+        .security_bookmarks
+        .record_directory(path)
+    {
+        tracing::warn!(
+            "failed to persist macOS folder bookmark for {}: {error}",
+            path.display()
+        );
+    }
+    #[cfg(not(target_os = "macos"))]
+    let _ = (app, path);
 }
 
 #[tauri::command]
@@ -215,7 +237,6 @@ pub async fn save_notebook_asset(
 ) -> Result<Option<attachments::SavedNotebookAsset>, String> {
     let permit = upload_quota::UPLOAD_QUOTA.acquire()?;
     let source = Path::new(&source_path);
-    start_security_bookmark_access(&state, source);
     let source = dunce::canonicalize(source).map_err(|error| error.to_string())?;
     if !super::helpers::can_access_document_path(&source, window.label(), &state) {
         return Err("Notebook asset source is not authorized".to_string());
@@ -240,7 +261,6 @@ pub async fn save_notebook_asset(
                 .map_err(|error| error.to_string())?;
         attachments::notebook_root(&store, Some(&owner)).map_err(|error| error.to_string())?
     };
-    start_security_bookmark_access(&state, &root);
     // Notebook-local assets are already durable workspace files. Return their
     // canonical path instead of making an attachment copy.
     if reuse_notebook_file.unwrap_or(false) && source.starts_with(&root) {
@@ -291,8 +311,6 @@ pub async fn copy_attachment_file(
     .map_err(|error| error.to_string())?;
     let source = source.as_path();
 
-    start_security_bookmark_access(&state, source);
-    start_security_bookmark_access(&state, Path::new(&target_path));
     let mut reader = fs::File::open(source).map_err(|error| error.to_string())?;
     state
         .export_access
@@ -319,7 +337,6 @@ pub async fn open_attachment_file(
     .map_err(|error| error.to_string())?;
     let source = source.as_path();
 
-    start_security_bookmark_access(&state, source);
     app.opener()
         .open_path(source.display().to_string(), None::<String>)
         .map_err(|e| e.to_string())

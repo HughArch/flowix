@@ -54,7 +54,7 @@ describe('browser column collection navigation', () => {
     });
   });
 
-  it('moves a collection with its selected view and resolves its current path', async () => {
+  it('opens a second collection view at the current path and retains Work', async () => {
     const item = fixture('table', '移动后.index.yaml');
     const display = ensureCollectionDisplay({ notebookId: 'notes', collectionId: item.collectionId!, viewId: 'selected-view' });
     const target: WorkColumnTarget = { kind: 'collection', ...display, collectionType: 'table', filePath: '/notes/旧.index.yaml', notebookPath: '/notes', name: '项目' };
@@ -63,13 +63,13 @@ describe('browser column collection navigation', () => {
     expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({
       activeFilePath: '/notes/移动后.index.yaml', collectionType: 'table', collectionDisplay: display,
     });
-    expect(useWorkColumnStore.getState().navigation.target).toEqual({ kind: 'empty' });
+    expect(useWorkColumnStore.getState().navigation.target).toEqual(target);
   });
 
   it.each([
     ['table', 'table', '旧.table.yaml'],
     ['media-library', 'media_library', '旧.lib.yml'],
-  ] as const)('moves the legacy %s target', async (kind, type, filename) => {
+  ] as const)('opens a second view for the legacy %s target', async (kind, type, filename) => {
     fixture(type, filename);
     activate({ kind, filePath: `/notes/${filename}`, notebookPath: '/notes', notebookId: 'notes' });
     await openWorkColumnTargetInBrowserColumn(useWorkColumnStore.getState().navigation.target);
@@ -84,5 +84,26 @@ describe('browser column collection navigation', () => {
     await expect(openWorkColumnTargetInBrowserColumn(target)).rejects.toThrow('集合身份冲突');
     expect(useBrowserColumnStore.getState().tabs).toEqual([]);
     expect(useWorkColumnStore.getState().navigation.target).toEqual(target);
+  });
+
+  it.each(['table', 'media_library'] as const)('keeps an invalid %s selected when opening and switching files', async (type) => {
+    fixture(type, 'broken.index.yaml');
+    const document = type === 'table' ? createTableDocument() : createMediaLibrary('照片');
+    const valid = type === 'table'
+      ? serializeTableDocument(document as ReturnType<typeof createTableDocument>)
+      : serializeMediaLibrary(document as ReturnType<typeof createMediaLibrary>);
+    vi.mocked(externalDocuments.read).mockResolvedValue(valid.replace(/placement: \w+/, 'placement: standalone1'));
+    const opened = await openBrowserColumnText('/notes/broken.index.yaml', '/notes');
+    expect(opened).not.toBeNull();
+    const tab = useBrowserColumnStore.getState().tabs[0];
+    expect(tab.target).toMatchObject({
+      activeFilePath: '/notes/broken.index.yaml', collectionType: type, collectionUnavailableReason: '集合文件格式无效',
+    });
+    await selectBrowserColumnFile(tab.id, '/notes/plan.md');
+    expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({ activeFilePath: '/notes/plan.md', collectionUnavailableReason: undefined });
+    await selectBrowserColumnFile(tab.id, '/notes/broken.index.yaml');
+    expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({
+      activeFilePath: '/notes/broken.index.yaml', collectionType: type, collectionUnavailableReason: '集合文件格式无效',
+    });
   });
 });

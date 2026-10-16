@@ -118,7 +118,7 @@
 /* 复用 __copy-icon 口径 ── 14×14, color 继承按钮文字色, 不缩小。
  * 之所以独立类不复用, 是因为以后可能给删除按钮单独调 hover 色或加危险态, 独立类
  * 给未来留扩展空间。 */
-.markdown-editor .agent-thread-card__trash-icon {
+.markdown-editor .agent-icon__trash {
   display: block;
   width: 14px;
   height: 14px;
@@ -512,7 +512,7 @@ html[data-platform="mac"] .agent-conversation-detail .agent-thread-card__body {
   margin-inline: auto;
 }
 
-.markdown-editor.agent-conversation-detail .agent-thread-card__composer {
+.markdown-editor.agent-conversation-detail .agent-composer {
   align-self: center;
   width: calc(100% - 3rem);
   max-width: 780px;
@@ -547,7 +547,7 @@ html[data-platform="mac"] .markdown-editor .agent-thread-card--collapsed .agent-
   display: none;
 }
 
-.markdown-editor .agent-thread-card--collapsed .agent-thread-card__composer {
+.markdown-editor .agent-thread-card--collapsed .agent-composer {
   display: none;
 }
 

@@ -56,6 +56,14 @@ pub async fn open_preferences_window(
     state: tauri::State<'_, AppState>,
     tab: Option<String>,
 ) -> Result<(), String> {
+    open_preferences_window_inner(&app, &state, tab.as_deref())
+}
+
+pub(crate) fn open_preferences_window_inner(
+    app: &tauri::AppHandle,
+    state: &AppState,
+    tab: Option<&str>,
+) -> Result<(), String> {
     use tauri::WebviewWindowBuilder;
 
     let boot_theme = match state.user_config.get_preference().theme {
@@ -69,23 +77,22 @@ pub async fn open_preferences_window(
         Some(theme) => format!("index.html?bootTheme={theme}"),
         None => "index.html".to_string(),
     };
-    let url = match tab {
-        Some(tab) => format!("{base}#preferences/{tab}"),
-        None => format!("{base}#preferences"),
+    let hash = match tab {
+        Some(tab) => format!("preferences/{tab}"),
+        None => "preferences".to_string(),
     };
+    let url = format!("{base}#{hash}");
 
     if let Some(window) = app.get_webview_window("preferences") {
-        window.set_focus().ok();
         window
-            .eval(preferences_navigation_script(
-                url.split_once('#').map(|(_, hash)| hash).unwrap_or(""),
-            )?)
-            .ok();
+            .eval(preferences_navigation_script(&hash)?)
+            .map_err(|error| error.to_string())?;
+        window.set_focus().map_err(|error| error.to_string())?;
         return Ok(());
     }
 
     let builder =
-        WebviewWindowBuilder::new(&app, "preferences", tauri::WebviewUrl::App(url.into()))
+        WebviewWindowBuilder::new(app, "preferences", tauri::WebviewUrl::App(url.into()))
             .title("Preferences")
             .inner_size(800.0, 600.0)
             .center()

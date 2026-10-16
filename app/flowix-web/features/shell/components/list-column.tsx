@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, type ReactNode } from 'react';
+import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
 
 import type { Notebook } from '@features/memo/store/note-store';
 import { MemoListTitlebarMac } from '@features/memo/components/memo-list-titlebar-mac';
@@ -23,7 +23,7 @@ interface ListColumnProps {
   onOpenPreferences: (tab?: string) => void;
   onPreviewEnter: () => void;
   onPreviewLeave: () => void;
-  onPointerDown: () => void;
+  onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
   children: ReactNode;
 }
 

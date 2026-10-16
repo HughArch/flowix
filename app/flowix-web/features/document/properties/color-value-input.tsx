@@ -88,7 +88,7 @@ export function ColorValueInput({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
-        className={cn('min-w-[200px] rounded-xl border-[var(--border-popup)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' ? 'p-1' : 'p-2')}
+        className={cn('min-w-[200px] rounded-xl border-[var(--border-popup)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' ? '!z-[170] p-1' : 'p-2')}
       >
         <div className="mb-2 flex items-center justify-between gap-2">
           <span className="text-xs text-[var(--muted-foreground)]">{t('document.properties.type.color')}</span>

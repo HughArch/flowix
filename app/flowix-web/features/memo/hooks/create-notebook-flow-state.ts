@@ -10,7 +10,6 @@ export type NotebookCreationState =
 export interface NotebookImportStatusEffect {
   creationState: NotebookCreationState;
   reloadMemoList: boolean;
-  stopMemoListLoading: boolean;
   errorMessage: string | null;
 }
 
@@ -26,7 +25,6 @@ export function resolveNotebookImportStatusEffect(
     return {
       creationState: { status: 'importing', notebookId },
       reloadMemoList: false,
-      stopMemoListLoading: false,
       errorMessage: null,
     };
   }
@@ -35,7 +33,6 @@ export function resolveNotebookImportStatusEffect(
     return {
       creationState: { status: 'ready', notebookId },
       reloadMemoList: true,
-      stopMemoListLoading: false,
       errorMessage: null,
     };
   }
@@ -45,7 +42,6 @@ export function resolveNotebookImportStatusEffect(
     return {
       creationState: { status: 'failed', message },
       reloadMemoList: false,
-      stopMemoListLoading: true,
       errorMessage: message,
     };
   }
@@ -53,7 +49,6 @@ export function resolveNotebookImportStatusEffect(
   return {
     creationState: { status: 'ready', notebookId },
     reloadMemoList: false,
-    stopMemoListLoading: true,
     errorMessage: null,
   };
 }

@@ -119,7 +119,7 @@ pub fn emit_run_event(app_handle: &tauri::AppHandle, event: PluginRunEvent) -> R
 fn plugin_root() -> Result<PathBuf, String> {
     let home = dirs::home_dir().ok_or_else(|| "Home directory is unavailable".to_string())?;
     let root = get_user_config_dir(&home).join("plugin");
-    fs::create_dir_all(&root).map_err(|e| format!("create plugin directory: {e}"))?;
+    flowix_core::memo_file::ensure_storage_directory(&root).map_err(|e| format!("create plugin directory: {e}"))?;
     let metadata = fs::symlink_metadata(&root)
         .map_err(|error| format!("inspect plugin directory: {error}"))?;
     if metadata.file_type().is_symlink() || !metadata.is_dir() {
@@ -169,42 +169,37 @@ fn ensure_builtin_plugin(
     let plugin = root.join(plugin_id);
     match fs::symlink_metadata(&plugin) {
         Ok(metadata) if metadata.file_type().is_symlink() || !metadata.is_dir() => {
-            return Err(format!("built-in {plugin_id} plugin path is invalid"));
+            flowix_core::memo_file::backup_storage_file(&plugin)
+                .map_err(|error| error.to_string())?;
+            fs::create_dir_all(&plugin).map_err(|error| error.to_string())?;
         }
+        // Existing files stay untouched; missing files use fresh-install assets.
         Ok(_) => {}
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
             fs::create_dir_all(&plugin).map_err(|e| format!("create {plugin_id} plugin: {e}"))?;
         }
         Err(error) => return Err(format!("inspect {plugin_id} plugin: {error}")),
     }
-    let manifest = plugin.join("plugin.json");
-    // The built-in plugin is versioned with the host application.  Older
-    // installations may still have the pre-declaration manifest (including
-    // the removed agent selector), which would fail validation and silently
-    // disappear from the sidebar.  Reconcile it on every startup so the
-    // built-in definition is migrated before plugin discovery runs.
-    let needs_manifest_migration = match fs::read_to_string(&manifest) {
-        Ok(existing) => existing != expected_manifest,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(error) => {
-            return Err(format!("read {plugin_id} manifest: {error}"));
+    for (name, content) in [
+        ("plugin.json", expected_manifest),
+        ("SKILL.md", expected_skill),
+    ] {
+        let path = plugin.join(name);
+        match fs::read(&path) {
+            Ok(bytes) if bytes == content.as_bytes() => continue,
+            Ok(_) => {
+                flowix_core::memo_file::backup_storage_file(&path)
+                    .map_err(|error| error.to_string())?;
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("read {plugin_id} {name}: {error}")),
         }
-    };
-    if needs_manifest_migration {
-        fs::write(&manifest, expected_manifest)
-            .map_err(|e| format!("write {plugin_id} manifest: {e}"))?;
-    }
-    let skill = plugin.join("SKILL.md");
-    let needs_skill_migration = match fs::read_to_string(&skill) {
-        Ok(existing) => existing != expected_skill,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => true,
-        Err(error) => return Err(format!("read {plugin_id} skill: {error}")),
-    };
-    if needs_skill_migration {
-        fs::write(&skill, expected_skill).map_err(|e| format!("write {plugin_id} skill: {e}"))?;
+        flowix_core::memo_file::atomic_create_bytes(&path, content.as_bytes())
+            .map_err(|error| format!("create {plugin_id} {name}: {error}"))?;
     }
     Ok(())
 }
+
 
 fn read_plugin(path: &Path) -> Result<PluginDescriptor, String> {
     let expected_id = path
@@ -509,7 +504,8 @@ fn scan_plugin_catalog() -> Result<PluginCatalogSnapshot, String> {
     };
     for entry in fs::read_dir(&root).map_err(|e| format!("scan plugins: {e}"))? {
         let entry = entry.map_err(|e| format!("scan plugin entry: {e}"))?;
-        if !entry.path().is_dir() || entry.file_name().to_string_lossy().starts_with('.') {
+        if !entry.path().is_dir() || entry.file_name().to_string_lossy().starts_with('.')
+            || entry.file_name() == "rebuild-backups" {
             continue;
         }
         match read_plugin(&entry.path()) {
@@ -783,6 +779,24 @@ mod tests {
         read_plugin_as, read_plugin_source, valid_plugin_id, validate_manifest, PluginManifest,
         PluginRuntime, MINDMAP_MANIFEST, MINDMAP_SKILL,
     };
+
+    #[test]
+    fn missing_runtime_dependencies_recreate_invalid_plugin_files() {
+        let temp = tempfile::tempdir().unwrap();
+        super::ensure_builtin_plugin(temp.path(), "mindmap", MINDMAP_MANIFEST, MINDMAP_SKILL).unwrap();
+        let dir = temp.path().join("mindmap");
+        std::fs::write(dir.join("plugin.json"), "existing manifest").unwrap();
+        std::fs::remove_file(dir.join("SKILL.md")).unwrap();
+        super::ensure_builtin_plugin(temp.path(), "mindmap", MINDMAP_MANIFEST, MINDMAP_SKILL).unwrap();
+        assert_eq!(
+            std::fs::read_to_string(dir.join("plugin.json")).unwrap(),
+            MINDMAP_MANIFEST
+        );
+        assert_eq!(
+            std::fs::read_to_string(dir.join("SKILL.md")).unwrap(),
+            MINDMAP_SKILL
+        );
+    }
 
     #[test]
     fn plugin_workspace_requires_a_registered_root_before_execution() {

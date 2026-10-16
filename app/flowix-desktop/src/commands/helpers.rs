@@ -2,19 +2,90 @@
 
 use std::path::Path;
 
+use serde::Serialize;
 use tauri::{AppHandle, Emitter, State};
 
 use crate::config::{path_is_inside, path_is_inside_reserved_directory};
-use crate::lock_utils::{read_lock, write_lock};
+use crate::lock_utils::read_lock;
 use crate::watcher::runtime::current_watcher;
 
 use crate::app::state::AppState;
-use flowix_core::memo_file::{
-    notebook_relative_path, MemoFile, NotebookConfig,
-};
+use flowix_core::memo_file::{notebook_relative_path, MemoFile, NotebookConfig};
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileOperationFailure {
+    pub code: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub message: Option<String>,
+}
+
+impl FileOperationFailure {
+    pub fn code(code: &str) -> Self {
+        Self {
+            code: code.to_string(),
+            message: None,
+        }
+    }
+}
+
+impl From<String> for FileOperationFailure {
+    fn from(value: String) -> Self {
+        let (code, message) = value.split_once(": ").unwrap_or((value.as_str(), ""));
+        Self {
+            code: code.to_string(),
+            message: (!message.is_empty()).then(|| message.to_string()),
+        }
+    }
+}
+
+impl From<&str> for FileOperationFailure {
+    fn from(value: &str) -> Self {
+        Self::from(value.to_string())
+    }
+}
+
+impl From<flowix_core::FlowixError> for FileOperationFailure {
+    fn from(error: flowix_core::FlowixError) -> Self {
+        use flowix_core::FlowixError;
+
+        match error {
+            FlowixError::Io(error) => {
+                let code = match error.kind() {
+                    std::io::ErrorKind::AlreadyExists => "FILE_EXISTS",
+                    std::io::ErrorKind::NotFound => "FILE_NOT_FOUND",
+                    std::io::ErrorKind::PermissionDenied => "FILE_PERMISSION_DENIED",
+                    _ => "FILE_OPERATION_FAILED",
+                };
+                Self {
+                    code: code.to_string(),
+                    message: Some(error.to_string()),
+                }
+            }
+            FlowixError::NotFound(message) => Self {
+                code: "FILE_NOT_FOUND".to_string(),
+                message: Some(message),
+            },
+            FlowixError::PermissionDenied(message) => Self {
+                code: "FILE_PERMISSION_DENIED".to_string(),
+                message: Some(message),
+            },
+            FlowixError::InvalidInput(message) => Self {
+                code: "INVALID_MOVE_TARGET".to_string(),
+                message: Some(message),
+            },
+            error => Self {
+                code: "FILE_OPERATION_FAILED".to_string(),
+                message: Some(error.to_string()),
+            },
+        }
+    }
+}
 
 pub(crate) fn watch_created_notebook(state: &AppState, app: &AppHandle, config: &NotebookConfig) {
-    start_security_bookmark_access(state, Path::new(&config.path));
+    state
+        .security_bookmarks
+        .record_accessible_directory(Path::new(&config.path));
     if let Some(watcher) = current_watcher(app) {
         if let Ok(mut guard) = watcher.write() {
             if guard.add_notebook_root(config) {
@@ -23,10 +94,6 @@ pub(crate) fn watch_created_notebook(state: &AppState, app: &AppHandle, config: 
         }
     }
     refresh_watcher_roots(state, app);
-}
-
-pub(crate) fn start_security_bookmark_access(state: &AppState, path: &Path) {
-    state.security_bookmarks.start_accessing_for_path(path);
 }
 
 /// Resolve a notebook-relative Markdown address without consulting the legacy
@@ -48,7 +115,10 @@ pub(crate) fn notebook_note_address(
             continue;
         };
         let relative = Path::new(&relative_path);
-        if memo_file.file_management_policy(&notebook.id).is_index_ignored_at(&root, relative) {
+        if memo_file
+            .file_management_policy(&notebook.id)
+            .is_index_ignored_at(&root, relative)
+        {
             return Err("document path is inside an ignored notebook directory".into());
         }
         if !relative
@@ -92,9 +162,6 @@ pub(crate) fn refresh_watcher_roots(state: &AppState, app: &AppHandle) {
         let memo_file = read_lock(&state.memo_file, "memo_file");
         memo_file.read_notebook_configs().unwrap_or_default()
     };
-    for config in &configs {
-        start_security_bookmark_access(state, Path::new(&config.path));
-    }
     if let Some(watcher) = current_watcher(app) {
         if let Ok(mut guard) = watcher.write() {
             guard.rebind_all(app.clone(), configs.clone());
@@ -106,11 +173,16 @@ pub(crate) fn refresh_watcher_roots(state: &AppState, app: &AppHandle) {
     for config in &configs {
         match memo_file.reconcile_note_index(&config.id) {
             Ok(report) if report.added + report.updated + report.removed > 0 => {
-                let _ = app.emit("flowix:path-note-changed", serde_json::json!({
-                    "notebookId": config.id, "relativePath": "", "deleted": false,
-                }));
+                let _ = app.emit(
+                    "flowix:path-note-changed",
+                    serde_json::json!({
+                        "notebookId": config.id, "relativePath": "", "deleted": false,
+                    }),
+                );
             }
-            Err(error) => tracing::warn!(notebook_id = %config.id, "watcher rebind reconciliation failed: {error}"),
+            Err(error) => {
+                tracing::warn!(notebook_id = %config.id, "watcher rebind reconciliation failed: {error}")
+            }
             _ => {}
         }
     }
@@ -131,7 +203,6 @@ pub(crate) fn retry_notebook_watch(state: &AppState, app: &AppHandle, notebook_i
     if watcher.is_watching(notebook_id) {
         return;
     }
-    start_security_bookmark_access(state, Path::new(&config.path));
     if !watcher.add_notebook_root(&config) {
         tracing::warn!(notebook_id, "notebook watch retry failed");
         return;
@@ -139,11 +210,17 @@ pub(crate) fn retry_notebook_watch(state: &AppState, app: &AppHandle, notebook_i
     drop(watcher);
     match read_lock(&state.memo_file, "memo_file").reconcile_note_index(notebook_id) {
         Ok(report) if report.added + report.updated + report.removed > 0 => {
-            let _ = app.emit("flowix:path-note-changed", serde_json::json!({
-                "notebookId": notebook_id, "relativePath": "", "deleted": false,
-            }));
+            let _ = app.emit(
+                "flowix:path-note-changed",
+                serde_json::json!({
+                    "notebookId": notebook_id, "relativePath": "", "deleted": false,
+                }),
+            );
         }
-        Err(error) => tracing::warn!(notebook_id, "notebook watch retry reconciliation failed: {error}"),
+        Err(error) => tracing::warn!(
+            notebook_id,
+            "notebook watch retry reconciliation failed: {error}"
+        ),
         _ => {}
     }
 }
@@ -171,24 +248,21 @@ pub(crate) fn refresh_notebook_watcher(state: &AppState, app: &AppHandle, notebo
 
 pub(crate) fn switch_notebook_trusting_index(
     state: &AppState,
-    app: &AppHandle,
     notebook_id: Option<String>,
 ) -> Result<(), String> {
-    switch_notebook(state, app, notebook_id)
+    switch_notebook(state, notebook_id)
 }
 
-fn switch_notebook(
-    state: &AppState,
-    app: &AppHandle,
-    notebook_id: Option<String>,
-) -> Result<(), String> {
+fn switch_notebook(state: &AppState, notebook_id: Option<String>) -> Result<(), String> {
     let prev = read_lock(&state.memo_file, "memo_file").current_notebook_id_value();
     if let Some(target_id) = notebook_id.as_deref() {
         let target_path = read_lock(&state.memo_file, "memo_file")
             .get_notebook_config_by_id(target_id)
             .map(|config| std::path::PathBuf::from(config.path))
             .ok_or_else(|| format!("notebook {target_id} not found"))?;
-        start_security_bookmark_access(state, &target_path);
+        state
+            .security_bookmarks
+            .record_accessible_directory(&target_path);
         if !target_path.is_dir() {
             return Err(format!(
                 "notebook {target_id} path is missing: {}",
@@ -198,20 +272,6 @@ fn switch_notebook(
     }
 
     if prev == notebook_id {
-        if let Some(notebook_id) = notebook_id.as_deref() {
-            {
-                let memo_file = read_lock(&state.memo_file, "memo_file");
-                let report = memo_file
-                    .ensure_notebook_migrations(notebook_id)
-                    .map_err(|error| format!("notebook migration failed: {error}"))?;
-                tracing::debug!(
-                    notebook = %notebook_id,
-                    moved_files = report.moved_files,
-                    rebuilt_tags = report.rebuilt_tags,
-                    "notebook migrations checked"
-                );
-            };
-        }
         return Ok(());
     }
 
@@ -223,23 +283,6 @@ fn switch_notebook(
             poisoned.into_inner()
         })
         .set_current_notebook(notebook_id.clone());
-
-    if let Some(notebook_id) = notebook_id.as_deref() {
-        {
-            let memo_file = read_lock(&state.memo_file, "memo_file");
-            let report = memo_file
-                .ensure_notebook_migrations(notebook_id)
-                .map_err(|error| format!("notebook migration failed: {error}"))?;
-            if report.moved_files > 0 || report.rebuilt_tags > 0 {
-                tracing::info!(
-                    notebook = %notebook_id,
-                    moved_files = report.moved_files,
-                    rebuilt_tags = report.rebuilt_tags,
-                    "notebook migrations completed"
-                );
-            }
-        };
-    }
 
     Ok(())
 }
@@ -286,9 +329,14 @@ pub(crate) fn is_registered_notebook_path_with_state(path: &Path, state: &AppSta
 }
 
 pub(crate) fn can_access_document_path(path: &Path, window: &str, state: &State<AppState>) -> bool {
-    is_registered_notebook_path(path, state)
-        || is_agent_access_folder(path, state)
-        || state.document_access.contains(window, path)
+    state.security_bookmarks.start_accessing_for_path(path);
+    let allowed = is_registered_notebook_path(path, state)
+        || is_attached_notebook_directory(path, state)
+        || state.document_access.contains(window, path);
+    if allowed && path.is_dir() {
+        state.security_bookmarks.record_accessible_directory(path);
+    }
+    allowed
 }
 
 pub(crate) fn can_access_scoped_file(
@@ -312,7 +360,7 @@ pub(crate) fn can_access_scoped_file_with_state(
     };
     let root = Path::new(space_path);
     (is_registered_notebook_path_with_state(root, state)
-        || is_agent_access_folder_with_state(root, state))
+        || is_attached_notebook_directory_with_state(root, state))
         && path_is_inside(file_path, root)
 }
 
@@ -333,19 +381,14 @@ pub(crate) fn is_internal_notebook_path_with_state(path: &Path, state: &AppState
         .any(|config| path_is_inside_reserved_directory(path, Path::new(&config.path), ".flowix"))
 }
 
-/// 侧栏"资料"文件夹作用域 ── agent access 配置里登记的 folder entry。
-/// `get_file_tree` / `read_file` 等文件树 IPC 用它放行用户添加的资料
-/// 文件夹 (这些目录不在注册笔记本列表里, `is_registered_notebook_path`
-/// 对它们返回 false)。
-pub(crate) fn is_agent_access_folder(path: &Path, state: &State<AppState>) -> bool {
-    is_agent_access_folder_with_state(path, state.inner())
+/// External file scopes come from enabled notebook mounts in local.db.
+pub(crate) fn is_attached_notebook_directory(path: &Path, state: &State<AppState>) -> bool {
+    is_attached_notebook_directory_with_state(path, state.inner())
 }
 
-pub(crate) fn is_agent_access_folder_with_state(path: &Path, state: &AppState) -> bool {
-    let config = state.agent_access.get_config();
-    config.entries.iter().any(|entry| {
-        entry.kind == crate::config::AgentAccessKind::Folder
-            && entry.enabled
-            && path_is_inside(path, Path::new(&entry.path))
-    })
+pub(crate) fn is_attached_notebook_directory_with_state(path: &Path, state: &AppState) -> bool {
+    let memo = read_lock(&state.memo_file, "memo_file");
+    memo.attached_directory_paths()
+        .map(|roots| roots.iter().any(|root| path_is_inside(path, root)))
+        .unwrap_or(false)
 }

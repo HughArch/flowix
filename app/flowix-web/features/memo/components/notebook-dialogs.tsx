@@ -230,7 +230,7 @@ export function NotebookDialogs({
             <div className="mt-[22px] w-full max-w-[780px]">
               {remoteNotebooksLoading ? (
                 <div className="flex min-h-[180px] items-center justify-center gap-2 text-sm text-[var(--muted-foreground)]">
-                  <Loader2 className="h-4 w-4 animate-spin" />
+                  <Loader2 className="h-4 w-4 flowix-spin" />
                   {t('notebook.cloudImport.loading')}
                 </div>
               ) : remoteNotebooks.length === 0 ? (
@@ -265,7 +265,7 @@ export function NotebookDialogs({
                             className="flex h-8 shrink-0 items-center gap-1.5 rounded-lg bg-[var(--primary)] px-3 text-sm text-[var(--primary-foreground)] hover:opacity-90 disabled:cursor-not-allowed disabled:opacity-60"
                           >
                             {syncing ? (
-                              <Loader2 className="h-4 w-4 animate-spin" />
+                              <Loader2 className="h-4 w-4 flowix-spin" />
                             ) : (
                               <CloudDownload className="h-4 w-4" />
                             )}
@@ -368,7 +368,7 @@ export function NotebookDialogs({
                     aria-busy={isCreatingNotebook}
                   >
                     {isCreatingNotebook ? (
-                      <><Loader2 size={17} className="animate-spin" aria-hidden="true" />{t("notebook.create.creating")}</>
+                      <><Loader2 size={17} className="flowix-spin" aria-hidden="true" />{t("notebook.create.creating")}</>
                     ) : (
                       <>新建笔记本 <ChevronRight size={14} aria-hidden="true" /></>
                     )}
@@ -495,7 +495,7 @@ export function NotebookDialogs({
                     !editNotebookDescriptionChanged)
                 }
               >
-                {editSaving && <Loader2 className="mr-1.5 inline-block h-3.5 w-3.5 animate-spin" />}
+                {editSaving && <Loader2 className="mr-1.5 inline-block h-3.5 w-3.5 flowix-spin" />}
                 {editSaving ? t("notebook.edit.saving") : t("notebook.edit.confirm")}
               </button>
             </div>

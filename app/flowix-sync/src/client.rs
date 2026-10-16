@@ -4,8 +4,8 @@ use serde_json::json;
 
 use crate::error::SyncError;
 use crate::models::{
-    ApiErrorEnvelope, AppleAuthChallenge, AppleAuthorization, AuthData, CloudCheckout,
-    CloudProduct, DataEnvelope, EntitlementData, MeData, RefreshData,
+    ApiErrorEnvelope, AppleAuthChallenge, AppleAuthorization, AuthData, CloudAiCredential, CloudCheckout,
+    CloudOrder, CloudOrderCheck, CloudProduct, DataEnvelope, EntitlementData, MeData, RefreshData,
 };
 use crate::v2::{
     V2BlobDownloadEnvelope, V2BlobReservationEnvelope, V2Bootstrap, V2ChangesPage, V2History,
@@ -133,13 +133,65 @@ impl CloudClient {
             .json(&json!({
                 "productId": product_id,
                 "successUrl": "flowix://billing/success",
-                "cancelUrl": "flowix://billing/cancel",
             }))
             .send()
             .await?;
         Self::decode::<DataEnvelope<CloudCheckout>>(response)
             .await
             .map(|value| value.data)
+    }
+
+    pub(crate) async fn billing_orders(
+        &self,
+        access_token: &str,
+    ) -> Result<Vec<CloudOrder>, SyncError> {
+        self.send::<DataEnvelope<Vec<CloudOrder>>>(
+            Method::GET,
+            "/v2/billing/orders",
+            Some(access_token),
+            None,
+        )
+        .await
+        .map(|value| value.data)
+    }
+
+    pub(crate) async fn check_billing_order(
+        &self,
+        access_token: &str,
+        order_id: &str,
+    ) -> Result<CloudOrderCheck, SyncError> {
+        self.send::<DataEnvelope<CloudOrderCheck>>(
+            Method::POST,
+            &format!("/v2/billing/orders/{order_id}/check"),
+            Some(access_token),
+            Some(json!({})),
+        )
+        .await
+        .map(|value| value.data)
+    }
+
+    pub(crate) async fn submit_feedback(
+        &self,
+        device_id: &str,
+        kind: &str,
+        content: &str,
+        app_version: &str,
+        platform: &str,
+        attachments: &[serde_json::Value],
+    ) -> Result<(), SyncError> {
+        self.send::<serde_json::Value>(
+            Method::POST,
+            "/v1/feedback",
+            None,
+            Some(json!({
+                "deviceId": device_id,
+                "type": kind,
+                "content": content,
+                "appVersion": app_version,
+                "platform": platform,
+                "attachments": attachments,
+            })),
+        ).await.map(|_| ())
     }
 
     pub(crate) async fn register(
@@ -277,6 +329,31 @@ impl CloudClient {
         )
         .await
         .map(|value| value.data)
+    }
+
+    pub(crate) async fn create_ai_credential(
+        &self,
+        access_token: &str,
+    ) -> Result<CloudAiCredential, SyncError> {
+        self.send::<DataEnvelope<CloudAiCredential>>(
+            Method::POST,
+            "/v1/ai/credentials",
+            Some(access_token),
+            Some(json!({})),
+        )
+        .await
+        .map(|value| value.data)
+    }
+
+    pub(crate) async fn revoke_ai_credential(&self, access_token: &str) -> Result<(), SyncError> {
+        self.send::<DataEnvelope<serde_json::Value>>(
+            Method::DELETE,
+            "/v1/ai/credentials/current",
+            Some(access_token),
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     pub async fn v2_sync_status(

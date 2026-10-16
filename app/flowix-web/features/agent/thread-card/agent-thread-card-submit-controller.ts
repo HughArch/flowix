@@ -1,3 +1,4 @@
+import { ensureAgentWorkspaceReady } from "@features/agent/store/agent-data-store";
 import type { AgentTypeKey } from "@/types/agent";
 import type { AgentConversationSource } from "@features/agent/store/agent-conversation-types";
 import { createConversationInstanceId } from "@features/agent/store/conversation-slice";
@@ -76,6 +77,7 @@ export async function ensureAgentThreadCardConversation(
     runtimeConfig: buildInitialInstanceRuntimeConfig(nextTypeKey),
   });
   nextInstanceId = conversation.instanceId;
+  await ensureAgentWorkspaceReady();
   const runtimeConfig = ensureConversationWorkspaceSnapshot(nextInstanceId);
   markConversationWorkspaceStarted(nextInstanceId);
   input.onThreadBound({

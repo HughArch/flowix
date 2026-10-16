@@ -24,7 +24,7 @@ describe('Obsidian note links', () => {
         linkTarget: null, heading: null, stale: false,
       },
     });
-    expect(editor.view.dom.querySelector('.editor-note-reference__card')?.getAttribute('data-stale')).toBe('false');
+    expect(editor.view.dom.querySelector('.note-reference__card')?.getAttribute('data-stale')).toBe('false');
     editor.destroy();
   });
   it('round trips a child note by notebook and relative path without a memo ID', () => {
@@ -45,7 +45,7 @@ describe('Obsidian note links', () => {
       content: '[Custom label](flowix://open?b=Work&f=Projects%2FPlan.md)',
       contentType: 'markdown',
     });
-    expect(editor.view.dom.querySelector('.editor-note-reference__title')?.textContent).toBe('Plan');
+    expect(editor.view.dom.querySelector('.note-reference__title')?.textContent).toBe('Plan');
     expect(editor.getMarkdown()).toContain('[Plan](flowix://open?b=Work&f=Projects%2FPlan.md)');
     editor.destroy();
   });

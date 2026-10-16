@@ -3,6 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { TableField, TableRecord } from './model';
 import { TableKanbanView } from './table-secondary-views';
+import { endDragSession, registerDropTarget } from '@shared/drag-drop/drag-drop-coordinator';
 
 const groupField: TableField = {
   id: 'status',
@@ -36,6 +37,42 @@ afterEach(() => {
 });
 
 describe('TableKanbanView pointer movement', () => {
+  it('cancels its drag session and clears another target preview when unmounted', () => {
+    container = document.createElement('div');
+    root = createRoot(container);
+    const onPreview = vi.fn();
+    const unregister = registerDropTarget({
+      id: 'unmount-probe',
+      priority: 200,
+      hitTest: () => 'probe',
+      locationKey: (location: string) => location,
+      evaluate: () => ({ accepted: true as const }),
+      onPreview,
+      onDrop: vi.fn(),
+      onError: vi.fn(),
+    });
+    try {
+      act(() => root?.render(<TableKanbanView
+        groupField={groupField}
+        titleField={titleField}
+        groups={new Map([['todo', [first]]])}
+        renderValue={(record) => record.note_path}
+        onDropRecord={vi.fn()}
+        onReorderLane={vi.fn()}
+      />));
+      const card = container.querySelector<HTMLElement>('[data-kanban-record="first"]')!;
+      pointer(card, 'pointerdown', 10, 10);
+      pointer(card, 'pointermove', 30, 30);
+      const sessionId = onPreview.mock.calls[0][0].payload.sessionId;
+      act(() => root?.unmount());
+      root = null;
+      expect(onPreview).toHaveBeenLastCalledWith(null);
+      expect(endDragSession(sessionId, { x: 30, y: 30 })).toBe(false);
+    } finally {
+      unregister();
+    }
+  });
+
   it('opens a linked note when a card is clicked without dragging', () => {
     container = document.createElement('div');
     root = createRoot(container);

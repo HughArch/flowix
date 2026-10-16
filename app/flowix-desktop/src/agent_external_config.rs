@@ -1,5 +1,5 @@
 //! External CLI path config ── 持久化在 `~/.flowix/agent-external-config.json`�?//!
-//! 作为�?external agent (codex / claude / gemini / hermes / openclaw) 执�?�?��
+//! External CLI paths for supported Agents are stored here.
 //! �?�?��参照":
 //! - �?��时探测一�?(`run_startup_detect`), 把命�?�� path 写入文件并灌�?//!   `agent_external::cli_resolver::REGISTRY`; 此后运�?�?`resolve_external_cli`
 //!   命中即用, 不再每条消息跑探测链�?//! - `source = "user"` 的条�?��动探测跳�? 尊重用户在偏好�?�?��手改的路径�?//! - path 失效 (文件�?��) 不自�?fallback ── �?`executable_available` �?false
@@ -18,8 +18,26 @@ use crate::agent_external::cli_resolver::{
 };
 use crate::agent_external::{claude, codex, hermes, opencode};
 
-/// 5 �?external agent �?binary_name (= AgentTypeKey = registry key)�?/// 顺序影响偏好设置列表呈现, 不影响逻辑�?
-pub const EXTERNAL_AGENT_KEYS: &[&str] = &["codex", "claude", "hermes", "opencode"];
+/// Stable IDs for the external CLI Agents configured by this module.
+pub const EXTERNAL_AGENT_KEYS: &[&str] = &["codex", "claudecode", "hermes", "opencode"];
+
+fn canonical_external_agent_key(agent_key: &str) -> Option<&'static str> {
+    match agent_key {
+        "codex" => Some("codex"),
+        "claude" | "claudecode" => Some("claudecode"),
+        "hermes" => Some("hermes"),
+        "opencode" => Some("opencode"),
+        _ => None,
+    }
+}
+
+fn external_binary_name(agent_key: &str) -> &str {
+    if agent_key == "claudecode" { "claude" } else { agent_key }
+}
+
+fn is_supported_external_agent_key(agent_key: &str) -> bool {
+    EXTERNAL_AGENT_KEYS.contains(&agent_key)
+}
 
 pub struct AgentExternalConfig {
     path: PathBuf,
@@ -42,6 +60,10 @@ pub struct AgentExternalEntry {
     /// `auto` = �?��探测写入 (�??下�?�?��覆盖); `user` = 用户手改 (�?��探测跳过)�?
     #[serde(default = "default_source")]
     pub source: AgentExternalSource,
+    /// Whether this path was explicitly configured or discovery has completed.
+    /// A missing path before that point means unknown, not uninstalled.
+    #[serde(default)]
+    pub detected: bool,
 }
 
 fn default_source() -> AgentExternalSource {
@@ -66,11 +88,42 @@ impl AgentExternalConfig {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let data = Self::read_from_disk(&path).unwrap_or_default();
-        Ok(Self {
+        let mut data = flowix_core::memo_file::read_or_create_json(&path, AgentExternalConfigFile::default)?;
+        // Canonicalize the one renamed external Agent ID on first load. If a
+        // canonical entry already exists, it wins; otherwise carry the user's
+        // existing path/source/detection state across unchanged.
+        let migrated_legacy_key = if let Some(legacy) = data.agents.remove("claude") {
+            match data.agents.remove("claudecode") {
+                Some(current) => {
+                    let chosen = match (current.source, legacy.source) {
+                        (AgentExternalSource::User, _) => current,
+                        (_, AgentExternalSource::User) => legacy,
+                        _ if current.path.is_some() || current.detected => current,
+                        _ => legacy,
+                    };
+                    data.agents.insert("claudecode".to_string(), chosen);
+                }
+                None => {
+                    data.agents.insert("claudecode".to_string(), legacy);
+                }
+            }
+            true
+        } else {
+            false
+        };
+        let original_entry_count = data.agents.len();
+        data.agents
+            .retain(|key, _| is_supported_external_agent_key(key));
+        let removed_unsupported_entries = migrated_legacy_key || data.agents.len() != original_entry_count;
+        let config = Self {
             path,
             data: RwLock::new(data),
-        })
+        };
+        if removed_unsupported_entries {
+            let sanitized = config.read_data().clone();
+            config.flush(&sanitized)?;
+        }
+        Ok(config)
     }
 
     pub fn transient(path: PathBuf) -> Self {
@@ -98,22 +151,6 @@ impl AgentExternalConfig {
         })
     }
 
-    fn read_from_disk(path: &Path) -> Option<AgentExternalConfigFile> {
-        if !path.exists() {
-            return None;
-        }
-        let content = fs::read_to_string(path).ok()?;
-        match serde_json::from_str::<AgentExternalConfigFile>(&content) {
-            Ok(data) => Some(data),
-            Err(e) => {
-                tracing::warn!(
-                    "agent-external-config.json parse error: {e}, falling back to empty"
-                );
-                None
-            }
-        }
-    }
-
     fn flush(&self, data: &AgentExternalConfigFile) -> std::io::Result<()> {
         if let Some(parent) = self.path.parent() {
             fs::create_dir_all(parent)?;
@@ -138,9 +175,10 @@ impl AgentExternalConfig {
 
     /// 读取�?agent 的当前条�?(path + source)�?
     pub fn get_entry(&self, agent_key: &str) -> AgentExternalEntry {
-        self.read_data()
-            .agents
-            .get(agent_key)
+        let Some(agent_key) = canonical_external_agent_key(agent_key) else {
+            return AgentExternalEntry::default();
+        };
+        self.read_data().agents.get(agent_key)
             .cloned()
             .unwrap_or_default()
     }
@@ -156,16 +194,23 @@ impl AgentExternalConfig {
         agent_key: &str,
         path: PathBuf,
     ) -> std::io::Result<AgentExternalEntry> {
+        let Some(agent_key) = canonical_external_agent_key(agent_key) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsupported external Agent: {agent_key}"),
+            ));
+        };
         let entry = AgentExternalEntry {
             path: Some(path.clone()),
             source: AgentExternalSource::User,
+            detected: true,
         };
         {
             let mut data = self.write_data();
             data.agents.insert(agent_key.to_string(), entry.clone());
             self.flush(&data)?;
         }
-        update_external_cli_path(agent_key, Some(path));
+        update_external_cli_path(external_binary_name(agent_key), Some(path));
         Ok(entry)
     }
 
@@ -201,6 +246,7 @@ impl AgentExternalConfig {
                 let entry = AgentExternalEntry {
                     path,
                     source: AgentExternalSource::Auto,
+                    detected: true,
                 };
                 data.agents.insert(key.to_string(), entry);
                 changed = true;
@@ -222,7 +268,7 @@ impl AgentExternalConfig {
         let mut map: HashMap<String, PathBuf> = HashMap::new();
         for &key in EXTERNAL_AGENT_KEYS {
             if let Some(p) = data.agents.get(key).and_then(|e| e.path.clone()) {
-                map.insert(key.to_string(), p);
+                map.insert(external_binary_name(key).to_string(), p);
             }
         }
         set_external_cli_registry(map);
@@ -231,8 +277,14 @@ impl AgentExternalConfig {
     /// 重新探测单个 agent: 清注册表该项 -> 跑探�?-> �?`source = auto` ->
     /// 更新注册表。返回探测到�?path (`None` = 没探测到)�?
     pub fn redetect(&self, agent_key: &str) -> std::io::Result<Option<PathBuf>> {
+        let Some(agent_key) = canonical_external_agent_key(agent_key) else {
+            return Err(std::io::Error::new(
+                std::io::ErrorKind::InvalidInput,
+                format!("unsupported external Agent: {agent_key}"),
+            ));
+        };
         // Remove the cached path before running the fallback detection chain.
-        update_external_cli_path(agent_key, None);
+        update_external_cli_path(external_binary_name(agent_key), None);
         let detected = detect_external_binary(agent_key);
         {
             let mut data = self.write_data();
@@ -241,13 +293,14 @@ impl AgentExternalConfig {
                 AgentExternalEntry {
                     path: detected.clone(),
                     source: AgentExternalSource::Auto,
+                    detected: true,
                 },
             );
             self.flush(&data)?;
         }
         // 探测到才回填注册�? 没探测到保持移除状�?(�?agent �?unavailable)�?
         if let Some(p) = detected.clone() {
-            update_external_cli_path(agent_key, Some(p));
+            update_external_cli_path(external_binary_name(agent_key), Some(p));
         }
         Ok(detected)
     }
@@ -258,7 +311,7 @@ impl AgentExternalConfig {
 fn detect_external_binary(agent_key: &str) -> Option<PathBuf> {
     let path = match agent_key {
         "codex" => codex::resolve_codex_binary(),
-        "claude" => claude::cli::resolve_claude_binary(),
+        "claudecode" => claude::cli::resolve_claude_binary(),
         "hermes" => hermes::cli::resolve_hermes_binary(),
         "opencode" => opencode::resolve_opencode_binary(),
         other => {

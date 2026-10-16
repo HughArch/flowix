@@ -147,7 +147,8 @@ impl MemoWatcher {
     pub fn set_whitelist(&self, new_cfg: WhitelistConfig) {
         if let Ok(mut g) = self.whitelist.write() {
             let mut config = new_cfg;
-            // Legacy name rules are migrated into each notebook policy.
+            // Name exclusions now come from the new notebook-local policy.
+            // Keep only the internal directories in the global event filter.
             config.skip_dirs = vec![".flowix".into(), ".plugin-output".into()];
             config.skip_files.clear();
             config.allowed_filename_patterns.clear();

@@ -23,6 +23,7 @@ interface SelectContextValue {
 }
 
 const SelectContext = React.createContext<SelectContextValue | null>(null);
+const selectDisabledClassName = "disabled:cursor-not-allowed disabled:opacity-50";
 
 function useSelectContext() {
 	const context = React.useContext(SelectContext);
@@ -84,9 +85,13 @@ interface SelectTriggerProps {
 	children?: React.ReactNode;
 	className?: string;
 	asChild?: boolean;
+	id?: string;
+	'aria-label'?: string;
+	'aria-labelledby'?: string;
+	'aria-describedby'?: string;
 }
 
-function SelectTrigger({ children, className, asChild }: SelectTriggerProps) {
+function SelectTrigger({ children, className, asChild, id, 'aria-label': ariaLabel, 'aria-labelledby': ariaLabelledBy, 'aria-describedby': ariaDescribedBy }: SelectTriggerProps) {
 	const { value, open, disabled, setOpen, triggerRef, setAnchorRect, anchorToCell } = useSelectContext();
 	const { t } = useI18n();
 
@@ -105,10 +110,15 @@ function SelectTrigger({ children, className, asChild }: SelectTriggerProps) {
 			<button
 				type="button"
 				ref={triggerRef as React.Ref<HTMLButtonElement>}
+				id={id}
+				aria-label={ariaLabel}
+				aria-labelledby={ariaLabelledBy}
+				aria-describedby={ariaDescribedBy}
 				disabled={disabled}
 				onClick={handleClick}
 				className={cn(
 					"flex items-center justify-between w-full h-8 px-3 rounded-lg bg-[var(--card)] border border-[var(--border)] text-sm text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)]",
+					selectDisabledClassName,
 					className
 				)}
 				data-state={open ? "open" : "closed"}
@@ -127,6 +137,11 @@ function SelectTrigger({ children, className, asChild }: SelectTriggerProps) {
 		const childOnClick = child.props.onClick;
 		return React.cloneElement(child, {
 			ref: triggerRef,
+			id: id ?? child.props.id,
+			'aria-label': ariaLabel ?? child.props['aria-label'],
+			'aria-labelledby': ariaLabelledBy ?? child.props['aria-labelledby'],
+			'aria-describedby': ariaDescribedBy ?? child.props['aria-describedby'],
+			className: cn(child.props.className, className, selectDisabledClassName),
 			onClick: (event: React.MouseEvent<HTMLElement>) => {
 				if (disabled) return;
 				childOnClick?.(event);
@@ -142,10 +157,15 @@ function SelectTrigger({ children, className, asChild }: SelectTriggerProps) {
 		<button
 			type="button"
 			ref={triggerRef as React.Ref<HTMLButtonElement>}
+			id={id}
+			aria-label={ariaLabel}
+			aria-labelledby={ariaLabelledBy}
+			aria-describedby={ariaDescribedBy}
 			disabled={disabled}
 			onClick={handleClick}
 			className={cn(
 				"flex items-center justify-between w-full h-8 px-3 rounded-lg bg-[var(--card)] border border-[var(--border)] text-sm text-[var(--foreground)] focus:outline-none focus:border-[var(--primary)]",
+				selectDisabledClassName,
 				className
 			)}
 			data-state={open ? "open" : "closed"}
