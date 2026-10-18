@@ -1,7 +1,7 @@
 //! Read-only collection dataset access shared by the CLI and MCP operation layer.
 use crate::{errors::CliError, store};
 use flowix_core::{
-    collection::{valid_id, CollectionDocument, CollectionPlacement, CollectionType},
+    collection::{display_name_for_path, valid_id, CollectionDocument, CollectionPlacement, CollectionType},
     memo_file::FileManagementPolicy,
 };
 use rusqlite::Connection;
@@ -23,7 +23,7 @@ pub(crate) fn read(
     }
 
     let memo = store::open()?;
-    let notebook = flowix_core::MemoService::new(&memo).resolve_notebook(notebook_key)?;
+    let notebook = store::resolve_notebook_config(&memo, notebook_key)?;
     let root = fs::canonicalize(&notebook.path)?;
     let policy = FileManagementPolicy::from_notebook_root(&root);
     let (path, document) = if let Some(id) = collection_id {
@@ -50,7 +50,7 @@ pub(crate) fn read(
         "collection": {
             "id": document.collection.id,
             "type": document.collection.kind.as_str(),
-            "name": document.collection.name,
+            "name": display_name_for_path(&path, document.collection.placement),
             "revision": document.collection.revision,
             "createdAt": document.collection.created_at,
             "updatedAt": document.collection.updated_at,

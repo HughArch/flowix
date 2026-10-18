@@ -1,5 +1,5 @@
-import { openExternalTarget } from '@features/workspace/use-cases/workspace-navigation';
-import type { WorkspaceContentLocation } from '@features/workspace/use-cases/workspace-content-activation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
+import type { WorkspaceContentLocation } from '@features/workspace/public/note-navigation-api';
 import type { Notebook } from '@features/memo/store/note-store';
 
 /** Open notebook Markdown through the shared path document surface. */
@@ -8,10 +8,10 @@ export async function openNotebookNote(
   notebook: Notebook,
   options: { destination?: 'main-third'; history?: 'push' | 'skip'; initialFocus?: 'title' | 'body'; mayBePlugin?: boolean } = {},
 ): Promise<WorkspaceContentLocation | null> {
-  return openExternalTarget(path, {
-    scopePath: notebook.path,
-    destination: options.destination,
-    history: options.history,
-    initialFocus: options.initialFocus,
+  const result = await openWorkspaceSurface({
+    host: options.destination ?? 'main-third',
+    target: { kind: 'external', path, scopePath: notebook.path, transitionId: null },
+    options: { history: options.history, initialFocus: options.initialFocus },
   });
+  return result.status === 'cancelled' ? null : result.location;
 }

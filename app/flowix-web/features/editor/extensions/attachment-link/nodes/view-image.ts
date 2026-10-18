@@ -1,30 +1,22 @@
-﻿import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
+import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import type { NodeView as ProseMirrorNodeView, EditorView, Decoration } from '@tiptap/pm/view';
 import {
     Node,
     InputRule,
     mergeAttributes,
     type JSONContent,
-    type MarkdownParseHelpers,
-    type MarkdownToken,
 } from '@tiptap/core';
 import { invoke } from '@platform/tauri/core';
 import { assetMarkdownUrl, assetUrl, decodeStorageKey } from '@features/editor/extensions/attachment-link/utils';
+import { renderFlowixMediaStyleComment } from '@features/editor/extensions/attachment-link/markdown/media-style';
 import {
-    parseFlowixMediaStyleComment,
-    parseFlowixMediaStyleSuffix,
-    renderFlowixMediaStyleComment,
-} from '@features/editor/extensions/attachment-link/markdown/media-style';
+    DEFAULT_IMAGE_WIDTH_PERCENT, MAX_IMAGE_WIDTH_PERCENT, imageMarkdownSpec,
+    normalizeImageAlignment, normalizeWidthPercent,
+} from '@features/editor/extensions/attachment-link/markdown/image-markdown';
 import { translate, type I18nKey } from '@/lib/i18n';
 import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api';
 
 export { decodeStorageKey };
-
-const MARKDOWN_IMAGE_RE = /^!\[([^\]]*)\]\(([^)\n]+)\)/;
-const ASSET_IMAGE_RE = /^(asset:\/\/|https?:\/\/asset\.localhost\/)/i;
-const DEFAULT_IMAGE_WIDTH_PERCENT = 100;
-const MIN_IMAGE_WIDTH_PERCENT = 20;
-const MAX_IMAGE_WIDTH_PERCENT = 100;
 
 type ImageAttributes = Record<string, unknown> & {
     src?: unknown;
@@ -37,8 +29,6 @@ type ImageAttributes = Record<string, unknown> & {
     align?: unknown;
 };
 
-type ImageAlignment = 'left' | 'center' | 'right';
-
 function stringAttribute(value: unknown): string {
     return typeof value === 'string' ? value : '';
 }
@@ -46,10 +36,6 @@ function stringAttribute(value: unknown): string {
 // NodeView 不在 React 树内, 不能用 useI18n, 走 user-settings-store 直读当前语言。
 function tKey(key: I18nKey, params?: Record<string, string | number>): string {
     return translate(getCurrentAppLanguage(), key, params);
-}
-
-function isAttachmentImageHref(href: string | null | undefined): boolean {
-    return !!href && ASSET_IMAGE_RE.test(href);
 }
 
 function whenIdle(cb: () => void, timeout = 200): number {
@@ -66,42 +52,6 @@ function cancelIdle(handle: number): void {
         clearTimeout(handle);
     }
 }
-
-function normalizeWidthPercent(value: unknown): number | null {
-    if (value === null || value === undefined || value === '') return null;
-    const numeric = typeof value === 'number' ? value : Number(value);
-    if (!Number.isFinite(numeric)) return null;
-    const clamped = Math.min(MAX_IMAGE_WIDTH_PERCENT, Math.max(MIN_IMAGE_WIDTH_PERCENT, numeric));
-    return Math.round(clamped * 10) / 10;
-}
-
-function normalizeImageAlignment(value: unknown): ImageAlignment {
-    return value === 'left' || value === 'right' ? value : 'center';
-}
-
-function parseImageSuffix(value: string): { raw: string; widthPercent: number | null; align: ImageAlignment } {
-    const modern = parseFlowixMediaStyleSuffix(value);
-    if (modern) {
-        return {
-            raw: modern.raw,
-            widthPercent: normalizeWidthPercent(modern.style.widthPercent),
-            align: normalizeImageAlignment(modern.style.align),
-        };
-    }
-
-    const legacy = /^\{([^}\n]+)\}/.exec(value);
-    const attributes = Object.fromEntries(
-        [...(legacy?.[1] ?? '').matchAll(/(?:^|\s)(width|align)=([^\s}]+)/g)].map(([, key, item]) => [key, item]),
-    );
-    const hasLegacyStyle = Object.keys(attributes).length > 0;
-    return {
-        raw: hasLegacyStyle ? (legacy?.[0] ?? '') : '',
-        widthPercent: normalizeWidthPercent(attributes.width?.replace('%', '')),
-        align: normalizeImageAlignment(attributes.align),
-    };
-}
-
-// 鈹€鈹€鈹€ ImageView 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
 
 class ImageView implements ProseMirrorNodeView {
     dom: HTMLElement;
@@ -592,69 +542,7 @@ export const ImageAttachment = Node.create({
         );
     },
 
-    markdownTokenizer: {
-        name: 'image',
-        level: 'block' as const,
-        start(src: string) {
-            const candidateIndex = src.search(/^<!--[ \t]*flowix:media[ \t]+\{/m);
-            const candidate = candidateIndex >= 0 ? parseFlowixMediaStyleComment(src.slice(candidateIndex)) : null;
-            const commentIndex = candidate && src.slice(candidateIndex + candidate.raw.length).startsWith('![')
-                ? candidateIndex
-                : -1;
-            const imageIndex = src.indexOf('![');
-            if (commentIndex < 0) return imageIndex;
-            if (imageIndex < 0) return commentIndex;
-            return Math.min(commentIndex, imageIndex);
-        },
-        tokenize(src: string) {
-            const metadata = parseFlowixMediaStyleComment(src);
-            const source = metadata ? src.slice(metadata.raw.length) : src;
-            const match = MARKDOWN_IMAGE_RE.exec(source);
-            if (!match) return undefined;
-            const suffix = parseImageSuffix(source.slice(match[0].length));
-            const widthPercent = metadata
-                ? normalizeWidthPercent(metadata.style.widthPercent)
-                : suffix.widthPercent;
-            const align = metadata
-                ? normalizeImageAlignment(metadata.style.align)
-                : suffix.align;
-            return {
-                type: 'image',
-                raw: (metadata?.raw ?? '') + match[0] + suffix.raw,
-                href: match[2],
-                text: match[1],
-                title: null,
-                widthPercent,
-                align,
-            };
-        },
-    },
-
-    parseMarkdown(token: MarkdownToken, helpers: MarkdownParseHelpers) {
-        if (!token.href) {
-            return { type: 'text', text: token.raw || '' };
-        }
-        if (!isAttachmentImageHref(token.href)) {
-            return helpers.createNode('image', {
-                src: token.href,
-                alt: token.text || null,
-                title: token.title || null,
-                storageMode: null,
-                storageKey: null,
-                widthPercent: token.widthPercent ?? null,
-                align: token.align ?? 'center',
-            });
-        }
-        return helpers.createNode('image', {
-            src: token.href,
-            alt: token.text || null,
-            title: token.title || null,
-            storageMode: 'attachment',
-            storageKey: decodeStorageKey(token.href),
-            widthPercent: token.widthPercent ?? null,
-            align: token.align ?? 'center',
-        });
-    },
+    ...imageMarkdownSpec,
 
     renderMarkdown(node: JSONContent) {
         const { alt, title, fileName, storageMode, storageKey, src, widthPercent, align } = node.attrs || {};

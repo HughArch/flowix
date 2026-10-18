@@ -29,7 +29,7 @@ describe("createRuntimeInfoRequester", () => {
   });
 
   it("returns undefined for agent types without a runtime provider", () => {
-    expect(createRuntimeInfoRequester("claude", () => "thread-1")).toBeUndefined();
+    expect(createRuntimeInfoRequester("claudecode", () => "thread-1")).toBeUndefined();
   });
 
   it("loads persisted Pi session metadata after the conversation is restored", async () => {
@@ -81,7 +81,7 @@ describe("createRuntimeInfoRequester", () => {
   });
 
   it("resolves null without invoking when the thread id is missing for thread-scoped runtimes", async () => {
-    for (const typeKey of ["deepseek-harness", "opencode"] as const) {
+    for (const typeKey of ["dsh", "opencode"] as const) {
       const request = createRuntimeInfoRequester(typeKey, () => null);
       await expect(request?.()).resolves.toBeNull();
     }
@@ -106,7 +106,7 @@ describe("createRuntimeInfoRequester", () => {
 
   it("reads the thread id at call time instead of creation time", async () => {
     let threadId: string | null = null;
-    const request = createRuntimeInfoRequester("deepseek-harness", () => threadId);
+    const request = createRuntimeInfoRequester("dsh", () => threadId);
     await expect(request?.()).resolves.toBeNull();
     threadId = "thread-2";
     mocks.sessionUsage.mockResolvedValue({

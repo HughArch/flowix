@@ -42,6 +42,7 @@ export class ErrorBoundary extends Component<ErrorBoundaryProps, ErrorBoundarySt
 	componentDidCatch(error: Error, errorInfo: ErrorInfo): void {
 		document.getElementById("app-loading")?.remove();
 		console.error("[ErrorBoundary] Caught error:", error, errorInfo);
+		console.error("[ErrorBoundary] Error stack:", error.stack ?? "<no stack>");
 		this.props.onError?.(error, errorInfo);
 	}
 

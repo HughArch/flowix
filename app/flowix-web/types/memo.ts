@@ -19,7 +19,7 @@ export type MemoChangeSource =
   | 'user_delete'
   | 'cloud_sync';
 
-export type MemoContentCommit = {
+export type NoteContentCommit = {
   derivedOnly?: boolean;
   /** SHA-256 of the exact committed markdown bytes. */
   contentHash?: string;
@@ -49,27 +49,23 @@ export type MemoEvent =
       notebookId: string;
       derivedChanged: MemoDerivedChanged;
       source: MemoChangeSource;
-    } & MemoContentCommit)
+    } & NoteContentCommit)
   | ({
       kind: 'updated';
-      /** @deprecated Legacy memo cache id. Dedup/patch keys use relativePath. */
-      id?: string;
       path: string;
       memo: MemoItem;
       notebookId: string;
       derivedChanged: MemoDerivedChanged;
       source: MemoChangeSource;
-    } & MemoContentCommit)
+    } & NoteContentCommit)
   | ({
       kind: 'deleted';
-      /** @deprecated Legacy memo cache id. Dedup keys use relativePath. */
-      id?: string;
       path: string;
       relativePath: string;
       notebookId: string;
       derivedChanged: MemoDerivedChanged;
       source: MemoChangeSource;
-    } & MemoContentCommit)
+    } & NoteContentCommit)
   | {
       kind: 'tags_renamed';
       notebookId: string;

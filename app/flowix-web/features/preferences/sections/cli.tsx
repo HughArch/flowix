@@ -112,7 +112,7 @@ export function CliSection() {
                 disabled={installing}
               >
                 {installing ? (
-                  <Loader2 data-icon="inline-start" className="animate-spin" />
+                  <Loader2 data-icon="inline-start" className="flowix-spin" />
                 ) : (
                   <Download data-icon="inline-start" />
                 )}

@@ -23,17 +23,21 @@ import { agent, type NotebookAgentFile, type NotebookAgentWorkspace, type Notebo
 import { Button } from "@shared/ui/button";
 import { cn } from "@/lib/utils";
 import { displayNameForComposerSkill } from "@features/agent/thread-card/composer/composer-skill-token";
-import { parseCodexSkillCatalog, type CodexSkillCatalogItem } from "@features/agent/services/codex-slash-command-service";
+import type { CodexSkillCatalogItem } from "@features/agent/services/codex-slash-command-service";
+import { invalidateNotebookSkills, loadNotebookSkillCatalog } from "@features/agent/services/agent-catalog-service";
+import { useAgentDataStore } from "@features/agent/store/agent-data-store";
+import { useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-store";
+import { useNoteStore } from "@features/memo/store/note-store";
 import { isValidPiSkillCommandName } from "@features/agent/services/pi-skill-name";
 
 type Tab = "mcp" | "skills" | "agents" | "plugins" | "other" | "memory";
 type FileKind = "skill" | "agent";
-type AgentResourceKey = "codex" | "deepseek-harness" | "general";
+type AgentResourceKey = "codex" | "dsh" | "general";
 type EditorState =
   | { kind: "mcp"; id: string | null }
   | { kind: "file"; fileKind: FileKind; id: string | null };
 
-const AGENT_RESOURCE_KEYS: readonly AgentResourceKey[] = ["codex", "deepseek-harness", "general"];
+const AGENT_RESOURCE_KEYS: readonly AgentResourceKey[] = ["codex", "dsh", "general"];
 const CODEX_RESOURCE_KEYS: readonly AgentResourceKey[] = ["codex"];
 
 const EMPTY_WORKSPACE: NotebookAgentWorkspace = {
@@ -239,7 +243,7 @@ function McpEditor({
         <Toggle checked={form.enabled} onChange={(enabled) => onChange({ enabled })} label="启用此服务" />
         <div className="flex items-center gap-2">
           <Button type="button" variant="ghost" onClick={onCancel}>取消</Button>
-          <Button type="button" disabled={saving} onClick={onSave}>{saving ? <Loader2 className="animate-spin" /> : <Save />}保存服务</Button>
+          <Button type="button" disabled={saving} onClick={onSave}>{saving ? <Loader2 className="flowix-spin" /> : <Save />}保存服务</Button>
         </div>
       </div>
       {error && <InlineError message={error} />}
@@ -417,7 +421,7 @@ function AgentTabs({ active, onChange, ariaLabel, keys = AGENT_RESOURCE_KEYS }: 
                 : "text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]",
             )}
           >
-            <span className="whitespace-nowrap">{agentKey === "codex" ? "Codex" : agentKey === "deepseek-harness" ? "DeepSeek Harness" : "通用"}</span>
+            <span className="whitespace-nowrap">{agentKey === "codex" ? "Codex" : agentKey === "dsh" ? "DeepSeek Harness" : "通用"}</span>
           </button>
         );
       })}
@@ -575,40 +579,71 @@ function CodexSkillGroup({ title, items }: { title: string; items: readonly Code
   );
 }
 
+const EMPTY_CODEX_SKILLS: readonly CodexSkillCatalogItem[] = [];
+
+function normalizeNotebookPath(path: string): string {
+  return path.trim().replace(/[\\/]+$/, "").toLowerCase();
+}
+
+function getNotebookSkillScopeId(notebookPath: string): string {
+  const normalizedPath = normalizeNotebookPath(notebookPath);
+  const notebookId = useNoteStore.getState().notebooks.find(
+    (notebook) => normalizeNotebookPath(notebook.path) === normalizedPath,
+  )?.id;
+  const workspaceNotebookId = Object.values(useAgentWorkspaceStore.getState().workspace.byNotebookId).find(
+    (notebook) => normalizeNotebookPath(notebook.notebook.path) === normalizedPath,
+  )?.notebook.id;
+  return notebookId ?? workspaceNotebookId ?? normalizedPath;
+}
+
 function CodexSkillsList({ notebookPath }: { notebookPath: string }) {
+  const normalizedPath = normalizeNotebookPath(notebookPath);
+  const notebookId = useNoteStore((state) =>
+    state.notebooks.find((notebook) => normalizeNotebookPath(notebook.path) === normalizedPath)?.id ?? null,
+  );
+  const workspaceNotebookId = useAgentWorkspaceStore((state) =>
+    Object.values(state.workspace.byNotebookId).find(
+      (notebook) => normalizeNotebookPath(notebook.notebook.path) === normalizedPath,
+    )?.notebook.id ?? null,
+  );
+  const scopeId = notebookId ?? workspaceNotebookId ?? normalizedPath;
+  const catalog = useAgentDataStore((state) =>
+    scopeId ? state.agents.codex.catalog.skillsByNotebookId[scopeId] : undefined,
+  );
+  const skills = (catalog?.items ?? EMPTY_CODEX_SKILLS) as readonly CodexSkillCatalogItem[];
   const [status, setStatus] = useState<"loading" | "ready" | "error">("loading");
-  const [skills, setSkills] = useState<readonly CodexSkillCatalogItem[]>([]);
   const [error, setError] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
-    setStatus("loading");
-    setSkills([]);
+    const cached = useAgentDataStore.getState().agents.codex.catalog.skillsByNotebookId[scopeId];
+    setStatus(cached ? "ready" : "loading");
     setError(null);
 
-    void (async () => {
-      try {
-        const capabilities = await agent.getCodexProjectCapabilities(notebookPath);
-        if (!capabilities.skills.ok) {
-          throw new Error(capabilities.skills.error ?? "Codex Skill 加载失败");
-        }
+    void loadNotebookSkillCatalog("codex", scopeId, notebookPath)
+      .then(() => {
         if (!active) return;
-        setSkills(parseCodexSkillCatalog(capabilities.skills.value));
         setStatus("ready");
-      } catch (cause) {
+      })
+      .catch((cause) => {
         if (!active) return;
+        const latest = useAgentDataStore.getState().agents.codex.catalog.skillsByNotebookId[scopeId];
+        if (latest) {
+          setStatus("ready");
+          setError(cause instanceof Error ? cause.message : String(cause));
+          return;
+        }
         setError(cause instanceof Error ? cause.message : String(cause));
         setStatus("error");
-      }
-    })();
+      });
 
     return () => { active = false; };
-  }, [notebookPath]);
+  }, [notebookPath, scopeId]);
 
-  if (status === "loading") {
+  if (status === "loading" && !catalog) {
     return <div className="flex min-h-[280px] items-center justify-center text-sm text-[var(--muted-foreground)]" aria-live="polite">加载中…</div>;
   }
-  if (status === "error") {
+  if (status === "error" && !catalog) {
     return <div className="space-y-3"><InlineError message={error ?? "Codex Skill 加载失败"} /><div className="py-5 text-center text-sm text-[var(--muted-foreground)]">暂时无法读取 Codex Skill 列表</div></div>;
   }
   if (!skills.length) {
@@ -1077,6 +1112,15 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
       setWorkspace(next);
       setOriginal(cloneWorkspace(next));
       closeEditor();
+      const skillScopeId = getNotebookSkillScopeId(notebookPath);
+      if (skillScopeId) {
+        for (const agentType of ["codex", "pi"] as const) {
+          invalidateNotebookSkills(agentType, skillScopeId);
+          void loadNotebookSkillCatalog(agentType, skillScopeId, notebookPath, { force: true }).catch((cause) => {
+            console.warn(`Failed to refresh ${agentType} skills after saving notebook Agent settings`, cause);
+          });
+        }
+      }
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -1145,7 +1189,7 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
               {tab === "mcp" && <>
                 <SectionHeader title="MCP 服务" description="为这个笔记本里的 Agent 添加可调用的外部工具与数据源。" action={mcpAgent === "general" ? <Button variant="default" className="gap-[3px] px-3" onClick={() => openMcp(null)} disabled={!!editor}><Plus />添加</Button> : null} />
                 <AgentTabs active={mcpAgent} ariaLabel="MCP Agent" onChange={(agentKey) => { setMcpAgent(agentKey); closeEditor(); }} />
-                {mcpAgent === "codex" ? <CodexMcpList notebookPath={notebookPath} /> : mcpAgent === "deepseek-harness" ? <DeepSeekHarnessMcpList /> : <>
+                {mcpAgent === "codex" ? <CodexMcpList notebookPath={notebookPath} /> : mcpAgent === "dsh" ? <DeepSeekHarnessMcpList /> : <>
                   {editor?.kind === "mcp" && mcpForm && <McpEditor form={mcpForm} onChange={(patch) => setMcpForm((current) => current ? { ...current, ...patch } : current)} onCancel={closeEditor} onSave={saveMcpDraft} error={formError} saving={false} />}
                   <McpList workspace={workspace ?? EMPTY_WORKSPACE} onAdd={() => openMcp(null)} onEdit={openMcp} onDelete={deleteMcp} onToggle={toggleMcp} />
                 </>}
@@ -1153,7 +1197,7 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
               {tab === "skills" && <>
                 <SectionHeader title="Skills" description="把可复用的工作流程保存为 Markdown Skill，之后可被不同 Agent 使用。" action={skillAgent === "general" ? <Button variant="default" className="gap-[3px] px-3" onClick={() => openFile("skill", null)} disabled={!!editor}><Plus />创建</Button> : null} />
                 <AgentTabs active={skillAgent} ariaLabel="Skill Agent" onChange={(agentKey) => { setSkillAgent(agentKey); closeEditor(); }} />
-                {skillAgent === "codex" ? <CodexSkillsList notebookPath={notebookPath} /> : skillAgent === "deepseek-harness" ? <DeepSeekHarnessSkillsList /> : <div className="space-y-3">
+                {skillAgent === "codex" ? <CodexSkillsList notebookPath={notebookPath} /> : skillAgent === "dsh" ? <DeepSeekHarnessSkillsList /> : <div className="space-y-3">
                   {editor?.kind === "file" && editor.fileKind === "skill" && fileForm && <FileEditor kind="skill" form={fileForm} onChange={(patch) => setFileForm((current) => current ? { ...current, ...patch } : current)} onCancel={closeEditor} onSave={saveFileDraft} error={formError} />}
                   <FileList kind="skill" items={(workspace ?? EMPTY_WORKSPACE).skills} onAdd={() => openFile("skill", null)} onEdit={(id) => openFile("skill", id)} onDelete={(id) => deleteFile("skill", id)} onToggle={(id, enabled) => toggleFile("skill", id, enabled)} />
                 </div>}
@@ -1161,7 +1205,7 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
               {tab === "agents" && <>
                 <SectionHeader title="子 Agent" description="创建专门角色，让主 Agent 可以把任务交给更合适的处理者。" action={childAgent === "general" ? <Button variant="default" className="gap-[3px] px-3" onClick={() => openFile("agent", null)} disabled={!!editor}><Plus />创建</Button> : null} />
                 <AgentTabs active={childAgent} ariaLabel="子 Agent" onChange={(agentKey) => { setChildAgent(agentKey); closeEditor(); }} />
-                {childAgent === "codex" ? <CodexAgentsList notebookPath={notebookPath} /> : childAgent === "deepseek-harness" ? <DeepSeekHarnessAgentsList /> : <div className="space-y-3">
+                {childAgent === "codex" ? <CodexAgentsList notebookPath={notebookPath} /> : childAgent === "dsh" ? <DeepSeekHarnessAgentsList /> : <div className="space-y-3">
                   {editor?.kind === "file" && editor.fileKind === "agent" && fileForm && <FileEditor kind="agent" form={fileForm} onChange={(patch) => setFileForm((current) => current ? { ...current, ...patch } : current)} onCancel={closeEditor} onSave={saveFileDraft} error={formError} />}
                   <FileList kind="agent" items={(workspace ?? EMPTY_WORKSPACE).agents} onAdd={() => openFile("agent", null)} onEdit={(id) => openFile("agent", id)} onDelete={(id) => deleteFile("agent", id)} onToggle={(id, enabled) => toggleFile("agent", id, enabled)} />
                 </div>}
@@ -1187,7 +1231,7 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
 
         <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-[var(--divider)] bg-[color-mix(in_oklch,var(--background)_92%,var(--card))] px-5 py-3 sm:px-6">
           <div className="min-w-0 text-xs text-[var(--muted-foreground)]">{dirty ? <span className="text-[var(--primary)]">有未保存更改</span> : <span className="inline-flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-[var(--primary)]" /></span>}</div>
-          <div className="flex items-center gap-2"><Button type="button" variant="ghost" onClick={requestClose}>取消</Button><Button type="button" disabled={!dirty || saving} onClick={() => void saveWorkspace()}>{saving ? <Loader2 className="animate-spin" /> : null}保存</Button></div>
+          <div className="flex items-center gap-2"><Button type="button" variant="ghost" onClick={requestClose}>取消</Button><Button type="button" disabled={!dirty || saving} onClick={() => void saveWorkspace()}>{saving ? <Loader2 className="flowix-spin" /> : null}保存</Button></div>
         </footer>
       </div>
     </div>

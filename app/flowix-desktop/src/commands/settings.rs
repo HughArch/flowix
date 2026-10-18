@@ -14,7 +14,7 @@ use crate::app::state::AppState;
 
 /// 跨窗口同步事�?—任一窗口成功写入偏好 / AI 配置�?emit, 其它窗口
 /// (主窗�?/ 偏好窗口 / �?��的�?窗口) 收到后从磁盘重新 load�?/// 解决: 两个 Tauri 窗口各跑�?�� React �?+ �?�� zustand store, 一�?/// 改动另一边看不到的问题�?
-pub(super) const USER_CONFIG_CHANGED_EVENT: &str = "user-config-changed";
+pub(crate) const USER_CONFIG_CHANGED_EVENT: &str = "user-config-changed";
 
 /// 用户偏好 (preference.json) —�?~/.flowix/boot/preference.json
 #[tauri::command]
@@ -62,7 +62,7 @@ pub async fn get_deepseek_harness_config(
     state: State<'_, AppState>,
 ) -> Result<AiConfigFile, String> {
     let mut configs = load_dsh_model_configs(&state).await?;
-    hydrate_dsh_credentials_without_blocking(&state, &mut configs).await;
+    hydrate_dsh_credential_statuses_without_blocking(&state, &mut configs).await;
     Ok(configs.into_iter().next().unwrap_or_default())
 }
 
@@ -71,7 +71,7 @@ pub async fn get_deepseek_harness_configs(
     state: State<'_, AppState>,
 ) -> Result<Vec<AiConfigFile>, String> {
     let mut configs = load_dsh_model_configs(&state).await?;
-    hydrate_dsh_credentials_without_blocking(&state, &mut configs).await;
+    hydrate_dsh_credential_statuses_without_blocking(&state, &mut configs).await;
     Ok(configs)
 }
 
@@ -79,21 +79,12 @@ async fn load_dsh_model_configs(state: &State<'_, AppState>) -> Result<Vec<AiCon
     state.deepseek_harness.dsh_model_configs().await
 }
 
-/// Preferences must remain usable when Flowix has just installed an older or
-/// temporarily unavailable remote DSH runtime. Credential migration/status is
-/// best-effort here; save and connection-test commands still return actionable
-/// runtime errors when the user explicitly invokes them.
-async fn hydrate_dsh_credentials_without_blocking(
+/// Credential status is best-effort here; save and connection-test commands
+/// still return actionable runtime errors when the user explicitly invokes them.
+async fn hydrate_dsh_credential_statuses_without_blocking(
     state: &State<'_, AppState>,
     configs: &mut [AiConfigFile],
 ) {
-    if let Err(error) = state
-        .deepseek_harness
-        .migrate_legacy_credentials(configs)
-        .await
-    {
-        tracing::warn!(%error, "could not migrate legacy Flowix credentials to DSH");
-    }
     if let Err(error) = state
         .deepseek_harness
         .hydrate_credential_statuses(configs)
@@ -220,6 +211,11 @@ pub fn get_pi_features() -> Result<crate::agent_external::pi::config::PiFeatures
 #[tauri::command]
 pub fn save_pi_features(features: crate::agent_external::pi::config::PiFeatures) -> Result<(), String> {
     pi_model_config::save_features(features)
+}
+
+#[tauri::command]
+pub fn clear_pi_legacy_code_mode() -> Result<(), String> {
+    pi_model_config::clear_legacy_code_mode()
 }
 
 #[tauri::command]

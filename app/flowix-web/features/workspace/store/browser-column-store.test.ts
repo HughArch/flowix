@@ -6,7 +6,7 @@ import {
 } from './browser-column-store';
 import { useWorkspaceFocusStore } from './workspace-focus-store';
 
-function tab(id: string, memoId = id) {
+function tab(id: string, fileStem = id) {
   return {
     id,
     title: `${id}.md`,
@@ -18,7 +18,7 @@ function tab(id: string, memoId = id) {
       scopePath: '/notes',
       fileTreeVisible: true,
       fileTreeWidth: 220,
-      activeFilePath: `/notes/${memoId}.md`,
+      activeFilePath: `/notes/${fileStem}.md`,
     },
   };
 }
@@ -49,12 +49,12 @@ describe('browser column store', () => {
 
   it('focuses an existing target instead of duplicating it by default', () => {
     const store = useBrowserColumnStore.getState();
-    store.openTab(tab('memo:a', 'a'));
-    store.openTab(tab('memo:a:second', 'a'));
+    store.openTab(tab('note:a', 'a'));
+    store.openTab(tab('note:a:second', 'a'));
 
     expect(useBrowserColumnStore.getState()).toMatchObject({
-      tabs: [{ ...tab('memo:a', 'a'), title: 'memo:a:second.md' }],
-      activeTabId: 'memo:a',
+      tabs: [{ ...tab('note:a', 'a'), title: 'note:a:second.md' }],
+      activeTabId: 'note:a',
       visible: true,
     });
     expect(useWorkspaceFocusStore.getState().focusedHostId).toBe('browser-column');
@@ -84,10 +84,10 @@ describe('browser column store', () => {
 
   it('reuses an existing target when replace-active would otherwise duplicate it', () => {
     const store = useBrowserColumnStore.getState();
-    store.openTab(tab('memo:a', 'a'));
-    store.openTab(tab('memo:b', 'b'));
+    store.openTab(tab('note:a', 'a'));
+    store.openTab(tab('note:b', 'b'));
 
-    store.openTab(tab('memo:a:replacement', 'a'), 'replace-active');
+    store.openTab(tab('note:a:replacement', 'a'), 'replace-active');
 
     expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['memo:a']);
     expect(useBrowserColumnStore.getState().activeTabId).toBe('memo:a');
@@ -240,8 +240,8 @@ describe('browser column store', () => {
 
   it('removes a file tab by path when the note is deleted', () => {
     const store = useBrowserColumnStore.getState();
-    store.openTab(tab('memo:a', 'a'));
-    store.openTab(tab('memo:b', 'b'));
+    store.openTab(tab('note:a', 'a'));
+    store.openTab(tab('note:b', 'b'));
 
     expect(store.removeTabsByFilePath('/notes/a.md')).toEqual(['memo:a']);
     expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['memo:b']);

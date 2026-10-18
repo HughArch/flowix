@@ -10,7 +10,10 @@ export function useNotebookTemplates(enabled = true) {
   const [status, setStatus] = useState<NotebookTemplateLoadStatus>('idle');
   const [retryCount, setRetryCount] = useState(0);
 
-  const retry = useCallback(() => setRetryCount((count) => count + 1), []);
+  const retry = useCallback(() => {
+    setStatus('loading');
+    setRetryCount((count) => count + 1);
+  }, []);
 
   useEffect(() => {
     if (!enabled) {
@@ -38,7 +41,9 @@ export function useNotebookTemplates(enabled = true) {
 
   return {
     templates,
-    status,
+    // Show the loading state in the same render that opens the picker; the
+    // effect below starts the request immediately after that commit.
+    status: enabled && status === 'idle' ? 'loading' : status,
     retry,
   } as const;
 }

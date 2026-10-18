@@ -39,19 +39,13 @@ fn explicit_destination_does_not_switch_current_notebook() {
 #[test]
 fn note_owner_resolves_notebook_from_absolute_path() {
     let (directory, store) = fixture();
-    let created = flowix_core::MemoService::new(&store)
-        .create_memo_named_with_tag_in_directory(
-            Some("second"),
-            None,
-            "Untitled",
-            "# Note\nbody\n",
-            None,
-        )
+    let created = flowix_core::NoteService::new(&store)
+        .create("second", None, "Untitled", "# Note\nbody\n")
         .unwrap();
     let note = directory
         .path()
         .join("second")
-        .join(&created.memo.relative_path);
+        .join(&created.entry.relative_path);
     assert_eq!(
         resolve_note_owner(&store, None, Some(note.to_str().unwrap())).unwrap(),
         ("second".to_string(), Some("Untitled.md".to_string()))
@@ -77,19 +71,13 @@ fn missing_or_unknown_owner_never_falls_back_to_current_notebook() {
 fn owned_save_validates_identity_before_creating_attachments() {
     let (directory, store) = fixture();
     assert!(save_for_owner(&store, None, None, "data", &mut &b"data"[..], false).is_err());
-    let created = flowix_core::MemoService::new(&store)
-        .create_memo_named_with_tag_in_directory(
-            Some("second"),
-            None,
-            "Untitled",
-            "# Owner\nbody\n",
-            None,
-        )
+    let created = flowix_core::NoteService::new(&store)
+        .create("second", None, "Untitled", "# Owner\nbody\n")
         .unwrap();
     let note = directory
         .path()
         .join("second")
-        .join(&created.memo.relative_path);
+        .join(&created.entry.relative_path);
     assert!(save_for_owner(
         &store,
         Some("first"),

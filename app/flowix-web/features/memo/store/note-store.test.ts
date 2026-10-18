@@ -40,6 +40,7 @@ vi.mock('@features/memo/store/custom-filter-store', () => ({
 }));
 
 import { useNoteStore } from '@features/memo/store/note-store';
+import { useNotebookBackgroundStore } from './notebook-background-store';
 
 describe('note store list loading', () => {
   beforeEach(() => {
@@ -60,6 +61,14 @@ describe('note store list loading', () => {
       activeFilter: 'todos',
       activePluginId: null,
     });
+  });
+
+  it('keeps a missing index as pending without treating it as an empty result', async () => {
+    useNotebookBackgroundStore.setState({ statuses: {} });
+    mocks.listByPath.mockRejectedValue(new Error('NOTE_INDEX_PENDING'));
+    await expect(useNoteStore.getState().loadNotes({ notebookId: 'notebook-1', filter: 'all' })).resolves.toBe(false);
+    expect(useNoteStore.getState().memoListQueryKey).toBeNull();
+    expect(useNotebookBackgroundStore.getState().statuses['notebook-1'].state).toBe('queued');
   });
 
   it('updates a filtered list without clearing the document selection', async () => {

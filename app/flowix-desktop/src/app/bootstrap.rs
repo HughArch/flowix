@@ -14,15 +14,13 @@ use crate::app::watchdog::spawn_external_agent_watchdog;
 use crate::cli_link;
 use crate::commands;
 use crate::config::user as user_config;
-use crate::config::AgentAccessStore;
-use crate::config::SecurityBookmarkStore;
 use crate::events as dispatcher;
 use crate::memo_events::{self, MemoChangeSource, MemoDerivedChanged, MemoEvent};
-use crate::plugin;
 use crate::runtime_log;
 use crate::system_data::SystemData;
 use crate::watcher::MemoWatcher;
 use std::path::{Path, PathBuf};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
 use tauri::{Emitter, Listener, Manager};
@@ -35,20 +33,13 @@ fn record_startup_stage(startup: &crate::app::startup::StartupCoordinator, stage
     );
 }
 
-fn record_slow_notebook_stage(notebook_id: &str, stage: &str, elapsed: Duration) {
-    if elapsed < Duration::from_millis(250) {
-        return;
-    }
-    runtime_log::record_event(
-        "info",
-        "startup.notebook_stage",
-        serde_json::json!({
-            "notebookId": notebook_id,
-            "stage": stage,
-            "elapsedMs": elapsed.as_millis(),
-        })
-        .to_string(),
-    );
+// Only the durable per-version completion record controls the first stage.
+// Missing migration journals, old settings, and rebuilt databases must never
+// move an initialized installation back into version initialization.
+fn version_initialization_pending(
+    device_registry: &crate::device_registration::DeviceRegistry,
+) -> bool {
+    !device_registry.is_version_initialization_complete()
 }
 
 pub fn run() {
@@ -80,13 +71,16 @@ pub fn run() {
 
     let user_config_dir = get_user_config_dir(&home_dir);
     std::fs::create_dir_all(&user_config_dir).ok();
-    if let Err(error) = plugin::ensure_builtin_plugins() {
-        tracing::warn!("[startup] failed to initialize plugins: {error}");
-    }
-    let thread_db_path = user_config_dir.join("thread.db");
+    // Only choose the canonical location here. Path migration uses VACUUM INTO
+    // and runs in the startup worker, where its progress can reach the WebView.
+    let database_dir = user_config_dir.join("db");
+    let thread_db_path = database_dir.join("thread.db");
     let user_config = Arc::new(user_config::UserConfigStore::new(home_dir.clone()));
+    let security_bookmarks = Arc::new(crate::config::SecurityBookmarkStore::new(
+        user_config_dir.clone(),
+    ));
 
-    // 笔�?�?��册表真源�?~/.flowix/index.db (SQLite); `MemoFile::open_index_db`
+    // 笔记本注册表真源为 ~/.flowix/db/local.db (SQLite); MemoFile 按需建表
     // 首�?�??时建表�?这里不需要任何�?盘迁�?── �?`notebook.json` �?��已废�?
     let memo_file = flowix_core::memo_file::MemoFile::new(user_config_dir.clone());
 
@@ -105,7 +99,7 @@ pub fn run() {
     };
 
     // External CLI 璺緞閰嶇疆 (~/.flowix/agent-external-config.json) 鈹€鈹€
-    // 作为 codex/claude/gemini/hermes/openclaw 执�?�?��的唯一参照�?
+    // Supported external Agents use agent-external-config as their path source.
     let agent_external_config_path = user_config_dir.join("agent-external-config.json");
     let agent_external_config = match AgentExternalConfig::new(agent_external_config_path.clone()) {
         Ok(store) => store,
@@ -120,7 +114,7 @@ pub fn run() {
 
     let memo_file_arc = Arc::new(RwLock::new(memo_file));
     let notebook_transition = Arc::new(std::sync::Mutex::new(()));
-    let thread_manager = match ThreadManager::new(thread_db_path.clone()) {
+    let thread_manager = match ThreadManager::new_uninitialized(thread_db_path.clone()) {
         Ok(manager) => manager,
         Err(err) => {
             tracing::error!(
@@ -133,16 +127,11 @@ pub fn run() {
         }
     };
     let thread_manager_arc = Arc::new(thread_manager);
-    // Orphaned tool loading rows are cleared after the first workspace paint.
+    // Orphaned tool loading rows are cleared before native ready is published.
     let user_config_arc = user_config.clone();
 
     // Agent �??�?���?store ── 必须�?notebook registry �?`memo_file_arc`
     // 都就�?��后构�?(�?store 会�? notebook registry �?? + 对账)�?
-    let security_bookmarks_arc = Arc::new(SecurityBookmarkStore::new(user_config_dir.clone()));
-    let agent_access_arc = Arc::new(AgentAccessStore::new(
-        user_config_dir.clone(),
-        &*crate::lock_utils::read_lock(&memo_file_arc, "memo_file"),
-    ));
 
     // 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
     // 监听 user-config-changed �?���?whitelist �? 也需�?user_config_arc,
@@ -152,9 +141,8 @@ pub fn run() {
     // 这里把构�?AppState 需要的子结�?clone 出来 (�?�� `move` 捕获),
     // 同时把另一�?clone 喂给 sub-component 构造函数�?
     let user_config_for_state = user_config_arc.clone();
+    let security_bookmarks_for_state = security_bookmarks.clone();
     let memo_file_for_state = memo_file_arc.clone();
-    let agent_access_for_state = agent_access_arc.clone();
-    let security_bookmarks_for_state = security_bookmarks_arc.clone();
     let thread_manager_for_state = thread_manager_arc.clone();
     let startup_for_state = startup_coordinator.clone();
     let notebook_transition_for_state = notebook_transition.clone();
@@ -213,6 +201,15 @@ pub fn run() {
         .plugin(crate::frame_scrollbar::init())
         .manage(crate::app_update::AppUpdateState::default())
         .manage(memo_watcher.clone())
+        .on_window_event(commands::window_shutdown::on_window_event)
+        .on_page_load(|webview, payload| {
+            #[cfg(windows)]
+            if payload.event() == tauri::webview::PageLoadEvent::Started {
+                commands::window_shutdown::clear_native_region(&webview.window());
+            }
+            #[cfg(not(windows))]
+            let _ = (webview, payload);
+        })
         .on_webview_event(|webview, event| {
             if let tauri::WebviewEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) = event {
                 let state = webview.state::<AppState>();
@@ -228,24 +225,8 @@ pub fn run() {
                 flowix_installer_helper::listen_for_shutdown(move || shutdown_app.exit(0));
             }
             record_startup_stage(&startup_coordinator, "native-setup-start");
-            if let Err(error) = crate::template_store::initialize(&user_config_dir_for_device) {
-                tracing::warn!("[startup] failed to initialize template directories: {error}");
-            }
-
-            // Read the notebook registry synchronously so AppState can be
-            // created. Structural migrations themselves are scheduled after
-            // AppState and IPC are available; the startup coordinator is the
-            // gate for the WebView and notebook-dependent commands.
-            let initial_notebooks = {
-                let memo_file = crate::lock_utils::read_lock(&memo_file_arc, "memo_file");
-                let notebooks = memo_file.read_notebook_configs()?;
-                for notebook in &notebooks {
-                    security_bookmarks_for_state
-                        .start_accessing_for_path(std::path::Path::new(&notebook.path));
-                }
-                notebooks
-            };
-
+            // Registry import and notebook inspection run in the startup
+            // initialization worker after AppState exists.
             // 鈹€鈹€ 0) 鍚姩璁惧鐧昏 / last_seen 鍒锋柊 鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€鈹€
             //   不阻�? spawn 一�?fire-and-forget tokio 任务, �?��内部
             //   �?sleep 10s �?POST, 与产品更�?7s 检查错开。远�?��
@@ -255,14 +236,63 @@ pub fn run() {
                 &user_config_dir_for_device,
                 app_version,
             ));
+            if version_initialization_pending(&device_registry) {
+                startup_coordinator.mark_running(
+                    crate::app::startup::StartupStage::Initialization,
+                    "versionInitialization",
+                );
+            } else {
+                startup_coordinator.mark_running(
+                    crate::app::startup::StartupStage::WorkspacePreparation,
+                    "preparingData",
+                );
+            }
             device_registry.clone().spawn_startup_registration();
-            app.manage(device_registry);
+            app.manage(device_registry.clone());
 
             // 鈹€鈹€ 1) 鍚姩鎺㈡祴 external CLI 璺緞 鈹€鈹€
             //   �?source=auto/缺失�?agent 跑探测链 (env>PATH>候�?shell),
             // Cached paths are available immediately. Probing external CLIs
             // can spawn processes, so run it after the first workspace paint.
             agent_external_config.load_into_registry();
+
+            let is_dev_build = option_env!("FLOWIX_DEV_MODE") == Some("1");
+            // A saved Preferences selection is the source of truth. The build
+            // target only supplies the initial/default environment.
+            let cloud_environment = if is_dev_build {
+                let saved_environment = user_config_for_state
+                    .get_preference()
+                    .cloud_environment;
+                flowix_sync::CloudEnvironment::parse(&saved_environment)
+                    .unwrap_or_else(flowix_sync::default_cloud_environment)
+            } else {
+                flowix_sync::CloudEnvironment::Prod
+            };
+            runtime_log::record_event(
+                "info",
+                "cloud.environment.selected",
+                format!(
+                    "environment={}, api_base={}",
+                    cloud_environment.name(),
+                    cloud_environment.api_base()
+                ),
+            );
+            let cloud_sync_db_path = if is_dev_build {
+                user_config_dir_for_device
+                    .join("db")
+                    .join(format!("sync-dev-{}.db", cloud_environment.name()))
+            } else {
+                user_config_dir_for_device.join("db").join("sync.db")
+            };
+            let cloud_refresh_token_store: Arc<dyn flowix_sync::RefreshTokenStore> =
+                if is_dev_build {
+                    Arc::new(crate::config::CloudDevRefreshTokenStore::new(
+                        user_config_for_state.clone(),
+                        cloud_environment,
+                    ))
+                } else {
+                    user_config_for_state.clone()
+                };
 
             let cloud_state_app = app.handle().clone();
             let cloud_state_notifier: Arc<dyn Fn(flowix_sync::CloudState) + Send + Sync> =
@@ -272,32 +302,40 @@ pub fn run() {
                     }
                 });
             let cloud_sync_for_state = Arc::new(
-                flowix_sync::SyncManager::new_with_session_dependencies(
-                    flowix_sync::DEFAULT_CLOUD_API_BASE,
-                    user_config_dir_for_device.join("sync.db"),
-                    user_config_for_state.clone(),
+                flowix_sync::SyncManager::new_with_session_dependencies_deferred(
+                    cloud_environment.api_base(),
+                    &cloud_sync_db_path,
+                    cloud_refresh_token_store.clone(),
                     cloud_state_notifier.clone(),
                 )
                 .unwrap_or_else(|error| {
                     tracing::error!(
                         "failed to initialize cloud sync database: {error}; using a temporary database"
                     );
-                    flowix_sync::SyncManager::new_with_session_dependencies(
-                        flowix_sync::DEFAULT_CLOUD_API_BASE,
+                    flowix_sync::SyncManager::new_with_session_dependencies_deferred(
+                        cloud_environment.api_base(),
                         std::env::temp_dir().join(format!("flowix-sync-{}.db", std::process::id())),
-                        user_config_for_state.clone(),
+                        cloud_refresh_token_store.clone(),
                         cloud_state_notifier.clone(),
                     )
                     .expect("failed to initialize temporary cloud sync database")
                 }),
             );
 
+            crate::dsh::set_user_selected_cli(
+                user_config_for_state
+                    .get_preference()
+                    .dsh_cli_path
+                    .map(std::path::PathBuf::from),
+            );
             let app_state = AppState {
                 upload_sessions: Default::default(),
                 document_access: Default::default(),
+                security_bookmarks: security_bookmarks_for_state.clone(),
                 export_access: Default::default(),
                 user_config: user_config_for_state.clone(),
                 cloud_sync: cloud_sync_for_state.clone(),
+                cloud_environment,
                 system_data,
                 agent_external_config,
                 memo_file: memo_file_for_state.clone(),
@@ -309,22 +347,25 @@ pub fn run() {
                 agent_history: agent_history.clone(),
                 agent_lifecycle: agent_lifecycle.clone(),
                 thread_manager: thread_manager_for_state.clone(),
-                agent_access: agent_access_for_state.clone(),
-                security_bookmarks: security_bookmarks_for_state.clone(),
                 plugin_runs: crate::plugin::PluginRunCoordinator::default(),
                 notebook_imports: Default::default(),
+                notebook_background: Default::default(),
                 notebook_template_initializations: Default::default(),
                 notebook_transition: notebook_transition_for_state,
                 startup: startup_for_state,
+                watcher_retry_stop: Arc::new(AtomicBool::new(false)),
             };
             app_state.upload_sessions.start_cleanup();
             app.manage(app_state);
-            let session_manager = cloud_sync_for_state.clone();
-            tauri::async_runtime::spawn(async move {
-                session_manager.run_session_service().await;
-            });
             external_runtimes.listen_for_terminal_events(app.handle());
+            #[cfg(windows)]
+            {
+                if let Err(error) = crate::native_close_region::start() {
+                    tracing::warn!("native close input retrying: {error}");
+                }
+            }
             if let Some(window) = app.get_webview_window("main") {
+                commands::window_shutdown::install_window(&window);
                 // �?��即�?齐主题背�?��, 消除冷启动白�?(尤其深色主�?)�?
                 let theme = app.state::<AppState>().user_config.get_preference().theme;
                 crate::window_chrome::apply_window_chrome_theme(&window, theme);
@@ -362,18 +403,6 @@ pub fn run() {
             app.manage(commands::file_browser_watch::FileBrowserWatchState::new(
                 app.handle().clone(),
             ));
-            // Restore security-scoped access for user-selected reference
-            // folders as well. External CLI children inherit the parent's
-            // active extensions, so this must happen before any agent spawn.
-            for entry in agent_access_for_state
-                .get_config()
-                .entries
-                .into_iter()
-                .filter(|entry| entry.enabled && !entry.missing)
-            {
-                security_bookmarks_for_state
-                    .start_accessing_for_path(std::path::Path::new(&entry.path));
-            }
             // �?��时把 preference.json::watcher 应用�?MemoWatcher;
             // 同时监听 user-config-changed，在偏好更新后热加载 watcher 规则。
             {
@@ -408,16 +437,18 @@ pub fn run() {
             }
 
             register_deep_links(app);
-            spawn_startup_reconciliation(
+            spawn_workbench_startup(
                 app.handle().clone(),
-                initial_notebooks.clone(),
                 memo_file_for_state.clone(),
+                cloud_sync_for_state.clone(),
                 memo_watcher.clone(),
                 user_config_for_watcher.clone(),
                 startup_coordinator.clone(),
                 external_runtimes.clone(),
                 user_config_dir_for_device.clone(),
                 thread_manager_for_state.clone(),
+                device_registry,
+                app.state::<AppState>().watcher_retry_stop.clone(),
             );
             record_startup_stage(&startup_coordinator, "native-setup-complete");
 
@@ -430,6 +461,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // 偏好 (JSON, �?user_config)
             commands::product::get_product_info,
+            commands::product::set_cloud_environment,
             commands::product::open_log_dir,
             commands::product::open_file_with_default_app,
             commands::product::reveal_in_file_manager,
@@ -465,20 +497,16 @@ pub fn run() {
             commands::settings::delete_pi_mcp_server,
             commands::settings::get_pi_features,
             commands::settings::save_pi_features,
+            commands::settings::clear_pi_legacy_code_mode,
             commands::settings::get_pi_model_catalog,
             commands::settings::save_pi_model_config,
             commands::settings::delete_pi_model_config,
             commands::settings::test_pi_model_config,
             commands::settings::discover_pi_models,
             commands::dsh::dsh_status,
-            commands::dsh::dsh_check_update,
-            commands::dsh::dsh_archive_size,
-            commands::dsh::dsh_download_status,
-            commands::dsh::dsh_install_runtime,
-            commands::dsh::dsh_update,
-            commands::dsh::dsh_ensure_runtime,
-            commands::dsh::dsh_cancel_update,
-            commands::dsh::dsh_uninstall,
+            commands::dsh::dsh_select_cli_path,
+            commands::dsh::dsh_set_cli_path,
+            commands::dsh::dsh_install_appserver_profile,
             commands::dsh::dsh_manage_profile_plugin,
             crate::app_update::install_app_update,
             crate::app_update::check_app_update,
@@ -486,8 +514,10 @@ pub fn run() {
             crate::app_update::cancel_app_update,
             commands::boot::get_boot_features,
             commands::boot::set_boot_intro_displayed,
-            commands::boot::set_boot_onboarding_completed,
+            commands::boot::get_version_initialization_completed,
+            commands::boot::set_version_initialization_completed,
             commands::boot::get_startup_status,
+            commands::boot::retry_startup,
             commands::boot::get_startup_notebook_id,
             commands::boot::notify_startup_interactive,
             commands::boot::record_startup_stage,
@@ -506,8 +536,15 @@ pub fn run() {
             commands::cloud::cloud_link_notebook,
             commands::cloud::cloud_set_notebook_enabled,
             commands::cloud::cloud_refresh_membership,
+            commands::cloud::cloud_ai_credit_balance,
+            commands::cloud::cloud_connect_pi_model_provider,
+            commands::cloud::cloud_refresh_pi_model_provider_at_startup,
+            commands::cloud::cloud_refresh_pi_model_provider,
             commands::cloud::cloud_list_products,
+            commands::cloud::cloud_list_billing_orders,
+            commands::cloud::cloud_check_billing_order,
             commands::cloud::cloud_create_checkout,
+            commands::cloud::cloud_submit_feedback,
             commands::cloud::cloud_sync_now,
             commands::cloud::cloud_note_history,
             commands::cloud::list_local_path_archives,
@@ -517,11 +554,11 @@ pub fn run() {
             commands::cloud::cloud_resolve_markdown_conflict,
             commands::cloud::cloud_resolve_attachment_conflict,
             commands::cloud::cloud_restore_note_revision,
-            // agent 鍙闂洰褰?(JSON, 璧?agent_access)
-            commands::agent_access::get_agent_access,
-            commands::agent_access::set_agent_access,
-            commands::agent_access::get_notebook_agent_configs,
-            commands::agent_access::set_notebook_agent_config,
+            // Device-local notebook workspaces (local.db).
+            commands::agent_workspace::get_agent_workspace,
+            commands::agent_workspace::get_legacy_agent_preferences,
+            commands::agent_workspace::attach_notebook_directory,
+            commands::agent_workspace::detach_notebook_directory,
             // System metadata (JSON, ~/.flowix/boot/system.json)
             commands::kv::get_tag_system_metadata,
             commands::kv::set_tag_system_layout,
@@ -552,22 +589,22 @@ pub fn run() {
             commands::memo::reads::write_document,
             commands::document_operations::document_operation_status,
             commands::document_operations::acknowledge_document_operation,
-            commands::document_shutdown::register_document_window,
-            commands::document_shutdown::finish_document_shutdown,
-            commands::document_shutdown::flush_document_background,
+            commands::window_shutdown::register_document_window,
+            commands::window_shutdown::finish_document_shutdown,
+            commands::window_shutdown::finish_document_close,
             commands::recovery::write_recovery_draft,
             commands::recovery::read_recovery_draft,
             commands::recovery::clear_recovery_draft_through,
             commands::recovery::list_recovery_drafts,
             commands::external_document::read_external_document,
-            commands::external_document::get_external_document_mime_type,
+            commands::external_document::detect_external_document_text,
             commands::external_document::write_external_document,
             commands::memo::reads::get_launch_open_files,
             commands::memo::reads::search_path_notes,
             commands::memo::creates::add_path_document,
             commands::memo::creates::list_notebook_templates,
             commands::memo::creates::initialize_notebook_template,
-            commands::memo::creates::ensure_notebook_template_setup,
+            commands::notebook_setup::ensure_notebook_template_setup,
             commands::memo::creates::import_external_document_by_path,
             commands::memo::creates::rename_memo_title,
             commands::memo::creates::move_memo_to_directory,
@@ -582,20 +619,26 @@ pub fn run() {
             commands::memo::deletes::prune_missing_memo,
             // tag
             commands::tag::get_all_tags,
-            commands::tag::create_notebook_tag,
             commands::tag::move_memo_tag,
             commands::tag::delete_memo_tag,
             commands::tag::get_tag_prefix_counts,
             // notebook
             commands::notebook::get_notebooks,
+            commands::notebook::set_notebook_pinned,
+            commands::notebook::get_notebook_background_status,
+            commands::notebook::get_notebook_media_maintenance_status,
+            commands::notebook::request_notebook_media_maintenance,
+            commands::notebook::request_notebook_refresh,
             commands::notebook::get_default_notebook_path,
             commands::notebook::confirm_notebook_preset_overwrite,
             commands::notebook::ensure_default_notebook_path,
             commands::notebook::create_notebook,
             commands::notebook::create_notebook_from_cloud,
             commands::notebook::start_notebook_import,
-            commands::notebook::get_notebook_template_setup_status,
-            commands::notebook::start_notebook_template_setup,
+            commands::notebook_setup::get_notebook_template_setup_status,
+            commands::notebook_setup::start_notebook_template_setup,
+            commands::notebook_setup::start_or_resume_ready_notebook_template_setups,
+            commands::notebook_setup::get_notebook_template_setup_snapshot,
             commands::notebook::get_notebook_import_status,
             commands::notebook::update_notebook,
             commands::notebook::delete_notebook,
@@ -631,6 +674,7 @@ pub fn run() {
             commands::file::move_file,
             commands::file::move_folder,
             commands::file::import_file,
+            commands::file::folder_import::import_folder,
             commands::file::rename_folder,
             commands::file::delete_file,
             commands::file::delete_folder,
@@ -646,6 +690,7 @@ pub fn run() {
             commands::web::parse_web_page,
             // dialog
             commands::dialog::select_directory,
+            commands::dialog::select_import_directory,
             commands::dialog::select_files,
             commands::dialog::save_file_dialog,
             commands::dialog::write_export_file,
@@ -657,7 +702,7 @@ pub fn run() {
             commands::dialog::upload_sessions::cancel_attachment_upload,
             commands::dialog::copy_attachment_file,
             commands::dialog::open_attachment_file,
-            commands::agent_access::add_agent_access_folder_from_picker,
+            commands::agent_workspace::pick_notebook_directory,
             // agent
             commands::agent::external_config::agent_runtime_status,
             commands::agent::external_config::get_agent_external_config,
@@ -752,6 +797,8 @@ pub fn run() {
             // window
             commands::window::show_main_window,
             commands::window::open_preferences_window,
+            commands::window_input::set_window_close_region,
+            commands::window_input::native_close_routing_ready,
             commands::window::apply_window_theme,
             commands::window::apply_menu_language,
             commands::external_document_watch::watch_external_document,
@@ -767,302 +814,373 @@ pub fn run() {
         .run(handle_run_event);
 }
 
-fn spawn_startup_reconciliation(
+fn spawn_workbench_startup(
     app: tauri::AppHandle,
-    initial_notebooks: Vec<flowix_core::memo_file::NotebookConfig>,
     memo_file: Arc<RwLock<flowix_core::memo_file::MemoFile>>,
+    cloud_sync: Arc<flowix_sync::SyncManager>,
     memo_watcher: Arc<RwLock<MemoWatcher>>,
     user_config_for_watcher: Arc<user_config::UserConfigStore>,
     startup: Arc<crate::app::startup::StartupCoordinator>,
     external_runtimes: Arc<ExternalRuntimeRegistry>,
     user_config_dir: PathBuf,
     thread_manager: Arc<ThreadManager>,
+    device_registry: Arc<crate::device_registration::DeviceRegistry>,
+    watcher_retry_stop: Arc<AtomicBool>,
 ) {
     tauri::async_runtime::spawn_blocking(move || {
-        let started = Instant::now();
-        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-            run_startup_reconciliation(
-                &app,
-                &initial_notebooks,
-                &memo_file,
-                &memo_watcher,
-                &user_config_for_watcher,
-                &startup,
-            )
-        }));
+        loop {
+            let started = Instant::now();
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                prepare_startup_storage(
+                    &device_registry,
+                    &memo_file,
+                    &thread_manager,
+                    &cloud_sync,
+                    &user_config_for_watcher,
+                    &user_config_dir,
+                    &startup,
+                )?;
+                let initial_notebooks = crate::lock_utils::read_lock(&memo_file, "memo_file")
+                    .read_notebook_configs()
+                    .map_err(|error| format!("reload notebook registry failed: {error}"))?;
+                prepare_notebook_selection(&initial_notebooks, &memo_file, &startup)?;
+                Ok::<_, String>(initial_notebooks)
+            }));
 
-        match result {
-            Ok(Ok(())) => {
-                startup.mark_ready();
-                record_startup_stage(&startup, "native-ready");
-                tracing::info!(
-                    elapsed_ms = started.elapsed().as_millis(),
-                    "[startup] workspace ready"
-                );
-                handle_cold_start_open_targets(&app);
-                if !startup.wait_until_interactive(Duration::from_secs(120)) {
-                    tracing::warn!(
-                        "[startup] first workspace paint was not reported within 120 seconds"
+            match result {
+                Ok(Ok(_)) => {
+                    // Clean crash leftovers before any workspace can start a new run.
+                    match thread_manager.clear_all_loading() {
+                        Ok(0) => tracing::debug!("[Startup] no orphan is_loading=1 rows"),
+                        Ok(n) => tracing::info!("[Startup] cleared {n} orphan is_loading=1 rows"),
+                        Err(error) => tracing::warn!("[Startup] clear_all_loading failed: {error}"),
+                    }
+                    startup.mark_ready();
+                    record_startup_stage(&startup, "native-ready");
+                    tracing::info!(
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "[startup] workspace ready"
                     );
-                }
-                record_startup_stage(&startup, "background-start");
-                let app_for_cli_detection = app.clone();
-                tauri::async_runtime::spawn_blocking(move || {
-                    app_for_cli_detection
-                        .state::<AppState>()
-                        .agent_external_config
-                        .run_startup_detect();
-                });
-                match thread_manager.clear_all_loading() {
-                    Ok(0) => tracing::debug!("[Startup] no orphan is_loading=1 rows"),
-                    Ok(n) => tracing::info!("[Startup] cleared {n} orphan is_loading=1 rows"),
-                    Err(error) => tracing::warn!("[Startup] clear_all_loading failed: {error}"),
-                }
-                crate::maintenance::spawn_startup_maintenance(
-                    app.package_info().version.to_string(),
-                    user_config_dir,
-                    thread_manager,
-                );
-                start_post_startup_services(app.clone(), external_runtimes);
-                let current_notebook_id = crate::lock_utils::read_lock(&memo_file, "memo_file")
-                    .current_notebook_id_value();
-                {
-                    let mut watcher = memo_watcher
-                        .write()
-                        .unwrap_or_else(|poisoned| poisoned.into_inner());
+                    handle_cold_start_open_targets(&app);
+                    if !startup.wait_until_interactive(Duration::from_secs(120)) {
+                        tracing::warn!(
+                            "[startup] first workspace paint was not reported within 120 seconds; releasing independent services as a degraded liveness fallback"
+                        );
+                        record_startup_stage(&startup, "interactive-timeout-degraded-release");
+                    }
+                    record_startup_stage(&startup, "background-start");
+                    let app_for_cli_detection = app.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        app_for_cli_detection
+                            .state::<AppState>()
+                            .agent_external_config
+                            .run_startup_detect();
+                    });
+                    crate::maintenance::spawn_startup_maintenance(
+                        app.package_info().version.to_string(),
+                        user_config_dir,
+                        thread_manager,
+                    );
+                    // Cloud readiness/credentials are independent of local startup.
+                    let cloud_app = app.clone();
+                    let session_manager = cloud_sync.clone();
+                    tauri::async_runtime::spawn(async move {
+                        let mut delay = Duration::from_secs(2);
+                        loop {
+                            let manager = session_manager.clone();
+                            let initialized = tauri::async_runtime::spawn_blocking(move || {
+                                manager.initialize_storage()
+                            }).await;
+                            match initialized {
+                                Ok(Ok(())) => break,
+                                Ok(Err(error)) => tracing::warn!(%error, retry_in_ms = delay.as_millis(),
+                                    "background cloud storage unavailable; retry scheduled"),
+                                Err(error) => tracing::warn!(%error, retry_in_ms = delay.as_millis(),
+                                    "background cloud storage worker failed; retry scheduled"),
+                            }
+                            tokio::time::sleep(delay).await;
+                            delay = (delay * 2).min(Duration::from_secs(60));
+                        }
+                        if let Ok(state) = session_manager.state() { let _ = cloud_app.emit("cloud-state-changed", state); }
+                        commands::cloud::start_cloud_sync_polling(cloud_app);
+                        tauri::async_runtime::spawn(async move { session_manager.run_session_service().await; });
+                    });
+                    if let Err(error) = user_config_for_watcher.clear_legacy_watcher_exclusions() {
+                        tracing::warn!(%error, "background watcher defaults could not be persisted");
+                    }
+                    start_post_startup_services(app.clone(), external_runtimes);
+                    let background = app.state::<AppState>().notebook_background.clone();
+                    // This identity only sets queue priority. Release the global
+                    // MemoFile lock before taking the watcher binding lock.
+                    let current_notebook_id = crate::lock_utils::read_lock(&memo_file, "memo_file")
+                        .current_notebook_id_value();
+                    // Serialize a fresh independent registry snapshot + binding
+                    // with other rebinds, without nesting the global MemoFile lock.
+                    let initial_notebooks = {
+                        let mut watcher = memo_watcher.write().unwrap_or_else(|p| p.into_inner());
+                        let configs = crate::watcher::runtime::read_registered_notebooks(
+                            user_config_for_watcher.config_dir(),
+                        );
+                        watcher.set_whitelist(user_config_for_watcher.get_preference().watcher);
+                        match configs {
+                            Ok(configs) => {
+                                watcher.rebind_all(app.clone(), configs.clone());
+                                configs
+                            }
+                            Err(error) => {
+                                tracing::warn!(%error, "startup watcher snapshot unavailable; retry deferred");
+                                Vec::new()
+                            }
+                        }
+                    };
+                    if let Some(notebook) = initial_notebooks.iter().find(|n| Some(n.id.as_str()) == current_notebook_id.as_deref()) {
+                        background.prioritize(&notebook.id);
+                    }
+                    background.start(app.clone(), user_config_for_watcher.config_dir().clone());
                     for notebook in &initial_notebooks {
-                        if current_notebook_id.as_deref() != Some(notebook.id.as_str())
-                            && !watcher.add_notebook_root(notebook)
-                        {
-                            tracing::warn!(notebook = %notebook.id, "[startup] background notebook watch unavailable");
+                        if current_notebook_id.as_deref() != Some(notebook.id.as_str()) {
+                            background.request(&notebook.id, false, false);
                         }
                     }
-                }
-                for notebook in &initial_notebooks {
-                    if current_notebook_id.as_deref() != Some(notebook.id.as_str()) {
-                        let _ = reconcile_startup_notebook(&app, notebook, &memo_file);
-                    }
-                    let media_started = Instant::now();
-                    if let Err(error) = crate::lock_utils::read_lock(&memo_file, "memo_file")
-                        .reconcile_media_resources(&notebook.id)
-                    {
-                        tracing::warn!(notebook = %notebook.id, "[startup] media maintenance failed: {error}");
-                    }
-                    tracing::info!(notebook = %notebook.id, elapsed_ms = media_started.elapsed().as_millis(), "[startup] media maintenance checked");
-                    record_slow_notebook_stage(
-                        &notebook.id,
-                        "media-reconcile",
-                        media_started.elapsed(),
+                    spawn_notebook_watch_retry(
+                        app.clone(),
+                        memo_watcher.clone(),
+                        user_config_for_watcher.config_dir().clone(),
+                        background.clone(),
+                        watcher_retry_stop.clone(),
                     );
-                    std::thread::yield_now();
+                    tracing::info!(
+                        elapsed_ms = started.elapsed().as_millis(),
+                        "[startup] background services admitted"
+                    );
+                    record_startup_stage(&startup, "background-services-admitted");
+                    return;
                 }
-                tracing::info!(
-                    elapsed_ms = started.elapsed().as_millis(),
-                    "[startup] background maintenance completed"
-                );
-                record_startup_stage(&startup, "background-complete");
+                Ok(Err(error)) => {
+                    tracing::error!("[startup] foreground preparation failed: {error}");
+                    crate::runtime_log::record_event("error", "startup.failed", serde_json::json!({
+                    "step": startup.status().step, "error": error,
+                    "elapsedMs": startup.elapsed_ms(), "attemptElapsedMs": started.elapsed().as_millis()
+                }).to_string());
+                    startup.mark_failed(error);
+                }
+                Err(_) => {
+                    tracing::error!("[startup] foreground preparation panicked");
+                    crate::runtime_log::record_event(
+                        "error",
+                        "startup.failed",
+                        "startup migration panicked",
+                    );
+                    startup.mark_failed("startup migration panicked");
+                }
             }
-            Ok(Err(error)) => {
-                tracing::error!("[startup] migration gate failed: {error}");
-                startup.mark_failed(error);
+            startup.wait_for_retry();
+        }
+    });
+}
+
+/// Retry external/not-yet-mounted notebook roots independently of index work.
+/// A newly attached root gets one reconciliation pass to cover changes made
+/// while its volume was offline. The process exit signal stops this loop.
+fn spawn_notebook_watch_retry(
+    app: tauri::AppHandle,
+    memo_watcher: Arc<RwLock<MemoWatcher>>,
+    config_dir: PathBuf,
+    background: Arc<crate::app::notebook_background::NotebookBackground>,
+    stop: Arc<AtomicBool>,
+) {
+    tauri::async_runtime::spawn_blocking(move || {
+        loop {
+            for _ in 0..15 {
+                if stop.load(Ordering::Acquire) {
+                    return;
+                }
+                std::thread::sleep(Duration::from_secs(1));
             }
-            Err(_) => {
-                tracing::error!("[startup] migration gate panicked");
-                startup.mark_failed("startup migration panicked");
+            if stop.load(Ordering::Acquire) {
+                return;
+            }
+            let Ok(mut watcher) = memo_watcher.write() else {
+                tracing::warn!("notebook watcher lock unavailable during root retry");
+                continue;
+            };
+            let configs = match crate::watcher::runtime::read_registered_notebooks(&config_dir)
+            {
+                Ok(configs) => configs,
+                Err(error) => {
+                    tracing::warn!(%error, "could not reload notebook roots for watcher retry");
+                    continue;
+                }
+            };
+            if !watcher.is_initialized() {
+                watcher.rebind_all(app.clone(), configs.clone());
+                // Binding alone cannot cover changes made while detached. Only
+                // reconcile roots that actually attached; offline roots retain
+                // their normal retry path and suspended roots stay untouched.
+                crate::watcher::runtime::reconcile_bound_roots(&watcher, &configs, &background);
+                continue;
+            }
+            for config in &configs {
+                if watcher.is_watching(&config.id)
+                    || watcher.is_notebook_suspended(&config.id)
+                    || !Path::new(&config.path).is_dir()
+                {
+                    continue;
+                }
+                if watcher.add_notebook_root(config) {
+                    tracing::info!(notebook_id = %config.id, root = %config.path,
+                        "attached notebook watcher after root became available");
+                    background.request(&config.id, false, true);
+                } else {
+                    tracing::debug!(notebook_id = %config.id, root = %config.path,
+                        "notebook watcher root retry is still unavailable");
+                }
             }
         }
     });
 }
 
-fn run_startup_reconciliation(
-    app: &tauri::AppHandle,
-    initial_notebooks: &[flowix_core::memo_file::NotebookConfig],
+fn prepare_startup_storage(
+    device_registry: &crate::device_registration::DeviceRegistry,
     memo_file: &Arc<RwLock<flowix_core::memo_file::MemoFile>>,
-    memo_watcher: &Arc<RwLock<MemoWatcher>>,
-    user_config_for_watcher: &Arc<user_config::UserConfigStore>,
+    thread_manager: &ThreadManager,
+    cloud_sync: &flowix_sync::SyncManager,
+    user_config: &crate::config::UserConfigStore,
+    user_config_dir: &Path,
     startup: &crate::app::startup::StartupCoordinator,
 ) -> Result<(), String> {
-    // MemoFile starts without an operation context. Resolve the persisted
-    // selection before deciding which notebook is on the startup critical path.
-    let current_notebook_id = {
-        let persisted = crate::lock_utils::read_lock(memo_file, "memo_file")
-            .read_selected_notebook_id()
-            .map_err(|error| format!("read selected notebook failed: {error}"))?;
-        let selected = persisted
-            .as_deref()
-            .and_then(|id| initial_notebooks.iter().find(|notebook| notebook.id == id))
-            .filter(|notebook| Path::new(&notebook.path).is_dir())
-            .or_else(|| {
-                initial_notebooks
-                    .iter()
-                    .find(|notebook| Path::new(&notebook.path).is_dir())
-            })
-            .map(|notebook| notebook.id.clone());
-        let mut memo_file = memo_file
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        memo_file.set_current_notebook(selected.clone());
-        if persisted != selected {
-            memo_file
-                .write_selected_notebook_id(selected.as_deref())
-                .map_err(|error| format!("persist selected notebook failed: {error}"))?;
-        }
-        selected
-    };
-    tracing::info!(notebook = ?current_notebook_id, "[startup] selected notebook resolved");
-    let legacy_watcher = user_config_for_watcher.get_preference().watcher;
-    for notebook in initial_notebooks {
-        let root = Path::new(&notebook.path);
-        if root.is_dir() {
-            if let Err(error) = crate::commands::file::migrate_legacy_watcher_rules(
-                root,
-                &legacy_watcher,
-                &crate::lock_utils::read_lock(&memo_file, "memo_file"),
-            ) {
-                tracing::warn!(notebook = %notebook.id, %error, "legacy watcher rule migration deferred");
-            }
-        }
+    let version_init_pending = version_initialization_pending(device_registry);
+    if version_init_pending {
+        startup.mark_running(
+            crate::app::startup::StartupStage::Initialization,
+            "versionInitialization",
+        );
+        startup.set_progress(0, 0, 4, "prepareDatabasePaths");
+    } else {
+        // Also reset retry state here: even a failed rebuild stays in stage 2.
+        startup.mark_running(
+            crate::app::startup::StartupStage::WorkspacePreparation,
+            "preparingData",
+        );
     }
-    runtime_log::record_event(
-        "info",
-        "startup.selection",
-        serde_json::json!({ "notebookId": current_notebook_id.as_deref() }).to_string(),
-    );
-    record_startup_stage(startup, "selected-notebook-resolved");
-    startup.mark_running("dataMigrations");
-    let migration_started = Instant::now();
+    if version_init_pending {
+        crate::storage_initialization::prepare_database_paths(user_config_dir)
+            .map_err(|error| format!("prepare database paths failed: {error}"))?;
+    } else {
+        flowix_core::memo_file::ensure_storage_directory(&user_config_dir.join("db"))
+            .map_err(|error| format!("prepare current database directory failed: {error}"))?;
+    }
+    if version_init_pending {
+        startup.set_progress(8, 1, 4, "prepareThreadDatabase");
+    }
+    thread_manager
+        .initialize_storage()
+        .map_err(|error| format!("initialize thread database failed: {error}"))?;
+    if version_init_pending {
+        startup.set_progress(16, 2, 4, "prepareSyncDatabase");
+    }
+    if version_init_pending {
+        cloud_sync.initialize_storage()
+            .map_err(|error| format!("initialize sync database failed: {error}"))?;
+    }
+    if version_init_pending {
+        startup.set_progress(24, 3, 4, "prepareNotebookRegistry");
+    }
     {
-        let memo_file = crate::lock_utils::read_lock(memo_file, "memo_file");
-        let report = memo_file
-            .run_pending_data_migrations()
-            .map_err(|error| format!("startup data migration failed: {error}"))?;
-        if report.applied > 0 {
-            tracing::info!(
-                from_version = report.from_version,
-                to_version = report.to_version,
-                applied = report.applied,
-                "startup data migrations completed"
-            );
-        }
+        let memo = crate::lock_utils::read_lock(memo_file, "memo_file");
+        let result = if version_init_pending { memo.initialize_registry_storage() }
+            else { memo.initialize_current_registry_storage() };
+        result.map_err(|error| format!("initialize notebook registry failed: {error}"))?;
+    }
+    if version_init_pending {
+        startup.set_progress(30, 4, 4, "prepareNotebookRegistry");
+    }
+    user_config.prepare_runtime_watcher_exclusions();
+    if !version_init_pending {
+        // Stage 2 only opens/rebuilds current runtime stores. Do not inspect or
+        // replay legacy jobs, even if their completion records were lost or a
+        // notebook was unavailable during the first initialization.
+        user_config.ensure_runtime_storage()?;
+        user_config.prepare_initialized_runtime();
+        tracing::info!("[startup] version initialization already completed for this app version");
+        record_startup_stage(startup, "version-initialization-skipped");
+        return Ok(());
+    }
+
+    if crate::lock_utils::read_lock(memo_file, "memo_file")
+        .local_migration_completed(crate::storage_initialization::CONFIG_LOCAL_MIGRATIONS_JOB)
+        .map_err(|error| format!("read configuration initialization progress failed: {error}"))?
+    {
+        user_config.prepare_initialized_runtime();
     }
     tracing::info!(
-        elapsed_ms = migration_started.elapsed().as_millis(),
-        "[startup] data migrations checked"
+        previous_app_version = ?device_registry.last_successful_app_version(),
+        "[startup] starting version initialization"
     );
-    record_startup_stage(startup, "data-migrations-checked");
+    record_startup_stage(startup, "version-initialization-start");
+    device_registry.begin_version_initialization()?;
 
-    startup.mark_running("migratingCurrentNotebook");
-    if let Some(notebook_id) = current_notebook_id.as_deref() {
-        {
-            let memo_file = crate::lock_utils::read_lock(memo_file, "memo_file");
-            let migration_started = Instant::now();
-            let report = memo_file
-                .ensure_notebook_migrations(notebook_id)
-                .map_err(|error| format!("current notebook migration failed: {error}"))?;
-            tracing::info!(notebook = %notebook_id, elapsed_ms = migration_started.elapsed().as_millis(), "[startup] current notebook migration completed");
-            if report.moved_files > 0 || report.rebuilt_tags > 0 {
-                tracing::info!(
-                    notebook = %notebook_id,
-                    moved_files = report.moved_files,
-                    rebuilt_tags = report.rebuilt_tags,
-                    "current notebook migrations completed"
-                );
-            }
-        }
-    }
+    crate::storage_initialization::initialize_legacy_storage_with_progress(
+        device_registry,
+        &crate::lock_utils::read_lock(memo_file, "memo_file"),
+        user_config,
+        user_config_dir,
+        &get_app_data_path(),
+        |completed, total, task| {
+            let percent = 30 + (55 * completed / total.max(1)) as u8;
+            startup.set_progress(percent, completed, total, task);
+        },
+    )?;
 
-    record_startup_stage(startup, "current-notebook-migrations-checked");
-    startup.mark_running("reconcilingCurrentNotebook");
-    if let Some(notebook) = initial_notebooks
-        .iter()
-        .find(|notebook| Some(notebook.id.as_str()) == current_notebook_id.as_deref())
-    {
-        let _ = reconcile_startup_notebook(app, notebook, memo_file);
-    }
-    record_startup_stage(startup, "current-notebook-reconciled");
+    startup.set_progress(88, 0, 2, "prepareRuntimeStorage");
+    user_config.ensure_runtime_storage()?;
+    startup.set_progress(95, 1, 2, "activateRuntime");
+    user_config.prepare_initialized_runtime();
 
-    // Bind the watcher after structural migrations, before background scans.
-    // Its index updates share the memo index lock with reconciliation.
-    let watcher_started = Instant::now();
-    let current_watch_configs = initial_notebooks
-        .iter()
-        .filter(|notebook| Some(notebook.id.as_str()) == current_notebook_id.as_deref())
-        .cloned()
-        .collect();
-    memo_watcher
-        .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .rebind_all(app.clone(), current_watch_configs);
-    let watcher_cfg = user_config_for_watcher.get_preference().watcher.clone();
-    memo_watcher
-        .write()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .set_whitelist(watcher_cfg);
-    tracing::info!(
-        elapsed_ms = watcher_started.elapsed().as_millis(),
-        "[startup] watcher bound"
-    );
-    record_startup_stage(startup, "current-notebook-watcher-bound");
+    crate::storage_initialization::retire_global_index_databases(user_config_dir);
+    device_registry.complete_version_initialization()?;
+    startup.set_progress(100, 2, 2, "completeInitialization");
 
+    record_startup_stage(startup, "version-initialization-complete");
     Ok(())
 }
 
-fn reconcile_startup_notebook(
-    _app: &tauri::AppHandle,
-    notebook: &flowix_core::memo_file::NotebookConfig,
+fn prepare_notebook_selection(
+    initial_notebooks: &[flowix_core::memo_file::NotebookConfig],
     memo_file: &Arc<RwLock<flowix_core::memo_file::MemoFile>>,
+    startup: &crate::app::startup::StartupCoordinator,
 ) -> Result<(), String> {
-    let started = Instant::now();
-    let memo_file = crate::lock_utils::read_lock(memo_file, "memo_file");
-    match memo_file.migrate_note_properties_for_notebook(&notebook.id) {
-        Ok(report) if report.notes_written > 0 => {
-            tracing::info!(notebook = %notebook.id, notes = report.notes_written, "[startup] note properties migrated")
-        }
-        Err(error) => {
-            tracing::warn!(notebook = %notebook.id, %error, "[startup] note property migration will retry")
-        }
-        _ => {}
+    startup.mark_running(crate::app::startup::StartupStage::WorkspacePreparation, "preparingData");
+    // Resolve identity solely from local metadata. Probing every external disk
+    // or attached repository does not belong on the shell's critical path.
+    let persisted = crate::lock_utils::read_lock(memo_file, "memo_file")
+        .read_selected_notebook_id().map_err(|error| error.to_string())?;
+    let selected = persisted.as_deref().and_then(|id| initial_notebooks.iter().find(|n| n.id == id))
+        .or_else(|| initial_notebooks.first()).map(|n| n.id.clone());
+    let mut memo = memo_file.write().unwrap_or_else(|p| p.into_inner());
+    memo.set_current_notebook(selected.clone());
+    if persisted != selected {
+        memo.write_selected_notebook_id(selected.as_deref()).map_err(|error| error.to_string())?;
     }
-    match memo_file.migrate_note_todo_metadata_for_notebook(&notebook.id) {
-        Ok(report) if report.notes_written > 0 => {
-            tracing::info!(notebook = %notebook.id, notes = report.notes_written, "[startup] task metadata migrated")
-        }
-        Err(error) => {
-            tracing::warn!(notebook = %notebook.id, %error, "[startup] task migration will retry")
-        }
-        _ => {}
-    }
-    let report = memo_file
-        .reconcile_note_index(&notebook.id)
-        .map_err(|error| {
-            format!(
-                "notebook {} path reconciliation failed: {error}",
-                notebook.id
-            )
-        })?;
-    tracing::info!(
-        notebook = %notebook.id,
-        added = report.added,
-        updated = report.updated,
-        removed = report.removed,
-        unchanged = report.unchanged,
-        elapsed_ms = started.elapsed().as_millis(),
-        "[startup] path index reconciled"
-    );
-    record_slow_notebook_stage(&notebook.id, "markdown-reconcile", started.elapsed());
+    record_startup_stage(startup, "selected-notebook-resolved");
     Ok(())
 }
+
 fn start_post_startup_services(
     app: tauri::AppHandle,
     external_runtimes: Arc<ExternalRuntimeRegistry>,
 ) {
-    commands::cloud::start_cloud_sync_polling(app.clone());
     spawn_external_agent_watchdog(app, external_runtimes);
 }
 
 fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
     // 二�?�?��: 区分 markdown 文件�?���?flowix:// 深链�?    // 两个通道�?��同时触发 (用户�?`xdg-open foo.md flowix://memo/abc123` �?��)�?
     let app = app.clone();
+    // Launch Services starts a short-lived second process for a protocol URL.
+    // Bring the already-running window forward before waiting for app startup
+    // or parsing the URL, so even a malformed/stale callback cannot leave the
+    // browser's transient launch as the only visible activation.
+    focus_main_window(&app);
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = app.state::<AppState>().startup.wait_until_ready() {
             tracing::warn!("second-instance target deferred because startup failed: {error}");
@@ -1083,15 +1201,48 @@ fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
 }
 
 #[cfg(desktop)]
+fn focus_main_window(app: &tauri::AppHandle) {
+    #[cfg(target_os = "macos")]
+    {
+        // A protocol launch briefly activates its own helper process. Focusing
+        // the existing NSWindow alone does not reactivate the already-running
+        // app on macOS, so explicitly activate NSApp on the main thread first.
+        let app = app.clone();
+        let app_for_main_thread = app.clone();
+        let _ = app.run_on_main_thread(move || {
+            if let Some(mtm) = objc2::MainThreadMarker::new() {
+                objc2_app_kit::NSApp(mtm).activate();
+            }
+            if let Some(window) = app_for_main_thread.get_webview_window("main") {
+                let _ = window.show();
+                let _ = window.unminimize();
+                let _ = window.set_focus();
+            }
+        });
+    }
+
+    #[cfg(not(target_os = "macos"))]
+    if let Some(window) = app.get_webview_window("main") {
+        let _ = window.show();
+        let _ = window.unminimize();
+        let _ = window.set_focus();
+    }
+}
+
+#[cfg(desktop)]
 fn dispatch_google_callback(app: &tauri::AppHandle, raw: &str) -> bool {
-    let Ok(url) = url::Url::parse(raw) else { return false; };
+    let Ok(url) = url::Url::parse(raw) else {
+        return false;
+    };
     let expected_scheme = if option_env!("FLOWIX_DEV_MODE") == Some("1") {
         "flowix-dev"
     } else {
         "flowix"
     };
-    if url.scheme() != expected_scheme || url.host_str() != Some("auth") ||
-        url.path() != "/google/callback" {
+    if url.scheme() != expected_scheme
+        || url.host_str() != Some("auth")
+        || url.path() != "/google/callback"
+    {
         return false;
     }
     let mut code = None;
@@ -1106,14 +1257,20 @@ fn dispatch_google_callback(app: &tauri::AppHandle, raw: &str) -> bool {
         }
     }
     let callback = match (auth_error, code, oauth_state) {
-        (Some(error), _, Some(state)) => Some(commands::cloud::GoogleCallback::Failure { error, state }),
-        (None, Some(code), Some(state)) => Some(commands::cloud::GoogleCallback::Success { code, state }),
+        (Some(error), _, Some(state)) => {
+            Some(commands::cloud::GoogleCallback::Failure { error, state })
+        }
+        (None, Some(code), Some(state)) => {
+            Some(commands::cloud::GoogleCallback::Success { code, state })
+        }
         _ => None,
     };
     if let Some(callback) = callback {
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            if let Err(error) = commands::cloud::complete_google_deep_link(app.clone(), callback).await {
+            if let Err(error) =
+                commands::cloud::complete_google_deep_link(app.clone(), callback).await
+            {
                 let _ = app.emit("cloud-google-auth-error", error);
             }
         });
@@ -1125,7 +1282,11 @@ fn dispatch_google_callback(app: &tauri::AppHandle, raw: &str) -> bool {
 fn register_deep_links(app: &mut tauri::App) {
     use tauri_plugin_deep_link::DeepLinkExt;
 
-    let callback_scheme = if option_env!("FLOWIX_DEV_MODE") == Some("1") { "flowix-dev" } else { "flowix" };
+    let callback_scheme = if option_env!("FLOWIX_DEV_MODE") == Some("1") {
+        "flowix-dev"
+    } else {
+        "flowix"
+    };
     // Bundled app metadata owns registration on macOS; runtime registration
     // remains useful on platforms where the deep-link plugin supports it.
     let _ = app.deep_link().register(callback_scheme);
@@ -1140,6 +1301,7 @@ fn register_deep_links(app: &mut tauri::App) {
             .map(|url| url.to_string())
             .collect::<Vec<_>>();
         let app = app_handle.clone();
+        focus_main_window(&app);
         let startup = startup.clone();
         tauri::async_runtime::spawn_blocking(move || {
             if let Err(error) = startup.wait_until_ready() {
@@ -1175,6 +1337,7 @@ fn handle_cold_start_open_targets(app: &tauri::AppHandle) {
 }
 
 fn emit_open_target_batch_if_needed(app: &tauri::AppHandle, paths: &[String]) {
+    if commands::window_shutdown::is_exiting() { return; }
     let mut external_paths = Vec::new();
     let state = app.state::<AppState>();
     let configs = crate::lock_utils::read_lock(&state.memo_file, "memo_file")
@@ -1216,6 +1379,7 @@ fn emit_open_target_batch_if_needed(app: &tauri::AppHandle, paths: &[String]) {
 }
 
 fn emit_open_target_if_resolved(app: &tauri::AppHandle, raw: &str) {
+    if commands::window_shutdown::is_exiting() { return; }
     let state = app.state::<AppState>();
     let markdown_paths = commands::markdown_paths_from_args([raw.to_string()]);
     for path in &markdown_paths {
@@ -1261,7 +1425,6 @@ fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             event: tauri::WindowEvent::Destroyed,
             ..
         } => {
-            commands::document_shutdown::forget_window(app, &label);
             commands::document_operations::forget_window(&label);
             app.state::<AppState>().export_access.revoke(&label);
             app.state::<AppState>().document_access.revoke(&label);
@@ -1269,6 +1432,7 @@ fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
         }
         #[cfg(target_os = "macos")]
         tauri::RunEvent::Opened { urls } => {
+            if commands::window_shutdown::is_exiting() { return; }
             let app = app.clone();
             tauri::async_runtime::spawn_blocking(move || {
                 if let Err(error) = app.state::<AppState>().startup.wait_until_ready() {
@@ -1290,16 +1454,28 @@ fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
             });
         }
         tauri::RunEvent::ExitRequested { api, code, .. } => {
-            if !commands::document_shutdown::request_exit(app, code.unwrap_or(0)) {
+            if !commands::window_shutdown::request_exit(app, code.unwrap_or(0)) {
                 api.prevent_exit();
                 return;
             }
-            stop_external_agent_children(app, "exit");
-            checkpoint_thread_database(app, "exit");
-        }
-        tauri::RunEvent::Exit => {
-            stop_external_agent_children(app, "final exit");
-            checkpoint_thread_database(app, "final exit");
+            static CLEANUP_STARTED: AtomicBool = AtomicBool::new(false);
+            static CLEANUP_DONE: AtomicBool = AtomicBool::new(false);
+            if !CLEANUP_DONE.load(Ordering::Acquire) {
+                api.prevent_exit();
+                if !CLEANUP_STARTED.swap(true, Ordering::AcqRel) {
+                    let app = app.clone();
+                    std::thread::spawn(move || {
+                        // Run once off the UI thread. A blocked lock, panic or
+                        // checkpoint cannot outlive the independent watchdog.
+                        app.state::<AppState>().notebook_background.stop();
+                        app.state::<AppState>().watcher_retry_stop.store(true, Ordering::Release);
+                        stop_external_agent_children(&app, "exit");
+                        checkpoint_thread_database(&app, "exit");
+                        CLEANUP_DONE.store(true, Ordering::Release);
+                        app.exit(code.unwrap_or(0));
+                    });
+                }
+            }
         }
         _ => {}
     }
@@ -1317,19 +1493,25 @@ fn checkpoint_thread_database(app: &tauri::AppHandle, phase: &str) {
 pub(crate) fn prepare_for_update(app: &tauri::AppHandle) -> UpdateRuntimeGuard {
     // Construct before cleanup so unwinding also restores admission. This guard
     // stays on the same worker through cleanup and installer launch.
-    let guard = UpdateRuntimeGuard(app.state::<AppState>().pi.clone());
+    let state = app.state::<AppState>();
+    state.notebook_background.pause();
+    let guard = UpdateRuntimeGuard { pi: state.pi.clone(), background: state.notebook_background.clone() };
     stop_external_agent_children(app, "update");
     checkpoint_thread_database(app, "update");
     guard
 }
 
 #[cfg(windows)]
-pub(crate) struct UpdateRuntimeGuard(Arc<PiRpcManager>);
+pub(crate) struct UpdateRuntimeGuard {
+    pi: Arc<PiRpcManager>,
+    background: Arc<crate::app::notebook_background::NotebookBackground>,
+}
 
 #[cfg(windows)]
 impl Drop for UpdateRuntimeGuard {
     fn drop(&mut self) {
-        self.0.resume_after_failed_update();
+        self.pi.resume_after_failed_update();
+        self.background.resume();
     }
 }
 
@@ -1357,7 +1539,7 @@ fn stop_external_agent_children(app: &tauri::AppHandle, phase: &str) {
                 if total > 0 {
                     let summary = stopped
                         .iter()
-                        .map(|result| format!("{}={}", result.runtime.key(), result.affected))
+                        .map(|result| format!("{}={}", result.runtime.id(), result.affected))
                         .collect::<Vec<_>>()
                         .join(", ");
                     tracing::info!("stopped external agent children on {phase}: {summary}");
@@ -1370,4 +1552,265 @@ fn stop_external_agent_children(app: &tauri::AppHandle, phase: &str) {
             }
         }
     });
+}
+
+#[cfg(test)]
+mod missing_dependency_tests {
+    use super::*;
+    use crate::app::startup::{StartupCoordinator, StartupStage};
+
+    fn prepare_storage(
+        config: &Path,
+        user: Arc<user_config::UserConfigStore>,
+        device: &crate::device_registration::DeviceRegistry,
+        memo: &Arc<RwLock<flowix_core::memo_file::MemoFile>>,
+        startup: &StartupCoordinator,
+    ) -> Result<(), String> {
+        let threads = ThreadManager::new_uninitialized(config.join("db/thread.db")).unwrap();
+        let sync = flowix_sync::SyncManager::new_with_session_dependencies_deferred(
+            flowix_sync::CloudEnvironment::Prod.api_base(),
+            config.join("db/sync.db"),
+            user.clone(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        prepare_startup_storage(device, memo, &threads, &sync, &user, config, startup)
+    }
+
+    #[test]
+    fn completed_version_skips_legacy_jobs_despite_old_settings_and_offline_notebooks() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().to_path_buf();
+        let config = get_user_config_dir(&home);
+        let user = user_config::UserConfigStore::new(home.clone());
+        let mut preference = user.get_preference();
+        preference.watcher.skip_dirs.push("legacy".into());
+        preference.watcher.skip_files.push("*.tmp".into());
+        user.set_preference(preference).unwrap();
+        let device = crate::device_registration::DeviceRegistry::load(&config, "test");
+        device.set_version_initialization_completed(true).unwrap();
+        // An older installation can have a completed version but no reset flag.
+        assert_eq!(device.notebook_storage_reset_version(), 0);
+        let boot_before = std::fs::read(config.join("boot/boot.json")).unwrap();
+        let memo = flowix_core::memo_file::MemoFile::new(config.clone());
+        memo.initialize_registry_storage().unwrap();
+        memo.mark_local_migration_completed("config_watcher_exclusions_v1")
+            .unwrap();
+        let root = home.join("notebook");
+        std::fs::create_dir_all(root.join(".flowix")).unwrap();
+        let preferences_path = root.join(".flowix/view-preferences.json");
+        let custom_preferences = b"{\"default_create_folder\":\"custom\"}";
+        std::fs::write(&preferences_path, custom_preferences).unwrap();
+        let notebooks: Vec<_> = [("online", root), ("offline", home.join("unavailable"))]
+            .into_iter()
+            .map(|(id, path)| flowix_core::memo_file::NotebookConfig {
+                id: id.into(),
+                name: id.into(),
+                icon: None,
+                path: path.to_string_lossy().into_owned(),
+                is_default: false,
+                sort: 0,
+                created_at: 0,
+                updated_at: 0,
+            })
+            .collect();
+        memo.write_notebook_configs(&notebooks).unwrap();
+        assert!(memo.has_pending_notebook_storage_initialization().unwrap());
+        drop(memo);
+
+        // Reload all state as two independent launches would do.
+        for _ in 0..2 {
+            let user = Arc::new(user_config::UserConfigStore::new(home.clone()));
+            let device = crate::device_registration::DeviceRegistry::load(&config, "test");
+            let memo = Arc::new(RwLock::new(flowix_core::memo_file::MemoFile::new(
+                config.clone(),
+            )));
+            let startup = StartupCoordinator::new();
+            prepare_storage(&config, user.clone(), &device, &memo, &startup).unwrap();
+            assert_eq!(startup.status().stage, StartupStage::WorkspacePreparation);
+            assert!(startup.status().progress.is_none());
+            assert!(!user.has_legacy_watcher_exclusions());
+            assert!(device.is_version_initialization_complete());
+            assert_eq!(
+                std::fs::read(config.join("boot/boot.json")).unwrap(),
+                boot_before
+            );
+            // Stage 2 must not replay resets or fabricate legacy job completion.
+            assert!(memo
+                .read()
+                .unwrap()
+                .has_pending_notebook_storage_initialization()
+                .unwrap());
+            assert_eq!(
+                std::fs::read(&preferences_path).unwrap(),
+                custom_preferences
+            );
+        }
+    }
+
+    #[test]
+    fn stage_two_uses_watcher_defaults_without_persisting_configuration() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().to_path_buf();
+        let config = get_user_config_dir(&home);
+        let user = Arc::new(user_config::UserConfigStore::new(home));
+        let mut preference = user.get_preference();
+        preference.watcher.skip_files.push("*.tmp".into());
+        user.set_preference(preference).unwrap();
+        // A directory at the file path gives a deterministic I/O failure on
+        // Windows, macOS and Linux, without relying on Unix permission bits.
+        let path = config.join("boot/preference.json");
+        std::fs::remove_file(&path).unwrap();
+        std::fs::create_dir(&path).unwrap();
+        let device = crate::device_registration::DeviceRegistry::load(&config, "test");
+        device.set_version_initialization_completed(true).unwrap();
+        let memo = Arc::new(RwLock::new(flowix_core::memo_file::MemoFile::new(
+            config.clone(),
+        )));
+        let startup = StartupCoordinator::new();
+        for _ in 0..2 {
+            prepare_storage(&config, user.clone(), &device, &memo, &startup).unwrap();
+            assert_eq!(startup.status().stage, StartupStage::WorkspacePreparation);
+            assert!(startup.status().progress.is_none());
+            assert!(!user.has_legacy_watcher_exclusions());
+            assert!(path.is_dir());
+            assert!(
+                crate::device_registration::DeviceRegistry::load(&config, "test")
+                    .is_version_initialization_complete()
+            );
+        }
+    }
+
+    #[test]
+    fn new_version_initializes_once_then_prepares_workspace() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().to_path_buf();
+        let config = get_user_config_dir(&home);
+        let user = Arc::new(user_config::UserConfigStore::new(home));
+        let old = crate::device_registration::DeviceRegistry::load(&config, "old");
+        old.set_version_initialization_completed(true).unwrap();
+        let current = crate::device_registration::DeviceRegistry::load(&config, "current");
+        let memo = Arc::new(RwLock::new(flowix_core::memo_file::MemoFile::new(
+            config.clone(),
+        )));
+        std::fs::write(config.join("index.db"), b"retired root database").unwrap();
+        std::fs::create_dir_all(config.join("db")).unwrap();
+        std::fs::write(config.join("db/index.db"), b"retired canonical database").unwrap();
+        let startup = StartupCoordinator::new();
+        prepare_storage(&config, user.clone(), &current, &memo, &startup).unwrap();
+        assert!(!config.join("index.db").exists());
+        assert!(!config.join("db/index.db").exists());
+        assert!(config.join("rebuild-backups").is_dir());
+        assert!(config.join("db/rebuild-backups").is_dir());
+        assert_eq!(startup.status().stage, StartupStage::Initialization);
+        assert_eq!(startup.status().progress.unwrap().percent, 100);
+        let reloaded = crate::device_registration::DeviceRegistry::load(&config, "current");
+        assert!(reloaded.is_version_initialization_complete());
+        let startup = StartupCoordinator::new();
+        prepare_storage(&config, user, &reloaded, &memo, &startup).unwrap();
+        assert_eq!(startup.status().stage, StartupStage::WorkspacePreparation);
+        assert!(startup.status().progress.is_none());
+    }
+
+    #[test]
+    fn storage_rebuild_starts_with_three_invalid_databases() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().to_path_buf();
+        let config = get_user_config_dir(&home);
+        let user = Arc::new(user_config::UserConfigStore::new(home));
+        let device = crate::device_registration::DeviceRegistry::load(&config, "test");
+        device.set_version_initialization_completed(true).unwrap();
+        device.complete_notebook_storage_reset_version(1).unwrap();
+        std::fs::create_dir_all(config.join("db")).unwrap();
+        for name in ["local.db", "thread.db", "sync.db"] {
+            std::fs::write(config.join("db").join(name), b"invalid database").unwrap();
+        }
+        let threads = ThreadManager::new_uninitialized(config.join("db/thread.db")).unwrap();
+        let sync = flowix_sync::SyncManager::new_with_session_dependencies_deferred(
+            flowix_sync::CloudEnvironment::Prod.api_base(),
+            config.join("db/sync.db"),
+            user.clone(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let memo = Arc::new(RwLock::new(flowix_core::memo_file::MemoFile::new(
+            config.clone(),
+        )));
+        let startup = StartupCoordinator::new();
+        prepare_startup_storage(&device, &memo, &threads, &sync, &user, &config, &startup)
+            .unwrap();
+        assert_eq!(startup.status().stage, StartupStage::WorkspacePreparation);
+        assert!(startup.status().progress.is_none());
+        assert!(memo
+            .read()
+            .unwrap()
+            .read_notebook_configs()
+            .unwrap()
+            .is_empty());
+        assert!(!user
+            .get_property_presets()
+            .unwrap()
+            .system_fields
+            .is_empty());
+        assert_eq!(
+            std::fs::read_dir(config.join("db/rebuild-backups"))
+                .unwrap()
+                .count(),
+            2
+        );
+        // Cloud storage is independently prepared after the shell, not in stage 2.
+        assert_eq!(std::fs::read(config.join("db/sync.db")).unwrap(), b"invalid database");
+        sync.initialize_storage().unwrap();
+        assert_eq!(std::fs::read_dir(config.join("db/rebuild-backups")).unwrap().count(), 3);
+    }
+
+    #[test]
+    fn missing_runtime_dependencies_start_with_completed_boot_marker() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().to_path_buf();
+        let config_dir = get_user_config_dir(&home);
+        let user_config = Arc::new(user_config::UserConfigStore::new(home));
+        let device = crate::device_registration::DeviceRegistry::load(&config_dir, "test");
+        device.set_version_initialization_completed(true).unwrap();
+        device.complete_notebook_storage_reset_version(1).unwrap();
+        let memo = Arc::new(RwLock::new(flowix_core::memo_file::MemoFile::new(
+            config_dir.clone(),
+        )));
+        memo.read().unwrap().initialize_registry_storage().unwrap();
+        user_config.ensure_runtime_storage().unwrap();
+        std::fs::remove_dir_all(config_dir.join("db")).unwrap();
+        let threads = ThreadManager::new_in_memory().unwrap();
+        let sync = flowix_sync::SyncManager::new_with_session_dependencies_deferred(
+            flowix_sync::CloudEnvironment::Prod.api_base(),
+            temp.path().join("sync.db"),
+            user_config.clone(),
+            Arc::new(|_| {}),
+        )
+        .unwrap();
+        let startup = crate::app::startup::StartupCoordinator::new();
+        prepare_startup_storage(
+            &device,
+            &memo,
+            &threads,
+            &sync,
+            &user_config,
+            &config_dir,
+            &startup,
+        )
+        .unwrap();
+        assert!(device.is_version_initialization_complete());
+        assert_eq!(startup.status().stage, StartupStage::WorkspacePreparation);
+        assert!(startup.status().progress.is_none());
+        assert!(memo
+            .read()
+            .unwrap()
+            .read_notebook_configs()
+            .unwrap()
+            .is_empty());
+        assert!(!user_config
+            .get_property_presets()
+            .unwrap()
+            .system_fields
+            .is_empty());
+    }
 }

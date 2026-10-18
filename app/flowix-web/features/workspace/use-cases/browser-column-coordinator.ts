@@ -1,4 +1,5 @@
 import { useBrowserColumnStore } from '@features/workspace/store/browser-column-store';
+import { getWorkspaceSurfaceLifecycle } from '@features/workspace/public/surface-lifecycle-api';
 
 export type BrowserColumnDocumentFlush = (
   options?: { silent?: boolean },
@@ -38,6 +39,15 @@ export async function flushActiveBrowserColumnDocument(
   options?: { silent?: boolean },
 ): Promise<boolean> {
   const activeTabId = useBrowserColumnStore.getState().activeTabId;
+  const lifecycle = activeTabId ? getWorkspaceSurfaceLifecycle(activeTabId) : null;
+  if (lifecycle?.status === 'ready' && lifecycle.flush) {
+    try {
+      return await lifecycle.flush(options);
+    } catch (error) {
+      console.error('[BrowserColumn] Failed to flush active surface lifecycle', error);
+      return false;
+    }
+  }
   const registration = activeFlushRegistration;
   if (!activeTabId || !registration || registration.tabId !== activeTabId) return true;
 
@@ -49,8 +59,21 @@ export async function flushActiveBrowserColumnDocument(
   }
 }
 
-export function discardActiveBrowserColumnDocument(): void {
-  activeFlushRegistration?.discard?.();
+/** False means this editor cannot discard and must still cross its flush barrier. */
+export function discardActiveBrowserColumnDocument(): boolean {
+  const activeTabId = useBrowserColumnStore.getState().activeTabId;
+  const lifecycle = activeTabId ? getWorkspaceSurfaceLifecycle(activeTabId) : null;
+  if (lifecycle?.status === 'ready' && lifecycle.discard) {
+    lifecycle.discard();
+    return true;
+  }
+  if (lifecycle?.flush) return false;
+  const registration = activeFlushRegistration;
+  if (activeTabId && registration?.tabId === activeTabId) {
+    if (!registration.discard) return false;
+    registration.discard();
+  }
+  return true;
 }
 
 /**

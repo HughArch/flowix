@@ -89,7 +89,7 @@ impl Drop for Server {
 }
 
 fn user(id: &str) -> Value {
-    json!({ "id": id, "email": format!("{id}@example.test"), "displayName": id, "systemRole": "user" })
+    json!({ "id": id, "email": format!("{id}@example.test"), "displayName": id })
 }
 fn session(id: &str) -> Value {
     json!({ "accessToken": format!("access-{id}"), "accessTokenExpiresAt": 4_102_444_800_000_i64,

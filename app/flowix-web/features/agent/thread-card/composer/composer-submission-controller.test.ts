@@ -25,8 +25,8 @@ function setup() {
     resetHistoryNavigation: vi.fn(), updateMultiLineState: vi.fn(),
   };
   const images = {
-    hasImages: true, hasPending: false,
-    readyImages: [{ path: "/tmp/file.png", mimeType: "image/png", name: "file.png" }],
+    hasAttachments: true, hasPending: false,
+    readyAttachments: [{ path: "/tmp/file.png", mimeType: "image/png", name: "file.png" }],
     setLocked: vi.fn(), clearAfterSubmit: vi.fn(),
   };
   const phases: string[] = [];
@@ -126,8 +126,9 @@ describe("composer submission transaction", () => {
     gate.resolve();
     await first;
     expect(composer.getDraftMarkdown()).toBe("a new follow-up");
-    expect(composer.clear).not.toHaveBeenCalled();
-    expect(options.clearPersistedDraft).not.toHaveBeenCalled();
+    // The submitted draft clears at dispatch; acceptance must not clear the new draft again.
+    expect(composer.clear).toHaveBeenCalledOnce();
+    expect(options.clearPersistedDraft).toHaveBeenCalledOnce();
   });
 
   it("rechecks a command/stop that appeared during binding", async () => {

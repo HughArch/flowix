@@ -25,12 +25,13 @@ interface MediaLibraryActionsOptions {
   sourceContentRef: MutableRefObject<string | null>;
   saveInFlightRef: MutableRefObject<boolean>;
   persistMutation: PersistMutation;
+  reportSaveFailure?: () => void;
   t: ReturnType<typeof useI18n>['t'];
 }
 
 export function useMediaLibraryActions({
   document, setDocument, notebookPath, notebookId, currentFilePath, saving, setSaving,
-  sourceContentRef, saveInFlightRef, persistMutation, t,
+  sourceContentRef, saveInFlightRef, persistMutation, reportSaveFailure, t,
 }: MediaLibraryActionsOptions) {
   const addMedia = useCallback(async (): Promise<boolean> => {
     if (!document || !notebookPath || !notebookId || saving || saveInFlightRef.current) return false;
@@ -66,13 +67,14 @@ export function useMediaLibraryActions({
       if (result.completed.length) toast.success(t('mediaLibrary.addMediaSuccess', { count: result.completed.length }));
       return result.completed.length > 0;
     } catch (reason) {
+      reportSaveFailure?.();
       toast.error(reason instanceof Error ? reason.message : t('mediaLibrary.addMediaFailed'));
       return false;
     } finally {
       saveInFlightRef.current = false;
       setSaving(false);
     }
-  }, [currentFilePath, document, notebookId, notebookPath, persistMutation, saving, t]);
+  }, [currentFilePath, document, notebookId, notebookPath, persistMutation, reportSaveFailure, saving, setSaving, t]);
 
   const deleteMedia = useCallback(async (item: DocumentPageItem): Promise<boolean> => {
     if (!document || !notebookPath || saving || saveInFlightRef.current) return false;
@@ -109,13 +111,14 @@ export function useMediaLibraryActions({
       toast.success(t('media.fileTree.deleted', { name: item.name }));
       return true;
     } catch (reason) {
+      reportSaveFailure?.();
       toast.error(reason instanceof Error ? reason.message : t('media.fileTree.deleteFailed'));
       return false;
     } finally {
       saveInFlightRef.current = false;
       setSaving(false);
     }
-  }, [currentFilePath, document, notebookPath, persistMutation, saving, t]);
+  }, [currentFilePath, document, notebookPath, persistMutation, reportSaveFailure, saving, setSaving, t]);
 
   return { addMedia, deleteMedia };
 }

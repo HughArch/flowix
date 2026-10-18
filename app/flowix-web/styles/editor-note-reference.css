@@ -1,27 +1,27 @@
-/* Note Reference — 行内笔记卡片
+/* Note Reference — 行内笔记引用
  *
- * 形态: [📄 notebookName/title]  (单行, inline-flex, baseline 对齐周围文本)
+ * 形态: [📄 title] (inline 卡片, 长标题可换行)
  * 状态: 正常 / hover / 选中 / stale (链接失效)
  *
  * 完全对照 .editor-file-attachment 的结构 / 配色 token:
  *   - 透明底 (无边框/无阴影) — 跟文件附件卡片视觉权重一致
  *   - 颜色统一到 --document-link, 跨各主题自动适配
  *   - 选中态背景走 color-mix(--document-link 10%, transparent) 派生公式
- *   - hover 时 name 颜色与正文 a:hover 同步提亮
+ *   - hover 时标题和图标与正文 a:hover 同步提亮
  *
- * 与 file attachment 的差异: 名称用 `notebookName/title` 拼接, stale 状态
- * 整卡片降饱和 + 删除线 (链接失效语义)。
+ * 与 file attachment 的差异: 标题放在独立的 __title 中; stale 状态降低
+ * 整卡片透明度并追加状态文字。
  *
- * NoteReference 同时被文档编辑器和 Agent composer 使用。composer 被文档
- * 通用排版选择器排除，但仍需要这组组件专属的行内布局样式。 */
+ * 本样式表只服务正文编辑器。Agent composer 使用独立的扩展注册和
+ * Agent Conversation composer 样式，不依赖这里的笔记链接展示规则。 */
 
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference {
+.markdown-editor .tiptap:not(.agent-composer__input-content) .editor-note-reference {
   display: inline;
 }
 
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__card {
+.markdown-editor .tiptap:not(.agent-composer__input-content) .note-reference__card {
   /* inline 而非 inline-flex: 行盒允许在子节点之间换行,
-   * 长 notebook/title 换行后, 图标不会孤立. icon 与 __name 之间的
+   * 长标题换行后, 图标不会孤立. icon 与 __name 之间的
    * 间距由 __icon 的 margin-right 替代原 gap: 4px. */
   display: inline;
   padding: 2px;
@@ -34,55 +34,41 @@
   transition: background-color 0.15s ease;
 }
 
-.markdown-editor .tiptap:not(.agent-thread-card__composer-editor) .editor-note-reference__card:hover {
-  border-color: transparent;
-}
-
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__card:hover {
-  background: transparent;
-  box-shadow: none;
-}
-
 /* hover 时整组切到手型 cursor, 跟 __card 自身的 cursor: pointer 一致。
  * 默认态 __name 仍是 default (避免光标在文字上从箭头变 I 形后再变 pointer 的
  * 三态闪烁), 仅在用户主动 hover 卡片时统一发出"可点"的视觉信号。 */
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__card:hover,
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__card:hover * {
+.markdown-editor .tiptap:not(.agent-composer__input-content) .note-reference__card:hover,
+.markdown-editor .tiptap:not(.agent-composer__input-content) .note-reference__card:hover * {
   cursor: pointer;
 }
 
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__card:hover .editor-note-reference__name {
-  color: color-mix(in oklch, var(--document-link), white 20%);
-}
-
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__icon {
+.markdown-editor .tiptap:not(.agent-composer__input-content) .note-reference__icon {
   display: inline-flex;
   align-items: center;
   vertical-align: middle;
   margin-right: 1px;
-  margin-bottom: 3px;
   color: var(--document-link);
   flex-shrink: 0;
   transition: color 0.15s ease;
 }
 
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference,
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__card,
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__card * {
+.markdown-editor .tiptap:not(.agent-composer__input-content) .editor-note-reference,
+.markdown-editor .tiptap:not(.agent-composer__input-content) .note-reference__card,
+.markdown-editor .tiptap:not(.agent-composer__input-content) .note-reference__card * {
   -webkit-user-drag: none;
   -moz-user-drag: none;
   -ms-user-drag: none;
   user-drag: none;
 }
 
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__name {
+.markdown-editor .tiptap:not(.agent-composer__input-content) .note-reference__name {
   /* 名称文字颜色与 file-attachment 同源: --document-link token
    * hover 派生公式一致 → 鼠标悬停时和文件附件卡片同步提亮
-   * 内部 __notebook / __title 由各自 className 覆写, 这里给兜底色 */
+   * 内部 __title 由自己的 className 覆写, 这里给兜底色 */
   color: var(--document-link);
   font-weight: 500;
   cursor: default;
-  /* 允许长 notebook/title 在任意字符处断行, 避免超出编辑器宽度;
+  /* 允许长标题在任意字符处断行, 避免超出编辑器宽度;
    * overflow-wrap 优先在词边界换行, 单"词"超长时强制断字. */
   white-space: normal;
   overflow-wrap: anywhere;
@@ -90,41 +76,16 @@
   transition: color 0.15s ease;
 }
 
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__notebook {
-  /* notebook 名 + chevron 跟笔记标题同色同源: --document-link
-   * 整条引用视为"一个语义单元", 视觉权重统一, 不再让前缀/分隔抢焦点
-   * font-weight 跟 __title 保持 500, 让用户一眼把整段当链接看 */
-  color: var(--document-link);
-  font-weight: 500;
-  transition: color 0.15s ease;
-}
-
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__chevron {
-  /* chevron 跟 notebook/title 完全同色, opacity 微微弱化仅做"路径层级"提示,
-   * 不再降色 — 颜色信号统一, 视觉上"notebook > title"是一条连贯的链接 */
-  display: inline-flex;
-  align-items: center;
-  color: var(--document-link);
-  opacity: 0.65;
-  vertical-align: -0.05em;
-  margin: 0 2px;
-  flex-shrink: 0;
-  transition: color 0.15s ease, opacity 0.15s ease;
-}
-
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__title {
-  /* 笔记标题: 跟原 file-attachment 的 __name 一致 — --document-link 强权重
-   * 让用户一眼锁定"这是哪个笔记", notebook 名只是定位上下文 */
+.markdown-editor .tiptap:not(.agent-composer__input-content) .note-reference__title {
+  /* 笔记标题沿用 file-attachment 的 __name 配色 */
   color: var(--document-link);
   font-weight: 500;
 }
 
-/* hover 时整组同步提亮: notebook / chevron / title / icon 一并走
+/* hover 时标题和图标同步提亮
  * color-mix(--document-link, white 20%) 与 file-attachment 同源 */
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__card:hover .editor-note-reference__title,
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__card:hover .editor-note-reference__notebook,
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__card:hover .editor-note-reference__chevron,
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__card:hover .editor-note-reference__icon {
+.markdown-editor .tiptap:not(.agent-composer__input-content) .note-reference__card:hover .note-reference__title,
+.markdown-editor .tiptap:not(.agent-composer__input-content) .note-reference__card:hover .note-reference__icon {
   color: color-mix(in oklch, var(--document-link), white 20%);
 }
 
@@ -132,7 +93,7 @@
  * 走 color-mix(--document-link × transparent) 派生公式, 跨主题自动适配。
  * 浓度 10% 与 .editor-file-attachment.is-selected 对齐, 选中态统一为"轻量"——
  * inline 卡片在文本行内不应铺大色块喧宾夺主, 视觉权重对齐 hover 反馈。 */
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference.is-selected .editor-note-reference__card {
+.markdown-editor .tiptap:not(.agent-composer__input-content) .editor-note-reference.is-selected .note-reference__card {
   background-color: color-mix(in oklch, var(--document-link) 10%, transparent);
 }
 
@@ -141,17 +102,16 @@
  * 视觉上: 整卡片 50% 透明度 + 末尾 "（已失效）" 标签, 跨主题一致.
  * 失效只表达视觉状态, 交互与正常卡片保持一致。 */
 
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__card[data-stale="true"] {
+.markdown-editor .tiptap:not(.agent-composer__input-content) .note-reference__card[data-stale="true"] {
   /* 整卡片半透明形成"明显已失效但仍占位"的视觉信号;
    * 透明度而非 color-mix 灰化是为了保留 --document-link 颜色信号,
    * 跨主题行为一致. */
   opacity: 0.5;
 }
 
-.markdown-editor :is(.tiptap:not(.agent-thread-card__composer-editor), .agent-thread-card__composer-input) .editor-note-reference__stale-mark {
-  /* 失效标签: 跟 __name 同色同源 (--document-link), 不加粗不加删除线
-   * (删除线仅作用于名字段, 失效标签本身是"状态注解"而非内容);
-   * 跟名字段间距与 chevron 风格保持一致, 视觉上是同一组里的尾巴. */
+.markdown-editor .tiptap:not(.agent-composer__input-content) .note-reference__stale-mark {
+  /* 失效标签: 跟 __name 同色同源 (--document-link), 不加粗;
+   * 跟名称字段保持间距, 作为状态注解显示. */
   color: var(--document-link);
   font-weight: 400;
   margin-left: 4px;

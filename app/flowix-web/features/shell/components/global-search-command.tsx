@@ -33,11 +33,10 @@ import {
   useGlobalSearchMemoViewModel,
   type Notebook,
 } from '@features/memo/public/global-search-api';
+import { useNoteStore } from '@features/memo/store';
 import { joinNotebookMemoPath } from '@/lib/path';
-import {
-  selectAndOpenAgentConversation,
-  selectNotebook,
-} from '@features/workspace/public/search-navigation-api';
+import { selectNotebook } from '@features/workspace/public/search-navigation-api';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import {
   AgentIcon,
   getConversationRunSummary,
@@ -359,7 +358,7 @@ function RunningAgentConversationsGroup({ onClose }: RunningAgentConversationsGr
 
   const openRunningInstance = async (instance: AgentConversationInstance) => {
     prepareAgentConversationSelection(instance);
-    await selectAndOpenAgentConversation(instance.instanceId);
+    await openWorkspaceSurface({ target: { kind: 'agent-conversation', instanceId: instance.instanceId } });
     onClose();
   };
 
@@ -380,7 +379,7 @@ function RunningAgentConversationsGroup({ onClose }: RunningAgentConversationsGr
           >
             <span className="flex h-5 w-5 shrink-0 items-center justify-center rounded-full border border-[var(--border)] p-0.5 agent-runtime-list__icon--running">
               <AgentIcon
-                typeKey={agent.key}
+                typeKey={agent.id}
                 alt=""
                 className="h-full w-full object-contain"
               />
@@ -504,7 +503,6 @@ function StaticGroups({ onClose }: StaticGroupsProps) {
     activeFilter,
     setActiveFilter,
     createNote,
-    loadNotes,
     setSelectedTagId,
   } = useGlobalSearchMemoViewModel();
 
@@ -581,7 +579,7 @@ function StaticGroups({ onClose }: StaticGroupsProps) {
     if (!selectedNotebook) return;
     try {
       const created = await notes.createFromTemplate(template.id, selectedNotebook.id);
-      await loadNotes({ notebookId: selectedNotebook.id });
+      useNoteStore.getState().upsertCreatedNote(created);
       void openNotebookNote(created.path, selectedNotebook);
     } catch (err) {
       logger.error('create from template failed', { error: err });

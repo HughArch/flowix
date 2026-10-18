@@ -4,11 +4,31 @@ import { notes as notesClient } from '@platform/tauri/client';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { setCurrentWorkspaceNotebook } from '@features/memo/public/workspace-api';
 import { canonicalDirectoryPath, canonicalPath, joinNotebookMemoPath } from '@/lib/path';
-import { clearWorkspaceDocument, openExternalTarget } from '@features/workspace/use-cases/workspace-navigation';
-import type { WorkspaceContentLocation } from '@features/workspace/use-cases/workspace-content-activation';
-import { publishHeadingAnchorRequest } from '@features/document/use-cases/heading-anchor-publish';
+import {
+  clearWorkspaceDocument,
+  openWorkspaceSurface,
+} from '@features/workspace/public/note-navigation-api';
+import type { WorkspaceContentLocation } from '@features/workspace/public/note-navigation-api';
+import type { WorkspaceSurfaceOpenResult } from '@features/workspace/public/open-surface-api';
+import { publishHeadingAnchorRequest } from '@features/document/public/heading-navigation-api';
 import { translate } from '@/lib/i18n';
 import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api';
+
+/**
+ * Where a note should be surfaced. `browser-column` mirrors the Agent message
+ * link target: notes open in the right column instead of replacing whatever
+ * the work column already shows.
+ */
+export interface OpenNoteDestinationOptions {
+  destination?: 'main-third' | 'browser-column';
+}
+
+/** Cancelled opens have no view location to publish anchors against. */
+function locationFromOpenResult(
+  opened: WorkspaceSurfaceOpenResult,
+): WorkspaceContentLocation | null {
+  return opened.status === 'cancelled' ? null : opened.location;
+}
 
 /** Extract the heading anchor from a flowix://open deep link.
  *
@@ -68,7 +88,11 @@ function hiddenNotebookForPhysicalTarget(rawPath: string): { path: string; noteb
 }
 
 /** Resolve a path link through the notebook path index and open the document. */
-export async function openNoteByDeepLink(url: string, anchorOverride: string | null = null): Promise<void> {
+export async function openNoteByDeepLink(
+  url: string,
+  anchorOverride: string | null = null,
+  options?: OpenNoteDestinationOptions,
+): Promise<void> {
   const anchor = anchorOverride ?? anchorFromDeepLinkUrl(url);
   if (/^flowix:\/\/open\?/i.test(url.trim())) {
     const target = new URL(url.trim().replace(/&amp;/gi, '&'));
@@ -82,13 +106,13 @@ export async function openNoteByDeepLink(url: string, anchorOverride: string | n
       }
       const matches = notebooks.filter((item) => item.name === book);
       if (matches.length !== 1) throw new Error(`Notebook link is unavailable or ambiguous: ${book}`);
-      await openNoteByNotebookPath(matches[0].id, file, anchor);
+      await openNoteByNotebookPath(matches[0].id, file, anchor, options);
       return;
     }
     const notebookId = target.searchParams.get('notebookId');
     const relativePath = target.searchParams.get('relativePath');
     if (notebookId && relativePath) {
-      await openNoteByNotebookPath(notebookId, relativePath, anchor);
+      await openNoteByNotebookPath(notebookId, relativePath, anchor, options);
       return;
     }
     if (!target.searchParams.get('path')) throw new Error(`Invalid note link: ${url}`);
@@ -105,16 +129,17 @@ export async function openNoteByDeepLink(url: string, anchorOverride: string | n
   if (/\.(?:md|markdown)$/i.test(physicalPath)) {
     const location = await notesClient.resolveLocation(physicalPath).catch(() => null);
     if (location?.indexable && location.notebookId && location.relativePath) {
-      await openNoteByNotebookPath(location.notebookId, location.relativePath, anchor);
+      await openNoteByNotebookPath(location.notebookId, location.relativePath, anchor, options);
       return;
     }
   }
   const hiddenTarget = hiddenNotebookForPhysicalTarget(url);
   if (hiddenTarget) {
-    const opened = await openExternalTarget(hiddenTarget.path, {
-      destination: 'main-third',
-      scopePath: hiddenTarget.notebookPath,
-    });
+    const opened = await openNoteDestination(
+      hiddenTarget.path,
+      hiddenTarget.notebookPath,
+      options,
+    );
     if (anchor) publishHeadingAnchorRequest(hiddenTarget.path, opened, anchor);
     return;
   }
@@ -125,8 +150,29 @@ export async function openNoteByDeepLink(url: string, anchorOverride: string | n
   if (!/\.(?:md|markdown)$/i.test(physicalPath)) {
     throw new Error(`Unsupported note target: ${url}`);
   }
-  const opened = await openExternalTarget(physicalPath, { scopePath: null, destination: 'main-third' });
+  const opened = await openNoteDestination(physicalPath, null, options);
   if (anchor) publishHeadingAnchorRequest(physicalPath, opened, anchor);
+}
+
+/** Route a resolved physical note into the requested workspace host. */
+async function openNoteDestination(
+  path: string,
+  scopePath: string | null,
+  options?: OpenNoteDestinationOptions,
+): Promise<WorkspaceContentLocation | null> {
+  if (options?.destination === 'browser-column') {
+    const opened = await openWorkspaceSurface({
+      host: 'browser-column',
+      target: { kind: 'external', path, scopePath, transitionId: null },
+      options: { notebookId: useNoteStore.getState().notebooks.find((notebook) => canonicalPath(notebook.path) === canonicalPath(scopePath ?? ''))?.id },
+    });
+    return locationFromOpenResult(opened);
+  }
+  const opened = await openWorkspaceSurface({
+    host: 'main-third',
+    target: { kind: 'external', path, scopePath, transitionId: null },
+  });
+  return locationFromOpenResult(opened);
 }
 
 /** Open a note by notebook ID + relative path; returns where the content landed. */
@@ -134,6 +180,7 @@ export async function openNoteByNotebookPath(
   notebookId: string,
   relativePath: string,
   anchor: string | null = null,
+  options?: OpenNoteDestinationOptions,
 ): Promise<WorkspaceContentLocation | null> {
   const normalized = relativePath.replace(/\\/g, '/');
   if (!normalized || normalized.startsWith('/') || normalized.split('/').some((part) => !part || part === '.' || part === '..')) {
@@ -152,14 +199,33 @@ export async function openNoteByNotebookPath(
       path: `${notebook.name}/${normalized}`,
     }));
   }
-  const opened = await openExternalTarget(path, { scopePath: notebook.path, destination: 'main-third' });
-  if (anchor) publishHeadingAnchorRequest(path, opened, anchor);
-  return opened;
+  if (options?.destination === 'browser-column') {
+    const opened = locationFromOpenResult(
+      await openWorkspaceSurface({
+        host: 'browser-column',
+        target: { kind: 'external', path, scopePath: notebook.path, transitionId: null },
+        options: { notebookId },
+      }),
+    );
+    if (anchor) publishHeadingAnchorRequest(path, opened, anchor);
+    return opened;
+  }
+  const opened = await openWorkspaceSurface({
+    host: 'main-third',
+    target: { kind: 'external', path, scopePath: notebook.path, transitionId: null },
+  });
+  const location = locationFromOpenResult(opened);
+  if (anchor) publishHeadingAnchorRequest(path, location, anchor);
+  return location;
 }
 
 /** Open a Markdown file by absolute path or file URL, with an optional heading anchor. */
-export async function openNoteByPhysicalPath(rawPath: string, anchor: string | null = null): Promise<void> {
-  await openNoteByDeepLink(rawPath, anchor);
+export async function openNoteByPhysicalPath(
+  rawPath: string,
+  anchor: string | null = null,
+  options?: OpenNoteDestinationOptions,
+): Promise<void> {
+  await openNoteByDeepLink(rawPath, anchor, options);
 }
 
 /** Open a notebook by its explicit notebook link. */

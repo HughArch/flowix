@@ -1,33 +1,25 @@
+import type { ActiveSettingsTab as RegistryActiveSettingsTab } from '@features/preferences/preferences-tab-config';
+
 /**
- * Identifier for each settings section.
- *
- * 模型配置 (供应商 / 模型 / API Key) 现在塞在 `aiAgent` 的 Flowix 卡片
- * 里, 不再是独立 tab。 图片生成 + 视频生成合并到 `tools`。
- *
- * `imageGeneration` / `videoGeneration` / `agent` / `modelConfig` /
- * `agents` 都是旧 tab id, 现在仅作 normalizeInitialTab 的 URL 兜底。
+ * Active tab IDs come from the preferences tab registry. This file only adds
+ * the legacy identifiers that remain accepted at the route boundary.
  */
-export type SettingsTab =
-  | 'general'
+export type ActiveSettingsTab = RegistryActiveSettingsTab;
+
+/** Legacy URL identifiers accepted by PreferencesView's compatibility map. */
+export type LegacySettingsTab =
   | 'fileDisplayRules'
-  | 'format'
   | 'theme'
-  | 'noteSettings'
-  | 'shortcuts'
   | 'cli'
-  | 'mcp'
   | 'connections'
-  | 'cloudSync'
   | 'tools'
   | 'history'
-  | 'dsh'
-  | 'pi'
   | 'codex'
-  | 'aiAgent'
   | 'plugins'
-  // 旧 id, 仍在 normalizeInitialTab 里重定向使用。
   | 'agent'
   | 'agents'
   | 'modelConfig'
   | 'imageGeneration'
   | 'videoGeneration';
+
+export type SettingsTab = ActiveSettingsTab | LegacySettingsTab;

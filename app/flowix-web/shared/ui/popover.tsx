@@ -138,6 +138,7 @@ interface PopoverContentProps {
 	sideOffset?: number;
 	offsetY?: number;
 	className?: string;
+	"aria-label"?: string;
 	style?: React.CSSProperties;
 	matchAnchorWidth?: boolean | number;
 	matchAnchorHeight?: boolean;
@@ -145,6 +146,8 @@ interface PopoverContentProps {
 	ignoreSelectOutside?: boolean;
 	ignorePopoverOutside?: boolean;
 	fitViewport?: boolean;
+	alignToAnchorOrigin?: boolean;
+	keepParentMenuOpen?: boolean;
 }
 
 type PopoverMotionState = "starting" | "open" | "closing";
@@ -159,6 +162,7 @@ function PopoverContent({
 	sideOffset = 4,
 	offsetY = 0,
 	className,
+	"aria-label": ariaLabel,
 	style,
 	matchAnchorWidth = false,
 	matchAnchorHeight = false,
@@ -166,6 +170,8 @@ function PopoverContent({
 	ignoreSelectOutside = true,
 	ignorePopoverOutside = false,
 	fitViewport = false,
+	alignToAnchorOrigin = false,
+	keepParentMenuOpen = false,
 }: PopoverContentProps) {
 	const { open, setOpen, triggerRef, anchorRect, cellAnchorRect, cellPopup } = usePopoverContext();
 	const contentRef = React.useRef<HTMLDivElement>(null);
@@ -215,15 +221,19 @@ function PopoverContent({
 
 		const updatePosition = () => {
 			const content = contentRef.current;
-			if (fitViewport && content) {
-				content.style.maxWidth = `${Math.max(0, window.innerWidth - 16)}px`;
-				content.style.maxHeight = `${Math.max(0, window.innerHeight - 8)}px`;
-				content.style.overflowY = 'auto';
-			}
 			const trigger = triggerRef.current;
 			const anchor = anchorSelector ? trigger?.closest<HTMLElement>(anchorSelector) : null;
 			const rect = anchor?.getBoundingClientRect() ?? cellAnchorRect ?? anchorRect ?? trigger?.getBoundingClientRect();
 			if (!rect) return;
+			if (content && alignToAnchorOrigin) {
+				content.style.maxWidth = `${Math.max(0, window.innerWidth - rect.left - 4)}px`;
+				content.style.maxHeight = `${Math.max(0, window.innerHeight - rect.top - 4)}px`;
+				content.style.overflowY = 'auto';
+			} else if (fitViewport && content) {
+				content.style.maxWidth = `${Math.max(0, window.innerWidth - 16)}px`;
+				content.style.maxHeight = `${Math.max(0, window.innerHeight - 8)}px`;
+				content.style.overflowY = 'auto';
+			}
 			const width = contentRef.current?.offsetWidth ?? 200;
 			const height = contentRef.current?.offsetHeight ?? 200;
 
@@ -237,7 +247,10 @@ function PopoverContent({
 				resolvedSide = 'right';
 			}
 
-			if (cellAnchorRect) {
+			if (alignToAnchorOrigin) {
+				leftPos = rect.left;
+				topPos = rect.top;
+			} else if (cellAnchorRect) {
 				leftPos = rect.left;
 				topPos = rect.top;
 			} else if (resolvedSide === "right" || resolvedSide === "left") {
@@ -257,10 +270,12 @@ function PopoverContent({
 			}
 
 			topPos += offsetY;
-			const nextPosition = {
-				top: Math.max(4, Math.min(topPos, window.innerHeight - height - 4)),
-				left: Math.max(4, Math.min(leftPos, window.innerWidth - width - 4)),
-			};
+			const nextPosition = alignToAnchorOrigin
+				? { top: topPos, left: leftPos }
+				: {
+					top: Math.max(4, Math.min(topPos, window.innerHeight - height - 4)),
+					left: Math.max(4, Math.min(leftPos, window.innerWidth - width - 4)),
+				};
 			setPosition((current) =>
 				current.top === nextPosition.top && current.left === nextPosition.left
 					? current
@@ -271,6 +286,10 @@ function PopoverContent({
 		updatePosition();
 		rafId = requestAnimationFrame(() => setMotionState("open"));
 		settleTimerId = window.setTimeout(updatePosition, 50);
+		const resizeObserver = fitViewport && typeof ResizeObserver !== 'undefined' && contentRef.current
+			? new ResizeObserver(updatePosition)
+			: null;
+		if (contentRef.current) resizeObserver?.observe(contentRef.current);
 
 		window.addEventListener('scroll', updatePosition, true);
 		window.addEventListener('resize', updatePosition);
@@ -278,10 +297,11 @@ function PopoverContent({
 		return () => {
 			cancelAnimationFrame(rafId);
 			window.clearTimeout(settleTimerId);
+			resizeObserver?.disconnect();
 			window.removeEventListener('scroll', updatePosition, true);
 			window.removeEventListener('resize', updatePosition);
 		};
-	}, [open, present, side, sideOffset, offsetY, align, anchorRect, cellAnchorRect, anchorSelector, fitViewport]);
+	}, [open, present, side, sideOffset, offsetY, align, anchorRect, cellAnchorRect, anchorSelector, fitViewport, alignToAnchorOrigin]);
 
 	React.useEffect(() => {
 		if (!open || !cellAnchorRect) return;
@@ -348,9 +368,12 @@ function PopoverContent({
 				shadowClass,
 				className
 			)}
-				data-motion-state={motionState}
+			data-motion-state={motionState}
 			data-side={side}
 				data-flowix-surface="popover"
+			data-flowix-menu-child={keepParentMenuOpen ? "" : undefined}
+			role={ariaLabel ? "dialog" : undefined}
+			aria-label={ariaLabel}
 			style={{
 				...style,
 				...(matchAnchorWidth && cellAnchorRect

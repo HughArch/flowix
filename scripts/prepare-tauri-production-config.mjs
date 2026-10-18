@@ -102,14 +102,70 @@ production.bundle.resources = {
   ...(production.bundle.resources && !Array.isArray(production.bundle.resources) ? production.bundle.resources : {}),
   [path.join(repoRoot, ".build", "pi-runtime", "provider-catalog.json")]: "pi/provider-catalog.json",
 };
-if (process.env.FLOWIX_BUNDLE_PI === "1") {
-  const piResources = JSON.parse(fs.readFileSync(path.join(repoRoot, ".build", "pi-runtime", "resources.json"), "utf8"));
-  const targetArch = process.env.FLOWIX_PI_TARGET_ARCH;
-  const selectedPiResources = Object.fromEntries(Object.entries(piResources).filter(([, target]) =>
-    !targetArch || target.endsWith(`-${targetArch}`),
-  ));
-  Object.assign(production.bundle.resources, selectedPiResources);
+
+// Ship the Flowix-owned DSH profile as an app resource. It is copied into the
+// user's selected DSH_HOME only after they explicitly install the App Server
+// plugin from Preferences.
+const dshProfileStage = path.join(repoRoot, ".build", "dsh-appserver-profile", "flowix");
+fs.rmSync(path.dirname(dshProfileStage), { recursive: true, force: true });
+fs.mkdirSync(path.join(dshProfileStage, "node_modules"), { recursive: true });
+fs.cpSync(path.join(repoRoot, "dsh-appserver"), path.join(dshProfileStage, "node_modules", "dsh-appserver"), {
+  recursive: true,
+  filter: (source) => !source.includes(`${path.sep}node_modules${path.sep}`),
+});
+fs.cpSync(path.join(repoRoot, "dsh-flowix-memory"), path.join(dshProfileStage, "node_modules", "dsh-flowix-memory"), {
+  recursive: true,
+  filter: (source) => !source.includes(`${path.sep}node_modules${path.sep}`),
+});
+fs.copyFileSync(
+  path.join(repoRoot, "scripts", "dsh-dev-profile.patch.yml"),
+  path.join(dshProfileStage, "cordis.patch.yml"),
+);
+fs.writeFileSync(path.join(dshProfileStage, "package.json"), `${JSON.stringify({
+  name: "dsh-profile-flowix",
+  private: true,
+  dsh: { profile: { bundles: ["@deepseek-ai/dsh-base", "dsh-appserver", "dsh-flowix-memory"] } },
+}, null, 2)}\n`);
+production.bundle.resources[dshProfileStage] = "dsh-profile/flowix";
+const piStageRoot = path.join(repoRoot, ".build", "pi-runtime");
+const providerCatalog = path.join(piStageRoot, "provider-catalog.json");
+if (!fs.existsSync(providerCatalog)) {
+  throw new Error("Pi provider catalog is missing. Run scripts/prepare-pi-bundle.mjs before generating the production config.");
 }
+const piResourcesPath = path.join(piStageRoot, "resources.json");
+if (!fs.existsSync(piResourcesPath)) {
+  throw new Error("Pi runtime resources are missing. Run scripts/prepare-pi-bundle.mjs before generating the production config.");
+}
+const piPlatform = { darwin: "darwin", win32: "windows", linux: "linux" }[targetPlatform];
+const nativePiPlatform = { darwin: "darwin", win32: "windows", linux: "linux" }[process.platform];
+const nativePiArch = { arm64: "arm64", x64: "x64" }[process.arch];
+const targetArch = process.env.FLOWIX_PI_TARGET_ARCH
+  || (nativePiPlatform === piPlatform ? nativePiArch : undefined);
+if (!targetArch || !["arm64", "x64"].includes(targetArch)) {
+  throw new Error(`Unsupported or missing Pi target architecture: ${targetArch ?? "<missing>"}`);
+}
+const piTarget = `pi/${piPlatform}-${targetArch}`;
+const piResources = JSON.parse(fs.readFileSync(piResourcesPath, "utf8"));
+const selectedPiResources = Object.entries(piResources).filter(([, target]) => target === piTarget);
+if (selectedPiResources.length !== 1) {
+  throw new Error(`Expected exactly one staged Pi runtime for ${piTarget}, found ${selectedPiResources.length}.`);
+}
+const [piResourceDirectory] = selectedPiResources[0];
+const piExecutable = path.join(piResourceDirectory, "dist", targetPlatform === "win32" ? "pi.exe" : "pi");
+const piExecutableFallback = path.join(piResourceDirectory, targetPlatform === "win32" ? "pi.exe" : "pi");
+const executablePath = [piExecutable, piExecutableFallback].find((candidate) => {
+  try {
+    if (!fs.statSync(candidate).isFile()) return false;
+    if (targetPlatform !== "win32") fs.accessSync(candidate, fs.constants.X_OK);
+    return true;
+  } catch {
+    return false;
+  }
+});
+if (!executablePath) {
+  throw new Error(`Staged Pi runtime for ${piTarget} is missing or not executable.`);
+}
+Object.assign(production.bundle.resources, Object.fromEntries(selectedPiResources));
 if (allowUnsigned) {
   // Local builds may omit updater artifacts; signed production Flowix builds
   // keep this enabled and require TAURI_SIGNING_PRIVATE_KEY.

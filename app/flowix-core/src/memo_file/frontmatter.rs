@@ -1,14 +1,12 @@
 //! Markdown frontmatter 解析与编辑。
 //!
 //! Notes are addressed by notebook-relative path. Supplied Markdown is kept
-//! intact, including legacy `flowix_key`. Existing identity fields remain reserved, and the
-//! merge helper can read them for legacy frontmatter compatibility. File
-//! registration never derives a note identity from those fields.
+//! intact; frontmatter fields are not parsed as note identities.
 //!
 //! ## 工具
 //!
 //! - [`extract_body_content`] — 切掉 `---\n...\n---` 块, 返回 body 切片。
-//! - [`build_md_content`] — 新建时剔除模板遗留的身份字段。
+//! - [`extract_document_metadata`] — 解析 frontmatter 属性与标签。
 //! - [`merge_frontmatter`] — 就地编辑 frontmatter 块, 见下文。
 //!
 //! ## `merge_frontmatter` 行为
@@ -19,7 +17,6 @@
 //!      **就地替换** value;
 //!    - 其它行 (注释 / 空行 / 列表 / 多行值起点 / 其它 map) → **字节级保留**。
 //! 3. `overrides` 里有但 frontmatter 找不到对应行的新字段:
-//!    - 显式传入的旧 `flowix_key` 字段 → **头部**追加;
 //!    - 其它字段 → **末尾**追加。
 //! 4. 无 frontmatter 块 → 在文件头插入包含 `overrides` 的完整块。
 //! 5. 规范化文件边界的 UTF-8 BOM; 其它 body 内容保持原样。
@@ -79,15 +76,6 @@ pub fn normalize_markdown_encoding_boundaries(content: &str) -> Cow<'_, str> {
 /// 3. value (含引号, 替换时由 caller 决定是否重新加引号)
 static FM_LINE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^(\s*)([A-Za-z_][A-Za-z0-9_-]*)\s*:\s*(.*?)\s*$").unwrap());
-pub const CANONICAL_FRONTMATTER_KEY: &str = "flowix_key";
-pub const LEGACY_FRONTMATTER_KEY: &str = "key";
-/// Reserved legacy identity fields. They are not note identities in the path
-/// index and must not appear as user-defined properties.
-pub const SYSTEM_FRONTMATTER_KEYS: [&str; 2] = [CANONICAL_FRONTMATTER_KEY, LEGACY_FRONTMATTER_KEY];
-
-pub fn is_system_frontmatter_key(key: &str) -> bool {
-    SYSTEM_FRONTMATTER_KEYS.contains(&key)
-}
 static TAGS_LINE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r#"^(?:tags|'tags'|"tags")\s*:"#).unwrap());
 static LEGACY_TAG_LINE_RE: Lazy<Regex> =
@@ -115,9 +103,7 @@ pub enum FrontmatterMetadataError {
 
 /// 注入指令集: key → 新 value。**就地替换**语义。
 ///
-/// The merge helper accepts an old `key` override for compatibility and maps
-/// it to `flowix_key`. Current note creation and indexing do not supply an
-/// identity override. Other field names are merged as provided.
+/// Frontmatter overrides are merged by field name. No field carries note identity.
 pub type MergeOverrides = BTreeMap<String, String>;
 
 /// 切掉 YAML frontmatter 块, 返回剩余 body。
@@ -125,7 +111,7 @@ pub type MergeOverrides = BTreeMap<String, String>;
 /// 输入示例:
 /// ```text
 /// ---
-/// flowix_key: abc123
+/// status: draft
 /// ---
 /// # Hello
 /// body
@@ -137,66 +123,6 @@ pub fn extract_body_content(content: &str) -> &str {
     } else {
         content
     }
-}
-
-/// Read a legacy `flowix_key` value for frontmatter compatibility. File
-/// registration resolves existing notes by path and does not call this parser.
-///
-/// 行为:
-/// - 无 frontmatter 块 → None
-/// - 有 frontmatter 但没 `flowix_key:` 行 → None
-/// - `flowix_key:` value 不在 `[0-9a-z]{6|8}` 字符集 → None (防止用户手写垃圾值)
-pub fn extract_frontmatter_key(content: &str) -> Option<String> {
-    let caps = FRONTMATTER_RE.captures(content)?;
-    let inner = caps.get(1)?.as_str();
-    for line in inner.split('\n') {
-        if let Some(c) = FM_LINE_RE.captures(line) {
-            let name = c.get(2).map(|m| m.as_str())?;
-            if name == CANONICAL_FRONTMATTER_KEY {
-                let value = c
-                    .get(3)
-                    .map(|m| m.as_str())?
-                    .trim()
-                    .trim_matches(|ch| ch == '"' || ch == '\'');
-                if matches!(value.len(), 6 | super::MEMO_ID_LENGTH)
-                    && value.chars().all(|c| {
-                        c.is_ascii_alphanumeric() && (c.is_ascii_digit() || c.is_ascii_lowercase())
-                    })
-                {
-                    return Some(value.to_string());
-                }
-                return None;
-            }
-        }
-    }
-    None
-}
-
-fn extract_legacy_frontmatter_key(content: &str) -> Option<String> {
-    let caps = FRONTMATTER_RE.captures(content)?;
-    let inner = caps.get(1)?.as_str();
-    for line in inner.split('\n') {
-        if let Some(c) = FM_LINE_RE.captures(line) {
-            let name = c.get(2).map(|m| m.as_str())?;
-            if name != LEGACY_FRONTMATTER_KEY {
-                continue;
-            }
-            let value = c
-                .get(3)
-                .map(|m| m.as_str())?
-                .trim()
-                .trim_matches(|ch| ch == '"' || ch == '\'');
-            if matches!(value.len(), 6 | 8)
-                && value.chars().all(|c| {
-                    c.is_ascii_alphanumeric() && (c.is_ascii_digit() || c.is_ascii_lowercase())
-                })
-            {
-                return Some(value.to_string());
-            }
-            return None;
-        }
-    }
-    None
 }
 
 pub fn extract_frontmatter_properties(content: &str) -> Value {
@@ -500,15 +426,7 @@ pub(crate) fn replace_frontmatter_tags_preserving_invalid_paths(
             .map_err(|error| FrontmatterMetadataError::InvalidYaml(error.to_string()))?;
         lines = yaml.trim_end().lines().map(str::to_string).collect();
     } else {
-        let insert_at = lines
-            .iter()
-            .position(|line| {
-                line.trim_start()
-                    .starts_with(&format!("{}:", CANONICAL_FRONTMATTER_KEY))
-            })
-            .map(|index| index + 1)
-            .unwrap_or(lines.len());
-        lines.splice(insert_at..insert_at, replacement);
+        lines.extend(replacement);
     }
 
     Ok(format!("---\n{}\n---\n{}", lines.join("\n"), body))
@@ -516,34 +434,7 @@ pub(crate) fn replace_frontmatter_tags_preserving_invalid_paths(
 
 /// 就地编辑 frontmatter 块, 见模块 doc 详述行为契约。
 pub fn merge_frontmatter(content: &str, overrides: &MergeOverrides) -> String {
-    let mut canonical_overrides = overrides.clone();
-    if let Some(legacy_value) = canonical_overrides.remove(LEGACY_FRONTMATTER_KEY) {
-        // A legacy override must not replace an existing canonical field.
-        // Explicit canonical overrides remain available to compatibility callers.
-        if extract_frontmatter_key(content).is_none() {
-            // Existing legacy-only notes migrate by copying their stored
-            // legacy value. The override is only a fallback when no legacy
-            // key line exists at all.
-            let legacy_value = extract_legacy_frontmatter_key(content).unwrap_or(legacy_value);
-            canonical_overrides
-                .entry(CANONICAL_FRONTMATTER_KEY.to_string())
-                .or_insert(legacy_value);
-        }
-    }
-    let overrides = &canonical_overrides;
-
     if overrides.is_empty() {
-        // Preserve an existing legacy field when collapsing an adjacent
-        // system-only frontmatter block into the user's block.
-        if let Some(canonical_key) = extract_frontmatter_key(content) {
-            let mut structural_overrides = MergeOverrides::new();
-            structural_overrides.insert(CANONICAL_FRONTMATTER_KEY.to_string(), canonical_key);
-            if let Some(collapsed) =
-                collapse_adjacent_override_frontmatter(content, &structural_overrides)
-            {
-                return merge_frontmatter(&collapsed, &structural_overrides);
-            }
-        }
         return content.to_string();
     }
 
@@ -580,16 +471,10 @@ pub fn merge_frontmatter(content: &str, overrides: &MergeOverrides) -> String {
         }
         None => {
             // 无 frontmatter 块 → 从显式传入的 overrides 创建完整块。
-            let mut block_lines: Vec<String> = Vec::new();
-            let mut tail_lines: Vec<String> = Vec::new();
-            for (k, v) in overrides {
-                if k == CANONICAL_FRONTMATTER_KEY {
-                    block_lines.push(format!("{}: {}", k, v));
-                } else {
-                    tail_lines.push(format!("{}: {}", k, v));
-                }
-            }
-            block_lines.extend(tail_lines);
+            let block_lines: Vec<String> = overrides
+                .iter()
+                .map(|(key, value)| format!("{}: {}", key, value))
+                .collect();
             let block = block_lines.join("\n");
             // body 前补一个换行: 文件头插入 `---\n...\n---\n\n<body>`
             format!("---\n{}\n---\n\n{}", block, content)
@@ -648,7 +533,6 @@ fn frontmatter_contains_only_override_fields(inner: &str, overrides: &MergeOverr
 /// - 对 `key: value` 单行, 命中 overrides 内的 key 时**就地替换** value;
 ///   **不**命中时**保留原行** (含其原引号风格 / 缩进)。
 /// - overrides 内出现但 frontmatter 找不到对应行的字段:
-///   - 显式传入的 `flowix_key` → 准备头部追加;
 ///   - 其它字段 → 准备末尾追加。
 fn merge_inner(inner: &str, overrides: &MergeOverrides) -> String {
     // 1. 行级扫描, 拆出 (key 名, 替换后 value 或 None) 与保留行
@@ -677,22 +561,15 @@ fn merge_inner(inner: &str, overrides: &MergeOverrides) -> String {
         }
     }
 
-    // 2. 显式旧身份字段在头部追加，其它字段在末尾追加。
-    let mut head_lines: Vec<String> = Vec::new();
+    // 2. Append newly supplied fields in their original order.
     let mut tail_lines: Vec<String> = Vec::new();
     for (k, v) in &pending {
         // pending 里剩下的就是 overrides 中未在 frontmatter 找到对应行的 key
-        if k == CANONICAL_FRONTMATTER_KEY {
-            head_lines.push(format!("{}: {}", k, v));
-        } else {
-            tail_lines.push(format!("{}: {}", k, v));
-        }
+        tail_lines.push(format!("{}: {}", k, v));
     }
 
     // 3. 拼接
-    let mut final_lines: Vec<String> =
-        Vec::with_capacity(head_lines.len() + preserved_lines.len() + tail_lines.len());
-    final_lines.extend(head_lines);
+    let mut final_lines: Vec<String> = Vec::with_capacity(preserved_lines.len() + tail_lines.len());
     final_lines.extend(preserved_lines);
     final_lines.extend(tail_lines);
 
@@ -707,18 +584,21 @@ mod tests {
 
     #[test]
     fn extracts_body_after_frontmatter() {
-        let md = "---\nflowix_key: x\n---\n# Title\nbody\n";
+        let md = "---\nstatus: draft\n---\n# Title\nbody\n";
         assert_eq!(extract_body_content(md), "# Title\nbody\n");
     }
 
     #[test]
     fn extracts_frontmatter_after_leading_blank_lines() {
         let md = "\n  \n---\nflowix_key: abc12345\ntags: [inbox]\n---\n# Title\n";
-        assert_eq!(extract_frontmatter_key(md), Some("abc12345".to_string()));
         assert_eq!(extract_body_content(md), "# Title\n");
         assert_eq!(
             extract_document_metadata(md).unwrap().tags,
             vec!["inbox".to_string()]
+        );
+        assert_eq!(
+            extract_document_metadata(md).unwrap().properties["flowix_key"],
+            "abc12345"
         );
     }
 
@@ -735,57 +615,45 @@ mod tests {
     }
 
     #[test]
-    fn extracts_quoted_frontmatter_keys() {
-        assert_eq!(
-            extract_frontmatter_key("---\nflowix_key: \"abc12345\"\n---\nbody\n"),
-            Some("abc12345".to_string())
-        );
-        assert_eq!(
-            extract_frontmatter_key("---\nflowix_key: 'abc123'\n---\nbody\n"),
-            Some("abc123".to_string())
-        );
+    fn historical_flowix_key_is_an_ordinary_yaml_property() {
+        let metadata = extract_document_metadata(
+            "---\nflowix_key: \"abc12345\"\nkey: legacy-value\n---\nbody\n",
+        )
+        .unwrap();
+        assert_eq!(metadata.properties["flowix_key"], "abc12345");
+        assert_eq!(metadata.properties["key"], "legacy-value");
     }
 
     #[test]
-    fn ignores_legacy_key_as_memo_identity() {
-        assert_eq!(
-            extract_frontmatter_key("---\nkey: abc12345\n---\nbody\n"),
-            None
-        );
-    }
-
-    #[test]
-    fn rejects_invalid_canonical_key_even_when_legacy_key_is_valid() {
-        assert_eq!(
-            extract_frontmatter_key("---\nflowix_key: not-a-valid-id\nkey: abc12345\n---\nbody\n"),
-            None
-        );
-    }
-
-    #[test]
-    fn copies_legacy_key_into_canonical_field_without_removing_legacy_field() {
+    fn ordinary_properties_can_be_merged_independently() {
         let mut overrides = MergeOverrides::new();
         overrides.insert("key".to_string(), "abc123".to_string());
         let out = merge_frontmatter("---\nkey: old999\n---\nbody\n", &overrides);
-        assert_eq!(out, "---\nflowix_key: old999\nkey: old999\n---\nbody\n");
+        assert_eq!(out, "---\nkey: abc123\n---\nbody\n");
     }
 
     #[test]
-    fn canonical_merge_override_wins_over_legacy_override() {
+    fn historical_identity_named_fields_use_generic_merge_behavior() {
         let mut overrides = MergeOverrides::new();
         overrides.insert("key".to_string(), "legacy123".to_string());
-        overrides.insert("flowix_key".to_string(), "canonical1".to_string());
+        overrides.insert("flowix_key".to_string(), "ordinary1".to_string());
         let out = merge_frontmatter("body\n", &overrides);
-        assert_eq!(out, "---\nflowix_key: canonical1\n---\n\nbody\n");
+        assert_eq!(
+            out,
+            "---\nflowix_key: ordinary1\nkey: legacy123\n---\n\nbody\n"
+        );
     }
 
     #[test]
-    fn legacy_merge_override_does_not_replace_valid_canonical_key() {
+    fn merge_adds_an_ordinary_property_alongside_historical_identity_field() {
         let mut overrides = MergeOverrides::new();
         overrides.insert("key".to_string(), "legacy-new-id".to_string());
         let input = "---\nflowix_key: abc12345\n---\nbody\n";
 
-        assert_eq!(merge_frontmatter(input, &overrides), input);
+        assert_eq!(
+            merge_frontmatter(input, &overrides),
+            "---\nflowix_key: abc12345\nkey: legacy-new-id\n---\nbody\n"
+        );
     }
 
     // ============== merge_frontmatter: no frontmatter ==============
@@ -795,7 +663,7 @@ mod tests {
         let mut overrides = MergeOverrides::new();
         overrides.insert("key".to_string(), "abc123".to_string());
         let out = merge_frontmatter("body\n", &overrides);
-        assert_eq!(out, "---\nflowix_key: abc123\n---\n\nbody\n");
+        assert_eq!(out, "---\nkey: abc123\n---\n\nbody\n");
     }
 
     #[test]
@@ -804,19 +672,19 @@ mod tests {
         overrides.insert("key".to_string(), "abc123".to_string());
         assert_eq!(
             merge_frontmatter("", &overrides),
-            "---\nflowix_key: abc123\n---\n\n"
+            "---\nkey: abc123\n---\n\n"
         );
     }
 
     // ============== merge_frontmatter: replace existing key ==============
 
     #[test]
-    fn explicit_canonical_override_replaces_existing_key_in_place() {
+    fn merge_replaces_historical_identity_named_property_in_place() {
         let mut overrides = MergeOverrides::new();
-        overrides.insert(CANONICAL_FRONTMATTER_KEY.to_string(), "newid1".to_string());
+        overrides.insert("flowix_key".to_string(), "new-value".to_string());
         let input = "---\nflowix_key: oldid9\ntags: [a]\n---\nbody\n";
         let out = merge_frontmatter(input, &overrides);
-        assert_eq!(out, "---\nflowix_key: newid1\ntags: [a]\n---\nbody\n");
+        assert_eq!(out, "---\nflowix_key: new-value\ntags: [a]\n---\nbody\n");
     }
 
     #[test]
@@ -827,40 +695,40 @@ mod tests {
         let out = merge_frontmatter(input, &overrides);
         assert_eq!(
             out,
-            "---\nflowix_key: abc123\ntags: [a, b]\n# comment\ndescription: |\n  multi\n  line\n\nauthor: x\n---\nbody\n"
+            "---\ntags: [a, b]\n# comment\ndescription: |\n  multi\n  line\n\nauthor: x\nkey: abc123\n---\nbody\n"
         );
     }
 
-    // ============== merge_frontmatter: prepend key, append others ==============
+    // ============== merge_frontmatter: append fields ==============
 
     #[test]
-    fn merge_prepends_missing_key() {
+    fn merge_appends_missing_key_property() {
         let mut overrides = MergeOverrides::new();
         overrides.insert("key".to_string(), "abc123".to_string());
         let input = "---\ntags: [a]\n---\nbody\n";
         let out = merge_frontmatter(input, &overrides);
-        assert_eq!(out, "---\nflowix_key: abc123\ntags: [a]\n---\nbody\n");
+        assert_eq!(out, "---\ntags: [a]\nkey: abc123\n---\nbody\n");
     }
 
     #[test]
-    fn merge_prepends_missing_key_in_crlf_frontmatter() {
+    fn merge_appends_missing_key_property_in_crlf_frontmatter() {
         let mut overrides = MergeOverrides::new();
         overrides.insert("key".to_string(), "abc123".to_string());
         let input = "---\r\nname: imported\r\n---\r\nbody\r\n";
         let out = merge_frontmatter(input, &overrides);
         assert_eq!(
             out,
-            "---\nflowix_key: abc123\nname: imported\n---\nbody\r\n"
+            "---\nname: imported\nkey: abc123\n---\nbody\r\n"
         );
     }
 
     #[test]
-    fn merge_collapses_adjacent_key_block_into_user_frontmatter() {
+    fn merge_collapses_adjacent_frontmatter_for_an_ordinary_property() {
         let mut overrides = MergeOverrides::new();
-        overrides.insert("key".to_string(), "sg8qgwdq".to_string());
+        overrides.insert("name".to_string(), "new-name".to_string());
         let input = concat!(
             "---\n",
-            "flowix_key: sg8qgwdq\n",
+            "name: old-name\n",
             "---\n",
             "---\n",
             "name: guizang-ppt-skill\n",
@@ -873,8 +741,7 @@ mod tests {
             out,
             concat!(
                 "---\n",
-                "flowix_key: sg8qgwdq\n",
-                "name: guizang-ppt-skill\n",
+                "name: new-name\n",
                 "description: deck generator\n",
                 "---\n",
                 "body\n"
@@ -886,16 +753,16 @@ mod tests {
     fn merge_appends_missing_non_key_field() {
         let mut overrides = MergeOverrides::new();
         overrides.insert("extra".to_string(), "x".to_string());
-        let input = "---\nflowix_key: abc123\ntags: [a]\n---\nbody\n";
+        let input = "---\nstatus: draft\ntags: [a]\n---\nbody\n";
         let out = merge_frontmatter(input, &overrides);
         assert_eq!(
             out,
-            "---\nflowix_key: abc123\ntags: [a]\nextra: x\n---\nbody\n"
+            "---\nstatus: draft\ntags: [a]\nextra: x\n---\nbody\n"
         );
     }
 
     #[test]
-    fn merge_prepends_key_and_appends_others_together() {
+    fn merge_appends_multiple_fields() {
         let mut overrides = MergeOverrides::new();
         overrides.insert("key".to_string(), "abc123".to_string());
         overrides.insert("extra".to_string(), "y".to_string());
@@ -903,7 +770,7 @@ mod tests {
         let out = merge_frontmatter(input, &overrides);
         assert_eq!(
             out,
-            "---\nflowix_key: abc123\ntags: [a]\nextra: y\n---\nbody\n"
+            "---\ntags: [a]\nextra: y\nkey: abc123\n---\nbody\n"
         );
     }
 
@@ -914,40 +781,40 @@ mod tests {
         // 同一字段名出现两次: 都替换 (YAML 语义上重复 key 是非法的,
         // 工具做防御性替换避免用户 frontmatter 包含重复行时丢改)。
         let mut overrides = MergeOverrides::new();
-        overrides.insert(CANONICAL_FRONTMATTER_KEY.to_string(), "newid1".to_string());
-        let input = "---\nflowix_key: oldid9\nother: x\nflowix_key: anotherold\n---\nbody\n";
+        overrides.insert("status".to_string(), "new-value".to_string());
+        let input = "---\nstatus: old\nother: x\nstatus: another\n---\nbody\n";
         let out = merge_frontmatter(input, &overrides);
         assert_eq!(
             out,
-            "---\nflowix_key: newid1\nother: x\nflowix_key: newid1\n---\nbody\n"
+            "---\nstatus: new-value\nother: x\nstatus: new-value\n---\nbody\n"
         );
     }
 
     #[test]
     fn merge_empty_overrides_returns_content_unchanged() {
         let overrides: MergeOverrides = MergeOverrides::new();
-        let input = "---\nflowix_key: abc123\n---\nbody\n";
+        let input = "---\nstatus: draft\n---\nbody\n";
         assert_eq!(merge_frontmatter(input, &overrides), input);
     }
 
     #[test]
     fn merge_strips_leading_bom_before_inserting_frontmatter() {
         let mut overrides = MergeOverrides::new();
-        overrides.insert(CANONICAL_FRONTMATTER_KEY.to_string(), "abc123".to_string());
+        overrides.insert("status".to_string(), "draft".to_string());
 
         let out = merge_frontmatter("\u{FEFF}# Imported\n", &overrides);
 
-        assert_eq!(out, "---\nflowix_key: abc123\n---\n\n# Imported\n");
+        assert_eq!(out, "---\nstatus: draft\n---\n\n# Imported\n");
     }
 
     #[test]
     fn encoding_boundary_normalization_is_idempotent_and_scoped() {
-        let legacy = "---\nflowix_key: abc123\n---\n\u{FEFF}body \u{FEFF} text\n";
+        let legacy = "---\nstatus: draft\n---\n\u{FEFF}body \u{FEFF} text\n";
         let normalized = normalize_markdown_encoding_boundaries(legacy);
 
         assert_eq!(
             normalized,
-            "---\nflowix_key: abc123\n---\nbody \u{FEFF} text\n"
+            "---\nstatus: draft\n---\nbody \u{FEFF} text\n"
         );
         assert!(matches!(
             normalize_markdown_encoding_boundaries(normalized.as_ref()),
@@ -958,24 +825,24 @@ mod tests {
     #[test]
     fn merge_strips_leading_bom_before_updating_frontmatter() {
         let mut overrides = MergeOverrides::new();
-        overrides.insert(CANONICAL_FRONTMATTER_KEY.to_string(), "abc123".to_string());
+        overrides.insert("status".to_string(), "draft".to_string());
 
-        let out = merge_frontmatter("\u{FEFF}---\nflowix_key: old999\n---\nbody\n", &overrides);
+        let out = merge_frontmatter("\u{FEFF}---\nstatus: old\n---\nbody\n", &overrides);
 
-        assert_eq!(out, "---\nflowix_key: abc123\n---\nbody\n");
+        assert_eq!(out, "---\nstatus: draft\n---\nbody\n");
     }
 
     #[test]
     fn merge_strips_legacy_bom_at_frontmatter_body_boundary() {
         let mut overrides = MergeOverrides::new();
-        overrides.insert(CANONICAL_FRONTMATTER_KEY.to_string(), "abc123".to_string());
+        overrides.insert("status".to_string(), "draft".to_string());
 
         let out = merge_frontmatter(
-            "---\nflowix_key: old999\n---\n\u{FEFF}<p>Imported</p>\n",
+            "---\nstatus: old\n---\n\u{FEFF}<p>Imported</p>\n",
             &overrides,
         );
 
-        assert_eq!(out, "---\nflowix_key: abc123\n---\n<p>Imported</p>\n");
+        assert_eq!(out, "---\nstatus: draft\n---\n<p>Imported</p>\n");
     }
 
     #[test]
@@ -985,17 +852,17 @@ mod tests {
 
         let out = merge_frontmatter("body \u{FEFF} text\n", &overrides);
 
-        assert_eq!(out, "---\nflowix_key: abc123\n---\n\nbody \u{FEFF} text\n");
+        assert_eq!(out, "---\nkey: abc123\n---\n\nbody \u{FEFF} text\n");
     }
 
     #[test]
     fn merge_preserves_value_with_quotes() {
         // 替换时按 YAML 标准不引号, 工具统一输出 `key: <value>` 无引号
         let mut overrides = MergeOverrides::new();
-        overrides.insert(CANONICAL_FRONTMATTER_KEY.to_string(), "abc123".to_string());
-        let input = "---\nflowix_key: \"old999\"\n---\nbody\n";
+        overrides.insert("status".to_string(), "draft".to_string());
+        let input = "---\nstatus: \"old\"\n---\nbody\n";
         let out = merge_frontmatter(input, &overrides);
-        assert_eq!(out, "---\nflowix_key: abc123\n---\nbody\n");
+        assert_eq!(out, "---\nstatus: draft\n---\nbody\n");
     }
 
     #[test]
@@ -1004,14 +871,14 @@ mod tests {
         let mut overrides = MergeOverrides::new();
         overrides.insert("key".to_string(), "z9y8x7".to_string());
         let out = merge_frontmatter("---\n---\nx", &overrides);
-        assert_eq!(out, "---\nflowix_key: z9y8x7\n---\nx");
+        assert_eq!(out, "---\nkey: z9y8x7\n---\nx");
     }
 
     #[test]
     fn document_metadata_uses_only_frontmatter_tags() {
         let content = concat!(
             "---\n",
-            "flowix_key: abc12345\n",
+            "status: draft\n",
             "tags: [product, product/design, product]\n",
             "status: draft\n",
             "---\n",
@@ -1037,7 +904,7 @@ mod tests {
 
     #[test]
     fn lenient_tag_replacement_preserves_unrelated_invalid_paths() {
-        let input = "---\nflowix_key: abc12345\ntags: [\"legacy tag\", remove]\n---\nbody\n";
+        let input = "---\nstatus: draft\ntags: [\"legacy tag\", remove]\n---\nbody\n";
         let metadata = extract_document_metadata_preserving_invalid_tag_paths(input).unwrap();
         assert_eq!(metadata.tags, vec!["legacy tag", "remove"]);
 
@@ -1051,13 +918,13 @@ mod tests {
     #[test]
     fn document_metadata_does_not_classify_body_tags() {
         let metadata =
-            extract_document_metadata("---\nflowix_key: abc12345\n---\n# body-only\n").unwrap();
+            extract_document_metadata("---\nstatus: draft\n---\n# body-only\n").unwrap();
         assert!(metadata.tags.is_empty());
     }
 
     #[test]
     fn legacy_singular_tag_is_read_and_rewritten_as_tags() {
-        let input = "---\nflowix_key: abc12345\ntag: [legacy]\n---\nbody\n";
+        let input = "---\nstatus: draft\ntag: [legacy]\n---\nbody\n";
         let metadata = extract_document_metadata(input).unwrap();
         assert_eq!(metadata.tags, vec!["legacy"]);
         assert!(metadata.properties.get("tag").is_none());
@@ -1101,7 +968,7 @@ mod tests {
     fn replace_tags_preserves_unrelated_yaml_and_body() {
         let input = concat!(
             "---\n",
-            "flowix_key: abc12345\n",
+            "status: draft\n",
             "# keep this comment\n",
             "tags:\n",
             "  - old/path\n",
@@ -1116,7 +983,7 @@ mod tests {
             output,
             concat!(
                 "---\n",
-                "flowix_key: abc12345\n",
+                "status: draft\n",
                 "# keep this comment\n",
                 "tags:\n",
                 "  - \"new/path\"\n",
@@ -1129,15 +996,15 @@ mod tests {
     }
 
     #[test]
-    fn replace_tags_inserts_after_key_and_keeps_body() {
+    fn replace_tags_appends_a_frontmatter_property_and_keeps_body() {
         let output = replace_frontmatter_tags(
-            "---\nflowix_key: abc12345\nstatus: draft\n---\nbody\n",
+            "---\nsource: archive\nstatus: draft\n---\nbody\n",
             &["product".to_string()],
         )
         .unwrap();
         assert_eq!(
             output,
-            "---\nflowix_key: abc12345\ntags:\n  - \"product\"\nstatus: draft\n---\nbody\n"
+            "---\nsource: archive\nstatus: draft\ntags:\n  - \"product\"\n---\nbody\n"
         );
     }
 }

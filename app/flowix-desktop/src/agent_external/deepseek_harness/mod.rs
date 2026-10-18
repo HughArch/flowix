@@ -16,4 +16,4 @@ mod transport;
 pub use config::resolve_runtime_config;
 pub use manager::{DeepSeekHarnessManager, DeepSeekHarnessSessionUsage};
 
-pub const AGENT_TYPE: &str = "deepseek-harness";
+pub const AGENT_TYPE: &str = "dsh";

@@ -2,7 +2,7 @@ import { beforeEach, describe, expect, it, vi } from "vitest";
 import type { ChatMessage } from "@/types";
 import { attachHistoryCursor, HistoryChangedError, type ThreadHistoryPage } from "./agent-history-adapters";
 import type { ProjectionSlice } from "./projection-slice";
-import { emptyProjection } from "./session-reducer";
+import { emptyProjection, reduceProjection } from "./session-reducer";
 import { createThreadHistorySlice, type ThreadHistorySlice } from "./thread-history-slice";
 import { DEFAULT_AGENT_SESSION_META } from "./session-state";
 
@@ -31,7 +31,7 @@ function store(messages: ChatMessage[]) {
   let state: Context;
   state = {
     ...createThreadHistorySlice(() => state),
-    sessionMeta: { ...DEFAULT_AGENT_SESSION_META, threadTypes: { thread: "claude" }, externalSessionResolutions: { thread: "native-a" } },
+    sessionMeta: { ...DEFAULT_AGENT_SESSION_META, threadTypes: { thread: "claudecode" }, externalSessionResolutions: { thread: "native-a" } },
     threadProjections: { thread: { ...emptyProjection(), messages } },
     threadEpochs: {}, threadTombstones: {}, threadMutationGuards: {}, codexLiveTurns: {},
     threadRunSignatures: {}, latestCompletedRunIds: {}, readThroughRunIds: {}, runStateVersion: 0,
@@ -53,6 +53,32 @@ function store(messages: ChatMessage[]) {
 
 describe("Pi history request fences", () => {
   beforeEach(() => { adapter.getInitialHistory.mockReset(); adapter.getFullHistory.mockReset(); adapter.getPage.mockReset(); });
+
+  it("restores the first turn and second-turn prompt while the second turn keeps streaming after refresh", async () => {
+    const get = store([]);
+    const pending = deferred<ThreadHistoryPage>();
+    adapter.getInitialHistory.mockReturnValueOnce(pending.promise);
+    const loading = get().loadMessages("pi", "thread");
+    const stream = (text: string) => {
+      get().threadProjections.thread = reduceProjection(get().threadProjections.thread, {
+        kind: "text_delta", agentType: "pi", threadId: "thread", runId: "second-run",
+        timestamp: 2000, sourceSubsequence: 0, contentMode: "delta", text,
+      });
+    };
+    stream("second answer");
+    const history = [
+      { ...row("u1"), role: "user" as const }, row("a1"),
+      { ...row("u2"), role: "user" as const },
+    ];
+    pending.resolve(page(history, "u2"));
+    await loading;
+    expect(get().threadProjections.thread.messages.slice(0, 3)).toEqual(history);
+    stream(" continues");
+    const messages = get().threadProjections.thread.messages;
+    expect(messages.slice(0, 3)).toEqual(history);
+    expect(messages).toHaveLength(4);
+    expect(messages[3].content).toBe("second answer continues");
+  });
 
   it("keeps known-empty Pi history ready while refreshing before the first message", async () => {
     const get = store([]);
@@ -160,7 +186,7 @@ describe("history binding request fences", () => {
     const get = store([row("visible")]);
     const pending = deferred<ThreadHistoryPage>();
     adapter.getInitialHistory.mockReturnValueOnce(pending.promise);
-    const loading = get().loadMessages("claude", "thread");
+    const loading = get().loadMessages("claudecode", "thread");
     get().sessionMeta.externalSessionResolutions.thread = "native-b";
     pending.resolve(page([row("stale")], "stale"));
     await loading;
@@ -171,9 +197,9 @@ describe("history binding request fences", () => {
     const get = store([]);
     const stale = deferred<ThreadHistoryPage>();
     adapter.getInitialHistory.mockReturnValueOnce(stale.promise).mockResolvedValueOnce(page([row("fresh")], "fresh"));
-    const oldLoad = get().loadMessages("claude", "thread");
+    const oldLoad = get().loadMessages("claudecode", "thread");
     get().sessionMeta.externalSessionResolutions.thread = "native-b";
-    await get().loadMessages("claude", "thread");
+    await get().loadMessages("claudecode", "thread");
     stale.resolve(page([row("stale")], "stale"));
     await oldLoad;
     expect(get().threadProjections.thread.messages.map((item) => item.id)).toEqual(["fresh"]);
@@ -184,8 +210,8 @@ describe("history binding request fences", () => {
     const get = store([]);
     const pending = deferred<ThreadHistoryPage>();
     adapter.getInitialHistory.mockReturnValueOnce(pending.promise);
-    const first = get().loadMessages("claude", "thread");
-    await get().loadMessages("claude", "thread");
+    const first = get().loadMessages("claudecode", "thread");
+    await get().loadMessages("claudecode", "thread");
     expect(adapter.getInitialHistory).toHaveBeenCalledTimes(1);
     pending.resolve(page([row("first")], "first"));
     await first;
@@ -195,7 +221,7 @@ describe("history binding request fences", () => {
     const get = store([]);
     const pending = deferred<ThreadHistoryPage>();
     adapter.getInitialHistory.mockReturnValueOnce(pending.promise);
-    const loading = get().loadMessages("claude", "thread");
+    const loading = get().loadMessages("claudecode", "thread");
     get().sessionMeta.externalSessionResolutions.thread = "native-b";
     pending.resolve(page([row("stale")], "stale"));
     await loading;
@@ -211,7 +237,7 @@ describe("history binding request fences", () => {
     }));
     const pending = deferred<ThreadHistoryPage>();
     adapter.getPage.mockReturnValueOnce(pending.promise);
-    const loading = get().loadMoreMessages("claude", "thread");
+    const loading = get().loadMoreMessages("claudecode", "thread");
     get().sessionMeta.externalSessionResolutions.thread = "native-b";
     pending.resolve(page([row("stale")], "stale"));
     await loading;
@@ -221,7 +247,7 @@ describe("history binding request fences", () => {
 
   it("merges a partial history page without dropping a live message", () => {
     const get = store([row("live")]);
-    get().applyHistoryPage("thread", "claude", { messages: [row("older")], coverage: "partial" });
+    get().applyHistoryPage("thread", "claudecode", { messages: [row("older")], coverage: "partial" });
     expect(get().threadProjections.thread.messages.map((item) => item.id)).toEqual(["older", "live"]);
   });
 
@@ -260,7 +286,7 @@ describe("full history refresh", () => {
     const get = store([old]);
     const pending = deferred<ChatMessage[]>();
     adapter.getFullHistory.mockReturnValueOnce(pending.promise);
-    const loading = get().reloadMessagesFromHistory("deepseek-harness", "thread");
+    const loading = get().reloadMessagesFromHistory("dsh", "thread");
     const live = { ...old, content: "new live content" };
     get().updateThreadHistory("thread", (projection) => ({ ...projection, messages: [live] }));
     pending.resolve([old]);

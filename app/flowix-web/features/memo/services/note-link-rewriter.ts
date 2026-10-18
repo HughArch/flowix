@@ -80,8 +80,19 @@ let retryCount = 0;
 let rerunRequested = false;
 
 export function updateNoteLinksAfterMove(oldPath: string, newPath: string, folder = false): void {
-  if (canonicalPath(oldPath) === canonicalPath(newPath)) return;
-  try { writeJobs([...readJobs(), { oldPath, newPath, folder }]); } catch { return; }
+  oldPath = canonicalPath(oldPath);
+  newPath = canonicalPath(newPath);
+  if (oldPath === newPath) return;
+  try {
+    const jobs = readJobs();
+    const last = jobs[jobs.length - 1];
+    // Only coalesce adjacent identical confirmations. A->B, B->A, A->B
+    // are distinct operations and must retain their order.
+    if (!last || canonicalPath(last.oldPath) !== oldPath
+      || canonicalPath(last.newPath) !== newPath || last.folder !== folder) {
+      writeJobs([...jobs, { oldPath, newPath, folder }]);
+    }
+  } catch { return; }
   resumePendingNoteLinkUpdates();
 }
 

@@ -1,7 +1,6 @@
 import type { ExternalDocumentSession } from '../store/document-store';
-import { documentIdentityFromFile, documentIdentityKey } from '../store/document-identity';
-import { captureLatestDocumentContent, discardDocumentDraft, flushDocumentPath, hasDocumentUnsavedChanges } from '../store/document-session-service';
-import { waitForSaveQueue } from '../store/save-queue';
+import { documentIdentityFromFile } from '../store/document-identity';
+import { captureLatestDocumentContent, discardDocumentDraft, saveDocumentPath, hasDocumentUnsavedChanges } from '../store/document-session-service';
 import { expectExternalDocumentDelete } from '../store/external-document-operation';
 import { localDocumentOperations } from './local-document-operations';
 
@@ -9,9 +8,8 @@ import { localDocumentOperations } from './local-document-operations';
 export async function deleteExternalDocument(session: ExternalDocumentSession): Promise<boolean> {
   const identity = documentIdentityFromFile(session.fileIdentity);
   captureLatestDocumentContent(identity);
-  const flushed = await flushDocumentPath(identity, identity.path, session.scopePath);
-  const settled = await waitForSaveQueue(documentIdentityKey(identity));
-  if (!flushed || !settled || hasDocumentUnsavedChanges(identity)) return false;
+  const saved = await saveDocumentPath(identity, identity.path, session.scopePath);
+  if (!saved || hasDocumentUnsavedChanges(identity)) return false;
 
   const cancelExpectedDelete = expectExternalDocumentDelete(identity.path);
   try {

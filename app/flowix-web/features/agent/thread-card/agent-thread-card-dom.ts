@@ -18,7 +18,7 @@ export function focusAgentThreadCardInput(
     if (!(dom instanceof HTMLElement)) return;
 
     const input = dom.querySelector<HTMLElement>(
-      ".agent-thread-card__composer-input",
+      ".agent-composer__input",
     );
     if (!input) return;
 
@@ -89,9 +89,9 @@ export function isAgentThreadCardInteractiveTarget(target: Element): boolean {
       "input",
       "select",
       '[role="button"]',
-      ".agent-thread-card__composer",
-      ".agent-thread-card__access-popover",
-      ".agent-thread-card__composer-note-popover",
+      ".agent-composer",
+      ".agent-composer__access-popover",
+      ".agent-composer__note-popover",
       ".agent-thread-card__message-reasoning-header",
     ].join(","),
   );

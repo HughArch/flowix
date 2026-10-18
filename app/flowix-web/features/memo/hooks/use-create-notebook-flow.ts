@@ -9,9 +9,8 @@ import {
   resolveNotebookImportStatusEffect,
   type NotebookCreationState,
 } from '@features/memo/hooks/create-notebook-flow-state';
-import { useNoteStore, useTagStore, type Notebook } from '@features/memo/store';
-import { clearWorkspaceDocument } from '@features/workspace/use-cases/workspace-navigation';
-import { setCurrentWorkspaceNotebook } from '@features/memo/public/workspace-api';
+import { useNoteStore, type Notebook } from '@features/memo/store';
+import { selectNotebook } from '@features/workspace/public/main-window-api';
 import { createNotebookRegistration } from '@features/memo/services/notebook-creation-service';
 
 const NOTEBOOK_IMPORT_POLL_INTERVAL_MS = 500;
@@ -27,20 +26,20 @@ interface CreateNotebookInput {
 
 interface UseCreateNotebookFlowOptions {
   onMemoListReloadNeeded: () => void;
-  onMemoListQueryReset: () => void;
-  onMemoListLoadingChange: (loading: boolean) => void;
 }
 
 export function useCreateNotebookFlow({
   onMemoListReloadNeeded,
-  onMemoListQueryReset,
-  onMemoListLoadingChange,
 }: UseCreateNotebookFlowOptions) {
   const { t } = useI18n();
   const [creationState, setCreationState] = useState<NotebookCreationState>({
     status: 'idle',
   });
   const createInFlightRef = useRef(false);
+  const registeredNotebookRef = useRef<{
+    key: string;
+    registration: Awaited<ReturnType<typeof createNotebookRegistration>>;
+  } | null>(null);
   const activeImportNotebookIdRef = useRef<string | null>(null);
   const importMonitorGenerationRef = useRef(0);
 
@@ -56,11 +55,11 @@ export function useCreateNotebookFlow({
       if (!effect) return;
 
       setCreationState(effect.creationState);
-      if (effect.reloadMemoList) {
+      if (
+        effect.reloadMemoList
+        && useNoteStore.getState().selectedNotebook?.id === trackedNotebookId
+      ) {
         onMemoListReloadNeeded();
-      }
-      if (effect.stopMemoListLoading) {
-        onMemoListLoadingChange(false);
       }
       if (effect.errorMessage) {
         toast.error(effect.errorMessage);
@@ -69,7 +68,7 @@ export function useCreateNotebookFlow({
         activeImportNotebookIdRef.current = null;
       }
     },
-    [onMemoListLoadingChange, onMemoListReloadNeeded, t],
+    [onMemoListReloadNeeded, t],
   );
 
   useEffect(() => {
@@ -108,47 +107,63 @@ export function useCreateNotebookFlow({
       if (!notebookName || (cloudNotebookId && !notebookPath)) return null;
       if (createInFlightRef.current) return null;
       createInFlightRef.current = true;
+      const registrationKey = JSON.stringify({ notebookName, notebookPath, icon, cloudNotebookId, templateId });
 
       setCreationState({ status: 'creating' });
 
       try {
         let registration: Awaited<ReturnType<typeof createNotebookRegistration>>;
-        if (cloudNotebookId) {
-          registration = {
-            notebook: await notebookRepository.createFromCloud(cloudNotebookId, notebookName, notebookPath ?? '', icon),
-            created: true,
-            needsImport: false,
-            hasTemplateSetup: false,
-            setupJob: null,
-          };
+        if (registeredNotebookRef.current?.key === registrationKey) {
+          registration = registeredNotebookRef.current.registration;
         } else {
-          try {
-            registration = await createNotebookRegistration({
-              name: notebookName,
-              path: notebookPath,
-              icon,
-              templateId,
-            });
-          } catch (error) {
-            if (!templateId || !String(error).includes('NOTEBOOK_PRESET_OVERWRITE_CONFIRM_REQUIRED')) {
-              throw error;
+          registeredNotebookRef.current = null;
+          if (cloudNotebookId) {
+            registration = {
+              notebook: await notebookRepository.createFromCloud(
+                cloudNotebookId,
+                notebookName,
+                notebookPath ?? '',
+                icon,
+                false,
+              ),
+              created: true,
+              needsImport: false,
+              hasTemplateSetup: false,
+              setupJob: null,
+            };
+          } else {
+            try {
+              registration = await createNotebookRegistration({
+                name: notebookName,
+                path: notebookPath,
+                icon,
+                templateId,
+                reuseExisting: true,
+              });
+            } catch (error) {
+              if (!templateId || !String(error).includes('NOTEBOOK_PRESET_OVERWRITE_CONFIRM_REQUIRED')) {
+                throw error;
+              }
+              if (!await notebookRepository.confirmPresetOverwrite(t('notebook.template.overwriteConfirm'))) {
+                setCreationState({ status: 'idle' });
+                return null;
+              }
+              registration = await createNotebookRegistration({
+                name: notebookName,
+                path: notebookPath,
+                icon,
+                templateId,
+                overwriteExisting: true,
+                reuseExisting: true,
+              });
             }
-            if (!await notebookRepository.confirmPresetOverwrite(t('notebook.template.overwriteConfirm'))) {
-              setCreationState({ status: 'idle' });
-              return null;
-            }
-            registration = await createNotebookRegistration({
-              name: notebookName,
-              path: notebookPath,
-              icon,
-              templateId,
-              overwriteExisting: true,
-            });
           }
+          registeredNotebookRef.current = { key: registrationKey, registration };
         }
         const created = registration.notebook as Notebook | null;
 
         if (!created) {
+          registeredNotebookRef.current = null;
           toast.error(t('memo.list.createFailed'));
           setCreationState({ status: 'failed', message: t('memo.list.createFailed') });
           return null;
@@ -160,14 +175,9 @@ export function useCreateNotebookFlow({
           ? existingNotebooks.map((notebook) => notebook.id === created.id ? created : notebook)
           : [...existingNotebooks, created];
 
-        await clearWorkspaceDocument();
-        await setCurrentWorkspaceNotebook(created);
         memoStore.setNotebooks(nextNotebooks);
-        memoStore.setSelectedNotebook(created);
-        useTagStore.getState().setSelectedTagId(null);
-        onMemoListQueryReset();
-        onMemoListLoadingChange(true);
-        onMemoListReloadNeeded();
+        await selectNotebook(created, { workColumnTarget: 'clear' });
+        registeredNotebookRef.current = null;
 
         if (cloudNotebookId) {
           setCreationState({ status: 'idle' });
@@ -181,7 +191,6 @@ export function useCreateNotebookFlow({
           } catch (error) {
             const message = notebookCreateErrorMessage(error, t);
             activeImportNotebookIdRef.current = null;
-            onMemoListLoadingChange(false);
             setCreationState({ status: 'failed', message });
             toast.error(message);
           }
@@ -204,16 +213,12 @@ export function useCreateNotebookFlow({
         const message = notebookCreateErrorMessage(error, t);
         toast.error(message);
         setCreationState({ status: 'failed', message });
-        onMemoListLoadingChange(false);
         return null;
       } finally {
         createInFlightRef.current = false;
       }
     },
     [
-      onMemoListLoadingChange,
-      onMemoListQueryReset,
-      onMemoListReloadNeeded,
       t,
     ],
   );

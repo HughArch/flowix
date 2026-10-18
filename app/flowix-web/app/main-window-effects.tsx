@@ -1,11 +1,13 @@
 'use client';
 
 import { useEffect } from "react";
-import { subscribe } from '@platform/tauri/event-bus';
+import { subscribeNotebookChanges } from '@platform/tauri/notebook-change-events';
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { useI18n } from "@/lib/i18n";
 import { subscribeAppActiveAgentConversation } from "@features/document/public/app-api";
 import {
+  mountNotebookBackgroundUpdates,
+  mountMemoListRefreshService,
   applyAppMemoCreated,
   applyAppMemoDeleted,
   applyAppMemoUpdated,
@@ -32,23 +34,58 @@ import {
 import { initializeMainWindowStartup } from './main-window-startup';
 import { createLogger } from '@/lib/logger';
 import { joinNotebookMemoPath } from '@/lib/path';
+import { useUserSettingsStore } from '@features/preferences/store/user-settings-store';
 import { resumePendingNoteLinkUpdates } from '@features/memo/public/app-api';
-import { subscribeWorkspaceDocumentSaves } from '@features/document/public/workspace-api';
+import { subscribeWorkspaceDocumentSaves, rebaseStoredRecoveryDraftPaths } from '@features/document/public/workspace-api';
 import {
   syncAppAgentConversationRestore,
-  openBrowserColumnNotebookNote,
   removeBrowserColumnTabsByPath,
   applyNotebookPathMove,
 } from '@features/workspace/public/app-api';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
+import { clearWorkspaceTargetForDeletedFile } from '@features/workspace/public/shell-api';
+import {
+  dismissNavigationFailure,
+  retryLastNavigation,
+  useWorkspaceNavigationFailure,
+} from '@features/workspace/public/main-window-api';
+import {
+  clearActionableNotice,
+  upsertActionableNotice,
+} from '@features/notifications/actionable-notice-store';
 
 const logger = createLogger('main-window-effects');
+const NAVIGATION_FAILURE_NOTICE_ID = 'workspace-navigation-failure';
 
 export function MainWindowEffects() {
   const { t } = useI18n();
   const mainWindowTitle = t("window.main.title");
+  const navigationFailure = useWorkspaceNavigationFailure();
 
   useEffect(() => {
-    resumePendingNoteLinkUpdates();
+    if (!navigationFailure) {
+      clearActionableNotice(NAVIGATION_FAILURE_NOTICE_ID);
+      return;
+    }
+    upsertActionableNotice({
+      id: NAVIGATION_FAILURE_NOTICE_ID,
+      priority: 100,
+      tone: 'error',
+      title: t('shell.navigation.failed'),
+      message: navigationFailure.message,
+      actions: [{ id: 'retry', label: t('error.retry'), run: retryLastNavigation }],
+      dismissible: true,
+      onDismiss: dismissNavigationFailure,
+      revision: navigationFailure.requestId,
+    });
+  }, [navigationFailure, t]);
+
+  useEffect(() => () => clearActionableNotice(NAVIGATION_FAILURE_NOTICE_ID), []);
+
+  useEffect(() => mountNotebookBackgroundUpdates(), []);
+  useEffect(() => mountMemoListRefreshService(), []);
+
+  useEffect(() => {
     return subscribeWorkspaceDocumentSaves(resumePendingNoteLinkUpdates);
   }, []);
 
@@ -82,27 +119,55 @@ export function MainWindowEffects() {
   }, [mainWindowTitle]);
 
   useEffect(() => {
-    let moveChain = Promise.resolve();
+    let pathChangeChain = Promise.resolve();
     let disposed = false;
-    const unsubscribe = subscribe<{ notebookId: string; relativePath: string; previousRelativePath?: string; directory?: boolean; deleted?: boolean }>(
-      'flowix:path-note-changed',
-      ({ notebookId, relativePath, previousRelativePath, directory, deleted }) => {
+    const unsubscribe = subscribeNotebookChanges(
+      (change) => {
+        const { notebookId } = change;
         invalidateMentionNotes();
         invalidateMentionTags();
         refreshAppPathNoteMetadata(notebookId);
-        if (previousRelativePath && relativePath && !deleted) {
-          moveChain = moveChain.then(async () => {
+        if (change.kind === 'resource-created'
+          && change.source === 'external_tool'
+          && change.relativePath.split('/').pop() !== 'AGENTS.md'
+          && useUserSettingsStore.getState().settings.autoOpenCreatedNotesInBrowser) {
+          const { relativePath } = change;
+          pathChangeChain = pathChangeChain.then(async () => {
+            if (disposed) return;
             const notebookPath = await getAppNotebookPath(notebookId);
-            if (!disposed && notebookPath) applyNotebookPathMove({
-              notebookId, notebookPath, previousRelativePath, relativePath,
-              directory: directory === true,
+            const path = notebookPath && joinNotebookMemoPath(notebookPath, relativePath);
+            if (disposed || !path || !notebookPath) return;
+            await openWorkspaceSurface({
+              host: 'browser-column',
+              target: { kind: 'external', path, scopePath: notebookPath, transitionId: null },
+              options: { notebookId },
             });
+          }).catch((error) => logger.warn('open externally created note failed', { error, notebookId, relativePath }));
+        }
+        if (change.kind === 'path-moved') {
+          const { previousRelativePath, relativePath, directory } = change;
+          pathChangeChain = pathChangeChain.then(async () => {
+            if (disposed) return;
+            const notebookPath = await getAppNotebookPath(notebookId);
+            if (!disposed && notebookPath) {
+              applyNotebookPathMove({ notebookId, notebookPath, previousRelativePath, relativePath, directory });
+              const previous = joinNotebookMemoPath(notebookPath, previousRelativePath);
+              const next = joinNotebookMemoPath(notebookPath, relativePath);
+              if (previous && next) await rebaseStoredRecoveryDraftPaths(previous, next, directory);
+            }
           }).catch((error) => logger.warn('rebase moved note path failed', { error, notebookId, relativePath }));
         }
-        if (deleted && relativePath) {
-          void getAppNotebookPath(notebookId).then((notebookPath) => {
+        if (change.kind === 'resource-deleted') {
+          const { relativePath } = change;
+          pathChangeChain = pathChangeChain.then(async () => {
+            if (disposed) return;
+            const notebookPath = await getAppNotebookPath(notebookId);
+            if (disposed) return;
             const path = notebookPath && joinNotebookMemoPath(notebookPath, relativePath);
-            if (path) removeBrowserColumnTabsByPath(path);
+            if (path) {
+              removeBrowserColumnTabsByPath(path);
+              await clearWorkspaceTargetForDeletedFile(path);
+            }
           }).catch((error) => logger.warn('resolve deleted note path failed', { error, notebookId, relativePath }));
         }
       },
@@ -137,7 +202,11 @@ export function MainWindowEffects() {
             const notebookPath = await getAppNotebookPath(notebookId);
             const path = notebookPath && joinNotebookMemoPath(notebookPath, relativePath);
             if (!path) throw new Error('Created note path is unavailable');
-            await openBrowserColumnNotebookNote(path, notebookId, notebookPath);
+            await openWorkspaceSurface({
+              host: 'browser-column',
+              target: { kind: 'external', path, scopePath: notebookPath, transitionId: null },
+              options: { notebookId },
+            });
           },
           reportOpenFailure: (error) => {
             logger.warn('open created note in browser column failed', { error });
@@ -147,6 +216,10 @@ export function MainWindowEffects() {
           handleMemoUpdated: applyAppMemoUpdated,
           handleMemoDeleted: applyAppMemoDeleted,
           removeBrowserColumnTabsByPath: (path) => removeBrowserColumnTabsByPath(path),
+          clearWorkspaceTargetByPath: (path) => {
+            void clearWorkspaceTargetForDeletedFile(path).catch((error) =>
+              logger.warn('clear deleted document target failed', { error, path }));
+          },
           handleTagsRenamed: applyAppTagsRenamed,
           handleTagsDeleted: applyAppTagsDeleted,
           refreshSelectedNotebookMetadata,

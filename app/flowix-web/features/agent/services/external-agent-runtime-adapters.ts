@@ -3,7 +3,7 @@ import type { AgentTypeKey } from '@/types/agent';
 
 export type ExternalAgentTypeKey = Extract<
   AgentTypeKey,
-  'codex' | 'claude' | 'hermes' | 'opencode' | 'deepseek-harness'
+  'codex' | 'claudecode' | 'hermes' | 'opencode' | 'dsh'
 >;
 
 export interface ExternalAgentRuntimeAdapter {
@@ -15,7 +15,8 @@ export interface ExternalAgentRuntimeAdapter {
 
 function createPrefixRuntimeAdapter(
   typeKey: ExternalAgentTypeKey,
-  resolveSessionId: (threadId: string) => Promise<string | null>
+  resolveSessionId: (threadId: string) => Promise<string | null>,
+  legacyPrefixes: readonly string[] = [],
 ): ExternalAgentRuntimeAdapter {
   return {
     typeKey,
@@ -23,9 +24,11 @@ function createPrefixRuntimeAdapter(
       return `${typeKey}-local-${instanceId}`;
     },
     isLocalThreadId(threadId) {
-      return threadId.startsWith(`${typeKey}-local-`) ||
+      return [typeKey, ...legacyPrefixes].some((prefix) =>
+        threadId.startsWith(`${prefix}-local-`) ||
         // Legacy local ids created before instance-backed routing.
-        threadId.startsWith(`${typeKey}-pending-`);
+        threadId.startsWith(`${prefix}-pending-`),
+      );
     },
     resolveSessionId,
   };
@@ -33,12 +36,13 @@ function createPrefixRuntimeAdapter(
 
 const externalAgentRuntimeAdapters: Record<ExternalAgentTypeKey, ExternalAgentRuntimeAdapter> = {
   codex: createPrefixRuntimeAdapter('codex', (threadId) => agent.getCodexSessionId(threadId)),
-  claude: createPrefixRuntimeAdapter('claude', (threadId) => agent.getClaudeSessionId(threadId)),
+  claudecode: createPrefixRuntimeAdapter('claudecode', (threadId) => agent.getClaudeSessionId(threadId), ['claude']),
   hermes: createPrefixRuntimeAdapter('hermes', (threadId) => agent.getHermesSessionId(threadId)),
   opencode: createPrefixRuntimeAdapter('opencode', (threadId) => agent.getOpenCodeSessionId(threadId)),
-  'deepseek-harness': createPrefixRuntimeAdapter(
-    'deepseek-harness',
+  dsh: createPrefixRuntimeAdapter(
+    'dsh',
     (threadId) => agent.getDeepSeekHarnessSessionId(threadId),
+    ['deepseek-harness'],
   ),
 };
 
@@ -47,10 +51,10 @@ export function getExternalAgentRuntimeAdapter(
 ): ExternalAgentRuntimeAdapter | null {
   if (
     typeKey === 'codex' ||
-    typeKey === 'claude' ||
+    typeKey === 'claudecode' ||
     typeKey === 'hermes' ||
     typeKey === 'opencode' ||
-    typeKey === 'deepseek-harness'
+    typeKey === 'dsh'
   ) {
     return externalAgentRuntimeAdapters[typeKey];
   }

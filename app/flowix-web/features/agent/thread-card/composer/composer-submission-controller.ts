@@ -1,5 +1,6 @@
 import type { ComposerController } from "./composer-controller";
-import type { ComposerImageController, AgentThreadCardInputImage } from "./composer-image-controller";
+import type { ComposerAttachmentController } from "./composer-attachment-controller";
+import type { AgentThreadCardInputAttachment } from "./composer-attachment-types";
 import {
   selectComposerSubmissionState,
   type ComposerRuntimeState,
@@ -17,7 +18,7 @@ export type ComposerSubmissionPhase =
 export interface ComposerSubmissionSnapshot {
   markdown: string;
   prompt: string;
-  images: AgentThreadCardInputImage[];
+  attachments: AgentThreadCardInputAttachment[];
 }
 
 type SubmissionComposer = Pick<
@@ -60,8 +61,8 @@ export class ComposerSubmissionController {
   async submit<T>(options: {
     composer: SubmissionComposer;
     images: Pick<
-      ComposerImageController,
-      "hasImages" | "hasPending" | "readyImages" | "setLocked" | "clearAfterSubmit"
+      ComposerAttachmentController,
+      "hasAttachments" | "hasPending" | "readyAttachments" | "setLocked" | "clearAfterSubmit"
     >;
     getRuntime: () => ComposerRuntimeState;
     isDisposed: () => boolean;
@@ -80,7 +81,7 @@ export class ComposerSubmissionController {
       ...options.getRuntime(),
       isSubmitting: this.isSubmitting,
       prompt: composer.getPrompt(),
-      hasAttachments: images.hasImages,
+      hasAttachments: images.hasAttachments,
       hasPendingAttachments: images.hasPending,
     });
     if (options.isDisposed() || !state.canSubmit) return;
@@ -88,7 +89,7 @@ export class ComposerSubmissionController {
     const snapshot: ComposerSubmissionSnapshot = {
       markdown: composer.getDraftMarkdown(),
       prompt: composer.getPrompt().trim() || "Analyze the attached image(s).",
-      images: images.readyImages.map((image) => ({ ...image })),
+      attachments: images.readyAttachments.map((attachment) => ({ ...attachment })),
     };
     this.snapshot = snapshot;
     const transition = (phase: ComposerSubmissionPhase): void => {
@@ -128,7 +129,7 @@ export class ComposerSubmissionController {
         ...options.getRuntime(),
         isSubmitting: false,
         prompt: snapshot.prompt,
-        hasAttachments: snapshot.images.length > 0,
+        hasAttachments: snapshot.attachments.length > 0,
         hasPendingAttachments: false,
         kind: state.kind,
       }).canSubmit) {

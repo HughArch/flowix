@@ -1,4 +1,11 @@
 import { Node, type Editor, type JSONContent, type MarkdownToken } from "@tiptap/core";
+import folderOutlineSvg from "@/assets/folder-outline.svg?raw";
+import {
+  createInlineAtomCloseIcon,
+  createInlineAtomNodeView,
+  deleteInlineAtomNode,
+  deleteAdjacentInlineAtom,
+} from "@features/editor/extensions/shared/inline-atom-nodeview";
 
 export interface ComposerFolderTokenValue {
   path: string;
@@ -59,7 +66,7 @@ export const ComposerFolderToken = Node.create({
     return ["span", {
       "data-composer-folder": path,
       "data-composer-folder-display-name": displayName,
-      class: "agent-thread-card__folder-token",
+      class: "agent-composer__folder-token",
     }, `@${displayName}`];
   },
 
@@ -110,20 +117,38 @@ export const ComposerFolderToken = Node.create({
         path,
         typeof node.attrs.displayName === "string" ? node.attrs.displayName : undefined,
       );
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "agent-thread-card__folder-token";
-      button.textContent = `@${displayName}`;
-      button.title = path;
-      button.setAttribute("aria-label", `移除资料库 ${displayName}`);
-      button.addEventListener("mousedown", (event) => event.preventDefault());
-      button.addEventListener("click", () => {
-        const pos = typeof getPos === "function" ? getPos() : undefined;
-        if (pos === undefined) return;
-        view.dispatch(view.state.tr.delete(pos, pos + node.nodeSize));
-        view.focus();
+      const iconTemplate = document.createElement("template");
+      iconTemplate.innerHTML = folderOutlineSvg;
+      const folderIcon = iconTemplate.content.firstElementChild;
+      folderIcon?.classList.add("agent-composer__folder-token-icon");
+      const nodeView = createInlineAtomNodeView({
+        caretGeometry: 'single-line',
+        wrapperClassName: "agent-composer__inline-atom-wrapper agent-composer__folder-token-wrapper",
+        cardClassName: "agent-composer__folder-token",
+        leadingIcon: folderIcon ?? undefined,
+        label: displayName,
+        labelClassName: "agent-composer__folder-token-label",
+        title: path,
+        hoverActions: [{
+          ariaLabel: `移除资料库 ${displayName}`,
+          icon: createInlineAtomCloseIcon(),
+          onClick: () => deleteInlineAtomNode(
+            view,
+            node,
+            () => typeof getPos === "function" ? getPos() : undefined,
+          ),
+        }],
       });
-      return { dom: button };
+      nodeView.dom.setAttribute("data-composer-folder", path);
+      nodeView.dom.setAttribute("data-composer-folder-display-name", displayName);
+      return nodeView;
+    };
+  },
+
+  addKeyboardShortcuts() {
+    return {
+      Backspace: () => deleteAdjacentInlineAtom(this.editor, "composerFolderToken", "before"),
+      Delete: () => deleteAdjacentInlineAtom(this.editor, "composerFolderToken", "after"),
     };
   },
 });

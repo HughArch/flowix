@@ -20,14 +20,6 @@ impl MemoFile {
         self.register_existing_file_for_notebook_id_locked(notebook_id, path)
     }
 
-    pub fn register_existing_file_for_notebook_id_without_frontmatter(
-        &self,
-        notebook_id: &str,
-        path: &Path,
-    ) -> Result<Memo, String> {
-        self.register_existing_file_for_notebook_id(notebook_id, path)
-    }
-
     pub fn register_existing_file_as_new_for_notebook_id(
         &self,
         notebook_id: &str,
@@ -47,30 +39,18 @@ impl MemoFile {
         )
     }
 
-    /// Cloud protocol association lives in the index, never in authored Markdown.
-    pub fn register_existing_file_with_cache_id(
-        &self,
-        notebook_id: &str,
-        path: &Path,
-        cache_id: &str,
-    ) -> Result<Memo, String> {
-        let _guard = self.current_index_io.lock().expect("index_io poisoned");
-        self.register_path_locked(notebook_id, path, Some(cache_id))
-    }
-
     pub(super) fn register_existing_file_for_notebook_id_locked(
         &self,
         notebook_id: &str,
         path: &Path,
     ) -> Result<Memo, String> {
-        self.register_path_locked(notebook_id, path, None)
+        self.register_path_locked(notebook_id, path)
     }
 
     fn register_path_locked(
         &self,
         notebook_id: &str,
         path: &Path,
-        cache_id: Option<&str>,
     ) -> Result<Memo, String> {
         if !path.is_md() || !path.is_file() {
             return Err(format!("not an existing Markdown file: {}", path.display()));
@@ -80,27 +60,11 @@ impl MemoFile {
         if let Some(memo) =
             self.find_memo_by_relative_path_for_notebook_id(notebook_id, &relative_path)
         {
-            if cache_id.is_some_and(|id| id != memo.id) {
-                return Err("path already belongs to another cache entry".into());
-            }
             return self.reload_memo_inner_for_notebook_id_locked(notebook_id, memo);
         }
         let content = fs::read_to_string(path).map_err(|error| error.to_string())?;
-        if let Some(id) = cache_id {
-            if self
-                .resolve_memo_location(id)
-                .map_err(|e| e.to_string())?
-                .is_some()
-            {
-                return Err("cache entry already belongs to another path".into());
-            }
-        }
         let now = chrono::Utc::now().timestamp_millis();
         let mut memo = Memo {
-            // Internal cache/history association only; never a Markdown identity.
-            id: cache_id
-                .map(str::to_string)
-                .unwrap_or_else(|| self.generate_global_memo_id()),
             filename: filename_from_notebook_relative_path(&relative_path),
             relative_path,
             preview: String::new(),

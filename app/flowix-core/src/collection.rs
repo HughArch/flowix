@@ -43,6 +43,8 @@ pub struct CollectionMetadata {
     pub kind: CollectionType,
     #[serde(default, skip_serializing_if = "is_standalone")]
     pub placement: CollectionPlacement,
+    /// Deprecated compatibility field. Names are derived from the collection path.
+    #[serde(default, skip_serializing)]
     pub name: String,
     pub revision: i64,
     pub created_at: String,
@@ -51,6 +53,24 @@ pub struct CollectionMetadata {
 }
 fn is_standalone(value: &CollectionPlacement) -> bool {
     *value == CollectionPlacement::Standalone
+}
+
+pub fn display_name_for_path(path: &std::path::Path, placement: CollectionPlacement) -> String {
+    let display_path = if placement == CollectionPlacement::Folder {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    };
+    let filename = display_path.file_name().unwrap_or_default().to_string_lossy();
+    if placement == CollectionPlacement::Folder {
+        return filename.into_owned();
+    }
+    [".index.yaml", ".index.yml", ".table.yaml", ".table.yml", ".lib.yaml", ".lib.yml"]
+        .iter()
+        .find_map(|suffix| filename.get(..filename.len().checked_sub(suffix.len())?)
+            .filter(|_| filename.to_ascii_lowercase().ends_with(suffix)))
+        .unwrap_or(&filename)
+        .to_owned()
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -115,8 +135,6 @@ impl CollectionDocument {
         if self.format != "flowix.collection"
             || self.schema_version < 1
             || !valid_id(&metadata.id, "col_")
-            || metadata.name.trim().is_empty()
-            || metadata.name != metadata.name.trim()
             || !(0..=9_007_199_254_740_991).contains(&metadata.revision)
             || chrono::DateTime::parse_from_rfc3339(&metadata.created_at).is_err()
             || chrono::DateTime::parse_from_rfc3339(&metadata.updated_at).is_err()
@@ -244,6 +262,55 @@ impl CollectionDocument {
         Ok(())
     }
 
+    /// Set media resource references to the canonical notebook-and-path ID.
+    /// Collection row IDs remain collection-local record identities.
+    pub fn normalize_media_resource_ids(&mut self, notebook_id: &str) -> Result<bool, String> {
+        if self.collection.kind != CollectionType::MediaLibrary {
+            return Ok(false);
+        }
+        let Some(records) = self
+            .payload
+            .get_mut("dataset")
+            .and_then(|dataset| dataset.get_mut("records"))
+        else {
+            return Err("INVALID_MEDIA_LIBRARY_RECORDS".into());
+        };
+        let mut changed = false;
+        for key in ["include", "exclude"] {
+            let entries = records
+                .get_mut(key)
+                .and_then(Value::as_array_mut)
+                .ok_or("INVALID_MEDIA_LIBRARY_RECORDS")?;
+            for record in entries {
+                let path = record
+                    .get("relative_path")
+                    .and_then(Value::as_str)
+                    .ok_or("INVALID_MEDIA_LIBRARY_PATH")?;
+                let id = crate::memo_file::media_resource_id(notebook_id, path)
+                    .map_err(|error| error.to_string())?;
+                if record.get("resource_id").and_then(Value::as_str) != Some(id.as_str()) {
+                    record["resource_id"] = Value::String(id);
+                    changed = true;
+                }
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Rebase file references and update media resource identities in one edit.
+    pub fn rebase_paths_for_notebook(
+        &mut self,
+        notebook_id: &str,
+        previous: &str,
+        next: &str,
+    ) -> Result<bool, String> {
+        let changed = self.rebase_paths(previous, next);
+        if changed {
+            self.normalize_media_resource_ids(notebook_id)?;
+        }
+        Ok(changed)
+    }
+
     /// Rebase notebook-relative references after a confirmed file or directory move.
     /// The caller owns revision updates and persistence.
     pub fn rebase_paths(&mut self, previous: &str, next: &str) -> bool {
@@ -304,7 +371,15 @@ impl CollectionDocument {
                 changed = true;
             }
         }
-        if let Some(filter) = dataset.get_mut("filter") { changed |= rules(filter, previous, next); }
+        if let Some(filter) = dataset.get_mut("filter") {
+            if let Some(path) = filter.get("path").and_then(Value::as_str) {
+                if let Some(path) = rebase(path, previous, next) {
+                    filter["path"] = Value::String(path);
+                    changed = true;
+                }
+            }
+            changed |= rules(filter, previous, next);
+        }
         if let Some(views) = self.payload.get_mut("views").and_then(|views| views.get_mut("items")).and_then(Value::as_array_mut) {
             for view in views {
                 if let Some(filter) = view.get_mut("filter") { changed |= rules(filter, previous, next); }
@@ -506,7 +581,7 @@ fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
     }
     if let Some(filter) = dataset.get("filter") {
         if !filter.is_null() {
-            validate_rule_filter(filter, document.collection.kind)?;
+            validate_dataset_filter(filter, document.collection.kind)?;
         }
     }
     let views = payload.get("views").ok_or("MISSING_COLLECTION_VIEWS")?;
@@ -582,7 +657,31 @@ fn validate_collection_v2(document: &CollectionDocument) -> Result<(), String> {
     Ok(())
 }
 fn validate_rule_filter(filter: &Value, collection_type: CollectionType) -> Result<(), String> {
-    validate_rule_filter_depth(filter, collection_type, 0)
+  validate_rule_filter_depth(filter, collection_type, 0)
+}
+fn validate_dataset_filter(filter: &Value, collection_type: CollectionType) -> Result<(), String> {
+    if filter.get("conditions").is_none() && filter.get("match").is_none() {
+        return validate_rule_filter(filter, collection_type);
+    }
+    only_keys(filter, &["path", "match", "conditions"])?;
+    match filter.get("path") {
+        Some(Value::Null) => {}
+        Some(Value::String(path)) if path.is_empty() => {}
+        Some(Value::String(path)) => validate_relative_resource_path(Some(path), "filter.path")?,
+        _ => return Err("INVALID_COLLECTION_FILTER_PATH".into()),
+    }
+    if !matches!(filter["match"].as_str(), Some("all" | "any")) {
+        return Err("INVALID_COLLECTION_FILTER_MATCH".into());
+    }
+    if collection_type == CollectionType::MediaLibrary && filter["match"] != "all" {
+        return Err("INVALID_COLLECTION_FILTER_MATCH".into());
+    }
+    for rule in array(filter, "conditions")? {
+        if rule.get("all").is_some() || rule.get("any").is_some() || rule["field"] == "path" {
+            return Err("INVALID_COLLECTION_FILTER_CONDITION".into());
+        }
+    }
+    validate_rule_filter(&serde_json::json!({"all":array(filter, "conditions")?,"any":[]}), collection_type)
 }
 fn validate_rule_filter_depth(filter: &Value, collection_type: CollectionType, depth: usize) -> Result<(), String> {
     only_keys(filter, &["all", "any"])?;

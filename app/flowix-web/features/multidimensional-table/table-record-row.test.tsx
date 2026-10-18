@@ -85,7 +85,7 @@ describe('TableRecordRow note fallback', () => {
     const view = renderRow('unknown');
     const retry = [...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('无法确认关联状态'));
     expect(retry).toBeTruthy();
-    expect(view.container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(true);
+    expect(view.container.querySelector<HTMLButtonElement>('[role="checkbox"]')?.disabled).toBe(true);
 
     act(() => retry?.click());
     expect(view.retryNoteLookup).toHaveBeenCalledOnce();
@@ -96,19 +96,19 @@ describe('TableRecordRow note fallback', () => {
     const view = renderRow('missing');
     const replace = [...view.container.querySelectorAll('button')].find((button) => button.textContent?.includes('未找到笔记'));
     expect(replace).toBeTruthy();
-    expect(view.container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(true);
+    expect(view.container.querySelector<HTMLButtonElement>('[role="checkbox"]')?.disabled).toBe(true);
 
     expect(view.container.querySelector('textarea')?.getAttribute('placeholder')).toBe('输入名称搜索 或 新建');
   });
 
   it('keeps property editing enabled for a resolved note', () => {
     const view = renderRow('linked', linkedNote);
-    expect(view.container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(false);
+    expect(view.container.querySelector<HTMLButtonElement>('[role="checkbox"]')?.disabled).toBe(false);
   });
 
   it('disables property editing in an unlinked draft row', () => {
     const view = renderRow('draft');
-    expect(view.container.querySelector<HTMLInputElement>('input[type="checkbox"]')?.disabled).toBe(true);
+    expect(view.container.querySelector<HTMLButtonElement>('[role="checkbox"]')?.disabled).toBe(true);
   });
 });
 
@@ -132,8 +132,8 @@ describe('TableRecordRow builtin metadata', () => {
     vi.useFakeTimers();
     const view = renderRow('linked', { ...linkedNote, favorited: true }, true);
     const index = BUILTIN_TABLE_FIELDS.findIndex((field) => field.label === '置顶');
-    const checkbox = view.container.querySelectorAll('td')[index + 2].querySelector<HTMLInputElement>('input');
-    expect(checkbox?.checked).toBe(true);
+    const checkbox = view.container.querySelectorAll('td')[index + 2].querySelector<HTMLButtonElement>('[role="checkbox"]');
+    expect(checkbox?.getAttribute('aria-checked')).toBe('true');
     await act(async () => { checkbox?.click(); vi.advanceTimersByTime(1000); });
     expect(view.updateCell).toHaveBeenCalledWith(expect.anything(), expect.anything(),
       expect.objectContaining({ id: '__note_pinned__', property_key: 'flowix_favorited', type: 'Boolean' }), false);

@@ -3,42 +3,45 @@
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import type { NodeView as ProseMirrorNodeView, EditorView } from '@tiptap/pm/view';
 import { DecorationSet } from '@tiptap/pm/view';
-import { Node, nodeInputRule, nodePasteRule, type InputRuleMatch, type JSONContent, type MarkdownToken, type PasteRuleMatch } from '@tiptap/core';
+import { Node, nodeInputRule, nodePasteRule, type InputRuleMatch, type JSONContent, type PasteRuleMatch } from '@tiptap/core';
 import { NodeSelection, Plugin, PluginKey, type EditorState } from '@tiptap/pm/state';
 
-import { readMarkdownLinkDestination } from '@features/editor/extensions/shared/markdown-link-destination';
-import { noteLinkForIndexedPath, openNoteByNotebookPath, openNoteByPhysicalPath } from '@features/editor/extensions/note-link/memo-resolver';
+import { noteLinkForIndexedPath } from '@features/editor/extensions/note-link/memo-resolver';
+import { openNoteByNotebookPath, openNoteByPhysicalPath } from '@features/memo/public/note-navigation-api';
 import { queryMentionNotes } from '@features/editor/extensions/note-mention/note-mention-data';
-import { parseBooleanAttr, pickAttr, splitDisplay, stripMdSuffix, unescapeHtml } from '@features/editor/extensions/note-link/markdown';
+import { parseBooleanAttr, splitDisplay, stripMdSuffix } from '@features/editor/extensions/note-link/markdown';
+import {
+  attrsFromMarkdownNoteLink, attrsFromWikiNoteLink, escapeMarkdownLinkText,
+  parseMarkdownNoteLinkAtStart, parseWikiNoteLinkAtStart, noteReferenceMarkdownSpec,
+  type NoteReferenceAttrs, type ParsedWikiNoteLink,
+} from './note-reference-markdown';
+export type { NoteReferenceAttrs } from './note-reference-markdown';
+export { isRelativeNoteDestination, parseWikiNoteLinkAtStart, splitObsidianTarget } from './note-reference-markdown';
 import { translate, type I18nKey } from '@/lib/i18n';
 import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api';
 import { createTerminalInlineAtomCaretDecorations } from '@features/editor/extensions/shared/terminal-inline-atom-caret';
+import {
+  createInlineAtomCloseIcon,
+  createInlineAtomNodeView,
+  deleteInlineAtomNode,
+  deleteAdjacentInlineAtom,
+  setInlineAtomNodeViewSelected,
+} from '@features/editor/extensions/shared/inline-atom-nodeview';
 import { navigateToHeadingAnchor } from '@features/editor/components/heading-anchor-navigation';
-import { decodeEditorHref } from '@features/editor/editor-link-resolution';
 import GithubSlugger from 'github-slugger';
 import { notes as notesClient } from '@platform/tauri/client';
+import type { NoteEntry } from '@platform/tauri/client/notes';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { joinNotebookMemoPath } from '@/lib/path';
 import { buildNoteOpenLink } from '@platform/open-target/path-link';
 import { displayTitleFromFilename } from '@/lib/utils';
 import { toast } from '@/lib/toast';
+import {
+  NoteReferencePreviewController,
+  type NoteReferencePreviewData,
+} from '@features/editor/extensions/note-link/note-reference-preview-controller';
 
 // ─── Attrs ────────────────────────────────────────────────────────────────────
-
-export interface NoteReferenceAttrs {
-  memoId: string | null;
-  notebookId: string | null;
-  relativePath?: string | null;
-  notebookName: string;
-  title: string;
-  originalPath: string | null;
-  linkStyle: 'flowix' | 'wiki' | 'markdown';
-  linkTarget: string | null;
-  heading: string | null;
-  /** 渲染态: memoId 缺失 或 后端按 memoId/originalPath 都解析不到时为 true;
-   *  不写入 markdown */
-  stale: boolean;
-}
 
 function noteReferenceDisplayTitle(attrs: NoteReferenceAttrs): string {
   if (attrs.relativePath) return displayTitleFromFilename(attrs.relativePath);
@@ -53,87 +56,8 @@ function noteReferenceDisplayTitle(attrs: NoteReferenceAttrs): string {
   return stripMdSuffix(attrs.title || '');
 }
 
-const FLOWIX_MEMO_URL_RE = /^flowix:\/\/(?:memo\/|open\?)/i;
-
-// NodeView 不在 React 树内, 不能用 useI18n, 走 user-settings-store 直读当前语言。
 function tKey(key: I18nKey, params?: Record<string, string | number>): string {
   return translate(getCurrentAppLanguage(), key, params);
-}
-
-type ParsedMarkdownNoteLink = {
-  raw: string;
-  text: string;
-  href: string;
-};
-
-type ParsedWikiNoteLink = {
-  raw: string;
-  target: string;
-  heading: string | null;
-  title: string;
-};
-
-export function splitObsidianTarget(rawTarget: string): { target: string; heading: string | null } {
-  const hash = rawTarget.indexOf('#');
-  if (hash < 0) return { target: decodeEditorHref(rawTarget.trim()), heading: null };
-  const target = decodeEditorHref(rawTarget.slice(0, hash).trim());
-  // Also accept the commonly typed `## Heading`, while Obsidian itself uses
-  // one `#` regardless of heading level.
-  const heading = decodeEditorHref(rawTarget.slice(hash).replace(/^#+\s*/, '').trim());
-  return { target, heading: heading || null };
-}
-
-export function parseWikiNoteLinkAtStart(src: string): ParsedWikiNoteLink | null {
-  if (!src.startsWith('[[')) return null;
-  const end = src.indexOf(']]', 2);
-  if (end < 0 || src.slice(2, end).includes('\n')) return null;
-  const body = src.slice(2, end);
-  const aliasAt = body.indexOf('|');
-  const rawTarget = aliasAt < 0 ? body : body.slice(0, aliasAt);
-  const { target, heading } = splitObsidianTarget(rawTarget);
-  if (!target) return null;
-  const fallbackTitle = target.split('/').pop()?.replace(/\.md$/i, '') || target;
-  return {
-    raw: src.slice(0, end + 2),
-    target,
-    heading,
-    title: (aliasAt < 0 ? fallbackTitle : body.slice(aliasAt + 1).trim()) || fallbackTitle,
-  };
-}
-
-export function isRelativeNoteDestination(href: string): boolean {
-  const value = href.trim();
-  if (!value || /^[a-z][a-z0-9+.-]*:/i.test(value)) return false;
-  if (value.startsWith('/') || value.startsWith('#') || value.startsWith('?') || value.startsWith('//')) return false;
-  return /\.md(?:#|$)/i.test(value) || /%20/i.test(value);
-}
-
-function findMarkdownLinkCloseBracket(src: string): number {
-  for (let i = 1; i < src.length; i += 1) {
-    const char = src[i];
-    if (char === '\\') {
-      i += 1;
-      continue;
-    }
-    if (char === '\n') return -1;
-    if (char === ']') return i;
-  }
-  return -1;
-}
-
-function parseMarkdownNoteLinkAtStart(src: string): ParsedMarkdownNoteLink | null {
-  if (!src.startsWith('[')) return null;
-  const closeBracket = findMarkdownLinkCloseBracket(src);
-  if (closeBracket < 0 || src[closeBracket + 1] !== '(') return null;
-
-  const destination = readMarkdownLinkDestination(src, closeBracket + 1);
-  if (!destination || !FLOWIX_MEMO_URL_RE.test(destination.url)) return null;
-
-  return {
-    raw: src.slice(0, destination.end + 1),
-    text: src.slice(1, closeBracket),
-    href: destination.url,
-  };
 }
 
 function findLastMarkdownNoteLink(text: string): InputRuleMatch | null {
@@ -188,72 +112,6 @@ function findWikiNotePasteMatches(text: string): PasteRuleMatch[] {
   return matches;
 }
 
-function parseFlowixMemoHrefForAttrs(href: string): { memoId: string | null; stale: boolean } {
-  if (/^flowix:\/\/open\?/i.test(href)) return { memoId: null, stale: false };
-  return { memoId: null, stale: true };
-}
-
-function escapeMarkdownLinkText(text: string): string {
-  return text
-    .replace(/\\/g, '\\\\')
-    .replace(/\[/g, '\\[')
-    .replace(/\]/g, '\\]');
-}
-
-function unescapeMarkdownLinkText(text: string): string {
-  return text.replace(/\\([\\\[\]])/g, '$1');
-}
-
-function attrsFromMarkdownNoteLink(titleText: string, href: string): NoteReferenceAttrs {
-  if (!FLOWIX_MEMO_URL_RE.test(href)) {
-    const { target, heading } = splitObsidianTarget(href);
-    return {
-      memoId: null,
-      notebookId: null,
-      notebookName: '',
-      title: unescapeMarkdownLinkText(titleText).trim(),
-      originalPath: null,
-      linkStyle: 'markdown',
-      linkTarget: target,
-      heading,
-      stale: false,
-    };
-  }
-  const parsed = parseFlowixMemoHrefForAttrs(href);
-  let pathTarget: URL | null = null;
-  if (/^flowix:\/\/open\?/i.test(href)) {
-    try { pathTarget = new URL(href); } catch { /* malformed link stays stale */ }
-  }
-  return {
-    memoId: parsed.memoId,
-    notebookId: pathTarget?.searchParams.get('notebookId') ?? null,
-    relativePath: pathTarget?.searchParams.get('f') ?? pathTarget?.searchParams.get('file') ?? pathTarget?.searchParams.get('relativePath') ?? null,
-    notebookName: pathTarget?.searchParams.get('b') ?? pathTarget?.searchParams.get('book') ?? '',
-    title: unescapeMarkdownLinkText(titleText).trim(),
-    originalPath: null,
-    linkStyle: 'flowix',
-    linkTarget: href,
-    // flowix://open 深链的 `#fragment` 是 GitHub-slug 标题锚点，与相对链接同语义。
-    heading: pathTarget?.hash ? decodeEditorHref(pathTarget.hash.replace(/^#/, '').trim()) || null : null,
-    stale: parsed.stale,
-  };
-}
-
-function attrsFromWikiNoteLink(parsed: ParsedWikiNoteLink): NoteReferenceAttrs {
-  return {
-    memoId: null,
-    notebookId: null,
-    notebookName: '',
-    title: parsed.title,
-    originalPath: null,
-    linkStyle: 'wiki',
-    linkTarget: parsed.target,
-    heading: parsed.heading,
-    stale: false,
-  };
-}
-
-
 // ─── HardBreak 清理 ───────────────────────────────────────────────────────────
 
 /**
@@ -306,8 +164,6 @@ function removeHardBreaksAroundNoteReferences(state: EditorState) {
   return tr;
 }
 
-const noteReferenceCaretPluginKey = new PluginKey<DecorationSet>('noteReferenceTerminalCaret');
-
 // ─── NodeView ─────────────────────────────────────────────────────────────────
 
 class NoteReferenceView implements ProseMirrorNodeView {
@@ -316,39 +172,49 @@ class NoteReferenceView implements ProseMirrorNodeView {
   private node: ProseMirrorNode;
   private view: EditorView;
   private getPos: (() => number | undefined) | undefined;
-  private clickHandler: (e: MouseEvent) => void;
   /** 节点已销毁标记. 异步 refresh 跑完后写回 doc 时如果发现 destroyed,
    * 立即放弃 dispatch, 避免 dispatch 到已死的 view 触发 PM 内部错误,
    * 或把 attrs 写到错的 noteReference 节点 (pos 处已被别的节点占据). */
   private destroyed = false;
+  private previewController: NoteReferencePreviewController | null = null;
 
-  constructor(node: ProseMirrorNode, view: EditorView, getPos: (() => number | undefined) | undefined) {
+  constructor(node: ProseMirrorNode, view: EditorView, getPos: (() => number | undefined) | undefined, private readonly presentation: 'document' | 'composer') {
     this.node = node;
     this.view = view;
     this.getPos = getPos;
     this.dom = this.createCard();
-    this.clickHandler = (e) => this.handleClick(e);
-    this.dom.addEventListener('click', this.clickHandler);
+    if (this.presentation === 'composer') {
+      this.previewController = new NoteReferencePreviewController({
+        anchor: this.dom,
+        getLocatorKey: () => this.previewLocatorKey(),
+        getFallbackTitle: () => noteReferenceDisplayTitle(this.node.attrs as NoteReferenceAttrs)
+          || tKey('editor.noteLink.untitled'),
+        loadData: () => this.loadNotePreviewData(),
+        openNote: async (data) => {
+          await openNoteByNotebookPath(
+            data.notebookId,
+            data.relativePath,
+            null,
+            { destination: 'browser-column' },
+          );
+        },
+        t: (key) => tKey(key),
+        onError: (error) => toast.error(error instanceof Error ? error.message : String(error)),
+      });
+    }
 
-    // mount 时异步校验: 用 memoId 反查最新 title / notebookName / 路径,
-    // 与 markdown 里缓存的旧值对比, 变化则写回 doc attrs;
-    // 解析失败 → 落 stale.
+    // mount 时按笔记本和相对路径校验目标是否仍存在.
   }
 
   private createCard(): HTMLElement {
     // notebookName 不再用于渲染 (见下方 nameSpan 注释), 仍在 attrs 里保留;
     // 这里只解构 UI 需要的字段.
-    const { notebookId, relativePath, notebookName, memoId, originalPath, linkTarget, stale } = this.node.attrs as NoteReferenceAttrs;
+    const { notebookId, relativePath, notebookName, originalPath, linkTarget, stale } = this.node.attrs as NoteReferenceAttrs;
 
     // 视觉 stale 判定:
     //   - 已 stale (applyAttrs 写入) → 视觉 stale
-    //   - memoId 缺失 + originalPath 缺失 (双向都没法定位 memo) → 视觉 stale
-    //   - 只有 memoId 缺失但 originalPath 在 (例如物理路径粘贴, paste 没
-    //     同步拿到 id) → **不**先 stale, mount 时 refreshMemoAttrs 会
-    //     用 originalPath 异步反查 memoId 并写回. 这样避免"刚粘贴的有效
-    //     链接一出生就是灰卡"的问题.
     const hasTarget = Boolean((notebookId || notebookName) && relativePath)
-      || Boolean(memoId || originalPath || linkTarget);
+      || Boolean(originalPath || linkTarget);
     const effectiveStale = stale || !hasTarget;
 
     // 外层 wrapper: 与 .editor-file-attachment 同结构 (display:inline),
@@ -359,26 +225,30 @@ class NoteReferenceView implements ProseMirrorNodeView {
     // 上鼠标按住拖动只会触发选区, 不会启动 DnD 流.
     const wrapper = document.createElement('span');
     wrapper.className = 'editor-note-reference';
-    // NoteReference remains the single source of truth for memo identity,
+    // NoteReference remains the single source of truth for note path,
     // path validation, and navigation. Only its composer surface gets a
     // presentation modifier, so Agent chips cannot leak into document links.
-    if (this.view.dom.closest('.agent-thread-card__composer')) {
-      wrapper.classList.add('editor-note-reference--composer');
+    if (this.presentation === 'composer') {
+      wrapper.classList.add('agent-composer__note-reference', 'agent-composer__inline-atom-wrapper');
     }
     wrapper.contentEditable = 'false';
     wrapper.draggable = true;
 
     const card = document.createElement('span');
-    card.className = 'editor-note-reference__card';
+    card.className = 'note-reference__card';
     card.setAttribute('data-stale', effectiveStale ? 'true' : 'false');
+    if (this.presentation === 'composer') {
+      card.setAttribute('aria-haspopup', 'dialog');
+      card.setAttribute('aria-expanded', 'false');
+    }
     if (originalPath) {
       card.setAttribute('title', effectiveStale ? tKey('editor.noteLink.stale', { path: originalPath }) : originalPath);
     }
 
-    // 笔记图标 (lucide file-text 同形, 内联 SVG 避免依赖 React)
+    // 使用侧边栏默认文档图标的 SVG 路径, 内联渲染以避免依赖 React。
     const icon = document.createElement('span');
-    icon.className = 'editor-note-reference__icon';
-    icon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M15 2H6a2 2 0 0 0-2 2v16a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V7Z"/><path d="M14 2v4a2 2 0 0 0 2 2h4"/><path d="M10 9H8"/><path d="M16 13H8"/><path d="M16 17H8"/></svg>`;
+    icon.className = 'note-reference__icon';
+    icon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 18 18" fill="none" aria-hidden="true"><g transform="matrix(0.6923077 0 0 0.6923077 0.6923077 0.6923077)"><line x1="7.6666" y1="11.36" x2="10.3333" y2="11.36" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" vector-effect="non-scaling-stroke"/><line x1="7.6666" y1="15.18" x2="16.3333" y2="15.18" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" vector-effect="non-scaling-stroke"/><path d="M 3.6667 19 V 5 c 0 -1.4733 1.1933 -2.6667 2.6667 -2.6667 h 7.448 c 0.3533 0 0.6933 0.14 0.9427 0.3907 l 5.2187 5.2187 c 0.2507 0.2507 0.3907 0.5893 0.3907 0.9427 v 10.1146 c 0 1.4733 -1.1933 2.6667 -2.6667 2.6667 H 6.3333 c -1.4733 0 -2.6667 -1.1933 -2.6667 -2.6667 Z" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" vector-effect="non-scaling-stroke"/><path d="M 20.2133 8.3333 h -4.5467 c -0.736 0 -1.3333 -0.5973 -1.3333 -1.3333 V 2.4693" fill="none" stroke="currentColor" stroke-linecap="round" stroke-linejoin="round" stroke-width="1.2" vector-effect="non-scaling-stroke"/></g></svg>`;
 
     // 名称 = `title` 单段。
     //
@@ -393,62 +263,151 @@ class NoteReferenceView implements ProseMirrorNodeView {
     // 仍保留 notebookName 在 attrs 里 (markdown round-trip / 双击跳转跨笔记本
     // 都还要用), 只是 UI 层不再展示.
     const nameSpan = document.createElement('span');
-    nameSpan.className = 'editor-note-reference__name';
+    nameSpan.className = 'note-reference__name';
     const titleSpan = document.createElement('span');
-    titleSpan.className = 'editor-note-reference__title';
+    titleSpan.className = 'note-reference__title';
     titleSpan.textContent = noteReferenceDisplayTitle(this.node.attrs as NoteReferenceAttrs) || tKey('editor.noteLink.untitled');
     nameSpan.appendChild(titleSpan);
 
     card.appendChild(icon);
     card.appendChild(nameSpan);
 
-    // 失效标签: stale 视觉信号除了 opacity + 删除线, 再追加一段
+    // 失效标签: stale 视觉信号在降低 opacity 的同时追加一段
     // "（已失效）" 文字, 让用户在不 hover 的情况下也能直接读到链接状态.
     // 用独立 span 包起来, 避免继承 __name 的 font-weight/换行属性.
     if (effectiveStale) {
       const staleMark = document.createElement('span');
-      staleMark.className = 'editor-note-reference__stale-mark';
+      staleMark.className = 'note-reference__stale-mark';
       staleMark.textContent = tKey('editor.noteLink.staleMark');
       card.appendChild(staleMark);
     }
 
-    // 节点首/尾部 caret 占位:
-    //  inline atom node 位于段落行首/行尾时, 浏览器把 caret 贴到
-    //  NodeView 第一个/最后一个可定位点; 此前该点是 icon / 末尾文字,
-    //  caret 视觉上 "穿入图标" 或 "贴卡片右边缘". 改为在 wrapper 内、
-    //  card 前后各塞一个零宽空格文本节点, caret 自然落在文本节点上,
-    //  与卡片边缘不再重叠.
-    //  - 必须是 TextNode (createTextNode), <span> 不行——
-    //    span 的边缘问题与 icon 相同, caret 仍会贴其左/右边缘.
-    //  - 零宽空格 U+200B 不可见、不占字宽, 视觉上无副作用.
-    //  - wrapper 整体 contentEditable=false, 用户无法编辑节点内部 DOM.
-    //  - ignoreMutation 返回 true, PM 不会把这段 DOM 视为内容变更.
-    //  - 前后对称两个 spacer: 保证从左侧进卡片 (← / Home) 与从右侧
-    //    出卡片 (→ / End) 时 caret 着陆点一致.
-    const caretSpacerLeading = document.createTextNode('​');
-    const caretSpacerTrailing = document.createTextNode('​');
-    wrapper.appendChild(caretSpacerLeading);
-    wrapper.appendChild(card);
-    wrapper.appendChild(caretSpacerTrailing);
-
-    return wrapper;
+    const inlineAtomNodeView = createInlineAtomNodeView({
+      caretGeometry: wrapper.classList.contains('agent-composer__note-reference') ? 'single-line' : undefined,
+      wrapper,
+      wrapperClassName: wrapper.className,
+      content: card,
+      onClick: () => {
+        this.selectOnClick();
+        if (this.presentation === 'composer') this.previewController?.toggle();
+      },
+      onDoubleClick: () => { void this.handleDoubleClick(); },
+      ...(this.presentation === 'composer' ? {
+        hoverActions: [{
+          ariaLabel: `移除笔记引用 ${noteReferenceDisplayTitle(this.node.attrs as NoteReferenceAttrs)}`,
+          icon: createInlineAtomCloseIcon(),
+          onClick: () => deleteInlineAtomNode(this.view, this.node, this.getPos),
+        }],
+      } : {}),
+    });
+    wrapper.draggable = true;
+    return inlineAtomNodeView.dom;
   }
 
-  private async handleClick(e: MouseEvent): Promise<void> {
-    e.preventDefault();
-    e.stopPropagation();
+  private previewLocatorKey(): string {
+    const attrs = this.node.attrs as NoteReferenceAttrs;
+    return JSON.stringify([
+      attrs.notebookId ?? '',
+      attrs.notebookName ?? '',
+      attrs.relativePath ?? '',
+      attrs.originalPath ?? '',
+      attrs.linkTarget ?? '',
+    ]);
+  }
 
-    // 双击才触发跳转; 单击 / ⌘+click / Ctrl+click 都不打开。
-    if (e.detail < 2) {
-      // 键盘触发的 click 没有前置 mousedown, 仍保留节点选中语义。
-      const pos = this.getPos?.();
-      if (pos !== undefined) {
-        const sel = NodeSelection.create(this.view.state.doc, pos);
-        this.view.dispatch(this.view.state.tr.setSelection(sel));
-      }
-      return;
+  private async loadNotePreviewData(): Promise<NoteReferencePreviewData | null> {
+    let attrs = this.node.attrs as NoteReferenceAttrs;
+    let notebookId = attrs.notebookId;
+    let relativePath = attrs.relativePath ?? null;
+    let notebookPath: string | null = null;
+    let location: Awaited<ReturnType<typeof notesClient.resolveLocation>> | null = null;
+    let physicalPath = attrs.originalPath;
+    let notebookName = attrs.notebookName;
+
+    if (attrs.linkTarget && /^flowix:\/\/open\?/i.test(attrs.linkTarget)) {
+      try {
+        const url = new URL(attrs.linkTarget);
+        notebookId ||= url.searchParams.get('notebookId');
+        relativePath ||= url.searchParams.get('f') ?? url.searchParams.get('file') ?? url.searchParams.get('relativePath');
+        notebookName ||= url.searchParams.get('b') ?? url.searchParams.get('book') ?? '';
+        physicalPath ||= url.searchParams.get('path');
+      } catch { /* Keep the authored attrs as fallback. */ }
+    } else if (!physicalPath && attrs.linkTarget && /^\//.test(attrs.linkTarget)) {
+      physicalPath = attrs.linkTarget;
     }
 
+    if ((!notebookId || !relativePath) && physicalPath) {
+      try {
+        location = await notesClient.resolveLocation(physicalPath);
+        notebookId ||= location?.notebookId;
+        relativePath ||= location?.relativePath;
+        notebookPath = location?.notebookPath ?? null;
+      } catch { /* A missing note still gets a title-only preview. */ }
+    }
+
+    if (!notebookId || !relativePath) {
+      // Relative wiki links may be resolved lazily by the same note-reference
+      // resolver used when opening the chip. Re-read attrs after it completes.
+      if (attrs.linkStyle === 'wiki' && attrs.linkTarget) {
+        await this.refreshMemoAttrs();
+        attrs = this.node.attrs as NoteReferenceAttrs;
+        notebookId = attrs.notebookId;
+        relativePath = attrs.relativePath ?? null;
+      }
+    }
+
+    if (!notebookId && relativePath && notebookName) {
+      let notebooks = useNoteStore.getState().notebooks;
+      if (!notebooks.length) {
+        await useNoteStore.getState().loadNotebooks();
+        notebooks = useNoteStore.getState().notebooks;
+      }
+      const matches = notebooks.filter((item) => item.name === notebookName);
+      if (matches.length === 1) notebookId = matches[0].id;
+    }
+
+    if (!notebookId || !relativePath) {
+      return null;
+    }
+
+    let notebook = useNoteStore.getState().notebooks.find((item) => item.id === notebookId);
+    if (!notebook) {
+      await useNoteStore.getState().loadNotebooks();
+      notebook = useNoteStore.getState().notebooks.find((item) => item.id === notebookId);
+    }
+    notebookPath ||= notebook?.path ?? null;
+    const filePath = notebookPath ? joinNotebookMemoPath(notebookPath, relativePath) : null;
+    if (!notebookPath || !filePath) {
+      return null;
+    }
+
+    let entry: NoteEntry | null = null;
+    try {
+      entry = await notesClient.getIndexed(notebookId, relativePath);
+    } catch { /* Render the saved reference title if the index is unavailable. */ }
+
+    const data: NoteReferencePreviewData = {
+      title: entry?.title || noteReferenceDisplayTitle(attrs) || tKey('editor.noteLink.untitled'),
+      preview: entry?.preview ?? '',
+      thumbnail: entry?.thumbnail ?? null,
+      notebookId,
+      relativePath,
+      notebookPath,
+      filePath,
+    };
+    return data;
+  }
+
+  private selectOnClick(): void {
+    // 键盘触发的 click 没有前置 mousedown, 仍保留节点选中语义。
+    const pos = this.getPos?.();
+    if (pos !== undefined) {
+      const sel = NodeSelection.create(this.view.state.doc, pos);
+      this.view.dispatch(this.view.state.tr.setSelection(sel));
+    }
+  }
+
+  private async handleDoubleClick(): Promise<void> {
     const attrs = this.node.attrs as NoteReferenceAttrs;
     if (attrs.linkTarget && /^flowix:\/\/memo\//i.test(attrs.linkTarget)) {
       this.applyAttrs({ stale: true });
@@ -494,10 +453,10 @@ class NoteReferenceView implements ProseMirrorNodeView {
   private refreshCard(): void {
     // 与 fileAttachment 保持同一策略: attrs 更新时只替换内部 card,
     // 保留外层 wrapper、caret spacer 和 ProseMirror 对 NodeView DOM 的引用。
-    const newCard = this.createCard().querySelector('.editor-note-reference__card') as HTMLElement | null;
+    const newCard = this.createCard().querySelector('.note-reference__card') as HTMLElement | null;
     if (!newCard) return;
 
-    const oldCard = this.dom.querySelector('.editor-note-reference__card');
+    const oldCard = this.dom.querySelector('.note-reference__card');
     if (oldCard) {
       this.dom.replaceChild(newCard, oldCard);
       return;
@@ -532,41 +491,31 @@ class NoteReferenceView implements ProseMirrorNodeView {
 
   update(node: ProseMirrorNode): boolean {
     if (node.type.name !== 'noteReference') return false;
+    const previousKey = this.previewLocatorKey();
     this.node = node;
     this.refreshCard();
+    this.previewController?.syncAnchorState();
+    if (previousKey !== this.previewLocatorKey()) {
+      this.previewController?.invalidate();
+    }
     // update 触发场景: 文档被外部修改 / 切换 memo / undo-redo,
     // 节点 attrs 可能刚被改过, 仍跑一次异步校验兜底.
     return true;
   }
 
-  /**
-   * 用 memoId 反查最新 memo 元数据, 与当前 attrs 比对:
-   *   - 解析失败 (memo 被删) → 落 stale.
-   *   - title / notebookName / originalPath / notebookId 任一变化 → 写回 doc.
-   *
-   * 通过 this.refreshPromise 跟踪 in-flight Promise, 短时间内多次触发
-   * (mount + 立刻 update) 时复用同一次请求, 避免后端被反复打.
-   */
+  /** Validate a note reference using its path target. */
   private refreshPromise: Promise<void> | null = null;
 
   refreshMemoAttrs(): Promise<void> {
     if (this.refreshPromise) return this.refreshPromise;
 
     const initialAttrs = this.node.attrs as NoteReferenceAttrs;
-    // 反查路径优先级:
-    //   1. memoId     — 稳定主键, 跨改名/跨笔记本移动不断链
-    //   2. originalPath — 物理路径粘贴场景下 memoId 缺失, 用来反查补 memoId
-    //   都没有 → 无可解析, 直接 return (createCard 已按 !memoId && !originalPath 落 stale)
-    if (!initialAttrs.memoId && !initialAttrs.originalPath && !initialAttrs.linkTarget) {
+    if (!initialAttrs.notebookId && !initialAttrs.notebookName && !initialAttrs.originalPath && !initialAttrs.linkTarget) {
       return Promise.resolve();
     }
 
     this.refreshPromise = (async () => {
       try {
-        if (initialAttrs.linkTarget && /^flowix:\/\/memo\//i.test(initialAttrs.linkTarget)) {
-          if (!(this.node.attrs as NoteReferenceAttrs).stale) this.applyAttrs({ stale: true });
-          return;
-        }
         if (initialAttrs.notebookName && initialAttrs.relativePath && !initialAttrs.notebookId) {
           let notebooks = useNoteStore.getState().notebooks;
           if (!notebooks.some((item) => item.name === initialAttrs.notebookName)) {
@@ -599,10 +548,6 @@ class NoteReferenceView implements ProseMirrorNodeView {
           const content = await notesClient.readDocument(initialAttrs.originalPath);
           const stale = content === null;
           if ((this.node.attrs as NoteReferenceAttrs).stale !== stale) this.applyAttrs({ stale });
-          return;
-        }
-        if (initialAttrs.memoId) {
-          if (!(this.node.attrs as NoteReferenceAttrs).stale) this.applyAttrs({ stale: true });
           return;
         }
         const target = initialAttrs.linkTarget!;
@@ -656,11 +601,11 @@ class NoteReferenceView implements ProseMirrorNodeView {
   }
 
   selectNode(): void {
-    this.dom.classList.add('is-selected');
+    setInlineAtomNodeViewSelected(this.dom, true);
   }
 
   deselectNode(): void {
-    this.dom.classList.remove('is-selected');
+    setInlineAtomNodeViewSelected(this.dom, false);
   }
 
   stopEvent(event: Event): boolean {
@@ -675,305 +620,217 @@ class NoteReferenceView implements ProseMirrorNodeView {
 
   destroy(): void {
     this.destroyed = true;
-    this.dom.removeEventListener('click', this.clickHandler);
+    this.previewController?.dispose();
+    this.previewController = null;
   }
 }
 
 // ─── Node definition ──────────────────────────────────────────────────────────
 
-export const NoteReference = Node.create({
-  name: 'noteReference',
-  group: 'inline',
-  inline: true,
-  atom: true,
-  selectable: true,
-  draggable: true,
-  // 抢在 Markdown 扩展之前注册 tokenizer
-  priority: 1000,
-
-  addAttributes() {
-    return {
-      memoId:        { default: null },
-      relativePath: { default: null },
-      notebookId:   { default: null },
-      notebookName: { default: '' },
-      title:        { default: '' },
-      originalPath: { default: null },
-      linkStyle:    { default: 'flowix' },
-      linkTarget:   { default: null },
-      heading:      { default: null },
-      stale:        { default: false },
-    };
-  },
-
-  parseHTML() {
-    return [
-      {
-        tag: 'note',
-        getAttrs: (el: HTMLElement) => {
-          const memoId        = el.getAttribute('id') || null;
-          const notebookId   = el.getAttribute('notebook') || null;
-          const originalPath = el.getAttribute('path') || null;
-          const relativePath = el.getAttribute('relativePath') || null;
-          const stale        = parseBooleanAttr(el.getAttribute('stale'));
-          const { notebookName, title } = splitDisplay(el.textContent ?? '');
-          return { memoId, notebookId, relativePath, notebookName, title, originalPath, linkStyle: 'flowix', linkTarget: null, heading: null, stale };
-        },
-      },
-    ];
-  },
-
-  renderHTML({ node }) {
-    const a = node.attrs as NoteReferenceAttrs;
-    return [
-      'note',
-      {
-        id: a.memoId ?? '',
-        notebook: a.notebookId ?? '',
-        relativePath: a.relativePath ?? '',
-        path: a.originalPath ?? '',
-        ...(a.stale ? { stale: 'true' } : {}),
-      },
-      // 序列化时 strip title 后缀, 跟 NodeView 渲染一致; 旧 markdown
-      // 历史里写 "foo.md" 也能正常 parse, 因为 splitDisplay 不剥后缀,
-      // 但下次落盘会被统一成无后缀形式.
-      `${a.notebookName || ''}${a.notebookName ? '/' : ''}${stripMdSuffix(a.title || '')}`,
-    ];
-  },
-
-  // ─── Markdown round-trip ──────────────────────────────────────────────────
-  // 新格式 `[title](flowix://memo/<id>)` 和旧格式 `<note ...>` 都转回
-  // noteReference 节点, 这样落盘格式可以迁移为标准 Markdown 链接,
-  // 渲染仍保持当前卡片 NodeView。
-
-  markdownTokenizer: {
+function createNoteReferenceExtension(presentation: 'document' | 'composer') {
+  const caretPluginKey = new PluginKey<DecorationSet>(`noteReferenceTerminalCaret:${presentation}`);
+  return Node.create({
     name: 'noteReference',
-    level: 'inline' as const,
-    start(src: string) {
-      const noteIndex = src.indexOf('<note ');
-      const linkHrefIndex = [src.indexOf('(flowix://memo/'), src.indexOf('(flowix://open?')]
-        .filter(index => index >= 0).sort((a, b) => a - b)[0] ?? -1;
-      const wikiIndex = src.indexOf('[[');
-      const indexes = [noteIndex, linkHrefIndex < 0 ? -1 : Math.max(0, src.lastIndexOf('[', linkHrefIndex)), wikiIndex]
-        .filter(index => index >= 0);
-      if (indexes.length === 0) return -1;
-      return Math.min(...indexes);
-    },
-    tokenize(src: string) {
-      const wiki = parseWikiNoteLinkAtStart(src);
-      if (wiki) {
-        return { type: 'noteReference', raw: wiki.raw, wiki };
-      }
-      const link = parseMarkdownNoteLinkAtStart(src);
-      if (link) {
-        return {
-          type: 'noteReference',
-          raw: link.raw,
-          href: link.href,
-          text: link.text,
-        };
-      }
+    group: 'inline',
+    inline: true,
+    atom: true,
+    selectable: true,
+    draggable: true,
+    // 抢在 Markdown 扩展之前注册 tokenizer
+    priority: 1000,
 
-      const note = /^<note\s+([^>]*)>([\s\S]*?)<\/note>/.exec(src);
-      if (!note) return undefined;
-      return { type: 'noteReference', raw: note[0], attrs: note[1], text: note[2] };
-    },
-  },
-
-  parseMarkdown(token: MarkdownToken) {
-    const wiki = token.wiki as ParsedWikiNoteLink | undefined;
-    if (wiki) {
-      return { type: 'noteReference', attrs: attrsFromWikiNoteLink(wiki) };
-    }
-    const href = String(token.href ?? '');
-    if (FLOWIX_MEMO_URL_RE.test(href)) {
+    addAttributes() {
       return {
-        type: 'noteReference',
-        attrs: attrsFromMarkdownNoteLink(String(token.text ?? ''), href),
+        relativePath: { default: null },
+        notebookId:   { default: null },
+        notebookName: { default: '' },
+        title:        { default: '' },
+        originalPath: { default: null },
+        linkStyle:    { default: 'flowix' },
+        linkTarget:   { default: null },
+        heading:      { default: null },
+        stale:        { default: false },
       };
-    }
+    },
 
-    const attrsStr = String(token.attrs ?? '');
-    const text     = String(token.text ?? '');
-    const { notebookName, title } = splitDisplay(unescapeHtml(text));
-    // memoId 缺失 → null (而不是 ''), 与 addAttributes default null 一致;
-    // 配合 renderMarkdown 在缺失时不写 id="" 属性, 避免 "memoId='' → 落
-    // stale → save → 写 id='' → 重新 parse → 仍然 stale" 的死锁. mount
-    // 时 refreshMemoAttrs 会用 originalPath 反查补回 memoId.
-    const rawId = pickAttr(attrsStr, 'id');
-    return {
-      type: 'noteReference',
-      attrs: {
-        memoId:        rawId && rawId.length > 0 ? rawId : null,
-        notebookId:   pickAttr(attrsStr, 'notebook'),
-        relativePath: pickAttr(attrsStr, 'relativePath'),
-        notebookName,
-        title,
-        originalPath: pickAttr(attrsStr, 'path'),
-        linkStyle:    'flowix',
-        linkTarget:   null,
-        heading:      null,
-        stale:        parseBooleanAttr(pickAttr(attrsStr, 'stale')),
-      },
-    };
-  },
+    parseHTML() {
+      return [
+        {
+          tag: 'note',
+          getAttrs: (el: HTMLElement) => {
+            const notebookId   = el.getAttribute('notebook') || null;
+            const originalPath = el.getAttribute('path') || null;
+            const relativePath = el.getAttribute('relativePath') || null;
+            const stale        = parseBooleanAttr(el.getAttribute('stale'));
+            const { notebookName, title } = splitDisplay(el.textContent ?? '');
+            return { notebookId, relativePath, notebookName, title, originalPath, linkStyle: 'flowix', linkTarget: null, heading: null, stale };
+          },
+        },
+      ];
+    },
 
-  renderMarkdown(node: JSONContent) {
-    const a = (node?.attrs ?? {}) as NoteReferenceAttrs;
-    const displayTitle = escapeMarkdownLinkText(noteReferenceDisplayTitle(a));
-    if (a.linkStyle === 'wiki' && a.linkTarget) {
-      const target = `${a.linkTarget}${a.heading ? `#${a.heading}` : ''}`;
-      const naturalTitle = a.linkTarget.split('/').pop()?.replace(/\.md$/i, '') ?? a.linkTarget;
-      return `[[${target}${a.title && a.title !== naturalTitle ? `|${a.title}` : ''}]]`;
-    }
-    if (a.linkStyle === 'markdown' && a.linkTarget) {
-      const target = `${a.linkTarget}${a.heading ? `#${a.heading}` : ''}`.replace(/ /g, '%20');
-      return `[${escapeMarkdownLinkText(a.title || stripMdSuffix(a.linkTarget))}](${target})`;
-    }
-    if (a.linkTarget && /^flowix:\/\/memo\//i.test(a.linkTarget)) {
-      return `[${displayTitle}](${a.linkTarget})`;
-    }
-    if (a.relativePath) {
-      const notebook = a.notebookId
-        ? useNoteStore.getState().notebooks.find((item) => item.id === a.notebookId)
-        : null;
-      const book = notebook?.name ?? a.notebookName;
-      if (book) {
-        const target = buildNoteOpenLink(book, a.relativePath);
-        return `[${displayTitle}](${target})`;
+    renderHTML({ node }) {
+      const a = node.attrs as NoteReferenceAttrs;
+      return [
+        'note',
+        {
+          notebook: a.notebookId ?? '',
+          relativePath: a.relativePath ?? '',
+          path: a.originalPath ?? '',
+          ...(a.stale ? { stale: 'true' } : {}),
+        },
+        // 序列化时 strip title 后缀, 跟 NodeView 渲染一致; 旧 markdown
+        // 历史里写 "foo.md" 也能正常 parse, 因为 splitDisplay 不剥后缀,
+        // 但下次落盘会被统一成无后缀形式.
+        `${a.notebookName || ''}${a.notebookName ? '/' : ''}${stripMdSuffix(a.title || '')}`,
+      ];
+    },
+
+    // ─── Markdown round-trip ──────────────────────────────────────────────────
+    // Path based Flowix links and authored note tags render as note cards.
+
+    ...noteReferenceMarkdownSpec,
+
+    renderMarkdown(node: JSONContent) {
+      const a = (node?.attrs ?? {}) as NoteReferenceAttrs;
+      const displayTitle = escapeMarkdownLinkText(noteReferenceDisplayTitle(a));
+      if (a.linkStyle === 'wiki' && a.linkTarget) {
+        const target = `${a.linkTarget}${a.heading ? `#${a.heading}` : ''}`;
+        const naturalTitle = a.linkTarget.split('/').pop()?.replace(/\.md$/i, '') ?? a.linkTarget;
+        return `[[${target}${a.title && a.title !== naturalTitle ? `|${a.title}` : ''}]]`;
       }
-      if (a.linkTarget) {
+      if (a.linkStyle === 'markdown' && a.linkTarget) {
+        const target = `${a.linkTarget}${a.heading ? `#${a.heading}` : ''}`.replace(/ /g, '%20');
+        return `[${escapeMarkdownLinkText(a.title || stripMdSuffix(a.linkTarget))}](${target})`;
+      }
+      if (a.linkTarget && /^flowix:\/\/memo\//i.test(a.linkTarget)) {
         return `[${displayTitle}](${a.linkTarget})`;
       }
-      if (a.notebookId) {
-        const target = `flowix://open?notebookId=${encodeURIComponent(a.notebookId)}&relativePath=${encodeURIComponent(a.relativePath)}`;
-        return `[${displayTitle}](${target})`;
+      if (a.relativePath) {
+        const notebook = a.notebookId
+          ? useNoteStore.getState().notebooks.find((item) => item.id === a.notebookId)
+          : null;
+        const book = notebook?.name ?? a.notebookName;
+        if (book) {
+          const target = buildNoteOpenLink(book, a.relativePath);
+          return `[${displayTitle}](${target})`;
+        }
+        if (a.linkTarget) {
+          return `[${displayTitle}](${a.linkTarget})`;
+        }
+        if (a.notebookId) {
+          const target = `flowix://open?notebookId=${encodeURIComponent(a.notebookId)}&relativePath=${encodeURIComponent(a.relativePath)}`;
+          return `[${displayTitle}](${target})`;
+        }
       }
-    }
-    if (a.linkTarget?.startsWith('flowix://open?') && !a.originalPath) {
-      return `[${displayTitle}](${a.linkTarget})`;
-    }
-    const pathLink = a.originalPath ? noteLinkForIndexedPath(a.originalPath) : null;
-    if (pathLink) {
-      return `[${displayTitle}](${pathLink})`;
-    }
-    if (a.originalPath) {
-      const fallback = `flowix://open?path=${encodeURIComponent(a.originalPath)}`;
-      return `[${displayTitle}](${fallback})`;
-    }
-    return escapeMarkdownLinkText(stripMdSuffix(a.title || ''));
-  },
+      if (a.linkTarget?.startsWith('flowix://open?') && !a.originalPath) {
+        return `[${displayTitle}](${a.linkTarget})`;
+      }
+      const pathLink = a.originalPath ? noteLinkForIndexedPath(a.originalPath) : null;
+      if (pathLink) {
+        return `[${displayTitle}](${pathLink})`;
+      }
+      if (a.originalPath) {
+        const fallback = `flowix://open?path=${encodeURIComponent(a.originalPath)}`;
+        return `[${displayTitle}](${fallback})`;
+      }
+      return escapeMarkdownLinkText(stripMdSuffix(a.title || ''));
+    },
 
-  // ─── NodeView ─────────────────────────────────────────────────────────────
+    // ─── NodeView ─────────────────────────────────────────────────────────────
 
-  addNodeView() {
-    return ({ node, view, getPos }) => new NoteReferenceView(node, view, getPos as () => number | undefined);
-  },
+    addNodeView() {
+      return ({ node, view, getPos }) => new NoteReferenceView(node, view, getPos as () => number | undefined, presentation);
+    },
 
-  // ─── HardBreak 清理 ───────────────────────────────────────────────────────
-  // 与 fileAttachment 同源(`attachment-link/nodes/view-file.ts:onCreate / addProseMirrorPlugins`):
-  // 编辑器刚创建时扫一遍,后续每次文档变动也扫一遍,防止用户手动在卡片
-  // 前后插入换行(Shift+Enter)导致卡片头部或末尾出现同块空行。
+    // ─── HardBreak 清理 ───────────────────────────────────────────────────────
+    // 与 fileAttachment 同源(`attachment-link/nodes/view-file.ts:onCreate / addProseMirrorPlugins`):
+    // 编辑器刚创建时扫一遍,后续每次文档变动也扫一遍,防止用户手动在卡片
+    // 前后插入换行(Shift+Enter)导致卡片头部或末尾出现同块空行。
 
-  onCreate() {
-    const tr = removeHardBreaksAroundNoteReferences(this.editor.state);
-    if (tr?.docChanged) {
-      this.editor.view.dispatch(tr);
-    }
-  },
+    onCreate() {
+      const tr = removeHardBreaksAroundNoteReferences(this.editor.state);
+      if (tr?.docChanged) {
+        this.editor.view.dispatch(tr);
+      }
+    },
 
-  addProseMirrorPlugins() {
-    return [
-      new Plugin({
-        key: noteReferenceCaretPluginKey,
-        state: {
-          init: (_, state) => createTerminalInlineAtomCaretDecorations(state.doc, 'noteReference'),
-          apply: (transaction, value, _oldState, newState) => (
-            transaction.docChanged
-              ? createTerminalInlineAtomCaretDecorations(newState.doc, 'noteReference')
-              : value
+    addProseMirrorPlugins() {
+      return [
+        new Plugin({
+          key: caretPluginKey,
+          state: {
+            init: (_, state) => createTerminalInlineAtomCaretDecorations(state.doc, 'noteReference'),
+            apply: (transaction, value, _oldState, newState) => (
+              transaction.docChanged
+                ? createTerminalInlineAtomCaretDecorations(newState.doc, 'noteReference')
+                : value
+            ),
+          },
+          props: {
+            decorations: (state) => caretPluginKey.getState(state) ?? DecorationSet.empty,
+          },
+          appendTransaction: (transactions, _oldState, newState) => {
+            if (!transactions.some(transaction => transaction.docChanged)) return null;
+            return removeHardBreaksAroundNoteReferences(newState);
+          },
+        }),
+      ];
+    },
+
+    addInputRules() {
+      return [
+        nodeInputRule({
+          find: findLastWikiNoteLink,
+          type: this.type,
+          getAttributes: match => attrsFromWikiNoteLink(match.data as unknown as ParsedWikiNoteLink),
+        }),
+        nodeInputRule({
+          find: findLastMarkdownNoteLink,
+          type: this.type,
+          getAttributes: match => attrsFromMarkdownNoteLink(
+            String(match.data?.title ?? ''),
+            String(match.data?.href ?? '')
           ),
+        }),
+      ];
+    },
+
+    addPasteRules() {
+      return [
+        nodePasteRule({
+          find: findWikiNotePasteMatches,
+          type: this.type,
+          getAttributes: match => attrsFromWikiNoteLink(match.data as unknown as ParsedWikiNoteLink),
+        }),
+        nodePasteRule({
+          find: findMarkdownNotePasteMatches,
+          type: this.type,
+          getAttributes: match => attrsFromMarkdownNoteLink(
+            String(match.data?.title ?? ''),
+            String(match.data?.href ?? '')
+          ),
+        }),
+      ];
+    },
+
+    // ─── Keyboard ─────────────────────────────────────────────────────────────
+
+    addKeyboardShortcuts() {
+      return {
+        Backspace: () => {
+          return deleteAdjacentInlineAtom(this.editor, 'noteReference', 'before');
         },
-        props: {
-          decorations: (state) => noteReferenceCaretPluginKey.getState(state) ?? DecorationSet.empty,
+        Delete: () => {
+          return deleteAdjacentInlineAtom(this.editor, 'noteReference', 'after');
         },
-        appendTransaction: (transactions, _oldState, newState) => {
-          if (!transactions.some(transaction => transaction.docChanged)) return null;
-          return removeHardBreaksAroundNoteReferences(newState);
-        },
-      }),
-    ];
-  },
+      };
+    },
+  });
+}
 
-  addInputRules() {
-    return [
-      nodeInputRule({
-        find: findLastWikiNoteLink,
-        type: this.type,
-        getAttributes: match => attrsFromWikiNoteLink(match.data as unknown as ParsedWikiNoteLink),
-      }),
-      nodeInputRule({
-        find: findLastMarkdownNoteLink,
-        type: this.type,
-        getAttributes: match => attrsFromMarkdownNoteLink(
-          String(match.data?.title ?? ''),
-          String(match.data?.href ?? '')
-        ),
-      }),
-    ];
-  },
+/** Document-editor note references. */
+export const NoteReference = createNoteReferenceExtension('document');
 
-  addPasteRules() {
-    return [
-      nodePasteRule({
-        find: findWikiNotePasteMatches,
-        type: this.type,
-        getAttributes: match => attrsFromWikiNoteLink(match.data as unknown as ParsedWikiNoteLink),
-      }),
-      nodePasteRule({
-        find: findMarkdownNotePasteMatches,
-        type: this.type,
-        getAttributes: match => attrsFromMarkdownNoteLink(
-          String(match.data?.title ?? ''),
-          String(match.data?.href ?? '')
-        ),
-      }),
-    ];
-  },
-
-  // ─── Keyboard ─────────────────────────────────────────────────────────────
-
-  addKeyboardShortcuts() {
-    return {
-      Backspace: () => {
-        const { selection } = this.editor.state;
-        if (selection instanceof NodeSelection && selection.node.type.name === 'noteReference') {
-          this.editor.commands.deleteSelection();
-          return true;
-        }
-        const { $from } = selection;
-        const before = $from.nodeBefore;
-        if (before && before.type.name === 'noteReference') {
-          const from = $from.pos - before.nodeSize;
-          this.editor.commands.deleteRange({ from, to: $from.pos });
-          return true;
-        }
-        return false;
-      },
-      Delete: () => {
-        const { selection } = this.editor.state;
-        if (selection instanceof NodeSelection && selection.node.type.name === 'noteReference') {
-          this.editor.commands.deleteSelection();
-          return true;
-        }
-        const { $from } = selection;
-        const after = $from.nodeAfter;
-        if (after && after.type.name === 'noteReference') {
-          this.editor.commands.deleteRange({ from: $from.pos, to: $from.pos + after.nodeSize });
-          return true;
-        }
-        return false;
-      },
-    };
-  },
-});
+/** Composer note references use a separate extension and plugin key. */
+export const ComposerNoteReference = createNoteReferenceExtension('composer');

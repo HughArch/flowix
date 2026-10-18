@@ -181,22 +181,24 @@ impl SyncManager {
         Ok(next_generation)
     }
 
-    pub async fn logout(&self) -> Result<(), SyncError> {
-        self.logout_with_cleanup(|| self.delete_persisted_refresh_token())
-            .await
+    /// Clear local authentication immediately and return a handle for remote revocation.
+    pub fn begin_logout(&self) -> PendingLogout {
+        let (refresh_token, local_cleanup) =
+            self.clear_auth_with_cleanup(|| self.delete_persisted_refresh_token());
+        PendingLogout {
+            refresh_token,
+            local_cleanup,
+        }
     }
 
-    async fn logout_with_cleanup(
-        &self,
-        cleanup: impl FnOnce() -> Result<(), SyncError>,
-    ) -> Result<(), SyncError> {
-        let (refresh_token, local_cleanup) = self.clear_auth_with_cleanup(cleanup);
-        let remote_logout = if let Some(refresh_token) = refresh_token {
+    /// Revoke a session after its local state and dependent UI have been cleared.
+    pub async fn finish_logout(&self, pending: PendingLogout) -> Result<(), SyncError> {
+        let remote_logout = if let Some(refresh_token) = pending.refresh_token {
             self.client.logout_with_refresh_token(&refresh_token).await
         } else {
             Ok(())
         };
-        if let Err(error) = local_cleanup {
+        if let Err(error) = pending.local_cleanup {
             if let Err(remote_error) = remote_logout {
                 tracing::warn!(
                     "failed to revoke Flowix Cloud session during local logout: {remote_error}"
@@ -205,6 +207,10 @@ impl SyncManager {
             return Err(error);
         }
         remote_logout
+    }
+
+    pub async fn logout(&self) -> Result<(), SyncError> {
+        self.finish_logout(self.begin_logout()).await
     }
 
     fn clear_auth_with_cleanup(
@@ -426,7 +432,6 @@ mod tests {
                         id: token.into(),
                         email: "test@example.test".into(),
                         display_name: "Test".into(),
-                        system_role: "user".into(),
                     },
                     protocol_epoch: crate::v2::PROTOCOL_EPOCH,
                 },
@@ -549,6 +554,24 @@ mod tests {
             refresh_token: token.into(),
             refresh_token_expires_at: i64::MAX,
         }
+    }
+
+    #[test]
+    fn begin_logout_clears_local_session_before_remote_revocation() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = SyncManager::new(
+            "https://cloud.example.test",
+            directory.path().join("sync.db"),
+        )
+        .unwrap();
+        let generation = sign_in(&manager, "current");
+
+        let pending = manager.begin_logout();
+
+        assert!(!manager.state().unwrap().authenticated);
+        assert!(manager.session_generation() > generation);
+        assert_eq!(pending.refresh_token.as_deref(), Some("current"));
+        assert!(pending.local_cleanup.is_ok());
     }
 
     #[test]

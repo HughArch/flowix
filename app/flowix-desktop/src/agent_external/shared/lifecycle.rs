@@ -249,7 +249,7 @@ pub async fn persist_external_chunk_for_thread_with_metadata(
     // local journal is retained only for Claude. Codex and DSH messages must
     // come from their provider history APIs; their live chunks are runtime
     // state only and must never become a second local transcript.
-    if agent_type != "claude" {
+    if agent_type != "claudecode" {
         return;
     }
     let payload_json = match chunk_payload_json(chunk, agent_type, run_id, metadata) {

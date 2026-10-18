@@ -1,35 +1,29 @@
-//! Notebook IPC —增删改查 + 切换当前 notebook�?//!
-//! `set_current_notebook` �?`switch_notebook_and_rebuild` helper, 触发
-//! watcher rebind + 磁盘对账 + 后台索引 rebuild�?//!
-//! �?/ �?/ �?/ 清空 四个写操作都会同步更�?`agent_access` store
-//! (`~/.flowix/agent-access.json`), 任何 entry 真改了之�?emit
-//! `agent-access-changed` 事件, 其它窗口 React 树收到后从�?盘重�?load�?
+//! Notebook lifecycle and device-local registration in db/local.db.
 use crate::events as dispatcher;
 use serde::Serialize;
 use std::path::{Path, PathBuf};
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::lock_utils::{read_lock, write_lock};
 use flowix_core::memo_file::{
     MemoFile, Notebook, NotebookConfig, NotebookSetupJob, NotebookSetupJobStatus,
+    NotebookSetupStage,
 };
-use flowix_core::MemoService;
 use flowix_sync::V2LocalNotebook;
 
-use super::agent_access::AGENT_ACCESS_CHANGED_EVENT;
+use super::agent_workspace::AGENT_WORKSPACE_CHANGED_EVENT;
 use super::helpers::{
     refresh_watcher_roots, switch_notebook_trusting_index, watch_created_notebook,
 };
 use crate::app::state::{AppState, NotebookImportStatus, NotebookImportStatusKind};
 
 const NOTEBOOK_IMPORT_COMPLETE_EVENT: &str = "notebook-import-complete";
-const NOTEBOOK_SETUP_STATUS_EVENT: &str = "notebook-setup-status";
 /// 笔�?�?��表发生变�?(reorder / create / update / delete) �?emit, 其它窗口
 /// store 监听�?reload。前�?TS 类型 `notebooks-changed` 事件 payload �?unit�?
 pub(crate) const NOTEBOOKS_CHANGED_EVENT: &str = "notebooks-changed";
 const NOTEBOOK_IMPORT_STATUS_EVENT: &str = "notebook-import-status";
 
-fn emit_notebook_import_status(
+pub(crate) fn emit_notebook_import_status(
     state: &AppState,
     app: &AppHandle,
     notebook_id: &str,
@@ -122,8 +116,12 @@ fn notebook_from_config(config: NotebookConfig) -> Notebook {
 #[serde(rename_all = "camelCase")]
 pub struct NotebookListItem {
     #[serde(flatten)]
-    notebook: Notebook,
-    memo_count: usize,
+    notebook: NotebookConfig,
+    pinned: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    memo_count: Option<usize>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    missing: Option<bool>,
 }
 
 fn create_notebook_registry(
@@ -256,7 +254,9 @@ fn create_notebook_registry_with_id_and_template(
 
     // 创建顺序: 1) 先�?现有 configs 验证�?��不冲�? 2) �?next sort;
     // 3) 组�? NotebookConfig 写盘。sort �?MAX(sort)+10 让新行落到末�?    // (ORDER BY sort ASC), 不取 len �?���?reorder �?sort �?��疏的�?
-    let mut configs = memo_file.read_notebook_configs().unwrap_or_default();
+    let mut configs = memo_file
+        .read_notebook_configs()
+        .map_err(|error| format!("INDEX_READ_FAILED: {error}"))?;
     if configs
         .iter()
         .any(|notebook| comparable_notebook_path(&notebook.path) == comparable_path)
@@ -287,15 +287,17 @@ fn create_notebook_registry_with_id_and_template(
             let relocated = existing.clone();
             let setup_job = template_id.map(|template_id| NotebookSetupJob {
                 notebook_id: relocated.id.clone(),
+                job_id: uuid::Uuid::now_v7().to_string(),
                 template_id: Some(template_id.to_string()),
                 overwrite_existing,
                 status: NotebookSetupJobStatus::Pending,
-                stage: "template".to_string(),
-                completed_files: 0,
-                total_files: 0,
+                stage: NotebookSetupStage::Preparing,
+                revision: 0,
+                run_id: String::new(),
                 message: None,
                 report: None,
                 updated_at: now,
+                execution_requested: false,
             });
             memo_file
                 .write_notebook_configs_with_setup_job(&configs, setup_job.as_ref())
@@ -327,15 +329,17 @@ fn create_notebook_registry_with_id_and_template(
     configs.push(config.clone());
     let setup_job = template_id.map(|template_id| NotebookSetupJob {
         notebook_id: config.id.clone(),
+        job_id: uuid::Uuid::now_v7().to_string(),
         template_id: Some(template_id.to_string()),
         overwrite_existing,
         status: NotebookSetupJobStatus::Pending,
-        stage: "template".to_string(),
-        completed_files: 0,
-        total_files: 0,
+        stage: NotebookSetupStage::Preparing,
+        revision: 0,
+        run_id: String::new(),
         message: None,
         report: None,
         updated_at: now,
+        execution_requested: false,
     });
     memo_file
         .write_notebook_configs_with_setup_job(&configs, setup_job.as_ref())
@@ -358,11 +362,8 @@ fn cloud_restore_directory_is_empty(path: &Path) -> Result<bool, String> {
     Ok(true)
 }
 
-fn sync_notebook_agent_access(config: &NotebookConfig, state: &AppState, app: &AppHandle) {
-    // 同�?往 agent_access 列表里加一�?(默�? enabled), 写盘后才�?    // 同�?完成 ── store 内部走原子写, 失败会回滚内存�?
-    if state.agent_access.add_or_update_notebook(config) {
-        dispatcher::emit_to(app, AGENT_ACCESS_CHANGED_EVENT, ());
-    }
+fn notify_notebook_workspace_changed(app: &AppHandle) {
+    dispatcher::emit_to(app, AGENT_WORKSPACE_CHANGED_EVENT, ());
 }
 
 fn set_current_notebook_inner(
@@ -382,8 +383,8 @@ fn set_current_notebook_inner(
 
     // Fast path for ordinary switching: trust memo index and avoid synchronous
     // disk reconciliation. Search index rebuild is lazy, triggered by search.
-    if let Err(error) = switch_notebook_trusting_index(state, app, notebook_id.clone()) {
-        if let Err(restore_error) = switch_notebook_trusting_index(state, app, previous_id) {
+    if let Err(error) = switch_notebook_trusting_index(state, notebook_id.clone()) {
+        if let Err(restore_error) = switch_notebook_trusting_index(state, previous_id) {
             tracing::error!(
                 "[set_current_notebook] failed to restore previous notebook after switch error: {restore_error}"
             );
@@ -397,7 +398,7 @@ fn set_current_notebook_inner(
     {
         // Keep the process-local and persisted selection aligned if the second
         // half of the switch fails. The original error remains authoritative.
-        if let Err(restore_error) = switch_notebook_trusting_index(state, app, previous_id) {
+        if let Err(restore_error) = switch_notebook_trusting_index(state, previous_id) {
             tracing::error!(
                 "[set_current_notebook] failed to restore previous notebook after persistence error: {restore_error}"
             );
@@ -406,6 +407,7 @@ fn set_current_notebook_inner(
     }
 
     if let Some(notebook_id) = notebook_id.as_deref() {
+        state.notebook_background.prioritize(notebook_id);
         crate::commands::helpers::retry_notebook_watch(state, app, notebook_id);
     }
     Ok(())
@@ -424,7 +426,7 @@ fn activate_created_notebook(
     Ok(())
 }
 
-fn run_notebook_import(app: AppHandle, notebook_id: String, seed_onboarding_docs: bool) -> bool {
+pub(crate) fn run_notebook_import(app: AppHandle, notebook_id: String, seed_onboarding_docs: bool) -> bool {
     let started = std::time::Instant::now();
     tracing::info!(
         "[create_notebook] background import start id={}",
@@ -437,9 +439,15 @@ fn run_notebook_import(app: AppHandle, notebook_id: String, seed_onboarding_docs
         let mut onboarding_docs_seeded = false;
         {
             let memo_file = read_lock(&app_state.memo_file, "memo_file");
-            memo_file
-                .ensure_notebook_migrations(&notebook_id)
-                .map_err(|error| format!("notebook import migration failed: {error}"))?;
+            match memo_file.has_legacy_notebook_internal_data(&notebook_id) {
+                Ok(true) => {
+                    if let Err(error) = memo_file.ensure_notebook_structure_migration(&notebook_id) {
+                        tracing::warn!(notebook = %notebook_id, %error, "legacy plugin artifact migration deferred");
+                    }
+                }
+                Ok(false) => {}
+                Err(error) => tracing::warn!(notebook = %notebook_id, %error, "legacy plugin artifact check deferred"),
+            }
             tracing::info!(
                 "[create_notebook] import/reconcile start id={}",
                 notebook_id
@@ -516,201 +524,75 @@ fn spawn_notebook_import(app: AppHandle, notebook_id: String) {
     std::thread::spawn(move || run_notebook_import(app, notebook_id, true));
 }
 
-fn persist_notebook_setup_job(
-    state: &AppState,
-    app: &AppHandle,
-    job: NotebookSetupJob,
-) -> Result<NotebookSetupJob, String> {
-    read_lock(&state.memo_file, "memo_file")
-        .write_notebook_setup_job(&job)
-        .map_err(|error| format!("persist notebook setup status failed: {error}"))?;
-    dispatcher::emit_to(app, NOTEBOOK_SETUP_STATUS_EVENT, job.clone());
-    Ok(job)
-}
-
-fn finish_notebook_template_setup(app: AppHandle, mut job: NotebookSetupJob) {
-    let state = app.state::<AppState>();
-    let mut report = job.report.clone().unwrap_or_default();
-    let result = (|| {
-        if job.stage != "indexing" {
-            let notebook_id = job.notebook_id.clone();
-            let template_id = job
-                .template_id
-                .clone()
-                .ok_or_else(|| "NOTEBOOK_TEMPLATE_NOT_SELECTED".to_string())?;
-            let mut next_stage_job = job.clone();
-            super::memo::creates::initialize_notebook_template_for_notebook(
-                &notebook_id,
-                &template_id,
-                true,
-                job.overwrite_existing,
-                state.inner(),
-                &app,
-                |report| {
-                    next_stage_job.stage = "indexing".to_string();
-                    next_stage_job.completed_files = report.total_files;
-                    next_stage_job.total_files = report.total_files;
-                    next_stage_job.message = None;
-                    next_stage_job.report = Some(report.clone());
-                    next_stage_job.updated_at = chrono::Utc::now().timestamp_millis();
-                    persist_notebook_setup_job(state.inner(), &app, next_stage_job.clone())
-                        .map(|_| ())
-                },
-            )?;
-            report = next_stage_job.report.clone().unwrap_or_default();
-            job = next_stage_job;
-        }
-
-        emit_notebook_import_status(
-            state.inner(),
-            &app,
-            &job.notebook_id,
-            NotebookImportStatusKind::Started,
-            None,
-        );
-        if !run_notebook_import(app.clone(), job.notebook_id.clone(), false) {
-            let message = state
-                .notebook_imports
-                .lock()
-                .ok()
-                .and_then(|imports| imports.get(&job.notebook_id).and_then(|status| status.message.clone()))
-                .unwrap_or_else(|| "NOTEBOOK_IMPORT_FAILED".to_string());
-            return Err(message);
-        }
-        Ok(())
-    })();
-
-    job.updated_at = chrono::Utc::now().timestamp_millis();
-    match result {
-        Ok(()) => {
-            job.report = Some(report.clone());
-            if report.failed_files > 0 {
-                job.status = NotebookSetupJobStatus::Partial;
-                job.stage = "template".to_string();
-            } else {
-                job.status = NotebookSetupJobStatus::Completed;
-                job.stage = "completed".to_string();
-            }
-            job.message = None;
-        }
-        Err(message) => {
-            job.status = NotebookSetupJobStatus::Failed;
-            if report.failed_files > 0 || job.stage != "indexing" {
-                job.stage = "template".to_string();
-            }
-            job.report = Some(report);
-            job.message = Some(message);
-        }
-    }
-    if let Err(error) = persist_notebook_setup_job(state.inner(), &app, job.clone()) {
-        tracing::error!("failed to persist notebook setup terminal state: {error}");
-    }
-    if let Ok(mut running) = state.notebook_template_initializations.lock() {
-        running.remove(&job.notebook_id);
-    };
-}
-
-#[tauri::command]
-pub fn get_notebook_template_setup_status(
-    notebook_id: String,
-    state: State<AppState>,
-) -> Result<Option<NotebookSetupJob>, String> {
-    read_lock(&state.memo_file, "memo_file")
-        .get_notebook_setup_job(&notebook_id)
-        .map_err(|error| format!("read notebook setup status failed: {error}"))
-}
-
-/// Start or resume template preparation for an opened notebook. Failed and
-/// partial jobs only restart when the user explicitly requests a retry.
-#[tauri::command]
-pub fn start_notebook_template_setup(
-    notebook_id: String,
-    retry: Option<bool>,
-    app: AppHandle,
-) -> Result<Option<NotebookSetupJob>, String> {
-    let state = app.state::<AppState>();
-    let mut running = state
-        .notebook_template_initializations
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let memo_file = read_lock(&state.memo_file, "memo_file");
-    let Some(mut job) = memo_file
-        .get_notebook_setup_job(&notebook_id)
-        .map_err(|error| format!("read notebook setup status failed: {error}"))?
-    else {
-        return Ok(None);
-    };
-    drop(memo_file);
-
-    if job.status == NotebookSetupJobStatus::Completed {
-        return Ok(Some(job));
-    }
-    if matches!(job.status, NotebookSetupJobStatus::Partial | NotebookSetupJobStatus::Failed)
-        && retry != Some(true)
-    {
-        return Ok(Some(job));
-    }
-    if job.status == NotebookSetupJobStatus::Partial && retry == Some(true) {
-        job.status = NotebookSetupJobStatus::Pending;
-        job.stage = "template".to_string();
-        job.message = None;
-        job.report = None;
-    } else if job.status == NotebookSetupJobStatus::Failed && retry == Some(true) {
-        job.status = NotebookSetupJobStatus::Pending;
-        job.message = None;
-        if job.stage != "indexing" {
-            job.stage = "template".to_string();
-            job.report = None;
-        }
-    }
-
-    if !running.insert(notebook_id.clone()) {
-        return Ok(Some(job));
-    }
-
-    job.status = NotebookSetupJobStatus::Running;
-    job.message = None;
-    job.updated_at = chrono::Utc::now().timestamp_millis();
-    let job = match persist_notebook_setup_job(state.inner(), &app, job) {
-        Ok(job) => job,
-        Err(error) => {
-            running.remove(&notebook_id);
-            return Err(error);
-        }
-    };
-    drop(running);
-
-    std::thread::spawn({
-        let app = app.clone();
-        let job = job.clone();
-        move || finish_notebook_template_setup(app, job)
-    });
-    Ok(Some(job))
-}
-
 #[tauri::command]
 pub async fn get_notebooks(app: AppHandle) -> Result<Vec<NotebookListItem>, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
         let memo_file = read_lock(&state.memo_file, "memo_file");
-        let configs = memo_file.read_notebook_configs().unwrap_or_default();
-        let counts = MemoService::new(&memo_file)
-            .notebook_note_counts(&configs)
-            .unwrap_or_default();
-
-        configs
-            .into_iter()
-            .map(|config| {
-                let memo_count = counts.get(&config.id).copied().unwrap_or(0);
-                NotebookListItem {
-                    notebook: notebook_from_config(config),
-                    memo_count,
-                }
-            })
-            .collect::<Vec<_>>()
+        let configs = memo_file.read_notebook_configs().map_err(|error| error.to_string())?;
+        let pinned_ids = memo_file.read_notebook_pin_states().map_err(|error| error.to_string())?;
+        // Metadata-only read: no path probes, count queries or filesystem scans.
+        Ok::<_, String>(configs.into_iter().map(|config| {
+            let cached = state.notebook_background.snapshot(&config.id);
+            NotebookListItem {
+                pinned: pinned_ids.contains(&config.id),
+                memo_count: cached.as_ref().and_then(|status| status.memo_count),
+                missing: cached.as_ref().and_then(|status| status.missing),
+                notebook: config,
+            }
+        }).collect::<Vec<_>>())
     })
     .await
-    .map_err(|error| format!("notebook list task failed: {error}"))
+    .map_err(|error| format!("notebook list task failed: {error}"))?
+}
+
+#[tauri::command]
+pub fn set_notebook_pinned(
+    notebook_id: String,
+    pinned: bool,
+    state: State<AppState>,
+    app: AppHandle,
+) -> Result<bool, String> {
+    let memo_file = write_lock(&state.memo_file, "memo_file");
+    let changed = memo_file
+        .set_notebook_pinned(&notebook_id, pinned)
+        .map_err(|error| format!("INDEX_WRITE_FAILED: {error}"))?;
+    drop(memo_file);
+    if changed {
+        dispatcher::emit_to(&app, NOTEBOOKS_CHANGED_EVENT, ());
+    }
+    Ok(changed)
+}
+
+#[tauri::command]
+pub fn get_notebook_background_status(state: State<AppState>) -> Vec<crate::app::notebook_background::NotebookBackgroundStatus> {
+    state.notebook_background.statuses()
+}
+
+#[tauri::command]
+pub fn get_notebook_media_maintenance_status(
+    state: State<AppState>,
+) -> Vec<crate::app::notebook_background::NotebookMediaMaintenanceStatus> {
+    state.notebook_background.media_statuses()
+}
+
+#[tauri::command]
+pub fn request_notebook_media_maintenance(
+    notebook_id: String,
+    app: AppHandle,
+    state: State<AppState>,
+) -> Result<(), String> {
+    let status = state
+        .notebook_background
+        .request_media(&notebook_id)
+        .ok_or_else(|| "媒体维护队列已停止".to_string())?;
+    let _ = app.emit(crate::app::notebook_background::MEDIA_EVENT, status);
+    Ok(())
+}
+
+#[tauri::command]
+pub fn request_notebook_refresh(notebook_id: String, state: State<AppState>) {
+    state.notebook_background.request(&notebook_id, true, true);
 }
 
 #[tauri::command]
@@ -747,9 +629,6 @@ pub async fn create_notebook(
                     .ok_or_else(|| "PATH_INVALID_UTF8".to_string())?
             }
         };
-        let has_bookmark_access = state
-            .security_bookmarks
-            .start_accessing_for_path(Path::new(trimmed_path));
         if !Path::new(trimmed_path).is_dir() {
             return Err("PATH_MISSING".to_string());
         }
@@ -772,13 +651,8 @@ pub async fn create_notebook(
         {
             return Err("NOTEBOOK_PRESET_OVERWRITE_CONFIRM_REQUIRED".to_string());
         }
-        if !has_bookmark_access {
-            state
-                .security_bookmarks
-                .record_directory(Path::new(trimmed_path))
-                .map_err(|e| format!("BOOKMARK_WRITE_FAILED: {e}"))?;
-        }
-
+        // Also handles dependency deletion while the window stayed open.
+        state.user_config.ensure_runtime_storage()?;
         let config = {
             let memo_file = write_lock(&state.memo_file, "memo_file");
             create_notebook_registry_with_id_and_template(
@@ -791,7 +665,7 @@ pub async fn create_notebook(
                 &memo_file,
             )?
         };
-        sync_notebook_agent_access(&config, state.inner(), &app);
+        notify_notebook_workspace_changed(&app);
         if activate.unwrap_or(true) {
             activate_created_notebook(&config, state.inner(), &app)?;
         } else {
@@ -805,6 +679,9 @@ pub async fn create_notebook(
     })
     .await
     .map_err(|error| format!("notebook creation task failed: {error}"))?;
+    if let Err(error) = &result {
+        crate::runtime_log::record_event("error", "notebook.create.failed", error);
+    }
     crate::runtime_log::record_event(
         "info",
         "notebook.create.timing",
@@ -879,6 +756,7 @@ pub fn create_notebook_from_cloud(
     name: String,
     path: String,
     icon: Option<String>,
+    activate: Option<bool>,
     state: State<AppState>,
     app: AppHandle,
 ) -> Result<Notebook, String> {
@@ -895,26 +773,22 @@ pub fn create_notebook_from_cloud(
     }
 
     let directory = Path::new(trimmed_path);
-    let has_bookmark_access = state.security_bookmarks.start_accessing_for_path(directory);
     if !directory.is_dir() {
         return Err("PATH_MISSING".to_string());
     }
     if !cloud_restore_directory_is_empty(directory)? {
         return Err("PATH_NOT_EMPTY".to_string());
     }
-    if !has_bookmark_access {
-        state
-            .security_bookmarks
-            .record_directory(directory)
-            .map_err(|e| format!("BOOKMARK_WRITE_FAILED: {e}"))?;
-    }
-
     let config = {
         let memo_file = write_lock(&state.memo_file, "memo_file");
         create_notebook_registry_with_id(trimmed_name, trimmed_path, icon, Some(&id), &memo_file)?
     };
-    sync_notebook_agent_access(&config, state.inner(), &app);
-    activate_created_notebook(&config, state.inner(), &app)?;
+    notify_notebook_workspace_changed(&app);
+    if activate.unwrap_or(true) {
+        activate_created_notebook(&config, state.inner(), &app)?;
+    } else {
+        watch_created_notebook(state.inner(), &app, &config);
+    }
     dispatcher::emit_to(&app, NOTEBOOKS_CHANGED_EVENT, ());
 
     Ok(notebook_from_config(config))
@@ -946,10 +820,7 @@ pub fn update_notebook(
     let updated = configs[index].clone();
     drop(memo_file);
 
-    // 名字 / �?��变更都同步到 agent_access ── store �?��判定�?��真改�?
-    if state.agent_access.add_or_update_notebook(&updated) {
-        dispatcher::emit_to(&app, AGENT_ACCESS_CHANGED_EVENT, ());
-    }
+    notify_notebook_workspace_changed(&app);
     refresh_watcher_roots(state.inner(), &app);
     record_notebook_metadata_change(state.inner(), &app, &updated);
 
@@ -1064,10 +935,7 @@ pub fn delete_notebook(
         crate::commands::cloud::schedule_notebook_sync(app.clone(), id.clone());
     }
 
-    // 同�?把�?应的 agent_access entry 也删�? 状态栏�?文件权限"子菜�?    // 会少一�?── 用户没主动去勾�? 不应该留�??儿在那里�?
-    if state.agent_access.remove_notebook(&id) {
-        dispatcher::emit_to(&app, AGENT_ACCESS_CHANGED_EVENT, ());
-    }
+    notify_notebook_workspace_changed(&app);
     refresh_watcher_roots(state.inner(), &app);
     dispatcher::emit_to(&app, NOTEBOOKS_CHANGED_EVENT, ());
     Ok(true)
@@ -1170,20 +1038,14 @@ pub fn clear_notebooks(state: State<AppState>, app: AppHandle) -> Result<bool, S
     drop(setup_guard);
 
     // 把�?清掉的非默�? notebook �?access 列表里也清掉, 然后 emit 一欰�?
-    let mut any_removed = false;
     for id in before_ids {
         if let Err(error) = state.cloud_sync.record_v2_notebook_delete(&id) {
             tracing::warn!("failed to persist cleared cloud notebook {id}: {error}");
         } else {
             crate::commands::cloud::schedule_notebook_sync(app.clone(), id.clone());
         }
-        if state.agent_access.remove_notebook(&id) {
-            any_removed = true;
-        }
     }
-    if any_removed {
-        dispatcher::emit_to(&app, AGENT_ACCESS_CHANGED_EVENT, ());
-    }
+    notify_notebook_workspace_changed(&app);
     refresh_watcher_roots(state.inner(), &app);
     Ok(ok)
 }
@@ -1226,6 +1088,17 @@ mod tests {
         let config_dir = root.join("config");
         fs::create_dir_all(&config_dir).expect("create config dir");
         MemoFile::new(config_dir)
+    }
+
+    #[test]
+    fn notebook_list_distinguishes_unknown_statistics_from_a_known_empty_index() {
+        let config = NotebookConfig { id: "offline".into(), name: "Offline".into(), icon: None,
+            path: "/unavailable/notebook".into(), is_default: false, sort: 0, created_at: 0, updated_at: 0 };
+        let unknown = serde_json::to_value(NotebookListItem { notebook: config.clone(), pinned: false, memo_count: None, missing: None }).unwrap();
+        assert!(unknown.get("memoCount").is_none());
+        assert!(unknown.get("missing").is_none());
+        let empty = serde_json::to_value(NotebookListItem { notebook: config, pinned: false, memo_count: Some(0), missing: Some(false) }).unwrap();
+        assert_eq!(empty["memoCount"], 0);
     }
 
     #[test]
@@ -1316,6 +1189,32 @@ mod tests {
         assert_eq!(configs.len(), 1);
         assert_eq!(configs[0].id, config.id);
         assert_eq!(configs[0].path, config.path);
+    }
+
+    #[test]
+    fn missing_runtime_dependencies_allow_notebook_creation() {
+        let temp = tempfile::tempdir().unwrap();
+        let config_dir = temp.path().join("config");
+        let memo = MemoFile::new(config_dir.clone());
+        memo.initialize_registry_storage().unwrap();
+        memo.mark_local_migration_completed("config_local_migrations_v1")
+            .unwrap();
+        fs::create_dir_all(config_dir.join("boot")).unwrap();
+        fs::write(
+            config_dir.join("boot/boot.json"),
+            "{\"versionInitialization\":{\"completed\":true}}",
+        )
+        .unwrap();
+        fs::remove_dir_all(config_dir.join("db")).unwrap();
+        // Keep the same in-memory MemoFile, as with an already open Dev window.
+        assert!(memo.read_notebook_configs().unwrap().is_empty());
+        assert!(memo.read_selected_notebook_id().unwrap().is_none());
+        assert!(memo.read_notebook_workspace().unwrap().notebooks.is_empty());
+        let path = temp.path().join("new-notebook");
+        fs::create_dir_all(&path).unwrap();
+        let created = create_notebook_registry("New", path.to_str().unwrap(), None, &memo).unwrap();
+        assert_eq!(memo.read_notebook_configs().unwrap()[0].id, created.id);
+        assert!(config_dir.join("boot/boot.json").exists());
     }
 
     #[test]

@@ -7,75 +7,6 @@
   --atc-header-h: 40px;
 }
 
-.agent-type-badge {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  width: 1.25rem; /* h-5 w-5 = 20px ── 跟按钮 28px / chevron 14px 视觉节奏
-                   * 匹配; header 总高 40px, 20px 方形 icon 居中后上下
-                   * 各留 10px 呼吸, 不顶到 header 边缘。 */
-  height: 1.25rem;
-  padding: 0;
-  box-sizing: border-box;
-  border: 1px solid var(--border);
-  border-radius: 9999px;
-  background: transparent;
-  flex: 0 0 auto;
-  user-select: none;
-  cursor: default;
-  transition: border-color 180ms ease;
-}
-
-.agent-type-badge--unavailable {
-  border-color: color-mix(in oklch, var(--border) 70%, transparent);
-  color: var(--muted-foreground);
-  opacity: 0.6;
-}
-
-.agent-type-badge__icon {
-  display: block;
-  width: 0.875rem; /* 14px ── 20px 方块留 3px 内边距, 视觉重量跟
-                    * 28px 按钮 + 14px icon 节奏一致。 */
-  height: 0.875rem;
-  flex: 0 0 auto;
-  object-fit: contain;
-  object-position: center;
-  border: 0 !important;
-  border-radius: 0 !important;
-  margin-bottom: 0 !important;
-  background-position: center;
-  background-repeat: no-repeat;
-  background-size: contain;
-}
-
-.agent-type-badge__icon--image {
-  background-image: var(--agent-icon-src);
-}
-
-.agent-type-badge__icon--unavailable {
-  filter: grayscale(1);
-}
-
-/* __name 元素在 header 中 hidden (badge 改为纯 icon), 样式只留
- * 兜底: 任何意外显示的实例也不会撑破 badge 容器。 */
-.agent-type-badge__name[hidden] {
-  display: none;
-}
-
-.agent-type-badge__name {
-  display: inline-block;
-  font-size: calc(var(--app-font-size, 15px) * 0.9); /* text-xs */
-  line-height: 1;
-  font-weight: 400; /* 明确非加粗 ── 不被父级 600 继承 */
-  color: var(--foreground);
-  white-space: nowrap;
-  letter-spacing: 0;
-}
-
-.agent-type-badge--unavailable .agent-type-badge__name {
-  color: var(--muted-foreground);
-}
-
 .markdown-editor
   .agent-thread-card--running
   .agent-type-badge:not(.agent-type-badge--unavailable) {
@@ -101,14 +32,14 @@
 }
 
 .markdown-editor .agent-thread-card {
-  margin: 0 0 calc(var(--app-font-size, 15px) * var(--app-line-height, 1.8) * 0.32);
+  margin: 0 0 calc(var(--font-size, 16px) * var(--font-line-height, 1.8) * 0.32);
   background: transparent;
   /* Messages and card chrome use the product font even though this NodeView
    * is nested inside a user-configurable Tiptap document. The nested composer
-   * is itself a Tiptap editor and opts into --app-font-family separately. */
+   * is itself a Tiptap editor and opts into --editor-font-family separately. */
   font-family: var(--font-sans);
-  font-size: var(--app-font-size, 15px);
-  line-height: var(--app-line-height, 1.6);
+  font-size: var(--font-size, 16px);
+  line-height: var(--font-line-height, 1.6);
   color: var(--foreground);
   tab-size: 5;
   cursor: default;
@@ -259,7 +190,7 @@
  *   (现代浏览器 outline 已支持 border-radius, 但显式写更稳)
  * - 选择器特异性: .agent-thread-card.ProseMirror-selectednode = (0,2,0)
  *   高于全局 .ProseMirror-selectednode = (0,1,0), 本规则胜出 */
-.markdown-editor .ProseMirror:not(.agent-thread-card__composer-editor) .agent-thread-card.ProseMirror-selectednode {
+.markdown-editor .ProseMirror:not(.agent-composer__input-content) .agent-thread-card.ProseMirror-selectednode {
   outline: 1px solid var(--brand);
   outline-offset: -1px;
   border-radius: 8px;
@@ -319,7 +250,7 @@
 
 /* 左侧: agent-type-badge (icon + role 名) + 对话标题 单行排版, 整体
  * flex 1 让 meta 推到右边。role 名称已迁出到 badge 内, 这里只剩 title。
- * badge 样式见本文件顶部的 .agent-type-badge 块, 这里只负责外层布局。 */
+ * badge 样式由共享 agent-conversation/titlebar.css 提供, 这里只负责外层布局。 */
 .markdown-editor .agent-thread-card__agent {
   display: flex;
   align-items: center;
@@ -350,7 +281,7 @@
   overflow: hidden;
   color: var(--foreground);
   cursor: grab;
-  font-size: calc(var(--app-font-size, 15px) * 0.9);
+  font-size: calc(var(--font-size, 16px) * 0.9);
   font-weight: 600;
   line-height: 1;
   text-overflow: ellipsis;
@@ -395,7 +326,7 @@
   flex: 0 0 auto;
   gap: 6px;
   color: var(--muted-foreground);
-  font-size: calc(var(--app-font-size, 15px) * 0.9); /* text-xs */
+  font-size: calc(var(--font-size, 16px) * 0.9); /* text-xs */
   line-height: 1;
   white-space: nowrap;
 }
@@ -409,7 +340,7 @@
   padding: 0;
   background: transparent;
   color: var(--muted-foreground);
-  font-size: calc(var(--app-font-size, 15px) * 0.9); /* text-xs */
+  font-size: calc(var(--font-size, 16px) * 0.9); /* text-xs */
   font-weight: 500;
   line-height: 1;
   letter-spacing: 0;

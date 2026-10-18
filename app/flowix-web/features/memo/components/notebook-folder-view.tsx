@@ -1,11 +1,12 @@
 'use client';
 
-import { useCallback, useEffect, useMemo, useRef } from 'react';
+import { useCallback, useEffect, useRef } from 'react';
 
 import { canonicalDirectoryPath, canonicalPath, parentDirectoryPath } from '@/lib/path';
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
+import { normalizeNotebookMoveFailure, type NotebookMoveFailure } from './notebook-move-failure-toast';
 import { resourceKindFromPath } from '@features/editor/public/code-file';
 import {
   NotebookFileTree,
@@ -17,18 +18,13 @@ import {
 import { useFolderTree } from '@features/memo/components/use-folder-tree';
 import { updateNoteLinksAfterMove } from '@features/memo/services/note-link-rewriter';
 import { openNotebookNote } from '@features/memo/use-cases/open-notebook-note';
-import {
-  openBrowserColumnFileBrowser,
-  openBrowserColumnMedia,
-  openBrowserColumnText,
-} from '@features/workspace/use-cases/browser-column-navigation';
-import {
-  openExternalTarget,
-  openMediaTarget,
-  openFolderCollectionOrList,
-} from '@features/workspace/use-cases/workspace-navigation';
+import { openFolderCollectionFromFolder } from '@features/workspace/public/main-window-api';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
+import { createFileBrowserTarget } from '@features/workspace/public/browser-column-api';
+import { useWorkspaceFocusStore } from '@features/workspace/store/workspace-focus-store';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
-import { createDocumentListTarget, workColumnTargetFilePath } from '@features/workspace/store/work-column-target';
+import { clearWorkspaceTargetsForDeletedDirectory } from '@features/workspace/public/shell-api';
+import { workColumnTargetFilePath } from '@features/workspace/store/work-column-target';
 import {
   files,
   mediaResources,
@@ -41,15 +37,6 @@ import { type Notebook } from '@features/memo/store';
 
 const FILE_BROWSER_DIRECTORIES_CHANGED_EVENT = 'file-browser-directories-changed';
 const logger = createLogger('notebook-folder-view');
-
-export function sortNotebookTreeItems(items: DocTreeItem[]): DocTreeItem[] {
-  const timestamp = (item: DocTreeItem) => item.memoCreatedMs ?? item.createdMs ?? 0;
-  return [...items].sort((left, right) => {
-    if (left.type !== right.type) return left.type === 'folder' ? -1 : 1;
-    if (left.type === 'folder') return left.name.localeCompare(right.name);
-    return timestamp(right) - timestamp(left) || left.name.localeCompare(right.name);
-  });
-}
 
 export function NotebookFolderView({
   notebook,
@@ -74,45 +61,15 @@ export function NotebookFolderView({
   const tree = useFolderTree(notebook.path, {
     enabled: isActive,
   });
-  const noteTree = useMemo(() => {
-    if (!isActive) return tree;
-    return {
-      ...tree,
-      rootChildren: sortNotebookTreeItems(tree.rootChildren),
-      nodes: new Map([...tree.nodes].map(([path, item]) => [
-        path,
-        item.children
-          ? {
-              ...item,
-                children: sortNotebookTreeItems(item.children),
-            }
-          : item,
-      ])),
-    };
-  }, [
-    isActive,
-    notebook.path,
-    tree.rootChildren,
-    tree.nodes,
-    tree.expanded,
-    tree.loading,
-    tree.error,
-    tree.toggle,
-    tree.expandTo,
-    tree.collapseAll,
-    tree.refresh,
-    tree.refreshDirectories,
-    tree.reload,
-  ]);
   const activeFilePath = useWorkColumnStore((state) => (
     workColumnTargetFilePath(state.navigation.target)
   ));
   const refreshDirectoriesRef = useRef(tree.refreshDirectories);
   refreshDirectoriesRef.current = tree.refreshDirectories;
 
-  useEffect(() => subscribe<{ notebookId: string }>('file-management-changed', ({ notebookId }) => {
-    if (isActive && notebookId === notebook.id) void tree.reload();
-  }), [isActive, notebook.id, tree.reload]);
+  useEffect(() => subscribe<{ notebookId: string; operationId?: string }>('file-management-changed', ({ notebookId, operationId }) => {
+    if (isActive && notebookId === notebook.id && !operationId) void tree.refresh();
+  }), [isActive, notebook.id, tree.refresh]);
 
   useEffect(() => subscribe<{ notebookPath: string; treeVisibilityChanged: boolean }>(
     'notebook-view-preferences-changed',
@@ -163,16 +120,14 @@ export function NotebookFolderView({
       if (resourceKindFromPath(filePath) !== 'note') {
         const resourceKind = resourceKindFromPath(filePath);
         if (resourceKind === 'image' || resourceKind === 'video') {
-          await openMediaTarget({
-            filePath,
-            notebookId: notebook.id,
-            notebookPath: notebook.path,
-            resourceKind,
+          await openWorkspaceSurface({
+            host: 'main-third',
+            target: { kind: 'media', filePath, notebookId: notebook.id, notebookPath: notebook.path, resourceKind },
           });
         } else {
-          await openExternalTarget(filePath, {
-            scopePath: notebook.path,
-            destination: 'main-third',
+          await openWorkspaceSurface({
+            host: 'main-third',
+            target: { kind: 'external', path: filePath, scopePath: notebook.path, transitionId: null },
           });
         }
         return;
@@ -192,13 +147,22 @@ export function NotebookFolderView({
       if (resourceKindFromPath(filePath) !== 'note') {
         const resourceKind = resourceKindFromPath(filePath);
         if (resourceKind === 'image' || resourceKind === 'video') {
-          await openBrowserColumnMedia(filePath, notebook.id, notebook.path, resourceKind);
+          await openWorkspaceSurface({
+            host: 'browser-column',
+            target: { kind: 'media', filePath, notebookId: notebook.id, notebookPath: notebook.path, resourceKind },
+          });
         } else {
-          await openBrowserColumnFileBrowser(notebook.path, filePath);
+          await openWorkspaceSurface({
+            host: 'browser-column',
+            target: createFileBrowserTarget(filePath, notebook.path, notebook.path),
+          });
         }
         return;
       }
-      await openBrowserColumnText(filePath, notebook.path);
+      await openWorkspaceSurface({
+        host: 'browser-column',
+        target: { kind: 'external', path: filePath, scopePath: notebook.path, transitionId: null },
+      });
     } catch (error) {
       logger.warn('opening notebook tree file in new tab failed', { error, filePath });
       toast.error(t('memo.fileTree.openFailed'));
@@ -210,11 +174,16 @@ export function NotebookFolderView({
     const root = canonicalDirectoryPath(notebook.path);
     const target = canonicalDirectoryPath(targetDirectoryPath);
     if (target !== root && !target.startsWith(`${root}/`)) {
-      return { movedPaths: [], failedPaths: sourcePaths };
+      return {
+        movedPaths: [],
+        failedPaths: sourcePaths,
+        failures: sourcePaths.map(() => ({ code: 'FILE_PERMISSION_DENIED' })),
+      };
     }
     const parentRelativePath = target === root ? '' : target.slice(root.length + 1);
     const movedPaths: string[] = [];
     const failedPaths: string[] = [];
+    const failures: NotebookMoveFailure[] = [];
     for (const source of sources) {
       const sourcePath = source.path;
       try {
@@ -249,15 +218,22 @@ export function NotebookFolderView({
       } catch (error) {
         logger.warn('moving notebook tree item failed', { error, sourcePath, targetDirectoryPath });
         failedPaths.push(sourcePath);
+        failures.push(normalizeNotebookMoveFailure(error));
       }
     }
-    return { movedPaths, failedPaths };
+    return { movedPaths, failedPaths, failures };
   }, [notebook.id, notebook.path]);
 
   const deleteFolder = useCallback(async (folderPath: string) => {
     try {
       const ok = await files.deleteFolder(folderPath, notebook.path);
       if (!ok) throw new Error('delete failed');
+      try {
+        await clearWorkspaceTargetsForDeletedDirectory(folderPath);
+      } catch (cleanupError) {
+        logger.warn('folder deleted, but workspace targets could not be fully cleared', { cleanupError, folderPath });
+        toast.error(t('memo.fileTree.deleteFolderViewCleanupFailed'));
+      }
       const parent = folderPath.slice(0, folderPath.replace(/[\\/]+$/, '').lastIndexOf('/')) || notebook.path;
       await tree.refresh(parent);
       toast.success(t('memo.fileTree.deleted', { name: folderPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() ?? folderPath }));
@@ -286,12 +262,13 @@ export function NotebookFolderView({
   }, [notebook.path, t, tree.refresh]);
 
   return (
+    <>
     <NotebookFileTree
       notebookId={notebook.id}
       notebookName={notebook.name}
       notebookPath={notebook.path}
       activeFilePath={activeFilePath}
-      tree={noteTree}
+      tree={tree}
       isActive={isActive}
       defaultCreateFolder={defaultCreateFolder}
       onSetDefaultCreateFolder={onSetDefaultCreateFolder}
@@ -300,13 +277,11 @@ export function NotebookFolderView({
       onCreateFolder={onCreateFolder}
       onNoteSelect={(filePath) => { void openFile(filePath); }}
       onFolderSelect={(folderPath) => {
-        const target = createDocumentListTarget(
-          { kind: 'folder', path: folderPath, notebookPath: notebook.path, notebookId: notebook.id },
-          {},
-        );
-        void openFolderCollectionOrList(target).catch((error) => {
+        const host = useWorkspaceFocusStore.getState().focusedHostId;
+        const opening = openFolderCollectionFromFolder(notebook.id, folderPath, host);
+        void opening.catch((error) => {
           logger.warn('opening folder collection failed', { folderPath, error });
-          toast.error(error instanceof Error ? error.message : typeof error === 'string' ? error : '无法打开文件夹集合');
+          toast.error(error instanceof Error ? error.message : '无法打开文件夹集合');
         });
       }}
       onNoteOpenInNewTab={(filePath) => { void openFileInNewTab(filePath); }}
@@ -315,5 +290,6 @@ export function NotebookFolderView({
       onDeleteFolder={deleteFolder}
       onDeleteFile={deleteFile}
     />
+  </>
   );
 }

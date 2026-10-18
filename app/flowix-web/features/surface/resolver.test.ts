@@ -13,7 +13,6 @@ import { ensureFileDisplayIdentity } from '@/lib/file-display-registry';
 
 function markdownSurface(options: {
   filePath?: string;
-  memoId?: string | null;
   transitionId?: number | null;
   notebookId?: string | null;
   notebookPath?: string | null;
@@ -21,7 +20,7 @@ function markdownSurface(options: {
 } = {}): MDSurface {
   return {
     kind: 'md',
-    instanceKey: options.memoId ? `memo:${options.memoId}` : `path:${options.filePath ?? '/notebook/note.md'}`,
+    instanceKey: `path:${options.filePath ?? '/notebook/note.md'}`,
     fileIdentity: {
       path: options.filePath ?? '/notebook/note.md',
       displayId: `display:${options.filePath ?? '/notebook/note.md'}`,

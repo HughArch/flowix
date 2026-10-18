@@ -50,7 +50,7 @@ export function NoteMentionDropdown({
         <span>{t('editor.noteMention.header')}</span>
         {loading && (
           <LoaderCircle
-            className="mention-note-header-spinner"
+            className="mention-note-header-spinner flowix-spin"
             aria-hidden="true"
           />
         )}

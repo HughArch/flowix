@@ -28,10 +28,6 @@ impl MemoFile {
         const MIGRATION_KEY: &str = "yaml-body-tag-union-index";
         const MIGRATION_VERSION: u32 = 1;
 
-        let _guard = self
-            .current_index_io
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
         if self
             .notebook_data_migration_version(notebook_id, MIGRATION_KEY)?
             .unwrap_or_default()
@@ -40,41 +36,14 @@ impl MemoFile {
             return Ok(0);
         }
 
-        let base = self
-            .memo_base_for_notebook_id_result(notebook_id)
+        // Tags are derived directly from Markdown into notes.tags. This
+        // migration now rebuilds the path index instead of backfilling the
+        // duplicate path projection.
+        let report = self
+            .reconcile_note_index(notebook_id)
             .map_err(std::io::Error::other)?;
-        let entries = self
-            .read_index_for_notebook_id(Some(notebook_id))?
-            .unwrap_or_default()
-            .memos;
-        let mut updated = 0usize;
-        for entry in entries {
-            let path = super::super::notebook_path_from_relative(&base, &entry.relative_path)
-                .map_err(std::io::Error::other)
-                .unwrap_or_else(|_| base.join(&entry.filename));
-            let content = match std::fs::read_to_string(&path) {
-                Ok(content) => content,
-                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-                    tracing::debug!(
-                        notebook = %notebook_id,
-                        path = %path.display(),
-                        "skip tag migration for missing memo file"
-                    );
-                    continue;
-                }
-                Err(error) => return Err(error),
-            };
-            let before = entry.tags.clone();
-            let mut memo = MemoFile::index_entry_to_memo(&entry);
-            apply_derived_memo_fields(&mut memo, &content);
-            if memo.tags != before {
-                MemoFile::sync_index_on_write_for_notebook_id_locked(self, notebook_id, &memo)?;
-                updated += 1;
-            }
-        }
-
         self.mark_notebook_data_migration(notebook_id, MIGRATION_KEY, MIGRATION_VERSION)?;
-        Ok(updated)
+        Ok(report.updated + report.added)
     }
 
     pub fn move_memo_tag_locked(
@@ -143,26 +112,18 @@ impl MemoFile {
             .map(str::to_string)
             .unwrap_or_else(|| self.current_notebook_id_for_index());
 
-        // 4. 冲突检查: new_path 在该 notebook 是否已存在
-        let conn = self.open_memo_index_db_for_notebook_id(&notebook_id_owned)?;
         let prefix = format!("{old_path}/");
-        let mut catalog_stmt = conn
-            .prepare(
-                "SELECT path FROM notebook_tags
-                 WHERE notebook_id = ?1
-                   AND (path = ?2 OR path LIKE ?3 ESCAPE '\\')
-                 ORDER BY length(path) ASC, path ASC",
-            )
-            .map_err(sqlite_to_io)?;
-        let catalog_paths: Vec<String> = catalog_stmt
-            .query_map(
-                rusqlite::params![&notebook_id_owned, &old_path, format!("{prefix}%")],
-                |row| row.get(0),
-            )
-            .map_err(sqlite_to_io)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(sqlite_to_io)?;
-        drop(catalog_stmt);
+        // Tags are derived from notes.tags. Moving a subtree changes the
+        // Markdown source and never writes a separate tag catalog.
+        let existing_tag_paths: std::collections::HashSet<String> = self
+            .read_notebook_tag_paths(Some(&notebook_id_owned))?
+            .into_iter()
+            .collect();
+        let catalog_paths: Vec<String> = existing_tag_paths
+            .iter()
+            .cloned()
+            .filter(|path| path == &old_path || path.starts_with(&prefix))
+            .collect();
         let renamed_catalog_paths: Vec<(String, String)> = catalog_paths
             .iter()
             .map(|path| {
@@ -173,19 +134,7 @@ impl MemoFile {
         let moving_paths: std::collections::HashSet<&str> =
             catalog_paths.iter().map(String::as_str).collect();
         for (_, target) in &renamed_catalog_paths {
-            let collision: Option<String> = conn
-                .query_row(
-                    "SELECT path FROM notebook_tags
-                     WHERE notebook_id = ?1 AND path = ?2 LIMIT 1",
-                    rusqlite::params![&notebook_id_owned, target],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(sqlite_to_io)?;
-            if collision
-                .as_deref()
-                .is_some_and(|path| !moving_paths.contains(path))
-            {
+            if existing_tag_paths.contains(target) && !moving_paths.contains(target.as_str()) {
                 return Err(std::io::Error::new(
                     std::io::ErrorKind::AlreadyExists,
                     format!("target tag already exists in notebook: {target}"),
@@ -193,15 +142,14 @@ impl MemoFile {
             }
         }
 
-        let new_exists = self.note_tag_exists(&notebook_id_owned, &new_path)?;
-        if new_exists {
+        if existing_tag_paths.contains(&new_path) && !moving_paths.contains(new_path.as_str()) {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::AlreadyExists,
                 format!("target tag already exists in notebook: {new_path}"),
             ));
         }
 
-        // 5. 找所有 affected note relative_path (note_tags 里有 old_path 或 old_path/*)
+        // 5. Find notes whose derived tags match this path or a descendant.
         let affected_paths: Vec<String> =
             self.note_paths_with_tag(&notebook_id_owned, &old_path)?;
         if catalog_paths.is_empty() && affected_paths.is_empty() {
@@ -283,7 +231,7 @@ impl MemoFile {
 
             atomic_write_bytes(&path, merged.as_bytes())?;
 
-            // 重新派生 Note 投影 + note_tags。
+            // Refresh the path projection from the edited Markdown.
             self.refresh_note_path(&notebook_id_owned, relative_path)?;
 
             // 写盘 + 投影同步完成后, 把 relative_path 交回调用方 ── 调用方
@@ -294,29 +242,6 @@ impl MemoFile {
             report.affected_memos += 1;
         }
 
-        let mut catalog_conn = self.open_memo_index_db_for_notebook_id(&notebook_id_owned)?;
-        let catalog_tx = catalog_conn.transaction().map_err(sqlite_to_io)?;
-        for old in &catalog_paths {
-            catalog_tx
-                .execute(
-                    "DELETE FROM notebook_tags WHERE notebook_id = ?1 AND path = ?2",
-                    rusqlite::params![&notebook_id_owned, old],
-                )
-                .map_err(sqlite_to_io)?;
-        }
-        let now = chrono::Utc::now().timestamp_millis();
-        for (_, new) in &renamed_catalog_paths {
-            catalog_tx
-                .execute(
-                    "INSERT OR REPLACE INTO notebook_tags
-                        (notebook_id, path, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?3)",
-                    rusqlite::params![&notebook_id_owned, new, now],
-                )
-                .map_err(sqlite_to_io)?;
-        }
-        catalog_tx.commit().map_err(sqlite_to_io)?;
-
         Ok(report)
     }
 
@@ -324,15 +249,15 @@ impl MemoFile {
     /// under `tag_path/`) from YAML, body tokens, and the memo index.
     ///
     /// Semantics:
-    /// - `tag_path` itself: removed from `memo_tags`, YAML, and body tokens.
+    /// - `tag_path` itself: removed from the note index, YAML, and body tokens.
     /// - `tag_path/<...>` subtree (any depth): all of them are removed in
     ///   one shot from both sources and the derived index.
     /// - Other tags and non-tag body text are untouched.
     ///
     /// Constraints (caller has roughly validated; we re-validate defensively):
     /// 1. `tag_path` must pass [`normalize_tag_path`] (legal path).
-    /// 2. `tag_path` must exist in this notebook (`memo_tags` table has at
-    ///    least one `tag = tag_path` or `tag LIKE tag_path/%` entry);
+    /// 2. `tag_path` must exist in this notebook's `notes.tags` projection
+    ///    at the given path or somewhere in its descendant subtree;
     ///    otherwise we error out.
     ///
     /// Locking: same as `move_memo_tag_locked` -- enters holding
@@ -383,28 +308,14 @@ impl MemoFile {
             .map(str::to_string)
             .unwrap_or_else(|| self.current_notebook_id_for_index());
 
-        let conn = self.open_memo_index_db_for_notebook_id(&notebook_id_owned)?;
-
         // 3. collect every tag path to delete: `tag_path` itself + every
         //    subtree tag at any depth.
         let prefix = format!("{tag_path}/");
-        let mut stmt = conn
-            .prepare(
-                "SELECT path FROM notebook_tags
-                 WHERE notebook_id = ?1
-                   AND (path = ?2 OR path LIKE ?3 ESCAPE '\\')
-                 ORDER BY length(path) DESC, path ASC",
-            )
-            .map_err(sqlite_to_io)?;
-        let deleted_tags: Vec<String> = stmt
-            .query_map(
-                rusqlite::params![&notebook_id_owned, &tag_path, format!("{prefix}%")],
-                |row| row.get(0),
-            )
-            .map_err(sqlite_to_io)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(sqlite_to_io)?;
-        drop(stmt);
+        let deleted_tags: Vec<String> = self
+            .read_notebook_tag_paths(Some(&notebook_id_owned))?
+            .into_iter()
+            .filter(|path| path == &tag_path || path.starts_with(&prefix))
+            .collect();
 
         // 4. collect affected note relative_paths
         let affected_paths: Vec<String> =
@@ -471,18 +382,6 @@ impl MemoFile {
             on_after_write(relative_path.as_str());
             report.affected_memos += 1;
         }
-
-        let mut catalog_conn = self.open_memo_index_db_for_notebook_id(&notebook_id_owned)?;
-        let catalog_tx = catalog_conn.transaction().map_err(sqlite_to_io)?;
-        for deleted in &report.deleted_tags {
-            catalog_tx
-                .execute(
-                    "DELETE FROM notebook_tags WHERE notebook_id = ?1 AND path = ?2",
-                    rusqlite::params![&notebook_id_owned, deleted],
-                )
-                .map_err(sqlite_to_io)?;
-        }
-        catalog_tx.commit().map_err(sqlite_to_io)?;
 
         Ok(report)
     }

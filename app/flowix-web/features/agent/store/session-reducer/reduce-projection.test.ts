@@ -5,6 +5,7 @@ import {
   reduceProjection,
 } from "@features/agent/store/session-reducer";
 import { mergeLiveMessagesIntoRenderableMessages } from "@features/agent/store/thread-history";
+import { codexFallbackItemMessageId } from "@features/agent/events/codex-message-identity";
 
 function event<K extends AgentEvent["kind"]>(
   kind: K,
@@ -15,7 +16,7 @@ function event<K extends AgentEvent["kind"]>(
 
 const userMessage = (text: string, id: string): AgentEvent =>
   event("user_message", {
-    agentType: "deepseek-harness",
+    agentType: "dsh",
     threadId: "t1",
     runId: "r1",
     timestamp: 1000,
@@ -28,7 +29,7 @@ const userMessage = (text: string, id: string): AgentEvent =>
 
 const textDelta = (text: string, messageId?: string): AgentEvent =>
   event("text_delta", {
-    agentType: "deepseek-harness",
+    agentType: "dsh",
     threadId: "t1",
     runId: "r1",
     timestamp: 2000,
@@ -43,7 +44,7 @@ const textDelta = (text: string, messageId?: string): AgentEvent =>
 
 const reasoningDelta = (text: string): AgentEvent =>
   event("reasoning_delta", {
-    agentType: "deepseek-harness",
+    agentType: "dsh",
     threadId: "t1",
     runId: "r1",
     timestamp: 3000,
@@ -58,7 +59,7 @@ const reasoningDelta = (text: string): AgentEvent =>
 
 const streamStart = (runId: string): AgentEvent =>
   event("stream_start", {
-    agentType: "deepseek-harness",
+    agentType: "dsh",
     threadId: "t1",
     runId,
     timestamp: 0,
@@ -71,7 +72,7 @@ const streamEnd = (
   durationMs?: number,
 ): AgentEvent =>
   event("stream_end", {
-    agentType: "deepseek-harness",
+    agentType: "dsh",
     threadId: "t1",
     runId,
     timestamp: 9000,
@@ -81,7 +82,7 @@ const streamEnd = (
 
 const errorEvent = (message: string): AgentEvent =>
   event("error", {
-    agentType: "deepseek-harness",
+    agentType: "dsh",
     threadId: "t1",
     runId: "r1",
     timestamp: 9500,
@@ -94,7 +95,7 @@ const toolCall = (
   reasoningBoundary = false,
 ): AgentEvent =>
   event("tool_call", {
-    agentType: "deepseek-harness",
+    agentType: "dsh",
     threadId: "t1",
     runId: "r1",
     timestamp: 4000,
@@ -111,7 +112,7 @@ const toolCall = (
 
 const toolResult = (id: string, name: string): AgentEvent =>
   event("tool_result", {
-    agentType: "deepseek-harness",
+    agentType: "dsh",
     threadId: "t1",
     runId: "r1",
     timestamp: 5000,
@@ -253,6 +254,105 @@ describe("reduceProjection / text streaming lifecycle", () => {
     expect(p.messages.find((message) => message.id === "item-1")?.content).toBe("Hello");
   });
 
+  it("adopts a stable turn-scoped fallback ID when a completed Codex item has no provider ID", () => {
+    let p = emptyProjection();
+    p = reduceProjection(p, event("text_delta", {
+      agentType: "codex", threadId: "t1", runId: "run-1", timestamp: 1,
+      text: "same reply", codexTurnId: "turn-fallback",
+      contentMode: "delta", messagePhase: "updated",
+    }));
+    p = reduceProjection(p, event("text_delta", {
+      agentType: "codex", threadId: "t1", runId: "run-1", timestamp: 2,
+      text: "same reply", codexTurnId: "turn-fallback",
+      contentMode: "snapshot", messagePhase: "completed",
+    }));
+
+    const expected = codexFallbackItemMessageId(
+      "turn-fallback", "assistant", "same reply", 0,
+    );
+    expect(p.messages).toHaveLength(1);
+    expect(p.messages[0]).toMatchObject({
+      id: expected,
+      messageId: expected,
+      content: "same reply",
+      isCompleted: true,
+    });
+    expect(expected).toBe("flowix:codex:item:turn-fallback:assistant:c9c3d78b64eaec57:0");
+    expect(codexFallbackItemMessageId("t", "assistant", "你好🙂", 0)).toBe(
+      "flowix:codex:item:t:assistant:71b13a3934f0304d:0",
+    );
+  });
+
+  it("keeps distinct identical Codex items when the backend supplies their occurrence IDs", () => {
+    let p = emptyProjection();
+    for (const occurrence of [0, 1]) {
+      const messageId = codexFallbackItemMessageId(
+        "turn-repeat", "assistant", "same reply", occurrence,
+      );
+      const completed = event("text_delta", {
+        agentType: "codex", threadId: "t1", runId: "run-1", timestamp: occurrence + 1,
+        text: "same reply", messageId, codexTurnId: "turn-repeat",
+        contentMode: "snapshot", messagePhase: "completed",
+      });
+      p = reduceProjection(p, completed);
+      // The terminal turn snapshot can repeat the same identity; it remains an
+      // idempotent update while an equal-text item with another occurrence id
+      // stays a separate history row.
+      p = reduceProjection(p, completed);
+    }
+
+    expect(p.messages.filter((message) => message.role === "assistant")).toEqual([
+      expect.objectContaining({
+        id: codexFallbackItemMessageId("turn-repeat", "assistant", "same reply", 0),
+        content: "same reply",
+      }),
+      expect.objectContaining({
+        id: codexFallbackItemMessageId("turn-repeat", "assistant", "same reply", 1),
+        content: "same reply",
+      }),
+    ]);
+  });
+
+  it("keeps repeated identical idless Codex reasoning snapshots aligned with history", () => {
+    let p = emptyProjection();
+    for (const occurrence of [0, 1]) {
+      p = reduceProjection(p, event("reasoning_delta", {
+        agentType: "codex", threadId: "t1", runId: "run-1", timestamp: occurrence + 1,
+        text: "same thought", codexTurnId: "turn-reasoning",
+        contentMode: "snapshot", messagePhase: "completed",
+        sourceSequence: occurrence + 1,
+      }));
+    }
+
+    expect(p.messages.filter((message) => message.role === "reasoning")).toEqual([
+      expect.objectContaining({
+        id: codexFallbackItemMessageId("turn-reasoning", "reasoning", "same thought", 0),
+        content: "same thought",
+      }),
+      expect.objectContaining({
+        id: codexFallbackItemMessageId("turn-reasoning", "reasoning", "same thought", 1),
+        content: "same thought",
+      }),
+    ]);
+  });
+
+  it("assigns distinct matching fallbacks to repeated Codex user items without provider IDs", () => {
+    let p = emptyProjection();
+    const userEvent = (timestamp: number): AgentEvent => event("user_message", {
+      agentType: "codex", threadId: "t1", runId: "run-1", timestamp,
+      id: "flowix:codex:missing-user-item",
+      messageId: "flowix:codex:missing-user-item", text: "repeat",
+      codexTurnId: "turn-users", messagePhase: "completed", contentMode: "snapshot",
+    });
+    p = reduceProjection(p, userEvent(1));
+    p = reduceProjection(p, userEvent(2));
+
+    expect(p.messages.map((message) => message.id)).toEqual([
+      codexFallbackItemMessageId("turn-users", "user", "repeat", 0),
+      codexFallbackItemMessageId("turn-users", "user", "repeat", 1),
+    ]);
+  });
+
   it("stream_start → text_delta → text_delta appends content", () => {
     let p = emptyProjection();
     p = reduceProjection(p, streamStart("r1"));
@@ -277,23 +377,23 @@ describe("reduceProjection / text streaming lifecycle", () => {
     p = reduceProjection(
       p,
       event("user_message", {
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         threadId: "t1",
         runId: "r2",
         timestamp: 2500,
         text: "second question",
-        id: "msg:deepseek-harness:r2:user:user-r2",
+        id: "msg:dsh:r2:user:user-r2",
       }),
     );
     p = reduceProjection(
       p,
       event("text_delta", {
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         threadId: "t1",
         runId: "r2",
         timestamp: 2600,
         text: "second",
-        messageId: "msg:deepseek-harness:r2:assistant:stream",
+        messageId: "msg:dsh:r2:assistant:stream",
         messagePhase: "updated",
         contentMode: "delta",
       }),
@@ -338,7 +438,7 @@ describe("reduceProjection / text streaming lifecycle", () => {
     p = reduceProjection(
       p,
       event("reasoning_delta", {
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         threadId: "t1",
         runId: "r1",
         timestamp: 6000,
@@ -360,13 +460,14 @@ describe("reduceProjection / text streaming lifecycle", () => {
     });
   });
 
-  it("stream_end clears an unfinished reasoning draft and pending state", () => {
+  it("stream_end retains and seals an unfinished reasoning draft", () => {
     let p = emptyProjection();
     p = reduceProjection(p, streamStart("r1"));
     p = reduceProjection(p, reasoningDelta("only thinking"));
     p = reduceProjection(p, streamEnd("r1"));
 
-    expect(p.messages).toHaveLength(0);
+    expect(p.messages).toHaveLength(1);
+    expect(p.messages[0].isCompleted).toBe(true);
     expect(p.runs.isLoading).toBe(false);
     expect(p.runs.activeRunId).toBeNull();
     expect(p.runs.lastRun?.status).toBe("completed");
@@ -377,14 +478,32 @@ describe("reduceProjection / text streaming lifecycle", () => {
   it.each([
     ["user stop", "user_stopped"],
     ["provider completion", null],
-  ] as const)("clears assistant drafts on %s", (_label, reason) => {
+  ] as const)("retains and seals assistant drafts on %s", (_label, reason) => {
     let p = emptyProjection();
     p = reduceProjection(p, streamStart("r1"));
     p = reduceProjection(p, textDelta("unfinished answer"));
     p = reduceProjection(p, streamEnd("r1", reason));
 
-    expect(p.messages).toHaveLength(0);
+    expect(p.messages).toHaveLength(1);
+    expect(p.messages[0].isCompleted).toBe(true);
     expect(p.pending.assistantId).toBeNull();
+  });
+
+  it("does not delete a forced-stop Pi answer when the next run fails", () => {
+    let p = emptyProjection();
+    p = reduceProjection(p, { ...streamStart("r1"), agentType: "pi" });
+    // Multiple native blocks can exist without a committed message_end.
+    p = reduceProjection(p, { ...textDelta("first block"), agentType: "pi", messageId: undefined, sourceSubsequence: 0 });
+    p = reduceProjection(p, { ...textDelta("last block"), agentType: "pi", messageId: undefined, sourceSubsequence: 1 });
+    p = reduceProjection(p, { ...streamEnd("r1", "user_stopped"), agentType: "pi" });
+    p = reduceProjection(p, { ...streamStart("r2"), agentType: "pi" });
+    p = reduceProjection(p, { ...textDelta("failed draft", "block-2"), agentType: "pi", runId: "r2" });
+    p = reduceProjection(p, { ...errorEvent("startup failed"), agentType: "pi", runId: "r2" });
+    expect(p.messages.filter(row => row.role === "assistant").map(row => row.content))
+      .toEqual(["first block", "last block", "startup failed"]);
+    expect(p.messages.some(row => row.content === "failed draft")).toBe(false);
+    expect(p.messages.filter(row => row.role === "assistant").every(row => row.isCompleted)).toBe(true);
+    expect(p.messages.some(row => row.content === "startup failed")).toBe(true);
   });
 
   it("clears unfinished output on provider error and retains the terminal error row", () => {
@@ -439,7 +558,7 @@ describe("reduceProjection / text streaming lifecycle", () => {
     p = reduceProjection(p, streamStart("r1"));
     p = reduceProjection(p, textDelta("answer"));
     p = reduceProjection(p, event("final_message", {
-      agentType: "deepseek-harness",
+      agentType: "dsh",
       threadId: "t1",
       runId: "r1",
       timestamp: 8000,
@@ -475,11 +594,11 @@ describe("reduceProjection / text streaming lifecycle", () => {
   it("collapses duplicate stdout/process-exit errors for one run", () => {
     let p = emptyProjection();
     const base = {
-      agentType: "claude" as const,
+      agentType: "claudecode" as const,
       threadId: "t1",
       runId: "r1",
       timestamp: 9500,
-      messageId: "msg:claude:r1:error:error",
+      messageId: "msg:claudecode:r1:error:error",
     };
     p = reduceProjection(p, {
       kind: "error",
@@ -510,17 +629,17 @@ describe("reduceProjection / text streaming lifecycle", () => {
     p = reduceProjection(
       p,
       event("error", {
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         threadId: "t1",
         runId: "r1",
         timestamp: 9500,
-        messageId: "msg:deepseek-harness:r1:error:error",
+        messageId: "msg:dsh:r1:error:error",
         message: "Request timed out.",
       }),
     );
 
     expect(p.messages[p.messages.length - 1]).toMatchObject({
-      id: "msg:deepseek-harness:r1:error:error",
+      id: "msg:dsh:r1:error:error",
       content: "Request timed out.",
       notice: "deepseek-harness-reconnect-failed",
     });
@@ -531,11 +650,11 @@ describe("reduceProjection / text streaming lifecycle", () => {
     p = reduceProjection(
       p,
       event("error", {
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         threadId: "t1",
         runId: "r1",
         timestamp: 9600,
-        messageId: "msg:deepseek-harness:r1:error:quota",
+        messageId: "msg:dsh:r1:error:quota",
         message: "Token Plan exhausted",
         errorDetails: {
           category: "quota_exhausted",
@@ -559,7 +678,7 @@ describe("reduceProjection / tool call cycle", () => {
   it("keeps harness assistant segments separate while the run is still streaming", () => {
     const harnessText = (text: string, messageId: string) =>
       event("text_delta", {
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         threadId: "t1",
         runId: "r1",
         timestamp: 2000,
@@ -569,24 +688,24 @@ describe("reduceProjection / tool call cycle", () => {
         contentMode: "delta",
       });
     const harnessToolCall = event("tool_call", {
-      agentType: "deepseek-harness",
+      agentType: "dsh",
       threadId: "t1",
       runId: "r1",
       timestamp: 3000,
-      toolCallId: "msg:deepseek-harness:r1:tool-call:c1",
+      toolCallId: "msg:dsh:r1:tool-call:c1",
       name: "read",
       input: { file_path: "README.md" },
-      messageId: "msg:deepseek-harness:r1:tool:c1",
+      messageId: "msg:dsh:r1:tool:c1",
     });
     const harnessToolResult = event("tool_result", {
-      agentType: "deepseek-harness",
+      agentType: "dsh",
       threadId: "t1",
       runId: "r1",
       timestamp: 4000,
-      toolCallId: "msg:deepseek-harness:r1:tool-call:c1",
+      toolCallId: "msg:dsh:r1:tool-call:c1",
       name: "read",
       result: "ok",
-      messageId: "msg:deepseek-harness:r1:tool:c1",
+      messageId: "msg:dsh:r1:tool:c1",
     });
     let p = emptyProjection();
     p = reduceProjection(p, streamStart("r1"));
@@ -594,7 +713,7 @@ describe("reduceProjection / tool call cycle", () => {
       p,
       harnessText(
         "before tool",
-        "msg:deepseek-harness:r1:assistant:assistant-stream-0",
+        "msg:dsh:r1:assistant:assistant-stream-0",
       ),
     );
     p = reduceProjection(p, harnessToolCall);
@@ -603,7 +722,7 @@ describe("reduceProjection / tool call cycle", () => {
       p,
       harnessText(
         "after tool",
-        "msg:deepseek-harness:r1:assistant:assistant-stream-1",
+        "msg:dsh:r1:assistant:assistant-stream-1",
       ),
     );
 
@@ -615,7 +734,7 @@ describe("reduceProjection / tool call cycle", () => {
       ["assistant", "after tool"],
     ]);
     expect(p.pending.assistantId).toBe(
-      "msg:deepseek-harness:r1:assistant:assistant-stream-1",
+      "msg:dsh:r1:assistant:assistant-stream-1",
     );
   });
 
@@ -695,7 +814,7 @@ describe("reduceProjection / DSH command operations", () => {
     p = reduceProjection(
       p,
       event("dsh_command", {
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         threadId: "t1",
         runId: "command-run-1",
         timestamp: 1000,
@@ -721,7 +840,7 @@ describe("reduceProjection / DSH command operations", () => {
     p = reduceProjection(
       p,
       event("dsh_command", {
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         threadId: "t1",
         runId: "command-run-1",
         timestamp: 2000,
@@ -750,7 +869,7 @@ describe("reduceProjection / DSH command operations", () => {
     p = reduceProjection(
       p,
       event("dsh_command", {
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         threadId: "t1",
         runId: "command-run-1",
         timestamp: 1000,
@@ -784,7 +903,7 @@ describe("reduceProjection / session_resolved is a no-op", () => {
     const after = reduceProjection(
       p,
       event("session_resolved", {
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         threadId: "t1",
         runId: "test-run",
         timestamp: 9999,
@@ -818,7 +937,7 @@ describe("reduceProjection / Codex command operations", () => {
 
     expect(p.messages).toMatchObject([
       {
-        id: "codex-command:live:codex-command-1",
+        id: "flowix:codex:command:pending:codex-command-1",
         role: "user",
         messageType: "codex-command",
         content: "/goal set ship it",
@@ -853,10 +972,11 @@ describe("reduceProjection / Codex command operations", () => {
     );
 
     expect(p.messages[0]).toMatchObject({
-      id: "codex-command:live:codex-command-1",
+      id: "flowix:codex:command:turn-goal-1",
       codexTurnId: "turn-goal-1",
       isCompleted: true,
     });
+    expect(p.messages).toHaveLength(1);
   });
 
   it.each(["error", "cancelled"] as const)(
@@ -882,7 +1002,7 @@ describe("reduceProjection / usage accumulates into runs", () => {
     p = reduceProjection(
       p,
       event("usage", {
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         threadId: "t1",
         runId: "r1",
         timestamp: 8000,

@@ -196,7 +196,7 @@ describe("agent user and assistant Markdown rendering", () => {
     document.body.append(host);
 
     const editorPreSelector =
-      ".markdown-editor .tiptap:not(.agent-thread-card__composer-editor) " +
+      ".markdown-editor .tiptap:not(.agent-composer__input-content) " +
       "pre:where(:not(.agent-thread-card__message, .agent-thread-card__message *)):not(.agent-thread-card__message-code-block)";
 
     expect(message.querySelector("pre")?.matches(editorPreSelector)).toBe(false);
@@ -216,7 +216,7 @@ describe("agent user and assistant Markdown rendering", () => {
     document.body.append(host);
 
     const firstBlockSelector =
-      ".markdown-editor .ProseMirror:not(.agent-thread-card__composer-editor) " +
+      ".markdown-editor .ProseMirror:not(.agent-composer__input-content) " +
       "> *:not(.agent-thread-card, .frontmatter-property-node):first-of-type";
 
     expect(card.matches(firstBlockSelector)).toBe(false);
@@ -310,7 +310,13 @@ describe("DSH command input rendering", () => {
     ]);
     expect(elements.map((element) => element.querySelector(
       ".agent-thread-card__message-dsh-badge",
-    )?.textContent)).toEqual(["DSH", "DSH", "DSH"]);
+    )?.textContent ?? null)).toEqual(["DSH", null, null]);
+    expect(elements.map((element) => element.querySelector(
+      ".agent-thread-card__message-mode-tag",
+    )?.textContent ?? null)).toEqual([null, "Goal 模式", "Plan 模式"]);
+    expect(elements[1].querySelector(".agent-thread-card__message-user-bubble")?.contains(
+      elements[1].querySelector(".agent-thread-card__message-mode-tag"),
+    )).toBe(false);
     expect(elements.map((element) => element.textContent?.includes("/"))).toEqual([
       true,
       true,
@@ -376,7 +382,10 @@ describe("Codex command rendering", () => {
     ]);
     expect(elements.map((element) => element.querySelector(
       ".agent-thread-card__message-codex-badge",
-    )?.textContent)).toEqual(["Codex", "Codex"]);
+    )?.textContent ?? null)).toEqual(["Codex", null]);
+    expect(elements.map((element) => element.querySelector(
+      ".agent-thread-card__message-mode-tag",
+    )?.textContent ?? null)).toEqual([null, "Goal 模式"]);
     expect(elements.map((element) => element.textContent?.includes("/"))).toEqual([
       true,
       true,

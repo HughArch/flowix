@@ -847,7 +847,7 @@ pub fn apply_derived_memo_fields(memo: &mut Memo, full_content: &str) {
                 Some(_) => None,
                 None => {
                     tracing::warn!(
-                        memo_id = %memo.id,
+                        note_path = %memo.relative_path,
                         tag = %raw,
                         "ignoring invalid legacy frontmatter tag path while deriving memo metadata"
                     );

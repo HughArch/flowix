@@ -16,17 +16,34 @@ use crate::config::path_is_inside;
 use crate::lock_utils::read_lock;
 use flowix_core::memo_file::{
     media_kind_for_path, notebook_path_from_relative, FileManagementPolicy, MediaResourceKind,
-    MemoColor, MemoFile,
+    NoteColor, MemoFile,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Notify, Semaphore};
 
 use super::helpers::{
-    can_access_document_path, can_access_scoped_file, is_agent_access_folder,
+    can_access_document_path, can_access_scoped_file, is_attached_notebook_directory,
     is_internal_notebook_path, is_registered_notebook_path, is_registered_notebook_root,
-    refresh_notebook_note_index, start_security_bookmark_access,
+    refresh_notebook_note_index, FileOperationFailure,
 };
 use crate::app::state::AppState;
+
+pub mod folder_import;
+
+#[cfg(target_os = "macos")]
+fn is_cloud_file_not_downloaded(path: &Path) -> bool {
+    use std::os::macos::fs::MetadataExt;
+
+    // macOS marks cloud-only placeholders with UF_DATALESS.
+    const UF_DATALESS: u32 = 0x4000_0000;
+    fs::symlink_metadata(path)
+        .is_ok_and(|metadata| metadata.st_flags() & UF_DATALESS != 0)
+}
+
+#[cfg(not(target_os = "macos"))]
+fn is_cloud_file_not_downloaded(_path: &Path) -> bool {
+    false
+}
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -64,9 +81,8 @@ pub enum DocTreeResourceKind {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocTreeMemoMeta {
-    pub id: String,
     pub icon: Option<String>,
-    pub colors: Vec<MemoColor>,
+    pub colors: Vec<NoteColor>,
     pub favorited: bool,
 }
 
@@ -196,20 +212,20 @@ fn memo_tree_metadata_for_directory(
         .strip_prefix(&notebook_root)
         .ok()?
         .to_path_buf();
-    let index = memo_file
-        .read_index_for_notebook_id(Some(&config.id))
-        .ok()??;
+    let notes = match memo_file.read_note_entries(&config.id) {
+        Ok(notes) => notes,
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            state.notebook_background.request(&config.id, true, false);
+            return None;
+        }
+        Err(_) => return None,
+    };
 
     Some(
-        index
-            .memos
+        notes
             .into_iter()
             .filter_map(|entry| {
-                let relative_path = if entry.relative_path.is_empty() {
-                    entry.filename
-                } else {
-                    entry.relative_path
-                };
+                let relative_path = entry.relative_path;
                 if !relative_memo_is_direct_child(Path::new(&relative_path), &relative_directory) {
                     return None;
                 }
@@ -220,7 +236,6 @@ fn memo_tree_metadata_for_directory(
                     MemoTreeMetadata {
                         created_ms: u64::try_from(entry.created_at).ok(),
                         memo: DocTreeMemoMeta {
-                            id: entry.id,
                             icon: entry.icon,
                             colors: entry.colors,
                             favorited: entry.favorited,
@@ -444,20 +459,14 @@ pub(crate) fn default_create_folder_for_notebook(root: &Path) -> Result<Option<S
     flowix_core::memo_file::default_create_folder_for_notebook(root)
 }
 
-pub(crate) fn migrate_legacy_watcher_rules(
-    root: &Path,
-    config: &crate::watcher::WhitelistConfig,
-    memo: &MemoFile,
-) -> Result<(), String> {
-    if read_notebook_view_preferences(root)
-        .file_management
-        .legacy_watcher_migrated
-    {
-        return Ok(());
-    }
-    with_registered_notebook_change(root, memo, "migrate_file_management_preferences", || {
-        migrate_legacy_watcher_rules_locked(root, config)
-    })
+pub(crate) fn write_default_notebook_view_preferences(root: &Path) -> Result<(), String> {
+    let path = notebook_preferences_path(root)?;
+    fs::create_dir_all(path.parent().ok_or("INVALID_NOTEBOOK_CONFIG_DIRECTORY")?)
+        .map_err(|error| format!("create notebook config directory failed: {error}"))?;
+    let bytes = serde_json::to_vec_pretty(&NotebookViewPreferences::default())
+        .map_err(|error| format!("serialize default notebook preferences failed: {error}"))?;
+    flowix_core::memo_file::atomic_write_bytes(&path, &bytes)
+        .map_err(|error| format!("write default notebook preferences failed: {error}"))
 }
 
 fn with_registered_notebook_change<T>(
@@ -468,61 +477,6 @@ fn with_registered_notebook_change<T>(
 ) -> Result<T, String> {
     memo.with_registered_path_change(&[root], operation, || Ok(change()))
         .map_err(|error| error.to_string())?
-}
-
-fn migrate_legacy_watcher_rules_locked(
-    root: &Path,
-    config: &crate::watcher::WhitelistConfig,
-) -> Result<(), String> {
-    let mut preferences = read_notebook_view_preferences(root);
-    if preferences.file_management.legacy_watcher_migrated {
-        return Ok(());
-    }
-    let policy = &mut preferences.file_management;
-    policy.legacy_skip_dirs = config
-        .skip_dirs
-        .iter()
-        .filter(|name| {
-            !matches!(
-                name.as_str(),
-                ".flowix"
-                    | ".plugin-output"
-                    | ".git"
-                    | ".DS_Store"
-                    | "node_modules"
-                    | ".cache"
-                    | ".trash"
-                    | "attachments"
-                    | "attachments-cache"
-            )
-        })
-        .cloned()
-        .collect();
-    policy.legacy_skip_files = config
-        .skip_files
-        .iter()
-        .filter(|name| {
-            !matches!(
-                name.as_str(),
-                "*.tmp" | "*.swp" | "*~" | ".DS_Store" | "Thumbs.db" | "*.bak" | "*.lock"
-            )
-        })
-        .cloned()
-        .collect();
-    policy.legacy_watcher_migrated = true;
-    let path = notebook_preferences_path(root)?;
-    fs::create_dir_all(path.parent().ok_or("INVALID_NOTEBOOK_CONFIG_DIRECTORY")?)
-        .map_err(|error| error.to_string())?;
-    if !policy.legacy_skip_dirs.is_empty() || !policy.legacy_skip_files.is_empty() {
-        flowix_core::memo_file::atomic_write_bytes(
-            &root.join(".flowix/file-management-refresh-pending"),
-            uuid::Uuid::new_v4().to_string().as_bytes(),
-        )
-        .map_err(|error| error.to_string())?;
-    }
-    let bytes = serde_json::to_vec_pretty(&preferences).map_err(|error| error.to_string())?;
-    flowix_core::memo_file::atomic_write_bytes(&path, &bytes).map_err(|error| error.to_string())?;
-    Ok(())
 }
 
 fn normalize_relative_folder_paths(folders: Vec<String>) -> Result<Vec<String>, String> {
@@ -571,11 +525,6 @@ pub fn get_notebook_view_preferences(
     if !is_registered_notebook_root(root, &state) {
         return Err("NOTEBOOK_NOT_REGISTERED".to_string());
     }
-    migrate_legacy_watcher_rules(
-        root,
-        &state.user_config.get_preference().watcher,
-        &read_lock(&state.memo_file, "memo_file"),
-    )?;
     if root
         .join(".flowix/file-management-refresh-pending")
         .exists()
@@ -656,11 +605,6 @@ pub fn get_file_management_candidates(
     if !is_registered_notebook_root(root, &state) {
         return Err("NOTEBOOK_NOT_REGISTERED".to_string());
     }
-    migrate_legacy_watcher_rules(
-        root,
-        &state.user_config.get_preference().watcher,
-        &read_lock(&state.memo_file, "memo_file"),
-    )?;
     let policy = read_notebook_view_preferences(root).file_management;
     let defaults = FileManagementPolicy::default();
     let mut pending = vec![root.to_path_buf()];
@@ -689,7 +633,6 @@ pub fn get_file_management_candidates(
             let is_directory = metadata.is_dir();
             let name = Path::new(entry.file_name().as_os_str()).to_path_buf();
             let own_name_ignored = defaults.is_ignored(&name)
-                || policy.matches_legacy_entry(&path)
                 || FileManagementPolicy::has_hidden_attribute(&path);
             if FileManagementPolicy::is_locked_name(&entry.file_name().to_string_lossy()) {
                 continue;
@@ -783,7 +726,6 @@ fn collect_notebook_settings_tree(
         let relative_path = relative.to_string_lossy().replace('\\', "/");
         let hidden = policy.is_tree_hidden_at(root, relative);
         let default_hidden = FileManagementPolicy::default().is_ignored_at(root, relative)
-            || policy.matches_legacy_entry(&path)
             || FileManagementPolicy::has_hidden_attribute(&path);
         if metadata.is_dir() {
             let is_flowix_dir = relative_path == ".flowix";
@@ -857,10 +799,6 @@ pub fn set_notebook_view_preferences(
             &read_lock(&state.memo_file, "memo_file"),
             "set_notebook_view_preferences",
             || {
-                migrate_legacy_watcher_rules_locked(
-                    &root,
-                    &state.user_config.get_preference().watcher,
-                )?;
                 let previous_preferences = read_notebook_view_preferences(&root);
                 let previous_policy = previous_preferences.file_management.clone();
                 let path = notebook_preferences_path(&root)?;
@@ -883,9 +821,6 @@ pub fn set_notebook_view_preferences(
                         excluded_index_paths: normalize_excluded_index_paths(
                             preferences.file_management.excluded_index_paths,
                         )?,
-                        legacy_skip_dirs: previous_policy.legacy_skip_dirs.clone(),
-                        legacy_skip_files: previous_policy.legacy_skip_files.clone(),
-                        legacy_watcher_migrated: previous_policy.legacy_watcher_migrated,
                     },
                     refresh_pending: false,
                 };
@@ -975,7 +910,6 @@ fn normalize_default_create_folder(folder: Option<String>) -> Result<Option<Stri
 #[tauri::command]
 pub fn get_file_tree(space_path: String, state: State<AppState>) -> Option<Vec<DocTreeItem>> {
     let path = Path::new(&space_path);
-    start_security_bookmark_access(&state, path);
     if !path.exists()
         || is_internal_notebook_path(path, &state)
         || !is_browsable_scope(path, &state)
@@ -996,7 +930,6 @@ pub fn get_file_tree(space_path: String, state: State<AppState>) -> Option<Vec<D
 #[tauri::command]
 pub fn get_dir_children(dir_path: String, state: State<AppState>) -> Vec<DocTreeItem> {
     let path = Path::new(&dir_path);
-    start_security_bookmark_access(&state, path);
     if !path.exists()
         || is_internal_notebook_path(path, &state)
         || !is_browsable_scope(path, &state)
@@ -1019,7 +952,7 @@ pub fn get_dir_children(dir_path: String, state: State<AppState>) -> Vec<DocTree
 /// `path_is_inside` 一并放行)。
 fn is_browsable_scope(path: &Path, state: &State<AppState>) -> bool {
     !is_internal_notebook_path(path, state)
-        && (is_registered_notebook_path(path, state) || is_agent_access_folder(path, state))
+        && (is_registered_notebook_path(path, state) || is_attached_notebook_directory(path, state))
 }
 
 #[tauri::command]
@@ -1032,7 +965,6 @@ pub fn read_file(
         eprintln!("[read_file] refused out-of-scope path: {}", file_path);
         return None;
     }
-    start_security_bookmark_access(&state, Path::new(&file_path));
     fs::read_to_string(&file_path).ok()
 }
 
@@ -1065,7 +997,6 @@ fn authorized_docx_path(
     {
         return Err("DOCX_FORBIDDEN: file is outside its authorized space".to_string());
     }
-    start_security_bookmark_access(state, &path);
     Ok(path)
 }
 
@@ -1278,7 +1209,6 @@ fn create_docx_markdown_with_images(
         {
             return Err("DOCX_FORBIDDEN: attachment directory escapes this space".to_string());
         }
-        start_security_bookmark_access(state, &attachment_directory);
 
         for (index, image) in prepared_images.iter().enumerate() {
             match create_docx_image_file(&attachment_directory, space_path, state, image, index) {
@@ -1401,7 +1331,6 @@ pub fn read_image_file(
         eprintln!("[read_image_file] refused file: {}", file_path);
         return None;
     }
-    start_security_bookmark_access(&state, path);
     let bytes = fs::read(path).ok()?;
     Some(format!(
         "data:{mime};base64,{}",
@@ -1422,7 +1351,6 @@ pub async fn read_image_preview(
     if !can_access_scoped_file(path, space_path.as_deref(), &state) || !path.is_file() {
         return Ok(None);
     }
-    start_security_bookmark_access(&state, path);
     let path = path.to_path_buf();
     let max_dimension = preview_max_dimension(max_dimension);
     let slots = MEDIA_PREVIEW_SLOTS
@@ -1552,7 +1480,6 @@ pub async fn get_media_thumbnail(
     if !is_image && !is_video {
         return Err("unsupported media thumbnail kind".to_string());
     }
-    start_security_bookmark_access(&state, &path);
 
     let metadata = fs::metadata(&path).map_err(|error| error.to_string())?;
     let modified_ns = metadata
@@ -1901,7 +1828,6 @@ pub fn read_video_preview(
         eprintln!("[read_video_preview] refused file: {}", file_path);
         return None;
     }
-    start_security_bookmark_access(&state, path);
 
     #[cfg(target_os = "macos")]
     {
@@ -1957,7 +1883,6 @@ pub fn write_file(
         eprintln!("[write_file] refused out-of-scope path: {}", file_path);
         return false;
     }
-    start_security_bookmark_access(&state, Path::new(&file_path));
     let memo_file = read_lock(&state.memo_file, "memo_file");
     let path = Path::new(&file_path);
     let notebook_ids = match memo_file.notebook_ids_for_paths(&[path]) {
@@ -2002,7 +1927,6 @@ pub fn create_file(
     if !path.parent().is_some_and(Path::is_dir) {
         return Err("FILE_NOT_FOUND: parent directory does not exist".to_string());
     }
-    start_security_bookmark_access(&state, path);
     let memo_file = read_lock(&state.memo_file, "memo_file");
     let notebook_ids = memo_file
         .notebook_ids_for_paths(&[path])
@@ -2031,7 +1955,6 @@ pub fn delete_file(file_path: String, space_path: Option<String>, state: State<A
         eprintln!("[delete_file] refused out-of-scope path: {}", file_path);
         return false;
     }
-    start_security_bookmark_access(&state, Path::new(&file_path));
     let memo_file = read_lock(&state.memo_file, "memo_file");
     let path = Path::new(&file_path);
     let notebook_ids = match memo_file.notebook_ids_for_paths(&[path]) {
@@ -2081,7 +2004,6 @@ pub fn delete_folder(
         );
         return Err("FILE_PERMISSION_DENIED".to_string());
     }
-    start_security_bookmark_access(&state, folder);
     let memo_file = read_lock(&state.memo_file, "memo_file");
     let notebook_ids = memo_file
         .notebook_ids_for_paths(&[folder])
@@ -2168,6 +2090,14 @@ fn file_mutation_error(error: std::io::Error) -> String {
     format!("{code}: {error}")
 }
 
+fn target_directory_error(error: std::io::Error) -> String {
+    if error.kind() == std::io::ErrorKind::NotFound {
+        "TARGET_NOT_DIRECTORY".to_string()
+    } else {
+        file_mutation_error(error)
+    }
+}
+
 fn validate_file_name(name: &str) -> Result<(), String> {
     if name.trim().is_empty()
         || name == "."
@@ -2191,18 +2121,13 @@ fn rename_path_and_notify(
     target: &Path,
     state: &AppState,
     app: &tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<Option<super::path_change::NotebookPathMove>, String> {
     let source_was_directory = source.is_dir();
-    let source_was_markdown = source
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
-        });
     let mf = read_lock(&state.memo_file, "memo_file");
-    let changes = mf
-        .rename_indexed_path(source, target)
+    let _watch_move = crate::commands::external_document_watch::begin_path_move(app, source);
+    mf.rename_indexed_path(source, target)
         .map_err(file_mutation_error)?;
+    crate::commands::external_document_watch::rebase_path(app, source, target);
     if target.is_dir() {
         let configs = mf.read_notebook_configs().unwrap_or_default();
         if let Some(config) = configs.into_iter().find(|config| {
@@ -2232,13 +2157,8 @@ fn rename_path_and_notify(
         crate::commands::document_list::refresh_view_document_path(&mf, source);
         crate::commands::document_list::refresh_view_document_path(&mf, target);
     }
-    let target_is_markdown = target
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
-        });
-    if source_was_directory || (source_was_markdown && target_is_markdown) {
+    let mut notebook_change = None;
+    {
         crate::commands::document_list::rebase_collection_paths_for_move(&mf, source, target);
         if let Some((notebook_id, relative_path, previous_path)) = mf
             .read_notebook_configs()
@@ -2258,38 +2178,14 @@ fn rename_path_and_notify(
                 ))
             })
         {
-            let _ = app.emit(
-                "flowix:path-note-changed",
-                serde_json::json!({
-                    "notebookId": notebook_id,
-                    "relativePath": relative_path,
-                    "previousRelativePath": previous_path,
-                    "kind": "path",
-                    "directory": source_was_directory,
-                    "deleted": false,
-                }),
-            );
+            if let Some(previous_path) = previous_path {
+                let change = super::path_change::NotebookPathMove::new(
+                    notebook_id, previous_path, relative_path, source_was_directory,
+                );
+                change.emit(app);
+                notebook_change = Some(change);
+            }
         }
-    }
-    for (notebook_id, before, memo) in changes {
-        let Some(config) = mf.get_notebook_config_by_id(&notebook_id) else {
-            continue;
-        };
-        let path = notebook_path_from_relative(Path::new(&config.path), &memo.relative_path)?;
-        crate::memo_events::emit(
-            app,
-            crate::memo_events::MemoEvent::Updated {
-                id: memo.id.clone(),
-                path: path.to_string_lossy().into_owned(),
-                notebook_id,
-                derived_changed: crate::memo_events::MemoDerivedChanged::from_memos(
-                    Some(&before),
-                    &memo,
-                ),
-                memo,
-                source: crate::memo_events::MemoChangeSource::UserEdit,
-            },
-        );
     }
     let notebooks = mf.read_notebook_configs().unwrap_or_default();
     let address_for = |path: &Path| {
@@ -2321,7 +2217,7 @@ fn rename_path_and_notify(
             );
         }
     }
-    Ok(())
+    Ok(notebook_change)
 }
 
 #[tauri::command]
@@ -2332,7 +2228,7 @@ pub async fn rename_file(
     name: String,
     space_path: String,
     app: tauri::AppHandle,
-) -> Result<String, String> {
+) -> Result<super::path_change::PathMutationResult, String> {
     crate::commands::document_operations::run(
         "rename_external",
         operation_id,
@@ -2348,15 +2244,14 @@ pub async fn rename_file(
             {
                 return Err("FILE_PERMISSION_DENIED".to_string());
             }
-            start_security_bookmark_access(&state, source);
             if !fs::symlink_metadata(source)
                 .map_err(file_mutation_error)?
                 .is_file()
             {
                 return Err("SOURCE_NOT_REGULAR_FILE".to_string());
             }
-            rename_path_and_notify(source, &target, state.inner(), &app)?;
-            Ok(target.to_string_lossy().into_owned())
+            let notebook_change = rename_path_and_notify(source, &target, state.inner(), &app)?;
+            Ok(super::path_change::PathMutationResult { path: target.to_string_lossy().into_owned(), notebook_change })
         },
     )
     .await
@@ -2372,7 +2267,7 @@ pub fn move_file(
     space_path: String,
     state: State<AppState>,
     app: tauri::AppHandle,
-) -> Result<String, String> {
+) -> Result<super::path_change::PathMutationResult, FileOperationFailure> {
     let source = Path::new(&file_path);
     let target_directory = Path::new(&target_directory_path);
     let scope = Path::new(&space_path);
@@ -2380,38 +2275,41 @@ pub fn move_file(
         || !can_access_scoped_file(source, Some(&space_path), &state)
         || !can_access_scoped_file(target_directory, Some(&space_path), &state)
     {
-        return Err("FILE_PERMISSION_DENIED".to_string());
+        return Err(FileOperationFailure::code("FILE_PERMISSION_DENIED"));
     }
-    start_security_bookmark_access(&state, source);
-    start_security_bookmark_access(&state, target_directory);
     if !fs::symlink_metadata(source)
         .map_err(file_mutation_error)?
         .is_file()
     {
-        return Err("SOURCE_NOT_REGULAR_FILE".to_string());
+        return Err(FileOperationFailure::code("SOURCE_NOT_REGULAR_FILE"));
     }
     if !fs::symlink_metadata(target_directory)
-        .map_err(file_mutation_error)?
+        .map_err(target_directory_error)?
         .is_dir()
     {
-        return Err("TARGET_NOT_DIRECTORY".to_string());
+        return Err(FileOperationFailure::code("TARGET_NOT_DIRECTORY"));
     }
-    let file_name = source.file_name().ok_or("INVALID_FILE_PATH")?;
+    let file_name = source
+        .file_name()
+        .ok_or_else(|| FileOperationFailure::code("INVALID_FILE_PATH"))?;
     let target = target_directory.join(file_name);
     if !can_access_scoped_file(&target, Some(&space_path), &state) {
-        return Err("FILE_PERMISSION_DENIED".to_string());
+        return Err(FileOperationFailure::code("FILE_PERMISSION_DENIED"));
     }
     if source == target {
-        return Ok(source.to_string_lossy().into_owned());
+        return Ok(super::path_change::PathMutationResult { path: source.to_string_lossy().into_owned(), notebook_change: None });
     }
     if fs::symlink_metadata(&target).is_ok() {
-        return Err(file_mutation_error(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "target already exists",
-        )));
+        return Err(
+            file_mutation_error(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "target already exists",
+            ))
+            .into(),
+        );
     }
-    rename_path_and_notify(source, &target, state.inner(), &app)?;
-    Ok(target.to_string_lossy().into_owned())
+    let notebook_change = rename_path_and_notify(source, &target, state.inner(), &app)?;
+    Ok(super::path_change::PathMutationResult { path: target.to_string_lossy().into_owned(), notebook_change })
 }
 
 /// Move a folder within the caller's notebook/access-folder scope.
@@ -2422,7 +2320,7 @@ pub fn move_folder(
     space_path: String,
     state: State<AppState>,
     app: tauri::AppHandle,
-) -> Result<String, String> {
+) -> Result<super::path_change::PathMutationResult, FileOperationFailure> {
     let source = Path::new(&folder_path);
     let target_directory = Path::new(&target_directory_path);
     let scope = Path::new(&space_path);
@@ -2433,41 +2331,44 @@ pub fn move_folder(
         || is_internal_notebook_path(source, &state)
         || is_internal_notebook_path(target_directory, &state)
     {
-        return Err("FILE_PERMISSION_DENIED".to_string());
+        return Err(FileOperationFailure::code("FILE_PERMISSION_DENIED"));
     }
-    start_security_bookmark_access(&state, source);
-    start_security_bookmark_access(&state, target_directory);
     if !fs::symlink_metadata(source)
         .map_err(file_mutation_error)?
         .is_dir()
     {
-        return Err("SOURCE_NOT_DIRECTORY".to_string());
+        return Err(FileOperationFailure::code("SOURCE_NOT_DIRECTORY"));
     }
     if !fs::symlink_metadata(target_directory)
-        .map_err(file_mutation_error)?
+        .map_err(target_directory_error)?
         .is_dir()
     {
-        return Err("TARGET_NOT_DIRECTORY".to_string());
+        return Err(FileOperationFailure::code("TARGET_NOT_DIRECTORY"));
     }
     if path_is_inside(target_directory, source) {
-        return Err("INVALID_MOVE_TARGET".to_string());
+        return Err(FileOperationFailure::code("INVALID_MOVE_TARGET"));
     }
-    let folder_name = source.file_name().ok_or("INVALID_FILE_PATH")?;
+    let folder_name = source
+        .file_name()
+        .ok_or_else(|| FileOperationFailure::code("INVALID_FILE_PATH"))?;
     let target = target_directory.join(folder_name);
     if !path_is_inside(&target, scope) || is_internal_notebook_path(&target, &state) {
-        return Err("FILE_PERMISSION_DENIED".to_string());
+        return Err(FileOperationFailure::code("FILE_PERMISSION_DENIED"));
     }
     if source == target {
-        return Ok(source.to_string_lossy().into_owned());
+        return Ok(super::path_change::PathMutationResult { path: source.to_string_lossy().into_owned(), notebook_change: None });
     }
     if fs::symlink_metadata(&target).is_ok() {
-        return Err(file_mutation_error(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "target already exists",
-        )));
+        return Err(
+            file_mutation_error(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "target already exists",
+            ))
+            .into(),
+        );
     }
-    rename_path_and_notify(source, &target, state.inner(), &app)?;
-    Ok(target.to_string_lossy().into_owned())
+    let notebook_change = rename_path_and_notify(source, &target, state.inner(), &app)?;
+    Ok(super::path_change::PathMutationResult { path: target.to_string_lossy().into_owned(), notebook_change })
 }
 
 /// Copy a supported external resource into the caller's notebook scope.
@@ -2480,14 +2381,14 @@ pub async fn import_file(
     target_directory_path: String,
     space_path: String,
     state: State<'_, AppState>,
-) -> Result<String, String> {
+) -> Result<String, FileOperationFailure> {
     let source = Path::new(&file_path);
     let target_directory = Path::new(&target_directory_path);
     let scope = Path::new(&space_path);
     if !is_browsable_scope(scope, &state)
         || !can_access_scoped_file(target_directory, Some(&space_path), &state)
     {
-        return Err("FILE_PERMISSION_DENIED".to_string());
+        return Err(FileOperationFailure::code("FILE_PERMISSION_DENIED"));
     }
     // WebView2 can invoke this command just before Tauri's Drop RunEvent has
     // recorded the exact external path in DocumentAccess. Wait briefly for
@@ -2503,35 +2404,41 @@ pub async fn import_file(
             || can_access_scoped_file(source, Some(&space_path), &state);
     }
     if !source_allowed {
-        return Err("FILE_PERMISSION_DENIED".to_string());
+        return Err(FileOperationFailure::code("FILE_PERMISSION_DENIED"));
     }
-    start_security_bookmark_access(&state, source);
-    start_security_bookmark_access(&state, target_directory);
     if !fs::symlink_metadata(source)
         .map_err(file_mutation_error)?
         .is_file()
     {
-        return Err("SOURCE_NOT_REGULAR_FILE".to_string());
+        return Err(FileOperationFailure::code("SOURCE_NOT_REGULAR_FILE"));
+    }
+    if is_cloud_file_not_downloaded(source) {
+        return Err(FileOperationFailure::code("CLOUD_FILE_NOT_DOWNLOADED"));
     }
     if !fs::symlink_metadata(target_directory)
-        .map_err(file_mutation_error)?
+        .map_err(target_directory_error)?
         .is_dir()
     {
-        return Err("TARGET_NOT_DIRECTORY".to_string());
+        return Err(FileOperationFailure::code("TARGET_NOT_DIRECTORY"));
     }
-    let file_name = source.file_name().ok_or("INVALID_FILE_PATH")?;
+    let file_name = source
+        .file_name()
+        .ok_or_else(|| FileOperationFailure::code("INVALID_FILE_PATH"))?;
     let target = target_directory.join(file_name);
     if !can_access_scoped_file(&target, Some(&space_path), &state) {
-        return Err("FILE_PERMISSION_DENIED".to_string());
+        return Err(FileOperationFailure::code("FILE_PERMISSION_DENIED"));
     }
     if source == target {
         return Ok(target.to_string_lossy().into_owned());
     }
     if fs::symlink_metadata(&target).is_ok() {
-        return Err(file_mutation_error(std::io::Error::new(
-            std::io::ErrorKind::AlreadyExists,
-            "target already exists",
-        )));
+        return Err(
+            file_mutation_error(std::io::Error::new(
+                std::io::ErrorKind::AlreadyExists,
+                "target already exists",
+            ))
+            .into(),
+        );
     }
 
     let source = source.to_path_buf();
@@ -2589,7 +2496,7 @@ pub async fn rename_folder(
     name: String,
     space_path: String,
     app: tauri::AppHandle,
-) -> Result<String, String> {
+) -> Result<super::path_change::PathMutationResult, String> {
     crate::commands::document_operations::run(
         "rename_folder",
         operation_id,
@@ -2614,7 +2521,6 @@ pub async fn rename_folder(
             {
                 return Err("FILE_PERMISSION_DENIED".to_string());
             }
-            start_security_bookmark_access(&state, source);
             if !fs::symlink_metadata(source)
                 .map_err(file_mutation_error)?
                 .is_dir()
@@ -2627,7 +2533,10 @@ pub async fn rename_folder(
             };
             if let Some((_notebook_id, result)) = collection_move {
                 let path = Path::new(&result.notebook_path).join(&result.actual_relative_path);
-                return Ok(path.parent().ok_or("INVALID_COLLECTION_PATH")?.to_string_lossy().into_owned());
+                return Ok(super::path_change::PathMutationResult {
+                    path: path.parent().ok_or("INVALID_COLLECTION_PATH")?.to_string_lossy().into_owned(),
+                    notebook_change: super::collection::path_change_for_result(&_notebook_id, &result),
+                });
             }
             if fs::symlink_metadata(&target).is_ok() {
                 return Err(file_mutation_error(std::io::Error::new(
@@ -2635,8 +2544,8 @@ pub async fn rename_folder(
                     "target already exists",
                 )));
             }
-            rename_path_and_notify(source, &target, state.inner(), &app)?;
-            Ok(target.to_string_lossy().into_owned())
+            let notebook_change = rename_path_and_notify(source, &target, state.inner(), &app)?;
+            Ok(super::path_change::PathMutationResult { path: target.to_string_lossy().into_owned(), notebook_change })
         },
     )
     .await
@@ -2661,7 +2570,6 @@ pub fn create_folder(
         );
         return None;
     }
-    start_security_bookmark_access(&state, &target_path);
     let memo_file = read_lock(&state.memo_file, "memo_file");
     let notebook_ids = memo_file.notebook_ids_for_paths(&[&target_path]).ok()?;
     if notebook_ids.is_empty() {
@@ -2715,7 +2623,6 @@ pub fn create_document(
         );
         return Err("FILE_PERMISSION_DENIED".to_string());
     }
-    start_security_bookmark_access(&state, &target_path);
     let memo_file = read_lock(&state.memo_file, "memo_file");
     let notebook_ids = memo_file
         .notebook_ids_for_paths(&[&target_path])
@@ -2804,9 +2711,8 @@ mod tests {
             MemoTreeMetadata {
                 created_ms: Some(42),
                 memo: DocTreeMemoMeta {
-                    id: "memo-1".to_string(),
                     icon: Some("flashlight".to_string()),
-                    colors: vec![MemoColor::Blue],
+                    colors: vec![NoteColor::Blue],
                     favorited: true,
                 },
             },
@@ -2815,9 +2721,8 @@ mod tests {
         let items = read_dir_single_level(directory.path(), Some(&metadata));
         assert_eq!(items[0].memo_created_ms, Some(42));
         let memo = items[0].memo_meta.as_ref().expect("indexed memo metadata");
-        assert_eq!(memo.id, "memo-1");
         assert_eq!(memo.icon.as_deref(), Some("flashlight"));
-        assert_eq!(memo.colors, vec![MemoColor::Blue]);
+        assert_eq!(memo.colors, vec![NoteColor::Blue]);
         assert!(memo.favorited);
     }
 

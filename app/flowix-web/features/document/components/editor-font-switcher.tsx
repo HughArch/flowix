@@ -1,10 +1,6 @@
 'use client';
 
 import { useEffect, useRef, useState } from 'react';
-import { Loader2 } from 'lucide-react';
-import standardIcon from '@/assets/editor-font-icons/standard.svg';
-import serifIcon from '@/assets/editor-font-icons/serif.svg';
-import wenkaiIcon from '@/assets/editor-font-icons/wenkai.svg';
 import {
   beginTypographyFontSelection,
   commitTypographyFontSelection,
@@ -15,19 +11,19 @@ import type { FontDownloadProgress } from '@platform/tauri/client/general';
 import { subscribe } from '@platform/tauri/event-bus';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
+import { TypographyFontSwitcher } from '@shared/ui/typography-font-switcher';
+import {
+  getTypographyFontId,
+  getTypographyFontMode,
+  type TypographyFontMode,
+} from '@/lib/typography-font-mode';
 
-const FONT_CHOICES = [
-  { mode: 'standard', icon: standardIcon },
-  { mode: 'serif', icon: serifIcon },
-  { mode: 'wenkai', icon: wenkaiIcon },
-] as const;
-
-type DocumentEditorFontMode = (typeof FONT_CHOICES)[number]['mode'];
+type DocumentEditorFontMode = TypographyFontMode;
 
 export function useEditorFontSwitch() {
   const { t } = useI18n();
   const fontId = useTypographyFontId();
-  const fontMode: DocumentEditorFontMode = fontId === 'noto-serif-sc' ? 'serif' : fontId === 'lxgw-wenkai' ? 'wenkai' : 'standard';
+  const fontMode = getTypographyFontMode(fontId);
   const [downloadingMode, setDownloadingMode] = useState<'serif' | 'wenkai' | null>(null);
   const [percent, setPercent] = useState<number | null>(null);
   const requestId = useRef(0);
@@ -44,22 +40,24 @@ export function useEditorFontSwitch() {
     downloadingFontId.current = null;
   }, []);
 
-  async function selectFontMode(mode: DocumentEditorFontMode) {
+  async function selectFontMode(mode: DocumentEditorFontMode): Promise<boolean> {
     const request = ++requestId.current;
-    const fontId = mode === 'standard' ? 'inter' : mode === 'serif' ? 'noto-serif-sc' : 'lxgw-wenkai';
+    const fontId = getTypographyFontId(mode);
     downloadingFontId.current = mode === 'standard' ? null : fontId;
     setDownloadingMode(mode === 'standard' ? null : mode);
     setPercent(null);
     try {
       const selectionId = await beginTypographyFontSelection();
-      if (requestId.current !== request) return;
+      if (requestId.current !== request) return false;
       if (mode !== 'standard') await ensureDownloadedFontRegistered(fontId);
-      if (requestId.current !== request) return;
+      if (requestId.current !== request) return false;
       await commitTypographyFontSelection(selectionId, fontId);
+      return true;
     } catch (error) {
-      if (requestId.current !== request) return;
+      if (requestId.current !== request) return false;
       const message = error instanceof Error ? error.message : String(error);
       toast.error(t('preferences.format.fontDownloadFailed', { message }));
+      return false;
     } finally {
       if (requestId.current === request) {
         downloadingFontId.current = null;
@@ -83,41 +81,5 @@ export function EditorFontSwitcher({
   percent: number | null;
   onSelect: (mode: DocumentEditorFontMode) => void;
 }) {
-  const { t } = useI18n();
-  const selectedMode = fontMode;
-
-  return (
-    <div className="mb-1">
-      <div className="flex justify-center gap-0.5" role="group" aria-label={t('document.font.label')}>
-        {FONT_CHOICES.map(({ mode, icon }) => {
-          const active = selectedMode === mode;
-          const isLoading = downloadingMode === mode;
-          return (
-            <button
-              key={mode}
-              type="button"
-              aria-pressed={active}
-              disabled={isLoading}
-              onClick={() => onSelect(mode)}
-              className={`group flex h-[58px] w-[58px] shrink-0 flex-col items-center justify-center gap-1 rounded-lg text-[11px] leading-tight transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] ${active ? 'text-[var(--foreground)]' : 'text-[var(--muted-foreground)]'}`}
-            >
-              {isLoading
-                ? <Loader2 aria-hidden="true" className="h-4 w-4 animate-spin text-[var(--brand)]" />
-                : <img
-                    aria-hidden="true"
-                    src={icon}
-                    alt=""
-                    className="h-6 w-6 shrink-0 dark:invert"
-                  />}
-              <span className="max-w-full truncate tabular-nums">
-                {isLoading
-                  ? percent == null ? '…' : `${percent}%`
-                  : t(mode === 'standard' ? 'document.font.standard' : mode === 'serif' ? 'document.font.serif' : 'document.font.wenkai')}
-              </span>
-            </button>
-          );
-        })}
-      </div>
-    </div>
-  );
+  return <TypographyFontSwitcher fontMode={fontMode} downloadingMode={downloadingMode} percent={percent} onSelect={onSelect} />;
 }

@@ -35,7 +35,7 @@ describe('pending upload transactions', () => {
     it('maps the captured position through edits before upload completion', async () => {
         const view = fixture();
         let complete!: (assets: StoredAsset[]) => void;
-        const upload = runTrackedUpload(view, () => new Promise((resolve) => { complete = resolve; }), 3, undefined, 'memo');
+        const upload = runTrackedUpload(view, () => new Promise((resolve) => { complete = resolve; }), 3);
         view.dispatch(view.state.tr.insertText('xx', 1));
         complete([asset]);
         await upload;
@@ -50,13 +50,13 @@ describe('pending upload transactions', () => {
         const upload = runTrackedUpload(view, (value) => {
             signal = value;
             return new Promise((resolve) => { complete = resolve; });
-        }, 3, undefined, 'memo');
+        }, 3);
         view.dispatch(view.state.tr.delete(2, 5));
         expect(signal.aborted).toBe(true);
         complete([asset]);
         await upload;
         expect(insertUploadContent).not.toHaveBeenCalled();
-        expect(recordAttachmentRecovery).toHaveBeenCalledWith(['/file'], 'memo');
+        expect(recordAttachmentRecovery).toHaveBeenCalledWith(['/file']);
     });
 
     it('aborts work when the editor is destroyed', async () => {

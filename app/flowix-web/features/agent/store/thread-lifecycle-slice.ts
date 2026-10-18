@@ -64,10 +64,10 @@ async function loadThreadList(
 ): Promise<void> {
   const type = getAgentType(typeKey);
   try {
-    const threads = await listHistoryThreads(type.key);
+    const threads = await listHistoryThreads(type.id);
     get().setSessionMeta((meta) => ({
       ...meta,
-      threadLists: { ...meta.threadLists, [type.key]: threads },
+      threadLists: { ...meta.threadLists, [type.id]: threads },
     }));
   } catch (error) {
     logger.error(`Failed to load ${errorLabel} thread list`, { error: String(error) });
@@ -85,25 +85,25 @@ async function loadThread(
     get().activateThread(threadId);
     const meta = get().sessionMeta;
     const threadInfo = await findHistoryThreadInfo(
-      type.key,
+      type.id,
       threadId,
-      meta.threadLists[type.key] ?? [],
+      meta.threadLists[type.id] ?? [],
     );
     get().setSessionMeta((current) => ({
       ...current,
-      activeAgentTypeKey: type.key,
-      activeThreadIds: { ...current.activeThreadIds, [type.key]: threadId },
+      activeAgentTypeKey: type.id,
+      activeThreadIds: { ...current.activeThreadIds, [type.id]: threadId },
       threadTypes: {
         ...current.threadTypes,
-        [threadId]: current.threadTypes[threadId] ?? type.key,
+        [threadId]: current.threadTypes[threadId] ?? type.id,
       },
       currentThreadTitles: {
         ...current.currentThreadTitles,
-        [threadId]: threadInfo?.title ?? defaultThreadTitle(type.key),
+        [threadId]: threadInfo?.title ?? defaultThreadTitle(type.id),
       },
     }));
     get().clearThreadPending(threadId);
-    await get().loadMessages(type.key, threadId);
+    await get().loadMessages(type.id, threadId);
   } catch (error) {
     logger.error(`Failed to load ${type.name} thread`, { error: String(error) });
   }
@@ -116,9 +116,9 @@ async function reloadThreadListForType(
   typeKey: AgentTypeKey,
 ): Promise<void> {
   const store = get();
-  if (typeKey === "deepseek-harness") await store.loadThreadList();
+  if (typeKey === "dsh") await store.loadThreadList();
   else if (typeKey === "codex") await store.loadCodexThreadList();
-  else if (typeKey === "claude") await store.loadClaudeThreadList();
+  else if (typeKey === "claudecode") await store.loadClaudeThreadList();
   else if (typeKey === "hermes") await store.loadHermesThreadList();
   else await store.loadLocalAgentThreadList(typeKey);
 }
@@ -214,9 +214,9 @@ export function createThreadLifecycleSlice(
     // cleanup out of `finally` prevents the work-column conversation from
     // disappearing while archive/delete is still pending or has failed.
     if (action === "archive") {
-      await agentClient.archiveAgentThread(typeKey.key, threadId);
+      await agentClient.archiveAgentThread(typeKey.id, threadId);
     } else {
-      await agentClient.deleteAgentThread(typeKey.key, threadId);
+      await agentClient.deleteAgentThread(typeKey.id, threadId);
     }
 
     // Notify the UI as soon as the provider confirms success. Local instance
@@ -230,7 +230,7 @@ export function createThreadLifecycleSlice(
     closeConversationIfActive(threadId, get);
     // provider 侧列表 (codex thread/list 等) 不再返回该 thread, 刷新让
     // 侧栏与后端状态对齐; 失败不阻塞流程。
-    await reloadThreadListForType(get, typeKey.key).catch(() => undefined);
+    await reloadThreadListForType(get, typeKey.id).catch(() => undefined);
     set((state) => ({ lifecycleVersion: state.lifecycleVersion + 1 }));
     } finally {
       get().setThreadMutationGuard(threadId, false);
@@ -240,29 +240,29 @@ export function createThreadLifecycleSlice(
   return {
     lifecycleVersion: 0,
     loadThreadList: () =>
-      loadThreadList(get, "deepseek-harness", "DeepSeek Harness"),
-    loadThread: (threadId) => loadThread(get, "deepseek-harness", threadId),
+      loadThreadList(get, "dsh", "DeepSeek Harness"),
+    loadThread: (threadId) => loadThread(get, "dsh", threadId),
     loadCodexThreadList: () => loadThreadList(get, "codex", "Codex"),
     loadCodexThread: (threadId) => loadThread(get, "codex", threadId),
-    loadClaudeThreadList: () => loadThreadList(get, "claude", "Claude Code"),
-    loadClaudeThread: (threadId) => loadThread(get, "claude", threadId),
+    loadClaudeThreadList: () => loadThreadList(get, "claudecode", "Claude Code"),
+    loadClaudeThread: (threadId) => loadThread(get, "claudecode", threadId),
     loadHermesThreadList: () => loadThreadList(get, "hermes", "Hermes"),
     loadHermesThread: (threadId) => loadThread(get, "hermes", threadId),
     loadAgentThread: (typeKey, threadId) => loadThread(get, typeKey, threadId),
     loadLocalAgentThreadList: async (typeKey) => {
       const type = getAgentType(typeKey);
-      if (["deepseek-harness", "codex", "claude", "hermes"].includes(type.key)) return;
-      await loadThreadList(get, type.key, type.name);
+      if (["dsh", "codex", "claudecode", "hermes"].includes(type.id)) return;
+      await loadThreadList(get, type.id, type.name);
     },
     loadThreadCache: async (threadId) => {
       try {
-        await get().loadMessages("deepseek-harness", threadId);
+        await get().loadMessages("dsh", threadId);
       } catch (error) {
         logger.error("Failed to load thread cache", { error: String(error) });
       }
     },
     loadMoreHistory: async (typeKey, threadId) => {
-      await get().loadMoreMessages(getAgentType(typeKey).key, threadId);
+      await get().loadMoreMessages(getAgentType(typeKey).id, threadId);
     },
     deleteThread: (threadId, onProviderSuccess) =>
       runThreadLifecycle(threadId, "delete", onProviderSuccess),
@@ -281,12 +281,12 @@ export function createThreadLifecycleSlice(
       const initialProductThreadId = resolveProductThreadId(
         threadId,
         before.externalSessionResolutions,
-        type.key,
+        type.id,
         before.threadTypes,
         (id) => isKnownProductThreadId(id, get()),
       );
       const initialIds = new Set([threadId, initialProductThreadId]);
-      const previousList = before.threadLists[type.key] ?? [];
+      const previousList = before.threadLists[type.id] ?? [];
       const previousThreadTitles = before.currentThreadTitles;
       const applyTitle = (meta: typeof before, productThreadId: string) => {
         const currentThreadTitles = { ...meta.currentThreadTitles };
@@ -295,14 +295,14 @@ export function createThreadLifecycleSlice(
         }
         currentThreadTitles[productThreadId] = nextTitle;
 
-        const threadLists = (meta.threadLists[type.key] ?? []).map((item) =>
+        const threadLists = (meta.threadLists[type.id] ?? []).map((item) =>
           initialIds.has(item.threadId)
             ? { ...item, threadId: productThreadId, title: nextTitle }
             : item,
         );
         const activeThreadIds = { ...meta.activeThreadIds };
-        if (initialIds.has(activeThreadIds[type.key] ?? "")) {
-          activeThreadIds[type.key] = productThreadId;
+        if (initialIds.has(activeThreadIds[type.id] ?? "")) {
+          activeThreadIds[type.id] = productThreadId;
         }
         const externalSessionResolutions =
           productThreadId !== threadId
@@ -313,14 +313,14 @@ export function createThreadLifecycleSlice(
           ...meta,
           threadTypes: {
             ...meta.threadTypes,
-            [threadId]: type.key,
-            [productThreadId]: type.key,
+            [threadId]: type.id,
+            [productThreadId]: type.id,
           },
           activeThreadIds,
           currentThreadTitles,
           threadLists: {
             ...meta.threadLists,
-            [type.key]: threadLists,
+            [type.id]: threadLists,
           },
           externalSessionResolutions,
         };
@@ -332,7 +332,7 @@ export function createThreadLifecycleSlice(
         const persisted = await agentClient.updateThreadTitle(
           threadId,
           nextTitle,
-          type.key,
+          type.id,
         );
         const persistedProductThreadId =
           persisted?.threadId ?? initialProductThreadId;
@@ -344,7 +344,7 @@ export function createThreadLifecycleSlice(
         // The title and conversation instances are already updated
         // optimistically above. Provider history reloads can wake an external
         // runtime and take several seconds, so they must not block saving.
-        void reloadThreadListForType(get, type.key).catch((error) => {
+        void reloadThreadListForType(get, type.id).catch((error) => {
           logger.error("Failed to refresh thread list after rename", { error: String(error) });
         });
       } catch (error) {
@@ -355,7 +355,7 @@ export function createThreadLifecycleSlice(
           },
           threadLists: {
             ...meta.threadLists,
-            [type.key]: previousList,
+            [type.id]: previousList,
           },
         }));
         logger.error("Failed to update thread title", { error: String(error) });

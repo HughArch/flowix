@@ -41,7 +41,7 @@
 
 .flowix-tag-icon {
 	display: inline-block;
-	font-family: 'Flowix Tag Icon', var(--app-font-family, var(--font-sans));
+	font-family: 'Flowix Tag Icon', var(--editor-font-family, var(--font-sans));
 	font-size: 1em;
 	font-style: normal;
 	font-weight: 400;

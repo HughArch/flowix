@@ -69,6 +69,7 @@ interface FormatSectionProps {
  * so the slider doesn't stretch across the full preferences content area.
  */
 function SliderRow({
+  id,
   value,
   min,
   max,
@@ -76,6 +77,7 @@ function SliderRow({
   onChange,
   formatValue,
 }: {
+  id: string;
   value: number;
   min: number;
   max: number;
@@ -89,6 +91,7 @@ function SliderRow({
   return (
     <div className="flex w-64 items-center gap-3">
       <input
+        id={id}
         type="range"
         min={min}
         max={max}
@@ -214,12 +217,13 @@ export function FormatSection({ settings, updateSettings }: FormatSectionProps) 
       <FieldRow
         title={t('preferences.format.font.title')}
         description={t('preferences.format.font.description')}
+        controlId="preferences-format-font"
       >
         <Select
           value={selectValue}
           onValueChange={(value) => { void handleFontChange(value); }}
         >
-          <SelectTrigger className="w-72">
+          <SelectTrigger id="preferences-format-font" className="w-72">
             <span
               className="flex min-w-0 flex-1 items-center gap-2 text-left"
               style={{ fontFamily: settings.fontFamily }}
@@ -230,7 +234,7 @@ export function FormatSection({ settings, updateSettings }: FormatSectionProps) 
                   : fontLabel}
               </span>
               {loadingFontId && (
-                <Loader2 className="h-3.5 w-3.5 shrink-0 animate-spin text-[var(--primary)]" aria-hidden="true" />
+                <Loader2 className="h-3.5 w-3.5 shrink-0 flowix-spin text-[var(--primary)]" aria-hidden="true" />
               )}
             </span>
           </SelectTrigger>
@@ -247,7 +251,7 @@ export function FormatSection({ settings, updateSettings }: FormatSectionProps) 
                           ? `${t('preferences.format.fontStatus.downloading')}${activeProgressLabel}`
                           : t('preferences.format.fontStatus.needsDownload')}
                         {isLoading && (
-                          <Loader2 className="h-3 w-3 animate-spin text-[var(--primary)]" aria-hidden="true" />
+                          <Loader2 className="h-3 w-3 flowix-spin text-[var(--primary)]" aria-hidden="true" />
                         )}
                       </span>
                     )}
@@ -263,8 +267,10 @@ export function FormatSection({ settings, updateSettings }: FormatSectionProps) 
       <FieldRow
         title={t('preferences.format.documentWidth.title')}
         description={t('preferences.format.documentWidth.description')}
+        controlId="preferences-format-document-width"
       >
         <SliderRow
+          id="preferences-format-document-width"
           value={settings.documentWidth}
           min={DOCUMENT_WIDTH_MIN}
           max={DOCUMENT_WIDTH_MAX}
@@ -282,8 +288,10 @@ export function FormatSection({ settings, updateSettings }: FormatSectionProps) 
       <FieldRow
         title={t('preferences.format.fontSize.title')}
         description={t('preferences.format.fontSize.description')}
+        controlId="preferences-format-font-size"
       >
         <SliderRow
+          id="preferences-format-font-size"
           value={settings.fontSize}
           min={FONT_SIZE_MIN}
           max={FONT_SIZE_MAX}
@@ -297,8 +305,10 @@ export function FormatSection({ settings, updateSettings }: FormatSectionProps) 
       <FieldRow
         title={t('preferences.format.lineHeight.title')}
         description={t('preferences.format.lineHeight.description')}
+        controlId="preferences-format-line-height"
       >
         <SliderRow
+          id="preferences-format-line-height"
           value={settings.lineHeight}
           min={LINE_HEIGHT_MIN}
           max={LINE_HEIGHT_MAX}

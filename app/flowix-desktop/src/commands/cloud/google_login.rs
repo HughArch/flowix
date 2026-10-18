@@ -15,11 +15,19 @@ pub(crate) enum GoogleCallback {
 
 impl PendingGoogleLogin {
     pub(super) fn new(state: String, code_verifier: String, generation: u64) -> Self {
-        Self { state, code_verifier, generation, created_at: Instant::now(), callback_received: false }
+        Self {
+            state,
+            code_verifier,
+            generation,
+            created_at: Instant::now(),
+            callback_received: false,
+        }
     }
 
     fn claim_once(&mut self, state: &str) -> Result<bool, &'static str> {
-        if self.state != state { return Ok(false); }
+        if self.state != state {
+            return Ok(false);
+        }
         // Browser fallback links and OS delivery can repeat the same callback.
         // Exchange its one-time code at most once, including while in flight.
         if self.callback_received {
@@ -33,16 +41,22 @@ impl PendingGoogleLogin {
     }
 
     pub(super) fn claim(&mut self, state: &str) -> Result<Option<(String, u64)>, &'static str> {
-        if !self.claim_once(state)? { return Ok(None); }
-        Ok(Some((std::mem::take(&mut self.code_verifier), self.generation)))
+        if !self.claim_once(state)? {
+            return Ok(None);
+        }
+        Ok(Some((
+            std::mem::take(&mut self.code_verifier),
+            self.generation,
+        )))
     }
 
     pub(super) fn claim_failure(&mut self, state: &str) -> Result<bool, &'static str> {
         let claimed = self.claim_once(state)?;
-        if claimed { self.code_verifier.clear(); }
+        if claimed {
+            self.code_verifier.clear();
+        }
         Ok(claimed)
     }
-
 }
 
 #[cfg(test)]
@@ -68,7 +82,10 @@ mod tests {
     fn expired_attempt_cannot_be_exchanged() {
         let mut attempt = PendingGoogleLogin::new("state".into(), "verifier".into(), 7);
         attempt.created_at -= Duration::from_secs(301);
-        assert_eq!(attempt.claim("state"), Err("Google sign-in expired; please try again"));
+        assert_eq!(
+            attempt.claim("state"),
+            Err("Google sign-in expired; please try again")
+        );
         assert!(!attempt.callback_received);
     }
 
@@ -85,7 +102,10 @@ mod tests {
     fn expired_failure_callback_is_reported_only_for_the_matching_attempt() {
         let mut attempt = PendingGoogleLogin::new("state".into(), "verifier".into(), 7);
         attempt.created_at -= Duration::from_secs(301);
-        assert_eq!(attempt.claim_failure("state"), Err("Google sign-in expired; please try again"));
+        assert_eq!(
+            attempt.claim_failure("state"),
+            Err("Google sign-in expired; please try again")
+        );
         assert!(!attempt.callback_received);
     }
 }

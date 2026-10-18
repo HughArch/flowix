@@ -1,8 +1,7 @@
 //! Memo and document IPC commands.
 //!
-//! Note file CRUD addresses Markdown by notebook-relative path. Internal IDs
-//! remain temporarily in compatibility projections, version history, and cloud
-//! association while their callers migrate independently.
+//! Note file CRUD and identity use notebook-relative paths. The `memo` module
+//! name is retained for the existing IPC command namespace and UI terminology.
 //!
 //! File layout (split from the original 1414-line `commands/memo.rs` because
 //! the file carried five distinct sub-domains):

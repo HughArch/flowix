@@ -9,9 +9,7 @@ export type { AgentTypeKey };
 //   - icon-claude-code.svg    Claude Code 品牌图标
 import iconCodex from '@/assets/codex.svg';
 import iconClaudeCode from '@/assets/icon-claude-code.svg';
-import iconGeminiCli from '@/assets/icon-gemini-cli.svg';
 import iconHermesAgent from '@/assets/icon-hermes-agent.svg';
-import iconOpenClaw from '@/assets/icon-openclaw.svg';
 import iconOpenCode from '@/assets/icon-opencode.svg';
 import iconDeepSeek from '@/assets/icon-deepseek.svg';
 import iconPi from '@/assets/icon-pi.svg';
@@ -21,12 +19,28 @@ import iconPi from '@/assets/icon-pi.svg';
 // DSH-backed cards implicitly; persisted/card-level choices still win.
 export const DEFAULT_AGENT_TYPE_KEY: AgentTypeKey = 'codex';
 
+/** One-time storage/API boundary normalization for IDs written by older builds. */
+export function normalizeAgentId(value: string | null | undefined): AgentTypeKey | null {
+  switch (value) {
+    case 'claude': return 'claudecode';
+    case 'deepseek-harness':
+    case 'deepseek_harness': return 'dsh';
+    case 'codex':
+    case 'claudecode':
+    case 'hermes':
+    case 'opencode':
+    case 'pi':
+    case 'dsh': return value;
+    default: return null;
+  }
+}
+
 /**
  * Agent icons that are rendered with the current theme color instead of
  * preserving their original brand colors.
  */
 export const THEME_ADAPTIVE_AGENT_ICON_KEYS = new Set<AgentTypeKey>([
-  'deepseek-harness',
+  'dsh',
   'opencode',
   'hermes',
 ]);
@@ -42,27 +56,11 @@ export function isThemeAdaptiveAgentIcon(typeKey: AgentTypeKey): boolean {
  * preference order.
  */
 export const LOCAL_AGENT_DISPLAY_PRIORITY = [
-  'deepseek-harness',
+  'dsh',
   'codex',
-  'claude',
+  'claudecode',
   'opencode',
 ] as const satisfies readonly AgentTypeKey[];
-
-/**
- * Product entry points that must remain discoverable even before their local
- * runtime has been installed. Other agents only appear in the new-conversation
- * menu after runtime detection confirms that they are installed.
- */
-export const ALWAYS_VISIBLE_NEW_CONVERSATION_AGENT_KEYS = new Set<AgentTypeKey>([
-  'deepseek-harness',
-  'codex',
-  'claude',
-  'pi',
-]);
-
-export function isAlwaysVisibleNewConversationAgent(typeKey: AgentTypeKey): boolean {
-  return ALWAYS_VISIBLE_NEW_CONVERSATION_AGENT_KEYS.has(typeKey);
-}
 
 export function pickFirstAvailableAgent(
   statusByType: Partial<Record<AgentTypeKey, { available: boolean }>>,
@@ -86,31 +84,18 @@ const STREAMING_EXTERNAL_CLI_CAPABILITIES: AgentRuntimeCapabilities = {
   externalSessionBacked: true,
 };
 
-const SIMPLE_CLI_CAPABILITIES: AgentRuntimeCapabilities = {
-  supportsTextStreaming: false,
-  supportsToolEvents: false,
-  externalSessionBacked: false,
-};
-
 export const AGENT_TYPES: AgentType[] = [
   {
-    key: 'pi',
+    id: 'pi',
+    runtimeKind: 'builtin',
     icon: iconPi,
     name: 'Pi',
     desc: 'Use Pi coding agent',
     capabilities: STREAMING_EXTERNAL_CLI_CAPABILITIES,
   },
   {
-    key: 'deepseek-harness',
-    icon: iconDeepSeek,
-    name: 'DeepSeek Harness',
-    desc: 'Use the bundled DeepSeek Harness',
-    nameKey: 'agent.types.deepseekHarness.name',
-    descKey: 'agent.types.deepseekHarness.desc',
-    capabilities: { ...STREAMING_EXTERNAL_CLI_CAPABILITIES, supportsThreadArchive: true },
-  },
-  {
-    key: 'codex',
+    id: 'codex',
+    runtimeKind: 'external-cli',
     icon: iconCodex,
     name: 'Codex',
     desc: 'Use Codex coding agent',
@@ -119,7 +104,8 @@ export const AGENT_TYPES: AgentType[] = [
     capabilities: { ...EXTERNAL_CLI_CAPABILITIES, supportsThreadArchive: true },
   },
   {
-    key: 'claude',
+    id: 'claudecode',
+    runtimeKind: 'external-cli',
     icon: iconClaudeCode,
     name: 'Claude Code',
     desc: 'Use Claude Code agent',
@@ -128,7 +114,8 @@ export const AGENT_TYPES: AgentType[] = [
     capabilities: STREAMING_EXTERNAL_CLI_CAPABILITIES,
   },
   {
-    key: 'opencode',
+    id: 'opencode',
+    runtimeKind: 'external-cli',
     icon: iconOpenCode,
     name: 'OpenCode',
     desc: 'Use OpenCode through Agent Client Protocol',
@@ -137,7 +124,8 @@ export const AGENT_TYPES: AgentType[] = [
     capabilities: { ...STREAMING_EXTERNAL_CLI_CAPABILITIES, supportsThreadArchive: true },
   },
   {
-    key: 'hermes',
+    id: 'hermes',
+    runtimeKind: 'external-cli',
     icon: iconHermesAgent,
     name: 'Hermes',
     desc: 'Use Hermes',
@@ -146,37 +134,28 @@ export const AGENT_TYPES: AgentType[] = [
     capabilities: { ...EXTERNAL_CLI_CAPABILITIES, supportsThreadArchive: true },
   },
   {
-    key: 'gemini',
-    icon: iconGeminiCli,
-    name: 'Gemini CLI',
-    desc: 'Use Gemini CLI agent',
-    nameKey: 'agent.types.gemini.name',
-    descKey: 'agent.types.gemini.desc',
-    releaseStatus: 'coming-soon',
-    capabilities: SIMPLE_CLI_CAPABILITIES,
-  },
-  {
-    key: 'openclaw',
-    icon: iconOpenClaw,
-    name: 'OpenClaw',
-    desc: 'Use OpenClaw agent',
-    nameKey: 'agent.types.openclaw.name',
-    descKey: 'agent.types.openclaw.desc',
-    releaseStatus: 'coming-soon',
-    capabilities: SIMPLE_CLI_CAPABILITIES,
+    id: 'dsh',
+    runtimeKind: 'builtin',
+    icon: iconDeepSeek,
+    name: 'DeepSeek Harness',
+    desc: 'Use the bundled DeepSeek Harness',
+    nameKey: 'agent.types.deepseekHarness.name',
+    descKey: 'agent.types.deepseekHarness.desc',
+    capabilities: { ...STREAMING_EXTERNAL_CLI_CAPABILITIES, supportsThreadArchive: true },
   },
 ];
 
 export function getAgentType(typeKey: string | null | undefined): AgentType {
+  const id = normalizeAgentId(typeKey);
   return (
-    AGENT_TYPES.find((t) => t.key === typeKey) ??
-    AGENT_TYPES.find((t) => t.key === DEFAULT_AGENT_TYPE_KEY) ??
+    AGENT_TYPES.find((t) => t.id === id) ??
+    AGENT_TYPES.find((t) => t.id === DEFAULT_AGENT_TYPE_KEY) ??
     AGENT_TYPES[0]
   );
 }
 
 export function normalizeAgentTypeKey(typeKey: string | null | undefined): AgentTypeKey {
-  return getAgentType(typeKey).key;
+  return normalizeAgentId(typeKey) ?? DEFAULT_AGENT_TYPE_KEY;
 }
 
 export function supportsTextStreaming(typeKey: string | null | undefined): boolean {

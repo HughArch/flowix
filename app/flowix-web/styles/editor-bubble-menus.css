@@ -413,13 +413,6 @@
   height: 16px;
   flex: 0 0 auto;
   color: var(--primary);
-  animation: mention-note-header-spinner 1s linear infinite;
-}
-
-@keyframes mention-note-header-spinner {
-  to {
-    transform: rotate(360deg);
-  }
 }
 
 .mention-note-items-frame {
@@ -511,6 +504,10 @@
   color: var(--foreground);
   font-size: 0.875rem;
   font-weight: 500;
+}
+
+.mention-note-dropdown:not(.tag-mention-dropdown) .mention-note-title {
+  font-weight: 400;
 }
 
 /* Middle-column navigation submenus (tags / filter / sort / view) use the

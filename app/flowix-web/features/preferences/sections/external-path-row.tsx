@@ -126,7 +126,7 @@ export function ExternalPathRow({
             onClick={() => void switchPath()}
           >
             {switching ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 flowix-spin" />
             ) : (
               t('preferences.agents.external.select')
             )}
@@ -138,7 +138,7 @@ export function ExternalPathRow({
             onClick={() => void check()}
           >
             {detecting ? (
-              <Loader2 className="h-3.5 w-3.5 animate-spin" />
+              <Loader2 className="h-3.5 w-3.5 flowix-spin" />
             ) : (
               t('preferences.agents.external.check')
             )}

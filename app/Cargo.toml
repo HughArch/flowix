@@ -11,7 +11,7 @@ members = [
 
 # 锁定共用依赖到同一版本 ── 避免 backend / cli 走不一致版本。
 [workspace.package]
-version = "1.5.6"
+version = "1.5.8"
 edition = "2021"
 
 # 锁定共用依赖到同一版本 ── 避免 backend / cli 走不一致版本。
@@ -25,7 +25,6 @@ serde_yaml = "0.9"
 toml = "0.8"
 tauri-plugin-process = "2"
 tauri-plugin-updater = "2"
-tauri-plugin-opener = "2"
 chrono = { version = "0.4", features = ["serde"] }
 dirs = "5.0"
 walkdir = "2.4"

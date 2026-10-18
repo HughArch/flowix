@@ -1,9 +1,9 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from 'react';
+import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from 'react';
 import { flushSync } from 'react-dom';
-import { Check, ChevronDown, ChevronRight, Code2, FileText, FilePlus2, Folder, Globe, MessageCirclePlus, X } from 'lucide-react';
-import { NotebookTreeFileIcon } from '@features/memo/public/shell-api';
+import { Check, ChevronDown, ChevronRight, Code2, FilePlus2, Globe, MessageCirclePlus, X } from 'lucide-react';
+import { ContentIcon, classifyFileContent } from '@features/content/public/content-api';
 import {
-  canMoveBrowserColumnTargetToWorkColumn,
+  canOpenBrowserColumnTargetInWorkColumn,
   type BrowserColumnTab,
 } from '@features/workspace/public/browser-column-api';
 import {
@@ -11,12 +11,16 @@ import {
   useDocumentEditorMode,
   useFullscreenAgentThreadCardInfo,
 } from '@features/document/public/shell-api';
-import { AgentIcon, isAgentRuntimeInstalledState, normalizeAgentRuntimeStatus, useBrowserColumnAgentHeaderModel } from '@features/agent/public/shell-api';
+import {
+  AgentIcon,
+  requestNewConversationAgentSelection,
+  useBrowserColumnAgentHeaderModel,
+} from '@features/agent/public/shell-api';
+import { useNewConversationAgentSelection } from '@features/agent/hooks/use-new-conversation-agent-selection';
 import type { BrowserColumnSurfaceChrome } from '@features/surface/public/shell-api';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
-import { DEFAULT_AGENT_TYPE_KEY } from '@/lib/agent-types';
 import { WORK_COLUMN_TITLEBAR_GRADIENT } from './work-column-titlebar-shell';
 import {
   ContextMenu,
@@ -34,7 +38,6 @@ import {
 } from '@shared/ui/dropdown-menu';
 import { documentIdentityFromFile } from '@features/document/public/shell-api';
 import { requireFileDisplayIdentity } from '@/lib/file-display-registry';
-import { AGENT_TYPES, isAgentTypeSelectable, isAlwaysVisibleNewConversationAgent } from '@/lib/agent-types';
 import type { AgentTypeKey } from '@/types/agent';
 
 function isWindowsPlatform(): boolean {
@@ -42,29 +45,53 @@ function isWindowsPlatform(): boolean {
     && (/Windows/i.test(navigator.userAgent) || /Win/i.test(navigator.platform));
 }
 
-function tabIcon(tab: BrowserColumnTab, agentTypeKey = DEFAULT_AGENT_TYPE_KEY) {
-  if (tab.icon?.startsWith('http://') || tab.icon?.startsWith('https://')) {
-    return (
+const MAX_INLINE_TAB_ICON_LENGTH = 64 * 1024;
+
+function tabIconImageSource(icon: string | null): string | null {
+  if (!icon) return null;
+  if (/^https?:\/\//i.test(icon)) return icon;
+  if (icon.length <= MAX_INLINE_TAB_ICON_LENGTH
+    && /^data:image\/(?:svg\+xml|png|jpe?g|gif|webp|avif)(?:;[^,]*)?,/i.test(icon)) return icon;
+  return null;
+}
+
+function tabIcon(tab: BrowserColumnTab, agentTypeKey?: AgentTypeKey) {
+  if (tab.target.kind === 'agent_conversation') {
+    return agentTypeKey ? <AgentIcon typeKey={agentTypeKey} alt="" className="h-3.5 w-3.5" /> : null;
+  }
+  if (tab.target.kind === 'web') {
+    const imageSource = tabIconImageSource(tab.icon);
+    return imageSource ? (
       <span className="relative flex h-4 w-4 items-center justify-center">
         <Globe className="h-3.5 w-3.5" />
         <img
-          src={tab.icon}
+          src={imageSource}
           alt=""
           className="absolute h-3.5 w-3.5 rounded-sm"
           onError={(event) => { event.currentTarget.style.display = 'none'; }}
         />
       </span>
-    );
+    ) : <Globe className="h-3.5 w-3.5" />;
   }
-  if (tab.icon) return <span className="text-sm leading-none">{tab.icon}</span>;
-  if (tab.target.kind === 'file-browser' && !tab.target.activeFilePath) return <Folder className="h-3.5 w-3.5" />;
-  if (tab.target.kind === 'agent_conversation') {
-    return <AgentIcon typeKey={agentTypeKey} alt="" className="h-3.5 w-3.5" />;
+  if (tab.target.kind === 'media') {
+    return <ContentIcon content={{ kind: 'file', path: tab.target.filePath }} className="h-3.5 w-3.5 opacity-100" />;
   }
-  if (tab.target.kind === 'web') return <Globe className="h-3.5 w-3.5" />;
-  if (tab.target.kind === 'file-browser' && tab.target.activeFilePath?.toLowerCase().endsWith('.md'))
-    return <NotebookTreeFileIcon className="h-4 w-4" />;
-  return <FileText className="h-3.5 w-3.5" />;
+  if (tab.target.kind === 'folder-collection') {
+    return <ContentIcon content={{ kind: 'folder' }} className="h-3.5 w-3.5 opacity-100" />;
+  }
+  if (tab.target.kind === 'file-browser') {
+    if (tab.target.collectionType === 'table') {
+      return <ContentIcon content={{ kind: 'multidimensional-table' }} className="h-3.5 w-3.5 opacity-100" />;
+    }
+    if (tab.target.collectionType === 'media_library') {
+      return <ContentIcon content={{ kind: 'media-library' }} className="h-3.5 w-3.5 opacity-100" />;
+    }
+    const path = tab.target.activeFilePath;
+    if (!path) return <ContentIcon content={{ kind: 'folder' }} className="h-3.5 w-3.5 opacity-100" />;
+    if (classifyFileContent(path) === 'note') return <ContentIcon content={{ kind: 'note' }} className="h-3.5 w-3.5 opacity-100" />;
+    return <ContentIcon content={{ kind: 'file', path }} className="h-3.5 w-3.5 opacity-100" />;
+  }
+  return <ContentIcon content={{ kind: 'web' }} className="h-3.5 w-3.5 opacity-100" />;
 }
 
 function MemoEditorModeContextMenuItem({
@@ -140,20 +167,8 @@ export function BrowserColumnHeader({
 }: BrowserColumnHeaderProps) {
   const { t } = useI18n();
   const [agentTypeMenuAnchor, setAgentTypeMenuAnchor] = useState<{ left: number; top: number } | null>(null);
-  const {
-    statusByType: agentRuntimeStatusByType,
-    isChecking: agentRuntimeIsChecking,
-    conversationInstances,
-    refreshIfStale: refreshAgentRuntimeIfStale,
-  } = useBrowserColumnAgentHeaderModel();
-  const newConversationAgentTypes = useMemo(() => AGENT_TYPES.filter((type) => {
-    if (!isAgentTypeSelectable(type.key)) return false;
-    if (isAlwaysVisibleNewConversationAgent(type.key)) return true;
-    return isAgentRuntimeInstalledState(normalizeAgentRuntimeStatus(
-      agentRuntimeStatusByType[type.key],
-      agentRuntimeIsChecking,
-    ));
-  }), [agentRuntimeIsChecking, agentRuntimeStatusByType]);
+  const { conversationInstances } = useBrowserColumnAgentHeaderModel();
+  const newConversationSelection = useNewConversationAgentSelection();
   const tabButtons = useRef(new Map<string, HTMLButtonElement>());
   const selectionRequest = useRef(0);
   const activeTabIdRef = useRef(activeTabId);
@@ -206,8 +221,8 @@ export function BrowserColumnHeader({
     return title || tab.title;
   };
   const tabAgentTypeKey = (tab: BrowserColumnTab) => tab.target.kind === 'agent_conversation'
-    ? conversationInstances[tab.target.instanceId]?.agentType ?? DEFAULT_AGENT_TYPE_KEY
-    : DEFAULT_AGENT_TYPE_KEY;
+    ? conversationInstances[tab.target.instanceId]?.agentType
+    : undefined;
 
   useEffect(() => {
     if (displayedActiveTabId) {
@@ -215,14 +230,23 @@ export function BrowserColumnHeader({
     }
   }, [displayedActiveTabId]);
 
-  useEffect(() => {
-    if (agentTypeMenuAnchor) void refreshAgentRuntimeIfStale();
-  }, [agentTypeMenuAnchor, refreshAgentRuntimeIfStale]);
-
   const openAgentTypeMenu = (event: MouseEvent<HTMLButtonElement>) => {
+    const selection = requestNewConversationAgentSelection();
+    if (selection.kind === 'create') {
+      setAgentTypeMenuAnchor(null);
+      onCreateAgentConversation(selection.agentType);
+      return;
+    }
+    if (selection.kind === 'none') return;
     const rect = event.currentTarget.getBoundingClientRect();
     setAgentTypeMenuAnchor({ left: rect.right + 2, top: rect.top });
   };
+
+  useEffect(() => {
+    if (agentTypeMenuAnchor && newConversationSelection.kind !== 'choose') {
+      setAgentTypeMenuAnchor(null);
+    }
+  }, [agentTypeMenuAnchor, newConversationSelection]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let nextIndex = index;
@@ -273,9 +297,7 @@ export function BrowserColumnHeader({
       >
         {tabs.map((tab, index) => {
           const selected = tab.id === displayedActiveTabId;
-          const moveUnavailableReason = tab.target.kind === 'web'
-            ? t('tabWindow.context.moveWebUnavailable')
-            : tab.target.kind === 'file-browser' && !tab.target.activeFilePath
+          const workOpenUnavailableReason = tab.target.kind === 'file-browser' && !tab.target.activeFilePath
               ? t('tabWindow.context.moveFolderUnavailable')
               : null;
           // 仅激活 tab 会挂载内容，全屏卡片必然在其中 ── 全屏期间激活
@@ -351,14 +373,14 @@ export function BrowserColumnHeader({
                       alt=""
                       className="h-3.5 w-3.5 shrink-0"
                     />
-                    <span className="min-w-0 truncate">{tabFullscreen.title}</span>
+                    <span className="ml-0.5 min-w-0 truncate">{tabFullscreen.title}</span>
                   </span>
                 ) : (
                   <span className="flex min-w-0 items-center">
                     <span aria-hidden="true" className="flex h-4 w-4 shrink-0 items-center justify-center">
                       {tabIcon(tab, tabAgentTypeKey(tab))}
                     </span>
-                    <span className="min-w-0 truncate">{tabLabel(tab)}</span>
+                    <span className="ml-0.5 min-w-0 truncate">{tabLabel(tab)}</span>
                   </span>
                 )}
               </button>
@@ -419,16 +441,16 @@ export function BrowserColumnHeader({
                   className={POPUP_SEPARATOR_CLASS}
                 />
                 <ContextMenuItem
-                  aria-describedby={moveUnavailableReason ? `move-unavailable-${tab.id}` : undefined}
-                  disabled={!canMoveBrowserColumnTargetToWorkColumn(tab.target)}
+                  aria-describedby={workOpenUnavailableReason ? `move-unavailable-${tab.id}` : undefined}
+                  disabled={!canOpenBrowserColumnTargetInWorkColumn(tab.target)}
                   onClick={() => onOpenTabInWorkColumn(tab.id)}
                   className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
                 >
                   <span className="leading-5">{t('tabWindow.context.openInWorkColumn')}</span>
                 </ContextMenuItem>
-                {moveUnavailableReason && (
+                {workOpenUnavailableReason && (
                   <p id={`move-unavailable-${tab.id}`} className="px-2 py-1 text-xs leading-5 text-[var(--muted-foreground)]">
-                    {moveUnavailableReason}
+                    {workOpenUnavailableReason}
                   </p>
                 )}
               </ContextMenuContent>
@@ -445,7 +467,7 @@ export function BrowserColumnHeader({
           </ContextMenuTrigger>
           <ContextMenuContent className="w-[180px] space-y-0.5 rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
             <ContextMenuItem
-              disabled={!canCreate}
+              disabled={!canCreate || newConversationSelection.kind === 'none'}
               onClick={onCreateNote}
               className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
             >
@@ -486,32 +508,21 @@ export function BrowserColumnHeader({
           <DropdownMenuLabel className="flex items-center gap-1.5 px-[0.375rem] pb-[0.35rem] pt-[0.35rem] text-xs font-normal leading-[1.2] text-[var(--muted-foreground)]">
             {t('tabWindow.context.newConversation')}
           </DropdownMenuLabel>
-          {newConversationAgentTypes.map((type) => {
-            const status = normalizeAgentRuntimeStatus(
-              agentRuntimeStatusByType[type.key],
-              agentRuntimeIsChecking,
-            );
-            const showNotInstalled = isAlwaysVisibleNewConversationAgent(type.key)
-              && status.state === 'not-installed';
+          {newConversationSelection.options.map((type) => {
             const name = type.nameKey
               ? t(type.nameKey as Parameters<typeof t>[0])
               : type.name;
             return (
               <DropdownMenuItem
-                key={type.key}
+                key={type.id}
                 onClick={() => {
                   setAgentTypeMenuAnchor(null);
-                  onCreateAgentConversation(type.key);
+                  onCreateAgentConversation(type.id);
                 }}
                 className="agent-conversation-new-agent-item group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
               >
-                <AgentIcon typeKey={type.key} alt="" className="h-4 w-4 shrink-0 object-contain" />
+                <AgentIcon typeKey={type.id} alt="" className="h-4 w-4 shrink-0 object-contain" />
                 <span className="min-w-0 flex-1 truncate">{name}</span>
-                {showNotInstalled && (
-                  <span className="shrink-0 text-xs text-[var(--muted-foreground)] group-hover:text-[var(--primary-foreground)]">
-                    {t('agent.status.notInstalled')}
-                  </span>
-                )}
               </DropdownMenuItem>
             );
           })}

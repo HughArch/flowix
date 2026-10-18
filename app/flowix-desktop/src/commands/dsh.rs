@@ -1,7 +1,8 @@
-//! DSH Runtime installation and Flowix plugin integration commands.
+//! DSH discovery and Flowix plugin integration commands.
 
 use crate::app::state::AppState;
 use crate::events as dispatcher;
+use std::path::PathBuf;
 use tauri::State;
 
 pub const DSH_RUNTIME_STATUS_CHANGED_EVENT: &str = "dsh-runtime-status-changed";
@@ -11,125 +12,75 @@ fn emit_runtime_status(app: &tauri::AppHandle, status: &crate::dsh::DshStatus) {
 }
 
 #[tauri::command]
-pub fn dsh_status() -> crate::dsh::DshStatus {
+pub fn dsh_status(state: State<'_, AppState>) -> crate::dsh::DshStatus {
+    let selected = state.user_config.get_preference().dsh_cli_path.map(PathBuf::from);
+    crate::dsh::set_user_selected_cli(selected);
     crate::dsh::status()
 }
 
 #[tauri::command]
-pub async fn dsh_check_update() -> Result<crate::dsh::DshUpdateCheck, String> {
-    tauri::async_runtime::spawn_blocking(crate::dsh::check_for_update)
-        .await
-        .map_err(|error| format!("DSH update check task failed: {error}"))?
+pub async fn dsh_select_cli_path(app: tauri::AppHandle) -> Option<String> {
+    use std::sync::mpsc;
+    use tauri_plugin_dialog::DialogExt;
+
+    let (tx, rx) = mpsc::channel();
+    let handle = app.clone();
+    tokio::task::spawn_blocking(move || {
+        let result = handle
+            .dialog()
+            .file()
+            .set_title("Select DSH executable")
+            .blocking_pick_file()
+            .map(|path| path.to_string());
+        let _ = tx.send(result);
+    });
+    rx.recv().ok().flatten()
 }
 
 #[tauri::command]
-pub async fn dsh_archive_size() -> Option<u64> {
-    tauri::async_runtime::spawn_blocking(crate::dsh::latest_archive_size)
-        .await
-        .ok()
-        .flatten()
-}
-
-#[tauri::command]
-pub fn dsh_download_status() -> Option<crate::dsh::DshDownloadProgress> {
-    crate::dsh::download_progress()
-}
-
-#[tauri::command]
-pub async fn dsh_install_runtime(
+pub fn dsh_set_cli_path(
+    path: String,
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<crate::dsh::DshStatus, String> {
-    ensure_runtime_replaceable(&state).await?;
-    let manager = state.deepseek_harness.clone();
-    let install_app = app.clone();
-    let status = tauri::async_runtime::spawn_blocking(move || {
-        crate::dsh::install_runtime_with_progress_before_publish(Some(install_app), move || {
-            tauri::async_runtime::block_on(manager.invalidate_hosts())
-                .map_err(|error| format!("stop DeepSeek Harness before install: {error}"))
-        })
-    })
-    .await
-    .map_err(|error| format!("DSH installer task failed: {error}"))??;
-    emit_runtime_status(&app, &status);
-    Ok(status)
-}
-
-#[tauri::command]
-pub async fn dsh_update(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-) -> Result<crate::dsh::DshStatus, String> {
-    ensure_runtime_replaceable(&state).await?;
-    let manager = state.deepseek_harness.clone();
-    let update_app = app.clone();
-    let status = tauri::async_runtime::spawn_blocking(move || {
-        crate::dsh::install_runtime_with_progress_before_publish(Some(update_app), move || {
-            tauri::async_runtime::block_on(manager.invalidate_hosts())
-                .map_err(|error| format!("stop DeepSeek Harness before update: {error}"))
-        })
-    })
-    .await
-    .map_err(|error| format!("DSH updater task failed: {error}"))??;
-    emit_runtime_status(&app, &status);
-    Ok(status)
-}
-
-/// Start or resume the managed runtime installation/update through one
-/// command shared by the main window and Preferences.
-#[tauri::command]
-pub async fn dsh_ensure_runtime(
-    state: State<'_, AppState>,
-    app: tauri::AppHandle,
-) -> Result<crate::dsh::DshStatus, String> {
-    ensure_runtime_replaceable(&state).await?;
-    let manager = state.deepseek_harness.clone();
-    let ensure_app = app.clone();
-    let status = tauri::async_runtime::spawn_blocking(move || {
-        crate::dsh::install_runtime_with_progress_before_publish(Some(ensure_app), move || {
-            tauri::async_runtime::block_on(manager.invalidate_hosts())
-                .map_err(|error| format!("stop DeepSeek Harness before install/update: {error}"))
-        })
-    })
-    .await
-    .map_err(|error| format!("DSH ensure task failed: {error}"))??;
-    emit_runtime_status(&app, &status);
-    Ok(status)
-}
-
-async fn ensure_runtime_replaceable(state: &State<'_, AppState>) -> Result<(), String> {
-    if crate::dsh::status().installed {
-        state
-            .deepseek_harness
-            .ensure_hosts_replaceable()
-            .await
-            .map_err(|error| format!("prepare DeepSeek Harness install/update: {error}"))?;
+    let path = PathBuf::from(path);
+    if !crate::dsh::is_valid_cli_path(&path) {
+        return Err("所选路径不是可执行的 DSH CLI".to_string());
     }
-    Ok(())
+    state
+        .user_config
+        .patch_preference(serde_json::json!({"dshCliPath": path.to_string_lossy()}))
+        .map_err(|error| error.to_string())?;
+    crate::dsh::set_user_selected_cli(Some(path));
+    let status = crate::dsh::status();
+    emit_runtime_status(&app, &status);
+    Ok(status)
 }
 
+/// Install the Flowix App Server profile after the user requests it from
+/// Preferences. Runtime discovery at startup is read-only and never installs.
 #[tauri::command]
-pub fn dsh_cancel_update() -> bool {
-    crate::dsh::cancel_update();
-    true
-}
-
-/// Shut down every running dsh-host, then remove the managed runtime tree.
-/// User state under `~/.dsh` (settings, sessions) is preserved; reinstalling
-/// from the Runtime tab restores a clean runtime.
-#[tauri::command]
-pub async fn dsh_uninstall(
+pub async fn dsh_install_appserver_profile(
     state: State<'_, AppState>,
     app: tauri::AppHandle,
 ) -> Result<crate::dsh::DshStatus, String> {
     state
         .deepseek_harness
-        .prepare_uninstall()
+        .ensure_hosts_replaceable()
         .await
-        .map_err(|error| format!("stop DeepSeek Harness before uninstall: {error}"))?;
-    let status = tauri::async_runtime::spawn_blocking(crate::dsh::uninstall_runtime)
-        .await
-        .map_err(|error| format!("DSH uninstall task failed: {error}"))??;
+        .map_err(|error| format!("stop DSH before installing App Server: {error}"))?;
+    state.deepseek_harness.invalidate_hosts().await?;
+    let install_app = app.clone();
+    tauri::async_runtime::spawn_blocking(move || {
+        crate::dsh::install_appserver_profile(&install_app)
+    })
+    .await
+    .map_err(|error| format!("DSH App Server installer task failed: {error}"))??;
+    if let Err(error) = state.deepseek_harness.dsh_model_configs().await {
+        let _ = state.deepseek_harness.invalidate_hosts().await;
+        return Err(format!("DSH App Server 安装后连接检查失败：{error}"));
+    }
+    let status = crate::dsh::status();
     emit_runtime_status(&app, &status);
     Ok(status)
 }

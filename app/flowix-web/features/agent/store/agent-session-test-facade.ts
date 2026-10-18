@@ -1,3 +1,4 @@
+import { useAgentDataStore } from "./agent-data-store";
 /**
  * Test-only legacy-shape facade over the canonical AgentSessionStore.
  *
@@ -132,6 +133,16 @@ function applyLegacyChatPatch(
     patch.agentPermissionMode !== undefined ||
     patch.agentCodexModel !== undefined ||
     patch.agentCodexReasoningEffort !== undefined;
+  if (hasSettings) {
+    const preferences = useAgentDataStore.getState();
+    preferences.setUserPreference("codex", {
+      ...(patch.agentPermissionMode !== undefined ? { permission: patch.agentPermissionMode } : {}),
+      ...(patch.agentCodexModel !== undefined ? { model: { id: patch.agentCodexModel } } : {}),
+    });
+    if (patch.agentCodexReasoningEffort !== undefined) {
+      preferences.rememberModelReasoning("codex", useAgentDataStore.getState().agents.codex.user.model, patch.agentCodexReasoningEffort);
+    }
+  }
   if (hasMeta || hasSettings) {
     useAgentSessionStore.getState().setSessionMeta((meta) => ({
       ...meta,

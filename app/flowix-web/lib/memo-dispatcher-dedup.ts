@@ -1,5 +1,5 @@
 /**
- * `memoDispatcher` dedup middleware — 同 id 短窗口内合并, last-write-wins。
+ * `memoDispatcher` dedup middleware — 同笔记路径短窗口内合并, last-write-wins。
  *
  * 背景:
  * - 后端 fs_watcher 在 FSEvents 双触发 / 编辑器 debounce save 期间
@@ -12,8 +12,7 @@
  *   N 次 IPC + N 次 `applyLoadedContent`。
  *
  * 设计:
- * - 按 `getKey(event)` 拿到同一 memo 的 key (MemoEvent 统一走 `id` 或
- *   新建 memo 的 `memo.id`)。
+ * - 按 `getKey(event)` 拿到同一笔记的 key (`notebookId + relativePath`)。
  * - 同 key 在 `delay` 窗口内有新事件 → 清掉旧 timer, 用新事件覆盖
  *   pending, 重启 timer。
  * - timer 到期 → 把最后一次事件 `next()` 给下游, 清掉 pending entry。
@@ -39,25 +38,24 @@ import type { DispatcherMiddleware } from '@/lib/event-dispatcher';
 import type { MemoEvent, MemoDerivedRefresh } from '@/types/memo';
 
 /**
- * 取 MemoEvent 的 dedup key。 三种 kind 都能拿到 memo id:
- * - created → e.memo.id
- * - updated → e.id
- * - deleted → e.id
+ * 取 MemoEvent 的 dedup key。三种 kind 都按笔记相对路径定位:
+ * - created → e.memo.relativePath
+ * - updated → e.memo.relativePath
+ * - deleted → e.relativePath
  * - tags_renamed → 返回 `undefined` (立即派发, 不 dedup) ── 它不是
- *   单条 memo 事件, 没有 memo id 维度; 短时间内多次 rename 也应该
+ *   单条笔记事件, 没有笔记路径维度; 短时间内多次 rename 也应该
  *   各自生效, 不能合并。
  *
  * 返回 `undefined` 表示此事件不参与 dedup (立即 next)。
  */
 function memoEventKey(event: MemoEvent): string | undefined {
-  // Path-keyed dedup: (notebookId, relativePath) is the identity that
-  // survives the legacy memo id decommission.
+  // Path-keyed dedup: (notebookId, relativePath) identifies a note.
   if (event.kind === 'created')
-    return JSON.stringify([event.notebookId, event.memo.relativePath ?? event.memo.filename]);
+    return JSON.stringify([event.notebookId, event.memo.relativePath]);
   if (event.kind === 'updated')
-    return JSON.stringify([event.notebookId, event.memo.relativePath ?? event.path]);
+    return JSON.stringify([event.notebookId, event.memo.relativePath]);
   if (event.kind === 'deleted') return JSON.stringify([event.notebookId, event.relativePath]);
-  // tags_renamed 没有 memo id 维度, 返回 undefined 让 caller 走 "立即 next" 分支
+  // tags_renamed 没有单笔记路径维度，立即派发。
   return undefined;
 }
 
@@ -75,7 +73,7 @@ export interface CreateMemoDedupMiddlewareOptions {
   onDiscardedDerivedChange?: (event: MemoDerivedRefresh) => void;
   /** 合并窗口, 默认 50ms。 */
   delay?: number;
-  /** 自定义 key 提取, 默认按 MemoEvent 的 memo id。 */
+  /** 自定义 key 提取, 默认按笔记路径。 */
   getKey?: (event: MemoEvent) => string | undefined;
 }
 

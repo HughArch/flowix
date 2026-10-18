@@ -10,7 +10,7 @@
 //   3. the approval decline loop — declining resolves to rejected and the
 //      command does not run
 //
-// The key is read at runtime from ~/.flowix/default.db and written only into
+// The key is read at runtime from ~/.flowix/db/default.db and written only into
 // the throwaway DSH home (mode 0600); it is never printed.
 import { prepareRuntimeTest, JsonlClient, check } from './runtime/host.mjs'
 

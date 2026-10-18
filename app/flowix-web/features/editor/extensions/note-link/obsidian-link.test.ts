@@ -20,11 +20,11 @@ describe('Obsidian note links', () => {
       type: 'noteReference',
       attrs: {
         notebookId: 'work', relativePath: 'Projects/Plan.md', notebookName: 'Work',
-        title: 'Plan', memoId: null, originalPath: null, linkStyle: 'flowix',
+        title: 'Plan', originalPath: null, linkStyle: 'flowix',
         linkTarget: null, heading: null, stale: false,
       },
     });
-    expect(editor.view.dom.querySelector('.editor-note-reference__card')?.getAttribute('data-stale')).toBe('false');
+    expect(editor.view.dom.querySelector('.note-reference__card')?.getAttribute('data-stale')).toBe('false');
     editor.destroy();
   });
   it('round trips a child note by notebook and relative path without a memo ID', () => {
@@ -35,7 +35,7 @@ describe('Obsidian note links', () => {
       contentType: 'markdown',
     });
     const node = editor.state.doc.firstChild?.firstChild;
-    expect(node?.attrs).toMatchObject({ notebookName: 'Work', relativePath: 'Projects/Plan.md', memoId: null });
+    expect(node?.attrs).toMatchObject({ notebookName: 'Work', relativePath: 'Projects/Plan.md' });
     expect(editor.getMarkdown()).toContain(link);
     editor.destroy();
   });
@@ -45,7 +45,7 @@ describe('Obsidian note links', () => {
       content: '[Custom label](flowix://open?b=Work&f=Projects%2FPlan.md)',
       contentType: 'markdown',
     });
-    expect(editor.view.dom.querySelector('.editor-note-reference__title')?.textContent).toBe('Plan');
+    expect(editor.view.dom.querySelector('.note-reference__title')?.textContent).toBe('Plan');
     expect(editor.getMarkdown()).toContain('[Plan](flowix://open?b=Work&f=Projects%2FPlan.md)');
     editor.destroy();
   });
@@ -69,7 +69,6 @@ describe('Obsidian note links', () => {
     const node = editor.state.doc.firstChild?.firstChild;
     expect(node?.type.name).toBe('noteReference');
     expect(node?.attrs.linkTarget).toBe(link);
-    expect(node?.attrs.memoId).toBeNull();
     editor.destroy();
   });
   it('normalizes an existing book/file link when saved', () => {
@@ -81,7 +80,7 @@ describe('Obsidian note links', () => {
     expect(editor.getMarkdown()).toContain('[Plan](flowix://open?b=MyVault&f=Projects%2FPlan.md)');
     editor.destroy();
   });
-  it('marks legacy memo ID links as stale and preserves them for repair', () => {
+  it('does not parse legacy memo ID links as note references', () => {
     const link = 'flowix://memo/abc12345';
     const editor = new Editor({
       extensions: [StarterKit, Markdown, NoteReference, MarkdownLink],
@@ -89,8 +88,7 @@ describe('Obsidian note links', () => {
       contentType: 'markdown',
     });
     const node = editor.state.doc.firstChild?.firstChild;
-    expect(node?.attrs).toMatchObject({ memoId: null, stale: true, linkTarget: link });
-    expect(editor.getMarkdown()).toContain(link);
+    expect(node?.type.name).not.toBe('noteReference');
     editor.destroy();
   });
   it('keeps ordinary relative Markdown links lightweight', () => {

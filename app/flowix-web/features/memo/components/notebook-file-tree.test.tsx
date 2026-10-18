@@ -4,6 +4,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
 import { files, notes, type DocTreeItem } from '@platform/tauri/client';
 import { toast } from '@/lib/toast';
+import { noteRepository } from '@features/memo/services/note-repository';
 import { EXTERNAL_FILE_DROP_EVENT } from '@features/document/components/use-external-file-drop';
 import type { FolderTreeController } from './use-folder-tree';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
@@ -14,12 +15,14 @@ import {
 } from './notebook-file-tree';
 
 const repositoryTreeTestState = vi.hoisted(() => ({ loadComplete: false }));
+const translationTestState = vi.hoisted(() => ({ t: (key: string) => key }));
 
 vi.mock('@/lib/i18n', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/lib/i18n')>(),
-  useI18n: () => ({ t: (key: string) => key }),
+  useI18n: () => ({ t: translationTestState.t }),
 }));
-vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn() } }));
+vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
+vi.mock('@features/memo/services/note-link-rewriter', () => ({ updateNoteLinksAfterMove: vi.fn() }));
 vi.mock('@shared/ui/overlay-scrollbar', () => ({
   OverlayScrollbar: ({
     children,
@@ -46,7 +49,7 @@ vi.mock('@shared/ui/context-menu', () => ({
   ContextMenu: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ContextMenuTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
   ContextMenuContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  ContextMenuItem: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+  ContextMenuItem: ({ children, onClick }: { children: React.ReactNode; onClick?: React.MouseEventHandler<HTMLDivElement> }) => <div onClick={onClick}>{children}</div>,
   ContextMenuSubmenu: ({ label, children }: { label: string; children: React.ReactNode }) => <div>{label}{children}</div>,
   ContextMenuSeparator: () => <hr />,
   useContextMenuContext: () => ({ openAt: vi.fn() }),
@@ -245,6 +248,78 @@ describe('NotebookFileTree pointer dragging', () => {
     return new MouseEvent('click', { bubbles: true, button: 0, ...modifiers });
   }
 
+  it('keeps the expanded folder visible while Enter saves its new name', async () => {
+    const { root, tree } = await mount(successfulMove);
+    const folder = tree.rootChildren[0];
+    const renameFolder = vi.fn<(path: string, name: string, scope: string) => Promise<string>>();
+    const base = { ...tree, renameFolder, loadingDirectories: new Set<string>(), directoryErrors: new Set<string>() };
+    const render = (current: FolderTreeController) => root.render(
+      <NotebookFileTree notebookPath="/notes" notebookName="Notes" tree={current}
+        onNoteSelect={vi.fn()} onCreateNote={vi.fn()} onMoveNote={successfulMove} />,
+    );
+    let finishRename!: (path: string) => void;
+    renameFolder.mockImplementationOnce(() => new Promise((resolve) => { finishRename = resolve; }));
+    try {
+      await act(async () => render(base));
+      const child = item(`${folder.fullPath}/child.md`, 'document');
+      const expanded = {
+        ...base,
+        expanded: new Set([folder.fullPath]),
+        nodes: new Map([[folder.fullPath, { ...folder, children: [child] }]]),
+      };
+      await act(async () => render(expanded));
+      const rename = Array.from(host.querySelectorAll('div')).find((element) => element.textContent === 'memo.fileTree.rename');
+      expect(rename).toBeDefined();
+      await act(async () => rename!.dispatchEvent(clickEvent()));
+      const input = host.querySelector<HTMLInputElement>('input');
+      expect(input).not.toBeNull();
+      await act(async () => {
+        Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')!.set!.call(input, 'renamed');
+        input!.dispatchEvent(new Event('input', { bubbles: true }));
+      });
+      await act(async () => input!.dispatchEvent(new KeyboardEvent('keydown', { bubbles: true, key: 'Enter' })));
+      expect(renameFolder).toHaveBeenCalledWith(folder.fullPath, 'renamed', '/notes');
+      expect(host.querySelector('[data-notebook-tree-path="/notes/projects/child.md"]')).not.toBeNull();
+      expect(host.querySelector('[aria-label="memo.fileTree.loading"]')).not.toBeNull();
+      await act(async () => finishRename('/notes/renamed'));
+      expect(base.toggle).not.toHaveBeenCalled();
+      expect(expanded.expanded.has(folder.fullPath)).toBe(true);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
+  it('opens a pinned note using its complete nested notebook path', async () => {
+    const { root, tree } = await mount(successfulMove);
+    const onNoteSelect = vi.fn();
+    vi.mocked(noteRepository.listByPath).mockResolvedValueOnce({
+      notes: [{
+        relativePath: 'projects/nested/note.md', title: 'note', preview: '', thumbnail: null,
+        tags: [], todos: [], agents: [], createdAt: 1, updatedAt: 1,
+        favorited: true, icon: null, colors: [], properties: {},
+      }],
+      nextCursor: null, hasMore: false,
+    });
+    try {
+      await act(async () => root.render(
+        <NotebookFileTree notebookId="notebook-1" notebookPath="/notes" notebookName="Notes" tree={tree}
+          onNoteSelect={onNoteSelect} onCreateNote={vi.fn()} onMoveNote={successfulMove} />,
+      ));
+      const row = host.querySelector<HTMLElement>('[data-notebook-tree-path="/notes/projects/nested/note.md"]');
+      expect(row).not.toBeNull();
+      await act(async () => row!.dispatchEvent(clickEvent()));
+      expect(onNoteSelect.mock.calls[0]?.[0]).toBe('/notes/projects/nested/note.md');
+      await act(async () => root.render(
+        <NotebookFileTree notebookId="notebook-1" notebookPath="/notes" notebookName="Notes" tree={tree}
+          activeFilePath="/notes/projects/nested/note.md"
+          onNoteSelect={onNoteSelect} onCreateNote={vi.fn()} onMoveNote={successfulMove} />,
+      ));
+      expect(tree.expandTo).not.toHaveBeenCalled();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('selects a folder on single click and toggles it on double click', async () => {
     const onFolderSelect = vi.fn();
     const { root, tree } = await mount(successfulMove, undefined, onFolderSelect);
@@ -269,16 +344,18 @@ describe('NotebookFileTree pointer dragging', () => {
     await act(async () => root.unmount());
   });
 
-  it('highlights the folder owning the active collection with the file selection background', async () => {
+  it.each(['collection', 'table', 'media-library'] as const)('highlights the folder owning an active %s including damaged file surfaces', async (kind) => {
     const previousNavigation = useWorkColumnStore.getState().navigation;
     const { root } = await mount(successfulMove);
     try {
       await act(async () => useWorkColumnStore.setState({ navigation: {
         ...previousNavigation,
-        target: {
+        target: kind === 'collection' ? {
           kind: 'collection', displayId: 'collection:projects', notebookId: 'notes',
           collectionId: 'projects', viewId: null, collectionType: 'table',
           filePath: '/notes/projects/.index.yaml', notebookPath: '/notes', name: 'Projects',
+        } : {
+          kind, filePath: '/notes/projects/.index.yaml', notebookPath: '/notes', notebookId: 'notes', unavailableReason: '集合文件格式无效',
         },
       } }));
       const folderRow = host.querySelector<HTMLElement>('[data-notebook-tree-kind="folder"]')!;
@@ -413,7 +490,6 @@ describe('NotebookFileTree pointer dragging', () => {
     const note = {
       ...item('/notes/a.md', 'document'),
       memoMeta: {
-        id: 'memo-1',
         icon: 'flashlight',
         colors: ['blue'],
         favorited: false,
@@ -434,7 +510,6 @@ describe('NotebookFileTree pointer dragging', () => {
     const note = {
       ...item('/notes/a.md', 'document'),
       memoMeta: {
-        id: 'memo-1',
         icon: null,
         colors: [],
         favorited: false,

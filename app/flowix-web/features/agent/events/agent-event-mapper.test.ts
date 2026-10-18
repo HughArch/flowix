@@ -20,7 +20,7 @@ describe("agent event mapper", () => {
         id: "user-1",
         text: "question",
         timestamp: 456,
-        agent_type: "claude",
+        agent_type: "claudecode",
         run_id: "run-1",
       },
       state(),
@@ -29,9 +29,9 @@ describe("agent event mapper", () => {
 
     expect(event).toMatchObject({
       kind: "user_message",
-      id: "msg:claude:run-1:user:user-1",
+      id: "msg:claudecode:run-1:user:user-1",
       text: "question",
-      messageId: "msg:claude:run-1:user:user-1",
+      messageId: "msg:claudecode:run-1:user:user-1",
       sourceTimestamp: 456,
       sourceSequence: 0,
     });
@@ -46,7 +46,7 @@ describe("agent event mapper", () => {
         text: "目标执行中：在吗（第 1/256 轮）",
         timestamp: 456,
         message_type: "goal-round",
-        agent_type: "deepseek-harness",
+        agent_type: "dsh",
         run_id: "run-1",
       },
       state(),
@@ -66,7 +66,7 @@ describe("agent event mapper", () => {
         kind: "text",
         thread_id: "flowix-thread",
         text: "hello",
-        agent_type: "deepseek-harness",
+        agent_type: "dsh",
         run_id: "run-1",
       },
       state(),
@@ -150,7 +150,7 @@ describe("agent event mapper", () => {
         kind: "error",
         thread_id: "claude-thread",
         run_id: "run-1",
-        agent_type: "claude",
+        agent_type: "claudecode",
         message: "Claude Code CLI exited with status exit status: 1",
         error_details: {
           category: "rate_limited",
@@ -166,7 +166,7 @@ describe("agent event mapper", () => {
 
     expect(event).toMatchObject({
       kind: "error",
-      messageId: "msg:claude:run-1:error:error",
+      messageId: "msg:claudecode:run-1:error:error",
       message: "Claude Code CLI exited with status exit status: 1",
       errorDetails: {
         category: "rate_limited",
@@ -226,7 +226,7 @@ describe("agent event mapper", () => {
         kind: "reasoning",
         thread_id: "thread-1",
         text: "thinking",
-        agent_type: "deepseek-harness",
+        agent_type: "dsh",
       },
       state(),
       () => 123,
@@ -238,7 +238,7 @@ describe("agent event mapper", () => {
       {
         kind: "usage",
         thread_id: "thread-1",
-        agent_type: "deepseek-harness",
+        agent_type: "dsh",
         usage: { input_tokens: 10, output_tokens: 4 },
       },
       state(),
@@ -253,7 +253,7 @@ describe("agent event mapper", () => {
         kind: "reasoning",
         thread_id: "claude-thread",
         text: "first",
-        agent_type: "claude",
+        agent_type: "claudecode",
         run_id: "run-1",
         message_id: "reasoning-provider-message-1-block-0",
       },
@@ -264,7 +264,7 @@ describe("agent event mapper", () => {
         kind: "reasoning",
         thread_id: "claude-thread",
         text: "second",
-        agent_type: "claude",
+        agent_type: "claudecode",
         run_id: "run-1",
         message_id: "reasoning-provider-message-2-block-0",
       },
@@ -272,7 +272,7 @@ describe("agent event mapper", () => {
     );
 
     expect(first.messageId).toBe(
-      "msg:claude:run-1:reasoning:reasoning-run-1",
+      "msg:claudecode:run-1:reasoning:reasoning-run-1",
     );
     expect(second.messageId).toBe(first.messageId);
   });
@@ -283,7 +283,7 @@ describe("agent event mapper", () => {
         kind: "text",
         thread_id: "claude-thread",
         text: "fragment",
-        agent_type: "claude",
+        agent_type: "claudecode",
         run_id: "run-1",
         message_id:
           "assistant-d9193ae4-86b5-47a6-9e85-1bb4ef0acc1c-block-1",
@@ -295,7 +295,7 @@ describe("agent event mapper", () => {
 
     expect(event).toMatchObject({
       kind: "text_delta",
-      agentType: "claude",
+      agentType: "claudecode",
       text: "fragment",
     });
     expect(event.messageId).toBeUndefined();
@@ -307,7 +307,7 @@ describe("agent event mapper", () => {
         kind: "text",
         thread_id: "claude-thread",
         text: "fragment",
-        agent_type: "claude",
+        agent_type: "claudecode",
         run_id: "run-1",
         message_id: "assistant-06bbbb1512785f3d1da3e1f495c31702-block-1",
         message_phase: "updated",
@@ -317,7 +317,7 @@ describe("agent event mapper", () => {
     );
 
     expect(event.messageId).toBe(
-      "msg:claude:run-1:assistant:assistant-06bbbb1512785f3d1da3e1f495c31702-block-1",
+      "msg:claudecode:run-1:assistant:assistant-06bbbb1512785f3d1da3e1f495c31702-block-1",
     );
   });
 
@@ -354,7 +354,7 @@ describe("agent event mapper", () => {
         args: "",
         status: "pending",
         timestamp: 456,
-        agent_type: "deepseek-harness",
+        agent_type: "dsh",
         run_id: "dsh-command-run-1",
       },
       state(),

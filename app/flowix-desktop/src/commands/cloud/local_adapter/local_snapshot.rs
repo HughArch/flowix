@@ -102,7 +102,9 @@ pub(crate) fn v2_account_snapshot(
     } else {
         Some(state.cloud_sync.v2_dirty_note_ids().map_err(sync_error)?)
     };
-    let memo_file = read_lock(&state.memo_file, "memo_file");
+    // A complete sync snapshot may scan files. It must not hold the global
+    // facade lock needed by foreground notebook switching.
+    let memo_file = flowix_core::memo_file::MemoFile::new(state.user_config.config_dir().clone());
     let configs = memo_file.read_notebook_configs().map_err(sync_error)?;
     let mut notebooks = Vec::new();
     let mut notes = Vec::new();
@@ -118,22 +120,33 @@ pub(crate) fn v2_account_snapshot(
         if full_scan {
             memo_file.reconcile_notebook_with_disk_bidirectional(&config.id)?;
         }
-        for memo in memo_file.read_all_memos_for_notebook_id(Some(&config.id)) {
-            let cloud_id = flowix_sync::v2_path_note_id(&config.id, &memo.relative_path);
+        let indexed_notes = match memo_file.read_note_entries(&config.id) {
+            Ok(notes) => notes,
+            Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                memo_file
+                    .reconcile_note_index_blocking(&config.id)
+                    .map_err(|error| error.to_string())?;
+                memo_file
+                    .read_note_entries(&config.id)
+                    .map_err(|error| error.to_string())?
+            }
+            Err(error) => return Err(error.to_string()),
+        };
+        for note in indexed_notes {
+            let cloud_id = flowix_sync::v2_path_note_id(&config.id, &note.relative_path);
             if dirty_note_ids
                 .as_ref()
                 .is_some_and(|ids| !ids.contains(&cloud_id))
             {
                 continue;
             }
-            let path = notebook_path_from_relative(Path::new(&config.path), &memo.relative_path)
-                .unwrap_or_else(|_| PathBuf::from(&config.path).join(&memo.filename));
+            let path = notebook_path_from_relative(Path::new(&config.path), &note.relative_path)?;
             let content = std::fs::read(&path)
                 .map_err(|error| format!("READ_NOTE_FAILED {}: {error}", path.display()))?;
             notes.push(V2LocalNote {
                 id: cloud_id,
                 notebook_id: config.id.clone(),
-                filename: memo.relative_path,
+                filename: note.relative_path,
                 content,
                 attachments: Vec::new(),
             });

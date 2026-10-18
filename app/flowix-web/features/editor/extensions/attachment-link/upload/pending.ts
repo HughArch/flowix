@@ -49,7 +49,6 @@ export async function runTrackedUpload(
     load: (signal: AbortSignal) => Promise<StoredAsset[]>,
     position?: number,
     range?: { from: number; to: number },
-    ownerPath?: string,
 ): Promise<void> {
     if (view.isDestroyed || !view.editable || !fileUploadPluginKey.getState(view.state)) return;
     const requestedPosition = position ?? range?.from ?? view.state.selection.from;
@@ -75,7 +74,7 @@ export async function runTrackedUpload(
     } finally {
         const newlyCreatedAssets = assets.filter((asset) => asset.created !== false);
         if (!inserted && newlyCreatedAssets.length) {
-            recordAttachmentRecovery(newlyCreatedAssets.flatMap((asset) => asset.storageKey ? [asset.storageKey] : []), ownerPath);
+            recordAttachmentRecovery(newlyCreatedAssets.flatMap((asset) => asset.storageKey ? [asset.storageKey] : []));
             reportUninsertedAttachments();
         }
         if (!view.isDestroyed) view.dispatch(view.state.tr.setMeta(fileUploadPluginKey, { remove: id }).setMeta('addToHistory', false));

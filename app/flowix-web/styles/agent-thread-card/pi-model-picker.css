@@ -1,0 +1,125 @@
+.agent-thread-card__codex-settings-popover--pi-model-picker {
+  display: flex;
+  width: min(258px, calc(100vw - 16px));
+  max-height: min(360px, calc(100vh - 16px));
+  flex-direction: column;
+  overflow: hidden;
+  padding: 4px;
+}
+
+.pi-model-picker {
+  display: flex;
+  min-height: 0;
+  flex: 1 1 auto;
+  flex-direction: column;
+}
+
+.pi-model-picker__tabs {
+  display: flex;
+  flex: 0 0 auto;
+  gap: 0;
+  padding: 4px 4px 0;
+}
+
+.pi-model-picker__tab {
+  min-width: 0;
+  flex: 0 0 auto;
+  padding: 6px 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 13px;
+  line-height: 1.25;
+  cursor: pointer;
+  transition: color 120ms ease;
+}
+
+.pi-model-picker__tab:hover,
+.pi-model-picker__tab:focus-visible {
+  color: var(--foreground);
+  outline: none;
+}
+
+.pi-model-picker__tab--active {
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.pi-model-picker__panel,
+.pi-model-picker__models {
+  min-height: 0;
+  flex: 1 1 auto;
+  overflow-y: auto;
+}
+
+.pi-model-picker__panel {
+  padding: 2px 0 0;
+}
+
+.pi-model-picker__models {
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+
+.pi-model-picker__provider {
+  min-width: 0;
+}
+
+.pi-model-picker__item {
+  min-height: 32px;
+  padding-inline: 10px;
+}
+
+.pi-model-picker__checkmark-placeholder {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  visibility: hidden;
+}
+
+.pi-model-picker__provider-icon {
+  width: 16px;
+  height: 16px;
+  flex: 0 0 auto;
+  border-radius: 4px;
+  object-fit: contain;
+}
+
+.pi-model-picker__multiplier,
+.pi-model-picker__provider-name {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  font-size: 12px;
+  line-height: 1.2;
+}
+
+.pi-model-picker__provider-name {
+  max-width: 96px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.pi-model-picker__provider-label {
+  padding: 7px 8px 4px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.pi-model-picker__empty {
+  padding: 18px 12px;
+  color: var(--muted-foreground);
+  font-size: 13px;
+  line-height: 1.45;
+  text-align: center;
+}
+
+.pi-model-picker__reasoning {
+  flex: 0 0 auto;
+  padding: 0 4px 4px;
+}

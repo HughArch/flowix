@@ -22,15 +22,17 @@ export function ListSurfaceViewport({
 /** Initial-load state shared by notes, trees, and conversation lists. */
 export function ListSurfaceLoadingState({
   label,
+  ariaLabel,
   className,
 }: {
-  label: string;
+  label?: string;
+  ariaLabel?: string;
   className?: string;
 }) {
   return (
     <CenteredLoadingSpinner
       className={cn('h-full w-full', className)}
-      ariaLabel={label}
+      ariaLabel={ariaLabel ?? label}
       label={label}
     />
   );
@@ -47,7 +49,7 @@ export function ListSurfaceSpinner({
   return (
     <span
       className={cn(
-        'shrink-0 animate-spin rounded-full border-2 border-[color-mix(in_oklch,var(--muted-foreground)_26%,transparent)] border-t-[var(--brand)]',
+        'shrink-0 flowix-spin rounded-full border-2 border-[color-mix(in_oklch,var(--muted-foreground)_26%,transparent)] border-t-[var(--brand)]',
         className,
       )}
       role={ariaLabel ? 'status' : undefined}

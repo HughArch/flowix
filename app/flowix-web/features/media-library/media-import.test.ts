@@ -109,7 +109,7 @@ describe('media import persistence and rollback', () => {
     const input = options();
     input.persist.mockResolvedValue(false);
     input.readLatest.mockResolvedValue({ ...input.document, dataset: { ...input.document.dataset,
-      records: { include: [createMediaLibraryRecord('attachments/photo.jpg')], exclude: [] },
+      records: { include: [createMediaLibraryRecord('notebook-1', 'attachments/photo.jpg')], exclude: [] },
     } });
     expect((await importMediaLibraryFiles(input)).completed).toEqual(['/notes/attachments/photo.jpg']);
     expect(mediaResources.delete).not.toHaveBeenCalled();

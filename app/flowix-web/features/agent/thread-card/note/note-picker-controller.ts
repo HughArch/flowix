@@ -140,11 +140,11 @@ export class NotePickerController {
 
   private render(): void {
     const list = document.createElement('div');
-    list.className = 'agent-thread-card__composer-note-search-list';
+    list.className = 'agent-composer__note-search-list';
     list.dataset.noteResults = '';
     const search = document.createElement('input');
     search.type = 'text';
-    search.className = 'agent-thread-card__composer-note-search';
+    search.className = 'agent-composer__note-search';
     search.placeholder = this.options.t('editor.threadCard.noteSearch.searchPlaceholder');
     search.setAttribute('aria-label', this.options.t('editor.threadCard.noteSearch.sectionTitle'));
     search.value = this.query;
@@ -186,9 +186,9 @@ export class NotePickerController {
     if (!list) return;
     list.replaceChildren();
     const header = document.createElement('div');
-    header.className = 'agent-thread-card__composer-note-popover-header';
+    header.className = 'agent-composer__note-popover-header';
     const title = document.createElement('div');
-    title.className = 'agent-thread-card__composer-note-popover-title';
+    title.className = 'agent-composer__note-popover-title';
     title.textContent = this.options.t('editor.threadCard.noteSearch.sectionTitle');
     header.append(title);
     list.append(header);
@@ -197,7 +197,7 @@ export class NotePickerController {
     for (const note of hits) {
       const item = document.createElement('button');
       item.type = 'button';
-      item.className = 'agent-thread-card__composer-note-result agent-thread-card__composer-note-item';
+      item.className = 'agent-composer__note-result agent-composer__note-item';
       item.title = `${note.title} · ${note.notebookName}`;
       item.textContent = note.title || note.filename;
       item.addEventListener('click', (event) => {
@@ -210,7 +210,7 @@ export class NotePickerController {
     }
     if (!hits.length) {
       const empty = document.createElement('div');
-      empty.className = 'agent-thread-card__composer-note-empty';
+      empty.className = 'agent-composer__note-empty';
       empty.textContent = this.loading
         ? this.options.t('editor.threadCard.noteSearch.searching')
         : this.options.t(filter ? 'editor.threadCard.noteSearch.emptyNoMatch' : 'editor.threadCard.noteSearch.emptyHint');

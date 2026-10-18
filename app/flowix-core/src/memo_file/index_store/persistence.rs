@@ -29,9 +29,9 @@ impl MemoFile {
         tx.execute(
             r#"
             INSERT INTO memos
-                (id, notebook_id, filename, relative_path, preview, thumbnail, thumbnail_checked, agents_checked, created_at, updated_at, favorited, icon, properties)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6, 1, 1, ?7, ?8, ?9, ?10, ?11)
-            ON CONFLICT(id) DO UPDATE SET
+                (notebook_id, filename, relative_path, preview, thumbnail, thumbnail_checked, agents_checked, created_at, updated_at, favorited, icon, properties)
+            VALUES (?1, ?2, ?3, ?4, ?5, 1, 1, ?6, ?7, ?8, ?9, ?10)
+            ON CONFLICT(relative_path) DO UPDATE SET
                 notebook_id = excluded.notebook_id,
                 filename = excluded.filename,
                 relative_path = excluded.relative_path,
@@ -46,7 +46,6 @@ impl MemoFile {
                 properties = excluded.properties
             "#,
             params![
-                entry.id,
                 notebook_id,
                 entry.filename,
                 entry.relative_path,
@@ -65,93 +64,24 @@ impl MemoFile {
 
     fn replace_entry_children_in_tx(
         tx: &rusqlite::Transaction<'_>,
-        notebook_id: &str,
+        _notebook_id: &str,
         entry: &MemoIndexEntry,
     ) -> std::io::Result<()> {
-        // Todo metadata is user-visible state kept in the local index. Read it
-        // before deleting the derived rows so a content refresh can preserve
-        // priority/owner/assignee and timestamps.
-        let existing_todos = Self::read_existing_todo_metadata_in_tx(tx, &entry.id)?;
-
         tx.execute(
-            "DELETE FROM memo_tags WHERE memo_id = ?1",
-            params![entry.id],
+            "DELETE FROM memo_colors WHERE relative_path = ?1",
+            params![entry.relative_path],
         )
         .map_err(sqlite_to_io)?;
         tx.execute(
-            "DELETE FROM memo_colors WHERE memo_id = ?1",
-            params![entry.id],
-        )
-        .map_err(sqlite_to_io)?;
-        tx.execute(
-            "DELETE FROM memo_todos WHERE memo_id = ?1",
-            params![entry.id],
-        )
-        .map_err(sqlite_to_io)?;
-        tx.execute(
-            "DELETE FROM memo_agents WHERE memo_id = ?1",
-            params![entry.id],
+            "DELETE FROM memo_agents WHERE relative_path = ?1",
+            params![entry.relative_path],
         )
         .map_err(sqlite_to_io)?;
 
-        for tag in &entry.tags {
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_tags (memo_id, tag) VALUES (?1, ?2)",
-                params![entry.id, tag],
-            )
-            .map_err(sqlite_to_io)?;
-            let now = chrono::Utc::now().timestamp_millis();
-            for prefix in tag_path_prefixes(tag) {
-                tx.execute(
-                    "INSERT OR IGNORE INTO notebook_tags
-                        (notebook_id, path, created_at, updated_at)
-                     VALUES (?1, ?2, ?3, ?3)",
-                    params![notebook_id, prefix, now],
-                )
-                .map_err(sqlite_to_io)?;
-            }
-        }
         for (position, color) in entry.colors.iter().enumerate() {
             tx.execute(
-                "INSERT OR REPLACE INTO memo_colors (memo_id, color, position) VALUES (?1, ?2, ?3)",
-                params![entry.id, color_to_str(*color), position as i64],
-            )
-            .map_err(sqlite_to_io)?;
-        }
-        let now = chrono::Utc::now().timestamp_millis();
-
-        for (position, todo) in entry.todos.iter().enumerate() {
-            let existing = existing_todos
-                .iter()
-                .find(|entry| entry.content == todo.content);
-            let created_at = existing
-                .map(|entry| entry.created_at)
-                .filter(|value| *value > 0)
-                .unwrap_or(entry.created_at);
-            let updated_at = existing
-                .filter(|entry| entry.status == todo.status)
-                .map(|entry| entry.updated_at)
-                .filter(|value| *value > 0)
-                .unwrap_or(now);
-            tx.execute(
-                r#"
-                INSERT OR REPLACE INTO memo_todos
-                    (memo_id, todo_id, content, status, priority, time_range, owner, assignee, created_at, updated_at, position)
-                VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
-                "#,
-                params![
-                    entry.id,
-                    if todo.id.is_empty() { format!("todo-{}", position) } else { todo.id.clone() },
-                    todo.content,
-                    todo.status,
-                    existing.map(|entry| entry.priority.as_str()).unwrap_or(""),
-                    existing.map(|entry| entry.time_range.as_str()).unwrap_or(""),
-                    existing.map(|entry| entry.owner.as_str()).unwrap_or(""),
-                    existing.map(|entry| entry.assignee.as_str()).unwrap_or(""),
-                    created_at,
-                    updated_at,
-                    position as i64,
-                ],
+                "INSERT OR REPLACE INTO memo_colors (relative_path, color, position) VALUES (?1, ?2, ?3)",
+                params![entry.relative_path, color_to_str(*color), position as i64],
             )
             .map_err(sqlite_to_io)?;
         }
@@ -159,11 +89,11 @@ impl MemoFile {
             tx.execute(
                 r#"
                 INSERT OR REPLACE INTO memo_agents
-                    (memo_id, thread_id, title, agent_type, position)
+                    (relative_path, thread_id, title, agent_type, position)
                 VALUES (?1, ?2, ?3, ?4, ?5)
                 "#,
                 params![
-                    entry.id,
+                    entry.relative_path,
                     agent.thread_id,
                     agent.title,
                     agent.agent_type,
@@ -173,38 +103,6 @@ impl MemoFile {
             .map_err(sqlite_to_io)?;
         }
         Ok(())
-    }
-
-    fn read_existing_todo_metadata_in_tx(
-        tx: &rusqlite::Transaction<'_>,
-        memo_id: &str,
-    ) -> std::io::Result<Vec<MemoTodoEntry>> {
-        let mut stmt = tx
-            .prepare(
-                r#"
-                SELECT todo_id, content, status, memo_id, priority, time_range, owner, assignee, created_at, updated_at
-                FROM memo_todos
-                WHERE memo_id = ?1
-                "#,
-            )
-            .map_err(sqlite_to_io)?;
-        let rows = stmt
-            .query_map(params![memo_id], |row| {
-                Ok(MemoTodoEntry {
-                    todo_id: row.get(0)?,
-                    content: row.get(1)?,
-                    status: row.get(2)?,
-                    memo_id: row.get(3)?,
-                    priority: row.get(4)?,
-                    time_range: row.get(5)?,
-                    owner: row.get(6)?,
-                    assignee: row.get(7)?,
-                    created_at: row.get(8)?,
-                    updated_at: row.get(9)?,
-                })
-            })
-            .map_err(sqlite_to_io)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_to_io)
     }
 
     pub(super) fn read_index_from_db(
@@ -227,7 +125,7 @@ impl MemoFile {
         let mut stmt = conn
             .prepare(
                 r#"
-                SELECT id, filename, relative_path, preview, thumbnail, created_at, updated_at, favorited, icon, properties
+                SELECT filename, relative_path, preview, thumbnail, created_at, updated_at, favorited, icon, properties
                 FROM memos
                 WHERE notebook_id = ?1
                 ORDER BY created_at ASC, rowid ASC
@@ -236,23 +134,21 @@ impl MemoFile {
             .map_err(sqlite_to_io)?;
         let rows = stmt
             .query_map(params![notebook_id], |row| {
-                let id: String = row.get(0)?;
                 Ok(MemoIndexEntry {
-                    id,
-                    filename: row.get(1)?,
-                    relative_path: row.get(2)?,
-                    preview: row.get(3)?,
-                    thumbnail: row.get(4)?,
+                    filename: row.get(0)?,
+                    relative_path: row.get(1)?,
+                    preview: row.get(2)?,
+                    thumbnail: row.get(3)?,
                     tags: Vec::new(),
                     todos: Vec::new(),
                     agents: Vec::new(),
-                    created_at: row.get(5)?,
-                    updated_at: row.get(6)?,
-                    favorited: row.get::<_, i64>(7)? != 0,
-                    icon: row.get(8)?,
+                    created_at: row.get(4)?,
+                    updated_at: row.get(5)?,
+                    favorited: row.get::<_, i64>(6)? != 0,
+                    icon: row.get(7)?,
                     colors: Vec::new(),
                     properties: serde_json::from_str::<serde_json::Value>(
-                        &row.get::<_, String>(9)?,
+                        &row.get::<_, String>(8)?,
                     )
                     .unwrap_or_else(|_| serde_json::json!({})),
                 })
@@ -261,10 +157,8 @@ impl MemoFile {
         let mut memos = rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_to_io)?;
 
         for entry in &mut memos {
-            entry.tags = self.read_entry_tags(conn, &entry.id)?;
-            entry.colors = self.read_entry_colors(conn, &entry.id)?;
-            entry.todos = self.read_entry_todos(conn, &entry.id)?;
-            entry.agents = self.read_entry_agents(conn, &entry.id)?;
+            entry.colors = self.read_entry_colors(conn, &entry.relative_path)?;
+            entry.agents = self.read_entry_agents(conn, &entry.relative_path)?;
         }
         let memo_base = self.memo_base_for_notebook_id(notebook_id);
         self.backfill_missing_properties(conn, notebook_id, &memo_base, &mut memos)?;
@@ -334,11 +228,11 @@ impl MemoFile {
             }
 
             conn.execute(
-                "UPDATE memos SET properties = ?1 WHERE notebook_id = ?2 AND id = ?3",
+                "UPDATE memos SET properties = ?1 WHERE notebook_id = ?2 AND relative_path = ?3",
                 params![
                     serde_json::to_string(&properties).unwrap_or_else(|_| "{}".to_string()),
                     notebook_id,
-                    entry.id,
+                    entry.relative_path,
                 ],
             )
             .map_err(sqlite_to_io)?;
@@ -358,8 +252,8 @@ impl MemoFile {
             if entry.thumbnail.as_deref().unwrap_or("").trim().is_empty() {
                 let checked = conn
                     .query_row(
-                        "SELECT thumbnail_checked FROM memos WHERE notebook_id = ?1 AND id = ?2",
-                        params![notebook_id, entry.id],
+                        "SELECT thumbnail_checked FROM memos WHERE notebook_id = ?1 AND relative_path = ?2",
+                        params![notebook_id, entry.relative_path],
                         |row| row.get::<_, i64>(0),
                     )
                     .optional()
@@ -379,8 +273,8 @@ impl MemoFile {
                 .and_then(|content| extract_thumbnail(&content));
 
             conn.execute(
-                "UPDATE memos SET thumbnail = ?1, thumbnail_checked = 1 WHERE notebook_id = ?2 AND id = ?3",
-                params![thumbnail, notebook_id, entry.id],
+                "UPDATE memos SET thumbnail = ?1, thumbnail_checked = 1 WHERE notebook_id = ?2 AND relative_path = ?3",
+                params![thumbnail, notebook_id, entry.relative_path],
             )
             .map_err(sqlite_to_io)?;
             entry.thumbnail = thumbnail;
@@ -402,8 +296,8 @@ impl MemoFile {
 
             let checked = conn
                 .query_row(
-                    "SELECT agents_checked FROM memos WHERE notebook_id = ?1 AND id = ?2",
-                    params![notebook_id, entry.id],
+                    "SELECT agents_checked FROM memos WHERE notebook_id = ?1 AND relative_path = ?2",
+                    params![notebook_id, entry.relative_path],
                     |row| row.get::<_, i64>(0),
                 )
                 .optional()
@@ -422,19 +316,19 @@ impl MemoFile {
 
             let tx = conn.unchecked_transaction().map_err(sqlite_to_io)?;
             tx.execute(
-                "DELETE FROM memo_agents WHERE memo_id = ?1",
-                params![entry.id],
+                "DELETE FROM memo_agents WHERE relative_path = ?1",
+                params![entry.relative_path],
             )
             .map_err(sqlite_to_io)?;
             for (position, agent) in agents.iter().enumerate() {
                 tx.execute(
                     r#"
                     INSERT OR REPLACE INTO memo_agents
-                        (memo_id, thread_id, title, agent_type, position)
+                        (relative_path, thread_id, title, agent_type, position)
                     VALUES (?1, ?2, ?3, ?4, ?5)
                     "#,
                     params![
-                        entry.id,
+                        entry.relative_path,
                         agent.thread_id,
                         agent.title,
                         agent.agent_type,
@@ -444,8 +338,8 @@ impl MemoFile {
                 .map_err(sqlite_to_io)?;
             }
             tx.execute(
-                "UPDATE memos SET agents_checked = 1 WHERE notebook_id = ?1 AND id = ?2",
-                params![notebook_id, entry.id],
+                "UPDATE memos SET agents_checked = 1 WHERE notebook_id = ?1 AND relative_path = ?2",
+                params![notebook_id, entry.relative_path],
             )
             .map_err(sqlite_to_io)?;
             tx.commit().map_err(sqlite_to_io)?;
@@ -454,30 +348,16 @@ impl MemoFile {
         Ok(())
     }
 
-    pub(super) fn read_entry_tags(
-        &self,
-        conn: &Connection,
-        memo_id: &str,
-    ) -> std::io::Result<Vec<String>> {
-        let mut stmt = conn
-            .prepare("SELECT tag FROM memo_tags WHERE memo_id = ?1 ORDER BY rowid ASC")
-            .map_err(sqlite_to_io)?;
-        let rows = stmt
-            .query_map(params![memo_id], |row| row.get(0))
-            .map_err(sqlite_to_io)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_to_io)
-    }
-
     pub(super) fn read_entry_colors(
         &self,
         conn: &Connection,
-        memo_id: &str,
-    ) -> std::io::Result<Vec<MemoColor>> {
+        relative_path: &str,
+    ) -> std::io::Result<Vec<NoteColor>> {
         let mut stmt = conn
-            .prepare("SELECT color FROM memo_colors WHERE memo_id = ?1 ORDER BY position ASC")
+            .prepare("SELECT color FROM memo_colors WHERE relative_path = ?1 ORDER BY position ASC")
             .map_err(sqlite_to_io)?;
         let rows = stmt
-            .query_map(params![memo_id], |row| row.get::<_, String>(0))
+            .query_map(params![relative_path], |row| row.get::<_, String>(0))
             .map_err(sqlite_to_io)?;
         Ok(rows
             .collect::<Result<Vec<_>, _>>()
@@ -487,40 +367,18 @@ impl MemoFile {
             .collect())
     }
 
-    pub(super) fn read_entry_todos(
-        &self,
-        conn: &Connection,
-        memo_id: &str,
-    ) -> std::io::Result<Vec<TodoItem>> {
-        let mut stmt = conn
-            .prepare(
-                "SELECT todo_id, content, status FROM memo_todos WHERE memo_id = ?1 ORDER BY position ASC",
-            )
-            .map_err(sqlite_to_io)?;
-        let rows = stmt
-            .query_map(params![memo_id], |row| {
-                Ok(TodoItem {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    status: row.get(2)?,
-                })
-            })
-            .map_err(sqlite_to_io)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_to_io)
-    }
-
     pub(super) fn read_entry_agents(
         &self,
         conn: &Connection,
-        memo_id: &str,
+        relative_path: &str,
     ) -> std::io::Result<Vec<AgentThreadItem>> {
         let mut stmt = conn
             .prepare(
-                "SELECT thread_id, title, agent_type FROM memo_agents WHERE memo_id = ?1 ORDER BY position ASC",
+                "SELECT thread_id, title, agent_type FROM memo_agents WHERE relative_path = ?1 ORDER BY position ASC",
             )
             .map_err(sqlite_to_io)?;
         let rows = stmt
-            .query_map(params![memo_id], |row| {
+            .query_map(params![relative_path], |row| {
                 Ok(AgentThreadItem {
                     thread_id: row.get(0)?,
                     title: row.get(1)?,

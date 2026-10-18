@@ -12,6 +12,10 @@ import {
 } from "@features/agent/message/display-limits";
 import { insertAgentMessageBySourceOrder, orderPiMessageBlocks } from "@features/agent/store/message-order";
 import type { MessageChunkMetadata } from "@features/agent/store/message-chunks";
+import {
+  codexCustomToolOutputMessageId,
+  codexToolCallMessageId,
+} from "@features/agent/events/codex-message-identity";
 
 function toolMessageTimestamp(sourceTimestamp?: number): string {
   return Number.isFinite(sourceTimestamp)
@@ -42,10 +46,15 @@ export function applyToolCallChunk(
   metadata: MessageChunkMetadata = {},
 ): MessageProjection {
   const toolInput = normalizeToolInput(input);
+  const messageId = metadata.id ?? (
+    agentType === "codex"
+      ? codexToolCallMessageId(metadata.codexTurnId, id)
+      : `tool-${id || Date.now()}`
+  );
   const toolMessage: ChatMessage = {
-    id: metadata.id ?? `tool-${id || Date.now()}`,
-    renderKey: metadata.id ?? id,
-    messageId: agentType === "pi" || agentType === "codex" ? metadata.id ?? id : undefined,
+    id: messageId,
+    renderKey: messageId,
+    messageId: agentType === "pi" || agentType === "codex" ? messageId : undefined,
     role: "tool",
     messageType: metadata.messageType,
     content: "",
@@ -130,6 +139,13 @@ export function applyToolResultChunk(
   const hasMatchingCall = st.messages.some(
     (message) => message.role === "tool" && toolCallIdsMatch(message.toolCallId, id),
   );
+  const orphanMessageId = metadata.id ?? (
+    agentType === "codex"
+      ? metadata.messageType === "codex-custom-tool"
+        ? codexCustomToolOutputMessageId(metadata.codexTurnId, id)
+        : codexToolCallMessageId(metadata.codexTurnId, id)
+      : `tool-${id || Date.now()}`
+  );
   const messages = hasMatchingCall
     ? st.messages.map((m) =>
         m.role === "tool" && toolCallIdsMatch(m.toolCallId, id)
@@ -157,9 +173,9 @@ export function applyToolResultChunk(
           : m,
       )
     : insertAgentMessageBySourceOrder(st.messages, {
-        id: metadata.id ?? `tool-${id || Date.now()}`,
-        renderKey: metadata.id ?? id,
-        messageId: agentType === "pi" || agentType === "codex" ? metadata.id ?? id : undefined,
+        id: orphanMessageId,
+        renderKey: orphanMessageId,
+        messageId: agentType === "pi" || agentType === "codex" ? orphanMessageId : undefined,
         role: "tool" as const,
         messageType: metadata.messageType,
         content: resultContent,

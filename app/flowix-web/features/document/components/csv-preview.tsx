@@ -2,6 +2,7 @@
 
 import { useCallback, useEffect, useRef, useState } from 'react';
 import Papa from 'papaparse';
+import type { SurfaceLifecycle, SurfacePresentationUpdate, SurfaceState } from '@features/workspace/public/surface-api';
 import { TabulatorFull as Tabulator, type CellComponent, type ColumnDefinition } from 'tabulator-tables';
 import { externalDocuments } from '@platform/tauri/client/memos';
 import { clearActionableNotice, upsertActionableNotice } from '@features/notifications/actionable-notice-store';
@@ -181,7 +182,12 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
 
-export function CsvPreview({ filePath, scopePath }: { filePath: string; scopePath: string | null }) {
+export function CsvPreview({ filePath, scopePath, onSurfaceLifecycleReady, reportPresentation }: {
+  filePath: string;
+  scopePath: string | null;
+  onSurfaceLifecycleReady?: (lifecycle: SurfaceLifecycle | null) => void;
+  reportPresentation?: (update: SurfacePresentationUpdate) => void;
+}) {
   const { t } = useI18n();
   const hostRef = useRef<HTMLDivElement>(null);
   const workerRef = useRef<Worker | null>(null);
@@ -192,10 +198,19 @@ export function CsvPreview({ filePath, scopePath }: { filePath: string; scopePat
   const finalNewlineRef = useRef(false);
   const bomRef = useRef(false);
   const revisionRef = useRef(0);
-  const savingRef = useRef<number | null>(null);
+  const savePromiseRef = useRef<{ requestId: number; promise: Promise<boolean> } | null>(null);
+  const mutationsRef = useRef(new Set<Promise<unknown>>());
+  const trackMutation = useCallback(<T,>(operation: () => Promise<T>): Promise<T> => {
+    const promise = operation();
+    mutationsRef.current.add(promise);
+    void promise.then(() => mutationsRef.current.delete(promise), () => mutationsRef.current.delete(promise));
+    return promise;
+  }, []);
   const visibleRowCountRef = useRef(MIN_VISIBLE_ROWS);
   const [state, setState] = useState<CsvLoadState>({ status: 'loading' });
   const [saveState, setSaveState] = useState<SaveState>({ status: 'idle' });
+  const [retryCount, setRetryCount] = useState(0);
+  const retryLoad = useCallback(() => setRetryCount((count) => count + 1), []);
 
   function retainDraft() {
     const doc = documentRef.current;
@@ -210,61 +225,101 @@ export function CsvPreview({ filePath, scopePath }: { filePath: string; scopePat
     });
   }
 
-  const saveCurrentDocument = useCallback(async () => {
+  const saveCurrentDocument = useCallback((): Promise<boolean> => {
     const requestId = requestRef.current;
     const key = draftKey(filePath, scopePath);
-    if (savingRef.current === requestId) return;
-    savingRef.current = requestId;
-    try {
-      while (requestRef.current === requestId && documentRef.current && revisionRef.current > 0) {
-        const revision = revisionRef.current;
-        const doc = documentRef.current;
-        const serialized = Papa.unparse([doc.headers, ...doc.rows], {
-          delimiter: doc.delimiter,
-          newline: newlineRef.current,
-          header: false,
-          skipEmptyLines: false,
-        });
-        const content = `${bomRef.current ? '\uFEFF' : ''}${serialized}${finalNewlineRef.current ? newlineRef.current : ''}`;
-        if (utf8Encoder.encode(content).byteLength > MAX_CSV_BYTES) {
-          setSaveState({ status: 'error', message: '编辑后的 CSV 超过 20 MiB 上限，无法自动保存。' });
-          return;
+    if (savePromiseRef.current?.requestId === requestId) return savePromiseRef.current.promise;
+    const save = async (): Promise<boolean> => {
+      try {
+        while (requestRef.current === requestId && documentRef.current && revisionRef.current > 0) {
+          const revision = revisionRef.current;
+          const doc = documentRef.current;
+          const serialized = Papa.unparse([doc.headers, ...doc.rows], {
+            delimiter: doc.delimiter,
+            newline: newlineRef.current,
+            header: false,
+            skipEmptyLines: false,
+          });
+          const content = `${bomRef.current ? '\uFEFF' : ''}${serialized}${finalNewlineRef.current ? newlineRef.current : ''}`;
+          if (utf8Encoder.encode(content).byteLength > MAX_CSV_BYTES) {
+            setSaveState({ status: 'error', message: '编辑后的 CSV 超过 20 MiB 上限，无法自动保存。' });
+            return false;
+          }
+          const original = savedTextRef.current;
+          const draftVersion = pendingCsvDrafts.get(key)?.version;
+          setSaveState({ status: 'saving' });
+          let outcome: Awaited<ReturnType<typeof externalDocuments.write>>;
+          try {
+            outcome = await externalDocuments.write({ filePath, scopePath, content, expectedContent: original });
+          } catch (error) {
+            if (requestRef.current !== requestId) return false;
+            setSaveState({ status: 'error', message: `自动保存失败：${errorMessage(error)}`, retryable: true });
+            return false;
+          }
+          if (outcome.status !== 'saved') {
+            if (requestRef.current !== requestId) return false;
+            const message = outcome.status === 'conflict'
+              ? '文件已在其他位置修改。当前编辑未覆盖磁盘文件，请重新打开后处理冲突。'
+              : outcome.status === 'missing'
+                ? '文件已不存在，无法自动保存。'
+                : outcome.message;
+            setSaveState({ status: 'error', message, retryable: outcome.status === 'error' });
+            return false;
+          }
+          const draft = pendingCsvDrafts.get(key);
+          if (draft && draft.version === draftVersion) pendingCsvDrafts.delete(key);
+          else if (draft) draft.expectedContent = outcome.content;
+          if (requestRef.current !== requestId) return false;
+          savedTextRef.current = outcome.content;
+          if (revisionRef.current === revision) {
+            revisionRef.current = 0;
+            setSaveState({ status: 'saved' });
+          }
         }
-        const original = savedTextRef.current;
-        const draftVersion = pendingCsvDrafts.get(key)?.version;
-        setSaveState({ status: 'saving' });
-        let outcome: Awaited<ReturnType<typeof externalDocuments.write>>;
-        try {
-          outcome = await externalDocuments.write({ filePath, scopePath, content, expectedContent: original });
-        } catch (error) {
-          if (requestRef.current !== requestId) return;
+        return requestRef.current === requestId && revisionRef.current === 0;
+      } catch (error) {
+        if (requestRef.current === requestId) {
           setSaveState({ status: 'error', message: `自动保存失败：${errorMessage(error)}`, retryable: true });
-          return;
         }
-        if (outcome.status !== 'saved') {
-          if (requestRef.current !== requestId) return;
-          const message = outcome.status === 'conflict'
-            ? '文件已在其他位置修改。当前编辑未覆盖磁盘文件，请重新打开后处理冲突。'
-            : outcome.status === 'missing'
-              ? '文件已不存在，无法自动保存。'
-              : outcome.message;
-          setSaveState({ status: 'error', message, retryable: outcome.status === 'error' });
-          return;
-        }
-        const draft = pendingCsvDrafts.get(key);
-        if (draft && draft.version === draftVersion) pendingCsvDrafts.delete(key);
-        else if (draft) draft.expectedContent = outcome.content;
-        if (requestRef.current !== requestId) return;
-        savedTextRef.current = outcome.content;
-        if (revisionRef.current === revision) {
-          revisionRef.current = 0;
-          setSaveState({ status: 'saved' });
-        }
+        return false;
       }
-    } finally {
-      if (savingRef.current === requestId) savingRef.current = null;
-    }
+    };
+    const promise = save().finally(() => {
+      if (savePromiseRef.current?.promise === promise) savePromiseRef.current = null;
+    });
+    savePromiseRef.current = { requestId, promise };
+    return promise;
   }, [filePath, scopePath]);
+
+  useEffect(() => {
+    const title = filePath.split(/[\\/]/).filter(Boolean).pop() ?? filePath;
+    let surfaceState: SurfaceState;
+    if (state.status === 'loading') {
+      surfaceState = { status: 'loading', phase: 'content', message: { key: 'document.file.loading' }, retainContent: false };
+    } else if (state.status === 'error') {
+      surfaceState = {
+        status: 'error', message: { key: 'document.file.unavailable', fallbackText: state.message },
+        actions: [{ id: 'retry', label: { key: 'error.retry' }, enabled: true, run: retryLoad }],
+      };
+    } else {
+      // Delimiter selection is an interactive CSV setup step, so the surface
+      // stays ready while its renderer presents that focused choice inline.
+      surfaceState = { status: 'ready' };
+    }
+    reportPresentation?.({ title, state: surfaceState });
+  }, [filePath, reportPresentation, retryLoad, state]);
+
+  useEffect(() => {
+    onSurfaceLifecycleReady?.({ status: 'ready', flush: async () => {
+      const requestId = requestRef.current;
+      while (mutationsRef.current.size) {
+        try { await Promise.all([...mutationsRef.current]); }
+        catch { return false; }
+      }
+      return requestRef.current === requestId && await saveCurrentDocument();
+    } });
+    return () => onSurfaceLifecycleReady?.(null);
+  }, [onSurfaceLifecycleReady, saveCurrentDocument]);
 
   useEffect(() => {
     const noticeId = `csv-save:${draftKey(filePath, scopePath)}`;
@@ -282,7 +337,7 @@ export function CsvPreview({ filePath, scopePath }: { filePath: string; scopePat
           id: 'retry',
           label: t('document.save.retry'),
           variant: 'default',
-          run: saveCurrentDocument,
+          run: async () => { await saveCurrentDocument(); },
         }],
       });
     } else if (saveState.status === 'saving') {
@@ -303,7 +358,6 @@ export function CsvPreview({ filePath, scopePath }: { filePath: string; scopePat
     let cancelled = false;
     documentRef.current = null;
     revisionRef.current = 0;
-    savingRef.current = null;
     setSaveState({ status: 'idle' });
     setState({ status: 'loading' });
     const draft = pendingCsvDrafts.get(draftKey(filePath, scopePath));
@@ -350,7 +404,7 @@ export function CsvPreview({ filePath, scopePath }: { filePath: string; scopePat
       workerRef.current?.terminate();
       workerRef.current = null;
     };
-  }, [filePath, scopePath]);
+  }, [filePath, retryCount, scopePath]);
 
   useEffect(() => {
     if (state.status !== 'ready' || !hostRef.current) return;
@@ -447,7 +501,7 @@ export function CsvPreview({ filePath, scopePath }: { filePath: string; scopePat
       resizable: false,
       hozAlign: 'center',
       headerHozAlign: 'center',
-      headerClick: () => { void addColumn(); },
+      headerClick: () => { void trackMutation(addColumn); },
       formatter: () => '',
     });
     const addVisibleRow = async () => {
@@ -595,7 +649,7 @@ export function CsvPreview({ filePath, scopePath }: { filePath: string; scopePat
     const pasteIntoRange = (pastedRows: Array<Record<string, unknown>>) => {
       if (pasteInProgress) return [];
       pasteInProgress = true;
-      void applyPastedRows(pastedRows).catch((error: unknown) => {
+      void trackMutation(() => applyPastedRows(pastedRows)).catch((error: unknown) => {
         setSaveState({ status: 'error', message: `粘贴失败：${errorMessage(error)}` });
       }).finally(() => { pasteInProgress = false; });
       return [];
@@ -738,7 +792,8 @@ export function CsvPreview({ filePath, scopePath }: { filePath: string; scopePat
         const doc = documentRef.current;
         const revision = revisionRef.current;
         event.preventDefault();
-        void navigator.clipboard.writeText(text).then(() => {
+        void trackMutation(async () => {
+          await navigator.clipboard.writeText(text);
           if (documentRef.current === doc && revisionRef.current === revision) clearSelectedCells(cells);
         }).catch((error: unknown) => {
           setSaveState({ status: 'error', message: `剪切失败：${errorMessage(error)}` });
@@ -746,7 +801,8 @@ export function CsvPreview({ filePath, scopePath }: { filePath: string; scopePat
       } else if (key === 'v') {
         if (!navigator.clipboard?.readText) return;
         event.preventDefault();
-        void navigator.clipboard.readText().then((text) => {
+        void trackMutation(async () => {
+          const text = await navigator.clipboard.readText();
           const pastedRows = parseClipboardRows(text);
           if (pastedRows) pasteIntoRange(pastedRows);
           else setSaveState({ status: 'error', message: '无法将剪贴板内容粘贴到当前选区。' });
@@ -794,6 +850,8 @@ export function CsvPreview({ filePath, scopePath }: { filePath: string; scopePat
     }
   }
 
+  if (reportPresentation && state.status === 'loading') return null;
+  if (reportPresentation && state.status === 'error') return null;
   if (state.status === 'loading') return <div className="csv-preview__status">正在读取 CSV…</div>;
   if (state.status === 'error') {
     return <div className="csv-preview__status csv-preview__error" role="alert">无法显示 CSV：{state.message}</div>;

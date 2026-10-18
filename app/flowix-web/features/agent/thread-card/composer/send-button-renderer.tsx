@@ -21,9 +21,9 @@ export function renderAgentThreadCardSendButton(
   // "flushSync was called from inside a lifecycle method" 报错。root.render
   // 只负责调度更新, DOM 提交可能发生在随后的事件循环。
   const className = [
-    "agent-thread-card__send",
-    options.wantStop && "agent-thread-card__send--stop",
-    options.isRunning && "agent-thread-card__send--running",
+    "agent-composer__send",
+    options.wantStop && "agent-composer__send--stop",
+    options.isRunning && "agent-composer__send--running",
   ].filter(Boolean).join(" ");
 
   options.root.render(
@@ -43,7 +43,7 @@ export function renderAgentThreadCardSendButton(
         }}
       >
         {options.isRunning ? (
-          <span className="agent-thread-card__send-spinner" aria-hidden="true" />
+          <span className="agent-composer__send-spinner flowix-spin" aria-hidden="true" />
         ) : options.wantStop ? (
           <StopIcon />
         ) : (
@@ -59,7 +59,7 @@ function StopIcon(): ReactElement {
     <svg
       aria-hidden="true"
       focusable="false"
-      className="agent-thread-card__send-icon"
+      className="agent-composer__send-icon"
       viewBox="0 0 256 256"
     >
       <path d={ICON_STOP_PATH} fill="currentColor" />
@@ -72,7 +72,7 @@ function SendIcon(): ReactElement {
     <svg
       aria-hidden="true"
       focusable="false"
-      className="agent-thread-card__send-icon"
+      className="agent-composer__send-icon"
       viewBox="0 0 24 24"
       fill="none"
       stroke="currentColor"

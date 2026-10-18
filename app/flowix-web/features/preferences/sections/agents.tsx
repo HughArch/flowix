@@ -18,28 +18,26 @@ import { AGENT_TYPES } from '@/lib/agent-types';
 import type { AgentTypeKey } from '@/types/agent';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
+import { useAgentDataStore } from '@features/agent/store/agent-data-store';
 
 type CollapsibleAgentKey =
   | 'codex'
-  | 'claude'
-  | 'gemini'
+  | 'claudecode'
   | 'hermes'
-  | 'openclaw'
   | 'opencode';
 
 /// "使用自定义模型" 文档链接, codex/claude 的"查看"按钮跳转此处。
 const CUSTOM_MODEL_DOCS_URL = 'https://flowix-memo.com/docs/ai-access/';
 
-/// 偏好设置 AI Agents 列表里要隐藏的 agent; 其它入口仍可独立使用。
+/// 偏好设置不展示内置 Agent 的路径配置卡片。
 const HIDDEN_PREFERENCE_AGENT_KEYS: ReadonlySet<AgentTypeKey> = new Set([
   'pi',
-  'openclaw',
-  'gemini',
-  'deepseek-harness',
+  'dsh',
 ]);
 
 export function AgentsSection() {
   const { t } = useI18n();
+  const persistenceError = useAgentDataStore((state) => state.persistenceError);
   const statusByType = useAgentRuntimeStore((s) => s.statusByType);
   const isChecking = useAgentRuntimeStore((s) => s.isChecking);
   const refreshIfStale = useAgentRuntimeStore((s) => s.refreshIfStale);
@@ -60,8 +58,7 @@ export function AgentsSection() {
     } catch (err) {
       console.warn('[agents] failed to load external config:', err);
     }
-    void refreshStatus({ force: true });
-  }, [refreshStatus]);
+  }, []);
 
   useEffect(() => {
     void refreshIfStale();
@@ -84,10 +81,8 @@ export function AgentsSection() {
   const renderHeaderAction = (typeKey: string) => {
     const isCollapsible =
       typeKey === 'codex' ||
-      typeKey === 'claude' ||
-      typeKey === 'gemini' ||
+      typeKey === 'claudecode' ||
       typeKey === 'hermes' ||
-      typeKey === 'openclaw' ||
       typeKey === 'opencode';
     if (!isCollapsible) {
       return null;
@@ -132,6 +127,14 @@ export function AgentsSection() {
         title={t('preferences.agents.title')}
         description={t('preferences.agents.subtitle')}
       />
+      {persistenceError && (
+        <div
+          role="alert"
+          className="rounded-md border border-[var(--destructive)]/35 bg-[var(--destructive)]/5 px-3 py-2 text-sm text-[var(--destructive)]"
+        >
+          {t('preferences.agents.cacheWriteFailed')}
+        </div>
+      )}
       <AgentRuntimeStatusList
         statusByType={statusByType}
         isChecking={isChecking}
@@ -148,7 +151,7 @@ export function AgentsSection() {
         onCardClick={(key) => toggleExpanded(key as CollapsibleAgentKey)}
         renderAfterRow={(typeKey) => {
           const renderExternalPath = () => {
-            const def = AGENT_TYPES.find((a) => a.key === typeKey);
+            const def = AGENT_TYPES.find((a) => a.id === typeKey);
             const displayName = def?.name ?? typeKey;
             // codex 走终端 npm install; 其余走 openAgentSetup 引导页。
             const onInstall =
@@ -161,13 +164,16 @@ export function AgentsSection() {
                 displayName={displayName}
                 entry={externalConfig?.[typeKey]}
                 onInstall={onInstall}
-                onChanged={() => void refreshExternal()}
+                onChanged={() => {
+                  void refreshExternal();
+                  void refreshStatus({ force: true });
+                }}
               />
             );
           };
-          if (typeKey === 'claude') {
+          if (typeKey === 'claudecode') {
             return renderCollapsible(
-              'claude',
+              'claudecode',
               <>
                 {renderExternalPath()}
                 <FieldRow
@@ -205,11 +211,9 @@ export function AgentsSection() {
               </>,
             );
           }
-          // gemini / hermes / openclaw / opencode: 只展示状态 + 执行路径。
+          // Hermes / OpenCode: 只展示状态 + 执行路径。
           if (
-            typeKey === 'gemini' ||
             typeKey === 'hermes' ||
-            typeKey === 'openclaw' ||
             typeKey === 'opencode'
           ) {
             return renderCollapsible(typeKey as CollapsibleAgentKey, renderExternalPath());

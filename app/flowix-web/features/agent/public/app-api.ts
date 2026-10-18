@@ -1,3 +1,4 @@
+import { useAgentDataStore } from "@features/agent/store/agent-data-store";
 import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
 export { invalidateDshModelConfigs } from '@features/agent/store/dsh-model-config-store';
 
@@ -7,4 +8,8 @@ export function useAppAgentRuntimeViewModel() {
   // as an external-store update loop during the initial render.
   const refreshAgentRuntime = useAgentRuntimeStore((state) => state.refresh);
   return { refreshAgentRuntime };
+}
+
+export function useAgentPersistenceError(): string | null {
+  return useAgentDataStore((state) => state.persistenceError);
 }

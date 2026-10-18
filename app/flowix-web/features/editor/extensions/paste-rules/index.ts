@@ -6,13 +6,17 @@ import { hasImportableHtml, isInternalEditorHtml, sanitizeExternalHtml } from '@
 import type { PasteContext } from '@features/editor/extensions/paste-rules/types';
 import type { Editor } from '@tiptap/core';
 
-export const ManagedPasteRules = Extension.create<{ ownerPath?: string; getOwnerPath?: () => string | undefined }>({
+export const ManagedPasteRules = Extension.create<{
+  ownerPath?: string;
+  getOwnerPath?: () => string | undefined;
+}>({
   name: 'managedPasteRules',
   priority: 1100,
 
   addOptions() {
     return {
       ownerPath: undefined,
+      getOwnerPath: undefined,
     };
   },
 
@@ -33,7 +37,9 @@ export const ManagedPasteRules = Extension.create<{ ownerPath?: string; getOwner
             const clipboardData = event.clipboardData;
             if (!clipboardData) return false;
             const snapshot = readClipboardSnapshot(clipboardData);
-            const ownerPath = this.options.getOwnerPath ? this.options.getOwnerPath() : this.options.ownerPath;
+            const ownerPath = this.options.getOwnerPath
+              ? this.options.getOwnerPath()
+              : this.options.ownerPath;
             if (snapshot.html && !hasImportableHtml(snapshot.html) && snapshot.text) {
               event.preventDefault();
               return pasteClipboardSnapshot(this.editor, { ...snapshot, html: '' }, ownerPath);

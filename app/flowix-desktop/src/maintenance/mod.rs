@@ -28,7 +28,7 @@ pub(crate) fn spawn_startup_maintenance(
         if let Err(error) = debug_dumps::cleanup(&user_config_dir.join("debug")) {
             tracing::warn!("startup debug maintenance failed: {error}");
         }
-        if let Err(error) = backups::prune(&user_config_dir) {
+        if let Err(error) = backups::prune(&user_config_dir.join("db")) {
             tracing::warn!("startup backup maintenance failed: {error}");
         }
 

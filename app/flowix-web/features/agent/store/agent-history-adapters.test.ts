@@ -95,7 +95,7 @@ describe("Pi backend history pages", () => {
 });
 
 describe.each([
-  ["claude", client.getClaudeThreadPage],
+  ["claudecode", client.getClaudeThreadPage],
   ["opencode", client.getOpenCodeThreadPage],
 ] as const)("%s full history", (runtime, getPage) => {
   beforeEach(() => getPage.mockReset());

@@ -217,7 +217,7 @@ function ShortcutRow({
           )}
         </div>
         {actionDescription && (
-          <p className="truncate text-xs text-[var(--muted-foreground)]">
+          <p className="truncate text-sm text-[var(--muted-foreground)]">
             {actionDescription}
           </p>
         )}
@@ -231,7 +231,7 @@ function ShortcutRow({
 
       <div className="flex shrink-0 items-center gap-2">
         {chordString ? (
-          <KbdChord chord={chordString} />
+          <KbdChord chord={chordString} className="!text-sm" />
         ) : (
           <span className="text-xs text-[var(--muted-foreground)]">{t('preferences.shortcuts.unbound')}</span>
         )}
@@ -240,7 +240,7 @@ function ShortcutRow({
           variant="ghost"
           size="sm"
           onClick={onEdit}
-          className="h-7 rounded-lg px-2 text-xs"
+          className="h-7 rounded-lg px-2 text-sm"
           aria-label={`${t('preferences.shortcuts.edit')} — ${actionTitle}`}
           title={t('preferences.shortcuts.edit')}
         >

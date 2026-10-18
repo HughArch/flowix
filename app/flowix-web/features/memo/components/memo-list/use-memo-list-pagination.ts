@@ -3,7 +3,8 @@ import { useCallback, useLayoutEffect, useMemo, type RefObject, type UIEvent } f
 import type { ColorFilterValue } from '@features/memo/store/note-store';
 import type { NoteListItem } from '@/types/note-item';
 
-const LOAD_MORE_THRESHOLD_PX = 720;
+const MIN_LOAD_MORE_THRESHOLD_PX = 720;
+const LOAD_MORE_VIEWPORT_MULTIPLIER = 2;
 
 interface MemoListPaginationOptions {
   memos: NoteListItem[];
@@ -39,7 +40,14 @@ export function useMemoListPagination({
   const loadWhenNearEnd = useCallback((scroller: HTMLDivElement | null) => {
     if (!isActive || loading || loadingMorePages || !hasMorePages || !scroller) return;
     const distanceToBottom = scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight;
-    if (distanceToBottom <= LOAD_MORE_THRESHOLD_PX) loadMorePages();
+    // Start fetching well before the user reaches the current page boundary.
+    // Two viewports gives the backend time to respond during a fast fling,
+    // while the floor preserves the previous buffer for short list panes.
+    const threshold = Math.max(
+      MIN_LOAD_MORE_THRESHOLD_PX,
+      scroller.clientHeight * LOAD_MORE_VIEWPORT_MULTIPLIER,
+    );
+    if (distanceToBottom <= threshold) loadMorePages();
   }, [hasMorePages, isActive, loadMorePages, loading, loadingMorePages]);
 
   const onScroll = useCallback((event: UIEvent<HTMLDivElement>) => {

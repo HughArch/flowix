@@ -145,8 +145,12 @@ impl DeepSeekHarnessManager {
         message: AgentUserMessage,
         app_handle: &tauri::AppHandle,
     ) -> Result<String, String> {
-        if !crate::dsh::status().installed {
+        let dsh_status = crate::dsh::status();
+        if !dsh_status.installed {
             return Err("DeepSeek Harness runtime is not installed".to_string());
+        }
+        if !dsh_status.app_server_profile_installed {
+            return Err("DSH App Server profile is not installed; install it from Flowix Preferences".to_string());
         }
 
         let thread_id = thread_id.to_string();
@@ -1120,45 +1124,6 @@ impl DeepSeekHarnessManager {
             let reference = Self::credential_reference(&config.model);
             config.model.api_key_env = reference.clone();
             config.model.credential_configured = self.credential_configured(&reference).await?;
-        }
-        Ok(())
-    }
-
-    /// Move any key written by an older Flowix build into DSH, then remove
-    /// the duplicate only after DSH confirms ownership.
-    pub async fn migrate_legacy_credentials(
-        &self,
-        configs: &[crate::config::AiConfigFile],
-    ) -> Result<(), String> {
-        for config in configs {
-            let route = if config.model.provider_id.trim().is_empty() {
-                config.model.provider.trim()
-            } else {
-                config.model.provider_id.trim()
-            };
-            let Some(secret) = self
-                .user_config
-                .legacy_dsh_secret(route)
-                .map_err(|error| error.to_string())?
-                .filter(|value| !value.trim().is_empty())
-            else {
-                continue;
-            };
-            let reference = Self::credential_reference(&config.model);
-            if !self.credential_configured(&reference).await? {
-                let host = self.model_host().await?;
-                let result = timed_host_request(
-                    &host.client(),
-                    protocol::credential_set_request(host.next_request_id(), &reference, &secret),
-                )
-                .await;
-                result?;
-            }
-            if self.credential_configured(&reference).await? {
-                self.user_config
-                    .delete_legacy_dsh_secret(route)
-                    .map_err(|error| error.to_string())?;
-            }
         }
         Ok(())
     }

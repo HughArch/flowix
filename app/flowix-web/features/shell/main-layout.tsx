@@ -1,9 +1,10 @@
 'use client';
 
 import { ColumnResizeHandle } from './components/column-resize-handle';
+import { focusWorkspaceHostFromEvent } from '@features/workspace/public/host-api';
 
 import { createLogger } from '@/lib/logger';
-import { canonicalPath } from '@/lib/path';
+import { canonicalPath, canonicalDirectoryPath, notebookRelativeDirectoryPath, parentDirectoryPath } from '@/lib/path';
 import {
   setMemoListViewPreference,
   useMemoListViewPreference,
@@ -28,20 +29,19 @@ import {
   MemoListServicesHost,
   NoteNavigationDrawer,
   useShellMemoViewModel,
-  useShellDocumentListTitle,
   type Notebook,
 } from '@features/memo/public/shell-api';
 import { AgentConversationTitlebar } from '@features/agent/public/shell-api';
 import { useSettingsStore } from '@/lib/store/settings-store';
+import { useWorkspaceStartupStore } from '@/lib/store/workspace-startup-store';
 import { useShallow } from 'zustand/react/shallow';
 import {
   product,
   windows,
   boot,
-  type StartupStatus,
-  type DshDownloadProgress,
 } from '@platform/tauri/client';
 import { files } from '@platform/tauri/client/desktop';
+import { subscribe } from '@platform/tauri/event-bus';
 import { WindowsTitlebarControls } from '@shared/window-titlebar-controls';
 import { NotebookDeleteDialog } from '@features/shell/components/notebook-delete-dialog';
 import { ExternalFileDropOverlay } from '@features/shell/components/drag-overlay/external-file-drop-overlay';
@@ -53,11 +53,11 @@ import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { openPath } from '@platform/tauri/opener';
 import { Button } from '@shared/ui/button';
-import type { DshRuntimeInstallerState } from '@features/preferences/public/system-api';
 import type { AppUpdaterState } from '@features/shell/hooks/use-app-updater';
 import {
   WorkColumnContentHost,
   resolveWorkColumnPresentation,
+  useWorkspaceSurfacePresentation,
   type DocumentSurfaceContext,
 } from '@features/surface/public/shell-api';
 import type { PluginDescriptor } from '@platform/tauri/client';
@@ -69,7 +69,6 @@ import {
 } from '@features/workspace/public/shell-api';
 import { MainStatusBarHost } from '@features/shell/components/main-status-bar-host';
 import { CenteredLoadingSpinner } from '@shared/ui/centered-loading-spinner';
-import { MainPromptHost } from '@features/shell/components/main-prompt-host';
 import type { Editor } from '@tiptap/core';
 import { OnboardingScreen } from '@features/onboarding';
 import { finishOnboardingNotebook } from '@features/shell/use-cases/finish-onboarding';
@@ -90,10 +89,6 @@ function isWindowsPlatform(): boolean {
   return /Windows/i.test(navigator.userAgent) || /Win/i.test(navigator.platform);
 }
 
-function isTauriRuntime(): boolean {
-  return typeof window !== 'undefined'
-    && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
-}
 
 function isDifferentHistoryTarget(
   entry: DocumentHistoryEntry,
@@ -121,15 +116,11 @@ export interface MainLayoutBusinessController {
 }
 
 export interface MainLayoutSystemController {
-  dshDownload: DshDownloadProgress | null;
-  dshInstallPromptOpen: boolean;
   onboardingOpen: boolean;
   onboardingLoading: boolean;
   updater: AppUpdaterState;
-  dshInstaller: DshRuntimeInstallerState;
-  closeDshInstallPrompt(): void;
-  markDshIntroDisplayed(): void;
-  completeDshInstallPrompt(): void;
+  hasPendingAppUpdateResult: boolean;
+  presentPendingAppUpdateResult(): void;
   completeOnboarding(): Promise<void>;
 }
 
@@ -157,15 +148,11 @@ export function MainLayout({
     selectNotebook: handleSelectNotebook,
   } = business;
   const {
-    dshDownload,
-    dshInstallPromptOpen,
     onboardingOpen,
     onboardingLoading,
     updater,
-    dshInstaller,
-    closeDshInstallPrompt: handleDshPromptClose,
-    markDshIntroDisplayed: handleDshIntroDisplayed,
-    completeDshInstallPrompt: handleDshInstalled,
+    hasPendingAppUpdateResult,
+    presentPendingAppUpdateResult,
     completeOnboarding,
   } = system;
   const showProductIntroAfterOnboarding = useCallback(() => {
@@ -181,6 +168,21 @@ export function MainLayout({
 
     setProductIntroOpen(true);
   }, []);
+
+  useEffect(() => {
+    if (!hasPendingAppUpdateResult
+      || onboardingLoading
+      || onboardingOpen
+      || productIntroOpen) return;
+    const frame = window.requestAnimationFrame(() => presentPendingAppUpdateResult());
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    hasPendingAppUpdateResult,
+    onboardingLoading,
+    onboardingOpen,
+    productIntroOpen,
+    presentPendingAppUpdateResult,
+  ]);
   // 切片订阅：每个 useStore 只取真正用到的字段，setter 走 useShallow 聚合。
   // 替代原来的 `useNoteStore()` / `useDocumentStore()` / `useSettingsStore()`
   // 全量订阅 —— 任何 set 都会让 MainLayout 整树重渲，跨菜单栏 / 状态栏 /
@@ -198,6 +200,48 @@ export function MainLayout({
     loadNotes,
     triggerRefresh,
   } = useShellMemoViewModel();
+  const [defaultCreateFolderState, setDefaultCreateFolderState] = useState<{
+    notebookId: string;
+    path: string | null;
+  } | null>(null);
+  const defaultCreateFolder = defaultCreateFolderState !== null
+    && selectedNotebook != null
+    && defaultCreateFolderState.notebookId === selectedNotebook.id
+    ? defaultCreateFolderState.path
+    : null;
+  useEffect(() => {
+    let current = true;
+    const refreshDefaultFolder = () => {
+      if (!selectedNotebook) return;
+      void files.getNotebookViewPreferences(selectedNotebook.path).then((preferences) => {
+        if (current) setDefaultCreateFolderState({
+          notebookId: selectedNotebook.id,
+          path: preferences.defaultCreateFolder ?? null,
+        });
+      }).catch((error) => {
+        logger.warn('load notebook default create folder for titlebar failed', { error, notebookId: selectedNotebook.id });
+        if (current) setDefaultCreateFolderState({ notebookId: selectedNotebook.id, path: null });
+      });
+    };
+    if (!selectedNotebook) {
+      setDefaultCreateFolderState(null);
+      return () => { current = false; };
+    }
+    refreshDefaultFolder();
+    const unsubscribe = subscribe<{ notebookPath: string; defaultCreateFolderChanged: boolean }>(
+      'notebook-view-preferences-changed',
+      ({ notebookPath, defaultCreateFolderChanged }) => {
+        if (defaultCreateFolderChanged
+          && canonicalDirectoryPath(notebookPath) === canonicalDirectoryPath(selectedNotebook.path)) {
+          refreshDefaultFolder();
+        }
+      },
+    );
+    return () => {
+      current = false;
+      unsubscribe();
+    };
+  }, [selectedNotebook?.id, selectedNotebook?.path]);
   const memoListView = useMemoListViewPreference();
   const isAgentConversationView = middleColumnView === 'conversations';
   const {
@@ -228,48 +272,18 @@ export function MainLayout({
     browserColumnVisible,
     browserColumnSplitRatio,
     setBrowserColumnSplitRatio,
-    focusWorkspaceHost,
     focusedHostId,
     notebookSwitching,
   } = useShellWorkspaceViewModel();
-  const [startupStatus, setStartupStatus] = useState<StartupStatus>({
-    phase: 'pending',
-    step: 'initializing',
-    error: null,
-  });
-  useEffect(() => {
-    if (!isTauriRuntime()) {
-      setStartupStatus({ phase: 'ready', step: 'ready', error: null });
-      return;
-    }
-
-    let active = true;
-    let timer: number | undefined;
-    const refresh = async () => {
-      try {
-        const next = await boot.getStartupStatus();
-        if (!active) return;
-        setStartupStatus(next);
-        if (next.phase === 'ready' || next.phase === 'failed') {
-          if (timer !== undefined) window.clearInterval(timer);
-          timer = undefined;
-        }
-      } catch {
-        // Browser preview and older native shells have no startup coordinator;
-        // they should retain the existing interactive behavior.
-        if (active) setStartupStatus({ phase: 'ready', step: 'ready', error: null });
-        if (timer !== undefined) window.clearInterval(timer);
-        timer = undefined;
-      }
-    };
-
-    void refresh();
-    timer = window.setInterval(() => void refresh(), 250);
-    return () => {
-      active = false;
-      if (timer !== undefined) window.clearInterval(timer);
-    };
-  }, []);
+  const nativeStartup = useWorkspaceStartupStore(useShallow((state) => ({
+    phase: state.nativePhase,
+    stage: state.nativeStage,
+    step: state.nativeStep,
+    error: state.nativeError,
+  })));
+  const workspaceStartup = useWorkspaceStartupStore();
+  // Native error UI remains in the layout; the root overlay owns all loading visuals.
+  const startupStatus = nativeStartup;
   const documentHistory = useShellDocumentHistory();
   const canNavigateBack = documentHistory.backStack.some((entry) => (
     isDifferentHistoryTarget(
@@ -322,7 +336,6 @@ export function MainLayout({
     openNoteNavigation();
   }, [openNoteNavigation, setMiddleColumnView]);
   const {
-    agentConversationListReady,
     shouldRenderAgentConversationList,
     showMemoListSurface,
     showAgentConversationSurface,
@@ -564,15 +577,12 @@ export function MainLayout({
       : null,
     emptyMessage: t('shell.emptyDocument'),
   });
-  const documentListTitle = useShellDocumentListTitle(
-    navigationState.target.kind === 'document-list'
-      ? {
-          notebookId: navigationState.target.scope.notebookId,
-          folderPath: navigationState.target.scope.path,
-          customFilterId: navigationState.target.filters.customFilterId ?? null,
-        }
-      : null,
-  );
+  const workSurfaceViewId = workColumnPresentation.content.status === 'surface'
+    ? workColumnPresentation.content.surface.instanceKey
+    : '';
+  const workRuntimePresentation = useWorkspaceSurfacePresentation(workSurfaceViewId);
+  const workCapabilities = workRuntimePresentation.capabilities ?? workColumnPresentation.capabilities;
+  const workHeaderStyle = workRuntimePresentation.appearance?.headerStyle ?? workColumnPresentation.chrome;
   const isAgentConversationDetail = workColumnPresentation.header.kind === 'agent';
   const workColumnLoadingTone = navigationState.phase === 'loading'
     ? navigationState.pendingTarget?.kind === 'agent-conversation'
@@ -581,10 +591,36 @@ export function MainLayout({
         ? 'media'
         : 'document'
     : workColumnPresentation.chrome;
+  const handleToggleDefaultFolder = useCallback(async (target: {
+    filePath: string;
+    notebookPath: string;
+    notebookId: string;
+  }) => {
+    const folderPath = parentDirectoryPath(target.filePath, target.notebookPath);
+    const relativeFolder = notebookRelativeDirectoryPath(target.notebookPath, folderPath);
+    if (relativeFolder === null) return;
+    try {
+      const preferences = await files.getNotebookViewPreferences(target.notebookPath);
+      const isDefaultFolder = (preferences.defaultCreateFolder ?? null) === relativeFolder;
+      const nextDefaultFolder = isDefaultFolder ? null : relativeFolder;
+      await files.setNotebookViewPreferences(target.notebookPath, {
+        ...preferences,
+        defaultCreateFolder: nextDefaultFolder,
+      });
+      setDefaultCreateFolderState({ notebookId: target.notebookId, path: nextDefaultFolder });
+      toast.success(t(isDefaultFolder
+        ? 'memo.fileTree.defaultCreateFolderCleared'
+        : 'memo.fileTree.defaultCreateFolderSet'));
+    } catch (error) {
+      logger.warn('set default create folder from collection titlebar failed', { error, folderPath });
+      toast.error(t('memo.fileTree.preferenceSaveFailed'));
+    }
+  }, [t]);
   const documentTitlebarProps = {
     reserveWindowsControls: !browserColumnVisible,
-    surfaceChrome: workColumnPresentation.chrome === 'media' ? 'media' as const : 'document' as const,
+    surfaceChrome: workHeaderStyle === 'media' ? 'media' as const : 'document' as const,
     showEditorFontSwitcher: workColumnPresentation.content.status === 'surface'
+      && workCapabilities.includes('edit')
       && workColumnPresentation.content.surface.kind === 'md',
     document: {
       // An artifact is allowed to sit above an existing editable session.
@@ -604,14 +640,15 @@ export function MainLayout({
       canNavigateForward,
       onNavigateBack: handleNavigateBack,
       onNavigateForward: handleNavigateForward,
-      title: documentListTitle,
+      title: workRuntimePresentation.title,
+      icon: workRuntimePresentation.icon,
     },
     contentCapabilities: {
-      copyFullText: workColumnPresentation.capabilities.includes('copy-content'),
-      memoColors: workColumnPresentation.capabilities.includes('memo-colors'),
-      exportContent: workColumnPresentation.capabilities.includes('export-content'),
-      saveAsTemplate: workColumnPresentation.capabilities.includes('save-template'),
-      versionHistory: workColumnPresentation.capabilities.includes('version-history'),
+      copyFullText: workCapabilities.includes('copy-content'),
+      memoColors: workCapabilities.includes('memo-colors'),
+      exportContent: workCapabilities.includes('export-content'),
+      saveAsTemplate: workCapabilities.includes('save-template'),
+      versionHistory: workCapabilities.includes('version-history'),
     },
     actions: {
       onCopyLink: handleCopyLink,
@@ -637,6 +674,19 @@ export function MainLayout({
       && navigationState.target.notebookId
       ? {
           current: navigationState.target.collectionType,
+          isDefaultFolder: defaultCreateFolderState?.notebookId === navigationState.target.notebookId
+            && notebookRelativeDirectoryPath(
+              navigationState.target.notebookPath,
+              parentDirectoryPath(navigationState.target.filePath, navigationState.target.notebookPath),
+            ) === defaultCreateFolder,
+          onToggleDefaultFolder: () => {
+            const target = navigationState.target;
+            if (target.kind === 'collection') void handleToggleDefaultFolder({
+              filePath: target.filePath,
+              notebookPath: target.notebookPath,
+              notebookId: target.notebookId,
+            });
+          },
           onSelect: (type: 'table' | 'media_library') => {
             const target = navigationState.target;
             if (target.kind !== 'collection' || target.collectionType === type) return;
@@ -687,7 +737,12 @@ export function MainLayout({
             onOpenPreferences={(tab) => void windows.openPreferences(tab)}
             onPreviewEnter={handleMemoListPreviewEnter}
             onPreviewLeave={handleMemoListPreviewLeave}
-            onPointerDown={() => focusWorkspaceHost('main-third')}
+            onPointerDown={(event) => {
+              if (event.button !== 0) return;
+              const target = event.target;
+              if (target instanceof Element && target.closest('[data-folder-selection]')) return;
+              focusWorkspaceHostFromEvent(event, 'main-third');
+            }}
           >
             <ListColumnContent
               activeView={middleColumnView === 'conversations'
@@ -703,7 +758,6 @@ export function MainLayout({
               }}
               navigationDrawerOpen={noteNavigationPhase !== 'closed'}
               onToggleNavigationDrawer={handleToggleNoteNavigation}
-              conversationLoading={isAgentConversationView && !agentConversationListReady}
             >
                 <div
                   className={`absolute inset-0 ${
@@ -756,8 +810,8 @@ export function MainLayout({
                 : { minWidth: DOCUMENT_PANEL_MIN_WIDTH, flex: 1 }}
               data-workspace-host="main-third"
               data-workspace-focused={focusedHostId === 'main-third' ? '' : undefined}
-              onPointerDown={() => focusWorkspaceHost('main-third')}
-              onFocusCapture={() => focusWorkspaceHost('main-third')}
+              onPointerDown={(event) => focusWorkspaceHostFromEvent(event, 'main-third')}
+              onFocusCapture={(event) => focusWorkspaceHostFromEvent(event, 'main-third')}
             >
             {isMemoListHidden && (
               <button
@@ -842,7 +896,11 @@ export function MainLayout({
                   </Button>
                 </div>
               )}
-              <WorkColumnContentHost content={workColumnPresentation.content} />
+              <WorkColumnContentHost
+                content={workColumnPresentation.content}
+                focused={focusedHostId === 'main-third'}
+                startupIdentity={JSON.stringify(navigationState.target)}
+              />
               {(isDocumentTransitioning
                 || (navigationState.phase === 'loading' && navigationState.showWorkColumnLoading)) && (
                 <CenteredLoadingSpinner
@@ -877,7 +935,6 @@ export function MainLayout({
             onOpenTagPanel={handleOpenTagPanel}
             productIntroOpen={productIntroOpen}
             onProductIntroOpenChange={setProductIntroOpen}
-            dshDownload={dshDownload}
             updater={updater}
           />
         </div>
@@ -896,42 +953,42 @@ export function MainLayout({
         suppressEmptyNotebookPrompt={onboardingLoading || onboardingOpen}
       />
 
-      <MainPromptHost
-        updater={updater}
-        dshInstallPromptOpen={dshInstallPromptOpen}
-        dshInstaller={dshInstaller}
-        onCloseDshInstallPrompt={handleDshPromptClose}
-        onDshIntroDisplayed={handleDshIntroDisplayed}
-        onDshInstalled={handleDshInstalled}
-      />
-
-      {(startupStatus.phase !== 'ready'
-        || memoStartupPhase === 'idle'
-        || memoStartupPhase === 'loading'
+      {(startupStatus.phase === 'failed'
+        || workspaceStartup.status === 'failed'
         || (memoStartupPhase === 'error' && (!showMemoListSurface || isMemoListHidden))) && (
         <div className="absolute inset-0 z-[100] flex items-center justify-center bg-[var(--frame-bg)]">
           {startupStatus.phase === 'failed' ? (
-            <div className="max-w-md px-6 text-center text-sm text-[var(--muted-foreground)]" role="alert">
-              {t('memo.navigation.startupMigrationFailed')}
-            </div>
-          ) : memoStartupPhase === 'error' ? (
-            <div className="flex max-w-md flex-col items-center gap-3 px-6 text-center" role="alert">
-              <span className="text-sm text-[var(--muted-foreground)]">{t('memo.list.loadFailed')}</span>
-              <Button size="sm" onClick={() => window.location.reload()}>{t('error.retry')}</Button>
+            <div className="flex max-w-md flex-col items-center gap-3 px-6 text-center text-sm text-[var(--muted-foreground)]" role="alert">
+              {t(startupStatus.stage === 'workspacePreparation'
+                ? 'memo.navigation.workspacePreparationFailed'
+                : 'memo.navigation.startupMigrationFailed')}
+              {startupStatus.error && <span className="max-h-40 overflow-auto break-words">{startupStatus.error}</span>}
+              <Button size="sm" className="rounded-lg" onClick={() => {
+                void boot.retryStartup().then(() => window.location.reload()).catch((error) => {
+                  useWorkspaceStartupStore.setState({ nativeError: String(error) });
+                });
+              }}>{t('error.retry')}</Button>
             </div>
           ) : (
-            <CenteredLoadingSpinner label={t('memo.navigation.preparingWorkspace')} />
+            <div className="flex max-w-md flex-col items-center gap-3 px-6 text-center" role="alert">
+              <span className="text-sm text-[var(--muted-foreground)]">{t(workspaceStartup.status === 'failed'
+                ? 'memo.navigation.workspacePreparationFailed'
+                : 'memo.list.loadFailed')}</span>
+              {workspaceStartup.error && <span className="max-h-40 overflow-auto break-words text-sm text-[var(--muted-foreground)]">{workspaceStartup.error}</span>}
+              <Button size="sm" className="rounded-lg" onClick={() => window.location.reload()}>{t('error.retry')}</Button>
+            </div>
           )}
         </div>
       )}
 
       {onboardingOpen && (
         <OnboardingScreen
-          onFinish={async (notebook, { startImport }) => {
-            await finishOnboardingNotebook(notebook, { startImport }, {
+          onFinish={async (notebook, { startImport, templateId }) => {
+            await finishOnboardingNotebook(notebook, { startImport, templateId }, {
               completeOnboarding,
               failureTitle: t('notebook.setup.failed'),
               retryLabel: t('error.retry'),
+              overwriteConfirmMessage: t('notebook.template.overwriteConfirm'),
             });
             showProductIntroAfterOnboarding();
           }}

@@ -372,7 +372,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
       case 'duplicate-key':
         return this.t('document.properties.duplicateKey');
       case 'reserved-key':
-        return this.t('document.properties.picker.reservedKeyError', { key: 'flowix_key' });
+        return this.t('document.properties.picker.reservedKeyError', { key: 'flowix_property_types' });
       case 'invalid-tag':
         return this.t('document.properties.invalidTag');
       case 'invalid-color':
@@ -1174,7 +1174,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
     const createControl = (kind: PropertyEditKind, value: string): PropertyEditControl => {
       if (kind === 'Boolean') {
         const label = createElement('label', 'frontmatter-property__edit-checkbox-label');
-        const checkbox = createElement('input', 'frontmatter-property__edit-checkbox');
+        const checkbox = createElement('input', 'frontmatter-property__edit-checkbox flowix-hand-checkbox-input');
         checkbox.type = 'checkbox';
         checkbox.checked = value.trim() === 'true';
         checkbox.setAttribute('aria-label', property.key);
@@ -1495,7 +1495,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
           return createSelectControl(value);
         }
         const label = createElement('label', 'frontmatter-property__edit-checkbox-label');
-        const checkbox = createElement('input', 'frontmatter-property__edit-checkbox');
+        const checkbox = createElement('input', 'frontmatter-property__edit-checkbox flowix-hand-checkbox-input');
         checkbox.type = 'checkbox';
         checkbox.checked = value.trim() === 'true';
         checkbox.setAttribute('aria-label', property.key);
@@ -2001,7 +2001,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
     }
 
     if (kind === 'boolean') {
-      const checkbox = createElement('input', 'frontmatter-property__value-checkbox');
+      const checkbox = createElement('input', 'frontmatter-property__value-checkbox flowix-hand-checkbox-input');
       checkbox.type = 'checkbox';
       checkbox.checked = property.value === true;
       checkbox.disabled = !this.view.editable;

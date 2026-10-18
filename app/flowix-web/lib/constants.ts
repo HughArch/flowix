@@ -30,7 +30,9 @@ export function isTextFile(fileName: string): boolean {
 export const STORAGE_KEYS = {
   CHAT: 'flowix-chat-storage',
   AGENT_SESSION: 'flowix-agent-session-storage',
+  AGENT_DATA: 'flowix-agent-data-storage',
   AGENT_CONVERSATIONS: 'flowix-agent-conversations',
+  AGENT_MESSAGE_FONT: 'flowix-agent-message-font',
   SETTINGS: 'flowix-settings',
   TAG: 'flowix-tag',
   NOTE: 'flowix-note-storage',
@@ -220,7 +222,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   format: {
     fontFamily: FONT_FAMILY_OPTIONS[0].value,
     fontId: FONT_FAMILY_OPTIONS[0].id,
-    fontSize: 15,
+    fontSize: 16,
     lineHeight: 1.8,
     documentWidth: DOCUMENT_WIDTH_DEFAULT,
   },

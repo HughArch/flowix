@@ -308,20 +308,20 @@ mod tests {
         let manager = ThreadManager::for_tests();
         let first = manager
             .ensure_thread(
-                "gemini-local-1",
-                AgentId("gemini".to_string()),
+                "codex-local-1",
+                AgentId("codex".to_string()),
                 "first title".to_string(),
             )
             .await
             .unwrap();
-        assert_eq!(first.thread_id, "gemini-local-1");
-        assert_eq!(first.agent_id.0, "gemini");
+        assert_eq!(first.thread_id, "codex-local-1");
+        assert_eq!(first.agent_id.0, "codex");
         assert_eq!(first.title, "first title");
 
         let second = manager
             .ensure_thread(
-                "gemini-local-1",
-                AgentId("gemini".to_string()),
+                "codex-local-1",
+                AgentId("codex".to_string()),
                 "second title".to_string(),
             )
             .await
@@ -550,14 +550,14 @@ mod tests {
             Some("Notes/Renamed.md")
         );
         let conn = manager.lock_conn();
-        let source_id: Option<String> = conn
-            .query_row(
-                "SELECT source_memo_id FROM agent_conversation_instances WHERE instance_id = ?1",
-                ["path-role"],
-                |row| row.get(0),
-            )
+        let columns = conn
+            .prepare("PRAGMA table_info(agent_conversation_instances)")
+            .unwrap()
+            .query_map([], |row| row.get::<_, String>(1))
+            .unwrap()
+            .collect::<Result<Vec<_>, _>>()
             .unwrap();
-        assert!(source_id.is_none());
+        assert!(!columns.iter().any(|column| column == "source_memo_id"));
     }
 
     #[tokio::test]
@@ -1368,31 +1368,38 @@ mod tests {
     }
 
     #[test]
-    fn migration_removes_persisted_role_file_selection() {
+    fn migration_drops_retired_role_note_columns() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("thread.db");
         drop(ThreadManager::new(db_path.clone()).expect("create database"));
         let conn = rusqlite::Connection::open(&db_path).expect("open database");
         conn.execute_batch(
-            "INSERT INTO agent_conversation_instances
-                (instance_id, agent_type, source_kind, role_memo_id, role_address, role_name, created_at, updated_at)
-             VALUES ('legacy-role', 'codex', 'dedicated', 'old-id', 'nb::Role.md', 'Role', 1, 1);
+            "ALTER TABLE agent_conversation_instances ADD COLUMN role_address TEXT;
+             ALTER TABLE agent_conversation_instances ADD COLUMN role_name TEXT;
+             ALTER TABLE agent_instances ADD COLUMN role_address TEXT;
+             ALTER TABLE agent_instances ADD COLUMN role_name TEXT;
+             INSERT INTO agent_conversation_instances
+                (instance_id, agent_type, source_kind, role_address, role_name, created_at, updated_at)
+             VALUES ('legacy-role', 'codex', 'dedicated', 'nb::Role.md', 'Role', 1, 1);
              INSERT INTO agent_instances
-                (id, agent, source, role_memo_id, role_address, role_name, created_at, updated_at)
-             VALUES ('legacy-role', 'codex', 'dedicated', 'old-id', 'nb::Role.md', 'Role', 1, 1);
-             PRAGMA user_version = 10;",
+                (id, agent, source, role_address, role_name, created_at, updated_at)
+             VALUES ('legacy-role', 'codex', 'dedicated', 'nb::Role.md', 'Role', 1, 1);
+             PRAGMA user_version = 15;",
         ).expect("seed previous role data");
         drop(conn);
 
         drop(ThreadManager::new(db_path.clone()).expect("migrate role data"));
         let conn = rusqlite::Connection::open(&db_path).expect("open migrated database");
         for table in ["agent_conversation_instances", "agent_instances"] {
-            let remaining: i64 = conn.query_row(
-                &format!("SELECT count(*) FROM {table} WHERE role_memo_id IS NOT NULL OR role_address IS NOT NULL OR role_name IS NOT NULL"),
-                [],
-                |row| row.get(0),
-            ).expect("read cleared roles");
-            assert_eq!(remaining, 0);
+            let columns = conn
+                .prepare(&format!("PRAGMA table_info({table})"))
+                .expect("inspect migrated columns")
+                .query_map([], |row| row.get::<_, String>(1))
+                .expect("query migrated columns")
+                .collect::<Result<Vec<_>, _>>()
+                .expect("collect migrated columns");
+            assert!(!columns.iter().any(|column| column == "role_address"));
+            assert!(!columns.iter().any(|column| column == "role_name"));
         }
     }
 
@@ -1438,7 +1445,7 @@ mod tests {
     }
 
     #[test]
-    fn newer_thread_schema_is_rejected() {
+    fn newer_thread_schema_is_rejected_without_rebuilding_user_data() {
         let dir = tempfile::tempdir().expect("tempdir");
         let db_path = dir.path().join("thread.db");
         let conn = rusqlite::Connection::open(&db_path).expect("open database");
@@ -1450,17 +1457,11 @@ mod tests {
         .expect("set future schema version");
         drop(conn);
 
-        let error = match ThreadManager::new(db_path) {
-            Ok(_) => panic!("future schema must be rejected"),
-            Err(error) => error,
-        };
-        assert!(matches!(
-            error,
-            crate::agent_session::error::ThreadError::UnsupportedSchemaVersion {
-                found,
-                supported
-            } if found == supported + 1
-        ));
+        assert!(ThreadManager::new(db_path.clone()).is_err());
+        assert!(!dir.path().join("rebuild-backups").exists());
+        let preserved = rusqlite::Connection::open(db_path).unwrap();
+        let version: i64 = preserved.pragma_query_value(None, "user_version", |row| row.get(0)).unwrap();
+        assert_eq!(version, crate::agent_session::migrations::THREAD_DB_SCHEMA_VERSION + 1);
     }
 
     #[tokio::test]

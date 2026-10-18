@@ -1,63 +1,18 @@
-import { CodeBlock } from '@tiptap/extension-code-block';
 import { createCodeBlockShikiView } from '@features/editor/extensions/codeblock-shiki/codeblock-shiki-view';
 import { proseMirrorPluginShiki } from '@features/editor/extensions/codeblock-shiki/shiki/shiki-plugin';
 import { TextSelection } from '@tiptap/pm/state';
+import {
+  CodeBlockShikiBase,
+  SHIKI_DEFAULT_LANGUAGE,
+  SHIKI_DEFAULT_THEME,
+  type ShikiCodeBlockOptions,
+} from './codeblock-shiki-base';
 
-const defaultTheme = 'github-light'
-const defaultLanguage = 'plaintext'
-const languageClassPrefix = 'language-'
+/** Shiki themes preloaded for synchronous theme changes after editor mount. */
+const PRELOADED_SHIKI_THEMES = ['github-light', 'github-dark'] as const;
 
-interface ShikiCodeBlockOptions {
-  defaultTheme: string;
-  traceId?: number | null;
-}
-
-/** Shiki 主题白名单 — 与 styles/theme/*.css 中 --shiki-theme 的取值一一对应
- *  (github-light 亮色 / github-dark 暗色)。这里预加载全部 2 个, 切换主题时
- *  getDecorations() 同步可用, 无 async lag / 无 flash。 */
-const PRELOADED_SHIKI_THEMES = [
-  'github-light',
-  'github-dark',
-] as const;
-
-function getLanguageFromElement(element: HTMLElement): string | null {
-  const codeElement = element.matches('code') ? element : element.querySelector('code');
-  const languageClass = Array.from(codeElement?.classList || [])
-    .find(className => className.startsWith(languageClassPrefix));
-
-  return languageClass?.replace(languageClassPrefix, '') || null;
-}
-
-export const CodeBlockShiki = CodeBlock.extend<ShikiCodeBlockOptions>({
-  addOptions() {
-    return {
-      ...this.parent?.(),
-      defaultLanguage,
-      defaultTheme,
-      traceId: null,
-    };
-  },
-
-  addAttributes() {
-    return {
-      ...this.parent?.(),
-      language: {
-        default: defaultLanguage,
-        parseHTML: (element) => {
-          return element.getAttribute('data-language') || getLanguageFromElement(element) || null;
-        },
-        renderHTML: (attributes) => {
-          if (attributes.language === defaultLanguage) return {};
-          return { 'data-language': attributes.language };
-        },
-      },
-      theme: {
-        default: defaultTheme,
-        parseHTML: element => element.getAttribute('data-theme'),
-      },
-    };
-  },
-
+/** Browser editor behavior layered over the worker-safe document extension. */
+export const CodeBlockShiki = CodeBlockShikiBase.extend<ShikiCodeBlockOptions>({
   addNodeView() {
     return (...args) => createCodeBlockShikiView(...args);
   },
@@ -95,8 +50,8 @@ export const CodeBlockShiki = CodeBlock.extend<ShikiCodeBlockOptions>({
       ...plugins,
       proseMirrorPluginShiki({
         name: this.name,
-        defaultLanguage,
-        defaultTheme,
+        defaultLanguage: SHIKI_DEFAULT_LANGUAGE,
+        defaultTheme: SHIKI_DEFAULT_THEME,
         preloadThemes: [...PRELOADED_SHIKI_THEMES],
         traceId: this.options.traceId,
       }),

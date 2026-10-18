@@ -91,7 +91,7 @@ describe('rename B updates the Markdown reference in A', () => {
     const reopened = editor();
     reopened.commands.setContent(getDocumentBuffer(identity).content, { contentType: 'markdown' });
     expect(reopened.state.doc.firstChild?.firstChild?.attrs.relativePath).toBe('教学方案/简介2.md');
-    expect(reopened.view.dom.querySelector('.editor-note-reference__title')?.textContent).toBe('简介2');
+    expect(reopened.view.dom.querySelector('.note-reference__title')?.textContent).toBe('简介2');
 
     // A persisted chain must reach the final filename in one pass.
     expect(await rewriteNoteLinkMoves([

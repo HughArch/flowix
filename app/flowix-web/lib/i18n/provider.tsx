@@ -28,7 +28,7 @@ interface I18nContextValue {
 
 const I18nContext = createContext<I18nContextValue>({
   language: DEFAULT_APP_LANGUAGE,
-  t: (key) => getMessages(DEFAULT_APP_LANGUAGE)[key],
+  t: (key, params) => interpolate(getMessages(DEFAULT_APP_LANGUAGE)[key], params),
 });
 
 export function I18nProvider({

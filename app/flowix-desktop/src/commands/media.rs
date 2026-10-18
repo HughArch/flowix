@@ -16,7 +16,7 @@ use flowix_core::memo_file::{
 use crate::app::state::AppState;
 use crate::lock_utils::read_lock;
 
-use super::helpers::{can_access_scoped_file, start_security_bookmark_access};
+use super::helpers::can_access_scoped_file;
 
 fn registered_notebook_for_path(
     memo_file: &MemoFile,
@@ -131,7 +131,6 @@ pub async fn get_media_resource(
         let resource = memo_file
             .ensure_media_resource(&notebook_id, &relative, kind, &file)
             .map_err(|error| error.to_string())?;
-        start_security_bookmark_access(&state, &file);
         Ok(MediaResourceResponse { resource })
     }).await?
 }
@@ -207,7 +206,6 @@ pub async fn delete_media_resource(
         let resource = memo_file
             .ensure_media_resource(&notebook_id, &relative, kind, &file)
             .map_err(|error| error.to_string())?;
-        start_security_bookmark_access(&state, &file);
         memo_file
             .delete_file_for_notebook(&notebook_id, &file)
             .map_err(|error| error.to_string())?;

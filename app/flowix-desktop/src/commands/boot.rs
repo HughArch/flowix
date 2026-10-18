@@ -2,7 +2,7 @@ use serde::Serialize;
 use std::sync::Arc;
 use tauri::{Manager, State};
 
-use crate::app::startup::StartupStatus;
+use crate::app::startup::{StartupPhase, StartupStatus};
 use crate::app::state::AppState;
 use crate::device_registration::DeviceRegistry;
 
@@ -11,7 +11,6 @@ use crate::device_registration::DeviceRegistry;
 pub struct BootFeatures {
     pub experimental: bool,
     pub is_introduct_displayed: bool,
-    pub is_onboarding_completed: bool,
 }
 
 #[tauri::command]
@@ -19,7 +18,6 @@ pub fn get_boot_features(registry: State<'_, Arc<DeviceRegistry>>) -> BootFeatur
     BootFeatures {
         experimental: registry.experimental(),
         is_introduct_displayed: registry.is_introduct_displayed(),
-        is_onboarding_completed: registry.is_onboarding_completed(),
     }
 }
 
@@ -29,10 +27,35 @@ pub fn set_boot_intro_displayed(registry: State<'_, Arc<DeviceRegistry>>) -> Res
 }
 
 #[tauri::command]
-pub fn set_boot_onboarding_completed(
+pub fn get_version_initialization_completed(
     registry: State<'_, Arc<DeviceRegistry>>,
+) -> Result<bool, String> {
+    if !crate::commands::product::is_dev_build() {
+        return Err(
+            "version initialization settings are only available in a development build".to_string(),
+        );
+    }
+    Ok(registry.is_version_initialization_complete())
+}
+
+#[tauri::command]
+pub fn set_version_initialization_completed(
+    completed: bool,
+    registry: State<'_, Arc<DeviceRegistry>>,
+    state: State<'_, AppState>,
 ) -> Result<(), String> {
-    registry.set_onboarding_completed(true)
+    if !crate::commands::product::is_dev_build() {
+        return Err(
+            "version initialization settings are only available in a development build".to_string(),
+        );
+    }
+    if matches!(
+        state.startup.status().phase,
+        StartupPhase::Pending | StartupPhase::Running
+    ) {
+        return Err("version initialization cannot be edited while startup is running".to_string());
+    }
+    registry.set_version_initialization_completed(completed)
 }
 
 #[tauri::command]
@@ -60,15 +83,20 @@ pub fn record_startup_stage(
     const ALLOWED: &[&str] = &[
         "native-ready",
         "notebook-selected",
-        "first-memo-query-ready",
-        "workspace-restored",
-        "initial-document-settled",
-        "initial-document-skipped",
-        "initial-document-superseded",
-        "initial-document-timeout",
         "first-workspace-paint",
+        "stage3-admitted",
+        "workspace-restore-settled",
+        "workspace-restore-superseded",
+        "foreground-degraded-paint",
+        "foreground-failed-paint",
     ];
-    if !ALLOWED.contains(&stage.as_str()) {
+    // Keep task-event identifiers bounded; task IDs contain only ASCII letters
+    // and separators.
+    let task_event = stage.starts_with("task:")
+        && stage.len() <= 96
+        && stage.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_:".contains(&b))
+        && [":start", ":complete", ":failed"].iter().any(|suffix| stage.ends_with(*suffix));
+    if !ALLOWED.contains(&stage.as_str()) && !task_event {
         return;
     }
     if startup_attempt_id.len() > 64 || !startup_attempt_id.is_ascii() {
@@ -93,4 +121,9 @@ pub async fn wait_for_startup_ready(app: tauri::AppHandle) -> Result<(), String>
     tauri::async_runtime::spawn_blocking(move || app.state::<AppState>().startup.wait_until_ready())
         .await
         .map_err(|error| format!("startup wait task failed: {error}"))?
+}
+
+#[tauri::command]
+pub fn retry_startup(state: State<'_, AppState>) -> Result<(), String> {
+    state.startup.request_retry()
 }

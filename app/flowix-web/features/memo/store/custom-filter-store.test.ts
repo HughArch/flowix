@@ -4,7 +4,7 @@ import { memoMatchesCustomFilter, type CustomFilter } from './custom-filter-stor
 import type { MemoItem } from '@/types/memo-item';
 
 const memo: MemoItem = {
-  id: 'memo-1',
+  relativePath: 'note.md',
   filename: 'note.md',
   preview: '',
   tags: [],

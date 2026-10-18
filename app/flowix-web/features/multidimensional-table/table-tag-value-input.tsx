@@ -211,7 +211,7 @@ export function TableTagValueInput({
     <PopoverContent
       align="start"
       sideOffset={4}
-      className="frontmatter-property__edit-popover rounded-xl p-1"
+      className="frontmatter-property__edit-popover !z-[170] rounded-xl p-1"
       matchAnchorWidth={1.2}
       style={{ maxWidth: 'calc(100vw - 8px)', maxHeight: '280px', overflowY: 'auto' }}
     >

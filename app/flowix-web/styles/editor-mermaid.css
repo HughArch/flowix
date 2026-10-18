@@ -41,14 +41,14 @@
   display: block;
   margin: 0 auto;
   color: var(--foreground);
-  font-family: var(--app-font-family), var(--font-sans), sans-serif !important;
+  font-family: var(--editor-font-family), var(--font-sans), sans-serif !important;
 }
 
 /* SVG 全部后代字体统一 ── mermaid 默认走 SF / Helvetica, 这里
  * 强制走应用字体, 让图表文字与编辑器正文视觉一致。 */
 .mermaid-surface svg,
 .mermaid-surface svg * {
-  font-family: var(--app-font-family), var(--font-sans), sans-serif !important;
+  font-family: var(--editor-font-family), var(--font-sans), sans-serif !important;
 }
 
 /* ── 文字 / label 字号 ─────────────────────────────────────────

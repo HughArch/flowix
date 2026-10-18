@@ -22,7 +22,8 @@ export const memoDocumentOperations = {
       expectedFilename: request.expectedFilename,
       expectedContent: request.expectedContent,
     });
-    if (result.path !== request.path) updateNoteLinksAfterMove(request.path, result.path);
+    // Modern results are applied by the shared notebook-change subscription.
+    if (!result.notebookChange && result.path !== request.path) updateNoteLinksAfterMove(request.path, result.path);
     return result;
   },
 } satisfies Pick<EditableDocumentOperations, 'read' | 'write'> & {

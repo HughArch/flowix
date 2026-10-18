@@ -66,8 +66,8 @@ export const notebookRepository = {
     notebooks.getTemplateSetupStatus(notebookId),
   startTemplateSetup: (notebookId: string, retry = false) =>
     notebooks.startTemplateSetup(notebookId, retry),
-  createFromCloud: (id: string, name: string, path: string, icon?: string | null) =>
-    notebooks.createFromCloud(id, name, path, icon),
+  createFromCloud: (id: string, name: string, path: string, icon?: string | null, activate = true) =>
+    notebooks.createFromCloud(id, name, path, icon, activate),
   startImport: (notebookId: string) => notebooks.startImport(notebookId),
   getImportStatus: (notebookId: string) => notebooks.getImportStatus(notebookId),
   update: (id: string, name?: string, icon?: string | null) =>

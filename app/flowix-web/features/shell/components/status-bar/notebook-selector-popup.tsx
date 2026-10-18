@@ -2,23 +2,17 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import { createPortal } from 'react-dom';
-import { ChevronsUpDown, MoreVertical, Pencil, Plus, Trash2, X } from 'lucide-react';
+import { ChevronsUpDown, Plus } from 'lucide-react';
+import { PencilSimpleIcon, StarIcon, TrashSimpleIcon } from '@phosphor-icons/react';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger,
-} from '@shared/ui/dropdown-menu';
 import { notebooks as notebooksClient } from '@platform/tauri/client';
 import { NotebookIcon } from '@features/memo/components/notebook-icon';
+import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
+import { Button } from '@shared/ui/button';
 import { useNoteStore, type Notebook } from '@features/memo/store/note-store';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
-import { WindowsTitlebarControls } from '@shared/window-titlebar-controls';
-import { isMac } from '@features/shortcuts';
-import { OnboardingTitlebarMac } from '@features/onboarding/onboarding-titlebar-mac';
 
 export interface NotebookSelectorPopupProps {
   open: boolean;
@@ -57,12 +51,12 @@ interface PointerState {
 }
 
 interface DragGeometry {
-  cardRects: Map<string, DOMRect>;
+  itemRects: Map<string, DOMRect>;
   viewportRect: DOMRect | null;
 }
 
 const DRAG_THRESHOLD_PX = 4;
-const NOTEBOOK_CARD_SIZE_CLASS = 'h-[165px] w-[144px] shrink-0';
+const NOTEBOOK_ITEM_CLASS = 'w-full shrink-0';
 
 function reorderNotebookIds(
   notebooks: Notebook[],
@@ -108,62 +102,76 @@ export function NotebookSelectorPopup({
 }: NotebookSelectorPopupProps) {
   const { t } = useI18n();
   const reorderNotebooks = useNoteStore((state) => state.reorderNotebooks);
-  const cardRefs = useRef(new Map<string, HTMLDivElement>());
-  const listViewportRef = useRef<HTMLElement>(null);
-  const previousCardRectsRef = useRef(new Map<string, DOMRect>());
-  const cardAnimationsRef = useRef(new Map<string, Animation>());
+  const itemRefs = useRef(new Map<string, HTMLDivElement>());
+  const listViewportRef = useRef<HTMLDivElement>(null);
+  const previousItemRectsRef = useRef(new Map<string, DOMRect>());
+  const itemAnimationsRef = useRef(new Map<string, Animation>());
   const pointerRef = useRef<PointerState | null>(null);
   const dragGeometryRef = useRef<DragGeometry | null>(null);
   const refreshRequestRef = useRef(0);
   const pendingAfterCloseRef = useRef<(() => void) | null>(null);
+  const searchComposingRef = useRef(false);
   const [draggingId, setDraggingId] = useState<string | null>(null);
   const [dropTarget, setDropTarget] = useState<DropTarget | null>(null);
   const [ghost, setGhost] = useState<PointerState | null>(null);
+  const [searchQuery, setSearchQuery] = useState('');
+  const [filterQuery, setFilterQuery] = useState('');
+  const normalizedSearchQuery = filterQuery.trim().toLocaleLowerCase();
   const notebooksById = useMemo(
     () => new Map(notebooks.map((notebook) => [notebook.id, notebook] as const)),
     [notebooks],
   );
   const previewNotebookIds = useMemo(
-    () => draggingId
-      ? reorderNotebookIds(notebooks, draggingId, dropTarget)
-      : notebooks.map((notebook) => notebook.id),
-    [draggingId, dropTarget, notebooks],
+    () => {
+      if (normalizedSearchQuery) {
+        return notebooks
+          .filter((notebook) => (
+            notebook.name.toLocaleLowerCase().includes(normalizedSearchQuery) ||
+            notebook.path.toLocaleLowerCase().includes(normalizedSearchQuery)
+          ))
+          .map((notebook) => notebook.id);
+      }
+      return draggingId
+        ? reorderNotebookIds(notebooks, draggingId, dropTarget)
+        : notebooks.map((notebook) => notebook.id);
+    },
+    [draggingId, dropTarget, notebooks, normalizedSearchQuery],
   );
 
   useLayoutEffect(() => {
     const nextRects = new Map<string, DOMRect>();
-    for (const [id, card] of cardRefs.current) {
-      const activeAnimation = cardAnimationsRef.current.get(id);
-      const visualRect = activeAnimation ? card.getBoundingClientRect() : null;
+    for (const [id, item] of itemRefs.current) {
+      const activeAnimation = itemAnimationsRef.current.get(id);
+      const visualRect = activeAnimation ? item.getBoundingClientRect() : null;
       activeAnimation?.cancel();
-      cardAnimationsRef.current.delete(id);
-      const nextRect = card.getBoundingClientRect();
+      itemAnimationsRef.current.delete(id);
+      const nextRect = item.getBoundingClientRect();
       nextRects.set(id, nextRect);
-      const previousRect = visualRect ?? previousCardRectsRef.current.get(id);
-      if (!previousRect || typeof card.animate !== 'function') continue;
+      const previousRect = visualRect ?? previousItemRectsRef.current.get(id);
+      if (!previousRect || typeof item.animate !== 'function') continue;
       const deltaX = previousRect.left - nextRect.left;
       const deltaY = previousRect.top - nextRect.top;
       if (Math.abs(deltaX) < 1 && Math.abs(deltaY) < 1) continue;
-      const animation = card.animate(
+      const animation = item.animate(
         [
           { transform: `translate3d(${deltaX}px, ${deltaY}px, 0)` },
           { transform: 'translate3d(0, 0, 0)' },
         ],
         { duration: 180, easing: 'cubic-bezier(0.2, 0.8, 0.2, 1)' },
       );
-      cardAnimationsRef.current.set(id, animation);
+      itemAnimationsRef.current.set(id, animation);
       animation.addEventListener('finish', () => {
-        if (cardAnimationsRef.current.get(id) === animation) {
-          cardAnimationsRef.current.delete(id);
+        if (itemAnimationsRef.current.get(id) === animation) {
+          itemAnimationsRef.current.delete(id);
         }
       }, { once: true });
     }
-    previousCardRectsRef.current = nextRects;
+    previousItemRectsRef.current = nextRects;
   }, [previewNotebookIds]);
 
   useEffect(() => () => {
-    for (const animation of cardAnimationsRef.current.values()) animation.cancel();
-    cardAnimationsRef.current.clear();
+    for (const animation of itemAnimationsRef.current.values()) animation.cancel();
+    itemAnimationsRef.current.clear();
   }, []);
 
   const refreshNotebooks = useCallback(async () => {
@@ -177,12 +185,31 @@ export function NotebookSelectorPopup({
     }
   }, [onRefresh]);
 
+  const toggleNotebookPinned = useCallback(async (notebook: Notebook) => {
+    const pinned = !notebook.pinned;
+    try {
+      const updated = await notebooksClient.setPinned(notebook.id, pinned);
+      if (!updated) throw new Error('Notebook pin state was not updated');
+      await refreshNotebooks();
+    } catch {
+      toast.error(t('memo.list.notebookMenu.pinFailed'));
+    }
+  }, [refreshNotebooks, t]);
+
   useEffect(() => () => {
     refreshRequestRef.current += 1;
   }, []);
 
   useEffect(() => {
     if (open) pendingAfterCloseRef.current = null;
+  }, [open]);
+
+  useEffect(() => {
+    if (!open) {
+      searchComposingRef.current = false;
+      setSearchQuery('');
+      setFilterQuery('');
+    }
   }, [open]);
 
   const closeThen = useCallback((afterClose: () => void) => {
@@ -217,7 +244,7 @@ export function NotebookSelectorPopup({
       ) {
         return null;
       }
-      const sourceRect = geometry.cardRects.get(sourceId);
+      const sourceRect = geometry.itemRects.get(sourceId);
       if (
         sourceRect &&
         x >= sourceRect.left && x <= sourceRect.right &&
@@ -230,7 +257,7 @@ export function NotebookSelectorPopup({
 
       for (const notebook of notebooks) {
         if (notebook.id === sourceId) continue;
-        const rect = geometry.cardRects.get(notebook.id);
+        const rect = geometry.itemRects.get(notebook.id);
         if (!rect) continue;
         if (
           rect.right < viewportRect.left || rect.left > viewportRect.right ||
@@ -240,7 +267,7 @@ export function NotebookSelectorPopup({
         const centerX = rect.left + rect.width / 2;
         const centerY = rect.top + rect.height / 2;
         const distance = Math.hypot(x - centerX, y - centerY);
-        const position: DropPosition = x < centerX ? 'before' : 'after';
+        const position: DropPosition = y < centerY ? 'before' : 'after';
 
         if (inside) return { id: notebook.id, position };
         if (!nearest || distance < nearest.distance) {
@@ -256,6 +283,7 @@ export function NotebookSelectorPopup({
       if (!pointer || pointer.pointerId !== event.pointerId) return;
 
       if (!pointer.dragging) {
+        if (normalizedSearchQuery) return;
         const dx = Math.abs(event.clientX - pointer.startX);
         const dy = Math.abs(event.clientY - pointer.startY);
         if (Math.hypot(dx, dy) < DRAG_THRESHOLD_PX) return;
@@ -316,17 +344,17 @@ export function NotebookSelectorPopup({
       window.removeEventListener('pointerup', handleUp);
       window.removeEventListener('pointercancel', handleUp);
     };
-  }, [closeThen, notebooks, onSelect, reorderNotebooks, t]);
+  }, [closeThen, notebooks, normalizedSearchQuery, onSelect, reorderNotebooks, t]);
 
   const handleCardPointerDown = (notebook: Notebook, event: React.PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0 || pointerRef.current) return;
     event.preventDefault();
-    const cardRects = new Map<string, DOMRect>();
-    for (const [id, card] of cardRefs.current) {
-      cardRects.set(id, card.getBoundingClientRect());
+    const itemRects = new Map<string, DOMRect>();
+    for (const [id, item] of itemRefs.current) {
+      itemRects.set(id, item.getBoundingClientRect());
     }
     dragGeometryRef.current = {
-      cardRects,
+      itemRects,
       viewportRect: listViewportRef.current?.getBoundingClientRect() ?? null,
     };
     pointerRef.current = {
@@ -384,218 +412,220 @@ export function NotebookSelectorPopup({
         side={side}
         sideOffset={sideOffset}
         onExitComplete={handleExitComplete}
+        aria-label={t('status.notebookList')}
         className={cn(
-          'flowix-notebook-selector-popup flowix-notebook-list-screen !fixed !inset-0 !left-0 !top-0 !z-[130] !h-dvh !max-h-none !w-full !max-w-none !translate-x-0 !translate-y-0 !flex !flex-col !overflow-hidden !rounded-none !border-0 !bg-[var(--frame-bg)] !p-0 !text-[var(--foreground)] !shadow-none [--onboarding-ink:var(--foreground)] [--onboarding-subtle:var(--muted-foreground)] [--onboarding-panel:color-mix(in_oklch,var(--card)_96%,var(--background))] [--onboarding-line:color-mix(in_oklch,var(--border)_78%,transparent)]',
+          'flowix-notebook-selector-popup !z-[150] !w-[max(25vw,320px)] !max-w-[calc(100vw-1rem)] !h-[72vh] !max-h-[72vh] !flex !flex-col !overflow-hidden !rounded-xl !border-[var(--border-popup)] !bg-[var(--popover)] !p-0 !text-[var(--foreground)] !shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]',
+          side === 'bottom' && 'flowix-notebook-selector-popup--bottom',
         )}
       >
-        {isMac() && <OnboardingTitlebarMac />}
-        <WindowsTitlebarControls reserveSpace />
-        <main ref={listViewportRef} className="relative z-[1] flex min-h-0 flex-1 overflow-x-hidden overflow-y-auto overscroll-contain px-[clamp(28px,6vw,96px)] pb-[clamp(22px,3vw,44px)]">
-          <div className="mx-auto flex min-h-full w-[min(100%,914px)] flex-[1_0_auto] flex-col items-stretch overflow-visible">
-            <section className="flex min-h-full w-full flex-[1_0_auto] flex-col py-[clamp(11px,1.33vw,16px)] pb-4">
-              <div className="relative mb-4 max-w-full pr-[58px]">
-                <h1 className="text-4xl font-light leading-[0.98] tracking-[-0.065em] text-[var(--onboarding-ink)]">{t('status.notebookList')}</h1>
-                <button
-                  type="button"
-                  onClick={() => onOpenChange(false)}
-                  className="fixed right-[clamp(20px,3vw,48px)] top-[58px] z-20 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--muted-foreground)] shadow-sm transition-colors duration-150 hover:border-[color-mix(in_oklch,var(--border)_65%,var(--muted-foreground))] hover:text-[color-mix(in_oklch,var(--muted-foreground)_75%,var(--foreground))]"
-                  aria-label={t('common.close')}
-                  title={t('common.close')}
-                >
-                  <X className="h-4 w-4" />
-                </button>
+        <div className="shrink-0 px-2">
+          <input
+            type="search"
+            value={searchQuery}
+            onChange={(event) => {
+              const value = event.target.value;
+              setSearchQuery(value);
+              if (!searchComposingRef.current && !(event.nativeEvent as InputEvent).isComposing) {
+                setFilterQuery(value);
+              }
+            }}
+            onCompositionStart={() => { searchComposingRef.current = true; }}
+            onCompositionEnd={(event) => {
+              searchComposingRef.current = false;
+              const value = event.currentTarget.value;
+              setSearchQuery(value);
+              setFilterQuery(value);
+            }}
+            placeholder={t('status.searchNotebookPlaceholder')}
+            aria-label={t('status.searchNotebookPlaceholder')}
+            className="agent-composer__note-search flowix-notebook-selector-search !mt-0 !h-[48px] !text-[var(--foreground)]"
+          />
+        </div>
+        <OverlayScrollbar
+          className="flowix-notebook-selector-scrollbar min-h-0 flex-1"
+          scrollerRef={listViewportRef}
+          scrollerClassName="h-full min-h-0 overflow-x-hidden overflow-y-auto overscroll-contain px-2 pt-1 pb-1"
+        >
+          <div className="flex flex-col space-y-0.5">
+            {notebooks.length === 0 && (
+              <div className="px-3 py-4 text-center text-sm text-[var(--muted-foreground)]">
+                {t('status.noNotebooks')}
               </div>
-              {notebooks.length === 0 && (
-                <div className="px-3 py-8 text-center text-sm text-[var(--muted-foreground)]">
-                  {t('status.noNotebooks')}
-                </div>
-              )}
-              <div className="grid w-full grid-cols-[repeat(auto-fit,144px)] justify-center gap-[10px]">
-                <button
-                  type="button"
-                  onClick={() => closeThen(onCreateNotebook)}
+            )}
+            {notebooks.length > 0 && normalizedSearchQuery && previewNotebookIds.length === 0 && (
+              <div className="px-3 py-4 text-center text-sm text-[var(--muted-foreground)]">
+                {t('status.noMatchingNotebooks')}
+              </div>
+            )}
+            {previewNotebookIds.map((notebookId) => {
+              if (notebookId === draggingId) {
+                return (
+                  <div
+                    key={`placeholder-${notebookId}`}
+                    aria-hidden="true"
+                    className={cn(
+                      NOTEBOOK_ITEM_CLASS,
+                      'min-h-9',
+                      'flowix-notebook-drop-placeholder rounded-lg border-2 border-dashed border-[color-mix(in_oklch,var(--primary)_62%,var(--border))] bg-[color-mix(in_oklch,var(--primary)_5%,transparent)]',
+                    )}
+                  />
+                );
+              }
+
+              const notebook = notebooksById.get(notebookId);
+              if (!notebook) return null;
+              const isActive = selectedNotebook?.id === notebook.id;
+              const isMissing = Boolean(notebook.missing);
+
+              return (
+                <div
+                  key={notebook.id}
+                  ref={(element) => {
+                    if (element) itemRefs.current.set(notebook.id, element);
+                    else itemRefs.current.delete(notebook.id);
+                  }}
+                  role="button"
+                  tabIndex={0}
+                  aria-pressed={isActive}
+                  onPointerDown={(event) => handleCardPointerDown(notebook, event)}
+                  onKeyDown={(event) => handleCardKeyDown(notebook, event)}
                   className={cn(
-                    NOTEBOOK_CARD_SIZE_CLASS,
-                    'group relative flex flex-col items-center justify-center gap-2 rounded-lg border border-dashed border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)] transition-colors hover:border-solid hover:text-[var(--primary)]',
+                    NOTEBOOK_ITEM_CLASS,
+                    'group relative flex cursor-pointer select-none items-center gap-3 rounded-lg px-1.5 py-1 text-left transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)]',
+                    isActive
+                      ? 'bg-[color-mix(in_oklch,var(--primary)_9%,var(--popover))]'
+                      : 'bg-transparent hover:bg-[var(--muted)]',
+                    isMissing && 'opacity-70',
                   )}
-                  aria-label={t('status.newNotebook')}
-                  title={t('status.newNotebook')}
+                  style={{ touchAction: 'none' }}
                 >
-                  <Plus className="h-7 w-7" />
-                  <span className="text-sm">{t('status.newNotebook')}</span>
-                </button>
-                {previewNotebookIds.map((notebookId) => {
-                  if (notebookId === draggingId) {
-                    return (
-                      <div
-                        key={`placeholder-${notebookId}`}
-                        aria-hidden="true"
-                        className={cn(
-                          NOTEBOOK_CARD_SIZE_CLASS,
-                          'flowix-notebook-drop-placeholder rounded-lg border-2 border-dashed border-[color-mix(in_oklch,var(--primary)_62%,var(--border))] bg-[color-mix(in_oklch,var(--primary)_5%,transparent)]',
-                        )}
-                      />
-                    );
-                  }
-
-                  const notebook = notebooksById.get(notebookId);
-                  if (!notebook) return null;
-                  const isActive = selectedNotebook?.id === notebook.id;
-                  const isMissing = Boolean(notebook.missing);
-
-                  return (
-                    <div
-                      key={notebook.id}
-                      ref={(element) => {
-                        if (element) cardRefs.current.set(notebook.id, element);
-                        else cardRefs.current.delete(notebook.id);
-                      }}
-                      role="button"
-                      tabIndex={0}
-                      aria-pressed={isActive}
-                      onPointerDown={(event) => handleCardPointerDown(notebook, event)}
-                      onKeyDown={(event) => handleCardKeyDown(notebook, event)}
+                  <NotebookIcon
+                    icon={notebook.icon}
+                    name={notebook.name}
+                    className={cn(
+                      'h-7 w-7 shrink-0 rounded-md text-[15px] font-semibold transition-colors duration-150',
+                      isActive
+                        ? 'bg-[color-mix(in_oklch,var(--primary)_16%,var(--muted))] !text-[var(--primary)]'
+                        : 'bg-[var(--muted)] !text-[var(--foreground)]',
+                    )}
+                    imageClassName="h-[72%] w-[72%]"
+                  />
+                  <div className="flex min-w-0 flex-1 items-center gap-2">
+                    <span
                       className={cn(
-                        NOTEBOOK_CARD_SIZE_CLASS,
-                        'group relative flex cursor-pointer select-none flex-col items-start gap-2 rounded-lg border px-3 py-3 text-left transition-[border-color,background-color,box-shadow]',
-                        isActive
-                          ? 'border-[var(--primary)]/50 bg-[color-mix(in_oklch,var(--primary)_10%,transparent)]'
-                          : 'border-[var(--border)] bg-[var(--card)] hover:border-[var(--primary)]/50 hover:bg-[var(--card)]',
-                        isMissing && 'opacity-70',
+                        'block min-w-0 flex-1 truncate text-sm',
+                        isMissing ? 'text-[var(--muted-foreground)]' : 'text-[var(--foreground)]',
                       )}
-                      style={{
-                        touchAction: 'none',
-                        ...(isActive
-                          ? {
-                              backgroundColor: 'var(--popover)',
-                              backgroundImage:
-                                'radial-gradient(ellipse 90% 145% at 100% 0%, var(--brand) 0%, color-mix(in oklch, var(--brand) 80%, transparent) 100%)',
-                            }
-                          : {}),
-                      }}
+                      title={notebook.name}
                     >
-                      <div className="flex w-full items-center justify-between">
-                        <NotebookIcon
-                          icon={notebook.icon}
-                          name={notebook.name}
-                          className={cn(
-                            'h-8 w-8 shrink-0 rounded-md text-[15px] font-semibold transition-[color,background-color,opacity,filter] duration-150',
-                            isActive
-                              ? 'bg-[color-mix(in_oklch,var(--inverse-foreground)_10%,transparent)] !text-white opacity-100'
-                              : 'bg-[var(--muted)] !text-[var(--foreground)]',
-                          )}
-                          imageClassName="h-[72%] w-[72%]"
-                        />
-                        <DropdownMenu className="shrink-0">
-                          <DropdownMenuTrigger
-                            asChild
-                            onClick={(event) => event.stopPropagation()}
-                          >
-                            <button
-                              type="button"
-                              onPointerDown={(event) => event.stopPropagation()}
-                              className={cn(
-                                'flex h-6 w-6 items-center justify-center rounded-md hover:bg-transparent',
-                                isActive
-                                  ? 'text-[var(--inverse-foreground)] hover:text-[var(--inverse-foreground)]'
-                                  : 'text-[var(--muted-foreground)] hover:text-[var(--foreground)]',
-                              )}
-                              aria-label={t('document.agent.moreActions')}
-                              title={t('document.agent.moreActions')}
-                            >
-                              <MoreVertical className="h-4 w-4 translate-x-1" />
-                            </button>
-                          </DropdownMenuTrigger>
-                          <DropdownMenuContent
-                            align="end"
-                            className="w-[132px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]"
-                          >
-                            <DropdownMenuItem
-                              onClick={() => closeThen(() => onEdit(notebook))}
-                              className="group h-7 items-center gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
-                            >
-                              <Pencil className="h-3.5 w-3.5 shrink-0" />
-                              <span>{t('common.edit')}</span>
-                            </DropdownMenuItem>
-                            <DropdownMenuItem
-                              onClick={() => closeThen(() => onDelete(notebook))}
-                              className="group h-7 items-center gap-2 rounded-lg px-2 py-0 text-left hover:bg-transparent hover:text-[var(--destructive)]"
-                            >
-                              <Trash2 className="h-3.5 w-3.5 shrink-0" />
-                              <span>{t('dialog.delete')}</span>
-                            </DropdownMenuItem>
-                          </DropdownMenuContent>
-                        </DropdownMenu>
-                      </div>
-                      <div className="mt-auto w-full space-y-1">
-                        <span
-                          className={cn(
-                            'block min-h-5 w-full min-w-0 truncate text-left text-sm font-medium',
-                            isMissing
-                              ? 'text-[var(--muted-foreground)]'
-                              : isActive
-                                ? 'text-[var(--inverse-foreground)]'
-                                : 'text-[var(--foreground)]',
-                          )}
-                          title={notebook.name}
-                        >
-                          {notebook.name}
-                          {isMissing && ` ${t('status.invalid')}`}
+                      {notebook.name}
+                      {isMissing && ` ${t('status.invalid')}`}
+                    </span>
+                    <span className="flex shrink-0 items-center gap-1 text-xs text-[var(--muted-foreground)] group-hover:hidden group-focus-within:hidden">
+                      {notebook.pinned && (
+                        <span title={t('memo.list.notebookMenu.pin')}>
+                          <StarIcon
+                            className="h-4 w-4 text-[var(--primary)]"
+                            aria-label={t('memo.list.notebookMenu.pin')}
+                            weight="fill"
+                          />
                         </span>
-                        <span
-                          className={cn(
-                            'flex items-center gap-0 text-left text-xs',
-                            isActive
-                              ? 'text-[var(--inverse-foreground)]'
-                              : 'text-[var(--muted-foreground)]',
-                          )}
-                        >
-                          {cloudSyncedNotebookIds?.has(notebook.id) && (
-                            <span className="flex h-4 w-3 shrink-0 items-center justify-center" aria-hidden="true">
-                              <span
-                                className={cn(
-                                  'h-2 w-2 rounded-full',
-                                  cloudSyncAvailable
-                                    ? 'bg-[var(--success)]'
-                                    : 'bg-[var(--muted-foreground)]',
-                                )}
-                                aria-hidden="true"
-                              />
-                            </span>
-                          )}
-                          {t('status.notebookMemoCount', { count: notebook.memoCount ?? 0 })}
+                      )}
+                      {cloudSyncedNotebookIds?.has(notebook.id) && (
+                        <span className="flex h-4 w-3 shrink-0 items-center justify-center" aria-hidden="true">
+                          <span
+                            className={cn(
+                              'h-2 w-2 rounded-full',
+                              cloudSyncAvailable ? 'bg-[var(--success)]' : 'bg-[var(--muted-foreground)]',
+                            )}
+                            aria-hidden="true"
+                          />
                         </span>
-                      </div>
-                    </div>
-                  );
-                })}
-              </div>
-            </section>
+                      )}
+                      <span className="text-sm">
+                        {notebook.memoCount === undefined ? '—' : t('status.notebookMemoCount', { count: notebook.memoCount })}
+                      </span>
+                    </span>
+                  </div>
+                  <div className="flex w-0 shrink-0 items-center justify-end gap-0.5 overflow-hidden opacity-0 transition-[width,opacity] duration-[37.5ms] group-hover:w-[76px] group-hover:opacity-100 group-focus-within:w-[76px] group-focus-within:opacity-100">
+                    <button
+                      type="button"
+                      aria-label={t(notebook.pinned ? 'memo.list.notebookMenu.unpin' : 'memo.list.notebookMenu.pin')}
+                      title={t(notebook.pinned ? 'memo.list.notebookMenu.unpin' : 'memo.list.notebookMenu.pin')}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        void toggleNotebookPinned(notebook);
+                      }}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--primary)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
+                    >
+                      <StarIcon className="h-4 w-4" weight={notebook.pinned ? 'fill' : 'regular'} aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={t('common.edit')}
+                      title={t('common.edit')}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        closeThen(() => onEdit(notebook));
+                      }}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
+                    >
+                      <PencilSimpleIcon className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={t('dialog.delete')}
+                      title={t('dialog.delete')}
+                      onPointerDown={(event) => event.stopPropagation()}
+                      onClick={(event) => {
+                        event.stopPropagation();
+                        closeThen(() => onDelete(notebook));
+                      }}
+                      className="flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--destructive)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
+                    >
+                      <TrashSimpleIcon className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </div>
+                </div>
+              );
+            })}
           </div>
-        </main>
+        </OverlayScrollbar>
+        <div className="shrink-0 p-2">
+          <Button
+            type="button"
+            className="h-9 w-full border border-[var(--border)] bg-[var(--card)] text-[var(--foreground)] hover:bg-[var(--hover-bg)]"
+            onClick={() => closeThen(onCreateNotebook)}
+          >
+            <Plus />
+            {t('status.newNotebook')}
+          </Button>
+        </div>
 
         {ghost && sourceNotebook && typeof document !== 'undefined' && createPortal(
           <div
-            className="pointer-events-none fixed z-[160] flex origin-top-left flex-col items-start gap-2 rounded-lg border border-[color-mix(in_oklch,var(--primary)_70%,var(--border))] bg-[var(--popover)] px-3 py-3 opacity-95 shadow-[0_16px_40px_color-mix(in_oklch,var(--foreground)_18%,transparent)]"
+            className="pointer-events-none fixed z-[160] flex origin-top-left items-center gap-3 rounded-lg border border-[color-mix(in_oklch,var(--primary)_70%,var(--border))] bg-[var(--popover)] px-1.5 py-1 opacity-95 shadow-[0_16px_40px_color-mix(in_oklch,var(--foreground)_18%,transparent)]"
             style={{
               left: ghost.pointerX + 10,
               top: ghost.pointerY + 10,
               width: ghost.ghostRect.width,
               height: ghost.ghostRect.height,
-              transform: 'rotate(1.5deg) scale(1.02)',
+              transform: 'rotate(0.5deg) scale(1.01)',
             }}
           >
             <NotebookIcon
               icon={sourceNotebook.icon}
               name={sourceNotebook.name}
-              className="h-8 w-8 shrink-0 rounded-md bg-[color-mix(in_oklch,var(--primary)_14%,var(--muted))] text-[15px] font-semibold !text-[var(--primary)]"
+              className="h-7 w-7 shrink-0 rounded-md bg-[color-mix(in_oklch,var(--primary)_14%,var(--muted))] text-[15px] font-semibold !text-[var(--primary)]"
             />
-            <div className="mt-auto w-full space-y-1">
-              <span className="block truncate text-sm font-medium text-[var(--foreground)]">
+            <div className="min-w-0 flex-1 space-y-0.5">
+              <span className="block truncate text-sm text-[var(--foreground)]">
                 {sourceNotebook.name}
               </span>
               <span className="block text-xs text-[var(--muted-foreground)]">
-                {t('status.notebookMemoCount', { count: sourceNotebook.memoCount ?? 0 })}
+                {sourceNotebook.memoCount === undefined ? '—' : t('status.notebookMemoCount', { count: sourceNotebook.memoCount })}
               </span>
             </div>
           </div>,

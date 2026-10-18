@@ -2,194 +2,188 @@
  * 面板 message-end = `text-xs text-[var(--muted-foreground)]
  * text-center`, 内容或时间戳。卡片里 mt-2 让 end 消息与前一条
  * 有视觉间距, 不与下一条 user/assistant "贴" 一起。 */
-.markdown-editor .agent-thread-card__message--end {
+.agent-conversation-surface .agent-thread-card__message--end {
   display: block;
   margin: 4px 0;
   text-align: center;
 }
 
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message--end
   .agent-thread-card__message-content {
   color: var(--muted-foreground);
-  font-size: calc(var(--app-font-size, 15px) * 0.94);
+  font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1));
   text-align: center;
 }
 
 /* 消息正文容器 ── 现在内容是 marked 输出的 HTML 树, 不能再用
  * white-space: pre-wrap (会把 <p> 节点当文本节点, 不再分段)。改成
  * 默认 block 流式 + overflow-wrap: anywhere (替代 word-break:
- * break-word, 语义更准), 正文字号为 0.94 倍 app 字号。 */
-.markdown-editor .agent-thread-card__message-content {
+ * break-word, 语义更准), 字号跟随 agent 字号档位。 */
+.agent-conversation-surface .agent-thread-card__message-content {
   color: var(--foreground);
   cursor: text;
-  font-size: calc(var(--app-font-size, 15px) * 0.94);
+  font-family: var(--agent-message-font-family, var(--font-sans));
+  font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1));
   line-height: 1.7;
   overflow-wrap: anywhere;
   word-break: break-word;
 }
 
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   :where(:not(a):not(button):not([role="button"])) {
   cursor: text;
 }
 
-/* reasoning 的正文为 0.94 倍 app 字号, 使用 muted-foreground。 */
-.markdown-editor
+/* reasoning 正文跟随 agent 字号档位, 使用 muted-foreground。 */
+.agent-conversation-surface
   .agent-thread-card__message--reasoning
   .agent-thread-card__message-content {
   color: var(--muted-foreground);
-  font-size: calc(var(--app-font-size, 15px) * 0.94);
+  font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1));
 }
 
 /* end 角色的 content: 居中灰字 (保留在 .--end 修饰里)。 */
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message--end
   .agent-thread-card__message-content {
   color: var(--muted-foreground);
-  font-size: calc(var(--app-font-size, 15px) * 0.94);
+  font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1));
   text-align: center;
 }
 
 /* ── markdown 元素排版 ── 对齐面板 markdown-renderer WRAPPER_CLASS
  * 子选择器 (面板走 Tailwind arbitrary variant, 卡片走原生 CSS 子选择器,
- * 效果相同)。标题尺寸为 H1–H3 1.2 倍 app 字号、H4–H6 0.94 倍；
- * 正文为 0.94 倍 app 字号。 */
-.markdown-editor .agent-thread-card__message-content > *:first-child {
+ * 效果相同)。标题尺寸为 H1–H3 1.2 倍 agent 字号、H4–H6 继承 agent 字号；
+ * 正文跟随 agent 字号档位。 */
+.agent-conversation-surface .agent-thread-card__message-content > *:first-child {
   margin-top: 0;
 }
-.markdown-editor .agent-thread-card__message-content > *:last-child {
+.agent-conversation-surface .agent-thread-card__message-content > *:last-child {
   margin-bottom: 0;
 }
-.markdown-editor .agent-thread-card__message-content > p:last-child {
+
+.agent-conversation-surface .agent-thread-card__message-content > p:last-child {
   padding-bottom: 0;
 }
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   > :is(ul, ol, blockquote):last-child {
   padding-bottom: 0;
 }
 
-.markdown-editor .agent-thread-card__message-content p {
+.agent-conversation-surface .agent-thread-card__message-content p {
   margin: 0;
   padding: 0 0 8px;
 }
 
-.markdown-editor .agent-thread-card__message-display-toggle {
+.agent-conversation-surface .agent-thread-card__message-display-toggle {
   justify-self: flex-start;
   width: fit-content;
   border: 0;
   padding: 2px 0;
-  background: color-mix(in srgb, var(--primary) 7%, transparent);
+  background: transparent;
   color: var(--muted-foreground);
   cursor: pointer;
-  font-size: calc(var(--app-font-size, 15px) * 0.82);
+  font-size: calc(var(--agent-message-base-font-size, 15px) * 0.82);
   line-height: 1.4;
-  text-decoration: underline;
-  text-underline-offset: 3px;
 }
 
-.markdown-editor .agent-thread-card__message-display-toggle:hover {
+.agent-conversation-surface .agent-thread-card__message-display-toggle:hover {
   color: var(--foreground);
 }
 
-.markdown-editor
-  .agent-thread-card__message--user
-  .agent-thread-card__message-display-toggle {
-  margin-left: auto;
-}
-
-.markdown-editor .agent-thread-card__message-content h1,
-.markdown-editor .agent-thread-card__message-content h2,
-.markdown-editor .agent-thread-card__message-content h3,
-.markdown-editor .agent-thread-card__message-content h4,
-.markdown-editor .agent-thread-card__message-content h5,
-.markdown-editor .agent-thread-card__message-content h6 {
+.agent-conversation-surface .agent-thread-card__message-content h1,
+.agent-conversation-surface .agent-thread-card__message-content h2,
+.agent-conversation-surface .agent-thread-card__message-content h3,
+.agent-conversation-surface .agent-thread-card__message-content h4,
+.agent-conversation-surface .agent-thread-card__message-content h5,
+.agent-conversation-surface .agent-thread-card__message-content h6 {
   margin: 0;
   padding: 8px 0;
   color: var(--foreground);
   font-weight: 600;
   line-height: 1.3;
 }
-.markdown-editor .agent-thread-card__message-content h4,
-.markdown-editor .agent-thread-card__message-content h5,
-.markdown-editor .agent-thread-card__message-content h6 {
+.agent-conversation-surface .agent-thread-card__message-content h4,
+.agent-conversation-surface .agent-thread-card__message-content h5,
+.agent-conversation-surface .agent-thread-card__message-content h6 {
   padding-top: 0;
 }
-.markdown-editor .agent-thread-card__message-content h1 {
-  font-size: calc(var(--app-font-size, 15px) * 1.2);
+.agent-conversation-surface .agent-thread-card__message-content h1 {
+  font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1) * 1.2);
 }
-.markdown-editor .agent-thread-card__message-content h2 {
-  font-size: calc(var(--app-font-size, 15px) * 1.2);
+.agent-conversation-surface .agent-thread-card__message-content h2 {
+  font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1) * 1.2);
 }
-.markdown-editor .agent-thread-card__message-content h3 {
-  font-size: calc(var(--app-font-size, 15px) * 1.2);
+.agent-conversation-surface .agent-thread-card__message-content h3 {
+  font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1) * 1.2);
 }
-.markdown-editor .agent-thread-card__message-content h4 {
-  font-size: calc(var(--app-font-size, 15px) * 0.94);
+.agent-conversation-surface .agent-thread-card__message-content h4 {
+  font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1));
   font-weight: 500;
 }
-.markdown-editor .agent-thread-card__message-content h5,
-.markdown-editor .agent-thread-card__message-content h6 {
-  font-size: calc(var(--app-font-size, 15px) * 0.94);
+.agent-conversation-surface .agent-thread-card__message-content h5,
+.agent-conversation-surface .agent-thread-card__message-content h6 {
+  font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1));
   font-weight: 500;
 }
 
-.markdown-editor .agent-thread-card__message-content ul,
-.markdown-editor .agent-thread-card__message-content ol {
+.agent-conversation-surface .agent-thread-card__message-content ul,
+.agent-conversation-surface .agent-thread-card__message-content ol {
   margin: 0;
   padding-top: 0;
   padding-bottom: 8px;
   padding-left: 22px;
 }
-.markdown-editor .agent-thread-card__message-content ul {
+.agent-conversation-surface .agent-thread-card__message-content ul {
   list-style: disc;
 }
-.markdown-editor .agent-thread-card__message-content ol {
+.agent-conversation-surface .agent-thread-card__message-content ol {
   list-style: decimal;
 }
-.markdown-editor .agent-thread-card__message-content li {
+.agent-conversation-surface .agent-thread-card__message-content li {
   margin: 0;
   line-height: 1.7;
 }
-.markdown-editor .agent-thread-card__message-content li > p {
+.agent-conversation-surface .agent-thread-card__message-content li > p {
   margin: 0;
 }
 
-.markdown-editor .agent-thread-card__message-content strong {
+.agent-conversation-surface .agent-thread-card__message-content strong {
   font-weight: 600;
 }
-.markdown-editor .agent-thread-card__message-content em {
+.agent-conversation-surface .agent-thread-card__message-content em {
   font-style: italic;
 }
-.markdown-editor .agent-thread-card__message-content del {
+.agent-conversation-surface .agent-thread-card__message-content del {
   color: var(--muted-foreground);
 }
 
 /* 链接 ── 面板走 text-primary + hover:underline; 卡片用 var(--brand)
  * + hover:underline。target=_blank / rel=noopener 在 marked 输出
  * 不会自动加, 后续如需可注入属性 (此处保留基础样式)。 */
-.markdown-editor .agent-thread-card__message-content a {
+.agent-conversation-surface .agent-thread-card__message-content a {
   color: var(--brand);
   cursor: pointer;
   text-decoration: none;
   border-bottom: 1px solid color-mix(in oklch, var(--brand) 35%, transparent);
 }
 
-.markdown-editor .agent-thread-card__message-content a *,
-.markdown-editor .agent-thread-card__message-content button *,
-.markdown-editor .agent-thread-card__message-content [role="button"] * {
+.agent-conversation-surface .agent-thread-card__message-content a *,
+.agent-conversation-surface .agent-thread-card__message-content button *,
+.agent-conversation-surface .agent-thread-card__message-content [role="button"] * {
   cursor: inherit;
 }
-.markdown-editor .agent-thread-card__message-content a:hover {
+.agent-conversation-surface .agent-thread-card__message-content a:hover {
   border-bottom-color: var(--brand);
 }
 
 /* Markdown images are regular <img> elements rather than editor attachment
  * NodeViews. Keep them inside the message column after editor image rules
  * are intentionally excluded. */
-.markdown-editor .agent-thread-card__message-content img {
+.agent-conversation-surface .agent-thread-card__message-content img {
   box-sizing: border-box;
   display: block;
   max-width: min(120px, 100%);
@@ -200,12 +194,12 @@
   cursor: zoom-in;
 }
 
-.markdown-editor .agent-thread-card__message-content img[data-agent-image-preview]:focus-visible {
+.agent-conversation-surface .agent-thread-card__message-content img[data-agent-image-preview]:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 
-.markdown-editor .agent-thread-card__generated-image-strip {
+.agent-conversation-surface .agent-thread-card__generated-image-strip {
   display: flex;
   gap: 8px;
   width: 100%;
@@ -218,7 +212,7 @@
   scrollbar-width: thin;
 }
 
-.markdown-editor .agent-thread-card__generated-image-frame {
+.agent-conversation-surface .agent-thread-card__generated-image-frame {
   display: flex;
   flex: 0 0 auto;
   align-items: center;
@@ -226,7 +220,7 @@
   max-width: 120px;
 }
 
-.markdown-editor .agent-thread-card__generated-image {
+.agent-conversation-surface .agent-thread-card__generated-image {
   display: block;
   width: auto;
   height: auto;
@@ -236,23 +230,23 @@
   cursor: zoom-in;
 }
 
-.markdown-editor .agent-thread-card__generated-image:focus-visible {
+.agent-conversation-surface .agent-thread-card__generated-image:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 
 /* 独立对话中的工具命令收起态是 nowrap 单行摘要；完整参数只在展开态
  * 进入详情列表。所有尺寸约束都落在工具自己的内容轨道内。 */
-.markdown-editor.agent-conversation-detail .agent-thread-card__message--tool,
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-tool-content,
-.markdown-editor.agent-conversation-detail .agent-thread-card__command-line,
-.markdown-editor.agent-conversation-detail .agent-thread-card__command-list,
-.markdown-editor.agent-conversation-detail .agent-thread-card__command-item {
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message--tool,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-tool-content,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__command-line,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__command-list,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__command-item {
   min-width: 0;
   max-width: 100%;
 }
 
-.markdown-editor.agent-conversation-detail .agent-thread-card__command-line {
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__command-line {
   display: flex;
   flex-wrap: nowrap;
   width: 100%;
@@ -262,16 +256,16 @@
   white-space: nowrap;
 }
 
-.markdown-editor.agent-conversation-detail .agent-thread-card__command-name,
-.markdown-editor.agent-conversation-detail .agent-thread-card__command-args-inline,
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-tool-summary {
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__command-name,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__command-args-inline,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-tool-summary {
   min-width: 0;
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.markdown-editor.agent-conversation-detail
+.agent-conversation-surface.agent-conversation-detail
   .agent-thread-card__message-tool-content--expanded
   .agent-thread-card__message-tool-summary {
   overflow: visible;
@@ -282,7 +276,7 @@
 
 /* 收起态命令名也必须保持单行；否则该高 specificity 规则会覆盖
  * messages.css 的 nowrap，导致 run/bash 等命令参数出现多行布局。 */
-.markdown-editor.agent-conversation-detail .agent-thread-card__command-name {
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__command-name {
   flex: 0 1 auto;
   width: fit-content;
   min-width: 0;
@@ -292,7 +286,7 @@
   white-space: nowrap;
 }
 
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-tool-name {
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-tool-name {
   /* 工具名是参数摘要左侧的稳定锚点，不参与 sibling 的负空间分配。
    * 否则长参数会把它压到接近 0px，overflow:hidden 最终只露出半个字；
    * 参数摘要自身已设置 min-width:0 + ellipsis，应由它承担收缩。 */
@@ -307,7 +301,7 @@
   text-align: left;
 }
 
-.markdown-editor.agent-conversation-detail .agent-thread-card__command-args-inline {
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__command-args-inline {
   flex: 1 1 auto;
   width: auto;
   max-width: none;
@@ -315,13 +309,13 @@
   word-break: normal;
 }
 
-.markdown-editor.agent-conversation-detail
+.agent-conversation-surface.agent-conversation-detail
   .agent-thread-card__message-tool-content--expanded {
   display: block;
   overflow: visible;
 }
 
-.markdown-editor.agent-conversation-detail
+.agent-conversation-surface.agent-conversation-detail
   .agent-thread-card__message-tool-content--expanded
   .agent-thread-card__command-line {
   width: 100%;
@@ -329,10 +323,10 @@
   white-space: normal;
 }
 
-.markdown-editor.agent-conversation-detail
+.agent-conversation-surface.agent-conversation-detail
   .agent-thread-card__message-tool-content--expanded
   .agent-thread-card__command-name,
-.markdown-editor.agent-conversation-detail
+.agent-conversation-surface.agent-conversation-detail
   .agent-thread-card__message-tool-content--expanded
   .agent-thread-card__command-args-inline {
   overflow: visible;
@@ -341,8 +335,8 @@
   overflow-wrap: anywhere;
 }
 
-.markdown-editor.agent-conversation-detail .agent-thread-card__command-args-inline,
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-tool-summary {
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__command-args-inline,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-tool-summary {
   display: block;
   min-width: 0;
   max-width: 100%;
@@ -353,26 +347,26 @@
 
 /* 第三列中的历史正文必须在自己的内容轨道内收缩。尤其是列表、引用、
  * 链接和媒体，它们不能因为某个不可断开的 token 把 body 撑出横向滚动。 */
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content > *,
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content li,
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content blockquote,
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content a,
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content img,
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content video,
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content iframe {
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content > *,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content li,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content blockquote,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content a,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content img,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content video,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content iframe {
   box-sizing: border-box;
   max-width: 100%;
 }
 
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content img,
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content video,
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content iframe {
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content img,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content video,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content iframe {
   height: auto;
 }
 
 /* Keep the conversation-detail media guard from overriding the compact
  * dimensions of Markdown images in Agent replies. */
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content img {
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content img {
   max-width: min(120px, 100%);
   width: auto;
   height: auto;
@@ -448,17 +442,7 @@
   border: 2px solid rgb(255 255 255 / 35%);
   border-top-color: white;
   border-radius: 50%;
-  animation: agent-thread-card-image-preview-spin 0.8s linear infinite;
-}
-
-@keyframes agent-thread-card-image-preview-spin {
-  to { transform: rotate(360deg); }
-}
-
-@media (prefers-reduced-motion: reduce) {
-  .agent-thread-card__image-preview-spinner {
-    animation: none;
-  }
+  --flowix-spin-duration: 0.8s;
 }
 
 .agent-thread-card__image-preview-close {
@@ -489,12 +473,12 @@
   outline-offset: 2px;
 }
 
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content table {
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content table {
   table-layout: fixed;
 }
 
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content th,
-.markdown-editor.agent-conversation-detail .agent-thread-card__message-content td {
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content th,
+.agent-conversation-surface.agent-conversation-detail .agent-thread-card__message-content td {
   overflow-wrap: anywhere;
   word-break: break-word;
 }
@@ -504,7 +488,7 @@
  * (与右栏面板 markdown-renderer 同源, 不写死颜色)。卡片
  * 映射到 3px 左边框 + 12px 左 padding, italic + muted-foreground
  * 跟编辑器一致。 */
-.markdown-editor .agent-thread-card__message-content blockquote {
+.agent-conversation-surface .agent-thread-card__message-content blockquote {
   margin: 6px 0;
   padding: 2px 0 2px 12px;
   border-left: 3px solid var(--border);
@@ -513,14 +497,14 @@
 }
 
 /* 分隔线 ── 面板 border-t 10% 透明; 卡片走 1px 透明分割。 */
-.markdown-editor .agent-thread-card__message-content hr {
+.agent-conversation-surface .agent-thread-card__message-content hr {
   margin: 10px 0;
   border: 0;
   border-top: 1px solid
     color-mix(in oklch, var(--muted-foreground) 12%, transparent);
 }
 
-/* 内联 code ── 严格对齐 .markdown-editor .tiptap:not(.agent-thread-card__composer-editor) p code 的视觉口径:
+/* 内联 code ── 严格对齐 .agent-conversation-surface .tiptap:not(.agent-composer__input-content) p code 的视觉口径:
  *   border: 1px solid color-mix(in oklch, var(--border) 90%, transparent)
  *   border-radius: 0.4rem
  *   padding: 0 0.3rem
@@ -537,8 +521,8 @@
  *  - <pre><code>foo</code></pre>          不命中 (pre 是 pre)
  * 编辑器正文也不带背景色 ── 仅靠 1px 边框 + 品牌色文字做区分。
  * 卡片跨三处 (Tiptap 正文 / 卡片 / 右栏面板) 走同一套 token。 */
-.markdown-editor .agent-thread-card__message-content .agent-thread-card__math,
-.markdown-editor
+.agent-conversation-surface .agent-thread-card__message-content .agent-thread-card__math,
+.agent-conversation-surface
   .agent-thread-card__message-content
   .agent-thread-card__math
   * {
@@ -547,7 +531,7 @@
   word-break: normal;
 }
 
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   .agent-thread-card__math--inline {
   display: inline;
@@ -559,7 +543,7 @@
   transition: background-color 120ms ease;
 }
 
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   .agent-thread-card__math--block {
   display: block;
@@ -578,7 +562,7 @@
 }
 
 /* Keep display math naturally sized while allowing long formulas to scroll. */
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   .agent-thread-card__math-scroller {
   display: block;
@@ -590,46 +574,48 @@
   box-sizing: border-box;
 }
 
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   .agent-thread-card__math:hover {
   background: color-mix(in oklch, var(--primary) 10%, transparent);
 }
 
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   .agent-thread-card__math:focus-visible {
   outline: 2px solid color-mix(in oklch, var(--primary) 65%, transparent);
   outline-offset: 2px;
 }
 
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   .agent-thread-card__math--copied {
   background: color-mix(in oklch, var(--primary) 16%, transparent);
 }
 
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   .agent-thread-card__math--block.agent-thread-card__math--copied {
   border-color: color-mix(in oklch, var(--primary) 35%, var(--border));
 }
 
-.markdown-editor .agent-thread-card__message-content .katex-display {
+.agent-conversation-surface .agent-thread-card__message-content .katex-display {
   margin: 0;
 }
 
-.markdown-editor .agent-thread-card__message-content :not(pre) > code {
+.agent-conversation-surface .agent-thread-card__message-content :not(pre) > code {
   padding: 0 0.3rem;
   border: 1px solid color-mix(in oklch, var(--border) 90%, transparent);
   border-radius: 0.4rem;
   color: var(--text-hint);
   font-family: inherit;
-  font-size: calc(var(--app-font-size, 15px) * 0.9); /* was 0.84rem ≈ 13.44px */
+  font-size: calc(
+    var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1)
+  );
   font-weight: 400;
 }
 
-/* fenced code 块 ── 严格对齐 .markdown-editor .tiptap:not(.agent-thread-card__composer-editor) pre / pre code
+/* fenced code 块 ── 严格对齐 .agent-conversation-surface .tiptap:not(.agent-composer__input-content) pre / pre code
  * 的视觉口径: 把"边框 / 底色 / 圆角 / padding / 字号 / 行高"全部
  * 挂在 pre 上 (跟编辑器一致), pre code 只还原 padding 与透明背景
  * (让内层 code 不再叠加边框/底色 ── 避免双层视觉)。
@@ -640,7 +626,7 @@
  *            padding     0.5rem 0.8rem 8px
  *            margin      0 0 6px
  *            font-size   inherit (from message-content)
- *            line-height 1.5
+ *            line-height var(--code-line-height, 1.8)
  *            language   small label in the top-right corner
  *            white-space pre-wrap (跟编辑器一致, 长代码在卡片宽度下自动换行)
  *   pre code: padding 0 / background transparent (还原内层, 让 pre
@@ -649,7 +635,7 @@
  * 卡片之前把样式挂在 pre code 上 ── 与编辑器结构相反, 这里收口到
  * pre。pre-wrap + 卡片宽度窄, 代码块天然按卡片宽换行, 不需要
  * overflow-x: auto (编辑器是 overflow-x: visible, 同源)。 */
-.markdown-editor .agent-thread-card__message-content pre {
+.agent-conversation-surface .agent-thread-card__message-content pre {
   position: relative;
   margin: 0 0 6px;
   padding: 0.5rem 0.8rem 8px;
@@ -658,12 +644,12 @@
   background: var(--editor-block-bg);
   font-family: var(--code-font-family);
   font-size: inherit;
-  line-height: 1.5;
+  line-height: var(--code-line-height, 1.8);
   white-space: pre-wrap;
   word-break: break-word;
   tab-size: 5;
 }
-.markdown-editor .agent-thread-card__message-content pre::before {
+.agent-conversation-surface .agent-thread-card__message-content pre::before {
   position: absolute;
   top: 0.5rem;
   right: 0.8rem;
@@ -676,7 +662,7 @@
   user-select: none;
   white-space: nowrap;
 }
-.markdown-editor .agent-thread-card__message-content pre code {
+.agent-conversation-surface .agent-thread-card__message-content pre code {
   /* 还原: 1) 上方 :not(pre) > code 已经让 inline code 规则不命中
    * pre code ── 但浏览器 UA stylesheet 默认给 code 元素
    * font-family: monospace, 会盖过 pre 的 font-family: inherit,
@@ -697,50 +683,52 @@
 /* 表格 ── 沿用编辑器 .tiptap table 的视觉规格 (separate + 单边 border)
  * table 统一负责整体 8px 圆角与 overflow 裁剪; border-collapse: separate
  * + border-spacing: 0 保证 cell 边框按整体形状自然收口。 */
-.markdown-editor .agent-thread-card__message-content table {
+.agent-conversation-surface .agent-thread-card__message-content table {
   width: 100%;
   margin: 8px 0;
   border-collapse: separate;
   border-spacing: 0;
   border-radius: 8px;
   overflow: hidden;
-  font-size: calc(var(--app-font-size, 15px) * 0.9);
+  font-size: calc(
+    var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1)
+  );
 }
-.markdown-editor .agent-thread-card__message-content thead {
+.agent-conversation-surface .agent-thread-card__message-content thead {
   background: transparent;
 }
 /* table 是外层圆角容器, tbody 保留圆角作为内部边界兜底; overflow: hidden
  * 把 thead / tbody 的 cell 边框按表格整体形状裁剪成圆角视觉。 */
-.markdown-editor .agent-thread-card__message-content tbody {
+.agent-conversation-surface .agent-thread-card__message-content tbody {
   border-radius: 8px;
   overflow: hidden;
 }
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   tbody
   tr:last-child
   td:first-child,
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   tbody
   tr:last-child
   th:first-child {
   border-bottom-left-radius: 8px;
 }
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   tbody
   tr:last-child
   td:last-child,
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__message-content
   tbody
   tr:last-child
   th:last-child {
   border-bottom-right-radius: 8px;
 }
-.markdown-editor .agent-thread-card__message-content th,
-.markdown-editor .agent-thread-card__message-content td {
+.agent-conversation-surface .agent-thread-card__message-content th,
+.agent-conversation-surface .agent-thread-card__message-content td {
   padding: 6px 10px;
   border: 1px solid var(--border);
   color: var(--foreground);
@@ -750,47 +738,47 @@
 }
 /* 头行底色对齐编辑器 (--muted); thead transparent 让 th 的底色
  * 直接透出, 不与 table 自身重叠。 */
-.markdown-editor .agent-thread-card__message-content th {
+.agent-conversation-surface .agent-thread-card__message-content th {
   background: color-mix(in srgb, var(--muted) 50%, var(--background));
   font-weight: 600;
 }
 /* 相邻 cell 共用一条边 ── 把每条边归属到"左/上"侧, 让行内/列内交界
  * 不出现双倍 1px 视觉。 */
-.markdown-editor .agent-thread-card__message-content th + th,
-.markdown-editor .agent-thread-card__message-content td + td,
-.markdown-editor .agent-thread-card__message-content th + td,
-.markdown-editor .agent-thread-card__message-content td + th {
+.agent-conversation-surface .agent-thread-card__message-content th + th,
+.agent-conversation-surface .agent-thread-card__message-content td + td,
+.agent-conversation-surface .agent-thread-card__message-content th + td,
+.agent-conversation-surface .agent-thread-card__message-content td + th {
   border-left: 0;
 }
-.markdown-editor .agent-thread-card__message-content tr + tr th,
-.markdown-editor .agent-thread-card__message-content tr + tr td {
+.agent-conversation-surface .agent-thread-card__message-content tr + tr th,
+.agent-conversation-surface .agent-thread-card__message-content tr + tr td {
   border-top: 0;
 }
 /* thead ↔ tbody 接缝去重 ── 默认两段 cell 各画一条边会在接缝处叠
  * 成 2px, 这里压掉 tbody 首行 cell 的 border-top, 让 thead 末行 cell
  * 的 border-bottom 独自承担"分隔线"职责, 视觉上仍是 1px。 */
-.markdown-editor .agent-thread-card__message-content
+.agent-conversation-surface .agent-thread-card__message-content
   tbody
   tr:first-child
   th,
-.markdown-editor .agent-thread-card__message-content
+.agent-conversation-surface .agent-thread-card__message-content
   tbody
   tr:first-child
   td {
   border-top: 0;
 }
 
-.markdown-editor .agent-thread-card__empty {
+.agent-conversation-surface .agent-thread-card__empty {
   display: flex;
   align-items: center;
   justify-content: center;
   gap: 8px;
   min-height: 38px;
   color: var(--muted-foreground);
-  font-size: calc(var(--app-font-size, 15px) * 0.9);
+  font-size: calc(var(--font-size, 16px) * 0.9);
 }
 
-.markdown-editor .agent-thread-card__empty--codex-settings {
+.agent-conversation-surface .agent-thread-card__empty--codex-settings {
   flex-direction: column;
   flex-wrap: nowrap;
   align-items: center;
@@ -800,17 +788,7 @@
   padding: 4px 10px;
 }
 
-/* 非全屏 thread card 保持原有单行表现: 控件组不产生额外盒子, Agent 图标
- * 不参与布局。居中 + 图标只在独立对话 / 全屏两种大画布下开启。 */
-.markdown-editor .agent-thread-card__empty-controls {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: center;
-  gap: 6px;
-}
-
-.markdown-editor .agent-thread-card__empty-agent-icon {
+.agent-conversation-surface .agent-thread-card__empty-agent-icon {
   display: block;
   width: 5rem;
   height: 5rem;
@@ -821,21 +799,21 @@
 /* Keep every empty Thread Card centered, including the embedded card surface.
  * The composer remains the independent bottom row; only the empty-state
  * content (Agent setup plus featured notes) participates in this centering. */
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__body:has(> .agent-thread-card__empty--codex-settings) {
   display: flex;
   flex-direction: column;
   justify-content: center;
 }
 
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card__body:has(> .agent-thread-card__empty--codex-settings)
   > .agent-thread-card__loading-indicator {
   height: 0;
   overflow: hidden;
 }
 
-.markdown-editor .agent-thread-card__dsh-update-notice {
+.agent-conversation-surface .agent-thread-card__dsh-update-notice {
   position: relative;
   overflow: hidden;
   display: none;
@@ -850,12 +828,12 @@
   cursor: pointer;
 }
 
-.markdown-editor .agent-thread-card__dsh-update-label {
+.agent-conversation-surface .agent-thread-card__dsh-update-label {
   position: relative;
   z-index: 1;
 }
 
-.markdown-editor .agent-thread-card__dsh-update-progress {
+.agent-conversation-surface .agent-thread-card__dsh-update-progress {
   position: absolute;
   right: 0;
   bottom: 0;
@@ -867,7 +845,7 @@
   transition: transform 180ms ease;
 }
 
-.markdown-editor .agent-thread-card__dsh-update-notice.is-updating .agent-thread-card__dsh-update-progress {
+.agent-conversation-surface .agent-thread-card__dsh-update-notice.is-updating .agent-thread-card__dsh-update-progress {
   transform: scaleX(1);
   background: linear-gradient(
     to right,
@@ -876,13 +854,13 @@
   );
 }
 
-.markdown-editor .agent-thread-card__dsh-update-notice.is-updating.is-indeterminate .agent-thread-card__dsh-update-progress {
+.agent-conversation-surface .agent-thread-card__dsh-update-notice.is-updating.is-indeterminate .agent-thread-card__dsh-update-progress {
   background: var(--primary);
   animation: dsh-update-progress-indeterminate 1.2s ease-in-out infinite;
   transform-origin: center;
 }
 
-.markdown-editor .agent-thread-card__dsh-update-notice:disabled {
+.agent-conversation-surface .agent-thread-card__dsh-update-notice:disabled {
   cursor: default;
 }
 
@@ -891,143 +869,45 @@
   to { transform: translateX(100%) scaleX(0.35); }
 }
 
-.markdown-editor.agent-conversation-detail .agent-thread-card__dsh-update-notice,
-.markdown-editor .agent-thread-card--fullscreen .agent-thread-card__dsh-update-notice {
+.agent-conversation-surface
+  .agent-thread-card__empty--expanded
+  .agent-thread-card__dsh-update-notice {
   display: inline-flex;
 }
 
-.markdown-editor .agent-thread-card__dsh-update-notice[hidden] {
+.agent-conversation-surface .agent-thread-card__dsh-update-notice[hidden] {
   display: none;
 }
 
-.markdown-editor .agent-thread-card__pi-unavailable-notice:not([hidden]) {
+.agent-conversation-surface .agent-thread-card__pi-unavailable-notice:not([hidden]) {
   display: inline-flex;
   cursor: default;
 }
 
-.markdown-editor .agent-thread-card__pi-model-notice:not([hidden]) {
+.agent-conversation-surface .agent-thread-card__pi-model-notice:not([hidden]) {
   display: inline-flex;
   gap: 3px;
   cursor: pointer;
 }
 
-.markdown-editor .agent-thread-card__pi-model-notice:hover {
+.agent-conversation-surface .agent-thread-card__pi-model-notice:hover {
   background: color-mix(in srgb, var(--primary) 12%, transparent);
 }
 
-.markdown-editor .agent-thread-card__pi-model-notice:focus-visible {
+.agent-conversation-surface .agent-thread-card__pi-model-notice:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--primary) 55%, transparent);
   outline-offset: 2px;
 }
 
-.markdown-editor.agent-conversation-detail
-  .agent-thread-card__empty--codex-settings,
-.markdown-editor
-  .agent-thread-card--fullscreen
-  .agent-thread-card__empty--codex-settings {
+.agent-conversation-surface .agent-thread-card__empty--expanded {
   /* 居中由 body 负责, 这里让空状态自身在纵向不被拉伸。 */
   flex: 0 0 auto;
-}
-
-.markdown-editor .agent-thread-card__empty-control {
-  display: inline-flex;
-  align-items: center;
-  max-width: 190px;
-  min-width: 0;
-  height: 28px;
-  gap: 5px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: calc(var(--app-font-size, 15px) * 0.9); /* text-xs */
-  line-height: 1;
-  cursor: pointer;
-  user-select: none;
-  transition:
-    background-color 120ms ease,
-    color 120ms ease;
-}
-
-/* 模型名现在会带上思考深度 (例如 "GPT-5.5 · medium"), 给模型控件
- * 单独留出更多空间，避免比全屏输入框更早截断。 */
-.markdown-editor .agent-thread-card__empty-control[data-kind='model'] {
-  max-width: 240px;
-}
-
-.markdown-editor .agent-thread-card__empty-workspace {
-  display: inline-flex;
-  align-items: center;
-  max-width: 190px;
-  min-width: 0;
-  height: 28px;
-  gap: 5px;
-  padding: 0 8px;
-  border: 0;
-  border-radius: 6px;
-  background: transparent;
-  color: var(--muted-foreground);
-  font-size: calc(var(--app-font-size, 15px) * 0.9);
-  line-height: 1;
-  font-family: inherit;
-  cursor: pointer;
-  user-select: none;
-  transition:
-    background-color 120ms ease,
-    color 120ms ease;
-}
-
-.markdown-editor .agent-thread-card__empty-workspace-value {
-  min-width: 0;
-  overflow: hidden;
-  /* 与模型控件的 value 保持一致：名称使用前景色，label 仍使用次级色。 */
-  color: var(--foreground);
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  line-height: 1.6;
-}
-
-.markdown-editor .agent-thread-card__empty-workspace:hover,
-.markdown-editor .agent-thread-card__empty-workspace:focus-visible,
-.markdown-editor .agent-thread-card__empty-workspace--open {
-  background: var(--muted);
-  color: var(--foreground);
-  outline: none;
-}
-
-.markdown-editor .agent-thread-card__empty-control:hover,
-.markdown-editor .agent-thread-card__empty-control--open,
-.markdown-editor .agent-thread-card__empty-control:focus-visible {
-  background: var(--muted);
-  color: var(--foreground);
-}
-
-.markdown-editor .agent-thread-card__empty-control-label {
-  flex: 0 0 auto;
-}
-
-.markdown-editor .agent-thread-card__empty-control-value {
-  min-width: 0;
-  overflow: hidden;
-  text-overflow: ellipsis;
-  white-space: nowrap;
-  color: var(--foreground);
-  line-height: 1.6;
-}
-
-.markdown-editor .agent-thread-card__empty-control-chevron {
-  width: 12px;
-  height: 12px;
-  flex: 0 0 auto;
-  color: currentColor;
-  opacity: 0.72;
 }
 
 /* Featured note shortcuts keep the empty state useful without turning it
  * into a dense launcher. A page stays to one row and preserves the generous
  * whitespace around the empty-state controls. */
-.markdown-editor .agent-thread-card__featured-notes {
+.agent-conversation-surface .agent-thread-card__featured-notes {
   position: relative;
   width: min(100%, 740px);
   flex: 0 0 auto;
@@ -1036,17 +916,14 @@
   color: var(--foreground);
 }
 
-/* Keep embedded cards compact while preserving shortcuts in standalone chats,
- * which share the agent-thread-card class without using fullscreen mode. */
-.markdown-editor
-  .agent-thread-card:not(.agent-thread-card--fullscreen):not(
-    .agent-conversation-detail__card
-  )
+/* Inline cards stay compact; expanded surfaces keep the shared shortcuts. */
+.agent-conversation-surface
+  .agent-thread-card__empty--inline-card
   .agent-thread-card__featured-notes {
   display: none;
 }
 
-.markdown-editor .agent-thread-card__featured-notes-header {
+.agent-conversation-surface .agent-thread-card__featured-notes-header {
   display: flex;
   align-items: center;
   justify-content: flex-start;
@@ -1055,25 +932,25 @@
   padding: 0 4px 5px;
 }
 
-.markdown-editor .agent-thread-card__featured-notes-header[hidden],
-.markdown-editor .agent-thread-card__featured-notes-navigation[hidden],
-.markdown-editor .agent-thread-card__featured-notes-nav[hidden] {
+.agent-conversation-surface .agent-thread-card__featured-notes-header[hidden],
+.agent-conversation-surface .agent-thread-card__featured-notes-navigation[hidden],
+.agent-conversation-surface .agent-thread-card__featured-notes-nav[hidden] {
   display: none;
 }
 
-/* 弹层与运算符菜单已挂到 document.body, 不再是 .markdown-editor 的后代,
+/* 弹层与运算符菜单已挂到 document.body, 不再是 .agent-conversation-surface 的后代,
  * 必须单独列出, 否则 [hidden] 不生效、关闭后仍会显示。 */
 .agent-thread-card__featured-notes-settings[hidden],
 .agent-thread-card__featured-notes-operator-menu[hidden] {
   display: none;
 }
 
-.markdown-editor .agent-thread-card__featured-notes-navigation {
+.agent-conversation-surface .agent-thread-card__featured-notes-navigation {
   display: inline-flex;
   gap: 2px;
 }
 
-.markdown-editor .agent-thread-card__featured-notes-nav {
+.agent-conversation-surface .agent-thread-card__featured-notes-nav {
   display: inline-grid;
   width: 22px;
   height: 22px;
@@ -1089,19 +966,19 @@
   transition: background-color 120ms ease, color 120ms ease;
 }
 
-.markdown-editor .agent-thread-card__featured-notes-nav:hover:not(:disabled),
-.markdown-editor .agent-thread-card__featured-notes-nav:focus-visible {
+.agent-conversation-surface .agent-thread-card__featured-notes-nav:hover:not(:disabled),
+.agent-conversation-surface .agent-thread-card__featured-notes-nav:focus-visible {
   background: var(--muted);
   color: var(--foreground);
   outline: none;
 }
 
-.markdown-editor .agent-thread-card__featured-notes-nav:disabled {
+.agent-conversation-surface .agent-thread-card__featured-notes-nav:disabled {
   color: color-mix(in srgb, var(--muted-foreground) 35%, transparent);
   cursor: default;
 }
 
-.markdown-editor .agent-thread-card__featured-notes-settings-footer {
+.agent-conversation-surface .agent-thread-card__featured-notes-settings-footer {
   position: relative;
   display: flex;
   align-items: center;
@@ -1111,19 +988,19 @@
 }
 
 /* 添加常用笔记按钮相对整行居中, 不受右侧翻页控件宽度影响。 */
-.markdown-editor .agent-thread-card__featured-notes-settings-button {
+.agent-conversation-surface .agent-thread-card__featured-notes-settings-button {
   position: absolute;
   left: 50%;
   transform: translateX(-50%);
 }
 
 /* 翻页控件贴齐内容区域右侧。 */
-.markdown-editor .agent-thread-card__featured-notes-settings-footer
+.agent-conversation-surface .agent-thread-card__featured-notes-settings-footer
   .agent-thread-card__featured-notes-navigation {
   margin-left: auto;
 }
 
-.markdown-editor .agent-thread-card__featured-notes-settings-button {
+.agent-conversation-surface .agent-thread-card__featured-notes-settings-button {
   min-height: 26px;
   padding: 0 10px;
   border: 1px solid color-mix(in srgb, var(--border) 82%, transparent);
@@ -1135,12 +1012,12 @@
   cursor: pointer;
 }
 
-.markdown-editor .agent-thread-card__featured-notes-settings-button:hover,
-.markdown-editor .agent-thread-card__featured-notes-settings-button:focus-visible {
+.agent-conversation-surface .agent-thread-card__featured-notes-settings-button:hover,
+.agent-conversation-surface .agent-thread-card__featured-notes-settings-button:focus-visible {
   color: var(--foreground);
 }
 
-.markdown-editor .agent-thread-card__featured-notes-settings-button:focus-visible {
+.agent-conversation-surface .agent-thread-card__featured-notes-settings-button:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--primary) 42%, var(--border));
   outline-offset: 2px;
 }
@@ -1151,7 +1028,7 @@
  * 视口坐标定位 (见 popover-position.ts)。这样弹层不受任何祖先的 overflow 裁剪,
  * 也不受祖先层叠上下文限制, 空状态下不会再有"被下面输入框遮住"的问题。
  *
- * 注意: 因为不在 .markdown-editor 子树内, 这一组选择器都不带该前缀。 */
+ * 注意: 因为不在 .agent-conversation-surface 子树内, 这一组选择器都不带该前缀。 */
 .agent-thread-card__featured-notes-settings {
   position: fixed;
   /* top/left 由 JS 计算写入, 这里给初值避免首帧跳动。 */
@@ -1446,23 +1323,23 @@
   height: 14px;
 }
 
-.markdown-editor .agent-thread-card__featured-notes-list {
+.agent-conversation-surface .agent-thread-card__featured-notes-list {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));
   gap: 10px;
 }
 
-.markdown-editor .agent-thread-card__featured-notes-list[data-card-count="1"] {
+.agent-conversation-surface .agent-thread-card__featured-notes-list[data-card-count="1"] {
   grid-template-columns: minmax(0, 240px);
   justify-content: center;
 }
 
-.markdown-editor .agent-thread-card__featured-notes-list[data-card-count="2"] {
+.agent-conversation-surface .agent-thread-card__featured-notes-list[data-card-count="2"] {
   grid-template-columns: repeat(2, minmax(0, 240px));
   justify-content: center;
 }
 
-.markdown-editor .agent-thread-card__featured-note {
+.agent-conversation-surface .agent-thread-card__featured-note {
   display: flex;
   width: 100%;
   min-height: 128px;
@@ -1479,21 +1356,21 @@
   transition: color 140ms ease;
 }
 
-.markdown-editor .agent-thread-card__featured-note:hover {
+.agent-conversation-surface .agent-thread-card__featured-note:hover {
   color: var(--primary);
 }
 
-.markdown-editor .agent-thread-card__featured-note:hover
+.agent-conversation-surface .agent-thread-card__featured-note:hover
   .agent-thread-card__featured-note-description {
   color: var(--primary);
 }
 
-.markdown-editor .agent-thread-card__featured-note:focus-visible {
+.agent-conversation-surface .agent-thread-card__featured-note:focus-visible {
   outline: 2px solid color-mix(in srgb, var(--primary) 42%, var(--border));
   outline-offset: 2px;
 }
 
-.markdown-editor .agent-thread-card__featured-note-icon {
+.agent-conversation-surface .agent-thread-card__featured-note-icon {
   display: grid;
   width: 18px;
   height: 18px;
@@ -1513,33 +1390,33 @@
 /* 图标值解析后可能是 <img> (属性图标)、<svg> (笔记本图标) 或纯文本 (emoji /
  * 单字)。图形子元素铺满 18px 容器; object-fit 给内联 SVG 兜底, 避免按原始
  * viewBox 撑破容器。 */
-.markdown-editor .agent-thread-card__featured-note-icon > img,
-.markdown-editor .agent-thread-card__featured-note-icon > svg {
+.agent-conversation-surface .agent-thread-card__featured-note-icon > img,
+.agent-conversation-surface .agent-thread-card__featured-note-icon > svg {
   display: block;
   width: 100%;
   height: 100%;
   object-fit: contain;
 }
 
-.markdown-editor .agent-thread-card__featured-note-content {
+.agent-conversation-surface .agent-thread-card__featured-note-content {
   display: grid;
   min-width: 0;
   gap: 5px;
 }
 
-.markdown-editor .agent-thread-card__featured-note-title {
+.agent-conversation-surface .agent-thread-card__featured-note-title {
   overflow: hidden;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
 
-.markdown-editor .agent-thread-card__featured-note-title {
+.agent-conversation-surface .agent-thread-card__featured-note-title {
   font-size: 13px;
   font-weight: 550;
   line-height: 1.35;
 }
 
-.markdown-editor .agent-thread-card__featured-note-description {
+.agent-conversation-surface .agent-thread-card__featured-note-description {
   display: -webkit-box;
   overflow: hidden;
   -webkit-box-orient: vertical;
@@ -1550,11 +1427,11 @@
 }
 
 @media (max-width: 767px) {
-  .markdown-editor .agent-thread-card__featured-notes {
+  .agent-conversation-surface .agent-thread-card__featured-notes {
     width: min(100%, calc(100vw - 24px));
   }
 
-  .markdown-editor .agent-thread-card__featured-notes-list {
+  .agent-conversation-surface .agent-thread-card__featured-notes-list {
     grid-template-columns: repeat(2, minmax(0, 1fr));
     gap: 8px;
   }
@@ -1775,7 +1652,7 @@
   border-radius: 8px;
   background: transparent;
   color: var(--foreground);
-  font-size: calc(var(--app-font-size, 15px) * 0.9);
+  font-size: calc(var(--font-size, 16px) * 0.9);
   line-height: 1.2;
   text-align: left;
   cursor: pointer;
@@ -1904,7 +1781,7 @@
 .agent-thread-card__codex-settings-empty {
   padding: 12px 8px;
   color: var(--muted-foreground);
-  font-size: calc(var(--app-font-size, 15px) * 0.9);
+  font-size: calc(var(--font-size, 16px) * 0.9);
   line-height: 1.4;
   text-align: center;
 }
@@ -1933,7 +1810,7 @@
   border-radius: 8px;
   background: transparent;
   color: var(--foreground);
-  font-size: calc(var(--app-font-size, 15px) * 0.9);
+  font-size: calc(var(--font-size, 16px) * 0.9);
   line-height: 1.2;
   text-align: left;
   cursor: default;
@@ -1990,7 +1867,7 @@
 }
 
 .agent-thread-card__codex-settings-repository-remove
-  .agent-thread-card__trash-icon {
+  .agent-icon__trash {
   width: 14px;
   height: 14px;
 }
@@ -2025,6 +1902,14 @@
   height: 15px;
   flex: 0 0 auto;
   color: var(--muted-foreground);
+}
+
+.agent-thread-card__model-provider-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  object-fit: contain;
 }
 
 .agent-thread-card__permission-mode-icon--warning {
@@ -2095,7 +1980,7 @@
   overflow: hidden;
 }
 
-.markdown-editor .agent-thread-card__loading-indicator {
+.agent-conversation-surface .agent-thread-card__loading-indicator {
   display: flex;
   align-items: center;
   gap: 0.3rem;
@@ -2104,32 +1989,16 @@
   height: 38px;
   padding: 0rem;
   color: var(--muted-foreground);
-  font-size: calc(var(--app-font-size, 15px) * 0.9); /* was 0.78rem ≈ 12.48px */
+  font-size: calc(var(--font-size, 16px) * 0.9); /* was 0.78rem ≈ 12.48px */
   font-weight: 500;
   line-height: 1;
 }
 
-.markdown-editor .agent-thread-card__loading-indicator[role="status"] {
+.agent-conversation-surface .agent-thread-card__loading-indicator[role="status"] {
   min-width: 0;
 }
 
-.markdown-editor
-  .agent-thread-card--fullscreen
-  .agent-thread-card__loading-indicator {
-  width: calc(100% - 3rem);
-  max-width: 780px;
-  margin-inline: auto;
-}
-
-/* The standalone detail is not CSS-fullscreen, but its message column uses
- * the same centered width as the fullscreen Thread Card. */
-.markdown-editor.agent-conversation-detail .agent-thread-card__loading-indicator {
-  width: calc(100% - 3rem);
-  max-width: 780px;
-  margin-inline: auto;
-}
-
-.markdown-editor .agent-thread-card__loading-cells {
+.agent-conversation-surface .agent-thread-card__loading-cells {
   display: inline-grid;
   grid-template-columns: repeat(2, 4px);
   grid-template-rows: repeat(2, 4px);
@@ -2138,7 +2007,7 @@
   line-height: 0;
 }
 
-.markdown-editor .agent-thread-card__loading-cell {
+.agent-conversation-surface .agent-thread-card__loading-cell {
   display: inline-block;
   width: 4px;
   height: 4px;
@@ -2173,7 +2042,7 @@
   animation-delay: calc(var(--cell-step, 0) * 0.6s - 0.36s);
 }
 
-.markdown-editor .agent-thread-card__loading-text {
+.agent-conversation-surface .agent-thread-card__loading-text {
   line-height: 1.5;
   /* 文本不再做扫光 ── 动效交给 2×2 格顺序点亮; 文字本身保持纯前景色,
    * 视觉负担小, 也避免 WebKit 在 background-clip:text + background:
@@ -2181,8 +2050,8 @@
   color: var(--muted-foreground);
 }
 
-.markdown-editor .agent-thread-card__loading-cells[hidden],
-.markdown-editor .agent-thread-card__loading-text[hidden] {
+.agent-conversation-surface .agent-thread-card__loading-cells[hidden],
+.agent-conversation-surface .agent-thread-card__loading-text[hidden] {
   display: none;
 }
 
@@ -2227,14 +2096,14 @@
 }
 
 @media (prefers-reduced-motion: reduce) {
-  .markdown-editor .agent-thread-card__loading-cell {
+  .agent-conversation-surface .agent-thread-card__loading-cell {
     animation: none;
     background-color: var(--muted-foreground);
   }
 }
 
 /* 折叠态 ── 与 body 一起消失, 不留孤立的 24px 空白带。 */
-.markdown-editor
+.agent-conversation-surface
   .agent-thread-card--collapsed
   .agent-thread-card__loading-indicator {
   display: none;

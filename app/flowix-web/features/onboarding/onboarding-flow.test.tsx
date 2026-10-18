@@ -1,13 +1,11 @@
 import { act, useCallback, useState } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { BootFeatures, NotebookImportStatus, NotebookRecord } from '@platform/tauri/client';
+import type { NotebookImportStatus, NotebookRecord } from '@platform/tauri/client';
 
-// Only desktop IPC and unrelated window chrome are replaced. The wizard, registration,
-// boot controller, empty-notebook policy, import monitoring and retry UI run together.
+// Only unrelated desktop IPC and window chrome are replaced. The wizard,
+// notebook policy, import monitoring and retry UI run together.
 const mocks = vi.hoisted(() => ({
-  getFeatures: vi.fn(),
-  setOnboardingCompleted: vi.fn(),
   create: vi.fn(),
   list: vi.fn(),
   getDefaultPath: vi.fn(),
@@ -21,11 +19,7 @@ const mocks = vi.hoisted(() => ({
 }));
 
 vi.mock('@platform/tauri/client', () => ({
-  boot: {
-    getFeatures: mocks.getFeatures,
-    setOnboardingCompleted: mocks.setOnboardingCompleted,
-    setIntroDisplayed: vi.fn(),
-  },
+  boot: {},
   consumeAppUpdateResult: async () => null,
   dshIntegration: { downloadStatus: async () => null },
   notebooks: {
@@ -57,17 +51,22 @@ vi.mock('@features/memo/public/shell-api', async () => ({
 }));
 vi.mock('@features/memo/store/note-store', async () => {
   const { create } = await import('zustand');
-  return { useNoteStore: create(() => ({
+  type MockNoteStore = {
+    selectedNotebook: NotebookRecord | null;
+    notebooks: NotebookRecord[];
+    startupPhase: 'ready';
+    setNotebooks(notebooks: NotebookRecord[]): void;
+  };
+  return { useNoteStore: create<MockNoteStore>()((set) => ({
     selectedNotebook: null as NotebookRecord | null,
-    setNotebooks: () => {},
+    notebooks: [] as NotebookRecord[],
+    startupPhase: 'ready' as const,
+    setNotebooks: (notebooks: NotebookRecord[]) => set({ notebooks }),
   })) };
 });
 vi.mock('@features/workspace/public/shell-api', () => ({ selectNotebook: mocks.selectNotebook }));
 vi.mock('@features/preferences/public/app-api', () => ({
   useAppUpdatePreferences: () => ({ loading: false, enabled: false }),
-}));
-vi.mock('@features/preferences/public/system-api', () => ({
-  useDshRuntimeInstaller: () => ({ busy: false, status: null }),
 }));
 vi.mock('@features/shell/public/system-api', () => ({ useAppUpdater: () => ({}) }));
 vi.mock('@shared/window-titlebar-controls', () => ({ WindowsTitlebarControls: () => null }));
@@ -75,6 +74,7 @@ vi.mock('@features/shortcuts', () => ({ isMac: () => false }));
 vi.mock('@features/memo/components/notebook-icon-popover', () => ({ NotebookIconPopover: () => null }));
 
 import { I18nProvider } from '@/lib/i18n';
+import { admitStartupStage3 } from '@/lib/startup-stage3';
 import { useMainWindowSystemController } from '@app/main-window/use-main-window-system-controller';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { useEmptyNotebookPrompt } from '@features/memo/hooks/use-empty-notebook-prompt';
@@ -87,7 +87,6 @@ const notebook: NotebookRecord = {
   id: 'first-book', name: 'My Notebook', path: '/notes/My Notebook',
   createdAt: 1, updatedAt: 1, isDefault: false,
 };
-let savedBoot: BootFeatures;
 let host: HTMLDivElement;
 let root: Root;
 
@@ -105,7 +104,6 @@ function FirstRunHarness() {
   });
   return <>
     {ordinaryCreateOpen && <div data-ordinary-create>普通新建笔记本</div>}
-    {system.dshInstallPromptOpen && <div data-agent-intro>Agent 安装引导</div>}
     {selectedNotebook && <div data-workspace>{selectedNotebook.name}</div>}
     {introOpen && <div data-product-intro>产品介绍</div>}
     {system.onboardingOpen && <OnboardingScreen onFinish={async (book, options) => {
@@ -120,7 +118,10 @@ function FirstRunHarness() {
 }
 
 async function mount() {
-  await act(async () => root.render(<I18nProvider language="zh-CN"><FirstRunHarness /></I18nProvider>));
+  await act(async () => {
+    admitStartupStage3();
+    root.render(<I18nProvider language="zh-CN"><FirstRunHarness /></I18nProvider>);
+  });
 }
 
 function button(text: string): HTMLButtonElement {
@@ -151,9 +152,6 @@ beforeEach(() => {
   vi.resetAllMocks();
   mocks.listeners.clear();
   for (const notice of getActionableNotices()) clearActionableNotice(notice.id);
-  savedBoot = { experimental: false, isIntroductDisplayed: false, isOnboardingCompleted: false };
-  mocks.getFeatures.mockImplementation(async () => ({ ...savedBoot }));
-  mocks.setOnboardingCompleted.mockImplementation(async () => { savedBoot.isOnboardingCompleted = true; });
   mocks.create.mockResolvedValue(notebook);
   mocks.list.mockResolvedValue([notebook]);
   mocks.getDefaultPath.mockResolvedValue(notebook.path);
@@ -163,7 +161,7 @@ beforeEach(() => {
   mocks.selectNotebook.mockImplementation(async (book: NotebookRecord) => {
     useNoteStore.setState({ selectedNotebook: book });
   });
-  useNoteStore.setState({ selectedNotebook: null });
+  useNoteStore.setState({ selectedNotebook: null, notebooks: [], startupPhase: 'ready' });
   host = document.createElement('div');
   document.body.appendChild(host);
   root = createRoot(host);
@@ -177,19 +175,14 @@ afterEach(async () => {
 });
 
 describe('first-run notebook setup', () => {
-  it('suppresses the ordinary create screen while boot is pending and enters the workspace with one create', async () => {
-    let resolveBoot!: (features: BootFeatures) => void;
-    mocks.getFeatures.mockReturnValueOnce(new Promise<BootFeatures>((resolve) => { resolveBoot = resolve; }));
+  it('suppresses the ordinary create screen while notebook context is ready and enters the workspace with one create', async () => {
     await mount();
-    expect(host.querySelector('[data-ordinary-create]')).toBeNull();
-    await act(async () => resolveBoot(savedBoot));
     expect(host.querySelector('#flowix-onboarding-notebook-form')).not.toBeNull();
     expect(host.textContent).not.toContain('接入 Agent');
 
     await click('创建并开始使用');
     expect(mocks.create).toHaveBeenCalledTimes(1);
     expect(mocks.startImport).toHaveBeenCalledWith(notebook.id);
-    expect(savedBoot.isOnboardingCompleted).toBe(true);
     expect(host.querySelector('#flowix-onboarding-notebook-form')).toBeNull();
     expect(host.querySelector('[data-ordinary-create]')).toBeNull();
     expect(host.querySelector('[data-workspace]')).not.toBeNull();
@@ -199,30 +192,26 @@ describe('first-run notebook setup', () => {
     expect(mocks.listeners.size).toBe(0);
   });
 
-  it('does not bring Agent onboarding back on the next launch even if the legacy intro flag is false', async () => {
+  it('closes notebook onboarding after successful setup', async () => {
     await mount();
     await click('创建并开始使用');
     await emitImport('completed');
     await act(async () => root.unmount());
     root = createRoot(host);
     await mount();
-    expect(savedBoot.isIntroductDisplayed).toBe(false);
     expect(host.querySelector('#flowix-onboarding-notebook-form')).toBeNull();
     expect(host.querySelector('[data-ordinary-create]')).toBeNull();
-    expect(host.querySelector('[data-agent-intro]')).toBeNull();
     expect(mocks.create).toHaveBeenCalledTimes(1);
   });
 
-  it('keeps creation failures retryable without recording completion', async () => {
+  it('keeps creation failures retryable', async () => {
     mocks.create.mockRejectedValueOnce(new Error('PATH_CREATE_FAILED'));
     await mount();
     await click('创建并开始使用');
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('PATH_CREATE_FAILED');
-    expect(mocks.setOnboardingCompleted).not.toHaveBeenCalled();
     expect(mocks.startImport).not.toHaveBeenCalled();
     await click('创建并开始使用');
     expect(mocks.create).toHaveBeenCalledTimes(2);
-    expect(savedBoot.isOnboardingCompleted).toBe(true);
   });
 
   it('retries workspace selection with the registered notebook instead of creating a second one', async () => {
@@ -230,7 +219,6 @@ describe('first-run notebook setup', () => {
     await mount();
     await click('创建并开始使用');
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('NOTEBOOK_UNAVAILABLE');
-    expect(mocks.setOnboardingCompleted).not.toHaveBeenCalled();
     expect(mocks.startImport).not.toHaveBeenCalled();
     await click('重试');
     expect(mocks.create).toHaveBeenCalledTimes(1);
@@ -244,25 +232,19 @@ describe('first-run notebook setup', () => {
     await mount();
     await click('创建并开始使用');
     expect(host.querySelector('[role="alert"]')?.textContent).toContain('IMPORT_START_FAILED');
-    expect(mocks.setOnboardingCompleted).not.toHaveBeenCalled();
     expect(mocks.listeners.size).toBe(0);
     await click('重试');
     expect(mocks.create).toHaveBeenCalledTimes(1);
     expect(mocks.startImport).toHaveBeenCalledTimes(2);
-    expect(savedBoot.isOnboardingCompleted).toBe(true);
   });
 
-  it('does not dismiss setup when completion persistence fails', async () => {
+  it('dismisses setup after import completion without a completion-state write', async () => {
     mocks.getImportStatus.mockResolvedValue({ notebookId: notebook.id, status: 'completed' });
-    mocks.setOnboardingCompleted.mockRejectedValueOnce(new Error('BOOT_WRITE_FAILED'));
     await mount();
     await click('创建并开始使用');
-    expect(host.querySelector('[role="alert"]')?.textContent).toContain('BOOT_WRITE_FAILED');
-    expect(savedBoot.isOnboardingCompleted).toBe(false);
-    expect(host.querySelector('[data-product-intro]')).toBeNull();
-    await click('重试');
     expect(mocks.create).toHaveBeenCalledTimes(1);
-    expect(savedBoot.isOnboardingCompleted).toBe(true);
+    expect(host.querySelector('#flowix-onboarding-notebook-form')).toBeNull();
+    expect(host.querySelector('[data-product-intro]')).not.toBeNull();
   });
 
   it('passes scene templates to deferred setup without starting the ordinary importer', async () => {
@@ -271,7 +253,6 @@ describe('first-run notebook setup', () => {
     await click('创建并开始使用');
     expect(mocks.create).toHaveBeenCalledWith('My Notebook', undefined, null, false, 'project', false);
     expect(mocks.startImport).not.toHaveBeenCalled();
-    expect(savedBoot.isOnboardingCompleted).toBe(true);
     expect(host.querySelector('[data-ordinary-create]')).toBeNull();
   });
 
@@ -282,7 +263,6 @@ describe('first-run notebook setup', () => {
     await selectTemplate();
     await click('创建并开始使用');
     expect(mocks.create).toHaveBeenCalledTimes(1);
-    expect(mocks.setOnboardingCompleted).not.toHaveBeenCalled();
     expect(host.querySelector('#flowix-onboarding-notebook-form')).not.toBeNull();
     expect(button('创建并开始使用').disabled).toBe(false);
   });
@@ -295,7 +275,6 @@ describe('first-run notebook setup', () => {
     expect(mocks.selectNotebook).toHaveBeenCalledWith(notebook);
     expect(mocks.create).toHaveBeenCalledTimes(1);
     expect(mocks.startImport).not.toHaveBeenCalled();
-    expect(savedBoot.isOnboardingCompleted).toBe(true);
   });
 
   it('offers a real retry button after background import failure and retries the original notebook', async () => {
@@ -350,19 +329,9 @@ describe('first-run notebook setup', () => {
     expect(mocks.listeners.size).toBe(0);
   });
 
-  it('still offers ordinary notebook creation when setup is completed but no notebook remains', async () => {
-    savedBoot.isOnboardingCompleted = true;
+  it('opens onboarding when no notebook exists', async () => {
     await mount();
-    expect(host.querySelector('[data-ordinary-create]')).not.toBeNull();
-    expect(host.querySelector('#flowix-onboarding-notebook-form')).toBeNull();
+    expect(host.querySelector('#flowix-onboarding-notebook-form')).not.toBeNull();
     expect(host.querySelector('[data-agent-intro]')).toBeNull();
-  });
-
-  it('releases the empty-notebook fallback when the boot lookup fails', async () => {
-    mocks.getFeatures.mockRejectedValueOnce(new Error('BOOT_UNAVAILABLE'));
-    await mount();
-    expect(host.querySelector('[data-ordinary-create]')).not.toBeNull();
-    expect(host.querySelector('#flowix-onboarding-notebook-form')).toBeNull();
-    expect(mocks.setOnboardingCompleted).not.toHaveBeenCalled();
   });
 });

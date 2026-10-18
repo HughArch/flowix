@@ -2,8 +2,11 @@ import { Extension } from '@tiptap/core';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 
-const stableCaretKey = new PluginKey('stableCaret');
-const ACTIVE_CLASS = 'has-stable-caret';
+type StableCaretScope = 'document' | 'composer';
+
+function activeClassFor(scope: StableCaretScope): string {
+  return scope === 'composer' ? 'has-composer-stable-caret' : 'has-document-stable-caret';
+}
 
 function elementAtPosition(view: EditorView, position: number): HTMLElement {
   const { node } = view.domAtPos(position, -1);
@@ -14,17 +17,65 @@ function elementAtPosition(view: EditorView, position: number): HTMLElement {
 function caretHeightAt(view: EditorView, position: number): number {
   const element = elementAtPosition(view, position);
   const fontSize = Number.parseFloat(getComputedStyle(element).fontSize);
-  const resolvedFontSize = Number.isFinite(fontSize) ? fontSize : 15;
+  const resolvedFontSize = Number.isFinite(fontSize) ? fontSize : 16;
 
   // Native carets expand to the line box in editable pre-wrap content. Keep
   // the visual caret tied to glyph size instead, independently of line-height.
   return Math.max(12, resolvedFontSize * 1.15);
 }
 
+function caretWidthAt(element: HTMLElement, scope: StableCaretScope = scopeAt(element)): number {
+  const property = scope === 'composer' ? '--agent-composer-caret-width' : '--editor-caret-width';
+  const width = Number.parseFloat(getComputedStyle(element).getPropertyValue(property));
+  return Number.isFinite(width) && width > 0 ? width : 2;
+}
+
+function scopeAt(element: HTMLElement): StableCaretScope {
+  return element.closest('.agent-composer__input-content') ? 'composer' : 'document';
+}
+
 interface CaretRect {
   left: number;
   top: number;
   bottom: number;
+}
+
+/** Resolve both sides from the logical selection and the visible chip, never
+ * from the browser's caret inside a non-editable NodeView. The shared caret
+ * is two pixels wide; its nearest edge stays one pixel away from the border. */
+export function getInlineAtomBoundaryCaretRect(
+  view: Pick<EditorView, 'state' | 'nodeDOM'>,
+  position: number,
+): CaretRect | null {
+  const $pos = view.state.doc.resolve(position);
+  const candidates = [
+    { node: $pos.nodeBefore, pos: position - ($pos.nodeBefore?.nodeSize ?? 0), side: 'after' },
+    { node: $pos.nodeAfter, pos: position, side: 'before' },
+  ] as const;
+  for (const { node, pos, side } of candidates) {
+    if (!node?.isInline || !node.isAtom || node.isText) continue;
+    const wrapper = view.nodeDOM(pos);
+    if (!(wrapper instanceof HTMLElement)
+      || wrapper.getAttribute('data-inline-atom-caret') !== 'single-line') continue;
+    const card = wrapper.querySelector<HTMLElement>('[data-inline-atom-card]');
+    if (!card) continue;
+    const rect = card.getBoundingClientRect();
+    if (rect.width <= 0 || rect.height <= 0) continue;
+    const scope = scopeAt(wrapper);
+    const gapProperty = scope === 'composer' ? '--agent-composer-caret-gap' : '--inline-atom-caret-gap';
+    const gapValue = Number.parseFloat(getComputedStyle(wrapper).getPropertyValue(gapProperty));
+    const gap = Number.isFinite(gapValue) && gapValue >= 0 ? gapValue : 1;
+    const width = caretWidthAt(wrapper, scope);
+    const rtl = getComputedStyle(card).direction === 'rtl';
+    const leftEdge = (side === 'before') !== rtl;
+    const result = {
+      left: leftEdge ? rect.left - width - gap : rect.right + gap,
+      top: rect.top,
+      bottom: rect.bottom,
+    };
+    if (isUsableCaretRect(result)) return result;
+  }
+  return null;
 }
 
 interface TerminalInlineAtomCaretResolution {
@@ -109,7 +160,7 @@ function resolveTerminalInlineAtomCaret(
   // so its union bounding box is not a valid caret position.
   const atomWrapper = anchor.previousElementSibling as HTMLElement | null;
   const card = atomWrapper?.querySelector<HTMLElement>(
-    '.editor-note-reference__card, .editor-file-attachment__card',
+    '.note-reference__card, .editor-file-attachment__card',
   );
   if (card) {
     const cardRect = terminalInlineCaretRect(card);
@@ -150,12 +201,61 @@ export function getTerminalInlineAtomCaretRect(
 class StableCaretView {
   private readonly caret = document.createElement('span');
   private frame: number | null = null;
+  private readonly layer: HTMLSpanElement | null;
+  private resizeObserver: ResizeObserver | null = null;
+  private mutationObserver: MutationObserver | null = null;
+  private destroyed = false;
+  private readonly observedElements = new Set<Element>();
   private lastGeometry: { left: number; top: number; height: number } | null = null;
 
-  constructor(private readonly view: EditorView) {
-    this.caret.className = 'stable-editor-caret';
+  constructor(
+    private readonly view: EditorView,
+    private readonly scope: StableCaretScope,
+  ) {
+    this.caret.className = scope === 'composer'
+      ? 'agent-composer__stable-caret'
+      : 'stable-editor-caret--document';
     this.caret.setAttribute('aria-hidden', 'true');
-    document.body.appendChild(this.caret);
+    this.caret.hidden = true;
+    const host = scope === 'composer'
+      ? view.dom.closest<HTMLElement>('.agent-composer__input-row')
+      : null;
+    this.layer = host ? document.createElement('span') : null;
+    if (this.layer && host) {
+      this.layer.className = 'agent-composer__caret-layer';
+      this.layer.contentEditable = 'false';
+      this.layer.setAttribute('aria-hidden', 'true');
+      this.layer.appendChild(this.caret);
+      host.appendChild(this.layer);
+    } else {
+      // Document editors retain their existing viewport caret. A composer
+      // mounted without its production input row also uses this fallback.
+      document.body.appendChild(this.caret);
+      this.caret.style.position = 'fixed';
+    }
+    if (scope === 'composer') {
+      this.resizeObserver = new ResizeObserver(this.schedule);
+      this.observeLayout();
+      this.mutationObserver = new MutationObserver((records) => {
+        // Toggling our native-caret suppression class is a render result,
+        // not a layout change. Do not feed it back into another render.
+        const layoutChanged = records.some((record) => {
+          if (record.target !== view.dom || record.attributeName !== 'class') return true;
+          const withoutCaretClass = (value: string | null) => (value ?? '')
+            .split(/\s+/).filter((name) => name && name !== activeClassFor(scope)).sort().join(' ');
+          return withoutCaretClass(record.oldValue) !== withoutCaretClass(view.dom.className);
+        });
+        if (!layoutChanged) return;
+        if (records.some((record) => record.type === 'childList')) this.observeLayout();
+        this.schedule();
+      });
+      this.mutationObserver.observe(view.dom, {
+        subtree: true, childList: true, characterData: true,
+        attributes: true, attributeOldValue: true, attributeFilter: ['class', 'style', 'src'],
+      });
+      document.fonts?.addEventListener('loadingdone', this.schedule);
+      view.dom.addEventListener('load', this.schedule, true);
+    }
 
     view.dom.addEventListener('focus', this.schedule, true);
     view.dom.addEventListener('blur', this.schedule, true);
@@ -172,8 +272,16 @@ class StableCaretView {
   }
 
   destroy(): void {
+    this.destroyed = true;
+    this.resizeObserver?.disconnect();
+    this.observedElements.clear();
+    this.mutationObserver?.disconnect();
+    document.fonts?.removeEventListener('loadingdone', this.schedule);
+    this.view.dom.removeEventListener('load', this.schedule, true);
     if (this.frame !== null) cancelAnimationFrame(this.frame);
-    this.view.dom.classList.remove(ACTIVE_CLASS);
+    if (this.view.dom.classList.contains(activeClassFor(this.scope))) {
+      this.view.dom.classList.remove(activeClassFor(this.scope));
+    }
     this.view.dom.removeEventListener('focus', this.schedule, true);
     this.view.dom.removeEventListener('blur', this.schedule, true);
     this.view.dom.removeEventListener('compositionstart', this.handleCompositionStart);
@@ -182,14 +290,33 @@ class StableCaretView {
     window.removeEventListener('resize', this.schedule);
     window.removeEventListener('scroll', this.schedule, true);
     this.caret.remove();
+    this.layer?.remove();
   }
 
   private readonly handleCompositionStart = (): void => {
     this.hide();
   };
 
+  private observeLayout(): void {
+    // Inline tokens and paragraphs can reflow without changing the scroll
+    // viewport's dimensions (for example when it has reached max-height).
+    const elements = new Set<Element>([this.view.dom, ...this.view.dom.querySelectorAll('*')]);
+    for (const element of this.observedElements) {
+      if (!elements.has(element)) {
+        this.resizeObserver?.unobserve(element);
+        this.observedElements.delete(element);
+      }
+    }
+    for (const element of elements) {
+      if (!this.observedElements.has(element)) {
+        this.resizeObserver?.observe(element);
+        this.observedElements.add(element);
+      }
+    }
+  }
+
   private readonly schedule = (): void => {
-    if (this.frame !== null) cancelAnimationFrame(this.frame);
+    if (this.destroyed || this.frame !== null) return;
     this.frame = requestAnimationFrame(() => {
       this.frame = null;
       this.render();
@@ -201,7 +328,7 @@ class StableCaretView {
     // A thread-card composer is a nested contenteditable inside the document
     // editor. EditorView.hasFocus() treats focus in that subtree as focus in
     // the parent view, but the parent stable caret must not hide or compete
-    // with the composer's native caret.
+    // with the composer's own caret renderer.
     const activeElement = document.activeElement;
     const nestedEditableHasFocus = activeElement instanceof HTMLElement
       && activeElement !== this.view.dom
@@ -220,7 +347,10 @@ class StableCaretView {
     }
 
     try {
-      const terminalAtom = resolveTerminalInlineAtomCaret(this.view, selection.head);
+      const boundaryRect = getInlineAtomBoundaryCaretRect(this.view, selection.head);
+      const terminalAtom = boundaryRect
+        ? { found: false, rect: null }
+        : resolveTerminalInlineAtomCaret(this.view, selection.head);
       // Never fall back to coordsAtPos for a known terminal atom.  If the
       // NodeView is between mount and layout, showing the native caret is safer
       // than drawing a caret from the trailing-break line box.
@@ -228,8 +358,11 @@ class StableCaretView {
         this.hide();
         return;
       }
-      const rect = terminalAtom.rect ?? this.view.coordsAtPos(selection.head);
-      const scrollViewport = this.view.dom.closest('.editor-content');
+      const rect = boundaryRect ?? terminalAtom.rect ?? this.view.coordsAtPos(selection.head);
+      const clipsOwnContent = /^(auto|scroll|hidden|clip)$/.test(getComputedStyle(this.view.dom).overflowY);
+      const scrollViewport = this.layer || clipsOwnContent
+        ? this.view.dom
+        : this.view.dom.closest('.editor-content');
       const viewportRect = scrollViewport instanceof HTMLElement
         ? scrollViewport.getBoundingClientRect()
         : this.view.dom.getBoundingClientRect();
@@ -245,9 +378,40 @@ class StableCaretView {
       }
 
       const height = caretHeightAt(this.view, selection.head);
-      const lineHeight = Math.max(0, rect.bottom - rect.top);
-      const top = rect.top + Math.max(0, (lineHeight - height) / 2);
-      const geometry = { left: rect.left, top, height };
+      const width = caretWidthAt(this.view.dom, this.scope);
+      let left = rect.left;
+      let top = rect.top;
+      let lineHeight = Math.max(0, rect.bottom - rect.top);
+      if (this.layer) {
+        const layerRect = this.layer.getBoundingClientRect();
+        // Convert viewport measurements back to the layer's CSS coordinates,
+        // including any axis-aligned scale applied by an ancestor.
+        const scaleX = this.layer.offsetWidth > 0 && layerRect.width > 0
+          ? layerRect.width / this.layer.offsetWidth : 1;
+        const scaleY = this.layer.offsetHeight > 0 && layerRect.height > 0
+          ? layerRect.height / this.layer.offsetHeight : 1;
+        left = (left - layerRect.left) / scaleX;
+        top = (top - layerRect.top) / scaleY;
+        lineHeight /= scaleY;
+        // Clip the overlay to the editor viewport, including partial lines.
+        // Its sibling placement keeps it outside ProseMirror's editable DOM.
+        const inputRect = this.view.dom.getBoundingClientRect();
+        // A caret extends rightward from the insertion point. At a full line's
+        // right edge, keep its entire width inside the clipped viewport rather
+        // than suppressing the native caret and clipping away its replacement.
+        const inputLeft = (inputRect.left - layerRect.left) / scaleX;
+        const inputRight = (inputRect.right - layerRect.left) / scaleX;
+        left = Math.min(left, Math.max(inputLeft, inputRight - width));
+        const insets = [
+          (inputRect.top - layerRect.top) / scaleY,
+          (layerRect.right - inputRect.right) / scaleX,
+          (layerRect.bottom - inputRect.bottom) / scaleY,
+          (inputRect.left - layerRect.left) / scaleX,
+        ].map((value) => `${Math.max(0, value)}px`);
+        this.layer.style.clipPath = `inset(${insets.join(' ')})`;
+      }
+      top += Math.max(0, (lineHeight - height) / 2);
+      const geometry = { left, top, height };
       const geometryChanged = (
         this.lastGeometry === null
         || Math.abs(this.lastGeometry.left - geometry.left) > 0.1
@@ -255,11 +419,14 @@ class StableCaretView {
         || Math.abs(this.lastGeometry.height - geometry.height) > 0.1
       );
 
-      this.caret.style.left = `${rect.left}px`;
+      this.caret.style.left = `${left}px`;
+      this.caret.style.width = `${width}px`;
       this.caret.style.top = `${top}px`;
       this.caret.style.height = `${height}px`;
       this.caret.hidden = false;
-      this.view.dom.classList.add(ACTIVE_CLASS);
+      if (!this.view.dom.classList.contains(activeClassFor(this.scope))) {
+        this.view.dom.classList.add(activeClassFor(this.scope));
+      }
       this.lastGeometry = geometry;
 
       if (geometryChanged) {
@@ -275,19 +442,27 @@ class StableCaretView {
   private hide(): void {
     this.caret.hidden = true;
     this.lastGeometry = null;
-    this.view.dom.classList.remove(ACTIVE_CLASS);
+    if (this.view.dom.classList.contains(activeClassFor(this.scope))) {
+      this.view.dom.classList.remove(activeClassFor(this.scope));
+    }
   }
 }
 
-export const StableCaret = Extension.create({
-  name: 'stableCaret',
+function createStableCaretExtension(scope: 'document' | 'composer') {
+  const key = new PluginKey(`stableCaret:${scope}`);
+  return Extension.create({
+    name: 'stableCaret',
 
-  addProseMirrorPlugins() {
-    return [
-      new Plugin({
-        key: stableCaretKey,
-        view: (view) => new StableCaretView(view),
-      }),
-    ];
-  },
-});
+    addProseMirrorPlugins() {
+      return [
+        new Plugin({
+          key,
+          view: (view) => new StableCaretView(view, scope),
+        }),
+      ];
+    },
+  });
+}
+
+export const StableCaret = createStableCaretExtension('document');
+export const ComposerStableCaret = createStableCaretExtension('composer');

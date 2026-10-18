@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState, type FormEvent } from 'react';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -13,7 +13,12 @@ import { PREFERENCE_TAB_GROUPS } from '@features/preferences/public/app-api';
 import { AgentIcon } from '@features/agent/components/agent-icon';
 import productLogo from '@/assets/productlogo.png';
 import { cn } from '@/lib/utils';
+import { toast } from '@/lib/toast';
 import { openUrl } from '@platform/tauri/opener';
+import { Check, ChevronDown, Plus, X } from 'lucide-react';
+import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
+import { cloud, type CloudFeedbackAttachment } from '@platform/tauri/client/cloud';
+import { product } from '@platform/tauri/client/desktop';
 
 interface NotebookIconMenuProps {
   /** 打开偏好设置窗口; 可传入偏好 tab id (如 'theme' / 'dsh' / 'mcp' / 'aiAgent')。 */
@@ -45,14 +50,111 @@ export function NotebookIconMenu({
 }: NotebookIconMenuProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
+  const [feedbackOpen, setFeedbackOpen] = useState(false);
+  const [feedbackType, setFeedbackType] = useState<'product_suggestion' | 'usage_issue'>('product_suggestion');
+  const [feedbackTypeTriggerWidth, setFeedbackTypeTriggerWidth] = useState<number | null>(null);
+  const [feedbackText, setFeedbackText] = useState('');
+  const [feedbackFiles, setFeedbackFiles] = useState<File[]>([]);
+  const [feedbackBusy, setFeedbackBusy] = useState(false);
+  const feedbackBusyRef = useRef(false);
+  const [feedbackPreviews, setFeedbackPreviews] = useState<Array<{ file: File; url: string }>>([]);
+  const feedbackFileInputRef = useRef<HTMLInputElement | null>(null);
   const openTimerRef = useRef<number | null>(null);
   const closeTimerRef = useRef<number | null>(null);
   const visiblePreferenceGroups = PREFERENCE_TAB_GROUPS.map((group) => ({
     ...group,
-    tabs: group.tabs.filter(
-      (tab) => !['cloudSync', 'connections', 'tools', 'history', 'dsh', 'aiAgent'].includes(tab.id),
-    ),
+    tabs: group.tabs.filter((tab) => !('visibleInProductMenu' in tab) || tab.visibleInProductMenu !== false),
   }));
+
+  const openFeedback = () => {
+    setOpen(false);
+    setFeedbackOpen(true);
+  };
+
+  const addFeedbackFiles = useCallback((incoming: File[]) => {
+    if (incoming.length === 0) return;
+    const next = [...feedbackFiles, ...incoming];
+    if (next.length > 3 || next.some((file) => !['image/png', 'image/jpeg', 'image/webp', 'image/gif'].includes(file.type) || file.size > 5 * 1024 * 1024)) {
+      toast.error(t('memo.list.notebookMenu.feedback.imageLimit'));
+      return;
+    }
+    setFeedbackFiles(next);
+  }, [feedbackFiles, t]);
+
+  useEffect(() => {
+    const previews = feedbackFiles.map((file) => ({ file, url: URL.createObjectURL(file) }));
+    setFeedbackPreviews(previews);
+    return () => previews.forEach(({ url }) => URL.revokeObjectURL(url));
+  }, [feedbackFiles]);
+
+  useEffect(() => {
+    if (!feedbackOpen) return;
+    const handlePaste = (event: ClipboardEvent) => {
+      if (feedbackBusyRef.current) {
+        event.preventDefault();
+        return;
+      }
+      const clipboardItems = Array.from(event.clipboardData?.items ?? []);
+      const images = clipboardItems
+        .filter((item) => item.kind === 'file' && item.type.startsWith('image/'))
+        .map((item) => item.getAsFile())
+        .filter((file): file is File => file !== null);
+      if (images.length === 0) return;
+      event.preventDefault();
+      addFeedbackFiles(images);
+    };
+    window.addEventListener('paste', handlePaste);
+    return () => window.removeEventListener('paste', handlePaste);
+  }, [feedbackOpen, addFeedbackFiles]);
+
+  const getFeedbackDeviceId = () => {
+    const storageKey = 'flowix:feedback-device-id:v1';
+    try {
+      const existing = localStorage.getItem(storageKey);
+      if (existing && /^[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/iu.test(existing)) return existing;
+      const deviceId = crypto.randomUUID();
+      localStorage.setItem(storageKey, deviceId);
+      return deviceId;
+    } catch {
+      return crypto.randomUUID();
+    }
+  };
+
+  const readFeedbackImages = async (): Promise<CloudFeedbackAttachment[]> => Promise.all(feedbackFiles.map(async (file) => {
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    let binary = '';
+    for (let offset = 0; offset < bytes.length; offset += 0x8000) binary += String.fromCharCode(...bytes.subarray(offset, offset + 0x8000));
+    return { filename: file.name, contentType: file.type, dataBase64: btoa(binary) };
+  }));
+
+  const submitFeedback = async (event: FormEvent<HTMLFormElement>) => {
+    event.preventDefault();
+    if (feedbackBusyRef.current || !feedbackText.trim()) return;
+    feedbackBusyRef.current = true;
+    setFeedbackBusy(true);
+    try {
+      const productInfo = await product.getInfo();
+      const architecture = productInfo.arch === 'aarch64' ? 'arm64' : productInfo.arch === 'x86_64' ? 'x64' : productInfo.arch;
+      const platform = `${productInfo.os}-${architecture}`;
+      await cloud.submitFeedback(
+        getFeedbackDeviceId(),
+        feedbackType,
+        feedbackText.trim(),
+        productInfo.version,
+        platform,
+        await readFeedbackImages(),
+      );
+      toast.success(t('memo.list.notebookMenu.feedback.submitSucceeded'));
+      setFeedbackOpen(false);
+      setFeedbackText('');
+      setFeedbackFiles([]);
+    } catch {
+      toast.error(t('memo.list.notebookMenu.feedback.submitFailed'));
+    } finally {
+      feedbackBusyRef.current = false;
+      setFeedbackBusy(false);
+    }
+  };
 
   const cancelOpen = useCallback(() => {
     if (openTimerRef.current !== null) {
@@ -150,7 +252,7 @@ export function NotebookIconMenu({
                 ) : (
                   tab.icon
                 )}
-                <span>{tab.id === 'mcp' ? 'MCP' : t(tab.labelKey)}</span>
+                <span>{t(tab.labelKey)}</span>
               </DropdownMenuItem>
             ))}
           </div>
@@ -163,14 +265,81 @@ export function NotebookIconMenu({
           className={NOTEBOOK_ICON_MENU_ITEM_CLASS}
         >
           <span>{t('memo.list.notebookMenu.officialWebsite')}</span>
+          <span className="ml-auto font-mono text-xs text-[var(--muted-foreground)]">Flowix.CC</span>
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={() => void openUrl(COMMUNITY_URL)}
           className={NOTEBOOK_ICON_MENU_ITEM_CLASS}
         >
           <span>{t('memo.list.notebookMenu.community')}</span>
+          <span className="ml-auto font-mono text-xs text-[var(--muted-foreground)]">GitHub</span>
+        </DropdownMenuItem>
+        <DropdownMenuItem onClick={openFeedback} className={NOTEBOOK_ICON_MENU_ITEM_CLASS}>
+          <span>{t('memo.list.notebookMenu.feedback')}</span>
         </DropdownMenuItem>
       </DropdownMenuContent>
+      <Dialog open={feedbackOpen} onOpenChange={(next) => { if (!feedbackBusy) setFeedbackOpen(next); }}>
+        <DialogContent className="max-w-lg rounded-xl border border-[var(--border-popup)] bg-[var(--background)]">
+          <DialogHeader>
+            <DialogTitle>{t('memo.list.notebookMenu.feedback.title')}</DialogTitle>
+            <DialogDescription>{t('memo.list.notebookMenu.feedback.description')}</DialogDescription>
+          </DialogHeader>
+          <form className="mt-4 space-y-4" onSubmit={(event) => void submitFeedback(event)}>
+            <div className="space-y-1.5 text-sm">
+              <span className="block">{t('memo.list.notebookMenu.feedback.type')}<span className="ml-1 rounded-md bg-[color-mix(in_oklch,var(--success)_15%,transparent)] px-1.5 py-0.5 text-xs text-[var(--success)]">{t('memo.list.notebookMenu.feedback.required')}</span></span>
+              <DropdownMenu>
+                <DropdownMenuTrigger asChild onClick={(event) => setFeedbackTypeTriggerWidth(event.currentTarget.getBoundingClientRect().width)}>
+                  <button type="button" aria-required="true" disabled={feedbackBusy} className="flex h-9 w-1/2 items-center justify-between rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 text-left text-sm hover:bg-[var(--hover-bg)] disabled:opacity-50">
+                    <span>{t(`memo.list.notebookMenu.feedback.${feedbackType === 'product_suggestion' ? 'suggestion' : 'issue'}`)}</span>
+                    <ChevronDown className="h-4 w-4 text-[var(--muted-foreground)]" />
+                  </button>
+                </DropdownMenuTrigger>
+                <DropdownMenuContent align="start" sideOffset={4} style={{ width: feedbackTypeTriggerWidth ?? undefined }} className="min-w-0 space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+                  <DropdownMenuItem onClick={() => setFeedbackType('product_suggestion')} className="flex h-8 items-center justify-between rounded-lg px-2 hover:bg-[var(--hover-bg)]">
+                    <span>{t('memo.list.notebookMenu.feedback.suggestion')}</span>
+                    {feedbackType === 'product_suggestion' && <Check className="h-4 w-4 text-[var(--brand)]" />}
+                  </DropdownMenuItem>
+                  <DropdownMenuItem onClick={() => setFeedbackType('usage_issue')} className="flex h-8 items-center justify-between rounded-lg px-2 hover:bg-[var(--hover-bg)]">
+                    <span>{t('memo.list.notebookMenu.feedback.issue')}</span>
+                    {feedbackType === 'usage_issue' && <Check className="h-4 w-4 text-[var(--brand)]" />}
+                  </DropdownMenuItem>
+                </DropdownMenuContent>
+              </DropdownMenu>
+            </div>
+            <label className="block space-y-1.5 text-sm">
+              <span>{t('memo.list.notebookMenu.feedback.content')}<span className="ml-1 rounded-md bg-[color-mix(in_oklch,var(--success)_15%,transparent)] px-1.5 py-0.5 text-xs text-[var(--success)]">{t('memo.list.notebookMenu.feedback.required')}</span></span>
+              <textarea required maxLength={2000} disabled={feedbackBusy} value={feedbackText} onChange={(event) => setFeedbackText(event.target.value)} rows={6} className="w-full resize-none rounded-lg border border-[var(--border)] bg-[var(--card)] px-3 py-2 text-sm outline-none focus:border-[var(--brand)] disabled:opacity-50" placeholder={t('memo.list.notebookMenu.feedback.placeholder')} />
+            </label>
+            <div className="block space-y-1.5 text-sm">
+              <div className="flex items-center gap-2">
+                <span>{t('memo.list.notebookMenu.feedback.attachments')}</span>
+                <span className="text-sm text-[var(--muted-foreground)]">{t('memo.list.notebookMenu.feedback.imageHint')}</span>
+              </div>
+              <input ref={feedbackFileInputRef} type="file" disabled={feedbackBusy} aria-label={t('memo.list.notebookMenu.feedback.attachments')} accept="image/png,image/jpeg,image/webp,image/gif" multiple className="sr-only" onChange={(event) => {
+                const files = Array.from(event.target.files ?? []);
+                addFeedbackFiles(files);
+                event.target.value = '';
+              }} />
+              <div className="flex flex-wrap gap-2 pt-1">
+                {feedbackPreviews.map(({ file, url }, index) => <div key={`${file.name}-${file.lastModified}-${index}`} className="relative h-[100px] w-[100px] shrink-0 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)]">
+                  <img src={url} alt={file.name} className="h-full w-full object-cover" />
+                  <span className="absolute inset-x-0 bottom-0 truncate bg-black/55 px-1.5 py-1 text-[10px] text-white" title={file.name}>{file.name}</span>
+                  <button type="button" disabled={feedbackBusy} onClick={() => setFeedbackFiles((current) => current.filter((_, fileIndex) => fileIndex !== index))} aria-label={t('memo.list.notebookMenu.feedback.removeImage')} title={t('memo.list.notebookMenu.feedback.removeImage')} className="absolute right-1 top-1 flex h-6 w-6 items-center justify-center rounded-full bg-black/55 text-white hover:bg-black/75">
+                    <X className="h-3.5 w-3.5" />
+                  </button>
+                </div>)}
+                {feedbackFiles.length < 3 && <button type="button" disabled={feedbackBusy} onClick={() => feedbackFileInputRef.current?.click()} aria-label={t('memo.list.notebookMenu.feedback.addImage')} title={t('memo.list.notebookMenu.feedback.addImage')} className="flex h-[100px] w-[100px] shrink-0 items-center justify-center rounded-xl border border-dashed border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)] transition-colors hover:border-[var(--brand)] hover:bg-[var(--hover-bg)] hover:text-[var(--foreground)] disabled:opacity-50">
+                  <Plus className="h-7 w-7" />
+                </button>}
+              </div>
+            </div>
+            <div className="flex justify-end gap-2">
+              <button type="button" disabled={feedbackBusy} onClick={() => setFeedbackOpen(false)} className="h-9 rounded-lg border border-[var(--border)] px-3 text-sm">{t('memo.list.notebookMenu.feedback.cancel')}</button>
+              <button type="submit" disabled={feedbackBusy || !feedbackText.trim()} className="h-9 rounded-lg bg-[var(--brand)] px-4 text-sm text-white disabled:opacity-50">{feedbackBusy ? t('memo.list.notebookMenu.feedback.submitting') : t('memo.list.notebookMenu.feedback.submit')}</button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
     </DropdownMenu>
   );
 }

@@ -22,7 +22,7 @@ function renderLoader(overrides: Partial<ComponentProps<typeof MemoListDataLoade
     activeTagId: null,
     colorFilter: 'any',
     activePluginId: null,
-    refreshTrigger: 0,
+    memoListRefreshTrigger: 0,
     loadNotes: vi.fn().mockResolvedValue(true),
     setLoadedMemoListQueryKey: vi.fn(),
     setIsMemoListLoading: vi.fn(),

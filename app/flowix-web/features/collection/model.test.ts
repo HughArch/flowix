@@ -14,7 +14,7 @@ describe('collection file identity and properties', () => {
     expect(tableFile.payload.dataset).not.toHaveProperty('id');
     expect(parseTableDocument(serializeTableDocument(table))).toEqual(table);
     const library = createMediaLibrary('照片');
-    library.dataset.records.include.push(createMediaLibraryRecord('attachments/photo.png'));
+    library.dataset.records.include.push(createMediaLibraryRecord('notebook-1', 'attachments/photo.png'));
     library.collection.properties = table.collection.properties;
     expect(parseMediaLibrary(serializeMediaLibrary(library))).toEqual(library);
     expect(library.collection.id).toMatch(/^col_[0-9a-f]{32}$/);

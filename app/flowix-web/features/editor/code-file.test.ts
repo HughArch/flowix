@@ -16,14 +16,17 @@ describe('code file classification', () => {
     expect(isMarkdownFilePath('/notes/README.MD')).toBe(true);
     expect(isCodeTextFilePath('/src/app.tsx')).toBe(true);
     expect(isCodeTextFilePath('/data/settings.JSON')).toBe(true);
-    expect(isCodeTextFilePath('/notes/plain.txt')).toBe(true);
+    expect(isCodeTextFilePath('/notes/plain.txt')).toBe(false);
+    expect(isEditableTextFilePath('/notes/plain.txt')).toBe(true);
     expect(isCodeTextFilePath('/notes/readme.md')).toBe(false);
   });
 
-  it('rejects unknown extensions until their MIME type is known to be text', () => {
+  it('recognizes known extensionless text files and waits to inspect unknown files', () => {
     expect(isEditableTextFilePath('/assets/logo.png')).toBe(false);
-    expect(isEditableTextFilePath('/src/Makefile')).toBe(false);
-    expect(isEditableTextFilePath('/src/LICENSE')).toBe(false);
+    expect(isEditableTextFilePath('/src/Makefile')).toBe(true);
+    expect(isEditableTextFilePath('/src/Dockerfile')).toBe(true);
+    expect(isEditableTextFilePath('/src/LICENSE')).toBe(true);
+    expect(externalFileViewKind('/src/LICENSE')).toBe('code');
     expect(isEditableTextFilePath('/src/data.custom', 'text/plain')).toBe(true);
     expect(isEditableTextFilePath('/src/archive.custom', 'application/octet-stream')).toBe(false);
     expect(isTextMimeType('text/csv; charset=utf-8')).toBe(true);

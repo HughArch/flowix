@@ -3,6 +3,7 @@ import {
   useLayoutEffect,
   useMemo,
   useRef,
+  useState,
   type RefObject,
 } from 'react';
 import {
@@ -31,6 +32,10 @@ interface DynamicVirtualListOptions<T> {
   estimateSize: (item: T, index: number) => number;
   scrollerRef: RefObject<HTMLDivElement | null>;
   enabled: boolean;
+  /** Track fresh, stable geometry across hidden-to-visible transitions. */
+  trackViewportReadiness?: boolean;
+  /** Whether the viewport is currently visible and can be measured. */
+  viewportActive?: boolean;
   /** Reset scroll position and measurements when the query changes. */
   resetKey?: string;
   overscan?: number;
@@ -41,26 +46,109 @@ interface DynamicVirtualListOptions<T> {
 
 function observeUsableRect(
   lastUsableRect: { current: Rect | null },
+  trackViewportReadiness: { current: boolean },
+  viewportActive: { current: boolean },
+  viewportReady: { current: boolean },
+  setViewportReady: (ready: boolean) => void,
 ) {
   return (
     instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
     onChange: (rect: Rect) => void,
-  ) => observeElementRect(instance, (observedRect) => {
-    const element = instance.scrollElement;
-    const rect = {
-      width: observedRect.width || element?.clientWidth || 0,
-      height: observedRect.height || element?.clientHeight || 0,
+  ) => {
+    let frame: number | null = null;
+    let previousFrameRect: Rect | null = null;
+    let stableFrames = 0;
+
+    const updateViewportReady = (ready: boolean) => {
+      if (viewportReady.current === ready) return;
+      viewportReady.current = ready;
+      setViewportReady(ready);
     };
-    if (rect.width > 0 && rect.height > 0) {
+
+    const cancelPendingMeasure = () => {
+      if (frame === null) return;
+      cancelAnimationFrame(frame);
+      frame = null;
+    };
+
+    const checkViewportStability = () => {
+      frame = null;
+      if (!trackViewportReadiness.current || !viewportActive.current) {
+        updateViewportReady(false);
+        previousFrameRect = null;
+        stableFrames = 0;
+        return;
+      }
+
+      const element = instance.scrollElement;
+      const bounds = element?.getBoundingClientRect();
+      const rect = {
+        width: bounds?.width ?? 0,
+        height: bounds?.height ?? 0,
+      };
+      if (rect.width <= 0 || rect.height <= 0) {
+        updateViewportReady(false);
+        previousFrameRect = null;
+        stableFrames = 0;
+        return;
+      }
+
       lastUsableRect.current = rect;
       onChange(rect);
-      return;
-    }
+      if (previousFrameRect
+        && Math.abs(previousFrameRect.width - rect.width) < 0.5
+        && Math.abs(previousFrameRect.height - rect.height) < 0.5) {
+        stableFrames += 1;
+      } else {
+        stableFrames = 0;
+      }
+      previousFrameRect = rect;
 
-    // Hidden workspace columns temporarily report zero geometry. Keep the
-    // last usable viewport so the list stays virtualized while hidden.
-    if (!lastUsableRect.current) onChange(rect);
-  });
+      // After a hidden-to-visible transition, wait for the opening width
+      // animation to settle before exposing dynamically measured rows.
+      if (stableFrames >= 1) {
+        updateViewportReady(true);
+        return;
+      }
+      frame = requestAnimationFrame(checkViewportStability);
+    };
+
+    const scheduleStabilityCheck = () => {
+      if (frame !== null) return;
+      frame = requestAnimationFrame(checkViewportStability);
+    };
+
+    const stopObserving = observeElementRect(instance, (observedRect) => {
+      const element = instance.scrollElement;
+      const rect = {
+        width: observedRect.width || element?.clientWidth || 0,
+        height: observedRect.height || element?.clientHeight || 0,
+      };
+      if (rect.width > 0 && rect.height > 0) {
+        lastUsableRect.current = rect;
+        onChange(rect);
+        if (trackViewportReadiness.current && viewportActive.current && !viewportReady.current) {
+          scheduleStabilityCheck();
+        }
+        return;
+      }
+
+      if (trackViewportReadiness.current) {
+        updateViewportReady(false);
+      }
+      previousFrameRect = null;
+      stableFrames = 0;
+      cancelPendingMeasure();
+      // Hidden workspace columns temporarily report zero geometry. Keep the
+      // last usable viewport so the list stays virtualized while hidden.
+      if (!lastUsableRect.current) onChange(rect);
+    });
+
+    return () => {
+      cancelPendingMeasure();
+      stopObserving?.();
+    };
+  };
 }
 
 /** Shared TanStack Virtual adapter for memo cards and notebook tree rows. */
@@ -70,12 +158,20 @@ export function useDynamicVirtualList<T>({
   estimateSize,
   scrollerRef,
   enabled,
+  trackViewportReadiness = false,
+  viewportActive = true,
   resetKey,
   overscan = DEFAULT_OVERSCAN,
   keepAliveKeys = [],
   scrollMargin = 0,
 }: DynamicVirtualListOptions<T>) {
   const lastUsableRectRef = useRef<Rect | null>(null);
+  const trackViewportReadinessRef = useRef(trackViewportReadiness);
+  trackViewportReadinessRef.current = trackViewportReadiness;
+  const viewportActiveRef = useRef(viewportActive);
+  viewportActiveRef.current = viewportActive;
+  const viewportReadyRef = useRef(false);
+  const [viewportReadyState, setViewportReadyState] = useState(false);
   const enabledRef = useRef(enabled);
   enabledRef.current = enabled;
   const itemIndexesRef = useRef(new Map<string, number>());
@@ -105,8 +201,14 @@ export function useDynamicVirtualList<T>({
     Math.ceil(element.getBoundingClientRect().height),
   ), []);
   const observeRect = useMemo(
-    () => observeUsableRect(lastUsableRectRef),
-    [],
+    () => observeUsableRect(
+      lastUsableRectRef,
+      trackViewportReadinessRef,
+      viewportActiveRef,
+      viewportReadyRef,
+      setViewportReadyState,
+    ),
+    [setViewportReadyState],
   );
   const virtualizer = useVirtualizer<HTMLDivElement, HTMLDivElement>({
     count: items.length,
@@ -126,6 +228,13 @@ export function useDynamicVirtualList<T>({
 
   const lastResetKeyRef = useRef(resetKey);
   useLayoutEffect(() => {
+    if (trackViewportReadiness && !viewportActive) {
+      viewportReadyRef.current = false;
+      setViewportReadyState(false);
+    }
+  }, [setViewportReadyState, trackViewportReadiness, viewportActive]);
+
+  useLayoutEffect(() => {
     if (lastResetKeyRef.current === resetKey) return;
     lastResetKeyRef.current = resetKey;
     if (scrollerRef.current) scrollerRef.current.scrollTop = 0;
@@ -140,10 +249,10 @@ export function useDynamicVirtualList<T>({
     previousWidthRef.current = viewportWidth;
     if (previousWidth === 0 || previousWidth === viewportWidth) return;
 
-    // Width changes invalidate cached heights. Reset and synchronously
-    // remeasure only the mounted virtual window; TanStack keeps the scroll
-    // anchor stable as changed rows above the viewport are measured.
-    virtualizer.measure();
+    // Width changes can alter the height of mounted rows. Remeasure those
+    // rows synchronously, while retaining cached sizes for offscreen rows;
+    // clearing the whole cache on every drag frame replaces them with
+    // estimates and creates visible gaps between cards.
     scrollerRef.current?.querySelectorAll<HTMLDivElement>('[data-index]').forEach((element) => {
       virtualizer.measureElement(element);
     });
@@ -200,6 +309,10 @@ export function useDynamicVirtualList<T>({
     totalSize: enabled ? totalSize : 0,
     virtualItems,
     isVirtualizationReady: enabled && lastUsableRectRef.current !== null,
+    isViewportReady: trackViewportReadiness
+      && enabled
+      && viewportActive
+      && viewportReadyState,
     getMeasureRef,
   };
 }

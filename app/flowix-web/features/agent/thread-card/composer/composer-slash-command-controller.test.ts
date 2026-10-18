@@ -1,6 +1,8 @@
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from '@tiptap/markdown';
+import { translate } from '@/lib/i18n';
+import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
 import {
@@ -12,7 +14,7 @@ import {
 import { ComposerSlashToken } from './composer-slash-token';
 
 function setup(options: {
-  agentType?: 'deepseek-harness' | 'codex';
+  agentType?: 'dsh' | 'codex';
   onModelSelect?: () => void;
   onPermissionSelect?: () => void;
   onDirectCommand?: (command: ComposerSlashCommand) => void;
@@ -21,7 +23,10 @@ function setup(options: {
   const composer = document.createElement('div');
   const input = document.createElement('div');
   input.contentEditable = 'true';
-  composer.append(input);
+  const inputRow = document.createElement('div');
+  inputRow.className = 'agent-composer__input-row';
+  inputRow.append(input);
+  composer.append(inputRow);
   document.body.append(composer);
   vi.spyOn(composer, 'getBoundingClientRect').mockReturnValue({
     x: 20,
@@ -36,8 +41,7 @@ function setup(options: {
   });
   const editor = new Editor({
     // Use the same mount contract as ComposerController. The input itself is
-    // ProseMirror's root; the slash controller then moves that root into the
-    // input row without introducing a nested editor.
+    // ProseMirror's root inside the factory-owned input row.
     element: { mount: input },
     extensions: [StarterKit, Markdown, ComposerSlashToken],
     content: '',
@@ -47,7 +51,7 @@ function setup(options: {
     input,
     composer,
     editor,
-    agentType: options.agentType ?? 'deepseek-harness',
+    agentType: options.agentType ?? 'dsh',
     onModelSelect: options.onModelSelect,
     onPermissionSelect: options.onPermissionSelect,
     onDirectCommand: options.onDirectCommand,
@@ -73,7 +77,7 @@ describe('ComposerSlashCommandController', () => {
     type(editor, '/export');
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     expect(onDirectCommand).toHaveBeenCalledWith(expect.objectContaining({ name: 'export' }));
-    expect(editor.getMarkdown()).toContain('flowix://slash/deepseek-harness/export');
+    expect(editor.getMarkdown()).toContain('flowix://slash/dsh/export');
     controller.dispose();
     editor.destroy();
   });
@@ -99,7 +103,7 @@ describe('ComposerSlashCommandController', () => {
     const { input, editor, controller } = setup();
     const row = input.parentElement;
 
-    expect(row?.classList.contains('agent-thread-card__composer-input-row')).toBe(true);
+    expect(row?.classList.contains('agent-composer__input-row')).toBe(true);
     input.blur();
     row?.dispatchEvent(new MouseEvent('mousedown', {
       bubbles: true,
@@ -149,16 +153,16 @@ describe('ComposerSlashCommandController', () => {
     type(editor, '/goal');
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
 
-    expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/deepseek-harness/goal) ');
-    expect(composer.querySelector('.agent-thread-card__slash-token')?.textContent).toBe('/goal');
+    expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/dsh/goal) ');
+    expect(composer.querySelector('.agent-thread-card__slash-token')?.textContent).toBe(translate(getCurrentAppLanguage(), 'editor.threadCard.composer.longTask'));
     expect(composer.querySelector('.agent-thread-card__slash-token--control')).not.toBeNull();
     const wrapper = composer.querySelector('.agent-thread-card__slash-token-wrapper');
-    expect(wrapper?.childNodes).toHaveLength(2);
-    expect(wrapper?.firstChild?.textContent).toBe('/goal');
+    expect(wrapper?.childNodes).toHaveLength(3);
+    expect(wrapper?.firstChild?.textContent).toBe('\u200B');
     expect(wrapper?.lastChild?.textContent).toBe('\u200B');
 
     editor.commands.insertContent('继续输入');
-    expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/deepseek-harness/goal) 继续输入');
+    expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/dsh/goal) 继续输入');
 
     editor.commands.focus('start');
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
@@ -198,7 +202,10 @@ describe('ComposerSlashCommandController', () => {
     const onModelSelect = vi.fn();
     const composer = document.createElement('div');
     const input = document.createElement('div');
-    composer.append(input);
+    const inputRow = document.createElement('div');
+  inputRow.className = 'agent-composer__input-row';
+  inputRow.append(input);
+  composer.append(inputRow);
     document.body.append(composer);
     const editor = new Editor({
       element: { mount: input },
@@ -282,7 +289,7 @@ describe('ComposerSlashCommandController', () => {
     )].find((candidate) => candidate.textContent?.includes('/goal'));
     item?.click();
 
-    expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/deepseek-harness/goal) ');
+    expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/dsh/goal) ');
     expect(document.querySelector('.agent-composer-slash-menu')).toBeNull();
     controller.dispose();
     editor.destroy();
@@ -293,7 +300,7 @@ describe('ComposerSlashCommandController', () => {
     editor.commands.setContent('[/goal](flowix://slash/goal)', { contentType: 'markdown' });
 
     expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/goal)');
-    expect(composer.querySelector('.agent-thread-card__slash-token')?.textContent).toBe('/goal');
+    expect(composer.querySelector('.agent-thread-card__slash-token')?.textContent).toBe(translate(getCurrentAppLanguage(), 'editor.threadCard.composer.longTask'));
 
     controller.dispose();
     editor.destroy();
@@ -302,7 +309,10 @@ describe('ComposerSlashCommandController', () => {
   it('shows only Codex-supported commands in Codex composers', () => {
     const composer = document.createElement('div');
     const input = document.createElement('div');
-    composer.append(input);
+    const inputRow = document.createElement('div');
+  inputRow.className = 'agent-composer__input-row';
+  inputRow.append(input);
+  composer.append(inputRow);
     document.body.append(composer);
     const editor = new Editor({
       element: { mount: input },
@@ -331,7 +341,10 @@ describe('ComposerSlashCommandController', () => {
   it('does not open for a composer without an Agent type', () => {
     const composer = document.createElement('div');
     const input = document.createElement('div');
-    composer.append(input);
+    const inputRow = document.createElement('div');
+  inputRow.className = 'agent-composer__input-row';
+  inputRow.append(input);
+  composer.append(inputRow);
     document.body.append(composer);
     const editor = new Editor({
       element: { mount: input },
@@ -364,7 +377,10 @@ describe('ComposerSlashCommandController', () => {
     // focused on the static-menu path.
     const nextComposer = document.createElement('div');
     const nextInput = document.createElement('div');
-    nextComposer.append(nextInput);
+    const nextRow = document.createElement('div');
+    nextRow.className = 'agent-composer__input-row';
+    nextRow.append(nextInput);
+    nextComposer.append(nextRow);
     document.body.append(nextComposer);
     const nextEditor = new Editor({
       element: { mount: nextInput },
@@ -377,7 +393,7 @@ describe('ComposerSlashCommandController', () => {
       input: nextInput,
       composer: nextComposer,
       editor: nextEditor,
-      agentType: 'deepseek-harness',
+      agentType: 'dsh',
       listDshSkills,
     });
     type(nextEditor, '/');

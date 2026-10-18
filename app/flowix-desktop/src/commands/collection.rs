@@ -2,7 +2,7 @@
 use crate::{app::state::AppState, lock_utils::read_lock};
 use flowix_core::{
     collection::{
-        valid_id, validate_properties, CollectionDocument, CollectionPlacement, CollectionProperty,
+        display_name_for_path, valid_id, validate_properties, CollectionDocument, CollectionPlacement, CollectionProperty,
         CollectionType,
     },
     memo_file::{
@@ -269,7 +269,7 @@ impl CollectionCatalog {
             Ok(document) => {
                 item.collection_type = document.collection.kind;
                 item.collection_id = Some(document.collection.id.clone());
-                item.name = document.collection.name.clone();
+                item.name = display_name_for_path(path, document.collection.placement);
                 item.schema_version = Some(document.schema_version);
                 item.payload_schema_version = document.payload["schema_version"].as_i64();
                 item.revision = Some(document.collection.revision);
@@ -535,7 +535,7 @@ impl CollectionCatalog {
                 let (item, _, content, document) = self.read(&operation.collection_id)?;
                 complete(&CollectionMutationResult {
                     operation_id: operation.operation_id.clone(), status: "completed".into(),
-                    collection_id: operation.collection_id.clone(), actual_name: document.collection.name,
+                    collection_id: operation.collection_id.clone(), actual_name: item.name.clone(),
                     previous_relative_path: operation.previous_path.clone(), notebook_path: self.root.to_string_lossy().into_owned(),
                     actual_relative_path: item.relative_path, actual_revision: document.collection.revision,
                     index_sequence: item.index_sequence, content, error_code: None,
@@ -639,7 +639,7 @@ impl CollectionCatalog {
             let path = self.root.join(&item.relative_path);
             let source = fs::read_to_string(&path).map_err(|error| error.to_string())?;
             let mut document = CollectionDocument::parse(&source)?.normalized_v2()?;
-            if !document.rebase_paths(&previous, &next) { continue; }
+            if !document.rebase_paths_for_notebook(&self.notebook_id, &previous, &next)? { continue; }
             document.revise()?;
             if fs::read_to_string(&path).map_err(|error| error.to_string())? != source {
                 return Err("COLLECTION_CONTENT_CONFLICT".into());
@@ -775,17 +775,19 @@ fn target_relative_path(
     }
 
     if document.collection.placement == CollectionPlacement::Folder {
+        let name = request.new_name.as_deref().ok_or("INVALID_COLLECTION_NAME")?.trim();
         let folder = Path::new(&item.relative_path).parent()
             .filter(|path| !path.as_os_str().is_empty())
             .ok_or("NOTEBOOK_ROOT_RENAME_FORBIDDEN")?;
         return Ok(folder.parent().unwrap_or(Path::new(""))
-            .join(&document.collection.name).join(".index.yaml")
+            .join(name).join(".index.yaml")
             .to_string_lossy().replace('\\', "/"));
     }
+    let name = request.new_name.as_deref().ok_or("INVALID_COLLECTION_NAME")?.trim();
     Ok(Path::new(&item.relative_path)
         .parent()
         .unwrap_or(Path::new(""))
-        .join(format!("{}.index.yaml", document.collection.name))
+        .join(format!("{}.index.yaml", name))
         .to_string_lossy()
         .replace('\\', "/"))
 }
@@ -910,7 +912,6 @@ fn mutate_locked(
             {
                 return Err("INVALID_COLLECTION_NAME".into());
             }
-            document.collection.name = name.to_owned();
         }
         if let Some(patch) = &request.properties {
             for (key, value) in patch {
@@ -976,11 +977,13 @@ fn mutate_locked(
             || (request.target_relative_path.is_some() && document.schema_version == 1);
         if rewrite_content {
             document = document.normalized_v2()?;
+            document.normalize_media_resource_ids(&request.notebook_id)?;
             if directory_move {
-                document.rebase_paths(
+                document.rebase_paths_for_notebook(
+                    &request.notebook_id,
                     &Path::new(&item.relative_path).parent().ok_or("INVALID_COLLECTION_PATH")?.to_string_lossy().replace('\\', "/"),
                     &Path::new(&target_relative).parent().ok_or("INVALID_COLLECTION_PATH")?.to_string_lossy().replace('\\', "/"),
-                );
+                )?;
             }
             document.revise()?;
         }
@@ -1092,13 +1095,38 @@ pub async fn mutate_collection(
 ) -> Result<CollectionMutationResult, String> {
     let memo = state.memo_file.clone();
     crate::commands::document_operations::run("mutate_collection", operation_id, window.label().to_owned(), move||{
-        let result=mutate_with_completion(&read_lock(&memo,"memo_file"),&request, &|result| emit_mutation_result(&app, &request.notebook_id, result))?;
+        let memo = read_lock(&memo, "memo_file");
+        // Recovery may finish a prior directory move too, so protect the
+        // notebook's open documents until completion has rebased their leases.
+        let _watch_move = memo.get_notebook_config_by_id(&request.notebook_id)
+            .and_then(|notebook| crate::commands::external_document_watch::begin_path_move(&app, Path::new(&notebook.path)));
+        let result=mutate_with_completion(&memo,&request, &|result| emit_mutation_result(&app, &request.notebook_id, result))?;
         Ok(result)
     }).await
 }
 
+pub(crate) fn path_change_for_result(notebook_id: &str, result: &CollectionMutationResult) -> Option<super::path_change::NotebookPathMove> {
+    let (previous, next, directory) = match &result.directory_move {
+        Some(moved) => (&moved.previous_relative_path, &moved.relative_path, true),
+        None if result.previous_relative_path != result.actual_relative_path =>
+            (&result.previous_relative_path, &result.actual_relative_path, false),
+        None => return None,
+    };
+    Some(super::path_change::NotebookPathMove {
+        change_id: format!("collection:{}:{}", notebook_id, result.operation_id),
+        notebook_id: notebook_id.to_owned(), previous_relative_path: previous.clone(),
+        relative_path: next.clone(), directory,
+    })
+}
+
 pub(crate) fn emit_mutation_result(app: &tauri::AppHandle, notebook_id: &str, result: &CollectionMutationResult) {
-    let _=app.emit("collection-changed",serde_json::json!({"notebookId":notebook_id,"collectionId":result.collection_id,"operationId":result.operation_id,"indexSequence":result.index_sequence,"relativePath":result.actual_relative_path,"previousRelativePath":result.previous_relative_path,"notebookPath":result.notebook_path,"name":result.actual_name,"revision":result.actual_revision}));
+    if let Some(moved) = &result.directory_move {
+        let root = Path::new(&result.notebook_path);
+        crate::commands::external_document_watch::rebase_path(
+            app, &root.join(&moved.previous_relative_path), &root.join(&moved.relative_path),
+        );
+    }
+    let _=app.emit("collection-changed",serde_json::json!({"notebookId":notebook_id,"collectionId":result.collection_id,"operationId":result.operation_id,"indexSequence":result.index_sequence,"relativePath":result.actual_relative_path,"previousRelativePath":result.previous_relative_path,"notebookPath":result.notebook_path,"name":result.actual_name,"revision":result.actual_revision,"directoryMove":result.directory_move}));
     if let Some(moved) = &result.directory_move {
         if let Some(state) = app.try_state::<AppState>() {
             let root = Path::new(&result.notebook_path);
@@ -1107,12 +1135,9 @@ pub(crate) fn emit_mutation_result(app: &tauri::AppHandle, notebook_id: &str, re
                 &root.join(&moved.previous_relative_path).to_string_lossy(), &root.join(&moved.relative_path).to_string_lossy(),
             ) { tracing::warn!(notebook_id, "agent references after collection folder move failed: {error}"); }
         }
-        let _ = app.emit("flowix:path-note-changed", serde_json::json!({
-            "notebookId": notebook_id, "previousRelativePath": moved.previous_relative_path,
-            "relativePath": moved.relative_path, "kind": "path", "directory": true, "deleted": false,
-        }));
-        let _ = app.emit("file-management-changed", serde_json::json!({ "notebookId": notebook_id, "notebookPath": result.notebook_path }));
+        let _ = app.emit("file-management-changed", serde_json::json!({ "notebookId": notebook_id, "notebookPath": result.notebook_path, "operationId": result.operation_id }));
     }
+    if let Some(change) = path_change_for_result(notebook_id, result) { change.emit(app); }
 }
 
 /// Tree and title actions share the same collection operation when the directory owns an index.
@@ -1133,6 +1158,7 @@ pub(crate) fn rename_folder_collection_at_path(memo: &MemoFile, folder: &Path, n
         expected_revision: document.collection.revision, operation_id: uuid::Uuid::now_v7().to_string(),
         new_name: Some(name.to_owned()), target_relative_path: None, properties: None,
     };
+    let _watch_move = crate::commands::external_document_watch::begin_path_move(app, Path::new(&notebook.path));
     let result = mutate_with_completion(memo, &request, &|result| emit_mutation_result(app, &request.notebook_id, result))?;
     Ok(Some((notebook.id, result)))
 }
@@ -1184,6 +1210,7 @@ pub async fn make_collection_identity_unique(
                         return Err("COLLECTION_ID_NOT_DUPLICATED".into());
                     }
                     document = document.normalized_v2()?;
+                    document.normalize_media_resource_ids(&notebook_id)?;
                     document.collection.id = format!("col_{}", uuid::Uuid::now_v7().simple());
                     document.revise()?;
                     atomic_write_bytes(&path, document.serialize()?.as_bytes())
@@ -1291,17 +1318,20 @@ mod tests {
         assert!(!root.join("Old").exists());
         assert!(root.join("New/note.md").is_file());
         let moved = memo.read_media_resource(&book, "New/photo.png").unwrap().unwrap();
-        assert_eq!(moved.id, resource.id);
+        assert_eq!(moved.id, flowix_core::memo_file::media_resource_id(&book, "New/photo.png").unwrap());
         assert_eq!(moved.properties["caption"], "keep");
         let next = CollectionDocument::parse(&result.content).unwrap();
         assert_eq!(next.collection.id, original.collection.id);
         assert_eq!(next.payload["dataset"]["records"]["include"][0]["relative_path"], "New/photo.png");
+        assert_eq!(next.payload["dataset"]["records"]["include"][0]["resource_id"], moved.id);
         let other = CollectionDocument::parse(&fs::read_to_string(root.join("Outside.lib.yaml")).unwrap()).unwrap();
         assert_eq!(other.collection.id, outside.collection.id);
         assert_eq!(other.collection.revision, 1);
         assert_eq!(other.payload["dataset"]["source"]["path"], "New");
         assert_eq!(other.payload["dataset"]["records"]["include"][0]["relative_path"], "New/photo.png");
+        assert_eq!(other.payload["dataset"]["records"]["include"][0]["resource_id"], moved.id);
         assert_eq!(other.payload["dataset"]["records"]["exclude"][0]["relative_path"], "New/hidden.png");
+        assert_eq!(other.payload["dataset"]["records"]["exclude"][0]["resource_id"], format!("{book}::New/hidden.png"));
         with_catalog(&memo, &book, |catalog| {
             assert_eq!(catalog.resolve(&child.collection.id)?.relative_path, "New/child/.index.yaml");
             Ok(())

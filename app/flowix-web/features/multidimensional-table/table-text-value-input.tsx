@@ -55,7 +55,7 @@ export function TableTextValueInput({ value, disabled = false, placeholder, onCh
       align="start"
       side="bottom"
       sideOffset={4}
-      className="rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]"
+      className="!z-[170] rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]"
       matchAnchorWidth={1.2}
       style={{ maxWidth: 'calc(100vw - 8px)', maxHeight: '280px', overflowY: 'auto' }}
     >

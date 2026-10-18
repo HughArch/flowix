@@ -17,6 +17,6 @@ pub mod secret;
 pub mod service;
 pub mod text_merge;
 
-pub use service::{FlowixError, MemoPage, MemoService, NotePage, NoteSaveOutcome, NoteService};
+pub use service::{FlowixError, NotePage, NoteSaveOutcome, NoteService};
 
 pub mod collection;

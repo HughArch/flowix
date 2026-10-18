@@ -7,8 +7,8 @@ use crate::app::state::AppState;
 /// can be removed while its artifact remains a readable notebook document.
 #[tauri::command]
 pub fn artifact_resolve(
-    memo_id: String,
+    note_path: String,
     state: State<AppState>,
 ) -> Result<crate::artifact::ArtifactSession, String> {
-    crate::artifact::resolve(&memo_id, &state.memo_file)
+    crate::artifact::resolve(&note_path, &state.memo_file)
 }

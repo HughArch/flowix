@@ -1,11 +1,11 @@
 import { useEffect, useState } from 'react';
-import { collections, externalDocuments, type CollectionIndexItem } from '@platform/tauri/client';
+import { collections, externalDocuments, type CollectionChangedEvent, type CollectionIndexItem } from '@platform/tauri/client';
 import { subscribe } from '@platform/tauri/event-bus';
+import { subscribeNotebookChanges } from '@platform/tauri/notebook-change-events';
 import { bindCollectionDisplayPath, ensureCollectionDisplay, pinCollectionDisplay } from '@/lib/collection-display-registry';
 import type { FileDisplayIdentity } from '@/lib/file-display-registry';
 import { canonicalDirectoryPath } from '@/lib/path';
 import { parseCollectionDocumentV2, type CollectionType } from './model';
-import { subscribeLocalCollectionChanges } from './events';
 
 interface ReferenceState {
   key: string;
@@ -49,13 +49,17 @@ export function useCollectionReference(notebook: { id: string; path: string } | 
     };
     void refresh();
     const matches = (event: { notebookId: string; collectionId?: string }) => event.notebookId === notebook.id && (!event.collectionId || event.collectionId === collectionId);
-    const stopCollection = subscribe<{ notebookId: string; collectionId: string }>('collection-changed', (event) => { if (matches(event)) void refresh(); });
-    const stopPath = subscribe<{ notebookId: string; relativePath?: string; directory?: boolean }>('flowix:path-note-changed', (event) => {
-      if (matches(event) && (event.directory || !event.relativePath || /(?:\.(table|lib)\.ya?ml|\.index\.yaml)$/i.test(event.relativePath))) void refresh();
+    const stopCollection = subscribe<CollectionChangedEvent>('collection-changed', (event) => {
+      if (matches(event) || (event.notebookId === notebook.id && Boolean(event.directoryMove))) void refresh();
     });
-    const stopCatalog = subscribe<{ notebookId: string }>('file-management-changed', (event) => { if (matches(event)) void refresh(); });
-    const stopLocal = subscribeLocalCollectionChanges((event) => { if (matches({ notebookId: event.notebookId, collectionId: event.item.collectionId ?? undefined })) void refresh(); });
-    return () => { active = false; stopCollection(); stopPath(); stopCatalog(); stopLocal(); release?.(); };
+    const stopPath = subscribeNotebookChanges((event) => {
+      const collectionMutation = event.changeId?.startsWith(`collection:${notebook.id}:`);
+      if (!collectionMutation && matches(event) && ((event.kind === 'path-moved' && event.directory) || !event.relativePath || /(?:\.(table|lib)\.ya?ml|\.index\.yaml)$/i.test(event.relativePath))) void refresh();
+    });
+    const stopCatalog = subscribe<{ notebookId: string; operationId?: string }>('file-management-changed', (event) => {
+      if (!event.operationId && matches(event)) void refresh();
+    });
+    return () => { active = false; stopCollection(); stopPath(); stopCatalog(); release?.(); };
   }, [enabled, notebook?.id, root, collectionId, type, viewId, key]);
   return state.key === key ? state : { key, item: null, content: null, fileIdentity: undefined, error: null };
 }

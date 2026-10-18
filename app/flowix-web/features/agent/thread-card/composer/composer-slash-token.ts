@@ -1,7 +1,19 @@
 import { Node, type Editor, type JSONContent, type MarkdownToken } from "@tiptap/core";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
-import { NodeSelection, Plugin, type EditorState } from "@tiptap/pm/state";
+import { Plugin, type EditorState } from "@tiptap/pm/state";
+import skillLibraryIconSvg from "@/assets/skill-library.svg?raw";
 import type { AgentTypeKey } from "@/types/agent";
+import { loadLanguage, translate } from "@/lib/i18n";
+import {
+  getCurrentAppLanguage,
+  subscribeAppLanguage,
+} from "@features/preferences/public/runtime-api";
+import {
+  createInlineAtomCloseIcon,
+  createInlineAtomNodeView,
+  deleteInlineAtomNode,
+  deleteAdjacentInlineAtom,
+} from "@features/editor/extensions/shared/inline-atom-nodeview";
 import { createTerminalInlineAtomCaretDecorations } from "@features/editor/extensions/shared/terminal-inline-atom-caret";
 
 export interface ComposerSlashTokenOptions {
@@ -13,8 +25,8 @@ export interface ComposerSlashTokenValue {
   agentType?: AgentTypeKey;
 }
 
-const SLASH_TOKEN_RE = /^\[\/([a-z0-9._:-]+)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex|pi)\/)?([a-z0-9._:-]+)\)/i;
-const SLASH_TOKEN_GLOBAL_RE = /\[\/([a-z0-9._:-]+)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex|pi)\/)?([a-z0-9._:-]+)\)/gi;
+const SLASH_TOKEN_RE = /^\[((?:\\.|[^\]\n])*)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex|pi)\/)?([a-z0-9._:-]+)\)/i;
+const SLASH_TOKEN_GLOBAL_RE = /\[((?:\\.|[^\]\n])*)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex|pi)\/)?([a-z0-9._:-]+)\)/gi;
 const LEGACY_DSH_COMMANDS = new Set([
   "compact",
   "skill",
@@ -30,10 +42,56 @@ function isControlCommand(command: string): boolean {
   return CONTROL_COMMANDS.has(command.trim().toLowerCase());
 }
 
+function isPiSkillCommand(command: string, agentType: string): boolean {
+  return agentType === "pi" && command.toLowerCase().startsWith("skill:");
+}
+
+function piSkillName(command: string): string {
+  return command.slice("skill:".length);
+}
+
+function escapeSlashTokenLabel(label: string): string {
+  return label.replace(/\\/g, "\\\\").replace(/\[/g, "\\[").replace(/\]/g, "\\]");
+}
+
+function unescapeSlashTokenLabel(label: string): string {
+  return label.replace(/\\([\\[\]])/g, "$1");
+}
+
+function findSlashTokenStart(src: string, hrefIndex: number): number {
+  let start = src.lastIndexOf("[", hrefIndex);
+  while (start >= 0) {
+    let escapeCount = 0;
+    for (let index = start - 1; index >= 0 && src[index] === "\\"; index -= 1) {
+      escapeCount += 1;
+    }
+    if (escapeCount % 2 === 0) return start;
+    start = src.lastIndexOf("[", start - 1);
+  }
+  return -1;
+}
+
 function slashTokenClass(command: string): string {
   return isControlCommand(command)
     ? "agent-thread-card__slash-token agent-thread-card__slash-token--control"
     : "agent-thread-card__slash-token";
+}
+
+function slashTokenLabel(command: string): string {
+  const normalized = command.trim().toLowerCase();
+  if (normalized === "plan") {
+    return translate(getCurrentAppLanguage(), "editor.threadCard.composer.planMode");
+  }
+  if (normalized === "goal") {
+    return translate(getCurrentAppLanguage(), "editor.threadCard.composer.longTask");
+  }
+  return `/${command}`;
+}
+
+function createSkillLibraryIcon(): SVGSVGElement {
+  const template = document.createElement("template");
+  template.innerHTML = skillLibraryIconSvg;
+  return template.content.firstElementChild as SVGSVGElement;
 }
 
 export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
@@ -49,6 +107,7 @@ export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
     return {
       command: { default: "" },
       agentType: { default: null },
+      displayName: { default: null },
     };
   },
 
@@ -56,6 +115,7 @@ export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
     return [{ tag: "span[data-composer-slash]", getAttrs: (dom) => ({
       command: (dom as HTMLElement).getAttribute("data-composer-slash") ?? "",
       agentType: (dom as HTMLElement).getAttribute("data-composer-slash-agent") || null,
+      displayName: (dom as HTMLElement).getAttribute("data-composer-slash-display-name") || null,
     }) }];
   },
 
@@ -65,6 +125,9 @@ export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
     return ["span", {
       "data-composer-slash": command,
       ...(agentType ? { "data-composer-slash-agent": agentType } : {}),
+      ...(node.attrs?.displayName
+        ? { "data-composer-slash-display-name": String(node.attrs.displayName) }
+        : {}),
       class: "agent-thread-card__slash-token-wrapper",
     }, ["button", {
       class: slashTokenClass(command),
@@ -76,8 +139,8 @@ export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
     name: "composerSlashToken",
     level: "inline" as const,
     start(src: string) {
-      const index = src.indexOf("flowix://slash/");
-      return index >= 0 ? index : -1;
+      const hrefIndex = src.indexOf("flowix://slash/");
+      return hrefIndex >= 0 ? findSlashTokenStart(src, hrefIndex) : -1;
     },
     tokenize(src: string) {
       const match = SLASH_TOKEN_RE.exec(src);
@@ -85,7 +148,7 @@ export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
         type: "composerSlashToken",
         raw: match[0],
         href: `flowix://slash/${match[2] ? `${match[2]}/` : ""}${match[3]}`,
-        text: `/${match[1]}`,
+        text: match[1],
       } : undefined;
     },
   },
@@ -94,60 +157,82 @@ export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
     const href = String(token.href ?? "");
     const path = href.replace(/^flowix:\/\/slash\//i, "");
     const parts = path.split("/");
-    const agentType = parts[0] === "deepseek-harness" || parts[0] === "codex" || parts[0] === "pi"
+    const agentType = parts[0] === "dsh" || parts[0] === "codex" || parts[0] === "pi"
       ? parts[0]
       : undefined;
     const command = (agentType ? parts[1] : parts[0]) ||
       String(token.text ?? "").replace(/^\//, "");
-    return { type: "composerSlashToken", attrs: { command, agentType } };
+    const label = unescapeSlashTokenLabel(String(token.text ?? "").trim());
+    const isPiSkill = agentType === "pi" && command.toLowerCase().startsWith("skill:");
+    const displayName = isPiSkill && label !== `/${command}` ? label || null : null;
+    return { type: "composerSlashToken", attrs: { command, agentType, displayName } };
   },
 
   renderMarkdown(node: JSONContent) {
     const command = String(node.attrs?.command ?? "");
     const agentType = String(node.attrs?.agentType ?? "");
-    return `[/${command}](flowix://slash/${agentType ? `${agentType}/` : ""}${command})`;
+    const displayName = String(node.attrs?.displayName ?? "").trim();
+    const label = isPiSkillCommand(command, agentType)
+      ? displayName || piSkillName(command)
+      : `/${command}`;
+    return `[${escapeSlashTokenLabel(label)}](flowix://slash/${agentType ? `${agentType}/` : ""}${command})`;
   },
 
   addNodeView() {
     return ({ node, view, getPos }) => {
-      // Keep the atom's visual card separate from its terminal caret landing
-      // point. The trailing text node is deliberately real: a span boundary
-      // is not a reliable caret anchor in Chromium/WebKit. There is no
-      // leading spacer because it makes the native caret render inside the
-      // chip, unlike the other composer reference cards.
-      const wrapper = document.createElement("span");
-      wrapper.className = "agent-thread-card__slash-token-wrapper";
-      wrapper.contentEditable = "false";
-      wrapper.setAttribute("data-composer-slash", String(node.attrs.command ?? ""));
-      const agentType = String(node.attrs.agentType ?? "");
-      if (agentType) wrapper.setAttribute("data-composer-slash-agent", agentType);
-
-      const button = document.createElement("button");
       const command = String(node.attrs.command ?? "");
-      button.type = "button";
-      button.className = slashTokenClass(command);
-      button.textContent = `/${command}`;
-      button.title = "点击移除命令";
-      button.setAttribute("aria-label", `移除 /${command} 命令`);
-      button.addEventListener("mousedown", (event) => event.preventDefault());
-      button.addEventListener("click", (event) => {
-        event.preventDefault();
-        event.stopPropagation();
-        const pos = typeof getPos === "function" ? getPos() : undefined;
-        if (pos === undefined) return;
-        view.dispatch(view.state.tr.delete(pos, pos + node.nodeSize));
-        view.focus();
+      const agentType = String(node.attrs.agentType ?? "");
+      const displayName = String(node.attrs.displayName ?? "").trim();
+      const piSkill = isPiSkillCommand(command, agentType);
+      const skillLabel = displayName || piSkillName(command);
+      const nodeView = createInlineAtomNodeView({
+        caretGeometry: 'single-line',
+        wrapperClassName: "agent-composer__inline-atom-wrapper agent-thread-card__slash-token-wrapper",
+        cardClassName: piSkill
+          ? "agent-composer__skill-token"
+          : slashTokenClass(command),
+        ...(piSkill
+          ? {
+            leadingIcon: createSkillLibraryIcon(),
+            labelClassName: "agent-composer__skill-token-label",
+          }
+          : {}),
+        label: piSkill ? skillLabel : slashTokenLabel(command),
+        title: `/${command}`,
+        ariaLabel: piSkill ? `Skill ${skillLabel}` : `/${command} 命令`,
+        hoverActions: [{
+          ariaLabel: piSkill ? `移除 Skill ${skillLabel}` : `移除 /${command} 命令`,
+          icon: createInlineAtomCloseIcon(),
+          onClick: () => deleteInlineAtomNode(
+            view,
+            node,
+            () => typeof getPos === "function" ? getPos() : undefined,
+          ),
+        }],
+        stopEvent: (event) => !event.type.startsWith("composition"),
       });
-
-      wrapper.append(button, document.createTextNode("\u200B"));
+      const wrapper = nodeView.dom;
+      const button = wrapper.querySelector<HTMLButtonElement>(".agent-thread-card__slash-token");
+      const updateLocalizedLabel = () => {
+        if (button) button.textContent = slashTokenLabel(command);
+      };
+      const refreshLabelForCurrentLanguage = () => {
+        void loadLanguage(getCurrentAppLanguage()).then(updateLocalizedLabel, updateLocalizedLabel);
+      };
+      const unsubscribeLanguage = piSkill
+        ? () => undefined
+        : (() => {
+          refreshLabelForCurrentLanguage();
+          return subscribeAppLanguage(refreshLabelForCurrentLanguage);
+        })();
+      wrapper.setAttribute("data-composer-slash", String(node.attrs.command ?? ""));
+      if (agentType) wrapper.setAttribute("data-composer-slash-agent", agentType);
+      if (displayName) wrapper.setAttribute("data-composer-slash-display-name", displayName);
 
       return {
-        dom: wrapper,
+        ...nodeView,
         contentDOM: null,
-        selectNode: () => wrapper.classList.add("is-selected"),
-        deselectNode: () => wrapper.classList.remove("is-selected"),
-        stopEvent: (event: Event) => !event.type.startsWith("composition"),
-        ignoreMutation: () => true,
+        destroy: unsubscribeLanguage,
       };
     };
   },
@@ -176,8 +261,8 @@ export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
 
   addKeyboardShortcuts() {
     return {
-      Backspace: () => deleteAdjacentComposerSlashToken(this.editor, "before"),
-      Delete: () => deleteAdjacentComposerSlashToken(this.editor, "after"),
+      Backspace: () => deleteAdjacentInlineAtom(this.editor, "composerSlashToken", "before"),
+      Delete: () => deleteAdjacentInlineAtom(this.editor, "composerSlashToken", "after"),
     };
   },
 });
@@ -215,25 +300,6 @@ function removeHardBreaksAroundComposerSlashTokens(state: EditorState) {
   return tr;
 }
 
-function deleteAdjacentComposerSlashToken(
-  editor: Editor,
-  direction: "before" | "after",
-): boolean {
-  const { selection } = editor.state;
-  if (selection instanceof NodeSelection && selection.node.type.name === "composerSlashToken") {
-    editor.commands.deleteSelection();
-    return true;
-  }
-
-  const { $from } = selection;
-  const node = direction === "before" ? $from.nodeBefore : $from.nodeAfter;
-  if (!node || node.type.name !== "composerSlashToken") return false;
-
-  const from = direction === "before" ? $from.pos - node.nodeSize : $from.pos;
-  editor.commands.deleteRange({ from, to: from + node.nodeSize });
-  return true;
-}
-
 export function getComposerSlashToken(editor: Editor): ComposerSlashTokenValue | null {
   let value: ComposerSlashTokenValue | null = null;
   editor.state.doc.descendants((node) => {
@@ -254,13 +320,14 @@ export function insertComposerSlashToken(
   editor: Editor,
   command: string,
   agentType?: AgentTypeKey,
+  displayName?: string,
 ): void {
   const { selection } = editor.state;
   editor.chain().focus().deleteRange({ from: 1, to: selection.to })
     .insertContent([
       {
         type: "composerSlashToken",
-        attrs: { command, agentType: agentType ?? null },
+        attrs: { command, agentType: agentType ?? null, displayName: displayName ?? null },
       },
       { type: "text", text: " " },
     ]).run();
@@ -270,12 +337,12 @@ export function insertComposerSlashToken(
 export function composerSlashMarkdownToPrompt(markdown: string): string {
   return markdown.replace(
     SLASH_TOKEN_GLOBAL_RE,
-    (match, command: string, scopedAgent: string | undefined, _encoded: string, offset: number, source: string) => {
+    (match, _label: string, scopedAgent: string | undefined, command: string, offset: number, source: string) => {
       // Unscoped chips are legacy data. Preserve old DSH drafts while keeping
       // the product-only permission chips UI-only as before.
       if (
         scopedAgent &&
-        scopedAgent.toLowerCase() !== "deepseek-harness" &&
+        scopedAgent.toLowerCase() !== "dsh" &&
         scopedAgent.toLowerCase() !== "codex" &&
         scopedAgent.toLowerCase() !== "pi" ||
         (!scopedAgent && !LEGACY_DSH_COMMANDS.has(command.toLowerCase()))

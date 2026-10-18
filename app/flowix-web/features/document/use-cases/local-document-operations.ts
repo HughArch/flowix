@@ -23,8 +23,8 @@ export const localDocumentOperations: EditableDocumentOperations = {
   },
   rename: async ({ path, name, scopePath, notebookId, collectionId }) => {
     if (!scopePath) throw new Error('A file scope is required to rename this document');
-    if (/\.(?:table|lib)\.ya?ml$/i.test(path)) {
-      const title = name.replace(/\.(?:table|lib)\.ya?ml$/i, '');
+    if (/\.(?:(?:table|lib)\.ya?ml|index\.yaml)$/i.test(path)) {
+      const title = name.replace(/\.(?:(?:table|lib)\.ya?ml|index\.yaml)$/i, '');
       const result = await renameCollectionAtPath(path, scopePath, title, notebookId, collectionId);
       if (result.errorCode) throw new Error(`集合已更新，但操作尚未完成：${result.errorCode}`);
       return { path: result.filePath };

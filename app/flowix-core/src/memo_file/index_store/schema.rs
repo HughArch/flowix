@@ -1,20 +1,4 @@
 use super::*;
-use std::sync::{LazyLock, Mutex};
-
-static MEMO_RELATIVE_PATH_MIGRATION_LOCK: LazyLock<Mutex<()>> = LazyLock::new(|| Mutex::new(()));
-
-/// Legacy global indexes predate several optional tables and columns.
-/// Importing from an absent source is a no-op, not an error; anything else
-/// still fails.
-fn tolerate_missing_legacy_table(error: std::io::Error) -> std::io::Result<usize> {
-    if error.to_string().contains("no such table")
-        || error.to_string().contains("no such column")
-    {
-        Ok(0)
-    } else {
-        Err(error)
-    }
-}
 
 impl MemoFile {
     pub fn storage_title_from_filename(filename: &str) -> String {
@@ -53,6 +37,51 @@ impl MemoFile {
     }
 
     fn ensure_memo_tables(&self, conn: &Connection) -> std::io::Result<()> {
+        // Remove retired ID-backed state even if an earlier upgrade already
+        // replaced `memos.id` but left these tables behind.
+        let (has_legacy_id, has_retired_id_tables): (bool, bool) = conn
+            .query_row(
+                "SELECT
+                    EXISTS(SELECT 1 FROM pragma_table_info('memos') WHERE name = 'id')
+                        OR EXISTS(SELECT 1 FROM pragma_table_info('memo_agents') WHERE name = 'memo_id')
+                        OR EXISTS(SELECT 1 FROM pragma_table_info('memo_colors') WHERE name = 'memo_id'),
+                    EXISTS(
+                        SELECT 1 FROM sqlite_master
+                        WHERE type = 'table'
+                          AND name IN (
+                              'memo_content_revisions',
+                              'pending_external_memo_creates',
+                              'memo_lifecycles',
+                              'schema_migrations'
+                          )
+                    )",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .map_err(sqlite_to_io)?;
+        if has_retired_id_tables {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS memo_content_revisions;
+                 DROP TABLE IF EXISTS pending_external_memo_creates;
+                 DROP TABLE IF EXISTS memo_lifecycles;
+                 DROP TABLE IF EXISTS schema_migrations;",
+            )
+            .map_err(sqlite_to_io)?;
+        }
+
+        // Rebuild the older cache if any of its tables still use memo IDs.
+        // Markdown remains the source of truth for every dropped projection.
+        if has_legacy_id {
+            conn.execute_batch(
+                "DROP TABLE IF EXISTS memo_todos;
+                 DROP TABLE IF EXISTS memo_tags;
+                 DROP TABLE IF EXISTS memo_agents;
+                 DROP TABLE IF EXISTS memo_colors;
+                 DROP TABLE IF EXISTS memos;
+                 DROP TABLE IF EXISTS memo_index_state;",
+            )
+            .map_err(sqlite_to_io)?;
+        }
         conn.execute_batch(
             r#"
             PRAGMA foreign_keys = ON;
@@ -79,12 +108,7 @@ impl MemoFile {
                 completed_at INTEGER NOT NULL,
                 PRIMARY KEY(notebook_id, migration_key)
             );
-            CREATE TABLE IF NOT EXISTS schema_migrations (
-                migration_key TEXT PRIMARY KEY,
-                completed_at INTEGER NOT NULL
-            );
             CREATE TABLE IF NOT EXISTS memos (
-                id TEXT PRIMARY KEY,
                 notebook_id TEXT NOT NULL,
                 filename TEXT NOT NULL,
                 relative_path TEXT NOT NULL,
@@ -97,47 +121,13 @@ impl MemoFile {
                 favorited INTEGER NOT NULL,
                 icon TEXT,
                 properties TEXT NOT NULL DEFAULT '{}',
-                FOREIGN KEY(notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE,
-                UNIQUE(notebook_id, relative_path)
+                PRIMARY KEY(relative_path),
+                FOREIGN KEY(notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE
             );
             CREATE INDEX IF NOT EXISTS idx_memos_notebook_created
                 ON memos(notebook_id, created_at DESC);
             CREATE INDEX IF NOT EXISTS idx_memos_notebook_updated
                 ON memos(notebook_id, updated_at DESC);
-            CREATE TABLE IF NOT EXISTS pending_external_memo_creates (
-                memo_id TEXT PRIMARY KEY,
-                notebook_id TEXT NOT NULL,
-                created_at INTEGER NOT NULL
-            );
-            CREATE TABLE IF NOT EXISTS memo_lifecycles (
-                memo_id TEXT PRIMARY KEY,
-                notebook_id TEXT NOT NULL,
-                relative_path TEXT NOT NULL DEFAULT '',
-                generation INTEGER NOT NULL DEFAULT 1,
-                is_deleted INTEGER NOT NULL DEFAULT 0 CHECK(is_deleted IN (0, 1)),
-                created_at INTEGER NOT NULL,
-                updated_at INTEGER NOT NULL,
-                deleted_at INTEGER
-            );
-            CREATE INDEX IF NOT EXISTS idx_memo_lifecycles_notebook
-                ON memo_lifecycles(notebook_id, is_deleted);
-            CREATE TABLE IF NOT EXISTS memo_content_revisions (
-                memo_id TEXT PRIMARY KEY,
-                notebook_id TEXT NOT NULL,
-                content_hash TEXT NOT NULL,
-                local_revision INTEGER NOT NULL,
-                change_id TEXT NOT NULL,
-                updated_at INTEGER NOT NULL,
-                FOREIGN KEY(memo_id) REFERENCES memo_lifecycles(memo_id) ON DELETE RESTRICT
-            );
-            CREATE INDEX IF NOT EXISTS idx_memo_content_revisions_notebook
-                ON memo_content_revisions(notebook_id);
-            CREATE TABLE IF NOT EXISTS memo_tags (
-                memo_id TEXT NOT NULL,
-                tag TEXT NOT NULL,
-                PRIMARY KEY(memo_id, tag),
-                FOREIGN KEY(memo_id) REFERENCES memos(id) ON DELETE CASCADE
-            );
             CREATE TABLE IF NOT EXISTS notebook_tags (
                 notebook_id TEXT NOT NULL,
                 path TEXT NOT NULL,
@@ -148,649 +138,34 @@ impl MemoFile {
             );
             CREATE INDEX IF NOT EXISTS idx_notebook_tags_notebook
                 ON notebook_tags(notebook_id);
-            CREATE TRIGGER IF NOT EXISTS trg_memo_tags_register_notebook_tag
-            AFTER INSERT ON memo_tags
-            BEGIN
-                INSERT OR IGNORE INTO notebook_tags
-                    (notebook_id, path, created_at, updated_at)
-                SELECT
-                    m.notebook_id,
-                    NEW.tag,
-                    CAST(strftime('%s', 'now') AS INTEGER) * 1000,
-                    CAST(strftime('%s', 'now') AS INTEGER) * 1000
-                FROM memos m
-                WHERE m.id = NEW.memo_id;
-            END;
             CREATE TABLE IF NOT EXISTS memo_colors (
-                memo_id TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
                 color TEXT NOT NULL,
                 position INTEGER NOT NULL,
-                PRIMARY KEY(memo_id, color),
-                FOREIGN KEY(memo_id) REFERENCES memos(id) ON DELETE CASCADE
-            );
-            CREATE TABLE IF NOT EXISTS memo_todos (
-                memo_id TEXT NOT NULL,
-                todo_id TEXT NOT NULL DEFAULT '',
-                content TEXT NOT NULL,
-                status TEXT NOT NULL,
-                priority TEXT NOT NULL DEFAULT '',
-                time_range TEXT NOT NULL DEFAULT '',
-                owner TEXT NOT NULL DEFAULT '',
-                assignee TEXT NOT NULL DEFAULT '',
-                created_at INTEGER NOT NULL DEFAULT 0,
-                updated_at INTEGER NOT NULL DEFAULT 0,
-                position INTEGER NOT NULL,
-                PRIMARY KEY(memo_id, todo_id),
-                FOREIGN KEY(memo_id) REFERENCES memos(id) ON DELETE CASCADE
+                PRIMARY KEY(relative_path, color),
+                FOREIGN KEY(relative_path) REFERENCES memos(relative_path) ON DELETE CASCADE
             );
             CREATE TABLE IF NOT EXISTS memo_agents (
-                memo_id TEXT NOT NULL,
+                relative_path TEXT NOT NULL,
                 thread_id TEXT NOT NULL,
                 title TEXT NOT NULL DEFAULT '',
                 agent_type TEXT NOT NULL DEFAULT '',
                 position INTEGER NOT NULL,
-                PRIMARY KEY(memo_id, thread_id),
-                FOREIGN KEY(memo_id) REFERENCES memos(id) ON DELETE CASCADE
+                PRIMARY KEY(relative_path, thread_id),
+                FOREIGN KEY(relative_path) REFERENCES memos(relative_path) ON DELETE CASCADE
             );
-            CREATE INDEX IF NOT EXISTS idx_memo_agents_memo_id
-                ON memo_agents(memo_id);
+            CREATE INDEX IF NOT EXISTS idx_memo_agents_relative_path
+                ON memo_agents(relative_path);
             "#,
         )
         .map_err(sqlite_to_io)?;
-        self.migrate_memo_relative_paths(conn)?;
-        self.migrate_memo_todo_ids(conn)?;
-        self.migrate_memo_lifecycles(conn)?;
         conn.execute_batch(
-            r#"
-            INSERT OR IGNORE INTO notebook_tags
-                (notebook_id, path, created_at, updated_at)
-            SELECT DISTINCT
-                m.notebook_id,
-                mt.tag,
-                CAST(strftime('%s', 'now') AS INTEGER) * 1000,
-                CAST(strftime('%s', 'now') AS INTEGER) * 1000
-            FROM memo_tags mt
-            JOIN memos m ON m.id = mt.memo_id
-            WHERE NOT EXISTS (
-                SELECT 1
-                FROM schema_migrations
-                WHERE migration_key = 'notebook_tags_v1'
-            );
-
-            INSERT OR IGNORE INTO schema_migrations (migration_key, completed_at)
-            VALUES (
-                'notebook_tags_v1',
-                CAST(strftime('%s', 'now') AS INTEGER) * 1000
-            );
-            "#,
+            "DROP TRIGGER IF EXISTS trg_memo_tags_register_notebook_tag; \
+             DROP TABLE IF EXISTS memo_tags; \
+             DROP TABLE IF EXISTS memo_todos;",
         )
         .map_err(sqlite_to_io)?;
         Ok(())
-    }
-
-    /// Upgrade the v3 index where filename was the notebook-relative
-    /// location. Keep filename as the basename and make relative_path the
-    /// durable location identity so same-named notes can coexist in folders.
-    fn migrate_memo_relative_paths(&self, conn: &Connection) -> std::io::Result<()> {
-        // Multiple MemoFile instances can open the same index during startup.
-        // The per-instance RMW mutex cannot protect schema setup, so combine a
-        // process-wide guard with SQLite's write transaction. The second
-        // connection re-checks the marker after it acquires the database lock.
-        let _migration_guard = MEMO_RELATIVE_PATH_MIGRATION_LOCK
-            .lock()
-            .expect("memo migration lock poisoned");
-
-        // Existing installations have the old UNIQUE(notebook_id, filename)
-        // constraint, which cannot be dropped in place. Rebuild the metadata
-        // table while preserving child tables and memo ids. SQLite DDL is
-        // transactional, so a crash must leave either the old or new schema.
-        conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")
-            .map_err(sqlite_to_io)?;
-        let result = (|| -> std::io::Result<()> {
-            let done: Option<String> = conn
-                .query_row(
-                    "SELECT migration_key FROM schema_migrations WHERE migration_key = 'memo_relative_paths_v1'",
-                    [],
-                    |row| row.get(0),
-                )
-                .optional()
-                .map_err(sqlite_to_io)?;
-            if done.is_some() {
-                return Ok(());
-            }
-
-            let has_relative_path = conn
-                .prepare("PRAGMA table_info(memos)")
-                .and_then(|mut statement| {
-                    let rows = statement.query_map([], |row| row.get::<_, String>(1))?;
-                    rows.collect::<Result<Vec<_>, _>>()
-                })
-                .map_err(sqlite_to_io)?
-                .into_iter()
-                .any(|name| name == "relative_path");
-
-            let recovery_table_exists: bool = conn
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memos_relative_paths_v1')",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(sqlite_to_io)?;
-
-            // Recover databases left by the earlier non-transactional
-            // migration. It could copy every memo into the replacement table
-            // and leave the live table empty without writing the marker.
-            if has_relative_path {
-                if recovery_table_exists {
-                    let live_count: i64 = conn
-                        .query_row("SELECT COUNT(*) FROM memos", [], |row| row.get(0))
-                        .map_err(sqlite_to_io)?;
-                    let recovery_count: i64 = conn
-                        .query_row("SELECT COUNT(*) FROM memos_relative_paths_v1", [], |row| {
-                            row.get(0)
-                        })
-                        .map_err(sqlite_to_io)?;
-                    if live_count == 0 && recovery_count > 0 {
-                        conn.execute_batch(
-                            r#"
-                            DROP TRIGGER IF EXISTS trg_memo_tags_register_notebook_tag;
-                            DROP TABLE memos;
-                            ALTER TABLE memos_relative_paths_v1 RENAME TO memos;
-                            "#,
-                        )
-                        .map_err(sqlite_to_io)?;
-                    } else {
-                        conn.execute_batch("DROP TABLE memos_relative_paths_v1;")
-                            .map_err(sqlite_to_io)?;
-                    }
-                }
-                Self::finish_memo_relative_path_migration(conn)?;
-                return Ok(());
-            }
-
-            conn.execute_batch("DROP TABLE IF EXISTS memos_relative_paths_v1;")
-                .map_err(sqlite_to_io)?;
-            conn.execute("ALTER TABLE memos ADD COLUMN relative_path TEXT", [])
-                .map_err(sqlite_to_io)?;
-            conn.execute_batch(
-                r#"
-                CREATE TABLE memos_relative_paths_v1 (
-                    id TEXT PRIMARY KEY,
-                    notebook_id TEXT NOT NULL,
-                    filename TEXT NOT NULL,
-                    relative_path TEXT NOT NULL,
-                    preview TEXT NOT NULL,
-                    thumbnail TEXT,
-                    thumbnail_checked INTEGER NOT NULL DEFAULT 0,
-                    agents_checked INTEGER NOT NULL DEFAULT 0,
-                    created_at INTEGER NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    favorited INTEGER NOT NULL,
-                    icon TEXT,
-                    properties TEXT NOT NULL DEFAULT '{}',
-                    FOREIGN KEY(notebook_id) REFERENCES notebooks(id) ON DELETE CASCADE,
-                    UNIQUE(notebook_id, relative_path)
-                );
-                INSERT INTO memos_relative_paths_v1
-                    (id, notebook_id, filename, relative_path, preview, thumbnail,
-                     thumbnail_checked, agents_checked, created_at, updated_at,
-                     favorited, icon, properties)
-                SELECT id, notebook_id, filename,
-                    COALESCE(NULLIF(relative_path, ''), filename),
-                    preview, thumbnail, thumbnail_checked, agents_checked,
-                    created_at, updated_at, favorited, icon, properties
-                FROM memos;
-                DROP TRIGGER IF EXISTS trg_memo_tags_register_notebook_tag;
-                DROP TABLE memos;
-                ALTER TABLE memos_relative_paths_v1 RENAME TO memos;
-                "#,
-            )
-            .map_err(sqlite_to_io)?;
-            Self::finish_memo_relative_path_migration(conn)?;
-            Ok(())
-        })();
-        let transaction = match result {
-            Ok(()) => conn.execute_batch("COMMIT;").map_err(sqlite_to_io),
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        };
-        let restore = conn
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .map_err(sqlite_to_io);
-        transaction.and(restore)
-    }
-
-    fn finish_memo_relative_path_migration(conn: &Connection) -> std::io::Result<()> {
-        conn.execute_batch(
-            r#"
-            CREATE INDEX IF NOT EXISTS idx_memos_notebook_created
-                ON memos(notebook_id, created_at DESC);
-            CREATE INDEX IF NOT EXISTS idx_memos_notebook_updated
-                ON memos(notebook_id, updated_at DESC);
-            CREATE TRIGGER IF NOT EXISTS trg_memo_tags_register_notebook_tag
-            AFTER INSERT ON memo_tags
-            BEGIN
-                INSERT OR IGNORE INTO notebook_tags
-                    (notebook_id, path, created_at, updated_at)
-                SELECT
-                    m.notebook_id,
-                    NEW.tag,
-                    CAST(strftime('%s', 'now') AS INTEGER) * 1000,
-                    CAST(strftime('%s', 'now') AS INTEGER) * 1000
-                FROM memos m
-                WHERE m.id = NEW.memo_id;
-            END;
-            INSERT OR IGNORE INTO schema_migrations (migration_key, completed_at)
-            VALUES ('memo_relative_paths_v1', CAST(strftime('%s', 'now') AS INTEGER) * 1000);
-            UPDATE memo_index_state
-            SET version = version + 1,
-                last_updated = MAX(
-                    last_updated + 1,
-                    CAST(strftime('%s', 'now') AS INTEGER) * 1000
-                );
-            "#,
-        )
-        .map_err(sqlite_to_io)
-    }
-
-    /// Upgrade the original `(memo_id, content)` todo key. Content is mutable
-    /// and is not unique (two checklist rows may intentionally have the same
-    /// text), so the durable child key must be `(memo_id, todo_id)`.
-    fn migrate_memo_todo_ids(&self, conn: &Connection) -> std::io::Result<()> {
-        let columns = conn
-            .prepare("PRAGMA table_info(memo_todos)")
-            .and_then(|mut statement| {
-                let rows = statement.query_map([], |row| {
-                    Ok((row.get::<_, String>(1)?, row.get::<_, i64>(5)?))
-                })?;
-                rows.collect::<Result<Vec<_>, _>>()
-            })
-            .map_err(sqlite_to_io)?;
-        if columns.is_empty() {
-            return Ok(());
-        }
-        let has_todo_id = columns.iter().any(|(name, _)| name == "todo_id");
-        if !has_todo_id {
-            conn.execute(
-                "ALTER TABLE memo_todos ADD COLUMN todo_id TEXT NOT NULL DEFAULT ''",
-                [],
-            )
-            .map_err(sqlite_to_io)?;
-        }
-        let todo_id_is_primary_key = columns
-            .iter()
-            .any(|(name, primary_key)| name == "todo_id" && *primary_key > 0);
-        if todo_id_is_primary_key {
-            return Ok(());
-        }
-
-        conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")
-            .map_err(sqlite_to_io)?;
-        let result = (|| -> std::io::Result<()> {
-            conn.execute_batch(
-                r#"
-                DROP TABLE IF EXISTS memo_todos_v2;
-                CREATE TABLE memo_todos_v2 (
-                    memo_id TEXT NOT NULL,
-                    todo_id TEXT NOT NULL,
-                    content TEXT NOT NULL,
-                    status TEXT NOT NULL,
-                    priority TEXT NOT NULL DEFAULT '',
-                    time_range TEXT NOT NULL DEFAULT '',
-                    owner TEXT NOT NULL DEFAULT '',
-                    assignee TEXT NOT NULL DEFAULT '',
-                    created_at INTEGER NOT NULL DEFAULT 0,
-                    updated_at INTEGER NOT NULL DEFAULT 0,
-                    position INTEGER NOT NULL,
-                    PRIMARY KEY(memo_id, todo_id),
-                    FOREIGN KEY(memo_id) REFERENCES memos(id) ON DELETE CASCADE
-                );
-                "#,
-            )
-            .map_err(sqlite_to_io)?;
-            let mut statement = conn
-                .prepare(
-                    "SELECT rowid, memo_id, todo_id, content, status, priority, time_range, owner, assignee, created_at, updated_at, position FROM memo_todos ORDER BY memo_id, position, rowid",
-                )
-                .map_err(sqlite_to_io)?;
-            let rows = statement
-                .query_map([], |row| {
-                    Ok((
-                        row.get::<_, i64>(0)?,
-                        row.get::<_, String>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, String>(3)?,
-                        row.get::<_, String>(4)?,
-                        row.get::<_, String>(5)?,
-                        row.get::<_, String>(6)?,
-                        row.get::<_, String>(7)?,
-                        row.get::<_, String>(8)?,
-                        row.get::<_, i64>(9)?,
-                        row.get::<_, i64>(10)?,
-                        row.get::<_, i64>(11)?,
-                    ))
-                })
-                .map_err(sqlite_to_io)?;
-            let rows = rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_to_io)?;
-            drop(statement);
-            for (
-                rowid,
-                memo_id,
-                _legacy_todo_id,
-                content,
-                status,
-                priority,
-                time_range,
-                owner,
-                assignee,
-                created_at,
-                updated_at,
-                position,
-            ) in rows
-            {
-                // rowid is only used for migrating legacy rows. New and
-                // imported rows receive their marker-derived id before they
-                // reach this table.
-                let todo_id = format!("todo-legacy-{rowid}");
-                conn.execute(
-                    r#"INSERT INTO memo_todos_v2
-                       (memo_id, todo_id, content, status, priority, time_range, owner, assignee, created_at, updated_at, position)
-                       VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)"#,
-                    params![memo_id, todo_id, content, status, priority, time_range, owner, assignee, created_at, updated_at, position],
-                )
-                .map_err(sqlite_to_io)?;
-            }
-            conn.execute_batch(
-                "DROP TABLE memo_todos; ALTER TABLE memo_todos_v2 RENAME TO memo_todos; CREATE INDEX IF NOT EXISTS idx_memo_todos_memo_id ON memo_todos(memo_id);",
-            )
-            .map_err(sqlite_to_io)?;
-            Ok(())
-        })();
-        let transaction = match result {
-            Ok(()) => conn.execute_batch("COMMIT;").map_err(sqlite_to_io),
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        };
-        let restore = conn
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .map_err(sqlite_to_io);
-        transaction.and(restore)
-    }
-
-    /// Keep revisions after a memo row is deleted, but make their owner an
-    /// explicit lifecycle record. This gives revision history a real foreign
-    /// key without cascading away the state needed to publish a tombstone.
-    fn migrate_memo_lifecycles(&self, conn: &Connection) -> std::io::Result<()> {
-        let has_fk = conn
-            .prepare("PRAGMA foreign_key_list(memo_content_revisions)")
-            .and_then(|mut statement| {
-                let rows = statement.query_map([], |row| row.get::<_, String>(2))?;
-                rows.collect::<Result<Vec<_>, _>>()
-            })
-            .map_err(sqlite_to_io)?
-            .into_iter()
-            .any(|table| table == "memo_lifecycles");
-
-        conn.execute_batch(
-            r#"
-            INSERT OR IGNORE INTO memo_lifecycles
-                (memo_id, notebook_id, relative_path, generation, is_deleted, created_at, updated_at)
-            SELECT id, notebook_id, relative_path, 1, 0, created_at, updated_at FROM memos;
-            INSERT OR IGNORE INTO memo_lifecycles
-                (memo_id, notebook_id, relative_path, generation, is_deleted, created_at, updated_at)
-            SELECT memo_id, notebook_id, '', 1, 1, updated_at, updated_at
-            FROM memo_content_revisions;
-            "#,
-        )
-        .map_err(sqlite_to_io)?;
-        if has_fk {
-            return Ok(());
-        }
-
-        conn.execute_batch("PRAGMA foreign_keys = OFF; BEGIN IMMEDIATE;")
-            .map_err(sqlite_to_io)?;
-        let result = (|| -> std::io::Result<()> {
-            conn.execute_batch(
-                r#"
-                CREATE TABLE memo_content_revisions_v2 (
-                    memo_id TEXT PRIMARY KEY,
-                    notebook_id TEXT NOT NULL,
-                    content_hash TEXT NOT NULL,
-                    local_revision INTEGER NOT NULL,
-                    change_id TEXT NOT NULL,
-                    updated_at INTEGER NOT NULL,
-                    FOREIGN KEY(memo_id) REFERENCES memo_lifecycles(memo_id) ON DELETE RESTRICT
-                );
-                INSERT INTO memo_content_revisions_v2
-                    (memo_id, notebook_id, content_hash, local_revision, change_id, updated_at)
-                SELECT memo_id, notebook_id, content_hash, local_revision, change_id, updated_at
-                FROM memo_content_revisions;
-                DROP TABLE memo_content_revisions;
-                ALTER TABLE memo_content_revisions_v2 RENAME TO memo_content_revisions;
-                CREATE INDEX IF NOT EXISTS idx_memo_content_revisions_notebook
-                    ON memo_content_revisions(notebook_id);
-                "#,
-            )
-            .map_err(sqlite_to_io)
-        })();
-        let transaction = match result {
-            Ok(()) => conn.execute_batch("COMMIT;").map_err(sqlite_to_io),
-            Err(error) => {
-                let _ = conn.execute_batch("ROLLBACK;");
-                Err(error)
-            }
-        };
-        let restore = conn
-            .execute_batch("PRAGMA foreign_keys = ON;")
-            .map_err(sqlite_to_io);
-        transaction.and(restore)
-    }
-
-    fn import_legacy_global_memo_index(
-        &self,
-        conn: &Connection,
-        notebook_id: &str,
-    ) -> std::io::Result<()> {
-        let already_imported: Option<String> = conn
-            .query_row(
-                "SELECT value FROM notebook_index_meta WHERE key = 'legacy_global_index_import_v1'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(sqlite_to_io)?;
-        if already_imported.is_some() {
-            return Ok(());
-        }
-
-        let legacy_path = self.registry_db_path();
-        if !legacy_path.is_file() {
-            conn.execute(
-                "INSERT OR REPLACE INTO notebook_index_meta (key, value) VALUES ('legacy_global_index_import_v1', ?1)",
-                ["missing"],
-            )
-            .map_err(sqlite_to_io)?;
-            return Ok(());
-        }
-
-        let legacy = self.open_registry_db()?;
-        let has_memos: bool = legacy
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'memos')",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(sqlite_to_io)?;
-        if !has_memos {
-            conn.execute(
-                "INSERT OR REPLACE INTO notebook_index_meta (key, value) VALUES ('legacy_global_index_import_v1', ?1)",
-                ["empty"],
-            )
-            .map_err(sqlite_to_io)?;
-            return Ok(());
-        }
-
-        let legacy_path_string = legacy_path.to_string_lossy().to_string();
-        conn.execute("ATTACH DATABASE ?1 AS legacy_index", [&legacy_path_string])
-            .map_err(sqlite_to_io)?;
-        // Pre-relative-path global indexes kept the notebook-relative location
-        // in `filename` and had no `relative_path` column; pre-todo-id todo
-        // tables had no stable `todo_id`. Detect both and adapt the import.
-        let legacy_has = |table: &str, column: &str| -> std::io::Result<bool> {
-            let count: i64 = conn.query_row(
-                "SELECT COUNT(*) FROM pragma_table_info(?1, 'legacy_index') WHERE name = ?2",
-                [table, column],
-                |row| row.get(0),
-            )
-            .map_err(sqlite_to_io)?;
-            Ok(count > 0)
-        };
-        let legacy_relative_path_expr = if legacy_has("memos", "relative_path")? {
-            "relative_path"
-        } else {
-            "filename"
-        };
-        let legacy_todo_id_expr = if legacy_has("memo_todos", "todo_id")? {
-            "mt.todo_id"
-        } else {
-            "'todo-legacy-' || mt.rowid"
-        };
-        let result = (|| -> std::io::Result<()> {
-            let tx = conn.unchecked_transaction().map_err(sqlite_to_io)?;
-
-            // Global indexes written before the lifecycle refactor predate the
-            // memo_lifecycles table. Skipping the import is safe: the primary
-            // copy stays valid and migrate_memo_lifecycles backfills lifecycle
-            // rows from the imported memos.
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_lifecycles
-                    (memo_id, notebook_id, relative_path, generation, is_deleted, created_at, updated_at, deleted_at)
-                 SELECT memo_id, notebook_id, relative_path, generation, is_deleted, created_at, updated_at, deleted_at
-                 FROM legacy_index.memo_lifecycles WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_lifecycles
-                    (memo_id, notebook_id, relative_path, generation, is_deleted, created_at, updated_at, deleted_at)
-                 SELECT memo_id, notebook_id, '', 1, 1, updated_at, updated_at, NULL
-                 FROM legacy_index.memo_content_revisions
-                 WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-                // Older global indexes did not have revisions yet. The
-                // primary copy remains valid when that optional table is absent.
-                .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                &format!(
-                    "INSERT OR IGNORE INTO memos
-                        (id, notebook_id, filename, relative_path, preview, thumbnail, thumbnail_checked, agents_checked, created_at, updated_at, favorited, icon, properties)
-                     SELECT id, notebook_id, filename, {legacy_relative_path_expr}, COALESCE(preview, ''), thumbnail, thumbnail_checked, agents_checked, created_at, updated_at, favorited, icon, COALESCE(properties, '{{}}')
-                     FROM legacy_index.memos WHERE notebook_id = ?1"
-                ),
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)?;
-            // The ensure_memo_tables lifecycle backfill ran before this import,
-            // so imported memos have no lifecycle rows yet. Backfill now: later
-            // revision imports reference these rows under FK RESTRICT.
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_lifecycles
-                    (memo_id, notebook_id, relative_path, generation, is_deleted, created_at, updated_at)
-                 SELECT id, notebook_id, relative_path, 1, 0, created_at, updated_at
-                 FROM memos WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_content_revisions
-                    (memo_id, notebook_id, content_hash, local_revision, change_id, updated_at)
-                 SELECT memo_id, notebook_id, content_hash, local_revision, change_id, updated_at
-                 FROM legacy_index.memo_content_revisions WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_tags (memo_id, tag)
-                 SELECT mt.memo_id, mt.tag FROM legacy_index.memo_tags mt
-                 JOIN legacy_index.memos m ON m.id = mt.memo_id
-                 WHERE m.notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_colors (memo_id, color, position)
-                 SELECT mc.memo_id, mc.color, mc.position FROM legacy_index.memo_colors mc
-                 JOIN legacy_index.memos m ON m.id = mc.memo_id
-                 WHERE m.notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                &format!(
-                    "INSERT OR IGNORE INTO memo_todos
-                        (memo_id, todo_id, content, status, priority, time_range, owner, assignee, created_at, updated_at, position)
-                     SELECT mt.memo_id, {legacy_todo_id_expr}, mt.content, mt.status, mt.priority, mt.time_range, mt.owner, mt.assignee, mt.created_at, mt.updated_at, mt.position
-                     FROM legacy_index.memo_todos mt
-                     JOIN legacy_index.memos m ON m.id = mt.memo_id
-                     WHERE m.notebook_id = ?1"
-                ),
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_agents (memo_id, thread_id, title, agent_type, position)
-                 SELECT ma.memo_id, ma.thread_id, ma.title, ma.agent_type, ma.position
-                 FROM legacy_index.memo_agents ma
-                 JOIN legacy_index.memos m ON m.id = ma.memo_id
-                 WHERE m.notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO notebook_tags (notebook_id, path, created_at, updated_at)
-                 SELECT notebook_id, path, created_at, updated_at
-                 FROM legacy_index.notebook_tags WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO memo_index_state (notebook_id, version, last_updated, migrated_at)
-                 SELECT notebook_id, version, last_updated, migrated_at
-                 FROM legacy_index.memo_index_state WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR IGNORE INTO notebook_data_migrations (notebook_id, migration_key, version, completed_at)
-                 SELECT notebook_id, migration_key, version, completed_at
-                 FROM legacy_index.notebook_data_migrations WHERE notebook_id = ?1",
-                [notebook_id],
-            )
-            .map_err(sqlite_to_io)
-            .or_else(tolerate_missing_legacy_table)?;
-            tx.execute(
-                "INSERT OR REPLACE INTO notebook_index_meta (key, value) VALUES ('legacy_global_index_import_v1', ?1)",
-                ["complete"],
-            )
-            .map_err(sqlite_to_io)?;
-            tx.commit().map_err(sqlite_to_io)
-        })();
-        let detach = conn.execute_batch("DETACH DATABASE legacy_index;");
-        result.and(detach.map_err(sqlite_to_io))
     }
 
     fn ensure_local_notebook_row(
@@ -833,334 +208,12 @@ impl MemoFile {
         let conn = self.open_notebook_db(notebook_id)?;
         self.ensure_memo_tables(&conn)?;
         self.ensure_local_notebook_row(&conn, notebook_id)?;
-        self.import_legacy_global_memo_index(&conn, notebook_id)?;
         Ok(conn)
     }
 
     pub(crate) fn open_memo_index_db(&self) -> std::io::Result<Connection> {
         let notebook_id = self.current_notebook_id_for_index();
         self.open_memo_index_db_for_notebook_id(&notebook_id)
-    }
-
-    /// Record an external-process create before its markdown file becomes visible.
-    /// The Desktop watcher consumes this marker when it observes the filesystem event.
-    pub fn mark_pending_external_memo_create(
-        &self,
-        memo_id: &str,
-        notebook_id: &str,
-    ) -> std::io::Result<()> {
-        let conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
-        let now = chrono::Utc::now().timestamp_millis();
-        conn.execute(
-            "DELETE FROM pending_external_memo_creates WHERE created_at < ?1",
-            params![now - EXTERNAL_CREATE_MARKER_TTL_MS],
-        )
-        .map_err(sqlite_to_io)?;
-        conn.execute(
-            r#"
-            INSERT INTO pending_external_memo_creates (memo_id, notebook_id, created_at)
-            VALUES (?1, ?2, ?3)
-            ON CONFLICT(memo_id) DO UPDATE SET
-                notebook_id = excluded.notebook_id,
-                created_at = excluded.created_at
-            "#,
-            params![memo_id, notebook_id, now],
-        )
-        .map_err(sqlite_to_io)?;
-        Ok(())
-    }
-
-    /// Atomically claim an external create marker. A marker can produce at most one
-    /// `Created` event even when the platform reports several filesystem events.
-    pub fn consume_pending_external_memo_create(
-        &self,
-        memo_id: &str,
-        notebook_id: &str,
-    ) -> std::io::Result<bool> {
-        let conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
-        let cutoff = chrono::Utc::now().timestamp_millis() - EXTERNAL_CREATE_MARKER_TTL_MS;
-        let changed = conn
-            .execute(
-                "DELETE FROM pending_external_memo_creates WHERE memo_id = ?1 AND notebook_id = ?2 AND created_at >= ?3",
-                params![memo_id, notebook_id, cutoff],
-            )
-            .map_err(sqlite_to_io)?;
-        Ok(changed > 0)
-    }
-
-    pub fn pending_external_memo_creates_for_notebook(
-        &self,
-        notebook_id: &str,
-    ) -> std::io::Result<std::collections::HashSet<String>> {
-        let conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
-        let cutoff = chrono::Utc::now().timestamp_millis() - EXTERNAL_CREATE_MARKER_TTL_MS;
-        let mut statement = conn
-            .prepare(
-                "SELECT memo_id FROM pending_external_memo_creates WHERE notebook_id = ?1 AND created_at >= ?2",
-            )
-            .map_err(sqlite_to_io)?;
-        let rows = statement
-            .query_map(params![notebook_id, cutoff], |row| row.get::<_, String>(0))
-            .map_err(sqlite_to_io)?;
-        let mut memo_ids = std::collections::HashSet::new();
-        for row in rows {
-            memo_ids.insert(row.map_err(sqlite_to_io)?);
-        }
-        Ok(memo_ids)
-    }
-
-    pub fn has_pending_external_memo_create(
-        &self,
-        memo_id: &str,
-        notebook_id: &str,
-    ) -> std::io::Result<bool> {
-        let conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
-        let cutoff = chrono::Utc::now().timestamp_millis() - EXTERNAL_CREATE_MARKER_TTL_MS;
-        conn.query_row(
-            "SELECT 1 FROM pending_external_memo_creates WHERE memo_id = ?1 AND notebook_id = ?2 AND created_at >= ?3",
-            params![memo_id, notebook_id, cutoff],
-            |_| Ok(()),
-        )
-        .optional()
-        .map(|row| row.is_some())
-        .map_err(sqlite_to_io)
-    }
-
-    pub fn clear_pending_external_memo_create(&self, memo_id: &str) -> std::io::Result<()> {
-        let conn = self.open_memo_index_db()?;
-        conn.execute(
-            "DELETE FROM pending_external_memo_creates WHERE memo_id = ?1",
-            params![memo_id],
-        )
-        .map_err(sqlite_to_io)?;
-        Ok(())
-    }
-
-    /// Atomically records a stable content revision for a memo.
-    ///
-    /// Re-observing identical bytes returns the existing revision/change id.
-    /// Returning to an older hash after another commit is a new transition and
-    /// therefore advances the counter as well.
-    pub fn commit_memo_content_revision(
-        &self,
-        memo_id: &str,
-        notebook_id: &str,
-        content_hash: &str,
-        next_change_id: &str,
-    ) -> std::io::Result<MemoContentCommit> {
-        self.commit_memo_content_revision_internal(
-            memo_id,
-            notebook_id,
-            content_hash,
-            next_change_id,
-            None,
-        )?
-        .ok_or_else(|| std::io::Error::other("unconditional revision commit was rejected"))
-    }
-
-    pub fn commit_memo_content_revision_if_current(
-        &self,
-        memo_id: &str,
-        notebook_id: &str,
-        content_hash: &str,
-        next_change_id: &str,
-        expected: Option<&MemoContentRevision>,
-    ) -> std::io::Result<Option<MemoContentCommit>> {
-        self.commit_memo_content_revision_internal(
-            memo_id,
-            notebook_id,
-            content_hash,
-            next_change_id,
-            Some(expected),
-        )
-    }
-
-    fn commit_memo_content_revision_internal(
-        &self,
-        memo_id: &str,
-        notebook_id: &str,
-        content_hash: &str,
-        next_change_id: &str,
-        expected: Option<Option<&MemoContentRevision>>,
-    ) -> std::io::Result<Option<MemoContentCommit>> {
-        let mut conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
-        let tx = conn
-            .transaction_with_behavior(TransactionBehavior::Immediate)
-            .map_err(sqlite_to_io)?;
-        // Revision rows may be created before the corresponding Markdown file
-        // is indexed (for example while an external writer is committing a
-        // save). Keep the lifecycle anchor in the same local index so the FK
-        // remains valid without making the revision stream depend on a prior
-        // memo-list refresh.
-        tx.execute(
-            "INSERT OR IGNORE INTO memo_lifecycles
-                (memo_id, notebook_id, relative_path, generation, is_deleted, created_at, updated_at)
-             VALUES (?1, ?2, '', 1, 0, ?3, ?3)",
-            params![memo_id, notebook_id, chrono::Utc::now().timestamp_millis()],
-        )
-        .map_err(sqlite_to_io)?;
-        let current = tx
-            .query_row(
-                "SELECT content_hash, local_revision, change_id, updated_at
-                 FROM memo_content_revisions WHERE memo_id = ?1",
-                params![memo_id],
-                |row| {
-                    Ok((
-                        row.get::<_, String>(0)?,
-                        row.get::<_, i64>(1)?,
-                        row.get::<_, String>(2)?,
-                        row.get::<_, i64>(3)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(sqlite_to_io)?;
-
-        if let Some(expected) = expected {
-            let matches = match (expected, current.as_ref()) {
-                (None, None) => true,
-                (Some(expected), Some((hash, revision, change_id, _))) => {
-                    expected.memo_id == memo_id
-                        && expected.content_hash == *hash
-                        && expected.revision == *revision
-                        && expected.change_id == *change_id
-                }
-                _ => false,
-            };
-            if !matches {
-                return Ok(None);
-            }
-        }
-
-        if let Some((existing_hash, revision, change_id, updated_at)) = current.as_ref() {
-            if existing_hash == content_hash {
-                tx.commit().map_err(sqlite_to_io)?;
-                return Ok(Some(MemoContentCommit {
-                    state: MemoContentRevision {
-                        memo_id: memo_id.to_string(),
-                        notebook_id: notebook_id.to_string(),
-                        content_hash: existing_hash.clone(),
-                        revision: *revision,
-                        change_id: change_id.clone(),
-                        updated_at: *updated_at,
-                    },
-                    changed: false,
-                }));
-            }
-        }
-
-        let revision = current
-            .as_ref()
-            .map(|(_, revision, _, _)| revision.saturating_add(1))
-            .unwrap_or(1);
-        let updated_at = chrono::Utc::now().timestamp_millis();
-        tx.execute(
-            r#"
-            INSERT INTO memo_content_revisions
-                (memo_id, notebook_id, content_hash, local_revision, change_id, updated_at)
-            VALUES (?1, ?2, ?3, ?4, ?5, ?6)
-            ON CONFLICT(memo_id) DO UPDATE SET
-                notebook_id = excluded.notebook_id,
-                content_hash = excluded.content_hash,
-                local_revision = excluded.local_revision,
-                change_id = excluded.change_id,
-                updated_at = excluded.updated_at
-            "#,
-            params![
-                memo_id,
-                notebook_id,
-                content_hash,
-                revision,
-                next_change_id,
-                updated_at,
-            ],
-        )
-        .map_err(sqlite_to_io)?;
-        tx.commit().map_err(sqlite_to_io)?;
-
-        Ok(Some(MemoContentCommit {
-            state: MemoContentRevision {
-                memo_id: memo_id.to_string(),
-                notebook_id: notebook_id.to_string(),
-                content_hash: content_hash.to_string(),
-                revision,
-                change_id: next_change_id.to_string(),
-                updated_at,
-            },
-            changed: true,
-        }))
-    }
-
-    pub fn read_memo_content_revision(
-        &self,
-        memo_id: &str,
-    ) -> std::io::Result<Option<MemoContentRevision>> {
-        for notebook in self.read_notebook_configs()? {
-            let revision = self.read_memo_content_revision_for_notebook(&notebook.id, memo_id)?;
-            if revision.is_some() {
-                return Ok(revision);
-            }
-        }
-        Ok(None)
-    }
-
-    /// Mutation callers already know the notebook. Avoid opening every local
-    /// database, especially for newly created notes with no revision yet.
-    pub fn read_memo_content_revision_for_notebook(
-        &self,
-        notebook_id: &str,
-        memo_id: &str,
-    ) -> std::io::Result<Option<MemoContentRevision>> {
-        let conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
-        conn.query_row(
-            "SELECT notebook_id, content_hash, local_revision, change_id, updated_at
-                     FROM memo_content_revisions WHERE memo_id = ?1 AND notebook_id = ?2",
-            params![memo_id, notebook_id],
-            |row| {
-                Ok(MemoContentRevision {
-                    memo_id: memo_id.to_string(),
-                    notebook_id: row.get(0)?,
-                    content_hash: row.get(1)?,
-                    revision: row.get(2)?,
-                    change_id: row.get(3)?,
-                    updated_at: row.get(4)?,
-                })
-            },
-        )
-        .optional()
-        .map_err(sqlite_to_io)
-    }
-
-    /// Backfill the path-keyed revision table from the legacy ID-keyed one.
-    /// Runs only when the legacy tables exist (they are never created here, so
-    /// path-only notebooks stay free of them). Idempotent: existing path-keyed
-    /// rows (which may already be newer after a rename cascade) always win.
-    fn backfill_note_content_revisions(conn: &Connection) -> std::io::Result<bool> {
-        let legacy_present: bool = conn
-            .query_row(
-                "SELECT COUNT(*) = 2 FROM sqlite_master
-                 WHERE type = 'table' AND name IN ('memo_content_revisions', 'memos')",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(sqlite_to_io)?;
-        if !legacy_present {
-            return Ok(false);
-        }
-        let migrated = conn
-            .execute(
-                r#"
-            INSERT OR IGNORE INTO note_content_revisions
-                (notebook_id, relative_path, content_hash, local_revision, change_id, updated_at)
-            SELECT m.notebook_id, m.relative_path, r.content_hash, r.local_revision, r.change_id, r.updated_at
-            FROM memo_content_revisions r
-            JOIN memos m ON m.id = r.memo_id AND m.notebook_id = r.notebook_id
-            WHERE m.relative_path != ''
-            "#,
-                [],
-            )
-            .map_err(sqlite_to_io)?;
-        Ok(migrated > 0)
     }
 
     /// Atomically records a stable content revision for one note, addressed by
@@ -1212,7 +265,6 @@ impl MemoFile {
         expected: Option<Option<&NoteContentRevision>>,
     ) -> std::io::Result<Option<NoteContentCommit>> {
         let mut conn = self.open_note_index_connection(notebook_id)?;
-        Self::backfill_note_content_revisions(&conn)?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sqlite_to_io)?;
@@ -1315,7 +367,6 @@ impl MemoFile {
         relative_path: &str,
     ) -> std::io::Result<Option<NoteContentRevision>> {
         let conn = self.open_note_index_connection(notebook_id)?;
-        Self::backfill_note_content_revisions(&conn)?;
         conn.query_row(
             "SELECT content_hash, local_revision, change_id, updated_at
              FROM note_content_revisions WHERE notebook_id = ?1 AND relative_path = ?2",
@@ -1348,7 +399,6 @@ impl MemoFile {
             return Ok(());
         }
         let mut conn = self.open_note_index_connection(notebook_id)?;
-        Self::backfill_note_content_revisions(&conn)?;
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sqlite_to_io)?;

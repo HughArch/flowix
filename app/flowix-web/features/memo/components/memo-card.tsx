@@ -112,7 +112,7 @@ function AgentTodoIcons({
         // 仅在 AI 运行中展示 star-four 图标, 主色高亮。
         <span className="memo-card__running-agent-icon">
           <AgentIcon
-            typeKey={runningAgent.key}
+            typeKey={runningAgent.id}
             alt=""
             className="h-full w-full object-contain"
           />
@@ -203,7 +203,7 @@ function MemoCardShell({
     <div
       onClick={() => onSelect(memo)}
       className={cn(
-        'group memo-card relative min-w-0 w-full cursor-pointer rounded-lg px-2 transition-all',
+        'group memo-card relative min-w-0 w-full cursor-pointer rounded-lg px-2 transition-colors duration-150',
         'py-3',
         isSelected && ['bg-[var(--accent)]', 'memo-card--selected'],
       )}

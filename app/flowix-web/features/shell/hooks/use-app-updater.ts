@@ -6,6 +6,7 @@ import {
   type AppUpdate,
   type AppUpdateDownloadProgress,
 } from '@platform/tauri/client/updater';
+import { runStartupStage3Task, waitForStartupStage3 } from '@/lib/startup-stage3';
 
 export type AppUpdaterStatus = 'idle' | 'checking' | 'none' | 'available' | 'downloading' | 'installing' | 'error';
 
@@ -35,9 +36,11 @@ export function useAppUpdater({
   const [progress, setProgress] = useState<AppUpdateDownloadProgress | null>(null);
   const [error, setError] = useState<unknown>(null);
   const updateRef = useRef<AppUpdate | null>(null);
+  const checkStartedRef = useRef(false);
   updateRef.current = update;
 
   const checkNow = useCallback(async () => {
+    checkStartedRef.current = true;
     setStatus('checking');
     setError(null);
     setProgress(null);
@@ -62,7 +65,7 @@ export function useAppUpdater({
     setError(null);
     setProgress(null);
     try {
-      await installAppUpdate((next) => {
+      await installAppUpdate(current.version, (next) => {
         setProgress(next);
         setStatus(next.phase === 'installing' ? 'installing' : 'downloading');
       });
@@ -81,13 +84,28 @@ export function useAppUpdater({
 
   useEffect(() => {
     if (!autoCheck || !enabled) return;
-    const timer = window.setTimeout(() => {
-      void checkNow().catch(() => {
-        // Automatic checks are intentionally silent. The preferences view
-        // exposes the error through its explicit check action.
-      });
-    }, delayMs);
-    return () => window.clearTimeout(timer);
+    let cancelled = false;
+    let timer: number | undefined;
+    void waitForStartupStage3().then(() => {
+      if (cancelled) return;
+      timer = window.setTimeout(() => {
+        if (cancelled) return;
+        void runStartupStage3Task('app-update-auto-check', async () => {
+          if (cancelled || checkStartedRef.current) return;
+          checkStartedRef.current = true;
+          try {
+            await checkNow();
+          } catch {
+            // Automatic checks are intentionally silent. The preferences view
+            // exposes the error through its explicit check action.
+          }
+        });
+      }, delayMs);
+    });
+    return () => {
+      cancelled = true;
+      if (timer !== undefined) window.clearTimeout(timer);
+    };
   }, [autoCheck, enabled, delayMs, checkNow]);
 
   return { status, update, progress, error, checkNow, installNow, cancelNow };

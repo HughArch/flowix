@@ -37,22 +37,18 @@ pub struct TagWithId {
     pub name: String,
 }
 
-#[derive(Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct CreateTagReport {
-    pub path: String,
-}
-
 #[tauri::command]
 pub async fn get_all_tags(
     notebook_id: Option<String>,
     app: AppHandle,
 ) -> Result<GetAllTagsResponse, String> {
-    tauri::async_runtime::spawn_blocking(move || {
+    tauri::async_runtime::spawn_blocking(move || -> Result<GetAllTagsResponse, String> {
         let state = app.state::<AppState>();
-        let tags = read_lock(&state.memo_file, "memo_file")
-            .derived_tags_for_notebook_id(notebook_id.as_deref());
-        GetAllTagsResponse {
+        let memo_file = read_lock(&state.memo_file, "memo_file");
+        let id = notebook_id.or_else(|| memo_file.current_notebook_id_value()).unwrap_or_default();
+        let tags = memo_file.derived_tags_for_notebook_id(Some(&id))
+            .map_err(|error| crate::app::notebook_background::query_error(state.inner(), &id, error))?;
+        Ok(GetAllTagsResponse {
             tags: tags
                 .into_iter()
                 .map(|t| TagWithId {
@@ -60,22 +56,10 @@ pub async fn get_all_tags(
                     name: t.name,
                 })
                 .collect(),
-        }
+        })
     })
     .await
-    .map_err(|error| format!("tag list task failed: {error}"))
-}
-
-#[tauri::command]
-pub fn create_notebook_tag(
-    notebook_id: String,
-    path: String,
-    state: State<AppState>,
-) -> Result<CreateTagReport, String> {
-    let path = read_lock(&state.memo_file, "memo_file")
-        .create_notebook_tag(&notebook_id, &path)
-        .map_err(|error| error.to_string())?;
-    Ok(CreateTagReport { path })
+    .map_err(|error| format!("tag list task failed: {error}"))?
 }
 
 /// 移动 subtag: �?`old_path` 整棵子树重命�?(�?prefix 替换),
@@ -111,10 +95,6 @@ pub fn move_memo_tag(
     };
 
     let sync_notebook_id = notebook_id.as_deref().unwrap_or("nb_default");
-    // read lock 已释放: 逐条 emit MemoEvent::Updated, 让前端 memo 卡片 /
-    // 标签树刷新 (derived_changed.tags -> refreshSelectedNotebookMetadata)。
-    for path in &affected_relative_paths {
-    }
     mark_tagged_memos_cloud_dirty(state.inner(), sync_notebook_id, &affected_relative_paths);
     if !affected_relative_paths.is_empty() {
         crate::commands::cloud::schedule_notebook_sync(app.clone(), sync_notebook_id.to_string());
@@ -158,11 +138,6 @@ pub fn delete_memo_tag(
     };
 
     let sync_notebook_id = notebook_id.as_deref().unwrap_or("nb_default");
-    // read lock released:
-    // 1) refresh search index per affected note (tag removed from body,
-    //    search index must follow -- otherwise stale hits leak through).
-    for path in &affected_relative_paths {
-    }
     mark_tagged_memos_cloud_dirty(state.inner(), sync_notebook_id, &affected_relative_paths);
     if !affected_relative_paths.is_empty() {
         crate::commands::cloud::schedule_notebook_sync(app.clone(), sync_notebook_id.to_string());
@@ -195,8 +170,11 @@ pub async fn get_tag_prefix_counts(
         });
         memo_file
             .read_tag_prefix_counts_for_notebook_id(notebook_id.as_deref())
-            .unwrap_or_default()
+            .map_err(|error| {
+                let id = notebook_id.clone().or_else(|| memo_file.current_notebook_id_value()).unwrap_or_default();
+                crate::app::notebook_background::query_error(state.inner(), &id, error)
+            })
     })
     .await
-    .map_err(|error| format!("tag count task failed: {error}"))
+    .map_err(|error| format!("tag count task failed: {error}"))?
 }

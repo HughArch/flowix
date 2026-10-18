@@ -19,10 +19,10 @@ import {
  * 不会泄漏到 MemoList、shadcn 按钮等其它 UI 文本。
  *
  * 与之配套的变量定义在 css/index.css :
- *   --app-font-family
- *   --app-font-size
- *   --app-line-height
- *   --app-document-width
+ *   --editor-font-family
+ *   --editor-font-size
+ *   --editor-line-height
+ *   --editor-document-width
  *
  * 调用方: app.tsx (主窗口 + 偏好设置窗口都会挂载, 因此跨窗口都会立即响应)。
  */
@@ -43,17 +43,17 @@ export function useApplyFontSettings(format: FormatConfig | undefined) {
       // Emoji must be considered before platform emoji fonts even when a user
       // selects a custom document font. This face only covers emoji codepoints,
       // so placing it first leaves ordinary text to the selected font stack.
-      root.style.setProperty('--app-font-family', `'Flowix Small Emoji', ${format.fontFamily}`);
+      root.style.setProperty('--editor-font-family', `'Flowix Small Emoji', ${format.fontFamily}`);
     }
     if (typeof format.fontSize === 'number' && !Number.isNaN(format.fontSize)) {
-      root.style.setProperty('--app-font-size', `${format.fontSize}px`);
+      root.style.setProperty('--editor-font-size', `${format.fontSize}px`);
     }
     if (typeof format.lineHeight === 'number' && !Number.isNaN(format.lineHeight)) {
-      root.style.setProperty('--app-line-height', String(format.lineHeight));
+      root.style.setProperty('--editor-line-height', String(format.lineHeight));
     }
     if (typeof format.documentWidth === 'number' && !Number.isNaN(format.documentWidth)) {
       root.style.setProperty(
-        '--app-document-width',
+        '--editor-document-width',
         format.documentWidth > DOCUMENT_WIDTH_FULL_THRESHOLD ? 'none' : `${format.documentWidth}px`,
       );
     }

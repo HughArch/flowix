@@ -30,6 +30,7 @@ struct WatchRegistry {
     delivering: HashSet<String>,
     delivery_epochs: HashMap<String, u64>,
     active_writes: HashMap<PathBuf, usize>,
+    active_path_moves: HashMap<usize, PathBuf>,
     completed_writes: HashMap<PathBuf, (String, String, String)>,
 }
 
@@ -47,7 +48,87 @@ struct ExternalDocumentChangedPayload {
 pub struct ExternalDocumentWatchState {
     registry: Arc<Mutex<WatchRegistry>>,
     watcher: Mutex<Option<RecommendedWatcher>>,
-    next_lease: AtomicUsize,
+    next_id: AtomicUsize,
+}
+
+// A local move can spend time updating indexes after the filesystem rename.
+// Keep old-path polls silent until its confirmed path mapping has been applied.
+pub(crate) struct PathMoveGuard {
+    registry: Arc<Mutex<WatchRegistry>>,
+    id: usize,
+}
+
+impl Drop for PathMoveGuard {
+    fn drop(&mut self) {
+        if let Ok(mut registry) = self.registry.lock() {
+            registry.active_path_moves.remove(&self.id);
+        }
+    }
+}
+
+fn watch_prefix(path: &Path) -> PathBuf {
+    // Resolve the parent even after a move, retaining the old basename for
+    // case-only renames on case-insensitive filesystems.
+    path.parent()
+        .and_then(|parent| dunce::canonicalize(parent).ok())
+        .zip(path.file_name())
+        .map(|(parent, name)| parent.join(name))
+        .unwrap_or_else(|| path.to_path_buf())
+}
+
+pub(crate) fn begin_path_move(app: &tauri::AppHandle, path: &Path) -> Option<PathMoveGuard> {
+    let state = app.try_state::<ExternalDocumentWatchState>()?;
+    let path = watch_prefix(path);
+    let mut registry = state.registry.lock().ok()?;
+    let id = state.next_id.fetch_add(1, Ordering::Relaxed);
+    registry.active_path_moves.insert(id, path);
+    Some(PathMoveGuard {
+        registry: state.registry.clone(),
+        id,
+    })
+}
+
+/// Called by both local mutations and confirmed native rename pairs before
+/// publishing the existing UI path-move event.
+pub(crate) fn rebase_path(app: &tauri::AppHandle, previous: &Path, next: &Path) {
+    if let Some(state) = app.try_state::<ExternalDocumentWatchState>() {
+        state.rebase_path(&watch_prefix(previous), &watch_prefix(next));
+    }
+}
+
+fn rebase_registry_paths(registry: &mut WatchRegistry, previous: &Path, next: &Path) {
+    if previous == next {
+        return;
+    }
+    let moved = registry
+        .leases
+        .iter()
+        .filter_map(|(id, lease)| {
+            let suffix = lease.path.strip_prefix(previous).ok()?;
+            Some((id.clone(), next.join(suffix)))
+        })
+        .collect::<Vec<_>>();
+    for (id, path) in moved {
+        registry.leases.get_mut(&id).expect("existing lease").path = path;
+        *registry.generations.entry(id.clone()).or_default() += 1;
+        invalidate_delivery(registry, &id);
+        // Preserve the last observed revision: a content change concurrent
+        // with the move must still be delivered at the new path.
+    }
+    // A native rename can arrive before the local command finishes. Its
+    // notification pause follows the prefix until the same guard is released.
+    for prefix in registry.active_path_moves.values_mut() {
+        if let Ok(suffix) = prefix.strip_prefix(previous) {
+            *prefix = next.join(suffix);
+        }
+    }
+    registry.path_ref_counts.clear();
+    for lease in registry.leases.values() {
+        *registry
+            .path_ref_counts
+            .entry(lease.path.clone())
+            .or_default() += 1;
+    }
 }
 
 impl ExternalDocumentWatchState {
@@ -72,7 +153,55 @@ impl ExternalDocumentWatchState {
         Self {
             registry,
             watcher: Mutex::new(watcher),
-            next_lease: AtomicUsize::new(1),
+            next_id: AtomicUsize::new(1),
+        }
+    }
+
+    fn rebase_path(&self, previous: &Path, next: &Path) {
+        let Ok(mut registry) = self.registry.lock() else {
+            return;
+        };
+        if previous == next {
+            return;
+        }
+        let old_paths = registry
+            .path_ref_counts
+            .keys()
+            .cloned()
+            .collect::<HashSet<_>>();
+        let moved_paths = old_paths
+            .iter()
+            .filter_map(|path| {
+                path.strip_prefix(previous)
+                    .ok()
+                    .map(|suffix| next.join(suffix))
+            })
+            .collect::<HashSet<_>>();
+        rebase_registry_paths(&mut registry, previous, next);
+        if moved_paths.is_empty() {
+            return;
+        }
+        // Use the same registry -> watcher lock order as registration. Keep
+        // lease changes and native watch changes together for concurrent opens.
+        let Ok(mut watcher) = self.watcher.lock() else {
+            return;
+        };
+        if let Some(watcher) = watcher.as_mut() {
+            for path in &old_paths {
+                if !registry.path_ref_counts.contains_key(path) {
+                    watcher.unwatch(path).ok();
+                }
+            }
+            for path in &moved_paths {
+                watcher.unwatch(path).ok();
+                if let Err(error) = watcher.watch(path, RecursiveMode::NonRecursive) {
+                    // Revision polling remains available if native rebinding fails.
+                    tracing::warn!(
+                        "[external-watch] failed to watch moved path {}: {error}",
+                        path.display()
+                    );
+                }
+            }
         }
     }
 
@@ -80,7 +209,7 @@ impl ExternalDocumentWatchState {
         let lease_id = format!(
             "external-watch:{}:{}",
             window_label,
-            self.next_lease.fetch_add(1, Ordering::Relaxed)
+            self.next_id.fetch_add(1, Ordering::Relaxed)
         );
 
         let mut registry = self
@@ -179,7 +308,10 @@ impl ExternalDocumentWatchState {
 
     pub fn begin_window_write(&self, path: &Path) {
         if let Ok(mut registry) = self.registry.lock() {
-            *registry.active_writes.entry(path.to_path_buf()).or_default() += 1;
+            *registry
+                .active_writes
+                .entry(path.to_path_buf())
+                .or_default() += 1;
         }
     }
 
@@ -214,7 +346,9 @@ impl ExternalDocumentWatchState {
                     if written_revision == file_revision(path)
                         && std::fs::read_to_string(path).is_ok_and(|disk| disk == written_content)
                     {
-                        let leases = registry.leases.iter()
+                        let leases = registry
+                            .leases
+                            .iter()
                             .filter(|(_, lease)| lease.path == path)
                             .map(|(id, lease)| (id.clone(), lease.clone()))
                             .collect::<Vec<_>>();
@@ -222,7 +356,11 @@ impl ExternalDocumentWatchState {
                             invalidate_delivery(&mut registry, &id);
                             let delivered = lease.window_label == origin
                                 || emit_external_document_changed(
-                                    app, &lease, written_revision.clone(), "user_edit", Some(&origin),
+                                    app,
+                                    &lease,
+                                    written_revision.clone(),
+                                    "user_edit",
+                                    Some(&origin),
                                 );
                             if delivered {
                                 registry.revisions.insert(id, written_revision.clone());
@@ -301,22 +439,18 @@ fn emit_if_revision_changed(
     lease_id: &str,
     lease: &WatchLease,
 ) {
-    let revision = file_revision(&lease.path);
-    let delivery_epoch = {
-        let Ok(mut registry) = registry.lock() else {
-            return;
-        };
-        try_claim_revision(&mut registry, lease_id, &lease.path, &revision)
-            .then(|| registry.delivery_epochs.get(lease_id).copied())
-            .flatten()
-    };
-    let Some(delivery_epoch) = delivery_epoch else {
+    // Serialize claim + emission with path rebasing. Otherwise a poll can
+    // claim an old-path deletion, then emit it after the lease has moved.
+    let Ok(mut registry) = registry.lock() else {
         return;
     };
-    let delivered = emit_external_document_changed(app, lease, revision.clone(), "external", None);
-    if let Ok(mut registry) = registry.lock() {
-        complete_revision_delivery(&mut registry, lease_id, delivery_epoch, delivered, revision);
+    let revision = file_revision(&lease.path);
+    if !try_claim_revision(&mut registry, lease_id, &lease.path, &revision) {
+        return;
     }
+    let delivery_epoch = registry.delivery_epochs[lease_id];
+    let delivered = emit_external_document_changed(app, lease, revision.clone(), "external", None);
+    complete_revision_delivery(&mut registry, lease_id, delivery_epoch, delivered, revision);
 }
 
 /// Pure state transition: mark a lease as "delivering" for a given revision.
@@ -330,22 +464,33 @@ fn try_claim_revision(
     lease_path: &Path,
     revision: &str,
 ) -> bool {
-    if registry.active_writes.contains_key(lease_path)
-        || registry.leases
-        .get(lease_id)
-        .is_none_or(|current| current.path != lease_path)
+    if registry
+        .active_path_moves
+        .values()
+        .any(|prefix| lease_path.starts_with(prefix))
+        || registry.active_writes.contains_key(lease_path)
+        || registry
+            .leases
+            .get(lease_id)
+            .is_none_or(|current| current.path != lease_path)
         || registry.revisions.get(lease_id).map(String::as_str) == Some(revision)
         || registry.delivering.contains(lease_id)
     {
         return false;
     }
     registry.delivering.insert(lease_id.to_string());
-    *registry.delivery_epochs.entry(lease_id.to_string()).or_default() += 1;
+    *registry
+        .delivery_epochs
+        .entry(lease_id.to_string())
+        .or_default() += 1;
     true
 }
 
 fn invalidate_delivery(registry: &mut WatchRegistry, lease_id: &str) {
-    *registry.delivery_epochs.entry(lease_id.to_string()).or_default() += 1;
+    *registry
+        .delivery_epochs
+        .entry(lease_id.to_string())
+        .or_default() += 1;
     registry.delivering.remove(lease_id);
 }
 
@@ -521,6 +666,193 @@ pub fn unwatch_external_document(
 mod tests {
     use super::*;
 
+    fn add_lease(registry: &mut WatchRegistry, id: &str, path: &Path) {
+        registry.leases.insert(
+            id.into(),
+            WatchLease {
+                window_label: id.into(),
+                path: path.into(),
+            },
+        );
+        *registry.path_ref_counts.entry(path.into()).or_default() += 1;
+        registry.revisions.insert(id.into(), file_revision(path));
+    }
+
+    #[test]
+    fn native_watch_is_rebound_to_the_moved_document() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = dunce::canonicalize(temp.path()).unwrap();
+        let old = root.join("Old");
+        let new = root.join("New");
+        std::fs::create_dir(&old).unwrap();
+        let old_note = old.join("note.md");
+        let new_note = new.join("note.md");
+        std::fs::write(&old_note, "original").unwrap();
+        let (tx, rx) = std::sync::mpsc::channel();
+        let mut watcher = notify::recommended_watcher(move |event| {
+            let _ = tx.send(event);
+        })
+        .unwrap();
+        watcher
+            .watch(&old_note, RecursiveMode::NonRecursive)
+            .unwrap();
+        let mut registry = WatchRegistry::default();
+        add_lease(&mut registry, "main", &old_note);
+        let state = ExternalDocumentWatchState {
+            registry: Arc::new(Mutex::new(registry)),
+            watcher: Mutex::new(Some(watcher)),
+            next_id: AtomicUsize::new(2),
+        };
+        std::fs::rename(&old, &new).unwrap();
+        state.rebase_path(&old, &new);
+        std::fs::write(&new_note, "external change at the new path").unwrap();
+        let deadline = std::time::Instant::now() + Duration::from_secs(5);
+        loop {
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            let event = rx
+                .recv_timeout(remaining)
+                .expect("native event for the moved file")
+                .unwrap();
+            if event
+                .paths
+                .iter()
+                .any(|path| event_matches_watched_file(path, &new_note))
+            {
+                break;
+            }
+        }
+        assert_eq!(state.registry.lock().unwrap().leases["main"].path, new_note);
+    }
+
+    #[test]
+    fn folder_move_preserves_revisions_and_rejects_stale_deletes_across_windows() {
+        let temp = tempfile::tempdir().unwrap();
+        let old = temp.path().join("Old");
+        let new = temp.path().join("New");
+        std::fs::create_dir_all(old.join("sub")).unwrap();
+        let old_note = old.join("sub/note.md");
+        let new_note = new.join("sub/note.md");
+        std::fs::write(&old_note, "original").unwrap();
+        let mut registry = WatchRegistry::default();
+        add_lease(&mut registry, "main", &old_note);
+        add_lease(&mut registry, "second", &old_note);
+        let unrelated = temp.path().join("Old-other/note.md");
+        add_lease(&mut registry, "other", &unrelated);
+        // An already-registered destination must share its native watch.
+        add_lease(&mut registry, "destination", &new_note);
+        assert!(try_claim_revision(
+            &mut registry,
+            "main",
+            &old_note,
+            "stale"
+        ));
+        let stale_epoch = registry.delivery_epochs["main"];
+        let observed = registry.revisions["main"].clone();
+
+        std::fs::rename(&old, &new).unwrap();
+        rebase_registry_paths(&mut registry, &old, &new);
+        rebase_registry_paths(&mut registry, &old, &new); // duplicate native rename pair
+        assert_eq!(registry.leases["main"].path, new_note);
+        assert_eq!(registry.leases["second"].path, new_note);
+        assert_eq!(registry.leases["other"].path, unrelated);
+        assert_eq!(registry.path_ref_counts[&new_note], 3);
+        assert!(!registry.path_ref_counts.contains_key(&old_note));
+        assert!(!try_claim_revision(
+            &mut registry,
+            "main",
+            &old_note,
+            "deleted"
+        ));
+        complete_revision_delivery(&mut registry, "main", stale_epoch, true, "deleted".into());
+        assert_eq!(registry.revisions["main"], observed);
+        assert!(!try_claim_revision(
+            &mut registry,
+            "main",
+            &new_note,
+            &file_revision(&new_note)
+        ));
+
+        std::fs::write(&new_note, "genuine external content change").unwrap();
+        let changed = file_revision(&new_note);
+        assert!(try_claim_revision(
+            &mut registry,
+            "main",
+            &new_note,
+            &changed
+        ));
+        let epoch = registry.delivery_epochs["main"];
+        complete_revision_delivery(&mut registry, "main", epoch, true, changed);
+        std::fs::remove_file(&new_note).unwrap();
+        assert!(try_claim_revision(
+            &mut registry,
+            "main",
+            &new_note,
+            &file_revision(&new_note)
+        ));
+        assert_eq!(decrement_path_ref_count(&mut registry, &new_note), None);
+        assert_eq!(registry.path_ref_counts[&new_note], 2);
+    }
+
+    #[test]
+    fn path_move_guard_defers_only_its_subtree_and_releases_on_failure() {
+        let prefix = PathBuf::from("/notes/old");
+        let note = prefix.join("note.md");
+        let other = PathBuf::from("/notes/old-other/note.md");
+        let registry = Arc::new(Mutex::new(WatchRegistry::default()));
+        {
+            let mut state = registry.lock().unwrap();
+            add_lease(&mut state, "note", &note);
+            add_lease(&mut state, "other", &other);
+            state.active_path_moves.insert(1, prefix.clone());
+            state.active_path_moves.insert(2, prefix.clone());
+            assert!(!try_claim_revision(&mut state, "note", &note, "deleted"));
+            assert!(try_claim_revision(&mut state, "other", &other, "changed"));
+        }
+        let outer = PathMoveGuard {
+            registry: registry.clone(),
+            id: 1,
+        };
+        let inner = PathMoveGuard {
+            registry: registry.clone(),
+            id: 2,
+        };
+        drop(inner);
+        {
+            let mut state = registry.lock().unwrap();
+            assert_eq!(state.active_path_moves.len(), 1);
+            let next = Path::new("/notes/new");
+            rebase_registry_paths(&mut state, &prefix, next);
+            assert_eq!(state.active_path_moves[&1], next);
+            assert!(!try_claim_revision(
+                &mut state,
+                "note",
+                &next.join("note.md"),
+                "changed"
+            ));
+        }
+        drop(outer); // also runs when a mutation returns an error
+        let mut state = registry.lock().unwrap();
+        assert!(state.active_path_moves.is_empty());
+        assert!(try_claim_revision(
+            &mut state,
+            "note",
+            Path::new("/notes/new/note.md"),
+            "genuine-delete"
+        ));
+    }
+
+    #[test]
+    fn case_only_move_updates_the_lease_spelling() {
+        let mut registry = WatchRegistry::default();
+        add_lease(&mut registry, "note", Path::new("/notes/Old/a.md"));
+        rebase_registry_paths(
+            &mut registry,
+            Path::new("/notes/Old"),
+            Path::new("/notes/old"),
+        );
+        assert_eq!(registry.leases["note"].path, Path::new("/notes/old/a.md"));
+    }
+
     #[test]
     fn file_reference_count_releases_only_the_last_lease() {
         let path = PathBuf::from("/tmp/flowix-external-watch/Reference.md");
@@ -593,11 +925,20 @@ mod tests {
     fn local_write_defers_file_notifications_until_write_settles() {
         let path = PathBuf::from("/tmp/flowix-external-watch/docs/Reference.md");
         let mut registry = WatchRegistry::default();
-        registry.leases.insert("lease".into(), WatchLease {
-            window_label: "main".into(), path: path.clone(),
-        });
+        registry.leases.insert(
+            "lease".into(),
+            WatchLease {
+                window_label: "main".into(),
+                path: path.clone(),
+            },
+        );
         registry.active_writes.insert(path.clone(), 1);
-        assert!(!try_claim_revision(&mut registry, "lease", &path, "changed"));
+        assert!(!try_claim_revision(
+            &mut registry,
+            "lease",
+            &path,
+            "changed"
+        ));
         registry.active_writes.remove(&path);
         assert!(try_claim_revision(&mut registry, "lease", &path, "changed"));
     }
@@ -637,9 +978,13 @@ mod tests {
         let path = PathBuf::from("/tmp/flowix-external-watch/docs/Reference.md");
         let lease_id = "lease".to_string();
         let mut registry = WatchRegistry::default();
-        registry.leases.insert(lease_id.clone(), WatchLease {
-            window_label: "main".into(), path: path.clone(),
-        });
+        registry.leases.insert(
+            lease_id.clone(),
+            WatchLease {
+                window_label: "main".into(),
+                path: path.clone(),
+            },
+        );
         assert!(try_claim_revision(&mut registry, &lease_id, &path, "old"));
         let old_epoch = registry.delivery_epochs[&lease_id];
 

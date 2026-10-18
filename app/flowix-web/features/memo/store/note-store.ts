@@ -1,8 +1,10 @@
+import { useNotebookBackgroundStore } from '@features/memo/store/notebook-background-store';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
 import { noteRepository, notebookRepository, type FilterType, type SortType } from '@features/memo/services';
 import { getNoteQueryKey } from '@features/memo/services/note-query-key';
 import { STORAGE_KEYS } from '@/lib/constants';
+import { createLogger } from '@/lib/logger';
 import { useTagStore } from '@features/memo/store/tag-store';
 import {
   memoMatchesCustomFilter,
@@ -49,6 +51,34 @@ interface MemoListPageQuery {
 }
 
 const MEMO_LIST_PAGE_SIZE = 50;
+const memoListRequestLogger = createLogger('memo-list-query');
+const recentMemoListRequestCounts = new Map<string, { startedAt: number; count: number }>();
+
+/** Development-only visibility into repeated backend reads for one query burst. */
+function recordMemoListRequest(queryKey: string, requestSeq: number, source: string): void {
+  if (!import.meta.env.DEV) return;
+
+  const now = Date.now();
+  const previous = recentMemoListRequestCounts.get(queryKey);
+  const isSameBurst = previous != null && now - previous.startedAt <= 500;
+  const count = isSameBurst && previous ? previous.count + 1 : 1;
+  recentMemoListRequestCounts.delete(queryKey);
+  recentMemoListRequestCounts.set(queryKey, {
+    startedAt: isSameBurst && previous ? previous.startedAt : now,
+    count,
+  });
+  if (recentMemoListRequestCounts.size > 64) {
+    const oldestQueryKey = recentMemoListRequestCounts.keys().next().value;
+    if (oldestQueryKey) recentMemoListRequestCounts.delete(oldestQueryKey);
+  }
+
+  memoListRequestLogger.debug('list query request started', {
+    queryKey,
+    requestSeq,
+    source,
+    requestsInBurst: count,
+  });
+}
 
 export interface SelectedNoteIdentity {
   notebookId: string;
@@ -94,6 +124,8 @@ export interface Notebook {
   /** User-defined display order; smaller values appear first. Mirrors the
    * Rust `NotebookConfig.sort` field. */
   sort?: number;
+  /** Device-local pinned state from the notebook registry. */
+  pinned?: boolean;
   missing?: boolean;
 }
 
@@ -146,8 +178,10 @@ export interface NoteLibraryStore {
   // 'color' 二级弹窗用的具体颜色值。'any'/'none'/具体颜色 (NOTE_COLORS)。
   // 当 activeFilter !== 'color' 时此值仍然保留, 切回颜色筛选时恢复。
   colorFilter: ColorFilterValue;
-  // Reload trigger
+  /** Broad refresh for the list and notebook-scoped dependent surfaces. */
   refreshTrigger: number;
+  /** Query-only invalidation. Does not reload notebook metadata consumers. */
+  memoListRefreshTrigger: number;
   /** Cursor state for the currently loaded memo query. Not persisted. */
   memoListQueryKey: string | null;
   memoListQuery: MemoListPageQuery | null;
@@ -179,14 +213,16 @@ export interface NoteLibraryStore {
   setActiveSort: (sort: SortType) => void;
   setColorFilter: (color: ColorFilterValue) => void;
   triggerRefresh: () => void;
+  /** Invalidate only the currently selected memo-list query. */
+  triggerMemoListRefresh: () => void;
   // Data loading
-  loadNotes: (params?: { notebookId?: string; filter?: ExtendedFilterType; sort?: SortType; tagId?: string }) => Promise<boolean>;
+  loadNotes: (params?: { notebookId?: string; filter?: ExtendedFilterType; sort?: SortType; tagId?: string; source?: string }) => Promise<boolean>;
   upsertCreatedNote: (created: CreatedNoteDocument) => void;
   updateMemoListItem: (memo: NoteListItem) => void;
   loadMoreMemos: () => Promise<boolean>;
   loadNotebooks: () => Promise<void>;
   createNote: (tag: string | undefined, notebookId: string) => Promise<CreatedNoteDocument>;
-  /** Invalidate the Note list after a legacy Memo IPC event. */
+  /** Invalidate the Note list after a memo-shaped IPC event. */
   handleMemoEvent: () => void;
 }
 
@@ -278,6 +314,7 @@ export const useNoteStore = create<NoteLibraryStore>()(
       activeSort: 'createdAt',
       colorFilter: 'any',
       refreshTrigger: 0,
+      memoListRefreshTrigger: 0,
       memoListQueryKey: null,
       memoListQuery: null,
       memoListNextCursor: null,
@@ -395,7 +432,13 @@ export const useNoteStore = create<NoteLibraryStore>()(
       }),
       setActiveSort: (sort) => set({ activeSort: sort }),
       setColorFilter: (color) => set({ colorFilter: color }),
-      triggerRefresh: () => set((state) => ({ refreshTrigger: state.refreshTrigger + 1 })),
+      triggerRefresh: () => set((state) => ({
+        refreshTrigger: state.refreshTrigger + 1,
+        memoListRefreshTrigger: state.memoListRefreshTrigger + 1,
+      })),
+      triggerMemoListRefresh: () => set((state) => ({
+        memoListRefreshTrigger: state.memoListRefreshTrigger + 1,
+      })),
 
       loadNotes: async (params) => {
         const requestSeq = ++loadMemosRequestSeq;
@@ -432,6 +475,7 @@ export const useNoteStore = create<NoteLibraryStore>()(
         };
         try {
           if (query.pluginId) {
+            recordMemoListRequest(queryKey, requestSeq, params?.source ?? 'unspecified');
             const indexed = await noteRepository.listAllByPath(query.notebookId);
             if (requestSeq !== loadMemosRequestSeq) return false;
             set({
@@ -446,6 +490,7 @@ export const useNoteStore = create<NoteLibraryStore>()(
             return true;
           }
 
+          recordMemoListRequest(queryKey, requestSeq, params?.source ?? 'unspecified');
           const response = await noteRepository.listByPath({
             notebookId: query.notebookId,
             filter: toBackendFilter(query.filter),
@@ -465,6 +510,16 @@ export const useNoteStore = create<NoteLibraryStore>()(
             memoListHasMore: response.hasMore ?? Boolean(response.nextCursor),
           });
           return true;
+        } catch (error) {
+          const message = error instanceof Error ? error.message : String(error);
+          if (message.includes('NOTE_INDEX_PENDING')) {
+            useNotebookBackgroundStore.getState().pending(notebookId);
+            return false;
+          }
+          // Backend status supplies a local failure/retry surface. Do not let
+          // fire-and-forget refresh consumers reject during offline maintenance.
+          if (message.includes('NOTE_INDEX_UNAVAILABLE')) return false;
+          throw error;
         } finally {
           if (requestSeq === loadMemosRequestSeq) {
             set({ memoListLoadingMore: false });
@@ -596,13 +651,21 @@ export const useNoteStore = create<NoteLibraryStore>()(
        */
       reorderNotebooks: async (nextOrderIds: string[]) => {
         if (nextOrderIds.length === 0) return;
+        const previousById = new Map(get().notebooks.map((notebook) => [notebook.id, notebook] as const));
         const order = nextOrderIds.map((id, index) => ({
           id,
           sort: (index + 1) * 10,
         }));
         try {
           const updated = await notebookRepository.reorder(order);
-          set({ notebooks: updated as Notebook[] });
+          set({ notebooks: updated.map((notebook) => {
+            const previous = previousById.get(notebook.id);
+            return {
+              ...notebook,
+              memoCount: notebook.memoCount ?? previous?.memoCount,
+              pinned: notebook.pinned ?? previous?.pinned,
+            };
+          }) as Notebook[] });
         } catch (error) {
           // 失败时重新拉一次 list 跟服务端对齐 (notebook 列表较短, 直接重拉比
           // 维护本地乐观回滚更稳)。
@@ -625,11 +688,8 @@ export const useNoteStore = create<NoteLibraryStore>()(
         }
         const createTag = tag ?? (createFilter === 'tagged' ? selectedTagId ?? undefined : undefined);
         const result = await noteRepository.create(createTag, notebookId);
-        invalidatePendingMemoLoads();
-        await get().loadNotes({ notebookId, filter: createFilter });
-        // 新建 memo 可能引入新 tag (body 派生) ── 主动 bump metadata refresh,
-        // 让侧栏标签树立即出现新节点 / 更新计数。后端 SelfWriteSuppressor 会
-        // 掐掉 desktop 自写的 memo-event, 不会自动触发 refresh, 必须手动调。
+        get().upsertCreatedNote(result);
+        // The shared path-created event refreshes notebook queries in every window.
         useTagStore.getState().triggerMetadataRefresh();
         return result;
       },

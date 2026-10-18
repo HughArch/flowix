@@ -1,5 +1,5 @@
 import type { PropertyFieldConfig } from '@/lib/constants';
-import { createCollectionMetadata, createCollectionId, createUuidV7, parseCollectionDocumentV2, serializeCollectionDocumentV2, validateCollectionMetadata, reviseCollection, hasOnlyKeys, type CollectionMetadata, type CollectionSource } from '@features/collection/model';
+import { createCollectionMetadata, createCollectionId, createUuidV7, parseCollectionDocumentV2, serializeCollectionDocumentV2, validateCollectionMetadata, reviseCollection, hasOnlyKeys, isRecord, type CollectionMetadata, type CollectionSource } from '@features/collection/model';
 export { createUuidV7 } from '@features/collection/model';
 import { isTablePropertyKind, type TablePropertyKind } from '@/lib/property-types';
 import { TAG_COLUMN_MIN_WIDTH, TAG_COLUMN_MAX_WIDTH } from './tag-column-width';
@@ -15,7 +15,11 @@ export interface TableFieldOption {
 }
 
 export interface TableAutoCollectCondition {
+  match?: 'all' | 'any';
+  /** `null` means no path rule; an empty string explicitly selects all folders. */
+  path?: string | null;
   property_conditions?: TableAutoCollectPropertyCondition[];
+  /** Kept for reading older runtime drafts. */
   property_match?: 'union' | 'intersection';
   file_condition?: TableAutoCollectFileCondition;
 }
@@ -94,61 +98,121 @@ export interface MultidimensionalTableDocument {
 export function tableAutoCollectConfig(document: MultidimensionalTableDocument): TableAutoCollectConfig | null {
   const filter = document.dataset.filter;
   if (!filter) return null;
+  if (Array.isArray(filter.conditions) && (filter.match === 'all' || filter.match === 'any')) {
+    const path = typeof filter.path === 'string' ? filter.path : null;
+    return { condition: tableConditionFromRules(filter.conditions as Record<string, unknown>[], filter.match, path) };
+  }
   const all = Array.isArray(filter.all) ? filter.all as Record<string, unknown>[] : [];
   const any = Array.isArray(filter.any) ? filter.any as Record<string, unknown>[] : [];
-  const grouped = any.find((rule) => Array.isArray(rule.all));
-  const isFileRule = (rule: Record<string, unknown>) => ['kind', 'file_name', 'path'].includes(String(rule.field));
-  const allPropertyRules = all.filter((rule) => !isFileRule(rule));
-  const propertyRules = grouped ? grouped.all as Record<string, unknown>[] : allPropertyRules.length ? allPropertyRules : any.filter((rule) => !isFileRule(rule));
-  const property_conditions = propertyRules.flatMap((rule) => {
-    if (typeof rule.field !== 'string' || ['kind', 'file_name', 'path'].includes(rule.field) || typeof rule.value !== 'string') return [];
+  const allPaths = all.filter((rule) => rule.field === 'path');
+  const anyPaths = any.filter((rule) => rule.field === 'path');
+  const path = pathFromLegacyRules([...allPaths, ...anyPaths]) ?? null;
+  const nonPathAll = all.filter((rule) => rule.field !== 'path');
+  const nonPathAny = any.filter((rule) => rule.field !== 'path');
+  const grouped = nonPathAny.find((rule) => Array.isArray(rule.all));
+  const chosenRules = nonPathAny.length
+    ? grouped && nonPathAny.length === 1 ? grouped.all as Record<string, unknown>[] : nonPathAny
+    : nonPathAll;
+  const match = nonPathAny.length && !grouped ? 'any' : 'all';
+  return { condition: tableConditionFromRules(chosenRules, match, path) };
+}
+
+function tableConditionFromRules(rules: Record<string, unknown>[], match: 'all' | 'any', path: string | null): TableAutoCollectCondition {
+  const property_conditions = rules.flatMap((rule) => {
+    if (typeof rule.field !== 'string' || ['kind', 'file_name', 'path'].includes(rule.field) || typeof rule.value !== 'string'
+      || !['eq', 'equals', 'contains'].includes(String(rule.op))) return [];
     return [{ field_id: rule.field, operator: rule.op === 'contains' ? 'contains' as const : 'equals' as const, value: rule.value }];
   });
-  const fileRules = [...all, ...any].filter((rule) => typeof rule.field === 'string');
   const file_condition: TableAutoCollectFileCondition = {};
-  for (const rule of fileRules) {
+  for (const rule of rules) {
     if (rule.field === 'file_name' && rule.op === 'contains' && typeof rule.value === 'string') file_condition.file_name_contains = rule.value;
-    if (rule.field === 'path' && rule.op === 'contains' && typeof rule.value === 'string') {
-      if (rule.value === '') file_condition.path_scope = 'all';
-      else file_condition.path_contains = rule.value;
-    }
     if (rule.field === 'kind' && rule.op === 'eq' && rule.value === 'note') file_condition.file_type = 'markdown';
   }
-  const condition: TableAutoCollectCondition = {
-    ...(property_conditions.length ? { property_conditions, property_match: grouped || allPropertyRules.length ? 'intersection' as const : 'union' as const } : {}),
+  return {
+    match,
+    path,
+    ...(property_conditions.length ? { property_conditions } : {}),
     ...(Object.keys(file_condition).length ? { file_condition } : {}),
   };
-  return { condition };
 }
 
 export function withTableAutoCollect(document: MultidimensionalTableDocument, config: TableAutoCollectConfig | null): MultidimensionalTableDocument {
   if (!config) return { ...document, dataset: { ...document.dataset, filter: null } };
   const properties = (config.condition.property_conditions ?? []).map((item) => ({ field: item.field_id.trim(), op: item.operator === 'contains' ? 'contains' : 'eq', value: item.value.trim() }));
   const file = config.condition.file_condition;
-  const pathRules: Record<string, unknown>[] = file?.path_scope === 'all'
-    ? [{ field: 'path', op: 'contains', value: '' }]
-    : file?.path_contains ? [{ field: 'path', op: 'contains', value: file.path_contains }] : [];
   const files: Record<string, unknown>[] = [];
-  if (file?.file_name_contains) files.push({ field: 'file_name', op: 'contains', value: file.file_name_contains });
+  if (file?.file_name_contains?.trim()) files.push({ field: 'file_name', op: 'contains', value: file.file_name_contains.trim() });
   if (file?.file_type === 'markdown') files.push({ field: 'kind', op: 'eq', value: 'note' });
-  const filter = properties.length && config.condition.property_match === 'intersection'
-    ? files.length ? { all: pathRules, any: [{ all: properties, any: [] }, ...files] } : { all: [...pathRules, ...properties], any: [] }
-    : { all: pathRules, any: [...properties, ...files] };
+  const legacyPath = file?.path_scope === 'all' ? '' : file?.path_contains?.trim() || null;
+  const rawPath = config.condition.path !== undefined ? config.condition.path : legacyPath;
+  const path = typeof rawPath === 'string' ? rawPath.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : null;
+  const filter = {
+    path,
+    match: config.condition.match ?? (config.condition.property_match === 'intersection' ? 'all' : 'any'),
+    conditions: [...properties, ...files],
+  };
   return { ...document, dataset: { ...document.dataset, filter } };
 }
 
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue);
   if (!value || typeof value !== 'object') return value;
-  const entries = Object.entries(value).map(([key, entry]) => [key, key === 'op' && entry === 'equals' ? 'eq' : stableValue(entry)] as const);
+  const entries = Object.entries(value).map(([key, entry]) => {
+    const normalized = key === 'op' && entry === 'equals' ? 'eq' : stableValue(entry);
+    // Sorting preserves duplicate counts while ignoring conjunction/disjunction order.
+    if (key === 'conditions' && Array.isArray(normalized)) {
+      normalized.sort((left, right) => JSON.stringify(left).localeCompare(JSON.stringify(right)));
+    }
+    return [key, normalized] as const;
+  });
   return Object.fromEntries(entries.sort(([left], [right]) => left.localeCompare(right)));
 }
 
 /** The compact auto-collect form can edit only filters it can round-trip exactly. */
 export function canEditTableAutoCollectFilter(document: MultidimensionalTableDocument): boolean {
   if (document.dataset.filter == null) return true;
+  const filter = document.dataset.filter;
+  if (!Array.isArray(filter.conditions)) return isEditableLegacyTableFilter(filter);
+  const supported = (filter.conditions as Record<string, unknown>[]).every((rule) => (
+    typeof rule.field === 'string' && typeof rule.value === 'string'
+      && ((rule.field === 'kind' && rule.op === 'eq' && rule.value === 'note')
+        || (rule.field === 'file_name' && rule.op === 'contains')
+        || (!['path', 'kind', 'file_name'].includes(rule.field) && ['eq', 'equals', 'contains'].includes(String(rule.op))))
+  ));
+  if (!supported) return false;
   const roundTripped = withTableAutoCollect(document, tableAutoCollectConfig(document)).dataset.filter;
   return JSON.stringify(stableValue(document.dataset.filter)) === JSON.stringify(stableValue(roundTripped));
+}
+
+function isEditableLegacyTableFilter(filter: Record<string, unknown>): boolean {
+  const all = Array.isArray(filter.all) ? filter.all as Record<string, unknown>[] : [];
+  const any = Array.isArray(filter.any) ? filter.any as Record<string, unknown>[] : [];
+  const allPaths = all.filter((rule) => rule.field === 'path');
+  const anyPaths = any.filter((rule) => rule.field === 'path');
+  // Path rules inside an OR branch cannot generally become the mandatory path.
+  if (anyPaths.length || pathFromLegacyRules(allPaths) === undefined) return false;
+  const allRules = all.filter((rule) => rule.field !== 'path');
+  const anyRules = any.filter((rule) => rule.field !== 'path');
+  const isLeaf = (rule: Record<string, unknown>) => typeof rule.field === 'string' && typeof rule.value === 'string'
+    && ((rule.field === 'kind' && rule.op === 'eq' && rule.value === 'note')
+      || (rule.field === 'file_name' && rule.op === 'contains')
+      || (!['path', 'kind', 'file_name'].includes(rule.field) && ['eq', 'equals', 'contains'].includes(String(rule.op))));
+  if (allRules.length && anyRules.length) return false;
+  const hasDuplicateFileRules = (rules: Record<string, unknown>[]) => ['file_name', 'kind'].some((field) => rules.filter((rule) => rule.field === field).length > 1);
+  if (anyRules.length === 1 && Array.isArray(anyRules[0].all)) {
+    const group = anyRules[0];
+    return Array.isArray(group.any) && group.any.length === 0 && !hasDuplicateFileRules(group.all as Record<string, unknown>[]) && (group.all as unknown[]).every((rule) => isRecord(rule) && isLeaf(rule as Record<string, unknown>));
+  }
+  return !hasDuplicateFileRules([...allRules, ...anyRules]) && [...allRules, ...anyRules].every(isLeaf);
+}
+
+function pathFromLegacyRules(rules: Record<string, unknown>[]): string | null | undefined {
+  if (rules.some((rule) => rule.op !== 'contains' || typeof rule.value !== 'string')) return rules.length ? undefined : null;
+  const paths = [...new Set(rules.map((rule) => String(rule.value).trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '')))];
+  const nonEmpty = paths.filter(Boolean);
+  if (nonEmpty.some((path) => nonEmpty.some((other) => path !== other
+    && !path.startsWith(`${other}/`) && !other.startsWith(`${path}/`)))) return undefined;
+  return nonEmpty.sort((left, right) => right.length - left.length)[0] ?? (rules.length ? '' : null);
 }
 
 export const createTableId = createCollectionId;

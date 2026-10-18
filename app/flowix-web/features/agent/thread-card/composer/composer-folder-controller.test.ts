@@ -155,7 +155,7 @@ describe("ComposerFolderController", () => {
     const markdown = editor.getMarkdown();
     expect(markdown).toContain("flowix://folder/%2FUsers%2Frop%2FDesktop%2Fvibe%2Fflowix-main");
     expect(composerFolderMarkdownToPrompt(markdown)).toBe("请操作 @flowix-main ");
-    expect(document.querySelector(".agent-thread-card__folder-token")?.textContent)
+    expect(document.querySelector(".agent-composer__folder-token")?.textContent)
       .toBe("@flowix-main");
 
     controller.dispose();

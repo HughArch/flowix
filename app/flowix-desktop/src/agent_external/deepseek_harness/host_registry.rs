@@ -26,42 +26,8 @@ pub(crate) struct ProcessDshClientFactory;
 #[async_trait::async_trait]
 impl DshClientFactory for ProcessDshClientFactory {
     async fn spawn(&self, spec: &HostLaunchSpec) -> Result<Arc<dyn DshClient>, String> {
-        let (command, args) = app_server_command(&spec.dsh_home)?;
-        // Match the legacy host's strict child environment boundary. Do
-        // not leak arbitrary Desktop variables (especially credentials)
-        // into the App Server process.
-        let allowed = [
-            "PATH",
-            "Path",
-            "PATHEXT",
-            "SystemRoot",
-            "WINDIR",
-            "COMSPEC",
-            "TMPDIR",
-            "TMP",
-            "TEMP",
-            "LANG",
-            "LC_ALL",
-            "HOME",
-            "USERPROFILE",
-            "NODE_USE_ENV_PROXY",
-            "HTTP_PROXY",
-            "HTTPS_PROXY",
-            "ALL_PROXY",
-            "NO_PROXY",
-            "http_proxy",
-            "https_proxy",
-            "all_proxy",
-            "no_proxy",
-        ];
-        let mut env = allowed
-            .iter()
-            .filter_map(|key| {
-                std::env::var(key)
-                    .ok()
-                    .map(|value| ((*key).to_string(), value))
-            })
-            .collect::<std::collections::HashMap<_, _>>();
+        let launch = app_server_command(&spec.dsh_home)?;
+        let mut env = launch.environment;
         env.insert("FLOWIX_DSH_APPSERVER_STDIO".into(), "1".into());
         env.insert(
             "DSH_HOME".into(),
@@ -87,14 +53,23 @@ impl DshClientFactory for ProcessDshClientFactory {
             "FLOWIX_DSH_PLUGIN_SETTINGS_PATH".into(),
             spec.plugin_settings_path.to_string_lossy().into_owned(),
         );
-        let client = AppServerClient::spawn(&command, &args, &env).await?;
+        let client =
+            AppServerClient::spawn(&launch.executable.to_string_lossy(), &launch.args, &env)
+                .await?;
         let initialize =
             protocol::app_initialize_request(client.next_request_id(), env!("CARGO_PKG_VERSION"));
-        let initialized = client.request(initialize).await?;
+        let initialized = match client.request(initialize).await {
+            Ok(initialized) => initialized,
+            Err(error) => {
+                client.shutdown().await;
+                return Err(error);
+            }
+        };
         let version = initialized
             .get("protocolVersion")
             .and_then(serde_json::Value::as_u64);
         if version != Some(super::protocol::APP_SERVER_PROTOCOL_VERSION) {
+            client.shutdown().await;
             return Err(format!(
                 "dsh-appserver protocol version mismatch (server={version:?}, client={})",
                 super::protocol::APP_SERVER_PROTOCOL_VERSION
@@ -105,7 +80,7 @@ impl DshClientFactory for ProcessDshClientFactory {
     }
 }
 
-fn app_server_command(dsh_home: &std::path::Path) -> Result<(String, Vec<String>), String> {
+fn app_server_command(dsh_home: &std::path::Path) -> Result<crate::dsh::cli::DshCliLaunch, String> {
     if let Ok(command) = std::env::var("FLOWIX_DSH_APPSERVER_COMMAND") {
         let args = std::env::var("FLOWIX_DSH_APPSERVER_ARGS")
             .ok()
@@ -115,87 +90,20 @@ fn app_server_command(dsh_home: &std::path::Path) -> Result<(String, Vec<String>
             })
             .transpose()?
             .unwrap_or_default();
-        return Ok((command, args));
+        return Ok(crate::dsh::cli::DshCliLaunch {
+            executable: PathBuf::from(command),
+            args,
+            environment: crate::dsh::cli::child_environment(),
+        });
     }
 
-    let launch = crate::dsh::managed_launch_spec()
-        .ok_or("DSH App Server is enabled but no managed DSH bundle is available".to_string())?;
-    // The child uses the per-session DSH_HOME below. Syncing only the durable
-    // install directory leaves that child on an old profile and lets the
-    // legacy SDK JSON-RPC server own model/config/read.
-    sync_flowix_profile(&launch.root, dsh_home)?;
-    let cli = launch
-        .cli_entrypoint
-        .ok_or("managed DSH bundle has no CLI entrypoint for App Server".to_string())?;
-    // The dsh CLI boots the named profile; dsh-appserver's profile config owns
-    // the stdio transport. `app-server` is not an upstream CLI subcommand and
-    // would be forwarded into the profile application as an unknown runtime
-    // argument.
-    let args = vec![
-        cli.to_string_lossy().into_owned(),
-        "--profile".into(),
-        "flowix".into(),
-    ];
-    // `executable` is the private Node binary for managed JS bundles. Native
-    // launchers can still provide an explicit command through the environment.
-    Ok((launch.executable.to_string_lossy().into_owned(), args))
-}
-
-fn sync_flowix_profile(
-    bundle_root: &std::path::Path,
-    dsh_home: &std::path::Path,
-) -> Result<(), String> {
-    let source = bundle_root.join("profile").join("flowix");
-    let target = dsh_home.join("profiles").join("flowix");
-    // Remove obsolete profile plugins instead of leaving them discoverable in
-    // a profile that is now exclusively owned by dsh-appserver.
-    for obsolete in [
-        target.join("node_modules/@flowix/dsh-flowix-bridge"),
-        target.join("node_modules/@deepseek-ai/dsh-sdk-jsonrpc-server"),
-    ] {
-        if obsolete.exists() {
-            std::fs::remove_dir_all(&obsolete).map_err(|error| {
-                format!("remove obsolete DSH plugin {}: {error}", obsolete.display())
-            })?;
-        }
+    if !crate::dsh::flowix_profile_installed(dsh_home) {
+        return Err(
+            "DSH App Server profile is not installed; install it from Flowix Preferences"
+                .to_string(),
+        );
     }
-    for relative in [
-        std::path::Path::new("package.json"),
-        std::path::Path::new("cordis.patch.yml"),
-        std::path::Path::new("node_modules/dsh-appserver"),
-        std::path::Path::new("node_modules/dsh-flowix-memory"),
-    ] {
-        let from = source.join(relative);
-        let to = target.join(relative);
-        if !from.exists() {
-            return Err(format!("managed DSH profile is missing {}", from.display()));
-        }
-        copy_profile_tree(&from, &to)?;
-    }
-    Ok(())
-}
-
-fn copy_profile_tree(source: &std::path::Path, target: &std::path::Path) -> Result<(), String> {
-    if source.is_dir() {
-        std::fs::create_dir_all(target).map_err(|error| {
-            format!("create DSH profile directory {}: {error}", target.display())
-        })?;
-        for entry in std::fs::read_dir(source)
-            .map_err(|error| format!("read DSH profile directory {}: {error}", source.display()))?
-        {
-            let entry = entry.map_err(|error| format!("read DSH profile entry: {error}"))?;
-            copy_profile_tree(&entry.path(), &target.join(entry.file_name()))?;
-        }
-    } else {
-        if let Some(parent) = target.parent() {
-            std::fs::create_dir_all(parent).map_err(|error| {
-                format!("create DSH profile parent {}: {error}", parent.display())
-            })?;
-        }
-        std::fs::copy(source, target)
-            .map_err(|error| format!("sync DSH profile {}: {error}", target.display()))?;
-    }
-    Ok(())
+    crate::dsh::resolve_cli_launch(&["--profile", "flowix"])
 }
 
 pub(crate) struct HostRegistry {
@@ -543,5 +451,45 @@ mod tests {
             .is_err());
         assert!(factory.client.lock().unwrap().as_ref().unwrap().is_closed());
         assert_eq!(registry.shutdown_all().await, 0);
+    }
+
+    /// Run with FLOWIX_DSH_SMOKE_CLI and FLOWIX_DSH_SMOKE_HOME pointing at an
+    /// official npm-installed DSH and a disposable home containing the Flowix
+    /// profile. This covers the same resolver, environment and handshake used
+    /// for locally installed DSH users.
+    #[tokio::test]
+    #[ignore = "requires an official DSH CLI and disposable installed profile"]
+    async fn official_dsh_cli_starts_the_flowix_appserver_profile() {
+        let _env_lock = crate::agent_external::acquire_test_env_lock();
+        let cli = std::env::var("FLOWIX_DSH_SMOKE_CLI").expect("set FLOWIX_DSH_SMOKE_CLI");
+        let home = PathBuf::from(
+            std::env::var("FLOWIX_DSH_SMOKE_HOME").expect("set FLOWIX_DSH_SMOKE_HOME"),
+        );
+        let previous_cli = std::env::var_os("FLOWIX_DSH_CLI_PATH");
+        std::env::set_var("FLOWIX_DSH_CLI_PATH", &cli);
+        let spec = HostLaunchSpec {
+            session_root: home.join("sessions"),
+            settings_path: home.join("settings.yaml"),
+            credentials_path: home.join(".credentials.yaml"),
+            plugin_settings_path: home.join("plugin-settings.json"),
+            dsh_home: home,
+        };
+
+        let result = async {
+            let client = ProcessDshClientFactory.spawn(&spec).await?;
+            let request = protocol::model_settings_describe_request(client.next_request_id());
+            let settings = client.request(request).await;
+            client.shutdown().await;
+            settings
+        }
+        .await;
+
+        match previous_cli {
+            Some(value) => std::env::set_var("FLOWIX_DSH_CLI_PATH", value),
+            None => std::env::remove_var("FLOWIX_DSH_CLI_PATH"),
+        }
+        let settings =
+            result.expect("official DSH profile must complete handshake and read model settings");
+        assert!(settings.get("providers").is_some());
     }
 }

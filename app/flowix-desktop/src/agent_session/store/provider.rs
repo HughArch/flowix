@@ -25,10 +25,10 @@ impl ProviderThreadStore {
     pub(super) fn for_runtime(runtime: &str) -> Option<Self> {
         match runtime {
             "codex" => Some(Self::Codex),
-            "deepseek-harness" => Some(Self::Dsh),
+            "dsh" => Some(Self::Dsh),
             "opencode" => Some(Self::OpenCode),
             "hermes" => Some(Self::Hermes),
-            "claude" => Some(Self::Claude),
+            "claudecode" => Some(Self::Claude),
             "pi" => Some(Self::Pi),
             _ => None,
         }

@@ -4,12 +4,8 @@
 // `pub(super)` so the sibling sections (`reads`, `creates`, `versions`,
 // `deletes`) can call them directly without leaking them outside `memo`.
 
-use tauri::AppHandle;
-
-use crate::document_mutation::DocumentCommit;
 use crate::lock_utils::read_lock;
-use crate::memo_events::{self, MemoChangeSource, MemoDerivedChanged, MemoEvent};
-use flowix_core::memo_file::{extract_body_content, is_system_frontmatter_key, Memo};
+use flowix_core::memo_file::extract_body_content;
 
 use crate::app::state::AppState;
 pub(super) use crate::commands::helpers::notebook_note_address;
@@ -18,31 +14,6 @@ pub(super) fn current_notebook_id(state: &AppState) -> String {
     read_lock(&state.memo_file, "memo_file")
         .current_notebook_id_value()
         .unwrap_or_else(|| "nb_default".to_string())
-}
-
-pub(super) fn emit_updated_memo_event(
-    app: &AppHandle,
-    id: &str,
-    path: String,
-    memo: Memo,
-    notebook_id: String,
-    derived_changed: MemoDerivedChanged,
-    source: MemoChangeSource,
-    origin_window_label: Option<&str>,
-) -> Option<DocumentCommit> {
-    crate::document_derived::schedule(app, id);
-    memo_events::emit_with_commit_from_window(
-        app,
-        MemoEvent::Updated {
-            id: id.to_string(),
-            path,
-            notebook_id,
-            memo,
-            derived_changed,
-            source,
-        },
-        origin_window_label,
-    )
 }
 
 /// Lightweight CAS fallback normalization.
@@ -119,20 +90,7 @@ pub(super) fn cas_content_matches(current: &str, expected: &str, incoming: &str)
         return true;
     }
 
-    let metadata = |content: &str| {
-        flowix_core::memo_file::extract_document_metadata(content)
-            .ok()
-            .map(|mut metadata| {
-                if let Some(properties) = metadata.properties.as_object_mut() {
-                    for key in properties.keys().cloned().collect::<Vec<_>>() {
-                        if is_system_frontmatter_key(&key) {
-                            properties.remove(&key);
-                        }
-                    }
-                }
-                metadata
-            })
-    };
+    let metadata = |content: &str| flowix_core::memo_file::extract_document_metadata(content).ok();
     matches!((metadata(current), metadata(expected)), (Some(current), Some(expected)) if current == expected)
         && code_content_for_cas(current) == code_content_for_cas(expected)
         && normalize_markdown_for_cas(current) == normalize_markdown_for_cas(expected)
@@ -182,8 +140,8 @@ mod tests {
     #[test]
     fn cas_accepts_markdown_serialization_noise() {
         let current = "---\nflowix_key: abc123\nkey: legacy-current\n---\r\n\r\n# Title\r\n&nbsp;\r\nBody  \r\n";
-        let expected = "---\nflowix_key: oldkey\nkey: legacy-expected\n---\n\n# Title\n\nBody\n";
-        let incoming = "---\nflowix_key: abc123\n---\n\n# Title\n&nbsp;\nBody\n";
+        let expected = "---\nflowix_key: abc123\nkey: legacy-current\n---\n\n# Title\n\nBody\n";
+        let incoming = "---\nflowix_key: abc123\nkey: legacy-current\n---\n\n# Title\n&nbsp;\nBody\n";
 
         assert!(cas_content_matches(current, expected, incoming));
     }

@@ -12,7 +12,7 @@ import { cn } from '@/lib/utils';
 export { isThemeAdaptiveAgentIcon, THEME_ADAPTIVE_AGENT_ICON_KEYS };
 
 const DEFAULT_AGENT_ICON_COLORS: Partial<Record<AgentTypeKey, string>> = {
-  'deepseek-harness': '#484848',
+  dsh: '#484848',
 };
 
 export interface AgentIconProps {

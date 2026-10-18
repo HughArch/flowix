@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync, statSync } from 'node:fs'
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { delimiter, join, resolve } from 'node:path'
+import { delimiter, resolve } from 'node:path'
 
 const repoRoot = resolve(import.meta.dirname, '..')
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
@@ -9,10 +9,41 @@ const npmEntrypoint = process.env.npm_execpath
 const tauriEntrypoint = resolve(repoRoot, 'node_modules/@tauri-apps/cli/tauri.js')
 const args = process.argv.slice(2)
 const withPi = args.includes('--with-pi')
-const config = args.find(arg => arg !== '--with-pi') ?? 'app/flowix-desktop/tauri.conf.dev.json'
+const cloudEnvIndex = args.findIndex(arg => arg === '--cloud-env' || arg.startsWith('--cloud-env='))
+const hasCloudEnvFlag = cloudEnvIndex >= 0
+const cloudEnvValue = cloudEnvIndex < 0
+  ? undefined
+  : args[cloudEnvIndex] === '--cloud-env'
+    ? args[cloudEnvIndex + 1]
+    : args[cloudEnvIndex].slice('--cloud-env='.length)
+const configArgs = [...args]
+if (cloudEnvIndex >= 0) {
+  configArgs.splice(cloudEnvIndex, args[cloudEnvIndex] === '--cloud-env' ? 2 : 1)
+}
+const config = configArgs.find(arg => arg !== '--with-pi') ?? 'app/flowix-desktop/tauri.conf.dev.json'
 const childEnv = { ...process.env }
+// Pi is shipped by Flowix; do not let a shell override change the runtime.
+delete childEnv.PI_CLI_PATH
 childEnv.CARGO_TARGET_DIR ??= resolve(repoRoot, '.build/cargo-target')
-if (config.includes('.dev.')) childEnv.FLOWIX_DEV_MODE = '1'
+const devMode = config.includes('.dev.')
+if (devMode) childEnv.FLOWIX_DEV_MODE = '1'
+else delete childEnv.FLOWIX_DEV_MODE
+
+if (hasCloudEnvFlag && !['staging', 'prod'].includes(cloudEnvValue)) {
+  throw new Error(`Unsupported or missing --cloud-env value: ${cloudEnvValue ?? '<missing>'}. Use staging or prod.`)
+}
+if (hasCloudEnvFlag && !devMode) {
+  throw new Error('--cloud-env can only be used with a development Tauri config.')
+}
+if (process.env.FLOWIX_CLOUD_API_BASE) {
+  throw new Error('FLOWIX_CLOUD_API_BASE has been removed. Use --cloud-env=staging or --cloud-env=prod.')
+}
+if (devMode) {
+  childEnv.FLOWIX_CLOUD_ENVIRONMENT = cloudEnvValue ?? 'prod'
+} else {
+  childEnv.FLOWIX_CLOUD_ENVIRONMENT = 'prod'
+}
+console.log(`Cloud build default: ${childEnv.FLOWIX_CLOUD_ENVIRONMENT} (saved app preference takes precedence)`)
 
 // The dev config is an overlay on tauri.conf.json. Keep versions in the
 // overlay-free canonical files aligned so a stale app version fails early.
@@ -28,56 +59,13 @@ if (!packageVersion || packageVersion !== cargoVersion || packageVersion !== tau
   )
 }
 
-function findInstalledFlowixPi() {
-  if (childEnv.PI_CLI_PATH) return childEnv.PI_CLI_PATH
-
-  const platform = { darwin: 'darwin', win32: 'windows', linux: 'linux' }[process.platform]
-  if (!platform) return undefined
-  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : process.arch
-  const executable = process.platform === 'win32' ? 'pi.exe' : 'pi'
-  const appRoots = [childEnv.FLOWIX_PROD_APP_PATH]
-  if (process.platform === 'darwin') {
-    appRoots.push('/Applications/Flowix.app', join(homedir(), 'Applications', 'Flowix.app'))
-  } else if (process.platform === 'win32') {
-    appRoots.push(
-      childEnv.LOCALAPPDATA && join(childEnv.LOCALAPPDATA, 'Programs', 'Flowix'),
-      childEnv.ProgramFiles && join(childEnv.ProgramFiles, 'Flowix'),
-    )
-  } else {
-    appRoots.push('/opt/Flowix', '/usr/lib/flowix', '/usr/lib/Flowix')
-  }
-
-  for (const appRoot of appRoots.filter(Boolean)) {
-    const resourceRoots = process.platform === 'darwin'
-      ? [join(appRoot, 'Contents', 'Resources')]
-      : [join(appRoot, 'resources'), appRoot]
-    for (const resourceRoot of resourceRoots) {
-      for (const candidate of [
-        join(resourceRoot, 'pi', `${platform}-${arch}`, 'dist', executable),
-        join(resourceRoot, 'pi', `${platform}-${arch}`, executable),
-      ]) {
-        if (existsSync(candidate)) return candidate
-      }
-    }
-  }
-  return undefined
-}
-
 if (process.platform === 'win32') {
   // rustup installs Cargo here by default. GUI shells and automation often do
   // not inherit the updated user PATH until they are restarted.
-  const cargoBin = join(homedir(), '.cargo', 'bin')
+  const cargoBin = resolve(homedir(), '.cargo', 'bin')
   const pathKey = Object.keys(childEnv).find(key => key.toLowerCase() === 'path') ?? 'Path'
   childEnv[pathKey] = `${cargoBin}${delimiter}${childEnv[pathKey] ?? ''}`
 
-}
-
-if (!withPi) {
-  const installedPi = findInstalledFlowixPi()
-  if (installedPi) {
-    childEnv.PI_CLI_PATH = installedPi
-    console.log(`using Pi from installed Flowix: ${installedPi}`)
-  }
 }
 
 function run(command, args) {
@@ -100,24 +88,36 @@ function npmRun(script) {
 }
 
 npmRun('cli:build:dev')
-if (withPi) {
-  const piPlatform = { darwin: 'darwin', win32: 'windows', linux: 'linux' }[process.platform]
-  if (!piPlatform) throw new Error(`Pi v1.1.0 has no release for ${process.platform}`)
+const piPlatform = { darwin: 'darwin', win32: 'windows', linux: 'linux' }[process.platform]
+if (!piPlatform) throw new Error(`Pi v1.1.0 has no release for ${process.platform}`)
+const piArch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : process.arch
+if (!['arm64', 'x64'].includes(piArch)) throw new Error(`Pi v1.1.0 has no release for ${process.platform}-${piArch}`)
+const piBinary = process.platform === 'win32' ? 'pi.exe' : 'pi'
+const piResourceDir = resolve(repoRoot, '.build', 'pi-runtime', 'resources', `${piPlatform}-${piArch}`)
+const stagedPiCandidates = [resolve(piResourceDir, 'dist', piBinary), resolve(piResourceDir, piBinary)]
+function hasStagedPi() {
+  return stagedPiCandidates.some(candidate => {
+    try {
+      if (!statSync(candidate).isFile()) return false
+      if (process.platform !== 'win32') accessSync(candidate, constants.X_OK)
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
+if (withPi || !hasStagedPi()) {
   run(process.execPath, [
     resolve(repoRoot, 'scripts/prepare-pi-bundle.mjs'),
     '--platform',
     process.platform,
     '--arch',
-    process.arch,
+    piArch,
   ])
-  const piArch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : process.arch
-  const piBinary = process.platform === 'win32' ? 'pi.exe' : 'pi'
-  const piResourceDir = resolve(repoRoot, '.build', 'pi-runtime', 'resources', `${piPlatform}-${piArch}`)
-  childEnv.PI_CLI_PATH = [resolve(piResourceDir, 'dist', piBinary), resolve(piResourceDir, piBinary)]
-    .find(existsSync)
-  if (!childEnv.PI_CLI_PATH) throw new Error(`staged Pi executable was not found in ${piResourceDir}`)
-  console.log(`using bundled Pi v1.1.0 from ${childEnv.PI_CLI_PATH}`)
-} else {
+  if (!hasStagedPi()) throw new Error(`staged Pi executable was not found in ${piResourceDir}`)
+  console.log(`prepared bundled Pi v1.1.0 for ${piPlatform}-${piArch}`)
+} else if (!existsSync(resolve(repoRoot, '.build', 'pi-runtime', 'provider-catalog.json'))) {
   run(process.execPath, [resolve(repoRoot, 'scripts/prepare-pi-catalog.mjs')])
 }
 childEnv.FLOWIX_PI_PROVIDER_CATALOG = resolve(repoRoot, '.build', 'pi-runtime', 'provider-catalog.json')
@@ -135,34 +135,23 @@ function runTauriDev() {
     return
   }
 
-  const executable = resolve(childEnv.CARGO_TARGET_DIR, 'debug/flowix-desktop')
-  const previousMtime = existsSync(executable) ? statSync(executable).mtimeMs : 0
-  const registerScript = resolve(repoRoot, 'scripts/register-macos-dev-app.mjs')
-  const child = spawn(process.execPath, [tauriEntrypoint, 'dev', '--config', config], {
+  const runner = resolve(repoRoot, 'scripts/run-macos-dev-app.mjs')
+  const child = spawn(process.execPath, [
+    tauriEntrypoint,
+    'dev',
+    '--config',
+    config,
+    '--runner',
+    runner,
+  ], {
     cwd: repoRoot,
     env: childEnv,
     stdio: 'inherit',
   })
-  let registered = false
-  const check = setInterval(() => {
-    if (registered || !existsSync(executable)) return
-    if (statSync(executable).mtimeMs <= previousMtime && !existsSync(resolve(repoRoot, '.build/macos-dev/Flowix Dev.app/Contents/Info.plist'))) return
-    registered = true
-    const result = spawnSync(process.execPath, [registerScript], {
-      cwd: repoRoot,
-      env: childEnv,
-      stdio: 'inherit',
-    })
-    if (result.error || result.status !== 0) {
-      console.error('Flowix Dev deep-link registration failed; Google login callbacks may open another installed Flowix app.')
-    }
-  }, 500)
   child.on('error', (error) => {
-    clearInterval(check)
     throw error
   })
   child.on('exit', (code, signal) => {
-    clearInterval(check)
     if (signal) process.kill(process.pid, signal)
     else process.exitCode = code ?? 1
   })

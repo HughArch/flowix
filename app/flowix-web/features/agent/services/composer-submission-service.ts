@@ -3,8 +3,10 @@ import { createLogger } from "@/lib/logger";
 import { toast } from "@/lib/toast";
 import { dialogs } from "@platform/tauri/client/desktop";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
+import { createAgentMessageAttachments } from "@features/agent/store/user-message";
 import { markConversationWorkspaceStarted } from "@features/agent/runtime/workspace-snapshot";
 import type { ComposerSubmissionSnapshot } from "@features/agent/thread-card/composer/composer-submission-controller";
+import { isAgentThreadCardImageAttachment } from "@features/agent/thread-card/composer/composer-attachment-types";
 import type { ComposerSubmissionKind } from "@features/agent/thread-card/composer/composer-submission-state";
 import { runDshCommand } from "./dsh-command-service";
 import {
@@ -31,17 +33,20 @@ export async function acceptComposerSubmission(
   kind: ComposerSubmissionKind,
   documentContext?: string,
 ): Promise<void> {
-  const imagePaths = snapshot.images.map((image) => image.path);
+  const imageAttachments = snapshot.attachments.filter(isAgentThreadCardImageAttachment);
+  const imagePaths = imageAttachments.map((image) => image.path);
   if (kind === "message") {
     await useAgentSessionStore.getState().sendMessageToThread(
       bound.threadId, snapshot.prompt, bound.typeKey, {
         instanceId: bound.instanceId, conversationTitle: bound.title,
         runtimeConfig: bound.runtimeConfig, isFirstMessage: bound.isFirstMessage,
         runId: bound.runId,
-        currentNoteContent: documentContext, imagePaths, rejectOnFailure: true,
+        currentNoteContent: documentContext, imagePaths,
+        attachments: createAgentMessageAttachments(imageAttachments),
+        rejectOnFailure: true,
       },
     );
-  } else if (bound.typeKey === "deepseek-harness") {
+  } else if (bound.typeKey === "dsh") {
     await runDshCommand({
       command: snapshot.prompt, imagePaths, rejectOnFailure: true,
       ensureConversation: async () => bound,

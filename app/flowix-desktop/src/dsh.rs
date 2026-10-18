@@ -20,6 +20,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::mpsc;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
+#[cfg(not(debug_assertions))]
+use tauri::Manager;
 use tauri::{AppHandle, Emitter};
 
 use crate::app::paths::get_app_data_path;
@@ -27,6 +29,14 @@ use crate::app::paths::get_app_data_path;
 mod activation;
 mod archive;
 mod cleanup;
+pub(crate) mod cli;
+pub(crate) use cli::resolve_cli_launch;
+pub(crate) fn set_user_selected_cli(path: Option<PathBuf>) {
+    cli::set_user_selected_dsh_cli(path);
+}
+pub(crate) fn is_valid_cli_path(path: &Path) -> bool {
+    cli::is_valid_dsh_cli_path(path)
+}
 mod download;
 mod environment;
 mod manifest;
@@ -66,6 +76,10 @@ static DSH_DOWNLOAD_PROGRESS: OnceLock<Mutex<Option<DshDownloadProgress>>> = Onc
 #[serde(rename_all = "camelCase")]
 pub struct DshStatus {
     pub installed: bool,
+    pub local_installed: bool,
+    pub managed_installed: bool,
+    pub app_server_profile_installed: bool,
+    pub app_server_profile_update_available: bool,
     pub executable_path: Option<String>,
     pub version: Option<String>,
     pub harness_version: Option<String>,
@@ -208,33 +222,55 @@ pub struct ManagedDshLaunch {
 }
 
 pub fn status() -> DshStatus {
-    if let Some(result) = development_bundle_launch_spec() {
-        return match result {
-            Ok(launch) => DshStatus {
-                installed: true,
-                executable_path: Some(launch.executable.display().to_string()),
-                version: Some("dev".to_string()),
-                harness_version: harness_version_from_root(&launch.root),
-                source: Some("flowix-dev-bundle".to_string()),
-                profile: DEFAULT_PROFILE.to_string(),
-                message: None,
-                archive_size: None,
-            },
-            Err(message) => DshStatus {
-                installed: false,
-                executable_path: None,
-                version: None,
-                harness_version: None,
-                source: Some("flowix-dev-bundle".to_string()),
-                profile: DEFAULT_PROFILE.to_string(),
-                message: Some(message),
-                archive_size: None,
-            },
+    let development = development_bundle_launch_spec();
+    let local = local_dsh_executable();
+    let managed = current_installation();
+    let dsh_home = dsh_home_path();
+    let profile_owned = flowix_profile_owned(&dsh_home);
+    let app_server_profile_installed = flowix_profile_installed(&dsh_home);
+    let app_server_profile_update_available = profile_owned && !app_server_profile_installed;
+    if let Some(executable) = local.as_ref() {
+        let version = local_dsh_version(executable);
+        return DshStatus {
+            installed: true,
+            local_installed: true,
+            managed_installed: managed.is_some()
+                || development
+                    .as_ref()
+                    .map(|result| result.is_ok())
+                    .unwrap_or(false),
+            executable_path: Some(executable.display().to_string()),
+            version,
+            harness_version: None,
+            source: Some("local-cli".to_string()),
+            profile: DEFAULT_PROFILE.to_string(),
+            message: None,
+            archive_size: None,
+            app_server_profile_installed,
+            app_server_profile_update_available,
         };
     }
-    match current_installation() {
+    if let Some(Ok(launch)) = development.as_ref() {
+        return DshStatus {
+            installed: true,
+            local_installed: false,
+            managed_installed: true,
+            executable_path: Some(launch.executable.display().to_string()),
+            version: Some("dev".to_string()),
+            harness_version: harness_version_from_root(&launch.root),
+            source: Some("flowix-dev-bundle".to_string()),
+            profile: DEFAULT_PROFILE.to_string(),
+            message: None,
+            archive_size: None,
+            app_server_profile_installed,
+            app_server_profile_update_available,
+        };
+    }
+    match managed {
         Some(installation) => DshStatus {
             installed: true,
+            local_installed: false,
+            managed_installed: true,
             executable_path: Some(installation.host_path.display().to_string()),
             version: Some(installation.version.clone()),
             harness_version: installation.harness_version.clone(),
@@ -242,17 +278,419 @@ pub fn status() -> DshStatus {
             profile: DEFAULT_PROFILE.to_string(),
             message: None,
             archive_size: installation.archive_size,
+            app_server_profile_installed,
+            app_server_profile_update_available,
         },
         None => DshStatus {
             installed: false,
+            local_installed: false,
+            managed_installed: false,
             executable_path: None,
             version: None,
             harness_version: None,
             source: None,
             profile: DEFAULT_PROFILE.to_string(),
-            message: Some("DeepSeek Harness is not installed".to_string()),
+            message: development
+                .and_then(Result::err)
+                .or_else(|| Some("DeepSeek Harness is not installed".to_string())),
             archive_size: None,
+            app_server_profile_installed: false,
+            app_server_profile_update_available: false,
         },
+    }
+}
+
+fn dsh_home_path() -> PathBuf {
+    crate::config::user::resolve_dsh_home(&dirs::home_dir().unwrap_or_else(|| PathBuf::from(".")))
+}
+
+pub(crate) fn flowix_profile_installed(dsh_home: &Path) -> bool {
+    flowix_profile_present(dsh_home)
+        && flowix_profile_version(dsh_home).as_deref() == Some(env!("CARGO_PKG_VERSION"))
+}
+
+fn flowix_profile_present(dsh_home: &Path) -> bool {
+    let profile = dsh_home.join("profiles").join(DEFAULT_PROFILE);
+    if !profile
+        .join("node_modules/dsh-appserver/src/cordis-plugin.js")
+        .is_file()
+        || !profile
+            .join("node_modules/dsh-flowix-memory/launcher.mjs")
+            .is_file()
+        || !profile.join("cordis.patch.yml").is_file()
+    {
+        return false;
+    }
+    let Ok(package_bytes) = fs::read(profile.join("package.json")) else {
+        return false;
+    };
+    let Ok(package) = serde_json::from_slice::<serde_json::Value>(&package_bytes) else {
+        return false;
+    };
+    package
+        .pointer("/dsh/profile/bundles")
+        .and_then(serde_json::Value::as_array)
+        .is_some_and(|bundles| {
+            ["dsh-appserver", "dsh-flowix-memory"]
+                .iter()
+                .all(|required| {
+                    bundles
+                        .iter()
+                        .any(|bundle| bundle.as_str() == Some(required))
+                })
+        })
+}
+
+fn flowix_profile_owned(dsh_home: &Path) -> bool {
+    let package = fs::read(
+        dsh_home
+            .join("profiles")
+            .join(DEFAULT_PROFILE)
+            .join("package.json"),
+    )
+    .ok()
+    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+    package
+        .as_ref()
+        .and_then(|package| package.get("name"))
+        .and_then(serde_json::Value::as_str)
+        == Some("dsh-profile-flowix")
+}
+
+fn flowix_profile_version(dsh_home: &Path) -> Option<String> {
+    let package = fs::read(
+        dsh_home
+            .join("profiles")
+            .join(DEFAULT_PROFILE)
+            .join("package.json"),
+    )
+    .ok()
+    .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())?;
+    package
+        .pointer("/flowix/profileVersion")
+        .and_then(serde_json::Value::as_str)
+        .map(str::to_string)
+}
+
+fn local_dsh_executable() -> Option<PathBuf> {
+    cli::local_dsh_executable()
+}
+
+fn local_dsh_version(cli: &Path) -> Option<String> {
+    let canonical = fs::canonicalize(cli).unwrap_or_else(|_| cli.to_path_buf());
+    for executable in [canonical.as_path(), cli] {
+        let mut directory = executable.parent();
+        while let Some(current) = directory {
+            let manifest = current.join("package.json");
+            if let Ok(bytes) = fs::read(&manifest) {
+                if let Ok(package) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                    if package.get("name").and_then(serde_json::Value::as_str)
+                        == Some("@deepseek-ai/dsh")
+                    {
+                        if let Some(version) =
+                            package.get("version").and_then(serde_json::Value::as_str)
+                        {
+                            return Some(version.to_string());
+                        }
+                    }
+                }
+            }
+            for relative in [
+                Path::new("node_modules/@deepseek-ai/dsh/package.json"),
+                Path::new("lib/node_modules/@deepseek-ai/dsh/package.json"),
+            ] {
+                let manifest = current.join(relative);
+                if let Ok(bytes) = fs::read(manifest) {
+                    if let Ok(package) = serde_json::from_slice::<serde_json::Value>(&bytes) {
+                        if package.get("name").and_then(serde_json::Value::as_str)
+                            == Some("@deepseek-ai/dsh")
+                        {
+                            if let Some(version) =
+                                package.get("version").and_then(serde_json::Value::as_str)
+                            {
+                                return Some(version.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+            directory = current.parent();
+        }
+    }
+    None
+}
+
+/// Install the Flowix App Server profile after an explicit user action.
+/// Startup only probes this state; it never calls this function implicitly.
+pub fn install_appserver_profile(app: &AppHandle) -> Result<DshStatus, String> {
+    let _operation_guard = try_acquire_operation_lock()?;
+    let current_status = status();
+    if !current_status.installed {
+        return Err("请先安装 DSH，再安装 Flowix App Server 插件".to_string());
+    }
+
+    let home = dsh_home_path();
+    let source = appserver_profile_resource(app)?;
+
+    install_profile_from_source(&home, &source)?;
+    Ok(status())
+}
+
+pub(crate) fn install_profile_from_source(home: &Path, source: &Path) -> Result<(), String> {
+    let target = home.join("profiles").join(DEFAULT_PROFILE);
+    let had_flowix_profile = target.exists();
+    if had_flowix_profile {
+        let package_path = target.join("package.json");
+        let package = fs::read(&package_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok());
+        if package
+            .as_ref()
+            .and_then(|value| value.get("name"))
+            .and_then(serde_json::Value::as_str)
+            != Some("dsh-profile-flowix")
+        {
+            return Err(format!(
+                "DSH profile '{}' 已存在且不属于 Flowix；为避免覆盖用户配置，请先在 DSH 中更换 profile 名称",
+                DEFAULT_PROFILE
+            ));
+        }
+    }
+
+    let parent = target.parent().ok_or("invalid DSH profile path")?;
+    fs::create_dir_all(parent)
+        .map_err(|error| format!("create DSH profiles directory: {error}"))?;
+    let transaction_id = uuid::Uuid::new_v4();
+    let staging = parent.join(format!(".flowix-profile-install-{transaction_id}"));
+    let backup = parent.join(format!(".flowix-profile-backup-{transaction_id}"));
+    let staged = if had_flowix_profile {
+        copy_profile_tree(&target, &staging).and_then(|()| {
+            for bundle in ["dsh-appserver", "dsh-flowix-memory"] {
+                let installed = staging.join("node_modules").join(bundle);
+                if installed.exists() {
+                    fs::remove_dir_all(&installed)
+                        .map_err(|error| format!("replace Flowix DSH bundle {bundle}: {error}"))?;
+                }
+                copy_profile_tree(&source.join("node_modules").join(bundle), &installed)?;
+            }
+            merge_flowix_profile_package(
+                &staging.join("package.json"),
+                &source.join("package.json"),
+            )?;
+            repair_flowix_profile_patch(
+                &staging.join("cordis.patch.yml"),
+                &source.join("cordis.patch.yml"),
+            )
+            .and_then(|()| stamp_flowix_profile_version(&staging))
+        })
+    } else {
+        copy_profile_tree(&source, &staging).and_then(|()| stamp_flowix_profile_version(&staging))
+    };
+    if let Err(error) = staged {
+        let _ = fs::remove_dir_all(&staging);
+        return Err(error);
+    }
+    if target.exists() {
+        fs::rename(&target, &backup)
+            .map_err(|error| format!("preserve existing Flowix DSH profile: {error}"))?;
+    }
+    if let Err(error) = fs::rename(&staging, &target) {
+        let _ = fs::remove_dir_all(&staging);
+        if backup.exists() {
+            let _ = fs::rename(&backup, &target);
+        }
+        return Err(format!("publish Flowix DSH profile: {error}"));
+    }
+    if backup.exists() {
+        let _ = fs::remove_dir_all(&backup);
+    }
+    Ok(())
+}
+
+/// Add missing Flowix patch entries while preserving existing user settings.
+fn repair_flowix_profile_patch(target: &Path, source: &Path) -> Result<(), String> {
+    if !target.exists() {
+        fs::copy(source, target)
+            .map_err(|error| format!("restore Flowix profile patch: {error}"))?;
+        return Ok(());
+    }
+    let read_patch = |path: &Path| -> Result<Vec<serde_yaml::Value>, String> {
+        let bytes = fs::read(path).map_err(|error| format!("read DSH profile patch: {error}"))?;
+        serde_yaml::from_slice(&bytes).map_err(|error| format!("parse DSH profile patch: {error}"))
+    };
+    let mut patch = read_patch(target)?;
+    let required = read_patch(source)?;
+    let mut changed = false;
+    for entry in required {
+        let id = entry.get("id").and_then(serde_yaml::Value::as_str);
+        if let Some(id) = id {
+            if let Some(existing) = patch
+                .iter_mut()
+                .find(|existing| existing.get("id").and_then(serde_yaml::Value::as_str) == Some(id))
+            {
+                changed |= merge_required_patch_fields(existing, &entry);
+                continue;
+            }
+        }
+        // Entries without an id (e.g. insert operations) use structural equality.
+        if id.is_none() && patch.contains(&entry) {
+            continue;
+        }
+        patch.push(entry);
+        changed = true;
+    }
+    if changed {
+        let yaml = serde_yaml::to_string(&patch)
+            .map_err(|error| format!("serialize DSH profile patch: {error}"))?;
+        fs::write(target, yaml).map_err(|error| format!("repair DSH profile patch: {error}"))?;
+    }
+    Ok(())
+}
+
+/// Refresh Flowix-owned patch fields while retaining user-added fields and
+/// entries. Required values from the shipped patch take precedence.
+fn merge_required_patch_fields(
+    existing: &mut serde_yaml::Value,
+    required: &serde_yaml::Value,
+) -> bool {
+    match (existing, required) {
+        (serde_yaml::Value::Mapping(existing), serde_yaml::Value::Mapping(required)) => {
+            let mut changed = false;
+            for (key, required_value) in required {
+                if let Some(existing_value) = existing.get_mut(key) {
+                    changed |= merge_required_patch_fields(existing_value, required_value);
+                } else {
+                    existing.insert(key.clone(), required_value.clone());
+                    changed = true;
+                }
+            }
+            changed
+        }
+        (existing, required) if existing != required => {
+            *existing = required.clone();
+            true
+        }
+        _ => false,
+    }
+}
+
+fn merge_flowix_profile_package(target: &Path, source: &Path) -> Result<(), String> {
+    let mut target_json: serde_json::Value = serde_json::from_slice(
+        &fs::read(target).map_err(|error| format!("read existing DSH profile package: {error}"))?,
+    )
+    .map_err(|error| format!("parse existing DSH profile package: {error}"))?;
+    let source_json: serde_json::Value = serde_json::from_slice(
+        &fs::read(source).map_err(|error| format!("read Flowix DSH profile package: {error}"))?,
+    )
+    .map_err(|error| format!("parse Flowix DSH profile package: {error}"))?;
+    let bundles = target_json
+        .pointer_mut("/dsh/profile/bundles")
+        .and_then(serde_json::Value::as_array_mut)
+        .ok_or("existing Flowix DSH profile has no bundle list")?;
+    for required in [
+        "@deepseek-ai/dsh-base",
+        "dsh-appserver",
+        "dsh-flowix-memory",
+    ] {
+        if !bundles
+            .iter()
+            .any(|bundle| bundle.as_str() == Some(required))
+        {
+            bundles.push(serde_json::Value::String(required.to_string()));
+        }
+    }
+    if target_json
+        .get("name")
+        .and_then(serde_json::Value::as_str)
+        .is_none()
+    {
+        target_json["name"] = source_json["name"].clone();
+    }
+    fs::write(
+        target,
+        serde_json::to_vec_pretty(&target_json)
+            .map_err(|error| format!("serialize Flowix DSH profile package: {error}"))?,
+    )
+    .map_err(|error| format!("write Flowix DSH profile package: {error}"))
+}
+
+fn stamp_flowix_profile_version(profile: &Path) -> Result<(), String> {
+    let package_path = profile.join("package.json");
+    let mut package: serde_json::Value = serde_json::from_slice(
+        &fs::read(&package_path)
+            .map_err(|error| format!("read Flowix DSH profile package: {error}"))?,
+    )
+    .map_err(|error| format!("parse Flowix DSH profile package: {error}"))?;
+    package["flowix"]["profileVersion"] =
+        serde_json::Value::String(env!("CARGO_PKG_VERSION").to_string());
+    fs::write(
+        &package_path,
+        serde_json::to_vec_pretty(&package)
+            .map_err(|error| format!("serialize Flowix DSH profile package: {error}"))?,
+    )
+    .map_err(|error| format!("write Flowix DSH profile version: {error}"))
+}
+
+fn appserver_profile_resource(_app: &AppHandle) -> Result<PathBuf, String> {
+    #[cfg(debug_assertions)]
+    {
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let source = repo.join(".build/dsh-runtime-dev");
+        if source.is_dir() {
+            let platform = if cfg!(target_os = "macos") {
+                "macos"
+            } else if cfg!(target_os = "windows") {
+                "windows"
+            } else {
+                "linux"
+            };
+            let arch = if cfg!(target_arch = "aarch64") {
+                "arm64"
+            } else {
+                "x64"
+            };
+            let candidate = source.join(format!("node24-{platform}-{arch}/profile/flowix"));
+            if candidate.is_dir() {
+                return Ok(candidate);
+            }
+        }
+        let staged = repo.join(".build/dsh-appserver-profile/flowix");
+        for bundle in ["dsh-appserver", "dsh-flowix-memory"] {
+            let plugin_target = staged.join("node_modules").join(bundle);
+            if plugin_target.exists() {
+                fs::remove_dir_all(&plugin_target)
+                    .map_err(|error| format!("refresh local DSH bundle {bundle}: {error}"))?;
+            }
+            copy_profile_tree(&repo.join(bundle), &plugin_target)?;
+        }
+        fs::create_dir_all(&staged)
+            .map_err(|error| format!("create local DSH profile template: {error}"))?;
+        fs::copy(
+            repo.join("scripts/dsh-dev-profile.patch.yml"),
+            staged.join("cordis.patch.yml"),
+        )
+        .map_err(|error| format!("stage DSH App Server profile patch: {error}"))?;
+        fs::write(
+            staged.join("package.json"),
+            br#"{
+  "name": "dsh-profile-flowix",
+  "private": true,
+  "dsh": { "profile": { "bundles": ["@deepseek-ai/dsh-base", "dsh-appserver", "dsh-flowix-memory"] } }
+}
+"#,
+        )
+        .map_err(|error| format!("stage DSH App Server profile manifest: {error}"))?;
+        Ok(staged)
+    }
+    #[cfg(not(debug_assertions))]
+    {
+        let resource = _app
+            .path()
+            .resource_dir()
+            .ok()
+            .map(|root| root.join("dsh-profile/flowix"))
+            .filter(|path| path.is_dir());
+        resource.ok_or_else(|| "Flowix App Server installation files are missing".to_string())
     }
 }
 
@@ -428,7 +866,6 @@ pub fn run_profile_plugin(
     package: Option<&str>,
 ) -> Result<String, String> {
     let _operation_guard = try_acquire_operation_lock()?;
-    let launch = managed_launch_spec().ok_or("DeepSeek Harness runtime is not installed")?;
     let action = action.trim();
     if !matches!(action, "add" | "remove" | "update") {
         return Err("unsupported DSH plugin action".to_string());
@@ -447,23 +884,18 @@ pub fn run_profile_plugin(
         return Err("invalid DSH plugin package spec".to_string());
     }
 
+    let mut args = vec!["plugin", "--profile", DEFAULT_PROFILE, action];
+    if let Some(package) = package {
+        args.push(package);
+    }
+    let launch = resolve_cli_launch(&args)?;
     let mut command = Command::new(&launch.executable);
     crate::process_window::hide_std_command_window(&mut command);
-    if let Some(cli) = launch.cli_entrypoint.as_ref() {
-        command.arg(cli);
-    } else {
-        command.env("DSH_EMBEDDED_CLI_MODE", "1");
-    }
     command
+        .args(&launch.args)
         .env_clear()
-        .envs(dsh_plugin_environment())
-        .envs(managed_child_environment(&launch.root))
-        .env("DSH_HOME", dsh_home)
-        .env("FLOWIX_DSH_ROOT", &launch.root)
-        .args(["plugin", "--profile", DEFAULT_PROFILE, action]);
-    if let Some(package) = package {
-        command.arg(package);
-    }
+        .envs(launch.environment)
+        .env("DSH_HOME", dsh_home);
     let output = command
         .output()
         .map_err(|error| format!("start official dsh plugin command: {error}"))?;
@@ -1376,7 +1808,7 @@ mod tests {
     use super::{
         archive::safe_archive_path, dsh_version_is_at_least, validate_manifest_version, DshArtifact,
     };
-    use std::path::Path;
+    use std::path::{Path, PathBuf};
 
     #[cfg(unix)]
     use super::DshManifest;
@@ -1400,6 +1832,59 @@ mod tests {
         let mode = stale.metadata().unwrap().permissions().mode() & 0o777;
         assert_eq!(mode, 0o600);
         assert_eq!(std::fs::read(&stale).unwrap(), b"b");
+    }
+
+    #[test]
+    fn repairs_appserver_bundle_and_patch_in_an_existing_flowix_profile() {
+        let temp = tempfile::tempdir().unwrap();
+        let source = temp.path().join("source");
+        let home = temp.path().join("official-dsh-home");
+        let target = home.join("profiles/flowix");
+        std::fs::create_dir_all(source.join("node_modules/dsh-appserver/src")).unwrap();
+        std::fs::create_dir_all(source.join("node_modules/dsh-flowix-memory/src")).unwrap();
+        std::fs::create_dir_all(&target).unwrap();
+        std::fs::write(
+            source.join("node_modules/dsh-appserver/src/cordis-plugin.js"),
+            "export {};",
+        )
+        .unwrap();
+        std::fs::write(
+            source.join("node_modules/dsh-flowix-memory/src/index.js"),
+            "export {};",
+        )
+        .unwrap();
+        std::fs::write(source.join("package.json"), br#"{"name":"dsh-profile-flowix","private":true,"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","dsh-appserver","dsh-flowix-memory"]}}}"#).unwrap();
+        let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
+        let patch_source = repo.join("scripts/dsh-dev-profile.patch.yml");
+        std::fs::copy(&patch_source, source.join("cordis.patch.yml")).unwrap();
+        std::fs::write(target.join("package.json"), br#"{"name":"dsh-profile-flowix","dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base"]}}}"#).unwrap();
+        std::fs::write(
+            target.join("cordis.patch.yml"),
+            "- id: user-custom-plugin\n  config:\n    enabled: true\n",
+        )
+        .unwrap();
+
+        super::install_profile_from_source(&home, &source).unwrap();
+        assert!(super::flowix_profile_installed(&home));
+        let package: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(target.join("package.json")).unwrap()).unwrap();
+        let bundles = package
+            .pointer("/dsh/profile/bundles")
+            .unwrap()
+            .as_array()
+            .unwrap();
+        assert!(bundles.iter().any(|bundle| bundle == "dsh-appserver"));
+        let patch: Vec<serde_yaml::Value> =
+            serde_yaml::from_slice(&std::fs::read(target.join("cordis.patch.yml")).unwrap())
+                .unwrap();
+        assert!(patch
+            .iter()
+            .any(|entry| entry.get("id").and_then(serde_yaml::Value::as_str)
+                == Some("user-custom-plugin")));
+        assert!(patch
+            .iter()
+            .any(|entry| entry.get("id").and_then(serde_yaml::Value::as_str)
+                == Some("dsh-appserver-extension")));
     }
 
     #[test]

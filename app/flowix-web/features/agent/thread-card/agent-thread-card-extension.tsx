@@ -2,6 +2,7 @@ import { Node, mergeAttributes, type MarkdownToken } from "@tiptap/core";
 import { Plugin, TextSelection } from "@tiptap/pm/state";
 import type { Node as ProseMirrorNode } from "@tiptap/pm/model";
 import type { AgentTypeKey } from "@/types/agent";
+import type { WorkspaceHostId } from "@features/workspace/public/host-api";
 import {
   DEFAULT_AGENT_TYPE_KEY,
   getAgentType,
@@ -15,8 +16,8 @@ import {
   parseFlowixAgentThreadCardComment,
   parseAgentThreadCardMarkdown,
   renderAgentThreadCardMarkdown,
-  encodeAgentThreadCardInputImages,
-  decodeAgentThreadCardInputImages,
+  encodeAgentThreadCardInputAttachments,
+  decodeAgentThreadCardInputAttachments,
 } from "@features/agent/thread-card/agent-thread-card-markdown";
 import { focusAgentThreadCardInput } from "@features/agent/thread-card/agent-thread-card-dom";
 import { AgentThreadCardView } from "@features/agent/thread-card/agent-thread-card-view";
@@ -25,6 +26,11 @@ import {
   terminateAgentThreadCardRuntime,
 } from "@features/agent/thread-card/agent-thread-card-cleanup";
 import { getCurrentThreadCardSource } from "@features/agent/thread-card/runtime/thread-card-source";
+import {
+  LEGACY_THREAD_CARD_IMAGES_HTML_ATTRIBUTE,
+  THREAD_CARD_ATTACHMENTS_ATTRIBUTE,
+  THREAD_CARD_ATTACHMENTS_HTML_ATTRIBUTE,
+} from "@features/agent/thread-card/composer/composer-attachment-compat";
 
 export const SKIP_AGENT_THREAD_CARD_CLEANUP_META =
   "flowixSkipAgentThreadCardCleanup";
@@ -69,7 +75,11 @@ declare module "@tiptap/core" {
   }
 }
 
-export const AgentThreadCard = Node.create({
+export const AgentThreadCard = Node.create<{ workspaceHost: WorkspaceHostId }>({
+  addOptions() {
+    return { workspaceHost: "main-third" };
+  },
+
   name: "agentThreadCard",
   group: "block",
   content: "",
@@ -91,7 +101,7 @@ export const AgentThreadCard = Node.create({
       initialPrompt: { default: null },
       autoSubmit: { default: false },
       inputDraft: { default: null },
-      inputImages: { default: [] },
+      [THREAD_CARD_ATTACHMENTS_ATTRIBUTE]: { default: [] },
     };
   },
 
@@ -111,8 +121,9 @@ export const AgentThreadCard = Node.create({
             collapsed: element.getAttribute("data-collapsed") === "true",
             fullscreen: element.getAttribute("data-fullscreen") === "true",
             inputDraft: element.getAttribute("data-input-draft") || null,
-            inputImages: decodeAgentThreadCardInputImages(
-              element.getAttribute("data-input-images"),
+            [THREAD_CARD_ATTACHMENTS_ATTRIBUTE]: decodeAgentThreadCardInputAttachments(
+              element.getAttribute(THREAD_CARD_ATTACHMENTS_HTML_ATTRIBUTE)
+                ?? element.getAttribute(LEGACY_THREAD_CARD_IMAGES_HTML_ATTRIBUTE),
             ),
           };
         },
@@ -129,7 +140,9 @@ export const AgentThreadCard = Node.create({
     const collapsed = !!node.attrs.collapsed;
     const fullscreen = !!node.attrs.fullscreen;
     const inputDraft = node.attrs.inputDraft || "";
-    const inputImages = encodeAgentThreadCardInputImages(node.attrs.inputImages);
+    const inputAttachments = encodeAgentThreadCardInputAttachments(
+      node.attrs[THREAD_CARD_ATTACHMENTS_ATTRIBUTE],
+    );
 
     return [
       "section",
@@ -141,7 +154,9 @@ export const AgentThreadCard = Node.create({
         "data-collapsed": collapsed ? "true" : "false",
         "data-fullscreen": fullscreen ? "true" : "false",
         "data-input-draft": inputDraft,
-        "data-input-images": inputImages,
+        [THREAD_CARD_ATTACHMENTS_HTML_ATTRIBUTE]: inputAttachments,
+        // Preserve copy/paste compatibility with releases that only read this key.
+        [LEGACY_THREAD_CARD_IMAGES_HTML_ATTRIBUTE]: inputAttachments,
         class: collapsed
           ? "agent-thread-card agent-thread-card--collapsed"
           : "agent-thread-card",
@@ -162,11 +177,11 @@ export const AgentThreadCard = Node.create({
         ],
         [
           "div",
-          { class: "agent-thread-card__composer" },
+          { class: "agent-composer" },
           [
             "div",
             {
-              class: "agent-thread-card__composer-input",
+              class: "agent-composer__input",
               contenteditable: "true",
             },
             inputDraft,
@@ -174,7 +189,7 @@ export const AgentThreadCard = Node.create({
           [
             "button",
             {
-              class: "agent-thread-card__send",
+              class: "agent-composer__send",
               type: "button",
               "aria-label": "Send",
             },
@@ -215,7 +230,7 @@ export const AgentThreadCard = Node.create({
             initialPrompt: options?.initialPrompt ?? null,
             autoSubmit: !!options?.autoSubmit,
             inputDraft: null,
-            inputImages: [],
+            [THREAD_CARD_ATTACHMENTS_ATTRIBUTE]: [],
           });
           const from = options?.replaceRange?.from ?? state.selection.from;
           const to = options?.replaceRange?.to ?? from;
@@ -272,6 +287,7 @@ export const AgentThreadCard = Node.create({
         props.node,
         props.view,
         typeof props.getPos === "function" ? props.getPos : undefined,
+        this.options.workspaceHost,
       );
   },
 

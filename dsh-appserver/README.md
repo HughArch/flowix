@@ -137,6 +137,12 @@ Pending approval 是进程内状态，会在 SSE 重连时回放；持久化的 
     stdio: true
 ```
 
+## Flowix 安装流程
+
+Flowix 启动时只检查本地 `dsh` 命令、Flowix 管理的 DSH Runtime，以及 `DSH_HOME/profiles/flowix` 中的 App Server profile；缺少任何一项都不会自动安装或弹窗。用户可以在 Flowix“偏好设置 → DeepSeek Harness”中打开 DSH 官方安装页面，安装后点“重新检查”。检测到 Runtime 但缺少 profile 时，用户点击“安装 DSH App Server 插件”。
+
+profile 安装到 `DSH_HOME/profiles/flowix`，其中包含 `dsh-appserver` bundle 和 Flowix Cordis patch。安装后 Flowix 启动该 profile 并通过 stdio JSON-RPC 握手；握手成功后 DSH Agent 才标记为 Ready。`DSH_HOME` 未设置时使用默认 `~/.dsh`。安装过程不会改写 DSH 默认 profile。
+
 ## 开发检查
 
 ```sh

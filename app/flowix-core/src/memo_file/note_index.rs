@@ -3,7 +3,7 @@
 //! This index never supplies bytes for a note. Markdown remains the source of
 //! content and the projection can be discarded and rebuilt from the notebook.
 
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::io;
 use std::path::Path;
@@ -17,13 +17,13 @@ use walkdir::WalkDir;
 
 use super::{
     notebook_path_from_relative, notebook_relative_path, AgentThreadItem, Memo, MemoFile,
-    MemoIndexEntry, NoteColor, TodoItem,
+    NoteColor, TodoItem,
 };
 
-const SCHEMA_VERSION: i64 = 3;
-// Version 9 tolerates legacy malformed tags while retaining ordinary properties.
-const PARSER_VERSION: i64 = 9;
-const NOTE_SEARCH_FTS_VERSION: i64 = 1;
+const SCHEMA_VERSION: i64 = 4;
+// Version 10 stores derived tags, todos, and agents on each notes row.
+const PARSER_VERSION: i64 = 10;
+const NOTE_SEARCH_FTS_VERSION: i64 = 2;
 const NOTE_INDEX_REFRESH_PENDING: &str = "note-index-refresh-pending";
 const NOTE_INDEX_REFRESH_PENDING_DIR: &str = "note-index-refresh-pending.d";
 static NOTE_INDEX_REFRESH_SEQUENCE: AtomicU64 = AtomicU64::new(0);
@@ -129,6 +129,13 @@ pub enum NoteWriteOutcome {
     Conflict { disk_content: String },
 }
 
+#[derive(Clone, Copy)]
+enum MaintenanceAdmission {
+    Wait,
+    SkipIfBusy,
+    FailIfBusy,
+}
+
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub struct NoteIndexReconcileReport {
     pub added: usize,
@@ -144,61 +151,6 @@ pub struct NoteSearchHit {
     pub title: String,
     pub snippet: String,
     pub matched_in: String,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct NoteTodoMigrationReport {
-    pub notes_written: usize,
-    pub tasks_written: usize,
-}
-
-#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
-pub struct NotePropertyMigrationReport {
-    pub notes_written: usize,
-    pub properties_written: usize,
-}
-
-#[derive(Debug)]
-struct LegacyNoteProperties {
-    id: String,
-    relative_path: String,
-    created_at: i64,
-    favorited: bool,
-    icon: Option<String>,
-    properties_json: String,
-}
-
-#[derive(Debug)]
-struct LegacyTodoAttributes {
-    todo_id: String,
-    priority: String,
-    time_range: String,
-    owner: String,
-    assignee: String,
-    created_at: i64,
-    updated_at: i64,
-}
-
-impl LegacyTodoAttributes {
-    fn has_persistent_value(&self) -> bool {
-        !self.priority.is_empty()
-            || !self.time_range.is_empty()
-            || !self.owner.is_empty()
-            || !self.assignee.is_empty()
-            || self.created_at != 0
-            || self.updated_at != 0
-    }
-
-    fn json_value(&self) -> serde_json::Value {
-        serde_json::json!({
-            "priority": self.priority,
-            "timeRange": self.time_range,
-            "owner": self.owner,
-            "assignee": self.assignee,
-            "createdAt": self.created_at,
-            "updatedAt": self.updated_at,
-        })
-    }
 }
 
 impl MemoFile {
@@ -667,7 +619,7 @@ impl MemoFile {
         let conn = self.open_note_index_connection(notebook_id)?;
         let exists: bool = conn
             .query_row(
-                "SELECT EXISTS(SELECT 1 FROM note_tags WHERE tag = ?1)",
+                "SELECT EXISTS(SELECT 1 FROM notes n, json_each(n.tags) t WHERE t.value = ?1)",
                 [tag],
                 |row| row.get(0),
             )
@@ -683,15 +635,14 @@ impl MemoFile {
         tag: &str,
     ) -> io::Result<Vec<String>> {
         let conn = self.open_note_index_connection(notebook_id)?;
-        let prefix = format!("{tag}/");
         let mut stmt = conn
             .prepare(
-                "SELECT DISTINCT relative_path FROM note_tags \
-                 WHERE tag = ?1 OR tag LIKE ?2 ESCAPE '\\' ORDER BY relative_path",
+                "SELECT DISTINCT n.relative_path FROM notes n, json_each(n.tags) t \
+                 WHERE t.value = ?1 OR substr(t.value, 1, length(?1)+1) = ?1 || '/' ORDER BY n.relative_path",
             )
             .map_err(io::Error::other)?;
         let rows = stmt
-            .query_map(params![tag, format!("{prefix}%")], |row| row.get(0))
+            .query_map(params![tag], |row| row.get(0))
             .map_err(io::Error::other)?;
         rows.collect::<Result<Vec<_>, _>>().map_err(io::Error::other)
     }
@@ -716,13 +667,14 @@ impl MemoFile {
         relative_path: &str,
     ) -> io::Result<Option<NoteEntry>> {
         let conn = self.open_note_index_connection(notebook_id)?;
-        let row: Option<(String, String, String, Option<String>, i64, i64, i64, Option<String>, String, String, u64)> = conn
+        let row: Option<(String, String, String, Option<String>, i64, i64, i64, Option<String>, String, String, u64, String, String, String)> = conn
             .query_row(
-                "SELECT relative_path, title, preview, thumbnail, created_at, updated_at, favorited, icon, colors_json, properties_json, size_bytes \
+                "SELECT relative_path, title, preview, thumbnail, created_at, updated_at, favorited, icon, colors_json, properties_json, size_bytes, tags, todos, agents \
                  FROM notes WHERE relative_path=?1",
                 params![relative_path],
                 |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?,
-                    row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?)),
+                    row.get(5)?, row.get(6)?, row.get(7)?, row.get(8)?, row.get(9)?, row.get(10)?,
+                    row.get(11)?, row.get(12)?, row.get(13)?)),
             )
             .optional()
             .map_err(io::Error::other)?;
@@ -738,19 +690,22 @@ impl MemoFile {
             colors,
             properties,
             size_bytes,
+            tags,
+            todos,
+            agents,
         )) = row
         else {
             return Ok(None);
         };
-        let mut entry = NoteEntry {
+        let entry = NoteEntry {
             size_bytes,
             relative_path,
             title,
             preview,
             thumbnail,
-            tags: Vec::new(),
-            todos: Vec::new(),
-            agents: Vec::new(),
+            tags: serde_json::from_str(&tags).map_err(io::Error::other)?,
+            todos: serde_json::from_str(&todos).map_err(io::Error::other)?,
+            agents: serde_json::from_str(&agents).map_err(io::Error::other)?,
             created_at,
             updated_at,
             favorited: favorited != 0,
@@ -758,42 +713,6 @@ impl MemoFile {
             colors: serde_json::from_str(&colors).map_err(io::Error::other)?,
             properties: serde_json::from_str(&properties).map_err(io::Error::other)?,
         };
-        let mut stmt = conn
-            .prepare("SELECT tag FROM note_tags WHERE relative_path=?1 ORDER BY tag")
-            .map_err(io::Error::other)?;
-        entry.tags = stmt
-            .query_map(params![&entry.relative_path], |row| row.get(0))
-            .map_err(io::Error::other)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(io::Error::other)?;
-        let mut stmt = conn.prepare(
-            "SELECT todo_id, content, status FROM note_todos WHERE relative_path=?1 ORDER BY position"
-        ).map_err(io::Error::other)?;
-        entry.todos = stmt
-            .query_map(params![&entry.relative_path], |row| {
-                Ok(TodoItem {
-                    id: row.get(0)?,
-                    content: row.get(1)?,
-                    status: row.get(2)?,
-                })
-            })
-            .map_err(io::Error::other)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(io::Error::other)?;
-        let mut stmt = conn.prepare(
-            "SELECT thread_id, title, agent_type FROM note_agents WHERE relative_path=?1 ORDER BY position"
-        ).map_err(io::Error::other)?;
-        entry.agents = stmt
-            .query_map(params![&entry.relative_path], |row| {
-                Ok(AgentThreadItem {
-                    thread_id: row.get(0)?,
-                    title: row.get(1)?,
-                    agent_type: row.get(2)?,
-                })
-            })
-            .map_err(io::Error::other)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(io::Error::other)?;
         Ok(Some(entry))
     }
 
@@ -823,7 +742,6 @@ impl MemoFile {
             .unwrap_or(updated_at);
         let content = fs::read_to_string(&path)?;
         let mut derived = Memo {
-            id: String::new(),
             filename: relative_path
                 .rsplit('/')
                 .next()
@@ -872,7 +790,7 @@ impl MemoFile {
         }
         let conn = self.open_note_index_connection(notebook_id)?;
         let mut stmt = conn.prepare(
-            "SELECT relative_path, title, preview, thumbnail, created_at, updated_at, favorited, icon, colors_json, properties_json, size_bytes \
+            "SELECT relative_path, title, preview, thumbnail, created_at, updated_at, favorited, icon, colors_json, properties_json, size_bytes, tags, todos, agents \
              FROM notes ORDER BY created_at ASC, relative_path ASC"
         ).map_err(io::Error::other)?;
         let rows = stmt
@@ -889,6 +807,9 @@ impl MemoFile {
                     row.get::<_, String>(8)?,
                     row.get::<_, String>(9)?,
                     row.get::<_, u64>(10)?,
+                    row.get::<_, String>(11)?,
+                    row.get::<_, String>(12)?,
+                    row.get::<_, String>(13)?,
                 ))
             })
             .map_err(io::Error::other)?;
@@ -906,6 +827,9 @@ impl MemoFile {
                 colors,
                 properties,
                 size_bytes,
+                tags,
+                todos,
+                agents,
             ) = row.map_err(io::Error::other)?;
             entries.push(NoteEntry {
                 size_bytes,
@@ -913,9 +837,9 @@ impl MemoFile {
                 title,
                 preview,
                 thumbnail,
-                tags: Vec::new(),
-                todos: Vec::new(),
-                agents: Vec::new(),
+                tags: serde_json::from_str(&tags).map_err(io::Error::other)?,
+                todos: serde_json::from_str(&todos).map_err(io::Error::other)?,
+                agents: serde_json::from_str(&agents).map_err(io::Error::other)?,
                 created_at,
                 updated_at,
                 favorited: favorited != 0,
@@ -923,68 +847,6 @@ impl MemoFile {
                 colors: serde_json::from_str(&colors).map_err(io::Error::other)?,
                 properties: serde_json::from_str(&properties).map_err(io::Error::other)?,
             });
-        }
-        drop(stmt);
-        let positions: HashMap<_, _> = entries
-            .iter()
-            .enumerate()
-            .map(|(index, entry)| (entry.relative_path.clone(), index))
-            .collect();
-        let mut stmt = conn
-            .prepare("SELECT relative_path, tag FROM note_tags ORDER BY relative_path, tag")
-            .map_err(io::Error::other)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(io::Error::other)?;
-        for row in rows {
-            let (path, tag) = row.map_err(io::Error::other)?;
-            if let Some(index) = positions.get(&path) {
-                entries[*index].tags.push(tag);
-            }
-        }
-        let mut stmt = conn.prepare(
-            "SELECT relative_path, todo_id, content, status FROM note_todos ORDER BY relative_path, position"
-        ).map_err(io::Error::other)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    TodoItem {
-                        id: row.get(1)?,
-                        content: row.get(2)?,
-                        status: row.get(3)?,
-                    },
-                ))
-            })
-            .map_err(io::Error::other)?;
-        for row in rows {
-            let (path, todo) = row.map_err(io::Error::other)?;
-            if let Some(index) = positions.get(&path) {
-                entries[*index].todos.push(todo);
-            }
-        }
-        let mut stmt = conn.prepare(
-            "SELECT relative_path, thread_id, title, agent_type FROM note_agents ORDER BY relative_path, position"
-        ).map_err(io::Error::other)?;
-        let rows = stmt
-            .query_map([], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    AgentThreadItem {
-                        thread_id: row.get(1)?,
-                        title: row.get(2)?,
-                        agent_type: row.get(3)?,
-                    },
-                ))
-            })
-            .map_err(io::Error::other)?;
-        for row in rows {
-            let (path, agent) = row.map_err(io::Error::other)?;
-            if let Some(index) = positions.get(&path) {
-                entries[*index].agents.push(agent);
-            }
         }
         Ok(entries)
     }
@@ -1035,9 +897,9 @@ impl MemoFile {
                     OR lower(body) LIKE ?1 ESCAPE '\\'
                     OR lower(tags) LIKE ?1 ESCAPE '\\')
                    AND (?4 IS NULL OR EXISTS (
-                       SELECT 1 FROM note_tags t
-                       WHERE t.relative_path=note_search_fts.relative_path
-                         AND (t.tag=?4 OR substr(t.tag, 1, length(?4)+1)=?4 || '/')
+                       SELECT 1 FROM notes n, json_each(n.tags) t
+                       WHERE n.relative_path=note_search_fts.relative_path
+                         AND (t.value=?4 OR substr(t.value, 1, length(?4)+1)=?4 || '/')
                    ))
                  ORDER BY updated_at DESC, relative_path ASC LIMIT ?3",
                 pattern,
@@ -1052,9 +914,9 @@ impl MemoFile {
                  FROM note_search_fts
                  WHERE note_search_fts MATCH ?1
                    AND (?4 IS NULL OR EXISTS (
-                       SELECT 1 FROM note_tags t
-                       WHERE t.relative_path=note_search_fts.relative_path
-                         AND (t.tag=?4 OR substr(t.tag, 1, length(?4)+1)=?4 || '/')
+                       SELECT 1 FROM notes n, json_each(n.tags) t
+                       WHERE n.relative_path=note_search_fts.relative_path
+                         AND (t.value=?4 OR substr(t.value, 1, length(?4)+1)=?4 || '/')
                    ))
                  ORDER BY updated_at DESC, relative_path ASC LIMIT ?3",
                 quoted,
@@ -1161,7 +1023,7 @@ impl MemoFile {
                 continue;
             }
             let tags: String = tx.query_row(
-                "SELECT COALESCE(group_concat(tag, ' '), '') FROM note_tags WHERE relative_path=?1",
+                "SELECT COALESCE(group_concat(value, ' '), '') FROM notes n, json_each(n.tags) WHERE n.relative_path=?1",
                 params![relative_path], |row| row.get(0),
             ).map_err(io::Error::other)?;
             tx.execute(
@@ -1221,21 +1083,17 @@ impl MemoFile {
         let mut sql = String::from("SELECT n.relative_path FROM notes n WHERE 1=1");
         let mut args: Vec<SqlValue> = Vec::new();
         match filter {
-            "todos" => sql.push_str(
-                " AND EXISTS (SELECT 1 FROM note_todos t WHERE t.relative_path=n.relative_path)",
-            ),
-            "agents" => sql.push_str(
-                " AND EXISTS (SELECT 1 FROM note_agents a WHERE a.relative_path=n.relative_path)",
-            ),
+            "todos" => sql.push_str(" AND json_array_length(n.todos)>0"),
+            "agents" => sql.push_str(" AND json_array_length(n.agents)>0"),
             "favorited" => sql.push_str(" AND n.favorited=1"),
             "tagged" => {
                 if let Some(tag) = tag_id {
-                    sql.push_str(" AND EXISTS (SELECT 1 FROM note_tags t WHERE t.relative_path=n.relative_path AND (t.tag=? OR substr(t.tag,1,length(?)+1)=?))");
+                    sql.push_str(" AND EXISTS (SELECT 1 FROM json_each(n.tags) t WHERE t.value=? OR substr(t.value,1,length(?)+1)=?)");
                     args.push(tag.to_owned().into());
                     args.push(tag.to_owned().into());
                     args.push(format!("{tag}/").into());
                 } else {
-                    sql.push_str(" AND EXISTS (SELECT 1 FROM note_tags t WHERE t.relative_path=n.relative_path)");
+                    sql.push_str(" AND json_array_length(n.tags)>0");
                 }
             }
             "thisWeek" | "thisMonth" => {
@@ -1319,69 +1177,6 @@ impl MemoFile {
             .collect()
     }
 
-    /// Adapt the path-keyed list to the current ID-bearing API while migration
-    /// of external callers is still in progress.
-    pub(crate) fn list_note_entries_with_legacy_ids(
-        &self,
-        notebook_id: &str,
-    ) -> io::Result<Option<Vec<MemoIndexEntry>>> {
-        if !self.note_index_is_ready(notebook_id)? {
-            return Ok(None);
-        }
-        let entries = self.read_note_entries(notebook_id)?;
-        let conn = self.open_note_index_connection(notebook_id)?;
-        let legacy_table: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memos'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(io::Error::other)?;
-        if legacy_table == 0 {
-            return Ok(None);
-        }
-        let mut stmt = conn
-            .prepare("SELECT relative_path, id FROM memos WHERE notebook_id=?1")
-            .map_err(io::Error::other)?;
-        let mappings = stmt
-            .query_map(params![notebook_id], |row| {
-                Ok((row.get::<_, String>(0)?, row.get::<_, String>(1)?))
-            })
-            .map_err(io::Error::other)?
-            .collect::<Result<HashMap<_, _>, _>>()
-            .map_err(io::Error::other)?;
-        if entries.len() != mappings.len() {
-            return Ok(None);
-        }
-        let mut adapted = Vec::with_capacity(entries.len());
-        for entry in entries {
-            let Some(id) = mappings.get(&entry.relative_path) else {
-                return Ok(None);
-            };
-            adapted.push(MemoIndexEntry {
-                id: id.clone(),
-                filename: entry
-                    .relative_path
-                    .rsplit('/')
-                    .next()
-                    .unwrap_or(&entry.relative_path)
-                    .to_owned(),
-                relative_path: entry.relative_path,
-                preview: entry.preview,
-                thumbnail: entry.thumbnail.clone(),
-                tags: entry.tags,
-                todos: entry.todos,
-                agents: entry.agents,
-                created_at: entry.created_at,
-                updated_at: entry.updated_at,
-                favorited: entry.favorited,
-                icon: entry.icon,
-                colors: entry.colors,
-                properties: entry.properties,
-            });
-        }
-        Ok(Some(adapted))
-    }
     pub(crate) fn note_index_is_ready(&self, notebook_id: &str) -> io::Result<bool> {
         let conn = self.open_note_index_connection(notebook_id)?;
         let mut stmt = conn.prepare(
@@ -1400,6 +1195,32 @@ impl MemoFile {
             && values
                 .get("parser_version")
                 .is_some_and(|value| value == &PARSER_VERSION.to_string()))
+    }
+
+    /// Read a completed projection without creating directories, tables or scans.
+    /// Absence, an unfinished build, and an obsolete parser return unknown.
+    pub fn cached_note_count(&self, notebook_id: &str) -> io::Result<Option<usize>> {
+        let notebook = self.get_notebook_config_by_id(notebook_id)
+            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "notebook not found"))?;
+        let path = Path::new(&notebook.path).join(".flowix/notebook.db");
+        if !path.is_file() { return Ok(None); }
+        let conn = Connection::open_with_flags(path, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY)
+            .map_err(io::Error::other)?;
+        conn.busy_timeout(Duration::from_millis(50)).map_err(io::Error::other)?;
+        let has_projection: bool = conn.query_row(
+            "SELECT COUNT(*)=2 FROM sqlite_master WHERE type='table' AND name IN ('note_index_meta', 'notes')",
+            [], |row| row.get(0),
+        ).map_err(io::Error::other)?;
+        if !has_projection { return Ok(None); }
+        let ready: bool = conn.query_row(
+            "SELECT EXISTS(SELECT 1 FROM note_index_meta WHERE key='build_state' AND value='ready')
+             AND EXISTS(SELECT 1 FROM note_index_meta WHERE key='parser_version' AND value=?1)",
+            [PARSER_VERSION.to_string()], |row| row.get(0),
+        ).map_err(io::Error::other)?;
+        if !ready { return Ok(None); }
+        let count: i64 = conn.query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))
+            .map_err(io::Error::other)?;
+        Ok(Some(usize::try_from(count).unwrap_or(0)))
     }
 
     pub(crate) fn note_count(&self, notebook_id: &str) -> io::Result<usize> {
@@ -1451,11 +1272,11 @@ impl MemoFile {
             Ok(usize::try_from(value).unwrap_or(0))
         };
         let total = count("SELECT COUNT(*) FROM notes")?;
-        let agents = count("SELECT COUNT(DISTINCT relative_path) FROM note_agents")?;
-        let todos = count("SELECT COUNT(DISTINCT relative_path) FROM note_todos")?;
+        let agents = count("SELECT COUNT(*) FROM notes WHERE json_array_length(agents)>0")?;
+        let todos = count("SELECT COUNT(*) FROM notes WHERE json_array_length(todos)>0")?;
         let mut stmt = conn
             .prepare(
-                "SELECT tag, COUNT(*) FROM note_tags GROUP BY tag ORDER BY tag COLLATE NOCASE ASC",
+                "SELECT t.value, COUNT(DISTINCT n.relative_path) FROM notes n, json_each(n.tags) t GROUP BY t.value ORDER BY t.value COLLATE NOCASE ASC",
             )
             .map_err(io::Error::other)?;
         let tags = stmt
@@ -1478,7 +1299,7 @@ impl MemoFile {
     ) -> io::Result<Vec<(String, String)>> {
         let conn = self.open_note_index_connection(notebook_id)?;
         let mut stmt = conn
-            .prepare("SELECT tag, relative_path FROM note_tags")
+            .prepare("SELECT t.value, n.relative_path FROM notes n, json_each(n.tags) t")
             .map_err(io::Error::other)?;
         let pairs = stmt
             .query_map([], |row| {
@@ -1490,350 +1311,54 @@ impl MemoFile {
         pairs
     }
 
-    /// Move note properties that may exist only in the legacy index into the
-    /// Markdown frontmatter. Existing file properties always win.
-    pub fn migrate_note_properties_for_notebook(
-        &self,
-        notebook_id: &str,
-    ) -> io::Result<NotePropertyMigrationReport> {
-        let _write_guard = self.acquire_cross_process_write_lock()?;
-        let _index_guard = self.current_index_io.lock().expect("index_io poisoned");
-        let root = self
-            .get_notebook_config_by_id(notebook_id)
-            .map(|config| std::path::PathBuf::from(config.path))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "notebook not found"))?;
+    /// Drop the obsolete Memo-ID projection after rebuilding the path index from Markdown.
+    /// Derived tags, todos, agents, colors, and properties come from the source files.
+    pub fn retire_legacy_memo_index(&self, notebook_id: &str) -> io::Result<()> {
+        self.initialize_note_index_schema(notebook_id)?;
         let conn = self.open_note_index_connection(notebook_id)?;
-        let complete: Option<String> = conn
+        let retired: Option<String> = conn
             .query_row(
-                "SELECT value FROM note_index_meta WHERE key='note_properties_migrated'",
+                "SELECT value FROM note_index_meta WHERE key='legacy_memo_index_retired'",
                 [],
                 |row| row.get(0),
             )
             .optional()
             .map_err(io::Error::other)?;
-        if complete.as_deref() == Some("1") {
-            return Ok(NotePropertyMigrationReport::default());
+        if retired.as_deref() == Some("1") {
+            return Ok(());
         }
-        let has_legacy: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memos'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(io::Error::other)?;
-        if has_legacy == 0 {
-            conn.execute(
-                "INSERT INTO note_index_meta (key, value) VALUES ('note_properties_migrated','1') \
-                ON CONFLICT(key) DO UPDATE SET value='1'",
-                [],
-            )
-            .map_err(io::Error::other)?;
-            return Ok(NotePropertyMigrationReport::default());
-        }
-        let mut statement = conn
-            .prepare(
-                "SELECT id, relative_path, created_at, favorited, icon, properties \
-             FROM memos WHERE notebook_id=?1 ORDER BY relative_path",
-            )
-            .map_err(io::Error::other)?;
-        let notes = statement
-            .query_map(params![notebook_id], |row| {
-                Ok(LegacyNoteProperties {
-                    id: row.get(0)?,
-                    relative_path: row.get(1)?,
-                    created_at: row.get(2)?,
-                    favorited: row.get::<_, i64>(3)? != 0,
-                    icon: row.get(4)?,
-                    properties_json: row.get(5)?,
-                })
-            })
-            .map_err(io::Error::other)?
-            .collect::<Result<Vec<_>, _>>()
-            .map_err(io::Error::other)?;
-        drop(statement);
-        let legacy_created_times: Vec<_> = notes
-            .iter()
-            .filter(|note| note.created_at > 0)
-            .map(|note| (note.relative_path.clone(), note.created_at))
-            .collect();
-        let mut report = NotePropertyMigrationReport::default();
-        for note in notes {
-            let stored_properties: serde_json::Value = serde_json::from_str(&note.properties_json)
-                .map_err(|error| {
-                    io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "invalid legacy properties for {}: {error}",
-                            note.relative_path
-                        ),
-                    )
-                })?;
-            let stored_properties = stored_properties.as_object().ok_or_else(|| {
-                io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!(
-                        "legacy properties are not an object for {}",
-                        note.relative_path
-                    ),
-                )
-            })?;
-            let path = notebook_path_from_relative(&root, &note.relative_path)
-                .map_err(io::Error::other)?;
-            let original = fs::read_to_string(&path)?;
-            let metadata = super::extract_document_metadata(&original)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-            let existing = metadata.properties.as_object().ok_or_else(|| {
-                io::Error::new(io::ErrorKind::InvalidData, "frontmatter is not a mapping")
-            })?;
-            let mut values = serde_json::Map::new();
-            if note.favorited && !existing.contains_key("flowix_favorited") {
-                values.insert("flowix_favorited".into(), serde_json::json!(true));
-            }
-            if let Some(icon) = note.icon.filter(|value| !value.is_empty()) {
-                if !existing.contains_key("flowix_icon") {
-                    values.insert("flowix_icon".into(), serde_json::json!(icon));
-                }
-            }
-            if !existing.contains_key("flowix_colors") {
-                let mut colors = conn
-                    .prepare("SELECT color FROM memo_colors WHERE memo_id=?1 ORDER BY position")
-                    .map_err(io::Error::other)?
-                    .query_map(params![note.id], |row| row.get::<_, String>(0))
-                    .map_err(io::Error::other)?
-                    .collect::<Result<Vec<_>, _>>()
-                    .map_err(io::Error::other)?;
-                if !colors.is_empty() {
-                    values.insert(
-                        "flowix_colors".into(),
-                        serde_json::json!(std::mem::take(&mut colors)),
-                    );
-                }
-            }
-            for (key, value) in stored_properties {
-                if key != "key"
-                    && key != "flowix_key"
-                    && key != "flowix_created_at"
-                    && !existing.contains_key(key)
-                    && !values.contains_key(key)
-                {
-                    values.insert(key.clone(), value.clone());
-                }
-            }
-            if values.is_empty() {
-                continue;
-            }
-            let mut overrides = super::MergeOverrides::new();
-            for (key, value) in &values {
-                if key.is_empty() || key.contains(['\n', '\r']) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("invalid legacy property name in {}", note.relative_path),
-                    ));
-                }
-                let yaml_key = if key
-                    .chars()
-                    .all(|ch| ch.is_ascii_alphanumeric() || ch == '_' || ch == '-')
-                {
-                    key.clone()
-                } else {
-                    serde_json::to_string(key).map_err(io::Error::other)?
-                };
-                overrides.insert(yaml_key, value.to_string());
-            }
-            let updated = super::merge_frontmatter(&original, &overrides);
-            let readback = super::extract_document_metadata(&updated)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-            for (key, value) in &values {
-                if readback.properties.get(key) != Some(value) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!("property {key} readback failed for {}", note.relative_path),
-                    ));
-                }
-            }
-            if fs::read_to_string(&path)? != original {
-                return Err(io::Error::new(
-                    io::ErrorKind::WouldBlock,
-                    format!(
-                        "note changed during property migration: {}",
-                        note.relative_path
-                    ),
-                ));
-            }
-            super::atomic_write_bytes(&path, updated.as_bytes())?;
-            report.notes_written += 1;
-            report.properties_written += values.len();
-        }
-        // Creation time remains index metadata. Seed it from the old index
-        // once, without changing the Markdown file for this field.
-        for (relative_path, created_at) in legacy_created_times {
-            self.refresh_note_path(notebook_id, &relative_path)?;
-            conn.execute(
-                "UPDATE notes SET created_at=?2 WHERE relative_path=?1",
-                params![relative_path, created_at],
-            )
-            .map_err(io::Error::other)?;
-        }
-        conn.execute(
-            "INSERT INTO note_index_meta (key, value) VALUES ('note_properties_migrated','1') \
-            ON CONFLICT(key) DO UPDATE SET value='1'",
-            [],
+        conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             DELETE FROM notes;
+             DELETE FROM note_index_meta WHERE key='parser_version';
+             COMMIT;",
         )
         .map_err(io::Error::other)?;
-        Ok(report)
-    }
-
-    /// Persist non-derivable legacy task attributes in their Markdown note.
-    /// The migration is idempotent. A mismatched task ID or conflicting
-    /// frontmatter value aborts before writing that note.
-    pub fn migrate_note_todo_metadata_for_notebook(
-        &self,
-        notebook_id: &str,
-    ) -> io::Result<NoteTodoMigrationReport> {
-        let _write_guard = self.acquire_cross_process_write_lock()?;
-        let _index_guard = self.current_index_io.lock().expect("index_io poisoned");
-        let root = self
-            .get_notebook_config_by_id(notebook_id)
-            .map(|config| std::path::PathBuf::from(config.path))
-            .ok_or_else(|| io::Error::new(io::ErrorKind::NotFound, "notebook not found"))?;
+        drop(conn);
+        self.reconcile_note_index_blocking(notebook_id)?;
         let conn = self.open_note_index_connection(notebook_id)?;
-        let complete: Option<String> = conn
-            .query_row(
-                "SELECT value FROM note_index_meta WHERE key='todo_metadata_migrated'",
-                [],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(io::Error::other)?;
-        if complete.as_deref() == Some("1") {
-            return Ok(NoteTodoMigrationReport::default());
-        }
-        let has_legacy: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name='memo_todos'",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(io::Error::other)?;
-        if has_legacy == 0 {
-            conn.execute(
-                "INSERT INTO note_index_meta (key, value) VALUES ('todo_metadata_migrated', '1') \
-                          ON CONFLICT(key) DO UPDATE SET value='1'",
-                [],
-            )
-            .map_err(io::Error::other)?;
-            return Ok(NoteTodoMigrationReport::default());
-        }
-        let mut stmt = conn
-            .prepare("SELECT m.relative_path, t.todo_id, t.priority, t.time_range, t.owner, t.assignee, \
-                      t.created_at, t.updated_at FROM memo_todos t \
-                      JOIN memos m ON m.id=t.memo_id WHERE m.notebook_id=?1 ORDER BY m.relative_path, t.position")
-            .map_err(io::Error::other)?;
-        let rows = stmt
-            .query_map(params![notebook_id], |row| {
-                Ok((
-                    row.get::<_, String>(0)?,
-                    LegacyTodoAttributes {
-                        todo_id: row.get(1)?,
-                        priority: row.get(2)?,
-                        time_range: row.get(3)?,
-                        owner: row.get(4)?,
-                        assignee: row.get(5)?,
-                        created_at: row.get(6)?,
-                        updated_at: row.get(7)?,
-                    },
-                ))
-            })
-            .map_err(io::Error::other)?;
-        let mut by_path: BTreeMap<String, Vec<LegacyTodoAttributes>> = BTreeMap::new();
-        for row in rows {
-            let (path, attributes) = row.map_err(io::Error::other)?;
-            if attributes.has_persistent_value() {
-                by_path.entry(path).or_default().push(attributes);
-            }
-        }
-        drop(stmt);
-        let mut report = NoteTodoMigrationReport::default();
-        for (relative_path, attributes) in by_path {
-            let path =
-                notebook_path_from_relative(&root, &relative_path).map_err(io::Error::other)?;
-            let original = fs::read_to_string(&path)?;
-            let with_ids = super::ensure_todo_ids_in_content(&original);
-            let todos = super::extract_todos_from_body(&with_ids);
-            let known_ids: HashSet<String> = todos.iter().map(|todo| todo.id.clone()).collect();
-            if known_ids.len() != todos.len() {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("duplicate task IDs in {relative_path}"),
-                ));
-            }
-            let mut metadata = super::extract_document_metadata(&with_ids)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?
-                .properties
-                .get("flowix_todo_metadata")
-                .and_then(serde_json::Value::as_object)
-                .cloned()
-                .unwrap_or_default();
-            for attribute in &attributes {
-                if !known_ids.contains(&attribute.todo_id) {
-                    return Err(io::Error::new(
-                        io::ErrorKind::InvalidData,
-                        format!(
-                            "legacy task {} is missing from {}",
-                            attribute.todo_id, relative_path
-                        ),
-                    ));
-                }
-                let value = attribute.json_value();
-                if let Some(existing) = metadata.get(&attribute.todo_id) {
-                    if existing != &value {
-                        return Err(io::Error::new(
-                            io::ErrorKind::InvalidData,
-                            format!(
-                                "task metadata conflict for {} in {}",
-                                attribute.todo_id, relative_path
-                            ),
-                        ));
-                    }
-                } else {
-                    metadata.insert(attribute.todo_id.clone(), value);
-                }
-            }
-            let mut overrides = HashMap::new();
-            overrides.insert(
-                "flowix_todo_metadata".to_owned(),
-                serde_json::Value::Object(metadata.clone()).to_string(),
-            );
-            let updated = super::merge_frontmatter(&with_ids, &overrides.into_iter().collect());
-            let readback = super::extract_document_metadata(&updated)
-                .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-            if readback.properties.get("flowix_todo_metadata")
-                != Some(&serde_json::Value::Object(metadata))
-            {
-                return Err(io::Error::new(
-                    io::ErrorKind::InvalidData,
-                    format!("task metadata readback failed for {relative_path}"),
-                ));
-            }
-            if updated != original {
-                if fs::read_to_string(&path)? != original {
-                    return Err(io::Error::new(
-                        io::ErrorKind::WouldBlock,
-                        format!("note changed during task metadata migration: {relative_path}"),
-                    ));
-                }
-                super::atomic_write_bytes(&path, updated.as_bytes())?;
-                report.notes_written += 1;
-                report.tasks_written += attributes.len();
-            }
-        }
-        conn.execute(
-            "INSERT INTO note_index_meta (key, value) VALUES ('todo_metadata_migrated', '1') \
-                      ON CONFLICT(key) DO UPDATE SET value='1'",
-            [],
+        conn.execute_batch(
+            "BEGIN IMMEDIATE;
+             DROP TABLE IF EXISTS memo_content_revisions;
+             DROP TABLE IF EXISTS memo_agents;
+             DROP TABLE IF EXISTS memo_colors;
+             DROP TRIGGER IF EXISTS trg_memo_tags_register_notebook_tag;
+             DROP TABLE IF EXISTS memo_tags;
+             DROP TABLE IF EXISTS memo_todos;
+             DROP TABLE IF EXISTS pending_external_memo_creates;
+             DROP TABLE IF EXISTS notebook_tags;
+             DROP TABLE IF EXISTS memos;
+             DROP TABLE IF EXISTS memo_lifecycles;
+             DROP TABLE IF EXISTS memo_index_state;
+             DROP TABLE IF EXISTS notebook_data_migrations;
+             DROP TABLE IF EXISTS schema_migrations;
+             INSERT INTO note_index_meta (key, value)
+               VALUES ('legacy_memo_index_retired', '1')
+               ON CONFLICT(key) DO UPDATE SET value='1';
+             COMMIT;",
         )
         .map_err(io::Error::other)?;
-        Ok(report)
+        Ok(())
     }
 
     /// Reconcile one notebook's Note projection with files on disk. Existing
@@ -1844,7 +1369,7 @@ impl MemoFile {
     /// already reconciling the same notebook, so a background refresh never
     /// turns into a spurious 5s timeout error. The next read pass retries.
     pub fn reconcile_note_index(&self, notebook_id: &str) -> io::Result<NoteIndexReconcileReport> {
-        self.reconcile_note_index_inner(notebook_id, false, true)
+        self.reconcile_note_index_inner(notebook_id, false, MaintenanceAdmission::SkipIfBusy, &|| true)
     }
 
     /// Hash every file, including entries whose size and mtime are unchanged.
@@ -1854,7 +1379,7 @@ impl MemoFile {
     /// maintenance lock rather than skipping, so the caller can rely on a full
     /// pass having completed.
     pub fn verify_note_index(&self, notebook_id: &str) -> io::Result<NoteIndexReconcileReport> {
-        self.reconcile_note_index_inner(notebook_id, true, false)
+        self.reconcile_note_index_inner(notebook_id, true, MaintenanceAdmission::Wait, &|| true)
     }
 
     /// Blocking reconcile used by short-lived CLI/MCP processes that need an
@@ -1867,7 +1392,7 @@ impl MemoFile {
         &self,
         notebook_id: &str,
     ) -> io::Result<NoteIndexReconcileReport> {
-        self.reconcile_note_index_inner(notebook_id, false, false)
+        self.reconcile_note_index_inner(notebook_id, false, MaintenanceAdmission::Wait, &|| true)
     }
 
     /// Enumerate Markdown note paths directly from the notebook tree without
@@ -1937,13 +1462,32 @@ impl MemoFile {
         )
     }
 
+    /// Upgrade only the rebuildable projection in place. Never replace the
+    /// shared notebook database, which also owns media properties/revisions.
+    pub fn prepare_background_note_projection(&self, notebook_id: &str) -> io::Result<()> {
+        let Some(_guard) = self.operation_locks().try_notebook_maintenance(notebook_id, "prepare_note_projection")? else {
+            return Err(io::Error::new(io::ErrorKind::WouldBlock, "notebook maintenance is busy"));
+        };
+        self.open_note_index_connection_unchecked(notebook_id, true)?;
+        Ok(())
+    }
+
+    /// Cooperative desktop maintenance. Locks and transactions remain per file;
+    /// cancellation leaves an incomplete cold index explicitly unavailable.
+    pub fn reconcile_note_index_background(
+        &self, notebook_id: &str, keep_running: &dyn Fn() -> bool,
+    ) -> io::Result<NoteIndexReconcileReport> {
+        self.reconcile_note_index_inner(notebook_id, false, MaintenanceAdmission::FailIfBusy, keep_running)
+    }
+
     fn reconcile_note_index_inner(
         &self,
         notebook_id: &str,
         verify_hashes: bool,
-        skip_if_busy: bool,
+        admission: MaintenanceAdmission,
+        keep_running: &dyn Fn() -> bool,
     ) -> io::Result<NoteIndexReconcileReport> {
-        let _maintenance_guard = if skip_if_busy {
+        let _maintenance_guard = if !matches!(admission, MaintenanceAdmission::Wait) {
             let Some(guard) = self
                 .operation_locks()
                 .try_notebook_maintenance(notebook_id, "reconcile_note_index")?
@@ -1952,6 +1496,9 @@ impl MemoFile {
                     notebook_id,
                     "note index reconcile skipped: another maintenance pass is in progress"
                 );
+                if matches!(admission, MaintenanceAdmission::FailIfBusy) {
+                    return Err(io::Error::new(io::ErrorKind::WouldBlock, "notebook maintenance is busy"));
+                }
                 return Ok(NoteIndexReconcileReport::default());
             };
             guard
@@ -1981,12 +1528,13 @@ impl MemoFile {
             .map_err(io::Error::other)?
             .and_then(|value| value.parse().ok());
         let reparse_all = parser_version != Some(PARSER_VERSION);
-        conn.execute(
-            "INSERT INTO note_index_meta (key, value) VALUES ('build_state', 'building') \
-                      ON CONFLICT(key) DO UPDATE SET value='building'",
-            [],
-        )
-        .map_err(io::Error::other)?;
+        // A warm refresh must not make existing lists unavailable while scanning.
+        if reparse_all || !self.note_index_is_ready(notebook_id)? {
+            conn.execute(
+                "INSERT INTO note_index_meta (key, value) VALUES ('build_state', 'building') \
+                 ON CONFLICT(key) DO UPDATE SET value='building'", [],
+            ).map_err(io::Error::other)?;
+        }
         let mut seen = HashSet::new();
         let mut report = NoteIndexReconcileReport::default();
         let policy = self.file_management_policy(notebook_id);
@@ -2004,6 +1552,9 @@ impl MemoFile {
                         .unwrap_or(false)
             })
         {
+            if !keep_running() {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "index maintenance cancelled"));
+            }
             let entry = entry.map_err(io::Error::other)?;
             if !entry.file_type().is_file() || !is_markdown_note_path(entry.path()) {
                 continue;
@@ -2030,6 +1581,9 @@ impl MemoFile {
             .map_err(io::Error::other)?;
         drop(stmt);
         for relative in indexed {
+            if !keep_running() {
+                return Err(io::Error::new(io::ErrorKind::Interrupted, "index maintenance cancelled"));
+            }
             if !seen.contains(&relative) {
                 let candidate = notebook_path_from_relative(&root, &relative).map_err(io::Error::other)?;
                 // The scan only nominates stale rows. A file may have appeared
@@ -2121,6 +1675,9 @@ impl MemoFile {
             Err(error) => return Err(error),
         };
         if missing || policy.is_index_ignored_at(root, Path::new(&relative)) {
+            if !root.is_dir() {
+                return Err(io::Error::new(io::ErrorKind::NotFound, "notebook directory unavailable"));
+            }
             tx.execute(
                 "DELETE FROM note_search_fts WHERE relative_path = ?1",
                 params![relative],
@@ -2185,7 +1742,6 @@ impl MemoFile {
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))?;
         let title = display_title_from_relative_path(&relative);
         let mut derived = Memo {
-            id: String::new(),
             filename: relative.rsplit('/').next().unwrap_or(&relative).to_owned(),
             relative_path: relative.clone(),
             preview: String::new(),
@@ -2202,13 +1758,14 @@ impl MemoFile {
         };
         super::apply_derived_memo_fields(&mut derived, &content);
         tx.execute(
-                "INSERT INTO notes (relative_path, size_bytes, modified_ns, content_hash, title, preview, thumbnail, properties_json, indexed_at, created_at, updated_at, favorited, icon, colors_json, filename, filename_lower) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16) \
+                "INSERT INTO notes (relative_path, size_bytes, modified_ns, content_hash, title, preview, thumbnail, properties_json, indexed_at, created_at, updated_at, favorited, icon, colors_json, filename, filename_lower, tags, todos, agents) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19) \
                  ON CONFLICT(relative_path) DO UPDATE SET size_bytes=excluded.size_bytes, modified_ns=excluded.modified_ns, \
                  content_hash=excluded.content_hash, title=excluded.title, preview=excluded.preview, thumbnail=excluded.thumbnail, \
                  properties_json=excluded.properties_json, indexed_at=excluded.indexed_at, \
                  created_at=excluded.created_at, updated_at=excluded.updated_at, favorited=excluded.favorited, \
-                 icon=excluded.icon, colors_json=excluded.colors_json, filename=excluded.filename, filename_lower=excluded.filename_lower",
+                 icon=excluded.icon, colors_json=excluded.colors_json, filename=excluded.filename, filename_lower=excluded.filename_lower, \
+                 tags=excluded.tags, todos=excluded.todos, agents=excluded.agents",
                 params![relative, size, modified_ns, hash, title, derived.preview, derived.thumbnail,
                     derived.properties.to_string(),
                     chrono::Utc::now().timestamp_millis(),
@@ -2217,20 +1774,11 @@ impl MemoFile {
                     modified_ns.unwrap_or(0) / 1_000_000,
                     i64::from(derived.favorited), derived.icon,
                      serde_json::to_string(&derived.colors).map_err(io::Error::other)?,
-                     derived.filename, derived.filename.to_lowercase()],
+                     derived.filename, derived.filename.to_lowercase(),
+                     serde_json::to_string(&derived.tags).map_err(io::Error::other)?,
+                     serde_json::to_string(&derived.todos).map_err(io::Error::other)?,
+                     serde_json::to_string(&derived.agents).map_err(io::Error::other)?],
             ).map_err(io::Error::other)?;
-        tx.execute(
-            "DELETE FROM note_tags WHERE relative_path = ?1",
-            params![relative],
-        )
-        .map_err(io::Error::other)?;
-        for tag in &derived.tags {
-            tx.execute(
-                "INSERT INTO note_tags (relative_path, tag) VALUES (?1, ?2)",
-                params![relative, tag],
-            )
-            .map_err(io::Error::other)?;
-        }
         tx.execute(
             "DELETE FROM note_search_fts WHERE relative_path = ?1",
             params![relative],
@@ -2248,45 +1796,6 @@ impl MemoFile {
             ],
         )
         .map_err(io::Error::other)?;
-        tx.execute(
-            "DELETE FROM note_todos WHERE relative_path = ?1",
-            params![relative],
-        )
-        .map_err(io::Error::other)?;
-        for (position, todo) in derived.todos.iter().enumerate() {
-            let attributes = derived
-                .properties
-                .get("flowix_todo_metadata")
-                .and_then(|value| value.get(&todo.id));
-            let string_field = |name| {
-                attributes
-                    .and_then(|value| value.get(name))
-                    .and_then(serde_json::Value::as_str)
-                    .unwrap_or("")
-            };
-            let number_field = |name| {
-                attributes
-                    .and_then(|value| value.get(name))
-                    .and_then(serde_json::Value::as_i64)
-                    .unwrap_or(0)
-            };
-            tx.execute("INSERT INTO note_todos \
-                    (relative_path, position, todo_id, content, status, priority, time_range, owner, assignee, created_at, updated_at) \
-                    VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)",
-                    params![relative, position as i64, todo.id, todo.content, todo.status,
-                        string_field("priority"), string_field("timeRange"), string_field("owner"),
-                        string_field("assignee"), number_field("createdAt"), number_field("updatedAt")])
-                    .map_err(io::Error::other)?;
-        }
-        tx.execute(
-            "DELETE FROM note_agents WHERE relative_path = ?1",
-            params![relative],
-        )
-        .map_err(io::Error::other)?;
-        for (position, agent) in derived.agents.iter().enumerate() {
-            tx.execute("INSERT INTO note_agents (relative_path, position, thread_id, title, agent_type) VALUES (?1, ?2, ?3, ?4, ?5)",
-                    params![relative, position as i64, agent.thread_id, agent.title, agent.agent_type]).map_err(io::Error::other)?;
-        }
         tx.commit().map_err(io::Error::other)?;
         if previous.is_some() {
             report.updated += 1;
@@ -2297,13 +1806,44 @@ impl MemoFile {
     }
 
     pub(crate) fn open_note_index_connection(&self, notebook_id: &str) -> io::Result<Connection> {
+        self.open_note_index_connection_inner(notebook_id, false)
+    }
+
+    /// Upgrade an existing note index only from the version-initialization worker.
+    pub fn initialize_note_index_schema(&self, notebook_id: &str) -> io::Result<()> {
+        self.open_note_index_connection_inner(notebook_id, true)?;
+        Ok(())
+    }
+
+    fn open_note_index_connection_inner(
+        &self,
+        notebook_id: &str,
+        run_legacy_migrations: bool,
+    ) -> io::Result<Connection> {
+        let path = self.notebook_db_path(notebook_id)?;
+        if run_legacy_migrations {
+            super::with_database_rebuild(&path, || {
+                self.open_note_index_connection_unchecked(notebook_id, true)
+            })
+        } else {
+            self.open_note_index_connection_unchecked(notebook_id, false)
+        }
+    }
+
+    fn open_note_index_connection_unchecked(
+        &self,
+        notebook_id: &str,
+        run_legacy_migrations: bool,
+    ) -> io::Result<Connection> {
         let path = self.notebook_db_path(notebook_id)?;
         let mut conn = Connection::open(path).map_err(io::Error::other)?;
         conn.busy_timeout(std::time::Duration::from_secs(10))
             .map_err(io::Error::other)?;
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON;")
             .map_err(io::Error::other)?;
-        discard_legacy_v2_note_projection(&mut conn)?;
+        if run_legacy_migrations {
+            discard_legacy_v2_note_projection(&mut conn)?;
+        }
         conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; \
             CREATE TABLE IF NOT EXISTS note_index_meta (key TEXT PRIMARY KEY, value TEXT NOT NULL); \
             CREATE TABLE IF NOT EXISTS notes (relative_path TEXT PRIMARY KEY, \
@@ -2311,20 +1851,8 @@ impl MemoFile {
               title TEXT NOT NULL, preview TEXT NOT NULL, thumbnail TEXT, properties_json TEXT NOT NULL, indexed_at INTEGER NOT NULL, \
               created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, \
               favorited INTEGER NOT NULL DEFAULT 0, icon TEXT, colors_json TEXT NOT NULL DEFAULT '[]', \
-              filename TEXT NOT NULL DEFAULT '', filename_lower TEXT NOT NULL DEFAULT ''); \
-            CREATE TABLE IF NOT EXISTS note_tags (relative_path TEXT NOT NULL REFERENCES notes(relative_path) ON DELETE CASCADE, \
-              tag TEXT NOT NULL, PRIMARY KEY(relative_path, tag)); \
-            CREATE INDEX IF NOT EXISTS idx_note_tags_tag ON note_tags(tag); \
-            CREATE INDEX IF NOT EXISTS idx_notes_created_page ON notes(favorited DESC, created_at DESC, relative_path DESC); \
-            CREATE INDEX IF NOT EXISTS idx_notes_updated_page ON notes(favorited DESC, updated_at DESC, relative_path DESC); \
-            CREATE TABLE IF NOT EXISTS note_todos (relative_path TEXT NOT NULL REFERENCES notes(relative_path) ON DELETE CASCADE, \
-              position INTEGER NOT NULL, todo_id TEXT NOT NULL, content TEXT NOT NULL, status TEXT NOT NULL, \
-              priority TEXT NOT NULL DEFAULT '', time_range TEXT NOT NULL DEFAULT '', owner TEXT NOT NULL DEFAULT '', \
-              assignee TEXT NOT NULL DEFAULT '', created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, \
-              PRIMARY KEY(relative_path, position)); \
-            CREATE TABLE IF NOT EXISTS note_agents (relative_path TEXT NOT NULL REFERENCES notes(relative_path) ON DELETE CASCADE, \
-              position INTEGER NOT NULL, thread_id TEXT NOT NULL, title TEXT NOT NULL, agent_type TEXT NOT NULL, \
-              PRIMARY KEY(relative_path, position)); \
+              filename TEXT NOT NULL DEFAULT '', filename_lower TEXT NOT NULL DEFAULT '', \
+              tags TEXT NOT NULL DEFAULT '[]', todos TEXT NOT NULL DEFAULT '[]', agents TEXT NOT NULL DEFAULT '[]'); \
             CREATE TABLE IF NOT EXISTS note_content_revisions (notebook_id TEXT NOT NULL, \
               relative_path TEXT NOT NULL, content_hash TEXT NOT NULL, local_revision INTEGER NOT NULL, \
               change_id TEXT NOT NULL, updated_at INTEGER NOT NULL, PRIMARY KEY(notebook_id, relative_path));")
@@ -2336,55 +1864,62 @@ impl MemoFile {
             );",
         )
         .map_err(io::Error::other)?;
-        for (column, definition) in [
-            ("priority", "TEXT NOT NULL DEFAULT ''"),
-            ("time_range", "TEXT NOT NULL DEFAULT ''"),
-            ("owner", "TEXT NOT NULL DEFAULT ''"),
-            ("assignee", "TEXT NOT NULL DEFAULT ''"),
-            ("created_at", "INTEGER NOT NULL DEFAULT 0"),
-            ("updated_at", "INTEGER NOT NULL DEFAULT 0"),
-        ] {
-            let mut statement = conn
-                .prepare("PRAGMA table_info(note_todos)")
-                .map_err(io::Error::other)?;
-            let names = statement
-                .query_map([], |row| row.get::<_, String>(1))
-                .map_err(io::Error::other)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(io::Error::other)?;
-            if !names.iter().any(|name| name == column) {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE note_todos ADD COLUMN {column} {definition}"
-                ))
+        if run_legacy_migrations {
+            for (column, definition) in [
+                ("thumbnail", "TEXT"),
+                ("created_at", "INTEGER NOT NULL DEFAULT 0"),
+                ("updated_at", "INTEGER NOT NULL DEFAULT 0"),
+                ("favorited", "INTEGER NOT NULL DEFAULT 0"),
+                ("icon", "TEXT"),
+                ("colors_json", "TEXT NOT NULL DEFAULT '[]'"),
+                ("filename", "TEXT NOT NULL DEFAULT ''"),
+                ("filename_lower", "TEXT NOT NULL DEFAULT ''"),
+                ("tags", "TEXT NOT NULL DEFAULT '[]'"),
+                ("todos", "TEXT NOT NULL DEFAULT '[]'"),
+                ("agents", "TEXT NOT NULL DEFAULT '[]'"),
+            ] {
+                let mut statement = conn
+                    .prepare("PRAGMA table_info(notes)")
+                    .map_err(io::Error::other)?;
+                let names = statement
+                    .query_map([], |row| row.get::<_, String>(1))
+                    .map_err(io::Error::other)?
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(io::Error::other)?;
+                if !names.iter().any(|name| name == column) {
+                    conn.execute_batch(&format!(
+                        "ALTER TABLE notes ADD COLUMN {column} {definition}"
+                    ))
+                    .map_err(io::Error::other)?;
+                }
+            }
+            // Older path projections stored derived values in child tables.
+            // Markdown is authoritative, so do not copy these rows into the
+            // new projection. Force a full parser pass before any query can
+            // rely on the replacement columns, then discard the old tables.
+            let has_table = |name: &str| -> io::Result<bool> {
+                conn.query_row(
+                    "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name=?1)",
+                    [name],
+                    |row| row.get(0),
+                ).map_err(io::Error::other)
+            };
+            let has_legacy_derived_tables = ["note_tags", "note_todos", "note_agents"]
+                .into_iter()
+                .try_fold(false, |found, table| Ok::<_, io::Error>(found || has_table(table)?))?;
+            if has_legacy_derived_tables {
+                conn.execute(
+                    "DELETE FROM note_index_meta WHERE key='parser_version'",
+                    [],
+                )
                 .map_err(io::Error::other)?;
             }
+            conn.execute_batch("DROP TABLE IF EXISTS note_tags; DROP TABLE IF EXISTS note_todos; DROP TABLE IF EXISTS note_agents;")
+                .map_err(io::Error::other)?;
         }
-        for (column, definition) in [
-            ("thumbnail", "TEXT"),
-            ("created_at", "INTEGER NOT NULL DEFAULT 0"),
-            ("updated_at", "INTEGER NOT NULL DEFAULT 0"),
-            ("favorited", "INTEGER NOT NULL DEFAULT 0"),
-            ("icon", "TEXT"),
-            ("colors_json", "TEXT NOT NULL DEFAULT '[]'"),
-            ("filename", "TEXT NOT NULL DEFAULT ''"),
-            ("filename_lower", "TEXT NOT NULL DEFAULT ''"),
-        ] {
-            let mut statement = conn
-                .prepare("PRAGMA table_info(notes)")
-                .map_err(io::Error::other)?;
-            let names = statement
-                .query_map([], |row| row.get::<_, String>(1))
-                .map_err(io::Error::other)?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(io::Error::other)?;
-            if !names.iter().any(|name| name == column) {
-                conn.execute_batch(&format!(
-                    "ALTER TABLE notes ADD COLUMN {column} {definition}"
-                ))
-                .map_err(io::Error::other)?;
-            }
-        }
-        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_notes_filename_page ON notes(favorited DESC, filename_lower ASC, filename ASC, relative_path ASC);")
+        conn.execute_batch("CREATE INDEX IF NOT EXISTS idx_notes_created_page ON notes(favorited DESC, created_at DESC, relative_path DESC); \
+            CREATE INDEX IF NOT EXISTS idx_notes_updated_page ON notes(favorited DESC, updated_at DESC, relative_path DESC); \
+            CREATE INDEX IF NOT EXISTS idx_notes_filename_page ON notes(favorited DESC, filename_lower ASC, filename ASC, relative_path ASC);")
             .map_err(io::Error::other)?;
         conn.execute(
             "INSERT INTO note_index_meta (key, value) VALUES ('schema_version', ?1) \
@@ -2400,10 +1935,18 @@ impl MemoFile {
             )
             .map_err(io::Error::other)?;
         if stored_version != SCHEMA_VERSION.to_string() {
-            return Err(io::Error::new(
-                io::ErrorKind::InvalidData,
-                format!("unsupported Note index schema version: {stored_version}"),
-            ));
+            let legacy_version = stored_version.parse::<i64>().unwrap_or(i64::MAX);
+            if !run_legacy_migrations || legacy_version > SCHEMA_VERSION {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    format!("unsupported Note index schema version: {stored_version}"),
+                ));
+            }
+            conn.execute(
+                "UPDATE note_index_meta SET value = ?1 WHERE key = 'schema_version'",
+                params![SCHEMA_VERSION.to_string()],
+            )
+            .map_err(io::Error::other)?;
         }
         let stored_notebook: Option<String> = conn
             .query_row(
@@ -2471,6 +2014,82 @@ mod tests {
     use super::*;
     use crate::memo_file::NotebookConfig;
 
+    fn background_fixture() -> (tempfile::TempDir, MemoFile, std::path::PathBuf) {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("notebook"); fs::create_dir_all(&root).unwrap();
+        let memo = MemoFile::new(temp.path().join("config"));
+        memo.initialize_current_registry_storage().unwrap();
+        memo.write_notebook_configs(&[NotebookConfig {
+            id: "background".into(), name: "Background".into(), icon: None,
+            path: root.to_string_lossy().into_owned(), is_default: true,
+            sort: 0, created_at: 0, updated_at: 0,
+        }]).unwrap();
+        (temp, memo, root)
+    }
+
+    #[test]
+    fn cached_counts_do_not_create_or_scan_a_cold_notebook() {
+        let (_temp, memo, root) = background_fixture();
+        fs::write(root.join("a.md"), "untouched").unwrap();
+        assert_eq!(memo.cached_note_count("background").unwrap(), None);
+        assert!(!root.join(".flowix/notebook.db").exists());
+    }
+
+    #[test]
+    fn cached_counts_treat_an_old_database_without_projection_as_unknown() {
+        let (_temp, memo, _root) = background_fixture();
+        let path = memo.notebook_db_path("background").unwrap();
+        let conn = Connection::open(&path).unwrap();
+        conn.execute_batch("CREATE TABLE legacy_data (value TEXT); INSERT INTO legacy_data VALUES ('keep');").unwrap();
+        assert_eq!(memo.cached_note_count("background").unwrap(), None);
+        let value: String = conn.query_row("SELECT value FROM legacy_data", [], |row| row.get(0)).unwrap();
+        assert_eq!(value, "keep");
+        let tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE name='notes'", [], |row| row.get(0)).unwrap();
+        assert_eq!(tables, 0);
+    }
+
+    #[test]
+    fn background_scan_reports_busy_instead_of_claiming_completion() {
+        let (_temp, memo, _root) = background_fixture();
+        let _guard = memo.operation_locks().notebook_maintenance("background", "test_busy").unwrap();
+        assert_eq!(memo.reconcile_note_index_background("background", &|| true).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        // Preserve the older passive API's documented skip behavior.
+        assert_eq!(memo.reconcile_note_index("background").unwrap(), NoteIndexReconcileReport::default());
+    }
+
+    #[test]
+    fn cold_tag_queries_request_preparation_without_scanning() {
+        let (_temp, memo, root) = background_fixture();
+        fs::write(root.join("a.md"), "#tag\nbody").unwrap();
+        assert_eq!(memo.read_tag_usage_summary_for_notebook_id(Some("background")).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(memo.read_tag_prefix_counts_for_notebook_id(Some("background")).unwrap_err().kind(), io::ErrorKind::WouldBlock);
+        assert_eq!(memo.note_count("background").unwrap(), 0);
+        assert_eq!(memo.cached_note_count("background").unwrap(), None);
+    }
+
+    #[test]
+    fn cancelled_cold_index_can_resume_without_changing_source_files() {
+        let (_temp, memo, root) = background_fixture();
+        fs::write(root.join("a.md"), "# Keep\nbody").unwrap();
+        assert_eq!(memo.reconcile_note_index_background("background", &|| false).unwrap_err().kind(), io::ErrorKind::Interrupted);
+        assert_eq!(memo.cached_note_count("background").unwrap(), None);
+        memo.reconcile_note_index_background("background", &|| true).unwrap();
+        assert_eq!(memo.cached_note_count("background").unwrap(), Some(1));
+        assert_eq!(fs::read_to_string(root.join("a.md")).unwrap(), "# Keep\nbody");
+    }
+
+    #[test]
+    fn cancelled_warm_refresh_keeps_the_previous_projection_readable() {
+        let (_temp, memo, root) = background_fixture();
+        fs::write(root.join("a.md"), "a").unwrap();
+        memo.reconcile_note_index_background("background", &|| true).unwrap();
+        fs::write(root.join("b.md"), "b").unwrap();
+        assert!(memo.reconcile_note_index_background("background", &|| false).is_err());
+        assert_eq!(memo.read_note_entries("background").unwrap().len(), 1);
+        memo.reconcile_note_index_background("background", &|| true).unwrap();
+        assert_eq!(memo.read_note_entries("background").unwrap().len(), 2);
+    }
+
     #[test]
     fn parser_upgrade_repairs_null_tag_properties_without_changing_note() {
         let temp = tempfile::tempdir().unwrap();
@@ -2523,15 +2142,17 @@ mod tests {
             INSERT INTO v2_notes VALUES ('old.md');
             CREATE VIRTUAL TABLE v2_note_search USING fts5(body);
             INSERT INTO v2_note_search (body) VALUES ('old');
-            CREATE TABLE memos (id TEXT PRIMARY KEY);
-            INSERT INTO memos VALUES ('legacy-id');").unwrap();
+            CREATE TABLE memos (relative_path TEXT PRIMARY KEY);
+            INSERT INTO memos VALUES ('legacy-note.md');").unwrap();
         drop(conn);
 
         let conn = store.open_note_index_connection("nb_test").unwrap();
         let note: String = conn.query_row("SELECT relative_path FROM notes", [], |row| row.get(0)).unwrap();
         assert_eq!(note, "current.md");
-        let legacy: String = conn.query_row("SELECT id FROM memos", [], |row| row.get(0)).unwrap();
-        assert_eq!(legacy, "legacy-id");
+        let memo_path: String = conn
+            .query_row("SELECT relative_path FROM memos", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(memo_path, "legacy-note.md");
         let old_tables: i64 = conn.query_row("SELECT COUNT(*) FROM sqlite_master WHERE type='table' AND name LIKE 'v2_%'", [], |row| row.get(0)).unwrap();
         assert_eq!(old_tables, 0);
     }
@@ -2677,10 +2298,6 @@ mod tests {
             )
             .unwrap();
         assert_eq!(legacy_tables, 0);
-        assert!(store
-            .list_note_entries_with_legacy_ids("nb_test")
-            .unwrap()
-            .is_none());
         let path_entries = store.read_note_entries("nb_test").unwrap();
         assert_eq!(path_entries.len(), 1);
         assert_eq!(path_entries[0].relative_path, "sub/a.md");
@@ -2705,14 +2322,14 @@ mod tests {
         );
         let tags: i64 = conn
             .query_row(
-                "SELECT COUNT(*) FROM note_tags WHERE tag = 'work'",
+                "SELECT COUNT(*) FROM notes n, json_each(n.tags) t WHERE t.value = 'work'",
                 [],
                 |row| row.get(0),
             )
             .unwrap();
         assert_eq!(tags, 1);
         drop(conn);
-        assert_eq!(store.memo_counts_by_notebook().unwrap()["nb_test"], 1);
+        assert_eq!(store.cached_note_count("nb_test").unwrap(), Some(1));
         assert_eq!(
             store
                 .occupied_filenames_in_directory("nb_test", Some("sub"))
@@ -2776,52 +2393,6 @@ mod tests {
     }
 
     #[test]
-    fn legacy_revisions_backfill_into_the_path_keyed_table_once() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("notebook");
-        fs::create_dir_all(&root).unwrap();
-        fs::write(root.join("Legacy.md"), "# Legacy\n").unwrap();
-        let mut store = MemoFile::new(temp.path().join("config"));
-        store
-            .write_notebook_configs(&[NotebookConfig {
-                id: "nb_test".into(),
-                name: "Test".into(),
-                icon: None,
-                path: root.to_string_lossy().into_owned(),
-                is_default: true,
-                sort: 0,
-                created_at: 0,
-                updated_at: 0,
-            }])
-            .unwrap();
-        store.set_current_notebook(Some("nb_test".into()));
-        // Register the file in the legacy id-keyed cache, then commit a
-        // revision through the legacy API.
-        let memo = store
-            .register_existing_file_for_notebook_id("nb_test", &root.join("Legacy.md"))
-            .map_err(|error| error.to_string())
-            .unwrap();
-        store
-            .commit_memo_content_revision(&memo.id, "nb_test", "hash-legacy", "change-legacy")
-            .unwrap();
-
-        // First path-keyed read migrates the legacy row.
-        let revision = store
-            .read_note_content_revision_for_notebook("nb_test", "Legacy.md")
-            .unwrap()
-            .expect("legacy revision must be visible through the path key");
-        assert_eq!(revision.revision, 1);
-        assert_eq!(revision.change_id, "change-legacy");
-
-        // A new path-keyed commit continues the same stream.
-        let commit = store
-            .commit_note_content_revision("nb_test", "Legacy.md", "hash-new", "change-new")
-            .unwrap();
-        assert!(commit.changed);
-        assert_eq!(commit.state.revision, 2);
-    }
-
-    #[test]
     fn moves_note_by_path_without_a_legacy_memo_row() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("notebook");
@@ -2872,7 +2443,7 @@ mod tests {
     }
 
     #[test]
-    fn note_projection_coexists_with_legacy_rows_in_the_same_notebook_db() {
+    fn note_projection_coexists_with_path_keyed_memo_rows_in_the_same_notebook_db() {
         let temp = tempfile::tempdir().unwrap();
         let root = temp.path().join("notebook");
         fs::create_dir_all(&root).unwrap();
@@ -2903,10 +2474,10 @@ mod tests {
         // parser version and reparses that row once.
         assert_eq!(store.reconcile_note_index("nb_test").unwrap().updated, 1);
         let conn = store.open_note_index_connection("nb_test").unwrap();
-        let legacy_id: String = conn
-            .query_row("SELECT id FROM memos", [], |row| row.get(0))
+        let memo_path: String = conn
+            .query_row("SELECT relative_path FROM memos", [], |row| row.get(0))
             .unwrap();
-        assert_eq!(legacy_id, created.id);
+        assert_eq!(memo_path, created.relative_path);
         let note_path: String = conn
             .query_row("SELECT relative_path FROM notes", [], |row| row.get(0))
             .unwrap();
@@ -2914,23 +2485,16 @@ mod tests {
         drop(conn);
         let conn = store.open_memo_index_db_for_notebook_id("nb_test").unwrap();
         conn.execute(
-            "UPDATE memos SET preview='stale legacy preview' WHERE id=?1",
-            params![created.id],
+            "UPDATE memos SET preview='stale memo preview' WHERE relative_path=?1",
+            params![created.relative_path],
         )
         .unwrap();
         drop(conn);
-        let listed = store
-            .list_note_entries_with_legacy_ids("nb_test")
-            .unwrap()
-            .unwrap();
-        assert_eq!(listed.len(), 1);
-        assert_ne!(listed[0].preview, "stale legacy preview");
-        assert_eq!(listed[0].id, created.id);
         let mut service = crate::service::NoteService::new(&store);
         let service_list = service.list("nb_test").unwrap();
-        assert_ne!(service_list[0].preview, "stale legacy preview");
+        assert_ne!(service_list[0].preview, "stale memo preview");
         store
-            .write_memo(&created.id, "# Changed\nnew body\n")
+            .write_memo(&created.relative_path, "# Changed\nnew body\n")
             .unwrap();
         let conn = store.open_note_index_connection("nb_test").unwrap();
         let title: String = conn
@@ -2938,7 +2502,9 @@ mod tests {
             .unwrap();
         assert_eq!(title, "Legacy and Note");
         drop(conn);
-        store.delete_memo_result_global(&created.id).unwrap();
+        store
+            .delete_memo_result_global(&created.relative_path)
+            .unwrap();
         let conn = store.open_note_index_connection("nb_test").unwrap();
         let count: i64 = conn
             .query_row("SELECT COUNT(*) FROM notes", [], |row| row.get(0))
@@ -2946,179 +2512,5 @@ mod tests {
         assert_eq!(count, 0);
     }
 
-    #[test]
-    fn legacy_task_attributes_survive_rebuilding_the_note_projection() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("notebook");
-        fs::create_dir_all(&root).unwrap();
-        let mut store = MemoFile::new(temp.path().join("config"));
-        store
-            .write_notebook_configs(&[NotebookConfig {
-                id: "nb_test".into(),
-                name: "Test".into(),
-                icon: None,
-                path: root.to_string_lossy().into_owned(),
-                is_default: true,
-                sort: 0,
-                created_at: 0,
-                updated_at: 0,
-            }])
-            .unwrap();
-        store.set_current_notebook(Some("nb_test".into()));
-        let created = store
-            .create_memo("Tasks", "- [ ] keep this task\n", None)
-            .unwrap();
-        let conn = store.open_memo_index_db_for_notebook_id("nb_test").unwrap();
-        conn.execute(
-            "UPDATE memo_todos SET priority='high', owner='me', created_at=11 WHERE memo_id=?1",
-            params![created.id],
-        )
-        .unwrap();
-        drop(conn);
 
-        let report = store
-            .migrate_note_todo_metadata_for_notebook("nb_test")
-            .unwrap();
-        assert_eq!(report.notes_written, 1);
-        assert_eq!(report.tasks_written, 1);
-        assert_eq!(
-            store
-                .migrate_note_todo_metadata_for_notebook("nb_test")
-                .unwrap()
-                .notes_written,
-            0
-        );
-        let content = fs::read_to_string(root.join(&created.relative_path)).unwrap();
-        assert!(content.contains("flowix_todo_metadata:"));
-        store.reconcile_note_index("nb_test").unwrap();
-        let conn = store.open_note_index_connection("nb_test").unwrap();
-        let (priority, owner, created_at): (String, String, i64) = conn
-            .query_row(
-                "SELECT priority, owner, created_at FROM note_todos",
-                [],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
-            )
-            .unwrap();
-        assert_eq!(
-            (priority.as_str(), owner.as_str(), created_at),
-            ("high", "me", 11)
-        );
-        conn.execute("DELETE FROM notes", []).unwrap();
-        drop(conn);
-        store.reconcile_note_index("nb_test").unwrap();
-        let conn = store.open_note_index_connection("nb_test").unwrap();
-        let priority: String = conn
-            .query_row("SELECT priority FROM note_todos", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(priority, "high");
-    }
-
-    #[test]
-    fn legacy_note_properties_survive_rebuilding_and_file_values_win() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("notebook");
-        fs::create_dir_all(&root).unwrap();
-        let mut store = MemoFile::new(temp.path().join("config"));
-        store
-            .write_notebook_configs(&[NotebookConfig {
-                id: "nb_test".into(),
-                name: "Test".into(),
-                icon: None,
-                path: root.to_string_lossy().into_owned(),
-                is_default: true,
-                sort: 0,
-                created_at: 0,
-                updated_at: 0,
-            }])
-            .unwrap();
-        store.set_current_notebook(Some("nb_test".into()));
-        let created = store
-            .create_memo(
-                "Properties",
-                "---\nflowix_icon: file-icon\n---\n# Properties\n",
-                None,
-            )
-            .unwrap();
-        let conn = store.open_memo_index_db_for_notebook_id("nb_test").unwrap();
-        conn.execute(
-            "UPDATE memos SET created_at=123, favorited=1, icon='index-icon' WHERE id=?1",
-            params![created.id],
-        )
-        .unwrap();
-        conn.execute(
-            "INSERT INTO memo_colors (memo_id,color,position) VALUES (?1,'blue',0)",
-            params![created.id],
-        )
-        .unwrap();
-        drop(conn);
-        let report = store
-            .migrate_note_properties_for_notebook("nb_test")
-            .unwrap();
-        assert_eq!(report.notes_written, 1);
-        let content = fs::read_to_string(root.join(&created.relative_path)).unwrap();
-        let properties = super::super::extract_document_metadata(&content)
-            .unwrap()
-            .properties;
-        assert!(properties.get("flowix_created_at").is_none());
-        assert_eq!(properties["flowix_favorited"], true);
-        assert_eq!(properties["flowix_icon"], "file-icon");
-        assert_eq!(properties["flowix_colors"], serde_json::json!(["blue"]));
-        assert_eq!(
-            store
-                .migrate_note_properties_for_notebook("nb_test")
-                .unwrap()
-                .notes_written,
-            0
-        );
-        store.reconcile_note_index("nb_test").unwrap();
-        let conn = store.open_note_index_connection("nb_test").unwrap();
-        let (created_at, icon): (i64, String) = conn
-            .query_row("SELECT created_at, icon FROM notes", [], |row| {
-                Ok((row.get(0)?, row.get(1)?))
-            })
-            .unwrap();
-        assert_eq!((created_at, icon.as_str()), (123, "file-icon"));
-    }
-
-    #[test]
-    fn legacy_creation_time_stays_in_index_without_changing_markdown() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path().join("notebook");
-        fs::create_dir_all(&root).unwrap();
-        let mut store = MemoFile::new(temp.path().join("config"));
-        store
-            .write_notebook_configs(&[NotebookConfig {
-                id: "nb_test".into(),
-                name: "Test".into(),
-                icon: None,
-                path: root.to_string_lossy().into_owned(),
-                is_default: true,
-                sort: 0,
-                created_at: 0,
-                updated_at: 0,
-            }])
-            .unwrap();
-        store.set_current_notebook(Some("nb_test".into()));
-        let created = store.create_memo("Plain", "# Plain\n", None).unwrap();
-        let path = root.join(&created.relative_path);
-        let original = fs::read(&path).unwrap();
-        let conn = store.open_memo_index_db_for_notebook_id("nb_test").unwrap();
-        conn.execute(
-            "UPDATE memos SET created_at=123 WHERE id=?1",
-            params![created.id],
-        )
-        .unwrap();
-        drop(conn);
-
-        let report = store
-            .migrate_note_properties_for_notebook("nb_test")
-            .unwrap();
-        assert_eq!(report.notes_written, 0);
-        assert_eq!(fs::read(&path).unwrap(), original);
-        let conn = store.open_note_index_connection("nb_test").unwrap();
-        let created_at: i64 = conn
-            .query_row("SELECT created_at FROM notes", [], |row| row.get(0))
-            .unwrap();
-        assert_eq!(created_at, 123);
-    }
 }

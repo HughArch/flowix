@@ -33,7 +33,6 @@ describe('resolveNotebookImportStatusEffect', () => {
     ).toEqual({
       creationState: { status: 'importing', notebookId: 'nb_current' },
       reloadMemoList: false,
-      stopMemoListLoading: false,
       errorMessage: null,
     });
   });
@@ -48,12 +47,11 @@ describe('resolveNotebookImportStatusEffect', () => {
     ).toEqual({
       creationState: { status: 'ready', notebookId: 'nb_current' },
       reloadMemoList: true,
-      stopMemoListLoading: false,
       errorMessage: null,
     });
   });
 
-  it('stops loading and surfaces backend failures', () => {
+  it('surfaces backend failures', () => {
     expect(
       resolveNotebookImportStatusEffect(
         'nb_current',
@@ -63,7 +61,6 @@ describe('resolveNotebookImportStatusEffect', () => {
     ).toEqual({
       creationState: { status: 'failed', message: 'import failed' },
       reloadMemoList: false,
-      stopMemoListLoading: true,
       errorMessage: 'import failed',
     });
   });
@@ -78,12 +75,11 @@ describe('resolveNotebookImportStatusEffect', () => {
     ).toEqual({
       creationState: { status: 'failed', message: 'Failed to create' },
       reloadMemoList: false,
-      stopMemoListLoading: true,
       errorMessage: 'Failed to create',
     });
   });
 
-  it('treats skipped imports as ready and stops memo-list loading', () => {
+  it('treats skipped imports as ready', () => {
     expect(
       resolveNotebookImportStatusEffect(
         'nb_current',
@@ -93,7 +89,6 @@ describe('resolveNotebookImportStatusEffect', () => {
     ).toEqual({
       creationState: { status: 'ready', notebookId: 'nb_current' },
       reloadMemoList: false,
-      stopMemoListLoading: true,
       errorMessage: null,
     });
   });

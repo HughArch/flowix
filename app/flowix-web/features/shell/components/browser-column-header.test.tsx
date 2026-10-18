@@ -77,6 +77,7 @@ async function withHeader(
     tabs?: BrowserColumnTab[];
     onToggleMemoEditorMode?: import('./browser-column-header').BrowserColumnHeaderProps['onToggleMemoEditorMode'];
     onCloseColumn?: import('./browser-column-header').BrowserColumnHeaderProps['onCloseColumn'];
+    onOpenTabInWorkColumn?: import('./browser-column-header').BrowserColumnHeaderProps['onOpenTabInWorkColumn'];
   } = {},
 ) {
   const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
@@ -93,7 +94,7 @@ async function withHeader(
   try {
     await act(async () => root.render(<BrowserColumnHeader tabs={tabs} activeTabId="one" activeSurfaceChrome="document" onSelectTab={onSelectTab}
       onCloseTab={vi.fn()} onCloseOtherTabs={vi.fn()} onCloseTabsToRight={vi.fn()}
-      onCloseAllTabs={vi.fn()} onToggleMemoEditorMode={options.onToggleMemoEditorMode ?? vi.fn()} onOpenTabInWorkColumn={vi.fn()} onReorderTab={vi.fn()}
+      onCloseAllTabs={vi.fn()} onToggleMemoEditorMode={options.onToggleMemoEditorMode ?? vi.fn()} onOpenTabInWorkColumn={options.onOpenTabInWorkColumn ?? vi.fn()} onReorderTab={vi.fn()}
       isTabMenuOpen={false} onTabMenuOpenChange={vi.fn()} onCloseColumn={options.onCloseColumn} onContextMenuOpenChange={vi.fn()}
       canCreate={false} onCreateNote={vi.fn()} onCreateAgentConversation={vi.fn()}
       isFocused={false} />));
@@ -222,13 +223,27 @@ it('ignores a stale failure after a newer keyboard selection', async () => {
   });
 });
 
-it('shows the reason why a webpage cannot be moved in its context menu', async () => {
+it('allows opening a webpage in Work from its context menu', async () => {
+  const onOpen = vi.fn();
+  await withHeader(vi.fn(), async (buttons) => {
+    await act(async () => { buttons[0].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 })); });
+    const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+      .find((element) => element.textContent === 'tabWindow.context.openInWorkColumn')!;
+    expect(item.disabled).toBe(false);
+    expect(item.getAttribute('aria-describedby')).toBeNull();
+    await act(async () => item.click());
+    expect(onOpen).toHaveBeenCalledWith('one');
+  }, { onOpenTabInWorkColumn: onOpen });
+});
+
+it('keeps an unselected folder tab unavailable for Work', async () => {
   await withHeader(vi.fn(), async (buttons) => {
     await act(async () => { buttons[0].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 })); });
     const explanation = document.getElementById('move-unavailable-one');
-    expect(explanation?.textContent).toBe('tabWindow.context.moveWebUnavailable');
+    expect(explanation?.textContent).toBe('tabWindow.context.moveFolderUnavailable');
     expect(document.querySelector<HTMLButtonElement>('[aria-describedby="move-unavailable-one"]')?.disabled).toBe(true);
-  });
+  }, { tabs: [{ id: 'one', title: 'folder', icon: null, target: { kind: 'file-browser', folderPath: '/book', activeFilePath: null,
+    notebookId: null, scopePath: '/book', fileTreeVisible: true, fileTreeWidth: 220 } }] });
 });
 
 it('shows the editor mode entry for Markdown file tabs and toggles its label', async () => {

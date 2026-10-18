@@ -6,7 +6,8 @@ use crate::client::CloudClient;
 use crate::error::SyncError;
 use crate::models::{
     AppleAuthChallenge, AppleAuthorization, CloudAuthStatus, CloudCheckout, CloudMembership,
-    CloudProduct, CloudState, LocalChangeKind, RefreshTokenStore, RuntimeSession,
+    CloudOrder, CloudOrderCheck, CloudProduct, CloudState, LocalChangeKind, RefreshTokenStore,
+    RuntimeSession,
 };
 use crate::store::SyncStore;
 use crate::v2::{
@@ -29,6 +30,12 @@ pub struct SyncManager {
     refresh_token_store: Option<Arc<dyn RefreshTokenStore>>,
     credential_retry: Arc<tokio::sync::Notify>,
     state_notifier: Arc<dyn Fn(CloudState) + Send + Sync>,
+}
+
+/// Local logout has completed; finish this value to revoke its server session.
+pub struct PendingLogout {
+    refresh_token: Option<String>,
+    local_cleanup: Result<(), SyncError>,
 }
 
 struct AuthState {

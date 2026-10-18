@@ -39,7 +39,7 @@ pub fn spawn_external_agent_watchdog(
             if total > 0 {
                 let summary = finalized
                     .iter()
-                    .map(|result| format!("{}={}", result.runtime.key(), result.affected))
+                    .map(|result| format!("{}={}", result.runtime.id(), result.affected))
                     .collect::<Vec<_>>()
                     .join(", ");
                 tracing::warn!(

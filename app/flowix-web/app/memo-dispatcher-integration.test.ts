@@ -24,7 +24,7 @@ describe('memo dispatcher window isolation', () => {
     const releaseDocument = memoDispatcher.subscribe(documentHandler);
     const releaseRefresh = registerMemoDerivedRefreshHandler(refresh);
     const event: MemoEvent = {
-      kind: 'deleted', id: 'memo', path: '/memo.md', relativePath: 'memo.md', notebookId: 'notebook',
+      kind: 'deleted', path: '/memo.md', relativePath: 'memo.md', notebookId: 'notebook',
       source: 'external_tool', derivedOnly: true,
       derivedChanged: { tags: true, todos: true, agents: false },
     };
@@ -141,8 +141,8 @@ describe('memo dispatcher window isolation', () => {
     bridge?.({
       kind: 'created',
       memo: {
-        id: 'memo-external',
         filename: 'External.md',
+        relativePath: 'External.md',
         preview: '',
         tags: [],
         todos: [],

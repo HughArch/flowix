@@ -1,5 +1,9 @@
 import type { I18nKey, I18nParams } from '@/lib/i18n';
 
+const FLOWIX_MEMBERSHIP_ERROR =
+  /^\s*(?:Error:\s*)?cloud API error\s+403\s+MEMBERSHIP_REQUIRED\b/i;
+const FLOWIX_REQUEST_ID = /\(request id:\s*([a-z\d_-]+)\s*\)/i;
+
 /**
  * Tauri IPC 错误格式化。
  *
@@ -74,6 +78,15 @@ function cloudErrorDetails(message: string): Record<string, unknown> {
 
 export function cloudSyncErrorMessage(error: unknown, t: Translate): string {
   const message = tauriErrorMessage(error);
+  if (['CHECKOUT_IN_PROGRESS', 'CHECKOUT_CREATION_IN_PROGRESS', 'CHECKOUT_PAYMENT_PROCESSING'].some((code) => hasTauriErrorCode(error, code))) {
+    return t('preferences.cloud.order.pendingCheckout');
+  }
+  if (hasTauriErrorCode(error, 'BILLING_RATE_LIMITED')) {
+    return t('preferences.cloud.order.rateLimited');
+  }
+  if (hasTauriErrorCode(error, 'BILLING_RATE_LIMIT_NOT_CONFIGURED')) {
+    return t('preferences.cloud.order.checkUnavailable');
+  }
   if (message.includes('MEMBERSHIP_REQUIRED')) {
     return t('preferences.cloud.membershipRequired');
   }
@@ -86,6 +99,23 @@ export function cloudSyncErrorMessage(error: unknown, t: Translate): string {
     });
   }
   return message;
+}
+
+export function cloudModelAccessErrorMessage(error: unknown, t: Translate): string {
+  const message = tauriErrorMessage(error);
+  if (message.includes('INSUFFICIENT_CREDITS')) return t('agent.error.insufficientCredits');
+  if (message.includes('MODEL_NOT_FOUND')) return t('agent.error.cloudModelUnavailable');
+  if (message.includes('MODEL_PRICING_NOT_CONFIGURED')) return t('agent.error.cloudPricingUnavailable');
+  if (!FLOWIX_MEMBERSHIP_ERROR.test(message)) return message;
+
+  const userMessage = t('agent.error.membershipRequired');
+  const requestId = message.match(FLOWIX_REQUEST_ID)?.[1];
+  if (!requestId) return userMessage;
+
+  return [
+    userMessage,
+    t('agent.error.diagnostic.reference', { value: requestId }),
+  ].join('\n\n');
 }
 
 export function notebookCreateErrorMessage(error: unknown, t: Translate): string {

@@ -1,5 +1,4 @@
 import { useCallback, useEffect, useRef } from 'react';
-import { installDocumentShutdown } from '../../store/document-shutdown';
 import { getDocumentSession, listDocumentSessions } from '../../store/document-runtime-session';
 import { commitDocumentSession, scheduleDocumentSessionSave, recordDocumentEdit,
   registerDocumentCapture, registerDocumentPersistence, prepareDocumentLeave, discardDocumentDraft } from '../../store/document-session-service';
@@ -63,7 +62,7 @@ export function useDocumentAutosave(options: UseDocumentAutosaveOptions) {
 
   useEffect(() => {
     mounted.current = true;
-    installDocumentShutdown(); installVisibilityCapture();
+    installVisibilityCapture();
     const stopCapture = registerDocumentCapture(identity,
       () => live.current.flushPendingContent?.() ?? null,
       live.current.hostId, () => live.current.isActive?.() !== false);

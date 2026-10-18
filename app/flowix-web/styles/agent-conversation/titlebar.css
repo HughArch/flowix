@@ -1,0 +1,138 @@
+/* Shared conversation identity used by standalone and fullscreen surfaces. */
+.agent-type-badge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.25rem;
+  height: 1.25rem;
+  box-sizing: border-box;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 9999px;
+  background: transparent;
+  cursor: default;
+  user-select: none;
+  transition: border-color 180ms ease;
+}
+
+.agent-type-badge--unavailable {
+  border-color: color-mix(in oklch, var(--border) 70%, transparent);
+  color: var(--muted-foreground);
+  opacity: 0.6;
+}
+
+.agent-type-badge__icon {
+  display: block;
+  width: 0.875rem;
+  height: 0.875rem;
+  flex: 0 0 auto;
+  object-fit: contain;
+  object-position: center;
+  border: 0 !important;
+  border-radius: 0 !important;
+  margin-bottom: 0 !important;
+  background-position: center;
+  background-repeat: no-repeat;
+  background-size: contain;
+}
+
+.agent-type-badge__icon--image {
+  background-image: var(--agent-icon-src);
+}
+
+.agent-type-badge__icon--unavailable {
+  filter: grayscale(1);
+}
+
+.agent-type-badge__name[hidden] {
+  display: none;
+}
+
+.agent-type-badge__name {
+  display: inline-block;
+  color: var(--foreground);
+  font-size: calc(var(--font-size, 16px) * 0.9);
+  font-weight: 400;
+  line-height: 1;
+  letter-spacing: 0;
+  white-space: nowrap;
+}
+
+.agent-type-badge--unavailable .agent-type-badge__name {
+  color: var(--muted-foreground);
+}
+
+.agent-conversation-identity {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 8px;
+}
+
+.agent-conversation-identity__badge-anchor {
+  position: relative;
+  display: inline-flex;
+  flex: 0 0 auto;
+  -webkit-app-region: no-drag;
+}
+
+.agent-conversation-identity__badge-trigger {
+  position: absolute;
+  inset: 0;
+  z-index: 1;
+  display: block;
+  border-radius: inherit;
+  background: transparent;
+  cursor: pointer;
+  -webkit-app-region: no-drag;
+}
+
+.agent-conversation-identity__title,
+.agent-conversation-identity__title-wrap {
+  min-width: 0;
+  flex: 0 1 auto;
+  overflow: hidden;
+  border-radius: 4px;
+  padding: 4px 2px;
+  color: var(--foreground);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  -webkit-app-region: no-drag;
+}
+
+.agent-conversation-identity__title {
+  cursor: default;
+  transition: background-color 120ms ease;
+}
+
+.agent-conversation-identity__title:hover,
+.agent-conversation-identity__title-wrap:hover,
+.agent-conversation-identity__title-wrap:focus-within {
+  background: var(--muted);
+}
+
+.agent-conversation-identity__title-input {
+  width: auto;
+  max-width: 100%;
+  min-width: 0;
+  height: 14px;
+  border: 0;
+  border-radius: 0;
+  padding: 0;
+  background: transparent;
+  color: inherit;
+  cursor: text;
+  font: inherit;
+  line-height: 1;
+  outline: none;
+  field-sizing: content;
+}
+
+.agent-conversation-identity__badge-trigger:hover ~ .agent-type-badge .agent-type-badge__name,
+.agent-conversation-identity__badge-trigger[data-state="open"] ~ .agent-type-badge .agent-type-badge__name {
+  color: var(--foreground);
+}

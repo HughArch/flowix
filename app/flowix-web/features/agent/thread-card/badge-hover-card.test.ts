@@ -58,7 +58,7 @@ describe("BadgeHoverCard", () => {
     await act(async () => {
       root.render(
         createElement(BadgeHoverCard, {
-          agentType: "deepseek-harness",
+          agentType: "dsh",
           sessionId: "provider-session-1",
           model: "deepseek-chat",
           usage: {
@@ -95,7 +95,7 @@ describe("BadgeHoverCard", () => {
     await act(async () => {
       root.render(
         createElement(BadgeHoverCard, {
-          agentType: "claude",
+          agentType: "claudecode",
           model: "gpt-5",
           usage: { input_tokens: 10, output_tokens: 2 },
         }),

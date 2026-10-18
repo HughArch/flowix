@@ -7,8 +7,7 @@ import { errorMessage } from '@/lib/error-message';
 import { createLogger } from '@/lib/logger';
 import { useShellSelectedNotebook } from '@features/memo/public/shell-api';
 import {
-  openBrowserColumnDroppedFile,
-  openExternalTarget,
+  openWorkspaceSurface,
 } from '@features/workspace/public/shell-api';
 import { FullscreenDragOverlay } from './fullscreen-drag-overlay';
 
@@ -24,11 +23,15 @@ export function ExternalFileDropOverlay() {
     if (paths.length === 0) return;
     for (const path of paths) {
       if (destination === 'browser-column') {
-        await openBrowserColumnDroppedFile(path);
+        await openWorkspaceSurface({
+          host: 'browser-column',
+          target: { kind: 'external', path, scopePath: selectedNotebook?.path ?? null, transitionId: null },
+          options: { browserDisposition: 'open-in-column' },
+        });
       } else {
-        await openExternalTarget(path, {
-          destination: 'main-third',
-          scopePath: selectedNotebook?.path ?? null,
+        await openWorkspaceSurface({
+          host: 'main-third',
+          target: { kind: 'external', path, scopePath: selectedNotebook?.path ?? null, transitionId: null },
         });
       }
     }

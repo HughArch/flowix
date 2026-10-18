@@ -11,24 +11,21 @@ import {
 import { MessageCirclePlus, MoreHorizontal } from 'lucide-react';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
-import { createAndOpenAgentConversation } from '@features/agent/public/shell-api';
+import {
+  createAndOpenAgentConversation,
+  requestNewConversationAgentSelection,
+} from '@features/agent/use-cases/new-conversation';
 import { useWorkspaceRestoreStore } from '@features/workspace/store/workspace-restore-store';
-import { selectAndOpenAgentConversation } from '@features/workspace/use-cases/agent-conversation-navigation';
-import { openBrowserColumnAgentConversation } from '@features/workspace/use-cases/browser-column-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { isAgentConversationRunning } from '@features/agent/store/conversation-run-index';
-import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
+import { useNewConversationAgentSelection } from '@features/agent/hooks/use-new-conversation-agent-selection';
 import {
   AGENT_TYPES,
   getAgentType,
   isAgentTypeSelectable,
-  isAlwaysVisibleNewConversationAgent,
 } from '@/lib/agent-types';
-import type { AgentTypeKey } from '@/types/agent';
-import {
-  isAgentRuntimeInstalledState,
-  normalizeAgentRuntimeStatus,
-} from '@features/agent/runtime/agent-runtime-status';
+import type { AgentType, AgentTypeKey } from '@/types/agent';
 import { formatTimeAgo } from '@/lib/format-time-ago';
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
@@ -41,8 +38,8 @@ import {
 import { useI18n } from '@/lib/i18n';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import {
-  ListSurfaceInlineLoadingState,
   ListSurfaceLoadingState,
+  ListSurfaceSpinner,
   ListSurfaceViewport,
 } from '@shared/ui/list-surface';
 import {
@@ -125,9 +122,6 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
   // Rows can therefore read their running state in O(1) without rebuilding an
   // index by scanning every loaded conversation.
   const conversationRunIndex = useAgentSessionStore((state) => state.threadRunSignatures);
-  const agentRuntimeStatusByType = useAgentRuntimeStore((state) => state.statusByType);
-  const agentRuntimeIsChecking = useAgentRuntimeStore((state) => state.isChecking);
-  const refreshAgentRuntimeIfStale = useAgentRuntimeStore((state) => state.refreshIfStale);
   const currentNotebookId = useNoteStore((state) => state.selectedNotebook?.id ?? null);
   const selectedInstanceId = useWorkspaceRestoreStore(
     (state) => state.agentConversation.selectedInstanceId,
@@ -180,17 +174,6 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     setRenameSaving(false);
     setShowScrollTopHint(false);
   }, [isActive]);
-
-  useEffect(() => {
-    const handleOpenCreateMenu = () => setNewConversationMenuOpen(true);
-    window.addEventListener('flowix:open-agent-create-menu', handleOpenCreateMenu);
-    return () => window.removeEventListener('flowix:open-agent-create-menu', handleOpenCreateMenu);
-  }, []);
-
-  useEffect(() => {
-    if (!newConversationMenuOpen) return;
-    void refreshAgentRuntimeIfStale();
-  }, [newConversationMenuOpen, refreshAgentRuntimeIfStale]);
 
   const toggleFavorite = useCallback((instanceId: string) => {
     setFavoriteIds(toggleFavoriteConversation(instanceId));
@@ -299,8 +282,8 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     const counts = new Map<AgentTypeKey, number>();
     if (Object.keys(agentTypeCounts).length > 0) {
       for (const type of AGENT_TYPES) {
-        const count = agentTypeCounts[type.key];
-        if (count && isAgentTypeSelectable(type.key)) counts.set(type.key, count);
+        const count = agentTypeCounts[type.id];
+        if (count && isAgentTypeSelectable(type.id)) counts.set(type.id, count);
       }
     } else {
       for (const instance of scopedConversations) {
@@ -309,14 +292,14 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
       }
     }
     return AGENT_TYPES
-      .filter((type) => counts.has(type.key))
-      .map((type) => ({ type, count: counts.get(type.key) ?? 0 }));
+      .filter((type) => counts.has(type.id))
+      .map((type) => ({ type, count: counts.get(type.id) ?? 0 }));
   }, [agentTypeCounts, scopedConversations]);
 
   // 对话可能在筛选期间变成空集 (例如全部删除) ── 若当前筛选的类型已不再激活，
   // 自动回退到"全部"，避免列表卡在空状态。
   const effectiveFilter: AgentTypeKey | null =
-    filterType && activeAgentTypes.some((entry) => entry.type.key === filterType)
+    filterType && activeAgentTypes.some((entry) => entry.type.id === filterType)
       ? filterType
       : null;
 
@@ -412,20 +395,16 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     }
   };
 
-  const displayName = (type: (typeof AGENT_TYPES)[number]): string =>
+  const displayName = (type: AgentType): string =>
     type.nameKey ? t(type.nameKey as Parameters<typeof t>[0]) : type.name;
 
-  const newConversationAgentTypes = useMemo(
-    () => AGENT_TYPES.filter((type) => {
-      if (!isAgentTypeSelectable(type.key)) return false;
-      if (isAlwaysVisibleNewConversationAgent(type.key)) return true;
-      return isAgentRuntimeInstalledState(normalizeAgentRuntimeStatus(
-        agentRuntimeStatusByType[type.key],
-        agentRuntimeIsChecking,
-      ));
-    }),
-    [agentRuntimeIsChecking, agentRuntimeStatusByType],
-  );
+  const newConversationSelection = useNewConversationAgentSelection();
+
+  useEffect(() => {
+    if (newConversationMenuOpen && newConversationSelection.kind !== 'choose') {
+      setNewConversationMenuOpen(false);
+    }
+  }, [newConversationMenuOpen, newConversationSelection]);
 
   const prepareConversation = useCallback((instance: AgentConversationInstance) => {
     // The durable list snapshot may arrive before the Zustand session store
@@ -456,19 +435,18 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
 
     prepareConversation(instance);
 
-    await selectAndOpenAgentConversation(instance.instanceId);
+    await openWorkspaceSurface({ target: { kind: 'agent-conversation', instanceId: instance.instanceId } });
   }, [markThreadRead, prepareConversation]);
 
   const openConversationInBrowserColumn = useCallback((instance: AgentConversationInstance) => {
     prepareConversation(instance);
-    void openBrowserColumnAgentConversation(instance.instanceId).catch((error) => {
+    void openWorkspaceSurface({ host: 'browser-column', target: { kind: 'agent-conversation', instanceId: instance.instanceId } }).catch((error) => {
       logger.error('Failed to open conversation in browser column', { error });
       toast.error(error instanceof Error ? error.message : String(error));
     });
   }, [prepareConversation]);
 
-  // 独立对话没有文档来源，但归属当前选中的
-  // notebook。notebook 未选中时不可新建 (cwd 无法解析到笔记本路径)。
+  // 独立对话没有文档来源，但归属当前选中的 notebook。
   const createConversation = useCallback(
     (typeKey: AgentTypeKey) => {
       if (!currentNotebookId) return;
@@ -476,6 +454,21 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     },
     [currentNotebookId],
   );
+
+  const requestNewConversation = useCallback(() => {
+    const selection = requestNewConversationAgentSelection();
+    if (selection.kind === 'create') {
+      createConversation(selection.agentType);
+      setNewConversationMenuOpen(false);
+      return;
+    }
+    setNewConversationMenuOpen(selection.kind === 'choose');
+  }, [createConversation]);
+
+  useEffect(() => {
+    window.addEventListener('flowix:open-agent-create-menu', requestNewConversation);
+    return () => window.removeEventListener('flowix:open-agent-create-menu', requestNewConversation);
+  }, [requestNewConversation]);
 
   return (
     <section className="relative flex h-full min-h-0 flex-1 flex-col bg-[var(--list-bg)]" aria-label={t('memo.navigation.conversations')}>
@@ -493,19 +486,19 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                 aria-label={t('document.agent.filterByAgent')}
               >
                 {activeAgentTypes.map(({ type, count }) => {
-                  const active = effectiveFilter === type.key;
+                  const active = effectiveFilter === type.id;
                   const label = t('document.agent.filterByAgentCount', {
                     name: displayName(type),
                     count,
                   });
                   return (
                     <button
-                      key={type.key}
+                      key={type.id}
                       type="button"
                       aria-pressed={active}
                       title={label}
                       aria-label={label}
-                      onClick={() => setFilterType((prev) => (prev === type.key ? null : type.key))}
+                      onClick={() => setFilterType((prev) => (prev === type.id ? null : type.id))}
                       className={cn(
                         'flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors',
                         active
@@ -513,7 +506,7 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                           : 'border-[var(--border)] opacity-20 hover:opacity-100',
                       )}
                     >
-                      <AgentIcon typeKey={type.key} alt="" className="h-full w-full object-contain" />
+                      <AgentIcon typeKey={type.id} alt="" className="h-full w-full object-contain" />
                     </button>
                   );
                 })}
@@ -523,12 +516,15 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
           <div className="flex items-center gap-1 shrink-0">
             <DropdownMenu
               open={newConversationMenuOpen}
-              onOpenChange={setNewConversationMenuOpen}
+              onOpenChange={(open) => {
+                if (open) requestNewConversation();
+                else setNewConversationMenuOpen(false);
+              }}
             >
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  disabled={!currentNotebookId}
+                  disabled={!currentNotebookId || newConversationSelection.kind === 'none'}
                   aria-label={t('agent.chat.newThread')}
                   title={currentNotebookId ? t('agent.chat.newThread') : t('memo.list.selectNotebook')}
                   className="group flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] disabled:cursor-not-allowed disabled:opacity-40"
@@ -543,27 +539,16 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                 <DropdownMenuLabel className="flex items-center gap-1.5 px-[0.375rem] pb-[0.35rem] pt-[0.35rem] text-xs font-normal leading-[1.2] text-[var(--muted-foreground)]">
                   {t('agent.chat.newThread')}
                 </DropdownMenuLabel>
-                {newConversationAgentTypes.map((type) => {
-                  const runtimeStatus = normalizeAgentRuntimeStatus(
-                    agentRuntimeStatusByType[type.key],
-                    agentRuntimeIsChecking,
-                  );
-                  const showNotInstalled = isAlwaysVisibleNewConversationAgent(type.key)
-                    && runtimeStatus.state === 'not-installed';
+                {newConversationSelection.options.map((type) => {
                   return (
                     <DropdownMenuItem
-                      key={type.key}
+                      key={type.id}
                       disabled={!currentNotebookId}
-                      onClick={() => createConversation(type.key)}
+                      onClick={() => createConversation(type.id)}
                       className="agent-conversation-new-agent-item group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
                     >
-                      <AgentIcon typeKey={type.key} alt="" className="h-4 w-4 shrink-0 object-contain" />
+                      <AgentIcon typeKey={type.id} alt="" className="h-4 w-4 shrink-0 object-contain" />
                       <span className="min-w-0 flex-1 truncate">{displayName(type)}</span>
-                      {showNotInstalled && (
-                        <span className="shrink-0 text-xs text-[var(--muted-foreground)] group-hover:text-[var(--primary-foreground)]">
-                          {t('agent.status.notInstalled')}
-                        </span>
-                      )}
                     </DropdownMenuItem>
                   );
                 })}
@@ -579,11 +564,11 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
           onScroll={handleListScroll}
         >
           {isLoading && scopedConversations.length === 0 ? (
-            <ListSurfaceLoadingState label={t('status.agent.loadingConversations')} />
+            <ListSurfaceLoadingState ariaLabel={t('status.agent.loadingConversations')} />
           ) : loadError && scopedConversations.length === 0 ? (
             <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-3 px-4 text-center text-sm text-[var(--muted-foreground)]" role="alert">
               <span>{t('status.agent.loadConversationsFailed')}</span>
-              <Button size="sm" onClick={retryFirstPage}>{t('error.retry')}</Button>
+              <Button size="sm" className="rounded-lg" onClick={retryFirstPage}>{t('error.retry')}</Button>
             </div>
           ) : scopedConversations.length === 0 ? (
             <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-[var(--muted-foreground)]">
@@ -595,13 +580,15 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
               loadError ? (
                 <div className="flex items-center justify-center gap-2 px-2 py-1 text-xs text-[var(--muted-foreground)]" role="alert">
                   <span>{t('status.agent.loadConversationsFailed')}</span>
-                  <Button size="xs" variant="ghost" onClick={retryFirstPage}>{t('error.retry')}</Button>
+                  <Button size="xs" variant="ghost" className="rounded-lg" onClick={retryFirstPage}>{t('error.retry')}</Button>
                 </div>
               ) : (
-                <ListSurfaceInlineLoadingState
-                  label={t('status.agent.loadingConversations')}
-                  className="py-1"
-                />
+                <div className="flex items-center justify-center px-2 py-1">
+                  <ListSurfaceSpinner
+                    className="h-3.5 w-3.5"
+                    ariaLabel={t('status.agent.loadingConversations')}
+                  />
+                </div>
               )
             )}
             <div className="relative min-h-full" style={{ height: totalSize }}>
@@ -624,12 +611,16 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
 
                 if (item.kind === 'loading') {
                   return (
-                    <ListSurfaceInlineLoadingState
+                    <div
                       key={item.key}
-                      label={t('status.agent.loadingMoreConversations')}
-                      className="absolute inset-x-0 top-0"
+                      className="absolute inset-x-0 top-0 flex items-center justify-center"
                       style={{ height: size, transform: `translateY(${start}px)` }}
-                    />
+                    >
+                      <ListSurfaceSpinner
+                        className="h-3.5 w-3.5"
+                        ariaLabel={t('status.agent.loadingMoreConversations')}
+                      />
+                    </div>
                   );
                 }
 
@@ -642,7 +633,7 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                       role="alert"
                     >
                       <span>{t('status.agent.loadConversationsFailed')}</span>
-                      <Button size="xs" variant="ghost" onClick={() => void loadMoreConversations(true)}>{t('error.retry')}</Button>
+                      <Button size="xs" variant="ghost" className="rounded-lg" onClick={() => void loadMoreConversations(true)}>{t('error.retry')}</Button>
                     </div>
                   );
                 }
@@ -674,7 +665,7 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                           'relative flex h-4 w-4 shrink-0 items-center justify-center rounded-full',
                           running && 'agent-conversation-list__icon--running',
                         )}>
-                          <AgentIcon typeKey={agent.key} alt="" className="h-4 w-4 object-contain" />
+                          <AgentIcon typeKey={agent.id} alt="" className="h-4 w-4 object-contain" />
                           {(running || (!!instance.threadId
                             && latestCompletedRunIds[instance.threadId] !== readThroughRunIds[instance.threadId]
                             && !(conversationDetailOpen && selectedInstanceId === instance.instanceId))) && (

@@ -10,6 +10,7 @@ import {
   FileDocIcon,
   FilePdfIcon,
   ClockIcon,
+  MapPinSimpleAreaIcon,
   TrashSimpleIcon,
   SwatchesIcon,
 } from '@phosphor-icons/react';
@@ -37,9 +38,10 @@ import { setDocumentProperties } from '@features/document/public/path-properties
 import { extractFrontmatter } from '@features/document/properties/frontmatter-model';
 import type { NoteColor } from '@/types/note-item';
 import { EditorFontSwitcher, useEditorFontSwitch } from '@features/document/components/editor-font-switcher';
+import { FontSizeSwitcher, type FontSizeMode } from '@shared/ui/font-size-switcher';
+import { useUserSettingsStore } from '@features/preferences/store/user-settings-store';
 import {
   applyLoadedDocumentContent,
-  flushDocumentPath,
   saveDocumentPath,
   getDocumentBuffer,
 } from '@features/document/store/document-session-service';
@@ -51,20 +53,16 @@ type VersionDisplay = PathVersionMeta;
 import { toast } from '@/lib/toast';
 import { FolderCollectionSwitchConfirmDialog } from '@features/collection/public/folder-api';
 import { notebookRelativeDirectoryPath, parentDirectoryPath } from '@/lib/path';
-import type { WorkspaceHostId } from '@features/workspace/store/workspace-focus-store';
+import type { WorkspaceHostId } from '@features/workspace/public/host-api';
 import { useI18n, translate, type AppLanguage, type I18nKey, type I18nParams } from '@/lib/i18n';
 import { createLogger } from '@/lib/logger';
-import { AgentIcon } from '@features/agent/components/agent-icon';
 import { normalizeAgentTypeKey } from '@/lib/agent-types';
 import type { AgentTypeKey } from '@/types/agent';
 import { ICON_FULLSCREEN_EXIT_PATH } from '@features/agent/thread-card/agent-thread-card-icons';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
-import { useAgentAccessStore } from '@features/agent/store/agent-access-store';
-import { BadgeHoverCard } from '@features/agent/thread-card/badge-hover-card';
-import { computeAgentThreadCardBadgeData } from '@features/agent/thread-card/runtime/run-status-presenter';
-import { createRuntimeInfoRequester } from '@features/agent/thread-card/runtime/runtime-info-requester';
-import { getResolvedExternalSessionId } from '@features/agent/services/external-agent-runtime-service';
-import { getAgentConversationRuntimeCwd } from '@features/agent/conversation-presentation';
+import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
+import { AgentConversationMoreMenu } from '@features/agent/components/agent-conversation-more-menu';
+import { AgentConversationIdentity } from '@features/agent/components/agent-conversation-identity';
 
 const logger = createLogger('document-titlebar');
 
@@ -95,6 +93,7 @@ export interface DocumentTitlebarProps {
     onNavigateForward: () => void;
     visible?: boolean;
     title?: string | null;
+    icon?: string | null;
   };
   contentCapabilities: {
     copyFullText: boolean;
@@ -120,11 +119,15 @@ export interface DocumentTitlebarProps {
   folderCollectionViewType?: {
     current: 'table' | 'media_library';
     onSelect: (type: 'table' | 'media_library') => void;
+    isDefaultFolder: boolean;
+    onToggleDefaultFolder: () => void;
   };
 }
 
 const AGENT_THREAD_CARD_FULLSCREEN_CHANGE_EVENT =
   'flowix:agent-thread-card-fullscreen-change';
+const AGENT_THREAD_CARD_FULLSCREEN_RENAME_EVENT =
+  'flowix:agent-thread-card-fullscreen-rename';
 const AGENT_THREAD_CARD_REQUEST_FULLSCREEN_EVENT =
   'flowix:agent-thread-card-request-fullscreen';
 
@@ -192,6 +195,7 @@ export function ExternalDocumentActions({
   canViewVersionHistory,
   folderCollectionViewType,
   showEditorFontSwitcher = false,
+  showMoreActions = true,
 }: {
   filePath: string;
   iconButtonClass: string;
@@ -209,6 +213,7 @@ export function ExternalDocumentActions({
   canViewVersionHistory: boolean;
   folderCollectionViewType?: DocumentTitlebarProps['folderCollectionViewType'];
   showEditorFontSwitcher?: boolean;
+  showMoreActions?: boolean;
 }) {
   const { t, language } = useI18n();
   const { session, currentNotebookPath, isOutsideCurrentNotebook } = useExternalDocumentLocation();
@@ -223,7 +228,22 @@ export function ExternalDocumentActions({
   const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
   const [versionRefreshKey, setVersionRefreshKey] = useState(0);
   const fontSwitch = useEditorFontSwitch();
+  const fontSize = useUserSettingsStore((store) => store.settings.format.fontSize);
+  const updateSettings = useUserSettingsStore((store) => store.updateSettings);
   const itemClass = 'group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--hover-bg)] hover:text-[var(--foreground)]';
+
+  const selectedFontSizeMode: FontSizeMode | null = fontSize === 15
+    ? 'small'
+    : fontSize === 16
+      ? 'medium'
+      : fontSize === 17
+        ? 'large'
+        : null;
+
+  const setEditorFontSizeMode = (mode: FontSizeMode) => {
+    const nextFontSize = { small: 15, medium: 16, large: 17 }[mode];
+    void updateSettings({ format: { fontSize: nextFontSize } });
+  };
 
   const changePathColors = async (colors: NoteColor[]) => {
     try {
@@ -236,7 +256,6 @@ export function ExternalDocumentActions({
           && note.relativePath === session?.relativePath ? { ...note, colors } : note),
       }));
       setFileColors(colors);
-      useNoteStore.getState().triggerRefresh();
     } catch (error) {
       logger.error('save path note colors failed', { error, filePath });
       toast.error(t('media.properties.saveFailed'));
@@ -268,7 +287,7 @@ export function ExternalDocumentActions({
       const session = useDocumentStore.getState().activeExternalSession;
       if (!session?.notebookId || !session.relativePath || session.fileIdentity.path !== filePath) throw new Error('Document session changed');
       const identity = documentIdentityFromFile(session.fileIdentity);
-      if (!await flushDocumentPath(identity, filePath, session.scopePath)) {
+      if (!await saveDocumentPath(identity, filePath, session.scopePath)) {
         toast.error(t('document.version.saveCurrentFailed'));
         return;
       }
@@ -309,7 +328,7 @@ export function ExternalDocumentActions({
       <NoteColorPicker colors={fileColors} iconButtonClass={iconButtonClass}
         onChange={(colors) => { void changePathColors(colors); }} />
     )}
-    <DropdownMenu>
+    {showMoreActions && <DropdownMenu>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -323,16 +342,31 @@ export function ExternalDocumentActions({
       <DropdownMenuContent align="end" className="w-[200px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
         {folderCollectionViewType ? (
           <>
-            <div className="shrink-0 px-2 py-1 text-xs font-normal uppercase tracking-wider text-[var(--muted-foreground)]">视图类型</div>
-            {([['table', '多维表格'], ['media_library', '媒体库']] as const).map(([type, label]) => (
+            <div className="flex shrink-0 items-center justify-between gap-2 px-2 py-1 text-xs font-normal uppercase tracking-wider text-[var(--muted-foreground)]">
+              <span>内容偏好</span>
+              <span className="inline-flex items-center gap-1 rounded bg-[var(--muted)] px-1.5 py-0.5 text-[10px] normal-case tracking-normal">
+                文件夹
+              </span>
+            </div>
+            {([['table', '展示笔记'], ['media_library', '展示图/视频']] as const).map(([type, label]) => (
               <DropdownMenuItem key={type} onClick={() => { if (type !== folderCollectionViewType.current) setPendingViewType(type); }} className={itemClass}>
+                <span className="inline-flex h-4 w-4 shrink-0 items-center justify-center" aria-hidden="true">
+                  {folderCollectionViewType.current === type && <Check className="h-4 w-4 text-[var(--brand)]" />}
+                </span>
                 <span className="flex-1">{label}</span>
-                {folderCollectionViewType.current === type && <Check className="h-4 w-4" aria-hidden="true" />}
               </DropdownMenuItem>
             ))}
             <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
           </>
-        ) : showEditorFontSwitcher ? <EditorFontSwitcher fontMode={fontSwitch.fontMode} downloadingMode={fontSwitch.downloadingMode} percent={fontSwitch.percent} onSelect={fontSwitch.selectFontMode} /> : null}
+        ) : showEditorFontSwitcher ? <>
+          <EditorFontSwitcher
+            fontMode={fontSwitch.fontMode}
+            downloadingMode={fontSwitch.downloadingMode}
+            percent={fontSwitch.percent}
+            onSelect={fontSwitch.selectFontMode}
+          />
+          <FontSizeSwitcher sizeMode={selectedFontSizeMode} onSelect={setEditorFontSizeMode} />
+        </> : null}
         <DropdownMenuItem onClick={() => void handleCopyPath()} className={itemClass}>
           <LinkSimpleIcon className="h-4 w-4" /> {t('memo.fileTree.copyPath')}
         </DropdownMenuItem>
@@ -401,6 +435,15 @@ export function ExternalDocumentActions({
         >
           <TrashSimpleIcon className="h-4 w-4" /> {t(indexable ? 'memo.delete.confirm' : 'document.external.deleteFile')}
         </DropdownMenuItem>}
+        {folderCollectionViewType && (
+          <>
+            <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
+            <DropdownMenuItem onClick={folderCollectionViewType.onToggleDefaultFolder} className={itemClass}>
+              <MapPinSimpleAreaIcon className="h-4 w-4" aria-hidden="true" />
+              {t(folderCollectionViewType.isDefaultFolder ? 'memo.fileTree.clearDefaultCreateFolder' : 'memo.fileTree.setDefaultCreateFolder')}
+            </DropdownMenuItem>
+          </>
+        )}
       </DropdownMenuContent>
       <FolderCollectionSwitchConfirmDialog
         open={pendingViewType !== null}
@@ -454,7 +497,7 @@ export function ExternalDocumentActions({
           </div>
         </DialogContent>
       </Dialog>
-    </DropdownMenu>
+    </DropdownMenu>}
     </>
   );
 }
@@ -488,13 +531,21 @@ export function ExternalPathDisplay({ path }: { path: string }) {
   );
 }
 
+export function SurfaceHeaderIcon({ icon }: { icon?: string | null }) {
+  if (!icon) return null;
+  if (icon.startsWith('http://') || icon.startsWith('https://')) {
+    return <img src={icon} alt="" className="h-4 w-4 shrink-0 rounded-sm object-contain" />;
+  }
+  return <span aria-hidden="true" className="shrink-0 text-sm leading-none">{icon}</span>;
+}
+
 // =====================================================================
 // Memo color picker — multi-select, dropdown of 7 swatches
 // 触发按钮:
 //   - 空数组 (无颜色) 时显示 `Palette` 图标
 //   - 至少 1 个颜色时显示叠加的小圆点 (右上偏移, 制造"多色"的视觉密度)
 // 7 个色块 + 1 个 "无" 按钮: 点色块 toggle, 点 "无" 清空全部。 每次切换
-// 把整组新颜色走 `onChange` 一次性写回后端, 由 memo-event 链路回灌 store。
+// 把整组新颜色走 `onChange` 一次性写回后端；行内状态即时更新，路径通知刷新查询投影。
 // =====================================================================
 
 const COLOR_LABEL_KEYS: Record<NoteColor, I18nKey> = {
@@ -730,7 +781,44 @@ export function AgentThreadCardFullscreenExitButton({
   );
 }
 
-/** Agent identity displayed in a column titlebar while a Thread Card is fullscreen. */
+/** Agent conversation menu rendered in the existing work-column titlebar slot. */
+export function AgentThreadCardFullscreenMoreMenu({
+  iconButtonClass,
+  host = 'main-third',
+}: {
+  iconButtonClass: string;
+  host?: AgentThreadCardFullscreenHost;
+}) {
+  const info = useFullscreenAgentThreadCardInfo(host);
+  const storedInstance = useAgentSessionStore((state) =>
+    info?.instanceId ? state.getInstance(info.instanceId) : null,
+  );
+  const instance: AgentConversationInstance | null = storedInstance ?? (
+    info?.instanceId ? {
+      instanceId: info.instanceId,
+      agentType: info.typeKey,
+      title: info.title,
+      threadId: info.threadId,
+      source: { kind: 'thread-card' },
+      createdAt: 0,
+      updatedAt: 0,
+    } : null
+  );
+
+  if (!info || !instance) return null;
+
+  return (
+    <AgentConversationMoreMenu
+      instance={instance}
+      iconButtonClass={iconButtonClass}
+      onRename={() => window.dispatchEvent(new CustomEvent(AGENT_THREAD_CARD_FULLSCREEN_RENAME_EVENT, {
+        detail: { host, instanceId: instance.instanceId },
+      }))}
+    />
+  );
+}
+
+/** Shared Agent identity displayed in a column titlebar while a conversation is fullscreen. */
 export function AgentThreadCardFullscreenIdentity({
   host = 'main-third',
 }: {
@@ -738,121 +826,36 @@ export function AgentThreadCardFullscreenIdentity({
 } = {}) {
   const { t } = useI18n();
   const info = useFullscreenAgentThreadCardInfo(host);
-  const [isEditingTitle, setIsEditingTitle] = useState(false);
-  const [titleDraft, setTitleDraft] = useState('');
-  // 用 selector 而不是 getState() ── session/runtime store 更新时让组件
-  // 重新 render, 否则外部 session id / cwd 注入后不会反映到 popup 内容。
+  const [renameRequest, setRenameRequest] = useState(0);
   const instance = useAgentSessionStore((state) =>
     info?.instanceId ? state.getInstance(info.instanceId) : null,
   );
-  const codexModel = useAgentSessionStore(
-    (state) => state.sessionMeta.settings.agentCodexModel,
-  );
-  const piCodeMode = useAgentAccessStore((state) =>
-    state.config.defaults?.runtime?.pi?.piCodeMode ?? false,
-  );
-  const projection = useAgentSessionStore((state) => {
-    const threadId = info?.threadId ?? (
-      info?.instanceId ? state.getInstance(info.instanceId)?.threadId : null
-    );
-    return threadId ? state.threadProjections[threadId] : undefined;
-  });
+
+  useEffect(() => {
+    const handleRename = (event: Event) => {
+      const detail = (event as CustomEvent<{
+        host?: AgentThreadCardFullscreenHost;
+        instanceId?: string;
+      }>).detail;
+      if (detail?.host !== host || detail.instanceId !== info?.instanceId) return;
+      setRenameRequest((request) => request + 1);
+    };
+    window.addEventListener(AGENT_THREAD_CARD_FULLSCREEN_RENAME_EVENT, handleRename);
+    return () => window.removeEventListener(AGENT_THREAD_CARD_FULLSCREEN_RENAME_EVENT, handleRename);
+  }, [host, info?.instanceId]);
 
   if (!info) return null;
 
-  const title = instance?.title?.trim() || info.title || t('common.untitled');
-  const commitTitle = () => {
-    const nextTitle = titleDraft.trim();
-    if (nextTitle && nextTitle !== title) {
-      void useAgentSessionStore.getState().renameAgentConversation({
-        instanceId: info.instanceId,
-        threadId: instance?.threadId ?? info.threadId,
-        title: nextTitle,
-        typeKey: info.typeKey,
-      });
-    }
-    setIsEditingTitle(false);
-  };
-
-  // Document titlebar 自身在 data-tauri-drag-region 容器里, badge wrapper + trigger
-  // 都必须显式 [-webkit-app-region:no-drag], 否则 Radix HoverCard 的 hover 会被
-  // macOS 窗口拖拽吞掉。同步处理 ── 与第三列 AgentConversationHeader 行为对齐。
-  const productThreadId = instance?.threadId ?? info.threadId ?? '';
-  const providerSessionId = instance?.providerSessionId ?? (
-    productThreadId ? getResolvedExternalSessionId(productThreadId) : null
-  );
-  const { runId, model, usage } = computeAgentThreadCardBadgeData({
-    threadState: projection ? {
-      lastRun: projection.runs.lastRun,
-      activeRunId: projection.runs.activeRunId,
-      runs: projection.runs.runs,
-    } : undefined,
-    codexModel,
-    typeKey: info.typeKey,
-  });
-  const cwd = getAgentConversationRuntimeCwd(instance);
-
   return (
-    <div
-      data-tauri-drag-region
-      className="ml-2 flex min-w-0 items-center gap-2"
-    >
-      <span className="agent-thread-card__badge-hover-wrapper shrink-0 [-webkit-app-region:no-drag]">
-        <BadgeHoverCard
-          threadId={productThreadId || undefined}
-          sessionId={providerSessionId ?? undefined}
-          runId={runId}
-          model={model}
-          usage={usage}
-          onRequestRuntimeInfo={createRuntimeInfoRequester(
-            info.typeKey,
-            () => productThreadId || null,
-            () => providerSessionId,
-          )}
-          agentType={info.typeKey}
-          piMode={info.typeKey === 'pi' ? (piCodeMode ? 'code' : 'writing') : undefined}
-          cwd={cwd}
-        />
-        <span className="agent-type-badge shrink-0" aria-hidden="true">
-          <AgentIcon typeKey={info.typeKey} alt="" className="agent-type-badge__icon" />
-        </span>
-      </span>
-      {isEditingTitle ? (
-        <div className="min-w-0 flex-[0_1_auto] truncate rounded px-0.5 py-1 text-sm font-semibold leading-none text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] focus-within:bg-[var(--muted)] [-webkit-app-region:no-drag]">
-          <input
-            autoFocus
-            value={titleDraft}
-            aria-label="重命名会话"
-            onChange={(event) => setTitleDraft(event.target.value)}
-            onBlur={commitTitle}
-            onKeyDown={(event) => {
-              if (event.key === 'Enter' && (event.nativeEvent.isComposing || event.keyCode === 229)) return;
-              if (event.key === 'Enter') {
-                event.preventDefault();
-                commitTitle();
-              } else if (event.key === 'Escape') {
-                event.preventDefault();
-                setIsEditingTitle(false);
-              }
-            }}
-            className="agent-thread-card__title-input h-auto max-w-full min-w-0 border-0 bg-transparent p-0 font-inherit leading-none text-[var(--foreground)] shadow-none outline-none ring-0 focus:border-0 focus:bg-transparent focus:outline-none focus:ring-0 [-webkit-app-region:no-drag]"
-          />
-        </div>
-      ) : (
-        <span
-          className="min-w-0 flex-[0_1_auto] truncate rounded px-0.5 py-1 text-sm font-semibold leading-none text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] [-webkit-app-region:no-drag]"
-          onPointerDown={(event) => event.stopPropagation()}
-          onMouseDown={(event) => event.stopPropagation()}
-          onClick={(event) => {
-            event.stopPropagation();
-            setTitleDraft(title);
-            setIsEditingTitle(true);
-          }}
-        >
-          {title}
-        </span>
-      )}
-    </div>
+    <AgentConversationIdentity
+      instanceId={info.instanceId}
+      title={instance?.title?.trim() || info.title || t('common.untitled')}
+      typeKey={instance?.agentType ?? info.typeKey}
+      threadId={instance?.threadId ?? info.threadId}
+      sessionId={instance?.providerSessionId}
+      renameRequest={renameRequest}
+      className="ml-2 min-w-0"
+    />
   );
 }
 
@@ -976,7 +979,7 @@ function VersionHistorySubmenu({
           <div className="max-h-[272px] overflow-y-auto px-1">
             {loading && (
               <div className="flex items-center gap-1 px-2 py-3 text-xs text-[var(--muted-foreground)]">
-                <Loader2 className="h-3.5 w-3.5 animate-spin" />
+                <Loader2 className="h-3.5 w-3.5 flowix-spin" />
                 {t("document.version.loading")}
               </div>
             )}
@@ -1006,7 +1009,7 @@ function VersionHistorySubmenu({
                     {formatVersionTime(version.createdAt, language)}
                   </span>
                   {isRestoring && (
-                    <Loader2 className="h-3 w-3 animate-spin text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]" />
+                    <Loader2 className="h-3 w-3 flowix-spin text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]" />
                   )}
                   <span className="rounded bg-[var(--background)] px-1.5 py-0.5 text-[10px] text-[var(--muted-foreground)] group-hover:bg-[var(--card)] group-hover:text-[var(--foreground)]">
                     {translate(language, VERSION_SOURCE_LABEL_KEYS[version.source] ?? "") || version.source}

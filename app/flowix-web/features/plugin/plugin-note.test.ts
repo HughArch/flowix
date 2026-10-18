@@ -4,7 +4,7 @@ import { getPluginNoteInfo } from './plugin-note';
 
 function memo(properties: Record<string, unknown>): MemoItem {
   return {
-    id: 'memo-1',
+    relativePath: 'memo-1.md',
     filename: 'note.md',
     preview: '',
     tags: [],

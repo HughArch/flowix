@@ -16,12 +16,15 @@ import {
   isAgentTypeEnabled,
   subscribeEditorRuntimePreferences,
 } from '@features/preferences/public/runtime-api';
-import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
-import { normalizeAgentRuntimeStatus } from '@features/agent/public/runtime-status-api';
+import {
+  getAgentRuntimeStatusSnapshot,
+  getAvailableAgentTypes,
+  refreshAgentRuntimeStatusIfStale,
+  subscribeAgentRuntimeStatus,
+} from '@features/agent/public/runtime-status-api';
 import { windows } from '@platform/tauri/client';
 import { translate } from '@/lib/i18n';
 import type { AgentTypeKey } from '@/types/agent';
-import { isAgentTypeComingSoon } from '@/lib/agent-types';
 import { applyListType } from './list-transforms';
 import { openTableReferencePicker } from '@features/multidimensional-table/table-reference-picker';
 import { openMediaLibraryReferencePicker } from '@features/media-library/media-library-reference-picker';
@@ -65,12 +68,10 @@ function disposeMenuRoot(root: Root, container: HTMLDivElement) {
 const AGENT_THREAD_TYPE_BY_SLASH_ID: Record<AgentThreadSlashMenuItemId, AgentTypeKey> = {
   'agent-thread-pi': 'pi',
   'agent-thread-codex': 'codex',
-  'agent-thread-claude': 'claude',
-  'agent-thread-gemini': 'gemini',
+  'agent-thread-claude': 'claudecode',
   'agent-thread-hermes': 'hermes',
-  'agent-thread-openclaw': 'openclaw',
   'agent-thread-opencode': 'opencode',
-  'agent-thread-deepseek-harness': 'deepseek-harness',
+  'agent-thread-deepseek-harness': 'dsh',
 };
 
 const TABLE_VIEW_TYPE_BY_SLASH_ID: Partial<Record<SlashMenuItem['id'], TableViewType>> = {
@@ -84,23 +85,32 @@ function isAgentThreadSlashMenuItemId(id: SlashMenuItem['id']): id is AgentThrea
   return id in AGENT_THREAD_TYPE_BY_SLASH_ID;
 }
 
-function isAgentRuntimeAvailable(typeKey: AgentTypeKey): boolean {
-  if (isAgentTypeComingSoon(typeKey)) return false;
-  const runtime = useAgentRuntimeStore.getState();
-  return normalizeAgentRuntimeStatus(runtime.statusByType[typeKey], runtime.isChecking).state === 'ready';
-}
+function getAvailableSlashAgentTypes(): Set<AgentTypeKey> {
+  const runtime = getAgentRuntimeStatusSnapshot();
+  const availableAgents = getAvailableAgentTypes(
+    runtime.statusByType,
+    runtime.isChecking,
+    isAgentTypeEnabled,
+  );
 
-function isAgentSlashEnabled(typeKey: AgentTypeKey): boolean {
-  return isAgentTypeEnabled(typeKey);
+  if (availableAgents.length > 0) {
+    return new Set(availableAgents.map((type) => type.id));
+  }
+
+  // While no successful check exists or a refresh is in flight, keep Pi as
+  // the lightweight default until runtime availability is known.
+  if ((!runtime.hasChecked || runtime.isChecking) && isAgentTypeEnabled('pi')) {
+    return new Set(['pi']);
+  }
+  return new Set();
 }
 
 function getAvailableSlashMenuItems(): SlashMenuItem[] {
+  const availableAgentTypes = getAvailableSlashAgentTypes();
+
   return SLASH_MENU_ITEMS.filter((item) => {
     if (!isAgentThreadSlashMenuItemId(item.id)) return true;
-    if (item.id === 'agent-thread-deepseek-harness') return true;
-    const typeKey = AGENT_THREAD_TYPE_BY_SLASH_ID[item.id];
-    if (!isAgentSlashEnabled(typeKey)) return false;
-    return item.alwaysVisible || isAgentRuntimeAvailable(typeKey);
+    return availableAgentTypes.has(AGENT_THREAD_TYPE_BY_SLASH_ID[item.id]);
   });
 }
 
@@ -123,14 +133,16 @@ function filterItems(query: string, availableItems = getAvailableSlashMenuItems(
   });
 }
 
-function closeMenu() {
+function closeMenu(ownerView?: EditorView) {
+  if (ownerView && activeView !== ownerView) return;
+
   menuOpenId += 1;
   if (positionFrame !== null) {
     window.cancelAnimationFrame(positionFrame);
     positionFrame = null;
   }
   document.removeEventListener('mousedown', handlePointerDownOutside, true);
-  window.removeEventListener('resize', closeMenu);
+  window.removeEventListener('resize', handleWindowResize);
   window.removeEventListener('scroll', handleScrollOutside, true);
   unsubscribeRuntimeStatus?.();
   unsubscribeRuntimeStatus = null;
@@ -169,6 +181,10 @@ function handlePointerDownOutside(event: MouseEvent) {
   closeMenu();
 }
 
+function handleWindowResize() {
+  closeMenu();
+}
+
 // 滚动关闭 ── 与 mention (suggestion-menu.tsx) 同源: 只在滚动发生在
 // menuContainer 外时才关闭。弹窗自身 overflow-y:auto, 用户在弹窗内
 // 滚轮 / 触摸滚动时 scroll 事件会冒泡到 window (capture 阶段也会捕到),
@@ -176,20 +192,21 @@ function handlePointerDownOutside(event: MouseEvent) {
 function handleScrollOutside(event: Event) {
   const target = event.target;
   if (target instanceof Node && menuContainer?.contains(target)) return;
-  const view = activeEditor?.view;
+  const view = activeView;
   if (!view || view.isDestroyed) {
     closeMenu();
     return;
   }
 
   if (positionFrame !== null) return;
+  const openId = menuOpenId;
   positionFrame = window.requestAnimationFrame(() => {
     positionFrame = null;
-    if (!isCurrentMenuView(view)) return;
+    if (!isCurrentMenuView(view, openId)) return;
     try {
       updatePosition(view);
     } catch {
-      closeMenu();
+      closeMenu(view);
     }
   });
 }
@@ -375,6 +392,7 @@ function updatePosition(view: EditorView) {
 
 function renderMenu(view: EditorView, reposition = true) {
   if (!isCurrentMenuView(view)) return;
+  const openId = menuOpenId;
   const root = menuRoot;
   const instance = menuInstance;
   if (!root || !instance) return;
@@ -386,6 +404,7 @@ function renderMenu(view: EditorView, reposition = true) {
       selectedIndex={instance.selectedIndex}
       scrollSelectedItem={instance.scrollSelectedItem}
       onHover={(index) => {
+        if (!isCurrentMenuView(view, openId)) return;
         if (!menuInstance) return;
         if (menuInstance.selectedIndex === index && !menuInstance.scrollSelectedItem) return;
         menuInstance.hasNavigated = true;
@@ -394,10 +413,16 @@ function renderMenu(view: EditorView, reposition = true) {
         renderMenu(view, false);
       }}
       onScroll={() => {
-        if (menuInstance) menuInstance.hasNavigated = true;
+        if (isCurrentMenuView(view, openId) && menuInstance) {
+          menuInstance.hasNavigated = true;
+        }
       }}
-      onSelect={handleSelect}
-      onAddAgent={handleAddAgentClick}
+      onSelect={(item) => {
+        if (isCurrentMenuView(view, openId)) handleSelect(item);
+      }}
+      onAddAgent={() => {
+        if (isCurrentMenuView(view, openId)) void handleAddAgentClick(view, openId);
+      }}
     />
   );
 
@@ -405,8 +430,9 @@ function renderMenu(view: EditorView, reposition = true) {
   if (reposition) updatePosition(view);
 }
 
-async function handleAddAgentClick(): Promise<void> {
-  closeMenu();
+async function handleAddAgentClick(view: EditorView, openId: number): Promise<void> {
+  if (!isCurrentMenuView(view, openId)) return;
+  closeMenu(view);
   try {
     await windows.openPreferences('agents');
   } catch (err) {
@@ -439,17 +465,15 @@ function openMenu(view: EditorView, editor: Editor, triggerFrom: number, deleteF
   menuRoot = createRoot(menuContainer);
 
   document.addEventListener('mousedown', handlePointerDownOutside, true);
-  window.addEventListener('resize', closeMenu);
+  window.addEventListener('resize', handleWindowResize);
   window.addEventListener('scroll', handleScrollOutside, true);
 
   // Runtime detection may finish after the menu opens. Update the idle menu,
   // then freeze its row order once the user begins navigating it.
-  unsubscribeRuntimeStatus = useAgentRuntimeStore.subscribe((state, previous) => {
-    if (state.statusByType === previous.statusByType) return;
+  unsubscribeRuntimeStatus = subscribeAgentRuntimeStatus(() => {
     if (!isCurrentMenuView(view, openId) || activeEditor !== editor) return;
     if (!menuInstance || menuInstance.hasNavigated) return;
-    menuInstance.availableItems = getAvailableSlashMenuItems();
-    refreshMenuFromEditor(view, true);
+    refreshAvailableAgentItems(view);
   });
   unsubscribeUserSettings = subscribeEditorRuntimePreferences(() => {
     if (!isCurrentMenuView(view, openId) || activeEditor !== editor) return;
@@ -458,7 +482,7 @@ function openMenu(view: EditorView, editor: Editor, triggerFrom: number, deleteF
   });
 
   renderMenu(view);
-  void useAgentRuntimeStore.getState().refreshIfStale();
+  void refreshAgentRuntimeStatusIfStale();
 }
 
 function deleteTriggerText(editor: Editor): boolean {
@@ -500,7 +524,6 @@ async function createChildNoteReference(editor: Editor): Promise<void> {
       .insertContent({
         type: 'noteReference',
         attrs: {
-          memoId: null,
           notebookId: notebook.id,
           notebookName: notebook.name,
           title: memoTitleFromFilename(created.relativePath.split('/').pop() ?? created.relativePath),
@@ -598,26 +621,10 @@ function handleSelect(item: SlashMenuItem): void {
 
   if (isAgentThreadSlashMenuItemId(item.id)) {
     const agentThreadType = AGENT_THREAD_TYPE_BY_SLASH_ID[item.id];
-    const runtime = useAgentRuntimeStore.getState();
-    const runtimeState = normalizeAgentRuntimeStatus(
-      runtime.statusByType[agentThreadType],
-      runtime.isChecking,
-    ).state;
-    // DSH is always discoverable in the slash menu. Until availability is
-    // positively confirmed (including while status is still loading), guide
-    // the user to installation/model setup instead of inserting a dead card.
-    if (agentThreadType === 'deepseek-harness' && runtimeState !== 'ready') {
-      closeMenu();
-      void windows.openPreferences('dsh');
-      return;
-    }
-    if (agentThreadType === 'pi' && runtimeState !== 'ready') {
-      closeMenu();
-      void windows.openPreferences('pi');
-      return;
-    }
-    if (runtimeState === 'not-installed' || runtimeState === 'not-ready') {
-      closeMenu();
+    if (!getAvailableSlashAgentTypes().has(agentThreadType)) {
+      const view = activeView;
+      if (view && !view.isDestroyed) refreshAvailableAgentItems(view);
+      else closeMenu();
       return;
     }
     const replaceRange = isBlockStartTrigger(editor)
@@ -682,7 +689,7 @@ function refreshMenuFromEditor(view: EditorView, force = false) {
 
   const query = getQuery(view, state.triggerFrom);
   if (query === null) {
-    closeMenu();
+    closeMenu(view);
     return;
   }
 
@@ -707,6 +714,14 @@ function refreshMenuFromEditor(view: EditorView, force = false) {
   renderMenu(view);
 }
 
+function refreshAvailableAgentItems(view: EditorView) {
+  if (!isCurrentMenuView(view) || !menuInstance) return;
+  menuInstance.availableItems = getAvailableSlashMenuItems();
+  menuInstance.selectedIndex = 0;
+  menuInstance.hasNavigated = false;
+  refreshMenuFromEditor(view, true);
+}
+
 export const SlashMenu = Extension.create({
   name: 'slashMenu',
 
@@ -718,13 +733,21 @@ export const SlashMenu = Extension.create({
         key: slashMenuPluginKey,
 
         view(view) {
+          const handleBlur = (event: FocusEvent) => {
+            const nextTarget = event.relatedTarget;
+            if (nextTarget instanceof Node && menuContainer?.contains(nextTarget)) return;
+            closeMenu(view);
+          };
+          view.dom.addEventListener('blur', handleBlur);
+
           return {
             update(updatedView) {
               if (updatedView !== view || !menuState) return;
               refreshMenuFromEditor(updatedView);
             },
             destroy() {
-              closeMenu();
+              if (!view.isDestroyed) view.dom.removeEventListener('blur', handleBlur);
+              closeMenu(view);
             },
           };
         },
@@ -735,7 +758,7 @@ export const SlashMenu = Extension.create({
 
             const deleteFrom = getSlashTriggerDeleteFrom(view, from);
             if (!editor.isEditable || deleteFrom === null) {
-              closeMenu();
+              closeMenu(view);
               return false;
             }
 
@@ -744,7 +767,7 @@ export const SlashMenu = Extension.create({
           },
 
           handleKeyDown(view, event) {
-            if (!menuState || !menuInstance) return false;
+            if (!isCurrentMenuView(view) || !menuState || !menuInstance) return false;
 
             if (event.key === 'ArrowUp') {
               event.preventDefault();
@@ -770,7 +793,7 @@ export const SlashMenu = Extension.create({
 
             if (event.key === 'Escape') {
               event.preventDefault();
-              closeMenu();
+              closeMenu(view);
               return true;
             }
 

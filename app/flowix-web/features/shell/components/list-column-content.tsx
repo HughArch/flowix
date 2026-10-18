@@ -3,15 +3,13 @@
 import type { ReactNode } from 'react';
 
 import { MemoListViewTabs, type MemoListViewTab } from '@features/memo/components/memo-list-view-tabs';
-import { useI18n } from '@/lib/i18n';
-import { ListSurfaceLoadingState } from '@shared/ui/list-surface';
+import { ListColumnGuideCard } from '@features/shell/components/list-column-guide-card';
 
 interface ListColumnContentProps {
   activeView: MemoListViewTab;
   onViewChange: (view: MemoListViewTab) => void;
   navigationDrawerOpen: boolean;
   onToggleNavigationDrawer: () => void;
-  conversationLoading: boolean;
   children: ReactNode;
 }
 
@@ -21,11 +19,8 @@ export function ListColumnContent({
   onViewChange,
   navigationDrawerOpen,
   onToggleNavigationDrawer,
-  conversationLoading,
   children,
 }: ListColumnContentProps) {
-  const { t } = useI18n();
-
   return (
     <div className="relative h-full min-h-0 bg-[var(--list-bg)]">
       <div className="absolute left-3 top-0 z-30">
@@ -38,12 +33,7 @@ export function ListColumnContent({
         />
       </div>
       <div className="absolute inset-0">{children}</div>
-      {conversationLoading && (
-        <ListSurfaceLoadingState
-          label={t('status.agent.loadingConversations')}
-          className="pointer-events-none absolute inset-0 z-20"
-        />
-      )}
+      <ListColumnGuideCard activeView={activeView} onViewChange={onViewChange} />
     </div>
   );
 }

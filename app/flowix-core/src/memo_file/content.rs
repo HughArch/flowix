@@ -1,8 +1,6 @@
 //! Markdown reads, memo list queries, and filters.
 //!
-//! Current-notebook methods support watcher and legacy reconciliation flows.
-//! Global memo-ID lookups remain for compatibility callers. Normal notebook
-//! lists and path-based document operations use the Note projection instead.
+//! Current-notebook methods support watcher and path-based document flows.
 
 use std::collections::HashSet;
 use std::fs;
@@ -17,17 +15,19 @@ impl MemoFile {
         Self::derive_tags_from_memos(self.read_all_memos())
     }
 
-    pub fn derived_tags_for_notebook_id(&self, notebook_id: Option<&str>) -> Vec<MemoTag> {
+    pub fn derived_tags_for_notebook_id(
+        &self,
+        notebook_id: Option<&str>,
+    ) -> std::io::Result<Vec<MemoTag>> {
         let now = chrono::Utc::now().timestamp_millis();
-        self.read_notebook_tag_paths(notebook_id)
-            .unwrap_or_default()
+        Ok(self.read_used_tag_ids_for_notebook_id(notebook_id)?
             .into_iter()
             .map(|name| MemoTag {
                 id: name.clone(),
                 name,
                 created_at: now,
             })
-            .collect()
+            .collect())
     }
 
     fn derive_tags_from_memos(memos: Vec<Memo>) -> Vec<MemoTag> {
@@ -56,13 +56,6 @@ impl MemoFile {
         let notebook_id = self.current_notebook_id_for_index();
         let policy = self.file_management_policy(&notebook_id);
         let root = self.get_memo_base();
-        if let Ok(Some(entries)) = self.list_note_entries_with_legacy_ids(&notebook_id) {
-            return Self::memos_from_index(super::types::MemoIndexFile {
-                version: 2,
-                last_updated: chrono::Utc::now().timestamp_millis(),
-                memos: entries,
-            }, &policy, &root);
-        }
         let list = match self.read_index() {
             Some(l) => l,
             None => return Vec::new(),
@@ -76,13 +69,6 @@ impl MemoFile {
         let root = self.get_notebook_config_by_id(&resolved_id)
             .map(|config| std::path::PathBuf::from(config.path))
             .unwrap_or_default();
-        if let Ok(Some(entries)) = self.list_note_entries_with_legacy_ids(&resolved_id) {
-            return Self::memos_from_index(super::types::MemoIndexFile {
-                version: 2,
-                last_updated: chrono::Utc::now().timestamp_millis(),
-                memos: entries,
-            }, &policy, &root);
-        }
         let list = match self.read_index_for_notebook_id(notebook_id) {
             Ok(Some(list)) => list,
             _ => return Vec::new(),
@@ -94,7 +80,7 @@ impl MemoFile {
         let mut memos: Vec<Memo> = list
             .memos
             .iter()
-            .filter(|entry| !entry.id.is_empty())
+            .filter(|entry| !entry.relative_path.is_empty())
             .filter(|entry| {
                 let relative_path = if entry.relative_path.is_empty() {
                     &entry.filename
@@ -195,7 +181,7 @@ impl MemoFile {
                         .to_lowercase()
                         .cmp(&b.filename.to_lowercase())
                         .then_with(|| a.filename.cmp(&b.filename))
-                        .then_with(|| a.id.cmp(&b.id));
+                        .then_with(|| a.relative_path.cmp(&b.relative_path));
                     b.favorited.cmp(&a.favorited).then_with(|| {
                         if descending {
                             filename_order.reverse()
@@ -216,7 +202,7 @@ impl MemoFile {
                         .then_with(|| b.updated_at.cmp(&a.updated_at))
                         // 同一毫秒创建/更新的 memo 也必须有确定顺序, 否则
                         // 分页时会出现重复或漏项。
-                        .then_with(|| b.id.cmp(&a.id))
+                        .then_with(|| b.relative_path.cmp(&a.relative_path))
                 });
                 sorted
             }
@@ -226,7 +212,7 @@ impl MemoFile {
                     b.favorited
                         .cmp(&a.favorited)
                         .then_with(|| b.created_at.cmp(&a.created_at))
-                        .then_with(|| b.id.cmp(&a.id))
+                        .then_with(|| b.relative_path.cmp(&a.relative_path))
                 });
                 sorted
             }
@@ -234,24 +220,16 @@ impl MemoFile {
     }
 
     /// Read one memo from the current notebook index. Body is not loaded.
-    pub fn read_current_memo(&self, id: &str) -> Option<Memo> {
+    pub fn read_current_memo(&self, relative_path: &str) -> Option<Memo> {
         let list = self.read_index()?;
         list.memos
             .iter()
-            .find(|e| e.id == id)
+            .find(|e| e.relative_path == relative_path)
             .map(MemoFile::index_entry_to_memo)
     }
 
-    pub fn read_memo(&self, id: &str) -> Option<Memo> {
-        self.read_current_memo(id)
-    }
-
-    /// Resolve one memo by globally unique id across all notebooks.
-    pub fn read_memo_global(&self, id: &str) -> Option<Memo> {
-        self.resolve_memo_location(id)
-            .ok()
-            .flatten()
-            .map(|location| MemoFile::index_entry_to_memo(&location.memo))
+    pub fn read_memo(&self, relative_path: &str) -> Option<Memo> {
+        self.read_current_memo(relative_path)
     }
 
     /// Read metadata and full markdown body for all memos in the current notebook.
@@ -276,7 +254,7 @@ impl MemoFile {
         let policy = super::FileManagementPolicy::from_notebook_root(&base);
         list.memos
             .into_iter()
-            .filter(|e| !e.id.is_empty())
+            .filter(|e| !e.relative_path.is_empty())
             .filter(|entry| !policy.is_index_ignored_at(&base, std::path::Path::new(&entry.relative_path)))
             .map(|entry| {
                 let path = super::notebook_path_from_relative(&base, &entry.relative_path)
@@ -288,9 +266,9 @@ impl MemoFile {
     }
 
     /// Read one memo and markdown body from the current notebook only.
-    pub fn read_current_memo_with_body(&self, id: &str) -> Option<(MemoIndexEntry, String)> {
+    pub fn read_current_memo_with_body(&self, relative_path: &str) -> Option<(MemoIndexEntry, String)> {
         let list = self.read_index()?;
-        let entry = list.memos.iter().find(|e| e.id == id)?.clone();
+        let entry = list.memos.iter().find(|e| e.relative_path == relative_path)?.clone();
         let base = self.get_memo_base();
         let path = super::notebook_path_from_relative(&base, &entry.relative_path)
             .unwrap_or_else(|_| base.join(&entry.filename));
@@ -298,18 +276,7 @@ impl MemoFile {
         Some((entry, body))
     }
 
-    pub fn read_memo_with_body(&self, id: &str) -> Option<(MemoIndexEntry, String)> {
-        self.read_current_memo_with_body(id)
-    }
-
-    /// Resolve one memo globally and read its markdown body from its owning notebook.
-    pub fn read_memo_with_body_global(&self, id: &str) -> Option<(MemoIndexEntry, String)> {
-        let location = self.resolve_memo_location(id).ok().flatten()?;
-        let entry = location.memo;
-        let base = std::path::PathBuf::from(location.notebook.path);
-        let path = super::notebook_path_from_relative(&base, &entry.relative_path)
-            .unwrap_or_else(|_| base.join(&entry.filename));
-        let body = fs::read_to_string(&path).ok()?;
-        Some((entry, body))
+    pub fn read_memo_with_body(&self, relative_path: &str) -> Option<(MemoIndexEntry, String)> {
+        self.read_current_memo_with_body(relative_path)
     }
 }

@@ -3,7 +3,7 @@ import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import type { DocumentPage, MediaResourcePage } from '@platform/tauri/client';
 import { DocumentListView } from './document-list-view';
-import type { DocumentListSurface } from './types';
+import type { DocumentListViewContext } from './document-list-view-model';
 
 const probe = vi.hoisted(() => ({
   read: vi.fn<(request: unknown) => Promise<DocumentPage>>(),
@@ -27,8 +27,8 @@ class RequestLoopBoundary extends Component<{ children: ReactNode }, { failed: b
   render() { return this.state.failed ? <div>Directory request loop</div> : this.props.children; }
 }
 
-const surface: DocumentListSurface = {
-  kind: 'document-list', instanceKey: 'folder', displayId: 'folder',
+const listContext: DocumentListViewContext = {
+  displayId: 'folder',
   folderPath: '/notes/empty', notebookPath: '/notes', notebookId: 'notes', filters: {},
 };
 const emptyPage: DocumentPage = { folders: [], items: [], nextCursor: null, hasMore: false };
@@ -72,9 +72,9 @@ describe('DocumentListView folder loading', () => {
     });
   }
 
-  async function render(nextSurface = surface) {
+  async function render(nextSurface = listContext) {
     await act(async () => root.render(
-      <RequestLoopBoundary><DocumentListView surface={nextSurface} /></RequestLoopBoundary>,
+      <RequestLoopBoundary><DocumentListView listContext={nextSurface} /></RequestLoopBoundary>,
     ));
   }
 
@@ -105,7 +105,7 @@ describe('DocumentListView folder loading', () => {
     expect(host.textContent).not.toContain('正在整理文件列表');
 
     respondWith(Promise.resolve(emptyPage));
-    await render({ ...surface, displayId: 'other', folderPath: '/notes/other' });
+    await render({ ...listContext, displayId: 'other', folderPath: '/notes/other' });
     expect(probe.read).toHaveBeenCalledTimes(2);
     expect(probe.read).toHaveBeenLastCalledWith(expect.objectContaining({ folderPath: '/notes/other' }));
     expect(host.textContent).toContain('列表内容为空');
@@ -114,12 +114,12 @@ describe('DocumentListView folder loading', () => {
 
   it('keeps folder media visible through a rename and coalesces a large event burst', async () => {
     probe.mediaRead.mockResolvedValueOnce(mediaPage('before'));
-    const mediaSurface = (folder: string): DocumentListSurface => ({
-      ...surface, displayId: 'folder-library', filters: { resourceKinds: ['image'] },
+    const mediaSurface = (folder: string): DocumentListViewContext => ({
+      ...listContext, displayId: 'folder-library', filters: { resourceKinds: ['image'] },
       mediaScope: { relativePath: folder, depth: 'descendants' },
     });
     const renderLibrary = async (folder: string, paused = false) => {
-      await act(async () => root.render(<DocumentListView surface={mediaSurface(folder)} mediaLibrary libraryActionsDisabled={paused} refreshPaused={paused} />));
+      await act(async () => root.render(<DocumentListView listContext={mediaSurface(folder)} mediaLibrary libraryActionsDisabled={paused} refreshPaused={paused} />));
     };
     await renderLibrary('before');
     // A containing-folder source must work without explicit records or a path filter.
@@ -158,11 +158,11 @@ describe('DocumentListView folder loading', () => {
 
   it('recovers an early empty query when media index reconciliation completes without changing filters', async () => {
     probe.mediaRead.mockResolvedValueOnce({ resources: [], nextCursor: null, hasMore: false });
-    const scopedSurface: DocumentListSurface = {
-      ...surface, displayId: 'reconciled-library', filters: { resourceKinds: ['image'] },
+    const scopedSurface: DocumentListViewContext = {
+      ...listContext, displayId: 'reconciled-library', filters: { resourceKinds: ['image'] },
       mediaScope: { relativePath: 'renamed', depth: 'descendants' },
     };
-    await act(async () => root.render(<DocumentListView surface={scopedSurface} mediaLibrary />));
+    await act(async () => root.render(<DocumentListView listContext={scopedSurface} mediaLibrary />));
     expect(probe.mediaRead).toHaveBeenCalledTimes(1);
     expect(host.textContent).toContain('列表内容为空');
     expect(host.textContent).not.toContain('未设置数据集合');
@@ -177,11 +177,11 @@ describe('DocumentListView folder loading', () => {
 
   it('loads a readable library when its actions are disabled', async () => {
     probe.mediaRead.mockResolvedValue(mediaPage('readonly'));
-    const scopedSurface: DocumentListSurface = {
-      ...surface, displayId: 'readonly-library', filters: { resourceKinds: ['image'] },
+    const scopedSurface: DocumentListViewContext = {
+      ...listContext, displayId: 'readonly-library', filters: { resourceKinds: ['image'] },
       mediaScope: { relativePath: 'readonly', depth: 'descendants' },
     };
-    await act(async () => root.render(<DocumentListView surface={scopedSurface} mediaLibrary libraryActionsDisabled />));
+    await act(async () => root.render(<DocumentListView listContext={scopedSurface} mediaLibrary libraryActionsDisabled />));
     expect(probe.mediaRead).toHaveBeenCalledTimes(1);
     expect(host.querySelector('[title="photo.png"]')).not.toBeNull();
   });

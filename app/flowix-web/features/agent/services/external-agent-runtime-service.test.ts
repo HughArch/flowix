@@ -12,7 +12,7 @@ const sessionStoreMock = vi.hoisted(() => ({
   state: {
     sessionMeta: {
       activeThreadIds: {} as Record<string, string | undefined>,
-      activeAgentTypeKey: "deepseek-harness" as const,
+      activeAgentTypeKey: "dsh" as const,
       threadTypes: {},
       externalSessionResolutions: {} as Record<string, string>,
       lastRunningRunsReconciledAt: null,
@@ -112,7 +112,7 @@ describe('external agent runtime service', () => {
 
     await expect(resolveExternalSessionId('codex-local-inst-1', 'codex'))
       .resolves.toBe('codex-real-session');
-    await expect(resolveExternalSessionId('claude-local-inst-1', 'claude'))
+    await expect(resolveExternalSessionId('claude-local-inst-1', 'claudecode'))
       .resolves.toBe('claude-real-session');
 
     expect(agent.getCodexSessionId).toHaveBeenCalledWith('codex-local-inst-1');

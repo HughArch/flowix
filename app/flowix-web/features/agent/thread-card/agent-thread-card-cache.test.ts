@@ -17,7 +17,7 @@ const sessionStoreMock = vi.hoisted(() => ({
   >,
   sessionMeta: {
     externalSessionResolutions: {},
-    activeAgentTypeKey: "deepseek-harness",
+    activeAgentTypeKey: "dsh",
     threadTypes: {},
     threadLists: {},
     currentThreadTitles: {},
@@ -99,11 +99,11 @@ describe("agent thread card cache helper", () => {
 
     const result = await loadAgentThreadCardCache({
       threadId: "flowix-thread",
-      typeKey: "deepseek-harness",
+      typeKey: "dsh",
     });
 
     expect(sessionStoreMock.loadMessages).toHaveBeenCalledWith(
-      "deepseek-harness",
+      "dsh",
       "flowix-thread",
     );
     expect(result).toEqual({
@@ -160,11 +160,11 @@ describe("agent thread card cache helper", () => {
 
     const result = await loadAgentThreadCardCache({
       threadId: "claude-real-session",
-      typeKey: "claude",
+      typeKey: "claudecode",
     });
 
     expect(sessionStoreMock.loadMessages).toHaveBeenCalledWith(
-      "claude",
+      "claudecode",
       "claude-real-session",
     );
     expect(result.loadedThreadId).toBe("claude-real-session");

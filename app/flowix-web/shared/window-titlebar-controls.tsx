@@ -1,7 +1,13 @@
+import { useEffect, useRef } from 'react';
+import { registerWindowCloseRegion, subscribeNativeCloseRouting } from '@platform/tauri/window-close-region';
+import { createLogger } from '@/lib/logger';
+import { toast } from '@/lib/toast';
 import { Minus, Square, X } from "lucide-react";
 import { getCurrentWindow } from "@platform/tauri/window";
 import { Tooltip } from "@shared/ui/tooltip";
 import { useI18n } from "@/lib/i18n";
+
+let lastAnnouncedRoutingStatus: boolean | undefined;
 
 function isWindowsPlatform(): boolean {
   return /Windows/i.test(navigator.userAgent) || /Win/i.test(navigator.platform);
@@ -21,6 +27,28 @@ export function WindowsTitlebarControls({
   reserveSpace = false,
 }: WindowsTitlebarControlsProps) {
   const { t } = useI18n();
+  const closeButton = useRef<HTMLButtonElement>(null);
+  const translate = useRef(t);
+  translate.current = t;
+  useEffect(() => {
+    if (isWindowsPlatform() && isTauriApp() && closeButton.current) {
+      const unregisterRegion = registerWindowCloseRegion(closeButton.current);
+      const unsubscribeHealth = subscribeNativeCloseRouting(ready => {
+        if (lastAnnouncedRoutingStatus === ready) return;
+        const wasKnown = lastAnnouncedRoutingStatus !== undefined;
+        lastAnnouncedRoutingStatus = ready;
+        if (!ready) {
+          toast.warning(translate.current('window.closeNativeUnavailable'));
+        } else if (wasKnown) {
+          toast.success(translate.current('window.closeNativeRestored'));
+        }
+      });
+      return () => {
+        unregisterRegion();
+        unsubscribeHealth();
+      };
+    }
+  }, []);
   if (!isWindowsPlatform() || !isTauriApp()) return null;
 
   return (
@@ -51,7 +79,13 @@ export function WindowsTitlebarControls({
           <button
             type="button"
             aria-label={t('window.close')}
-            onClick={() => getCurrentWindow().close()}
+            ref={closeButton}
+            onClick={() => {
+              void getCurrentWindow().close().catch(() => {
+                createLogger('window:controls').error('close request failed');
+                toast.error(t('window.closeRequestFailed'));
+              });
+            }}
             className="flex h-9 w-[42px] items-center justify-center text-[var(--muted-foreground)] transition-colors hover:bg-[var(--destructive)] hover:text-[var(--floating-foreground)] [-webkit-app-region:no-drag]"
           >
             <X className="h-3.5 w-3.5" strokeWidth={1.8} />

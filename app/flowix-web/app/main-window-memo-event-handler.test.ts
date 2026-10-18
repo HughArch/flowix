@@ -8,7 +8,7 @@ import type { MemoEvent } from '@/types/memo';
 import type { MemoItem } from '@/types/memo-item';
 
 const memo: MemoItem = {
-  id: 'memo-b',
+  relativePath: 'Created.md',
   filename: 'Created.md',
   preview: '',
   tags: [],
@@ -135,7 +135,6 @@ describe('handleMainWindowMemoEvent', () => {
     const actions = createActions('notebook-b');
     const event: MemoEvent = {
       kind: 'updated',
-      id: memo.id,
       path: '/notebook-b/Renamed.md',
       memo: { ...memo, filename: 'Renamed.md' },
       notebookId: 'notebook-b',

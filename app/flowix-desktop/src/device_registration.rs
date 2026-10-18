@@ -43,18 +43,33 @@ const DEFAULT_SUPABASE_ANON_KEY: &str = "sb_publishable_l6AmH0K0Uq8_roThQHSnnQ_2
 pub struct BootFile {
     pub schema_version: u32,
     #[serde(default)]
+    pub version_initialization: VersionInitializationState,
+    /// Most recent app version whose one-time version initialization completed.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub last_successful_app_version: Option<String>,
+    /// Version of the one-time on-disk storage reset already completed.
+    /// This is separate from app-version initialization so later releases do
+    /// not repeatedly discard derived indexes or user-created plugin files.
+    #[serde(default)]
+    pub notebook_storage_reset_version: u32,
+    #[serde(default)]
     pub experimental: bool,
     /// Whether the first-run DeepSeek Harness introduction has been shown.
     /// Keep the on-disk key in snake_case for the boot.json contract.
     #[serde(default, rename = "is_introduct_displayed")]
     pub is_introduct_displayed: bool,
-    /// Whether the first-run workspace onboarding has been completed.
-    /// Development builds intentionally keep this false so the flow can be
-    /// exercised on every launch.
-    #[serde(default, rename = "is_onboarding_completed")]
-    pub is_onboarding_completed: bool,
     #[serde(default)]
     pub user_info: UserInfo,
+}
+
+/// Completion state for the one-time initialization associated with an app version.
+#[derive(Debug, Clone, Default, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct VersionInitializationState {
+    #[serde(default)]
+    pub app_version: Option<String>,
+    #[serde(default)]
+    pub completed: bool,
 }
 
 /// 设备登记子对象：保存随机设备 ID 和登记尝试状态。
@@ -91,20 +106,32 @@ impl DeviceRegistry {
         let app_version = app_version.into();
         if let Some(parent) = path.parent() {
             // best-effort, 文件已存在就能�?常�?�? 不存在时 `read_from_disk` 返回 None
-            let _ = std::fs::create_dir_all(parent);
+            let _ = flowix_core::memo_file::ensure_storage_directory(parent);
         }
-        let boot = Self::read_from_disk(&path).unwrap_or_else(|| {
+        let loaded = Self::read_from_disk(&path);
+        let mut save_defaults = loaded.is_none();
+        let boot = loaded.unwrap_or_else(|| {
+            if let Err(error) = flowix_core::memo_file::backup_storage_file(&path) {
+                save_defaults = false;
+                tracing::warn!(%error, "could not preserve invalid boot configuration");
+            }
             tracing::info!(
                 "[device-reg] no boot.json at {}; creating a fresh registration record",
                 path.display()
             );
             Self::fresh()
         });
-        Self {
+        let registry = Self {
             path,
             app_version,
             inner: RwLock::new(boot),
+        };
+        if save_defaults {
+            if let Err(error) = registry.flush(&registry.read()) {
+                tracing::warn!(%error, "could not persist boot configuration");
+            }
         }
+        registry
     }
 
     /// 异�?上报入口�?Fire-and-forget: �?�� `tauri::async_runtime::spawn`,
@@ -122,6 +149,73 @@ impl DeviceRegistry {
         self.read().experimental
     }
 
+    /// App version whose one-time version initialization most recently completed.
+    pub fn last_successful_app_version(&self) -> Option<String> {
+        self.read().last_successful_app_version.clone()
+    }
+
+    /// Whether the current app version has completed its one-time initialization.
+    pub fn is_version_initialization_complete(&self) -> bool {
+        let boot = self.read();
+        // `last_successful_app_version` is the durable fallback if the in-flight
+        // marker was restored from an older backup or otherwise became stale.
+        // Once this version has completed successfully, do not replay one-time
+        // initialization because the secondary progress flag disagrees.
+        boot.last_successful_app_version.as_deref() == Some(self.app_version.as_str())
+            || (boot.version_initialization.app_version.as_deref()
+                == Some(self.app_version.as_str())
+                && boot.version_initialization.completed)
+    }
+
+    /// Update the current app version's initialization flag from dev settings.
+    pub fn set_version_initialization_completed(&self, completed: bool) -> Result<(), String> {
+        let mut boot = self.write();
+        boot.version_initialization.app_version = Some(self.app_version.clone());
+        boot.version_initialization.completed = completed;
+        if completed {
+            boot.last_successful_app_version = Some(self.app_version.clone());
+        } else if boot.last_successful_app_version.as_deref() == Some(self.app_version.as_str()) {
+            // Preserve the explicit development setting that requests a rerun.
+            boot.last_successful_app_version = None;
+        }
+        self.flush(&boot)
+            .map_err(|error| format!("persist boot.json: {error}"))
+    }
+
+    /// Persist an incomplete marker before running version-specific migrations.
+    pub fn begin_version_initialization(&self) -> Result<(), String> {
+        let mut boot = self.write();
+        boot.version_initialization.app_version = Some(self.app_version.clone());
+        boot.version_initialization.completed = false;
+        self.flush(&boot)
+            .map_err(|error| format!("persist boot.json: {error}"))
+    }
+
+    /// Mark the current app version initialized after all one-time steps succeed.
+    /// The same atomic boot.json write advances the previous successful version
+    /// so it remains available until this initialization has fully completed.
+    pub fn complete_version_initialization(&self) -> Result<(), String> {
+        let mut boot = self.write();
+        if boot.version_initialization.app_version.as_deref() != Some(self.app_version.as_str()) {
+            return Err("version initialization marker changed while running".to_string());
+        }
+        boot.version_initialization.completed = true;
+        boot.last_successful_app_version = Some(self.app_version.clone());
+        self.flush(&boot)
+            .map_err(|error| format!("persist boot.json: {error}"))
+    }
+
+    pub fn notebook_storage_reset_version(&self) -> u32 {
+        self.read().notebook_storage_reset_version
+    }
+
+    pub fn complete_notebook_storage_reset_version(&self, version: u32) -> Result<(), String> {
+        let mut boot = self.write();
+        boot.notebook_storage_reset_version = boot.notebook_storage_reset_version.max(version);
+        self.flush(&boot)
+            .map_err(|error| format!("persist boot.json: {error}"))
+    }
+
     /// Whether the DeepSeek Harness introduction has already been displayed.
     pub fn is_introduct_displayed(&self) -> bool {
         self.read().is_introduct_displayed
@@ -131,24 +225,6 @@ impl DeviceRegistry {
     pub fn set_introduct_displayed(&self, displayed: bool) -> Result<(), String> {
         let mut boot = self.write();
         boot.is_introduct_displayed = displayed;
-        self.flush(&boot)
-            .map_err(|error| format!("persist boot.json: {error}"))
-    }
-
-    /// Whether the first-run workspace onboarding has been completed.
-    ///
-    /// 与线上行为一致: 直接读 `boot.json`, 开发构建不再强制返回 false ——
-    /// 否则每次 `tauri:dev` 都会重走引导, 无法验证"完成一次后不再展示"。
-    /// 开发期想重现首次启动, 删掉 `~/.flowix/boot/boot.json` 里的
-    /// `is_onboarding_completed`(或整个文件) 即可。
-    pub fn is_onboarding_completed(&self) -> bool {
-        self.read().is_onboarding_completed
-    }
-
-    /// Persist onboarding completion.
-    pub fn set_onboarding_completed(&self, completed: bool) -> Result<(), String> {
-        let mut boot = self.write();
-        boot.is_onboarding_completed = completed;
         self.flush(&boot)
             .map_err(|error| format!("persist boot.json: {error}"))
     }
@@ -296,9 +372,11 @@ impl DeviceRegistry {
     fn fresh() -> BootFile {
         BootFile {
             schema_version: BOOT_SCHEMA_VERSION,
+            version_initialization: VersionInitializationState::default(),
+            last_successful_app_version: None,
+            notebook_storage_reset_version: 0,
             experimental: false,
             is_introduct_displayed: false,
-            is_onboarding_completed: false,
             user_info: UserInfo {
                 device_id: Uuid::new_v4(),
                 installed_at: Utc::now(),
@@ -431,7 +509,6 @@ mod tests {
         assert_eq!(b.schema_version, BOOT_SCHEMA_VERSION);
         assert!(!b.experimental);
         assert!(!b.is_introduct_displayed);
-        assert!(!b.is_onboarding_completed);
         assert!(!b.user_info.registered);
         assert_eq!(b.user_info.attempts, 0);
         assert!(b.user_info.registered_at.is_none());
@@ -444,11 +521,9 @@ mod tests {
         b.experimental = true;
         let s = serde_json::to_string(&b).unwrap();
         assert!(s.contains("\"is_introduct_displayed\":false"));
-        assert!(s.contains("\"is_onboarding_completed\":false"));
         let v: BootFile = serde_json::from_str(&s).unwrap();
         assert!(v.experimental);
         assert!(!v.is_introduct_displayed);
-        assert!(!v.is_onboarding_completed);
         assert_eq!(b.user_info.device_id, v.user_info.device_id);
         assert_eq!(b.user_info.installed_at, v.user_info.installed_at);
         assert_eq!(
@@ -477,48 +552,8 @@ mod tests {
     }
 
     #[test]
-    fn missing_onboarding_completed_defaults_to_false() {
-        let mut value = serde_json::to_value(fresh_boot()).unwrap();
-        value
-            .as_object_mut()
-            .unwrap()
-            .remove("is_onboarding_completed");
-        let boot: BootFile = serde_json::from_value(value).unwrap();
-        assert!(!boot.is_onboarding_completed);
-    }
-
-    #[test]
-    fn onboarding_completion_survives_reload() {
-        // 线上行为: 完成一次就落盘, 重新加载后不再展示引导。
-        // (回归保护: 曾经 debug 构建读写两端都强制 false, 导致 dev 每次重走引导。)
-        //
-        // 注意用 `tempfile::tempdir()` 而不是 `tempdir_path()`: 后者返回的裸路径
-        // 既不当文件建也不当目录建, 而 `flush()` 会在其下再建 `boot/` —— 一旦与
-        // 其它用例的时间戳撞车 (macOS 上 `timestamp_nanos` 分辨率不足以区分并发
-        // 用例), 就会出现 "文件已存在" / "Not a directory" 的偶发失败。
-        let temp = tempfile::tempdir().unwrap();
-        let dir = temp.path();
-        let registry = DeviceRegistry::load(dir, "test-version");
-        assert!(!registry.is_onboarding_completed());
-
-        registry.set_onboarding_completed(true).unwrap();
-        assert!(registry.is_onboarding_completed());
-
-        let reloaded = DeviceRegistry::load(dir, "test-version");
-        assert!(
-            reloaded.is_onboarding_completed(),
-            "completion must be read back from boot.json, not reset per launch"
-        );
-
-        // 反向同样生效 (便于开发期手动重置)。
-        reloaded.set_onboarding_completed(false).unwrap();
-        assert!(!DeviceRegistry::load(dir, "test-version").is_onboarding_completed());
-    }
-
-    #[test]
     fn intro_displayed_survives_reload() {
-        // 与 onboarding 同一条持久化路径, 一并锁住, 避免将来又被构建类型短路。
-        // 同上: 必须用独立临时目录, 不能复用 `tempdir_path()`。
+        // 必须用独立临时目录, 不能复用 `tempdir_path()`。
         let temp = tempfile::tempdir().unwrap();
         let dir = temp.path();
         let registry = DeviceRegistry::load(dir, "test-version");

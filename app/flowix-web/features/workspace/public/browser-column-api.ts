@@ -1,7 +1,7 @@
 import { useCallback } from 'react';
 import { useShallow } from 'zustand/react/shallow';
 import {
-  canMoveBrowserColumnTargetToWorkColumn,
+  canOpenBrowserColumnTargetInWorkColumn,
   useBrowserColumnStore,
   type BrowserColumnTab,
 } from '@features/workspace/store/browser-column-store';
@@ -13,18 +13,27 @@ import {
   registerBrowserColumnDocumentFlush,
 } from '@features/workspace/use-cases/browser-column-coordinator';
 import {
-  openBrowserColumnMarkdown,
-  openBrowserColumnAgentConversation,
-  openBrowserColumnNotebookNote,
-  openBrowserColumnTabInWorkColumn,
+  createFileBrowserTarget,
+  removeBrowserColumnTabsByPath,
+  selectBrowserColumnFile,
 } from '@features/workspace/use-cases/browser-column-navigation';
+import { openBrowserColumnTabInWorkColumn } from '@features/workspace/use-cases/surface-opening';
 
-export { openBrowserColumnAgentConversation, openBrowserColumnNotebookNote };
+export { openWorkspaceSurface } from './open-surface-api';
+export type { OpenWorkspaceSurfaceRequest, BrowserWorkspaceSurfaceRequest } from './open-surface-api';
 
 export {
-  canMoveBrowserColumnTargetToWorkColumn,
+  createFileBrowserTarget,
+  removeBrowserColumnTabsByPath,
+  selectBrowserColumnFile,
+};
+export { openBrowserColumnTabInWorkColumn };
+
+export {
+  canOpenBrowserColumnTargetInWorkColumn,
   type BrowserColumnTab,
 };
+export type { BrowserColumnTarget } from '@features/workspace/store/browser-column-store';
 
 export function useBrowserColumnViewModel() {
   return useBrowserColumnStore(useShallow((state) => {
@@ -56,8 +65,6 @@ export function useBrowserColumnFocusViewModel() {
 
 export const selectBrowserColumnTab = activateBrowserColumnTab;
 export const registerBrowserColumnFlush = registerBrowserColumnDocumentFlush;
-export const openBrowserColumnTabInMainWorkColumn = openBrowserColumnTabInWorkColumn;
-export const openMarkdownInBrowserColumn = openBrowserColumnMarkdown;
 
 export function hideBrowserColumn(): void {
   useBrowserColumnStore.getState().setVisible(false);
@@ -76,12 +83,12 @@ export function closeBrowserColumnTab(
   options?: { discardChanges?: boolean },
 ): Promise<boolean | null> {
   const closesActiveTab = useBrowserColumnStore.getState().activeTabId === tabId;
-  if (options?.discardChanges && closesActiveTab) discardActiveBrowserColumnDocument();
+  const discarded = Boolean(options?.discardChanges && closesActiveTab && discardActiveBrowserColumnDocument());
   return enqueueBrowserColumnNavigation(() => {
     if (browserColumnTabExists(tabId)) useBrowserColumnStore.getState().closeTab(tabId);
     return true;
   }, {
-    flush: closesActiveTab && !options?.discardChanges,
+    flush: closesActiveTab && !discarded,
     silentFlush: true,
   });
 }
@@ -91,12 +98,12 @@ export function closeOtherBrowserColumnTabs(
   options?: { discardChanges?: boolean },
 ): Promise<boolean | null> {
   const closesActiveTab = useBrowserColumnStore.getState().activeTabId !== tabId;
-  if (options?.discardChanges && closesActiveTab) discardActiveBrowserColumnDocument();
+  const discarded = Boolean(options?.discardChanges && closesActiveTab && discardActiveBrowserColumnDocument());
   return enqueueBrowserColumnNavigation(() => {
     if (browserColumnTabExists(tabId)) useBrowserColumnStore.getState().closeOtherTabs(tabId);
     return true;
   }, {
-    flush: closesActiveTab && !options?.discardChanges,
+    flush: closesActiveTab && !discarded,
     silentFlush: true,
   });
 }
@@ -109,12 +116,12 @@ export function closeBrowserColumnTabsToRight(
   const targetIndex = state.tabs.findIndex((tab) => tab.id === tabId);
   const activeIndex = state.tabs.findIndex((tab) => tab.id === state.activeTabId);
   const closesActiveTab = targetIndex >= 0 && activeIndex > targetIndex;
-  if (options?.discardChanges && closesActiveTab) discardActiveBrowserColumnDocument();
+  const discarded = Boolean(options?.discardChanges && closesActiveTab && discardActiveBrowserColumnDocument());
   return enqueueBrowserColumnNavigation(() => {
     if (browserColumnTabExists(tabId)) useBrowserColumnStore.getState().closeTabsToRight(tabId);
     return true;
   }, {
-    flush: closesActiveTab && !options?.discardChanges,
+    flush: closesActiveTab && !discarded,
     silentFlush: true,
   });
 }
@@ -122,9 +129,9 @@ export function closeBrowserColumnTabsToRight(
 export function closeAllBrowserColumnTabs(
   options?: { discardChanges?: boolean },
 ): Promise<boolean | null> {
-  if (options?.discardChanges) discardActiveBrowserColumnDocument();
+  const discarded = Boolean(options?.discardChanges && discardActiveBrowserColumnDocument());
   return enqueueBrowserColumnNavigation(() => {
     useBrowserColumnStore.getState().closeAllTabs();
     return true;
-  }, { flush: !options?.discardChanges, silentFlush: true });
+  }, { flush: !discarded, silentFlush: true });
 }

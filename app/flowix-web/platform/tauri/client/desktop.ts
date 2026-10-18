@@ -1,10 +1,10 @@
+import { acceptPathMutationResult, publishNotebookPathMove, type PathMutationResult } from '../notebook-change-events';
 import { invokeDocumentMutation } from './document-mutation';
 import { convertFileSrc, invoke } from '@platform/tauri/core';
 import type { ThemeId } from '@/lib/theme';
 import type { NoteColor } from '@/types/note-item';
 
 export interface DocTreeMemoMeta {
-  id: string;
   icon: string | null;
   colors: NoteColor[];
   favorited: boolean;
@@ -149,13 +149,37 @@ export interface CollectionMutationResult {
   notebookPath: string;
   directoryMove: { previousRelativePath: string; relativePath: string } | null;
 }
+export interface CollectionChangedEvent {
+  notebookId: string;
+  collectionId: string;
+  operationId: string;
+  indexSequence: number;
+  relativePath: string;
+  previousRelativePath: string;
+  notebookPath: string;
+  name: string;
+  revision: number;
+  directoryMove?: CollectionMutationResult['directoryMove'];
+}
 export const collections = {
   list: (notebookId: string, collectionType?: CollectionIndexItem['collectionType']) =>
     invoke<CollectionIndexItem[]>('list_collections', { notebookId, collectionType }),
   resolve: (notebookId: string, collectionId: string) =>
     invoke<CollectionIndexItem>('resolve_collection', { notebookId, collectionId }),
   mutate: (request: CollectionMutationRequest) =>
-    invokeDocumentMutation<CollectionMutationResult>('mutate_collection', { request }),
+    invokeDocumentMutation<CollectionMutationResult>('mutate_collection', { request }).then((result) => {
+      const moved = result.directoryMove;
+      if (moved || result.previousRelativePath !== result.actualRelativePath) {
+        publishNotebookPathMove({
+          changeId: `collection:${request.notebookId}:${result.operationId}`,
+          notebookId: request.notebookId,
+          previousRelativePath: moved?.previousRelativePath ?? result.previousRelativePath,
+          relativePath: moved?.relativePath ?? result.actualRelativePath,
+          directory: Boolean(moved),
+        });
+      }
+      return result;
+    }),
   setInViews: (notebookId: string, collectionId: string, inViews: boolean) =>
     invoke<void>('set_collection_display_state', { notebookId, collectionId, inViews }),
   makeIdentityUnique: (notebookId: string, relativePath: string) =>
@@ -229,15 +253,17 @@ export const files = {
   deleteFolder: (folderPath: string, spacePath: string) =>
     invoke<boolean>('delete_folder', { folderPath, spacePath }),
   rename: (filePath: string, name: string, spacePath: string) =>
-    invokeDocumentMutation<string>('rename_file', { filePath, name, spacePath }),
+    invokeDocumentMutation<PathMutationResult>('rename_file', { filePath, name, spacePath }).then(acceptPathMutationResult),
   move: (filePath: string, targetDirectoryPath: string, spacePath: string) =>
-    invoke<string>('move_file', { filePath, targetDirectoryPath, spacePath }),
+    invoke<PathMutationResult>('move_file', { filePath, targetDirectoryPath, spacePath }).then(acceptPathMutationResult),
   moveFolder: (folderPath: string, targetDirectoryPath: string, spacePath: string) =>
-    invoke<string>('move_folder', { folderPath, targetDirectoryPath, spacePath }),
+    invoke<PathMutationResult>('move_folder', { folderPath, targetDirectoryPath, spacePath }).then(acceptPathMutationResult),
   importFile: (filePath: string, targetDirectoryPath: string, spacePath: string) =>
     invoke<string>('import_file', { filePath, targetDirectoryPath, spacePath }),
+  importFolder: (sourceDirectoryPath: string, targetDirectoryPath: string, spacePath: string) =>
+    invoke<string>('import_folder', { sourceDirectoryPath, targetDirectoryPath, spacePath }),
   renameFolder: (folderPath: string, name: string, spacePath: string) =>
-    invokeDocumentMutation<string>('rename_folder', { folderPath, name, spacePath }),
+    invokeDocumentMutation<PathMutationResult>('rename_folder', { folderPath, name, spacePath }).then(acceptPathMutationResult),
   createFolder: (spacePath: string, name: string, parentId?: string) =>
     invoke<DocTreeItem | null>('create_folder', { spacePath, name, parentId }),
   createDocument: (spacePath: string, name: string, parentId?: string) =>
@@ -282,6 +308,7 @@ export interface SaveFileFilter {
 
 export const dialogs = {
   selectDirectory: () => invoke<string | null>('select_directory'),
+  selectImportDirectory: () => invoke<string | null>('select_import_directory'),
   selectFiles: (options?: { accept?: string; multiple?: boolean }) => invoke<string[] | null>('select_files', {
     accept: options?.accept ?? null,
     multiple: options?.multiple ?? true,
@@ -352,6 +379,8 @@ export const windows = {
     invoke<void>('unwatch_external_document', { leaseId }),
 };
 
+export type CloudEnvironment = 'staging' | 'prod';
+
 export interface ProductInfo {
   productName: string;
   version: string;
@@ -360,10 +389,14 @@ export interface ProductInfo {
   logDir: string;
   os: string;
   arch: string;
+  isDevBuild: boolean;
+  cloudEnvironment: CloudEnvironment;
 }
 
 export const product = {
   getInfo: () => invoke<ProductInfo>('get_product_info'),
+  setCloudEnvironment: (environment: CloudEnvironment) =>
+    invoke<void>('set_cloud_environment', { environment }),
   openLogDir: () => invoke<void>('open_log_dir'),
   revealInFileManager: (filePath: string) => invoke<void>('reveal_in_file_manager', { filePath }),
 };
@@ -507,8 +540,6 @@ export const plugins = {
     sourceNote?: string;
   }) => invoke<PluginRunStarted>('plugin_run', params),
   runStop: (runId: string) => invoke<boolean>('plugin_run_stop', { runId }),
-  resolveNote: (memoId: string) =>
-    invoke<PluginArtifact>('plugin_resolve_note', { memoId }),
 };
 
 export const artifacts = {

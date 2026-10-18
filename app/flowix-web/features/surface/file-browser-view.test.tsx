@@ -2,7 +2,7 @@ import { act, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import { FileBrowserView, type FileBrowserViewSurface } from './file-browser-view';
-import { useAgentAccessStore } from '@features/agent/store/agent-access-store';
+import { useAgentWorkspaceStore, type AgentWorkspaceState } from '@features/agent/store/agent-workspace-store';
 import { useNoteStore } from '@features/memo/store';
 import { DocumentContainer } from '@features/document/components/document-container';
 
@@ -33,9 +33,9 @@ vi.mock('@platform/tauri/event-bus', () => ({ subscribe: () => () => {} }));
 it('derives the tree from the owning notebook without remounting or changing file access scope', async () => {
   const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
   environment.IS_REACT_ACT_ENVIRONMENT = true;
-  const previousConfig = useAgentAccessStore.getState().config;
+  const previousWorkspace = useAgentWorkspaceStore.getState().workspace;
   const previousNotebookId = useNoteStore.getState().selectedNotebookId;
-  useAgentAccessStore.setState({ config: { version: 1, entries: [], defaults: {} }, notebookConfigs: {} });
+  setWorkspace({ byNotebookId: {} });
   probe.mounts = 0;
   const element = document.createElement('div');
   const root = createRoot(element);
@@ -58,13 +58,11 @@ it('derives the tree from the owning notebook without remounting or changing fil
     expect(editor).not.toBeNull();
     expect(element.querySelector('[data-tree-root]')).toBeNull();
     expect(flushReady).toHaveBeenCalledWith(probe.flush);
-    await act(async () => useAgentAccessStore.setState({
-      config: { version: 1, entries: [
-        { id: 'src', kind: 'folder', path: '/workspace/src', name: 'src', enabled: true, workspace: false, missing: false, addedAt: 0, updatedAt: 0 },
-      ], defaults: {} },
-      notebookConfigs: { owner: { version: 1, revision: 1, addDirs: [
-        { id: 'src', path: '/workspace/src', label: 'src', enabled: true },
-      ] } },
+    await act(async () => setWorkspace({
+      byNotebookId: { owner: {
+        notebook: { id: 'owner', name: 'Owner', path: '/notes/owner' },
+        addDirs: [{ id: 'src', path: '/workspace/src', label: 'src', enabled: true, missing: false }],
+      } },
     }));
     expect(element.querySelector('[data-tree-root]')?.getAttribute('data-tree-root')).toBe('/workspace/src');
     await act(async () => useNoteStore.setState({ selectedNotebookId: 'unrelated' }));
@@ -75,7 +73,7 @@ it('derives the tree from the owning notebook without remounting or changing fil
     await act(async () => root.render(<FileBrowserView surface={{ ...surface, fileTreeVisible: false }} />));
     expect(element.querySelector('[data-tree-root]')).toBeNull();
     expect(element.querySelector('[title="展开文件树"]')).not.toBeNull();
-    await act(async () => useAgentAccessStore.setState({ config: { version: 1, entries: [], defaults: {} }, notebookConfigs: {} }));
+    await act(async () => setWorkspace({ byNotebookId: {} }));
     expect(element.querySelector('[title="展开文件树"]')).toBeNull();
     expect(element.querySelector('textarea')).toBe(editor);
     expect(editor?.value).toBe('unsaved draft');
@@ -83,8 +81,14 @@ it('derives the tree from the owning notebook without remounting or changing fil
     expect(probe.scope).toBe('/granted-scope');
   } finally {
     await act(async () => root.unmount());
-    useAgentAccessStore.setState({ config: previousConfig });
+    setWorkspace(previousWorkspace);
     useNoteStore.setState({ selectedNotebookId: previousNotebookId });
     environment.IS_REACT_ACT_ENVIRONMENT = false;
   }
 });
+
+function setWorkspace(update: Partial<AgentWorkspaceState> | ((state: AgentWorkspaceState) => Partial<AgentWorkspaceState>)) {
+  const store = useAgentWorkspaceStore.getState();
+  const patch = typeof update === "function" ? update(store.workspace) : update;
+  useAgentWorkspaceStore.setState({ workspace: { ...store.workspace, ...patch } });
+}

@@ -1,7 +1,7 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
-const { openExternalTarget, store } = vi.hoisted(() => ({
-  openExternalTarget: vi.fn(),
+const { openWorkspaceSurface, store } = vi.hoisted(() => ({
+  openWorkspaceSurface: vi.fn(),
   store: {
     notebooks: [{ id: 'work-id', name: 'My Vault', path: 'C:/Notes' }],
     loadNotebooks: vi.fn(),
@@ -9,9 +9,9 @@ const { openExternalTarget, store } = vi.hoisted(() => ({
 }));
 
 vi.mock('@features/memo/store/note-store', () => ({ useNoteStore: { getState: () => store } }));
-vi.mock('@features/workspace/use-cases/workspace-navigation', () => ({
+vi.mock('@features/workspace/public/note-navigation-api', () => ({
   clearWorkspaceDocument: vi.fn(),
-  openExternalTarget,
+  openWorkspaceSurface,
 }));
 vi.mock('@features/memo/public/workspace-api', () => ({ setCurrentWorkspaceNotebook: vi.fn() }));
 vi.mock('@platform/tauri/client', () => ({ notes: {
@@ -23,35 +23,40 @@ import { openNoteByDeepLink } from './open-by-target';
 import { peekAgentLocationRequest, cancelAgentLocationRequest } from '../../document/use-cases/agent-location-navigation';
 
 describe('note deep links', () => {
-  beforeEach(() => openExternalTarget.mockClear());
+  beforeEach(() => {
+    openWorkspaceSurface.mockClear();
+    openWorkspaceSurface.mockResolvedValue({
+      status: 'opened', host: 'main-third', location: { host: 'main-third', state: 'active' },
+    });
+  });
 
   it('opens a note by notebook name and relative file', async () => {
     await openNoteByDeepLink('flowix://open?b=My+Vault&f=Projects%2FPlan.md');
-    expect(openExternalTarget).toHaveBeenCalledWith('C:/Notes/Projects/Plan.md', {
-      scopePath: 'C:/Notes',
-      destination: 'main-third',
+    expect(openWorkspaceSurface).toHaveBeenCalledWith({
+      host: 'main-third',
+      target: { kind: 'external', path: 'C:/Notes/Projects/Plan.md', scopePath: 'C:/Notes', transitionId: null },
     });
   });
 
   it('still opens existing book/file links', async () => {
     await openNoteByDeepLink('flowix://open?book=My+Vault&file=Projects%2FPlan.md');
-    expect(openExternalTarget).toHaveBeenCalledWith('C:/Notes/Projects/Plan.md', {
-      scopePath: 'C:/Notes',
-      destination: 'main-third',
+    expect(openWorkspaceSurface).toHaveBeenCalledWith({
+      host: 'main-third',
+      target: { kind: 'external', path: 'C:/Notes/Projects/Plan.md', scopePath: 'C:/Notes', transitionId: null },
     });
   });
 
   it('rejects legacy memo ID links', async () => {
     await expect(openNoteByDeepLink('flowix://memo/abc12345')).rejects.toThrow('Expired note link');
-    expect(openExternalTarget).not.toHaveBeenCalled();
+    expect(openWorkspaceSurface).not.toHaveBeenCalled();
   });
 
   it('publishes a heading anchor request for hash deep links', async () => {
-    openExternalTarget.mockResolvedValueOnce({ host: 'main-third', state: 'active' });
+    openWorkspaceSurface.mockResolvedValueOnce({ status: 'opened', host: 'main-third', location: { host: 'main-third', state: 'active' } });
     await openNoteByDeepLink('flowix://open?b=My+Vault&f=Projects%2FPlan.md#%E7%9B%AE%E6%A0%87%E4%B8%8E%E8%8C%83%E5%9B%B4');
-    expect(openExternalTarget).toHaveBeenCalledWith('C:/Notes/Projects/Plan.md', {
-      scopePath: 'C:/Notes',
-      destination: 'main-third',
+    expect(openWorkspaceSurface).toHaveBeenCalledWith({
+      host: 'main-third',
+      target: { kind: 'external', path: 'C:/Notes/Projects/Plan.md', scopePath: 'C:/Notes', transitionId: null },
     });
     const request = peekAgentLocationRequest('C:/Notes/Projects/Plan.md');
     expect(request?.anchor).toBe('目标与范围');
@@ -60,7 +65,7 @@ describe('note deep links', () => {
   });
 
   it('accepts the legacy heading parameter and normalizes it to a slug', async () => {
-    openExternalTarget.mockResolvedValueOnce({ host: 'main-third', state: 'active' });
+    openWorkspaceSurface.mockResolvedValueOnce({ status: 'opened', host: 'main-third', location: { host: 'main-third', state: 'active' } });
     await openNoteByDeepLink('flowix://open?b=My+Vault&f=Projects%2FPlan.md&heading=Step%201%3A%20Setup');
     const request = peekAgentLocationRequest('C:/Notes/Projects/Plan.md');
     expect(request?.anchor).toBe('step-1-setup');
@@ -68,13 +73,13 @@ describe('note deep links', () => {
   });
 
   it('does not treat an empty heading parameter as an anchor', async () => {
-    openExternalTarget.mockResolvedValueOnce({ host: 'main-third', state: 'active' });
+    openWorkspaceSurface.mockResolvedValueOnce({ status: 'opened', host: 'main-third', location: { host: 'main-third', state: 'active' } });
     await openNoteByDeepLink('flowix://open?b=My+Vault&f=Projects%2FPlan.md&heading=');
     expect(peekAgentLocationRequest('C:/Notes/Projects/Plan.md')).toBeNull();
   });
 
   it('routes anchor requests to the browser column tab when content lands there', async () => {
-    openExternalTarget.mockResolvedValueOnce({ host: 'browser-column', tabId: 'tab-7' });
+    openWorkspaceSurface.mockResolvedValueOnce({ status: 'opened', host: 'browser-column', location: { host: 'browser-column', tabId: 'tab-7' } });
     await openNoteByDeepLink('flowix://open?b=My+Vault&f=Projects%2FPlan.md#%E7%BB%93%E8%AE%BA');
     const request = peekAgentLocationRequest('C:/Notes/Projects/Plan.md');
     expect(request?.host).toBe('browser-column');
@@ -82,14 +87,36 @@ describe('note deep links', () => {
     cancelAgentLocationRequest('C:/Notes/Projects/Plan.md');
   });
 
-  it('falls back to main-third when the open result does not report a location', async () => {
-    // openExternalTarget 的 markdown 主区分支返回 null，但内容实际落在 main-third。
-    openExternalTarget.mockResolvedValueOnce(undefined);
+  it('does not publish an anchor when the open was cancelled', async () => {
+    openWorkspaceSurface.mockResolvedValueOnce({ status: 'cancelled', host: 'main-third', reason: 'navigation-cancelled' });
     await openNoteByDeepLink('flowix://open?b=My+Vault&f=Projects%2FPlan.md#%E7%9B%AE%E6%A0%87');
+    expect(peekAgentLocationRequest('C:/Notes/Projects/Plan.md')).toBeNull();
+  });
+
+  it('opens a note in the browser column without touching the work column', async () => {
+    openWorkspaceSurface.mockResolvedValueOnce({
+      status: 'opened', host: 'browser-column', location: { host: 'browser-column', tabId: 'file:C:/Notes/Projects/Plan.md' },
+    });
+    await openNoteByDeepLink('flowix://open?b=My+Vault&f=Projects%2FPlan.md', null, {
+      destination: 'browser-column',
+    });
+    expect(openWorkspaceSurface).toHaveBeenCalledWith({
+      host: 'browser-column',
+      target: { kind: 'external', path: 'C:/Notes/Projects/Plan.md', scopePath: 'C:/Notes', transitionId: null },
+      options: { notebookId: 'work-id' },
+    });
+  });
+
+  it('publishes the anchor against the browser column tab', async () => {
+    openWorkspaceSurface.mockResolvedValueOnce({
+      status: 'opened', host: 'browser-column', location: { host: 'browser-column', tabId: 'tab-note' },
+    });
+    await openNoteByDeepLink('flowix://open?b=My+Vault&f=Projects%2FPlan.md#%E7%BB%93%E8%AE%BA', null, {
+      destination: 'browser-column',
+    });
     const request = peekAgentLocationRequest('C:/Notes/Projects/Plan.md');
-    expect(request?.anchor).toBe('目标');
-    expect(request?.host).toBe('main-third');
-    expect(request?.viewId).toBe('main-third');
+    expect(request?.host).toBe('browser-column');
+    expect(request?.viewId).toBe('tab-note');
     cancelAgentLocationRequest('C:/Notes/Projects/Plan.md');
   });
 });
