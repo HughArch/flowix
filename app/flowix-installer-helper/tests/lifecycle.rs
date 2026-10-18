@@ -181,6 +181,49 @@ fn unresponsive_desktop_blocks_install_without_losing_drafts() {
 }
 
 #[test]
+fn waits_for_a_temporary_external_lock_on_the_desktop_executable() {
+    use std::os::windows::fs::OpenOptionsExt;
+    let f = Fixture::new();
+    let file = f.root.join("install/Flowix.exe");
+    fs::create_dir_all(file.parent().unwrap()).unwrap();
+    fs::write(&file, b"desktop fixture").unwrap();
+    let lock = fs::OpenOptions::new()
+        .read(true)
+        .share_mode(0)
+        .open(&file)
+        .unwrap();
+    let mut installer = Command::new(env!("CARGO_BIN_EXE_flowix-installer-helper"))
+        .args(["--mode", "prepare", "--target"])
+        .arg(f.root.join("install"))
+        .args(["--main-executable", "Flowix.exe"])
+        .args(["--timeout-ms", "3000", "--interval-ms", "50", "--log"])
+        .arg(f.root.join("update.log"))
+        .stdout(std::process::Stdio::null())
+        .stderr(std::process::Stdio::piped())
+        .spawn()
+        .unwrap();
+    // Release only after preflight has observed the external lock, avoiding a
+    // test that passes merely because the handle closed before helper startup.
+    let deadline = std::time::Instant::now() + Duration::from_secs(2);
+    while !fs::read_to_string(f.root.join("update.log"))
+        .unwrap_or_default()
+        .contains("file-in-use-wait")
+    {
+        if std::time::Instant::now() >= deadline {
+            let _ = installer.kill();
+            let _ = installer.wait();
+            panic!("installer never waited for the external lock");
+        }
+        std::thread::sleep(Duration::from_millis(10));
+    }
+    drop(lock);
+    let result = installer.wait_with_output().unwrap();
+    assert!(result.status.success(), "{result:?}");
+    let log = fs::read_to_string(f.root.join("update.log")).unwrap();
+    assert!(log.contains("file-ready-after-wait"), "{log}");
+}
+
+#[test]
 fn locked_bundled_library_reports_path_and_blocks_install() {
     use std::os::windows::fs::OpenOptionsExt;
     let f = Fixture::new();

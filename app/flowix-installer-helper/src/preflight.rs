@@ -48,7 +48,18 @@ pub struct PreflightError {
 }
 fn failure(path: &Path, error: CloseError) -> PreflightError {
     let owners = locking_processes(path).unwrap_or_else(|e| format!("occupant lookup failed: {e}"));
-    PreflightError { code: error.exit_code(), message: format!("Cannot replace {}: {error:?}. {owners} Close the listed app or pause its Flowix MCP connection and retry.", path.display()) }
+    let action = if matches!(&error, CloseError::FileInUse(_)) {
+        "Wait for the listed process to finish scanning the file, then retry. Only close a process if you recognize it as Flowix-owned."
+    } else {
+        "Resolve the reported file access issue and retry."
+    };
+    PreflightError {
+        code: error.exit_code(),
+        message: format!(
+            "Cannot replace {}: {error:?}. {owners} {action}",
+            path.display()
+        ),
+    }
 }
 
 pub fn prepare_install(
@@ -96,8 +107,10 @@ pub fn prepare_install(
                 .map_err(|e| failure(file, e))?;
         }
     }
+    let files_deadline = Instant::now() + timeout;
     for file in &files {
-        can_replace_file(file).map_err(|e| failure(file, e))?;
+        wait_until_replaceable(file, files_deadline, interval, log_path)
+            .map_err(|e| failure(file, e))?;
     }
     log(
         log_path,
@@ -108,6 +121,61 @@ pub fn prepare_install(
         ),
     );
     Ok(())
+}
+
+/// Windows inventory, antivirus, and indexing services can briefly open an
+/// installed executable while inspecting it. Give those external handles the
+/// same bounded retry window as app shutdown instead of aborting on the first
+/// sharing violation. Never terminate the process that owns the handle.
+fn wait_until_replaceable(
+    file: &Path,
+    deadline: Instant,
+    interval: Duration,
+    log_path: &Path,
+) -> Result<(), CloseError> {
+    let mut attempts = 0_u32;
+    loop {
+        attempts += 1;
+        match can_replace_file(file) {
+            Ok(()) => {
+                if attempts > 1 {
+                    log(
+                        log_path,
+                        &format!(
+                            "file-ready-after-wait path={} attempts={attempts}",
+                            file.display()
+                        ),
+                    );
+                }
+                return Ok(());
+            }
+            Err(error @ CloseError::FileInUse(_)) => {
+                if Instant::now() >= deadline {
+                    log(
+                        log_path,
+                        &format!(
+                            "file-lock-timeout path={} attempts={attempts}",
+                            file.display()
+                        ),
+                    );
+                    return Err(error);
+                }
+                if attempts == 1 || attempts % 5 == 0 {
+                    log(
+                        log_path,
+                        &format!(
+                            "file-in-use-wait path={} attempt={attempts}",
+                            file.display()
+                        ),
+                    );
+                }
+                std::thread::sleep(
+                    interval.min(deadline.saturating_duration_since(Instant::now())),
+                );
+            }
+            Err(error) => return Err(error),
+        }
+    }
 }
 
 fn program_files(root: &Path) -> std::io::Result<Vec<PathBuf>> {
