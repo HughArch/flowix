@@ -79,7 +79,7 @@ describe('agent thread card submit helper', () => {
     const result = await ensureAgentThreadCardThread({
       prompt: 'hello flowix',
       fallbackTitle: 'AI',
-      typeKey: 'deepseek-harness',
+      typeKey: 'dsh',
       currentThreadId: null,
       runtimeHandleId: 'handle-1',
       instanceId: 'inst-1',
@@ -89,7 +89,7 @@ describe('agent thread card submit helper', () => {
     expect(agent.createThread).not.toHaveBeenCalled();
     expect(beginExternalAgentThreadCardRun).toHaveBeenCalledWith(
       'handle-1',
-      'deepseek-harness',
+      'dsh',
       null,
       'inst-1',
     );
@@ -98,7 +98,7 @@ describe('agent thread card submit helper', () => {
     expect(result).toEqual({
       threadId: 'codex-local-inst-1',
       title: 'Title: hello flowix',
-      typeKey: 'deepseek-harness',
+      typeKey: 'dsh',
     });
   });
 });

@@ -7,6 +7,7 @@ import { reuseCollectionValue } from '@features/collection/content-equality';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { externalDocuments, notes as notesClient, type NoteEntry } from '@platform/tauri/client';
 import { subscribe } from '@platform/tauri/event-bus';
+import { subscribeNotebookChanges, type NotebookChange } from '@platform/tauri/notebook-change-events';
 import { toast } from '@/lib/toast';
 import { findFileDisplayPath, type FileDisplayIdentity } from '@/lib/file-display-registry';
 import { parseTableDocumentAsync } from './parse-table-document';
@@ -20,14 +21,6 @@ interface TableSessionOptions {
   fileIdentity?: FileDisplayIdentity;
   notebookPath: string | null;
   notebookId: string | null;
-}
-
-interface NoteChangeEvent {
-  notebookId: string;
-  relativePath?: string;
-  previousRelativePath?: string;
-  kind?: string;
-  deleted?: boolean;
 }
 
 /** Apply the same path/default normalization to loads, rename replies and events. */
@@ -205,7 +198,7 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
     };
   }, [sessionKey]);
 
-  const syncNotes = useCallback(async (event: NoteChangeEvent) => {
+  const syncNotes = useCallback(async (event: NotebookChange) => {
     const notebook = resolvedNotebookId;
     if (!notebook || event.notebookId !== notebook) return;
     const key = sessionKey;
@@ -218,7 +211,7 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
     const generation = loadSequenceRef.current;
     const syncSequence = ++syncSequenceRef.current;
     const isCurrent = () => isCurrentSession(generation, key) && syncSequence === syncSequenceRef.current;
-    if (event.kind === 'path' || event.deleted || !event.relativePath) pendingTableSyncRef.current = true;
+    if (event.kind !== 'query-invalidated' || !event.relativePath) pendingTableSyncRef.current = true;
     let needsTableSync = pendingTableSyncRef.current;
     try {
       const singlePath = !needsTableSync && event.relativePath?.replace(/\\/g, '/');
@@ -287,7 +280,7 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
       }
       if (sourceContentRef.current?.content !== baselineAtStart) {
         pendingTableSyncRef.current = true;
-        void syncNotes({ notebookId: notebook, kind: 'path' });
+        void syncNotes({ notebookId: notebook, kind: 'query-invalidated', relativePath: null });
         return;
       }
       const sourceChanged = sourceContentRef.current?.content !== baseline;
@@ -306,12 +299,11 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
 
   useEffect(() => {
     if (!saving && !savingRef.current && pendingTableSyncRef.current && resolvedNotebookId) {
-      void syncNotes({ notebookId: resolvedNotebookId, kind: 'path' });
+      void syncNotes({ notebookId: resolvedNotebookId, kind: 'query-invalidated', relativePath: null });
     }
   }, [resolvedNotebookId, saving, syncNotes]);
 
-  useEffect(() => subscribe<NoteChangeEvent>(
-    'flowix:path-note-changed',
+  useEffect(() => subscribeNotebookChanges(
     (event) => {
       if (event.relativePath && /\.(table|lib)\.ya?ml$/i.test(event.relativePath)) return;
       if (event.notebookId === resolvedNotebookId) void syncNotes(event);

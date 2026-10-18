@@ -1,11 +1,9 @@
-import { useCallback, useEffect, useState } from 'react';
-import { boot, consumeAppUpdateResult, dshIntegration, type DshDownloadProgress } from '@platform/tauri/client';
-import { subscribe } from '@platform/tauri/event-bus';
-import { useAppUpdatePreferences } from '@features/preferences/public/app-api';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import {
-  useDshRuntimeInstaller,
-  type DshRuntimeInstallerState,
-} from '@features/preferences/public/system-api';
+  consumeAppUpdateResult,
+  type AppUpdateInstallResult,
+} from '@platform/tauri/client';
+import { useAppUpdatePreferences } from '@features/preferences/public/app-api';
 import {
   useAppUpdater,
   type AppUpdaterState,
@@ -13,120 +11,70 @@ import {
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
+import { useWorkspaceMemoViewModel } from '@features/memo/public/workspace-api';
 
 const logger = createLogger('main-window-system-controller');
 
-function isActiveDshDownload(progress: DshDownloadProgress | null): boolean {
-  return progress?.phase === 'checking'
-    || progress?.phase === 'downloading'
-    || progress?.phase === 'downloaded'
-    || progress?.phase === 'installing';
-}
-
 export interface MainWindowSystemController {
-  dshDownload: DshDownloadProgress | null;
-  dshInstallPromptOpen: boolean;
   onboardingOpen: boolean;
   onboardingLoading: boolean;
   updater: AppUpdaterState;
-  appUpdatePromptOpen: boolean;
-  dshInstaller: DshRuntimeInstallerState;
-  closeDshInstallPrompt(): void;
-  openAppUpdatePrompt(): void;
-  closeAppUpdatePrompt(): void;
-  markDshIntroDisplayed(): void;
-  completeDshInstallPrompt(): void;
+  hasPendingAppUpdateResult: boolean;
+  presentPendingAppUpdateResult(): void;
   completeOnboarding(): Promise<void>;
 }
 
 export function useMainWindowSystemController(): MainWindowSystemController {
-  const [dshDownload, setDshDownload] = useState<DshDownloadProgress | null>(null);
-  const [dshInstallPromptOpen, setDshInstallPromptOpen] = useState(false);
   const [onboardingOpen, setOnboardingOpen] = useState(false);
   const [onboardingLoading, setOnboardingLoading] = useState(true);
-  const [appUpdatePromptOpen, setAppUpdatePromptOpen] = useState(false);
+  const onboardingDecisionMade = useRef(false);
+  const { notebooks, startupPhase } = useWorkspaceMemoViewModel();
+  const [pendingAppUpdateResult, setPendingAppUpdateResult] = useState<AppUpdateInstallResult | null>(null);
   const { t } = useI18n();
   const updatePreferences = useAppUpdatePreferences();
   const updater = useAppUpdater({
     autoCheck: !updatePreferences.loading,
     enabled: updatePreferences.enabled,
   });
-  const dshInstaller = useDshRuntimeInstaller();
 
   useEffect(() => {
     void consumeAppUpdateResult().then((result) => {
-      if (!result) return;
-      if (result.status === 'failed') {
-        toast.error(`${t('appUpdates.previousInstallFailed')}${result.message ? `: ${result.message}` : ''}`);
-      } else {
-        toast.success(t('appUpdates.installSucceeded'));
-      }
+      if (result) setPendingAppUpdateResult(result);
     }).catch((error) => {
       logger.warn('read previous app update result failed', { error });
     });
-  }, [t]);
-
-  useEffect(() => {
-    const applyProgress = (progress: DshDownloadProgress) => {
-      setDshDownload(isActiveDshDownload(progress) ? progress : null);
-    };
-    const unsubscribe = subscribe<DshDownloadProgress>('dsh-download-progress', applyProgress);
-    void dshIntegration.downloadStatus()
-      .then((progress) => {
-        if (progress) applyProgress(progress);
-      })
-      .catch(() => {
-        // Preferences remains the detailed recovery surface.
-      });
-    return unsubscribe;
   }, []);
 
   useEffect(() => {
-    let cancelled = false;
-    void boot.getFeatures().then((features) => {
-      if (cancelled) return;
-      if (!features.isOnboardingCompleted) {
-        setOnboardingOpen(true);
-        return;
-      }
-      // Notebook-only onboarding must not schedule the legacy Agent intro on a later launch.
-    }).catch(() => {
-      // Do not show onboarding when its durable state cannot be read.
-    }).finally(() => {
-      if (!cancelled) setOnboardingLoading(false);
-    });
-    return () => { cancelled = true; };
-  }, []);
-
-  const markDshIntroDisplayed = useCallback(() => {
-    void boot.setIntroDisplayed().catch((error) => {
-      logger.warn('persist DSH intro display state failed', { error });
-    });
-  }, []);
-
-  const closeDshInstallPrompt = useCallback(() => {
-    markDshIntroDisplayed();
-    setDshInstallPromptOpen(false);
-  }, [markDshIntroDisplayed]);
+    if (startupPhase !== 'ready' || onboardingDecisionMade.current) return;
+    // Notebook identity is resolved in stage 2. Show first-run onboarding only
+    // when the notebook list is empty; do not wait for stage 3 or another read.
+    onboardingDecisionMade.current = true;
+    setOnboardingOpen(notebooks.length === 0);
+    setOnboardingLoading(false);
+  }, [notebooks.length, startupPhase]);
 
   const completeOnboarding = useCallback(async () => {
-    await boot.setOnboardingCompleted();
     setOnboardingOpen(false);
   }, []);
 
+  const presentPendingAppUpdateResult = useCallback(() => {
+    if (!pendingAppUpdateResult) return;
+    const result = pendingAppUpdateResult;
+    setPendingAppUpdateResult(null);
+    if (result.status === 'failed') {
+      toast.error(`${t('appUpdates.previousInstallFailed')}${result.message ? `: ${result.message}` : ''}`);
+    } else {
+      toast.success(t('appUpdates.installSucceeded'));
+    }
+  }, [pendingAppUpdateResult, t]);
+
   return {
-    dshDownload,
-    dshInstallPromptOpen,
     onboardingOpen,
     onboardingLoading,
     updater,
-    appUpdatePromptOpen,
-    dshInstaller,
-    closeDshInstallPrompt,
-    openAppUpdatePrompt: () => setAppUpdatePromptOpen(true),
-    closeAppUpdatePrompt: () => setAppUpdatePromptOpen(false),
-    markDshIntroDisplayed,
-    completeDshInstallPrompt: () => setDshInstallPromptOpen(false),
+    hasPendingAppUpdateResult: pendingAppUpdateResult !== null,
+    presentPendingAppUpdateResult,
     completeOnboarding,
   };
 }

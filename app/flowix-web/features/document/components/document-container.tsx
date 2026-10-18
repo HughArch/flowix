@@ -63,7 +63,7 @@ import {
   isExternalDocumentRenameInProgress,
 } from '@features/document/store/external-document-operation';
 import { rebaseActiveDocumentPath } from '@features/document/store/document-session-service';
-import type { Editor } from '@tiptap/core';
+import type { Editor, JSONContent } from '@tiptap/core';
 import { replaceExternalDocumentPath } from '@features/workspace/use-cases/workspace-navigation';
 import { openDocumentLocalLink } from '@features/document/use-cases/open-document-local-link';
 import {
@@ -72,6 +72,15 @@ import {
   peekAgentLocationRequest,
   subscribeAgentLocationRequest,
 } from '@features/document/use-cases/agent-location-navigation';
+import { parseMarkdownInWorker } from '@features/editor/markdown-parser';
+import { markDocumentOpenTrace } from '@/lib/document-open-perf';
+
+type ParsedMarkdownDocument = {
+  key: string;
+  source: string;
+  /** `null` keeps the editor's compatibility fallback after Worker failure. */
+  document: JSONContent | null;
+};
 
 export function DocumentContainer({
   fileIdentity,
@@ -122,9 +131,15 @@ export function DocumentContainer({
   // 编辑器懒加载完成后递增，驱动待消费的定位请求在 handle 就绪后重试，
   // 避免用固定计时器猜测加载状态。
   const [editorReadyTick, setEditorReadyTick] = useState(0);
+  const [richEditorMount, setRichEditorMount] = useState<{ key: string; ready: boolean } | null>(null);
+  const [codeEditorReadyFor, setCodeEditorReadyFor] = useState<string | null>(null);
+  const richEditorMountReadyFor = richEditorMount?.key ?? null;
+  const richEditorReadyFor = richEditorMount?.ready ? richEditorMount.key : null;
+  const [parsedMarkdownDocument, setParsedMarkdownDocument] = useState<ParsedMarkdownDocument | null>(null);
   const titleEditorRef = useRef<MemoTitleEditorHandle | null>(null);
   const memoFilename = fileNameFromPath(filePath);
   const renameInProgressRef = useRef(false);
+  const previousFilePathRef = useRef(filePath);
   const getCurrentFilePath = useCallback(() => documentIdentity.path, [documentIdentity]);
   const getAttachmentNotebookId = useCallback(() => {
     return resolveNotebookIdForPath(documentIdentity.path, getWorkspaceMemoState().notebooks);
@@ -140,17 +155,91 @@ export function DocumentContainer({
     isolatedSession: documentSessionMode === 'isolated',
   });
 
+  const markdownParserKey = JSON.stringify([documentInstanceKey, filePath]);
+  const parsedMarkdownMatches = parsedMarkdownDocument?.key === markdownParserKey
+    && parsedMarkdownDocument.source === state.fullContent;
+  const shouldMountRichEditor = state.isLoaded && !state.isLoading && !state.error && !usesCodeEditor;
+  const needsWorkerMarkdownParse = richEditorMountReadyFor !== documentInstanceKey
+    && !parsedMarkdownMatches;
+  const canMountRichEditor = shouldMountRichEditor && !needsWorkerMarkdownParse;
+  const editorIsReady = state.isLoaded && !state.isLoading && !state.error
+    && (usesCodeEditor ? codeEditorReadyFor === documentInstanceKey : richEditorReadyFor === documentInstanceKey);
+
+  useEffect(() => {
+    if (!shouldMountRichEditor
+      || richEditorMountReadyFor === documentInstanceKey || parsedMarkdownMatches) return;
+
+    let cancelled = false;
+    const source = state.fullContent;
+    const startedAt = performance.now();
+    markDocumentOpenTrace(transitionId, 'editor:markdown-worker-start', {
+      contentChars: source.length,
+      path: filePath,
+    });
+    const finishWith = (document: JSONContent | null, error?: string, workerMs?: number) => {
+      if (cancelled) return;
+      const elapsedMs = Math.round((performance.now() - startedAt) * 10) / 10;
+      setParsedMarkdownDocument({ key: markdownParserKey, source, document });
+      console.info('[perf:open-doc]', 'MarkdownParser:worker', {
+        elapsedMs,
+        workerMs,
+        contentChars: source.length,
+        success: !error,
+        ...(error ? { error } : {}),
+      });
+      markDocumentOpenTrace(transitionId, error ? 'editor:markdown-worker-error' : 'editor:markdown-worker-ready', {
+        elapsedMs,
+        workerMs,
+        contentChars: source.length,
+        error,
+      });
+    };
+
+    void parseMarkdownInWorker(source).then((reply) => {
+      finishWith(reply.document ?? null, undefined, reply.workerMs);
+    }).catch((error) => {
+      finishWith(null, error instanceof Error ? error.message : String(error));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    documentInstanceKey,
+    filePath,
+    markdownParserKey,
+    parsedMarkdownMatches,
+    richEditorMountReadyFor,
+    shouldMountRichEditor,
+    state.fullContent,
+    transitionId,
+  ]);
+
+  useEffect(() => {
+    if (!canMountRichEditor) {
+      setRichEditorMount(null);
+      return;
+    }
+    if (richEditorMountReadyFor === documentInstanceKey) return;
+    setRichEditorMount({ key: documentInstanceKey, ready: false });
+  }, [canMountRichEditor, documentInstanceKey, richEditorMountReadyFor]);
+
   useEffect(() => {
     if (!onContentStateChange) return;
     if (state.error) {
-      onContentStateChange({ status: 'error', message: state.error,
-        retry: () => reloadDocument(filePath, { showLoading: true }) });
-    } else if (state.isLoading || !state.isLoaded) {
+      const retry = () => reloadDocument(filePath, { showLoading: true });
+      if (isExternalDocument && /\.(?:md|markdown)$/i.test(filePath)
+        && state.errorKind === 'missing-note') {
+        onContentStateChange({ status: 'missing-note', path: filePath, retry });
+      } else {
+        onContentStateChange({ status: 'error', message: state.error, retry });
+      }
+    } else if (!editorIsReady) {
       onContentStateChange({ status: 'loading', retainContent: true });
     } else {
       onContentStateChange({ status: 'ready' });
     }
-  }, [filePath, onContentStateChange, reloadDocument, state.error, state.isLoaded, state.isLoading]);
+  }, [editorIsReady, filePath, isExternalDocument, onContentStateChange, reloadDocument, state.error, state.errorKind]);
 
   useEffect(() => {
     if (!filePath) return;
@@ -407,7 +496,7 @@ export function DocumentContainer({
     return () => onFlushReady?.(null, null);
   }, [discardDocument, flushDocument, onFlushReady]);
   useEffect(() => {
-    if (!state.isLoaded || state.isLoading || state.error) return;
+    if (!editorIsReady) return;
     let active = true;
     onSurfaceLifecycleReady?.({
       status: 'ready', flush: flushDocument, discard: discardDocument,
@@ -432,7 +521,7 @@ export function DocumentContainer({
       active = false;
       onSurfaceLifecycleReady?.(null);
     };
-  }, [discardDocument, flushDocument, hostId, onSurfaceLifecycleReady, state.error, state.isLoaded, state.isLoading]);
+  }, [discardDocument, editorIsReady, flushDocument, hostId, onSurfaceLifecycleReady]);
   useEffect(() => {
     if (!filePath) {
       useDocumentMetricsStore.getState().clear(documentInstanceKey);
@@ -453,12 +542,24 @@ export function DocumentContainer({
 
     const loadedDocumentInstanceKey = loadedDocumentInstanceKeyRef.current;
     const instanceKeyChanged = loadedDocumentInstanceKey !== documentInstanceKey;
+    const pathChanged = previousFilePathRef.current !== filePath;
+    previousFilePathRef.current = filePath;
     loadedDocumentInstanceKeyRef.current = documentInstanceKey;
 
     // A path is an attribute of this session, never an editor lifecycle key.
     // Actual external content changes arrive through the content watchers.
     if (!instanceKeyChanged) {
       rebaseActiveDocumentPath(documentIdentity, filePath);
+      if (pathChanged) {
+        if (state.isLoading) return;
+        if (state.error || !state.isLoaded) {
+          reloadDocument(filePath, {
+            preservePending: hasDocumentUnsavedChanges(documentIdentity),
+            showLoading: true,
+          });
+          return;
+        }
+      }
       if (documentSessionMode !== 'isolated' && transitionId !== null) {
         useDocumentStore.getState().finishDocumentTransition(transitionId);
       }
@@ -540,11 +641,11 @@ export function DocumentContainer({
       onPointerDownCapture={(event) => focusWorkspaceHostFromEvent(event, hostId)}
       className="document-container h-full w-full min-w-0 flex flex-col bg-transparent relative overflow-hidden"
     >
-      <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
-        {state.isLoading && (
-          <CenteredLoadingSpinner className="h-full w-full" />
+      <div className="relative flex-1 min-h-0 min-w-0 overflow-hidden">
+        {!state.error && !editorIsReady && (
+          <CenteredLoadingSpinner className="absolute inset-0 z-10 bg-[var(--document-bg)]" />
         )}
-        {!state.isLoading && usesCodeEditor && (
+        {state.isLoaded && !state.isLoading && usesCodeEditor && (
           <LazyCodeEditor
             ref={editorHandleRef}
             key={documentInstanceKey}
@@ -555,12 +656,16 @@ export function DocumentContainer({
             autoFocus={initialFocus === 'body'}
             onEditorScroll={handleEditorScroll}
             onEditingFinished={flushPendingEditorChanges}
+            onReadyChange={(ready) => {
+              setCodeEditorReadyFor((current) => ready
+                ? documentInstanceKey : current === documentInstanceKey ? null : current);
+            }}
             scrollHeader={documentHeader ?? undefined}
             searchPanelOpen={searchPanelOpen}
             onSearchPanelOpenChange={onSearchPanelOpenChange}
           />
         )}
-        {!state.isLoading && state.isLoaded && !usesCodeEditor && (
+        {canMountRichEditor && richEditorMountReadyFor === documentInstanceKey && (
           <LazyDocumentEditor
             ownerPath={documentIdentity.path}
             getAttachmentNotebookId={getAttachmentNotebookId}
@@ -571,6 +676,7 @@ export function DocumentContainer({
             ref={editorHandleRef}
             key={documentInstanceKey}
             content={state.fullContent}
+            initialParsedContent={parsedMarkdownMatches ? parsedMarkdownDocument?.document ?? undefined : undefined}
             header={documentHeader}
             editable={!readOnly}
             onDirty={handleDirty}
@@ -593,6 +699,11 @@ export function DocumentContainer({
             onSearchPanelOpenChange={onSearchPanelOpenChange}
             onBeforeCreate={(editor: Editor) => {
               onEditorReady?.(editor);
+              setRichEditorMount({ key: documentInstanceKey, ready: true });
+              // The editor has consumed the initial tree; release the duplicate.
+              setParsedMarkdownDocument((parsed) => (
+                parsed?.key === markdownParserKey ? null : parsed
+              ));
               setEditorReadyTick((tick) => tick + 1);
             }}
             linkContext={{

@@ -1,4 +1,5 @@
 use std::collections::{HashMap, VecDeque};
+use std::future::Future;
 use std::path::PathBuf;
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
@@ -7,8 +8,8 @@ use std::sync::Arc;
 use base64::Engine;
 use serde_json::Value;
 use sha2::{Digest, Sha256};
-use tauri::Manager;
-use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
+use tauri::{Emitter, Manager};
+use tokio::io::{AsyncBufRead, AsyncBufReadExt, AsyncRead, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::process::{ChildStdin, Command};
 use tokio::sync::{mpsc, oneshot, Mutex, OwnedMutexGuard};
 use tokio::time::Duration;
@@ -25,8 +26,8 @@ use crate::agent_wire::{AgentChunk, AgentMessageAttachment, AgentUserMessage, Ru
 
 const PI_IDLE_SESSION_TTL_MS: i64 = 10 * 60 * 1000;
 const PI_RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
-const PI_HISTORY_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const PI_ABORT_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
+const PI_STDERR_TAIL_BYTES: usize = 64 * 1024;
 const PI_FORK_TIMEOUT: Duration = Duration::from_secs(20);
 
 const PI_FORK_EXTENSION: &str = r#"
@@ -290,6 +291,7 @@ struct PiSessionConfig {
     tool_search: bool,
     provider: Option<String>,
     model: Option<String>,
+    cloud_auth_generation: Option<u64>,
     thinking: Option<String>,
     startup_resources: PiStartupResources,
 }
@@ -306,6 +308,17 @@ pub struct PiHistoryRevision {
 pub struct PiSessionSnapshot {
     messages: Vec<Value>,
     revision: PiHistoryRevision,
+}
+
+fn empty_pi_session_snapshot() -> PiSessionSnapshot {
+    PiSessionSnapshot {
+        messages: Vec::new(),
+        revision: PiHistoryRevision {
+            session_id: String::new(),
+            append_cursor: None,
+            leaf_id: None,
+        },
+    }
 }
 
 #[derive(serde::Serialize)]
@@ -390,6 +403,28 @@ async fn read_pi_rpc_record<R: AsyncBufRead + Unpin>(
     }
 }
 
+/// Keep diagnostics available while the process is alive, with bounded memory.
+async fn capture_pi_stderr<R: AsyncRead + Unpin>(
+    mut reader: R,
+    captured: Arc<Mutex<String>>,
+) -> std::io::Result<()> {
+    let mut tail = Vec::new();
+    let mut chunk = [0_u8; 4096];
+    loop {
+        let count = reader.read(&mut chunk).await?;
+        if count == 0 {
+            return Ok(());
+        }
+        tail.extend_from_slice(&chunk[..count]);
+        if tail.len() > PI_STDERR_TAIL_BYTES {
+            tail.drain(..tail.len() - PI_STDERR_TAIL_BYTES);
+        }
+        // Decode the retained bytes together so a UTF-8 character split across
+        // reads is restored once its remaining bytes arrive.
+        *captured.lock().await = String::from_utf8_lossy(&tail).into_owned();
+    }
+}
+
 #[derive(Default)]
 struct PiEntriesCache {
     entries: Arc<Vec<Value>>,
@@ -440,7 +475,6 @@ struct PiSession {
     config: PiSessionConfig,
     stdin: Arc<Mutex<ChildStdin>>,
     records: Mutex<mpsc::UnboundedReceiver<Result<Value, String>>>,
-    deferred_records: Mutex<VecDeque<Value>>,
     response_waiters: Arc<Mutex<HashMap<String, oneshot::Sender<Value>>>>,
     entries_cache: Mutex<PiEntriesCache>,
     child: Mutex<tokio::process::Child>,
@@ -457,6 +491,18 @@ impl PiSession {
     }
 
     async fn request(&self, id: &str, value: &Value) -> Result<Value, String> {
+        let response = self.request_response(id, value).await?;
+        if response.get("success").and_then(Value::as_bool) != Some(true) {
+            return Err(response
+                .get("error")
+                .and_then(Value::as_str)
+                .unwrap_or("Pi rejected the RPC command")
+                .to_string());
+        }
+        Ok(response)
+    }
+
+    async fn request_response(&self, id: &str, value: &Value) -> Result<Value, String> {
         let (sender, receiver) = oneshot::channel();
         self.response_waiters
             .lock()
@@ -474,13 +520,6 @@ impl PiSession {
                 return Err("Pi RPC command timed out".into());
             }
         };
-        if response.get("success").and_then(Value::as_bool) != Some(true) {
-            return Err(response
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("Pi rejected the RPC command")
-                .to_string());
-        }
         Ok(response)
     }
 
@@ -501,9 +540,6 @@ impl PiSession {
     }
 
     async fn next_record(&self) -> Result<Value, String> {
-        if let Some(record) = self.deferred_records.lock().await.pop_front() {
-            return Ok(record);
-        }
         self.records
             .lock()
             .await
@@ -512,10 +548,9 @@ impl PiSession {
             .ok_or_else(|| "Pi RPC event reader closed".to_string())?
     }
 
-    /// Called only by the owner of `operation`. Read responses from the same
-    /// receiver and preserve interleaved agent events for the main event loop.
+    /// Serialize cursor updates while allowing the read RPC to run alongside
+    /// a prompt and its streamed events.
     async fn session_entries(&self) -> Result<(Arc<Vec<Value>>, Option<String>), String> {
-        static REQUEST_SEQUENCE: AtomicU64 = AtomicU64::new(0);
         let mut cache = self.entries_cache.lock().await;
         // The cursor follows append order, not the active leaf: branch switches
         // can move the leaf backwards without changing the append-only log.
@@ -526,23 +561,12 @@ impl PiSession {
             .and_then(Value::as_str)
             .map(str::to_owned);
         loop {
-            let request_id = format!(
-                "flowix-entries-{}",
-                REQUEST_SEQUENCE.fetch_add(1, Ordering::Relaxed)
-            );
+            let request_id = format!("flowix-entries-{}", next_pi_rpc_id());
             let mut request = serde_json::json!({"id": request_id, "type": "get_entries"});
             if let Some(cursor) = &since {
                 request["since"] = Value::String(cursor.clone());
             }
-            self.write(&request).await?;
-            let mut records = self.records.lock().await;
-            let mut deferred = self.deferred_records.lock().await;
-            let response = tokio::time::timeout(
-                PI_RPC_REQUEST_TIMEOUT,
-                receive_rpc_response(&mut records, &mut deferred, &request_id),
-            )
-            .await
-            .map_err(|_| "Pi session entries RPC timed out".to_string())??;
+            let response = self.request_response(&request_id, &request).await?;
             if response.get("success").and_then(Value::as_bool) != Some(true) {
                 if since.take().is_some() {
                     // A stale cursor or an older runtime can be recovered with
@@ -566,6 +590,17 @@ impl PiSession {
                 .map(str::to_owned);
             return Ok((Arc::clone(&cache.entries), leaf_id));
         }
+    }
+
+    async fn session_messages(&self) -> Result<Vec<Value>, String> {
+        let request_id = format!("flowix-messages-{}", next_pi_rpc_id());
+        let request = serde_json::json!({"id":request_id, "type":"get_messages"});
+        let response = self.request(&request_id, &request).await?;
+        response
+            .pointer("/data/messages")
+            .and_then(Value::as_array)
+            .cloned()
+            .ok_or_else(|| "Pi get_messages response did not include messages".to_string())
     }
 
     async fn is_alive(&self) -> bool {
@@ -607,6 +642,7 @@ struct ActivePiRun {
     run_id: String,
     started_at: i64,
     session: Mutex<Option<Arc<PiSession>>>,
+    session_state: tokio::sync::watch::Sender<Option<Arc<PiSession>>>,
     session_id: Mutex<Option<String>>,
     queued_messages: Mutex<HashMap<String, PiQueuedMessage>>,
     queue_lock: Mutex<()>,
@@ -633,6 +669,21 @@ struct PiProjectedUserMessage {
 }
 
 impl ActivePiRun {
+    async fn wait_for_session(&self) -> Option<Arc<PiSession>> {
+        let mut session_state = self.session_state.subscribe();
+        loop {
+            if let Some(session) = session_state.borrow().clone() {
+                return Some(session);
+            }
+            if self.finalizing.load(Ordering::Acquire) {
+                return None;
+            }
+            if session_state.changed().await.is_err() {
+                return None;
+            }
+        }
+    }
+
     async fn take_queued_user_message(&self, native_text: &str) -> Option<PiProjectedUserMessage> {
         let _queue_guard = self.queue_lock.lock().await;
         let mut queued = self.queued_messages.lock().await;
@@ -676,6 +727,51 @@ pub struct PiRpcManager {
     active_runs: Mutex<HashMap<String, Arc<ActivePiRun>>>,
     shutting_down: AtomicBool,
     history_snapshots: Mutex<VecDeque<(String, Arc<PiSessionSnapshot>)>>,
+    cloud_credential_generation: Mutex<Option<u64>>,
+    startup_cloud_refresh_results: Mutex<HashMap<u64, Result<bool, String>>>,
+}
+
+async fn run_startup_cloud_refresh_once<F, Fut>(
+    results: &Mutex<HashMap<u64, Result<bool, String>>>,
+    generation: u64,
+    refresh: F,
+) -> Result<bool, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<bool, String>>,
+{
+    // Keep the lock while refreshing so concurrent WebViews await the same
+    // result, including a failure, instead of treating an in-flight attempt
+    // as a successful refresh.
+    let mut results = results.lock().await;
+    if let Some(result) = results.get(&generation) {
+        return result.clone();
+    }
+
+    let result = refresh().await;
+    results.insert(generation, result.clone());
+    result
+}
+
+async fn run_startup_cloud_credential_refresh_once<F, Fut>(
+    results: &Mutex<HashMap<u64, Result<bool, String>>>,
+    credential_generation: &Mutex<Option<u64>>,
+    generation: u64,
+    refresh: F,
+) -> Result<bool, String>
+where
+    F: FnOnce() -> Fut,
+    Fut: Future<Output = Result<(), String>>,
+{
+    run_startup_cloud_refresh_once(results, generation, || async {
+        // Startup refreshes the live model catalog even if this process has
+        // already created a credential for the current Cloud login.
+        let mut credential_generation = credential_generation.lock().await;
+        refresh().await?;
+        *credential_generation = Some(generation);
+        Ok(true)
+    })
+    .await
 }
 
 #[async_trait::async_trait]
@@ -723,7 +819,185 @@ impl PiRpcManager {
             active_runs: Mutex::new(HashMap::new()),
             shutting_down: AtomicBool::new(false),
             history_snapshots: Mutex::new(VecDeque::new()),
+            cloud_credential_generation: Mutex::new(None),
+            startup_cloud_refresh_results: Mutex::new(HashMap::new()),
         }
+    }
+
+    pub async fn connect_cloud_model_provider(
+        &self,
+        app: &tauri::AppHandle,
+        api_base: &str,
+    ) -> Result<(), String> {
+        let app_state = app.state::<crate::app::state::AppState>();
+        let cloud_sync = app_state.cloud_sync.clone();
+        let generation = cloud_sync.ai_credential_session_generation();
+        drop(app_state);
+
+        let mut cached_generation = self.cloud_credential_generation.lock().await;
+        self.create_and_save_cloud_credential(app, api_base, &cloud_sync, generation)
+            .await?;
+        *cached_generation = Some(generation);
+        Ok(())
+    }
+
+    /// Remove the local Flowix Cloud provider and its credential after logout.
+    pub async fn disconnect_cloud_model_provider(
+        &self,
+        app: &tauri::AppHandle,
+        api_base: &str,
+        logout_generation: u64,
+    ) -> Result<(), String> {
+        // Serialize with credential creation and refresh before reading the
+        // provider files, so a concurrent save cannot slip past this cleanup.
+        let mut cached_generation = self.cloud_credential_generation.lock().await;
+        let app_state = app.state::<crate::app::state::AppState>();
+        let cloud_sync = app_state.cloud_sync.clone();
+        drop(app_state);
+        if cloud_sync.ai_credential_session_generation() != logout_generation
+            || cloud_sync
+                .state()
+                .map_err(|error| error.to_string())?
+                .authenticated
+        {
+            return Ok(());
+        }
+        *cached_generation = None;
+        if super::config::delete_cloud_providers(api_base)? {
+            let _ = app.emit(
+                crate::commands::settings::USER_CONFIG_CHANGED_EVENT,
+                "pi_config",
+            );
+        }
+        Ok(())
+    }
+
+    /// Refresh the saved Flowix Cloud model metadata once after workspace startup.
+    /// The generation guard deduplicates calls from multiple content WebViews.
+    pub async fn refresh_cloud_model_provider_at_startup(
+        &self,
+        app: &tauri::AppHandle,
+        api_base: &str,
+    ) -> Result<bool, String> {
+        let has_cloud_provider = super::config::list()?
+            .iter()
+            .any(|provider| provider.source.as_deref() == Some("flowix-cloud"));
+        if !has_cloud_provider {
+            return Ok(false);
+        }
+
+        let app_state = app.state::<crate::app::state::AppState>();
+        let cloud_sync = app_state.cloud_sync.clone();
+        if !cloud_sync
+            .state()
+            .map_err(|error| error.to_string())?
+            .authenticated
+        {
+            return Ok(false);
+        }
+        let generation = cloud_sync.ai_credential_session_generation();
+        drop(app_state);
+
+        run_startup_cloud_credential_refresh_once(
+            &self.startup_cloud_refresh_results,
+            &self.cloud_credential_generation,
+            generation,
+            || async {
+                self.create_and_save_cloud_credential(app, api_base, &cloud_sync, generation)
+                    .await
+            },
+        )
+        .await
+    }
+
+    /// Refresh the saved Flowix Cloud model catalog on an explicit user request.
+    pub async fn refresh_cloud_model_provider(
+        &self,
+        app: &tauri::AppHandle,
+        api_base: &str,
+    ) -> Result<bool, String> {
+        let has_cloud_provider = super::config::list()?
+            .iter()
+            .any(|provider| provider.source.as_deref() == Some("flowix-cloud"));
+        if !has_cloud_provider {
+            return Ok(false);
+        }
+
+        let app_state = app.state::<crate::app::state::AppState>();
+        let cloud_sync = app_state.cloud_sync.clone();
+        if !cloud_sync
+            .state()
+            .map_err(|error| error.to_string())?
+            .authenticated
+        {
+            return Ok(false);
+        }
+        let generation = cloud_sync.ai_credential_session_generation();
+        drop(app_state);
+
+        let mut cached_generation = self.cloud_credential_generation.lock().await;
+        self.create_and_save_cloud_credential(app, api_base, &cloud_sync, generation)
+            .await?;
+        *cached_generation = Some(generation);
+        Ok(true)
+    }
+
+    async fn ensure_cloud_credential(
+        &self,
+        app: &tauri::AppHandle,
+        provider_id: Option<&str>,
+        api_base: &str,
+    ) -> Result<Option<u64>, String> {
+        if !super::config::is_flowix_cloud_provider(provider_id, api_base)? {
+            return Ok(None);
+        }
+        let app_state = app.state::<crate::app::state::AppState>();
+        let cloud_sync = app_state.cloud_sync.clone();
+        let generation = cloud_sync.ai_credential_session_generation();
+        drop(app_state);
+        let mut cached_generation = self.cloud_credential_generation.lock().await;
+        if *cached_generation == Some(generation) {
+            return Ok(Some(generation));
+        }
+
+        self.create_and_save_cloud_credential(app, api_base, &cloud_sync, generation)
+            .await?;
+        *cached_generation = Some(generation);
+        Ok(Some(generation))
+    }
+
+    async fn create_and_save_cloud_credential(
+        &self,
+        app: &tauri::AppHandle,
+        api_base: &str,
+        cloud_sync: &flowix_sync::SyncManager,
+        generation: u64,
+    ) -> Result<(), String> {
+        let credential = cloud_sync
+            .create_ai_credential()
+            .await
+            .map_err(|error| error.to_string())?;
+        if cloud_sync.ai_credential_session_generation() != generation {
+            return Err(
+                "Flowix Cloud account changed while preparing the Pi model; retry the request"
+                    .into(),
+            );
+        }
+        if let Err(error) = super::config::save_cloud_credential(app, api_base, credential) {
+            if cloud_sync.ai_credential_session_generation() == generation {
+                if let Err(revoke_error) = cloud_sync.revoke_ai_credential().await {
+                    tracing::warn!(
+                        "failed to revoke an unconfigured Flowix Cloud Pi credential: {revoke_error}"
+                    );
+                }
+            }
+            return Err(error);
+        }
+        let _ = app.emit(
+            crate::commands::settings::USER_CONFIG_CHANGED_EVENT,
+            "pi_config",
+        );
+        Ok(())
     }
 
     pub async fn queue_message(
@@ -1140,10 +1414,7 @@ impl PiRpcManager {
         let stderr = Arc::new(Mutex::new(String::new()));
         let stderr_capture = stderr.clone();
         tokio::spawn(async move {
-            let mut reader = BufReader::new(stderr_pipe);
-            let mut captured = String::new();
-            let _ = reader.read_to_string(&mut captured).await;
-            *stderr_capture.lock().await = captured;
+            let _ = capture_pi_stderr(stderr_pipe, stderr_capture).await;
         });
 
         let session = Arc::new(PiSession {
@@ -1151,7 +1422,6 @@ impl PiRpcManager {
             config: config.clone(),
             stdin,
             records: Mutex::new(record_rx),
-            deferred_records: Mutex::new(VecDeque::new()),
             response_waiters,
             entries_cache: Mutex::new(PiEntriesCache::default()),
             child: Mutex::new(child),
@@ -1486,17 +1756,12 @@ impl PiRpcManager {
             .get_external_session(thread_id, AGENT_TYPE)
             .await
             .map_err(|error| error.to_string())?;
-        let has_session =
-            mapped_session.is_some() || self.sessions.lock().await.contains_key(thread_id);
+        let active_run = self.active_runs.lock().await.get(thread_id).cloned();
+        let has_session = mapped_session.is_some()
+            || self.sessions.lock().await.contains_key(thread_id)
+            || active_run.is_some();
         if !has_session {
-            return Ok(PiSessionSnapshot {
-                messages: Vec::new(),
-                revision: PiHistoryRevision {
-                    session_id: String::new(),
-                    append_cursor: None,
-                    leaf_id: None,
-                },
-            });
+            return Ok(empty_pi_session_snapshot());
         }
         let cwd = self
             .thread_manager
@@ -1512,6 +1777,7 @@ impl PiRpcManager {
             tool_search: false,
             provider: None,
             model: None,
+            cloud_auth_generation: None,
             thinking: None,
             startup_resources: skill_resources::capture(
                 &cwd,
@@ -1519,72 +1785,71 @@ impl PiRpcManager {
                 &resolve_pi_session_dir(thread_id, true)?,
             )?,
         };
-        let session = self.ensure_session(app, thread_id, config, true).await?;
-        let _operation = tokio::time::timeout(
-            PI_HISTORY_LOCK_TIMEOUT,
-            self.lock_session_operation(thread_id, &session),
-        )
-        .await
-        .map_err(|_| {
-            "Pi history read timed out waiting for the active turn to finish".to_string()
-        })??;
-        session.touch();
-        let request_id = format!("flowix-history-{}", chrono::Utc::now().timestamp_millis());
-        if let Err(error) = session
-            .write(&serde_json::json!({"id":request_id,"type":"get_messages"}))
-            .await
-        {
-            drop(_operation);
-            self.remove_session_if_same(thread_id, &session).await;
-            return Err(error);
-        }
-        let response = tokio::time::timeout(PI_RPC_REQUEST_TIMEOUT, async {
-            loop {
-                let value = session.next_record().await?;
-                if value.get("id").and_then(Value::as_str) == Some(&request_id)
-                    && value.get("type").and_then(Value::as_str) == Some("response")
-                {
-                    return Ok::<Value, String>(value);
+        let session = if let Some(active_run) = active_run.as_ref() {
+            let active_session =
+                tokio::time::timeout(PI_RPC_REQUEST_TIMEOUT, active_run.wait_for_session())
+                    .await
+                    .map_err(|_| {
+                        "Pi session initialization timed out while reading history".to_string()
+                    })?;
+            if let Some(session) = active_session {
+                session
+            } else if let Some(session) = self.sessions.lock().await.get(thread_id).cloned() {
+                session
+            } else {
+                let mapped_session = self
+                    .thread_manager
+                    .get_external_session(thread_id, AGENT_TYPE)
+                    .await
+                    .map_err(|error| error.to_string())?;
+                if mapped_session.is_some() {
+                    self.ensure_session(app, thread_id, config, true).await?
+                } else {
+                    return Ok(empty_pi_session_snapshot());
                 }
             }
-        })
-        .await;
-        let value = match response {
-            Ok(Ok(value)) => value,
-            Ok(Err(error)) => {
-                drop(_operation);
-                self.remove_session_if_same(thread_id, &session).await;
-                return Err(error);
-            }
-            Err(_) => {
-                drop(_operation);
-                self.remove_session_if_same(thread_id, &session).await;
-                return Err("Pi history read timed out waiting for an RPC response".into());
-            }
+        } else {
+            self.ensure_session(app, thread_id, config, true).await?
         };
-        if value.get("success").and_then(Value::as_bool) != Some(true) {
-            return Err(value
-                .get("error")
-                .and_then(Value::as_str)
-                .unwrap_or("Pi could not read this session")
-                .to_string());
-        }
         session.touch();
-        let mut messages = value
-            .pointer("/data/messages")
-            .and_then(Value::as_array)
-            .cloned()
-            .unwrap_or_default();
-        let (entries, leaf_id) = match session.session_entries().await {
-            Ok(snapshot) => snapshot,
-            Err(error) => {
-                drop(_operation);
-                self.shutdown_and_remove_session_if_same(thread_id, &session)
-                    .await;
-                return Err(error);
+        // Pi keeps the operation lock for the whole prompt. History reads use
+        // correlated RPC waiters and a small revision fence instead, matching
+        // the behavior of Codex's concurrent live-turn/history reads.
+        let active_at_start = self.active_runs.lock().await.contains_key(thread_id);
+        let mut last_read = None;
+        let mut stable_revision_seen = false;
+        for attempt in 0..3 {
+            let (before_entries, before_leaf) = session.session_entries().await?;
+            let messages = session.session_messages().await?;
+            let (entries, leaf_id) = session.session_entries().await?;
+            let before_cursor = before_entries
+                .last()
+                .and_then(|entry| entry.get("id"))
+                .and_then(Value::as_str);
+            let after_cursor = entries
+                .last()
+                .and_then(|entry| entry.get("id"))
+                .and_then(Value::as_str);
+            let revision_matches = before_cursor == after_cursor && before_leaf == leaf_id;
+            last_read = Some((messages, entries, leaf_id));
+            if revision_matches {
+                stable_revision_seen = true;
+                break;
             }
-        };
-        attach_pi_session_message_ids(&mut messages, &entries, leaf_id.as_deref())?;
+            if attempt < 2 {
+                tokio::time::sleep(Duration::from_millis(10)).await;
+            }
+        }
+        let (mut messages, entries, leaf_id) =
+            last_read.ok_or_else(|| "Pi history read did not return a snapshot".to_string())?;
+        let active_during_read =
+            active_at_start || self.active_runs.lock().await.contains_key(thread_id);
+        attach_pi_session_message_ids_with_pending_tail(
+            &mut messages,
+            &entries,
+            leaf_id.as_deref(),
+            active_during_read || !stable_revision_seen,
+        )?;
         // Keep original Pi block positions even when thinking is hidden.
         for (sequence, message) in messages.iter_mut().enumerate() {
             if let Some(object) = message.as_object_mut() {
@@ -1611,6 +1876,7 @@ impl PiRpcManager {
             }
         }
         let native_session_id = session.session_id.lock().await.clone();
+        session.touch();
         Ok(PiSessionSnapshot {
             messages,
             revision: PiHistoryRevision {
@@ -1709,6 +1975,7 @@ impl PiRpcManager {
             run_id: run_id.clone(),
             started_at,
             session: Mutex::new(None),
+            session_state: tokio::sync::watch::channel(None).0,
             session_id: Mutex::new(None),
             queued_messages: Mutex::new(HashMap::new()),
             queue_lock: Mutex::new(()),
@@ -1752,6 +2019,9 @@ impl PiRpcManager {
         if active.finalizing.swap(true, Ordering::AcqRel) {
             return;
         }
+        active
+            .session_state
+            .send_replace(active.session.lock().await.clone());
         let stop_reason = active.stop_reason.lock().await.clone();
         let error = match stop_reason.as_deref() {
             Some(USER_STOPPED_REASON) => None,
@@ -1806,6 +2076,14 @@ impl PiRpcManager {
         let pi_features = super::config::features()?;
         let runtime_model =
             runtime_model.filter(|value| !value.trim().is_empty() && value != "inherit");
+        let cloud_api_base = app
+            .state::<crate::app::state::AppState>()
+            .cloud_environment
+            .api_base()
+            .to_string();
+        let cloud_auth_generation = self
+            .ensure_cloud_credential(app, provider.as_deref(), &cloud_api_base)
+            .await?;
         let thinking = message
             .reasoning_effort_for_runtime(AGENT_TYPE)
             .filter(|value| {
@@ -1818,12 +2096,11 @@ impl PiRpcManager {
         let config = PiSessionConfig {
             cwd: cwd.clone(),
             tools: pi_tools_for_permission_mode(permission_mode).into(),
-            code_mode: message
-                .code_mode_for_runtime(AGENT_TYPE)
-                .unwrap_or(false),
+            code_mode: message.code_mode_for_runtime(AGENT_TYPE).unwrap_or(false),
             tool_search: pi_features.tool_search,
             provider: provider.clone().filter(|value| !value.trim().is_empty()),
             model: runtime_model.clone(),
+            cloud_auth_generation,
             thinking,
             startup_resources: skill_resources::capture(
                 &cwd,
@@ -1833,6 +2110,7 @@ impl PiRpcManager {
         };
         let session = self.ensure_session(app, thread_id, config, false).await?;
         *active.session.lock().await = Some(session.clone());
+        active.session_state.send_replace(Some(session.clone()));
         let session_id = session.session_id.lock().await.clone();
         *active.session_id.lock().await = Some(session_id.clone());
         active
@@ -2931,8 +3209,9 @@ async fn run_pi_fork_extension(
                     if let Some(error) = value.get("error").and_then(Value::as_str) {
                         return Err(error.to_string());
                     }
-                    let fork: PiForkMetadata = serde_json::from_value(value)
-                        .map_err(|error| format!("Pi fork returned incomplete metadata: {error}"))?;
+                    let fork: PiForkMetadata = serde_json::from_value(value).map_err(|error| {
+                        format!("Pi fork returned incomplete metadata: {error}")
+                    })?;
                     if fork.session_id.trim().is_empty() || fork.session_id == expected_source_id {
                         return Err("Pi fork did not create a new session ID".into());
                     }
@@ -3011,7 +3290,11 @@ fn resolve_pi_session_dir(thread_id: &str, create: bool) -> Result<PathBuf, Stri
     Ok(path)
 }
 
-/// The sole receiver owner preserves every agent event while waiting for RPC.
+fn pi_message_matches(left: &Value, right: &Value) -> bool {
+    left == right
+}
+
+#[cfg(test)]
 async fn receive_rpc_response(
     records: &mut mpsc::UnboundedReceiver<Result<Value, String>>,
     deferred: &mut VecDeque<Value>,
@@ -3026,10 +3309,6 @@ async fn receive_rpc_response(
         }
         deferred.push_back(record);
     }
-}
-
-fn pi_message_matches(left: &Value, right: &Value) -> bool {
-    left == right
 }
 
 #[cfg(test)]
@@ -3082,15 +3361,35 @@ fn pi_active_branch_entries<'a>(
     Ok(branch)
 }
 
+#[cfg(test)]
 fn attach_pi_session_message_ids(
-    messages: &mut [Value],
+    messages: &mut Vec<Value>,
     entries: &[Value],
     leaf_id: Option<&str>,
 ) -> Result<(), String> {
+    attach_pi_session_message_ids_impl(messages, entries, leaf_id, false)
+}
+
+fn attach_pi_session_message_ids_with_pending_tail(
+    messages: &mut Vec<Value>,
+    entries: &[Value],
+    leaf_id: Option<&str>,
+    allow_pending_tail: bool,
+) -> Result<(), String> {
+    attach_pi_session_message_ids_impl(messages, entries, leaf_id, allow_pending_tail)
+}
+
+fn attach_pi_session_message_ids_impl(
+    messages: &mut Vec<Value>,
+    entries: &[Value],
+    leaf_id: Option<&str>,
+    allow_pending_tail: bool,
+) -> Result<(), String> {
     let branch = pi_active_branch_entries(entries, leaf_id)?;
     let mut entry_index = 0;
+    let mut first_unmatched_renderable = None;
     let mut unmatched_renderable_messages = 0;
-    for message in messages {
+    for (message_index, message) in messages.iter_mut().enumerate() {
         let matched_index = branch[entry_index..].iter().position(|entry| {
             entry.get("type").and_then(Value::as_str) == Some("message")
                 && entry
@@ -3109,10 +3408,16 @@ fn attach_pi_session_message_ids(
                         | "compactionSummary"
                 )
             ) {
+                first_unmatched_renderable.get_or_insert(message_index);
                 unmatched_renderable_messages += 1;
             }
             continue;
         };
+        if first_unmatched_renderable.is_some() {
+            return Err(
+                "Pi history contains an unmatched message before a later committed message".into(),
+            );
+        }
         entry_index += relative_index;
         let entry = branch[entry_index];
         entry_index += 1;
@@ -3129,6 +3434,12 @@ fn attach_pi_session_message_ids(
         }
     }
     if unmatched_renderable_messages > 0 {
+        if allow_pending_tail {
+            if let Some(start) = first_unmatched_renderable {
+                messages.truncate(start);
+                return Ok(());
+            }
+        }
         return Err(format!(
             "Pi returned {unmatched_renderable_messages} history messages that could not be reconciled with native ids on the active session branch"
         ));
@@ -3136,70 +3447,164 @@ fn attach_pi_session_message_ids(
     Ok(())
 }
 
-fn resolve_pi_binary(app: &tauri::AppHandle) -> Result<PathBuf, String> {
-    if let Some(value) = std::env::var_os("PI_CLI_PATH") {
-        let candidate = PathBuf::from(value);
-        if candidate.is_file() {
-            return Ok(candidate);
-        }
-    }
-    #[cfg(target_os = "macos")]
-    let platform = "darwin";
-    #[cfg(target_os = "windows")]
-    let platform = "windows";
-    #[cfg(target_os = "linux")]
-    let platform = "linux";
+pub(crate) fn resolve_pi_binary(app: &tauri::AppHandle) -> Result<PathBuf, String> {
+    let platform = match std::env::consts::OS {
+        "macos" => "darwin",
+        "windows" => "windows",
+        "linux" => "linux",
+        other => return Err(format!("Pi runtime is not bundled for {other}")),
+    };
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
         "x86_64" => "x64",
-        other => other,
+        other => return Err(format!("Pi runtime is not bundled for {platform}-{other}")),
     };
+    let target = format!("{platform}-{arch}");
+    let executable = if cfg!(windows) { "pi.exe" } else { "pi" };
+    let mut roots = Vec::new();
+
     if let Ok(resources) = app.path().resource_dir() {
-        let name = if cfg!(windows) { "pi.exe" } else { "pi" };
-        let bundled_root = resources.join("pi").join(format!("{platform}-{arch}"));
-        let bundled_candidates = [
-            bundled_root.join("dist").join(name),
-            bundled_root.join(name),
-        ];
-        if let Some(bundled) = bundled_candidates
-            .into_iter()
-            .find(|candidate| candidate.is_file())
-        {
-            return Ok(bundled);
+        roots.push(resources.join("pi").join(&target));
+    }
+    #[cfg(debug_assertions)]
+    roots.push(
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../../.build/pi-runtime/resources")
+            .join(&target),
+    );
+
+    for root in roots {
+        for candidate in [root.join("dist").join(executable), root.join(executable)] {
+            if crate::agent_external::cli_resolver::is_executable_file(&candidate) {
+                return Ok(candidate);
+            }
         }
     }
-    if let Some(path) = crate::agent_external::cli_resolver::which_in_path(
-        if cfg!(windows) { "pi.exe" } else { "pi" },
-        std::env::var_os("PATH").as_deref(),
-    ) {
-        return Ok(path);
-    }
-    if let Some(path) = installed_flowix_pi_binary() {
-        return Ok(path);
-    }
-    Ok(
-        crate::agent_external::cli_resolver::resolve_external_cli_uncached(
-            &crate::agent_external::cli_resolver::ExternalCliSpec {
-                binary_name: "pi",
-                #[cfg(windows)]
-                windows_binary_name: "pi.exe",
-                env_vars: &["PI_CLI_PATH"],
-                extra_unix_candidates: crate::agent_external::cli_resolver::no_extra_candidates,
-                #[cfg(windows)]
-                extra_windows_candidates: crate::agent_external::cli_resolver::no_extra_candidates,
-            },
-        ),
-    )
+
+    Err(format!(
+        "Bundled Pi runtime is missing or not executable for {target}"
+    ))
 }
 
 #[cfg(test)]
 mod tests {
     use super::{
         attach_pi_session_message_ids, pi_active_branch_entries, pi_rpc_message_id,
-        receive_rpc_response,
+        receive_rpc_response, run_startup_cloud_credential_refresh_once,
+        run_startup_cloud_refresh_once,
     };
     use serde_json::json;
 
+    #[tokio::test]
+    async fn startup_cloud_refresh_shares_the_actual_failure_per_generation() {
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let results = Arc::new(Mutex::new(HashMap::new()));
+        let refresh_count = Arc::new(AtomicUsize::new(0));
+        let run = |results: Arc<Mutex<HashMap<u64, Result<bool, String>>>>,
+                   refresh_count: Arc<AtomicUsize>| async move {
+            run_startup_cloud_refresh_once(&results, 7, || async move {
+                refresh_count.fetch_add(1, Ordering::SeqCst);
+                tokio::task::yield_now().await;
+                Err("credential refresh failed".to_string())
+            })
+            .await
+        };
+
+        let (first, concurrent) = tokio::join!(
+            run(results.clone(), refresh_count.clone()),
+            run(results.clone(), refresh_count.clone()),
+        );
+        assert_eq!(first, Err("credential refresh failed".to_string()));
+        assert_eq!(concurrent, Err("credential refresh failed".to_string()));
+        assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
+
+        let cached = run_startup_cloud_refresh_once(&results, 7, || async { Ok(true) }).await;
+        assert_eq!(cached, Err("credential refresh failed".to_string()));
+        assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
+
+        let next_generation =
+            run_startup_cloud_refresh_once(&results, 8, || async { Ok(true) }).await;
+        assert_eq!(next_generation, Ok(true));
+    }
+
+    #[tokio::test]
+    async fn startup_cloud_refresh_fetches_latest_catalog_once_even_if_credential_is_cached() {
+        use std::collections::HashMap;
+        use std::sync::atomic::{AtomicUsize, Ordering};
+        use std::sync::Arc;
+        use tokio::sync::Mutex;
+
+        let results = Mutex::new(HashMap::new());
+        let credential_generation = Mutex::new(Some(7));
+        let refresh_count = Arc::new(AtomicUsize::new(0));
+        let count = refresh_count.clone();
+        let refreshed = run_startup_cloud_credential_refresh_once(
+            &results,
+            &credential_generation,
+            7,
+            || async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+        assert_eq!(refreshed, Ok(true));
+        assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
+
+        let count = refresh_count.clone();
+        let coalesced = run_startup_cloud_credential_refresh_once(
+            &results,
+            &credential_generation,
+            7,
+            || async move {
+                count.fetch_add(1, Ordering::SeqCst);
+                Ok(())
+            },
+        )
+        .await;
+        assert_eq!(coalesced, Ok(true));
+        assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
+    }
+
+    #[tokio::test]
+    async fn stderr_is_visible_before_eof_and_keeps_only_a_bounded_tail() {
+        use std::sync::Arc;
+        use tokio::io::AsyncWriteExt;
+        use tokio::sync::Mutex;
+        let (mut writer, reader) = tokio::io::duplex(4096);
+        let captured = Arc::new(Mutex::new(String::new()));
+        let task = tokio::spawn(super::capture_pi_stderr(reader, captured.clone()));
+        writer.write_all(b"startup diagnostic").await.unwrap();
+        tokio::time::timeout(std::time::Duration::from_secs(1), async {
+            loop {
+                if captured.lock().await.contains("startup diagnostic") {
+                    break;
+                }
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            !task.is_finished(),
+            "diagnostics must be visible before EOF"
+        );
+        writer
+            .write_all(&vec![b'x'; super::PI_STDERR_TAIL_BYTES * 2])
+            .await
+            .unwrap();
+        writer.write_all("最新错误".as_bytes()).await.unwrap();
+        drop(writer);
+        task.await.unwrap().unwrap();
+        let text = captured.lock().await;
+        assert!(text.ends_with("最新错误"));
+        assert!(text.len() <= super::PI_STDERR_TAIL_BYTES);
+        assert!(!text.contains("startup diagnostic"));
+    }
     #[tokio::test]
     async fn pi_queue_rebuild_keeps_duplicate_message_attachments_with_the_right_item() {
         use super::{known_pi_queue_payloads, pi_queue_target_index, ActivePiRun, PiQueuedMessage};
@@ -3226,6 +3631,7 @@ mod tests {
             run_id: "test".into(),
             started_at: 0,
             session: Mutex::new(None),
+            session_state: tokio::sync::watch::channel(None).0,
             session_id: Mutex::new(None),
             queued_messages: Mutex::new(HashMap::from([
                 ("first".into(), first.clone()),
@@ -3449,67 +3855,4 @@ mod tests {
 
         assert!(error.contains("could not be reconciled with native ids"));
     }
-}
-
-/// Find Pi shipped inside a regular Flowix installation. Dev launches use
-/// this when Tauri does not preserve the `PI_CLI_PATH` set by tauri-dev.mjs.
-pub fn installed_flowix_pi_binary() -> Option<PathBuf> {
-    #[cfg(target_os = "macos")]
-    let platform = "darwin";
-    #[cfg(target_os = "windows")]
-    let platform = "windows";
-    #[cfg(target_os = "linux")]
-    let platform = "linux";
-    let arch = match std::env::consts::ARCH {
-        "aarch64" => "arm64",
-        "x86_64" => "x64",
-        other => other,
-    };
-    let executable = if cfg!(windows) { "pi.exe" } else { "pi" };
-    let mut app_roots = Vec::new();
-    if let Some(root) = std::env::var_os("FLOWIX_PROD_APP_PATH") {
-        app_roots.push(PathBuf::from(root));
-    }
-    #[cfg(target_os = "macos")]
-    {
-        app_roots.push(PathBuf::from("/Applications/Flowix.app"));
-        if let Some(home) = dirs::home_dir() {
-            app_roots.push(home.join("Applications").join("Flowix.app"));
-        }
-    }
-    #[cfg(target_os = "windows")]
-    {
-        if let Some(local_app_data) = std::env::var_os("LOCALAPPDATA") {
-            app_roots.push(
-                PathBuf::from(local_app_data)
-                    .join("Programs")
-                    .join("Flowix"),
-            );
-        }
-        if let Some(program_files) = std::env::var_os("ProgramFiles") {
-            app_roots.push(PathBuf::from(program_files).join("Flowix"));
-        }
-    }
-    #[cfg(target_os = "linux")]
-    {
-        app_roots.push(PathBuf::from("/opt/Flowix"));
-        app_roots.push(PathBuf::from("/usr/lib/flowix"));
-        app_roots.push(PathBuf::from("/usr/lib/Flowix"));
-    }
-
-    for app_root in app_roots {
-        #[cfg(target_os = "macos")]
-        let resource_roots = vec![app_root.join("Contents").join("Resources")];
-        #[cfg(not(target_os = "macos"))]
-        let resource_roots = vec![app_root.join("resources"), app_root];
-        for resource_root in resource_roots {
-            let root = resource_root.join("pi").join(format!("{platform}-{arch}"));
-            for candidate in [root.join("dist").join(executable), root.join(executable)] {
-                if crate::agent_external::cli_resolver::is_executable_file(&candidate) {
-                    return Some(candidate);
-                }
-            }
-        }
-    }
-    None
 }

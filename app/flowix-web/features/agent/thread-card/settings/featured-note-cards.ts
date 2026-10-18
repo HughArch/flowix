@@ -312,8 +312,8 @@ export function getFeaturedNoteCards(
 
     return [{
       // Test harness for the shared filter logic; production uses the path variant.
-      // Re-keyed off the path identity during the memo id decommission.
-      id: memo.relativePath || memo.filename,
+      // Use the notebook-relative path as the note key.
+      id: memo.relativePath,
       icon,
       name,
       title: noteTitle(memo.filename),
@@ -383,4 +383,3 @@ export function getFeaturedNotePage(
   const start = safePage * safePageSize;
   return notes.slice(start, start + safePageSize);
 }
-

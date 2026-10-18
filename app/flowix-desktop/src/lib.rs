@@ -18,7 +18,6 @@ mod connection_probe;
 mod device_registration;
 mod document_mutation;
 mod document_io;
-mod document_derived;
 mod dsh;
 mod events;
 mod frame_scrollbar;
@@ -36,6 +35,7 @@ mod template_store;
 mod update_security;
 mod watcher;
 mod window_chrome;
+mod native_close_region;
 
 pub use app::{get_app_data_path, get_user_config_dir, APP_DATA_DIR_NAME, USER_CONFIG_DIR_NAME};
 

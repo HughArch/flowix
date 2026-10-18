@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { flushDocumentPath } from '@features/document/store/document-session-service';
+import { prepareDocumentLeave } from '@features/document/store/document-session-service';
 import { canonicalPath } from '@/lib/path';
 import {
   markDocumentOpenTrace,
@@ -10,6 +10,7 @@ import { ensureFileDisplayIdentity, type FileDisplayIdentity } from '@/lib/file-
 
 
 export type DocumentSource = 'external';
+export type DocumentLoadOutcome = 'pending' | 'ready' | 'unavailable' | null;
 
 export interface ExternalDocumentSession {
   fileIdentity: FileDisplayIdentity;
@@ -43,7 +44,8 @@ interface DocumentStore {
   activeExternalSession: ExternalDocumentSession | null;
   isDocumentTransitioning: boolean;
   documentTransitionId: number;
-  finishDocumentTransition: (transitionId: number) => void;
+  documentLoadOutcome: DocumentLoadOutcome;
+  finishDocumentTransition: (transitionId: number, outcome?: 'ready' | 'unavailable') => void;
   replaceActiveExternalPath: (displayId: string, path: string) => void;
   openExternalDocument: (path: string | null, options?: {
     scopePath?: string | null;
@@ -63,15 +65,13 @@ interface DocumentStore {
 // ---------------------------------------------------------------------------
 //
 // A document session transition has two phases, both owned by this store:
-//   1. flush the outgoing document's pending edits to disk
-//      (calls document-session-service.flushDocumentPath for the previous path)
+//   1. retain the outgoing draft and start its save/checkpoint work
+//      (calls document-session-service.prepareDocumentLeave for the previous path)
 //   2. commit the new session state via set(...)
 //
-// The flush awaits the save queue's chain — see save-queue.ts — so by
-// the time set() runs, the outgoing document's last edit is on disk
-// (or a CAS refusal toast has been surfaced). React then re-renders
-// with the new session; useDocumentContent's reloadDocument effect
-// reads the new path and re-hydrates the buffer.
+// Navigation does not block on disk I/O. The outgoing runtime session stays
+// retained until its queued save or recovery checkpoint settles. Operations
+// that overwrite or delete the path use saveDocumentPath as a durability barrier.
 //
 // If there is no previous session (first open after launch), the flush
 // is a no-op.
@@ -84,6 +84,7 @@ function documentState(path: string | null, source: DocumentSource | null) {
     activeAgentConversationId: null,
     activeExternalSession: null,
     isDocumentTransitioning: false,
+    documentLoadOutcome: null,
   };
 }
 
@@ -120,10 +121,11 @@ export const useDocumentStore = create<DocumentStore>()(
     activeExternalSession: null,
     isDocumentTransitioning: false,
     documentTransitionId: 0,
-    finishDocumentTransition: (transitionId) => {
+    documentLoadOutcome: null,
+    finishDocumentTransition: (transitionId, outcome = 'ready') => {
       set((state) => {
-        if (state.documentTransitionId !== transitionId) return state;
-        return { isDocumentTransitioning: false };
+        if (state.documentTransitionId !== transitionId || !state.isDocumentTransitioning) return state;
+        return { isDocumentTransitioning: false, documentLoadOutcome: outcome };
       });
     },
     replaceActiveExternalPath: (displayId, path) => {
@@ -153,7 +155,8 @@ export const useDocumentStore = create<DocumentStore>()(
     } = {}) => {
       const canonicalNewPath = path ? canonicalPath(path) : null;
       const canonicalScopePath = scopePath ? canonicalPath(scopePath) : null;
-      if (isSameExternalTarget(get(), canonicalNewPath, canonicalScopePath)) {
+      // Returning to the visible document must supersede a queued switch too.
+      if (!get().isDocumentTransitioning && isSameExternalTarget(get(), canonicalNewPath, canonicalScopePath)) {
         return;
       }
 
@@ -166,9 +169,14 @@ export const useDocumentStore = create<DocumentStore>()(
       markDocumentOpenTrace(transitionId, 'navigation:external-start', {
         scopePath: canonicalScopePath,
       });
-      set({ isDocumentTransitioning: true, documentTransitionId: transitionId });
+      set({
+        isDocumentTransitioning: true,
+        documentTransitionId: transitionId,
+        documentLoadOutcome: 'pending',
+      });
       return enqueueTransition(async () => {
         try {
+          if (get().documentTransitionId !== transitionId) return;
           if (isSameExternalTarget(get(), canonicalNewPath, canonicalScopePath)) {
             get().finishDocumentTransition(transitionId);
             return;
@@ -176,13 +184,14 @@ export const useDocumentStore = create<DocumentStore>()(
 
           const prev = get().activeExternalSession;
           if (prev) {
-            const flushed = await flushDocumentPath(
+            const prepared = await prepareDocumentLeave(
               sessionIdentity(prev),
               sessionPath(prev),
               sessionScopePath(prev),
             );
-            if (!flushed) throw new Error('Document switch cancelled because saving did not complete');
+            if (!prepared) throw new Error('Document switch cancelled because saving could not be retained');
           }
+          if (get().documentTransitionId !== transitionId) return;
           set(() => {
             if (!canonicalNewPath) return documentState(null, null);
             const openedAt = Date.now();
@@ -202,6 +211,7 @@ export const useDocumentStore = create<DocumentStore>()(
                 transitionId,
               },
               isDocumentTransitioning: true,
+              documentLoadOutcome: 'pending',
             };
           });
         } catch (err) {
@@ -217,8 +227,8 @@ export const useDocumentStore = create<DocumentStore>()(
       return enqueueTransition(async () => {
         const prev = get().activeExternalSession;
         if (prev) {
-          const flushed = await flushDocumentPath(sessionIdentity(prev), sessionPath(prev), sessionScopePath(prev));
-          if (!flushed) throw new Error('Session switch cancelled because saving did not complete');
+          const prepared = await prepareDocumentLeave(sessionIdentity(prev), sessionPath(prev), sessionScopePath(prev));
+          if (!prepared) throw new Error('Session switch cancelled because saving could not be retained');
         }
         set({
           ...documentState(null, null),
@@ -234,8 +244,8 @@ export const useDocumentStore = create<DocumentStore>()(
       return enqueueTransition(async () => {
         const prev = get().activeExternalSession;
         if (prev) {
-          const flushed = await flushDocumentPath(sessionIdentity(prev), sessionPath(prev), sessionScopePath(prev));
-          if (!flushed) throw new Error('Document close cancelled because saving did not complete');
+          const prepared = await prepareDocumentLeave(sessionIdentity(prev), sessionPath(prev), sessionScopePath(prev));
+          if (!prepared) throw new Error('Document close cancelled because saving could not be retained');
         }
         set(documentState(null, null));
       });

@@ -10,7 +10,6 @@ import { localDocumentOperations } from '@features/document/public/file-operatio
 import { openPath } from '@platform/tauri/opener';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import {
-  ListSurfaceInlineLoadingState,
   ListSurfaceLoadingState,
   ListSurfaceSpinner,
   ListSurfaceViewport,
@@ -564,10 +563,12 @@ export function FolderFileTree({
           onScroll={(event) => setShowScrollTopHint(event.currentTarget.scrollTop > 0)}
         >
           {tree.loading && visibleNodes.length > 0 && (
-            <ListSurfaceInlineLoadingState label={t('memo.fileTree.loading')} className="py-1" />
+            <div className="flex items-center justify-center px-2 py-1" role="status" aria-live="polite">
+              <ListSurfaceSpinner className="h-3.5 w-3.5" ariaLabel={t('memo.fileTree.loading')} />
+            </div>
           )}
           {tree.loading && visibleNodes.length === 0 && contentSized && (
-            <ListSurfaceLoadingState label={t('memo.fileTree.loading')} className="h-24" />
+            <ListSurfaceLoadingState ariaLabel={t('memo.fileTree.loading')} className="h-24" />
           )}
           {tree.error && (
             <div className="flex items-center justify-center gap-2 px-4 py-4 text-center text-xs text-[var(--muted-foreground)]" role="alert">
@@ -630,7 +631,7 @@ export function FolderFileTree({
         </OverlayScrollbar>
         {tree.loading && visibleNodes.length === 0 && !contentSized && (
           <ListSurfaceLoadingState
-            label={t('memo.fileTree.loading')}
+            ariaLabel={t('memo.fileTree.loading')}
             className="absolute inset-0 z-[2] bg-[var(--list-bg)]"
           />
         )}

@@ -158,33 +158,23 @@ pub(crate) fn refresh_notebook_note_index(memo_file: &MemoFile, path: &Path) {
 }
 
 pub(crate) fn refresh_watcher_roots(state: &AppState, app: &AppHandle) {
-    let configs = {
-        let memo_file = read_lock(&state.memo_file, "memo_file");
-        memo_file.read_notebook_configs().unwrap_or_default()
-    };
-    if let Some(watcher) = current_watcher(app) {
-        if let Ok(mut guard) = watcher.write() {
-            guard.rebind_all(app.clone(), configs.clone());
+    let Some(watcher) = current_watcher(app) else { return; };
+    let Ok(mut guard) = watcher.write() else { return; };
+    // Snapshot under the same lock as binding so delayed callers cannot
+    // overwrite a newer bind with metadata read before taking the lock.
+    let configs = match crate::watcher::runtime::read_registered_notebooks(state.user_config.config_dir()) {
+        Ok(configs) => configs,
+        Err(error) => {
+            tracing::warn!(%error, "watcher roots snapshot unavailable; retaining current bindings");
+            return;
         }
-    }
+    };
+    guard.rebind_all(app.clone(), configs.clone());
+    drop(guard);
     // A full rebind has a short gap. Reconcile once after binding so changes
     // made during that gap are included even if no filesystem event arrives.
-    let memo_file = read_lock(&state.memo_file, "memo_file");
     for config in &configs {
-        match memo_file.reconcile_note_index(&config.id) {
-            Ok(report) if report.added + report.updated + report.removed > 0 => {
-                let _ = app.emit(
-                    "flowix:path-note-changed",
-                    serde_json::json!({
-                        "notebookId": config.id, "relativePath": "", "deleted": false,
-                    }),
-                );
-            }
-            Err(error) => {
-                tracing::warn!(notebook_id = %config.id, "watcher rebind reconciliation failed: {error}")
-            }
-            _ => {}
-        }
+        state.notebook_background.request(&config.id, false, true);
     }
 }
 
@@ -208,21 +198,7 @@ pub(crate) fn retry_notebook_watch(state: &AppState, app: &AppHandle, notebook_i
         return;
     }
     drop(watcher);
-    match read_lock(&state.memo_file, "memo_file").reconcile_note_index(notebook_id) {
-        Ok(report) if report.added + report.updated + report.removed > 0 => {
-            let _ = app.emit(
-                "flowix:path-note-changed",
-                serde_json::json!({
-                    "notebookId": notebook_id, "relativePath": "", "deleted": false,
-                }),
-            );
-        }
-        Err(error) => tracing::warn!(
-            notebook_id,
-            "notebook watch retry reconciliation failed: {error}"
-        ),
-        _ => {}
-    }
+    state.notebook_background.request(notebook_id, true, true);
 }
 
 pub(crate) fn set_notebook_watching_suspended(app: &AppHandle, notebook_id: &str, suspended: bool) {

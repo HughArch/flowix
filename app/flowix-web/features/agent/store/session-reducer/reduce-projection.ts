@@ -2,6 +2,12 @@ import type { ChatMessage } from "@/types";
 import type { AgentEvent } from "@/types/agent";
 import { completedRunUserMessageId } from "@features/agent/events/message-identity";
 import {
+  CODEX_MISSING_USER_ITEM_ID,
+  codexCommandMessageId,
+  codexFallbackItemMessageId,
+  codexPendingCommandMessageId,
+} from "@features/agent/events/codex-message-identity";
+import {
   applyErrorChunk,
   applyReasoningChunk,
   applyTextChunk,
@@ -91,9 +97,16 @@ function applyUserMessageToProjection(
 
   const isOptimisticPiUser = event.agentType === "pi" &&
     event.id === completedRunUserMessageId(event.agentType, event.runId);
+  const codexUserHasSyntheticId = event.agentType === "codex" &&
+    event.id === CODEX_MISSING_USER_ITEM_ID && !!event.codexTurnId;
+  const codexUserId = codexUserHasSyntheticId
+    ? codexFallbackIdForCompletedItem(p, event, "user", event.text, null)
+    : undefined;
+  const messageId = codexUserId ?? event.id;
   const next = applyUserMessageChunk(p, event.text, {
-    id: event.id,
-    nativeMessageId: !isOptimisticPiUser && (event.agentType === "pi" || event.agentType === "codex")
+    id: messageId,
+    nativeMessageId: !isOptimisticPiUser && !codexUserHasSyntheticId &&
+      (event.agentType === "pi" || event.agentType === "codex")
       ? event.id : undefined,
     isOptimistic: isOptimisticPiUser,
     messageType: event.messageType,
@@ -115,6 +128,37 @@ function applyUserMessageToProjection(
     messages: next.messages,
     pending: next.pending,
   };
+}
+
+function codexFallbackIdForCompletedItem(
+  p: ThreadProjection,
+  event: AgentEvent,
+  role: "user" | "assistant" | "reasoning",
+  content: string,
+  pendingId: string | null,
+): string | undefined {
+  if (
+    event.agentType !== "codex" ||
+    (event.messageId && event.messageId !== CODEX_MISSING_USER_ITEM_ID) ||
+    event.contentMode !== "snapshot" || event.messagePhase !== "completed" ||
+    !event.codexTurnId
+  ) return undefined;
+
+  const prefix = `flowix:codex:item:${event.codexTurnId}:${role}:`;
+  const matching = p.messages.filter((message) =>
+    message.id !== pendingId &&
+    message.codexTurnId === event.codexTurnId &&
+    message.role === role &&
+    message.content === content &&
+    message.id.startsWith(prefix),
+  );
+  const pendingExists = pendingId != null && p.messages.some((message) => message.id === pendingId);
+  // Codex can replay the final assistant item in its terminal turn snapshot.
+  // Reasoning items have no such replay path and must retain their occurrence.
+  if (role === "assistant" && !pendingExists && matching.length > 0) {
+    return matching[matching.length - 1].id;
+  }
+  return codexFallbackItemMessageId(event.codexTurnId, role, content, matching.length);
 }
 
 function isLiveDshPlanPrompt(p: ThreadProjection, text: string): boolean {
@@ -153,7 +197,10 @@ function applyTextDeltaToProjection(
   }
   const next = applyTextChunk(p, event.text, {
     id: event.agentType === "pi" && event.messageId && event.sourceSubsequence !== undefined
-      ? `${event.messageId}:block:${event.sourceSubsequence}` : event.messageId,
+      ? `${event.messageId}:block:${event.sourceSubsequence}`
+      : event.messageId ?? codexFallbackIdForCompletedItem(
+          p, event, "assistant", event.text, p.pending.assistantId,
+        ),
     nativeMessageId: event.agentType === "pi" || event.agentType === "codex" ? event.messageId : undefined,
     blockIndex: event.agentType === "pi" ? event.sourceSubsequence : undefined,
     phase: event.messagePhase,
@@ -183,7 +230,10 @@ function applyReasoningDeltaToProjection(
 ): ThreadProjection {
   const next = applyReasoningChunk(p, event.text, {
     id: event.agentType === "pi" && event.messageId && event.sourceSubsequence !== undefined
-      ? `${event.messageId}:block:${event.sourceSubsequence}` : event.messageId,
+      ? `${event.messageId}:block:${event.sourceSubsequence}`
+      : event.messageId ?? codexFallbackIdForCompletedItem(
+          p, event, "reasoning", event.text, p.pending.reasoningId,
+        ),
     nativeMessageId: event.agentType === "pi" || event.agentType === "codex" ? event.messageId : undefined,
     blockIndex: event.agentType === "pi" ? event.sourceSubsequence : undefined,
     phase: event.messagePhase,
@@ -233,7 +283,9 @@ function applyFinalMessageToProjection(
 ): ThreadProjection {
   // final_message 形态与 text_delta 一致, 仅 contentMode="snapshot" 且 phase="completed".
   const next = applyTextChunk(p, event.text, {
-    id: event.messageId,
+    id: event.messageId ?? codexFallbackIdForCompletedItem(
+      p, event, "assistant", event.text, p.pending.assistantId,
+    ),
     nativeMessageId: event.agentType === "codex" ? event.messageId : undefined,
     phase: event.messagePhase,
     contentMode: event.contentMode,
@@ -380,8 +432,13 @@ function applyCodexCommandToProjection(
   p: ThreadProjection,
   event: AgentEvent & { kind: "codex_command" },
 ): ThreadProjection {
-  const messageId = `codex-command:live:${event.id}`;
-  const existingIndex = p.messages.findIndex((message) => message.id === messageId);
+  const provisionalId = codexPendingCommandMessageId(event.id);
+  const messageId = event.codexTurnId
+    ? codexCommandMessageId(event.codexTurnId)
+    : provisionalId;
+  const existingIndex = p.messages.findIndex((message) =>
+    message.id === messageId || message.id === provisionalId,
+  );
   const message = {
     id: messageId,
     role: "user" as const,
@@ -447,19 +504,16 @@ function applyStreamEndToProjection(
 ): ThreadProjection {
   const runsNext = applyRunEndedCore(p.runs, event);
   if (runsNext === p.runs) return p;
-  // run 结束时把仍 loading 的 tool 行收尾为 isLoading=false (避免中断 tool 永久转圈)，
-  // 并完成仍 pending 的 reasoning 行。助手文本即使没有单独的 final 事件也要保留。
-  // 仅在最后一个 run 结束时执行，避免误改并发 run 的消息。
+  // Once no run remains active, retained output is terminal even if the
+  // provider never delivered its final snapshot (for example a forced Pi
+  // stop). Seal every draft block so a later run's error cannot delete it.
   const terminalMessages = !runsNext.isLoading
-    ? closeLoadingToolRows(
-        p.pending.reasoningId
-          ? p.messages.map((message) =>
-              message.id === p.pending.reasoningId && message.role === "reasoning"
-                ? { ...message, isCompleted: true }
-                : message,
-            )
-          : p.messages,
-      )
+    ? closeLoadingToolRows(p.messages.map((message) =>
+        (message.role === "assistant" || message.role === "reasoning") &&
+          message.isCompleted !== true
+          ? { ...message, isCompleted: true }
+          : message,
+      ))
     : p.messages;
   const messagesWithDuration =
     !runsNext.isLoading &&

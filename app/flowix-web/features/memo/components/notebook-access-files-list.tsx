@@ -4,7 +4,7 @@ import { useCallback } from 'react';
 import { Folder } from '@phosphor-icons/react';
 import { Plus } from 'lucide-react';
 import { toast } from '@/lib/toast';
-import { useAgentDataStore } from '@features/agent/store/agent-data-store';
+import { useAgentWorkspaceStore } from '@features/agent/store/agent-workspace-store';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { Tooltip } from '@shared/ui/tooltip';
@@ -44,11 +44,11 @@ export function NotebookAccessFilesList({
 }: NotebookAccessFilesListProps) {
   const { t } = useI18n();
   const notebookId = notebook?.id;
-  const workspaceNotebook = useAgentDataStore((state) =>
+  const workspaceNotebook = useAgentWorkspaceStore((state) =>
     notebookId ? state.workspace.byNotebookId[notebookId] : undefined,
   );
-  const addFolderFromPicker = useAgentDataStore((s) => s.workspaceActions.addFolderFromPicker);
-  const detachFolderFromNotebook = useAgentDataStore((s) => s.workspaceActions.detachFolderFromNotebook);
+  const addFolderFromPicker = useAgentWorkspaceStore((s) => s.workspaceActions.addFolderFromPicker);
+  const detachFolderFromNotebook = useAgentWorkspaceStore((s) => s.workspaceActions.detachFolderFromNotebook);
 
   // Show the selected notebook's mounts, including missing paths for removal.
   const folderItems: ResolvedItem[] = (workspaceNotebook?.addDirs ?? [])

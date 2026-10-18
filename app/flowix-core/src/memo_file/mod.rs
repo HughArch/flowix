@@ -1,16 +1,15 @@
 //! Notebook storage and Markdown file operations.
 //!
-//! Markdown files own note content. The rebuildable path projection in each
-//! notebook's `.flowix/notebook.db` addresses notes by relative path. Legacy
-//! memo-ID records and APIs remain for callers that have not migrated yet;
-//! new Note writes do not stamp those IDs into Markdown frontmatter or filenames.
+//! Markdown files own note content. Rebuildable projections address notes by
+//! notebook-relative path; note identity is never generated from or parsed
+//! out of Markdown frontmatter.
 //!
 //! - `frontmatter` parses and edits authored YAML metadata.
 //! - `note_index` maintains the path-keyed Note projection and path operations;
 //!   it discards the old rebuildable `v2_*` projection schema on first use.
-//! - `index_store` maintains legacy memo-ID records and related metadata.
-//! - `ops` contains legacy CRUD and reconciliation operations.
-//! - `versions` stores history currently keyed by internal memo ID.
+//! - `index_store` stores content-derived listing fields.
+//! - `ops` contains CRUD and reconciliation operations.
+//! - `versions` stores history keyed by notebook-relative path.
 //!
 //! `MemoIndexEntry::filename` contains the disk filename, including `.md`.
 //! Nested notes also carry a notebook-relative path; resolve that path against
@@ -18,16 +17,6 @@
 
 use std::path::PathBuf;
 use std::{fs::OpenOptions, io};
-
-/// memo id 随机段使用的字符集 — `[0-9a-z]` 36 个字符 (小写字母 + 数字)。
-///
-/// nanoid's default alphabet includes `_` and `-`; legacy memo IDs use only
-/// lowercase letters and digits. New IDs contain [`MEMO_ID_LENGTH`] characters.
-pub const MEMO_ID_ALPHABET: [char; 36] = [
-    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i',
-    'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-];
-pub const MEMO_ID_LENGTH: usize = 8;
 
 mod content;
 mod database_layout;
@@ -53,8 +42,8 @@ mod note_index;
 mod versions;
 
 pub use note_index::{
-    NoteEntry, NoteIndexReconcileReport, NotePropertyMigrationReport, NoteSearchHit,
-    NoteTodoMigrationReport, NoteWriteOutcome,
+    NoteEntry, NoteIndexReconcileReport, NoteSearchHit,
+    NoteWriteOutcome,
 };
 pub use operation_locks::{FileLockIntent, FileWriteGuard, OperationLocks};
 
@@ -70,18 +59,17 @@ pub use file_io::{
 };
 pub use file_management::{default_create_folder_for_notebook, FileManagementPolicy};
 pub use frontmatter::{
-    extract_body_content, extract_document_metadata, extract_frontmatter_key,
-    extract_frontmatter_properties, is_system_frontmatter_key, merge_frontmatter,
+    extract_body_content, extract_document_metadata, extract_frontmatter_properties,
+    merge_frontmatter,
     normalize_document_tags, normalize_markdown_encoding_boundaries, replace_frontmatter_tags,
-    DocumentMetadata, FrontmatterMetadataError, MergeOverrides, CANONICAL_FRONTMATTER_KEY,
-    LEGACY_FRONTMATTER_KEY, SYSTEM_FRONTMATTER_KEYS,
+    DocumentMetadata, FrontmatterMetadataError, MergeOverrides,
 };
-pub use index_store::{MemoContentCommit, MemoContentRevision, NoteContentCommit, NoteContentRevision};
+pub use index_store::{NoteContentCommit, NoteContentRevision};
 pub use local_migrations::{initialize_local_migration_table, NotebookInitializationJob};
 pub use internal_migration::{NotebookInternalMigrationReport, NOTEBOOK_INTERNAL_MIGRATION_KEY};
 pub use storage_repair::{ensure_storage_directory, read_or_create_json, backup_database, backup_storage_file, is_rebuildable_storage_error, with_database_rebuild};
 pub use database_layout::{prepare_database_directory, DATABASE_DIRECTORY_NAME};
-pub use media_resource::{media_kind_for_path, MediaResource, MediaResourceKind, MediaResourcePage};
+pub use media_resource::{media_kind_for_path, media_resource_id, MediaResource, MediaResourceKind, MediaResourcePage};
 pub use migration::{DataMigrationReport, NotebookMigrationReport, LATEST_DATA_MIGRATION_VERSION};
 pub use ops::{
     base_filename, filename_from_notebook_relative_path, is_ignored_notebook_relative_path,
@@ -89,9 +77,11 @@ pub use ops::{
     resolve_relative_filename_conflict, sanitize_filename_component, IsMd,
 };
 pub use types::{
-    AgentThreadItem, DeleteTagReport, Memo, MemoColor, MemoIndexEntry, MemoIndexFile, MemoLocation,
-    MemoMetadataFile, MemoTag, MemoTodoEntry, MoveTagReport, NoteColor,
+    AgentThreadItem, DeleteTagReport, Memo, MemoIndexEntry, MemoIndexFile, MemoLocation,
+    MemoTag, MoveTagReport, NoteColor,
     Notebook, NotebookConfig, NotebookManifest, NotebookSetupJob, NotebookSetupJobStatus,
+    NotebookSetupSnapshot,
+    NotebookSetupStage,
     NotebookSetupReport,
     ReconcileReport, TodoItem,
 };
@@ -100,16 +90,16 @@ pub use versions::{
     MEMO_VERSION_LIMIT,
 };
 
-/// Compatibility storage façade over notebook registry, Note catalog, media,
-/// revisions and Memo-ID records. Domain implementations live in separate
-/// modules; `NotebookRegistry` owns the device-local registry path and cache.
+/// Storage façade over notebook registry, Note catalog, media and revisions.
+/// Domain implementations live in separate modules; `NotebookRegistry` owns
+/// the device-local registry path and cache.
 ///
 /// 字段:
 /// - `registry`: 用户配置目录 (`~/.flowix/`) 下的设备级笔记本注册表。
-/// - Note 投影、兼容 memo-ID 数据和媒体属性位于
+/// - Note 投影和媒体属性位于
 ///   `<notebook>/.flowix/notebook.db`。
 /// - `current_notebook_id`: 当前活跃 notebook id, `None` 表示走默认。
-/// - `index_cache`: 当前 notebook 兼容 memo-ID 列表的内存缓存。读路径先查询 SQLite
+/// - `index_cache`: 当前 notebook 相对路径索引的内存缓存。读路径先查询 SQLite
 ///   `memo_index_state.last_updated`，只有版本一致才复用，保证其他进程写入可见。
 ///   写路径 ([`MemoFile::write_index`] / `_locked` 系列) 在 DB 写入成功后回填。
 ///   切 notebook 时由 [`Self::set_current_notebook`] 失效。

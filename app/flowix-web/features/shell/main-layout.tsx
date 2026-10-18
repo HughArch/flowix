@@ -39,7 +39,6 @@ import {
   product,
   windows,
   boot,
-  type DshDownloadProgress,
 } from '@platform/tauri/client';
 import { files } from '@platform/tauri/client/desktop';
 import { subscribe } from '@platform/tauri/event-bus';
@@ -54,7 +53,6 @@ import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { openPath } from '@platform/tauri/opener';
 import { Button } from '@shared/ui/button';
-import type { DshRuntimeInstallerState } from '@features/preferences/public/system-api';
 import type { AppUpdaterState } from '@features/shell/hooks/use-app-updater';
 import {
   WorkColumnContentHost,
@@ -71,7 +69,6 @@ import {
 } from '@features/workspace/public/shell-api';
 import { MainStatusBarHost } from '@features/shell/components/main-status-bar-host';
 import { CenteredLoadingSpinner } from '@shared/ui/centered-loading-spinner';
-import { MainPromptHost } from '@features/shell/components/main-prompt-host';
 import type { Editor } from '@tiptap/core';
 import { OnboardingScreen } from '@features/onboarding';
 import { finishOnboardingNotebook } from '@features/shell/use-cases/finish-onboarding';
@@ -119,18 +116,11 @@ export interface MainLayoutBusinessController {
 }
 
 export interface MainLayoutSystemController {
-  dshDownload: DshDownloadProgress | null;
-  dshInstallPromptOpen: boolean;
   onboardingOpen: boolean;
   onboardingLoading: boolean;
   updater: AppUpdaterState;
-  appUpdatePromptOpen: boolean;
-  dshInstaller: DshRuntimeInstallerState;
-  closeDshInstallPrompt(): void;
-  openAppUpdatePrompt(): void;
-  closeAppUpdatePrompt(): void;
-  markDshIntroDisplayed(): void;
-  completeDshInstallPrompt(): void;
+  hasPendingAppUpdateResult: boolean;
+  presentPendingAppUpdateResult(): void;
   completeOnboarding(): Promise<void>;
 }
 
@@ -158,18 +148,11 @@ export function MainLayout({
     selectNotebook: handleSelectNotebook,
   } = business;
   const {
-    dshDownload,
-    dshInstallPromptOpen,
     onboardingOpen,
     onboardingLoading,
     updater,
-    appUpdatePromptOpen,
-    dshInstaller,
-    closeDshInstallPrompt: handleDshPromptClose,
-    openAppUpdatePrompt,
-    closeAppUpdatePrompt,
-    markDshIntroDisplayed: handleDshIntroDisplayed,
-    completeDshInstallPrompt: handleDshInstalled,
+    hasPendingAppUpdateResult,
+    presentPendingAppUpdateResult,
     completeOnboarding,
   } = system;
   const showProductIntroAfterOnboarding = useCallback(() => {
@@ -185,6 +168,21 @@ export function MainLayout({
 
     setProductIntroOpen(true);
   }, []);
+
+  useEffect(() => {
+    if (!hasPendingAppUpdateResult
+      || onboardingLoading
+      || onboardingOpen
+      || productIntroOpen) return;
+    const frame = window.requestAnimationFrame(() => presentPendingAppUpdateResult());
+    return () => window.cancelAnimationFrame(frame);
+  }, [
+    hasPendingAppUpdateResult,
+    onboardingLoading,
+    onboardingOpen,
+    productIntroOpen,
+    presentPendingAppUpdateResult,
+  ]);
   // 切片订阅：每个 useStore 只取真正用到的字段，setter 走 useShallow 聚合。
   // 替代原来的 `useNoteStore()` / `useDocumentStore()` / `useSettingsStore()`
   // 全量订阅 —— 任何 set 都会让 MainLayout 整树重渲，跨菜单栏 / 状态栏 /
@@ -338,7 +336,6 @@ export function MainLayout({
     openNoteNavigation();
   }, [openNoteNavigation, setMiddleColumnView]);
   const {
-    agentConversationListReady,
     shouldRenderAgentConversationList,
     showMemoListSurface,
     showAgentConversationSurface,
@@ -761,7 +758,6 @@ export function MainLayout({
               }}
               navigationDrawerOpen={noteNavigationPhase !== 'closed'}
               onToggleNavigationDrawer={handleToggleNoteNavigation}
-              conversationLoading={isAgentConversationView && !agentConversationListReady}
             >
                 <div
                   className={`absolute inset-0 ${
@@ -939,9 +935,7 @@ export function MainLayout({
             onOpenTagPanel={handleOpenTagPanel}
             productIntroOpen={productIntroOpen}
             onProductIntroOpenChange={setProductIntroOpen}
-            dshDownload={dshDownload}
             updater={updater}
-            onOpenAppUpdatePrompt={openAppUpdatePrompt}
           />
         </div>
       </div>
@@ -959,17 +953,6 @@ export function MainLayout({
         suppressEmptyNotebookPrompt={onboardingLoading || onboardingOpen}
       />
 
-      <MainPromptHost
-        updater={updater}
-        appUpdatePromptOpen={appUpdatePromptOpen}
-        onCloseAppUpdatePrompt={closeAppUpdatePrompt}
-        dshInstallPromptOpen={dshInstallPromptOpen}
-        dshInstaller={dshInstaller}
-        onCloseDshInstallPrompt={handleDshPromptClose}
-        onDshIntroDisplayed={handleDshIntroDisplayed}
-        onDshInstalled={handleDshInstalled}
-      />
-
       {(startupStatus.phase === 'failed'
         || workspaceStartup.status === 'failed'
         || (memoStartupPhase === 'error' && (!showMemoListSurface || isMemoListHidden))) && (
@@ -980,7 +963,7 @@ export function MainLayout({
                 ? 'memo.navigation.workspacePreparationFailed'
                 : 'memo.navigation.startupMigrationFailed')}
               {startupStatus.error && <span className="max-h-40 overflow-auto break-words">{startupStatus.error}</span>}
-              <Button size="sm" onClick={() => {
+              <Button size="sm" className="rounded-lg" onClick={() => {
                 void boot.retryStartup().then(() => window.location.reload()).catch((error) => {
                   useWorkspaceStartupStore.setState({ nativeError: String(error) });
                 });
@@ -992,7 +975,7 @@ export function MainLayout({
                 ? 'memo.navigation.workspacePreparationFailed'
                 : 'memo.list.loadFailed')}</span>
               {workspaceStartup.error && <span className="max-h-40 overflow-auto break-words text-sm text-[var(--muted-foreground)]">{workspaceStartup.error}</span>}
-              <Button size="sm" onClick={() => window.location.reload()}>{t('error.retry')}</Button>
+              <Button size="sm" className="rounded-lg" onClick={() => window.location.reload()}>{t('error.retry')}</Button>
             </div>
           )}
         </div>
@@ -1000,11 +983,12 @@ export function MainLayout({
 
       {onboardingOpen && (
         <OnboardingScreen
-          onFinish={async (notebook, { startImport }) => {
-            await finishOnboardingNotebook(notebook, { startImport }, {
+          onFinish={async (notebook, { startImport, templateId }) => {
+            await finishOnboardingNotebook(notebook, { startImport, templateId }, {
               completeOnboarding,
               failureTitle: t('notebook.setup.failed'),
               retryLabel: t('error.retry'),
+              overwriteConfirmMessage: t('notebook.template.overwriteConfirm'),
             });
             showProductIntroAfterOnboarding();
           }}

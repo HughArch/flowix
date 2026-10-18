@@ -1,5 +1,5 @@
 use serde::{Deserialize, Serialize};
-use serde_json::{json, Map, Value};
+use serde_json::{Map, Value, json};
 use std::fs::{self, OpenOptions};
 use std::io::Write;
 use std::path::Path;
@@ -13,6 +13,12 @@ pub struct PiModelEntry {
     pub id: String,
     #[serde(default)]
     pub name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub subtitle: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub credit_multiplier: Option<f64>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_icon_url: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub api: Option<String>,
     #[serde(default)]
@@ -30,6 +36,8 @@ pub struct PiModelEntry {
 pub struct PiProviderConfig {
     pub id: String,
     pub display_name: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub icon_url: Option<String>,
     pub api: String,
     pub base_url: String,
     /// Flowix-owned provider source, surfaced for settings UI classification.
@@ -177,7 +185,10 @@ fn validate_mcp_server(name: &str, config: &Value) -> Result<(), String> {
         return Err("Pi MCP command and url values must be non-empty strings".into());
     }
     if command == url {
-        return Err("Configure exactly one Pi MCP transport: command (stdio) or url (streamable HTTP)".into());
+        return Err(
+            "Configure exactly one Pi MCP transport: command (stdio) or url (streamable HTTP)"
+                .into(),
+        );
     }
     if let Some(kind) = object.get("type").and_then(Value::as_str) {
         if !matches!(kind, "stdio" | "http" | "streamable-http") {
@@ -200,9 +211,11 @@ fn validate_mcp_server(name: &str, config: &Value) -> Result<(), String> {
         }
     }
     for key in ["env", "headers"] {
-        if object.get(key).and_then(Value::as_object).is_some_and(|values| {
-            values.values().any(|value| !value.is_string())
-        }) {
+        if object
+            .get(key)
+            .and_then(Value::as_object)
+            .is_some_and(|values| values.values().any(|value| !value.is_string()))
+        {
             return Err(format!("Pi MCP {key} values must be strings"));
         }
     }
@@ -224,7 +237,10 @@ fn validate_mcp_server(name: &str, config: &Value) -> Result<(), String> {
         }
     }
     if let Some(exposure) = object.get("exposure").and_then(Value::as_str) {
-        if !matches!(exposure, "codemode" | "codemode-deferred" | "deferred" | "direct" | "hidden") {
+        if !matches!(
+            exposure,
+            "codemode" | "codemode-deferred" | "deferred" | "direct" | "hidden"
+        ) {
             return Err("Pi MCP exposure must be codemode, deferred, direct or hidden".into());
         }
     }
@@ -236,7 +252,10 @@ pub fn save_mcp_server(name: &str, config: Value) -> Result<(), String> {
     let (path, mut file) = read_mcp_config()?;
     let servers = object_at(&mut file, "mcpServers")?;
     let normalized = name.replace('-', "_");
-    if servers.keys().any(|existing| existing != name && existing.replace('-', "_") == normalized) {
+    if servers
+        .keys()
+        .any(|existing| existing != name && existing.replace('-', "_") == normalized)
+    {
         return Err("Pi treats server names that differ only by - and _ as the same name".into());
     }
     servers.insert(name.to_string(), config);
@@ -245,7 +264,8 @@ pub fn save_mcp_server(name: &str, config: Value) -> Result<(), String> {
 
 pub fn delete_mcp_server(name: &str) -> Result<(), String> {
     let (path, mut file) = read_mcp_config()?;
-    let is_empty = if let Some(servers) = file.get_mut("mcpServers").and_then(Value::as_object_mut) {
+    let is_empty = if let Some(servers) = file.get_mut("mcpServers").and_then(Value::as_object_mut)
+    {
         servers.remove(name);
         servers.is_empty()
     } else {
@@ -372,15 +392,21 @@ pub fn list() -> Result<Vec<PiProviderConfig>, String> {
         .and_then(Value::as_object)
         .cloned()
         .unwrap_or_default();
+    let flowix_catalog = settings.get("flowixPiCatalog").and_then(Value::as_object);
     Ok(providers
         .into_iter()
         .filter_map(|(id, provider)| {
             let models = provider.get("models")?.as_array()?;
+            let provider_metadata = flowix_catalog.and_then(|catalog| catalog.get(&id));
+            let model_metadata = provider_metadata
+                .and_then(|metadata| metadata.get("models"))
+                .and_then(Value::as_object);
             let entries: Vec<PiModelEntry> =
                 models
                     .iter()
                     .filter_map(|entry| {
                         let id = entry.get("id")?.as_str()?.to_string();
+                        let metadata = model_metadata.and_then(|catalog| catalog.get(&id));
                         Some(PiModelEntry {
                             id,
                             name: entry
@@ -388,6 +414,18 @@ pub fn list() -> Result<Vec<PiProviderConfig>, String> {
                                 .and_then(Value::as_str)
                                 .unwrap_or_default()
                                 .to_string(),
+                            subtitle: metadata
+                                .and_then(|item| item.get("subtitle"))
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
+                            credit_multiplier: metadata
+                                .and_then(|item| item.get("creditMultiplier"))
+                                .and_then(Value::as_f64)
+                                .filter(|value| value.is_finite() && (0.01..=10.0).contains(value)),
+                            provider_icon_url: metadata
+                                .and_then(|item| item.get("providerIconUrl"))
+                                .and_then(Value::as_str)
+                                .map(str::to_string),
                             api: entry.get("api").and_then(Value::as_str).map(str::to_string),
                             reasoning: entry
                                 .get("reasoning")
@@ -414,6 +452,10 @@ pub fn list() -> Result<Vec<PiProviderConfig>, String> {
                     .and_then(Value::as_str)
                     .unwrap_or(&id)
                     .to_string(),
+                icon_url: provider_metadata
+                    .and_then(|metadata| metadata.get("providerIconUrl"))
+                    .and_then(Value::as_str)
+                    .map(str::to_string),
                 api: provider
                     .get("api")
                     .and_then(Value::as_str)
@@ -541,6 +583,73 @@ pub fn save(mut config: PiProviderConfig, app: &AppHandle) -> Result<(), String>
         settings["flowixCloudProviderId"] = json!(id);
         settings_changed = true;
     }
+    let mut model_metadata = Map::new();
+    for model in &config.models {
+        let mut metadata = Map::new();
+        if let Some(subtitle) = model
+            .subtitle
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            metadata.insert("subtitle".into(), json!(subtitle.trim()));
+        }
+        if let Some(multiplier) = model
+            .credit_multiplier
+            .filter(|value| value.is_finite() && (0.01..=10.0).contains(value))
+        {
+            metadata.insert("creditMultiplier".into(), json!(multiplier));
+        }
+        if let Some(icon_url) = model
+            .provider_icon_url
+            .as_deref()
+            .filter(|value| !value.trim().is_empty())
+        {
+            metadata.insert("providerIconUrl".into(), json!(icon_url.trim()));
+        }
+        if !metadata.is_empty() {
+            model_metadata.insert(model.id.clone(), Value::Object(metadata));
+        }
+    }
+    let mut provider_metadata = Map::new();
+    if let Some(icon_url) = config
+        .icon_url
+        .as_deref()
+        .filter(|value| !value.trim().is_empty())
+    {
+        provider_metadata.insert("providerIconUrl".into(), json!(icon_url.trim()));
+    }
+    if !model_metadata.is_empty() {
+        provider_metadata.insert("models".into(), Value::Object(model_metadata));
+    }
+    if provider_metadata.is_empty() {
+        let removed = settings
+            .get_mut("flowixPiCatalog")
+            .and_then(Value::as_object_mut)
+            .is_some_and(|catalog| catalog.remove(&id).is_some());
+        if removed {
+            let catalog_empty = settings
+                .get("flowixPiCatalog")
+                .and_then(Value::as_object)
+                .is_some_and(Map::is_empty);
+            if catalog_empty {
+                settings
+                    .as_object_mut()
+                    .map(|settings| settings.remove("flowixPiCatalog"));
+            }
+            settings_changed = true;
+        }
+    } else {
+        let provider_metadata = Value::Object(provider_metadata);
+        let unchanged = settings
+            .get("flowixPiCatalog")
+            .and_then(Value::as_object)
+            .and_then(|catalog| catalog.get(&id))
+            == Some(&provider_metadata);
+        if !unchanged {
+            object_at(&mut settings, "flowixPiCatalog")?.insert(id.clone(), provider_metadata);
+            settings_changed = true;
+        }
+    }
     if settings_changed {
         write_json(&settings_path, &settings)?;
     }
@@ -581,9 +690,29 @@ pub fn delete(provider_id: &str) -> Result<(), String> {
         }
         settings_changed = true;
     }
-    if settings.get("flowixCloudProviderId").and_then(Value::as_str) == Some(id) {
+    if settings
+        .get("flowixCloudProviderId")
+        .and_then(Value::as_str)
+        == Some(id)
+    {
         if let Some(settings) = settings.as_object_mut() {
             settings.remove("flowixCloudProviderId");
+        }
+        settings_changed = true;
+    }
+    let removed_catalog_metadata = settings
+        .get_mut("flowixPiCatalog")
+        .and_then(Value::as_object_mut)
+        .is_some_and(|catalog| catalog.remove(id).is_some());
+    if removed_catalog_metadata {
+        let catalog_empty = settings
+            .get("flowixPiCatalog")
+            .and_then(Value::as_object)
+            .is_some_and(Map::is_empty);
+        if catalog_empty {
+            settings
+                .as_object_mut()
+                .map(|settings| settings.remove("flowixPiCatalog"));
         }
         settings_changed = true;
     }
@@ -621,24 +750,176 @@ pub fn legacy_cloud_provider_id(api_base: &str) -> Result<Option<String>, String
     Ok((looks_like_cloud_provider && has_cloud_credential).then(|| provider_id.to_string()))
 }
 
-pub fn delete_cloud_provider(api_base: &str) -> Result<(), String> {
-    let dir = pi_config_dir()?;
-    let settings = read_json(&dir.join("settings.json"))?;
-    let marked_provider_id = settings
-        .get("flowixCloudProviderId")
-        .and_then(Value::as_str)
-        .map(str::to_string);
-    let legacy_provider_id = legacy_cloud_provider_id(api_base)?;
-    if let Some(provider_id) = marked_provider_id {
-        delete(&provider_id)?;
-        if legacy_provider_id.as_deref() == Some(provider_id.as_str()) {
-            return Ok(());
+fn collect_cloud_provider_ids(
+    providers: impl IntoIterator<Item = (String, bool)>,
+    marked_provider_id: Option<&str>,
+    legacy_provider_id: Option<&str>,
+) -> Vec<String> {
+    let mut ids: Vec<String> = providers
+        .into_iter()
+        .filter_map(|(id, is_cloud)| is_cloud.then_some(id))
+        .collect();
+    for id in [marked_provider_id, legacy_provider_id]
+        .into_iter()
+        .flatten()
+        .map(str::trim)
+        .filter(|id| !id.is_empty())
+    {
+        if !ids.iter().any(|existing| existing == id) {
+            ids.push(id.to_string());
         }
     }
-    if let Some(provider_id) = legacy_provider_id {
+    ids
+}
+
+/// Remove every Flowix Cloud Pi provider, including providers identified by
+/// the settings marker and the legacy provider shape.
+pub fn delete_cloud_providers(api_base: &str) -> Result<bool, String> {
+    let providers = list()?.into_iter().map(|provider| {
+        let is_cloud = provider.source.as_deref() == Some("flowix-cloud");
+        (provider.id, is_cloud)
+    });
+    let settings = read_json(&pi_config_dir()?.join("settings.json"))?;
+    let marked_provider_id = settings
+        .get("flowixCloudProviderId")
+        .and_then(Value::as_str);
+    let legacy_provider_id = legacy_cloud_provider_id(api_base)?;
+    let provider_ids =
+        collect_cloud_provider_ids(providers, marked_provider_id, legacy_provider_id.as_deref());
+    if provider_ids.is_empty() {
+        return Ok(false);
+    }
+    for provider_id in provider_ids {
         delete(&provider_id)?;
     }
-    Ok(())
+    Ok(true)
+}
+
+pub fn is_flowix_cloud_provider(provider_id: Option<&str>, api_base: &str) -> Result<bool, String> {
+    let dir = pi_config_dir()?;
+    let settings = read_json(&dir.join("settings.json"))?;
+    let selected_provider = provider_id
+        .filter(|value| !value.trim().is_empty())
+        .or_else(|| settings.get("defaultProvider").and_then(Value::as_str));
+    let Some(selected_provider) = selected_provider else {
+        return Ok(false);
+    };
+    let providers = list()?;
+    if providers.iter().any(|provider| {
+        provider.id == selected_provider && provider.source.as_deref() == Some("flowix-cloud")
+    }) {
+        return Ok(true);
+    }
+    Ok(legacy_cloud_provider_id(api_base)?.as_deref() == Some(selected_provider))
+}
+
+pub fn save_cloud_credential(
+    app: &AppHandle,
+    api_base: &str,
+    credential: flowix_sync::CloudAiCredential,
+) -> Result<(), String> {
+    let api_base = api_base.trim_end_matches('/');
+    let providers = list()?;
+    let legacy_cloud_id = legacy_cloud_provider_id(api_base)?;
+    let settings = read_json(&pi_config_dir()?.join("settings.json"))?;
+    let catalog = if credential.models.is_empty() {
+        vec![credential.model.clone()]
+    } else {
+        credential.models.clone()
+    };
+    let provider_icon_url = credential
+        .provider
+        .as_ref()
+        .and_then(|provider| provider.icon_url.clone());
+    let model_ids: Vec<String> = catalog.iter().map(|model| model.id.clone()).collect();
+    let current_cloud = providers
+        .iter()
+        .find(|provider| provider.source.as_deref() == Some("flowix-cloud"))
+        .or_else(|| {
+            legacy_cloud_id
+                .as_deref()
+                .and_then(|id| providers.iter().find(|provider| provider.id == id))
+        });
+    let saved_default = current_cloud
+        .and_then(|provider| provider.default_model_id.clone())
+        .filter(|id| model_ids.iter().any(|model_id| model_id == id));
+    let default_model_id = saved_default
+        .or_else(|| {
+            model_ids
+                .iter()
+                .find(|id| **id == credential.model.id)
+                .cloned()
+        })
+        .or_else(|| model_ids.first().cloned());
+    let provider_id = current_cloud
+        .map(|provider| provider.id.clone())
+        .unwrap_or_else(|| {
+            let existing_ids: std::collections::HashSet<&str> = providers
+                .iter()
+                .map(|provider| provider.id.as_str())
+                .collect();
+            let base_id = "flowix-cloud-member";
+            if !existing_ids.contains(base_id) {
+                return base_id.to_string();
+            }
+            let mut suffix = 2;
+            loop {
+                let candidate = format!("{base_id}-{suffix}");
+                if !existing_ids.contains(candidate.as_str()) {
+                    return candidate;
+                }
+                suffix += 1;
+            }
+        });
+    let default_model_id = if current_cloud.is_some()
+        && settings.get("defaultProvider").and_then(Value::as_str) != Some(provider_id.as_str())
+    {
+        None
+    } else {
+        default_model_id
+    };
+    save(
+        PiProviderConfig {
+            id: provider_id,
+            display_name: "Flowix Cloud".into(),
+            icon_url: provider_icon_url,
+            api: "openai-completions".into(),
+            base_url: format!("{api_base}/v1/ai"),
+            source: Some("flowix-cloud".into()),
+            api_key: Some(credential.api_key),
+            credential_configured: true,
+            default_model_id,
+            models: catalog
+                .into_iter()
+                .map(|model| {
+                    let id = model.id;
+                    let name = model
+                        .title
+                        .filter(|title| !title.trim().is_empty())
+                        .unwrap_or_else(|| id.clone());
+                    PiModelEntry {
+                        id,
+                        name,
+                        subtitle: model
+                            .subtitle
+                            .filter(|subtitle| !subtitle.trim().is_empty()),
+                        credit_multiplier: model
+                            .credit_multiplier
+                            .filter(|value| value.is_finite() && (0.01..=10.0).contains(value)),
+                        provider_icon_url: model
+                            .provider_icon_url
+                            .filter(|url| !url.trim().is_empty()),
+                        api: None,
+                        reasoning: false,
+                        vision: false,
+                        context_window: None,
+                        max_tokens: None,
+                    }
+                })
+                .collect(),
+        },
+        app,
+    )
 }
 
 pub async fn test_connection(config: PiProviderConfig) -> Result<u64, String> {
@@ -764,6 +1045,9 @@ pub async fn discover_models(config: PiProviderConfig) -> Result<Vec<PiModelEntr
                     .unwrap_or_default()
                     .to_string(),
                 id,
+                subtitle: None,
+                credit_multiplier: None,
+                provider_icon_url: None,
                 reasoning: false,
                 vision: false,
                 api: None,
@@ -772,4 +1056,31 @@ pub async fn discover_models(config: PiProviderConfig) -> Result<Vec<PiModelEntr
             })
         })
         .collect())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::collect_cloud_provider_ids;
+
+    #[test]
+    fn cloud_provider_cleanup_includes_marked_and_legacy_ids_without_duplicates() {
+        let ids = collect_cloud_provider_ids(
+            [
+                ("flowix-cloud-member".to_string(), true),
+                ("custom-provider".to_string(), false),
+            ],
+            Some("flowix-cloud-member"),
+            Some("flowix-cloud"),
+        );
+
+        assert_eq!(ids, ["flowix-cloud-member", "flowix-cloud"]);
+    }
+
+    #[test]
+    fn cloud_provider_cleanup_ignores_empty_markers_and_non_cloud_providers() {
+        let ids =
+            collect_cloud_provider_ids([("custom-provider".to_string(), false)], Some("  "), None);
+
+        assert!(ids.is_empty());
+    }
 }

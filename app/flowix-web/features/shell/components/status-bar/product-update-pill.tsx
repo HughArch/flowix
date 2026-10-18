@@ -3,9 +3,10 @@
 import { ArrowCircleUpIcon } from '@phosphor-icons/react';
 import type { AppUpdaterState } from '@features/shell/hooks/use-app-updater';
 import { useI18n } from '@/lib/i18n';
+import { toast } from '@/lib/toast';
 
-/** Status-bar entry that opens the app update prompt. */
-export function ProductUpdatePill({ updater, onClick }: { updater: AppUpdaterState; onClick: () => void }) {
+/** Status-bar action that installs the prepared app update. */
+export function ProductUpdatePill({ updater }: { updater: AppUpdaterState }) {
   const { t } = useI18n();
   const { status, update } = updater;
 
@@ -16,17 +17,22 @@ export function ProductUpdatePill({ updater, onClick }: { updater: AppUpdaterSta
   const versionLabel = t('appUpdates.statusBarVersion', {
     version: update.version.replace(/^v/i, ''),
   });
-  const isDownloading = status === 'downloading';
+  const isUpdating = status === 'downloading' || status === 'installing';
 
   return (
     <button
       type="button"
-      onClick={onClick}
+      onClick={() => {
+        void updater.installNow().catch(() => {
+          toast.error(t('appUpdates.installFailed'));
+        });
+      }}
+      disabled={isUpdating}
       title={versionLabel}
       className="inline-flex h-[22px] items-center justify-center gap-1 rounded-md px-2 text-xs leading-none text-[var(--primary)] hover:bg-[var(--muted)]"
       aria-label={versionLabel}
     >
-      {isDownloading
+      {isUpdating
         ? <DownloadProgressIcon progress={updater.progress} />
         : <ArrowCircleUpIcon className="h-[18px] w-[18px]" weight="fill" aria-hidden="true" />}
       <span>{versionLabel}</span>

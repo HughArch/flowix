@@ -4,7 +4,7 @@ use std::fs;
 use std::path::PathBuf;
 use std::time::Duration;
 
-use rusqlite::{params, Connection};
+use rusqlite::{params, Connection, OptionalExtension};
 
 use super::notebook::sqlite_to_io;
 use super::types::NotebookConfig;
@@ -58,6 +58,13 @@ impl NotebookRegistry {
             .map_err(sqlite_to_io)?
             .filter_map(Result::ok)
             .any(|name| name == "sort");
+        let has_pinned_column = conn
+            .prepare("PRAGMA table_info(notebooks)")
+            .map_err(sqlite_to_io)?
+            .query_map([], |row| row.get::<_, String>(1))
+            .map_err(sqlite_to_io)?
+            .filter_map(Result::ok)
+            .any(|name| name == "pinned");
         if notebooks_table_exists && !has_sort_column && !run_legacy_migrations {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
@@ -80,6 +87,16 @@ impl NotebookRegistry {
             )
             .map_err(sqlite_to_io)?;
             conn.execute_batch("ALTER TABLE notebooks ADD COLUMN sort INTEGER NOT NULL DEFAULT 0;")
+            .map_err(sqlite_to_io)?;
+        }
+        if notebooks_table_exists && !has_pinned_column {
+            if !run_legacy_migrations {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "notebook registry requires pinned-column migration",
+                ));
+            }
+            conn.execute_batch("ALTER TABLE notebooks ADD COLUMN pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1));")
                 .map_err(sqlite_to_io)?;
         }
         conn.execute_batch(
@@ -94,6 +111,7 @@ impl NotebookRegistry {
                 path TEXT NOT NULL UNIQUE,
                 is_default INTEGER NOT NULL,
                 sort INTEGER NOT NULL DEFAULT 0,
+                pinned INTEGER NOT NULL DEFAULT 0 CHECK(pinned IN (0,1)),
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -101,6 +119,8 @@ impl NotebookRegistry {
                 ON notebooks(is_default);
             CREATE INDEX IF NOT EXISTS idx_notebooks_sort
                 ON notebooks(sort);
+            CREATE INDEX IF NOT EXISTS idx_notebooks_pinned_sort
+                ON notebooks(pinned DESC, sort ASC);
             CREATE TABLE IF NOT EXISTS app_state (
                 key TEXT PRIMARY KEY,
                 value TEXT,
@@ -111,12 +131,14 @@ impl NotebookRegistry {
                 template_id TEXT,
                 status TEXT NOT NULL,
                 stage TEXT NOT NULL,
-                completed_files INTEGER NOT NULL DEFAULT 0,
-                total_files INTEGER NOT NULL DEFAULT 0,
                 message TEXT,
                 report_json TEXT,
                 overwrite_existing INTEGER NOT NULL DEFAULT 0,
-                updated_at INTEGER NOT NULL
+                updated_at INTEGER NOT NULL,
+                revision INTEGER NOT NULL DEFAULT 0,
+                run_id TEXT NOT NULL DEFAULT '',
+                job_id TEXT NOT NULL DEFAULT '',
+                execution_requested INTEGER NOT NULL DEFAULT 0
             );
             CREATE TABLE IF NOT EXISTS local_migrations (
                 migration_key TEXT PRIMARY KEY,
@@ -161,6 +183,68 @@ impl NotebookRegistry {
             )
             .map_err(sqlite_to_io)?;
         }
+        for (column, declaration) in [
+            ("revision", "INTEGER NOT NULL DEFAULT 0"),
+            ("run_id", "TEXT NOT NULL DEFAULT ''"),
+            ("job_id", "TEXT NOT NULL DEFAULT ''"),
+            ("execution_requested", "INTEGER NOT NULL DEFAULT 0"),
+        ] {
+            let has_column = conn
+                .prepare("PRAGMA table_info(notebook_setup_jobs)")
+                .map_err(sqlite_to_io)?
+                .query_map([], |row| row.get::<_, String>(1))
+                .map_err(sqlite_to_io)?
+                .filter_map(Result::ok)
+                .any(|name| name == column);
+            if !has_column && !run_legacy_migrations {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    format!("notebook setup registry requires version initialization ({column})"),
+                ));
+            }
+            if !has_column {
+                conn.execute_batch(&format!(
+                    "ALTER TABLE notebook_setup_jobs ADD COLUMN {column} {declaration};"
+                ))
+                .map_err(sqlite_to_io)?;
+            }
+        }
+        conn.execute(
+            "UPDATE notebook_setup_jobs SET job_id = lower(hex(randomblob(16))) WHERE job_id = ''",
+            [],
+        )
+        .map_err(sqlite_to_io)?;
+        let migration_tx = conn
+            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
+            .map_err(sqlite_to_io)?;
+        let execution_request_migration: Option<String> = migration_tx
+            .query_row(
+                "SELECT value FROM app_state WHERE key = 'notebook_setup_execution_request_migrated'",
+                [],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(sqlite_to_io)?;
+        if execution_request_migration.is_none() {
+            migration_tx
+                .execute(
+                    "UPDATE notebook_setup_jobs SET execution_requested = 1 WHERE status IN ('pending', 'running')",
+                    [],
+                )
+                .map_err(sqlite_to_io)?;
+            migration_tx
+                .execute(
+                    "INSERT INTO app_state (key, value, updated_at) VALUES ('notebook_setup_execution_request_migrated', '1', 0)",
+                    [],
+                )
+                .map_err(sqlite_to_io)?;
+        }
+        migration_tx.commit().map_err(sqlite_to_io)?;
+        conn.execute(
+            "INSERT OR IGNORE INTO app_state (key, value, updated_at) SELECT 'notebook_setup_revision', CAST(COALESCE(MAX(revision), 0) AS TEXT), 0 FROM notebook_setup_jobs",
+            [],
+        )
+        .map_err(sqlite_to_io)?;
         if notebooks_table_exists && !has_sort_column {
             let tx = conn.transaction().map_err(sqlite_to_io)?;
             let mut stmt = tx
@@ -185,148 +269,5 @@ impl NotebookRegistry {
             tx.commit().map_err(sqlite_to_io)?;
         }
         Ok(conn)
-    }
-
-    pub(super) fn import_legacy_registry(&self, conn: &mut Connection) -> std::io::Result<()> {
-        super::initialize_local_migration_table(conn)?;
-        let imported: bool = conn
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM local_migrations WHERE migration_key = 'registry_v1')",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(sqlite_to_io)?;
-        if imported {
-            return Ok(());
-        }
-        let legacy_path = self.config_dir.join("db").join("index.db");
-        if !legacy_path.is_file() {
-            conn.execute(
-                "INSERT OR IGNORE INTO local_migrations (migration_key, completed_at) VALUES ('registry_v1', CAST(strftime('%s','now') AS INTEGER) * 1000)",
-                [],
-            )
-            .map_err(sqlite_to_io)?;
-            return Ok(());
-        }
-        let tx = conn
-            .transaction_with_behavior(rusqlite::TransactionBehavior::Immediate)
-            .map_err(sqlite_to_io)?;
-        let imported: bool = tx
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM local_migrations WHERE migration_key = 'registry_v1')",
-                [],
-                |row| row.get(0),
-            )
-            .map_err(sqlite_to_io)?;
-        if imported {
-            return Ok(());
-        }
-        tx.execute(
-            "ATTACH DATABASE ?1 AS old_registry",
-            [legacy_path.to_string_lossy().as_ref()],
-        )
-        .map_err(sqlite_to_io)?;
-        let has_table = |name: &str| -> std::io::Result<bool> {
-            tx.query_row("SELECT EXISTS(SELECT 1 FROM old_registry.sqlite_master WHERE type = 'table' AND name = ?1)", [name], |row| row.get(0)).map_err(sqlite_to_io)
-        };
-        if has_table("notebooks")? {
-            let has_sort: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM pragma_table_info('notebooks', 'old_registry') WHERE name = 'sort')", [], |row| row.get(0)).map_err(sqlite_to_io)?;
-            let sort = if has_sort {
-                "COALESCE(sort, 0)"
-            } else {
-                "ROW_NUMBER() OVER (ORDER BY created_at, name COLLATE NOCASE) * 10"
-            };
-            let conflicts: bool = tx.query_row("SELECT EXISTS(SELECT 1 FROM old_registry.notebooks old JOIN main.notebooks current ON old.id=current.id OR old.path=current.path WHERE old.id<>current.id OR old.path<>current.path)", [], |row| row.get(0)).map_err(sqlite_to_io)?;
-            if conflicts {
-                return Err(std::io::Error::new(std::io::ErrorKind::AlreadyExists, "legacy notebook registry conflicts with local.db; both databases were preserved"));
-            }
-            tx.execute_batch(&format!("INSERT OR IGNORE INTO notebooks (id,name,icon,path,is_default,sort,created_at,updated_at) SELECT id,name,icon,path,is_default,{sort},created_at,updated_at FROM old_registry.notebooks;")).map_err(sqlite_to_io)?;
-            let old_count: i64 = tx
-                .query_row("SELECT COUNT(*) FROM old_registry.notebooks", [], |row| {
-                    row.get(0)
-                })
-                .map_err(sqlite_to_io)?;
-            let imported_count: i64 = tx
-                .query_row(
-                    "SELECT COUNT(*) FROM old_registry.notebooks old JOIN main.notebooks current ON old.id=current.id AND old.path=current.path",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(sqlite_to_io)?;
-            if old_count != imported_count {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "legacy notebook registry verification failed; source data was preserved",
-                ));
-            }
-        } else {
-            let has_tables: bool = tx
-                .query_row(
-                    "SELECT EXISTS(SELECT 1 FROM old_registry.sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%')",
-                    [],
-                    |row| row.get(0),
-                )
-                .map_err(sqlite_to_io)?;
-            if has_tables {
-                return Err(std::io::Error::new(
-                    std::io::ErrorKind::InvalidData,
-                    "legacy index database has an unsupported registry schema; source data was preserved",
-                ));
-            }
-        }
-        tx.execute(
-            "INSERT INTO local_migrations (migration_key, completed_at) VALUES ('registry_v1', CAST(strftime('%s','now') AS INTEGER) * 1000)",
-            [],
-        )
-        .map_err(sqlite_to_io)?;
-        tx.commit().map_err(sqlite_to_io)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    #[test]
-    fn imports_only_registry_rows_without_rewriting_old_index() {
-        let temp = tempfile::tempdir().unwrap();
-        let legacy = Connection::open(temp.path().join("index.db")).unwrap();
-        legacy.execute_batch("CREATE TABLE notebooks (id TEXT PRIMARY KEY,name TEXT,icon TEXT,path TEXT,is_default INTEGER,sort INTEGER,created_at INTEGER,updated_at INTEGER);
-            INSERT INTO notebooks VALUES ('old','Old',NULL,'/old',1,30,1,2);
-            CREATE TABLE app_state (key TEXT PRIMARY KEY,value TEXT,updated_at INTEGER);
-            INSERT INTO app_state VALUES ('selected_notebook_id','old',2);
-            CREATE TABLE notebook_setup_jobs (notebook_id TEXT PRIMARY KEY,template_id TEXT,status TEXT,stage TEXT,completed_files INTEGER,total_files INTEGER,message TEXT,updated_at INTEGER);
-            INSERT INTO notebook_setup_jobs VALUES ('old','template','pending','queued',0,1,NULL,2);").unwrap();
-        drop(legacy);
-        let registry = NotebookRegistry::new(temp.path().to_path_buf());
-        let conn = registry.open().unwrap();
-        let selected: i64 = conn
-            .query_row(
-                "SELECT COUNT(*) FROM app_state WHERE key='selected_notebook_id'",
-                [],
-                |r| r.get(0),
-            )
-            .unwrap();
-        assert_eq!(selected, 0);
-        let setup_jobs: i64 = conn
-            .query_row("SELECT COUNT(*) FROM notebook_setup_jobs", [], |r| r.get(0))
-            .unwrap();
-        assert_eq!(setup_jobs, 0);
-        conn.execute("DELETE FROM notebooks WHERE id='old'", [])
-            .unwrap();
-        drop(conn);
-        let conn = registry.open().unwrap();
-        assert_eq!(
-            conn.query_row("SELECT COUNT(*) FROM notebooks", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            0
-        );
-        let legacy = Connection::open(temp.path().join("db/index.db")).unwrap();
-        assert_eq!(
-            legacy
-                .query_row("SELECT COUNT(*) FROM notebooks", [], |r| r.get::<_, i64>(0))
-                .unwrap(),
-            1
-        );
-        assert!(temp.path().join("db/local.db").is_file());
     }
 }

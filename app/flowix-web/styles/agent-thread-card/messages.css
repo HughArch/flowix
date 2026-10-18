@@ -419,7 +419,8 @@ html:not([data-theme="dark"])
 }
 
 .agent-conversation-surface .agent-thread-card__message:hover .agent-thread-card__message-actions,
-.agent-conversation-surface .agent-thread-card__message:focus-within .agent-thread-card__message-actions {
+.agent-conversation-surface .agent-thread-card__message:focus-within .agent-thread-card__message-actions,
+.agent-conversation-surface .agent-thread-card__message--forking .agent-thread-card__message-actions {
   opacity: 1;
   visibility: visible;
   pointer-events: auto;
@@ -464,21 +465,29 @@ html:not([data-theme="dark"])
   white-space: nowrap;
 }
 
-.agent-conversation-surface
-  .agent-thread-card:not(.agent-thread-card--fullscreen)
+:is(
+    .agent-conversation-surface.agent-thread-card:not(.agent-thread-card--fullscreen),
+    .agent-conversation-surface .agent-thread-card:not(.agent-thread-card--fullscreen)
+  )
   .agent-thread-card__message--user
   .agent-thread-card__message-content,
-.agent-conversation-surface
-  .agent-thread-card:not(.agent-thread-card--fullscreen)
+:is(
+    .agent-conversation-surface.agent-thread-card:not(.agent-thread-card--fullscreen),
+    .agent-conversation-surface .agent-thread-card:not(.agent-thread-card--fullscreen)
+  )
   .agent-thread-card__message--user
   .agent-thread-card__message-content
   *,
-.agent-conversation-surface
-  .agent-thread-card:not(.agent-thread-card--fullscreen)
+:is(
+    .agent-conversation-surface.agent-thread-card:not(.agent-thread-card--fullscreen),
+    .agent-conversation-surface .agent-thread-card:not(.agent-thread-card--fullscreen)
+  )
   .agent-thread-card__message--assistant
   .agent-thread-card__message-content,
-.agent-conversation-surface
-  .agent-thread-card:not(.agent-thread-card--fullscreen)
+:is(
+    .agent-conversation-surface.agent-thread-card:not(.agent-thread-card--fullscreen),
+    .agent-conversation-surface .agent-thread-card:not(.agent-thread-card--fullscreen)
+  )
   .agent-thread-card__message--assistant
   .agent-thread-card__message-content
   * {
@@ -592,6 +601,7 @@ html:not([data-theme="dark"])
   display: flex;
   flex-direction: column;
   min-width: 0;
+  font-family: var(--agent-message-font-family, var(--font-sans));
   padding-top: 6px;
   padding-bottom: 6px;
   padding-left: 4px;
@@ -614,6 +624,7 @@ html:not([data-theme="dark"])
   border-radius: 4px;
   background: transparent;
   color: var(--foreground);
+  font-family: inherit;
   font-size: calc(var(--agent-message-base-font-size, 15px) * var(--agent-message-size-scale, 1));
   line-height: 18px;
   cursor: pointer;
@@ -690,11 +701,6 @@ html:not([data-theme="dark"])
   outline-offset: 1px;
 }
 
-.agent-conversation-surface .agent-thread-card__tool-group--failed
-  .agent-thread-card__tool-group-header {
-  color: var(--destructive, var(--muted-foreground));
-}
-
 .agent-conversation-surface .agent-thread-card__tool-group-completed-tools {
   display: none;
   min-width: 0;
@@ -703,14 +709,6 @@ html:not([data-theme="dark"])
 }
 
 .agent-conversation-surface .agent-thread-card__tool-group--expanded
-  .agent-thread-card__tool-group-completed-tools {
-  display: flex;
-  flex-direction: column;
-}
-
-/* A failed tool keeps its fallback row visible while the group is collapsed,
- * so provider/rendering errors are not silently hidden behind the summary. */
-.agent-conversation-surface .agent-thread-card__tool-group--failed
   .agent-thread-card__tool-group-completed-tools {
   display: flex;
   flex-direction: column;

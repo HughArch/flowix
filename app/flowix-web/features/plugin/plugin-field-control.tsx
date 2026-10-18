@@ -38,7 +38,7 @@ export function PluginFieldControl({
   const className = 'rounded-lg border border-[var(--border)] bg-[var(--background)] p-2 text-sm outline-none focus:border-[var(--brand)]';
   const options = field.options?.length
     ? field.options
-    : agentOptions.map((item) => ({ value: item.key, label: item.name }));
+    : agentOptions.map((item) => ({ value: item.id, label: item.name }));
 
   if (field.type === 'agent-select' || field.id === 'agentType') {
     return (

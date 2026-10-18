@@ -1,4 +1,4 @@
-import { useAgentDataStore } from '@features/agent/store/agent-data-store';
+import { useAgentWorkspaceStore } from '@features/agent/store/agent-workspace-store';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
 
 export interface WorkspaceAgentRepository {
@@ -20,7 +20,7 @@ export function hasWorkspaceAgentConversation(instanceId: string): boolean {
 /** Resolve resource roots without exposing Agent access configuration stores. */
 export function getWorkspaceAgentResourceFolders(notebookId: string | null): string[] {
   if (!notebookId) return [];
-  return useAgentDataStore.getState().workspace.byNotebookId[notebookId]
+  return useAgentWorkspaceStore.getState().workspace.byNotebookId[notebookId]
     ?.addDirs.filter((directory) => directory.enabled && !directory.missing)
     .map((directory) => directory.path) ?? [];
 }
@@ -30,7 +30,7 @@ export function getWorkspaceAgentRepositories(
   notebookId: string | null,
 ): WorkspaceAgentRepository[] {
   if (!notebookId) return [];
-  const notebook = useAgentDataStore.getState().workspace.byNotebookId[notebookId];
+  const notebook = useAgentWorkspaceStore.getState().workspace.byNotebookId[notebookId];
   return (notebook?.addDirs ?? [])
     .filter((directory) => directory.enabled && !directory.missing)
     .map((directory) => ({

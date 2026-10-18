@@ -1,13 +1,19 @@
-export { modelPreferenceKey, useAgentDataStore } from '@features/agent/store/agent-data-store';
+export { ensureAgentPreferencesReady, modelPreferenceKey, useAgentDataStore } from '@features/agent/store/agent-data-store';
 export type {
   AgentCatalogModel,
   AgentCatalogSkill,
   AgentCapabilities,
   AgentModelCatalog,
   AgentUserPreference,
+} from '@features/agent/store/agent-data-store';
+export { ensureAgentWorkspaceReady, useAgentWorkspaceStore } from '@features/agent/store/agent-workspace-store';
+export type {
+  AgentWorkspaceActions,
+  AgentWorkspaceLoadState,
+  AgentWorkspaceLoadStatus,
   AgentWorkspaceNotebook,
   AgentWorkspaceState,
-} from '@features/agent/store/agent-data-store';
+} from '@features/agent/store/agent-workspace-store';
 export { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
 export type {
   AgentConversationInstance,

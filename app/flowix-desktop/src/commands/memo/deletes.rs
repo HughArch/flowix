@@ -5,12 +5,10 @@ use std::path::Path;
 use tauri::{AppHandle, State};
 
 use crate::lock_utils::read_lock;
-use crate::memo_events::{self, MemoChangeSource, MemoDerivedChanged, MemoEvent};
 
 use crate::app::state::AppState;
 use crate::watcher::runtime::mark_self_write_for;
-use flowix_core::memo_file::notebook_path_from_relative;
-use flowix_core::{MemoService, NoteService};
+use flowix_core::NoteService;
 
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -26,6 +24,14 @@ pub enum PruneMissingMemoOutcome {
     MissingCleaned,
 }
 
+fn emit_deleted_path(app: &AppHandle, notebook_id: &str, relative_path: &str) {
+    crate::commands::path_change::NotebookPathDeleted::new(
+        notebook_id.to_string(),
+        relative_path.to_string(),
+    )
+    .emit(app);
+}
+
 fn delete_note_path_internal(
     file_path: &Path,
     state: &AppState,
@@ -38,7 +44,6 @@ fn delete_note_path_internal(
     let memo_file = read_lock(&state.memo_file, "memo_file");
     let (notebook_id, relative_path) = super::helpers::notebook_note_address(&memo_file, file_path)?
         .ok_or_else(|| "note path is outside a notebook or is not Markdown".to_string())?;
-    let before = memo_file.find_memo_by_relative_path_for_notebook_id(&notebook_id, &relative_path);
     let artifact_path = match crate::artifact::path_for_note(
         &notebook_id,
         &relative_path,
@@ -78,34 +83,12 @@ fn delete_note_path_internal(
         &relative_path,
     );
 
-    let Some(before) = before else {
-        return Ok(Some(outcome));
-    };
-
-    // The Markdown deletion is authoritative. Clean up optional ID-keyed
-    // history and projections afterward without making them a prerequisite.
-    let legacy_cleanup = read_lock(&state.memo_file, "memo_file")
-        .prune_deleted_memo_for_notebook_id(&notebook_id, &relative_path, &before.id)
-        .map_err(|error| error.to_string())?;
-    if !legacy_cleanup {
-        return Ok(None);
-    }
     if let Some(artifact_path) = artifact_path {
         if let Err(error) = crate::artifact::remove_path(&artifact_path) {
             tracing::warn!(path = %artifact_path.display(), "plugin artifact cleanup failed: {error}");
         }
     }
-    memo_events::emit(
-        app,
-        MemoEvent::Deleted {
-            id: before.id.clone(),
-            path: absolute_path.display().to_string(),
-            relative_path: relative_path.clone(),
-            notebook_id,
-            derived_changed: MemoDerivedChanged::from_deleted(&before),
-            source: MemoChangeSource::UserDelete,
-        },
-    );
+    emit_deleted_path(app, &notebook_id, &relative_path);
     Ok(Some(outcome))
 }
 

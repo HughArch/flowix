@@ -8,8 +8,7 @@ import { normalizePluginId } from '@features/plugin/plugin-note';
 
 const logger = createLogger('memo-session');
 
-/** Open a main-list note by its notebook-relative path, without resolving a
- * memo ID or creating an ID-backed workspace target. */
+/** Open a main-list note by its notebook-relative path. */
 export async function openPathNoteSession(
   note: NoteListItem,
   notebook: Notebook | null,

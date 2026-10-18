@@ -34,7 +34,6 @@ import {
 } from '@platform/tauri/client';
 import { subscribe } from '@platform/tauri/event-bus';
 import { type Notebook } from '@features/memo/store';
-import { useWorkspaceStartupStore } from '@/lib/store/workspace-startup-store';
 
 const FILE_BROWSER_DIRECTORIES_CHANGED_EVENT = 'file-browser-directories-changed';
 const logger = createLogger('notebook-folder-view');
@@ -62,23 +61,15 @@ export function NotebookFolderView({
   const tree = useFolderTree(notebook.path, {
     enabled: isActive,
   });
-  const startupStatus = useWorkspaceStartupStore((state) => state.status);
-  useEffect(() => {
-    if (!isActive
-      || tree.loading
-      || tree.loadedRootPath !== canonicalDirectoryPath(notebook.path)
-      || startupStatus !== 'running') return;
-    useWorkspaceStartupStore.getState().setStartupTask('folder-list', tree.error ? 'failed' : 'ready');
-  }, [isActive, notebook.path, startupStatus, tree.error, tree.loadedRootPath, tree.loading]);
   const activeFilePath = useWorkColumnStore((state) => (
     workColumnTargetFilePath(state.navigation.target)
   ));
   const refreshDirectoriesRef = useRef(tree.refreshDirectories);
   refreshDirectoriesRef.current = tree.refreshDirectories;
 
-  useEffect(() => subscribe<{ notebookId: string }>('file-management-changed', ({ notebookId }) => {
-    if (isActive && notebookId === notebook.id) void tree.reload();
-  }), [isActive, notebook.id, tree.reload]);
+  useEffect(() => subscribe<{ notebookId: string; operationId?: string }>('file-management-changed', ({ notebookId, operationId }) => {
+    if (isActive && notebookId === notebook.id && !operationId) void tree.refresh();
+  }), [isActive, notebook.id, tree.refresh]);
 
   useEffect(() => subscribe<{ notebookPath: string; treeVisibilityChanged: boolean }>(
     'notebook-view-preferences-changed',

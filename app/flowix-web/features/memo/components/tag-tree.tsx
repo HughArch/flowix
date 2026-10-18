@@ -1,3 +1,4 @@
+import { useNotebookBackgroundStore } from '@features/memo/store/notebook-background-store';
 'use client';
 
 import {
@@ -7,7 +8,6 @@ import {
   useRef,
   useState,
 } from 'react';
-import { PlusIcon } from '@phosphor-icons/react';
 import { SquareMinus } from 'lucide-react';
 
 import { cn } from '@/lib/utils';
@@ -17,8 +17,6 @@ import { createLogger } from '@/lib/logger';
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@shared/ui/context-menu';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
 import { Button } from '@shared/ui/button';
-import { Input } from '@shared/ui/input';
-import { Select, SelectContent, SelectItem, SelectTrigger } from '@shared/ui/select';
 import {
   useNoteStore,
 } from '@features/memo/store/note-store';
@@ -115,6 +113,8 @@ export function TagTree({
   const loadLibraryMetadata = useMemoLibraryMetadataStore((s) => s.loadMetadata);
   const clearLibraryMetadata = useMemoLibraryMetadataStore((s) => s.clearMetadata);
 
+  const backgroundIndex = useNotebookBackgroundStore((state) => selectedNotebook ? state.statuses[selectedNotebook.id] : undefined);
+  const [loadedTagNotebookId, setLoadedTagNotebookId] = useState<string | null>(null);
   const [tagOptions, setTagOptions] = useState<MemoTagTreeItem[]>([]);
   const [tagLayout, setTagLayout] = useState<MemoTagLayoutItem[]>([]);
   const [hiddenTagIds, setHiddenTagIds] = useState<string[]>([]);
@@ -127,11 +127,6 @@ export function TagTree({
   // 行内重命名编辑态: editingTagId 命中时标签名 span 替换为 input。
   const [editingTagId, setEditingTagId] = useState<string | null>(null);
   const [editingTagName, setEditingTagName] = useState('');
-  const [createDialogOpen, setCreateDialogOpen] = useState(false);
-  const [newTagParentPath, setNewTagParentPath] = useState('');
-  const [newTagName, setNewTagName] = useState('');
-  const [createTagError, setCreateTagError] = useState<string | null>(null);
-  const [isCreatingTag, setIsCreatingTag] = useState(false);
   // 删除确认弹窗: `deletingTag` 命中时, 弹 Dialog 提示子树影响范围 + 确认。
   const [deletingTag, setDeletingTag] = useState<MemoTagTreeItem | null>(null);
   // 批量管理模式: true 时标签末尾的数字变成删除按钮 (SquareMinus),
@@ -167,6 +162,7 @@ export function TagTree({
         );
         if (!metadata || cancelled) return;
         setTagOptions(metadata.tagOptions);
+        setLoadedTagNotebookId(notebook.id);
         setTagLayout(metadata.tagLayout);
         setHiddenTagIds(metadata.hiddenTagIds);
         setPinnedByParent(metadata.pinnedByParent);
@@ -190,6 +186,10 @@ export function TagTree({
         }
       } catch (error) {
         if (!cancelled) {
+          if (String(error).includes('NOTE_INDEX_PENDING')) {
+            useNotebookBackgroundStore.getState().pending(notebook.id);
+            return;
+          }
           logger.warn('failed to load tags', { error });
           setTagOptions([]);
           setTagLayout([]);
@@ -233,63 +233,6 @@ export function TagTree({
     ],
   );
 
-  const openCreateTagDialog = useCallback(() => {
-    setNewTagParentPath('');
-    setNewTagName('');
-    setCreateTagError(null);
-    setCreateDialogOpen(true);
-  }, []);
-
-  const submitCreateTag = useCallback(async () => {
-    if (!selectedNotebook || isCreatingTag) return;
-    const name = newTagName.trim();
-    if (!name) {
-      setCreateTagError(t('memo.tag.createEmpty'));
-      return;
-    }
-    if (name.startsWith('#')) {
-      setCreateTagError(t('memo.tag.createWithoutHash'));
-      return;
-    }
-    if (!isValidTagPath(name)) {
-      setCreateTagError(t('memo.tag.createInvalid'));
-      return;
-    }
-    const path = newTagParentPath ? `${newTagParentPath}/${name}` : name;
-
-    setIsCreatingTag(true);
-    setCreateTagError(null);
-    try {
-      const report = await useTagStore
-        .getState()
-        .createTag(selectedNotebook.id, path);
-      clearLibraryMetadata();
-      invalidateMentionTags();
-      setCreateDialogOpen(false);
-      setNewTagParentPath('');
-      setNewTagName('');
-      toast.success(
-        t('memo.tag.createdToast', { path: report.path } satisfies I18nParams),
-      );
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      toast.error(
-        message.includes('already exists')
-          ? t('memo.tag.createDuplicate')
-          : `${t('memo.tag.createFailed')}: ${message}`,
-      );
-    } finally {
-      setIsCreatingTag(false);
-    }
-  }, [
-    clearLibraryMetadata,
-    isCreatingTag,
-    newTagName,
-    newTagParentPath,
-    selectedNotebook,
-    t,
-  ]);
-
   const startRename = useCallback((tag: MemoTagTreeItem) => {
     setEditingTagId(tag.id);
     setEditingTagName(tag.name);
@@ -324,40 +267,35 @@ export function TagTree({
     [],
   );
 
-  /**
-   * 「置顶」菜单项: 把 tag 推到 parent 下兄弟组最前 (MRU 语义)。无提供取消
-   * 路径 ── pinned 只能通过 delete / rename / reparent 间接迁移或清空。
-   * 既有 pinned 重新置顶 = 把它从当前位置抽离并插到 head (让其他 pinned 后
-   * 退一格), 符合 "最近置顶排第一"。
-   */
-  const pinTag = useCallback(
+  /** 置顶或取消置顶标签；新置顶项放在同级置顶项的最前面。 */
+  const toggleTagPin = useCallback(
     async (tag: MemoTagTreeItem) => {
       const notebookId = useNoteStore.getState().selectedNotebook?.id;
       if (!notebookId) return;
       const parentKey = tag.parentId ?? '';
       const current = pinnedByParent[parentKey] ?? [];
-      const next: string[] = [
-        tag.fullPath,
-        ...current.filter((p) => p !== tag.fullPath),
-      ];
+      const isPinned = current.includes(tag.fullPath);
+      const next = isPinned
+        ? current.filter((path) => path !== tag.fullPath)
+        : [tag.fullPath, ...current];
       const prev = pinnedByParent;
-      const nextMap: Record<string, string[]> = {
-        ...pinnedByParent,
-        [parentKey]: next,
-      };
+      const nextMap = { ...pinnedByParent };
+      if (next.length > 0) nextMap[parentKey] = next;
+      else delete nextMap[parentKey];
+      const baseOptions = rebuildTagOptionsFromLayout(tagLayout, tagOptions);
       // 乐观更新
       setPinnedByParent(nextMap);
-      setTagOptions(applyPinOrdering(tagOptions, nextMap));
+      setTagOptions(applyPinOrdering(baseOptions, nextMap));
       try {
         await system.setTagPinned(notebookId, parentKey, next);
       } catch (err) {
         // 回滚
         setPinnedByParent(prev);
-        setTagOptions(applyPinOrdering(tagOptions, prev));
+        setTagOptions(applyPinOrdering(baseOptions, prev));
         toast.error(err instanceof Error ? err.message : String(err));
       }
     },
-    [pinnedByParent, tagOptions],
+    [pinnedByParent, tagLayout, tagOptions],
   );
 
   // 行内重命名提交: 复用 moveTag (重命名 = 同父级 move 末段)。segment 字符
@@ -648,6 +586,11 @@ export function TagTree({
 
   const draggingTagId = draggingId;
 
+  if (selectedNotebook && loadedTagNotebookId !== selectedNotebook.id
+    && (backgroundIndex?.state === 'queued' || backgroundIndex?.state === 'running')) {
+    return <div className="px-3 py-2 text-xs text-[var(--muted-foreground)]" role="status">{t('memo.navigation.loading')}</div>;
+  }
+
   return (
     <>
       {/* 标签组 ── 外侧容器, pt-1 提供组上方留白 (与资料组对称, 两侧均用 padding 而非 margin);
@@ -667,18 +610,7 @@ export function TagTree({
               >
                 <span>{t('memo.tag.batchDone')}</span>
               </button>
-            ) : (
-              <button
-                type="button"
-                onClick={openCreateTagDialog}
-                disabled={!selectedNotebook}
-                className="-my-1 flex h-5 w-5 translate-x-1 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:pointer-events-none disabled:opacity-40"
-                aria-label={t('memo.tag.create')}
-                title={t('memo.tag.create')}
-              >
-                <PlusIcon className="h-3.5 w-3.5" weight="light" />
-              </button>
-            )}
+            ) : null}
           </div>
         )}
         {tagOptions.length > 0 && (
@@ -686,6 +618,7 @@ export function TagTree({
           {visibleTagOptions.map((tag) => {
             const isSelected = activeFilter === 'tagged' && selectedTagId === tag.id;
             const isHidden = hiddenTagIdSet.has(tag.id);
+            const isPinned = (pinnedByParent[tag.parentId ?? ''] ?? []).includes(tag.fullPath);
             const isDragging = draggingTagId === tag.id;
             const hasChildren = childTagIdSet.has(tag.id);
             const isDropBefore =
@@ -720,7 +653,11 @@ export function TagTree({
                   void loadNativeMenuIcons(TAG_NATIVE_ICON_NAMES)
                     .then((icons) => popupNativeContextMenu(event, [
                       { text: t('memo.tag.rename'), icon: icons.pencil!, action: () => startRename(tag) },
-                      { text: t('memo.tag.pin'), icon: icons.pin!, action: () => void pinTag(tag) },
+                      {
+                        text: t(isPinned ? 'memo.tag.unpin' : 'memo.tag.pin'),
+                        icon: icons.pin!,
+                        action: () => void toggleTagPin(tag),
+                      },
                       { text: t('memo.tag.batchManage'), icon: icons['list-checks']!, action: () => setBatchMode(true) },
                       { text: t('memo.tag.delete'), icon: icons.delete!, action: () => setDeletingTag(tag) },
                     ]))
@@ -876,10 +813,10 @@ export function TagTree({
                   {t('memo.tag.rename')}
                 </ContextMenuItem>
                 <ContextMenuItem
-                  onClick={() => void pinTag(tag)}
+                  onClick={() => void toggleTagPin(tag)}
                   className="h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
                 >
-                  {t('memo.tag.pin')}
+                  {t(isPinned ? 'memo.tag.unpin' : 'memo.tag.pin')}
                 </ContextMenuItem>
                 <ContextMenuItem
                   onClick={() => setBatchMode(true)}
@@ -905,107 +842,6 @@ export function TagTree({
       {/* Tag 删除确认弹窗 ── 右键菜单"删除" 触发。 子树命中时给出更
           严肃的提示文案, 明确告诉用户删除是整棵子树 + body 里所有
           #tag 都会被移除, 无法撤销。 */}
-      <Dialog
-        open={createDialogOpen}
-        onOpenChange={(open) => {
-          if (isCreatingTag) return;
-          setCreateDialogOpen(open);
-          if (!open) {
-            setNewTagParentPath('');
-            setNewTagName('');
-            setCreateTagError(null);
-          }
-        }}
-      >
-        <DialogContent className="w-[460px]">
-          <DialogHeader className="pr-7">
-            <DialogTitle>{t('memo.tag.createTitle')}</DialogTitle>
-          </DialogHeader>
-          <form
-            onSubmit={(event) => {
-              event.preventDefault();
-              void submitCreateTag();
-            }}
-          >
-            <div className="flex items-center gap-2">
-              <div className="w-1/3 shrink-0">
-                <Select
-                  value={newTagParentPath || '__root__'}
-                  disabled={isCreatingTag}
-                  onValueChange={(value) => {
-                    setNewTagParentPath(value === '__root__' ? '' : value);
-                    if (createTagError) setCreateTagError(null);
-                  }}
-                >
-                  <SelectTrigger className="bg-[var(--background)]">
-                    <span className="min-w-0 truncate text-left">
-                      {newTagParentPath
-                        ? `#${newTagParentPath}`
-                        : t('memo.tag.createParent')}
-                    </span>
-                  </SelectTrigger>
-                  <SelectContent align="start" className="max-h-64 w-[240px] overflow-y-auto">
-                    <SelectItem value="__root__">
-                      {t('memo.tag.createNoParent')}
-                    </SelectItem>
-                    {tagOptions.map((tag) => (
-                      <SelectItem key={tag.id} value={tag.fullPath}>
-                        <span
-                          className="block truncate"
-                          style={{ paddingLeft: `${tag.depth * 12}px` }}
-                        >
-                          #{tag.fullPath}
-                        </span>
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-              </div>
-              <div className="flex min-w-0 flex-1 items-center rounded-lg border border-input bg-background focus-within:border-[var(--primary)]">
-                <span className="pl-3 text-sm text-[var(--muted-foreground)]">#</span>
-                <Input
-                  id="new-tag-name"
-                  autoFocus
-                  value={newTagName}
-                  disabled={isCreatingTag}
-                  placeholder={t('memo.tag.createPlaceholder')}
-                  aria-label={t('memo.tag.createName')}
-                  onChange={(event) => {
-                    setNewTagName(event.target.value);
-                    if (createTagError) setCreateTagError(null);
-                  }}
-                  className="border-0 pl-1 focus-visible:border-0"
-                  aria-invalid={Boolean(createTagError)}
-                />
-              </div>
-            </div>
-            {createTagError && (
-              <p className="mt-1.5 text-xs text-[var(--destructive)]">
-                {createTagError}
-              </p>
-            )}
-            <div className="mt-4 flex justify-end gap-2">
-              <Button
-                type="button"
-                variant="ghost"
-                disabled={isCreatingTag}
-                onClick={() => setCreateDialogOpen(false)}
-              >
-                {t('memo.tag.createCancel')}
-              </Button>
-              <Button
-                type="submit"
-                disabled={isCreatingTag || !newTagName.trim()}
-              >
-                {isCreatingTag
-                  ? t('memo.tag.creating')
-                  : t('memo.tag.createConfirm')}
-              </Button>
-            </div>
-          </form>
-        </DialogContent>
-      </Dialog>
-
       <Dialog
         open={deletingTag !== null}
         onOpenChange={(open) => {

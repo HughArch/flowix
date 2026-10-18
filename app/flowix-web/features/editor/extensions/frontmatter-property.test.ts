@@ -49,11 +49,11 @@ describe('frontmatter property helpers', () => {
     });
   });
 
-  it('reorders visible properties while keeping the system key in place', () => {
+  it('reorders ordinary YAML properties', () => {
     const yaml = 'flowix_key: ra61em97\nfirst: one\nsecond: two\nthird: three';
     const reordered = reorderVisibleFrontmatterProperty(yaml, 'first', 'third', 'after');
     expect([...parseVisibleFrontmatter(reordered).properties].map(({ key }) => key))
-      .toEqual(['second', 'third', 'first']);
+      .toEqual(['flowix_key', 'second', 'third', 'first']);
     expect(reordered.indexOf('flowix_key: ra61em97'))
       .toBeLessThan(reordered.indexOf('second: two'));
   });
@@ -77,7 +77,7 @@ describe('frontmatter property helpers', () => {
     const content = '\n  \n---\nflowix_key: abc12345\nstatus: draft\n---\n# Body';
     const extracted = extractFrontmatter(content);
     expect(extracted.hasFrontmatter).toBe(true);
-    expect(extracted.userData).toEqual({ status: 'draft' });
+    expect(extracted.userData).toEqual({ flowix_key: 'abc12345', status: 'draft' });
     expect(extracted.body).toBe('# Body');
 
     const editor = new Editor({
@@ -92,32 +92,38 @@ describe('frontmatter property helpers', () => {
     editor.destroy();
   });
 
-  it('skips the system key and returns every property from the first group', () => {
+  it('returns historical identity fields as ordinary YAML properties', () => {
     const result = parseVisibleFrontmatter('flowix_key: ra61em97\nstatus: in-progress\nkeywords: [推广, 归类]');
 
-    expect(result.firstProperty).toEqual({ key: 'status', value: 'in-progress' });
+    expect(result.firstProperty).toEqual({ key: 'flowix_key', value: 'ra61em97' });
     expect(result.properties).toEqual([
+      { key: 'flowix_key', value: 'ra61em97' },
       { key: 'status', value: 'in-progress' },
       { key: 'keywords', value: ['推广', '归类'] },
     ]);
     expect(result.userData).toEqual({
+      flowix_key: 'ra61em97',
       status: 'in-progress',
       keywords: ['推广', '归类'],
     });
   });
 
-  it('returns an empty visible property when frontmatter only has the system key', () => {
+  it('returns the historical identity field as a visible property', () => {
     const result = parseVisibleFrontmatter('flowix_key: ra61em97');
 
-    expect(result.firstProperty).toBeNull();
+    expect(result.firstProperty).toEqual({ key: 'flowix_key', value: 'ra61em97' });
+    expect(result.properties).toEqual([{ key: 'flowix_key', value: 'ra61em97' }]);
     expect(result.parseError).toBeNull();
   });
 
-  it('hides the deprecated legacy key from visible properties', () => {
+  it('returns the deprecated legacy key as an ordinary property', () => {
     const result = parseVisibleFrontmatter('key: legacy-id\nstatus: draft');
 
-    expect(result.properties).toEqual([{ key: 'status', value: 'draft' }]);
-    expect(result.userData).toEqual({ status: 'draft' });
+    expect(result.properties).toEqual([
+      { key: 'key', value: 'legacy-id' },
+      { key: 'status', value: 'draft' },
+    ]);
+    expect(result.userData).toEqual({ key: 'legacy-id', status: 'draft' });
   });
 
   it('suggests moving the malformed suffix into the document body', () => {
@@ -171,12 +177,13 @@ describe('frontmatter property helpers', () => {
     expect(result).toContain('stage: in-progress');
     expect(result).toContain('keywords: [ 推广, 归类 ]');
     expect(parseVisibleFrontmatter(result).userData).toEqual({
+      flowix_key: 'ra61em97',
       stage: 'in-progress',
       keywords: ['推广', '归类'],
     });
   });
 
-  it('adds a first user property after the system key', () => {
+  it('adds a property while preserving the historical identity field', () => {
     const result = updateVisibleFrontmatterProperty(
       'flowix_key: ra61em97',
       null,
@@ -185,16 +192,20 @@ describe('frontmatter property helpers', () => {
     );
 
     expect(result).toBe('flowix_key: ra61em97\nstatus: todo');
-    expect(parseVisibleFrontmatter(result).userData).toEqual({ status: 'todo' });
+    expect(parseVisibleFrontmatter(result).userData).toEqual({ flowix_key: 'ra61em97', status: 'todo' });
   });
 
-  it('rejects editing the system key', () => {
-    expect(() => updateVisibleFrontmatterProperty(
+  it('allows editing historical identity field names as ordinary properties', () => {
+    const result = updateVisibleFrontmatterProperty(
       'flowix_key: ra61em97',
       null,
       'key',
       'another-id',
-    )).toThrow(/managed by Flowix/);
+    );
+    expect(parseVisibleFrontmatter(result).userData).toEqual({
+      flowix_key: 'ra61em97',
+      key: 'another-id',
+    });
   });
 
   it('formats collections as a compact single line', () => {
@@ -1229,9 +1240,8 @@ describe('frontmatter property helpers', () => {
       detail: { propertyTargetId: 'file:display-frontmatter', keys },
     }));
 
-    // User properties are reported. `flowix_key` (the system key) is excluded
-    // by `parseVisibleFrontmatter`, matching the preset lists it feeds.
-    expect(new Set(keys)).toEqual(new Set(['status', 'tags']));
+    // Historical identity keys are ordinary frontmatter properties.
+    expect(new Set(keys)).toEqual(new Set(['flowix_key', 'status', 'tags']));
 
     // A query aimed at another target must not be answered by this view.
     const otherKeys: string[] = [];

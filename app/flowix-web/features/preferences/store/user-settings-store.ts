@@ -305,12 +305,14 @@ function mergePreferencePatches(current: PreferencePatch | null, incoming: Prefe
   return merged;
 }
 
-async function writeToBackend(patch: PreferencePatch): Promise<void> {
-  try {
-    await tauriPreferences.patch(patch);
-  } catch (error) {
+const writesInFlight = new Set<Promise<void>>();
+function writeToBackend(patch: PreferencePatch): Promise<void> {
+  const write = tauriPreferences.patch(patch).then(() => undefined).catch(error => {
     logger.error('persist failed', { error });
-  }
+  });
+  writesInFlight.add(write);
+  void write.finally(() => writesInFlight.delete(write));
+  return write;
 }
 
 /** debounced flush — 拖动滑块 / 连续敲键盘时合并多次写盘 */
@@ -431,7 +433,8 @@ export const useUserSettingsStore = create<UserSettingsState>((set, get) => ({
     if (pendingPatch) {
       const toWrite = pendingPatch;
       pendingPatch = null;
-      await writeToBackend(toWrite);
+      void writeToBackend(toWrite);
     }
+    await Promise.all([...writesInFlight]);
   },
 }));

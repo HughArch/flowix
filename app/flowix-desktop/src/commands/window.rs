@@ -40,6 +40,9 @@ mod navigation_tests {
 
 #[tauri::command]
 pub fn show_main_window(app: tauri::AppHandle) -> Result<(), String> {
+    if crate::commands::window_shutdown::is_exiting() {
+        return Ok(());
+    }
     let Some(window) = app.get_webview_window("main") else {
         return Ok(());
     };
@@ -65,6 +68,9 @@ pub(crate) fn open_preferences_window_inner(
     tab: Option<&str>,
 ) -> Result<(), String> {
     use tauri::WebviewWindowBuilder;
+    if crate::commands::window_shutdown::is_exiting() {
+        return Err("Application is closing".into());
+    }
 
     let boot_theme = match state.user_config.get_preference().theme {
         Theme::System => None,
@@ -91,12 +97,12 @@ pub(crate) fn open_preferences_window_inner(
         return Ok(());
     }
 
-    let builder =
-        WebviewWindowBuilder::new(app, "preferences", tauri::WebviewUrl::App(url.into()))
-            .title("Preferences")
-            .inner_size(800.0, 600.0)
-            .center()
-            .devtools(cfg!(debug_assertions));
+    let builder = WebviewWindowBuilder::new(app, "preferences", tauri::WebviewUrl::App(url.into()))
+        .title("Preferences")
+        .visible(false)
+        .inner_size(800.0, 600.0)
+        .center()
+        .devtools(cfg!(debug_assertions));
 
     #[cfg(target_os = "macos")]
     let builder = builder
@@ -109,9 +115,11 @@ pub(crate) fn open_preferences_window_inner(
     let builder = builder.decorations(false);
 
     let window = builder.build().map_err(|e| e.to_string())?;
+    crate::commands::window_shutdown::install_window(&window);
     // 新窗口即刻�?齐主题背�?�� (与主窗口�?��一�?, 避免冷启动白�?�?
     let theme = state.user_config.get_preference().theme;
     crate::window_chrome::apply_window_chrome_theme(&window, theme);
+    window.show().map_err(|error| error.to_string())?;
     Ok(())
 }
 

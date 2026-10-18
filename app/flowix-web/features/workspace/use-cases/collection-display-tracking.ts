@@ -1,6 +1,7 @@
 import { parseCollectionDocumentV2 } from '@features/collection/model';
-import { collections, externalDocuments, notebooks, type CollectionIndexItem } from '@platform/tauri/client';
+import { collections, externalDocuments, notebooks, type CollectionChangedEvent, type CollectionIndexItem } from '@platform/tauri/client';
 import { subscribe } from '@platform/tauri/event-bus';
+import { subscribeNotebookChanges } from '@platform/tauri/notebook-change-events';
 import { canonicalDirectoryPath } from '@/lib/path';
 import { bindCollectionDisplayPath, collectionDisplays, findCollectionDisplayPath } from '@/lib/collection-display-registry';
 import { useWorkColumnStore } from '../store/work-column-store';
@@ -12,14 +13,14 @@ import { findFileDisplayId } from '@/lib/file-display-registry';
 import { replaceWorkspaceDocumentPath } from '@features/document/public/workspace-api';
 import { useBrowserColumnStore } from '../store/browser-column-store';
 
-interface CollectionChange { notebookId: string; collectionId?: string; indexSequence?: number; relativePath?: string; kind?: string }
+interface CollectionChange extends Partial<CollectionChangedEvent> { notebookId: string; kind?: string; changeId?: string }
 const appliedSequences = new Map<string, number>();
 const sequences = new Map<string, number>();
 let started = false;
 
 function replaceLiveFilePath(previousPath: string, path: string): void {
   const displayId = findFileDisplayId(previousPath);
-  if (displayId) replaceWorkspaceDocumentPath({ kind: 'md', path: previousPath, displayId }, path);
+  if (displayId && !replaceWorkspaceDocumentPath({ kind: 'md', path: previousPath, displayId }, path)) return;
   useWorkColumnStore.getState().replaceExternalPath(previousPath, path);
   useBrowserColumnStore.getState().replaceExternalPath(previousPath, path);
 }
@@ -147,9 +148,16 @@ export function ensureCollectionDisplayTrackingStarted(): void {
       void refreshCollectionDisplays({ notebookId: display.notebookId, collectionId: display.collectionId });
     }
   }
-  subscribe<CollectionChange>('collection-changed', (event) => { void refreshCollectionDisplays(event); });
-  subscribe<CollectionChange>('flowix:path-note-changed', (event) => {
-    if (event.notebookId && (!event.relativePath || /(?:\.(table|lib)\.ya?ml|\.index\.yaml)$/i.test(event.relativePath))) void refreshCollectionDisplays(event);
+  subscribe<CollectionChangedEvent>('collection-changed', (event) => {
+    void refreshCollectionDisplays(event.directoryMove ? { notebookId: event.notebookId } : event);
   });
-  subscribe<CollectionChange>('file-management-changed', (event) => { if (event.notebookId) void refreshCollectionDisplays(event); });
+  subscribeNotebookChanges((event) => {
+    const collectionMutation = event.changeId?.startsWith(`collection:${event.notebookId}:`);
+    if (!collectionMutation && (!event.relativePath || (event.kind === 'path-moved' && event.directory) || /(?:\.(table|lib)\.ya?ml|\.index\.yaml)$/i.test(event.relativePath))) {
+      void refreshCollectionDisplays({ notebookId: event.notebookId });
+    }
+  });
+  subscribe<CollectionChange>('file-management-changed', (event) => {
+    if (event.notebookId && !event.operationId) void refreshCollectionDisplays(event);
+  });
 }

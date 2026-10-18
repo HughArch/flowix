@@ -26,7 +26,7 @@ import {
   enqueueBrowserColumnNavigation,
 } from './browser-column-coordinator';
 import {
-  flushWorkspaceDocument,
+  prepareActiveWorkColumnDocumentLeave,
 } from './workspace-navigation';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import type { ContentIdentity } from '@features/workspace/store/workspace-content-identity';
@@ -284,7 +284,7 @@ export function openWorkColumnTargetInBrowserColumn(
     }
 
     // This legacy transfer opens the current Work content as a second view.
-    if (target.kind !== 'agent-conversation') await flushWorkspaceDocument();
+    if (target.kind !== 'agent-conversation') await prepareActiveWorkColumnDocumentLeave();
     if (!isStillCurrentTarget()) return null;
 
     const preparedTarget = await prepareCollectionBrowserTarget(browserTarget);

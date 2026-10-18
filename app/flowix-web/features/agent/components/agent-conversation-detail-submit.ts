@@ -1,4 +1,4 @@
-import { ensureAgentWorkspaceReady } from "@features/agent/store/agent-data-store";
+import { ensureAgentWorkspaceReady } from "@features/agent/store/agent-workspace-store";
 import type { AgentTypeKey, RuntimeConfig } from "@/types/agent";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
 import { buildInitialInstanceRuntimeConfig } from "@features/agent/store/initial-runtime-config";

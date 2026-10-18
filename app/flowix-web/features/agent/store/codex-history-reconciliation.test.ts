@@ -121,6 +121,19 @@ describe("Codex turn reconciliation", () => {
     expect(result.map((item) => item.id)).toEqual(["u", "command", "a", "next"]);
   });
 
+  it("reconciles a completed native command by its shared turn identity", () => {
+    const command = {
+      ...row("flowix:codex:command:t1", "user", "t1", "/compact"),
+      messageType: "codex-command" as const,
+      isCompleted: true,
+    };
+
+    const result = reconcileCodexHistory(
+      [command], [{ ...command }], complete, [command],
+    );
+    expect(result.map((item) => item.id)).toEqual(["flowix:codex:command:t1"]);
+  });
+
   it("reuses a large loaded prefix and the array for an equivalent latest-page snapshot", () => {
     const current: ChatMessage[] = [];
     for (let turn = 0; turn < 2000; turn += 1) {

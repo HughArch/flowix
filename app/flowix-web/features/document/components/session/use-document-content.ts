@@ -1,6 +1,6 @@
 import { getBuffer } from '../../store/buffer-registry';
 import { getDocumentSession } from '../../store/document-runtime-session';
-import { restoreTitleDraft } from '@features/document/store/document-title-session';
+import { hasTitleDraft, restoreTitleDraft } from '@features/document/store/document-title-session';
 import { useCallback, useEffect, useRef, useState } from 'react';
 
 import { localDocumentOperations } from '@features/document/use-cases/local-document-operations';
@@ -13,11 +13,16 @@ import {
   protectDocumentDraft,
   saveDocumentContent,
 } from '@features/document/store/document-session-service';
-import { readRecoveryDraft, type RecoveryDraft } from '@features/document/store/recovery-draft-store';
+import {
+  clearRecoveryDraftThrough,
+  readRecoveryDraft,
+  type RecoveryDraft,
+} from '@features/document/store/recovery-draft-store';
 import { useDocumentStore } from '@features/document/store/document-store';
 import type { DocumentIdentity } from '@features/document/store/document-identity';
 import { translate } from '@/lib/i18n';
-import { isFileDisplayIdLive } from '@/lib/file-display-registry';
+import { findFileDisplayPath, isFileDisplayIdLive } from '@/lib/file-display-registry';
+import { canonicalPath } from '@/lib/path';
 import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api';
 import { markDocumentOpenTrace } from '@/lib/document-open-perf';
 import {
@@ -39,6 +44,27 @@ interface UseDocumentContentOptions {
   isolatedSession?: boolean;
 }
 
+const RECOVERY_DRAFT_READ_TIMEOUT_MS = 10_000;
+
+function readRecoveryDraftWithin(promise: Promise<RecoveryDraft | null>): Promise<RecoveryDraft | null> {
+  return new Promise((resolve, reject) => {
+    const timer = window.setTimeout(
+      () => reject(new Error('Recovery draft read timed out')),
+      RECOVERY_DRAFT_READ_TIMEOUT_MS,
+    );
+    void promise.then(
+      (draft) => {
+        window.clearTimeout(timer);
+        resolve(draft);
+      },
+      (error) => {
+        window.clearTimeout(timer);
+        reject(error);
+      },
+    );
+  });
+}
+
 function logOpenDocPerf(label: string, startedAt: number, meta?: Record<string, unknown>) {
   console.info('[perf:open-doc]', label, {
     elapsedMs: Math.round((performance.now() - startedAt) * 10) / 10,
@@ -53,15 +79,25 @@ function logOpenDocPerf(label: string, startedAt: number, meta?: Record<string, 
   }
 }
 
+function isMissingDocumentError(error: unknown): boolean {
+  const reason = error instanceof Error ? error.message : String(error);
+  const normalized = reason.toLowerCase();
+  return normalized.includes('external document is unavailable')
+    || normalized.includes('no such file')
+    || normalized.includes('not found')
+    || normalized.includes('failed to resolve');
+}
+
 function readFailureMessage(error: unknown, language: ReturnType<typeof getCurrentAppLanguage>): string {
   const reason = error instanceof Error ? error.message : String(error);
   const normalized = reason.toLowerCase();
+  if (normalized.includes('recovery draft read timed out')) {
+    return translate(language, 'document.load.recoveryTimeout');
+  }
   if (normalized.includes('outside its authorized scope') || normalized.includes('permission denied')) {
     return translate(language, 'document.load.accessDenied');
   }
-  if (normalized.includes('no such file') || normalized.includes('not found') || normalized.includes('failed to resolve')) {
-    return translate(language, 'document.load.fileNotFound');
-  }
+  if (isMissingDocumentError(error)) return translate(language, 'document.load.fileNotFound');
   if (normalized.includes('not a supported text file') || normalized.includes('is a directory')
     || normalized.includes('not a regular file') || normalized.includes('expected file')) {
     return translate(language, 'document.load.notTextFile');
@@ -84,15 +120,18 @@ export function useDocumentContent({
   // Monotonic counter for the latest reloadDocument call. Stale IPC
   // reads compare against this and abort.
   const counter = useRef(0);
+  const reloadDocumentRef = useRef<((path: string, options?: LoadContentOptions) => Promise<void>) | null>(null);
 
-  const readOpeningRecovery = useCallback(() => {
+  const readOpeningRecovery = useCallback((path: string) => {
     const session = getDocumentSession(identity);
-    if (session.openingRecovery) return session.openingRecovery;
-    const pending = readRecoveryDraft(identity).catch(() => null);
-    session.openingRecovery = pending;
-    void pending.finally(() => {
-      if (session.openingRecovery === pending) session.openingRecovery = undefined;
-    });
+    const recoveryPath = canonicalPath(path);
+    if (session.openingRecovery?.path === recoveryPath) return session.openingRecovery.promise;
+    const pending = readRecoveryDraft({ ...identity, path: recoveryPath });
+    session.openingRecovery = { path: recoveryPath, promise: pending };
+    const clearPending = () => {
+      if (session.openingRecovery?.promise === pending) session.openingRecovery = undefined;
+    };
+    void pending.then(clearPending, clearPending);
     return pending;
   }, [identity]);
 
@@ -118,26 +157,26 @@ export function useDocumentContent({
         setAsCurrent: !isolatedSession,
       });
       const recovery = options?.recovery ?? null;
-      if (recovery && recovery.originalPath === path) {
+      const recoveryMatchesPath = recovery?.originalPath === path;
+      const recoveryNeedsSave = Boolean(recoveryMatchesPath && recovery.content !== fullContent);
+      if (recoveryMatchesPath && recovery) {
         const session = getDocumentSession(identity);
         session.recoveryRevision = Math.max(session.recoveryRevision, recovery.revision);
       }
-      if (recovery?.title && recovery.originalPath === path) restoreTitleDraft(identity.displayId, recovery.title);
-      const recoveryNeedsMerge = Boolean(recovery
-        && recovery.originalPath === path
-        && recovery.content !== fullContent
-        && recovery.baseContent !== fullContent);
-      if (
-        recovery
-        && recovery.originalPath === path
-      ) {
+      if (recovery?.title && recoveryMatchesPath) restoreTitleDraft(identity.displayId, recovery.title);
+      if (recoveryNeedsSave && recovery) {
         applyRecoveryDraftContent(identity, recovery.content, recovery.bodyRevision ?? recovery.revision);
-        if (recoveryNeedsMerge) {
+        if (recovery.baseContent !== fullContent) {
           // The same conditional write used by live edits attempts a diffy
           // merge. An overlap will mark the buffer conflicted for review.
           buf.lastSavedContent = recovery.baseContent;
           buf.saveState = 'dirty';
         }
+      } else if (recoveryMatchesPath && recovery && !hasTitleDraft(identity.displayId)) {
+        // A completed body save can leave behind a checkpoint if clearing it
+        // raced with shutdown. The disk already has these bytes, so only clear
+        // the checkpoint after confirming there is no unsaved title input.
+        void clearRecoveryDraftThrough(identity, recovery.revision);
       }
       // A document heading does not imply that the file was just created.
       const initialContent = recovery
@@ -152,6 +191,7 @@ export function useDocumentContent({
         isLoaded: true,
         isLoading: false,
         error: null,
+        errorKind: null,
         isScrolled: false,
         isNewlyCreated: false,
         charCount: initialCharCount,
@@ -162,7 +202,7 @@ export function useDocumentContent({
         isFavorited: false,
         frontmatterMeta: {},
       });
-      if (recoveryNeedsMerge && recovery) {
+      if (recoveryNeedsSave && recovery) {
         void saveDocumentContent({
           identity, path, content: recovery.content,
           scopePath: externalScopePath, force: true,
@@ -180,19 +220,29 @@ export function useDocumentContent({
   const reloadDocument = useCallback(
     async (path: string, options?: LoadContentOptions) => {
       if (!path) return;
+      let readPath = findFileDisplayPath(identity.displayId) ?? path;
       const startedAt = performance.now();
       markDocumentOpenTrace(transitionId, 'content:load-start', {
-        path,
+        path: readPath,
         isolatedSession,
       });
 
       // Switch the active buffer up-front so any in-flight writes from
       // the previous document that resolve after this point still
       // target the right buffer.
-      if (!isolatedSession) setActiveDocumentPath(identity, path);
+      if (!isolatedSession) setActiveDocumentPath(identity, readPath);
       captureLatestDocumentContent(identity);
       const startRevision = getBuffer(identity)?.capturedRevision ?? 0;
       const currentLoadId = ++counter.current;
+      const restartAfterPathMove = () => {
+        const latestPath = findFileDisplayPath(identity.displayId);
+        if (!latestPath || canonicalPath(latestPath) === canonicalPath(readPath)) return false;
+        // The pathname is part of the durable address, while this editor and
+        // its buffer keep the same display identity across a rename. Restart
+        // against that address instead of applying an old-path read result.
+        void reloadDocumentRef.current?.(latestPath, options);
+        return true;
+      };
       if (skipContentLoad) {
         setState((prev) => ({
           ...prev,
@@ -200,6 +250,7 @@ export function useDocumentContent({
           isLoaded: false,
           isLoading: false,
           error: null,
+          errorKind: null,
           isScrolled: false,
           charCount: 0,
           tokenCount: 0,
@@ -211,20 +262,20 @@ export function useDocumentContent({
       }
       const session = getDocumentSession(identity);
       if ((options?.showLoading ?? true) && session.loaded && session.buffer) {
-        applyLoadedContent(identity.path, session.buffer.lastSavedContent, { preservePending: true });
+        applyLoadedContent(readPath, session.buffer.lastSavedContent, { preservePending: true });
         if (!isolatedSession && transitionId !== null) useDocumentStore.getState().finishDocumentTransition(transitionId);
         return;
       }
-      const stagedContent = consumeStagedDocumentSnapshot(identity, path);
+      const stagedContent = consumeStagedDocumentSnapshot(identity, readPath);
       if (stagedContent !== null) {
         // The just-committed create result is already authoritative. There
         // cannot be a recovery draft from this new note before its first edit.
         if (currentLoadId !== counter.current || !isFileDisplayIdLive(identity.displayId)) return;
         if (session.loaded && session.buffer) {
-          applyLoadedContent(session.identity.path, session.buffer.lastSavedContent, { preservePending: true });
+          applyLoadedContent(readPath, session.buffer.lastSavedContent, { preservePending: true });
           return;
         }
-        applyLoadedContent(path, stagedContent, { preservePending: true });
+        applyLoadedContent(readPath, stagedContent, { preservePending: true });
         logOpenDocPerf('reloadDocument:staged', startedAt, {
           transitionId,
           bytes: stagedContent.length,
@@ -240,6 +291,7 @@ export function useDocumentContent({
           isLoading: true,
           isLoaded: false,
           error: null,
+          errorKind: null,
           isScrolled: false,
           isNewlyCreated: false,
         }));
@@ -248,13 +300,12 @@ export function useDocumentContent({
       try {
         logOpenDocPerf('reloadDocument:start', startedAt, {
           transitionId,
-          path,
+          path: readPath,
         });
         const readStartedAt = performance.now();
         markDocumentOpenTrace(transitionId, 'ipc:read-start', {
-          path,
+          path: readPath,
         });
-        let readPath = path;
         const read = () => localDocumentOperations.read({ path: readPath, scopePath: externalScopePath });
         const opening = options?.showLoading ?? true;
         const operation = opening && session.openingRead?.path === readPath
@@ -274,28 +325,38 @@ export function useDocumentContent({
           bytes: fullContent?.length ?? 0,
         });
 
+        if (currentLoadId !== counter.current) return;
+        if (restartAfterPathMove()) return;
+        if (!isFileDisplayIdLive(identity.displayId)) return;
+
         if (fullContent === null || fullContent === undefined) {
-          if (currentLoadId !== counter.current) return;
+          session.loaded = false;
           const language = getCurrentAppLanguage();
-          setState((prev) => ({ ...prev, isLoading: false, error: translate(language, 'document.load.fileNotFound') }));
+          setState((prev) => ({
+            ...prev,
+            isLoading: false,
+            error: translate(language, 'document.load.fileNotFound'),
+            errorKind: 'missing-note',
+          }));
           if (!isolatedSession && transitionId !== null) {
-            useDocumentStore.getState().finishDocumentTransition(transitionId);
+            useDocumentStore.getState().finishDocumentTransition(transitionId, 'unavailable');
           }
           return;
         }
 
-        if (currentLoadId !== counter.current || !isFileDisplayIdLive(identity.displayId)) return;
         if ((options?.showLoading ?? true) && session.loaded && session.buffer) {
-          applyLoadedContent(session.identity.path, session.buffer.lastSavedContent, { preservePending: true });
+          applyLoadedContent(readPath, session.buffer.lastSavedContent, { preservePending: true });
           return;
         }
-        markDocumentOpenTrace(transitionId, 'recovery:read-start', { path });
+        markDocumentOpenTrace(transitionId, 'recovery:read-start', { path: readPath });
         const recovery = (options?.showLoading ?? true)
-          ? await readOpeningRecovery() : await readRecoveryDraft(identity).catch(() => null);
+          ? await readRecoveryDraftWithin(readOpeningRecovery(readPath))
+          : await readRecoveryDraftWithin(readRecoveryDraft({ ...identity, path: readPath }));
         markDocumentOpenTrace(transitionId, 'recovery:read-end', {
             found: recovery !== null,
         });
         if (currentLoadId !== counter.current || !isFileDisplayIdLive(identity.displayId)) return;
+        if (restartAfterPathMove()) return;
         captureLatestDocumentContent(identity);
         const liveBuffer = getBuffer(identity);
         if (options?.showLoading === false && liveBuffer
@@ -305,6 +366,7 @@ export function useDocumentContent({
             // through the same conditional merge used by normal saves.
             if (await protectDocumentDraft(identity, readPath, 'autosave')) {
               if (currentLoadId !== counter.current || !isFileDisplayIdLive(identity.displayId)) return;
+              if (restartAfterPathMove()) return;
               captureLatestDocumentContent(identity);
               void saveDocumentContent({
                 identity, path: readPath, content: getBuffer(identity)?.content ?? liveBuffer.content,
@@ -317,7 +379,7 @@ export function useDocumentContent({
         // Another view may have finished the same opening and accepted input
         // while this view was still reading recovery. Adopt that live buffer.
         if ((options?.showLoading ?? true) && session.loaded && session.buffer) {
-          applyLoadedContent(session.identity.path, session.buffer.lastSavedContent, { preservePending: true });
+          applyLoadedContent(readPath, session.buffer.lastSavedContent, { preservePending: true });
           return;
         }
         applyLoadedContent(readPath, fullContent, {
@@ -333,11 +395,21 @@ export function useDocumentContent({
         }
       } catch (err) {
         if (currentLoadId !== counter.current) return;
+        if (restartAfterPathMove()) return;
+        session.loaded = false;
         const language = getCurrentAppLanguage();
-        setState((prev) => ({ ...prev, isLoading: false, error: readFailureMessage(err, language) }));
+        setState((prev) => ({
+          ...prev,
+          isLoading: false,
+          error: readFailureMessage(err, language),
+          errorKind: isMissingDocumentError(err) ? 'missing-note' : 'error',
+        }));
         logOpenDocPerf('reloadDocument:error', startedAt, {
           transitionId,
         });
+        if (!isolatedSession && transitionId !== null) {
+          useDocumentStore.getState().finishDocumentTransition(transitionId, 'unavailable');
+        }
       } finally {
         if (currentLoadId === counter.current && !isolatedSession && transitionId !== null) {
           useDocumentStore.getState().finishDocumentTransition(transitionId);
@@ -346,6 +418,7 @@ export function useDocumentContent({
     },
     [applyLoadedContent, identity, isolatedSession, externalScopePath, readOpeningRecovery, skipContentLoad, transitionId],
   );
+  reloadDocumentRef.current = reloadDocument;
 
   return {
     state,

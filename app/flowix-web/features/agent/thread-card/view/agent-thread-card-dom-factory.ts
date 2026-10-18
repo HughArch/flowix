@@ -166,7 +166,9 @@ export function createAgentThreadCardDom(
   body.dataset.noContextMenuScroll = "";
   body.addEventListener("click", options.onBodyClick);
   body.addEventListener("scroll", options.onBodyScroll, { passive: true });
-  body.addEventListener("wheel", options.onBodyWheel, { passive: true });
+  // Inline cards may route wheel input to the document until the message
+  // viewport is explicitly activated, so this listener must be cancellable.
+  body.addEventListener("wheel", options.onBodyWheel, { passive: false });
   const disposeBodyScrollbar = () => bodyScrollbar?.destroy();
 
   const loadingIndicator = document.createElement("div");

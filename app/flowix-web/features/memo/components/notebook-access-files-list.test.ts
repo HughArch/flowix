@@ -1,7 +1,7 @@
 import { act, createElement, type ReactNode } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
-import { useAgentDataStore } from "@features/agent/store/agent-data-store";
+import { useAgentWorkspaceStore, type AgentWorkspaceState } from "@features/agent/store/agent-workspace-store";
 import { NotebookAccessFilesList } from "@features/memo/components/notebook-access-files-list";
 import type { Notebook } from "@features/memo/store/note-store";
 import type { AgentAccessEntry } from "@/lib/types/agent-workspace.test-support";
@@ -38,15 +38,15 @@ function menuItems(host: HTMLElement): NodeListOf<HTMLElement> { return host.que
 
 describe("NotebookAccessFilesList — notebook-local add-dir list", () => {
   let active: MountHandle | null = null;
-  beforeEach(() => { setWorkspace({ resources: [], byNotebookId: {} }); useAgentDataStore.setState((state) => ({ workspaceActions: { ...state.workspaceActions, detachFolderFromNotebook: detachFolderMock } })); detachFolderMock.mockClear(); detachFolderMock.mockResolvedValue("saved"); toastMock.success.mockClear(); toastMock.error.mockClear(); });
+  beforeEach(() => { setWorkspace({ resources: [], byNotebookId: {} }); useAgentWorkspaceStore.setState((state) => ({ workspaceActions: { ...state.workspaceActions, detachFolderFromNotebook: detachFolderMock } })); detachFolderMock.mockClear(); detachFolderMock.mockResolvedValue("saved"); toastMock.success.mockClear(); toastMock.error.mockClear(); });
   afterEach(() => { if (active) { void act(() => active!.root.unmount()); active.host.remove(); active = null; } });
   it("renders add-dir rows without workspace controls or badges", () => { active = mount(makeNotebook(), ["/folder-a", "/folder-b"]); expect(active.host.textContent).toContain("folder-a"); expect(active.host.querySelectorAll(".agent-composer__access-workspace-star").length).toBe(0); expect(active.host.querySelectorAll('[data-testid="menu-item:Set as workspace"]').length).toBe(0); expect(menuItems(active.host).length).toBe(2); });
   it("deleting an add-dir detaches only that notebook path", async () => { const notebook = makeNotebook(); active = mount(notebook, ["/folder-a", "/folder-b"]); await act(async () => { (menuItems(active!.host)[0] as HTMLElement).click(); await Promise.resolve(); }); expect(detachFolderMock).toHaveBeenCalledWith(notebook.id, "/folder-a"); expect(toastMock.success).toHaveBeenCalled(); });
   it("does not render rows without a selected notebook", () => { active = mount(undefined, ["/folder-a"]); expect(menuItems(active.host).length).toBe(0); });
 });
 
-function setWorkspace(update: Partial<import("@features/agent/store/agent-data-store").AgentWorkspaceState> | ((state: import("@features/agent/store/agent-data-store").AgentWorkspaceState) => Partial<import("@features/agent/store/agent-data-store").AgentWorkspaceState>)) {
-  const store = useAgentDataStore.getState();
+function setWorkspace(update: Partial<AgentWorkspaceState> | ((state: AgentWorkspaceState) => Partial<AgentWorkspaceState>)) {
+  const store = useAgentWorkspaceStore.getState();
   const patch = typeof update === "function" ? update(store.workspace) : update;
-  useAgentDataStore.setState({ workspace: { ...store.workspace, ...patch } });
+  useAgentWorkspaceStore.setState({ workspace: { ...store.workspace, ...patch } });
 }

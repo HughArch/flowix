@@ -23,6 +23,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
 import { SectionHeader } from '@features/preferences/sections/primitives';
 import { cn } from '@/lib/utils';
 import { useCloudAccountState } from '@features/preferences/hooks/use-cloud-account-state';
+import { PiCloudModelsSection } from '@features/preferences/sections/pi-cloud-models-section';
 
 function formatStorageCapacity(value: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -349,6 +350,8 @@ export function CloudSyncSection() {
               </div>}
             </div>
           </div>
+
+          <PiCloudModelsSection authenticated />
 
           {(ordersLoading || ordersLoadError || orders.length > 0) && (
             <div className="space-y-3">

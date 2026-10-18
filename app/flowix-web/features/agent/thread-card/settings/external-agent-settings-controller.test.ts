@@ -63,7 +63,7 @@ let storedFilter = { key: "", operator: "", value: "" };
 
 function memo(id: string, properties: Record<string, unknown>): MemoItem {
   return {
-    id,
+    relativePath: `${id}.md`,
     filename: `${id}.md`,
     preview: `${id} description`,
     thumbnail: null,

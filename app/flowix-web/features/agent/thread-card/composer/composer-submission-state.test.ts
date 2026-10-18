@@ -9,11 +9,11 @@ const idle = {
 
 describe("composer submission policy", () => {
   it("uses one command catalog for typed prompts and menu commands", () => {
-    expect(getComposerSubmissionKind("deepseek-harness", "/export")).toBe("command");
-    expect(getComposerSubmissionKind("deepseek-harness", "/compact")).toBe("command");
+    expect(getComposerSubmissionKind("dsh", "/export")).toBe("command");
+    expect(getComposerSubmissionKind("dsh", "/compact")).toBe("command");
     expect(getComposerSubmissionKind("codex", "/goal set ship it")).toBe("command");
     expect(getComposerSubmissionKind("codex", "/goalkeeper")).toBe("message");
-    expect(getComposerSubmissionKind("claude", "/goal")).toBe("message");
+    expect(getComposerSubmissionKind("claudecode", "/goal")).toBe("message");
     expect(getComposerSubmissionKind("codex", "$browser:review")).toBe("message");
   });
 
@@ -37,13 +37,13 @@ describe("composer submission policy", () => {
       .toMatchObject({ action, disabled, canSubmit });
   });
 
-  it.each(["codex", "deepseek-harness", "pi"] as const)("allows %s messages to queue, but not native commands", (agentType) => {
+  it.each(["codex", "dsh", "pi"] as const)("allows %s messages to queue, but not native commands", (agentType) => {
     expect(selectComposerSubmissionState({ ...idle, agentType, isModelRunning: true }).canSubmit).toBe(true);
     expect(selectComposerSubmissionState({ ...idle, agentType, isModelRunning: true, kind: "command" }).canSubmit).toBe(false);
   });
 
   it("keeps Stop available for agents that cannot queue without permitting Enter to send", () => {
-    expect(selectComposerSubmissionState({ ...idle, agentType: "claude", isModelRunning: true }))
+    expect(selectComposerSubmissionState({ ...idle, agentType: "claudecode", isModelRunning: true }))
       .toMatchObject({ action: "stop", disabled: false, canSubmit: false });
   });
 });

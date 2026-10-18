@@ -25,8 +25,8 @@ describe("workspace capabilities", () => {
     expect(codex.switchBetweenRuns).toBe(false);
     expect(codex.switchRequiresRuntimeRestart).toBe(false);
     expect(codex.preservesConversationSession).toBe(true);
-    expect(getAgentRuntimeSpec("deepseek-harness").workspace.switchBetweenRuns).toBe(false);
-    for (const type of ["claude", "opencode"] as const) {
+    expect(getAgentRuntimeSpec("dsh").workspace.switchBetweenRuns).toBe(false);
+    for (const type of ["claudecode", "opencode"] as const) {
       expect(getAgentRuntimeSpec(type).workspace.switchBetweenRuns).toBe(false);
     }
   });
@@ -70,7 +70,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
 
   it("完全没输入时返回 cwd=undefined / workspacePaths=[] (dispatch 据此判断是否拦截)", () => {
     const result = buildAgentRuntimeConfig({
-      typeKey: "claude",
+      typeKey: "claudecode",
       permissionMode: "workspace-write",
       codexModel: "inherit",
       codexReasoningEffort: "low",
@@ -81,7 +81,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
 
   it("资料目录始终是 add-dir, cwd 固定为当前笔记本", () => {
     const result = buildAgentRuntimeConfig({
-      typeKey: "deepseek-harness",
+      typeKey: "dsh",
       notebookPath: "D:\\当前笔记本",
       permissionMode: "workspace-write",
       codexModel: "inherit",
@@ -101,7 +101,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
 
   it("没有显式主空间时 cwd 仍固定为笔记本", () => {
     const result = buildAgentRuntimeConfig({
-      typeKey: "deepseek-harness",
+      typeKey: "dsh",
       notebookPath: "D:\\当前笔记本",
       permissionMode: "workspace-write",
       codexModel: "inherit",
@@ -118,7 +118,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
 
   it("资料列表为空 (没添加资料), cwd 退到当前笔记本路径", () => {
     const result = buildAgentRuntimeConfig({
-      typeKey: "deepseek-harness",
+      typeKey: "dsh",
       notebookPath: "D:\\当前笔记本",
       permissionMode: "workspace-write",
       codexModel: "inherit",
@@ -131,7 +131,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
 
   it("未传 defaultFiles 时, 仅当前笔记本作为 cwd", () => {
     const result = buildAgentRuntimeConfig({
-      typeKey: "claude",
+      typeKey: "claudecode",
       notebookPath: "D:\\当前笔记本",
       permissionMode: "workspace-write",
       codexModel: "inherit",
@@ -189,7 +189,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
 
   it("DeepSeek Harness exposes model before mode and permission and sends the card overrides", () => {
     const result = buildAgentRuntimeConfig({
-      typeKey: "deepseek-harness",
+      typeKey: "dsh",
       notebookPath: "/tmp/notebook",
       permissionMode: "workspace-write",
       codexModel: "inherit",
@@ -203,7 +203,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
     expect(result.deepseekHarness?.mode).toBe("code");
     expect(result.deepseekHarness?.model).toBe("deepseek-v4-pro");
     expect(result.deepseekHarness?.providerId).toBe("provider-b");
-    expect(getAgentRuntimeSpec("deepseek-harness").emptySettings).toEqual([
+    expect(getAgentRuntimeSpec("dsh").emptySettings).toEqual([
       "model",
       "mode",
       "permission",
@@ -212,7 +212,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
 
   it("DeepSeek Harness inherit 时不序列化模型, 选定后透传卡片模型", () => {
     const inherited = buildAgentRuntimeConfig({
-      typeKey: "deepseek-harness",
+      typeKey: "dsh",
       notebookPath: "/tmp/project",
       permissionMode: "workspace-write",
       codexModel: "inherit",
@@ -221,7 +221,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
     expect(inherited.deepseekHarness?.model).toBe("inherit");
 
     const selected = buildAgentRuntimeConfig({
-      typeKey: "deepseek-harness",
+      typeKey: "dsh",
       notebookPath: "/tmp/project",
       permissionMode: "workspace-write",
       codexModel: "deepseek-v4-pro",
@@ -231,13 +231,13 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
   });
 
   it("DeepSeek Harness supports empty-card runtime settings for files (空状态设置区仍可用)", () => {
-    expect(supportsAgentEmptySettings("deepseek-harness")).toBe(true);
+    expect(supportsAgentEmptySettings("dsh")).toBe(true);
     expect(supportsAgentEmptySettings("codex")).toBe(true);
-    expect(supportsAgentEmptySettings("claude")).toBe(true);
-    expect(supportsAgentEmptySettings("deepseek-harness")).toBe(true);
-    expect(supportsAgentRuntimeSetting("deepseek-harness", "model")).toBe(true);
-    expect(supportsAgentRuntimeSetting("deepseek-harness", "mode")).toBe(true);
-    expect(supportsAgentRuntimeSetting("deepseek-harness", "permission")).toBe(true);
+    expect(supportsAgentEmptySettings("claudecode")).toBe(true);
+    expect(supportsAgentEmptySettings("dsh")).toBe(true);
+    expect(supportsAgentRuntimeSetting("dsh", "model")).toBe(true);
+    expect(supportsAgentRuntimeSetting("dsh", "mode")).toBe(true);
+    expect(supportsAgentRuntimeSetting("dsh", "permission")).toBe(true);
   });
 
   it("omits yolo from Codex App Server access options", () => {
@@ -246,7 +246,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
       "workspace-write",
       "read-only",
     ]);
-    expect(getAgentAccessOptions("claude").map((option) => option.id)).not.toContain(
+    expect(getAgentAccessOptions("claudecode").map((option) => option.id)).not.toContain(
       "yolo",
     );
   });
@@ -266,7 +266,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
 
   it("migrates legacy Claude yolo selection to full access", () => {
     const result = buildAgentRuntimeConfig({
-      typeKey: "claude",
+      typeKey: "claudecode",
       notebookPath: "/tmp/project",
       permissionMode: "yolo",
       codexModel: "inherit",
@@ -294,7 +294,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
 
   it("DeepSeek Harness 卡片显式选择的权限仍生效", () => {
     const explicit = buildAgentRuntimeConfig({
-      typeKey: "deepseek-harness",
+      typeKey: "dsh",
       notebookPath: "/tmp/project",
       permissionMode: "workspace-write",
       codexModel: "inherit",
@@ -307,7 +307,7 @@ describe("buildAgentRuntimeConfig — 「资料列表 + 当前笔记本」派生
   });
 
   it("DeepSeek Harness 权限选项不含 yolo, 默认完全访问", () => {
-    expect(getAgentAccessOptions("deepseek-harness").map((o) => o.id)).toEqual([
+    expect(getAgentAccessOptions("dsh").map((o) => o.id)).toEqual([
       "danger-full-access",
       "workspace-write",
       "read-only",

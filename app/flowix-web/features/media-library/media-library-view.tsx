@@ -7,13 +7,14 @@ import { resolveDatasetFilterForLocation } from '@features/collection/dataset-fi
 import { collectionSessionKey } from '@/lib/collection-session-key';
 import { reuseCollectionValue } from '@features/collection/content-equality';
 import { FolderCollectionSwitchConfirmDialog } from '@features/collection/public/folder-api';
-import { isLegacyCollectionSource } from '@features/collection/model';
+import { collectionDisplayName, isLegacyCollectionSource } from '@features/collection/model';
 import { collectionDisplayDescriptor } from '@/lib/collection-display-registry';
 import { subscribe } from '@platform/tauri/event-bus';
 import { useCallback, useEffect, useMemo, useRef, useState, type SetStateAction } from 'react';
-import { externalDocuments, files } from '@platform/tauri/client';
+import { externalDocuments, files, notebooks as notebookClient, type CollectionChangedEvent } from '@platform/tauri/client';
 import { canonicalDirectoryPath, canonicalPath } from '@/lib/path';
 import { useNoteStore } from '@features/memo/store/note-store';
+import { useNotebookMediaMaintenanceStore } from '@features/memo/store/notebook-media-maintenance-store';
 import { DocumentListView } from '@features/surface/document-list-view';
 import type { DocumentListViewContext } from '@features/surface/document-list-view-model';
 import { findFileDisplayPath, type FileDisplayIdentity } from '@/lib/file-display-registry';
@@ -23,6 +24,7 @@ import { useI18n } from '@/lib/i18n';
 import { canEditMediaLibraryFilter, hasMediaDatasetFilter, mediaCollectionFilterForSave, mediaLibraryDefaultView, mediaLibraryFileCondition, parseMediaLibrary, serializeMediaLibrary, type MediaLibraryDocument, type MediaLibraryFileCondition, type MediaLibraryKind } from './model';
 import { renameMediaLibrary } from './rename-media-library';
 import { useMediaLibraryActions } from './use-media-library-actions';
+import { useMediaLibraryRefresh } from './use-media-library-refresh';
 
 export function MediaLibraryView({ onSurfaceLifecycleReady, reportPresentation, filePath, fileIdentity, notebookPath: rawNotebookPath, notebookId = null, expectedCollectionId, workspaceHost = 'main-third' }: { onSurfaceLifecycleReady?: (lifecycle: SurfaceLifecycle | null) => void; reportPresentation?: (update: SurfacePresentationUpdate) => void; filePath: string; fileIdentity?: FileDisplayIdentity; notebookPath: string | null; notebookId?: string | null; expectedCollectionId?: string | null; workspaceHost?: 'main-third' | 'browser-column' }) {
   const notebookPath = rawNotebookPath ? canonicalDirectoryPath(rawNotebookPath) : null;
@@ -30,12 +32,15 @@ export function MediaLibraryView({ onSurfaceLifecycleReady, reportPresentation, 
   const { t } = useI18n();
   const notebooks = useNoteStore((state) => state.notebooks);
   const notebook = notebooks.find((candidate) => canonicalDirectoryPath(candidate.path) === (notebookPath ?? ''));
+  const resolvedNotebookId = notebookId ?? notebook?.id ?? null;
+  const mediaMaintenance = useNotebookMediaMaintenanceStore((state) => resolvedNotebookId ? state.statuses[resolvedNotebookId] : undefined);
   const [renamedFilePath, setRenamedFilePath] = useState<string | null>(null);
   const [document, setDocument] = useState<MediaLibraryDocument | null>(null);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [loadAttempt, setLoadAttempt] = useState(0);
   const [saving, setSavingState] = useState(false);
+  const [retryingMaintenance, setRetryingMaintenance] = useState(false);
   const savingStateRef = useRef(false);
   const saveBarrier = useMemo(createSaveBarrier, [sessionKey]);
   const setSaving = useCallback((action: SetStateAction<boolean>) => {
@@ -44,6 +49,17 @@ export function MediaLibraryView({ onSurfaceLifecycleReady, reportPresentation, 
     savingStateRef.current = next;
     setSavingState(next);
   }, [saveBarrier]);
+  const retryMediaMaintenance = useCallback(async () => {
+    if (!resolvedNotebookId || retryingMaintenance) return;
+    setRetryingMaintenance(true);
+    try {
+      await notebookClient.retryMediaMaintenance(resolvedNotebookId);
+    } catch (reason) {
+      toast.error(reason instanceof Error ? reason.message : t('mediaLibrary.maintenanceRetryFailed'));
+    } finally {
+      setRetryingMaintenance(false);
+    }
+  }, [resolvedNotebookId, retryingMaintenance, t]);
   const reportSaveFailure = useCallback(() => saveBarrier.fail(), [saveBarrier]);
   const [confirmFolderSwitch, setConfirmFolderSwitch] = useState(false);
   const sourceContentRef = useRef<string | null>(null);
@@ -64,7 +80,6 @@ export function MediaLibraryView({ onSurfaceLifecycleReady, reportPresentation, 
     };
   }, [onSurfaceLifecycleReady, saveBarrier, sessionKey]);
   useEffect(() => () => saveBarrier.cancel(), [saveBarrier]);
-  const pendingRefreshRef = useRef<{ key: string; path: string } | null>(null);
   const acceptContent = useCallback((content: string) => {
     if (currentSessionKeyRef.current !== sessionKey) return false;
     const next = parseMediaLibrary(content);
@@ -79,22 +94,9 @@ export function MediaLibraryView({ onSurfaceLifecycleReady, reportPresentation, 
     } : next);
     return true;
   }, [displayId, expectedCollectionId, sessionKey]);
-  const refreshContent = useCallback((path: string) => {
-    void externalDocuments.read(path, notebookPath).then((content) => {
-      if (currentSessionKeyRef.current !== sessionKey) return;
-      if (saveInFlightRef.current) {
-        pendingRefreshRef.current ??= { key: sessionKey, path };
-        return;
-      }
-      acceptContent(content);
-    }).catch(() => undefined);
-  }, [acceptContent, notebookPath, sessionKey]);
-  useEffect(() => {
-    if (saving) return;
-    const pending = pendingRefreshRef.current;
-    pendingRefreshRef.current = null;
-    if (pending?.key === sessionKey) refreshContent(pending.path);
-  }, [refreshContent, saving, sessionKey]);
+  const { error: refreshError, refreshContent, retryRefresh } = useMediaLibraryRefresh({
+    sessionKey, notebookPath, currentFilePath, saving, saveInFlightRef, acceptContent,
+  });
 
   useEffect(() => setRenamedFilePath(null), [filePath]);
 
@@ -137,24 +139,36 @@ export function MediaLibraryView({ onSurfaceLifecycleReady, reportPresentation, 
       if (!cancelled) setLoading(false);
     });
     return () => { cancelled = true; };
-  }, [displayId ?? currentFilePath, loadAttempt, notebookPath]);
+  }, [displayId ?? currentFilePath, expectedCollectionId, loadAttempt, notebookPath]);
 
   useEffect(() => {
-    const refresh = (event: { notebookId: string; collectionId?: string; relativePath?: string }) => {
+    const refresh = (event: Partial<CollectionChangedEvent> & Pick<CollectionChangedEvent, 'notebookId'>) => {
       const collectionId = document?.collection.id;
-      if (event.notebookId !== (notebookId ?? notebook?.id) || !collectionId
-        || (event.collectionId && event.collectionId !== collectionId) || !notebookPath) return;
-      const path = event.relativePath ? `${canonicalDirectoryPath(notebookPath)}/${event.relativePath}`
-        : (displayId ? findFileDisplayPath(displayId) : null) ?? currentFilePath;
-      if (saveInFlightRef.current) {
-        // A readiness event must not replace a confirmed destination with the old display path.
-        if (event.relativePath || !pendingRefreshRef.current) pendingRefreshRef.current = { key: sessionKey, path };
-        return;
+      if (event.notebookId !== (notebookId ?? notebook?.id) || !collectionId || !notebookPath) return;
+      const root = canonicalDirectoryPath(notebookPath);
+      let movedPath: string | null = null;
+      if (event.directoryMove) {
+        const previous = canonicalPath(`${root}/${event.directoryMove.previousRelativePath}`);
+        const next = canonicalPath(`${root}/${event.directoryMove.relativePath}`);
+        const current = canonicalPath(currentFilePath);
+        if (current === previous || current.startsWith(`${previous}/`)) {
+          movedPath = `${next}${current.slice(previous.length)}`;
+        } else if (current === next || current.startsWith(`${next}/`)) {
+          movedPath = current;
+        }
       }
-      refreshContent(path);
+      if (event.collectionId && event.collectionId !== collectionId && !movedPath) return;
+      const eventPath = event.relativePath
+        ? `${root}/${event.relativePath}`
+        : (displayId ? findFileDisplayPath(displayId) : null) ?? currentFilePath;
+      const path = movedPath ?? eventPath;
+      // Events with an authoritative path can replace a queued readiness refresh.
+      refreshContent(path, Boolean(event.relativePath));
     };
-    const stopCollection = subscribe<{ notebookId: string; collectionId: string; relativePath: string }>('collection-changed', refresh);
-    const stopCatalog = subscribe<{ notebookId: string }>('file-management-changed', refresh);
+    const stopCollection = subscribe<CollectionChangedEvent>('collection-changed', refresh);
+    const stopCatalog = subscribe<{ notebookId: string; operationId?: string }>('file-management-changed', (event) => {
+      if (!event.operationId) refresh(event);
+    });
     return () => { stopCollection(); stopCatalog(); };
   }, [currentFilePath, displayId, document?.collection.id, notebook?.id, notebookId, notebookPath, refreshContent, sessionKey]);
 
@@ -275,9 +289,7 @@ export function MediaLibraryView({ onSurfaceLifecycleReady, reportPresentation, 
   const selectedKind = document ? mediaLibraryFileCondition(document).file_type : undefined;
   const resourceKinds = useMemo<MediaLibraryKind[]>(() => selectedKind ? [selectedKind] : ['image', 'video'], [selectedKind]);
   const activeCollectionId = document?.collection.id;
-  const libraryDisplayName = document?.collection.placement === 'folder'
-    ? currentFilePath.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '').split(/[\\/]/).pop() || document.collection.name
-    : document?.collection.name ?? '媒体库';
+  const libraryDisplayName = document ? collectionDisplayName(currentFilePath, document.collection.placement) : '媒体库';
   useEffect(() => {
     if (!reportPresentation) return;
     if (loading) {
@@ -349,6 +361,21 @@ export function MediaLibraryView({ onSurfaceLifecycleReady, reportPresentation, 
 
   return <div className="relative h-full min-h-0">
     {saving && <span className="pointer-events-none absolute right-5 top-4 z-10 text-[11px] text-[var(--muted-foreground)]">保存中…</span>}
+    {refreshError && <div role="alert" className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-lg border border-[var(--destructive)]/30 bg-[var(--destructive)]/5 px-3 py-2 text-xs text-[var(--foreground)]">
+      <span className="min-w-0 truncate">{t('mediaLibrary.refreshFailed')}: {refreshError}</span>
+      <button type="button" onClick={retryRefresh} className="shrink-0 rounded-lg border border-[var(--border)] px-2.5 py-1 text-xs hover:bg-[var(--hover-bg)]">
+        {t('error.retry')}
+      </button>
+    </div>}
+    {mediaMaintenance?.state === 'failed' && <div role="alert" className="mx-4 mt-3 flex items-center justify-between gap-3 rounded-lg border border-[var(--destructive)]/30 bg-[var(--destructive)]/5 px-3 py-2 text-xs text-[var(--foreground)]">
+      <span className="min-w-0 truncate">{mediaMaintenance.message || t('mediaLibrary.maintenanceFailed')}</span>
+      <button type="button" disabled={retryingMaintenance} onClick={() => void retryMediaMaintenance()} className="shrink-0 rounded-lg border border-[var(--border)] px-2.5 py-1 text-xs hover:bg-[var(--hover-bg)] disabled:opacity-50">
+        {retryingMaintenance ? t('mediaLibrary.maintenanceRunning') : t('error.retry')}
+      </button>
+    </div>}
+    {(mediaMaintenance?.state === 'queued' || mediaMaintenance?.state === 'running') && <div role="status" className="mx-4 mt-3 rounded-lg bg-[var(--muted)] px-3 py-2 text-xs text-[var(--muted-foreground)]">
+      {mediaMaintenance.state === 'queued' ? t('mediaLibrary.maintenanceQueued') : t('mediaLibrary.maintenanceRunning')}
+    </div>}
     <DocumentListView
       key={listContext.displayId}
       listContext={listContext}

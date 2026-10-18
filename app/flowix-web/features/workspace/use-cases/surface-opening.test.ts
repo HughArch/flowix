@@ -1,11 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 
 const mocks = vi.hoisted(() => ({
-  openWork: vi.fn(), openBrowser: vi.fn(), flush: vi.fn(),
+  openWork: vi.fn(), openBrowser: vi.fn(),
+  prepareDocumentLeave: vi.fn(),
   workIdentity: null as { kind: 'external'; path: string } | null,
 }));
 vi.mock('./workspace-navigation', () => ({
-  openExternalTarget: mocks.openWork, flushWorkspaceDocument: mocks.flush,
+  openExternalTarget: mocks.openWork,
+  prepareActiveWorkColumnDocumentLeave: mocks.prepareDocumentLeave,
   openCollectionTarget: vi.fn(),
   openMediaLibraryTarget: vi.fn(), openMediaTarget: vi.fn(),
   openPluginWorkbench: vi.fn(), openTableTarget: vi.fn(), openWebTarget: vi.fn(),
@@ -36,6 +38,7 @@ describe('public surface opening host contract', () => {
   const target = { kind: 'external' as const, path: '/notes/a.md', scopePath: '/notes' };
   beforeEach(() => {
     vi.clearAllMocks();
+    mocks.prepareDocumentLeave.mockResolvedValue(undefined);
     mocks.workIdentity = null;
     mocks.openWork.mockImplementation(async (path: string) => { mocks.workIdentity = { kind: 'external', path }; });
     mocks.openBrowser.mockResolvedValue({ host: 'browser-column', tabId: 'a', alreadyOpen: true });
@@ -59,8 +62,8 @@ describe('public surface opening host contract', () => {
   it('publishes Work changes before opening a second view of the same content', async () => {
     mocks.workIdentity = { kind: 'external', path: target.path };
     await openWorkspaceSurface({ host: 'browser-column', target });
-    expect(mocks.flush).toHaveBeenCalledOnce();
-    expect(mocks.flush.mock.invocationCallOrder[0]).toBeLessThan(mocks.openBrowser.mock.invocationCallOrder[0]);
+    expect(mocks.prepareDocumentLeave).toHaveBeenCalledOnce();
+    expect(mocks.prepareDocumentLeave.mock.invocationCallOrder[0]).toBeLessThan(mocks.openBrowser.mock.invocationCallOrder[0]);
   });
 
   it('preserves a cancelled Browser navigation result', async () => {

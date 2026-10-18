@@ -1,12 +1,13 @@
 import { beforeEach, describe, expect, it, vi } from "vitest";
-import type { AgentWorkspaceSnapshot, NotebookWorkspaceConfig } from "@/lib/types/agent-workspace";
+import type { AgentWorkspaceSnapshot, LegacyAgentRuntimePreferences, NotebookWorkspaceConfig } from "@/lib/types/agent-workspace";
 import { STORAGE_KEYS } from "@/lib/constants";
 
 const backend = vi.hoisted(() => ({ get: vi.fn(), getLegacyPreferences: vi.fn(), attachDirectory: vi.fn(), detachDirectory: vi.fn(), pickDirectory: vi.fn() }));
 const piBackend = vi.hoisted(() => ({ getFeatures: vi.fn(), clearLegacyCodeMode: vi.fn() }));
 vi.mock("@platform/tauri/client", () => ({ agentWorkspace: backend, piModels: piBackend }));
 vi.mock("./agent-session-store", () => ({ useAgentSessionStore: { getState: () => ({ sessionMeta: { settings: {} } }) } }));
-import { useAgentDataStore, ensureAgentWorkspaceReady } from "./agent-data-store";
+import { ensureAgentPreferencesReady, useAgentDataStore } from "./agent-data-store";
+import { ensureAgentWorkspaceReady, useAgentWorkspaceStore } from "./agent-workspace-store";
 
 const notebook = (id: string) => ({ id, kind: "notebook" as const, path: `/notes/${id}`, name: id, enabled: true, missing: false, addedAt: 1, updatedAt: 1 });
 const resource = { ...notebook("resource"), kind: "folder" as const, path: "/projects/shared" };
@@ -17,6 +18,7 @@ beforeEach(() => {
   vi.restoreAllMocks();
   localStorage.clear();
   useAgentDataStore.setState(useAgentDataStore.getInitialState(), true);
+  useAgentWorkspaceStore.setState(useAgentWorkspaceStore.getInitialState(), true);
   vi.resetAllMocks();
   backend.get.mockImplementation(async () => snapshot());
   backend.getLegacyPreferences.mockResolvedValue(null);
@@ -84,7 +86,7 @@ describe("Pi mode startup migration", () => {
     await useAgentDataStore.getState().initializePiMode();
     expect(useAgentDataStore.getState().agents.pi.user.mode).toBe("code");
     expect(useAgentDataStore.getState().loadState.piMode.status).toBe("ready");
-    expect(useAgentDataStore.getState().loadState.workspace.status).toBe("idle");
+    expect(useAgentWorkspaceStore.getState().loadState.workspace.status).toBe("idle");
     expect(backend.get).not.toHaveBeenCalled();
     expect(piBackend.clearLegacyCodeMode).toHaveBeenCalledOnce();
   });
@@ -134,21 +136,21 @@ describe("local.db workspace projection", () => {
       { id: 'disabled', path: '/disabled', label: 'Disabled', enabled: false },
     );
     backend.get.mockResolvedValue(data);
-    expect(useAgentDataStore.getState().workspaceActions.getNotebookFiles('one')).toBeUndefined();
-    await useAgentDataStore.getState().workspaceActions.loadInitial();
-    expect(useAgentDataStore.getState().workspaceActions.getNotebookFiles('one')?.folders).toEqual([resource.path]);
-    expect(useAgentDataStore.getState().workspace.resources).toHaveLength(3);
+    expect(useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles('one')).toBeUndefined();
+    await useAgentWorkspaceStore.getState().workspaceActions.loadInitial();
+    expect(useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles('one')?.folders).toEqual([resource.path]);
+    expect(useAgentWorkspaceStore.getState().workspace.resources).toHaveLength(3);
   });
   it("never persists or rehydrates a stale workspace cache", async () => {
-    await useAgentDataStore.getState().workspaceActions.loadInitial();
+    await useAgentWorkspaceStore.getState().workspaceActions.loadInitial();
     const persisted = JSON.parse(localStorage.getItem(STORAGE_KEYS.AGENT_DATA)!);
     expect(persisted.state.workspace).toBeUndefined();
     expect(persisted.state.agents.codex.catalog.capabilities).toBeUndefined();
-    const current = useAgentDataStore.getState().workspace;
+    const current = useAgentWorkspaceStore.getState().workspace;
     persisted.state.workspace = { resources: [], byNotebookId: {}, validatedAt: Date.now()+1000 };
     localStorage.setItem(STORAGE_KEYS.AGENT_DATA,JSON.stringify(persisted));
     await useAgentDataStore.persist.rehydrate();
-    expect(useAgentDataStore.getState().workspace).toBe(current);
+    expect(useAgentWorkspaceStore.getState().workspace).toBe(current);
   });
   it.each(['attach-first','detach-first'])("serializes opposite path operations: %s", async order => {
     let data = snapshot();
@@ -160,8 +162,8 @@ describe("local.db workspace projection", () => {
       data.notebookConfigs[id].addDirs=[];
       return structuredClone(data);
     });
-    await useAgentDataStore.getState().workspaceActions.loadInitial();
-    const actions = useAgentDataStore.getState().workspaceActions;
+    await useAgentWorkspaceStore.getState().workspaceActions.loadInitial();
+    const actions = useAgentWorkspaceStore.getState().workspaceActions;
     await Promise.all(order==='attach-first' ? [actions.attachFolderToNotebook('two',resource.path),actions.detachFolderFromNotebook('two',resource.path)] : [actions.detachFolderFromNotebook('one',resource.path),actions.attachFolderToNotebook('one',resource.path)]);
     expect(actions.getNotebookFiles(order==='attach-first'?'two':'one')?.folders).toEqual(order==='attach-first'?[]:[resource.path]);
   });
@@ -169,36 +171,46 @@ describe("local.db workspace projection", () => {
     const data = snapshot();
     data.notebookConfigs.two.addDirs=structuredClone(localConfig.addDirs);
     backend.pickDirectory.mockResolvedValue(data);
-    expect((await useAgentDataStore.getState().workspaceActions.addFolderFromPicker(null)).ok).toBe(false);
+    expect((await useAgentWorkspaceStore.getState().workspaceActions.addFolderFromPicker(null)).ok).toBe(false);
     expect(backend.pickDirectory).not.toHaveBeenCalled();
-    expect((await useAgentDataStore.getState().workspaceActions.addFolderFromPicker('two')).ok).toBe(true);
+    expect((await useAgentWorkspaceStore.getState().workspaceActions.addFolderFromPicker('two')).ok).toBe(true);
     expect(backend.pickDirectory).toHaveBeenCalledWith('two');
     expect(backend.attachDirectory).not.toHaveBeenCalled();
-    expect(useAgentDataStore.getState().workspaceActions.getNotebookFiles('two')?.folders).toEqual([resource.path]);
+    expect(useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles('two')?.folders).toEqual([resource.path]);
   });
   it("ignores a read started before a committed mutation", async () => {
-    await useAgentDataStore.getState().workspaceActions.loadInitial();
+    await useAgentWorkspaceStore.getState().workspaceActions.loadInitial();
     let finish!: (data: AgentWorkspaceSnapshot) => void;
     backend.get.mockReturnValueOnce(new Promise<AgentWorkspaceSnapshot>(resolve => {finish=resolve;}));
-    const reading=useAgentDataStore.getState().workspaceActions.loadInitial();
+    const reading=useAgentWorkspaceStore.getState().workspaceActions.loadInitial();
     const saved=snapshot(); saved.notebookConfigs.one.addDirs=[];
     backend.detachDirectory.mockResolvedValue(saved);
-    await useAgentDataStore.getState().workspaceActions.detachFolderFromNotebook('one',resource.path);
+    await useAgentWorkspaceStore.getState().workspaceActions.detachFolderFromNotebook('one',resource.path);
     finish(snapshot()); await reading;
-    expect(useAgentDataStore.getState().workspaceActions.getNotebookFiles('one')?.folders).toEqual([]);
+    expect(useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles('one')?.folders).toEqual([]);
   });
   it("migrates old user preferences without writing the legacy JSON", async () => {
     backend.getLegacyPreferences.mockResolvedValue({codex:{model:{key:'legacy-model'}}});
-    await useAgentDataStore.getState().workspaceActions.loadInitial();
+    await useAgentDataStore.getState().initializeLegacyPreferences();
     expect(useAgentDataStore.getState().agents.codex.user.model?.id).toBe('legacy-model');
     expect(JSON.parse(localStorage.getItem(STORAGE_KEYS.AGENT_DATA)!).state.legacyPreferencesMigrated).toBe(true);
   });
+  it("waits for legacy preference migration before preparing an Agent request", async () => {
+    let finish!: (value: LegacyAgentRuntimePreferences | null) => void;
+    backend.getLegacyPreferences.mockReturnValueOnce(new Promise((resolve) => { finish = resolve; }));
+    const ready = ensureAgentPreferencesReady("codex");
+    await Promise.resolve();
+    expect(useAgentDataStore.getState().agents.codex.user.model).toBeUndefined();
+    finish({ codex: { model: { key: "legacy-model" } } });
+    await ready;
+    expect(useAgentDataStore.getState().agents.codex.user.model?.id).toBe("legacy-model");
+  });
   it("reports a database failure and retries", async () => {
     backend.get.mockRejectedValueOnce(new Error('database unavailable'));
-    await useAgentDataStore.getState().workspaceActions.loadInitial();
-    expect(useAgentDataStore.getState().loadState.workspace.status).toBe('error');
-    await useAgentDataStore.getState().workspaceActions.loadInitial();
-    expect(useAgentDataStore.getState().loadState.workspace.status).toBe('ready');
+    await useAgentWorkspaceStore.getState().workspaceActions.loadInitial();
+    expect(useAgentWorkspaceStore.getState().loadState.workspace.status).toBe('error');
+    await useAgentWorkspaceStore.getState().workspaceActions.loadInitial();
+    expect(useAgentWorkspaceStore.getState().loadState.workspace.status).toBe('ready');
   });
 });
 
@@ -206,16 +218,17 @@ it("waits for initial database hydration before allowing a workspace snapshot", 
   let finish!: (snapshot: AgentWorkspaceSnapshot) => void;
   backend.get.mockReturnValueOnce(new Promise<AgentWorkspaceSnapshot>(resolve => { finish=resolve; }));
   const ready = ensureAgentWorkspaceReady();
-  expect(useAgentDataStore.getState().workspaceActions.getNotebookFiles('one')).toBeUndefined();
+  expect(useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles('one')).toBeUndefined();
   finish(snapshot()); await ready;
-  expect(useAgentDataStore.getState().workspaceActions.getNotebookFiles('one')?.folders).toEqual([resource.path]);
+  expect(useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles('one')?.folders).toEqual([resource.path]);
 });
 
 it("loads database mounts even when importing old preferences fails", async () => {
   backend.getLegacyPreferences.mockRejectedValue(new Error('legacy JSON unavailable'));
-  expect(await useAgentDataStore.getState().workspaceActions.loadInitial()).toBe(true);
+  expect(await useAgentWorkspaceStore.getState().workspaceActions.loadInitial()).toBe(true);
+  await expect(useAgentDataStore.getState().initializeLegacyPreferences()).rejects.toThrow('legacy JSON unavailable');
   expect(useAgentDataStore.getState().legacyPreferencesMigrated).toBe(false);
-  expect(useAgentDataStore.getState().workspaceActions.getNotebookFiles('one')?.folders).toEqual([resource.path]);
+  expect(useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles('one')?.folders).toEqual([resource.path]);
 });
 
 it("waits for the newer startup read when its own read was superseded", async () => {
@@ -224,10 +237,10 @@ it("waits for the newer startup read when its own read was superseded", async ()
   backend.get.mockReturnValueOnce(new Promise<AgentWorkspaceSnapshot>(resolve => { first=resolve; }));
   backend.get.mockReturnValueOnce(new Promise<AgentWorkspaceSnapshot>(resolve => { second=resolve; }));
   const ready=ensureAgentWorkspaceReady();
-  const newer=useAgentDataStore.getState().workspaceActions.loadInitial();
+  const newer=useAgentWorkspaceStore.getState().workspaceActions.loadInitial();
   first(snapshot());
   await Promise.resolve(); await Promise.resolve();
   second(snapshot());
   await Promise.all([ready,newer]);
-  expect(useAgentDataStore.getState().loadState.workspace.status).toBe('ready');
+  expect(useAgentWorkspaceStore.getState().loadState.workspace.status).toBe('ready');
 });

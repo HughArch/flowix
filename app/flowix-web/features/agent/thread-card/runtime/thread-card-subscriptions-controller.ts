@@ -2,6 +2,7 @@ import type { AgentTypeKey } from "@/types/agent";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
 import { useAgentRuntimeStore } from "@features/agent/store/agent-runtime-store";
 import { useAgentDataStore } from "@features/agent/store/agent-data-store";
+import { useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-store";
 import type { ThreadProjection } from "@features/agent/store/session-reducer";
 import {
   isLocalExternalThreadId,
@@ -44,6 +45,7 @@ export class AgentThreadCardSubscriptionsController {
       this.subscribeThreadState(),
       this.subscribeTitle(),
       this.subscribeAgentData(),
+      this.subscribeWorkspace(),
       ...this.subscribeConversation(),
       this.subscribeRuntime(),
     ];
@@ -213,13 +215,23 @@ export class AgentThreadCardSubscriptionsController {
         || current.user.reasoningByModel !== prior.user.reasoningByModel
         || current.user.serviceTier !== prior.user.serviceTier;
       const modelCatalogChanged = current.catalog.models !== prior.catalog.models;
-      const workspaceChanged = state.workspace !== previous.workspace;
-      if (!preferenceChanged && !modelCatalogChanged && !workspaceChanged) return;
-      this.options.refreshAttrs();
-      this.options.refreshExternalAgentEmptySettings();
-      if (this.options.isExternalSettingsOpen()) {
-        this.options.renderCodexSettingsPopover();
-      }
+      if (!preferenceChanged && !modelCatalogChanged) return;
+      this.refreshAgentSettings();
     });
+  }
+
+  private subscribeWorkspace(): Unsubscribe {
+    return useAgentWorkspaceStore.subscribe((state, previous) => {
+      if (state.workspace === previous.workspace) return;
+      this.refreshAgentSettings();
+    });
+  }
+
+  private refreshAgentSettings(): void {
+    this.options.refreshAttrs();
+    this.options.refreshExternalAgentEmptySettings();
+    if (this.options.isExternalSettingsOpen()) {
+      this.options.renderCodexSettingsPopover();
+    }
   }
 }

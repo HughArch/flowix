@@ -26,7 +26,6 @@ import {
   listenToCloudStateChanges,
   listenToCloudSyncStatusChanges,
   type CloudSyncStatus,
-  type DshDownloadProgress,
 } from '@platform/tauri/client';
 import type { AppUpdaterState } from '@features/shell/hooks/use-app-updater';
 
@@ -40,57 +39,13 @@ interface StatusBarProps {
   productIntroOpen: boolean;
   onProductIntroOpenChange: (open: boolean) => void;
   onOpenMcpPreferences: () => void;
-  onOpenDshPreferences: () => void;
-  dshDownload: DshDownloadProgress | null;
   updater: AppUpdaterState;
-  onOpenAppUpdatePrompt: () => void;
-}
-
-function DshDownloadProgressIcon({ percent }: { percent: number | null | undefined }) {
-  const radius = 5;
-  const circumference = 2 * Math.PI * radius;
-  const progress = percent == null ? 0.25 : Math.min(100, Math.max(0, percent)) / 100;
-
-  return (
-    <svg
-      aria-hidden="true"
-      className={`h-3.5 w-3.5 shrink-0${percent == null ? ' flowix-spin' : ''}`}
-      viewBox="0 0 12 12"
-    >
-      <circle
-        cx="6"
-        cy="6"
-        r={radius}
-        fill="none"
-        stroke="currentColor"
-        strokeOpacity="0.25"
-        strokeWidth="1.5"
-      />
-      <circle
-        cx="6"
-        cy="6"
-        r={radius}
-        fill="none"
-        stroke="currentColor"
-        strokeLinecap="round"
-        strokeWidth="1.5"
-        strokeDasharray={circumference}
-        strokeDashoffset={circumference * (1 - progress)}
-        transform="rotate(-90 6 6)"
-      />
-    </svg>
-  );
 }
 
 function PiRuntimeStatusIndicator() {
   const { t } = useI18n();
   const piStatus = useAgentRuntimeStore((state) => state.statusByType.pi);
   const isChecking = useAgentRuntimeStore((state) => state.isChecking);
-  const refreshIfStale = useAgentRuntimeStore((state) => state.refreshIfStale);
-
-  useEffect(() => {
-    void refreshIfStale();
-  }, [refreshIfStale]);
 
   const runtimeStatus = normalizeAgentRuntimeStatus(piStatus, isChecking);
   const statusText = runtimeStatus.state === 'ready'
@@ -141,10 +96,7 @@ export function StatusBar({
   productIntroOpen,
   onProductIntroOpenChange,
   onOpenMcpPreferences,
-  onOpenDshPreferences,
-  dshDownload,
   updater,
-  onOpenAppUpdatePrompt,
 }: StatusBarProps) {
   const { t } = useI18n();
   const [notebookPopupOpen, setNotebookPopupOpen] = useState(false);
@@ -285,18 +237,7 @@ export function StatusBar({
         </button>
         <AgentConversationStatusBar />
         <div className="flex-1" />
-        {dshDownload && (
-          <button
-            type="button"
-            onClick={onOpenDshPreferences}
-            className="inline-flex h-[22px] items-center gap-0.5 rounded-md px-2 text-xs leading-none text-[var(--primary)] hover:bg-[var(--muted)]"
-            title={t('preferences.dsh.runtime.downloadProgress')}
-          >
-            <DshDownloadProgressIcon percent={dshDownload.percent} />
-            <span>{t('preferences.dsh.runtime.downloading')}</span>
-          </button>
-        )}
-        <ProductUpdatePill updater={updater} onClick={onOpenAppUpdatePrompt} />
+        <ProductUpdatePill updater={updater} />
         {cloudSyncInProgress && (
           <div
             className="inline-flex h-[22px] items-center gap-1 px-1.5 text-xs leading-none text-[var(--muted-foreground)]"

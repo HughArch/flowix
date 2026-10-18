@@ -1,27 +1,7 @@
 import { Schema } from '@tiptap/pm/model'
-import { describe, expect, it, vi } from 'vitest'
+import { describe, expect, it } from 'vitest'
 
-vi.mock(
-  '@features/editor/extensions/codeblock-shiki/shiki/shiki-highlighter',
-  () => ({
-    getShiki: () => ({
-      codeToTokensBase: (code: string) => (
-        code.split('\n').map((line) => (
-          line
-            ? [
-                { color: '#ffffff', content: '' },
-                { color: '#ffffff', content: line },
-              ]
-            : []
-        ))
-      ),
-      getLoadedLanguages: () => ['javascript', 'mermaid'],
-      getLoadedThemes: () => ['github-light'],
-    }),
-  }),
-)
-
-import { getDecorations } from './shiki-decorations'
+import { createShikiDecorationSet, getDecorations } from './shiki-decorations'
 
 const schema = new Schema({
   nodes: {
@@ -47,12 +27,30 @@ describe('Shiki code block decorations', () => {
     )
     const doc = schema.node('doc', null, [codeBlock])
 
-    const decorations = getDecorations({
+    const inputs = [{
+      from: 1,
+      text: 'alpha\nbeta\ngamma',
+      language: 'javascript',
+      theme: 'github-light',
+    }]
+    const decorations = createShikiDecorationSet(
       doc,
-      name: 'codeBlock',
-      defaultLanguage: 'plaintext',
-      defaultTheme: 'github-light',
-    }).find()
+      {
+        doc,
+        name: 'codeBlock',
+        defaultLanguage: 'plaintext',
+        defaultTheme: 'github-light',
+      },
+      inputs,
+      [{
+        from: 1,
+        lines: [
+          [{ content: 'alpha', color: '#ffffff' }],
+          [{ content: 'beta', color: '#ffffff' }],
+          [{ content: 'gamma', color: '#ffffff' }],
+        ],
+      }],
+    ).find()
 
     expect(decorations).toHaveLength(3)
     expect(decorations.every(({ from, to }) => from < to)).toBe(true)

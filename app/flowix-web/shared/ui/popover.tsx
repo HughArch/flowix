@@ -138,6 +138,7 @@ interface PopoverContentProps {
 	sideOffset?: number;
 	offsetY?: number;
 	className?: string;
+	"aria-label"?: string;
 	style?: React.CSSProperties;
 	matchAnchorWidth?: boolean | number;
 	matchAnchorHeight?: boolean;
@@ -161,6 +162,7 @@ function PopoverContent({
 	sideOffset = 4,
 	offsetY = 0,
 	className,
+	"aria-label": ariaLabel,
 	style,
 	matchAnchorWidth = false,
 	matchAnchorHeight = false,
@@ -370,6 +372,8 @@ function PopoverContent({
 			data-side={side}
 				data-flowix-surface="popover"
 			data-flowix-menu-child={keepParentMenuOpen ? "" : undefined}
+			role={ariaLabel ? "dialog" : undefined}
+			aria-label={ariaLabel}
 			style={{
 				...style,
 				...(matchAnchorWidth && cellAnchorRect

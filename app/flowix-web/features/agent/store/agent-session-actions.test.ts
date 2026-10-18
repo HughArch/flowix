@@ -138,16 +138,17 @@ vi.mock("@features/document/store/document-store", () => ({
   },
 }));
 
-vi.mock("@features/agent/store/agent-data-store", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@features/agent/store/agent-data-store")>();
-  return { ...actual, ensureAgentWorkspaceReady: vi.fn(async () => {}), useAgentDataStore: Object.assign(
-    (selector: Parameters<typeof actual.useAgentDataStore>[0]) => actual.useAgentDataStore(selector),
-    actual.useAgentDataStore,
-    { getState: () => ({ ...actual.useAgentDataStore.getState(), workspaceActions: {
-      ...actual.useAgentDataStore.getState().workspaceActions,
-      getNotebookFiles: (notebookId: string | null | undefined) => notebookId
-        ? agentAccessMock.config.defaults?.files?.[notebookId] : undefined,
-    } }) },
+vi.mock("@features/agent/store/agent-workspace-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@features/agent/store/agent-workspace-store")>();
+  const getState = () => ({ ...actual.useAgentWorkspaceStore.getState(), workspaceActions: {
+    ...actual.useAgentWorkspaceStore.getState().workspaceActions,
+    getNotebookFiles: (notebookId: string | null | undefined) => notebookId
+      ? agentAccessMock.config.defaults?.files?.[notebookId] : undefined,
+  } });
+  return { ...actual, ensureAgentWorkspaceReady: vi.fn(async () => {}), useAgentWorkspaceStore: Object.assign(
+    (selector: Parameters<typeof actual.useAgentWorkspaceStore>[0]) => selector ? selector(getState()) : getState(),
+    actual.useAgentWorkspaceStore,
+    { getState },
   ) };
 });
 
@@ -259,7 +260,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     );
 
     const instance = useAgentSessionStore.getState().createInstance({
-      agentType: "deepseek-harness",
+      agentType: "dsh",
       title: "First title",
       threadId: null,
       source: { kind: "thread-card" },
@@ -369,7 +370,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     useChatStore.getState().reconcileRunningRunsFromSnapshot({
       [threadId]: {
         runId: "run-ended-offline",
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         startedAt: Date.now() - 10_000,
         currentTool: null,
       },
@@ -383,7 +384,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
 
     expect(useChatStore.getState().threadStates[threadId].isLoading).toBe(false);
     expect(reconcileCompletedRun).toHaveBeenCalledWith(
-      "deepseek-harness",
+      "dsh",
       threadId,
       "run-ended-offline",
     );
@@ -400,8 +401,8 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     );
     const threadId = "active-history-after-ipc-failure";
     useChatStore.setState({
-      activeThreadIds: { "deepseek-harness": threadId },
-      threadTypes: { [threadId]: "deepseek-harness" },
+      activeThreadIds: { "dsh": threadId },
+      threadTypes: { [threadId]: "dsh" },
     });
     vi.mocked(agent.runningThreads).mockRejectedValueOnce(
       new Error("ipc://localhost/agent_running_threads was blocked"),
@@ -412,7 +413,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
 
     await reconcileAgentRunsAndRefreshEndedHistory();
 
-    expect(loadMessages).toHaveBeenCalledWith("deepseek-harness", threadId);
+    expect(loadMessages).toHaveBeenCalledWith("dsh", threadId);
   });
 
   it("routes streamed assistant text into the same thread state consumed by Thread Card", async () => {
@@ -423,7 +424,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const store = useChatStore.getState();
     const threadId = "thread-card-flowix";
 
-    store.bindThreadType(threadId, "deepseek-harness");
+    store.bindThreadType(threadId, "dsh");
     store.dispatchAgentChunk({ kind: "stream_start", thread_id: threadId, run_id: "run-flowix" });
     store.dispatchAgentChunk({
       kind: "text",
@@ -491,7 +492,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const store = useChatStore.getState();
     const threadId = "thread-card-optimistic-user";
 
-    await store.sendMessageToThread(threadId, "Hello from user", "deepseek-harness");
+    await store.sendMessageToThread(threadId, "Hello from user", "dsh");
 
     const renderMessages =
       useAgentConversationStore.getState().messageStates[threadId]?.messages ??
@@ -534,7 +535,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const { useAgentSessionStore } = await import("@features/agent/store/agent-session-store");
     vi.mocked(agent.chatStream).mockRejectedValueOnce(new Error("request was rejected"));
     await expect(useAgentSessionStore.getState().sendMessageToThread(
-      "thread-rejected-dispatch", "keep input", "deepseek-harness", { rejectOnFailure: true },
+      "thread-rejected-dispatch", "keep input", "dsh", { rejectOnFailure: true },
     )).rejects.toThrow("request was rejected");
     expect(useAgentSessionStore.getState().threadProjections["thread-rejected-dispatch"].runs.isLoading).toBe(false);
   });
@@ -546,21 +547,21 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const activeThreadId = "thread-card-active-title";
     const cardThreadId = "thread-card-secondary-title";
     const cardInstance = useAgentConversationStore.getState().createInstance({
-      agentType: "deepseek-harness",
+      agentType: "dsh",
       title: "B title",
       threadId: cardThreadId,
       source: { kind: "thread-card" },
     });
 
     useChatStore.setState({
-      activeThreadIds: { "deepseek-harness": activeThreadId },
+      activeThreadIds: { "dsh": activeThreadId },
       currentThreadTitles: { [activeThreadId]: "A title" },
     });
 
     await useChatStore.getState().sendMessageToThread(
       cardThreadId,
       "message from B",
-      "deepseek-harness",
+      "dsh",
       {
         instanceId: cardInstance.instanceId,
         conversationTitle: "B title",
@@ -569,7 +570,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     );
 
     expect(useChatStore.getState().currentThreadTitles[activeThreadId]).toBe("A title");
-    expect(useChatStore.getState().threadLists["deepseek-harness"]).toEqual([]);
+    expect(useChatStore.getState().threadLists["dsh"]).toEqual([]);
     expect(
       useAgentConversationStore
         .getState()
@@ -594,7 +595,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     await useChatStore.getState().sendMessageToThread(
       threadId,
       "follow up from canonical",
-      "deepseek-harness",
+      "dsh",
       {
         currentNoteContent: "note context should not be appended",
       },
@@ -614,7 +615,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const threadId = "thread-low-frequency-conversation-live";
     const toolCallId = "tool-live-state";
 
-    useChatStore.getState().bindThreadType(threadId, "deepseek-harness");
+    useChatStore.getState().bindThreadType(threadId, "dsh");
     await seedProjection(threadId, (projection) => ({
       ...projection,
       messages: [
@@ -638,7 +639,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
       id: toolCallId,
       name: "Read",
       result: { content: "file contents from conversation state" },
-      agent_type: "deepseek-harness",
+      agent_type: "dsh",
     });
 
     const message =
@@ -666,19 +667,19 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const runId = "claude-live-reasoning-run";
     const store = useChatStore.getState();
 
-    store.bindThreadType(threadId, "claude");
+    store.bindThreadType(threadId, "claudecode");
     const chunks: AgentChunk[] = [
       {
         kind: "stream_start",
         thread_id: threadId,
         run_id: runId,
-        agent_type: "claude",
+        agent_type: "claudecode",
       },
       {
         kind: "reasoning",
         thread_id: threadId,
         run_id: runId,
-        agent_type: "claude",
+        agent_type: "claudecode",
         text: "first thought\n\n",
         message_id: "reasoning-provider-message-1-block-0",
         message_phase: "updated",
@@ -691,7 +692,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
         kind: "tool_call",
         thread_id: threadId,
         run_id: runId,
-        agent_type: "claude",
+        agent_type: "claudecode",
         id: "tool-cycle-1",
         name: "Bash",
         input: { command: "pwd" },
@@ -705,7 +706,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
         kind: "tool_result",
         thread_id: threadId,
         run_id: runId,
-        agent_type: "claude",
+        agent_type: "claudecode",
         id: "tool-cycle-1",
         name: "Bash",
         result: { content: "/workspace" },
@@ -719,7 +720,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
         kind: "reasoning",
         thread_id: threadId,
         run_id: runId,
-        agent_type: "claude",
+        agent_type: "claudecode",
         text: "second thought",
         message_id: "reasoning-provider-message-2-block-0",
         message_phase: "updated",
@@ -732,7 +733,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
         kind: "text",
         thread_id: threadId,
         run_id: runId,
-        agent_type: "claude",
+        agent_type: "claudecode",
         text: "final answer",
         message_id: "assistant-provider-message-2-block-1",
         message_phase: "updated",
@@ -745,7 +746,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
         kind: "stream_end",
         thread_id: threadId,
         run_id: runId,
-        agent_type: "claude",
+        agent_type: "claudecode",
         reason: null,
       },
     ];
@@ -760,13 +761,13 @@ describe("chat-store Agent Thread Card streaming flow", () => {
 
     expect(reasoning).toHaveLength(1);
     expect(reasoning[0]).toMatchObject({
-      id: `msg:claude:${runId}:reasoning:reasoning-${runId}`,
+      id: `msg:claudecode:${runId}:reasoning:reasoning-${runId}`,
       content: "first thought\n\nsecond thought",
       isCompleted: true,
     });
     expect(tools).toHaveLength(1);
     expect(tools[0]).toMatchObject({
-      toolCallId: `msg:claude:${runId}:tool-call:tool-cycle-1`,
+      toolCallId: `msg:claudecode:${runId}:tool-call:tool-cycle-1`,
       isLoading: false,
     });
     expect(messages.map((message) => message.role)).toEqual([
@@ -791,18 +792,18 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const runId = "claude-reasoning-only-run";
     const store = useChatStore.getState();
 
-    store.bindThreadType(threadId, "claude");
+    store.bindThreadType(threadId, "claudecode");
     store.dispatchAgentChunk({
       kind: "stream_start",
       thread_id: threadId,
       run_id: runId,
-      agent_type: "claude",
+      agent_type: "claudecode",
     });
     store.dispatchAgentChunk({
       kind: "reasoning",
       thread_id: threadId,
       run_id: runId,
-      agent_type: "claude",
+      agent_type: "claudecode",
       text: "reasoning without final text",
       message_id: "reasoning-provider-message-only-block-0",
       message_phase: "updated",
@@ -812,7 +813,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
       kind: "stream_end",
       thread_id: threadId,
       run_id: runId,
-      agent_type: "claude",
+      agent_type: "claudecode",
       reason: null,
     });
 
@@ -820,7 +821,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
       useAgentConversationStore.getState().messageStates[threadId];
     expect(messageState.messages).toMatchObject([
       {
-        id: `msg:claude:${runId}:reasoning:reasoning-${runId}`,
+        id: `msg:claudecode:${runId}:reasoning:reasoning-${runId}`,
         role: "reasoning",
         content: "reasoning without final text",
         isCompleted: true,
@@ -839,13 +840,13 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const runId = "claude-live-envelope-run";
     const store = useChatStore.getState();
 
-    store.bindThreadType(threadId, "claude");
+    store.bindThreadType(threadId, "claudecode");
     const chunks: AgentChunk[] = [
       {
         kind: "stream_start",
         thread_id: threadId,
         run_id: runId,
-        agent_type: "claude",
+        agent_type: "claudecode",
       },
       ...[
         ["d9193ae4-86b5-47a6-9e85-1bb4ef0acc1c", "first "],
@@ -855,7 +856,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
           kind: "text",
           thread_id: threadId,
           run_id: runId,
-          agent_type: "claude",
+          agent_type: "claudecode",
           text,
           message_id: `assistant-${envelopeId}-block-1`,
           message_phase: "updated",
@@ -869,7 +870,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
         kind: "tool_call",
         thread_id: threadId,
         run_id: runId,
-        agent_type: "claude",
+        agent_type: "claudecode",
         id: "legacy-text-tool",
         name: "Bash",
         input: { command: "pwd" },
@@ -883,7 +884,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
         kind: "tool_result",
         thread_id: threadId,
         run_id: runId,
-        agent_type: "claude",
+        agent_type: "claudecode",
         id: "legacy-text-tool",
         name: "Bash",
         result: { content: "/workspace" },
@@ -901,7 +902,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
           kind: "text",
           thread_id: threadId,
           run_id: runId,
-          agent_type: "claude",
+          agent_type: "claudecode",
           text,
           message_id: `assistant-${envelopeId}-block-1`,
           message_phase: "updated",
@@ -915,7 +916,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
         kind: "stream_end",
         thread_id: threadId,
         run_id: runId,
-        agent_type: "claude",
+        agent_type: "claudecode",
         reason: null,
       },
     ];
@@ -946,7 +947,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     );
     const threadId = "thread-buffered-conversation-live";
 
-    useChatStore.getState().bindThreadType(threadId, "deepseek-harness");
+    useChatStore.getState().bindThreadType(threadId, "dsh");
     // Phase 2 (2026-08-02): session-store 是真源, 直接 seed 它. mirror 会自动
     // 把同步状态写到 conv-store 与 chat-store, 断言仍走两个老 store.
     await seedProjection(threadId, (p) => ({
@@ -967,7 +968,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
       thread_id: threadId,
       run_id: "run-buffered-live",
       text: "world",
-      agent_type: "deepseek-harness",
+      agent_type: "dsh",
     });
 
     await flushAnimationFrame();
@@ -992,12 +993,12 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const store = useChatStore.getState();
     const threadId = "thread-card-missed-start";
 
-    store.bindThreadType(threadId, "deepseek-harness");
+    store.bindThreadType(threadId, "dsh");
     store.dispatchAgentChunk({
       kind: "text",
       thread_id: threadId,
       run_id: "run-restored",
-      agent_type: "deepseek-harness",
+      agent_type: "dsh",
       text: "still running",
     });
 
@@ -1109,14 +1110,14 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     useChatStore.getState().reconcileRunningRunsFromSnapshot({
       [threadId]: {
         runId: "run-snapshot-instance-running",
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         startedAt: 1234,
         currentTool: "shell",
       },
     });
 
     expect(useAgentConversationStore.getState().findByThreadId(threadId)).toMatchObject({
-      agentType: "deepseek-harness",
+      agentType: "dsh",
       title: "Snapshot restored title",
       threadId,
       source: { kind: "thread-card" },
@@ -1222,7 +1223,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const store = useChatStore.getState();
     const threadId = "thread-card-stale-running";
 
-    store.bindThreadType(threadId, "deepseek-harness");
+    store.bindThreadType(threadId, "dsh");
     store.dispatchAgentChunk({
       kind: "stream_start",
       thread_id: threadId,
@@ -1269,7 +1270,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     vi.mocked(agent.runningThreads).mockReturnValueOnce(new Promise((resolve) => { finishQuery = resolve; }));
     const pending = useAgentSessionStore.getState().reconcileRunningRuns();
     useAgentSessionStore.getState().dispatchAgentChunk({
-      kind: "stream_start", thread_id: threadId, run_id: "new-run", agent_type: "claude",
+      kind: "stream_start", thread_id: threadId, run_id: "new-run", agent_type: "claudecode",
     });
     now += 10_000;
     finishQuery({});
@@ -1323,8 +1324,8 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const store = useChatStore.getState();
     const threadId = "thread-card-optimistic-run";
 
-    store.bindThreadType(threadId, "deepseek-harness");
-    await store.sendMessageToThread(threadId, "hello optimistic", "deepseek-harness");
+    store.bindThreadType(threadId, "dsh");
+    await store.sendMessageToThread(threadId, "hello optimistic", "dsh");
     expect(useChatStore.getState().threadStates[threadId].isLoading).toBe(true);
 
     store.reconcileRunningRunsFromSnapshot({});
@@ -1365,7 +1366,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
 
     // 鍒涘缓涓€涓湁 content 鐨?thread, 鐒跺悗 dispatch 涓€浜?chunk 璁?threadStates
     // 绱Н messages / runs 鈹€鈹€ 杩欐槸 deleteThread 涔嬪墠鐨勭姸鎬併€?  
-    store.bindThreadType(threadId, "deepseek-harness");
+    store.bindThreadType(threadId, "dsh");
     store.dispatchAgentChunk({
       kind: "stream_start",
       thread_id: threadId,
@@ -1376,7 +1377,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
       thread_id: threadId,
       run_id: "run-1",
       text: "answer body that should be wiped on delete",
-      agent_type: "deepseek-harness",
+      agent_type: "dsh",
     });
     store.dispatchAgentChunk({
       kind: "tool_call",
@@ -1385,7 +1386,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
       id: "call-x",
       name: "read",
       input: {},
-      agent_type: "deepseek-harness",
+      agent_type: "dsh",
     });
 
     // rAF flush 璁?text chunk 鐪熸钀藉埌 messages / pendingAssistantId 涓?    // (涓?`routes streamed assistant text` 娴嬭瘯鍚屽舰 鈹€ 绂昏繖鍧楃殑璇?text
@@ -1411,7 +1412,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
 
   it("deleteThread clears threadTypes and reverse-mapped externalSessionResolutions", async () => {
     // 淇 #7: deleteThread 涔嬪墠娌℃竻 `state.threadTypes[threadId]`, 鐣欎笅瀛ゅ効
-    // 鏉＄洰 鈹€鈹€ 鍚庣画 `get().threadTypes[threadId] ?? "deepseek-harness"` 浼氭嬁鍒版棫 type,
+    // 鏉＄洰 鈹€鈹€ 鍚庣画 `get().threadTypes[threadId] ?? "dsh"` 浼氭嬁鍒版棫 type,
     // 璇垽 dispatch 璺緞銆?鍚屾椂鍙嶅悜鏄犲皠 `externalSessionResolutions[local] === threadId`
     // (鍗?local id 宸茬粡琚?resolve 鍒拌繖涓鍒犵殑 thread) 涔熻娓? 鍚﹀垯 findByThreadId
     // 浼氳鍛戒腑宸插垹 id銆?  
@@ -1979,7 +1980,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const secondThreadId = "thread-card-flowix";
 
     store.bindThreadType(firstThreadId, "codex");
-    store.bindThreadType(secondThreadId, "deepseek-harness");
+    store.bindThreadType(secondThreadId, "dsh");
 
     const chunks: AgentChunk[] = [
       { kind: "stream_start", thread_id: firstThreadId, run_id: "run-codex" },
@@ -2009,7 +2010,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
       state.threadStates[secondThreadId].runs[
         state.threadStates[secondThreadId].activeRunId ?? ""
       ]?.agentType,
-    ).toBe("deepseek-harness");
+    ).toBe("dsh");
   });
 
   it("loads Codex history through paged IPC", async () => {
@@ -2140,7 +2141,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
 
     const messages = await useAgentSessionStore
       .getState()
-      .reloadMessagesFromHistory("deepseek-harness", threadId);
+      .reloadMessagesFromHistory("dsh", threadId);
 
     expect(agent.getDeepSeekHarnessThread).toHaveBeenCalledWith(threadId);
     expect(messages).toEqual(
@@ -2223,14 +2224,14 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const store = useChatStore.getState();
     const threadId = "claude-history-tool-merge";
 
-    store.bindThreadType(threadId, "claude");
+    store.bindThreadType(threadId, "claudecode");
     store.dispatchAgentChunk({
       kind: "tool_call",
       thread_id: threadId,
       id: "toolu_1",
       name: "Read",
       input: { file_path: "README.md" },
-      agent_type: "claude",
+      agent_type: "claudecode",
     });
     store.dispatchAgentChunk({
       kind: "tool_result",
@@ -2238,7 +2239,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
       id: "toolu_1",
       name: "",
       result: { content: "file contents" },
-      agent_type: "claude",
+      agent_type: "claudecode",
     });
 
     vi.mocked(agent.listClaudeThreads).mockResolvedValueOnce([
@@ -2323,7 +2324,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const store = useChatStore.getState();
     const threadId = "thread-card-tool";
 
-    store.bindThreadType(threadId, "deepseek-harness");
+    store.bindThreadType(threadId, "dsh");
     store.dispatchAgentChunk({ kind: "stream_start", thread_id: threadId, run_id: "run-tool" });
     store.dispatchAgentChunk({
       kind: "tool_call",
@@ -2579,7 +2580,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     const { useChatStore } = await import("@features/agent/store/agent-session-test-facade");
     const store = useChatStore.getState();
 
-    // 鍒濆 activeAgentTypeKey (DEFAULT_AGENT_TYPE_KEY 閫氬父鏄?'deepseek-harness', 浣嗕笉渚濊禆鍏蜂綋鍊?
+    // 鍒濆 activeAgentTypeKey (DEFAULT_AGENT_TYPE_KEY 閫氬父鏄?'dsh', 浣嗕笉渚濊禆鍏蜂綋鍊?
     const initialType = useChatStore.getState().activeAgentTypeKey;
 
     // 鍒囧埌 codex thread 鈹€鈹€ 浠呮洿鏂?activeThreadIds.codex, 涓嶅姩 activeAgentTypeKey銆?  
@@ -2589,7 +2590,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
 
     // 鍒囧埌 flowix thread 鈹€鈹€ 鍚屾牱涓嶅姩 activeAgentTypeKey銆?  
     store.setActiveThreadId("flowix-thread-1");
-    expect(useChatStore.getState().activeThreadIds["deepseek-harness"]).toBe("flowix-thread-1");
+    expect(useChatStore.getState().activeThreadIds["dsh"]).toBe("flowix-thread-1");
     expect(useChatStore.getState().activeAgentTypeKey).toBe(initialType);
 
     // setActiveAgentThread 浠嶇劧鍚屾涓よ€?鈹€鈹€ 杩欐槸璺?runtime 鍒囨崲鐨勬樉寮忓叆鍙ｃ€?  
@@ -2614,7 +2615,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
 
     // 鈹€鈹€ 鎯呭舰 2: thread 璺戣繃浣嗗凡鑷劧缁撴潫銆?  
     const finishedThreadId = "thread-stop-already-ended";
-    store.bindThreadType(finishedThreadId, "deepseek-harness");
+    store.bindThreadType(finishedThreadId, "dsh");
     store.dispatchAgentChunk({
       kind: "stream_start",
       thread_id: finishedThreadId,
@@ -2703,7 +2704,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
       // The workspace adapter intersects notebook add-dirs with enabled access entries.
       entries: [
         { id: "e-notes-main", kind: "folder", path: "D:\\notes\\main", name: "main", enabled: true, missing: false },
-        { id: "e-flowix", kind: "folder", path: "D:\\projects\\flowix", name: "deepseek-harness", enabled: true, missing: false },
+        { id: "e-flowix", kind: "folder", path: "D:\\projects\\flowix", name: "dsh", enabled: true, missing: false },
       ],
       defaults: {
         files: {

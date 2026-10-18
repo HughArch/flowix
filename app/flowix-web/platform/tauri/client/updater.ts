@@ -65,6 +65,7 @@ export async function consumeAppUpdateResult(): Promise<AppUpdateInstallResult |
 }
 
 export async function installAppUpdate(
+  version: string,
   onProgress?: (progress: AppUpdateDownloadProgress) => void,
 ): Promise<void> {
   if (installPromise) return installPromise;
@@ -75,7 +76,7 @@ export async function installAppUpdate(
       onProgress?.(event.payload);
     });
     try {
-      await invoke('install_app_update');
+      await invoke('install_app_update', { version });
       await relaunch();
     } finally {
       await unlisten();

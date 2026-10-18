@@ -1,4 +1,4 @@
-import type { MemoContentCommit } from '@/types/memo';
+import type { NoteContentCommit } from '@/types/memo';
 
 /** File operations used by an open editable document surface. */
 export interface DocumentWriteRequest {
@@ -9,7 +9,7 @@ export interface DocumentWriteRequest {
 }
 
 export type DocumentWriteOutcome =
-  | ({ status: 'saved'; path: string; content: string; merged?: boolean } & MemoContentCommit)
+  | ({ status: 'saved'; path: string; content: string; merged?: boolean } & NoteContentCommit)
   | { status: 'conflict'; diskContent: string }
   | { status: 'refused' }
   | { status: 'missing' }

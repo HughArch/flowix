@@ -53,7 +53,7 @@ export type SurfaceState =
   | { status: 'empty'; reason: SurfaceEmptyReason; message: SurfaceMessage; actions?: readonly SurfaceAction[] }
   | { status: 'ready'; notices?: readonly SurfaceNotice[] }
   | { status: 'unavailable'; reason: 'missing' | 'forbidden' | 'unsupported' | 'stale-context'; message: SurfaceMessage; actions?: readonly SurfaceAction[] }
-  | { status: 'error'; message: SurfaceMessage; actions?: readonly SurfaceAction[] };
+  | { status: 'error'; message: SurfaceMessage; detailText?: string; actions?: readonly SurfaceAction[] };
 
 /** A content identity may have independent Work and Browser view instances. */
 export interface SurfaceViewContext {

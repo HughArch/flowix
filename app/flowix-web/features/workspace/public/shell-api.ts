@@ -35,6 +35,10 @@ export function getVisibleWorkspaceSurfaceHosts(): ('main-third' | 'browser-colu
   return hosts;
 }
 
+export function getWorkspaceNavigationRevision(): number {
+  return useWorkColumnStore.getState().navigation.requestId;
+}
+
 export function getWorkColumnStartupIdentity(): string {
   return JSON.stringify(useWorkColumnStore.getState().navigation.target);
 }

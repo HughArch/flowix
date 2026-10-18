@@ -2,6 +2,8 @@ import type { MemoEvent, MemoDerivedRefresh } from '@/types/memo';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { useTagStore } from '@features/memo/store/tag-store';
 import { useTodoCountStore } from '@features/memo/store/todo-count-store';
+export { mountNotebookBackgroundUpdates } from '@features/memo/services/notebook-background-service';
+export { mountMemoListRefreshService } from '@features/memo/services/memo-list-refresh-service';
 export { resumePendingNoteLinkUpdates } from '@features/memo/services/note-link-rewriter';
 export {
   mountOpenTargetListener,
@@ -45,7 +47,9 @@ export function applyAppMemoDeleted(): void {
 }
 
 export function refreshAppTodoCount(notebookId: string): void {
-  void useTodoCountStore.getState().loadTodoCount(notebookId);
+  void useTodoCountStore.getState().loadTodoCount(notebookId).catch((error) => {
+    if (!String(error).includes('NOTE_INDEX_PENDING')) console.warn('Todo count unavailable:', error);
+  });
 }
 
 /** Refresh derived data after a filesystem path changes without a memo ID event. */

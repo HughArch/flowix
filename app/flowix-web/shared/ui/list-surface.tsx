@@ -22,15 +22,17 @@ export function ListSurfaceViewport({
 /** Initial-load state shared by notes, trees, and conversation lists. */
 export function ListSurfaceLoadingState({
   label,
+  ariaLabel,
   className,
 }: {
-  label: string;
+  label?: string;
+  ariaLabel?: string;
   className?: string;
 }) {
   return (
     <CenteredLoadingSpinner
       className={cn('h-full w-full', className)}
-      ariaLabel={label}
+      ariaLabel={ariaLabel ?? label}
       label={label}
     />
   );

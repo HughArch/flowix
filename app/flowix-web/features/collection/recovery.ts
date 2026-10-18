@@ -1,10 +1,11 @@
 import YAML from 'yaml';
-import { externalDocuments } from '@platform/tauri/client';
-import { canonicalPath, notebookRelativeDirectoryPath } from '@/lib/path';
+import { externalDocuments, notebooks } from '@platform/tauri/client';
+import { canonicalDirectoryPath, canonicalPath, notebookRelativeDirectoryPath } from '@/lib/path';
 import { createFolderCollectionContent } from './folder-collection';
 import {
   createCollectionId,
   createUuidV7,
+  collectionDisplayName,
   isRecord,
   parseCollectionDocumentV2,
   serializeCollectionDocumentV2,
@@ -98,6 +99,7 @@ function sourceRecords(
 function sanitizeRecords(
   loose: Record<string, unknown> | null,
   type: CollectionType,
+  notebookId?: string,
 ): { include: Record<string, unknown>[]; exclude: Record<string, unknown>[] } {
   const records = sourceRecords(loose);
   const sanitize = (values: unknown[]) => {
@@ -106,16 +108,17 @@ function sanitizeRecords(
     const output: Record<string, unknown>[] = [];
     for (const raw of values) {
       if (!isRecord(raw)) continue;
-      const path = type === 'table' ? raw.note_path : raw.relative_path;
+      const path = type === 'table' ? raw.note_path : (raw.relative_path ?? raw.note_path);
       if (!validNotebookRelativePath(path) || seen.has(path)) continue;
-      if (type === 'media_library' && (typeof raw.resource_id !== 'string' || !raw.resource_id.trim())) continue;
+      if (type === 'media_library' && !notebookId
+        && (typeof raw.resource_id !== 'string' || !raw.resource_id.trim())) continue;
       seen.add(path);
       const recordId = validRecordId(raw.id) && !seenIds.has(raw.id) ? raw.id : `rec_${createUuidV7()}`;
       seenIds.add(recordId);
       output.push({
         id: recordId,
         updated_at: validTimestamp(raw.updated_at) ? raw.updated_at : new Date().toISOString(),
-        ...(type === 'table' ? { note_path: path } : { resource_id: (raw.resource_id as string).trim(), relative_path: path }),
+        ...(type === 'table' ? { note_path: path } : { resource_id: notebookId ? `${notebookId}::${path}` : (raw.resource_id as string).trim(), relative_path: path }),
       });
     }
     return output;
@@ -194,6 +197,7 @@ function buildRecoveredDocument(
   loose: Record<string, unknown> | null,
   type: CollectionType,
   placement: CollectionPlacement,
+  notebookId?: string,
 ): CollectionDocumentV2 {
   const name = fallbackCollectionName(filePath, type);
   const template = createTemplate(filePath, notebookPath, type, placement, name);
@@ -203,7 +207,7 @@ function buildRecoveredDocument(
   let candidate: CollectionDocumentV2 = {
     ...template,
     collection,
-    payload: { ...template.payload, dataset: { ...dataset, records: sanitizeRecords(loose, type) } },
+    payload: { ...template.payload, dataset: { ...dataset, records: sanitizeRecords(loose, type, notebookId) } },
   };
 
   // Keep each optional dataset section only when it passes the full collection
@@ -262,7 +266,11 @@ export async function repairCollectionFile(
   const collectionType = detectCollectionType(source, loose);
   const placement = detectPlacement(path);
   const name = fallbackCollectionName(path, collectionType);
-  const document = buildRecoveredDocument(path, root, loose, collectionType, placement);
+  const notebookId = collectionType === 'media_library'
+    ? (await notebooks.getAll()).find((notebook) => canonicalDirectoryPath(notebook.path) === root)?.id
+    : undefined;
+  if (collectionType === 'media_library' && !notebookId) throw new Error('媒体库所属笔记本未注册');
+  const document = buildRecoveredDocument(path, root, loose, collectionType, placement, notebookId);
   const content = serializeCollectionDocumentV2(document);
   // Validate the exact bytes before touching disk; serialization must produce
   // a complete document accepted by the normal reader.
@@ -275,6 +283,6 @@ export async function repairCollectionFile(
     collectionId: verified.collection.id,
     collectionType: verified.collection.type,
     placement: verified.collection.placement,
-    name: verified.collection.name || name,
+    name: collectionDisplayName(path, placement) || name,
   };
 }

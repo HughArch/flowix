@@ -1,6 +1,6 @@
 import { useCallback } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
-import { Node as TiptapNode, mergeAttributes, type Editor, type MarkdownToken } from '@tiptap/core';
+import { Node as TiptapNode, mergeAttributes, type Editor } from '@tiptap/core';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import type { EditorView, NodeView as ProseMirrorNodeView } from '@tiptap/pm/view';
 import { X } from 'lucide-react';
@@ -15,44 +15,15 @@ import { toast } from '@/lib/toast';
 import { Button } from '@shared/ui/button';
 import { TableDocumentView } from './table-document-view';
 import { openTableReferencePicker } from './table-reference-picker';
+import {
+  TABLE_REFERENCE_MARKER,
+  TABLE_REFERENCE_VERSION,
+  normalizeTableReferenceAttrs,
+  tableReferenceMarkdownSpec,
+  type TableReferenceAttrs,
+} from './table-reference-markdown';
 
-const TABLE_REFERENCE_MARKER = 'flowix:table-reference';
-const TABLE_REFERENCE_VERSION = 1;
 const EDITOR_EDITABILITY_CHANGE_EVENT = 'flowix:editor-editability-change';
-
-export interface TableReferenceAttrs {
-  notebookId: string | null;
-  relativePath: string | null;
-  collectionId: string | null;
-  viewId: string | null;
-}
-
-function normalizeText(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
-function normalizeAttrs(value: unknown): TableReferenceAttrs {
-  const attrs = value && typeof value === 'object' ? value as Record<string, unknown> : {};
-  return {
-    notebookId: normalizeText(attrs.notebookId),
-    relativePath: normalizeText(attrs.relativePath)?.replace(/\\/g, '/').replace(/^\/+/, '') ?? null,
-    collectionId: normalizeText(attrs.collectionId),
-    viewId: normalizeText(attrs.viewId),
-  };
-}
-
-function metadataFromSource(source: string): Record<string, unknown> | null {
-  const match = new RegExp(`^<!--[ \\t]*${TABLE_REFERENCE_MARKER}[ \\t]+(\\{[^\\r\\n]*\\})[ \\t]*-->(?:\\r?\\n|$)`).exec(source);
-  if (!match) return null;
-  try {
-    const parsed: unknown = JSON.parse(match[1]);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed)
-      ? parsed as Record<string, unknown>
-      : null;
-  } catch {
-    return null;
-  }
-}
 
 class TableReferenceNodeView implements ProseMirrorNodeView {
   readonly dom: HTMLElement;
@@ -79,7 +50,7 @@ class TableReferenceNodeView implements ProseMirrorNodeView {
 
   private render() {
     if (this.destroyed) return;
-    const attrs = normalizeAttrs(this.node.attrs);
+    const attrs = normalizeTableReferenceAttrs(this.node.attrs);
     this.root.render(<TableReferenceSurface
       attrs={attrs}
       editable={this.editor.isEditable}
@@ -260,7 +231,7 @@ export const TableReference = TiptapNode.create({
   },
 
   renderHTML({ node, HTMLAttributes }) {
-    const attrs = normalizeAttrs(node.attrs);
+    const attrs = normalizeTableReferenceAttrs(node.attrs);
     return ['div', mergeAttributes(HTMLAttributes, {
       'data-flowix-table-reference': 'true',
       'data-notebook-id': attrs.notebookId ?? '',
@@ -281,32 +252,10 @@ export const TableReference = TiptapNode.create({
     );
   },
 
-  markdownTokenizer: {
-    name: 'tableReference',
-    level: 'block' as const,
-    start(source: string) {
-      const match = new RegExp(`^<!--[ \\t]*${TABLE_REFERENCE_MARKER}[ \\t]+\\{`, 'm').exec(source);
-      return match?.index ?? -1;
-    },
-    tokenize(source: string) {
-      const metadata = metadataFromSource(source);
-      if (!metadata) return undefined;
-      const match = new RegExp(`^<!--[ \\t]*${TABLE_REFERENCE_MARKER}[ \\t]+\\{[^\\r\\n]*\\}[ \\t]*-->(?:\\r?\\n|$)`).exec(source);
-      if (!match) return undefined;
-      return { type: 'tableReference', raw: match[0], metadata };
-    },
-  },
-
-  parseMarkdown(token: MarkdownToken) {
-    const metadata = token.metadata && typeof token.metadata === 'object'
-      ? token.metadata as Record<string, unknown>
-      : metadataFromSource(token.raw ?? '') ?? {};
-    const data = metadata.version === TABLE_REFERENCE_VERSION ? metadata : {};
-    return { type: 'tableReference', attrs: normalizeAttrs(data) };
-  },
+  ...tableReferenceMarkdownSpec,
 
   renderMarkdown(node) {
-    const attrs = normalizeAttrs(node.attrs);
+    const attrs = normalizeTableReferenceAttrs(node.attrs);
     return `<!-- ${TABLE_REFERENCE_MARKER} ${JSON.stringify({ version: TABLE_REFERENCE_VERSION, ...attrs })} -->\n`;
   },
 });

@@ -63,22 +63,23 @@ vi.mock("@features/memo/store/note-store", () => ({
   },
 }));
 
-vi.mock("@features/agent/store/agent-data-store", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@features/agent/store/agent-data-store")>();
-  return { ...actual, useAgentDataStore: Object.assign(
-    (selector: Parameters<typeof actual.useAgentDataStore>[0]) => actual.useAgentDataStore(selector),
-    actual.useAgentDataStore,
-    { getState: () => ({
-      ...actual.useAgentDataStore.getState(),
+vi.mock("@features/agent/store/agent-workspace-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@features/agent/store/agent-workspace-store")>();
+  const getState = () => ({
+      ...actual.useAgentWorkspaceStore.getState(),
       workspaceActions: {
-        ...actual.useAgentDataStore.getState().workspaceActions,
+        ...actual.useAgentWorkspaceStore.getState().workspaceActions,
         getNotebookFiles: () => ({
           workspace: null,
           folders: state.accessConfig.defaults.files["nb-1"].folders,
           notebooks: [],
         }),
       },
-    }) },
+    });
+  return { ...actual, useAgentWorkspaceStore: Object.assign(
+    (selector: Parameters<typeof actual.useAgentWorkspaceStore>[0]) => selector ? selector(getState()) : getState(),
+    actual.useAgentWorkspaceStore,
+    { getState },
   ) };
 });
 

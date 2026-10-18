@@ -391,9 +391,7 @@ export function TableKanbanView({ groupField, titleField, records, groups, rende
           && (!config.groupField.options?.some((option) => option.id === location.groupId) || !config.groupField.property_key)) {
           return { accepted: false, reason: 'unavailable' };
         }
-        return config.onDropRecord
-          ? { accepted: true }
-          : { accepted: false, reason: 'unavailable' };
+        return { accepted: true };
       }
       const notes = payload.items.filter(isMarkdownNoteDragResource);
       if (notes.length === 0 || notes.length !== payload.items.length) {

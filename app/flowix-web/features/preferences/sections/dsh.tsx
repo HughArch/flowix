@@ -1,6 +1,6 @@
 'use client';
 
-import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
+import { lazy, Suspense, useCallback, useEffect, useState } from 'react';
 import {
   Check,
   Database,
@@ -26,8 +26,8 @@ import type { DeepSeekHarnessPlugin, DeepSeekHarnessPluginCatalog } from '@platf
 import { dshIntegration, type DshIntegrationStatus } from '@platform/tauri/client';
 import { subscribe } from '@platform/tauri/event-bus';
 import { Button } from '@shared/ui/button';
-import { useDshRuntimeInstaller } from '@features/preferences/hooks/use-dsh-runtime-installer';
 import { SettingsTabGroup } from '@features/preferences/components/settings-tab-group';
+import { openUrl } from '@platform/tauri/opener';
 
 type DshTab = 'models' | 'general' | 'plugins' | 'presets';
 
@@ -59,10 +59,9 @@ const PRESET_TITLE_KEYS: Record<string, I18nKey> = {
   cordis: 'preferences.dsh.plugins.presetCreative',
 };
 
-export function DshSettingsSection({ autoUpdate = false }: { autoUpdate?: boolean }) {
+export function DshSettingsSection() {
   const { t } = useI18n();
   const [activeTab, setActiveTab] = useState<DshTab>('general');
-  const [useLocalDevRuntime, setUseLocalDevRuntime] = useState(false);
   const [status, setStatus] = useState<DshIntegrationStatus | null>(null);
   const [statusError, setStatusError] = useState<string | null>(null);
 
@@ -81,11 +80,6 @@ export function DshSettingsSection({ autoUpdate = false }: { autoUpdate?: boolea
       void refreshStatus();
     });
   }, [refreshStatus]);
-
-  const handleUninstalled = (next: DshIntegrationStatus) => {
-    setStatus(next);
-    setActiveTab('general');
-  };
 
   if (status === null) {
     return (
@@ -113,24 +107,13 @@ export function DshSettingsSection({ autoUpdate = false }: { autoUpdate?: boolea
     );
   }
 
-  if (!status.installed && !(import.meta.env.DEV && useLocalDevRuntime)) {
-    if (import.meta.env.DEV) {
-      return (
-        <div className="flex min-h-[min(560px,calc(100vh-220px))] flex-col">
-          <DshDevRuntimeNotice onContinue={() => setUseLocalDevRuntime(true)} />
-        </div>
-      );
-    }
+  if (!status.installed || !status.appServerProfileInstalled) {
     return (
       <div className="flex min-h-[min(560px,calc(100vh-220px))] flex-col">
-        <DshInstallPage initialStatus={status} onInstalled={setStatus} />
+        <DshSetupPage status={status} onStatusChanged={setStatus} />
       </div>
     );
   }
-
-  const displayedStatus = import.meta.env.DEV && useLocalDevRuntime
-    ? { ...status, installed: true }
-    : status;
 
   return (
     <div className="flex min-h-0 flex-1 flex-col space-y-5">
@@ -169,7 +152,7 @@ export function DshSettingsSection({ autoUpdate = false }: { autoUpdate?: boolea
             />
           </Suspense>
         )}
-        {activeTab === 'general' && <GeneralTab initialStatus={displayedStatus} onUninstalled={handleUninstalled} autoUpdate={autoUpdate} />}
+        {activeTab === 'general' && <GeneralTab status={status} />}
         {activeTab === 'plugins' && <PluginsTab />}
         {activeTab === 'presets' && <PresetsTab />}
       </SettingsTabGroup>
@@ -177,63 +160,77 @@ export function DshSettingsSection({ autoUpdate = false }: { autoUpdate?: boolea
   );
 }
 
-function DshDevRuntimeNotice({ onContinue }: { onContinue: () => void }) {
-  return (
-    <div className="flex flex-1 items-start justify-center px-1 py-2">
-      <div className="flex h-[420px] w-full max-w-xl flex-col rounded-2xl border border-[var(--divider)] bg-[var(--card)] p-8 text-center shadow-sm">
-        <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-[color-mix(in_oklch,var(--primary)_12%,transparent)] text-[var(--primary)]">
-          <AgentIcon typeKey="dsh" alt="" className="h-8 w-8" />
-        </div>
-        <h3 className="mt-5 text-lg font-semibold text-[var(--foreground)]">Dev 本地 DSH</h3>
-        <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-          开发版本使用本地 dsh-host 和 runtime，不下载或安装远程 DSH。
-        </p>
-        <div className="mt-auto pt-8">
-          <Button type="button" onClick={onContinue}>
-            继续使用本地 DSH
-          </Button>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function DshInstallPage({
-  initialStatus,
-  onInstalled,
+function DshSetupPage({
+  status,
+  onStatusChanged,
 }: {
-  initialStatus: DshIntegrationStatus;
-  onInstalled: (status: DshIntegrationStatus) => void;
+  status: DshIntegrationStatus;
+  onStatusChanged: (status: DshIntegrationStatus) => void;
 }) {
   const { t } = useI18n();
-  const { busy, error, progress, install, cancel } = useDshRuntimeInstaller(initialStatus);
-  const [archiveSize, setArchiveSize] = useState<number | null>(initialStatus.archiveSize ?? null);
-  const canCancel = busy && progress?.phase !== 'downloaded' && progress?.phase !== 'installing';
+  const [busy, setBusy] = useState(false);
+  const [error, setError] = useState<string | null>(null);
+  const [selectingPath, setSelectingPath] = useState(false);
+  const [checkingPath, setCheckingPath] = useState(false);
 
-  useEffect(() => {
-    if (initialStatus.installed) return;
-    void dshIntegration.archiveSize().then((size) => setArchiveSize(size));
-  }, [initialStatus.installed]);
-
-  const startInstall = async () => {
+  const installAppServer = async () => {
+    setBusy(true);
+    setError(null);
     try {
-      const status = await install();
-      if (status) {
-        onInstalled(status);
-        toast.success(t('preferences.dsh.setup.installSuccess'));
-      }
-    } catch {
-      // The hook owns and exposes the rendered error state.
+      onStatusChanged(await dshIntegration.installAppServerProfile());
+      toast.success(t('preferences.dsh.appServer.installSuccess'));
+    } catch (value) {
+      setError(errorMessage(value));
+    } finally {
+      setBusy(false);
     }
   };
 
-  const cancelInstall = async () => {
-    if (await cancel()) toast.info(t('preferences.dsh.setup.cancelled'));
+  const openOfficialInstall = async () => {
+    setError(null);
+    try {
+      await openUrl('https://github.com/deepseek-ai/deepseek-harness');
+    } catch (value) {
+      setError(errorMessage(value));
+    }
+  };
+
+  const selectCliPath = async () => {
+    setSelectingPath(true);
+    setError(null);
+    try {
+      const path = await dshIntegration.selectCliPath();
+      if (!path) return;
+      onStatusChanged(await dshIntegration.setCliPath(path));
+      toast.success(t('preferences.agents.external.pathSaved'));
+    } catch (value) {
+      setError(errorMessage(value));
+    } finally {
+      setSelectingPath(false);
+    }
+  };
+
+  const checkCliPath = async () => {
+    setCheckingPath(true);
+    setError(null);
+    try {
+      const next = await dshIntegration.status();
+      onStatusChanged(next);
+      if (next.installed && next.executablePath) {
+        toast.success(t('preferences.agents.external.checkSuccess'));
+      } else {
+        toast.error(t('preferences.agents.external.checkNotFound'));
+      }
+    } catch (value) {
+      setError(errorMessage(value));
+    } finally {
+      setCheckingPath(false);
+    }
   };
 
   return (
     <div className="flex flex-1 items-start justify-center px-1 py-2">
-      <div className="flex h-[420px] w-full max-w-xl flex-col rounded-2xl border border-[var(--divider)] bg-[var(--card)] p-8 text-center shadow-sm">
+      <div className="flex min-h-[360px] w-full max-w-xl flex-col p-8 text-center">
         <div className="mx-auto flex h-16 w-16 items-center justify-center rounded-2xl bg-[color-mix(in_oklch,var(--primary)_12%,transparent)] text-[var(--primary)]">
           <AgentIcon typeKey="dsh" alt="" className="h-8 w-8" />
         </div>
@@ -241,88 +238,81 @@ function DshInstallPage({
           {t('preferences.dsh.setup.title')}
         </h3>
         <p className="mt-2 text-sm text-[var(--muted-foreground)]">
-          {t('preferences.dsh.setup.description')}
+          {status.installed
+            ? status.appServerProfileUpdateAvailable
+              ? t('preferences.dsh.appServer.updateDescription')
+              : status.appServerProfileInstalled
+                ? t('preferences.dsh.appServer.missingDescription')
+                : status.source === 'local-cli'
+                  ? t('preferences.dsh.appServer.localDetected', { version: status.version ?? '—' })
+                  : t('preferences.dsh.appServer.managedRuntime', { version: status.harnessVersion ?? status.version ?? '—' })
+            : t('preferences.dsh.appServer.runtimeMissingDescription')}
         </p>
-        {archiveSize != null && (
-          <p className="mt-3 text-xs text-[var(--muted-foreground)]">
-            {t('preferences.dsh.runtime.packageSize')}: {formatDshArchiveSize(archiveSize)}
-          </p>
-        )}
-
-        <div className="mt-auto flex justify-center gap-2 pt-8">
-          <Button type="button" onClick={() => void startInstall()} disabled={busy}>
-            {busy && <Loader2 className="h-4 w-4 flowix-spin" />}
-            {busy ? t(progress?.phase === 'installing' ? 'preferences.dsh.setup.installing' : 'preferences.dsh.setup.downloading') : t('preferences.dsh.setup.install')}
-          </Button>
-          {canCancel && (
-            <Button type="button" variant="outline" onClick={() => void cancelInstall()}>
-              {t('preferences.dsh.setup.cancel')}
+        <div className="mt-4 w-full space-y-2 text-left">
+          <div className="flex min-w-0 items-center gap-2">
+            <Input
+              value={status.executablePath ?? ''}
+              placeholder={t('preferences.agents.external.notConfigured')}
+              spellCheck={false}
+              readOnly
+              disabled
+              title={status.executablePath ?? ''}
+              className="min-w-0 flex-1 text-ellipsis"
+            />
+            <Button
+              type="button"
+              variant="outline"
+              title={t('preferences.agents.external.selectHint')}
+              disabled={selectingPath}
+              onClick={() => void selectCliPath()}
+            >
+              {selectingPath ? <Loader2 className="h-4 w-4 flowix-spin" /> : t('preferences.agents.external.select')}
             </Button>
+            <Button
+              type="button"
+              variant="outline"
+              disabled={checkingPath}
+              onClick={() => void checkCliPath()}
+            >
+              {checkingPath ? <Loader2 className="h-4 w-4 flowix-spin" /> : t('preferences.agents.external.check')}
+            </Button>
+          </div>
+        </div>
+        <div className="mt-auto flex flex-wrap justify-center gap-2 pt-8">
+          {!status.installed ? (
+            <Button type="button" onClick={() => void openOfficialInstall()}>
+              {t('preferences.dsh.appServer.openOfficialInstall')}
+            </Button>
+          ) : (
+            <div className="flex flex-col items-center gap-2">
+              <Button type="button" onClick={() => void installAppServer()} disabled={busy}>
+                {busy && <Loader2 className="h-4 w-4 flowix-spin" />}
+                {busy
+                  ? t('preferences.dsh.appServer.installing')
+                  : status.appServerProfileUpdateAvailable
+                    ? t('preferences.dsh.appServer.update')
+                    : t('preferences.dsh.appServer.install')}
+              </Button>
+              <p className="text-xs text-[var(--muted-foreground)]">
+                {t('preferences.dsh.appServer.installNote')}
+              </p>
+            </div>
           )}
         </div>
-
-        {busy && progress && (
-          <div className="mx-auto mt-6 max-w-md space-y-2 text-left">
-            <div className="flex justify-between text-xs text-[var(--muted-foreground)]">
-              <span>{t(progress.phase === 'installing' ? 'preferences.dsh.setup.installing' : 'preferences.dsh.setup.downloading')}</span>
-              <span>{progress.percent == null ? '…' : `${progress.percent}%`}</span>
-            </div>
-            <div className="h-2 overflow-hidden rounded-full bg-[var(--muted)]">
-              <div
-                className="h-full rounded-full bg-[var(--primary)] transition-[width]"
-                style={{ width: `${progress.percent ?? 0}%` }}
-              />
-            </div>
-            {progress.resumed && (
-              <p className="text-xs text-[var(--muted-foreground)]">
-                {t('preferences.dsh.setup.resumed')}
-              </p>
-            )}
-          </div>
-        )}
-
-        {error && (
-          <div className="mx-auto mt-5 max-w-md space-y-2 rounded-lg border border-[var(--destructive)]/30 bg-[var(--destructive)]/5 px-3 py-2 text-left">
-            <p className="text-xs text-[var(--destructive)]">
-              {t('preferences.dsh.setup.error')}: {error}
-            </p>
-            {!busy && (
-              <Button type="button" variant="outline" className="px-3" onClick={() => void startInstall()}>
-                {t('preferences.dsh.setup.retry')}
-              </Button>
-            )}
-          </div>
-        )}
-
+        {error && <p className="mt-4 text-xs text-[var(--destructive)]">{error}</p>}
       </div>
     </div>
   );
 }
 
-function GeneralTab({
-  initialStatus,
-  onUninstalled,
-  autoUpdate = false,
-}: {
-  initialStatus: DshIntegrationStatus;
-  onUninstalled: (status: DshIntegrationStatus) => void;
-  autoUpdate?: boolean;
-}) {
+
+function GeneralTab({ status }: { status: DshIntegrationStatus }) {
   const { t } = useI18n();
-  const { status, busy, error, progress, install, uninstall } =
-    useDshRuntimeInstaller(initialStatus);
-  const autoUpdateStarted = useRef(false);
-  const [uninstalling, setUninstalling] = useState(false);
-  const checkingUpdate = busy && progress?.phase === 'checking';
-  const showingUpdateProgress = busy
-    && (progress?.phase === 'downloading'
-      || progress?.phase === 'downloaded'
-      || progress?.phase === 'installing');
   const rows = [
     {
       icon: Tag,
       title: t('preferences.dsh.general.harnessVersion'),
-      value: status?.harnessVersion ?? 'unknown',
+      value: status.harnessVersion ?? status.version ?? 'unknown',
     },
     {
       icon: Database,
@@ -340,42 +330,6 @@ function GeneralTab({
       value: t('preferences.dsh.general.sessionsValue'),
     },
   ] as const;
-
-  const startUninstall = async () => {
-    if (!window.confirm(t('preferences.dsh.runtime.uninstallConfirm'))) return;
-    setUninstalling(true);
-    try {
-      const next = await uninstall();
-      if (next) {
-        onUninstalled(next);
-        toast.success(t('preferences.dsh.runtime.uninstallSuccess'));
-      } else {
-        toast.error(t('preferences.dsh.runtime.uninstallFailed'));
-      }
-    } finally {
-      setUninstalling(false);
-    }
-  };
-
-  const checkForUpdates = async () => {
-    const previousVersion = status?.version;
-    const next = await install();
-    if (!next) {
-      toast.error(t('preferences.dsh.runtime.updateFailed'));
-      return;
-    }
-    toast.success(
-      next.version && next.version !== previousVersion
-        ? t('preferences.dsh.runtime.updateSuccess')
-        : t('preferences.dsh.runtime.upToDate'),
-    );
-  };
-
-  useEffect(() => {
-    if (!autoUpdate || autoUpdateStarted.current || !status?.installed) return;
-    autoUpdateStarted.current = true;
-    void install();
-  }, [autoUpdate, install, status?.installed]);
 
   return (
     <div className="space-y-2 pb-[30px]">
@@ -396,63 +350,18 @@ function GeneralTab({
         <div className="flex items-center gap-3">
           <div className="min-w-0 flex-1">
             <p className="text-sm text-[var(--foreground)]">{t('preferences.dsh.runtime.version')}</p>
-          </div>
-          <Button
-            variant="outline"
-            className="px-3"
-            disabled={busy || !status?.installed}
-            onClick={() => void checkForUpdates()}
-          >
-            {checkingUpdate && <Loader2 className="h-4 w-4 flowix-spin" />}
-            {checkingUpdate
-              ? t('preferences.dsh.runtime.checking')
-              : busy
-                ? t(progress?.phase === 'installing' ? 'preferences.dsh.runtime.installing' : 'preferences.dsh.runtime.downloading')
-                : t('preferences.dsh.runtime.check')}
-          </Button>
-          <Button
-            variant="outline"
-            className="px-3 text-[var(--muted-foreground)] hover:bg-transparent hover:text-[var(--destructive)]"
-            title={t('preferences.dsh.runtime.uninstall')}
-            disabled={busy || !status?.installed}
-            onClick={() => void startUninstall()}
-          >
-            {uninstalling && <Loader2 className="h-4 w-4 flowix-spin" />}
-            {uninstalling
-              ? t('preferences.dsh.runtime.uninstalling')
-              : t('preferences.dsh.runtime.uninstallButton')}
-          </Button>
-        </div>
-        {showingUpdateProgress && progress && (
-          <div className="space-y-1.5">
-            <div className="flex justify-between text-xs text-[var(--muted-foreground)]">
-              <span>{t(progress.phase === 'installing' ? 'preferences.dsh.runtime.installing' : 'preferences.dsh.runtime.downloading')}</span>
-              <span>{progress.percent == null ? '…' : `${progress.percent}%`}</span>
-            </div>
-            <div className="h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
-              <div
-                className="h-full rounded-full bg-[var(--primary)] transition-[width]"
-                style={{ width: `${progress.percent ?? 0}%` }}
-              />
-            </div>
-            {progress.resumed && (
-              <p className="text-xs text-[var(--muted-foreground)]">
-                {t('preferences.dsh.runtime.resumed')}
+            {status.source === 'local-cli' && (
+              <p className="mt-1 truncate text-sm text-[var(--muted-foreground)]">
+                {t('preferences.dsh.appServer.localRuntime', { path: status.executablePath ?? '' })}
               </p>
             )}
           </div>
-        )}
-        {error && <p className="text-xs text-[var(--destructive)]">{error}</p>}
+        </div>
       </div>
     </div>
   );
 }
 
-function formatDshArchiveSize(bytes: number | null | undefined): string {
-  if (!Number.isFinite(bytes) || bytes == null || bytes <= 0) return '—';
-  const megabytes = bytes / (1024 * 1024);
-  return `${megabytes.toFixed(megabytes >= 10 ? 0 : 1)} MB`;
-}
 
 function PluginsTab() {
   const { t } = useI18n();

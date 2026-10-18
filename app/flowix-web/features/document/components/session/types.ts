@@ -10,6 +10,7 @@ export interface LoadContentOptions {
 export type DocumentContentStatus =
   | { status: 'loading'; retainContent: boolean }
   | { status: 'ready' }
+  | { status: 'missing-note'; path: string; retry: () => void | Promise<void> }
   | { status: 'error'; message: string; retry: () => void | Promise<void> };
 
 export interface DocumentContainerState {
@@ -18,6 +19,7 @@ export interface DocumentContainerState {
   isLoaded: boolean;
   isLoading: boolean;
   error: string | null;
+  errorKind: 'missing-note' | 'error' | null;
   isScrolled: boolean;
   isNewlyCreated: boolean;
   charCount: number;
@@ -85,6 +87,7 @@ export const initialDocumentContainerState: DocumentContainerState = {
   isLoaded: false,
   isLoading: false,
   error: null,
+  errorKind: null,
   isScrolled: false,
   isNewlyCreated: false,
   charCount: 0,

@@ -144,6 +144,7 @@ export function NotebookIconMenu({
         platform,
         await readFeedbackImages(),
       );
+      toast.success(t('memo.list.notebookMenu.feedback.submitSucceeded'));
       setFeedbackOpen(false);
       setFeedbackText('');
       setFeedbackFiles([]);
@@ -251,7 +252,7 @@ export function NotebookIconMenu({
                 ) : (
                   tab.icon
                 )}
-                <span>{tab.id === 'mcp' ? 'MCP' : t(tab.labelKey)}</span>
+                <span>{t(tab.labelKey)}</span>
               </DropdownMenuItem>
             ))}
           </div>
@@ -264,12 +265,14 @@ export function NotebookIconMenu({
           className={NOTEBOOK_ICON_MENU_ITEM_CLASS}
         >
           <span>{t('memo.list.notebookMenu.officialWebsite')}</span>
+          <span className="ml-auto font-mono text-xs text-[var(--muted-foreground)]">Flowix.CC</span>
         </DropdownMenuItem>
         <DropdownMenuItem
           onClick={() => void openUrl(COMMUNITY_URL)}
           className={NOTEBOOK_ICON_MENU_ITEM_CLASS}
         >
           <span>{t('memo.list.notebookMenu.community')}</span>
+          <span className="ml-auto font-mono text-xs text-[var(--muted-foreground)]">GitHub</span>
         </DropdownMenuItem>
         <DropdownMenuItem onClick={openFeedback} className={NOTEBOOK_ICON_MENU_ITEM_CLASS}>
           <span>{t('memo.list.notebookMenu.feedback')}</span>

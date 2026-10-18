@@ -64,26 +64,35 @@ html[data-platform="mac"] *::-webkit-scrollbar-thumb:active {
 	background: var(--muted-foreground);
 }
 
-/* Select popups keep their scrollbar track space, but only paint the thumb
- * while the list is actively scrolling. */
-[data-flowix-surface="select"]:not([data-scrolling="true"]) {
+/* Select and composer popups keep their scrollbar track space, but only paint
+ * the thumb while the list is actively scrolling. */
+[data-flowix-surface="select"]:not([data-scrolling="true"]),
+.agent-composer-slash-menu:not([data-scrolling="true"]) {
 	scrollbar-color: transparent transparent;
 }
 
-[data-flowix-surface="select"][data-scrolling="true"] {
+[data-flowix-surface="select"][data-scrolling="true"],
+.agent-composer-slash-menu[data-scrolling="true"] {
 	scrollbar-color: color-mix(in oklch, var(--muted-foreground) 30%, transparent) transparent;
 }
 
-[data-flowix-surface="select"]:not([data-scrolling="true"])::-webkit-scrollbar-thumb {
+[data-flowix-surface="select"]:not([data-scrolling="true"])::-webkit-scrollbar-thumb,
+.agent-composer-slash-menu:not([data-scrolling="true"])::-webkit-scrollbar-thumb {
 	background: transparent;
 }
 
-[data-flowix-surface="select"][data-scrolling="true"]::-webkit-scrollbar-thumb {
+[data-flowix-surface="select"][data-scrolling="true"]::-webkit-scrollbar-thumb,
+.agent-composer-slash-menu[data-scrolling="true"]::-webkit-scrollbar-thumb {
 	background: color-mix(in oklch, var(--muted-foreground) 25%, transparent);
 }
 
-html[data-platform="mac"] [data-flowix-surface="select"][data-scrolling="true"]::-webkit-scrollbar-thumb {
+html[data-platform="mac"] [data-flowix-surface="select"][data-scrolling="true"]::-webkit-scrollbar-thumb,
+html[data-platform="mac"] .agent-composer-slash-menu[data-scrolling="true"]::-webkit-scrollbar-thumb {
 	background: color-mix(in oklch, var(--muted-foreground) 78%, transparent);
+}
+
+html[data-platform="mac"] .agent-composer-slash-menu:not([data-scrolling="true"])::-webkit-scrollbar-thumb {
+	background: transparent;
 }
 
 html[data-platform="non-mac"] .overlay-scrollbar,
@@ -153,6 +162,16 @@ html[data-platform="mac"] .overlay-scrollbar-frame--custom-mac .overlay-scrollba
 
 html[data-platform="mac"] .overlay-scrollbar-frame--custom-mac .overlay-scrollbar-track--vertical {
 	width: 6px;
+}
+
+/* Keep the notebook selector's overlay thumb clear of the popup's rounded corners. */
+.flowix-notebook-selector-scrollbar > .overlay-scrollbar-track--vertical {
+	top: 8px !important;
+	bottom: 8px !important;
+}
+
+.flowix-notebook-selector-scrollbar > .overlay-scrollbar-thumb--vertical {
+	top: 8px !important;
 }
 
 /* Horizontal counterpart of the product scrollbar: matching capsule thumb,

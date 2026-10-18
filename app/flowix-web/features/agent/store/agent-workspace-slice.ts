@@ -1,12 +1,26 @@
 import { createLogger } from '@/lib/logger';
-import { STORAGE_KEYS } from '@/lib/constants';
 import { agentWorkspace } from '@platform/tauri/client';
-import type { AgentWorkspaceSnapshot } from '@/lib/types/agent-workspace';
-import type { AgentDataStoreState } from './agent-data-store';
+import type { AgentWorkspaceSnapshot, AgentWorkspaceResource } from '@/lib/types/agent-workspace';
 import type { FilesConfig } from '@/types/agent';
 
 const logger = createLogger('agent-workspace');
 export type AgentAccessErrorCode = 'not-selected' | 'already-tracked' | 'save-failed';
+export interface AgentWorkspaceNotebook {
+  notebook: { id: string; name: string; path: string };
+  addDirs: Array<{
+    id: string;
+    path: string;
+    label: string;
+    enabled: boolean;
+    missing: boolean;
+  }>;
+}
+export interface AgentWorkspaceState {
+  /** In-memory projection of local.db; runtime authorization remains backend-owned. */
+  resources: AgentWorkspaceResource[];
+  byNotebookId: Record<string, AgentWorkspaceNotebook>;
+  validatedAt?: number;
+}
 export interface AgentWorkspaceActions {
   loadInitial: () => Promise<boolean>;
   getNotebookFiles: (notebookId: string | null | undefined) => FilesConfig | undefined;
@@ -19,15 +33,14 @@ export interface AgentWorkspaceActions {
 export type AgentWorkspaceLoadStatus = 'idle' | 'loading' | 'ready' | 'error';
 export interface AgentWorkspaceLoadState { status: AgentWorkspaceLoadStatus; error?: string }
 
-export async function readLegacyPiModePreference(): Promise<'code' | 'writing' | undefined> {
-  const legacy = (await agentWorkspace.getLegacyPreferences())?.pi;
-  if (legacy?.piCodeMode !== undefined) return legacy.piCodeMode ? 'code' : 'writing';
-  const mode: unknown = legacy?.mode;
-  return mode === 'code' || mode === 'writing' ? mode : undefined;
+export interface AgentWorkspaceSliceStoreState {
+  workspace: AgentWorkspaceState;
+  loadState: { workspace: AgentWorkspaceLoadState };
+  workspaceActions: AgentWorkspaceActions;
 }
 
 export function createAgentWorkspaceSlice(
-  getStore: () => AgentDataStoreState,
+  getStore: () => AgentWorkspaceSliceStoreState,
   publishWorkspace: (snapshot: AgentWorkspaceSnapshot) => void,
   setLoadState: (state: AgentWorkspaceLoadState) => void,
 ): AgentWorkspaceActions {
@@ -57,20 +70,6 @@ export function createAgentWorkspaceSlice(
       if (!getStore().workspace.validatedAt) setLoadState({ status: 'loading' });
       try {
         const snapshot = await agentWorkspace.get();
-        // Runtime preferences are the only browser-owned legacy import.
-        try {
-          if (!getStore().legacyPreferencesMigrated) {
-            const legacy = await agentWorkspace.getLegacyPreferences();
-            const { useAgentSessionStore } = await import('./agent-session-store');
-            if (requestGeneration !== generation) return false;
-            getStore().migrateLegacyPreferences(legacy ?? undefined, useAgentSessionStore.getState().sessionMeta.settings);
-            const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.AGENT_DATA) ?? 'null');
-            if (!saved?.state?.legacyPreferencesMigrated) logger.warn('Agent preference migration has not reached durable storage');
-          }
-        } catch (error) {
-          logger.warn('Legacy preference import deferred; workspace data remains available', { error });
-        }
-
         if (requestGeneration !== generation) return false;
         publish(snapshot);
         return true;

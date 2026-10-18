@@ -1,11 +1,34 @@
 'use client';
 
-import { Component, Fragment, type ErrorInfo, type ReactNode } from 'react';
+import { Component, createContext, Fragment, lazy, useContext, type ComponentType, type ErrorInfo, type LazyExoticComponent, type ReactNode } from 'react';
 import { CenteredLoadingSpinner } from '@shared/ui/centered-loading-spinner';
 import { WorkspaceEmptyState } from '@shared/ui/workspace-empty-state';
 import { useI18n } from '@/lib/i18n';
 import type { I18nKey } from '@/lib/i18n/locales';
 import type { SurfaceAppearance, SurfaceMessage, SurfaceState } from '@features/workspace/public/surface-api';
+
+const WorkspaceSurfaceRendererRetryContext = createContext<object>({});
+const rendererCache = new WeakMap<object, WeakMap<object, unknown>>();
+
+/** Recreate a lazy component when the shared renderer boundary retries. */
+export function useWorkspaceSurfaceRendererLazy<P extends object>(
+  load: () => Promise<{ default: ComponentType<P> }>,
+): LazyExoticComponent<ComponentType<P>> {
+  const retryScope = useContext(WorkspaceSurfaceRendererRetryContext);
+  // Initial suspension discards hook state, including useMemo. Cache outside
+  // the suspending component so retries reuse the same resolved lazy wrapper.
+  let scopes = rendererCache.get(load);
+  if (!scopes) {
+    scopes = new WeakMap();
+    rendererCache.set(load, scopes);
+  }
+  let renderer = scopes.get(retryScope) as LazyExoticComponent<ComponentType<P>> | undefined;
+  if (!renderer) {
+    renderer = lazy(load);
+    scopes.set(retryScope, renderer);
+  }
+  return renderer;
+}
 
 function messageText(message: SurfaceMessage, t: (key: I18nKey, params?: Record<string, string | number>) => string): string {
   const translated = t(message.key as I18nKey, message.params);
@@ -37,6 +60,7 @@ export function WorkspaceSurfaceStateView({
   const message = 'message' in state && state.message
     ? messageOverride ?? messageText(state.message, t)
     : null;
+  const detailText = state.status === 'error' ? state.detailText : undefined;
 
   if (keepContentMounted) {
     const contentVisible = state.status === 'ready' || state.status === 'loading' && state.retainContent;
@@ -95,7 +119,8 @@ export function WorkspaceSurfaceStateView({
 
   return <div className={`flex h-full min-h-0 w-full flex-col items-center justify-center gap-3 px-6 text-center ${backgroundClass(appearance)}`}
     role={state.status === 'error' || state.status === 'unavailable' ? 'alert' : 'status'}>
-    <p className="text-sm text-[var(--muted-foreground)]">{message}</p>
+    <p className={detailText ? 'text-sm font-medium text-[var(--foreground)]' : 'text-sm text-[var(--muted-foreground)]'}>{message}</p>
+    {detailText ? <p className="max-w-full break-all text-xs text-[var(--muted-foreground)]">{detailText}</p> : null}
     {'actions' in state && state.actions?.length ? <div className="flex flex-wrap justify-center gap-2">
       {state.actions.map((action) => <button key={action.id} type="button" disabled={!action.enabled}
         onClick={() => { void action.run(); }}
@@ -150,6 +175,8 @@ export class WorkspaceSurfaceErrorBoundary extends Component<
       />;
     }
 
-    return <Fragment key={this.state.retryKey}>{this.props.children}</Fragment>;
+    return <WorkspaceSurfaceRendererRetryContext.Provider value={this.state}>
+      <Fragment key={this.state.retryKey}>{this.props.children}</Fragment>
+    </WorkspaceSurfaceRendererRetryContext.Provider>;
   }
 }

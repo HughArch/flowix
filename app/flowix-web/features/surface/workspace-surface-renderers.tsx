@@ -14,6 +14,7 @@ import { WorkspaceSurfaceStateView } from './workspace-surface-state-view';
 import { useWorkspaceSurfaceLifecycleBridge } from './workspace-surface-lifecycle-bridge';
 import type { DocumentContentStatus } from '@features/document/components/session/types';
 import { openFolderCollection } from '@features/workspace/public/main-window-api';
+import { notes } from '@platform/tauri/client';
 import { toast } from '@/lib/toast';
 
 const NO_SURFACE_ACTIONS: readonly [] = [];
@@ -34,6 +35,27 @@ function publishDocumentContentState(
       reportPresentation({ state: {
         status: 'error', message: { key: 'error.unexpected', fallbackText: contentState.message },
         actions: [{ id: 'retry', label: { key: 'error.retry' }, enabled: true, run: contentState.retry }],
+      } });
+      break;
+    case 'missing-note':
+      reportPresentation({ state: {
+        status: 'error', message: { key: 'document.load.missingNoteTitle' }, detailText: contentState.path,
+        actions: [
+          { id: 'retry', label: { key: 'error.retry' }, enabled: true, run: contentState.retry },
+          { id: 'delete', label: { key: 'document.action.delete' }, enabled: true, run: async () => {
+            try {
+              const outcome = await notes.pruneMissing(contentState.path);
+              if (outcome === 'present') {
+                await contentState.retry();
+                return;
+              }
+              // The confirmed resource-deleted event owns list, tab and work
+              // target cleanup in every window.
+            } catch (error) {
+              toast.error(error instanceof Error ? error.message : String(error));
+            }
+          } },
+        ],
       } });
       break;
     case 'ready':

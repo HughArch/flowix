@@ -4,7 +4,7 @@ export { DocumentTitlebarWin } from '@features/document/components/document-titl
 export { LazyDocumentEditor } from '@features/document/components/lazy-document-editor';
 export { useDocumentCommands } from '@features/document/components/use-document-commands';
 export {
-  flushWorkspaceDocumentPath,
+  prepareWorkspaceDocumentLeave,
   getWorkspaceDocumentState,
   recordWorkspaceDocumentNavigation,
   type WorkspaceDocumentState,

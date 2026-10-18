@@ -94,7 +94,7 @@ async function fetchAgentModelCatalog(agentType: AgentTypeKey): Promise<AgentMod
   if (agentType === "pi") {
     const [providers, models] = await Promise.all([piModels.list(), agent.listSupportedModels("pi")]);
     const defaultProvider = providers.find((provider) => provider.defaultModelId);
-    const providerNames = new Map(providers.map((provider) => [provider.id, provider.displayName]));
+    const providerById = new Map(providers.map((provider) => [provider.id, provider]));
     const seen = new Set<string>();
     const items = models.flatMap((model): AgentCatalogModel[] => {
       const separator = model.indexOf("::");
@@ -104,7 +104,19 @@ async function fetchAgentModelCatalog(agentType: AgentTypeKey): Promise<AgentMod
       const key = `${providerId}\u0000${id}`;
       if (!id || seen.has(key)) return [];
       seen.add(key);
-      return [{ id, label: formatModelDisplayLabel(id), providerId, providerName: providerNames.get(providerId) ?? providerId }];
+      const provider = providerById.get(providerId);
+      const modelConfig = provider?.models.find((entry) => entry.id === id);
+      return [{
+        id,
+        label: modelConfig?.name?.trim() || formatModelDisplayLabel(id),
+        ...(modelConfig?.subtitle?.trim() ? { subtitle: modelConfig.subtitle.trim() } : {}),
+        ...(modelConfig?.creditMultiplier != null ? { creditMultiplier: modelConfig.creditMultiplier } : {}),
+        ...(modelConfig?.providerIconUrl || provider?.iconUrl
+          ? { iconUrl: modelConfig?.providerIconUrl || provider?.iconUrl }
+          : {}),
+        providerId,
+        providerName: provider?.displayName ?? providerId,
+      }];
     });
     return {
       items,

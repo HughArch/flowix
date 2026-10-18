@@ -71,6 +71,8 @@ interface CodeEditorProps {
   onSearchPanelOpenChange?: (open: boolean) => void;
   onEditorScroll?: (scrollTop: number) => void;
   onEditingFinished?: () => void;
+  /** Whether the CodeMirror view exists and can accept editor operations. */
+  onReadyChange?: (ready: boolean) => void;
   /** Optional control rendered in the source memo's title gutter. */
   onToggleEditorMode?: () => void;
   sourceModeToggleLabel?: string;
@@ -314,6 +316,7 @@ export const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(function
   onSearchPanelOpenChange,
   onEditorScroll,
   onEditingFinished,
+  onReadyChange,
   onToggleEditorMode,
   sourceModeToggleLabel,
   scrollHeader,
@@ -326,6 +329,7 @@ export const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(function
   const onSearchPanelOpenChangeRef = useRef(onSearchPanelOpenChange);
   const onEditorScrollRef = useRef(onEditorScroll);
   const onEditingFinishedRef = useRef(onEditingFinished);
+  const onReadyChangeRef = useRef(onReadyChange);
   const languageCompartment = useMemo(() => new Compartment(), []);
   const editableCompartment = useMemo(() => new Compartment(), []);
   const hasScrollHeader = Boolean(scrollHeader);
@@ -341,6 +345,7 @@ export const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(function
   onSearchPanelOpenChangeRef.current = onSearchPanelOpenChange;
   onEditorScrollRef.current = onEditorScroll;
   onEditingFinishedRef.current = onEditingFinished;
+  onReadyChangeRef.current = onReadyChange;
 
   useShortcutScope('editor');
 
@@ -500,6 +505,7 @@ export const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(function
     });
     const view = new EditorView({ state, parent: mount });
     viewRef.current = view;
+    onReadyChangeRef.current?.(true);
 
     const handleScroll = () => onEditorScrollRef.current?.(view.scrollDOM.scrollTop);
     const handleBlur = () => onEditingFinishedRef.current?.();
@@ -513,6 +519,7 @@ export const CodeEditor = forwardRef<CodeEditorHandle, CodeEditorProps>(function
       view.contentDOM.removeEventListener('blur', handleBlur);
       view.destroy();
       viewRef.current = null;
+      onReadyChangeRef.current?.(false);
       setScrollHeaderMount(null);
     };
   }, [autoFocus, editableCompartment, filePath, handleSourceHeaderMount, languageCompartment]);

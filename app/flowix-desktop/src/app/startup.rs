@@ -111,6 +111,11 @@ impl StartupCoordinator {
         task: impl Into<String>,
     ) {
         let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.status.stage != StartupStage::Initialization
+            || state.status.phase != StartupPhase::Running
+        {
+            return;
+        }
         state.status.progress = Some(StartupProgress {
             percent: percent.min(100),
             completed,
@@ -147,8 +152,12 @@ impl StartupCoordinator {
         }
         state.status = StartupStatus {
             phase: StartupPhase::Pending,
-            stage: StartupStage::Initialization,
-            step: "initialization".into(),
+            stage: state.status.stage,
+            step: match state.status.stage {
+                StartupStage::Initialization => "initialization",
+                StartupStage::WorkspacePreparation => "preparingData",
+            }
+            .into(),
             error: None,
             progress: None,
         };
@@ -222,6 +231,14 @@ impl StartupCoordinator {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Once stage 2 starts, neither retries nor later maintenance may reopen
+        // version initialization. Keep this invariant at the status boundary.
+        if state.status.stage == StartupStage::WorkspacePreparation
+            && status.stage == StartupStage::Initialization
+        {
+            tracing::warn!(step = %status.step, "ignored startup transition back to initialization");
+            return;
+        }
         state.status = status;
         self.changed.notify_all();
     }
@@ -281,7 +298,34 @@ mod tests {
         assert_eq!(status.stage, StartupStage::WorkspacePreparation);
         assert_eq!(status.step, "load-current-notebook");
         coordinator.request_retry().unwrap();
-        assert_eq!(coordinator.status().stage, StartupStage::Initialization);
+        assert_eq!(
+            coordinator.status().stage,
+            StartupStage::WorkspacePreparation
+        );
+    }
+
+    #[test]
+    fn workspace_preparation_cannot_return_to_initialization_or_publish_its_progress() {
+        let coordinator = StartupCoordinator::new();
+        coordinator.mark_running(StartupStage::Initialization, "migrating");
+        coordinator.set_progress(50, 1, 2, "migration");
+        assert!(coordinator.status().progress.is_some());
+        coordinator.mark_running(StartupStage::WorkspacePreparation, "preparingData");
+
+        for _ in 0..2 {
+            coordinator.mark_running(StartupStage::Initialization, "versionInitialization");
+            coordinator.set_progress(30, 0, 2, "prepareNotebookRegistry");
+            let status = coordinator.status();
+            assert_eq!(status.stage, StartupStage::WorkspacePreparation);
+            assert!(status.progress.is_none());
+            coordinator.mark_failed("database unavailable");
+            coordinator.request_retry().unwrap();
+            assert_eq!(
+                coordinator.status().stage,
+                StartupStage::WorkspacePreparation
+            );
+            coordinator.mark_running(StartupStage::WorkspacePreparation, "preparingData");
+        }
     }
 
     #[test]

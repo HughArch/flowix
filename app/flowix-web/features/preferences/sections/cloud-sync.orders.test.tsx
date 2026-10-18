@@ -6,15 +6,19 @@ import { CloudSyncSection } from './cloud-sync';
 const mocks = vi.hoisted(() => ({
   listBillingOrders: vi.fn(), checkBillingOrder: vi.fn(), listProducts: vi.fn(),
   refreshMembership: vi.fn(), success: vi.fn(), info: vi.fn(), error: vi.fn(),
+  cloudState: { authenticated: true, account: { user: { id: 'usr_1', displayName: 'User' } } },
 }));
 vi.mock('@platform/tauri/client', () => ({ cloud: {
   listBillingOrders: mocks.listBillingOrders,
   checkBillingOrder: mocks.checkBillingOrder,
   listProducts: mocks.listProducts,
 } }));
+vi.mock('@features/preferences/sections/pi-cloud-models-section', () => ({
+  PiCloudModelsSection: () => 'PI_MEMBER_MODELS_SECTION',
+}));
 vi.mock('@features/preferences/hooks/use-cloud-account-state', () => ({
   useCloudAccountState: () => ({
-    state: { authenticated: true, account: { user: { id: 'usr_1', displayName: 'User' } } },
+    state: mocks.cloudState,
     refreshMembership: mocks.refreshMembership,
   }),
 }));
@@ -30,6 +34,7 @@ let container: HTMLDivElement;
 let root: Root;
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.cloudState.authenticated = true;
   mocks.listProducts.mockResolvedValue([]);
   mocks.listBillingOrders.mockResolvedValue([{
     id: 'ord_1', productName: 'Plan', amount: 390, currency: 'CNY', status: 'pending', createdAt: 0,
@@ -52,6 +57,17 @@ async function clickCheck() {
   expect(button).toBeDefined();
   await act(async () => button!.click());
 }
+
+it('hides Pi Cloud models while signed out', async () => {
+  mocks.cloudState.authenticated = false;
+  await act(async () => root.render(<CloudSyncSection />));
+  expect(container.textContent).not.toContain('PI_MEMBER_MODELS_SECTION');
+});
+
+it('shows Pi Cloud models while signed in', async () => {
+  await act(async () => root.render(<CloudSyncSection />));
+  expect(container.textContent).toContain('PI_MEMBER_MODELS_SECTION');
+});
 
 it.each([
   ['unsupported', 'error', 'needsReview'],

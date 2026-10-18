@@ -11,6 +11,7 @@ export interface MainWindowMemoEventActions {
   handleMemoUpdated: (memo: MemoItem) => void;
   handleMemoDeleted: () => void;
   removeBrowserColumnTabsByPath: (path: string) => void;
+  clearWorkspaceTargetByPath?: (path: string) => void;
   handleTagsRenamed: (event: Extract<MemoEvent, { kind: 'tags_renamed' }>) => void;
   handleTagsDeleted: (event: Extract<MemoEvent, { kind: 'tags_deleted' }>) => void;
   refreshSelectedNotebookMetadata: (event: MemoEvent) => void;
@@ -20,10 +21,11 @@ export interface MainWindowMemoEventActions {
 /**
  * Route one memo event inside the main Webview.
  *
- * Externally created notes and notes created in a background notebook may
- * auto-open according to the user preference. Template notes skip that side
- * effect. List and tag metadata updates remain scoped to the selected
- * notebook, while notebook-keyed todo counts refresh in background.
+ * Legacy Memo events for externally created notes and notes created in a
+ * background notebook may auto-open according to the user preference.
+ * Path-first external creates are handled by the notebook path event instead.
+ * Template notes skip auto-open. List and tag metadata updates remain scoped
+ * to the selected notebook, while notebook-keyed todo counts refresh in background.
  *
  * `tags_renamed` / `tags_deleted` 都是 tag 子树操作的收口事件, 后端已经
  * 完成所有 affected memo 的 body 改写 + index 同步。 这里只走
@@ -58,6 +60,7 @@ export function handleMainWindowMemoEvent(
   // events, otherwise a later tab activation can resurrect the old filename.
   if (event.kind === 'deleted') {
     actions.removeBrowserColumnTabsByPath(event.path);
+    actions.clearWorkspaceTargetByPath?.(event.path);
   }
 
   const selectedNotebookId = actions.getSelectedNotebookId();

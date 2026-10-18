@@ -31,9 +31,9 @@ describe("initial runtime from unified Agent preferences", () => {
 
   it("isolates Agent preferences without copying the global Pi mode into conversations", () => {
     const store = useAgentDataStore.getState();
-    store.setUserPreference("claude", { model: { id: "claude-model" } });
+    store.setUserPreference("claudecode", { model: { id: "claude-model" } });
     store.setUserPreference("pi", { mode: "code" });
-    expect(buildInitialInstanceRuntimeConfig("deepseek-harness").model).toBeUndefined();
+    expect(buildInitialInstanceRuntimeConfig("dsh").model).toBeUndefined();
     expect(buildInitialInstanceRuntimeConfig("pi").pi).toBeUndefined();
     expect(resolveAgentPreferenceRuntimeConfig("pi", { pi: { codeMode: false } }).pi).toBeUndefined();
     expect(useAgentDataStore.getState().agents.pi.user.mode).toBe("code");

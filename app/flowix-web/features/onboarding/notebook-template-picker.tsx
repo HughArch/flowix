@@ -1,5 +1,5 @@
 import { useMemo, useState } from 'react';
-import { Check, CircleAlert, Plus, X } from 'lucide-react';
+import { Check, CircleAlert, LoaderCircle, Plus, X } from 'lucide-react';
 import { ArrowsLeftRightIcon } from '@phosphor-icons/react';
 import { Button } from '@shared/ui/button';
 import { cn } from '@/lib/utils';
@@ -12,9 +12,11 @@ import { NotebookTemplateCover } from './notebook-template-icon';
 function NotebookTemplateCardContent({
   template,
   onSwitch,
+  disabled = false,
 }: {
   template: NotebookTemplate;
   onSwitch?: () => void;
+  disabled?: boolean;
 }) {
   return (
     <>
@@ -24,6 +26,7 @@ function NotebookTemplateCardContent({
           <span className="pointer-events-none absolute inset-0 grid place-items-center rounded-lg bg-[color-mix(in_oklch,var(--background)_68%,transparent)] opacity-0 transition-opacity group-hover/cover:pointer-events-auto group-hover/cover:opacity-100 group-focus-within/cover:pointer-events-auto group-focus-within/cover:opacity-100">
             <button
               type="button"
+              disabled={disabled}
               aria-label="切换场景模板"
               title="切换场景模板"
               className="inline-flex h-7 w-7 items-center justify-center text-[var(--brand)]"
@@ -45,22 +48,25 @@ function NotebookTemplateCardContent({
 export function NotebookTemplateCardPreview({
   template,
   onSwitch,
+  disabled = false,
 }: {
   template: NotebookTemplate;
   onSwitch: () => void;
+  disabled?: boolean;
 }) {
   return (
     <div className="grid min-h-0 w-[min(280px,100%)] grid-rows-[auto_auto] gap-2 rounded-[11px] border border-[var(--onboarding-line)] bg-[var(--card)] p-[10px] text-left text-[var(--onboarding-subtle)]">
-      <NotebookTemplateCardContent template={template} onSwitch={onSwitch} />
+      <NotebookTemplateCardContent template={template} onSwitch={onSwitch} disabled={disabled} />
     </div>
   );
 }
 
-export function NotebookTemplateEmptyCard({ onClick }: { onClick: () => void }) {
+export function NotebookTemplateEmptyCard({ onClick, disabled = false }: { onClick: () => void; disabled?: boolean }) {
   return (
     <button
       type="button"
-      className="flex h-[240px] w-[320px] max-w-full flex-col items-center justify-center gap-1.5 rounded-2xl border-2 border-dashed border-[color-mix(in_oklch,var(--onboarding-line)_90%,var(--onboarding-ink))] bg-transparent text-sm text-[var(--onboarding-subtle)]"
+      disabled={disabled}
+      className="flex h-[240px] w-[320px] max-w-full flex-col items-center justify-center gap-1.5 rounded-2xl border-2 border-dashed border-[color-mix(in_oklch,var(--onboarding-line)_90%,var(--onboarding-ink))] bg-transparent text-sm text-[var(--onboarding-subtle)] disabled:cursor-not-allowed disabled:opacity-50"
       aria-haspopup="dialog"
       onClick={onClick}
     >
@@ -93,35 +99,53 @@ export function NotebookTemplatePicker({
       ? templates.filter((template) => template.category === selectedCategory)
       : templates
   ), [selectedCategory, templates]);
+  const hasCategories = templates.some((template) => Boolean(template.category));
 
   return (
     <div className="absolute inset-0 z-[5] grid grid-rows-[minmax(0,1fr)_auto] bg-[var(--frame-bg)] text-[var(--onboarding-ink)] [--onboarding-ink:var(--foreground)] [--onboarding-subtle:var(--muted-foreground)] [--onboarding-panel:color-mix(in_oklch,var(--card)_96%,var(--background))] [--onboarding-line:color-mix(in_oklch,var(--border)_78%,transparent)]" role="dialog" aria-modal="true" aria-label="选择场景模板">
-      <main className="overflow-auto px-[clamp(20px,5vw,64px)] pb-7 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
-        <div className="sticky top-0 z-[3] flex items-center gap-3 bg-[var(--frame-bg)] pb-2 shadow-[0_1px_0_var(--onboarding-line)]">
-          <NotebookTemplateCategories
-            templates={templates}
-            value={selectedCategory}
-            onChange={setSelectedCategory}
-          />
-          <button
-            type="button"
-            className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--muted-foreground)] shadow-sm transition-colors hover:border-[color-mix(in_oklch,var(--border)_65%,var(--muted-foreground))] hover:text-[var(--foreground)]"
-            aria-label="关闭场景选择"
-            onClick={onCancel}
-          >
-            <X size={19} aria-hidden="true" />
-          </button>
-        </div>
-        {status === 'loading' && (
-          <p className="mt-4 text-sm text-muted-foreground" aria-live="polite">
-            {t('notebook.template.loading')}
-          </p>
+      <main className={cn(
+        'min-h-0 overflow-auto px-[clamp(20px,5vw,64px)] pb-7 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden',
+        status === 'loading' && 'relative grid place-items-center',
+      )}>
+        {status === 'loading' ? (
+          <>
+            <button
+              type="button"
+              className="absolute right-[clamp(20px,5vw,64px)] top-3 z-[3] inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--muted-foreground)] shadow-sm transition-colors hover:border-[color-mix(in_oklch,var(--border)_65%,var(--muted-foreground))] hover:text-[var(--foreground)]"
+              aria-label="关闭场景选择"
+              onClick={onCancel}
+            >
+              <X size={19} aria-hidden="true" />
+            </button>
+            <div className="flex items-center justify-center gap-2 text-sm text-muted-foreground" role="status" aria-live="polite">
+              <LoaderCircle size={16} className="flowix-spin" aria-hidden="true" />
+              <span>{t('notebook.template.loading')}</span>
+            </div>
+          </>
+        ) : (
+          <div className="sticky top-0 z-[3] flex items-center gap-3 bg-[var(--frame-bg)] pb-2 shadow-[0_1px_0_var(--onboarding-line)]">
+            {hasCategories && (
+              <NotebookTemplateCategories
+                templates={templates}
+                value={selectedCategory}
+                onChange={setSelectedCategory}
+              />
+            )}
+            <button
+              type="button"
+              className="inline-flex h-8 w-8 shrink-0 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--muted-foreground)] shadow-sm transition-colors hover:border-[color-mix(in_oklch,var(--border)_65%,var(--muted-foreground))] hover:text-[var(--foreground)]"
+              aria-label="关闭场景选择"
+              onClick={onCancel}
+            >
+              <X size={19} aria-hidden="true" />
+            </button>
+          </div>
         )}
         {status === 'error' && (
           <div className="mt-4 flex items-start gap-2 text-xs leading-5 text-[var(--destructive)]" role="alert">
             <CircleAlert size={15} aria-hidden="true" />
             <span>{t('notebook.template.loadFailed')}</span>
-            <Button type="button" variant="outline" size="sm" className="h-7" onClick={retry}>
+            <Button type="button" variant="outline" size="sm" className="h-7 rounded-lg" onClick={retry}>
               {t('error.retry')}
             </Button>
           </div>
@@ -129,33 +153,35 @@ export function NotebookTemplatePicker({
         {status === 'ready' && templates.length === 0 && (
           <p className="mt-4 text-sm text-muted-foreground">{t('notebook.template.empty')}</p>
         )}
-        <div className="mt-[18px] grid grid-cols-[repeat(auto-fill,minmax(min(100%,220px),1fr))] gap-3 max-[600px]:grid-cols-2 max-[600px]:gap-2" role="group" aria-label="场景模板">
-          {visibleTemplates.map((template) => {
-            const selected = template.id === selectedTemplateId;
-            return (
-              <button
-                key={template.id}
-                type="button"
-                aria-pressed={selected}
-                className={cn(
-                  'relative grid min-h-0 min-w-0 content-start grid-rows-[auto_auto] gap-2 rounded-[11px] border border-[var(--onboarding-line)] bg-[color-mix(in_oklch,var(--onboarding-panel)_74%,transparent)] p-[11px] text-left text-[var(--onboarding-subtle)] transition-colors hover:border-[color-mix(in_oklch,var(--brand)_45%,var(--onboarding-line))] max-[600px]:p-2',
-                  selected && 'border-[color-mix(in_oklch,var(--brand)_55%,var(--border))] bg-[var(--card)]',
-                )}
-                onClick={() => setSelectedTemplateId((current) => current === template.id ? null : template.id)}
-              >
-                <NotebookTemplateCardContent template={template} />
-                {selected && (
-                  <span
-                    className="pointer-events-none absolute inset-0 z-[1] grid place-items-center rounded-[inherit] bg-[color-mix(in_oklch,var(--background)_68%,transparent)]"
-                    aria-hidden="true"
-                  >
-                    <Check size={32} className="text-[var(--brand)]" strokeWidth={3} />
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+        {status === 'ready' && (
+          <div className="mt-[18px] grid grid-cols-[repeat(auto-fill,minmax(min(100%,220px),1fr))] gap-3 max-[600px]:grid-cols-2 max-[600px]:gap-2" role="group" aria-label="场景模板">
+            {visibleTemplates.map((template) => {
+              const selected = template.id === selectedTemplateId;
+              return (
+                <button
+                  key={template.id}
+                  type="button"
+                  aria-pressed={selected}
+                  className={cn(
+                    'relative grid min-h-0 min-w-0 content-start grid-rows-[auto_auto] gap-2 rounded-[11px] border border-[var(--onboarding-line)] bg-[color-mix(in_oklch,var(--onboarding-panel)_74%,transparent)] p-[11px] text-left text-[var(--onboarding-subtle)] transition-colors hover:border-[color-mix(in_oklch,var(--brand)_45%,var(--onboarding-line))] max-[600px]:p-2',
+                    selected && 'border-[color-mix(in_oklch,var(--brand)_55%,var(--border))] bg-[var(--card)]',
+                  )}
+                  onClick={() => setSelectedTemplateId((current) => current === template.id ? null : template.id)}
+                >
+                  <NotebookTemplateCardContent template={template} />
+                  {selected && (
+                    <span
+                      className="pointer-events-none absolute inset-0 z-[1] grid place-items-center rounded-[inherit] bg-[color-mix(in_oklch,var(--background)_68%,transparent)]"
+                      aria-hidden="true"
+                    >
+                      <Check size={32} className="text-[var(--brand)]" strokeWidth={3} />
+                    </span>
+                  )}
+                </button>
+              );
+            })}
+          </div>
+        )}
       </main>
 
       <footer className="flex justify-end gap-2 border-t border-[var(--onboarding-line)] bg-[var(--frame-bg)] px-[clamp(20px,5vw,64px)] pb-[calc(14px+env(safe-area-inset-bottom))] pt-[14px]">

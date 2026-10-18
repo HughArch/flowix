@@ -32,6 +32,12 @@ pub struct SyncManager {
     state_notifier: Arc<dyn Fn(CloudState) + Send + Sync>,
 }
 
+/// Local logout has completed; finish this value to revoke its server session.
+pub struct PendingLogout {
+    refresh_token: Option<String>,
+    local_cleanup: Result<(), SyncError>,
+}
+
 struct AuthState {
     session: Option<RuntimeSession>,
     status: CloudAuthStatus,

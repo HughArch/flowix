@@ -31,12 +31,11 @@ import {
   openPluginWorkbench,
   openTableTarget,
   openWebTarget,
-  flushWorkspaceDocument,
+  prepareActiveWorkColumnDocumentLeave,
 } from './workspace-navigation';
 import { selectAndOpenAgentConversation } from './agent-conversation-navigation';
-import { browserColumnTargetIdentity, workColumnTargetIdentity, findWorkspaceContentForNavigation, findWorkspaceContentLocations } from './workspace-content-activation';
-import { flushActiveBrowserColumnDocument } from './browser-column-coordinator';
-import { getWorkspaceSurfaceLifecycle } from '../store/surface-lifecycle-store';
+import { browserColumnTargetIdentity, workColumnTargetIdentity, findWorkspaceContentForNavigation } from './workspace-content-activation';
+import { flushBrowserViewBeforeOpeningWork } from './prepare-browser-document-for-work';
 
 function fileKind(path: string): WorkspaceSurfaceKind {
   return workspaceFileSurfaceKind(resolveWorkspaceFileSurfaceKind(path));
@@ -174,22 +173,6 @@ function assertHostSupport(kind: WorkspaceSurfaceKind, host: WorkspaceSurfaceHos
   }
 }
 
-async function flushBrowserViewBeforeOpeningWork(identity: ContentIdentity): Promise<boolean> {
-  const browserLocation = findWorkspaceContentLocations(identity).browserColumn;
-  if (!browserLocation) return true;
-  const lifecycle = getWorkspaceSurfaceLifecycle(browserLocation.tabId);
-  if (lifecycle?.status === 'ready' && lifecycle.flush) {
-    try { return await lifecycle.flush(); }
-    catch { return false; }
-  }
-  if (useBrowserColumnStore.getState().activeTabId === browserLocation.tabId) {
-    return flushActiveBrowserColumnDocument();
-  }
-  // Inactive tabs have already crossed the coordinator's flush barrier when
-  // they were hidden; their renderer is not mounted and cannot hold a live edit.
-  return true;
-}
-
 async function openBrowserTarget(
   target: BrowserColumnTarget,
   disposition?: BrowserSurfaceOpenDisposition,
@@ -199,7 +182,7 @@ async function openBrowserTarget(
     const requestedIdentity = browserColumnTargetIdentity(target);
     const activeWorkIdentity = workColumnTargetIdentity(useWorkColumnStore.getState().navigation.target);
     if (activeWorkIdentity && contentIdentityKey(activeWorkIdentity) === contentIdentityKey(requestedIdentity)) {
-      await flushWorkspaceDocument();
+      await prepareActiveWorkColumnDocumentLeave();
     }
   }
   const result = await openBrowserColumnTarget(target, disposition);
@@ -231,7 +214,7 @@ export async function openWorkspaceSurface(
   const options = request.options;
   const identity = workTargetIdentity(target);
   const previousLocation = identity ? findWorkspaceContentForNavigation(identity, 'main-third') : null;
-  if (!(previousLocation?.host === 'main-third' && previousLocation.state === 'active') && identity
+  if (target.kind !== 'external' && !(previousLocation?.host === 'main-third' && previousLocation.state === 'active') && identity
     && identity.kind !== 'media' && identity.kind !== 'web' && identity.kind !== 'agent-conversation') {
     if (!await flushBrowserViewBeforeOpeningWork(identity)) {
       return { status: 'cancelled', host: 'main-third', reason: 'navigation-cancelled' };

@@ -33,6 +33,7 @@ import {
   useGlobalSearchMemoViewModel,
   type Notebook,
 } from '@features/memo/public/global-search-api';
+import { useNoteStore } from '@features/memo/store';
 import { joinNotebookMemoPath } from '@/lib/path';
 import { selectNotebook } from '@features/workspace/public/search-navigation-api';
 import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
@@ -502,7 +503,6 @@ function StaticGroups({ onClose }: StaticGroupsProps) {
     activeFilter,
     setActiveFilter,
     createNote,
-    loadNotes,
     setSelectedTagId,
   } = useGlobalSearchMemoViewModel();
 
@@ -579,7 +579,7 @@ function StaticGroups({ onClose }: StaticGroupsProps) {
     if (!selectedNotebook) return;
     try {
       const created = await notes.createFromTemplate(template.id, selectedNotebook.id);
-      await loadNotes({ notebookId: selectedNotebook.id });
+      useNoteStore.getState().upsertCreatedNote(created);
       void openNotebookNote(created.path, selectedNotebook);
     } catch (err) {
       logger.error('create from template failed', { error: err });

@@ -59,10 +59,10 @@ describe('normalizeAgentRuntimeStatusByType', () => {
   it('normalizes the known entries without inventing missing entries', () => {
     expect(normalizeAgentRuntimeStatusByType({
       codex: { installation: 'installed', readiness: 'ready' },
-      claude: { installation: 'installed', readiness: 'blocked', reason: 'Needs setup' },
+      claudecode: { installation: 'installed', readiness: 'blocked', reason: 'Needs setup' },
     })).toEqual({
       codex: { state: 'ready', reason: null },
-      claude: { state: 'not-ready', reason: 'Needs setup' },
+      claudecode: { state: 'not-ready', reason: 'Needs setup' },
     });
   });
 });

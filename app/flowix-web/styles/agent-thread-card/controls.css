@@ -140,7 +140,7 @@
 }
 
 /* 查看笔记按钮 ── 在右侧列对话 (AgentConversationDetail) header 的
- * actions 区出现, 视觉同 __icon-btn 基类。 仅在 source.memoId /
+ * actions 区出现, 视觉同 __icon-btn 基类。 仅在 source.relativePath /
  * source.documentPath 存在时启用; dedicated 对话没有来源笔记, 整段
  * "[icon] | …" 操作组被隐藏, 只剩 "…" 入口供删除。
  *
@@ -275,6 +275,18 @@
   transition:
     padding 150ms ease,
     opacity 120ms ease;
+}
+
+/* A click transfers wheel ownership to the embedded message viewport. Keep a
+ * quiet top/bottom inset cue on the whole card until the user clicks elsewhere. */
+.markdown-editor
+  .agent-thread-card.agent-thread-card--message-scroll-active
+  > .agent-thread-card__container {
+  box-shadow:
+    inset 0 5px 14px -8px color-mix(in oklch, var(--brand) 18%, transparent),
+    inset 0 -5px 14px -8px color-mix(in oklch, var(--brand) 18%, transparent),
+    inset 5px 0 14px -8px color-mix(in oklch, var(--brand) 18%, transparent),
+    inset -5px 0 14px -8px color-mix(in oklch, var(--brand) 18%, transparent);
 }
 
 html[data-platform="mac"] .markdown-editor .agent-thread-card__body-frame {
@@ -481,6 +493,13 @@ html[data-platform="mac"] .agent-conversation-detail .agent-thread-card__body {
   align-items: stretch;
 }
 
+/* Keep the running indicator on the same message-column track in every
+ * Thread Card mode. Expanded surfaces below narrow this shared track. */
+.markdown-editor .agent-thread-card__messages,
+.markdown-editor .agent-thread-card__body > .agent-thread-card__loading-indicator {
+  width: 100%;
+}
+
 /* 独立对话的消息区不允许长 URL / token / 代码行把整个 surface 撑出
  * 横向滚动。仅限第三列 AgentConversationDetail, 不影响文档内嵌卡片及其
  * fullscreen 模式。 */
@@ -506,7 +525,8 @@ html[data-platform="mac"] .agent-conversation-detail .agent-thread-card__body {
 }
 
 .markdown-editor.agent-conversation-detail .agent-thread-card__messages,
-.markdown-editor.agent-conversation-detail .agent-thread-card__skeleton {
+.markdown-editor.agent-conversation-detail .agent-thread-card__skeleton,
+.markdown-editor.agent-conversation-detail .agent-thread-card__loading-indicator {
   width: calc(100% - 3rem);
   max-width: 780px;
   margin-inline: auto;
@@ -637,7 +657,10 @@ html[data-platform="mac"] .markdown-editor .agent-thread-card--collapsed .agent-
   width: calc(100% - 3rem);
 }
 
-.markdown-editor .agent-thread-card--fullscreen .agent-thread-card__messages {
+.markdown-editor .agent-thread-card--fullscreen .agent-thread-card__messages,
+.markdown-editor
+  .agent-thread-card--fullscreen
+  .agent-thread-card__loading-indicator {
   width: calc(100% - 3rem);
   max-width: 780px;
   margin-inline: auto;

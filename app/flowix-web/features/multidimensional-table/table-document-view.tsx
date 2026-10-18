@@ -41,6 +41,7 @@ import { NotebookTreeResourceIcon } from '@features/memo/components/file-type-ic
 import { renameMarkdownTitle } from '@features/document/use-cases/local-document-operations';
 import { ensureFileDisplayIdentity, type FileDisplayIdentity } from '@/lib/file-display-registry';
 import { displayTitleFromFilename } from '@/lib/utils';
+import { collectionDisplayName } from '@features/collection/model';
 import { Button } from '@shared/ui/button';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
 import { CenteredLoadingSpinner } from '@shared/ui/centered-loading-spinner';
@@ -461,9 +462,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
   const commitTableTitle = useCallback(async (rawTitle: string) => {
     setEditingTableName(false);
     const title = rawTitle.trim();
-    const currentTitle = document?.collection.placement === 'folder'
-      ? currentFilePath.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '').split(/[\\/]/).pop() ?? document.collection.name
-      : document?.collection.name ?? displayTitleFromFilename(currentFilePath);
+    const currentTitle = document ? collectionDisplayName(currentFilePath, document.collection.placement) : displayTitleFromFilename(currentFilePath);
     if (!editable || saving || renamingTable || !notebookPath || !title || title === currentTitle) return;
     if (/[\\/]/.test(title)) {
       toast.error('文件名不能包含路径分隔符');
@@ -568,7 +567,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
   const hasRemoveReference = Boolean(onRemoveReference);
   useEffect(() => {
     if (!reportPresentation) return;
-    const title = document?.collection.name ?? displayTitleFromFilename(currentFilePath);
+    const title = document ? collectionDisplayName(currentFilePath, document.collection.placement) : displayTitleFromFilename(currentFilePath);
     if (loadError) {
       const actions = [
         { id: 'retry', label: { key: 'error.retry' }, enabled: true, run: () => load() },
@@ -1768,7 +1767,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
     if (keyChanged) {
       const normalized = canonicalizePropertyKey(name).toLowerCase();
       if (isSystemPropertyKey(propertyKey) || isSystemPropertyKey(name)
-        || !name || ['flowix_key', 'key', 'flowix_property_types', 'flowix_plugin'].includes(normalized)) {
+        || !name || ['flowix_property_types', 'flowix_plugin'].includes(normalized)) {
         toast.error('系统预设或保留名称不能修改属性名称');
         return false;
       }
@@ -1956,7 +1955,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
       || isSystemPropertyKey(field.property_key ?? '')) return false;
     const propertyKey = preset.key.trim();
     const normalizedKey = canonicalizePropertyKey(propertyKey).toLocaleLowerCase();
-    if (!propertyKey || normalizedKey === 'flowix_key' || normalizedKey === 'key' || normalizedKey === 'flowix_property_types'
+    if (!propertyKey || normalizedKey === 'flowix_property_types'
       || document.dataset.schema.fields.some((item) => item.id !== field.id && item.property_key
         && canonicalizePropertyKey(item.property_key).toLocaleLowerCase() === normalizedKey)) {
       toast.error('属性键已存在或属于保留名称');
@@ -2409,6 +2408,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
       for (const item of resolved) {
         if (!item || !isCurrentSession(sequence)) return;
         const path = joinNotebookMemoPath(notebookPath, item.relativePath);
+        if (!path) throw new Error('无法确定笔记路径');
         if (groupField.property_key) {
           const saved = targetOption
             ? await setDocumentProperties(path, { [groupField.property_key]: targetOption.label }, { [groupField.property_key]: 'Select' })
@@ -2617,9 +2617,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
       ]
       : [];
   const showAssociateNoteButton = canCreateRecords || showAssociateNoteAction;
-  const tableDisplayName = document.collection.placement === 'folder'
-    ? currentFilePath.replace(/[\\/]+$/, '').replace(/[\\/][^\\/]*$/, '').split(/[\\/]/).pop() || document.collection.name
-    : document.collection.name;
+  const tableDisplayName = collectionDisplayName(currentFilePath, document.collection.placement);
   const cellSaveStatuses = [...cellStatusesByRecord.values()].flatMap((statuses) => [...statuses.values()]);
   const isSaving = saving || renamingTable || cellSaveStatuses.some((status) => status.saving);
   const saveStatusText = saveFailed || cellSaveStatuses.some((status) => status.error) ? '未保存' : '已保存';

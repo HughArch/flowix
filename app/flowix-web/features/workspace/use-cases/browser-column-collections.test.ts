@@ -21,7 +21,7 @@ function fixture(type: 'table' | 'media_library', filename: string) {
     : serializeMediaLibrary(document as ReturnType<typeof createMediaLibrary>);
   const item: CollectionIndexItem = {
     collectionId: document.collection.id, collectionType: type, relativePath: filename,
-    indexSequence: 1, name: document.collection.name, schemaVersion: 2, payloadSchemaVersion: 2,
+    indexSequence: 1, name: filename.replace(/\.(?:index\.ya?ml|(?:table|lib)\.ya?ml)$/i, ''), schemaVersion: 2, payloadSchemaVersion: 2,
     revision: 0, properties: {}, createdAt: null, updatedAt: null, modifiedMs: 0,
     sizeBytes: content.length, contentHash: null, parseState: 'valid', errorCode: null,
     inViews: true, identityConflict: false,

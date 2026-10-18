@@ -1,40 +1,35 @@
 use std::collections::{HashMap, HashSet};
 mod coordinator;
 mod deletion;
-mod local_adapter;
 mod google_login;
-use google_login::PendingGoogleLogin;
-pub(crate) use google_login::GoogleCallback;
+mod local_adapter;
 pub(crate) use coordinator::{
     schedule_notebook_sync, schedule_notebook_sync_observation, start_cloud_sync_polling,
 };
+pub(crate) use google_login::GoogleCallback;
+use google_login::PendingGoogleLogin;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::Duration;
 
 use chrono::Utc;
-use flowix_core::memo_file::{
-    notebook_path_from_relative, IsMd,
-};
+use flowix_core::memo_file::{notebook_path_from_relative, notebook_relative_path, IsMd};
 use flowix_sync::{
-    v2_content_hash, v2_local_content_diverged, CloudCheckout, CloudMembership,
-    CloudNotebook, CloudOrder, CloudOrderCheck, CloudProduct, CloudState, SyncError, V2AccountSyncReport,
-    V2LocalNote, V2LocalNotebook, V2RemoteApply, V2SyncedNotebook,
+    v2_content_hash, v2_local_content_diverged, CloudAiCreditBalance, CloudCheckout,
+    CloudMembership, CloudNotebook, CloudOrder, CloudOrderCheck, CloudProduct, CloudState,
+    SyncError, V2AccountSyncReport, V2LocalNote, V2LocalNotebook, V2RemoteApply, V2SyncedNotebook,
 };
-use crate::agent_external::pi::config::{self as pi_model_config, PiModelEntry, PiProviderConfig};
+use once_cell::sync::Lazy;
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager, State, WebviewWindow};
 use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
-use once_cell::sync::Lazy;
 
-static GOOGLE_OAUTH_LOGIN: Lazy<Mutex<Option<PendingGoogleLogin>>> =
-    Lazy::new(|| Mutex::new(None));
+static GOOGLE_OAUTH_LOGIN: Lazy<Mutex<Option<PendingGoogleLogin>>> = Lazy::new(|| Mutex::new(None));
 
 use crate::app::state::AppState;
 use crate::lock_utils::read_lock;
-use crate::memo_events::{self, MemoChangeSource, MemoDerivedChanged, MemoEvent};
 
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -167,19 +162,33 @@ pub async fn cloud_start_google_sign_in(app: AppHandle) -> Result<(), String> {
     let app_state = app.state::<AppState>();
     let generation = app_state.cloud_sync.begin_google_sign_in();
     let cloud_api_base = app_state.cloud_environment.api_base();
-    let state = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
-    let code_verifier = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
+    let state = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
+    let code_verifier = format!(
+        "{}{}",
+        uuid::Uuid::new_v4().simple(),
+        uuid::Uuid::new_v4().simple()
+    );
     let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
     {
-        *GOOGLE_OAUTH_LOGIN.lock().unwrap_or_else(|p| p.into_inner()) =
-            Some(PendingGoogleLogin::new(state.clone(), code_verifier, generation));
+        *GOOGLE_OAUTH_LOGIN.lock().unwrap_or_else(|p| p.into_inner()) = Some(
+            PendingGoogleLogin::new(state.clone(), code_verifier, generation),
+        );
     }
-    let mut url = url::Url::parse(&format!(
-        "{cloud_api_base}/v1/auth/google/start"
-    ))
-    .map_err(|error| error.to_string())?;
+    let mut url = url::Url::parse(&format!("{cloud_api_base}/v1/auth/google/start"))
+        .map_err(|error| error.to_string())?;
     url.query_pairs_mut()
-        .append_pair("mode", if option_env!("FLOWIX_DEV_MODE") == Some("1") { "desktop-dev" } else { "desktop" })
+        .append_pair(
+            "mode",
+            if option_env!("FLOWIX_DEV_MODE") == Some("1") {
+                "desktop-dev"
+            } else {
+                "desktop"
+            },
+        )
         .append_pair("state", &state)
         .append_pair("code_challenge", &code_challenge);
     app.opener()
@@ -192,7 +201,10 @@ pub(crate) async fn complete_google_deep_link(
     callback: GoogleCallback,
 ) -> Result<(), String> {
     match callback {
-        GoogleCallback::Success { code, state: oauth_state } => {
+        GoogleCallback::Success {
+            code,
+            state: oauth_state,
+        } => {
             let claimed = {
                 let mut pending = GOOGLE_OAUTH_LOGIN.lock().unwrap_or_else(|p| p.into_inner());
                 let attempt = pending.as_mut().ok_or_else(|| {
@@ -200,9 +212,12 @@ pub(crate) async fn complete_google_deep_link(
                 })?;
                 attempt.claim(&oauth_state).map_err(str::to_string)?
             };
-            let Some((code_verifier, generation)) = claimed else { return Ok(()); };
+            let Some((code_verifier, generation)) = claimed else {
+                return Ok(());
+            };
             let app_state = app.state::<AppState>();
-            app_state.cloud_sync
+            app_state
+                .cloud_sync
                 .sign_in_with_google_desktop(&code, &oauth_state, &code_verifier, generation)
                 .await
                 .map_err(sync_error)?;
@@ -211,17 +226,28 @@ pub(crate) async fn complete_google_deep_link(
                 &app_state,
                 Some("cloudSync"),
             ) {
-                tracing::warn!("Google sign-in succeeded but account preferences could not open: {error}");
+                tracing::warn!(
+                    "Google sign-in succeeded but account preferences could not open: {error}"
+                );
             }
             Ok(())
         }
-        GoogleCallback::Failure { error, state: oauth_state } => {
+        GoogleCallback::Failure {
+            error,
+            state: oauth_state,
+        } => {
             let accepted = {
                 let mut pending = GOOGLE_OAUTH_LOGIN.lock().unwrap_or_else(|p| p.into_inner());
-                let Some(attempt) = pending.as_mut() else { return Ok(()); };
-                attempt.claim_failure(&oauth_state).map_err(str::to_string)?
+                let Some(attempt) = pending.as_mut() else {
+                    return Ok(());
+                };
+                attempt
+                    .claim_failure(&oauth_state)
+                    .map_err(str::to_string)?
             };
-            if accepted { let _ = app.emit("cloud-google-auth-error", error); }
+            if accepted {
+                let _ = app.emit("cloud-google-auth-error", error);
+            }
             Ok(())
         }
     }
@@ -251,13 +277,25 @@ pub async fn cloud_logout(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<CloudState, String> {
-    let logout_result = state.cloud_sync.logout().await.map_err(sync_error);
-    let next_state = state.cloud_sync.state().map_err(sync_error)?;
-    if let Err(error) = pi_model_config::delete_cloud_provider(state.cloud_environment.api_base()) {
-        tracing::warn!("failed to remove the local Flowix Cloud Pi credential: {error}");
-    }
-    let _ = app.emit(crate::commands::settings::USER_CONFIG_CHANGED_EVENT, "pi_config");
-    logout_result?;
+    let pi = state.pi.clone();
+    let api_base = state.cloud_environment.api_base().to_string();
+    let pending_logout = state.cloud_sync.begin_logout();
+    let logout_generation = state.cloud_sync.ai_credential_session_generation();
+    let next_state = state.cloud_sync.state().map_err(sync_error);
+    let pi_cleanup = async {
+        match &next_state {
+            Ok(next_state) if !next_state.authenticated => {
+                pi.disconnect_cloud_model_provider(&app, &api_base, logout_generation)
+                    .await
+            }
+            _ => Ok(()),
+        }
+    };
+    let logout = state.cloud_sync.finish_logout(pending_logout);
+    let (pi_cleanup, logout_result) = tokio::join!(pi_cleanup, logout);
+    let next_state = next_state?;
+    pi_cleanup?;
+    logout_result.map_err(sync_error)?;
     Ok(next_state)
 }
 
@@ -359,90 +397,44 @@ pub async fn cloud_refresh_membership(
 }
 
 #[tauri::command]
+pub async fn cloud_ai_credit_balance(
+    state: State<'_, AppState>,
+) -> Result<CloudAiCreditBalance, String> {
+    state
+        .cloud_sync
+        .ai_credit_balance()
+        .await
+        .map_err(sync_error)
+}
+
+#[tauri::command]
 pub async fn cloud_connect_pi_model_provider(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let api_base = state.cloud_environment.api_base().trim_end_matches('/');
-    let providers = pi_model_config::list()?;
-    let legacy_cloud_id = pi_model_config::legacy_cloud_provider_id(api_base)?;
-    let credential = state.cloud_sync.create_ai_credential().await.map_err(sync_error)?;
-    let catalog = if credential.models.is_empty() {
-        vec![credential.model.clone()]
-    } else {
-        credential.models.clone()
-    };
-    let model_ids: Vec<String> = catalog.iter().map(|model| model.id.clone()).collect();
-    let current_cloud = providers
-        .iter()
-        .find(|provider| provider.source.as_deref() == Some("flowix-cloud"))
-        .or_else(|| {
-            legacy_cloud_id
-                .as_deref()
-                .and_then(|id| providers.iter().find(|provider| provider.id == id))
-        });
-    let saved_default = current_cloud
-        .and_then(|provider| provider.default_model_id.clone())
-        .filter(|id| model_ids.iter().any(|model_id| model_id == id));
-    let default_model_id = saved_default
-        .or_else(|| model_ids.iter().find(|id| **id == credential.model.id).cloned())
-        .or_else(|| model_ids.first().cloned());
-    let provider_id = current_cloud
-        .map(|provider| provider.id.clone())
-        .unwrap_or_else(|| {
-            let existing_ids: std::collections::HashSet<&str> =
-                providers.iter().map(|provider| provider.id.as_str()).collect();
-            let base_id = "flowix-cloud-member";
-            if !existing_ids.contains(base_id) {
-                return base_id.to_string();
-            }
-            let mut suffix = 2;
-            loop {
-                let candidate = format!("{base_id}-{suffix}");
-                if !existing_ids.contains(candidate.as_str()) {
-                    return candidate;
-                }
-                suffix += 1;
-            }
-        });
-    let save_result = pi_model_config::save(PiProviderConfig {
-        id: provider_id,
-        display_name: "Flowix Cloud".into(),
-        api: "openai-completions".into(),
-        base_url: format!("{api_base}/v1/ai"),
-        source: Some("flowix-cloud".into()),
-        api_key: Some(credential.api_key),
-        credential_configured: true,
-        default_model_id,
-        models: catalog.into_iter().map(|model| PiModelEntry {
-            id: model.id.clone(),
-            name: model.id,
-            api: None,
-            reasoning: false,
-            vision: false,
-            context_window: None,
-            max_tokens: None,
-        }).collect(),
-    }, &app);
-    if let Err(error) = save_result {
-        if let Err(revoke_error) = state.cloud_sync.revoke_ai_credential().await {
-            tracing::warn!("failed to revoke an unconfigured Flowix Cloud Pi credential: {}", sync_error(revoke_error));
-        }
-        return Err(error);
-    }
-    let _ = app.emit(crate::commands::settings::USER_CONFIG_CHANGED_EVENT, "pi_config");
-    Ok(())
+    state.pi.connect_cloud_model_provider(&app, api_base).await
 }
 
 #[tauri::command]
-pub async fn cloud_disconnect_pi_model_provider(
+pub async fn cloud_refresh_pi_model_provider_at_startup(
     app: AppHandle,
     state: State<'_, AppState>,
-) -> Result<(), String> {
-    state.cloud_sync.revoke_ai_credential().await.map_err(sync_error)?;
-    pi_model_config::delete_cloud_provider(state.cloud_environment.api_base())?;
-    let _ = app.emit(crate::commands::settings::USER_CONFIG_CHANGED_EVENT, "pi_config");
-    Ok(())
+) -> Result<bool, String> {
+    let api_base = state.cloud_environment.api_base().trim_end_matches('/');
+    state
+        .pi
+        .refresh_cloud_model_provider_at_startup(&app, api_base)
+        .await
+}
+
+#[tauri::command]
+pub async fn cloud_refresh_pi_model_provider(
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    let api_base = state.cloud_environment.api_base().trim_end_matches('/');
+    state.pi.refresh_cloud_model_provider(&app, api_base).await
 }
 
 #[tauri::command]
@@ -492,7 +484,18 @@ pub async fn cloud_submit_feedback(
     attachments: Vec<serde_json::Value>,
     state: State<'_, AppState>,
 ) -> Result<(), String> {
-    state.cloud_sync.submit_feedback(&device_id, &kind, &content, &app_version, &platform, &attachments).await.map_err(sync_error)
+    state
+        .cloud_sync
+        .submit_feedback(
+            &device_id,
+            &kind,
+            &content,
+            &app_version,
+            &platform,
+            &attachments,
+        )
+        .await
+        .map_err(sync_error)
 }
 
 #[tauri::command]
@@ -510,7 +513,11 @@ pub async fn cloud_note_history(
     state: State<'_, AppState>,
 ) -> Result<flowix_sync::V2History, String> {
     let note_id = flowix_sync::v2_path_note_id(&notebook_id, &relative_path);
-    let history = state.cloud_sync.v2_history(&note_id).await.map_err(sync_error)?;
+    let history = state
+        .cloud_sync
+        .v2_history(&note_id)
+        .await
+        .map_err(sync_error)?;
     if history.notebook_id != notebook_id || history.note_id != note_id {
         return Err("CLOUD_HISTORY_ID_MISMATCH".into());
     }
@@ -533,8 +540,12 @@ pub fn restore_local_path_version(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let memo_file = read_lock(&state.memo_file, "memo_file");
-    let _guard = memo_file.operation_locks().notebook_change(&[&notebook_id], "restore_local_path_version").map_err(sync_error)?;
-    let notebook = memo_file.get_notebook_config_by_id(&notebook_id)
+    let _guard = memo_file
+        .operation_locks()
+        .notebook_change(&[&notebook_id], "restore_local_path_version")
+        .map_err(sync_error)?;
+    let notebook = memo_file
+        .get_notebook_config_by_id(&notebook_id)
         .ok_or_else(|| "NOTEBOOK_NOT_FOUND".to_string())?;
     let root = Path::new(&notebook.path);
     let attachment = relative_path.starts_with("attachments/");
@@ -542,7 +553,8 @@ pub fn restore_local_path_version(
         return Err("CLOUD_HISTORY_INVALID_PATH".into());
     }
     let path = local_adapter::safe_cloud_file_path(root, &relative_path, attachment)?;
-    let target = memo_file.read_path_version_bytes(&notebook_id, &relative_path, &version_id)
+    let target = memo_file
+        .read_path_version_bytes(&notebook_id, &relative_path, &version_id)
         .ok_or_else(|| "CLOUD_HISTORY_VERSION_NOT_FOUND".to_string())?;
     if !attachment && std::str::from_utf8(&target).is_err() {
         return Err("CLOUD_HISTORY_INVALID_MARKDOWN".into());
@@ -552,26 +564,44 @@ pub fn restore_local_path_version(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(sync_error(error)),
     };
-    if current.as_deref() == Some(target.as_slice()) { return Ok(()); }
-    if let Some(bytes) = current.as_deref() {
-        memo_file.create_path_version_bytes(
-            &notebook_id, &relative_path, bytes,
-            flowix_core::memo_file::MemoVersionSource::RestoreBackup,
-        ).map_err(sync_error)?;
+    if current.as_deref() == Some(target.as_slice()) {
+        return Ok(());
     }
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(sync_error)?; }
+    if let Some(bytes) = current.as_deref() {
+        memo_file
+            .create_path_version_bytes(
+                &notebook_id,
+                &relative_path,
+                bytes,
+                flowix_core::memo_file::MemoVersionSource::RestoreBackup,
+            )
+            .map_err(sync_error)?;
+    }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(sync_error)?;
+    }
     let fallback = local_adapter::cloud_conflict_copy_path(&path, &format!("restore-{version_id}"));
     match local_adapter::safely_replace_cloud_file(
-        &path, current.as_deref(), &target, &format!("restore-{version_id}"), &fallback,
+        &path,
+        current.as_deref(),
+        &target,
+        &format!("restore-{version_id}"),
+        &fallback,
     )? {
-        local_adapter::ConflictFileOutcome::Applied { preserved: None } => {},
+        local_adapter::ConflictFileOutcome::Applied { preserved: None } => {}
         outcome => {
             let preserved = match outcome {
                 local_adapter::ConflictFileOutcome::Applied { preserved }
                 | local_adapter::ConflictFileOutcome::Interrupted { preserved } => preserved,
             };
             if let Some(preserved) = preserved {
-                local_adapter::register_preserved_conflict_copy(&memo_file, &notebook_id, root, &preserved, attachment)?;
+                local_adapter::register_preserved_conflict_copy(
+                    &memo_file,
+                    &notebook_id,
+                    root,
+                    &preserved,
+                    attachment,
+                )?;
             }
             return Err("CLOUD_HISTORY_LOCAL_CHANGED".into());
         }
@@ -581,16 +611,22 @@ pub fn restore_local_path_version(
     // or media refresh below fails after the watcher self-write marker.
     schedule_notebook_sync_observation(app.clone(), notebook_id.clone(), true);
     if attachment {
-        memo_file.refresh_media_resource_path(&notebook_id, &relative_path).map_err(sync_error)?;
-        let _ = app.emit("media-properties-changed", serde_json::json!({ "notebookId": notebook_id }));
+        memo_file
+            .refresh_media_resource_path(&notebook_id, &relative_path)
+            .map_err(sync_error)?;
+        let _ = app.emit(
+            "media-properties-changed",
+            serde_json::json!({ "notebookId": notebook_id }),
+        );
     } else {
-        let updated = memo_file.register_existing_file_for_notebook_id(&notebook_id, &path).map_err(sync_error)?;
-        memo_events::emit(&app, MemoEvent::Updated {
-            id: updated.id.clone(), path: path.to_string_lossy().into_owned(),
-            notebook_id: notebook_id.clone(),
-            derived_changed: MemoDerivedChanged { tags: true, todos: true, agents: true },
-            memo: updated, source: MemoChangeSource::CloudSync,
-        });
+        memo_file
+            .refresh_note_path(&notebook_id, &relative_path)
+            .map_err(sync_error)?;
+        crate::commands::path_change::NotebookPathInvalidated::new(
+            notebook_id.clone(),
+            relative_path.clone(),
+        )
+        .emit(&app);
     }
     Ok(())
 }
@@ -607,11 +643,17 @@ pub async fn cloud_preview_note_revision(
         return Err("CLOUD_PREVIEW_MARKDOWN_ONLY".into());
     }
     let note_id = flowix_sync::v2_path_note_id(&notebook_id, &relative_path);
-    let (history, bytes) = state.cloud_sync.v2_historical_bytes(&note_id, &revision).await.map_err(sync_error)?;
+    let (history, bytes) = state
+        .cloud_sync
+        .v2_historical_bytes(&note_id, &revision)
+        .await
+        .map_err(sync_error)?;
     if history.notebook_id != notebook_id || history.note_id != note_id {
         return Err("CLOUD_HISTORY_ID_MISMATCH".into());
     }
-    if bytes.len() > 2 * 1024 * 1024 { return Err("CLOUD_PREVIEW_TOO_LARGE".into()); }
+    if bytes.len() > 2 * 1024 * 1024 {
+        return Err("CLOUD_PREVIEW_TOO_LARGE".into());
+    }
     String::from_utf8(bytes).map_err(|_| "CLOUD_PREVIEW_NOT_UTF8".into())
 }
 
@@ -621,19 +663,34 @@ pub fn cloud_list_conflicts(
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
     let memo_file = read_lock(&state.memo_file, "memo_file");
-    let notebook = memo_file.get_notebook_config_by_id(&notebook_id)
+    let notebook = memo_file
+        .get_notebook_config_by_id(&notebook_id)
         .ok_or_else(|| "NOTEBOOK_NOT_FOUND".to_string())?;
-    let mut paths: Vec<String> = memo_file.read_all_memos_for_notebook_id(Some(&notebook_id))
+    let notes = match memo_file.read_note_entries(&notebook_id) {
+        Ok(notes) => notes,
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            memo_file
+                .reconcile_note_index_blocking(&notebook_id)
+                .map_err(|error| error.to_string())?;
+            memo_file
+                .read_note_entries(&notebook_id)
+                .map_err(|error| error.to_string())?
+        }
+        Err(error) => return Err(error.to_string()),
+    };
+    let mut paths: Vec<String> = notes
         .into_iter()
-        .filter(|memo| memo.relative_path.contains("(Flowix conflict "))
-        .map(|memo| memo.relative_path)
+        .filter(|note| note.relative_path.contains("(Flowix conflict "))
+        .map(|note| note.relative_path)
         .collect();
     let mut attachments = Vec::new();
     let root = Path::new(&notebook.path);
     local_adapter::scan_cloud_attachments(root, &root.join("attachments"), &mut attachments)?;
     for path in attachments {
         let relative = flowix_core::memo_file::notebook_relative_path(root, &path)?;
-        if relative.contains("(Flowix conflict ") { paths.push(relative); }
+        if relative.contains("(Flowix conflict ") {
+            paths.push(relative);
+        }
     }
     paths.sort();
     paths.dedup();
@@ -650,104 +707,178 @@ pub fn cloud_resolve_markdown_conflict(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let memo_file = read_lock(&state.memo_file, "memo_file");
-    let _guard = memo_file.operation_locks().notebook_change(&[&notebook_id], "resolve_markdown_conflict").map_err(sync_error)?;
-    let notebook = memo_file.get_notebook_config_by_id(&notebook_id)
+    let _guard = memo_file
+        .operation_locks()
+        .notebook_change(&[&notebook_id], "resolve_markdown_conflict")
+        .map_err(sync_error)?;
+    let notebook = memo_file
+        .get_notebook_config_by_id(&notebook_id)
         .ok_or_else(|| "NOTEBOOK_NOT_FOUND".to_string())?;
     let root = Path::new(&notebook.path);
     let original = local_adapter::safe_cloud_note_path(root, &relative_path)?;
     let copy = local_adapter::safe_cloud_note_path(root, &conflict_path)?;
-    if !conflict_path.contains("(Flowix conflict ") || original.parent() != copy.parent()
-        || original == copy {
+    let note_id = flowix_sync::v2_path_note_id(&notebook_id, &relative_path);
+    if !conflict_path.contains("(Flowix conflict ")
+        || original.parent() != copy.parent()
+        || original == copy
+    {
         return Err("CLOUD_INVALID_CONFLICT_COPY".into());
     }
-    let copy_memo = memo_file.find_memo_by_relative_path_for_notebook_id(&notebook_id, &conflict_path)
-        .ok_or_else(|| "CLOUD_CONFLICT_COPY_MISSING".to_string())?;
+    if !copy.is_file() {
+        return Err("CLOUD_CONFLICT_COPY_MISSING".to_string());
+    }
     let copy_bytes = std::fs::read(&copy).map_err(sync_error)?;
     local_adapter::record_rejected_cloud_version(
-        &memo_file, &notebook_id, root, &original, &copy_bytes,
+        &memo_file,
+        &notebook_id,
+        root,
+        &original,
+        &copy_bytes,
     )?;
     if use_local {
-        let note_id = flowix_sync::v2_path_note_id(&notebook_id, &relative_path);
         let current = match std::fs::read(&original) {
             Ok(bytes) => Some(bytes),
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(sync_error(error)),
         };
         let chosen = copy_bytes.clone();
-        let baseline = state.cloud_sync.v2_note_state(&note_id).map_err(sync_error)?
+        let baseline = state
+            .cloud_sync
+            .v2_note_state(&note_id)
+            .map_err(sync_error)?
             .ok_or_else(|| "CLOUD_CONFLICT_ORIGINAL_NOT_SYNCED".to_string())?;
         let current_hash = current.as_ref().map(|bytes| v2_content_hash(bytes));
         if baseline.deleted != current.is_none()
             || baseline.content_hash.as_deref() != current_hash.as_deref()
-            || state.cloud_sync.has_pending_v2_note_change(&note_id).map_err(sync_error)? {
+            || state
+                .cloud_sync
+                .has_pending_v2_note_change(&note_id)
+                .map_err(sync_error)?
+        {
             return Err("CLOUD_CONFLICT_ORIGINAL_CHANGED".into());
         }
         if let Some(current) = current.as_ref() {
-            let stem = original.file_stem().and_then(|value| value.to_str()).unwrap_or("Note");
-            let backup = original.with_file_name(format!("{stem} (Flowix before conflict resolve {}).md", baseline.revision));
+            let stem = original
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("Note");
+            let backup = original.with_file_name(format!(
+                "{stem} (Flowix before conflict resolve {}).md",
+                baseline.revision
+            ));
             if !backup.exists() {
-                flowix_core::memo_file::atomic_create_bytes(&backup, &current).map_err(sync_error)?;
-                memo_file.register_existing_file_for_notebook_id(&notebook_id, &backup).map_err(sync_error)?;
-                let backup_relative = flowix_core::memo_file::notebook_relative_path(root, &backup)?;
-                state.cloud_sync.record_v2_local_change(&notebook_id,
-                    &flowix_sync::v2_path_note_id(&notebook_id, &backup_relative),
-                    flowix_sync::LocalChangeKind::Put, &v2_content_hash(&current)).map_err(sync_error)?;
+                flowix_core::memo_file::atomic_create_bytes(&backup, &current)
+                    .map_err(sync_error)?;
+                let backup_relative =
+                    flowix_core::memo_file::notebook_relative_path(root, &backup)?;
+                memo_file
+                    .refresh_note_path(&notebook_id, &backup_relative)
+                    .map_err(sync_error)?;
+                state
+                    .cloud_sync
+                    .record_v2_local_change(
+                        &notebook_id,
+                        &flowix_sync::v2_path_note_id(&notebook_id, &backup_relative),
+                        flowix_sync::LocalChangeKind::Put,
+                        &v2_content_hash(&current),
+                    )
+                    .map_err(sync_error)?;
             } else if std::fs::read(&backup).map_err(sync_error)? != *current {
                 return Err("CLOUD_CONFLICT_BACKUP_COLLISION".into());
             }
         }
-        if let Some(parent) = original.parent() { std::fs::create_dir_all(parent).map_err(sync_error)?; }
+        if let Some(parent) = original.parent() {
+            std::fs::create_dir_all(parent).map_err(sync_error)?;
+        }
         crate::watcher::runtime::mark_self_write_for(&app, &original);
-        let preserved_path = local_adapter::cloud_conflict_copy_path(&original, &format!("resolve-{note_id}"));
-        match local_adapter::safely_replace_cloud_file(&original, current.as_deref(), &chosen,
-            &format!("resolve-{note_id}"), &preserved_path)? {
-            local_adapter::ConflictFileOutcome::Applied { preserved: None } => {},
+        let preserved_path =
+            local_adapter::cloud_conflict_copy_path(&original, &format!("resolve-{note_id}"));
+        match local_adapter::safely_replace_cloud_file(
+            &original,
+            current.as_deref(),
+            &chosen,
+            &format!("resolve-{note_id}"),
+            &preserved_path,
+        )? {
+            local_adapter::ConflictFileOutcome::Applied { preserved: None } => {}
             outcome => {
                 let preserved = match outcome {
                     local_adapter::ConflictFileOutcome::Applied { preserved }
                     | local_adapter::ConflictFileOutcome::Interrupted { preserved } => preserved,
                 };
                 if let Some(preserved) = preserved {
-                    local_adapter::register_preserved_conflict_copy(&memo_file, &notebook_id,
-                        root, &preserved, false)?;
+                    local_adapter::register_preserved_conflict_copy(
+                        &memo_file,
+                        &notebook_id,
+                        root,
+                        &preserved,
+                        false,
+                    )?;
                 }
                 return Err("CLOUD_CONFLICT_ORIGINAL_CHANGED".into());
             }
         }
-        let updated = memo_file.register_existing_file_for_notebook_id(&notebook_id, &original).map_err(sync_error)?;
-        memo_events::emit(&app, MemoEvent::Updated {
-            id: updated.id.clone(), path: original.to_string_lossy().into_owned(),
-            notebook_id: notebook_id.clone(),
-            derived_changed: MemoDerivedChanged { tags: true, todos: true, agents: true },
-            memo: updated, source: MemoChangeSource::CloudSync,
-        });
-        state.cloud_sync.record_v2_local_change(&notebook_id, &note_id,
-            flowix_sync::LocalChangeKind::Put, &v2_content_hash(&chosen)).map_err(sync_error)?;
+        memo_file
+            .refresh_note_path(&notebook_id, &relative_path)
+            .map_err(sync_error)?;
+        crate::commands::path_change::NotebookPathInvalidated::new(
+            notebook_id.clone(),
+            relative_path.clone(),
+        )
+        .emit(&app);
+        state
+            .cloud_sync
+            .record_v2_local_change(
+                &notebook_id,
+                &note_id,
+                flowix_sync::LocalChangeKind::Put,
+                &v2_content_hash(&chosen),
+            )
+            .map_err(sync_error)?;
     }
     crate::watcher::runtime::mark_self_write_for(&app, &copy);
-    let preserved_path = local_adapter::cloud_conflict_copy_path(&copy, &format!("remove-{}", copy_memo.id));
-    match local_adapter::safely_remove_conflict_file(&copy, &copy_bytes,
-        &format!("remove-{}", copy_memo.id), &preserved_path)? {
-        local_adapter::ConflictFileOutcome::Applied { preserved: None } => {},
+    let copy_note_id = flowix_sync::v2_path_note_id(&notebook_id, &conflict_path);
+    let preserved_path =
+        local_adapter::cloud_conflict_copy_path(&copy, &format!("remove-{copy_note_id}"));
+    match local_adapter::safely_remove_conflict_file(
+        &copy,
+        &copy_bytes,
+        &format!("remove-{copy_note_id}"),
+        &preserved_path,
+    )? {
+        local_adapter::ConflictFileOutcome::Applied { preserved: None } => {}
         outcome => {
             let preserved = match outcome {
                 local_adapter::ConflictFileOutcome::Applied { preserved }
                 | local_adapter::ConflictFileOutcome::Interrupted { preserved } => preserved,
             };
             if let Some(preserved) = preserved {
-                local_adapter::register_preserved_conflict_copy(&memo_file, &notebook_id,
-                    root, &preserved, false)?;
+                local_adapter::register_preserved_conflict_copy(
+                    &memo_file,
+                    &notebook_id,
+                    root,
+                    &preserved,
+                    false,
+                )?;
             }
             return Err("CLOUD_CONFLICT_COPY_CHANGED".into());
         }
     }
-    if !memo_file.prune_deleted_memo_for_notebook_id(&notebook_id, &conflict_path, &copy_memo.id)
-        .map_err(sync_error)? {
+    if copy.exists() {
         return Err("CLOUD_CONFLICT_COPY_CHANGED".into());
     }
-    state.cloud_sync.record_v2_local_change(&notebook_id,
-        &flowix_sync::v2_path_note_id(&notebook_id, &conflict_path),
-        flowix_sync::LocalChangeKind::Delete, "deleted").map_err(sync_error)?;
+    memo_file
+        .refresh_note_path(&notebook_id, &conflict_path)
+        .map_err(sync_error)?;
+    state
+        .cloud_sync
+        .record_v2_local_change(
+            &notebook_id,
+            &copy_note_id,
+            flowix_sync::LocalChangeKind::Delete,
+            "deleted",
+        )
+        .map_err(sync_error)?;
     drop(_guard);
     drop(memo_file);
     schedule_notebook_sync_observation(app, notebook_id, true);
@@ -764,19 +895,29 @@ pub fn cloud_resolve_attachment_conflict(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let memo_file = read_lock(&state.memo_file, "memo_file");
-    let _guard = memo_file.operation_locks().notebook_change(&[&notebook_id], "resolve_attachment_conflict").map_err(sync_error)?;
-    let notebook = memo_file.get_notebook_config_by_id(&notebook_id)
+    let _guard = memo_file
+        .operation_locks()
+        .notebook_change(&[&notebook_id], "resolve_attachment_conflict")
+        .map_err(sync_error)?;
+    let notebook = memo_file
+        .get_notebook_config_by_id(&notebook_id)
         .ok_or_else(|| "NOTEBOOK_NOT_FOUND".to_string())?;
     let root = Path::new(&notebook.path);
     let original = local_adapter::safe_cloud_file_path(root, &relative_path, true)?;
     let copy = local_adapter::safe_cloud_file_path(root, &conflict_path, true)?;
-    if !conflict_path.contains("(Flowix conflict ") || original.parent() != copy.parent()
-        || original == copy {
+    if !conflict_path.contains("(Flowix conflict ")
+        || original.parent() != copy.parent()
+        || original == copy
+    {
         return Err("CLOUD_INVALID_CONFLICT_COPY".into());
     }
     let chosen = std::fs::read(&copy).map_err(sync_error)?;
     local_adapter::record_rejected_cloud_version(
-        &memo_file, &notebook_id, root, &original, &chosen,
+        &memo_file,
+        &notebook_id,
+        root,
+        &original,
+        &chosen,
     )?;
     if use_local {
         let note_id = flowix_sync::v2_path_note_id(&notebook_id, &relative_path);
@@ -785,86 +926,156 @@ pub fn cloud_resolve_attachment_conflict(
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
             Err(error) => return Err(sync_error(error)),
         };
-        let baseline = state.cloud_sync.v2_note_state(&note_id).map_err(sync_error)?
+        let baseline = state
+            .cloud_sync
+            .v2_note_state(&note_id)
+            .map_err(sync_error)?
             .ok_or_else(|| "CLOUD_CONFLICT_ORIGINAL_NOT_SYNCED".to_string())?;
         let current_hash = current.as_ref().map(|bytes| v2_content_hash(bytes));
         if baseline.deleted != current.is_none()
             || baseline.content_hash.as_deref() != current_hash.as_deref()
-            || state.cloud_sync.has_pending_v2_note_change(&note_id).map_err(sync_error)? {
+            || state
+                .cloud_sync
+                .has_pending_v2_note_change(&note_id)
+                .map_err(sync_error)?
+        {
             return Err("CLOUD_CONFLICT_ORIGINAL_CHANGED".into());
         }
         if let Some(current) = current.as_ref() {
-            let stem = original.file_stem().and_then(|value| value.to_str()).unwrap_or("attachment");
-            let extension = original.extension().and_then(|value| value.to_str()).unwrap_or("");
+            let stem = original
+                .file_stem()
+                .and_then(|value| value.to_str())
+                .unwrap_or("attachment");
+            let extension = original
+                .extension()
+                .and_then(|value| value.to_str())
+                .unwrap_or("");
             let backup_name = if extension.is_empty() {
-                format!("{stem} (Flowix before conflict resolve {})", baseline.revision)
+                format!(
+                    "{stem} (Flowix before conflict resolve {})",
+                    baseline.revision
+                )
             } else {
-                format!("{stem} (Flowix before conflict resolve {}).{extension}", baseline.revision)
+                format!(
+                    "{stem} (Flowix before conflict resolve {}).{extension}",
+                    baseline.revision
+                )
             };
             let backup = original.with_file_name(backup_name);
             if !backup.exists() {
-                flowix_core::memo_file::atomic_create_bytes(&backup, &current).map_err(sync_error)?;
-                let backup_relative = flowix_core::memo_file::notebook_relative_path(root, &backup)?;
+                flowix_core::memo_file::atomic_create_bytes(&backup, &current)
+                    .map_err(sync_error)?;
+                let backup_relative =
+                    flowix_core::memo_file::notebook_relative_path(root, &backup)?;
                 if flowix_core::memo_file::media_kind_for_path(&backup).is_some() {
-                    memo_file.refresh_media_resource_path(&notebook_id, &backup_relative).map_err(sync_error)?;
+                    memo_file
+                        .refresh_media_resource_path(&notebook_id, &backup_relative)
+                        .map_err(sync_error)?;
                 }
-                state.cloud_sync.record_v2_local_change(&notebook_id,
-                    &flowix_sync::v2_path_note_id(&notebook_id, &backup_relative),
-                    flowix_sync::LocalChangeKind::Put, &v2_content_hash(&current)).map_err(sync_error)?;
+                state
+                    .cloud_sync
+                    .record_v2_local_change(
+                        &notebook_id,
+                        &flowix_sync::v2_path_note_id(&notebook_id, &backup_relative),
+                        flowix_sync::LocalChangeKind::Put,
+                        &v2_content_hash(&current),
+                    )
+                    .map_err(sync_error)?;
             } else if std::fs::read(&backup).map_err(sync_error)? != *current {
                 return Err("CLOUD_CONFLICT_BACKUP_COLLISION".into());
             }
         }
         crate::watcher::runtime::mark_self_write_for(&app, &original);
-        let preserved_path = local_adapter::cloud_conflict_copy_path(&original, &format!("resolve-{note_id}"));
-        match local_adapter::safely_replace_cloud_file(&original, current.as_deref(), &chosen,
-            &format!("resolve-{note_id}"), &preserved_path)? {
-            local_adapter::ConflictFileOutcome::Applied { preserved: None } => {},
+        let preserved_path =
+            local_adapter::cloud_conflict_copy_path(&original, &format!("resolve-{note_id}"));
+        match local_adapter::safely_replace_cloud_file(
+            &original,
+            current.as_deref(),
+            &chosen,
+            &format!("resolve-{note_id}"),
+            &preserved_path,
+        )? {
+            local_adapter::ConflictFileOutcome::Applied { preserved: None } => {}
             outcome => {
                 let preserved = match outcome {
                     local_adapter::ConflictFileOutcome::Applied { preserved }
                     | local_adapter::ConflictFileOutcome::Interrupted { preserved } => preserved,
                 };
                 if let Some(preserved) = preserved {
-                    local_adapter::register_preserved_conflict_copy(&memo_file, &notebook_id,
-                        root, &preserved, true)?;
+                    local_adapter::register_preserved_conflict_copy(
+                        &memo_file,
+                        &notebook_id,
+                        root,
+                        &preserved,
+                        true,
+                    )?;
                 }
                 return Err("CLOUD_CONFLICT_ORIGINAL_CHANGED".into());
             }
         }
         crate::watcher::runtime::mark_self_write_for(&app, &original);
         if flowix_core::memo_file::media_kind_for_path(&original).is_some() {
-            memo_file.refresh_media_resource_path(&notebook_id, &relative_path).map_err(sync_error)?;
+            memo_file
+                .refresh_media_resource_path(&notebook_id, &relative_path)
+                .map_err(sync_error)?;
         }
-        state.cloud_sync.record_v2_local_change(&notebook_id, &note_id,
-            flowix_sync::LocalChangeKind::Put, &v2_content_hash(&chosen)).map_err(sync_error)?;
+        state
+            .cloud_sync
+            .record_v2_local_change(
+                &notebook_id,
+                &note_id,
+                flowix_sync::LocalChangeKind::Put,
+                &v2_content_hash(&chosen),
+            )
+            .map_err(sync_error)?;
     }
     crate::watcher::runtime::mark_self_write_for(&app, &copy);
-    let preserved_path = local_adapter::cloud_conflict_copy_path(&copy, &format!("remove-{conflict_path}"));
-    match local_adapter::safely_remove_conflict_file(&copy, &chosen,
-        &format!("remove-{conflict_path}"), &preserved_path)? {
-        local_adapter::ConflictFileOutcome::Applied { preserved: None } => {},
+    let preserved_path =
+        local_adapter::cloud_conflict_copy_path(&copy, &format!("remove-{conflict_path}"));
+    match local_adapter::safely_remove_conflict_file(
+        &copy,
+        &chosen,
+        &format!("remove-{conflict_path}"),
+        &preserved_path,
+    )? {
+        local_adapter::ConflictFileOutcome::Applied { preserved: None } => {}
         outcome => {
             let preserved = match outcome {
                 local_adapter::ConflictFileOutcome::Applied { preserved }
                 | local_adapter::ConflictFileOutcome::Interrupted { preserved } => preserved,
             };
             if let Some(preserved) = preserved {
-                local_adapter::register_preserved_conflict_copy(&memo_file, &notebook_id,
-                    root, &preserved, true)?;
+                local_adapter::register_preserved_conflict_copy(
+                    &memo_file,
+                    &notebook_id,
+                    root,
+                    &preserved,
+                    true,
+                )?;
             }
             return Err("CLOUD_CONFLICT_COPY_CHANGED".into());
         }
     }
     if flowix_core::memo_file::media_kind_for_path(&copy).is_some() {
-        memo_file.refresh_media_resource_path(&notebook_id, &conflict_path).map_err(sync_error)?;
+        memo_file
+            .refresh_media_resource_path(&notebook_id, &conflict_path)
+            .map_err(sync_error)?;
     }
-    state.cloud_sync.record_v2_local_change(&notebook_id,
-        &flowix_sync::v2_path_note_id(&notebook_id, &conflict_path),
-        flowix_sync::LocalChangeKind::Delete, "deleted").map_err(sync_error)?;
+    state
+        .cloud_sync
+        .record_v2_local_change(
+            &notebook_id,
+            &flowix_sync::v2_path_note_id(&notebook_id, &conflict_path),
+            flowix_sync::LocalChangeKind::Delete,
+            "deleted",
+        )
+        .map_err(sync_error)?;
     drop(_guard);
     drop(memo_file);
-    let _ = app.emit("media-properties-changed", serde_json::json!({ "notebookId": notebook_id }));
+    let _ = app.emit(
+        "media-properties-changed",
+        serde_json::json!({ "notebookId": notebook_id }),
+    );
     schedule_notebook_sync_observation(app, notebook_id, true);
     Ok(())
 }
@@ -878,13 +1089,21 @@ pub async fn cloud_restore_note_revision(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     let note_id = flowix_sync::v2_path_note_id(&notebook_id, &relative_path);
-    let (history, bytes) = state.cloud_sync.v2_historical_bytes(&note_id, &revision).await.map_err(sync_error)?;
+    let (history, bytes) = state
+        .cloud_sync
+        .v2_historical_bytes(&note_id, &revision)
+        .await
+        .map_err(sync_error)?;
     if history.notebook_id != notebook_id || history.note_id != note_id {
         return Err("CLOUD_HISTORY_ID_MISMATCH".into());
     }
     let memo_file = read_lock(&state.memo_file, "memo_file");
-    let _guard = memo_file.operation_locks().notebook_change(&[&notebook_id], "restore_cloud_note_revision").map_err(sync_error)?;
-    let notebook = memo_file.get_notebook_config_by_id(&notebook_id)
+    let _guard = memo_file
+        .operation_locks()
+        .notebook_change(&[&notebook_id], "restore_cloud_note_revision")
+        .map_err(sync_error)?;
+    let notebook = memo_file
+        .get_notebook_config_by_id(&notebook_id)
         .ok_or_else(|| "NOTEBOOK_NOT_FOUND".to_string())?;
     let root = Path::new(&notebook.path);
     let attachment = relative_path.starts_with("attachments/");
@@ -894,18 +1113,33 @@ pub async fn cloud_restore_note_revision(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
         Err(error) => return Err(sync_error(error)),
     };
-    let baseline = state.cloud_sync.v2_note_state(&note_id).map_err(sync_error)?
+    let baseline = state
+        .cloud_sync
+        .v2_note_state(&note_id)
+        .map_err(sync_error)?
         .ok_or_else(|| "CLOUD_RESTORE_NO_LOCAL_BASE".to_string())?;
     let current_hash = current.as_ref().map(|bytes| v2_content_hash(bytes));
     if baseline.deleted != current.is_none()
         || baseline.content_hash.as_deref() != current_hash.as_deref()
-        || state.cloud_sync.has_pending_v2_note_change(&note_id).map_err(sync_error)? {
+        || state
+            .cloud_sync
+            .has_pending_v2_note_change(&note_id)
+            .map_err(sync_error)?
+    {
         return Err("CLOUD_RESTORE_LOCAL_CHANGED: save or resolve local edits first".into());
     }
-    if current.as_deref() == Some(bytes.as_slice()) { return Ok(()); }
+    if current.as_deref() == Some(bytes.as_slice()) {
+        return Ok(());
+    }
     if let Some(current) = current.as_ref() {
-        let stem = path.file_stem().and_then(|value| value.to_str()).unwrap_or("Note");
-        let extension = path.extension().and_then(|value| value.to_str()).unwrap_or("");
+        let stem = path
+            .file_stem()
+            .and_then(|value| value.to_str())
+            .unwrap_or("Note");
+        let extension = path
+            .extension()
+            .and_then(|value| value.to_str())
+            .unwrap_or("");
         let backup_name = if extension.is_empty() {
             format!("{stem} (Flowix before restore {})", revision)
         } else {
@@ -915,33 +1149,57 @@ pub async fn cloud_restore_note_revision(
         if !backup.exists() {
             flowix_core::memo_file::atomic_create_bytes(&backup, &current).map_err(sync_error)?;
             if !attachment {
-                memo_file.register_existing_file_for_notebook_id(&notebook_id, &backup).map_err(sync_error)?;
+                let backup_relative = notebook_relative_path(root, &backup)?;
+                memo_file
+                    .refresh_note_path(&notebook_id, &backup_relative)
+                    .map_err(sync_error)?;
             }
             let backup_relative = flowix_core::memo_file::notebook_relative_path(root, &backup)?;
             if attachment && flowix_core::memo_file::media_kind_for_path(&backup).is_some() {
-                memo_file.refresh_media_resource_path(&notebook_id, &backup_relative).map_err(sync_error)?;
+                memo_file
+                    .refresh_media_resource_path(&notebook_id, &backup_relative)
+                    .map_err(sync_error)?;
             }
-            state.cloud_sync.record_v2_local_change(&notebook_id,
-                &flowix_sync::v2_path_note_id(&notebook_id, &backup_relative),
-                flowix_sync::LocalChangeKind::Put, &v2_content_hash(&current)).map_err(sync_error)?;
+            state
+                .cloud_sync
+                .record_v2_local_change(
+                    &notebook_id,
+                    &flowix_sync::v2_path_note_id(&notebook_id, &backup_relative),
+                    flowix_sync::LocalChangeKind::Put,
+                    &v2_content_hash(&current),
+                )
+                .map_err(sync_error)?;
         } else if std::fs::read(&backup).map_err(sync_error)? != *current {
             return Err("CLOUD_RESTORE_BACKUP_COLLISION".into());
         }
     }
-    if let Some(parent) = path.parent() { std::fs::create_dir_all(parent).map_err(sync_error)?; }
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent).map_err(sync_error)?;
+    }
     crate::watcher::runtime::mark_self_write_for(&app, &path);
-    let conflict_copy = local_adapter::cloud_conflict_copy_path(&path, &format!("restore-{revision}"));
-    match local_adapter::safely_replace_cloud_file(&path, current.as_deref(), &bytes,
-        &format!("restore-{revision}"), &conflict_copy)? {
-        local_adapter::ConflictFileOutcome::Applied { preserved: None } => {},
+    let conflict_copy =
+        local_adapter::cloud_conflict_copy_path(&path, &format!("restore-{revision}"));
+    match local_adapter::safely_replace_cloud_file(
+        &path,
+        current.as_deref(),
+        &bytes,
+        &format!("restore-{revision}"),
+        &conflict_copy,
+    )? {
+        local_adapter::ConflictFileOutcome::Applied { preserved: None } => {}
         outcome => {
             let preserved = match outcome {
                 local_adapter::ConflictFileOutcome::Applied { preserved }
                 | local_adapter::ConflictFileOutcome::Interrupted { preserved } => preserved,
             };
             if let Some(preserved) = preserved {
-                local_adapter::register_preserved_conflict_copy(&memo_file, &notebook_id,
-                    root, &preserved, attachment)?;
+                local_adapter::register_preserved_conflict_copy(
+                    &memo_file,
+                    &notebook_id,
+                    root,
+                    &preserved,
+                    attachment,
+                )?;
             }
             return Err("CLOUD_RESTORE_LOCAL_CHANGED: local file preserved".into());
         }
@@ -949,22 +1207,33 @@ pub async fn cloud_restore_note_revision(
     if attachment {
         crate::watcher::runtime::mark_self_write_for(&app, &path);
         if flowix_core::memo_file::media_kind_for_path(&path).is_some() {
-            memo_file.refresh_media_resource_path(&notebook_id, &relative_path).map_err(sync_error)?;
+            memo_file
+                .refresh_media_resource_path(&notebook_id, &relative_path)
+                .map_err(sync_error)?;
         }
-        let _ = app.emit("media-properties-changed", serde_json::json!({ "notebookId": notebook_id }));
+        let _ = app.emit(
+            "media-properties-changed",
+            serde_json::json!({ "notebookId": notebook_id }),
+        );
     } else {
-        let updated = memo_file.register_existing_file_for_notebook_id(&notebook_id, &path).map_err(sync_error)?;
-        memo_events::emit(&app, MemoEvent::Updated {
-            id: updated.id.clone(), path: path.to_string_lossy().into_owned(),
-            notebook_id: notebook_id.clone(),
-            derived_changed: MemoDerivedChanged { tags: true, todos: true, agents: true },
-            memo: updated, source: MemoChangeSource::CloudSync,
-        });
+        memo_file
+            .refresh_note_path(&notebook_id, &relative_path)
+            .map_err(sync_error)?;
+        crate::commands::path_change::NotebookPathInvalidated::new(
+            notebook_id.clone(),
+            relative_path.clone(),
+        )
+        .emit(&app);
     }
-    state.cloud_sync.record_v2_local_change(
-        &notebook_id, &note_id, flowix_sync::LocalChangeKind::Put,
-        &v2_content_hash(&bytes),
-    ).map_err(sync_error)?;
+    state
+        .cloud_sync
+        .record_v2_local_change(
+            &notebook_id,
+            &note_id,
+            flowix_sync::LocalChangeKind::Put,
+            &v2_content_hash(&bytes),
+        )
+        .map_err(sync_error)?;
     drop(_guard);
     drop(memo_file);
     schedule_notebook_sync_observation(app, notebook_id, true);

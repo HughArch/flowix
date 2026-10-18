@@ -53,3 +53,8 @@ export function subscribeWorkspaceSurfaceLifecycle(viewId: string, listener: () 
     if (viewSubscribers.size === 0) subscribers.delete(viewId);
   };
 }
+
+/** Snapshot all mounted surfaces, including background/browser-column views. */
+export function listWorkspaceSurfaceLifecycles(): SurfaceLifecycle[] {
+  return [...new Set([...lifecycles.values()].map(entry => entry.lifecycle))];
+}

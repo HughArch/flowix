@@ -1,6 +1,6 @@
 'use client';
 
-import { lazy, Suspense, useEffect, type ComponentType, type LazyExoticComponent, type ReactNode } from 'react';
+import { Suspense, useEffect, type ComponentType, type ReactNode } from 'react';
 import {
   workspaceSurfaceAppearance,
   workspaceSurfaceCapabilities,
@@ -14,7 +14,7 @@ import type {
   WorkspaceSurfaceHost,
   WorkspaceSurfaceKind,
 } from '@features/workspace/public/surface-api';
-import { WorkspaceSurfaceErrorBoundary, WorkspaceSurfaceStateView } from './workspace-surface-state-view';
+import { useWorkspaceSurfaceRendererLazy, WorkspaceSurfaceErrorBoundary, WorkspaceSurfaceStateView } from './workspace-surface-state-view';
 import { registerStartupSurfaceHostView, useWorkspaceSurfacePresentation } from './workspace-surface-runtime';
 
 export type { WorkspaceSurfaceRendererData, WorkspaceSurfaceRenderContext } from './workspace-surface-renderer-contract';
@@ -30,6 +30,7 @@ type RendererProps<R extends RendererId> = {
   surface: Extract<WorkspaceSurfaceRendererData, { kind: SurfaceKindsForRenderer<R> }>;
   context: WorkspaceSurfaceRenderContext;
 };
+type RendererLoader<R extends RendererId> = () => Promise<{ default: ComponentType<RendererProps<R>> }>;
 
 interface RendererImplementation {
   render: (surface: WorkspaceSurfaceRendererData, context: WorkspaceSurfaceRenderContext) => ReactNode;
@@ -42,9 +43,22 @@ export interface WorkspaceSurfaceRendererDefinition extends RendererImplementati
   capabilities: readonly WorkspaceSurfaceCapability[];
 }
 
+function RetryableRenderer<R extends RendererId>({
+  loader,
+  surface,
+  context,
+}: {
+  loader: RendererLoader<R>;
+  surface: RendererProps<R>['surface'];
+  context: WorkspaceSurfaceRenderContext;
+}) {
+  const Renderer = useWorkspaceSurfaceRendererLazy(loader);
+  return <Renderer surface={surface} context={context} />;
+}
+
 function implementRenderer<R extends RendererId>(
   rendererId: R,
-  Renderer: LazyExoticComponent<ComponentType<RendererProps<R>>>,
+  loader: RendererLoader<R>,
 ): RendererImplementation {
   return {
     render(surface, context) {
@@ -53,44 +67,34 @@ function implementRenderer<R extends RendererId>(
       }
       // The public renderer ID check above correlates the data variant with the
       // component. Keep the generic assertion at this single implementation boundary.
-      return <Renderer surface={surface as RendererProps<R>['surface']} context={context} />;
+      return <RetryableRenderer<R>
+        loader={loader}
+        surface={surface as RendererProps<R>['surface']}
+        context={context}
+      />;
     },
   };
 }
 
-const MarkdownRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.MarkdownRenderer })));
-const CodeRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.CodeRenderer })));
-const CsvRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.CsvRenderer })));
-const ImageRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.ImageRenderer })));
-const VideoRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.VideoRenderer })));
-const TableRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.TableRenderer })));
-const MediaLibraryRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.MediaLibraryRenderer })));
-const HtmlRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.HtmlRenderer })));
-const DocxRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.DocxRenderer })));
-const UnavailableRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.UnavailableRenderer })));
-const PluginDocumentRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.PluginDocumentRenderer })));
-const PluginWorkbenchRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.PluginWorkbenchRenderer })));
-const CollectionRenderer = lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.CollectionRenderer })));
-
 /** Implementations have no host registration or independent support declarations. */
 const rendererImplementations = {
-  'file-markdown': implementRenderer('file-markdown', MarkdownRenderer),
-  'file-code': implementRenderer('file-code', CodeRenderer),
-  'file-csv': implementRenderer('file-csv', CsvRenderer),
-  'file-image': implementRenderer('file-image', ImageRenderer),
-  'file-video': implementRenderer('file-video', VideoRenderer),
-  'file-table': implementRenderer('file-table', TableRenderer),
-  'file-media-library': implementRenderer('file-media-library', MediaLibraryRenderer),
-  'file-html': implementRenderer('file-html', HtmlRenderer),
-  'file-docx': implementRenderer('file-docx', DocxRenderer),
-  'file-unavailable': implementRenderer('file-unavailable', UnavailableRenderer),
-  media: implementRenderer('media', lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.MediaResourceRenderer })))),
-  'agent-conversation': implementRenderer('agent-conversation', lazy(() => import('./workspace-surface-renderers').then((module) => ({ default: module.AgentConversationRenderer })))),
-  'plugin-document': implementRenderer('plugin-document', PluginDocumentRenderer),
-  'plugin-workbench': implementRenderer('plugin-workbench', PluginWorkbenchRenderer),
-  collection: implementRenderer('collection', CollectionRenderer),
-  web: implementRenderer('web', lazy(() => import('./workspace-web-surface-renderer').then((module) => ({ default: module.WebRenderer })))),
-  'file-browser': implementRenderer('file-browser', lazy(() => import('./workspace-file-browser-surface-renderer').then((module) => ({ default: module.FileBrowserRenderer })))),
+  'file-markdown': implementRenderer('file-markdown', () => import('./workspace-surface-renderers').then((module) => ({ default: module.MarkdownRenderer }))),
+  'file-code': implementRenderer('file-code', () => import('./workspace-surface-renderers').then((module) => ({ default: module.CodeRenderer }))),
+  'file-csv': implementRenderer('file-csv', () => import('./workspace-surface-renderers').then((module) => ({ default: module.CsvRenderer }))),
+  'file-image': implementRenderer('file-image', () => import('./workspace-surface-renderers').then((module) => ({ default: module.ImageRenderer }))),
+  'file-video': implementRenderer('file-video', () => import('./workspace-surface-renderers').then((module) => ({ default: module.VideoRenderer }))),
+  'file-table': implementRenderer('file-table', () => import('./workspace-surface-renderers').then((module) => ({ default: module.TableRenderer }))),
+  'file-media-library': implementRenderer('file-media-library', () => import('./workspace-surface-renderers').then((module) => ({ default: module.MediaLibraryRenderer }))),
+  'file-html': implementRenderer('file-html', () => import('./workspace-surface-renderers').then((module) => ({ default: module.HtmlRenderer }))),
+  'file-docx': implementRenderer('file-docx', () => import('./workspace-surface-renderers').then((module) => ({ default: module.DocxRenderer }))),
+  'file-unavailable': implementRenderer('file-unavailable', () => import('./workspace-surface-renderers').then((module) => ({ default: module.UnavailableRenderer }))),
+  media: implementRenderer('media', () => import('./workspace-surface-renderers').then((module) => ({ default: module.MediaResourceRenderer }))),
+  'agent-conversation': implementRenderer('agent-conversation', () => import('./workspace-surface-renderers').then((module) => ({ default: module.AgentConversationRenderer }))),
+  'plugin-document': implementRenderer('plugin-document', () => import('./workspace-surface-renderers').then((module) => ({ default: module.PluginDocumentRenderer }))),
+  'plugin-workbench': implementRenderer('plugin-workbench', () => import('./workspace-surface-renderers').then((module) => ({ default: module.PluginWorkbenchRenderer }))),
+  collection: implementRenderer('collection', () => import('./workspace-surface-renderers').then((module) => ({ default: module.CollectionRenderer }))),
+  web: implementRenderer('web', () => import('./workspace-web-surface-renderer').then((module) => ({ default: module.WebRenderer }))),
+  'file-browser': implementRenderer('file-browser', () => import('./workspace-file-browser-surface-renderer').then((module) => ({ default: module.FileBrowserRenderer }))),
 } satisfies Record<RendererId, RendererImplementation>;
 
 function buildWorkspaceSurfaceRendererRegistry() {

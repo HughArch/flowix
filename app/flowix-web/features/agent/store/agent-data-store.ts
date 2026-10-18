@@ -1,14 +1,8 @@
-import {
-  createAgentWorkspaceSlice,
-  readLegacyPiModePreference,
-  type AgentWorkspaceActions,
-  type AgentWorkspaceLoadState,
-} from "./agent-workspace-slice";
 import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { createLogger } from "@/lib/logger";
 import { STORAGE_KEYS } from "@/lib/constants";
-import { piModels } from "@platform/tauri/client";
+import { agentWorkspace, piModels } from "@platform/tauri/client";
 import type {
   AgentCodexReasoningEffort,
   AgentCodexServiceTier,
@@ -16,10 +10,8 @@ import type {
   AgentTypeKey,
 } from "@/types/agent";
 import type {
-  AgentWorkspaceSnapshot,
   LegacyAgentRuntimePreference,
   LegacyAgentRuntimePreferences,
-  AgentWorkspaceResource,
 } from "@/lib/types/agent-workspace";
 import {
   getAgentAccessOptions,
@@ -43,7 +35,7 @@ function updatePersistenceError(error: string | null): void {
   });
 }
 
-// A failed browser-cache write must not prevent backend workspace hydration.
+// A failed browser-cache write must not prevent backend-owned workspace loading.
 const agentStorage = {
   getItem: (name: string): string | null => {
     try { return localStorage.getItem(name); }
@@ -72,6 +64,10 @@ function errorMessage(error: unknown): string {
 export interface AgentCatalogModel {
   id: string;
   label: string;
+  description?: string;
+  subtitle?: string;
+  creditMultiplier?: number;
+  iconUrl?: string;
   providerId?: string;
   providerName?: string;
   reasoningEfforts?: AgentCodexReasoningEffort[];
@@ -125,28 +121,8 @@ interface AgentDataRecord {
   user: AgentUserPreference;
 }
 
-export interface AgentWorkspaceNotebook {
-  notebook: { id: string; name: string; path: string };
-  addDirs: Array<{
-    id: string;
-    path: string;
-    label: string;
-    /** Enabled for this notebook in local.db. */
-    enabled: boolean;
-    missing: boolean;
-  }>;
-}
-
-export interface AgentWorkspaceState {
-  /** In-memory projection of local.db; runtime authorization remains backend-owned. */
-  resources: AgentWorkspaceResource[];
-  byNotebookId: Record<string, AgentWorkspaceNotebook>;
-  validatedAt?: number;
-}
-
 interface AgentDataLoadState {
-  workspace: AgentWorkspaceLoadState;
-  piMode: AgentWorkspaceLoadState;
+  piMode: { status: 'idle' | 'loading' | 'ready' | 'error'; error?: string };
 }
 
 export interface AgentDataStoreState {
@@ -157,10 +133,9 @@ export interface AgentDataStoreState {
   /** Transient UI status; deliberately excluded from localStorage. */
   persistenceError: string | null;
   agents: Record<AgentTypeKey, AgentDataRecord>;
-  workspace: AgentWorkspaceState;
-  workspaceActions: AgentWorkspaceActions;
   loadState: AgentDataLoadState;
   initializePiMode: () => Promise<void>;
+  initializeLegacyPreferences: () => Promise<void>;
   setModelCatalog: (agentType: AgentTypeKey, catalog: AgentModelCatalog) => void;
   invalidateModelCatalog: (agentType: AgentTypeKey) => void;
   invalidateSkillCatalog: (agentType: AgentTypeKey, notebookId: string) => void;
@@ -257,6 +232,14 @@ const SKILL_CATALOG_MAX_AGE_MS = 60 * 1000;
 const pendingModelLoads = new Map<AgentTypeKey, Promise<AgentModelCatalog>>();
 const pendingSkillLoads = new Map<string, Promise<AgentCatalogSkill[]>>();
 let pendingPiModeInitialization: Promise<void> | null = null;
+let pendingLegacyPreferencesInitialization: Promise<void> | null = null;
+
+async function readLegacyPiModePreference(): Promise<'code' | 'writing' | undefined> {
+  const legacy = (await agentWorkspace.getLegacyPreferences())?.pi;
+  if (legacy?.piCodeMode !== undefined) return legacy.piCodeMode ? 'code' : 'writing';
+  const mode: unknown = legacy?.mode;
+  return mode === 'code' || mode === 'writing' ? mode : undefined;
+}
 
 function skillLoadKey(agentType: AgentTypeKey, notebookId: string): string {
   return `${agentType}:${notebookId}`;
@@ -548,17 +531,7 @@ export const useAgentDataStore = create<AgentDataStoreState>()(
       userPreferenceRevisions: {},
       persistenceError: lastPersistenceError,
       agents: createInitialAgents(),
-      workspace: { resources: [], byNotebookId: {} },
-      workspaceActions: createAgentWorkspaceSlice(
-        get,
-        (snapshot) => set((state) => ({
-          workspace: { ...state.workspace, ...projectAgentWorkspace(snapshot) },
-        })),
-        (workspace) => set((state) => ({
-          loadState: { ...state.loadState, workspace },
-        })),
-      ),
-      loadState: { workspace: { status: "idle" }, piMode: { status: "idle" } },
+      loadState: { piMode: { status: "idle" } },
 
       initializePiMode: () => {
         if (pendingPiModeInitialization) return pendingPiModeInitialization;
@@ -607,6 +580,29 @@ export const useAgentDataStore = create<AgentDataStoreState>()(
           throw error;
         }).finally(() => { pendingPiModeInitialization = null; });
         pendingPiModeInitialization = request;
+        return request;
+      },
+
+      initializeLegacyPreferences: () => {
+        if (get().legacyPreferencesMigrated) return Promise.resolve();
+        if (pendingLegacyPreferencesInitialization) return pendingLegacyPreferencesInitialization;
+        const request = (async () => {
+          const legacy = await agentWorkspace.getLegacyPreferences();
+          const { useAgentSessionStore } = await import('./agent-session-store');
+          get().migrateLegacyPreferences(
+            legacy ?? undefined,
+            useAgentSessionStore.getState().sessionMeta.settings,
+          );
+          try {
+            const saved = JSON.parse(localStorage.getItem(STORAGE_KEYS.AGENT_DATA) ?? 'null');
+            if (!saved?.state?.legacyPreferencesMigrated) {
+              logger.warn('Agent preference migration has not reached durable storage');
+            }
+          } catch (error) {
+            logger.warn('Agent preference migration persistence check failed', { error });
+          }
+        })().finally(() => { pendingLegacyPreferencesInitialization = null; });
+        pendingLegacyPreferencesInitialization = request;
         return request;
       },
 
@@ -752,7 +748,11 @@ export const useAgentDataStore = create<AgentDataStoreState>()(
       },
 
       migrateLegacyPreferences: (runtime, codexSessionSettings) => {
-        if (get().legacyPreferencesMigrated || (!runtime && !codexSessionSettings)) return;
+        if (get().legacyPreferencesMigrated) return;
+        if (!runtime && !codexSessionSettings) {
+          set({ legacyPreferencesMigrated: true });
+          return;
+        }
         set((state) => {
           const agents = { ...state.agents };
           const userPreferenceRevisions = { ...state.userPreferenceRevisions };
@@ -832,33 +832,21 @@ export const useAgentDataStore = create<AgentDataStoreState>()(
           agents,
           legacyPreferencesMigrated: !!merged.legacyPreferencesMigrated,
           userPreferenceRevisions: merged.userPreferenceRevisions,
-          workspace: current.workspace,
         };
       },
     },
   ),
 );
 
-/** Derive the shared resource view from notebook-owned attachments. */
-export function projectAgentWorkspace(
-  snapshot: AgentWorkspaceSnapshot,
-): Pick<AgentWorkspaceState, "resources" | "byNotebookId" | "validatedAt"> {
-  const resourcesByPath = new Map<string, AgentWorkspaceResource>();
-  const byNotebookId: Record<string, AgentWorkspaceNotebook> = {};
-  for (const notebook of snapshot.notebooks) {
-    const addDirs = (snapshot.notebookConfigs[notebook.id]?.addDirs ?? []).map(directory => {
-      const missing = !!directory.missing;
-      if (!resourcesByPath.has(directory.path)) resourcesByPath.set(directory.path, {
-        id: directory.id, path: directory.path, name: directory.label,
-        enabled: directory.enabled, missing,
-      });
-      const resource = resourcesByPath.get(directory.path)!;
-      resource.enabled ||= directory.enabled;
-      return { ...directory, missing };
-    });
-    byNotebookId[notebook.id] = { notebook, addDirs };
+/** Resolve legacy defaults before a runtime config is built for a request. */
+export async function ensureAgentPreferencesReady(agentType?: AgentTypeKey): Promise<void> {
+  const state = useAgentDataStore.getState();
+  await state.initializeLegacyPreferences().catch((error) => {
+    logger.warn("Agent preference migration deferred", { error });
+  });
+  if (!agentType || agentType === "pi") {
+    await state.initializePiMode();
   }
-  return { resources: [...resourcesByPath.values()], byNotebookId, validatedAt: Date.now() };
 }
 
 if (typeof window !== "undefined") {
@@ -887,22 +875,4 @@ if (typeof window !== "undefined") {
       });
     }
   });
-}
-
-/** Initial submissions must not freeze an empty startup workspace projection. */
-export async function ensureAgentWorkspaceReady(): Promise<void> {
-  if (useAgentDataStore.getState().loadState.workspace.status === "ready") return;
-  await useAgentDataStore.getState().workspaceActions.loadInitial();
-  // An event-driven refresh may have superseded our initial read.
-  if (useAgentDataStore.getState().loadState.workspace.status === "loading") {
-    await new Promise<void>((resolve) => {
-      const unsubscribe = useAgentDataStore.subscribe((state) => {
-        if (state.loadState.workspace.status !== "loading") { unsubscribe(); resolve(); }
-      });
-    });
-  }
-
-  if (useAgentDataStore.getState().loadState.workspace.status !== "ready") {
-    throw new Error(useAgentDataStore.getState().loadState.workspace.error ?? "Workspace data is not ready");
-  }
 }

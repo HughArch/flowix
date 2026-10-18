@@ -14,12 +14,14 @@ interface NotebookIconPopoverProps {
   value: string | null;
   notebookName: string;
   onChange: (icon: string | null) => void;
+  disabled?: boolean;
 }
 
 export function NotebookIconPopover({
   value,
   notebookName,
   onChange,
+  disabled = false,
 }: NotebookIconPopoverProps) {
   const [open, setOpen] = useState(false);
   const selected = getNotebookIconOption(value);
@@ -29,10 +31,11 @@ export function NotebookIconPopover({
       <PopoverTrigger asChild>
         <button
           type="button"
+          disabled={disabled}
           className={cn(
             'flex h-10 w-10 shrink-0 items-center justify-center rounded-lg border border-input bg-[var(--card)] transition-colors',
             'hover:bg-[var(--muted)]/40 focus-visible:border-[var(--primary)] focus-visible:outline-none',
-            'data-[state=open]:border-[var(--primary)]',
+            'data-[state=open]:border-[var(--primary)] disabled:cursor-not-allowed disabled:opacity-50',
           )}
           aria-label="设置笔记本图标"
           title={selected?.label ?? '设置笔记本图标'}

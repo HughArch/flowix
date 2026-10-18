@@ -134,7 +134,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   onCreateMediaLibrary: (parentPath: string) => void;
   onImportFiles?: (parentPath: string) => void;
   onImportFolder?: (parentPath: string) => void;
-  onRename: (item: DocTreeItem, nextName: string) => Promise<void> | void;
+  onRename: (item: DocTreeItem, nextName: string) => Promise<boolean | void> | boolean | void;
   onPointerDown: (item: DocTreeItem, event: ReactPointerEvent<HTMLDivElement>) => void;
   onDeleteFolder?: (path: string) => Promise<void>;
   onDeleteFile?: (item: DocTreeItem) => Promise<void>;
@@ -225,12 +225,15 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   const [renameValue, setRenameValue] = useState(
     isFolder || !isExtensionlessDocument ? item.name : displayTitleFromFilename(item.name),
   );
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [optimisticName, setOptimisticName] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmFileDelete, setConfirmFileDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const keepsVirtualRowAlive = contextMenuOpen
     || renaming
+    || renameSaving
     || confirmDelete
     || confirmFileDelete
     || deleting;
@@ -342,11 +345,26 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
     }
   }, [deleting, item, onDeleteFile, t]);
 
-  const submitRename = useCallback(() => {
-    if (!renaming) return;
+  const submitRename = useCallback(async () => {
+    if (!renaming || renameSaving) return;
+    const nextName = renameValue.trim();
+    if (!nextName) {
+      setRenaming(false);
+      setRenameValue(isFolder || !isExtensionlessDocument ? item.name : displayTitleFromFilename(item.name));
+      return;
+    }
     setRenaming(false);
-    void onRename(item, renameValue);
-  }, [item, onRename, renameValue, renaming]);
+    setRenameSaving(true);
+    setOptimisticName(nextName);
+    try {
+      const saved = await onRename(item, nextName);
+      if (saved === false) setOptimisticName(null);
+    } catch {
+      setOptimisticName(null);
+    } finally {
+      setRenameSaving(false);
+    }
+  }, [isExtensionlessDocument, isFolder, item, onRename, renameSaving, renameValue, renaming]);
 
   const cancelRename = useCallback(() => {
     setRenaming(false);
@@ -510,9 +528,9 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
             'ml-1.5',
             active || selected ? 'opacity-100' : 'opacity-[0.82]',
           )}>
-            {isFolder || !isExtensionlessDocument
+            {optimisticName ?? (isFolder || !isExtensionlessDocument
               ? item.name
-              : displayTitleFromFilename(item.name)}
+              : displayTitleFromFilename(item.name))}
           </span>
           {isFolder && isDefaultFolder && !renaming && (
             <span className="ml-2 shrink-0 text-xs text-[var(--muted-foreground)] opacity-50 transition-opacity duration-150 group-hover:opacity-0">
@@ -522,10 +540,13 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
           {isFolder && isLoadingChildren && (
             <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 flowix-spin text-[var(--muted-foreground)]" aria-label={t('memo.fileTree.loading')} />
           )}
+          {renameSaving && (
+            <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 flowix-spin text-[var(--muted-foreground)]" aria-label={t('memo.fileTree.loading')} />
+          )}
           {isFolder && expanded && childrenError && (
             <button
               type="button"
-              className="ml-1 shrink-0 rounded px-1.5 py-0.5 text-[11px] text-[var(--foreground)] hover:bg-[var(--muted)]"
+              className="ml-1 shrink-0 rounded-lg px-1.5 py-0.5 text-[11px] text-[var(--foreground)] hover:bg-[var(--muted)]"
               aria-label={t('memo.fileTree.unreadableHint')}
               title={t('memo.fileTree.unreadableHint')}
               onPointerDown={(event) => event.stopPropagation()}
@@ -577,6 +598,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
         <ContextMenuItem
           onClick={() => {
             setRenameValue(isFolder || !isExtensionlessDocument ? item.name : displayTitleFromFilename(item.name));
+            setOptimisticName(null);
             setRenaming(true);
           }}
           className={TREE_MENU_ITEM_CLASS}

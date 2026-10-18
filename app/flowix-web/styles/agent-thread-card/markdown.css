@@ -869,8 +869,9 @@
   to { transform: translateX(100%) scaleX(0.35); }
 }
 
-.agent-conversation-surface.agent-conversation-detail .agent-thread-card__dsh-update-notice,
-.agent-conversation-surface .agent-thread-card--fullscreen .agent-thread-card__dsh-update-notice {
+.agent-conversation-surface
+  .agent-thread-card__empty--expanded
+  .agent-thread-card__dsh-update-notice {
   display: inline-flex;
 }
 
@@ -898,11 +899,7 @@
   outline-offset: 2px;
 }
 
-.agent-conversation-surface.agent-conversation-detail
-  .agent-thread-card__empty--codex-settings,
-.agent-conversation-surface
-  .agent-thread-card--fullscreen
-  .agent-thread-card__empty--codex-settings {
+.agent-conversation-surface .agent-thread-card__empty--expanded {
   /* 居中由 body 负责, 这里让空状态自身在纵向不被拉伸。 */
   flex: 0 0 auto;
 }
@@ -919,12 +916,9 @@
   color: var(--foreground);
 }
 
-/* Keep embedded cards compact while preserving shortcuts in standalone chats,
- * which share the agent-thread-card class without using fullscreen mode. */
+/* Inline cards stay compact; expanded surfaces keep the shared shortcuts. */
 .agent-conversation-surface
-  .agent-thread-card:not(.agent-thread-card--fullscreen):not(
-    .agent-conversation-detail__card
-  )
+  .agent-thread-card__empty--inline-card
   .agent-thread-card__featured-notes {
   display: none;
 }
@@ -1910,6 +1904,14 @@
   color: var(--muted-foreground);
 }
 
+.agent-thread-card__model-provider-icon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  border-radius: 5px;
+  object-fit: contain;
+}
+
 .agent-thread-card__permission-mode-icon--warning {
   color: var(--destructive);
 }
@@ -1994,22 +1996,6 @@
 
 .agent-conversation-surface .agent-thread-card__loading-indicator[role="status"] {
   min-width: 0;
-}
-
-.agent-conversation-surface
-  .agent-thread-card--fullscreen
-  .agent-thread-card__loading-indicator {
-  width: calc(100% - 3rem);
-  max-width: 780px;
-  margin-inline: auto;
-}
-
-/* The standalone detail is not CSS-fullscreen, but its message column uses
- * the same centered width as the fullscreen Thread Card. */
-.agent-conversation-surface.agent-conversation-detail .agent-thread-card__loading-indicator {
-  width: calc(100% - 3rem);
-  max-width: 780px;
-  margin-inline: auto;
 }
 
 .agent-conversation-surface .agent-thread-card__loading-cells {

@@ -372,7 +372,7 @@ export class FrontmatterPropertyNodeView implements NodeView {
       case 'duplicate-key':
         return this.t('document.properties.duplicateKey');
       case 'reserved-key':
-        return this.t('document.properties.picker.reservedKeyError', { key: 'flowix_key' });
+        return this.t('document.properties.picker.reservedKeyError', { key: 'flowix_property_types' });
       case 'invalid-tag':
         return this.t('document.properties.invalidTag');
       case 'invalid-color':

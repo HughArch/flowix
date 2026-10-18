@@ -176,7 +176,7 @@ export function useRunningAgentTypeIndex(): RunningAgentTypeIndex {
 
 export function findRunningAgentForMemo(
   index: RunningAgentIndex,
-  memo: Pick<MemoItem, 'id' | 'agents'>,
+  memo: Pick<MemoItem, 'agents'>,
 ): AgentConversationInstance | null {
   let match: RankedAgent | undefined;
 
@@ -192,7 +192,7 @@ export function findRunningAgentForMemo(
 
 export function findRunningAgentTypeForMemo(
   index: RunningAgentTypeIndex,
-  memo: Pick<MemoItem, 'agents'> & { id?: string },
+  memo: Pick<MemoItem, 'agents'>,
 ): AgentConversationInstance['agentType'] | null {
   let match: RunningAgentTypeMatch | null = null;
 

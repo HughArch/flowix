@@ -75,8 +75,8 @@ interface MenuInstance<TItem> {
 }
 
 // ─── 模块级单例: 同一时刻只允许一个 suggestion 弹窗 ──────────────────────
-// Mention 扩展共享同一容器 / 位置 / IME 状态,
-// 开新弹窗时主动 close 旧的, 避免两者并存。
+// Mention 扩展共享同一容器 / 位置 / IME 状态。
+// activeView 是弹窗 owner，其他编辑器的事件和销毁不能操作它。
 let menuState: MenuState | null = null;
 let menuInstance: MenuInstance<unknown> | null = null;
 let menuContainer: HTMLDivElement | null = null;
@@ -84,7 +84,7 @@ let menuRoot: Root | null = null;
 let activeEditor: Editor | null = null;
 let activeView: EditorView | null = null;
 let activeConfig: SuggestionMenuConfig<unknown> | null = null;
-let composing = false;
+let composingOwner: { view: EditorView; openId: number } | null = null;
 let menuPlacement: 'above' | 'below' | null = null;
 let positionFrame = 0;
 let menuOpenId = 0;
@@ -97,10 +97,15 @@ function disposeMenuRoot(root: Root, container: HTMLDivElement) {
 }
 
 function isComposing(view: EditorView): boolean {
-  return composing || Boolean((view as EditorView & { composing?: boolean }).composing);
+  return (
+    (composingOwner?.view === view && composingOwner.openId === menuOpenId)
+    || Boolean((view as EditorView & { composing?: boolean }).composing)
+  );
 }
 
-function closeMenu() {
+function closeMenu(ownerView?: EditorView) {
+  if (ownerView && activeView !== ownerView) return;
+
   menuOpenId += 1;
   document.removeEventListener('mousedown', handlePointerDownOutside, true);
   window.removeEventListener('resize', handleWindowResize);
@@ -120,7 +125,7 @@ function closeMenu() {
   activeEditor = null;
   activeView = null;
   activeConfig = null;
-  composing = false;
+  composingOwner = null;
   menuPlacement = null;
 
   if (root && container) {
@@ -153,10 +158,11 @@ function handleScrollOutside(event: Event) {
     return;
   }
 
+  const view = activeView;
   try {
-    refreshMenuFromEditor(activeView);
+    refreshMenuFromEditor(view);
   } catch {
-    closeMenu();
+    closeMenu(view);
   }
 }
 
@@ -221,16 +227,18 @@ function updatePosition(view: EditorView, width: number) {
   menuContainer.style.left = `${left}px`;
 }
 
-function scheduleUpdatePosition(view: EditorView, width: number) {
+function scheduleUpdatePosition(view: EditorView, width: number, openId: number) {
   if (positionFrame) window.cancelAnimationFrame(positionFrame);
   positionFrame = window.requestAnimationFrame(() => {
     positionFrame = 0;
+    if (!isCurrentMenuView(view, openId)) return;
     updatePosition(view, width);
   });
 }
 
 function renderMenu(view: EditorView) {
   if (!isCurrentMenuView(view)) return;
+  const openId = menuOpenId;
   const root = menuRoot;
   const instance = menuInstance;
   const config = activeConfig;
@@ -244,7 +252,7 @@ function renderMenu(view: EditorView) {
     hasMore: instance.visibleCount < instance.allItems.length,
     loading: instance.loading,
     onSelect: (item) => {
-      if (!activeEditor || !menuState || !activeConfig) return;
+      if (!isCurrentMenuView(view, openId) || !activeEditor || !menuState || !activeConfig) return;
       activeConfig.onSelect({
         editor: activeEditor,
         view,
@@ -255,12 +263,14 @@ function renderMenu(view: EditorView) {
       });
     },
     onHover: (index) => {
+      if (!isCurrentMenuView(view, openId)) return;
       if (!menuInstance) return;
       menuInstance.selectedIndex = index;
       menuInstance.scrollSelectedItem = false;
       renderMenu(view);
     },
     onLoadMore: () => {
+      if (!isCurrentMenuView(view, openId)) return;
       if (!menuInstance) return;
       menuInstance.visibleCount = Math.min(
         menuInstance.visibleCount + PAGE_SIZE,
@@ -270,7 +280,7 @@ function renderMenu(view: EditorView) {
     },
   }));
 
-  scheduleUpdatePosition(view, config.width);
+  scheduleUpdatePosition(view, config.width, openId);
 }
 
 function applyQueryItems(view: EditorView, items: unknown[], resetPage: boolean) {
@@ -388,7 +398,7 @@ function refreshMenuFromEditor(view: EditorView) {
 
   const query = config.parseQuery(view, state.triggerFrom, state.trigger);
   if (query === null) {
-    closeMenu();
+    closeMenu(view);
     return;
   }
 
@@ -425,19 +435,30 @@ export function createSuggestionExtension<TItem>(config: SuggestionMenuConfig<TI
           key: pluginKey,
 
           view(view) {
+            const handleBlur = (event: FocusEvent) => {
+              const nextTarget = event.relatedTarget;
+              if (nextTarget instanceof Node && menuContainer?.contains(nextTarget)) return;
+              closeMenu(view);
+            };
             const handleCompositionStart = () => {
-              if (menuState) composing = true;
+              if (activeView === view && menuState) {
+                composingOwner = { view, openId: menuOpenId };
+              }
             };
             const handleCompositionEnd = () => {
-              if (!composing) return;
-              composing = false;
+              const composition = composingOwner;
+              if (composition?.view !== view) return;
+              composingOwner = null;
               window.setTimeout(() => {
-                if (menuState) refreshMenuFromEditor(view);
+                if (isCurrentMenuView(view, composition.openId)) {
+                  refreshMenuFromEditor(view);
+                }
               }, 0);
             };
 
             view.dom.addEventListener('compositionstart', handleCompositionStart);
             view.dom.addEventListener('compositionend', handleCompositionEnd);
+            view.dom.addEventListener('blur', handleBlur);
 
             return {
               update(updatedView) {
@@ -451,8 +472,9 @@ export function createSuggestionExtension<TItem>(config: SuggestionMenuConfig<TI
                 if (!view.isDestroyed) {
                   view.dom.removeEventListener('compositionstart', handleCompositionStart);
                   view.dom.removeEventListener('compositionend', handleCompositionEnd);
+                  view.dom.removeEventListener('blur', handleBlur);
                 }
-                closeMenu();
+                closeMenu(view);
               },
             };
           },
@@ -469,7 +491,7 @@ export function createSuggestionExtension<TItem>(config: SuggestionMenuConfig<TI
                 from = prefixFrom;
               }
               if (!editor.isEditable || !view.state.selection.empty) {
-                closeMenu();
+                closeMenu(view);
                 return false;
               }
               if (isValidTriggerPosition && !isValidTriggerPosition(view, from)) {
@@ -481,7 +503,7 @@ export function createSuggestionExtension<TItem>(config: SuggestionMenuConfig<TI
             },
 
             handleKeyDown(view, event) {
-              if (!menuState || !menuInstance) return false;
+              if (!isCurrentMenuView(view) || !menuState || !menuInstance) return false;
               if (event.isComposing || isComposing(view)) return false;
 
               const visibleItems = menuInstance.allItems.slice(0, menuInstance.visibleCount);
@@ -519,7 +541,7 @@ export function createSuggestionExtension<TItem>(config: SuggestionMenuConfig<TI
 
               if (event.key === 'Escape') {
                 event.preventDefault();
-                closeMenu();
+                closeMenu(view);
                 return true;
               }
 

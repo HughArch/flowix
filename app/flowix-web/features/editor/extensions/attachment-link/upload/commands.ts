@@ -63,7 +63,7 @@ export function createAttachmentCommands(
                     const files = await pickBrowserFiles(params, signal);
                     if (signal.aborted) return [];
                     return (await createAttachmentUpload(files, undefined, undefined, resolveOwnerPath(), signal, true)).assets;
-                }, undefined, params?.replaceRange, resolveOwnerPath());
+                }, undefined, params?.replaceRange);
                 return true;
             },
 

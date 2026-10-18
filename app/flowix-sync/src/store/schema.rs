@@ -10,12 +10,19 @@ impl SyncStore {
     pub fn new_uninitialized(path: impl AsRef<Path>) -> Self {
         Self {
             path: path.as_ref().to_path_buf(),
+            schema_ready: Default::default(),
+            schema_lock: Default::default(),
         }
     }
 
     pub fn initialize_schema(&self) -> Result<(), SyncError> {
+        let _guard = self.schema_lock.lock().unwrap_or_else(|p| p.into_inner());
+        self.initialize_schema_locked()
+    }
+
+    fn initialize_schema_locked(&self) -> Result<(), SyncError> {
         flowix_core::memo_file::with_database_rebuild(&self.path, || {
-            let connection = self.open().map_err(std::io::Error::other)?;
+            let connection = self.open_raw().map_err(std::io::Error::other)?;
             Self::initialize_v2_schema(&connection).map_err(std::io::Error::other)?;
             connection
                 .query_row(
@@ -27,10 +34,25 @@ impl SyncStore {
                 .map_err(std::io::Error::other)?;
             Ok(())
         })
-        .map_err(|error| SyncError::InvalidState(format!("initialize sync database: {error}")))
+        .map_err(|error| SyncError::InvalidState(format!("initialize sync database: {error}")))?;
+        self.schema_ready
+            .store(true, std::sync::atomic::Ordering::Release);
+        Ok(())
     }
 
     pub(super) fn open(&self) -> Result<Connection, SyncError> {
+        // Early Cloud UI/API requests initialize on demand; the local shell
+        // never waits for this database or the operating-system credential store.
+        if !self.schema_ready.load(std::sync::atomic::Ordering::Acquire) {
+            let _guard = self.schema_lock.lock().unwrap_or_else(|p| p.into_inner());
+            if !self.schema_ready.load(std::sync::atomic::Ordering::Acquire) {
+                self.initialize_schema_locked()?;
+            }
+        }
+        self.open_raw()
+    }
+
+    fn open_raw(&self) -> Result<Connection, SyncError> {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| {
                 SyncError::InvalidState(format!("create sync directory: {error}"))
@@ -52,6 +74,25 @@ impl SyncStore {
 #[cfg(test)]
 mod storage_rebuild_tests {
     use super::*;
+
+    #[test]
+    fn deferred_store_initializes_on_first_use_and_coalesces_concurrent_readers() {
+        let temp = tempfile::tempdir().unwrap();
+        let path = temp.path().join("cloud/sync.db");
+        let store = SyncStore::new_uninitialized(&path);
+        assert!(!path.exists());
+        let handles: Vec<_> = (0..4)
+            .map(|_| {
+                let store = store.clone();
+                std::thread::spawn(move || store.session_restore_blocked().unwrap())
+            })
+            .collect();
+        for handle in handles {
+            assert!(!handle.join().unwrap());
+        }
+        assert!(path.is_file());
+        assert!(!path.parent().unwrap().join("rebuild-backups").exists());
+    }
 
     #[test]
     fn invalid_sync_database_is_backed_up_and_recreated() {

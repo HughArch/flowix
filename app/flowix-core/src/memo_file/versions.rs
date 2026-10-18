@@ -1,6 +1,11 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
+const VERSION_ID_ALPHABET: [char; 36] = [
+    '0', '1', '2', '3', '4', '5', '6', '7', '8', '9', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i',
+    'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
+];
+
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
@@ -276,7 +281,7 @@ impl MemoFile {
         let id = format!(
             "v_{}_{}",
             now.format("%Y%m%d_%H%M%S"),
-            nanoid::nanoid!(6, &super::MEMO_ID_ALPHABET)
+            nanoid::nanoid!(6, &VERSION_ID_ALPHABET)
         );
         let meta = PathVersionMeta {
             id: id.clone(),

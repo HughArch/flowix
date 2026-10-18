@@ -167,9 +167,9 @@ export function canEditMediaLibraryFilter(document: MediaLibraryDocument): boole
   ));
 }
 
-export function createMediaLibraryRecord(relativePath: string, resourceId?: string, now = new Date().toISOString()): MediaLibraryRecord {
+export function createMediaLibraryRecord(notebookId: string, relativePath: string, resourceId?: string, now = new Date().toISOString()): MediaLibraryRecord {
   const path = relativePath.replace(/\\/g, '/');
-  return { id: `rec_${createUuidV7()}`, updated_at: now, resource_id: resourceId ?? `path:${path}`, relative_path: path };
+  return { id: `rec_${createUuidV7()}`, updated_at: now, resource_id: resourceId ?? `${notebookId}::${path}`, relative_path: path };
 }
 
 /** Called against each current document, including conflict retries. */

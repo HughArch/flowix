@@ -11,6 +11,7 @@ import { createLogger } from '@/lib/logger';
 import { agent } from '@platform/tauri/client/agent';
 import { useAgentConversationSurface } from './use-agent-conversation-surface';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
+import { createAndOpenAgentConversation } from '@features/agent/use-cases/new-conversation';
 import { canActOnQueuedMessage } from '@features/agent/store/follow-up-queue-slice';
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
 import { useNoteStore } from '@features/memo/store/note-store';
@@ -78,6 +79,12 @@ const SCROLL_DELTA_EPSILON_PX = 0.5;
 const INPUT_DRAFT_MAX_CHARS = 500;
 const EMPTY_MESSAGES: ThreadState['messages'] = [];
 const EMPTY_PENDING_CODEX_MESSAGES: readonly [] = [];
+
+function isMissingHistorySession(error: string | null | undefined): boolean {
+  if (!error) return false;
+  return Boolean(error.match(/session\s+["'][^"']+["']\s+not found/i)
+    ?? error.match(/session\s+not found:\s*["']?[\w.-]+["']?/i));
+}
 const DETAIL_DRAFT_KEY_PREFIX = 'flowix:agent-conversation-draft:';
 const logger = createLogger('agent-conversation-detail');
 
@@ -162,6 +169,7 @@ function AgentConversationDetailContent({
   instance: AgentConversationInstance;
 }) {
   const { language, t } = useI18n();
+  const selectedNotebookId = useNoteStore((state) => state.selectedNotebook?.id ?? null);
   const messageFontMode = useAgentMessageFontStore((state) => state.fontMode);
   const messageSizeMode = useAgentMessageFontStore((state) => state.sizeMode);
   useEffect(() => {
@@ -200,12 +208,14 @@ function AgentConversationDetailContent({
   );
   const initialHistoryStatus = projection?.pagination.initialStatus ?? 'idle';
   const initialHistoryError = projection?.pagination.initialError;
+  const missingSession = isMissingHistorySession(initialHistoryError);
   const isInitialHistoryLoading = shouldShowInitialHistorySkeleton(
     threadId,
     messages.length,
     initialHistoryStatus,
   );
   const showHistoryError = initialHistoryStatus === 'error' && messages.length === 0;
+  const showHistoryWarning = initialHistoryStatus === 'error' && messages.length > 0;
   const domRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const composerMountRef = useRef<HTMLDivElement>(null);
@@ -572,7 +582,7 @@ function AgentConversationDetailContent({
       t: (key) => tRef.current(key),
         createThreadCacheSkeleton: () => createThreadCacheSkeleton(tRef.current('editor.threadCard.loadingThreadCache')),
         createExternalAgentEmptySettings: () =>
-          externalSettings.createEmptySettings({ showControls: false }),
+          externalSettings.createEmptySettings({ presentation: "expanded" }),
         onForkMessage: forkFromMessage,
       },
       composerOptions: {
@@ -794,25 +804,65 @@ function AgentConversationDetailContent({
                 tone="agent"
                 message={(
                   <span className="flex flex-col items-center gap-3">
-                    <span>{t('status.agent.loadHistoryFailed')}</span>
-                    {initialHistoryError && (
-                      <span className="max-w-xl break-words text-center text-xs text-[var(--muted-foreground)]">
-                        {initialHistoryError}
-                      </span>
+                    <span>{missingSession ? t('status.agent.historySessionNotFound') : t('status.agent.loadHistoryFailed')}</span>
+                    {missingSession ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-lg"
+                        onClick={() => {
+                          const notebookId = instance.source.notebookId ?? selectedNotebookId;
+                          if (notebookId) createAndOpenAgentConversation(instance.agentType, notebookId);
+                        }}
+                        disabled={!instance.source.notebookId && !selectedNotebookId}
+                      >
+                        {t('status.agent.newConversation')}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-lg"
+                        onClick={() => {
+                          if (threadId) void useAgentSessionStore.getState().loadMessages(instance.agentType, threadId);
+                        }}
+                      >
+                        {t('error.retry')}
+                      </Button>
                     )}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="rounded-lg"
-                      onClick={() => {
-                        if (threadId) void useAgentSessionStore.getState().loadMessages(instance.agentType, threadId);
-                      }}
-                    >
-                      {t('error.retry')}
-                    </Button>
                   </span>
                 )}
               />
+            </div>
+          )}
+          {showHistoryWarning && (
+            <div className="absolute inset-x-3 top-3 z-[4] flex items-center justify-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--background)]/95 px-3 py-2 text-xs text-[var(--muted-foreground)] shadow-sm" role="alert">
+              <span>{missingSession ? t('status.agent.historySessionNotFound') : t('status.agent.historyRefreshFailed')}</span>
+              {missingSession ? (
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="rounded-lg"
+                  onClick={() => {
+                    const notebookId = instance.source.notebookId ?? selectedNotebookId;
+                    if (notebookId) createAndOpenAgentConversation(instance.agentType, notebookId);
+                  }}
+                  disabled={!instance.source.notebookId && !selectedNotebookId}
+                >
+                  {t('status.agent.newConversation')}
+                </Button>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="rounded-lg"
+                  onClick={() => {
+                    if (threadId) void useAgentSessionStore.getState().loadMessages(instance.agentType, threadId);
+                  }}
+                >
+                  {t('error.retry')}
+                </Button>
+              )}
             </div>
           )}
         </div>

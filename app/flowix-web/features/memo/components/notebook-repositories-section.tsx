@@ -70,12 +70,14 @@ function AgentRepositoryItem({
     const currentName = isTableDocument || isMediaLibrary ? displayTitleFromFilename(item.name) : item.name;
     if (!name || name === currentName) return;
     try {
-      if (item.type === 'folder') await files.renameFolder(item.fullPath, name, repository.path);
+      if (item.type === 'folder') {
+        await tree.renameFolder(item.fullPath, name, repository.path);
+      }
       else {
         const extension = isTableDocument ? tableDocumentExtension(item.name) : isMediaLibrary ? mediaLibraryExtension(item.name) : '';
         await localDocumentOperations.rename({ path: item.fullPath, name: `${name}${extension}`, scopePath: repository.path });
       }
-      await tree.refresh(parentDirectoryPath(item.fullPath, repository.path));
+      if (item.type !== 'folder') await tree.refresh(parentDirectoryPath(item.fullPath, repository.path));
       toast.success(t('memo.fileTree.renamed', { name }));
     } catch (error) {
       toast.error(t(String(error).includes('FILE_EXISTS') ? 'memo.fileTree.nameConflict' : 'memo.fileTree.renameFailed'));
@@ -314,8 +316,8 @@ function AgentRepositoryItem({
       {expanded && (
         <div className="folder-file-tree__items">
           {tree.loading && tree.nodes.size === 0 && (
-            <div className="flex min-h-7 items-center px-2 text-xs text-[var(--muted-foreground)]" style={{ marginLeft: TREE_EDGE_GUTTER + 20 }}>
-              {t('memo.fileTree.loading')}
+            <div className="flex min-h-7 items-center px-2" style={{ marginLeft: TREE_EDGE_GUTTER + 20 }}>
+              <ListSurfaceSpinner className="h-3.5 w-3.5" ariaLabel={t('memo.fileTree.loading')} />
             </div>
           )}
           {tree.error && (

@@ -1,5 +1,6 @@
 export type ActionableNoticeTone = 'neutral' | 'error' | 'warning';
 export type ActionableNoticeActionVariant = 'default' | 'outline' | 'destructive';
+export type ActionableNoticeLeadingIcon = 'loading';
 
 export interface ActionableNoticeAction {
   id: string;
@@ -14,6 +15,8 @@ export interface ActionableNotice {
   tone: ActionableNoticeTone;
   title: string;
   message?: string;
+  leadingIcon?: ActionableNoticeLeadingIcon;
+  width?: 'default' | 'wide' | 'narrow';
   actions: ActionableNoticeAction[];
   dismissible?: boolean;
   onDismiss?: () => void;

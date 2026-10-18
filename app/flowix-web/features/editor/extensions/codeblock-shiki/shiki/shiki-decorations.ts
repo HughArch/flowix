@@ -4,13 +4,31 @@ import type { BundledLanguage, BundledTheme } from 'shiki'
 import { findChildren } from '@tiptap/core'
 import { Decoration, DecorationSet } from '@tiptap/pm/view'
 
-import { getShiki } from '@features/editor/extensions/codeblock-shiki/shiki/shiki-highlighter'
+import { getShikiLanguageDefinition } from '@features/editor/extensions/codeblock-shiki/shiki/shiki-languages'
 
 interface DecorationsOptions {
   doc: ProseMirrorNode
   name: string
   defaultTheme: BundledTheme
   defaultLanguage: BundledLanguage | 'plaintext' | null | undefined
+}
+
+export interface ShikiHighlightInput {
+  /** ProseMirror position immediately inside the codeBlock node. */
+  from: number
+  text: string
+  language: string
+  theme: string
+}
+
+export interface ShikiHighlightToken {
+  content: string
+  color: string
+}
+
+export interface ShikiHighlightBlockResult {
+  from: number
+  lines: ShikiHighlightToken[][]
 }
 
 // Shiki exposes VS Code TextMate's FontStyle as a bit mask:
@@ -221,12 +239,9 @@ function getMermaidDecorations(
 // 长时间占用。缓存读取结果, 把读路径退化成一个普通变量访问, 消
 // 除 reflow。
 //
-// 失效时机 ── 由 shiki-plugin.ts 在 view() 挂载时挂 per-editor
-// 'app-theme-changed' 监听器, 切主题时同步 invalidate + dispatch
-// forceDecoration 触发 apply 重算。本模块自身不挂监听器 ── 缓存
-// 与失效职责分离: 本文件管「读 + 缓存 + 暴露失效接口」, plugin
-// 决定「何时失效」(只有 plugin 持有 editorView 引用, 才能在失
-// 效后强制刷新装饰)。
+// 失效时机 ── 由 shiki-plugin.ts 在 view() 挂载时监听
+// 'app-theme-changed'。切主题后由 plugin 安排 Worker 重算装饰。
+// 本模块只负责读取缓存并提供失效接口。
 let cachedCssTheme: string | null | undefined = undefined
 
 function readCssTheme(): string {
@@ -241,36 +256,43 @@ function readCssTheme(): string {
   return cachedCssTheme ?? ''
 }
 
-/** 失效缓存 ── 由 shiki-plugin 在收到 app-theme-changed 时调用,
- *  并伴随一次 shikiPluginForceDecoration dispatch 强制刷新装饰。
- *  Export 是因为 plugin 是同模块的兄弟文件, 需要 import 这个
- *  失效函数。 */
+/** Invalidate the cached CSS theme before the Worker recomputes decorations. */
 export function invalidateShikiThemeCache() {
   cachedCssTheme = undefined
 }
 
-export function getDecorations({
+export function collectShikiHighlightInputs({
   doc,
   name,
   defaultTheme,
-  defaultLanguage
-}: DecorationsOptions) {
+  defaultLanguage,
+}: DecorationsOptions): { codeBlockCount: number; blocks: ShikiHighlightInput[] } {
+  let codeBlockCount = 0
+  const blocks: ShikiHighlightInput[] = []
+  const cssTheme = readCssTheme()
+
+  findChildren(doc, node => node.type.name === name).forEach((block) => {
+    codeBlockCount += 1
+    const rawLanguage = String(block.node.attrs.language || defaultLanguage || 'plaintext')
+    if (rawLanguage.toLowerCase() === 'mermaid') return
+    const language = getShikiLanguageDefinition(rawLanguage)?.id ?? 'plaintext'
+    blocks.push({
+      from: block.pos + 1,
+      text: block.node.textContent,
+      language,
+      theme: cssTheme || block.node.attrs.theme || defaultTheme,
+    })
+  })
+
+  return { codeBlockCount, blocks }
+}
+
+export function getDecorations({ doc, name, defaultTheme }: DecorationsOptions) {
   const decorations: Decoration[] = []
-  const highlighter = getShiki()
-
-  // During the synchronous editor mount Shiki has not loaded yet. Avoid
-  // traversing every code block just to return no decorations.
-  if (!highlighter) return DecorationSet.empty
-
   const codeBlocks = findChildren(doc, node => node.type.name === name)
 
   codeBlocks.forEach((block) => {
-    let language = block.node.attrs.language || defaultLanguage
-
-    if (!highlighter.getLoadedLanguages().includes(language)) {
-      language = 'plaintext'
-    }
-
+    if ((block.node.attrs.language || '').toLowerCase() !== 'mermaid') return
     let theme = block.node.attrs.theme || defaultTheme
     // Theme resolution: the --shiki-theme CSS var (app theme) is authoritative
     // whenever set — which is always, so node.attrs.theme / defaultTheme only act
@@ -279,41 +301,40 @@ export function getDecorations({
     // 读路径走 readCssTheme() 缓存, 避免每个 keystroke 触发 getComputedStyle 强制 reflow。
     const cssTheme = readCssTheme()
     if (cssTheme) theme = cssTheme as BundledTheme
-    const themeToApply = highlighter.getLoadedThemes().includes(theme)
-      ? theme
-      : highlighter.getLoadedThemes()[0]
-
-    if ((block.node.attrs.language || '').toLowerCase() === 'mermaid') {
-      decorations.push(...getMermaidDecorations(block, themeToApply))
-      return
-    }
-
-    const lines = highlighter.codeToTokensBase(block.node.textContent, {
-      lang: language,
-      theme: themeToApply
-    })
-
-    let from = block.pos + 1
-
-    lines.forEach((lineTokens, lineIndex) => {
-      for (const token of lineTokens) {
-        if (token.content.length === 0) continue
-
-        const to = from + token.content.length
-
-        const decoration = Decoration.inline(from, to, {
-          style: `color: ${token.color}`
-        })
-
-        decorations.push(decoration)
-        from = to
-      }
-
-      // ProseMirror text positions include the newline between Shiki lines.
-      // Do not advance past the end of the final line.
-      if (lineIndex < lines.length - 1) from += 1
-    })
+    decorations.push(...getMermaidDecorations(block, theme))
   })
 
   return DecorationSet.create(doc, decorations)
+}
+
+export function createShikiDecorationSet(
+  doc: ProseMirrorNode,
+  options: DecorationsOptions,
+  inputs: readonly ShikiHighlightInput[],
+  results: readonly ShikiHighlightBlockResult[],
+): DecorationSet {
+  const decorations: Decoration[] = []
+  const resultsByPosition = new Map(results.map((result) => [result.from, result]))
+
+  for (const input of inputs) {
+    const node = doc.nodeAt(input.from - 1)
+    if (!node || node.type.name !== options.name || node.textContent !== input.text) continue
+    const result = resultsByPosition.get(input.from)
+    if (!result) continue
+
+    let from = input.from
+    result.lines.forEach((lineTokens, lineIndex) => {
+      for (const token of lineTokens) {
+        if (!token.content.length) continue
+        const to = from + token.content.length
+        decorations.push(Decoration.inline(from, to, {
+          style: `color: ${token.color}`,
+        }))
+        from = to
+      }
+      if (lineIndex < result.lines.length - 1) from += 1
+    })
+  }
+
+  return getDecorations(options).add(doc, decorations)
 }

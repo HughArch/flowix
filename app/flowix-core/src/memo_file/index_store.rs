@@ -1,8 +1,7 @@
-//! Legacy memo-ID records and metadata stored in the notebook-local database.
+//! Notebook-relative-path projection stored in the notebook-local database.
 //!
-//! The Note projection is path-keyed in `note_index`; this module remains
-//! for callers and records that still require memo IDs. Older global rows are
-//! imported from the user-level registry database during notebook setup.
+//! The separate Note catalog in `note_index` tracks filesystem metadata. This
+//! module stores the content-derived listing fields used by memo surfaces.
 
 use std::fs;
 use std::path::PathBuf;
@@ -13,34 +12,12 @@ use super::derivation::{extract_agent_threads_from_body, extract_thumbnail};
 use super::frontmatter::extract_frontmatter_properties;
 use super::notebook::sqlite_to_io;
 use super::types::{
-    AgentThreadItem, Memo, MemoColor, MemoIndexEntry, MemoIndexFile, MemoLocation, MemoTodoEntry,
-    NotebookConfig, TodoItem,
+    AgentThreadItem, Memo, NoteColor, MemoIndexEntry, MemoIndexFile, MemoLocation, NotebookConfig,
 };
 use super::MemoFile;
 
-/// Durable identity of the latest committed bytes for one memo.
-///
-/// `revision` is a local, monotonically increasing counter. `change_id`
-/// identifies one concrete content transition and is stable when duplicate
-/// filesystem notifications observe the same bytes.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoContentRevision {
-    pub memo_id: String,
-    pub notebook_id: String,
-    pub content_hash: String,
-    pub revision: i64,
-    pub change_id: String,
-    pub updated_at: i64,
-}
-
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub struct MemoContentCommit {
-    pub state: MemoContentRevision,
-    pub changed: bool,
-}
-
-/// Path-keyed successor of [`MemoContentRevision`]. The revision stream is
-/// addressed by `(notebook_id, relative_path)` instead of a legacy memo ID,
+/// Path-keyed content revision for a note. The revision stream is
+/// addressed by `(notebook_id, relative_path)`,
 /// so renames must carry the row over (see rename/move flows).
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct NoteContentRevision {
@@ -58,41 +35,29 @@ pub struct NoteContentCommit {
     pub changed: bool,
 }
 
-// Pending markers only bridge a live Desktop watcher and a concurrent CLI/MCP
-// process. Expiry prevents an offline create from being mistaken for a create
-// when that document is edited much later.
-const EXTERNAL_CREATE_MARKER_TTL_MS: i64 = 60_000;
-
-fn color_to_str(color: MemoColor) -> &'static str {
+fn color_to_str(color: NoteColor) -> &'static str {
     match color {
-        MemoColor::Red => "red",
-        MemoColor::Orange => "orange",
-        MemoColor::Yellow => "yellow",
-        MemoColor::Green => "green",
-        MemoColor::Cyan => "cyan",
-        MemoColor::Blue => "blue",
-        MemoColor::Gray => "gray",
+        NoteColor::Red => "red",
+        NoteColor::Orange => "orange",
+        NoteColor::Yellow => "yellow",
+        NoteColor::Green => "green",
+        NoteColor::Cyan => "cyan",
+        NoteColor::Blue => "blue",
+        NoteColor::Gray => "gray",
     }
 }
 
-fn color_from_str(value: &str) -> Option<MemoColor> {
+fn color_from_str(value: &str) -> Option<NoteColor> {
     match value {
-        "red" => Some(MemoColor::Red),
-        "orange" => Some(MemoColor::Orange),
-        "yellow" => Some(MemoColor::Yellow),
-        "green" => Some(MemoColor::Green),
-        "cyan" => Some(MemoColor::Cyan),
-        "blue" => Some(MemoColor::Blue),
-        "gray" => Some(MemoColor::Gray),
+        "red" => Some(NoteColor::Red),
+        "orange" => Some(NoteColor::Orange),
+        "yellow" => Some(NoteColor::Yellow),
+        "green" => Some(NoteColor::Green),
+        "cyan" => Some(NoteColor::Cyan),
+        "blue" => Some(NoteColor::Blue),
+        "gray" => Some(NoteColor::Gray),
         _ => None,
     }
-}
-
-fn tag_path_prefixes(path: &str) -> Vec<String> {
-    let segments: Vec<&str> = path.split('/').collect();
-    (1..=segments.len())
-        .map(|end| segments[..end].join("/"))
-        .collect()
 }
 
 mod persistence;

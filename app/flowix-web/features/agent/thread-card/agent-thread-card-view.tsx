@@ -127,10 +127,34 @@ const AGENT_THREAD_CARD_REQUEST_FULLSCREEN_EVENT =
   "flowix:agent-thread-card-request-fullscreen";
 const AGENT_THREAD_CARD_FULLSCREEN_RESTORE_CLASS =
   "agent-thread-card--restoring-fullscreen";
+const AGENT_THREAD_CARD_MESSAGE_SCROLL_ACTIVE_CLASS =
+  "agent-thread-card--message-scroll-active";
 const AGENT_THREAD_CARD_INPUT_DRAFT_MAX_CHARS = 500;
 // inputDraft 落盘 debounce: typing 停 2s 后写入 ProseMirror attrs。
 // submit / destroy / blur 会主动 flush, 避免卡片重挂载时用旧 attr 回填。
 const AGENT_THREAD_CARD_DRAFT_PERSIST_DEBOUNCE_MS = 2000;
+
+function wheelDeltaPixels(event: WheelEvent, scroller: HTMLElement): {
+  deltaX: number;
+  deltaY: number;
+} {
+  if (event.deltaMode === WheelEvent.DOM_DELTA_LINE) {
+    const styles = getComputedStyle(scroller);
+    const lineHeight = Number.parseFloat(styles.lineHeight);
+    const fontSize = Number.parseFloat(styles.fontSize) || 16;
+    const lineSize = Number.isFinite(lineHeight) ? lineHeight : fontSize * 1.5;
+    return { deltaX: event.deltaX * lineSize, deltaY: event.deltaY * lineSize };
+  }
+
+  if (event.deltaMode === WheelEvent.DOM_DELTA_PAGE) {
+    return {
+      deltaX: event.deltaX * scroller.clientWidth,
+      deltaY: event.deltaY * scroller.clientHeight,
+    };
+  }
+
+  return { deltaX: event.deltaX, deltaY: event.deltaY };
+}
 
 function buildTitle(prompt: string, fallback: string = ""): string {
   return deriveThreadTitleFromPrompt(prompt, fallback);
@@ -189,6 +213,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
   private hydratingInstanceId: string | null = null;
   private releaseThreadInterest: (() => void) | null = null;
   private isFullscreen = false;
+  private isMessageScrollActive = false;
   private isViewportVisible = false;
   private visibilityObserver: IntersectionObserver | null = null;
   private fullscreenRestoreGeneration = 0;
@@ -265,6 +290,18 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
   };
   private boundHandleOutsidePointerDown = (event: PointerEvent): void => {
     this.blurOwnedFocusForOutsidePointer(event);
+  };
+  private boundHandleMessageScrollModePointerDown = (event: PointerEvent): void => {
+    if (this.isDestroyed || this.isFullscreen || event.button !== 0) return;
+    const target = event.target;
+    if (!(target instanceof Node)) return;
+
+    const bodyFrame = this.body.parentElement;
+    const clickedMessageSurface =
+      this.body.contains(target) ||
+      (bodyFrame?.classList.contains("agent-thread-card__body-frame") === true &&
+        bodyFrame.contains(target));
+    this.setMessageScrollActive(clickedMessageSurface);
   };
   /**
    * A fullscreen card remains a NodeView inside the outer ProseMirror DOM.
@@ -347,7 +384,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       },
       onBodyClick: (event) => this.handleBodyClick(event),
       onBodyScroll: this.boundHandleBodyScroll,
-      onBodyWheel: (event) => this.messages.handleUserScrollIntent(event.deltaY),
+      onBodyWheel: (event) => this.handleBodyWheel(event),
       // composer 空区域 → 输入框 focus 已由 createAgentComposerDom
       // 工厂内部挂的 pointerdown 委托统一处理 (详见
       // composer-dom-factory.ts COMPOSER_FOCUS_INTERACTIVE_SELECTOR),
@@ -395,6 +432,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       getNodeSize: () => this.node.nodeSize,
       isFullscreen: () => this.isFullscreen,
       closeTransientUi: () => {
+        this.composerAddMenu?.close();
         this.setCodexSettingsPopoverOpen(false);
         this.notePicker.setOpen(false);
       },
@@ -439,6 +477,8 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       isDestroyed: () => this.isDestroyed,
       isRunning: () => this.currentRuntimeView().isRunning,
       consumeOutsidePointer: consumeEditorPopoverDismissPointer,
+      onPopoverStateChange: (open, anchor) =>
+        this.composerAddMenu?.syncSettingsSubmenuState(open, anchor),
       // 常用笔记卡片 → 直接注入 composer 输入框, 与文档引用走同一条路径。
       onSelectFeaturedNote: (ref) => this.injectMemoReference(ref),
       toast: (kind, message) => toast[kind](message),
@@ -504,10 +544,46 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       trigger: this.composerRoleIcon,
       popover: composerAddPopover,
       notePopover: composerRolePopover,
+      settingsPopover: codexSettingsPopover,
       notePicker: this.notePicker,
       attachments: this.composerAttachments,
       t: (key) => this.t(key),
       isDestroyed: () => this.isDestroyed,
+      settings: [
+        ...(composerModelButton
+          ? [{
+              label: "agent.model.title" as const,
+              popupRole: this.typeKey === "pi" ? "dialog" as const : "menu" as const,
+              onHover: (anchor: HTMLButtonElement) =>
+                this.externalAgentSettings.openComposerSettingsPopover("model", anchor),
+            }]
+          : []),
+        ...(composerModeButton
+          ? [{
+              label: "agent.mode.title" as const,
+              onHover: (anchor: HTMLButtonElement) =>
+                this.externalAgentSettings.openComposerSettingsPopover("mode", anchor),
+            }]
+          : []),
+        ...(composerPermissionButton
+          ? [{
+              label: "agent.permission.title" as const,
+              onHover: (anchor: HTMLButtonElement) =>
+                this.externalAgentSettings.openComposerSettingsPopover("permission", anchor),
+            }]
+          : []),
+        ...(composerWorkspaceButton
+          ? [{
+              label: "agent.workspace.access" as const,
+              onHover: (anchor: HTMLButtonElement) =>
+                this.externalAgentSettings.openComposerWorkspacePopover(anchor),
+            }]
+          : []),
+      ],
+      showSettings: () => !this.isFullscreen,
+      closeSettingsSubmenu: (anchor) =>
+        this.externalAgentSettings.closeComposerSettingsPopover(anchor),
+      consumeOutsidePointer: consumeEditorPopoverDismissPointer,
       openNotebookAgentSettings: () => {
         const notebookPath = this.notebookPath;
         if (notebookPath) this.notebookAgentSettingsDialog.open(notebookPath);
@@ -644,6 +720,11 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
     document.addEventListener(
       "pointerdown",
       this.boundHandleOutsidePointerDown,
+      true,
+    );
+    document.addEventListener(
+      "pointerdown",
+      this.boundHandleMessageScrollModePointerDown,
       true,
     );
     document.addEventListener(
@@ -926,7 +1007,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
 
   private createExternalAgentEmptySettings(): HTMLElement {
     return this.externalAgentSettings.createEmptySettings({
-      showControls: !this.isFullscreen,
+      presentation: this.isFullscreen ? "expanded" : "inline-card",
     });
   }
 
@@ -1224,6 +1305,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       this.cancelPersistedFullscreenRestore();
     }
     if (this.isFullscreen === fullscreen) return;
+    this.setMessageScrollActive(false);
 
     if (fullscreen) {
       this.captureFullscreenReturnAnchor();
@@ -1491,6 +1573,37 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       logger.error("Failed to open Agent message link", { error, rawHref });
       toast.error(error instanceof Error ? error.message : this.t("agent.link.openLocalFileFailed"));
     });
+  }
+
+  private setMessageScrollActive(active: boolean): void {
+    if (this.isMessageScrollActive === active) return;
+    this.isMessageScrollActive = active;
+    this.dom.classList.toggle(
+      AGENT_THREAD_CARD_MESSAGE_SCROLL_ACTIVE_CLASS,
+      active,
+    );
+  }
+
+  private handleBodyWheel(event: WheelEvent): void {
+    if (this.isFullscreen || this.isMessageScrollActive) {
+      this.messages.handleUserScrollIntent(event.deltaY);
+      return;
+    }
+
+    const editorScroller = this.body.closest<HTMLElement>(".editor-content");
+    if (!editorScroller) {
+      this.messages.handleUserScrollIntent(event.deltaY);
+      return;
+    }
+
+    const { deltaX, deltaY } = wheelDeltaPixels(event, editorScroller);
+    if (deltaX === 0 && deltaY === 0) return;
+
+    // Before the message area is clicked, treat it as transparent to editor
+    // scrolling. Clicking outside the viewport returns to this default mode.
+    event.preventDefault();
+    editorScroller.scrollTop += deltaY;
+    editorScroller.scrollLeft += deltaX;
   }
 
   private renderMetaState(
@@ -1905,6 +2018,11 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
     document.removeEventListener(
       "pointerdown",
       this.boundHandleOutsidePointerDown,
+      true,
+    );
+    document.removeEventListener(
+      "pointerdown",
+      this.boundHandleMessageScrollModePointerDown,
       true,
     );
     document.removeEventListener(

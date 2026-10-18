@@ -2,7 +2,7 @@ import { act, createElement } from 'react';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 
-import type { DocTreeItem } from '@platform/tauri/client';
+import { files, type DocTreeItem } from '@platform/tauri/client';
 import {
   flattenLoadedTree,
   flattenVisibleTree,
@@ -92,6 +92,140 @@ describe('useFolderTree', () => {
     act(() => lastState?.toggle('/root/sub'));
     act(() => lastState?.toggle('/root/sub'));
     expect(getDirChildrenMock).toHaveBeenCalledTimes(1);
+  });
+
+  it('重命名后丢弃旧父目录的迟到刷新结果', async () => {
+    const oldPath = '/root/old';
+    const newPath = '/root/new';
+    getTreeMock.mockResolvedValue([dir(oldPath, 'old')]);
+    getDirChildrenMock.mockResolvedValue([file(`${oldPath}/note.md`, 'note.md')]);
+    mount('/root');
+    await vi.waitFor(() => expect(lastState?.loading).toBe(false));
+    await act(async () => lastState?.toggle(oldPath));
+    let finishRefresh!: (items: DocTreeItem[]) => void;
+    getTreeMock.mockImplementationOnce(() => new Promise((resolve) => { finishRefresh = resolve; }));
+    let pending!: Promise<void>;
+    act(() => { pending = lastState!.refresh('/root'); });
+    act(() => lastState?.rebasePath(oldPath, newPath));
+    await act(async () => {
+      finishRefresh([dir(oldPath, 'old')]);
+      await pending;
+    });
+    expect(lastState?.expanded.has(newPath)).toBe(true);
+    expect(lastState?.rootChildren.map((item) => item.fullPath)).toEqual([newPath]);
+    expect(flattenVisibleTree(lastState!).map(({ item }) => item.fullPath)).toContain(`${newPath}/note.md`);
+  });
+
+  it.each(['/root', '/root/parent'])('保存期间监听刷新 %s 不展示折叠中间态', async (parent) => {
+    const oldPath = `${parent}/old`;
+    const nextPath = `${parent}/new`;
+    let renamed = false;
+    getTreeMock.mockImplementation(async () => parent === '/root'
+      ? [dir(renamed ? nextPath : oldPath, renamed ? 'new' : 'old')]
+      : [dir(parent, 'parent')]);
+    getDirChildrenMock.mockImplementation(async (path) => path === parent
+      ? [dir(renamed ? nextPath : oldPath, renamed ? 'new' : 'old')]
+      : [file(`${path}/note.md`, 'note.md')]);
+    mount('/root');
+    await vi.waitFor(() => expect(lastState?.loading).toBe(false));
+    if (parent !== '/root') await act(async () => lastState?.toggle(parent));
+    await act(async () => lastState?.toggle(oldPath));
+    let complete!: (path: string) => void;
+    let completeRead!: (items: DocTreeItem[]) => void;
+    const delayedRead = () => new Promise<DocTreeItem[]>((resolve) => { completeRead = resolve; });
+    if (parent === '/root') getTreeMock.mockImplementationOnce(delayedRead);
+    else getDirChildrenMock.mockImplementationOnce(delayedRead);
+    let pendingRead!: Promise<void>;
+    act(() => { pendingRead = lastState!.refresh(parent); });
+    const rename = vi.spyOn(files, 'renameFolder').mockImplementationOnce(() => new Promise((resolve) => { complete = resolve; }));
+    try {
+      let saving!: Promise<string>;
+      act(() => { saving = lastState!.renameFolder(oldPath, 'new', '/root'); });
+      renamed = true;
+      await act(async () => { completeRead([dir(nextPath, 'new')]); await pendingRead; });
+      await act(async () => { await lastState?.refresh(parent); });
+      expect(lastState?.expanded.has(oldPath)).toBe(true);
+      expect(flattenVisibleTree(lastState!).map(({ item }) => item.fullPath)).toContain(`${oldPath}/note.md`);
+      await act(async () => { complete(nextPath); await saving; });
+      expect(lastState?.expanded.has(nextPath)).toBe(true);
+      expect(flattenVisibleTree(lastState!).map(({ item }) => item.fullPath)).toContain(`${nextPath}/note.md`);
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
+  it('文件夹重命名成功后不等待父目录刷新再结束保存态', async () => {
+    const oldPath = '/root/old';
+    const newPath = '/root/new';
+    getTreeMock.mockResolvedValue([dir(oldPath, 'old')]);
+    mount('/root');
+    await vi.waitFor(() => expect(lastState?.loading).toBe(false));
+
+    let finishRefresh!: (items: DocTreeItem[]) => void;
+    getTreeMock.mockImplementationOnce(() => new Promise((resolve) => { finishRefresh = resolve; }));
+    const rename = vi.spyOn(files, 'renameFolder').mockResolvedValueOnce(newPath);
+    try {
+      let saving!: Promise<string>;
+      act(() => { saving = lastState!.renameFolder(oldPath, 'new', '/root'); });
+      let timeout!: ReturnType<typeof setTimeout>;
+      let settled = false;
+      await act(async () => {
+        settled = await Promise.race([
+          saving.then(() => true),
+          new Promise<boolean>((resolve) => { timeout = setTimeout(() => resolve(false), 100); }),
+        ]);
+      });
+      clearTimeout(timeout);
+      expect(settled).toBe(true);
+      expect(lastState?.rootChildren.map((item) => item.fullPath)).toEqual([newPath]);
+      expect(getTreeMock).toHaveBeenCalledTimes(2);
+
+      await act(async () => { finishRefresh([dir(newPath, 'new')]); });
+    } finally {
+      rename.mockRestore();
+    }
+  });
+
+  it('重命名锁定期间到达的 watcher 刷新会在新路径补执行', async () => {
+    const oldPath = '/root/old';
+    const newPath = '/root/new';
+    let renamed = false;
+    getTreeMock.mockImplementation(async () => [dir(renamed ? newPath : oldPath, renamed ? 'new' : 'old')]);
+    getDirChildrenMock.mockImplementation(async (path) => [
+      file(`${path}/${path === newPath ? 'updated' : 'initial'}.md`, `${path === newPath ? 'updated' : 'initial'}.md`),
+    ]);
+    mount('/root');
+    await vi.waitFor(() => expect(lastState?.loading).toBe(false));
+    await act(async () => lastState?.toggle(oldPath));
+    // Let the tree's refresh deduplication window expire before delivering the watcher event.
+    await new Promise((resolve) => setTimeout(resolve, 400));
+
+    let completeRename!: (path: string) => void;
+    const rename = vi.spyOn(files, 'renameFolder').mockImplementationOnce(() => new Promise((resolve) => {
+      completeRename = resolve;
+    }));
+    try {
+      let saving!: Promise<string>;
+      act(() => {
+        saving = lastState!.renameFolder(oldPath, 'new', '/root');
+        lastState!.refreshDirectories([oldPath]);
+      });
+      renamed = true;
+      await act(async () => { await new Promise((resolve) => setTimeout(resolve, 300)); });
+      expect(getDirChildrenMock).toHaveBeenCalledTimes(1);
+
+      await act(async () => {
+        completeRename(newPath);
+        await saving;
+      });
+
+      await vi.waitFor(() => expect(getDirChildrenMock).toHaveBeenCalledWith(newPath));
+      await vi.waitFor(() => expect(lastState?.nodes.get(newPath)?.children?.map((item) => item.name)).toEqual(['updated.md']));
+      expect(lastState?.expanded.has(newPath)).toBe(true);
+      expect(lastState?.nodes.get(newPath)?.children?.map((item) => item.name)).toEqual(['updated.md']);
+    } finally {
+      rename.mockRestore();
+    }
   });
 
   it('根目录不可读时置 error 且列表为空', async () => {

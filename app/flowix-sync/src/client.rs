@@ -4,8 +4,9 @@ use serde_json::json;
 
 use crate::error::SyncError;
 use crate::models::{
-    ApiErrorEnvelope, AppleAuthChallenge, AppleAuthorization, AuthData, CloudAiCredential, CloudCheckout,
-    CloudOrder, CloudOrderCheck, CloudProduct, DataEnvelope, EntitlementData, MeData, RefreshData,
+    ApiErrorEnvelope, AppleAuthChallenge, AppleAuthorization, AuthData, CloudAiCredential,
+    CloudCheckout, CloudOrder, CloudOrderCheck, CloudProduct, DataEnvelope, EntitlementData,
+    MeData, RefreshData,
 };
 use crate::v2::{
     V2BlobDownloadEnvelope, V2BlobReservationEnvelope, V2Bootstrap, V2ChangesPage, V2History,
@@ -191,7 +192,9 @@ impl CloudClient {
                 "platform": platform,
                 "attachments": attachments,
             })),
-        ).await.map(|_| ())
+        )
+        .await
+        .map(|_| ())
     }
 
     pub(crate) async fn register(
@@ -340,6 +343,20 @@ impl CloudClient {
             "/v1/ai/credentials",
             Some(access_token),
             Some(json!({})),
+        )
+        .await
+        .map(|value| value.data)
+    }
+
+    pub(crate) async fn ai_credit_balance(
+        &self,
+        access_token: &str,
+    ) -> Result<crate::models::CloudAiCreditBalance, SyncError> {
+        self.send::<DataEnvelope<crate::models::CloudAiCreditBalance>>(
+            Method::GET,
+            "/v1/account/ai-credits",
+            Some(access_token),
+            None,
         )
         .await
         .map(|value| value.data)

@@ -7,14 +7,12 @@ import { useI18n, type I18nParams } from '@/lib/i18n';
 import { useShallow } from 'zustand/react/shallow';
 import {
   cloud,
-  files,
   listenToCloudStateChanges,
   mediaResources,
   notes,
   notebooks as notebooksClient,
   windows as tauriWindows,
   type CloudNotebook,
-  type NotebookSetupJob,
   type NotebookSetupReport,
 } from '@platform/tauri/client';
 import { useTauriRpc } from '@platform/tauri/use-tauri-rpc';
@@ -25,17 +23,15 @@ import {
 } from '@platform/tauri/errors';
 import { useCreateNotebookFlow } from '@features/memo/hooks/use-create-notebook-flow';
 import { useEmptyNotebookPrompt } from '@features/memo/hooks/use-empty-notebook-prompt';
-import { clearActionableNotice, upsertActionableNotice } from '@features/notifications/actionable-notice-store';
+import { clearActionableNotice, dismissActionableNotice, upsertActionableNotice } from '@features/notifications/actionable-notice-store';
 import { noteRepository, notebookRepository } from '@features/memo/services/note-repository';
 import { getVisibleCreateFilter, useNoteStore, useTagStore, type NoteListItem, type Notebook } from '@features/memo/store';
 import { noteListItemRelativePath } from '@/types/note-item';
+import { upsertNotebookSetupJob, useNotebookSetupJob } from '@features/memo/store/notebook-setup-store';
 import { getNotebookIconOption } from '@features/memo/components/notebook-icon';
 import { openNotebookNote } from '@features/memo/use-cases/open-notebook-note';
 import { clearWorkspaceDocument } from '@features/workspace/use-cases/workspace-navigation';
 import { selectNotebook } from '@features/workspace/public/main-window-api';
-import {
-  removeBrowserColumnTabsByPath,
-} from '@features/workspace/public/browser-column-api';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
 import { joinNotebookMemoPath } from '@/lib/path';
@@ -46,7 +42,7 @@ import { LazyGlobalSearchCommand } from '@features/memo/components/lazy-global-s
 import { subscribe } from '@platform/tauri/event-bus';
 import { externalDocuments } from '@platform/tauri/client';
 import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
-import { documentIdentityFromFile, flushWorkspaceDocumentPath } from '@features/document/public/workspace-api';
+import { documentIdentityFromFile, saveWorkspaceDocumentPath } from '@features/document/public/workspace-api';
 import { ensureFileDisplayIdentity } from '@/lib/file-display-registry';
 import {
   FLOWIX_EXTERNAL_MARKDOWN_OPEN_EVENT,
@@ -63,11 +59,6 @@ function normalizeNotebookIconId(icon: string | null | undefined): string | null
   return getNotebookIconOption(icon) ? icon! : null;
 }
 
-const NOTEBOOK_DESCRIPTION_START = '<notebook-description>';
-const NOTEBOOK_DESCRIPTION_END = '</notebook-description>';
-const NOTEBOOK_DESCRIPTION_BLOCK = /<notebook-description>[\s\S]*?<\/notebook-description>/;
-const FLOWIX_MANAGED_BLOCK = /<!-- flowix:instructions:start -->[\s\S]*?<!-- flowix:instructions:end -->/;
-
 interface MediaDeleteRequest {
   filePath: string;
   notebookPath: string;
@@ -75,35 +66,6 @@ interface MediaDeleteRequest {
 
 function filenameFromPath(filePath: string): string {
   return filePath.split(/[\\/]/).filter(Boolean).pop() ?? filePath;
-}
-
-function extractNotebookDescription(content: string): string {
-  const tagged = content.match(/<notebook-description>([\s\S]*?)<\/notebook-description>/);
-  if (tagged) return tagged[1].trim();
-
-  // Backward compatibility for descriptions written before the tagged block
-  // was introduced. Keep Flowix's generated instructions out of the editor.
-  return content.replace(FLOWIX_MANAGED_BLOCK, '').trim();
-}
-
-function notebookDescriptionBlock(description: string): string {
-  const normalized = description.trim();
-  return normalized
-    ? `${NOTEBOOK_DESCRIPTION_START}\n${normalized}\n${NOTEBOOK_DESCRIPTION_END}`
-    : `${NOTEBOOK_DESCRIPTION_START}\n${NOTEBOOK_DESCRIPTION_END}`;
-}
-
-function replaceNotebookDescription(existing: string, description: string): string {
-  const block = notebookDescriptionBlock(description);
-  if (NOTEBOOK_DESCRIPTION_BLOCK.test(existing)) {
-    return existing.replace(NOTEBOOK_DESCRIPTION_BLOCK, block);
-  }
-
-  // Migrate legacy untagged content into the new block. The managed Flowix
-  // section is retained outside it; all other old content was the former
-  // notebook-description field.
-  const managed = existing.match(FLOWIX_MANAGED_BLOCK)?.[0].trim() ?? '';
-  return managed ? `${managed}\n\n${block}\n` : `${block}\n`;
 }
 
 function DeleteDialogShortcuts({
@@ -194,8 +156,8 @@ function ExternalMarkdownOpenDialog() {
         const content = await externalDocuments.read(filePath, null);
         const created = await notes.importDocument(filePath, content, notebookId);
         imported.push(created.path);
+        useNoteStore.getState().upsertCreatedNote(created);
       }
-      await useNoteStore.getState().loadNotes({ notebookId });
       setRequest(null);
       const notebook = useNoteStore.getState().notebooks.find((item) => item.id === notebookId);
       if (notebook) await openNotebookNote(imported[imported.length - 1], notebook);
@@ -298,12 +260,14 @@ export function MemoListServicesHost({
     setNotebooks,
     setActiveFilter,
     triggerRefresh,
+    triggerMemoListRefresh,
   } = useNoteStore(
     useShallow((state) => ({
       setSelectedNotebook: state.setSelectedNotebook,
       setNotebooks: state.setNotebooks,
       setActiveFilter: state.setActiveFilter,
       triggerRefresh: state.triggerRefresh,
+      triggerMemoListRefresh: state.triggerMemoListRefresh,
     })),
   );
 
@@ -325,17 +289,14 @@ export function MemoListServicesHost({
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
   const [editIcon, setEditIcon] = useState<string | null>(null);
-  const [editNotebookDescription, setEditNotebookDescription] = useState('');
-  const [editNotebookDescriptionDirty, setEditNotebookDescriptionDirty] = useState(false);
-  const [editNotebookDescriptionLoading, setEditNotebookDescriptionLoading] = useState(false);
   const [editCloudSync, setEditCloudSync] = useState(false);
   const [originalEditCloudSync, setOriginalEditCloudSync] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
   const [cloudSyncAvailable, setCloudSyncAvailable] = useState(false);
-  const [notebookSetupJob, setNotebookSetupJob] = useState<NotebookSetupJob | null>(null);
+  const notebookSetupJob = useNotebookSetupJob(selectedNotebook?.id);
   const [notebookSetupNotice, setNotebookSetupNotice] = useState<NotebookSetupReport | null>(null);
   const [dismissedNotebookSetupKey, setDismissedNotebookSetupKey] = useState<string | null>(null);
-  const notebookSetupJobRef = useRef<NotebookSetupJob | null>(null);
+  const previousNotebookSetupJobRef = useRef(notebookSetupJob);
   const activeSetupNoticeIdRef = useRef<string | null>(null);
 
   const { creationState, createNotebook } = useCreateNotebookFlow({
@@ -343,56 +304,39 @@ export function MemoListServicesHost({
   });
 
   useEffect(() => {
-    const notebookId = selectedNotebook?.id;
-    notebookSetupJobRef.current = null;
-    setNotebookSetupJob(null);
-    setNotebookSetupNotice(null);
     let dismissedSetupKey: string | null = null;
-    if (notebookId) {
+    if (selectedNotebook?.id) {
       try {
-        dismissedSetupKey = window.localStorage.getItem(`flowix:notebook-setup-dismissed:${notebookId}`);
+        dismissedSetupKey = window.localStorage.getItem(
+          `flowix:notebook-setup-dismissed:${selectedNotebook.id}`,
+        );
       } catch {
         // Dismissal still works for the current session without persistent storage.
       }
     }
     setDismissedNotebookSetupKey(dismissedSetupKey);
-    if (!notebookId) return;
+  }, [selectedNotebook?.id]);
 
-    let active = true;
-    const applyJob = (job: NotebookSetupJob) => {
-      if (!active || job.notebookId !== notebookId) return;
-      const previous = notebookSetupJobRef.current;
-      if (previous && previous.updatedAt > job.updatedAt) return;
-      if (previous?.status === 'completed' && job.status === 'running') return;
-      const justCompleted = previous?.status === 'running' && job.status === 'completed';
-      notebookSetupJobRef.current = job;
-      setNotebookSetupJob(job);
-      if (justCompleted && (job.report?.skippedExistingFiles ?? 0) > 0) {
-        setNotebookSetupNotice(job.report ?? null);
-      }
-    };
-    const unlisten = subscribe<NotebookSetupJob>('notebook-setup-status', applyJob);
-
-    void notebooksClient.startTemplateSetup(notebookId)
-      .then((job) => {
-        if (active && job) applyJob(job);
-      })
-      .catch((error) => {
-        if (active) console.warn('[MemoList] Failed to load notebook setup status:', error);
-      });
-
-    return () => {
-      active = false;
-      unlisten();
-    };
-  }, [onRefresh, selectedNotebook?.id]);
+  useEffect(() => {
+    const previous = previousNotebookSetupJobRef.current;
+    if (previous?.notebookId !== notebookSetupJob?.notebookId) setNotebookSetupNotice(null);
+    if (previous && notebookSetupJob
+      && previous.notebookId === notebookSetupJob.notebookId
+      && previous.jobId === notebookSetupJob.jobId
+      && previous.runId === notebookSetupJob.runId
+      && previous.status === 'running'
+      && notebookSetupJob.status === 'completed'
+      && (notebookSetupJob.report?.skippedExistingFiles ?? 0) > 0) {
+      setNotebookSetupNotice(notebookSetupJob.report);
+    }
+    previousNotebookSetupJobRef.current = notebookSetupJob;
+  }, [notebookSetupJob]);
 
   const retryNotebookSetup = useCallback(async (notebookId: string) => {
     try {
       const job = await notebooksClient.startTemplateSetup(notebookId, true);
       if (job && useNoteStore.getState().selectedNotebook?.id === notebookId) {
-        notebookSetupJobRef.current = job;
-        setNotebookSetupJob(job);
+        upsertNotebookSetupJob(job);
       }
     } catch (error) {
       throw new Error(notebookCreateErrorMessage(error, t));
@@ -400,7 +344,7 @@ export function MemoListServicesHost({
   }, [t]);
 
   const setupJobNoticeKey = notebookSetupJob
-    ? `${notebookSetupJob.notebookId}:${notebookSetupJob.updatedAt}:${notebookSetupJob.status}`
+    ? `${notebookSetupJob.jobId}:${notebookSetupJob.runId || notebookSetupJob.revision}:${notebookSetupJob.status}`
     : null;
   const notebookSetupNoticeDismissed = setupJobNoticeKey !== null
     && dismissedNotebookSetupKey === setupJobNoticeKey;
@@ -461,6 +405,30 @@ export function MemoListServicesHost({
       }],
     });
   }, [dismissNotebookSetupNotice, notebookSetupJob, notebookSetupNoticeDismissed, retryNotebookSetup, selectedNotebook?.name, t]);
+
+  useEffect(() => {
+    const job = notebookSetupJob;
+    if (!job || job.status !== 'completed' || !notebookSetupNotice
+      || notebookSetupNotice.skippedExistingFiles <= 0) return;
+    const noticeId = `notebook-setup-result:${job.notebookId}`;
+    upsertActionableNotice({
+      id: noticeId,
+      priority: 40,
+      tone: 'neutral',
+      title: t('notebook.setup.completedWithSkips', {
+        written: notebookSetupNotice.writtenFiles,
+        existing: notebookSetupNotice.skippedExistingFiles,
+      }),
+      revision: `${job.updatedAt}:${notebookSetupNotice.writtenFiles}:${notebookSetupNotice.skippedExistingFiles}`,
+      actions: [{
+        id: 'hide',
+        label: t('notebook.setup.hide'),
+        variant: 'outline',
+        run: () => dismissActionableNotice(noticeId),
+      }],
+    });
+    return () => clearActionableNotice(noticeId);
+  }, [notebookSetupJob, notebookSetupNotice, t]);
 
   useEffect(() => () => {
     if (activeSetupNoticeIdRef.current) clearActionableNotice(activeSetupNoticeIdRef.current);
@@ -543,44 +511,6 @@ export function MemoListServicesHost({
     };
   }, [editOpen, editingNotebook]);
 
-  useEffect(() => {
-    if (!editOpen || !editingNotebook) {
-      setEditNotebookDescription('');
-      setEditNotebookDescriptionDirty(false);
-      setEditNotebookDescriptionLoading(false);
-      return;
-    }
-
-    const agentsPath = joinNotebookMemoPath(editingNotebook.path, 'AGENTS.md');
-    if (!agentsPath) {
-      setEditNotebookDescription('');
-      setEditNotebookDescriptionDirty(false);
-      setEditNotebookDescriptionLoading(false);
-      return;
-    }
-
-    let cancelled = false;
-    setEditNotebookDescriptionLoading(true);
-    void files.read(agentsPath, editingNotebook.path)
-      .then((content) => {
-        if (cancelled) return;
-        setEditNotebookDescription(extractNotebookDescription(content ?? ''));
-        setEditNotebookDescriptionDirty(false);
-      })
-      .catch(() => {
-        if (cancelled) return;
-        setEditNotebookDescription('');
-        setEditNotebookDescriptionDirty(false);
-      })
-      .finally(() => {
-        if (!cancelled) setEditNotebookDescriptionLoading(false);
-      });
-
-    return () => {
-      cancelled = true;
-    };
-  }, [editOpen, editingNotebook?.id, editingNotebook?.path]);
-
   useEffect(() => listenToCloudStateChanges((state) => {
     setCloudSyncAvailable(state.authenticated);
   }), []);
@@ -594,9 +524,6 @@ export function MemoListServicesHost({
       setEditingNotebook(notebook);
       setEditName(notebook.name);
       setEditIcon(normalizeNotebookIconId(notebook.icon));
-      setEditNotebookDescription('');
-      setEditNotebookDescriptionDirty(false);
-      setEditNotebookDescriptionLoading(true);
       setEditOpen(true);
     };
     const handleDeleteMemo = (event: Event) => {
@@ -649,21 +576,8 @@ export function MemoListServicesHost({
     if (shouldSelectNewMemo) {
       void openNotebookNote(created.path, selectedNotebook, { initialFocus: 'title' });
     }
-    void useNoteStore.getState().loadNotes({ notebookId: selectedNotebook.id, filter: createFilter })
-      .then((loaded) => {
-        if (!loaded) return;
-        const state = useNoteStore.getState();
-        if (state.selectedNotebook?.id !== selectedNotebook.id
-          || state.activeFilter !== createFilter
-          || (createFilter === 'tagged' && useTagStore.getState().selectedTagId !== tagId)) return;
-        if (!state.notes.some((note) => (
-          note.notebookId === created.notebookId && note.relativePath === created.relativePath
-        ))) state.upsertCreatedNote(created);
-      })
-      .catch((error) => {
-        console.warn('Failed to refresh note list after create', error);
-      });
-  }, [activeFilter, selectedNotebook, selectedTagId, setActiveFilter, setSelectedTagId]);
+    triggerMemoListRefresh();
+  }, [activeFilter, selectedNotebook, selectedTagId, setActiveFilter, setSelectedTagId, triggerMemoListRefresh]);
 
   useEffect(() => {
     const handleRequest = () => void handleCreateMemo();
@@ -682,12 +596,12 @@ export function MemoListServicesHost({
         ? joinNotebookMemoPath(targetNotebook.path, noteListItemRelativePath(memo))
         : null;
       if (!path) return;
-      const flushed = await flushWorkspaceDocumentPath(
+      const saved = await saveWorkspaceDocumentPath(
         documentIdentityFromFile(ensureFileDisplayIdentity(path)),
         path,
         targetNotebook?.path ?? null,
       );
-      if (flushed === false) {
+      if (!saved) {
         const status = await notes.pathStatus(path);
         if (status === 'present') {
           toast.error(t('document.save.failed', { message: '当前页签保存失败，未删除笔记' }));
@@ -695,13 +609,7 @@ export function MemoListServicesHost({
         }
       }
       const outcome = await noteRepository.delete(path);
-      removeBrowserColumnTabsByPath(path);
-      const selected = useNoteStore.getState().selectedNote;
-      if (selected?.notebookId === memo.notebookId && selected.relativePath === memo.relativePath) {
-        useNoteStore.getState().setSelectedNote(null);
-        await clearWorkspaceDocument();
-      }
-      triggerRefresh();
+      // MemoEvent or the path-deleted fallback owns list and workspace cleanup.
       if (outcome === 'missingCleaned') toast.success(t('memo.delete.missingCleaned'));
     })().catch((error) => {
       toast.error(error instanceof Error ? error.message : String(error));
@@ -807,23 +715,19 @@ export function MemoListServicesHost({
     setEditingNotebook(null);
     setEditName('');
     setEditIcon(null);
-    setEditNotebookDescription('');
-    setEditNotebookDescriptionDirty(false);
-    setEditNotebookDescriptionLoading(false);
     setEditCloudSync(false);
     setOriginalEditCloudSync(false);
     setEditSaving(false);
   }, [editSaving]);
 
   const confirmEdit = useCallback(async () => {
-    if (!editingNotebook || editSaving || editNotebookDescriptionLoading) return;
+    if (!editingNotebook || editSaving) return;
     const name = editName.trim();
     const icon = editIcon || null;
     const iconChanged = (icon ?? '') !== (normalizeNotebookIconId(editingNotebook.icon) ?? '');
     const metadataChanged = name !== editingNotebook.name || iconChanged;
     const cloudChanged = editCloudSync !== originalEditCloudSync;
-    const descriptionChanged = editNotebookDescriptionDirty;
-    if (!name || (!metadataChanged && !cloudChanged && !descriptionChanged)) {
+    if (!name || (!metadataChanged && !cloudChanged)) {
       closeEdit();
       return;
     }
@@ -834,15 +738,6 @@ export function MemoListServicesHost({
         : editingNotebook;
       if (!updated) throw new Error(t('memo.list.updateFailed'));
       if (cloudChanged) await cloud.setNotebookEnabled(editingNotebook.id, editCloudSync);
-      if (descriptionChanged) {
-        const agentsPath = joinNotebookMemoPath(editingNotebook.path, 'AGENTS.md');
-        if (!agentsPath) throw new Error(t('notebook.edit.agents.saveFailed'));
-        const existing = (await files.read(agentsPath, editingNotebook.path)) ?? '';
-        const next = replaceNotebookDescription(existing, editNotebookDescription);
-        if (!await files.write(agentsPath, next, false, editingNotebook.path)) {
-          throw new Error(t('notebook.edit.agents.saveFailed'));
-        }
-      }
       setNotebooks(useNoteStore.getState().notebooks.map((item) => item.id === updated.id ? updated : item));
       if (useNoteStore.getState().selectedNotebook?.id === updated.id) setSelectedNotebook(updated);
       if (cloudChanged && editCloudSync) {
@@ -850,42 +745,16 @@ export function MemoListServicesHost({
           toast.error(cloudSyncErrorMessage(error, t));
         });
       }
-      toast.success(t(descriptionChanged ? 'notebook.edit.agents.saved' : 'memo.list.updated'));
+      toast.success(t('memo.list.updated'));
       closeEdit();
     } catch (error) {
       toast.error(cloudSyncErrorMessage(error, t));
       setEditSaving(false);
     }
-  }, [closeEdit, editCloudSync, editIcon, editName, editNotebookDescription, editNotebookDescriptionDirty, editNotebookDescriptionLoading, editSaving, editingNotebook, originalEditCloudSync, setNotebooks, setSelectedNotebook, t]);
+  }, [closeEdit, editCloudSync, editIcon, editName, editSaving, editingNotebook, originalEditCloudSync, setNotebooks, setSelectedNotebook, t]);
 
   return (
     <>
-      {notebookSetupJob?.status === 'running' && (
-        <div
-          className="fixed bottom-16 right-4 z-[180] flex max-w-sm items-center gap-2 rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3 text-sm text-[var(--foreground)] shadow-xl"
-          role="status"
-          aria-live="polite"
-        >
-          <Loader2 className="h-4 w-4 shrink-0 flowix-spin text-[var(--primary)]" aria-hidden="true" />
-          <span>
-            {notebookSetupJob.stage === 'indexing'
-              ? t('notebook.setup.indexing')
-              : t('notebook.setup.applyingTemplate')}
-          </span>
-        </div>
-      )}
-      {notebookSetupNotice && (
-        <div
-          className="fixed bottom-16 right-4 z-[180] max-w-sm rounded-xl border border-[var(--border)] bg-[var(--card)] px-4 py-3 text-sm text-[var(--muted-foreground)] shadow-xl"
-          role="status"
-          aria-live="polite"
-        >
-          {t('notebook.setup.completedWithSkips', {
-            written: notebookSetupNotice.writtenFiles,
-            existing: notebookSetupNotice.skippedExistingFiles,
-          })}
-        </div>
-      )}
       <ExternalMarkdownOpenDialog />
 
       {cloudImporting && (
@@ -973,13 +842,6 @@ export function MemoListServicesHost({
             onEditNotebookNameChange={setEditName}
             editNotebookIcon={editIcon}
             onEditNotebookIconChange={setEditIcon}
-            editNotebookDescription={editNotebookDescription}
-            onEditNotebookDescriptionChange={(description) => {
-              setEditNotebookDescription(description);
-              setEditNotebookDescriptionDirty(true);
-            }}
-            editNotebookDescriptionLoading={editNotebookDescriptionLoading}
-            editNotebookDescriptionChanged={editNotebookDescriptionDirty}
             editNotebookCloudSync={editCloudSync}
             onEditNotebookCloudSyncChange={setEditCloudSync}
             onEditNotebookCloudSyncUnavailable={() => {

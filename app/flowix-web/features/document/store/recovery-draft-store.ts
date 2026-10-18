@@ -11,7 +11,7 @@ import {
 
 const recoveryOperations = new Map<string, Promise<unknown>>();
 const createdAtByKey = new Map<string, number>();
-const RECOVERY_READ_TIMEOUT_MS = 2_000;
+const RECOVERY_LIST_TIMEOUT_MS = 2_000;
 
 function settleWithin<T>(promise: Promise<T>, timeoutMs: number, fallback: T): Promise<T> {
   return new Promise((resolve) => {
@@ -73,17 +73,10 @@ export interface RecoveryDraft {
 
 interface PreviousRecoveryDraft extends Omit<RecoveryDraft, 'schemaVersion' | 'identity'> {
   schemaVersion: 2 | 3;
-  identity: { kind: 'md'; memoId?: string | null; path: string };
+  identity: { kind: 'md'; path: string };
 }
 
-interface LegacyRecoveryDraft extends Omit<RecoveryDraft, 'schemaVersion' | 'identity'> {
-  schemaVersion: 1;
-  identity:
-    | { kind: 'memo'; id: string }
-    | { kind: 'external'; path: string };
-}
-
-type StoredRecoveryDraft = RecoveryDraft | PreviousRecoveryDraft | LegacyRecoveryDraft;
+type StoredRecoveryDraft = RecoveryDraft | PreviousRecoveryDraft;
 
 function normalizeRecoveryDraft(
   draft: StoredRecoveryDraft | null,
@@ -99,13 +92,7 @@ function normalizeRecoveryDraft(
       },
     };
   }
-  return {
-    ...draft,
-    schemaVersion: 4,
-    identity: draft.identity.kind === 'memo'
-      ? { kind: 'md', path: canonicalPath(draft.originalPath) }
-      : { kind: 'md', path: canonicalPath(draft.identity.path) },
-  };
+  return null;
 }
 
 function legacyExternalRecoveryKey(path: string): string {
@@ -123,15 +110,13 @@ async function readStoredDraftEntry(key: string): Promise<{
   const stored = await recoveryDrafts.read<StoredRecoveryDraft>(key);
   const draft = normalizeRecoveryDraft(stored);
   if (!stored || !draft) return null;
-  const hasLegacyMemoIdentity = stored.schemaVersion !== 1
-    && 'memoId' in stored.identity;
   return {
     draft,
-    needsMigration: stored.schemaVersion !== 4 || hasLegacyMemoIdentity,
+    needsMigration: stored.schemaVersion !== 4,
   };
 }
 
-function legacyRecoveryKeys(identity: DocumentIdentity): string[] {
+function legacyRecoveryKeys(identity: DocumentLocator): string[] {
   return [legacyExternalRecoveryKey(identity.path)];
 }
 
@@ -197,9 +182,10 @@ async function persistRecoverySnapshot(
   }).catch(() => false);
 }
 
+/** Opening callers must distinguish no checkpoint from a slow store read. */
 export function readRecoveryDraft(identity: DocumentIdentity): Promise<RecoveryDraft | null> {
   const recoveryIdentity = documentLocator(identity);
-  return settleWithin(enqueueRecoveryOperation(identity, async () => {
+  return enqueueRecoveryOperation(identity, async () => {
     const key = documentLocatorKey(recoveryIdentity);
     const stored = await readDraftForIdentity(identity);
     if (!stored) return null;
@@ -216,7 +202,7 @@ export function readRecoveryDraft(identity: DocumentIdentity): Promise<RecoveryD
     return {
       ...migratedDraft,
     };
-  }), RECOVERY_READ_TIMEOUT_MS, null);
+  });
 }
 
 export async function clearRecoveryDraftThrough(
@@ -236,14 +222,14 @@ export async function clearRecoveryDraftThrough(
 }
 
 /** Move a path-keyed draft with its live document during an in-place rename. */
-export function rebaseRecoveryDraftPath(identity: DocumentIdentity, nextPath: string): void {
-  const previous = documentLocator(identity);
+export function rebaseRecoveryDraftPath(identity: DocumentLocator, nextPath: string): Promise<void> {
+  const previous: DocumentLocator = { kind: 'md', path: canonicalPath(identity.path) };
   const next = { ...previous, path: canonicalPath(nextPath) };
-  if (!previous.path || !next.path || previous.path === next.path) return;
+  if (!previous.path || !next.path || previous.path === next.path) return Promise.resolve();
 
   const previousKey = documentLocatorKey(previous);
   const nextKey = documentLocatorKey(next);
-  void enqueueRecoveryOperationForKeys([previousKey, nextKey], async () => {
+  return enqueueRecoveryOperationForKeys([previousKey, nextKey], async () => {
     let sourceKey = previousKey;
     let source = await readStoredDraft(previousKey);
     if (!source) {
@@ -276,6 +262,21 @@ export function rebaseRecoveryDraftPath(identity: DocumentIdentity, nextPath: st
   }).catch(() => undefined);
 }
 
+/** Closed drafts have no runtime display to participate in a path move. */
+export async function rebaseStoredRecoveryDraftPaths(previous: string, next: string, directory: boolean): Promise<void> {
+  // Await migrations scheduled for live displays before listing closed drafts.
+  await Promise.all([...recoveryOperations.values()].map((operation) => operation.catch(() => undefined)));
+  const drafts = await recoveryDrafts.list<StoredRecoveryDraft>();
+  await Promise.all(drafts.map(async (stored) => {
+    const draft = normalizeRecoveryDraft(stored);
+    if (!draft) return;
+    const path = canonicalPath(draft.identity.path);
+    const replacement = path === previous ? next
+      : directory && path.startsWith(`${previous}/`) ? `${next}${path.slice(previous.length)}` : null;
+    if (replacement) await rebaseRecoveryDraftPath({ kind: 'md', path }, replacement);
+  }));
+}
+
 export function listRecoveryDrafts(): Promise<RecoveryDraft[]> {
   return settleWithin(
     recoveryDrafts.list<StoredRecoveryDraft>()
@@ -296,7 +297,7 @@ export function listRecoveryDrafts(): Promise<RecoveryDraft[]> {
         }
         return [...unique.values()];
       }),
-    RECOVERY_READ_TIMEOUT_MS,
+    RECOVERY_LIST_TIMEOUT_MS,
     [],
   );
 }

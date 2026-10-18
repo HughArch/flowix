@@ -71,7 +71,7 @@ describe("appendFirstMessageContext", () => {
       "@features/agent/store/context-block"
     );
 
-    const result = appendFirstMessageContext("question", true, "note", "claude");
+    const result = appendFirstMessageContext("question", true, "note", "claudecode");
 
     expect(result).toContain("# flowix CLI");
   });

@@ -99,7 +99,7 @@ describe("DeepSeek Harness tool metadata", () => {
     ["cordis_inspect_self", "Cordis 插件", TOOL_ICON_PATHS.plug],
     ["todo_write", "计划", TOOL_ICON_PATHS.checks],
   ] as const)("maps %s to label and icon via wildcard", (toolName, label, iconPath) => {
-    const lookup = { agentType: "deepseek-harness" as const, toolName };
+    const lookup = { agentType: "dsh" as const, toolName };
     expect(getToolLabel(lookup, "zh-CN")).toBe(label);
     expect(getToolIconPath(lookup)).toBe(iconPath);
   });

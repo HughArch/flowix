@@ -1,7 +1,8 @@
+import { publishNotebookPathCreated, publishNotebookPathMove, type NotebookPathCreated, type NotebookPathMove } from '../notebook-change-events';
 import { invokeDocumentMutation } from './document-mutation';
 import { invoke } from '@tauri-apps/api/core';
 import type { NoteColor } from '@/types/note-item';
-import type { MemoContentCommit } from '@/types/memo';
+import type { NoteContentCommit } from '@/types/memo';
 
 export type FilterType = 'all' | 'todos' | 'agents' | 'favorited' | 'tagged' | 'thisWeek' | 'thisMonth';
 export type SortType = 'createdAt' | 'updatedAt' | 'filenameAsc' | 'filenameDesc';
@@ -36,6 +37,17 @@ export interface CreatedNoteDocument {
   path: string;
   initialContent: string;
   entry: NoteEntry;
+  notebookChange?: NotebookPathCreated;
+}
+
+function publishCreatedNote(result: CreatedNoteDocument): CreatedNoteDocument {
+  // Older desktop processes return the path result without a change receipt.
+  // The command result still confirms creation, so refresh this window locally.
+  publishNotebookPathCreated(result.notebookChange ?? {
+    notebookId: result.notebookId,
+    relativePath: result.relativePath,
+  });
+  return result;
 }
 
 export interface MarkdownLocation {
@@ -87,21 +99,21 @@ export const notes = {
     invoke<MarkdownLocation>('resolve_markdown_location', { filePath }),
   readDocument: (filePath: string) => invoke<string | null>('read_document', { filePath }),
   writeDocument: (params: { filePath: string; content: string; expectedContent?: string }) =>
-    invokeDocumentMutation<({ path: string; content: string } & MemoContentCommit) | null>('write_document', {
+    invokeDocumentMutation<({ path: string; content: string } & NoteContentCommit) | null>('write_document', {
       filePath: params.filePath,
       content: params.content,
       expectedContent: params.expectedContent,
     }),
   modifiedAt: (filePath: string) => invoke<number | null>('get_document_modified_at', { filePath }),
   renameTitle: (params: { filePath: string; title: string; expectedFilename?: string; expectedContent: string }) =>
-    invokeDocumentMutation<{ path: string; filename: string }>('rename_memo_title', {
+    invokeDocumentMutation<{ path: string; filename: string; notebookChange: NotebookPathMove }>('rename_memo_title', {
       filePath: params.filePath,
       title: params.title,
       expectedFilename: params.expectedFilename,
       expectedContent: params.expectedContent,
-    }),
+    }).then((result) => { publishNotebookPathMove(result.notebookChange); return result; }),
   moveToDirectory: (filePath: string, notebookId: string, parentRelativePath: string) =>
-    invoke<{ path: string }>('move_memo_to_directory', { filePath, notebookId, parentRelativePath }),
+    invoke<{ path: string; notebookChange: NotebookPathMove }>('move_memo_to_directory', { filePath, notebookId, parentRelativePath }).then((result) => { publishNotebookPathMove(result.notebookChange); return result; }),
   list: (notebookId: string) => invoke<NoteEntry[]>('list_notes_by_path', { notebookId }),
   getIndexed: (notebookId: string, relativePath: string) =>
     invoke<NoteEntry | null>('get_indexed_note_by_path', { notebookId, relativePath }),
@@ -129,14 +141,17 @@ export const notes = {
   pruneMissing: (filePath: string) => invoke<PruneMissingNoteOutcome>('prune_missing_memo', { filePath }),
   /** Omitted parent uses the notebook's default create folder; '' explicitly targets the notebook root. */
   create: (notebookId: string, tag?: string, parentRelativePath?: string, title?: string) =>
-    invoke<CreatedNoteDocument>('add_path_document', { tag, notebookId, parentRelativePath, title }),
+    invoke<CreatedNoteDocument>('add_path_document', { tag, notebookId, parentRelativePath, title })
+      .then(publishCreatedNote),
   createFromTemplate: (templateId: string, notebookId: string) =>
-    invoke<CreatedNoteDocument>('create_path_from_template', { templateId, notebookId }),
+    invoke<CreatedNoteDocument>('create_path_from_template', { templateId, notebookId })
+      .then(publishCreatedNote),
   listTemplates: () => invoke<NoteTemplate[]>('list_memo_templates'),
   saveTemplate: (title: string, content: string) => invoke<NoteTemplate>('save_memo_template', { title, content }),
   deleteTemplate: (templateId: string) => invoke<boolean>('delete_memo_template', { templateId }),
   importDocument: (filePath: string, content: string, notebookId: string) =>
-    invoke<CreatedNoteDocument>('import_external_document_by_path', { filePath, content, notebookId }),
+    invoke<CreatedNoteDocument>('import_external_document_by_path', { filePath, content, notebookId })
+      .then(publishCreatedNote),
   listVersions: (notebookId: string, relativePath: string) =>
     invoke<PathVersionMeta[]>('list_path_versions', { notebookId, relativePath }),
   listArchives: () => invoke<PathArchiveSummary[]>('list_local_path_archives'),

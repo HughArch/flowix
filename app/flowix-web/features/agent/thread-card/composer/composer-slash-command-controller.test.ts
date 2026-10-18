@@ -14,7 +14,7 @@ import {
 import { ComposerSlashToken } from './composer-slash-token';
 
 function setup(options: {
-  agentType?: 'deepseek-harness' | 'codex';
+  agentType?: 'dsh' | 'codex';
   onModelSelect?: () => void;
   onPermissionSelect?: () => void;
   onDirectCommand?: (command: ComposerSlashCommand) => void;
@@ -51,7 +51,7 @@ function setup(options: {
     input,
     composer,
     editor,
-    agentType: options.agentType ?? 'deepseek-harness',
+    agentType: options.agentType ?? 'dsh',
     onModelSelect: options.onModelSelect,
     onPermissionSelect: options.onPermissionSelect,
     onDirectCommand: options.onDirectCommand,
@@ -77,7 +77,7 @@ describe('ComposerSlashCommandController', () => {
     type(editor, '/export');
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
     expect(onDirectCommand).toHaveBeenCalledWith(expect.objectContaining({ name: 'export' }));
-    expect(editor.getMarkdown()).toContain('flowix://slash/deepseek-harness/export');
+    expect(editor.getMarkdown()).toContain('flowix://slash/dsh/export');
     controller.dispose();
     editor.destroy();
   });
@@ -153,7 +153,7 @@ describe('ComposerSlashCommandController', () => {
     type(editor, '/goal');
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
 
-    expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/deepseek-harness/goal) ');
+    expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/dsh/goal) ');
     expect(composer.querySelector('.agent-thread-card__slash-token')?.textContent).toBe(translate(getCurrentAppLanguage(), 'editor.threadCard.composer.longTask'));
     expect(composer.querySelector('.agent-thread-card__slash-token--control')).not.toBeNull();
     const wrapper = composer.querySelector('.agent-thread-card__slash-token-wrapper');
@@ -162,7 +162,7 @@ describe('ComposerSlashCommandController', () => {
     expect(wrapper?.lastChild?.textContent).toBe('\u200B');
 
     editor.commands.insertContent('继续输入');
-    expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/deepseek-harness/goal) 继续输入');
+    expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/dsh/goal) 继续输入');
 
     editor.commands.focus('start');
     input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Backspace', bubbles: true }));
@@ -289,7 +289,7 @@ describe('ComposerSlashCommandController', () => {
     )].find((candidate) => candidate.textContent?.includes('/goal'));
     item?.click();
 
-    expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/deepseek-harness/goal) ');
+    expect(editor.getMarkdown()).toBe('[/goal](flowix://slash/dsh/goal) ');
     expect(document.querySelector('.agent-composer-slash-menu')).toBeNull();
     controller.dispose();
     editor.destroy();
@@ -393,7 +393,7 @@ describe('ComposerSlashCommandController', () => {
       input: nextInput,
       composer: nextComposer,
       editor: nextEditor,
-      agentType: 'deepseek-harness',
+      agentType: 'dsh',
       listDshSkills,
     });
     type(nextEditor, '/');

@@ -4,7 +4,7 @@ import { isAgentTypeComingSoon } from '@/lib/agent-types';
 
 const AGENT_SETUP_URLS: Partial<Record<AgentTypeKey, string>> = {
   codex: 'https://developers.openai.com/codex/cli',
-  claude: 'https://code.claude.com/docs/en/setup',
+  claudecode: 'https://code.claude.com/docs/en/setup',
   hermes: 'https://hermes-agent.nousresearch.com/docs/user-guide/cli',
   opencode: 'https://opencode.ai/docs/cli/',
 };

@@ -212,7 +212,20 @@ impl PathNoteEventProcessor {
         memo_file: &Arc<std::sync::RwLock<MemoFile>>,
         ctx: &NotebookWatchContext,
     ) {
+        if let Some(previous) = &event.rename_from {
+            crate::commands::external_document_watch::rebase_path(app, previous, &event.path);
+        }
+
         if process_media_event(event, memo_file, ctx) {
+            if let Some(old_path) = event.rename_from.as_ref() {
+                if let Ok(memo_file) = memo_file.read() {
+                    crate::commands::document_list::rebase_collection_paths_for_move(
+                        &memo_file,
+                        old_path,
+                        &event.path,
+                    );
+                }
+            }
             let old_media_path = event.rename_from.as_ref().and_then(|old_path| {
                 let old_ctx = NotebookWatchContext {
                     notebook_id: event.rename_from_notebook_id.clone().unwrap_or_else(|| ctx.notebook_id.clone()),
@@ -291,9 +304,8 @@ impl PathNoteEventProcessor {
                 // references before publishing its completion event.
                 return;
             }
-            if let Err(error) = memo_file.reconcile_note_index(&ctx.notebook_id) {
-                tracing::warn!(notebook_id = %ctx.notebook_id, "path rename reconciliation failed: {error}");
-            }
+            app.state::<crate::app::state::AppState>().notebook_background
+                .request(&ctx.notebook_id, true, true);
             drop(_write_guard);
             let old_path_is_markdown = is_markdown_path(old_path);
             let new_path_is_markdown = is_markdown_path(&event.path);
@@ -351,7 +363,21 @@ impl PathNoteEventProcessor {
         }
 
         match event.kind {
-            FsEventKind::Create | FsEventKind::Modify | FsEventKind::Remove => {
+            FsEventKind::Create => {
+                crate::commands::document_list::refresh_view_document_path(&memo_file, &event.path);
+                match refresh_path(&memo_file, ctx, &event.path) {
+                    Ok(DispatchOutcome::PathIndexed { relative_path }) => {
+                        crate::commands::path_change::NotebookPathCreated::from_external_tool(
+                            ctx.notebook_id.clone(),
+                            relative_path.clone(),
+                        )
+                        .emit(app);
+                        record_cloud_path_change(app, ctx, &relative_path, false);
+                    }
+                    Err(error) => tracing::debug!(path = %event.path.display(), "path refresh skipped: {error}"),
+                }
+            }
+            FsEventKind::Modify | FsEventKind::Remove => {
                 crate::commands::document_list::refresh_view_document_path(&memo_file, &event.path);
                 match refresh_path(&memo_file, ctx, &event.path) {
                     Ok(DispatchOutcome::PathIndexed { relative_path }) => {
@@ -369,26 +395,9 @@ impl PathNoteEventProcessor {
 
     fn reconcile_directory_change(app: &AppHandle, memo_file: &MemoFile, ctx: &NotebookWatchContext) {
         crate::commands::document_list::refresh_view_document_catalog(memo_file, &ctx.notebook_id, &ctx.root);
-        match memo_file.reconcile_note_index(&ctx.notebook_id) {
-            Ok(report) => tracing::info!(notebook_id = %ctx.notebook_id,
-                added = report.added, updated = report.updated, removed = report.removed,
-                "path index reconciliation completed"),
-            Err(error) => tracing::warn!(notebook_id = %ctx.notebook_id,
-                "path index reconciliation failed: {error}"),
-        }
+        app.state::<crate::app::state::AppState>().notebook_background
+            .request(&ctx.notebook_id, false, true);
         emit_path_changed(app, ctx, "", false);
-        match memo_file.reconcile_media_resources(&ctx.notebook_id) {
-            Ok(count) => {
-                tracing::debug!(notebook_id = %ctx.notebook_id, count, "media catalog reconciliation completed");
-                // Directory notifications can reach the UI before a large media scan
-                // finishes. Publish completion so an empty early query is refreshed.
-                let _ = app.emit(
-                    "file-management-changed",
-                    serde_json::json!({ "notebookId": ctx.notebook_id, "notebookPath": ctx.root.to_string_lossy() }),
-                );
-            }
-            Err(error) => tracing::warn!(notebook_id = %ctx.notebook_id, "media catalog reconciliation failed: {error}"),
-        }
     }
 
     pub(crate) fn unregister_and_emit(

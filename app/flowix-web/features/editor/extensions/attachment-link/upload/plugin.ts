@@ -19,7 +19,7 @@ export async function handleFileUpload(
 
         await runTrackedUpload(view, async (signal) =>
             (await createAttachmentUpload(filteredFiles, undefined, undefined, ownerPath, signal, true)).assets,
-        position, replaceRange, ownerPath);
+        position, replaceRange);
     } catch (err) {
         console.error('[FileUpload] Upload failed:', err);
     }

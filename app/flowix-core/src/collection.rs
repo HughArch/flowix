@@ -43,6 +43,8 @@ pub struct CollectionMetadata {
     pub kind: CollectionType,
     #[serde(default, skip_serializing_if = "is_standalone")]
     pub placement: CollectionPlacement,
+    /// Deprecated compatibility field. Names are derived from the collection path.
+    #[serde(default, skip_serializing)]
     pub name: String,
     pub revision: i64,
     pub created_at: String,
@@ -51,6 +53,24 @@ pub struct CollectionMetadata {
 }
 fn is_standalone(value: &CollectionPlacement) -> bool {
     *value == CollectionPlacement::Standalone
+}
+
+pub fn display_name_for_path(path: &std::path::Path, placement: CollectionPlacement) -> String {
+    let display_path = if placement == CollectionPlacement::Folder {
+        path.parent().unwrap_or(path)
+    } else {
+        path
+    };
+    let filename = display_path.file_name().unwrap_or_default().to_string_lossy();
+    if placement == CollectionPlacement::Folder {
+        return filename.into_owned();
+    }
+    [".index.yaml", ".index.yml", ".table.yaml", ".table.yml", ".lib.yaml", ".lib.yml"]
+        .iter()
+        .find_map(|suffix| filename.get(..filename.len().checked_sub(suffix.len())?)
+            .filter(|_| filename.to_ascii_lowercase().ends_with(suffix)))
+        .unwrap_or(&filename)
+        .to_owned()
 }
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
@@ -115,8 +135,6 @@ impl CollectionDocument {
         if self.format != "flowix.collection"
             || self.schema_version < 1
             || !valid_id(&metadata.id, "col_")
-            || metadata.name.trim().is_empty()
-            || metadata.name != metadata.name.trim()
             || !(0..=9_007_199_254_740_991).contains(&metadata.revision)
             || chrono::DateTime::parse_from_rfc3339(&metadata.created_at).is_err()
             || chrono::DateTime::parse_from_rfc3339(&metadata.updated_at).is_err()
@@ -242,6 +260,55 @@ impl CollectionDocument {
         self.collection.updated_at =
             chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Millis, true);
         Ok(())
+    }
+
+    /// Set media resource references to the canonical notebook-and-path ID.
+    /// Collection row IDs remain collection-local record identities.
+    pub fn normalize_media_resource_ids(&mut self, notebook_id: &str) -> Result<bool, String> {
+        if self.collection.kind != CollectionType::MediaLibrary {
+            return Ok(false);
+        }
+        let Some(records) = self
+            .payload
+            .get_mut("dataset")
+            .and_then(|dataset| dataset.get_mut("records"))
+        else {
+            return Err("INVALID_MEDIA_LIBRARY_RECORDS".into());
+        };
+        let mut changed = false;
+        for key in ["include", "exclude"] {
+            let entries = records
+                .get_mut(key)
+                .and_then(Value::as_array_mut)
+                .ok_or("INVALID_MEDIA_LIBRARY_RECORDS")?;
+            for record in entries {
+                let path = record
+                    .get("relative_path")
+                    .and_then(Value::as_str)
+                    .ok_or("INVALID_MEDIA_LIBRARY_PATH")?;
+                let id = crate::memo_file::media_resource_id(notebook_id, path)
+                    .map_err(|error| error.to_string())?;
+                if record.get("resource_id").and_then(Value::as_str) != Some(id.as_str()) {
+                    record["resource_id"] = Value::String(id);
+                    changed = true;
+                }
+            }
+        }
+        Ok(changed)
+    }
+
+    /// Rebase file references and update media resource identities in one edit.
+    pub fn rebase_paths_for_notebook(
+        &mut self,
+        notebook_id: &str,
+        previous: &str,
+        next: &str,
+    ) -> Result<bool, String> {
+        let changed = self.rebase_paths(previous, next);
+        if changed {
+            self.normalize_media_resource_ids(notebook_id)?;
+        }
+        Ok(changed)
     }
 
     /// Rebase notebook-relative references after a confirmed file or directory move.

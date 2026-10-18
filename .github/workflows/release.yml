@@ -131,6 +131,19 @@ jobs:
         run: |
           npm run cli:build:prod -- --target=${{ matrix.target }}
 
+      - name: Prepare bundled Pi runtime
+        shell: bash
+        run: |
+          case "${{ matrix.target }}" in
+            aarch64-apple-darwin) platform=darwin; arch=arm64 ;;
+            x86_64-apple-darwin) platform=darwin; arch=x64 ;;
+            *-windows-msvc) platform=win32; arch=x64 ;;
+            *-linux-gnu) platform=linux; arch=x64 ;;
+            *) echo "Unsupported Pi release target: ${{ matrix.target }}" >&2; exit 1 ;;
+          esac
+          node scripts/prepare-pi-bundle.mjs --platform "$platform" --arch "$arch"
+          echo "FLOWIX_PI_TARGET_ARCH=$arch" >> "$GITHUB_ENV"
+
       - name: Import Windows signing certificate for Tauri
         if: matrix.target == 'x86_64-pc-windows-msvc'
         shell: pwsh

@@ -6,6 +6,7 @@ import {
 } from '@features/agent/store/agent-session-store';
 import { isProjectionRunActive } from '@features/agent/store/session-reducer';
 import { getInterestedThreadIds } from '@features/agent/store/thread-interest';
+import { runStartupStage3Task } from '@/lib/startup-stage3';
 
 export async function reconcileAgentRunsAndRefreshEndedHistory(): Promise<void> {
   // Canonical run state lives in AgentSessionStore projections.
@@ -56,7 +57,9 @@ export async function reconcileAgentRunsAndRefreshEndedHistory(): Promise<void> 
     refreshTargets.set(threadId, agentType);
   }
 
-  for (const interestedThreadId of getInterestedThreadIds()) {
+  const interestedThreadIds = getInterestedThreadIds();
+  const priorityThreadIds = new Set(interestedThreadIds);
+  for (const interestedThreadId of interestedThreadIds) {
     refreshTargets.set(
       interestedThreadId,
       after.sessionMeta.threadTypes[interestedThreadId] ??
@@ -70,16 +73,23 @@ export async function reconcileAgentRunsAndRefreshEndedHistory(): Promise<void> 
       .map((target) => [target.threadId, target]),
   );
 
-  await Promise.allSettled(
-    [...refreshTargets].map(([threadId, agentType]) => {
-      const completed = completedTargets.get(threadId);
-      return completed
-        ? useAgentSessionStore
-            .getState()
-            .reconcileCompletedRun(agentType, threadId, completed.runId)
-        : useAgentSessionStore.getState().loadMessages(agentType, threadId);
-    }),
-  );
+  const targets = [...refreshTargets];
+  const priorityTargets = targets.filter(([threadId]) => priorityThreadIds.has(threadId));
+  const backgroundTargets = targets.filter(([threadId]) => !priorityThreadIds.has(threadId));
+  const refreshTarget = ([threadId, agentType]: [string, typeof after.sessionMeta.activeAgentTypeKey]) => {
+    const completed = completedTargets.get(threadId);
+    return completed
+      ? useAgentSessionStore
+          .getState()
+          .reconcileCompletedRun(agentType, threadId, completed.runId)
+      : useAgentSessionStore.getState().loadMessages(agentType, threadId);
+  };
+
+  // Refresh visible conversations first; catch up hidden sessions two at a time.
+  await Promise.allSettled(priorityTargets.map(refreshTarget));
+  for (let index = 0; index < backgroundTargets.length; index += 2) {
+    await Promise.allSettled(backgroundTargets.slice(index, index + 2).map(refreshTarget));
+  }
 }
 
 /**
@@ -88,13 +98,15 @@ export async function reconcileAgentRunsAndRefreshEndedHistory(): Promise<void> 
  * This is mounted by AgentWindowEffects in content Webviews, but not
  * preferences. The bridge itself is idempotent within each Webview realm.
  */
-export function useAgentEvents(): void {
+export function useAgentEvents(waitForWorkspaceRestore?: () => Promise<void>): void {
   useEffect(() => {
     let disposed = false;
+    let startupRecoveryReady = false;
+    let reconcileAfterStartupRecovery = false;
     let lastReconcileAt = 0;
 
     const reconcileRunningRuns = async (force = false) => {
-      if (disposed) return;
+      if (disposed || !startupRecoveryReady) return;
       const now = Date.now();
       if (!force && now - lastReconcileAt < 1000) return;
       lastReconcileAt = now;
@@ -105,18 +117,29 @@ export function useAgentEvents(): void {
       // Listener readiness is a recovery boundary. Force a snapshot even if
       // the normal focus/visibility throttle ran recently, because stream_end
       // may have been missed while Tauri registration was unavailable.
+      if (!startupRecoveryReady) {
+        reconcileAfterStartupRecovery = true;
+        return;
+      }
       void reconcileRunningRuns(true).catch((err) => {
         console.warn('[useAgentEvents] post-listen reconciliation failed:', err);
       });
     });
 
-    (async () => {
-      try {
-        await reconcileRunningRuns();
-      } catch (err) {
-        console.warn('[useAgentEvents] agent_running_threads failed:', err);
-      }
-    })();
+    void runStartupStage3Task('agent-session-recovery', async () => {
+      await waitForWorkspaceRestore?.();
+      await reconcileAgentRunsAndRefreshEndedHistory();
+    })
+      .then(() => {
+        if (disposed) return;
+        startupRecoveryReady = true;
+        if (reconcileAfterStartupRecovery) {
+          reconcileAfterStartupRecovery = false;
+          void reconcileRunningRuns(true).catch((err) => {
+            console.warn('[useAgentEvents] deferred post-listen reconciliation failed:', err);
+          });
+        }
+      });
 
     const handleVisibilityChange = () => {
       if (document.visibilityState !== 'visible') return;
@@ -138,5 +161,5 @@ export function useAgentEvents(): void {
       window.removeEventListener('focus', handleFocus);
       document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, []);
+  }, [waitForWorkspaceRestore]);
 }

@@ -13,13 +13,10 @@ export const preferences = {
 export interface BootFeatures {
   experimental: boolean;
   isIntroductDisplayed: boolean;
-  isOnboardingCompleted: boolean;
 }
 
 export const boot = {
   getFeatures: () => invoke<BootFeatures>('get_boot_features'),
-  setIntroDisplayed: () => invoke<void>('set_boot_intro_displayed'),
-  setOnboardingCompleted: () => invoke<void>('set_boot_onboarding_completed'),
   getVersionInitializationCompleted: () => invoke<boolean>('get_version_initialization_completed'),
   setVersionInitializationCompleted: (completed: boolean) =>
     invoke<void>('set_version_initialization_completed', { completed }),
@@ -132,6 +129,9 @@ export const deepseekHarness = {
 export interface PiModelEntryConfig {
   id: string;
   name: string;
+  subtitle?: string;
+  creditMultiplier?: number;
+  providerIconUrl?: string;
   api?: string;
   reasoning: boolean;
   vision: boolean;
@@ -142,6 +142,7 @@ export interface PiModelEntryConfig {
 export interface PiProviderConfig {
   id: string;
   displayName: string;
+  iconUrl?: string;
   api: string;
   baseUrl: string;
   /** Set for providers managed by Flowix Cloud. */
@@ -197,6 +198,10 @@ export const piMcp = {
 
 export interface DshIntegrationStatus {
   installed: boolean;
+  localInstalled: boolean;
+  managedInstalled: boolean;
+  appServerProfileInstalled: boolean;
+  appServerProfileUpdateAvailable: boolean;
   executablePath?: string | null;
   version?: string | null;
   harnessVersion?: string | null;
@@ -206,30 +211,12 @@ export interface DshIntegrationStatus {
   archiveSize?: number | null;
 }
 
-export interface DshDownloadProgress {
-  phase: 'checking' | 'downloading' | 'downloaded' | 'installing' | 'installed' | 'up-to-date' | 'cancelled' | 'failed';
-  downloadedBytes: number;
-  totalBytes?: number | null;
-  percent?: number | null;
-  resumed: boolean;
-}
-
-export interface DshUpdateCheck {
-  currentVersion?: string | null;
-  latestVersion?: string | null;
-  updateAvailable: boolean;
-}
-
 export const dshIntegration = {
   status: () => invoke<DshIntegrationStatus>('dsh_status'),
-  checkUpdate: () => invoke<DshUpdateCheck>('dsh_check_update'),
-  archiveSize: () => invoke<number | null>('dsh_archive_size'),
-  downloadStatus: () => invoke<DshDownloadProgress | null>('dsh_download_status'),
-  installRuntime: () => invoke<DshIntegrationStatus>('dsh_install_runtime'),
-  updateRuntime: () => invoke<DshIntegrationStatus>('dsh_update'),
-  ensureRuntime: () => invoke<DshIntegrationStatus>('dsh_ensure_runtime'),
-  cancelUpdate: () => invoke<boolean>('dsh_cancel_update'),
-  uninstallRuntime: () => invoke<DshIntegrationStatus>('dsh_uninstall'),
+  selectCliPath: () => invoke<string | null>('dsh_select_cli_path'),
+  setCliPath: (path: string) => invoke<DshIntegrationStatus>('dsh_set_cli_path', { path }),
+  installAppServerProfile: () =>
+    invoke<DshIntegrationStatus>('dsh_install_appserver_profile'),
 };
 
 function snapshotFromHarnessUsage(

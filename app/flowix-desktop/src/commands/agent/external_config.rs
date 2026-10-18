@@ -12,6 +12,7 @@ use crate::app::state::AppState;
 const CODEX_VERSION_TOO_LOW_CODE: &str = "version-too-low";
 const CODEX_VERSION_TOO_LOW_REASON: &str = "Codex CLI version below 0.150.0";
 const MIN_CODEX_CLI_VERSION: (u64, u64, u64) = (0, 150, 0);
+const STARTUP_CLI_DETECTION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
 
 #[derive(Clone, Copy, Debug, Serialize)]
 #[serde(rename_all = "kebab-case")]
@@ -157,6 +158,18 @@ pub async fn agent_runtime_status(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<AgentRuntimeStatus, String> {
+    let startup_detection_finished = tokio::time::timeout(
+        STARTUP_CLI_DETECTION_WAIT,
+        state.agent_external_config.wait_for_startup_detect(),
+    )
+    .await
+    .is_ok();
+    if !startup_detection_finished {
+        tracing::warn!(
+            wait_seconds = STARTUP_CLI_DETECTION_WAIT.as_secs(),
+            "startup CLI detection did not finish before the runtime status deadline"
+        );
+    }
     // The external CLI path comes from agent-external-config.json. Runtime
     // preflight can still add dependency details without hiding the entry.
     let cfg = &state.agent_external_config;
@@ -177,48 +190,20 @@ pub async fn agent_runtime_status(
     let claude_code = external_availability(cfg.get_entry("claudecode"), "Claude Code CLI");
     let hermes = external_availability(cfg.get_entry("hermes"), "Hermes Agent CLI");
     let opencode = external_availability(cfg.get_entry("opencode"), "OpenCode CLI");
-    let pi = {
-        use tauri::Manager;
-        let platform = match std::env::consts::OS {
-            "macos" => "darwin",
-            other => other,
-        };
-        let bundled = app.path().resource_dir().ok().is_some_and(|resources| {
-            let name = if cfg!(windows) { "pi.exe" } else { "pi" };
-            let arch = match std::env::consts::ARCH {
-                "aarch64" => "arm64",
-                "x86_64" => "x64",
-                other => other,
-            };
-            let root = resources.join("pi").join(format!("{platform}-{arch}"));
-            root.join("dist").join(name).is_file() || root.join(name).is_file()
-        });
-        let env_path_available = std::env::var_os("PI_CLI_PATH")
-            .map(PathBuf::from)
-            .as_deref()
-            .is_some_and(crate::agent_external::cli_resolver::is_executable_file);
-        let path_available = crate::agent_external::cli_resolver::which_in_path(
-            if cfg!(windows) { "pi.exe" } else { "pi" },
-            std::env::var_os("PATH").as_deref(),
+    let pi = if crate::agent_external::pi::resolve_pi_binary(&app).is_ok() {
+        AgentRuntimeSnapshot::new(
+            InstallationState::Installed,
+            ReadinessState::Ready,
+            None,
+            None,
         )
-        .is_some();
-        let installed_flowix = crate::agent_external::pi::installed_flowix_pi_binary().is_some();
-        let installed = bundled || env_path_available || path_available || installed_flowix;
-        if installed {
-            AgentRuntimeSnapshot::new(
-                InstallationState::Installed,
-                ReadinessState::Ready,
-                None,
-                None,
-            )
-        } else {
-            AgentRuntimeSnapshot::new(
-                InstallationState::Missing,
-                ReadinessState::Unknown,
-                Some("runtime-not-installed"),
-                Some("Pi runtime is not installed or included in this build".to_string()),
-            )
-        }
+    } else {
+        AgentRuntimeSnapshot::new(
+            InstallationState::Missing,
+            ReadinessState::Unknown,
+            Some("runtime-not-installed"),
+            Some("The bundled Pi runtime is missing or not executable".to_string()),
+        )
     };
     let dsh_status = crate::dsh::status();
     let deepseek_harness = if !dsh_status.installed {
@@ -229,6 +214,13 @@ pub async fn agent_runtime_status(
             dsh_status
                 .message
                 .or_else(|| Some("DeepSeek Harness runtime is not installed".to_string())),
+        )
+    } else if !dsh_status.app_server_profile_installed {
+        AgentRuntimeSnapshot::new(
+            InstallationState::Installed,
+            ReadinessState::Blocked,
+            Some("appserver-profile-not-installed"),
+            Some("Install the DSH App Server plugin from Flowix Preferences".to_string()),
         )
     } else {
         match state.deepseek_harness.dsh_model_configs().await {

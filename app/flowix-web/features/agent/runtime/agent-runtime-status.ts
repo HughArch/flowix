@@ -36,16 +36,16 @@ export function normalizeAgentRuntimeStatus(
     };
   }
 
+  if (status.installation === 'missing') {
+    return { state: 'not-installed', reason: status.reason ?? null };
+  }
+
   if (status.installation === 'unknown' || status.readiness === 'unknown') {
     return { state: isChecking ? 'checking' : 'unknown', reason: status.reason ?? null };
   }
 
   return {
-    state: status.installation === 'missing'
-      ? 'not-installed'
-      : status.readiness === 'ready'
-        ? 'ready'
-        : 'not-ready',
+    state: status.readiness === 'ready' ? 'ready' : 'not-ready',
     reason: status.reason ?? null,
   };
 }

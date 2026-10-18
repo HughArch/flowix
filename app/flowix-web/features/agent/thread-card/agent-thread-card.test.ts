@@ -120,26 +120,30 @@ vi.mock("@platform/tauri/client", () => ({
   listenToAgentStream: vi.fn(),
 }));
 
-vi.mock("@features/agent/store/agent-data-store", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@features/agent/store/agent-data-store")>();
-  return { ...actual, ensureAgentWorkspaceReady: vi.fn(async () => {}), useAgentDataStore: Object.assign(
-    (selector: Parameters<typeof actual.useAgentDataStore>[0]) => actual.useAgentDataStore(selector),
-    actual.useAgentDataStore,
-    { getState: () => ({ ...actual.useAgentDataStore.getState(), workspace: {
-      ...actual.useAgentDataStore.getState().workspace,
+vi.mock("@features/agent/store/agent-workspace-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@features/agent/store/agent-workspace-store")>();
+  const getState = () => ({ ...actual.useAgentWorkspaceStore.getState(),
+    workspace: {
+      ...actual.useAgentWorkspaceStore.getState().workspace,
       ...actual.projectAgentWorkspace({ notebooks: agentAccessState.config.entries.filter(e => e.kind === "notebook"), notebookConfigs: Object.fromEntries(
         Object.entries(agentAccessState.config.defaults?.files ?? {}).map(([id, files]) => [id, {
           version: 1, revision: 1, addDirs: files.folders.map((path) => ({ id: path, path, label: path, enabled: true })),
         }]),
       ) }),
-    }, workspaceActions: {
-      ...actual.useAgentDataStore.getState().workspaceActions,
-      addFolderFromPicker: vi.fn(async () => ({ ok: true })),
+    },
+    workspaceActions: {
+      ...actual.useAgentWorkspaceStore.getState().workspaceActions,
+      addFolderFromPicker: vi.fn(async () => ({ ok: true as const })),
       attachFolderToNotebook: vi.fn(async () => "saved" as const),
       detachFolderFromNotebook: vi.fn(async () => "saved" as const),
       getNotebookFiles: (id: string | null | undefined) => id ? agentAccessState.config.defaults?.files?.[id] : undefined,
       loadInitial: vi.fn(async () => true),
-    } }) },
+    },
+  });
+  return { ...actual, ensureAgentWorkspaceReady: vi.fn(async () => {}), useAgentWorkspaceStore: Object.assign(
+    (selector: Parameters<typeof actual.useAgentWorkspaceStore>[0]) => selector ? selector(getState()) : getState(),
+    actual.useAgentWorkspaceStore,
+    { getState },
   ) };
 });
 
@@ -155,10 +159,13 @@ vi.mock("@features/agent/store/agent-runtime-store", () => ({
 }));
 
 vi.mock("@features/memo/store/note-store", () => ({
-  useNoteStore: {
-    getState: () => memoStateMock,
-    subscribe: vi.fn(() => () => undefined),
-  },
+  useNoteStore: Object.assign(
+    (selector: (state: typeof memoStateMock) => unknown) => selector(memoStateMock),
+    {
+      getState: () => memoStateMock,
+      subscribe: vi.fn(() => () => undefined),
+    },
+  ),
 }));
 
 vi.mock("@features/memo/components/notebook-icon", () => ({
@@ -278,7 +285,7 @@ async function waitForEnabledSendButton(
 }
 
 async function seedRenderableMessages(
-  _typeKey: "deepseek-harness" | "codex" | "claude" | "hermes" | "opencode",
+  _typeKey: "dsh" | "codex" | "claudecode" | "hermes" | "opencode",
   threadId: string,
   messages: ChatMessage[],
 ): Promise<void> {
@@ -562,7 +569,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "DOM Flow",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -574,7 +581,7 @@ describe("AgentThreadCard NodeView streaming", () => {
     expect(card).not.toBeNull();
 
     const store = useChatStore.getState();
-    store.bindThreadType(threadId, "deepseek-harness");
+    store.bindThreadType(threadId, "dsh");
     dispatchChunk(store, { kind: "stream_start", thread_id: threadId });
     dispatchChunk(store, {
       kind: "text",
@@ -929,7 +936,7 @@ describe("AgentThreadCard NodeView streaming", () => {
     const { useChatStore } = await import("@features/agent/store/agent-session-test-facade");
     const threadId = "thread-card-conversation-run-source";
     const instance = useAgentConversationStore.getState().createInstance({
-      agentType: "deepseek-harness",
+      agentType: "dsh",
       title: "Conversation Run Source",
       threadId,
       source: { kind: "thread-card" },
@@ -938,7 +945,7 @@ describe("AgentThreadCard NodeView streaming", () => {
       kind: "stream_start",
       thread_id: threadId,
       run_id: "run-conversation-source",
-      agent_type: "deepseek-harness",
+      agent_type: "dsh",
     });
 
     const host = document.createElement("div");
@@ -956,7 +963,7 @@ describe("AgentThreadCard NodeView streaming", () => {
               instanceId: instance.instanceId,
               threadId,
               title: "Conversation Run Source",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -993,7 +1000,7 @@ describe("AgentThreadCard NodeView streaming", () => {
     };
 
     useChatStore.setState((state) => ({
-      threadTypes: { ...state.threadTypes, [threadId]: "deepseek-harness" },
+      threadTypes: { ...state.threadTypes, [threadId]: "dsh" },
       threadStates: {
         ...state.threadStates,
         [threadId]: {
@@ -1009,7 +1016,7 @@ describe("AgentThreadCard NodeView streaming", () => {
         },
       },
     }));
-    await seedRenderableMessages("deepseek-harness", threadId, [
+    await seedRenderableMessages("dsh", threadId, [
       firstMessage,
       streamingMessage,
     ]);
@@ -1025,7 +1032,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "Incremental",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -1055,7 +1062,7 @@ describe("AgentThreadCard NodeView streaming", () => {
         },
       };
     });
-    await seedRenderableMessages("deepseek-harness", threadId, patchedMessages);
+    await seedRenderableMessages("dsh", threadId, patchedMessages);
 
     await flushAnimationFrame();
 
@@ -1078,7 +1085,7 @@ describe("AgentThreadCard NodeView streaming", () => {
     const content = `${"A".repeat(ASSISTANT_MESSAGE_DISPLAY_MAX_CHARS + 20)}${tail}`;
 
     useChatStore.setState((state) => ({
-      threadTypes: { ...state.threadTypes, [threadId]: "deepseek-harness" },
+      threadTypes: { ...state.threadTypes, [threadId]: "dsh" },
       threadStates: {
         ...state.threadStates,
         [threadId]: {
@@ -1094,7 +1101,7 @@ describe("AgentThreadCard NodeView streaming", () => {
         },
       },
     }));
-    await seedRenderableMessages("deepseek-harness", threadId, [
+    await seedRenderableMessages("dsh", threadId, [
       {
         id: "assistant-large",
         role: "assistant",
@@ -1114,7 +1121,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "Display Budget",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -1152,7 +1159,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "Editable title",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -1166,7 +1173,7 @@ describe("AgentThreadCard NodeView streaming", () => {
     expect(title).not.toBeNull();
 
     const store = useChatStore.getState();
-    store.bindThreadType(threadId, "deepseek-harness");
+    store.bindThreadType(threadId, "dsh");
     dispatchChunk(store, { kind: "stream_start", thread_id: threadId });
     dispatchChunk(store, {
       kind: "text",
@@ -1217,7 +1224,7 @@ describe("AgentThreadCard NodeView streaming", () => {
       "@features/agent/thread-card/runtime/thread-card-conversation"
     );
     const instance = useAgentConversationStore.getState().createInstance({
-      agentType: "deepseek-harness",
+      agentType: "dsh",
       title: "User renamed title",
       threadId: "thread-existing-title",
       source: { kind: "thread-card" },
@@ -1225,7 +1232,7 @@ describe("AgentThreadCard NodeView streaming", () => {
 
     const result = await upsertAgentThreadCardConversationInstance({
       instanceId: instance.instanceId,
-      agentType: "deepseek-harness",
+      agentType: "dsh",
       title: "Prompt generated title",
       threadId: "thread-existing-title",
       source: { kind: "thread-card" },
@@ -1312,7 +1319,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "Submit Flow",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -1334,7 +1341,7 @@ describe("AgentThreadCard NodeView streaming", () => {
       threadId,
       expect.objectContaining({
         content: "write a short answer",
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         runtimeConfig: expect.objectContaining({
           deepseekHarness: expect.any(Object),
         }),
@@ -1385,7 +1392,7 @@ describe("AgentThreadCard NodeView streaming", () => {
           attrs: {
             threadId: "thread-awaited-initialization",
             title: "Awaited initialization",
-            typeKey: "deepseek-harness",
+            typeKey: "dsh",
             collapsed: false,
           },
         }],
@@ -1545,7 +1552,7 @@ describe("AgentThreadCard NodeView streaming", () => {
           attrs: {
             threadId: null,
             title: "Failed initialization",
-            typeKey: "deepseek-harness",
+            typeKey: "dsh",
             collapsed: false,
           },
         }],
@@ -1574,7 +1581,7 @@ describe("AgentThreadCard NodeView streaming", () => {
     editor = new Editor({
       element: host, extensions: [StarterKit, AgentThreadCard],
       content: { type: "doc", content: [{ type: "agentThreadCard", attrs: {
-        threadId: "thread-rejected-send", typeKey: "deepseek-harness", collapsed: false,
+        threadId: "thread-rejected-send", typeKey: "dsh", collapsed: false,
         inputDraft: "please review", inputAttachments: images,
       } }] },
     });
@@ -1611,7 +1618,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId: "thread-card-draft",
               title: "Draft",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -1655,7 +1662,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId: "thread-card-long-draft",
               title: "Long Draft",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
               inputDraft: "short",
             },
@@ -1698,7 +1705,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "Clear Draft",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
               inputDraft: "send me",
             },
@@ -2029,7 +2036,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "Collapsed History",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: true,
             },
           },
@@ -2082,7 +2089,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "Cached",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -2093,7 +2100,7 @@ describe("AgentThreadCard NodeView streaming", () => {
     await flushPromises();
     await flushAnimationFrame();
 
-    await seedRenderableMessages("deepseek-harness", threadId, [
+    await seedRenderableMessages("dsh", threadId, [
       {
         id: "assistant-cached",
         role: "assistant",
@@ -2176,7 +2183,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "Skeleton History",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -2248,7 +2255,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "Fullscreen Skeleton",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: true,
             },
           },
@@ -2340,7 +2347,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "Viewport History",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -2394,7 +2401,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "Fullscreen History",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: true,
             },
           },
@@ -2435,7 +2442,7 @@ describe("AgentThreadCard NodeView streaming", () => {
               instanceId: "instance-fullscreen-persist",
               threadId: "thread-fullscreen-persist",
               title: "Fullscreen Persist",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
               fullscreen: false,
             },
@@ -2477,7 +2484,7 @@ describe("AgentThreadCard NodeView streaming", () => {
               instanceId: "instance-browser-column-fullscreen",
               threadId: "thread-browser-column-fullscreen",
               title: "Browser Column conversation",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
               fullscreen: false,
             },
@@ -2525,7 +2532,7 @@ describe("AgentThreadCard NodeView streaming", () => {
               instanceId: "instance-work-column-fullscreen",
               threadId: "thread-work-column-fullscreen",
               title: "Work Column conversation",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
               fullscreen: false,
             },
@@ -2582,7 +2589,7 @@ describe("AgentThreadCard NodeView streaming", () => {
               instanceId: "instance-fullscreen-first",
               threadId: "thread-fullscreen-first",
               title: "First Fullscreen",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
               fullscreen: true,
             },
@@ -2593,7 +2600,7 @@ describe("AgentThreadCard NodeView streaming", () => {
               instanceId: "instance-fullscreen-second",
               threadId: "thread-fullscreen-second",
               title: "Second Fullscreen",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
               fullscreen: true,
             },
@@ -2658,7 +2665,7 @@ describe("AgentThreadCard NodeView streaming", () => {
               instanceId: "instance-browser-column-restore",
               threadId: "thread-browser-column-restore",
               title: "Note conversation",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
               fullscreen: true,
             },
@@ -2683,7 +2690,7 @@ describe("AgentThreadCard NodeView streaming", () => {
     const { AgentThreadCard } =
       await import("@features/agent/thread-card");
     const threadId = "thread-restored-fullscreen-bottom";
-    await seedRenderableMessages("deepseek-harness", threadId, [
+    await seedRenderableMessages("dsh", threadId, [
       {
         id: "cached-assistant-message",
         role: "assistant",
@@ -2706,7 +2713,7 @@ describe("AgentThreadCard NodeView streaming", () => {
               instanceId: "instance-restored-fullscreen-bottom",
               threadId,
               title: "Restored Fullscreen Bottom",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
               fullscreen: true,
             },
@@ -2745,7 +2752,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId: "thread-legacy-fullscreen-restore",
               title: "Legacy Fullscreen Restore",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
               fullscreen: true,
             },
@@ -2786,7 +2793,7 @@ describe("AgentThreadCard NodeView streaming", () => {
     });
 
     const threadId = "thread-stale-restore-frame";
-    await seedRenderableMessages("deepseek-harness", threadId, [
+    await seedRenderableMessages("dsh", threadId, [
       {
         id: "stale-frame-message",
         role: "assistant",
@@ -2808,7 +2815,7 @@ describe("AgentThreadCard NodeView streaming", () => {
               instanceId: "instance-stale-restore-frame",
               threadId,
               title: "Stale Restore Frame",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
               fullscreen: true,
             },
@@ -2859,7 +2866,7 @@ describe("AgentThreadCard NodeView streaming", () => {
               instanceId: "instance-before-document-switch",
               threadId: "thread-before-document-switch",
               title: "Before Document Switch",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
               fullscreen: false,
             },
@@ -2878,7 +2885,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             instanceId: "instance-after-document-switch",
             threadId: "thread-after-document-switch",
             title: "After Document Switch",
-            typeKey: "deepseek-harness",
+            typeKey: "dsh",
             collapsed: false,
             fullscreen: true,
           },
@@ -2923,7 +2930,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId,
               title: "Fullscreen Selection",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -2970,7 +2977,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId: "thread-card-fullscreen-input-focus",
               title: "Fullscreen Input Focus",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3028,7 +3035,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId: "thread-card-click-focus",
               title: "Click Focus",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3070,7 +3077,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId: "thread-card-event-boundary",
               title: "Event Boundary",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3113,7 +3120,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId: "thread-card-focus-deselect",
               title: "Focus Deselect",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3169,7 +3176,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId: "thread-card-focus-first",
               title: "First",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3182,7 +3189,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId: "thread-card-focus-second",
               title: "Second",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3232,7 +3239,7 @@ describe("AgentThreadCard NodeView streaming", () => {
             attrs: {
               threadId: "thread-card-outside-blur",
               title: "Outside Blur",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3512,7 +3519,7 @@ describe("AgentThreadCard input history navigation", () => {
             attrs: {
               threadId,
               title: "Empty",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3547,7 +3554,7 @@ describe("AgentThreadCard input history navigation", () => {
             attrs: {
               threadId,
               title: "History",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3589,7 +3596,7 @@ describe("AgentThreadCard input history navigation", () => {
         },
       },
     }));
-    await seedRenderableMessages("deepseek-harness", threadId, messages);
+    await seedRenderableMessages("dsh", threadId, messages);
     await flushAnimationFrame();
 
     const input = getComposerInput(host);
@@ -3625,7 +3632,7 @@ describe("AgentThreadCard input history navigation", () => {
             attrs: {
               threadId,
               title: "Draft",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3655,7 +3662,7 @@ describe("AgentThreadCard input history navigation", () => {
         },
       },
     }));
-    await seedRenderableMessages("deepseek-harness", threadId, messages);
+    await seedRenderableMessages("dsh", threadId, messages);
     await flushAnimationFrame();
 
     const input = getComposerInput(host);
@@ -3693,7 +3700,7 @@ describe("AgentThreadCard input history navigation", () => {
             attrs: {
               threadId,
               title: "Draft not overwritten",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3723,7 +3730,7 @@ describe("AgentThreadCard input history navigation", () => {
         },
       },
     }));
-    await seedRenderableMessages("deepseek-harness", threadId, messages);
+    await seedRenderableMessages("dsh", threadId, messages);
     await flushAnimationFrame();
 
     const input = getComposerInput(host);
@@ -3778,7 +3785,7 @@ describe("AgentThreadCard input history navigation", () => {
             attrs: {
               threadId,
               title: "Down idle",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3807,7 +3814,7 @@ describe("AgentThreadCard input history navigation", () => {
         },
       },
     }));
-    await seedRenderableMessages("deepseek-harness", threadId, messages);
+    await seedRenderableMessages("dsh", threadId, messages);
     await flushAnimationFrame();
 
     const input = getComposerInput(host);
@@ -3836,7 +3843,7 @@ describe("AgentThreadCard input history navigation", () => {
             attrs: {
               threadId,
               title: "Typing",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3866,7 +3873,7 @@ describe("AgentThreadCard input history navigation", () => {
         },
       },
     }));
-    await seedRenderableMessages("deepseek-harness", threadId, messages);
+    await seedRenderableMessages("dsh", threadId, messages);
     await flushAnimationFrame();
 
     const input = getComposerInput(host);
@@ -3902,7 +3909,7 @@ describe("AgentThreadCard input history navigation", () => {
             attrs: {
               threadId,
               title: "Caret boundaries",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -3932,7 +3939,7 @@ describe("AgentThreadCard input history navigation", () => {
         },
       },
     }));
-    await seedRenderableMessages("deepseek-harness", threadId, messages);
+    await seedRenderableMessages("dsh", threadId, messages);
     await flushAnimationFrame();
 
     const input = getComposerInput(host);
@@ -3973,7 +3980,7 @@ describe("AgentThreadCard input history navigation", () => {
             attrs: {
               threadId,
               title: "Unmodified",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -4003,7 +4010,7 @@ describe("AgentThreadCard input history navigation", () => {
         },
       },
     }));
-    await seedRenderableMessages("deepseek-harness", threadId, messages);
+    await seedRenderableMessages("dsh", threadId, messages);
     await flushAnimationFrame();
 
     const input = getComposerInput(host);
@@ -4090,7 +4097,7 @@ describe("AgentThreadCard input latency optimizations", () => {
             attrs: {
               threadId,
               title: "Lite",
-              typeKey: "deepseek-harness",
+              typeKey: "dsh",
               collapsed: false,
             },
           },
@@ -4217,7 +4224,7 @@ describe("AgentThreadCard composer during agent run", () => {
     vi.useRealTimers();
   });
 
-  it.each(["deepseek-harness", "pi"] as const)("queues a message while %s is running", async (agentType) => {
+  it.each(["dsh", "pi"] as const)("queues a message while %s is running", async (agentType) => {
     const { AgentThreadCard } =
       await import("@features/agent/thread-card");
     const { useAgentSessionStore } = await import(

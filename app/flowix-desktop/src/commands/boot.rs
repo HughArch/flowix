@@ -11,7 +11,6 @@ use crate::device_registration::DeviceRegistry;
 pub struct BootFeatures {
     pub experimental: bool,
     pub is_introduct_displayed: bool,
-    pub is_onboarding_completed: bool,
 }
 
 #[tauri::command]
@@ -19,20 +18,12 @@ pub fn get_boot_features(registry: State<'_, Arc<DeviceRegistry>>) -> BootFeatur
     BootFeatures {
         experimental: registry.experimental(),
         is_introduct_displayed: registry.is_introduct_displayed(),
-        is_onboarding_completed: registry.is_onboarding_completed(),
     }
 }
 
 #[tauri::command]
 pub fn set_boot_intro_displayed(registry: State<'_, Arc<DeviceRegistry>>) -> Result<(), String> {
     registry.set_introduct_displayed(true)
-}
-
-#[tauri::command]
-pub fn set_boot_onboarding_completed(
-    registry: State<'_, Arc<DeviceRegistry>>,
-) -> Result<(), String> {
-    registry.set_onboarding_completed(true)
 }
 
 #[tauri::command]
@@ -92,18 +83,15 @@ pub fn record_startup_stage(
     const ALLOWED: &[&str] = &[
         "native-ready",
         "notebook-selected",
-        "first-memo-query-ready",
-        "workspace-restored",
-        "initial-document-settled",
-        "initial-document-skipped",
-        "initial-document-superseded",
-        "initial-document-timeout",
         "first-workspace-paint",
+        "stage3-admitted",
+        "workspace-restore-settled",
+        "workspace-restore-superseded",
         "foreground-degraded-paint",
         "foreground-failed-paint",
     ];
-    // Task events extend automatically when a first-screen dependency is added.
-    // Keep identifiers bounded; task IDs contain only ASCII letters and separators.
+    // Keep task-event identifiers bounded; task IDs contain only ASCII letters
+    // and separators.
     let task_event = stage.starts_with("task:")
         && stage.len() <= 96
         && stage.bytes().all(|b| b.is_ascii_alphanumeric() || b"-_:".contains(&b))

@@ -36,10 +36,7 @@ if (registration.error) throw registration.error
 if (registration.status !== 0) process.exit(registration.status ?? 1)
 
 const openArgs = ['-W', '-a', appPath]
-for (const name of [
-  'FLOWIX_PI_PROVIDER_CATALOG',
-  'PI_CLI_PATH',
-]) {
+for (const name of ['FLOWIX_PI_PROVIDER_CATALOG']) {
   const value = process.env[name]
   if (value) openArgs.push('--env', `${name}=${value}`)
 }

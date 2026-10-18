@@ -1,5 +1,5 @@
 import { resolveAgentPreferenceRuntimeConfig } from "@features/agent/store/agent-user-preferences";
-import { useAgentDataStore } from "@features/agent/store/agent-data-store";
+import { useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-store";
 import type { ChatMessage } from "@/types";
 import { errorMessage } from "@/lib/error-message";
 import type { AgentRuntimeConfig, AgentTypeKey, RuntimeConfig } from "@/types/agent";
@@ -9,6 +9,7 @@ import {
 } from "@features/agent/runtime/workspace-snapshot";
 import { normalizeConversationWorkspaceState } from "@features/agent/runtime/conversation-workspace";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
+import { ensureAgentPreferencesReady } from "@features/agent/store/agent-data-store";
 import { useNoteStore } from "@features/memo/store/note-store";
 import { agentClient } from "@features/agent/store/agent-client";
 
@@ -82,7 +83,7 @@ export function buildDshCommandMessage(
     ? useNoteStore.getState().notebooks.find((item) => item.id === notebookId)
     : useNoteStore.getState().selectedNotebook;
   const defaultFiles = !workspaceSnapshot && notebookId
-    ? useAgentDataStore.getState().workspaceActions.getNotebookFiles(notebookId)
+    ? useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles(notebookId)
     : undefined;
 
   const runtimeConfig = buildAgentRuntimeConfig({
@@ -111,6 +112,7 @@ export async function executeDshCommand(input: {
   runtimeConfig?: RuntimeConfig | null;
   imagePaths?: string[];
 }): Promise<unknown> {
+  await ensureAgentPreferencesReady(DSH_AGENT_TYPE);
   return agentClient.executeDeepSeekHarnessCommand(
     input.threadId,
     input.command,

@@ -104,7 +104,8 @@ function updateTarget(drag: ActiveDrag): void {
   const current = drag.target;
   if (current && next && current.id === next.id && current.key === next.key
     && current.preview.decision.accepted === next.preview.decision.accepted
-    && (current.preview.decision.accepted || current.preview.decision.reason === next.preview.decision.reason)) {
+    && (current.preview.decision.accepted || (!next.preview.decision.accepted
+      && current.preview.decision.reason === next.preview.decision.reason))) {
     return;
   }
   if (!current || !next || current.id !== next.id || current.key !== next.key) clearTargetPreview(current);

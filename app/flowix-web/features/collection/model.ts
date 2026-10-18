@@ -19,7 +19,8 @@ export interface CollectionMetadata {
   id: string;
   type: CollectionType;
   placement: CollectionPlacement;
-  name: string;
+  /** Legacy name retained when reading old files; the path is authoritative. */
+  name?: string;
   revision: number;
   created_at: string;
   updated_at: string;
@@ -46,11 +47,16 @@ export function createUuidV7(): string {
 export const createCollectionId = () => `col_${createUuidV7()}`;
 export function createCollectionMetadata(
   type: CollectionType,
-  name: string,
+  _name: string,
   placement: CollectionPlacement = 'standalone',
 ): CollectionMetadata {
   const now = new Date().toISOString();
-  return { id: createCollectionId(), type, placement, name: name.trim(), revision: 0, created_at: now, updated_at: now, properties: {} };
+  return { id: createCollectionId(), type, placement, revision: 0, created_at: now, updated_at: now, properties: {} };
+}
+export function collectionDisplayName(filePath: string, placement: CollectionPlacement): string {
+  const parts = filePath.split(/[\\/]/).filter(Boolean);
+  if (placement === 'folder') return parts[parts.length - 2] ?? '';
+  return (parts[parts.length - 1] ?? '').replace(/\.(?:index\.ya?ml|(?:table|lib)\.ya?ml)$/i, '');
 }
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -129,7 +135,7 @@ export function validateCollectionMetadata(value: unknown, type?: CollectionType
     || typeof value.id !== 'string' || !/^col_[0-9a-f]{32}$/.test(value.id)
     || !['table', 'media_library'].includes(String(normalizedType)) || (type && normalizedType !== type)
     || (value.placement !== undefined && !['standalone', 'folder'].includes(String(value.placement)))
-    || typeof value.name !== 'string' || !value.name.trim() || value.name !== value.name.trim()
+    || (value.name !== undefined && (typeof value.name !== 'string' || !value.name.trim() || value.name !== value.name.trim()))
     || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0
     || typeof value.created_at !== 'string' || !Number.isFinite(Date.parse(value.created_at))
     || typeof value.updated_at !== 'string' || !Number.isFinite(Date.parse(value.updated_at))
@@ -370,7 +376,6 @@ export function serializeCollectionDocumentV2(document: CollectionDocumentV2): s
     id: checked.id,
     type: checked.type === 'table' ? 'notes' : 'media',
     placement: checked.placement,
-    name: checked.name,
     revision: checked.revision,
     created_at: checked.created_at,
     updated_at: checked.updated_at,

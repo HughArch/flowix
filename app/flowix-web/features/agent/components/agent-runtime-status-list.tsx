@@ -97,7 +97,7 @@ export function AgentRuntimeStatusList({
     !hiddenKeys?.has(typeKey);
   const visibleAgentTypes = AGENT_TYPES.filter((type) => isVisible(type.id));
   const { t } = useI18n();
-  const { enabledByType: agentVisibility, setEnabled } = useAgentVisibilityPreferences();
+  const { enabledByType: agentEnabledByType, setEnabled } = useAgentVisibilityPreferences();
 
   // 解析 i18n 文案 ── 卡片有 nameKey/descKey 就走 t(), 缺省回退到 type.name
   // / type.desc 的硬编码英文 (供编辑器节点等非 React 上下文用)。
@@ -106,7 +106,7 @@ export function AgentRuntimeStatusList({
   const displayDesc = (type: (typeof AGENT_TYPES)[number]): string =>
     type.descKey ? t(type.descKey as Parameters<typeof t>[0]) : type.desc;
 
-  const setAgentSlashEnabled = (typeKey: AgentTypeKey, enabled: boolean) => {
+  const setAgentEnabled = (typeKey: AgentTypeKey, enabled: boolean) => {
     void setEnabled(typeKey, enabled);
   };
 
@@ -121,7 +121,7 @@ export function AgentRuntimeStatusList({
           const statusText = getAgentRuntimeStatusText({ typeKey: type.id, status, isChecking, t });
           const canSetup = !comingSoon && isRuntimeUnavailable(runtimeStatus) && Boolean(onSetupClick);
           const available = !comingSoon && runtimeStatus.state === 'ready';
-          const slashEnabled = agentVisibility[type.id] ?? true;
+          const agentEnabled = agentEnabledByType[type.id] ?? true;
 
           return (
             <div
@@ -189,13 +189,13 @@ export function AgentRuntimeStatusList({
                     <button
                       type="button"
                       role="switch"
-                      aria-checked={slashEnabled}
-                      aria-label={`${displayName(type)} slash menu visibility`}
-                      onClick={() => setAgentSlashEnabled(type.id, !slashEnabled)}
+                      aria-checked={agentEnabled}
+                      aria-label={t('preferences.agents.enableAgent', { name: displayName(type) })}
+                      onClick={() => setAgentEnabled(type.id, !agentEnabled)}
                       className={cn(
                         'relative h-5 w-9 rounded-full border transition-colors outline-none',
                         'focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2',
-                        slashEnabled
+                        agentEnabled
                           ? 'border-[var(--primary)] bg-[var(--primary)]'
                           : 'border-[var(--border)] bg-[var(--muted)]'
                       )}
@@ -203,7 +203,7 @@ export function AgentRuntimeStatusList({
                       <span
                         className={cn(
                           'absolute left-0.5 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-[var(--card)] shadow-sm transition-transform',
-                          slashEnabled ? 'translate-x-4' : 'translate-x-0'
+                          agentEnabled ? 'translate-x-4' : 'translate-x-0'
                         )}
                       />
                     </button>

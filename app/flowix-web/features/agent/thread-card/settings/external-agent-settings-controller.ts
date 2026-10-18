@@ -35,6 +35,7 @@ import {
   type AgentRuntimeSettingKind,
 } from "@features/agent/runtime/agent-runtime-spec";
 import { modelPreferenceKey, useAgentDataStore, type AgentModelCatalog } from "@features/agent/store/agent-data-store";
+import { useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-store";
 import { loadAgentModelCatalog } from "@features/agent/services/agent-catalog-service";
 import { useAgentRuntimeStore } from "@features/agent/store/agent-runtime-store";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
@@ -48,7 +49,7 @@ import {
   selectDesiredWorkspace,
 } from "@features/agent/runtime/conversation-workspace";
 import { ensureConversationWorkspaceSnapshot } from "@features/agent/runtime/workspace-snapshot";
-import { agent, dshIntegration, windows } from "@platform/tauri/client";
+import { agent, windows } from "@platform/tauri/client";
 import { POPUP_SEPARATOR_CLASS } from "@shared/ui/popup-separator";
 import { subscribe, type UnlistenFn } from "@platform/tauri/event-bus";
 import {
@@ -69,11 +70,17 @@ import {
   createPlusIcon,
   createTrashIcon,
 } from "@features/agent/thread-card/agent-thread-card-icons";
+import {
+  createPiModelPicker,
+  isFlowixCloudModelOption,
+} from "@features/agent/thread-card/settings/model-picker/pi-model-picker";
+import type { AgentModelOption } from "@features/agent/thread-card/settings/model-picker/model-picker-types";
 
 const CODEX_SETTINGS_POPOVER_WIDTH_PX = 212;
 const CODEX_SETTINGS_POPOVER_MAX_HEIGHT_PX = 280;
 const CODEX_SETTINGS_POPOVER_OFFSET_PX = 6;
 const CODEX_SETTINGS_POPOVER_VIEWPORT_PADDING_PX = 8;
+type SettingsPopoverPlacement = "anchor" | "submenu";
 
 
 function createComposerWorkspaceIcon(): SVGSVGElement | null {
@@ -112,14 +119,24 @@ function createPermissionModeIcon(
   return icon;
 }
 
-type AgentModelOption = {
-  id: AgentCodexModel;
-  label: string;
-  reasoningEfforts?: AgentCodexReasoningEffort[];
-  /** DeepSeek Harness llm-pi-ai route; absent for legacy/Codex options. */
-  providerId?: string;
-  providerName?: string;
-};
+function modelProviderIcon(iconUrl?: string): HTMLImageElement | undefined {
+  if (!iconUrl) return undefined;
+  try {
+    if (new URL(iconUrl).protocol !== "https:") return undefined;
+  } catch {
+    return undefined;
+  }
+  const image = document.createElement("img");
+  image.className = "agent-thread-card__model-provider-icon";
+  image.src = iconUrl;
+  image.alt = "";
+  image.loading = "lazy";
+  image.referrerPolicy = "no-referrer";
+  image.onerror = () => image.remove();
+  return image;
+}
+
+export type AgentEmptyStatePresentation = "inline-card" | "expanded";
 
 const CLAUDE_MODEL_OPTIONS: AgentModelOption[] = [
   { id: "claude-opus-4-8", label: "claude-opus-4-8" },
@@ -142,6 +159,10 @@ export interface ExternalAgentSettingsControllerOptions {
   isDestroyed: () => boolean;
   isRunning?: () => boolean;
   consumeOutsidePointer?: (event: PointerEvent) => void;
+  onPopoverStateChange?: (
+    open: boolean,
+    anchor: HTMLButtonElement | null,
+  ) => void;
   /**
    * 点击常用笔记卡片时的动作 ── 把该笔记作为行内引用注入 composer 输入框
    * (而不是打开笔记)。由宿主 (thread card view / 独立对话) 接到
@@ -163,6 +184,10 @@ export class ExternalAgentSettingsController {
   private readonly t: (key: I18nKey, params?: I18nParams) => string;
   private readonly isDestroyed: () => boolean;
   private readonly consumeOutsidePointer?: (event: PointerEvent) => void;
+  private readonly onPopoverStateChange?: (
+    open: boolean,
+    anchor: HTMLButtonElement | null,
+  ) => void;
   private readonly toast?: (
     kind: "success" | "error" | "info",
     message: string,
@@ -182,6 +207,7 @@ export class ExternalAgentSettingsController {
   private kind: AgentRuntimeSettingKind | null = null;
   private open = false;
   private workspacePopoverOpen = false;
+  private popoverPlacement: SettingsPopoverPlacement = "anchor";
   /**
    * 「可访问」弹窗的第二页 (仓库列表)。 弹窗只有一块 DOM, 翻页通过替换内容
    * 实现而不是叠一个新弹窗 ── 保持单一定位/外点关闭/焦点语义, 返回时也不
@@ -214,6 +240,7 @@ export class ExternalAgentSettingsController {
     this.t = options.t;
     this.isDestroyed = options.isDestroyed;
     this.consumeOutsidePointer = options.consumeOutsidePointer;
+    this.onPopoverStateChange = options.onPopoverStateChange;
     this.featuredNotes = new FeaturedNotesController({
       getNotebookId: () => this.getCurrentNotebookId(),
       t: options.t,
@@ -456,8 +483,11 @@ export class ExternalAgentSettingsController {
     }
   }
 
-  createEmptySettings(options: { showControls?: boolean } = {}): HTMLElement {
-    const showControls = options.showControls ?? true;
+  createEmptySettings(
+    options: { presentation?: AgentEmptyStatePresentation } = {},
+  ): HTMLElement {
+    const presentation = options.presentation ?? "inline-card";
+    const showControls = presentation === "inline-card";
     this.workspaceDisplay = null;
     this.modelButton = null;
     this.piModelNotice = null;
@@ -465,11 +495,13 @@ export class ExternalAgentSettingsController {
     this.modeButton = null;
     this.permissionButton = null;
     const empty = document.createElement("div");
-    empty.className =
-      "agent-thread-card__empty agent-thread-card__empty--codex-settings";
+    empty.className = [
+      "agent-thread-card__empty",
+      "agent-thread-card__empty--codex-settings",
+      `agent-thread-card__empty--${presentation}`,
+    ].join(" ");
 
-    // 控件组独立成行, 让独立对话 / 全屏能在其上方叠加 Agent 图标并整体居中；
-    // 非全屏 thread card 通过 CSS 让这层保持原有的单行 flex 表现。
+    // 两种展示模式共用 Agent 标识与精选笔记；卡片内模式额外显示设置控件。
     empty.append(createExternalAgentEmptyIcon(this.getTypeKey()));
     if (this.getTypeKey() === "pi") {
       const modelNotice = document.createElement("button");
@@ -510,97 +542,6 @@ export class ExternalAgentSettingsController {
         if (runtimeStatus.state !== "ready" && runtimeStatus.reason) {
           unavailableNotice.title = runtimeStatus.reason;
         }
-      });
-    }
-    if (this.getTypeKey() === "dsh") {
-      const updateNotice = document.createElement("button");
-      updateNotice.type = "button";
-      updateNotice.className = "agent-thread-card__dsh-update-notice";
-      updateNotice.hidden = true;
-      const updateLabel = document.createElement("span");
-      updateLabel.className = "agent-thread-card__dsh-update-label";
-      const updateProgress = document.createElement("span");
-      updateProgress.className = "agent-thread-card__dsh-update-progress";
-      updateProgress.setAttribute("aria-hidden", "true");
-      updateNotice.append(updateLabel, updateProgress);
-      let updating = false;
-      let unlistenProgress: UnlistenFn | null = null;
-      let completionTimer: number | null = null;
-      const showProgress = (progress: {
-        phase: string;
-        percent?: number | null;
-      }) => {
-        const active = ["checking", "downloading", "downloaded", "installing"].includes(progress.phase);
-        if (!active) {
-          unlistenProgress?.();
-          unlistenProgress = null;
-          if (this.isDestroyed()) return;
-          if (progress.phase === "installed" || progress.phase === "up-to-date") {
-            updating = false;
-            updateNotice.disabled = false;
-            updateNotice.classList.remove("is-updating", "is-indeterminate");
-            updateNotice.classList.add("is-complete");
-            updateLabel.textContent = this.t("agent.dsh.updateComplete");
-            if (completionTimer !== null) window.clearTimeout(completionTimer);
-            completionTimer = window.setTimeout(() => {
-              completionTimer = null;
-              if (!this.isDestroyed()) updateNotice.hidden = true;
-            }, 4000);
-          } else if (progress.phase === "failed" || progress.phase === "cancelled") {
-            updating = false;
-            updateNotice.disabled = false;
-            updateNotice.classList.remove("is-updating", "is-indeterminate");
-            updateNotice.classList.add("is-failed");
-            updateLabel.textContent = this.t("agent.dsh.updateFailed");
-          }
-          return;
-        }
-        if (this.isDestroyed()) return;
-        updateNotice.hidden = false;
-        updateNotice.disabled = true;
-        updateNotice.classList.add("is-updating");
-        updateNotice.classList.remove("is-complete", "is-failed");
-        const percent = progress.percent;
-        if (progress.phase === "downloading" && typeof percent === "number") {
-          updateNotice.classList.remove("is-indeterminate");
-          updateNotice.style.setProperty("--dsh-update-progress", `${Math.max(0, Math.min(100, percent))}%`);
-          updateLabel.textContent = this.t("agent.dsh.updateDownloading").replace("{percent}", String(percent));
-        } else {
-          updateNotice.classList.add("is-indeterminate");
-          updateLabel.textContent = progress.phase === "installing"
-            ? this.t("agent.dsh.updateInstalling")
-            : this.t("agent.dsh.updatePreparing");
-        }
-      };
-      updateNotice.addEventListener("click", (event) => {
-        event.stopPropagation();
-        if (updating) return;
-        if (completionTimer !== null) {
-          window.clearTimeout(completionTimer);
-          completionTimer = null;
-        }
-        updating = true;
-        updateNotice.hidden = false;
-        updateNotice.disabled = true;
-        updateNotice.classList.remove("is-failed", "is-complete");
-        updateNotice.classList.add("is-updating", "is-indeterminate");
-        updateLabel.textContent = this.t("agent.dsh.updatePreparing");
-        unlistenProgress = subscribe("dsh-download-progress", showProgress);
-        void dshIntegration.updateRuntime().then(() => {
-          showProgress({ phase: "installed" });
-        }).catch(() => {
-          showProgress({ phase: "failed" });
-        });
-      });
-      updateNotice.addEventListener("mousedown", (event) => event.stopPropagation());
-      empty.append(updateNotice);
-      void dshIntegration.checkUpdate().then((check) => {
-        if (this.isDestroyed() || !check.updateAvailable || !check.latestVersion) return;
-        updateLabel.textContent = this.t("agent.dsh.updateAvailable")
-          .replace("{version}", check.latestVersion);
-        updateNotice.hidden = false;
-      }).catch(() => {
-        // Version checks are advisory and must never affect conversation setup.
       });
     }
     if (showControls) {
@@ -672,6 +613,7 @@ export class ExternalAgentSettingsController {
       this.getComposerModelDisplayLabel(),
       (anchor) => this.toggleSettingsPopover("model", anchor),
     );
+    if (this.getTypeKey() === "pi") button.setAttribute("aria-haspopup", "dialog");
     button.classList.replace(
       "agent-composer__workspace",
       "agent-composer__model",
@@ -901,7 +843,7 @@ export class ExternalAgentSettingsController {
     if (!path) return this.t("agent.workspace.unset");
 
     const normalize = (value: string): string => value.replace(/[\\/]+$/, "").toLowerCase();
-    const workspaceState = useAgentDataStore.getState().workspace;
+    const workspaceState = useAgentWorkspaceStore.getState().workspace;
     const entry = workspaceState.resources.find(
       (item) => normalize(item.path) === normalize(path),
     );
@@ -965,8 +907,8 @@ export class ExternalAgentSettingsController {
       (configuredNotebookId
         ? memoState.notebooks.find((item) => item.id === configuredNotebookId)
         : null) ?? memoState.selectedNotebook;
-    const workspace = useAgentDataStore.getState().workspace.byNotebookId[configuredNotebookId ?? notebook?.id ?? ""];
-    const workspaceState = useAgentDataStore.getState().workspace;
+    const workspace = useAgentWorkspaceStore.getState().workspace.byNotebookId[configuredNotebookId ?? notebook?.id ?? ""];
+    const workspaceState = useAgentWorkspaceStore.getState().workspace;
     const addDirPaths = snapshot
       ? snapshot.workspacePaths
       : (workspace?.addDirs.filter((directory) => directory.enabled && !directory.missing).map((directory) => directory.path) ?? []);
@@ -1021,12 +963,42 @@ export class ExternalAgentSettingsController {
     this.setSettingsPopoverOpen(!sameMenuOpen, kind, anchor);
   }
 
+  /** Open a runtime settings picker as a right-side submenu from the add menu. */
+  openComposerSettingsPopover(
+    kind: AgentRuntimeSettingKind,
+    anchor: HTMLButtonElement,
+  ): void {
+    if (!this.supportsRuntimeSetting(kind)) return;
+    this.setSettingsPopoverOpen(true, kind, anchor, "submenu");
+  }
+
+  closeComposerSettingsPopover(anchor?: HTMLButtonElement): void {
+    if (this.popoverPlacement !== "submenu") return;
+    if (anchor && this.anchor !== anchor) return;
+    this.setSettingsPopoverOpen(false);
+  }
+
   private toggleWorkspacePopover(anchor: HTMLButtonElement): void {
     const sameMenuOpen = this.workspacePopoverOpen && this.anchor === anchor;
     if (sameMenuOpen) {
       this.setSettingsPopoverOpen(false);
       return;
     }
+    this.openWorkspacePopover(anchor, "anchor");
+  }
+
+  /** Open the read-only access page as a right-side submenu from the add menu. */
+  openComposerWorkspacePopover(anchor: HTMLButtonElement): void {
+    if (this.workspacePopoverOpen && this.anchor === anchor) return;
+    this.openWorkspacePopover(anchor, "submenu");
+  }
+
+  private openWorkspacePopover(
+    anchor: HTMLButtonElement,
+    placement: SettingsPopoverPlacement,
+  ): void {
+    this.popoverPlacement = placement;
+    this.workspacePage = "access";
     this.workspacePopoverOpen = true;
     this.open = true;
     this.kind = null;
@@ -1039,19 +1011,33 @@ export class ExternalAgentSettingsController {
     this.schedulePosition();
     this.startPositionTracking();
     document.addEventListener("pointerdown", this.handleOutsidePointer, true);
+    this.onPopoverStateChange?.(true, anchor);
   }
 
   setSettingsPopoverOpen(
     open: boolean,
     kind: AgentRuntimeSettingKind | null = null,
     anchor: HTMLButtonElement | null = null,
+    placement: SettingsPopoverPlacement = "anchor",
   ): void {
-    if (this.open === open && (!open || this.kind === kind) && !this.workspacePopoverOpen) return;
+    const nextPlacement = open ? placement : "anchor";
+    if (
+      this.open === open
+      && (!open || (
+        this.kind === kind
+        && this.anchor === anchor
+        && this.popoverPlacement === nextPlacement
+      ))
+      && !this.workspacePopoverOpen
+    ) return;
+    const previousAnchor = this.anchor;
+    this.popoverPlacement = nextPlacement;
     this.workspacePopoverOpen = false;
     this.workspacePage = "access";
     this.open = open;
     this.kind = open ? kind : null;
     this.anchor = open ? anchor : null;
+    this.onPopoverStateChange?.(open, open ? anchor : previousAnchor);
     this.popover.hidden = !open;
     this.popover.classList.toggle(
       "agent-thread-card__codex-settings-popover--mode",
@@ -1112,6 +1098,17 @@ export class ExternalAgentSettingsController {
       "agent-thread-card__codex-settings-popover--model-picker",
       this.getTypeKey() === "codex" && kind === "model",
     );
+    const isPiModelPicker = this.getTypeKey() === "pi" && kind === "model";
+    this.popover.classList.toggle(
+      "agent-thread-card__codex-settings-popover--pi-model-picker",
+      isPiModelPicker,
+    );
+    this.popover.setAttribute("role", isPiModelPicker ? "dialog" : "menu");
+    if (isPiModelPicker) {
+      this.popover.setAttribute("aria-label", this.t("agent.model.title"));
+    } else {
+      this.popover.removeAttribute("aria-label");
+    }
     if (!kind || !this.supportsRuntimeSetting(kind)) return;
 
     if (kind !== "model") {
@@ -1146,6 +1143,11 @@ export class ExternalAgentSettingsController {
     this.popover.classList.remove(
       "agent-thread-card__codex-settings-popover--model-picker",
     );
+    this.popover.classList.remove(
+      "agent-thread-card__codex-settings-popover--pi-model-picker",
+    );
+    this.popover.setAttribute("role", "menu");
+    this.popover.removeAttribute("aria-label");
     this.popover.replaceChildren();
     if (this.workspacePage === "repositories") {
       this.renderRepositoryPage();
@@ -1366,7 +1368,7 @@ export class ExternalAgentSettingsController {
   private async addRepository(): Promise<void> {
     const notebookId = this.getRepositoryScopeNotebookId();
     if (!notebookId) return;
-    const result = await useAgentDataStore.getState().workspaceActions.addFolderFromPicker(notebookId);
+    const result = await useAgentWorkspaceStore.getState().workspaceActions.addFolderFromPicker(notebookId);
     if (!result.ok) {
       if (result.code === "already-tracked") {
         this.toast?.("error", this.t("agent.access.alreadyTracked"));
@@ -1375,7 +1377,7 @@ export class ExternalAgentSettingsController {
       }
       return;
     }
-    const latestFiles = useAgentDataStore.getState().workspaceActions.getNotebookFiles(notebookId);
+    const latestFiles = useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles(notebookId);
     this.updateCurrentConversationWorkspaceFolders([
       ...(latestFiles?.folders ?? []),
     ]);
@@ -1385,7 +1387,7 @@ export class ExternalAgentSettingsController {
   private async removeRepository(path: string, name: string): Promise<void> {
     const notebookId = this.getRepositoryScopeNotebookId();
     if (!notebookId) return;
-    const state = useAgentDataStore.getState().workspaceActions;
+    const state = useAgentWorkspaceStore.getState().workspaceActions;
     const saved = await state.detachFolderFromNotebook(notebookId, path);
     if (saved === false) {
       this.toast?.("error", this.t("agent.access.saveFailed"));
@@ -1395,7 +1397,7 @@ export class ExternalAgentSettingsController {
       this.rerenderRepositories();
       return;
     }
-    const files = useAgentDataStore.getState().workspaceActions.getNotebookFiles(notebookId);
+    const files = useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles(notebookId);
     const nextFolders = files?.folders ?? [];
     this.updateCurrentConversationWorkspaceFolders(nextFolders);
     this.toast?.("success", this.t("agent.access.folderDeleted", { name }));
@@ -1463,9 +1465,13 @@ export class ExternalAgentSettingsController {
     label: string,
     value: string,
   ): HTMLButtonElement {
-    return createExternalAgentEmptyControl(kind, label, value, (nextKind, button) => {
+    const button = createExternalAgentEmptyControl(kind, label, value, (nextKind, button) => {
       this.toggleSettingsPopover(nextKind, button);
     });
+    if (kind === "model" && this.getTypeKey() === "pi") {
+      button.setAttribute("aria-haspopup", "dialog");
+    }
+    return button;
   }
 
   private syncControlOpenState(
@@ -1703,7 +1709,15 @@ export class ExternalAgentSettingsController {
     if (this.shouldShowPiModelEmptyState()) return [];
 
     const selection = this.resolveCurrentSelection();
-    const modelOptions = this.getLoadedModelOptions();
+    const loadedModelOptions = this.getLoadedModelOptions();
+    // Keep the Flowix Cloud provider at the top of Pi's composer picker when
+    // its catalog entry is present. Preserve the order within each provider.
+    const modelOptions = this.getTypeKey() === "pi"
+      ? [
+          ...loadedModelOptions.filter(isFlowixCloudModelOption),
+          ...loadedModelOptions.filter((option) => !isFlowixCloudModelOption(option)),
+        ]
+      : loadedModelOptions;
     const piDefaultProvider = this.getTypeKey() === "pi"
       ? modelOptions.find((option) => option.providerId === this.piDefaultProviderId)
       : undefined;
@@ -1729,12 +1743,17 @@ export class ExternalAgentSettingsController {
         : []),
       ...modelOptions,
     ];
+    const missingPiCloudModel = this.getTypeKey() === "pi"
+      && selection.providerId?.trim().toLocaleLowerCase().startsWith("flowix-cloud") === true;
     // Synthesize a tail row only when the current model is genuinely absent
     // from the directory. A model present under a different provider route is
     // reconciled above and rendered as its real option, never duplicated here.
+    // Flowix Cloud models are only valid while present in the active Cloud
+    // directory, so a stale selection must not survive logout as a synthetic row.
     if (
       selection.id !== "inherit" &&
       !(this.getTypeKey() === "pi" && !selection.id) &&
+      !missingPiCloudModel &&
       !options.some((option) =>
         option.id === selection.id
         && (option.providerId ?? "") === (selection.providerId ?? ""),
@@ -1905,8 +1924,24 @@ export class ExternalAgentSettingsController {
       return;
     }
 
-    if (this.getTypeKey() === "dsh" || this.getTypeKey() === "pi") {
-      if (this.getTypeKey() === "pi" && this.shouldShowPiModelEmptyState()) {
+    if (this.getTypeKey() === "pi") {
+      const picker = createPiModelPicker({
+        models: options,
+        showMemberTab: this.getLoadedModelOptions().some(isFlowixCloudModelOption),
+        selectedModelId: current,
+        selectedProviderId: currentProviderId,
+        memberLabel: this.t("agent.pi.modelTab.member"),
+        mineLabel: this.t("agent.pi.modelTab.mine"),
+        modelLabel: this.t("agent.model.title"),
+        emptyLabel: this.t(
+          this.piModelsLoadFailed ? "agent.model.loadFailed" : "agent.model.noneFound",
+        ),
+        personalEmptyLabel: this.t("agent.pi.modelTab.mineEmpty"),
+        createModelItem: (option) => this.createModelSettingsItem(option, current, currentProviderId),
+      });
+      this.popover.append(picker);
+    } else if (this.getTypeKey() === "dsh") {
+      if (this.shouldShowPiModelEmptyState()) {
         const modelSection = document.createElement("div");
         modelSection.className = "agent-thread-card__codex-settings-section";
         modelSection.textContent = this.t("agent.model.title");
@@ -1978,9 +2013,18 @@ export class ExternalAgentSettingsController {
     const reasoningSection = document.createElement("div");
     reasoningSection.className = "agent-thread-card__codex-settings-section";
     reasoningSection.textContent = this.t("agent.reasoningDepth.title");
-    this.popover.append(reasoningSection);
-
-    this.renderReasoningOptions();
+    if (this.getTypeKey() === "pi") {
+      const reasoningGroup = document.createElement("div");
+      reasoningGroup.className = "pi-model-picker__reasoning";
+      reasoningGroup.setAttribute("role", "group");
+      reasoningGroup.setAttribute("aria-label", this.t("agent.reasoningDepth.title"));
+      reasoningGroup.append(reasoningSection);
+      this.popover.append(reasoningGroup);
+      this.renderReasoningOptions(reasoningGroup, true);
+    } else {
+      this.popover.append(reasoningSection);
+      this.renderReasoningOptions();
+    }
   }
 
   private createCodexReasoningSlider(): HTMLElement {
@@ -2099,6 +2143,13 @@ export class ExternalAgentSettingsController {
     current: AgentCodexModel,
     currentProviderId: string | undefined,
   ): HTMLElement {
+    const isPiCloudModel = this.getTypeKey() === "pi" && isFlowixCloudModelOption(option);
+    const description = isPiCloudModel ? undefined : [
+      option.subtitle?.trim(),
+      option.creditMultiplier != null
+        ? translate(this.getLanguage(), "preferences.pi.creditMultiplier", { value: option.creditMultiplier.toFixed(2) })
+        : this.getTypeKey() === "pi" ? undefined : option.description,
+    ].filter(Boolean).join(" · ");
     return createCodexSettingsItem(
       option.label,
       option.id === current
@@ -2107,6 +2158,8 @@ export class ExternalAgentSettingsController {
         this.setExternalAgentModel(option);
         this.setSettingsPopoverOpen(false);
       },
+      description,
+      { icon: modelProviderIcon(option.iconUrl) },
     );
   }
 
@@ -2114,7 +2167,10 @@ export class ExternalAgentSettingsController {
     this.renderReasoningOptions();
   }
 
-  private renderReasoningOptions(): void {
+  private renderReasoningOptions(
+    target: HTMLElement = this.popover,
+    useButtonSelectionState = false,
+  ): void {
     const current =
       this.readRuntimeSetting("reasoning") ??
       "medium";
@@ -2129,12 +2185,16 @@ export class ExternalAgentSettingsController {
             ["low", "medium", "high", "xhigh"].includes(option.id),
           );
     reasoningOptions.forEach((option) => {
-      this.popover.append(
-        createCodexSettingsItem(option.label, option.id === current, () => {
-          this.writeRuntimeSetting("reasoning", option.id);
-          this.setSettingsPopoverOpen(false);
-        }),
-      );
+      const item = createCodexSettingsItem(option.label, option.id === current, () => {
+        this.writeRuntimeSetting("reasoning", option.id);
+        this.setSettingsPopoverOpen(false);
+      });
+      if (useButtonSelectionState) {
+        item.removeAttribute("role");
+        item.removeAttribute("aria-checked");
+        item.setAttribute("aria-pressed", option.id === current ? "true" : "false");
+      }
+      target.append(item);
     });
   }
 
@@ -2244,6 +2304,20 @@ export class ExternalAgentSettingsController {
       popoverRect.height || CODEX_SETTINGS_POPOVER_MAX_HEIGHT_PX,
       CODEX_SETTINGS_POPOVER_MAX_HEIGHT_PX,
     );
+    if (this.popoverPlacement === "submenu") {
+      const maxLeft = Math.max(padding, viewportWidth - padding - popoverWidth);
+      // A cascading settings panel touches the hovered row directly and uses
+      // that row's top edge, rather than the parent add-menu bounds, as anchor.
+      const rightPosition = anchorRect.right;
+      const preferredLeft = rightPosition + popoverWidth <= viewportWidth - padding
+        ? rightPosition
+        : anchorRect.left - popoverWidth;
+      const left = Math.min(Math.max(preferredLeft, padding), maxLeft);
+      const maxTop = Math.max(padding, viewportHeight - padding - popoverHeight);
+      const top = Math.min(Math.max(anchorRect.top, padding), maxTop);
+      applyPopoverPosition(this.popover, { left, top, placeAbove: false });
+      return;
+    }
     applyPopoverPosition(
       this.popover,
       calculateAnchoredPopoverPosition({

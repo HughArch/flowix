@@ -1,6 +1,7 @@
 import { createRoot } from "react-dom/client";
 
 import App from "@app/app";
+import { installDesktopShutdown } from "@app/desktop-shutdown";
 import "@/styles/index.css";
 import "sonner/dist/styles.css";
 import { initTauriClient } from "@platform/tauri/client";
@@ -16,5 +17,7 @@ try {
 } catch (error) {
   console.error("[desktop entry] Failed to initialize Tauri:", error);
 }
+
+installDesktopShutdown();
 
 createRoot(document.getElementById("root")!).render(<App />);

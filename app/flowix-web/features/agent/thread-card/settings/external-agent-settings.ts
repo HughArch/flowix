@@ -149,7 +149,7 @@ export interface CodexSettingsItemOptions {
   readOnly?: boolean;
   selectedLabel?: string;
   notebookLabel?: boolean;
-  icon?: SVGSVGElement | null;
+  icon?: Node | null;
 }
 
 export function createCodexSettingsItem(

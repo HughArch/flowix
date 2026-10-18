@@ -157,7 +157,7 @@ describe("Codex protocol tool summaries", () => {
 
 describe("DeepSeek Harness (DSH) tool displays", () => {
   const dsh = (toolName: string, input: unknown) =>
-    createAgentToolDisplay({ agentType: "deepseek-harness", toolName, input });
+    createAgentToolDisplay({ agentType: "dsh", toolName, input });
 
   it.each([
     ["read", { file_path: "/tmp/a/main.rs" }, "main.rs", "file"],
@@ -407,7 +407,7 @@ describe("parseAgentCommandInput", () => {
   it("normalizes Flowix shell command tools to command display", () => {
     expect(
       createAgentToolDisplay({
-        agentType: "deepseek-harness",
+        agentType: "dsh",
         toolName: "shell",
         input: { command: "npm run build" },
       }),
@@ -420,7 +420,7 @@ describe("parseAgentCommandInput", () => {
   it("normalizes Claude Code Bash command tools to command display", () => {
     expect(
       createAgentToolDisplay({
-        agentType: "claude",
+        agentType: "claudecode",
         toolName: "Bash",
         input: { command: "npm test", description: "run tests" },
       }),

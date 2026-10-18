@@ -56,6 +56,16 @@ contract and should shrink as higher-level commands are introduced.
 Same-feature code may use its own internal paths. Tests may import internals
 when they are explicitly testing an internal unit.
 
+## Markdown parsing worker
+
+`features/editor/markdown-parser-extensions.ts` is the parser-only registry used
+for every Markdown document. Its extensions must come from pure Markdown
+modules; they must not import editor NodeViews, React, Tauri clients, or feature
+stores. Editor extensions reuse the same tokenizer and parse specs so parsing
+behavior stays aligned between the Worker and the interactive editor. Raw HTML
+and other unsupported forms return an explicit Worker error and use the
+existing main-thread parser fallback.
+
 ## Navigation transaction
 
 Workspace owns the order of a navigation change:
@@ -96,15 +106,14 @@ The `app/main-window` composition code also consumes Workspace through
 aware of feature capabilities without binding it to Workspace's Zustand state
 shape or use-case file layout.
 
-Application update lifecycle, DSH download observation, and DSH onboarding
+Application update lifecycle, DSH download observation, and notebook onboarding
 persistence are owned by `app/main-window/use-main-window-system-controller`.
 Shell receives their current presentation state through
 `MainLayoutSystemController`; it no longer starts those subscriptions or writes
 the onboarding flag itself.
 
-The DSH onboarding and installation prompt is owned by Preferences and exposed
-through `features/preferences/public/dsh-install-prompt`. Shell only places the
-prompt in its overlay stack and supplies controller state from `app/main-window`.
+DSH runtime installation is managed in Preferences. Shell only exposes active
+download progress in the status bar; startup has no DSH installation prompt.
 
 `features/shell/main-layout` now consumes Document, Memo, Agent, Surface, and
 Workspace through their `public/shell-api` entrypoints. These entrypoints are
@@ -114,10 +123,9 @@ stores. The public hooks retain narrow selectors and shallow equality inside
 the owning module, preserving render-subscription behavior while hiding store
 shape and implementation paths from Shell.
 
-MainLayout delegates bottom-bar composition to `MainStatusBarHost` and overlay
-composition to `MainPromptHost`. These hosts group cohesive presentation props
-and keep platform navigation and prompt ordering outside the central layout
-tree. Their cross-feature imports are protected by the public-entrypoint rule.
+MainLayout delegates bottom-bar composition to `MainStatusBarHost`. Navigation
+failures use the shared actionable-notice host and Workspace's public API;
+Shell does not own a floating prompt stack.
 
 Middle-column switching is coordinated by
 `useMainMiddleColumnController`. It owns the Agent conversation list's lazy
@@ -192,7 +200,5 @@ selection. The first two files are fully protected from cross-feature deep
 imports; global search is ratcheted on its migrated Workspace seam while its
 legacy Memo and Agent dependencies are handled separately.
 
-Navigation failure and application update prompts are isolated presentation
-components under `features/shell/components/prompts`. The navigation prompt
-uses Workspace's public API, and boundary checks protect prompt components from
-reaching into another feature's private implementation.
+Navigation failure recovery is published through the shared actionable-notice
+host and Workspace's public API. It no longer has a Shell prompt component.

@@ -3,7 +3,7 @@ import { useWorkColumnStore } from '@features/workspace/store/work-column-store'
 export {
   clearPluginWorkbenchTarget,
   dismissNavigationFailure,
-  flushWorkspaceDocument,
+  prepareActiveWorkColumnDocumentLeave,
   openFolderCollection,
   openFolderCollectionFromFolder,
   reconcileDeletedNotebook,

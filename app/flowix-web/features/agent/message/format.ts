@@ -14,11 +14,10 @@ export function truncateStart(path: string, maxChars: number = 20): string {
 
 /**
  * Extracts a compact file name for tool message summaries.
- * Removes the memo id suffix in the #xxxxxx format and then the extension.
+ * Removes the file extension from a path's final component.
  */
 export function extractFileName(path: string): string {
-  // v3 改造: filename 已经是磁盘文件名 (xxx.md), 不再带 #memoid 后缀,
-  // 因此 memoIdPattern 分支移除 ── 直接按扩展名规则剥掉 .md / .txt 等。
+  // Strip the extension from the on-disk filename.
   const fileName = path.split("/").pop() ?? path.split("\\").pop() ?? path;
 
   const lastDot = fileName.lastIndexOf(".");

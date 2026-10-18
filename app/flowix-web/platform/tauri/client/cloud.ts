@@ -19,6 +19,10 @@ export interface CloudMembership {
   readOnly: boolean;
 }
 
+export interface CloudAiCreditBalance {
+  balanceMicrocredits: number;
+}
+
 export interface CloudState {
   revision: number;
   authenticated: boolean;
@@ -160,8 +164,12 @@ export const cloud = {
     invoke<CloudNotebookSyncState>('cloud_set_notebook_enabled', { notebookId, enabled }),
   refreshMembership: () =>
     invoke<CloudMembership>('cloud_refresh_membership'),
+  getAiCreditBalance: () =>
+    invoke<CloudAiCreditBalance>('cloud_ai_credit_balance'),
   connectPiModelProvider: () => invoke<void>('cloud_connect_pi_model_provider'),
-  disconnectPiModelProvider: () => invoke<void>('cloud_disconnect_pi_model_provider'),
+  refreshPiModelProvider: () => invoke<boolean>('cloud_refresh_pi_model_provider'),
+  refreshPiModelProviderAtStartup: () =>
+    invoke<boolean>('cloud_refresh_pi_model_provider_at_startup'),
   listProducts: () => invoke<CloudProduct[]>('cloud_list_products'),
   listBillingOrders: () => invoke<CloudOrder[]>('cloud_list_billing_orders'),
   checkBillingOrder: (orderId: string) =>

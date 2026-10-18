@@ -66,7 +66,6 @@ export function PreferencesView({ initialTab }: PreferencesViewProps) {
 	const [productInfo, setProductInfo] = useState<ProductInfo | null>(null);
 	const title = t('preferences.title');
 	const initialTabName = initialTab?.split('?')[0];
-	const autoUpdateDsh = initialTab?.includes('autoUpdate=1') ?? false;
 
 	useEffect(() => {
 		product.getInfo().then(setProductInfo).catch(() => setProductInfo(null));
@@ -161,7 +160,7 @@ export function PreferencesView({ initialTab }: PreferencesViewProps) {
 											fallback={(
 												<div className="flex flex-wrap items-center justify-between gap-3 rounded-md bg-[color-mix(in_oklch,var(--destructive)_10%,transparent)] p-3" role="alert">
 													<p className="text-sm text-[var(--destructive)]">{t('preferences.sectionLoadFailed')}</p>
-													<Button type="button" size="sm" variant="outline" onClick={() => setTabRetryVersion((version) => version + 1)}>
+									<Button type="button" size="sm" variant="outline" className="rounded-lg" onClick={() => setTabRetryVersion((version) => version + 1)}>
 														{t('error.retry')}
 													</Button>
 												</div>
@@ -175,7 +174,6 @@ export function PreferencesView({ initialTab }: PreferencesViewProps) {
 											)}>
 												{ActiveTabComponent && <ActiveTabComponent
 													productInfo={productInfo}
-													autoUpdate={autoUpdateDsh}
 												/>}
 											</Suspense>
 										</ErrorBoundary>

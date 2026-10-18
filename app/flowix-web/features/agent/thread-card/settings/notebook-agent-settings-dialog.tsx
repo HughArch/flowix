@@ -26,6 +26,7 @@ import { displayNameForComposerSkill } from "@features/agent/thread-card/compose
 import type { CodexSkillCatalogItem } from "@features/agent/services/codex-slash-command-service";
 import { invalidateNotebookSkills, loadNotebookSkillCatalog } from "@features/agent/services/agent-catalog-service";
 import { useAgentDataStore } from "@features/agent/store/agent-data-store";
+import { useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-store";
 import { useNoteStore } from "@features/memo/store/note-store";
 import { isValidPiSkillCommandName } from "@features/agent/services/pi-skill-name";
 
@@ -589,7 +590,7 @@ function getNotebookSkillScopeId(notebookPath: string): string {
   const notebookId = useNoteStore.getState().notebooks.find(
     (notebook) => normalizeNotebookPath(notebook.path) === normalizedPath,
   )?.id;
-  const workspaceNotebookId = Object.values(useAgentDataStore.getState().workspace.byNotebookId).find(
+  const workspaceNotebookId = Object.values(useAgentWorkspaceStore.getState().workspace.byNotebookId).find(
     (notebook) => normalizeNotebookPath(notebook.notebook.path) === normalizedPath,
   )?.notebook.id;
   return notebookId ?? workspaceNotebookId ?? normalizedPath;
@@ -600,7 +601,7 @@ function CodexSkillsList({ notebookPath }: { notebookPath: string }) {
   const notebookId = useNoteStore((state) =>
     state.notebooks.find((notebook) => normalizeNotebookPath(notebook.path) === normalizedPath)?.id ?? null,
   );
-  const workspaceNotebookId = useAgentDataStore((state) =>
+  const workspaceNotebookId = useAgentWorkspaceStore((state) =>
     Object.values(state.workspace.byNotebookId).find(
       (notebook) => normalizeNotebookPath(notebook.notebook.path) === normalizedPath,
     )?.notebook.id ?? null,

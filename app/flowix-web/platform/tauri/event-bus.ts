@@ -1,12 +1,8 @@
 /**
  * 前端事件总线 — 统一收口 `@tauri-apps/api/event` 的 `listen<T>(name, cb)`。
  *
- * 背景: 项目里后端发了多 channel 事件 (memo-event / agent-chunk /
- * user-config-changed / agent-workspace-changed / flowix:open-target), 此前
- * 每个 channel 自己写 "模块级 unlisten 单例 + 重复挂载短路" 样板
- * (client.ts 的 `streamUnlisten` / `userConfigUnlisten` / `agentAccessUnlisten`、
- * openByTarget/listener.ts 的 `unlisten`、useMemoEvents 的 `disposed` 互斥)。
- * 同形逻辑散在 4 处, 改一处就得手工同步 4 处。
+ * 后端事件经此适配层共享 Tauri listener。业务层可独立订阅同名事件，
+ * 底层仅保留一个 listener，并在最后一个订阅者离开时释放。
  *
  * 设计:
  * - `subscribe<T>(event, handler): UnlistenFn` — 同名事件只挂 1 个 Tauri
@@ -23,11 +19,9 @@
  * - 单例状态模块级, 跨 hook 共享 (跟原 client.ts 设计一致)。 进程退出
  *   Tauri 自动清理, 这里不提供 `shutdown`。
  *
- * 迁移: client.ts 的 `listenToAgentStream` / `listenToUserConfigChanges` /
- * `listenToAgentWorkspaceChanges` / `stopListeningTo*` 内部都改走本模块。
- * openByTarget/listener.ts 的 `mountOpenTargetListener` / `unmount` 也走
- * 同一接口。 useMemoEvents 用 `subscribe` 替换内联 `listen` + `disposed`
- * 样板, useEffect cleanup 直接调 unsubscribe。
+ * 应用层的 memo-event 桥接、open-target 监听和客户端事件适配都通过
+ * `subscribe` 管理生命周期；外部文档 watcher 还会在领域层合并文件 lease，
+ * 再把事件分发到该文件的各个视图。
  *
  * 类型安全: handler 入参是 `event.payload` (T), 生命周期通知通过类型化的
  * SubscribeOptions 暴露。

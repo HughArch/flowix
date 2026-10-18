@@ -1,7 +1,7 @@
 import { spawn, spawnSync } from 'node:child_process'
-import { existsSync, readFileSync } from 'node:fs'
+import { accessSync, constants, existsSync, readFileSync, statSync } from 'node:fs'
 import { homedir } from 'node:os'
-import { delimiter, join, resolve } from 'node:path'
+import { delimiter, resolve } from 'node:path'
 
 const repoRoot = resolve(import.meta.dirname, '..')
 const npm = process.platform === 'win32' ? 'npm.cmd' : 'npm'
@@ -22,6 +22,8 @@ if (cloudEnvIndex >= 0) {
 }
 const config = configArgs.find(arg => arg !== '--with-pi') ?? 'app/flowix-desktop/tauri.conf.dev.json'
 const childEnv = { ...process.env }
+// Pi is shipped by Flowix; do not let a shell override change the runtime.
+delete childEnv.PI_CLI_PATH
 childEnv.CARGO_TARGET_DIR ??= resolve(repoRoot, '.build/cargo-target')
 const devMode = config.includes('.dev.')
 if (devMode) childEnv.FLOWIX_DEV_MODE = '1'
@@ -57,56 +59,13 @@ if (!packageVersion || packageVersion !== cargoVersion || packageVersion !== tau
   )
 }
 
-function findInstalledFlowixPi() {
-  if (childEnv.PI_CLI_PATH) return childEnv.PI_CLI_PATH
-
-  const platform = { darwin: 'darwin', win32: 'windows', linux: 'linux' }[process.platform]
-  if (!platform) return undefined
-  const arch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : process.arch
-  const executable = process.platform === 'win32' ? 'pi.exe' : 'pi'
-  const appRoots = [childEnv.FLOWIX_PROD_APP_PATH]
-  if (process.platform === 'darwin') {
-    appRoots.push('/Applications/Flowix.app', join(homedir(), 'Applications', 'Flowix.app'))
-  } else if (process.platform === 'win32') {
-    appRoots.push(
-      childEnv.LOCALAPPDATA && join(childEnv.LOCALAPPDATA, 'Programs', 'Flowix'),
-      childEnv.ProgramFiles && join(childEnv.ProgramFiles, 'Flowix'),
-    )
-  } else {
-    appRoots.push('/opt/Flowix', '/usr/lib/flowix', '/usr/lib/Flowix')
-  }
-
-  for (const appRoot of appRoots.filter(Boolean)) {
-    const resourceRoots = process.platform === 'darwin'
-      ? [join(appRoot, 'Contents', 'Resources')]
-      : [join(appRoot, 'resources'), appRoot]
-    for (const resourceRoot of resourceRoots) {
-      for (const candidate of [
-        join(resourceRoot, 'pi', `${platform}-${arch}`, 'dist', executable),
-        join(resourceRoot, 'pi', `${platform}-${arch}`, executable),
-      ]) {
-        if (existsSync(candidate)) return candidate
-      }
-    }
-  }
-  return undefined
-}
-
 if (process.platform === 'win32') {
   // rustup installs Cargo here by default. GUI shells and automation often do
   // not inherit the updated user PATH until they are restarted.
-  const cargoBin = join(homedir(), '.cargo', 'bin')
+  const cargoBin = resolve(homedir(), '.cargo', 'bin')
   const pathKey = Object.keys(childEnv).find(key => key.toLowerCase() === 'path') ?? 'Path'
   childEnv[pathKey] = `${cargoBin}${delimiter}${childEnv[pathKey] ?? ''}`
 
-}
-
-if (!withPi) {
-  const installedPi = findInstalledFlowixPi()
-  if (installedPi) {
-    childEnv.PI_CLI_PATH = installedPi
-    console.log(`using Pi from installed Flowix: ${installedPi}`)
-  }
 }
 
 function run(command, args) {
@@ -129,24 +88,36 @@ function npmRun(script) {
 }
 
 npmRun('cli:build:dev')
-if (withPi) {
-  const piPlatform = { darwin: 'darwin', win32: 'windows', linux: 'linux' }[process.platform]
-  if (!piPlatform) throw new Error(`Pi v1.1.0 has no release for ${process.platform}`)
+const piPlatform = { darwin: 'darwin', win32: 'windows', linux: 'linux' }[process.platform]
+if (!piPlatform) throw new Error(`Pi v1.1.0 has no release for ${process.platform}`)
+const piArch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : process.arch
+if (!['arm64', 'x64'].includes(piArch)) throw new Error(`Pi v1.1.0 has no release for ${process.platform}-${piArch}`)
+const piBinary = process.platform === 'win32' ? 'pi.exe' : 'pi'
+const piResourceDir = resolve(repoRoot, '.build', 'pi-runtime', 'resources', `${piPlatform}-${piArch}`)
+const stagedPiCandidates = [resolve(piResourceDir, 'dist', piBinary), resolve(piResourceDir, piBinary)]
+function hasStagedPi() {
+  return stagedPiCandidates.some(candidate => {
+    try {
+      if (!statSync(candidate).isFile()) return false
+      if (process.platform !== 'win32') accessSync(candidate, constants.X_OK)
+      return true
+    } catch {
+      return false
+    }
+  })
+}
+
+if (withPi || !hasStagedPi()) {
   run(process.execPath, [
     resolve(repoRoot, 'scripts/prepare-pi-bundle.mjs'),
     '--platform',
     process.platform,
     '--arch',
-    process.arch,
+    piArch,
   ])
-  const piArch = process.arch === 'arm64' ? 'arm64' : process.arch === 'x64' ? 'x64' : process.arch
-  const piBinary = process.platform === 'win32' ? 'pi.exe' : 'pi'
-  const piResourceDir = resolve(repoRoot, '.build', 'pi-runtime', 'resources', `${piPlatform}-${piArch}`)
-  childEnv.PI_CLI_PATH = [resolve(piResourceDir, 'dist', piBinary), resolve(piResourceDir, piBinary)]
-    .find(existsSync)
-  if (!childEnv.PI_CLI_PATH) throw new Error(`staged Pi executable was not found in ${piResourceDir}`)
-  console.log(`using bundled Pi v1.1.0 from ${childEnv.PI_CLI_PATH}`)
-} else {
+  if (!hasStagedPi()) throw new Error(`staged Pi executable was not found in ${piResourceDir}`)
+  console.log(`prepared bundled Pi v1.1.0 for ${piPlatform}-${piArch}`)
+} else if (!existsSync(resolve(repoRoot, '.build', 'pi-runtime', 'provider-catalog.json'))) {
   run(process.execPath, [resolve(repoRoot, 'scripts/prepare-pi-catalog.mjs')])
 }
 childEnv.FLOWIX_PI_PROVIDER_CATALOG = resolve(repoRoot, '.build', 'pi-runtime', 'provider-catalog.json')

@@ -2,13 +2,10 @@ import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import type { NodeView as ProseMirrorNodeView, EditorView, Decoration } from '@tiptap/pm/view';
 import type { ViewMutationRecord } from '@tiptap/pm/view';
 import { NodeSelection } from '@tiptap/pm/state';
-import { Node, InputRule, mergeAttributes, type JSONContent, type MarkdownToken } from '@tiptap/core';
+import { Node, InputRule, mergeAttributes, type JSONContent } from '@tiptap/core';
 import { assetMarkdownUrl, assetUrl, decodeStorageKey, isVideoUrl } from '@features/editor/extensions/attachment-link/utils';
-import {
-    parseFlowixMediaStyleComment,
-    parseFlowixMediaStyleSuffix,
-    renderFlowixMediaStyleComment,
-} from '@features/editor/extensions/attachment-link/markdown/media-style';
+import { renderFlowixMediaStyleComment } from '@features/editor/extensions/attachment-link/markdown/media-style';
+import { normalizeVideoAlignment, videoMarkdownSpec } from '@features/editor/extensions/attachment-link/markdown/video-markdown';
 
 type VideoAttributes = Record<string, unknown> & {
     src?: unknown;
@@ -17,28 +14,6 @@ type VideoAttributes = Record<string, unknown> & {
     storageKey?: unknown;
     align?: unknown;
 };
-
-type VideoAlignment = 'left' | 'center' | 'right';
-
-function normalizeVideoAlignment(value: unknown): VideoAlignment {
-    return value === 'left' || value === 'right' ? value : 'center';
-}
-
-function parseVideoSuffix(value: string): { raw: string; align: VideoAlignment } {
-    const modern = parseFlowixMediaStyleSuffix(value);
-    if (modern) {
-        return {
-            raw: modern.raw,
-            align: normalizeVideoAlignment(modern.style.align),
-        };
-    }
-
-    const legacy = /^\{align=(left|center|right)\}/.exec(value);
-    return {
-        raw: legacy?.[0] ?? '',
-        align: normalizeVideoAlignment(legacy?.[1]),
-    };
-}
 
 function stringAttribute(value: unknown): string {
     return typeof value === 'string' ? value : '';
@@ -484,126 +459,7 @@ export const VideoAttachment = Node.create({
         );
     },
 
-    markdownTokenizer: {
-        name: 'videoAttachment',
-        level: 'block' as const,
-        start(src: string) {
-            const candidateIndex = src.search(/^<!--[ \t]*flowix:media[ \t]+\{/m);
-            const candidate = candidateIndex >= 0 ? parseFlowixMediaStyleComment(src.slice(candidateIndex)) : null;
-            const commentIndex = candidate && src.slice(candidateIndex + candidate.raw.length).startsWith('[')
-                ? candidateIndex
-                : -1;
-            let pos = 0;
-            let mediaIndex = -1;
-            while (pos < src.length) {
-                const openBracket = src.indexOf('[', pos);
-                if (openBracket === -1) break;
-
-                const closeBracket = src.indexOf(']', openBracket);
-                const openParen = src.indexOf('(', openBracket);
-
-                if (closeBracket === -1 || openParen === -1) {
-                    pos = openBracket + 1;
-                    continue;
-                }
-
-                // Must be adjacent: ](
-                if (closeBracket !== openParen - 1) {
-                    pos = openBracket + 1;
-                    continue;
-                }
-
-                // Check if it's an asset:// video link
-                if (src.startsWith('asset://', openParen + 1)) {
-                    mediaIndex = openBracket;
-                    break;
-                }
-
-                pos = openBracket + 1;
-            }
-            if (commentIndex < 0) return mediaIndex;
-            if (mediaIndex < 0) return commentIndex;
-            return Math.min(commentIndex, mediaIndex);
-        },
-        tokenize(src: string) {
-            const metadata = parseFlowixMediaStyleComment(src);
-            const source = metadata ? src.slice(metadata.raw.length) : src;
-            // source should start with '[' — if not, this isn't a video link
-            if (!source.startsWith('[')) return undefined;
-            const closeBracket = source.indexOf(']');
-            if (closeBracket === -1) return undefined;
-            const openParen = source.indexOf('(', closeBracket);
-            if (openParen !== closeBracket + 1) return undefined;
-            // Find matching ')' handling %29 escape
-            let closePos = -1;
-            for (let i = openParen + 1; i < source.length; i++) {
-                const ch = source[i];
-                if (ch === '%' && i + 2 < source.length && source[i + 1] === '2' && source[i + 2] === '9') {
-                    i += 2;
-                    continue;
-                }
-                if (ch === ')') {
-                    if (i > 0 && source[i - 1] === '%') continue;
-                    closePos = i;
-                    break;
-                }
-            }
-            if (closePos === -1) return undefined;
-            const url = source.slice(openParen + 1, closePos);
-            if (!isVideoUrl(url)) return undefined;
-            // raw is precisely [title](url), plus the optional style metadata.
-            const suffix = parseVideoSuffix(source.slice(closePos + 1));
-            const align = metadata
-                ? normalizeVideoAlignment(metadata.style.align)
-                : suffix.align;
-            const raw = (metadata?.raw ?? '') + source.slice(0, closePos + 1) + suffix.raw;
-            return { type: 'videoAttachment', raw, align };
-        },
-    },
-
-    parseMarkdown(token: MarkdownToken) {
-        const raw = typeof token.raw === 'string' ? token.raw : '';
-        if (raw.startsWith('!')) return { type: 'text', text: raw };
-        const firstBracket = raw.indexOf('[');
-        if (firstBracket === -1) return { type: 'text', text: raw };
-        const closeBracket = raw.indexOf(']', firstBracket + 1);
-        const openParen = raw.indexOf('(', firstBracket);
-        if (closeBracket === -1 || openParen === -1 || closeBracket !== openParen - 1) {
-            return { type: 'text', text: raw };
-        }
-        const title = raw.slice(firstBracket + 1, closeBracket);
-        let closePos = -1;
-        const remaining = raw.slice(openParen + 1);
-        for (let i = 0; i < remaining.length; i++) {
-            if (remaining[i] === '%' && i + 2 < remaining.length && remaining[i + 1] === '2' && remaining[i + 2] === '9') {
-                i += 2;
-                continue;
-            }
-            if (remaining[i] === ')') {
-                if (i > 0 && remaining[i - 1] === '%') continue;
-                closePos = openParen + 1 + i;
-                break;
-            }
-        }
-        if (closePos === -1) return { type: 'text', text: raw };
-        const src = raw.slice(openParen + 1, closePos);
-        if (!isVideoUrl(src)) return { type: 'text', text: raw };
-        const metadata = parseFlowixMediaStyleComment(raw);
-        const suffix = parseVideoSuffix(raw.slice(closePos + 1));
-        const align = metadata
-            ? normalizeVideoAlignment(metadata.style.align)
-            : suffix.align;
-        return {
-            type: 'videoAttachment',
-            attrs: {
-                src,
-                title,
-                storageMode: 'attachment',
-                storageKey: decodeStorageKey(src),
-            align,
-            },
-        };
-    },
+    ...videoMarkdownSpec,
 
     renderMarkdown(node: JSONContent) {
         const { title, storageMode, storageKey, src } = node.attrs || {};

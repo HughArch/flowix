@@ -21,25 +21,25 @@ Pi session with the persisted Pi session ID and the updated runtime settings.
 
 ## Build variants
 
-- `npm run tauri:dev:pi` downloads the matching Pi v1.1.0 archive into
-  `.build/pi-runtime`, verifies its pinned SHA-256 digest, and points the dev
-  app at that executable. No system-wide Pi installation is required.
-- `npm run tauri:dev` reuses Pi from an installed Flowix app when it finds one
-  in the standard app location for the current platform. Set `PI_CLI_PATH` to
-  override the executable path, or `FLOWIX_PROD_APP_PATH` when the app is in a
-  non-standard location. This avoids downloading or staging another Pi build.
-- `npm run tauri:build:prod` builds Flowix without Pi. The user must have `pi`
-  on `PATH` or set `PI_CLI_PATH` to a Pi v1.1.0 executable.
-- `npm run tauri:build:prod:pi` downloads the matching Pi v1.1.0 release
-  archive, verifies its pinned SHA-256 digest, and puts the matching runtime
-  in the app resources. The universal macOS build stages arm64 and x64
-  archives separately and includes only the matching runtime in each app.
+- Pi is an application resource in every desktop build. Runtime availability
+  checks and Pi process startup resolve the same bundled executable; neither
+  `PATH` nor `PI_CLI_PATH` selects an external Pi installation.
+- `npm run tauri:dev` reuses the matching architecture already staged in
+  `.build/pi-runtime`; if it is missing, the command downloads Pi v1.1.0,
+  verifies its pinned SHA-256 digest, and stages it. No system-wide Pi
+  installation is required. `npm run tauri:dev:pi` remains available to force
+  staging again.
+- `npm run tauri:build:prod` stages Pi v1.1.0 and includes it in the package.
+  The legacy `npm run tauri:build:prod:pi` command remains an alias. A universal
+  macOS build stages arm64 and x64 archives and packages only the matching
+  runtime in each app. Release CI prepares the runtime for each target before
+  generating its Tauri resource configuration.
 
-Pi-enabled artifacts use the Pi updater endpoint family. Release infrastructure
-must publish manifests under `/updater/pi/{macos,windows,linux}/latest.json` or
-set `FLOWIX_UPDATER_ENDPOINT_PI_MACOS`, `FLOWIX_UPDATER_ENDPOINT_PI_WINDOWS`,
-and `FLOWIX_UPDATER_ENDPOINT_PI_LINUX` as appropriate. This keeps Pi-enabled
-and base installations on separate update channels.
+Production packages always include Pi. Their updater endpoint remains the
+regular platform endpoint unless `FLOWIX_UPDATER_ENDPOINT_PI_MACOS`,
+`FLOWIX_UPDATER_ENDPOINT_PI_WINDOWS`, or `FLOWIX_UPDATER_ENDPOINT_PI_LINUX` is
+configured. Set those variables only when release infrastructure publishes a
+separate Pi manifest, such as `/updater/pi/{macos,windows,linux}/latest.json`.
 
 ## Models and permissions
 
@@ -79,6 +79,15 @@ Pi history adapter maps native user, assistant, reasoning, tool, bash, custom,
 and compaction messages into Flowix rows and pages the full RPC transcript by
 conversation turns. Pi's session remains the history source of truth; Flowix's
 external-event journal is not used to reconstruct Pi conversations.
+History RPC responses are routed by request ID, so snapshots can be read while
+a prompt is streaming. Flowix checks the native append cursor and active leaf
+around the message read; an unfinished tail without a native entry ID remains
+owned by the live stream projection. Pi does not persist a partial assistant
+message, so a refresh restores committed history and the submitted user message
+but cannot restore assistant text streamed before the refresh. If a new turn is
+still starting its Pi process, history reads wait for that active run to bind
+its session before reading, so reopening the conversation does not mistake
+session startup for an empty history.
 
 Pi thinking blocks are not forwarded to Flowix by default. Set
 `FLOWIX_PI_FORWARD_THINKING=1` (also accepts `true`, `yes`, or `on`) in the

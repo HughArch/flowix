@@ -12,12 +12,19 @@ type ListActions = {
 const mocks = vi.hoisted(() => ({
   read: vi.fn(), write: vi.fn(), importFiles: vi.fn(),
   actions: null as ListActions | null,
+  subscriptions: [] as Array<{ event: string; handler: (event: never) => void }>,
 }));
 vi.mock('@platform/tauri/client', () => ({
   files: { read: mocks.read }, externalDocuments: { read: mocks.read, write: mocks.write },
   dialogs: { selectFiles: async () => ['/source/image.png'] }, mediaResources: {}, notebookAssets: {},
 }));
-vi.mock('@platform/tauri/event-bus', () => ({ subscribe: () => () => {} }));
+vi.mock('@platform/tauri/event-bus', () => ({
+  subscribe: (event: string, handler: (event: never) => void) => {
+    const subscription = { event, handler };
+    mocks.subscriptions.push(subscription);
+    return () => { mocks.subscriptions = mocks.subscriptions.filter((item) => item !== subscription); };
+  },
+}));
 vi.mock('@features/collection/public/folder-api', () => ({ FolderCollectionSwitchConfirmDialog: () => null }));
 vi.mock('@features/memo/store/note-store', () => ({
   useNoteStore: (select: (state: { notebooks: unknown[] }) => unknown) => select({ notebooks: [] }),
@@ -31,6 +38,7 @@ vi.mock('@/lib/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn(), success: vi.fn() } }));
 
 let root: Root;
+let container: HTMLDivElement;
 let lifecycle: SurfaceLifecycle | null;
 const register = (value: SurfaceLifecycle | null) => { lifecycle = value; };
 function deferred<T>() {
@@ -40,16 +48,67 @@ function deferred<T>() {
 }
 beforeEach(async () => {
   vi.clearAllMocks();
+  mocks.subscriptions = [];
   mocks.read.mockResolvedValue(serializeMediaLibrary(createMediaLibrary('Library')));
   mocks.write.mockImplementation(async ({ content }: { content: string }) => ({ status: 'saved', content }));
   lifecycle = null;
-  root = createRoot(document.createElement('div'));
+  container = document.createElement('div');
+  root = createRoot(container);
   await act(async () => root.render(<MediaLibraryView filePath="/book/library.lib.yaml"
     notebookPath="/book" notebookId="book" onSurfaceLifecycleReady={register} />));
 });
 afterEach(async () => { await act(async () => root.unmount()); });
 
 describe('media library surface save barrier', () => {
+  it('shows refresh failures, keeps the view mounted, and retries the latest path', async () => {
+    const failure = new Error('temporary disk read failure');
+    mocks.read.mockRejectedValueOnce(failure);
+    const collectionChanged = mocks.subscriptions.find((item) => item.event === 'collection-changed');
+    expect(collectionChanged).toBeDefined();
+
+    await act(async () => {
+      collectionChanged!.handler({ notebookId: 'book', relativePath: 'library.lib.yaml' } as never);
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).toContain('mediaLibrary.refreshFailed');
+    expect(container.textContent).toContain('temporary disk read failure');
+    expect(container.querySelector('[role="alert"]')).not.toBeNull();
+
+    const retry = [...container.querySelectorAll('button')].find((button) => button.textContent === 'error.retry');
+    expect(retry).toBeDefined();
+    await act(async () => {
+      retry!.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain('mediaLibrary.refreshFailed');
+    expect(mocks.read).toHaveBeenCalledWith('/book/library.lib.yaml', '/book');
+  });
+
+  it('ignores a refresh failure after the surface changes to another session', async () => {
+    let rejectRead!: (reason: Error) => void;
+    mocks.read.mockReturnValueOnce(new Promise<string>((_resolve, reject) => { rejectRead = reject; }));
+    const collectionChanged = mocks.subscriptions.find((item) => item.event === 'collection-changed');
+    expect(collectionChanged).toBeDefined();
+    act(() => {
+      collectionChanged!.handler({ notebookId: 'book', relativePath: 'library.lib.yaml' } as never);
+    });
+
+    await act(async () => root.render(<MediaLibraryView filePath="/book/next.lib.yaml"
+      notebookPath="/book" notebookId="book" onSurfaceLifecycleReady={register} />));
+    await act(async () => {
+      rejectRead(new Error('stale session failure'));
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(container.textContent).not.toContain('stale session failure');
+    expect(container.querySelector('[role="alert"]')).toBeNull();
+  });
+
   it('returns false for a failed config write and permits a successful retry', async () => {
     const write = deferred<{ status: 'error'; message: string }>();
     mocks.write.mockReturnValueOnce(write.promise);

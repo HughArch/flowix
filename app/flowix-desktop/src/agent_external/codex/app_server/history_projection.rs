@@ -49,7 +49,11 @@ pub(super) fn app_server_turn_messages_with_offset(
     let mut messages = Vec::new();
     for (turn_offset, turn) in turns.iter().enumerate() {
         let turn_index = turn_index_offset + turn_offset;
-        let turn_id = turn.get("id").and_then(Value::as_str).map(str::to_string);
+        let turn_id = turn
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_string);
         let turn_duration_ms = app_server_turn_duration_ms(turn);
         let turn_message_start = messages.len();
         let timestamp = app_server_timestamp_string(
@@ -67,6 +71,7 @@ pub(super) fn app_server_turn_messages_with_offset(
         }
         let is_manual_compact_turn = is_manual_compact_turn(turn);
         let mut compact_command_emitted = false;
+        let mut fallback_item_occurrences: HashMap<(String, String), usize> = HashMap::new();
         let turn_items = turn
             .get("items")
             .and_then(Value::as_array)
@@ -94,8 +99,6 @@ pub(super) fn app_server_turn_messages_with_offset(
                         messages.push(app_server_orphan_custom_tool_output_message(
                             item,
                             &timestamp,
-                            turn_index,
-                            item_index,
                             turn_id.as_deref(),
                         ));
                     }
@@ -138,14 +141,50 @@ pub(super) fn app_server_turn_messages_with_offset(
                 item_index,
                 turn_id.as_deref(),
             ) {
-                if matches!(message.role.as_str(), "assistant" | "reasoning") {
-                    let item_status = item.get("status").and_then(Value::as_str);
-                    let turn_status = turn.get("status").and_then(Value::as_str);
-                    let interrupted_turn = matches!(turn_status, Some("failed" | "interrupted" | "cancelled"));
-                    let interrupted_item = matches!(item_status, Some("inProgress" | "failed" | "interrupted" | "cancelled"));
-                    if interrupted_turn && interrupted_item {
-                        continue;
+                let item_status = item.get("status").and_then(Value::as_str);
+                let turn_status = turn.get("status").and_then(Value::as_str);
+                let interrupted_turn =
+                    matches!(turn_status, Some("failed" | "interrupted" | "cancelled"));
+                let interrupted_item = matches!(
+                    item_status,
+                    Some("inProgress" | "failed" | "interrupted" | "cancelled")
+                );
+                if matches!(message.role.as_str(), "assistant" | "reasoning")
+                    && interrupted_turn
+                    && interrupted_item
+                {
+                    continue;
+                }
+                if item
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .map_or(true, |id| id.trim().is_empty())
+                {
+                    if message.role == "tool" {
+                        if let Some(call_id) = message.tool_call_id.as_deref() {
+                            message.id =
+                                super::codex_tool_call_message_id(turn_id.as_deref(), call_id);
+                        }
+                    } else if let Some(turn_id) =
+                        turn_id.as_deref().filter(|id| !id.trim().is_empty())
+                    {
+                        let key = (message.role.clone(), message.content.clone());
+                        let occurrence = fallback_item_occurrences.entry(key).or_default();
+                        message.id = super::codex_fallback_item_message_id(
+                            turn_id,
+                            &message.role,
+                            &message.content,
+                            *occurrence,
+                        );
+                        *occurrence += 1;
+                    } else if item.get("type").and_then(Value::as_str) == Some("contextCompaction")
+                    {
+                        // The live stream uses this stable marker when the provider omits both
+                        // the compaction item ID and its turn ID.
+                        message.id = "codex-context-compaction".to_string();
                     }
+                }
+                if matches!(message.role.as_str(), "assistant" | "reasoning") {
                     let item_terminal = item_status.is_some_and(is_terminal_native_status);
                     let turn_terminal = turn_status.is_some_and(is_terminal_native_status);
                     message.is_completed = Some(item_terminal || turn_terminal);
@@ -205,17 +244,10 @@ pub(super) fn app_server_compact_command_message(
         .get("id")
         .and_then(Value::as_str)
         .filter(|id| !id.trim().is_empty())
-        .or(turn_id)
         .map(str::to_string)
         .unwrap_or_else(|| format!("turn-{turn_index}-item-{item_index}"));
-    let mut message =
-        app_server_base_message(format!("codex-command-history-{source_id}"), timestamp);
-    message.role = "user".to_string();
-    message.message_type = Some(CODEX_COMMAND_MESSAGE_TYPE.to_string());
-    message.content = "/compact".to_string();
-    message.is_completed = Some(true);
-    message.codex_turn_id = turn_id.map(str::to_string);
-    message
+    let id = super::codex_command_message_id(turn_id, &source_id);
+    app_server_command_message(id, "/compact", timestamp, turn_id)
 }
 
 pub(super) fn app_server_goal_command_message(
@@ -224,16 +256,25 @@ pub(super) fn app_server_goal_command_message(
     turn_index: usize,
     turn_id: Option<&str>,
 ) -> ChatMessage {
-    let source_id = turn_id
-        .map(str::to_string)
-        .unwrap_or_else(|| format!("turn-{turn_index}"));
-    let mut message =
-        app_server_base_message(format!("codex-command-history-goal-{source_id}"), timestamp);
+    let source_id = format!("turn-{turn_index}");
+    let id = super::codex_command_message_id(turn_id, &source_id);
+    app_server_command_message(id, &format!("/goal {objective}"), timestamp, turn_id)
+}
+
+fn app_server_command_message(
+    id: String,
+    content: &str,
+    timestamp: &str,
+    turn_id: Option<&str>,
+) -> ChatMessage {
+    let mut message = app_server_base_message(id, timestamp);
     message.role = "user".to_string();
     message.message_type = Some(CODEX_COMMAND_MESSAGE_TYPE.to_string());
-    message.content = format!("/goal {objective}");
+    message.content = content.to_string();
     message.is_completed = Some(true);
-    message.codex_turn_id = turn_id.map(str::to_string);
+    message.codex_turn_id = turn_id
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_string);
     message
 }
 
@@ -257,16 +298,20 @@ pub(super) fn app_server_turn_error_message(
             .or_else(|| value.get("message").and_then(Value::as_str))
     });
     let text = match (status, error_text) {
-        ("failed", Some(message)) | ("interrupted", Some(message)) => message.to_string(),
+        ("failed", Some(message))
+        | ("interrupted", Some(message))
+        | ("cancelled", Some(message)) => message.to_string(),
         ("failed", None) => "Codex turn failed".to_string(),
         ("interrupted", None) => "Codex turn interrupted".to_string(),
+        ("cancelled", None) => "Codex turn failed".to_string(),
         _ => return None,
     };
     let id = turn
         .get("id")
         .and_then(Value::as_str)
-        .map(|id| format!("codex-turn-error-{id}"))
-        .unwrap_or_else(|| format!("codex-turn-error-{turn_index}"));
+        .filter(|id| !id.trim().is_empty())
+        .map(super::codex_turn_error_message_id)
+        .unwrap_or_else(|| super::codex_turn_error_message_id(&format!("index-{turn_index}")));
     let mut message = app_server_base_message(id, timestamp);
     message.role = "assistant".to_string();
     message.content = text.clone();
@@ -281,21 +326,19 @@ pub(super) fn app_server_turn_error_message(
 fn app_server_orphan_custom_tool_output_message(
     item: &Value,
     timestamp: &str,
-    turn_index: usize,
-    item_index: usize,
     turn_id: Option<&str>,
 ) -> ChatMessage {
     let call_id = custom_tool_output_call_id(item).unwrap_or("unknown-call");
     let output = codex_custom_tool_output(item)
         .map(codex_tool_payload_text)
         .unwrap_or_default();
-    let mut message = app_server_base_message(
-        format!(
-            "codex-custom-tool-output-{}-{turn_index}-{item_index}",
-            call_id
-        ),
-        timestamp,
-    );
+    let output_id = item
+        .get("id")
+        .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| super::codex_custom_tool_output_message_id(turn_id, call_id));
+    let mut message = app_server_base_message(output_id, timestamp);
     message.role = "tool".to_string();
     message.message_type = Some(CODEX_CUSTOM_TOOL_MESSAGE_TYPE.to_string());
     message.tool_call_id = Some(call_id.to_string());
@@ -303,7 +346,9 @@ fn app_server_orphan_custom_tool_output_message(
     message.tool_data = Some(output.clone());
     message.content = output;
     message.is_completed = Some(true);
-    message.codex_turn_id = turn_id.map(str::to_string);
+    message.codex_turn_id = turn_id
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_string);
     message
 }
 
@@ -322,7 +367,9 @@ pub(super) fn app_server_item_message(
         .map(str::to_string)
         .unwrap_or_else(|| format!("codex-{turn_index}-{item_index}"));
     let mut message = app_server_base_message(id, timestamp);
-    message.codex_turn_id = turn_id.map(str::to_string);
+    message.codex_turn_id = turn_id
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_string);
     message.message_type = codex_message_type(item).map(str::to_string);
     match kind {
         "userMessage" => {

@@ -12,7 +12,7 @@ use flowix_core::memo_file::{
     NoteEntry,
 };
 use flowix_core::service::NoteSaveOutcome;
-use flowix_core::{FlowixError, MemoPage, MemoService, NoteService};
+use flowix_core::{FlowixError, NoteService};
 
 use crate::app::state::AppState;
 use crate::watcher::runtime::mark_self_write_for;
@@ -56,7 +56,7 @@ pub fn note_path_status(file_path: String, state: State<AppState>) -> Result<Not
     }
 }
 
-/// Classify a Markdown file independently of its opening UI and legacy memo ID.
+/// Classify a Markdown file by notebook-relative path, independently of its opening UI.
 #[tauri::command]
 #[allow(non_snake_case)]
 pub async fn resolve_markdown_location(
@@ -101,8 +101,7 @@ pub async fn resolve_markdown_location(
         })
     }).await.map_err(|error| format!("Markdown location task failed: {error}"))?
 }
-/// List the notebook's rebuildable note projection by relative path. This is
-/// the ID-free list boundary for callers migrating off the legacy memo table.
+/// List the notebook's rebuildable note projection, keyed by relative path.
 #[tauri::command]
 pub async fn list_notes_by_path(
     notebook_id: String,
@@ -113,7 +112,7 @@ pub async fn list_notes_by_path(
         let memo_file = read_lock(&state.memo_file, "memo_file");
         NoteService::new(&memo_file)
             .list(&notebook_id)
-            .map_err(|error| error.to_string())
+            .map_err(|error| crate::app::notebook_background::query_error(state.inner(), &notebook_id, error))
     })
     .await
     .map_err(|error| format!("path-based note list task failed: {error}"))?
@@ -163,7 +162,7 @@ pub async fn get_path_notes(
                 cursor.as_deref(),
                 limit,
             )
-            .map_err(|error: FlowixError| error.to_string())?;
+            .map_err(|error: FlowixError| crate::app::notebook_background::query_error(state.inner(), &notebook_id, error))?;
         Ok(GetPathNotesResponse {
             notes: page.notes,
             next_cursor: page.next_cursor,
@@ -180,11 +179,12 @@ pub async fn get_used_memo_tag_ids(
 ) -> Result<UsedMemoTagIdsResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<AppState>();
+        let memo_file = read_lock(&state.memo_file, "memo_file");
+        let id = notebook_id.or_else(|| memo_file.current_notebook_id_value()).unwrap_or_default();
         let (used_tag_ids, tag_counts, total_memo_count, agent_memo_count, todo_memo_count) =
-            MemoService::new(&read_lock(&state.memo_file, "memo_file"))
-                .tag_usage_summary(notebook_id.as_deref())
-                .unwrap_or_default();
-        UsedMemoTagIdsResponse {
+            memo_file.read_tag_usage_summary_for_notebook_id(Some(&id))
+                .map_err(|error| crate::app::notebook_background::query_error(state.inner(), &id, error))?;
+        Ok(UsedMemoTagIdsResponse {
             used_tag_ids,
             tag_counts: tag_counts
                 .into_iter()
@@ -193,10 +193,10 @@ pub async fn get_used_memo_tag_ids(
             total_memo_count,
             agent_memo_count,
             todo_memo_count,
-        }
+        })
     })
     .await
-    .map_err(|error| format!("tag summary task failed: {error}"))
+    .map_err(|error| format!("tag summary task failed: {error}"))?
 }
 
 #[tauri::command]

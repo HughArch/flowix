@@ -53,6 +53,14 @@ export function HtmlResourceView({
       reportPresentation?.({ state: {
         status: 'loading', phase: 'content', message: { key: 'document.file.loading' }, retainContent: state.retainContent,
       } });
+    } else if (state.status === 'missing-note') {
+      reportPresentation?.({ state: {
+        status: 'error', message: { key: 'document.load.missingNoteTitle' }, detailText: state.path,
+        actions: [
+          { id: 'retry', label: { key: 'error.retry' }, enabled: true, run: state.retry },
+          { id: 'preview', label: { key: 'htmlResource.preview' }, enabled: true, run: () => setMode('preview') },
+        ],
+      } });
     } else if (state.status === 'error') {
       reportPresentation?.({ state: {
         status: 'error', message: { key: 'error.unexpected', fallbackText: state.message },

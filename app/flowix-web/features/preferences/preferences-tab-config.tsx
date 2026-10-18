@@ -14,7 +14,6 @@ import { AgentIcon } from '@features/agent/components/agent-icon';
 
 export interface PreferenceTabProps {
   productInfo?: import('@platform/tauri/client').ProductInfo | null;
-  autoUpdate?: boolean;
 }
 
 export type PreferenceTabComponent = LazyExoticComponent<ComponentType<PreferenceTabProps>>;

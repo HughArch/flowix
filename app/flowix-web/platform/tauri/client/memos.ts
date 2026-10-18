@@ -12,7 +12,7 @@ export interface NotebookTemplateRecord {
   coverUrl?: string;
 }
 
-/** Memo-ID tag summary and compatibility IPC. Path-based note operations live in `notes`. */
+/** Tag summary and memo events. Path-based note operations live in `notes`. */
 export const memos = {
   getUsedTagIds: (notebookId?: string) =>
     invoke<{
@@ -55,8 +55,6 @@ export const externalDocuments = {
 export const tags = {
   getAll: (notebookId?: string) =>
     invoke<{ tags: { id: string; name: string }[] }>('get_all_tags', { notebookId }),
-  create: (notebookId: string, path: string) =>
-    invoke<{ path: string }>('create_notebook_tag', { notebookId, path }),
   /**
    * 移动 subtag: 把 `oldPath` 整棵子树重命名 (含 prefix 替换), 批量
    * 改写所有受影响 memo 的 YAML `tags` + 同步 memo index。
@@ -94,6 +92,22 @@ export interface NotebookSortEntry {
   sort: number;
 }
 
+export interface NotebookBackgroundStatus {
+  notebookId: string;
+  state: 'queued' | 'running' | 'ready' | 'failed';
+  revision: number;
+  memoCount?: number;
+  missing?: boolean;
+  message: string | null;
+}
+
+export interface NotebookMediaMaintenanceStatus {
+  notebookId: string;
+  state: 'queued' | 'running' | 'ready' | 'failed';
+  revision: number;
+  message: string | null;
+}
+
 export interface NotebookRecord {
   id: string;
   name: string;
@@ -105,10 +119,12 @@ export interface NotebookRecord {
   updatedAt: number;
   isDefault: boolean;
   sort?: number;
+  pinned?: boolean;
   missing?: boolean;
 }
 
 export type NotebookSetupJobStatus = 'pending' | 'running' | 'completed' | 'partial' | 'failed';
+export type NotebookSetupStage = 'preparing' | 'writing' | 'indexing' | 'completed';
 
 export interface NotebookSetupReport {
   totalFiles: number;
@@ -121,19 +137,32 @@ export interface NotebookSetupReport {
 
 export interface NotebookSetupJob {
   notebookId: string;
+  jobId: string;
   templateId: string | null;
   overwriteExisting: boolean;
   status: NotebookSetupJobStatus;
-  stage: string;
-  completedFiles: number;
-  totalFiles: number;
+  stage: NotebookSetupStage;
+  revision: number;
+  runId: string;
   message: string | null;
   report: NotebookSetupReport | null;
   updatedAt: number;
+  executionRequested: boolean;
+}
+
+export interface NotebookSetupSnapshot {
+  revision: number;
+  jobs: NotebookSetupJob[];
 }
 
 export const notebooks = {
   getAll: () => invoke<NotebookRecord[]>('get_notebooks'),
+  setPinned: (notebookId: string, pinned: boolean) =>
+    invoke<boolean>('set_notebook_pinned', { notebookId, pinned }),
+  getBackgroundStatus: () => invoke<NotebookBackgroundStatus[]>('get_notebook_background_status'),
+  refreshIndex: (notebookId: string) => invoke<void>('request_notebook_refresh', { notebookId }),
+  getMediaMaintenanceStatus: () => invoke<NotebookMediaMaintenanceStatus[]>('get_notebook_media_maintenance_status'),
+  retryMediaMaintenance: (notebookId: string) => invoke<void>('request_notebook_media_maintenance', { notebookId }),
   listTemplates: () => invoke<NotebookTemplateRecord[]>('list_notebook_templates'),
   getDefaultPath: (name: string) =>
     invoke<string>('get_default_notebook_path', { name }),
@@ -166,6 +195,10 @@ export const notebooks = {
     invoke<NotebookSetupJob | null>('get_notebook_template_setup_status', { notebookId }),
   startTemplateSetup: (notebookId: string, retry = false) =>
     invoke<NotebookSetupJob | null>('start_notebook_template_setup', { notebookId, retry }),
+  startOrResumeReadyTemplateSetups: (activeNotebookId: string | null) =>
+    invoke<void>('start_or_resume_ready_notebook_template_setups', { activeNotebookId }),
+  getTemplateSetupSnapshot: () =>
+    invoke<NotebookSetupSnapshot>('get_notebook_template_setup_snapshot'),
   createFromCloud: (id: string, name: string, path: string, icon?: string | null, activate = true) =>
     invoke<NotebookRecord>('create_notebook_from_cloud', { id, name, path, icon, activate }),
   startImport: (notebookId: string) =>

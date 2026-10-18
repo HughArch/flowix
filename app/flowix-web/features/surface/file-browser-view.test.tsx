@@ -2,7 +2,7 @@ import { act, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import { FileBrowserView, type FileBrowserViewSurface } from './file-browser-view';
-import { useAgentDataStore } from '@features/agent/store/agent-data-store';
+import { useAgentWorkspaceStore, type AgentWorkspaceState } from '@features/agent/store/agent-workspace-store';
 import { useNoteStore } from '@features/memo/store';
 import { DocumentContainer } from '@features/document/components/document-container';
 
@@ -33,7 +33,7 @@ vi.mock('@platform/tauri/event-bus', () => ({ subscribe: () => () => {} }));
 it('derives the tree from the owning notebook without remounting or changing file access scope', async () => {
   const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
   environment.IS_REACT_ACT_ENVIRONMENT = true;
-  const previousWorkspace = useAgentDataStore.getState().workspace;
+  const previousWorkspace = useAgentWorkspaceStore.getState().workspace;
   const previousNotebookId = useNoteStore.getState().selectedNotebookId;
   setWorkspace({ byNotebookId: {} });
   probe.mounts = 0;
@@ -87,8 +87,8 @@ it('derives the tree from the owning notebook without remounting or changing fil
   }
 });
 
-function setWorkspace(update: Partial<import("@features/agent/store/agent-data-store").AgentWorkspaceState> | ((state: import("@features/agent/store/agent-data-store").AgentWorkspaceState) => Partial<import("@features/agent/store/agent-data-store").AgentWorkspaceState>)) {
-  const store = useAgentDataStore.getState();
+function setWorkspace(update: Partial<AgentWorkspaceState> | ((state: AgentWorkspaceState) => Partial<AgentWorkspaceState>)) {
+  const store = useAgentWorkspaceStore.getState();
   const patch = typeof update === "function" ? update(store.workspace) : update;
-  useAgentDataStore.setState({ workspace: { ...store.workspace, ...patch } });
+  useAgentWorkspaceStore.setState({ workspace: { ...store.workspace, ...patch } });
 }

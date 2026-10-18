@@ -145,8 +145,12 @@ impl DeepSeekHarnessManager {
         message: AgentUserMessage,
         app_handle: &tauri::AppHandle,
     ) -> Result<String, String> {
-        if !crate::dsh::status().installed {
+        let dsh_status = crate::dsh::status();
+        if !dsh_status.installed {
             return Err("DeepSeek Harness runtime is not installed".to_string());
+        }
+        if !dsh_status.app_server_profile_installed {
+            return Err("DSH App Server profile is not installed; install it from Flowix Preferences".to_string());
         }
 
         let thread_id = thread_id.to_string();

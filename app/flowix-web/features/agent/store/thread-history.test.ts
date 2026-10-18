@@ -38,7 +38,7 @@ describe("mergeMessagesForThreadRender", () => {
     const time = "2026-01-01T00:00:00Z";
     const history = [message("user-old", "user", "first", time), message("answer-old", "assistant", "Done.", time)];
     const live = [message("user-new", "user", "second", time), message("answer-new", "assistant", "Done.", time)];
-    expect(mergeMessagesForThreadRender({ history, live, agentType: "claude" }).map((row) => row.id))
+    expect(mergeMessagesForThreadRender({ history, live, agentType: "claudecode" }).map((row) => row.id))
       .toEqual(["user-old", "answer-old", "user-new", "answer-new"]);
   });
   it("uses the new Pi projection order when existing render rows are reordered", () => {
@@ -354,7 +354,7 @@ describe("mergeHistoricalMessages", () => {
     const time = "2026-01-01T00:00:00Z";
     const existing = [message("user-new", "user", "second question", time), message("reply-new", "assistant", "Done.", time)];
     const historical = [message("user-old", "user", "first question", time), message("reply-old", "assistant", "Done.", time)];
-    expect(mergeHistoricalMessages(existing, historical, "claude").map((item) => item.id))
+    expect(mergeHistoricalMessages(existing, historical, "claudecode").map((item) => item.id))
       .toEqual(["user-old", "reply-old", "user-new", "reply-new"]);
   });
   it("keeps identical Codex replies from different native turns", () => {
@@ -393,7 +393,7 @@ describe("mergeHistoricalMessages", () => {
     const existing = [
       {
         ...message(
-          "codex-command:live:command-1",
+          "flowix:codex:command:turn-1",
           "user",
           "/compact",
           "2026-08-29T10:00:01.000Z",
@@ -406,7 +406,7 @@ describe("mergeHistoricalMessages", () => {
     const historical = [
       {
         ...message(
-          "codex-command-history-compaction-1",
+          "flowix:codex:command:turn-1",
           "user",
           "/compact",
           "2026-08-29T10:00:00.000Z",
@@ -428,7 +428,7 @@ describe("mergeHistoricalMessages", () => {
 
     expect(
       mergeHistoricalMessages(existing, historical, "codex").map((item) => item.id),
-    ).toEqual(["codex-command-history-compaction-1", "compaction-1"]);
+    ).toEqual(["flowix:codex:command:turn-1", "compaction-1"]);
   });
 });
 
@@ -616,7 +616,7 @@ describe("replaceCompletedRunWithHistory", () => {
     const existing = [
       message("old-user", "user", "same prompt", "2026-01-01T00:00:00.000Z"),
       message("old-assistant", "assistant", "old answer", "2026-01-01T00:00:01.000Z"),
-      message("msg:deepseek-harness:run-2:user:user-run-2", "user", "same prompt", "2026-01-01T00:00:02.000Z"),
+      message("msg:dsh:run-2:user:user-run-2", "user", "same prompt", "2026-01-01T00:00:02.000Z"),
       message("live-assistant", "assistant", "current answer", "2026-01-01T00:00:03.000Z"),
     ];
     const history = [
@@ -631,7 +631,7 @@ describe("replaceCompletedRunWithHistory", () => {
         existing,
         history,
         "run-2",
-        "deepseek-harness",
+        "dsh",
       ).map((item) => item.content),
     ).toEqual(["same prompt", "old answer", "same prompt", "current answer"]);
   });

@@ -30,6 +30,22 @@ function toolResultText(message: JsonRecord): string {
   return message.isError === true ? `[error] ${text || "Tool failed"}` : text;
 }
 
+function codemodeChildCallIds(messages: JsonRecord[]): Set<string> {
+  const ids = new Set<string>();
+  for (const message of messages) {
+    if (message.role !== "toolResult" || message.toolName !== "codemode") continue;
+    for (const container of [record(message.nestedCalls), record(message.details)]) {
+      const calls = container?.calls;
+      if (!Array.isArray(calls)) continue;
+      for (const value of calls) {
+        const id = record(value)?.id;
+        if (typeof id === "string" && id) ids.add(id);
+      }
+    }
+  }
+  return ids;
+}
+
 function bashExecutionText(message: JsonRecord): string {
   const output = typeof message.output === "string" ? message.output : "";
   const exitCode = typeof message.exitCode === "number" ? message.exitCode : null;
@@ -59,6 +75,7 @@ export function parsePiHistoryMessages(
   if (!Array.isArray(values)) return [];
   const native = values.map(record).filter((value): value is JsonRecord => value !== null);
   const resultsByCallId = new Map<string, JsonRecord>();
+  const nestedCodemodeCallIds = codemodeChildCallIds(native);
   for (const message of native) {
     if (message.role === "toolResult" && typeof message.toolCallId === "string") {
       resultsByCallId.set(message.toolCallId, message);
@@ -118,7 +135,11 @@ export function parsePiHistoryMessages(
           rows.push(textRow);
         } else if (block.type === "thinking" && typeof block.thinking === "string" && block.thinking) {
           rows.push({ order: blockIndex, type: "thinking", content: block.thinking });
-        } else if (block.type === "toolCall" && typeof block.id === "string") {
+        } else if (
+          block.type === "toolCall" &&
+          typeof block.id === "string" &&
+          !nestedCodemodeCallIds.has(block.id)
+        ) {
           rows.push({ order: blockIndex, type: "tool", block });
         }
       });

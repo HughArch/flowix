@@ -89,9 +89,9 @@ pub(crate) fn refresh_view_document_catalog(memo: &MemoFile, id: &str, root: &Pa
     }
 }
 
-fn rebase_collection_document_paths(source: &str, old_path: &str, new_path: &str) -> Option<String> {
+fn rebase_collection_document_paths(source: &str, notebook_id: &str, old_path: &str, new_path: &str) -> Option<String> {
     let mut document = flowix_core::collection::CollectionDocument::parse(source).ok()?.normalized_v2().ok()?;
-    if !document.rebase_paths(old_path, new_path) { return None; }
+    if !document.rebase_paths_for_notebook(notebook_id, old_path, new_path).ok()? { return None; }
     document.revise().ok()?;
     document.serialize().ok()
 }
@@ -215,7 +215,7 @@ pub(crate) fn rebase_collection_paths(
         let Ok(source) = fs::read_to_string(&path) else {
             continue;
         };
-        let Some(next) = rebase_collection_document_paths(&source, old_relative_path, new_relative_path)
+        let Some(next) = rebase_collection_document_paths(&source, notebook_id, old_relative_path, new_relative_path)
         else {
             continue;
         };

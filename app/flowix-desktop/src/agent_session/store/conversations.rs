@@ -126,8 +126,8 @@ impl ThreadManager {
         let mut stmt = conn.prepare(
             "SELECT
                 i.id, i.agent, ti.title, ti.id, i.config_json,
-                legacy.frozen_cwd, i.source, i.document_path, i.memo_id,
-                NULL, NULL, i.created_at, i.updated_at, i.notebook_id,
+                legacy.frozen_cwd, i.source, i.document_path,
+                i.created_at, i.updated_at, i.notebook_id,
                 COALESCE(
                     CASE i.agent
                         WHEN 'codex' THEN (SELECT external_id FROM threads_codex WHERE thread_id = ti.id)
@@ -210,8 +210,8 @@ impl ThreadManager {
         let mut stmt = conn.prepare(
             "SELECT
                 i.id, i.agent, ti.title, ti.id, i.config_json,
-                legacy.frozen_cwd, i.source, i.document_path, i.memo_id,
-                NULL, NULL, i.created_at, i.updated_at, i.notebook_id,
+                legacy.frozen_cwd, i.source, i.document_path,
+                i.created_at, i.updated_at, i.notebook_id,
                 COALESCE(
                     CASE i.agent
                         WHEN 'codex' THEN (SELECT external_id FROM threads_codex WHERE thread_id = ti.id)
@@ -293,8 +293,8 @@ impl ThreadManager {
         conn.query_row(
             "SELECT
                 i.id, i.agent, ti.title, ti.id, i.config_json,
-                legacy.frozen_cwd, i.source, i.document_path, i.memo_id,
-                NULL, NULL, i.created_at, i.updated_at, i.notebook_id,
+                legacy.frozen_cwd, i.source, i.document_path,
+                i.created_at, i.updated_at, i.notebook_id,
                 COALESCE(
                     CASE i.agent
                         WHEN 'codex' THEN (SELECT external_id FROM threads_codex WHERE thread_id = ti.id)
@@ -335,8 +335,8 @@ impl ThreadManager {
         conn.query_row(
             "SELECT
                 i.id, i.agent, ti.title, ti.id, i.config_json,
-                legacy.frozen_cwd, i.source, i.document_path, i.memo_id,
-                NULL, NULL, i.created_at, i.updated_at, i.notebook_id,
+                legacy.frozen_cwd, i.source, i.document_path,
+                i.created_at, i.updated_at, i.notebook_id,
                 COALESCE(
                     CASE i.agent
                         WHEN 'codex' THEN (SELECT external_id FROM threads_codex WHERE thread_id = ti.id)
@@ -429,16 +429,15 @@ impl ThreadManager {
         tx.execute(
             "INSERT INTO agent_conversation_instances (
                 instance_id, agent_type, thread_id,
-                runtime_config, source_kind, source_document_path, source_memo_id, source_notebook_id, source_relative_path,
+                runtime_config, source_kind, source_document_path, source_notebook_id, source_relative_path,
                 created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
              ON CONFLICT(instance_id) DO UPDATE SET
                 agent_type = excluded.agent_type,
                 thread_id = excluded.thread_id,
                 runtime_config = excluded.runtime_config,
                 source_kind = excluded.source_kind,
                 source_document_path = excluded.source_document_path,
-                source_memo_id = excluded.source_memo_id,
                 source_notebook_id = excluded.source_notebook_id,
                 source_relative_path = excluded.source_relative_path,
                 updated_at = excluded.updated_at
@@ -450,7 +449,6 @@ impl ThreadManager {
                 runtime_config,
                 source_kind,
                 input.source.document_path,
-                Option::<String>::None,
                 input.source.notebook_id,
                 input.source.relative_path,
                 created_at,
@@ -464,15 +462,14 @@ impl ThreadManager {
         // repository methods.
         tx.execute(
             "INSERT INTO agent_instances (
-                id, agent, config_json, source, document_path, memo_id,
+                id, agent, config_json, source, document_path,
                 notebook_id, relative_path, created_at, updated_at
-             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10)
+             ) VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9)
              ON CONFLICT(id) DO UPDATE SET
                 agent = excluded.agent,
                 config_json = excluded.config_json,
                 source = excluded.source,
                 document_path = excluded.document_path,
-                memo_id = excluded.memo_id,
                 notebook_id = excluded.notebook_id,
                 relative_path = excluded.relative_path,
                 updated_at = excluded.updated_at
@@ -483,7 +480,6 @@ impl ThreadManager {
                 runtime_config,
                 source_kind,
                 input.source.document_path,
-                Option::<String>::None,
                 input.source.notebook_id,
                 input.source.relative_path,
                 created_at,
@@ -546,8 +542,8 @@ impl ThreadManager {
             .query_row(
                 "SELECT
                     i.id, i.agent, ti.title, ti.id, i.config_json,
-                    legacy.frozen_cwd, i.source, i.document_path, i.memo_id,
-                    NULL, NULL, i.created_at, i.updated_at, i.notebook_id,
+                    legacy.frozen_cwd, i.source, i.document_path,
+                    i.created_at, i.updated_at, i.notebook_id,
                     COALESCE(
                         CASE i.agent
                             WHEN 'codex' THEN (SELECT external_id FROM threads_codex WHERE thread_id = ti.id)
@@ -922,20 +918,20 @@ impl ThreadManager {
         let source = AgentConversationSource {
             kind: row.get(6)?,
             document_path: row.get(7)?,
-            relative_path: row.get(15)?,
-            notebook_id: row.get(13)?,
+            relative_path: row.get(12)?,
+            notebook_id: row.get(10)?,
         };
         Ok(AgentConversationInstance {
             instance_id: row.get(0)?,
             agent_type: row.get(1)?,
             thread_title: row.get(2)?,
             thread_id: row.get(3)?,
-            session_id: row.get(14)?,
+            session_id: row.get(11)?,
             runtime_config: row.get(4)?,
             frozen_cwd: row.get(5)?,
             source,
-            created_at: row.get(11)?,
-            updated_at: row.get(12)?,
+            created_at: row.get(8)?,
+            updated_at: row.get(9)?,
         })
     }
 }

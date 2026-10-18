@@ -1,6 +1,6 @@
 # Agent data ownership
 
-Device-local notebook registration and repository mounts are stored in `~/.flowix/local.db`.
+Device-local notebook registration and repository mounts are stored in `~/.flowix/db/local.db`.
 
 - `notebooks` owns notebook identity, display metadata, local root paths and order.
 - `notebook_add_dirs` owns notebook-scoped repository mounts. The same directory may be mounted by multiple notebooks. A notebook deletion cascades to its mounts.
@@ -15,7 +15,7 @@ Flowix file IPC authorizes registered notebook roots and enabled mounted directo
 
 ## Upgrade imports
 
-- `index.db` notebook registration, app state and setup jobs are imported into `local.db` in a transaction, with an import marker. Old notebook-owned memo data can still be imported from the original `index.db`; it is not moved into `local.db`.
+- `index.db` is retired and is no longer opened or imported. After successful version initialization, copies in `~/.flowix/` and `~/.flowix/db/`, including SQLite companions, are moved to each directory's `rebuild-backups/<UUID>/` for manual recovery. Installations with only an old index must re-register their notebook folders.
 - Each notebook's `.flowix/agent.json` is imported once. Older `agent-access.json.defaults.files` is a fallback for notebooks registered before the upgrade. Unattached global folder entries never create mounts.
 - Missing notebook roots defer the mount import. Malformed legacy files fail without marking import complete, allowing a later retry. Successfully imported sources are not reread after mounts change.
 - Old runtime defaults are exposed through a migration-only IPC and imported into the browser-owned user preference Store.

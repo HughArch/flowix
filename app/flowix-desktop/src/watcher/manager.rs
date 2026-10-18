@@ -29,6 +29,7 @@ pub struct MemoWatcher {
     watched_roots: Arc<std::sync::RwLock<Vec<NotebookWatchContext>>>,
     suspended_notebook_ids: HashMap<String, usize>,
     recent_self_writes: Arc<Mutex<SelfWriteMap>>,
+    rename_tracker: Arc<Mutex<super::rename_tracker::RenameTracker>>,
     remove_coalescer: Option<RemoveCoalescer>,
     memo_file: Arc<std::sync::RwLock<MemoFile>>,
     whitelist: Arc<std::sync::RwLock<WhitelistConfig>>,
@@ -63,6 +64,10 @@ impl MemoWatcher {
             .collect();
         drop(roots);
         for root in previous {
+            self.rename_tracker
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .forget_root(&root);
             if watcher.unwatch(&root).is_err() {
                 return false;
             }
@@ -76,7 +81,23 @@ impl MemoWatcher {
             return true;
         }
         let root = PathBuf::from(&config.path);
-        if !root.is_dir() || watcher.watch(&root, RecursiveMode::Recursive).is_err() {
+        if !root.is_dir() {
+            return false;
+        }
+        let context = NotebookWatchContext {
+            notebook_id: config.id.clone(),
+            root: root.clone(),
+        };
+        let seed = super::rename_tracker::RenameTracker::seed_root(&context);
+        self.rename_tracker
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .merge_seed(seed);
+        if watcher.watch(&root, RecursiveMode::Recursive).is_err() {
+            self.rename_tracker
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .forget_root(&root);
             return false;
         }
         if let Ok(mut roots) = self.watched_roots.write() {
@@ -86,6 +107,11 @@ impl MemoWatcher {
             });
             true
         } else {
+            let _ = watcher.unwatch(&root);
+            self.rename_tracker
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .forget_root(&root);
             false
         }
     }
@@ -106,7 +132,20 @@ impl MemoWatcher {
         if !root.is_dir() {
             return false;
         }
+        let context = NotebookWatchContext {
+            notebook_id: config.id.clone(),
+            root: root.clone(),
+        };
+        let seed = super::rename_tracker::RenameTracker::seed_root(&context);
+        self.rename_tracker
+            .lock()
+            .unwrap_or_else(|p| p.into_inner())
+            .merge_seed(seed);
         if watcher.watch(&root, RecursiveMode::Recursive).is_err() {
+            self.rename_tracker
+                .lock()
+                .unwrap_or_else(|p| p.into_inner())
+                .forget_root(&root);
             return false;
         }
         match self.watched_roots.write() {
@@ -116,6 +155,10 @@ impl MemoWatcher {
             }
             Err(_) => {
                 let _ = watcher.unwatch(&root);
+                self.rename_tracker
+                    .lock()
+                    .unwrap_or_else(|p| p.into_inner())
+                    .forget_root(&root);
                 false
             }
         }
@@ -128,12 +171,21 @@ impl MemoWatcher {
             })
     }
 
+    pub fn is_initialized(&self) -> bool {
+        self._watcher.is_some()
+    }
+
+    pub fn is_notebook_suspended(&self, notebook_id: &str) -> bool {
+        self.suspended_notebook_ids.contains_key(notebook_id)
+    }
+
     pub fn new(memo_file: Arc<std::sync::RwLock<MemoFile>>) -> Self {
         Self {
             _watcher: None,
             watched_roots: Arc::new(std::sync::RwLock::new(Vec::new())),
             suspended_notebook_ids: HashMap::new(),
             recent_self_writes: Arc::new(Mutex::new(HashMap::new())),
+            rename_tracker: Arc::new(Mutex::new(super::rename_tracker::RenameTracker::default())),
             remove_coalescer: None,
             memo_file,
             whitelist: Arc::new(std::sync::RwLock::new(WhitelistConfig::load_or_default())),
@@ -201,10 +253,6 @@ impl MemoWatcher {
             })
             .collect();
         if let Ok(mut watched) = self.watched_roots.write() { watched.clear(); }
-        if roots.is_empty() {
-            return;
-        }
-
         let remove_coalescer =
             RemoveCoalescer::new(app.clone(), self.memo_file.clone(), REMOVE_TOMBSTONE_DELAY);
         let remove_coalescer_for_callback = remove_coalescer.clone();
@@ -215,22 +263,32 @@ impl MemoWatcher {
 
         // notify 共享事件线程 -> 单 worker 线程的派发通道。notify 回调只做廉价的
         // filter / debounce / 自写抑制 + 入队 (`send` 非阻塞), 重 `process` 交给 worker。
-        // tx 给回调, rx 留给下方 watched_count>0 后 spawn 的 worker。
+        // tx 给回调, rx 交给 worker；即使当前没有可用根，worker 也保持就绪，
+        // 供后续离线根恢复挂载后接收事件。
         let (worker_tx, worker_rx) =
             std::sync::mpsc::channel::<(RawFsEvent, NotebookWatchContext)>();
         let worker_tx_for_callback = worker_tx.clone();
 
-        let mut rename_tracker = super::rename_tracker::RenameTracker::seed(&roots);
+        let rename_tracker = Arc::new(Mutex::new(
+            super::rename_tracker::RenameTracker::seed(&roots),
+        ));
+        self.rename_tracker = rename_tracker.clone();
+        let rename_tracker_for_callback = rename_tracker.clone();
         let mut watcher: RecommendedWatcher =
             match notify::recommended_watcher(move |res: notify::Result<Event>| {
                 let Ok(event) = res else {
                     return;
                 };
-                let removed_known_directories: std::collections::HashSet<PathBuf> = event.paths.iter()
-                    .filter(|path| rename_tracker.was_directory(path))
-                    .cloned()
-                    .collect();
-                let event = rename_tracker.correlate(event);
+                let (event, removed_known_directories) = {
+                    let mut rename_tracker = rename_tracker_for_callback
+                        .lock()
+                        .unwrap_or_else(|p| p.into_inner());
+                    let removed_known_directories: std::collections::HashSet<PathBuf> = event.paths.iter()
+                        .filter(|path| rename_tracker.was_directory(path))
+                        .cloned()
+                        .collect();
+                    (rename_tracker.correlate(event), removed_known_directories)
+                };
                 handle_notify_event(
                     &remove_coalescer_for_callback,
                     &whitelist,
@@ -268,7 +326,7 @@ impl MemoWatcher {
             watched_count += 1;
         }
         if watched_count == 0 {
-            return;
+            tracing::info!("[MemoWatcher] initialized with no available notebook roots; offline roots can be retried later");
         }
 
         // 单 worker 串行 drain -> 保 FIFO (同路径事件顺序不乱)。`process` 含
@@ -613,6 +671,31 @@ fn context_for_path(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recovered_bindings_reconcile_attached_roots_but_not_offline_or_suspended_roots() {
+        let temp = tempfile::tempdir().unwrap();
+        let memo = Arc::new(std::sync::RwLock::new(MemoFile::new(temp.path().join("config"))));
+        let mut manager = MemoWatcher::new(memo);
+        manager._watcher = Some(notify::recommended_watcher(|_: notify::Result<Event>| {}).unwrap());
+        let configs: Vec<_> = (0..3).map(|index| {
+            let path = temp.path().join(format!("book-{index}"));
+            if index != 1 { std::fs::create_dir_all(&path).unwrap(); }
+            NotebookConfig {
+                id: format!("nb_{index}"), name: format!("Book {index}"),
+                path: path.to_string_lossy().into_owned(), icon: None,
+                is_default: false, sort: 0, created_at: 1, updated_at: 1,
+            }
+        }).collect();
+        manager.set_notebook_suspended(&configs[2].id, true);
+        for config in &configs { manager.add_notebook_root(config); }
+        let background = crate::app::notebook_background::NotebookBackground::default();
+        crate::watcher::runtime::reconcile_bound_roots(&manager, &configs, &background);
+        let statuses = background.statuses();
+        assert_eq!(statuses.len(), 1);
+        assert_eq!(statuses[0].notebook_id, configs[0].id);
+        assert_eq!(statuses[0].state, "queued");
+    }
 
     #[test]
     fn template_suspension_only_rebinds_its_own_root() {

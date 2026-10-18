@@ -40,15 +40,21 @@ pub fn initialize_local_migration_table(conn: &mut Connection) -> io::Result<()>
 pub enum NotebookInitializationJob {
     ResetLegacyStorage,
     InitializeSchema,
+    MigrateMediaResourceIdentity,
 }
 
 impl NotebookInitializationJob {
-    pub const ALL: [Self; 2] = [Self::ResetLegacyStorage, Self::InitializeSchema];
+    pub const ALL: [Self; 3] = [
+        Self::ResetLegacyStorage,
+        Self::InitializeSchema,
+        Self::MigrateMediaResourceIdentity,
+    ];
 
     pub fn key(self, notebook_id: &str) -> String {
         let prefix = match self {
             Self::ResetLegacyStorage => "storage_reset_v1",
             Self::InitializeSchema => "storage_schema_v1",
+            Self::MigrateMediaResourceIdentity => "media_resource_identity_v1",
         };
         format!("{prefix}:notebook:{notebook_id}")
     }

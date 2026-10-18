@@ -14,7 +14,7 @@ use crate::app::state::AppState;
 
 /// 跨窗口同步事�?—任一窗口成功写入偏好 / AI 配置�?emit, 其它窗口
 /// (主窗�?/ 偏好窗口 / �?��的�?窗口) 收到后从磁盘重新 load�?/// 解决: 两个 Tauri 窗口各跑�?�� React �?+ �?�� zustand store, 一�?/// 改动另一边看不到的问题�?
-pub(super) const USER_CONFIG_CHANGED_EVENT: &str = "user-config-changed";
+pub(crate) const USER_CONFIG_CHANGED_EVENT: &str = "user-config-changed";
 
 /// 用户偏好 (preference.json) —�?~/.flowix/boot/preference.json
 #[tauri::command]

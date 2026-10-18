@@ -16,7 +16,7 @@ use crate::config::path_is_inside;
 use crate::lock_utils::read_lock;
 use flowix_core::memo_file::{
     media_kind_for_path, notebook_path_from_relative, FileManagementPolicy, MediaResourceKind,
-    MemoColor, MemoFile,
+    NoteColor, MemoFile,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Notify, Semaphore};
@@ -81,9 +81,8 @@ pub enum DocTreeResourceKind {
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct DocTreeMemoMeta {
-    pub id: String,
     pub icon: Option<String>,
-    pub colors: Vec<MemoColor>,
+    pub colors: Vec<NoteColor>,
     pub favorited: bool,
 }
 
@@ -213,20 +212,20 @@ fn memo_tree_metadata_for_directory(
         .strip_prefix(&notebook_root)
         .ok()?
         .to_path_buf();
-    let index = memo_file
-        .read_index_for_notebook_id(Some(&config.id))
-        .ok()??;
+    let notes = match memo_file.read_note_entries(&config.id) {
+        Ok(notes) => notes,
+        Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+            state.notebook_background.request(&config.id, true, false);
+            return None;
+        }
+        Err(_) => return None,
+    };
 
     Some(
-        index
-            .memos
+        notes
             .into_iter()
             .filter_map(|entry| {
-                let relative_path = if entry.relative_path.is_empty() {
-                    entry.filename
-                } else {
-                    entry.relative_path
-                };
+                let relative_path = entry.relative_path;
                 if !relative_memo_is_direct_child(Path::new(&relative_path), &relative_directory) {
                     return None;
                 }
@@ -237,7 +236,6 @@ fn memo_tree_metadata_for_directory(
                     MemoTreeMetadata {
                         created_ms: u64::try_from(entry.created_at).ok(),
                         memo: DocTreeMemoMeta {
-                            id: entry.id,
                             icon: entry.icon,
                             colors: entry.colors,
                             favorited: entry.favorited,
@@ -2123,18 +2121,13 @@ fn rename_path_and_notify(
     target: &Path,
     state: &AppState,
     app: &tauri::AppHandle,
-) -> Result<(), String> {
+) -> Result<Option<super::path_change::NotebookPathMove>, String> {
     let source_was_directory = source.is_dir();
-    let source_was_markdown = source
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
-        });
     let mf = read_lock(&state.memo_file, "memo_file");
-    let changes = mf
-        .rename_indexed_path(source, target)
+    let _watch_move = crate::commands::external_document_watch::begin_path_move(app, source);
+    mf.rename_indexed_path(source, target)
         .map_err(file_mutation_error)?;
+    crate::commands::external_document_watch::rebase_path(app, source, target);
     if target.is_dir() {
         let configs = mf.read_notebook_configs().unwrap_or_default();
         if let Some(config) = configs.into_iter().find(|config| {
@@ -2164,13 +2157,8 @@ fn rename_path_and_notify(
         crate::commands::document_list::refresh_view_document_path(&mf, source);
         crate::commands::document_list::refresh_view_document_path(&mf, target);
     }
-    let target_is_markdown = target
-        .extension()
-        .and_then(|extension| extension.to_str())
-        .is_some_and(|extension| {
-            matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown")
-        });
-    if source_was_directory || (source_was_markdown && target_is_markdown) {
+    let mut notebook_change = None;
+    {
         crate::commands::document_list::rebase_collection_paths_for_move(&mf, source, target);
         if let Some((notebook_id, relative_path, previous_path)) = mf
             .read_notebook_configs()
@@ -2190,38 +2178,14 @@ fn rename_path_and_notify(
                 ))
             })
         {
-            let _ = app.emit(
-                "flowix:path-note-changed",
-                serde_json::json!({
-                    "notebookId": notebook_id,
-                    "relativePath": relative_path,
-                    "previousRelativePath": previous_path,
-                    "kind": "path",
-                    "directory": source_was_directory,
-                    "deleted": false,
-                }),
-            );
+            if let Some(previous_path) = previous_path {
+                let change = super::path_change::NotebookPathMove::new(
+                    notebook_id, previous_path, relative_path, source_was_directory,
+                );
+                change.emit(app);
+                notebook_change = Some(change);
+            }
         }
-    }
-    for (notebook_id, before, memo) in changes {
-        let Some(config) = mf.get_notebook_config_by_id(&notebook_id) else {
-            continue;
-        };
-        let path = notebook_path_from_relative(Path::new(&config.path), &memo.relative_path)?;
-        crate::memo_events::emit(
-            app,
-            crate::memo_events::MemoEvent::Updated {
-                id: memo.id.clone(),
-                path: path.to_string_lossy().into_owned(),
-                notebook_id,
-                derived_changed: crate::memo_events::MemoDerivedChanged::from_memos(
-                    Some(&before),
-                    &memo,
-                ),
-                memo,
-                source: crate::memo_events::MemoChangeSource::UserEdit,
-            },
-        );
     }
     let notebooks = mf.read_notebook_configs().unwrap_or_default();
     let address_for = |path: &Path| {
@@ -2253,7 +2217,7 @@ fn rename_path_and_notify(
             );
         }
     }
-    Ok(())
+    Ok(notebook_change)
 }
 
 #[tauri::command]
@@ -2264,7 +2228,7 @@ pub async fn rename_file(
     name: String,
     space_path: String,
     app: tauri::AppHandle,
-) -> Result<String, String> {
+) -> Result<super::path_change::PathMutationResult, String> {
     crate::commands::document_operations::run(
         "rename_external",
         operation_id,
@@ -2286,8 +2250,8 @@ pub async fn rename_file(
             {
                 return Err("SOURCE_NOT_REGULAR_FILE".to_string());
             }
-            rename_path_and_notify(source, &target, state.inner(), &app)?;
-            Ok(target.to_string_lossy().into_owned())
+            let notebook_change = rename_path_and_notify(source, &target, state.inner(), &app)?;
+            Ok(super::path_change::PathMutationResult { path: target.to_string_lossy().into_owned(), notebook_change })
         },
     )
     .await
@@ -2303,7 +2267,7 @@ pub fn move_file(
     space_path: String,
     state: State<AppState>,
     app: tauri::AppHandle,
-) -> Result<String, FileOperationFailure> {
+) -> Result<super::path_change::PathMutationResult, FileOperationFailure> {
     let source = Path::new(&file_path);
     let target_directory = Path::new(&target_directory_path);
     let scope = Path::new(&space_path);
@@ -2333,7 +2297,7 @@ pub fn move_file(
         return Err(FileOperationFailure::code("FILE_PERMISSION_DENIED"));
     }
     if source == target {
-        return Ok(source.to_string_lossy().into_owned());
+        return Ok(super::path_change::PathMutationResult { path: source.to_string_lossy().into_owned(), notebook_change: None });
     }
     if fs::symlink_metadata(&target).is_ok() {
         return Err(
@@ -2344,8 +2308,8 @@ pub fn move_file(
             .into(),
         );
     }
-    rename_path_and_notify(source, &target, state.inner(), &app)?;
-    Ok(target.to_string_lossy().into_owned())
+    let notebook_change = rename_path_and_notify(source, &target, state.inner(), &app)?;
+    Ok(super::path_change::PathMutationResult { path: target.to_string_lossy().into_owned(), notebook_change })
 }
 
 /// Move a folder within the caller's notebook/access-folder scope.
@@ -2356,7 +2320,7 @@ pub fn move_folder(
     space_path: String,
     state: State<AppState>,
     app: tauri::AppHandle,
-) -> Result<String, FileOperationFailure> {
+) -> Result<super::path_change::PathMutationResult, FileOperationFailure> {
     let source = Path::new(&folder_path);
     let target_directory = Path::new(&target_directory_path);
     let scope = Path::new(&space_path);
@@ -2392,7 +2356,7 @@ pub fn move_folder(
         return Err(FileOperationFailure::code("FILE_PERMISSION_DENIED"));
     }
     if source == target {
-        return Ok(source.to_string_lossy().into_owned());
+        return Ok(super::path_change::PathMutationResult { path: source.to_string_lossy().into_owned(), notebook_change: None });
     }
     if fs::symlink_metadata(&target).is_ok() {
         return Err(
@@ -2403,8 +2367,8 @@ pub fn move_folder(
             .into(),
         );
     }
-    rename_path_and_notify(source, &target, state.inner(), &app)?;
-    Ok(target.to_string_lossy().into_owned())
+    let notebook_change = rename_path_and_notify(source, &target, state.inner(), &app)?;
+    Ok(super::path_change::PathMutationResult { path: target.to_string_lossy().into_owned(), notebook_change })
 }
 
 /// Copy a supported external resource into the caller's notebook scope.
@@ -2532,7 +2496,7 @@ pub async fn rename_folder(
     name: String,
     space_path: String,
     app: tauri::AppHandle,
-) -> Result<String, String> {
+) -> Result<super::path_change::PathMutationResult, String> {
     crate::commands::document_operations::run(
         "rename_folder",
         operation_id,
@@ -2569,7 +2533,10 @@ pub async fn rename_folder(
             };
             if let Some((_notebook_id, result)) = collection_move {
                 let path = Path::new(&result.notebook_path).join(&result.actual_relative_path);
-                return Ok(path.parent().ok_or("INVALID_COLLECTION_PATH")?.to_string_lossy().into_owned());
+                return Ok(super::path_change::PathMutationResult {
+                    path: path.parent().ok_or("INVALID_COLLECTION_PATH")?.to_string_lossy().into_owned(),
+                    notebook_change: super::collection::path_change_for_result(&_notebook_id, &result),
+                });
             }
             if fs::symlink_metadata(&target).is_ok() {
                 return Err(file_mutation_error(std::io::Error::new(
@@ -2577,8 +2544,8 @@ pub async fn rename_folder(
                     "target already exists",
                 )));
             }
-            rename_path_and_notify(source, &target, state.inner(), &app)?;
-            Ok(target.to_string_lossy().into_owned())
+            let notebook_change = rename_path_and_notify(source, &target, state.inner(), &app)?;
+            Ok(super::path_change::PathMutationResult { path: target.to_string_lossy().into_owned(), notebook_change })
         },
     )
     .await
@@ -2744,9 +2711,8 @@ mod tests {
             MemoTreeMetadata {
                 created_ms: Some(42),
                 memo: DocTreeMemoMeta {
-                    id: "memo-1".to_string(),
                     icon: Some("flashlight".to_string()),
-                    colors: vec![MemoColor::Blue],
+                    colors: vec![NoteColor::Blue],
                     favorited: true,
                 },
             },
@@ -2755,9 +2721,8 @@ mod tests {
         let items = read_dir_single_level(directory.path(), Some(&metadata));
         assert_eq!(items[0].memo_created_ms, Some(42));
         let memo = items[0].memo_meta.as_ref().expect("indexed memo metadata");
-        assert_eq!(memo.id, "memo-1");
         assert_eq!(memo.icon.as_deref(), Some("flashlight"));
-        assert_eq!(memo.colors, vec![MemoColor::Blue]);
+        assert_eq!(memo.colors, vec![NoteColor::Blue]);
         assert!(memo.favorited);
     }
 

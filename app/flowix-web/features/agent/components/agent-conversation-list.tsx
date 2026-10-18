@@ -11,23 +11,21 @@ import {
 import { MessageCirclePlus, MoreHorizontal } from 'lucide-react';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
-import { createAndOpenAgentConversation } from '@features/agent/public/shell-api';
+import {
+  createAndOpenAgentConversation,
+  requestNewConversationAgentSelection,
+} from '@features/agent/use-cases/new-conversation';
 import { useWorkspaceRestoreStore } from '@features/workspace/store/workspace-restore-store';
 import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { isAgentConversationRunning } from '@features/agent/store/conversation-run-index';
-import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
+import { useNewConversationAgentSelection } from '@features/agent/hooks/use-new-conversation-agent-selection';
 import {
   AGENT_TYPES,
   getAgentType,
   isAgentTypeSelectable,
-  isAlwaysVisibleNewConversationAgent,
 } from '@/lib/agent-types';
-import type { AgentTypeKey } from '@/types/agent';
-import {
-  isAgentRuntimeInstalledState,
-  normalizeAgentRuntimeStatus,
-} from '@features/agent/runtime/agent-runtime-status';
+import type { AgentType, AgentTypeKey } from '@/types/agent';
 import { formatTimeAgo } from '@/lib/format-time-ago';
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
@@ -40,8 +38,8 @@ import {
 import { useI18n } from '@/lib/i18n';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import {
-  ListSurfaceInlineLoadingState,
   ListSurfaceLoadingState,
+  ListSurfaceSpinner,
   ListSurfaceViewport,
 } from '@shared/ui/list-surface';
 import {
@@ -58,7 +56,6 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@shared/ui/dia
 import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@shared/ui/context-menu';
 import { useFixedVirtualList, type FixedVirtualListItem } from './use-fixed-virtual-list';
 import { useConversationListData } from './use-conversation-list-data';
-import { useWorkspaceStartupStore } from '@/lib/store/workspace-startup-store';
 import {
   mergeLiveConversation,
   sortFavoriteConversations,
@@ -125,9 +122,6 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
   // Rows can therefore read their running state in O(1) without rebuilding an
   // index by scanning every loaded conversation.
   const conversationRunIndex = useAgentSessionStore((state) => state.threadRunSignatures);
-  const agentRuntimeStatusByType = useAgentRuntimeStore((state) => state.statusByType);
-  const agentRuntimeIsChecking = useAgentRuntimeStore((state) => state.isChecking);
-  const refreshAgentRuntimeIfStale = useAgentRuntimeStore((state) => state.refreshIfStale);
   const currentNotebookId = useNoteStore((state) => state.selectedNotebook?.id ?? null);
   const selectedInstanceId = useWorkspaceRestoreStore(
     (state) => state.agentConversation.selectedInstanceId,
@@ -144,8 +138,6 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     loadMoreError,
     hasMore,
     agentTypeCounts,
-    settledQueryKey,
-    queryKey,
     loadMore: loadMoreConversations,
     retryFirstPage,
     updateTitle,
@@ -154,14 +146,6 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     agentType: filterType,
     lifecycleVersion,
   });
-  const startupStatus = useWorkspaceStartupStore((state) => state.status);
-  useEffect(() => {
-    if (!isActive || startupStatus !== 'running' || settledQueryKey !== queryKey) return;
-    useWorkspaceStartupStore.getState().setStartupTask(
-      'conversation-list',
-      loadError ? 'failed' : 'ready',
-    );
-  }, [isActive, loadError, queryKey, settledQueryKey, startupStatus]);
   const [showScrollTopHint, setShowScrollTopHint] = useState(false);
   const latestCompletedRunIds = useAgentSessionStore((state) => state.latestCompletedRunIds);
   const readThroughRunIds = useAgentSessionStore((state) => state.readThroughRunIds);
@@ -190,17 +174,6 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     setRenameSaving(false);
     setShowScrollTopHint(false);
   }, [isActive]);
-
-  useEffect(() => {
-    const handleOpenCreateMenu = () => setNewConversationMenuOpen(true);
-    window.addEventListener('flowix:open-agent-create-menu', handleOpenCreateMenu);
-    return () => window.removeEventListener('flowix:open-agent-create-menu', handleOpenCreateMenu);
-  }, []);
-
-  useEffect(() => {
-    if (!newConversationMenuOpen) return;
-    void refreshAgentRuntimeIfStale();
-  }, [newConversationMenuOpen, refreshAgentRuntimeIfStale]);
 
   const toggleFavorite = useCallback((instanceId: string) => {
     setFavoriteIds(toggleFavoriteConversation(instanceId));
@@ -422,20 +395,16 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     }
   };
 
-  const displayName = (type: (typeof AGENT_TYPES)[number]): string =>
+  const displayName = (type: AgentType): string =>
     type.nameKey ? t(type.nameKey as Parameters<typeof t>[0]) : type.name;
 
-  const newConversationAgentTypes = useMemo(
-    () => AGENT_TYPES.filter((type) => {
-      if (!isAgentTypeSelectable(type.id)) return false;
-      if (isAlwaysVisibleNewConversationAgent(type.id)) return true;
-      return isAgentRuntimeInstalledState(normalizeAgentRuntimeStatus(
-        agentRuntimeStatusByType[type.id],
-        agentRuntimeIsChecking,
-      ));
-    }),
-    [agentRuntimeIsChecking, agentRuntimeStatusByType],
-  );
+  const newConversationSelection = useNewConversationAgentSelection();
+
+  useEffect(() => {
+    if (newConversationMenuOpen && newConversationSelection.kind !== 'choose') {
+      setNewConversationMenuOpen(false);
+    }
+  }, [newConversationMenuOpen, newConversationSelection]);
 
   const prepareConversation = useCallback((instance: AgentConversationInstance) => {
     // The durable list snapshot may arrive before the Zustand session store
@@ -477,8 +446,7 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     });
   }, [prepareConversation]);
 
-  // 独立对话没有文档来源，但归属当前选中的
-  // notebook。notebook 未选中时不可新建 (cwd 无法解析到笔记本路径)。
+  // 独立对话没有文档来源，但归属当前选中的 notebook。
   const createConversation = useCallback(
     (typeKey: AgentTypeKey) => {
       if (!currentNotebookId) return;
@@ -486,6 +454,21 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     },
     [currentNotebookId],
   );
+
+  const requestNewConversation = useCallback(() => {
+    const selection = requestNewConversationAgentSelection();
+    if (selection.kind === 'create') {
+      createConversation(selection.agentType);
+      setNewConversationMenuOpen(false);
+      return;
+    }
+    setNewConversationMenuOpen(selection.kind === 'choose');
+  }, [createConversation]);
+
+  useEffect(() => {
+    window.addEventListener('flowix:open-agent-create-menu', requestNewConversation);
+    return () => window.removeEventListener('flowix:open-agent-create-menu', requestNewConversation);
+  }, [requestNewConversation]);
 
   return (
     <section className="relative flex h-full min-h-0 flex-1 flex-col bg-[var(--list-bg)]" aria-label={t('memo.navigation.conversations')}>
@@ -533,12 +516,15 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
           <div className="flex items-center gap-1 shrink-0">
             <DropdownMenu
               open={newConversationMenuOpen}
-              onOpenChange={setNewConversationMenuOpen}
+              onOpenChange={(open) => {
+                if (open) requestNewConversation();
+                else setNewConversationMenuOpen(false);
+              }}
             >
               <DropdownMenuTrigger asChild>
                 <button
                   type="button"
-                  disabled={!currentNotebookId}
+                  disabled={!currentNotebookId || newConversationSelection.kind === 'none'}
                   aria-label={t('agent.chat.newThread')}
                   title={currentNotebookId ? t('agent.chat.newThread') : t('memo.list.selectNotebook')}
                   className="group flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] disabled:cursor-not-allowed disabled:opacity-40"
@@ -553,13 +539,7 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                 <DropdownMenuLabel className="flex items-center gap-1.5 px-[0.375rem] pb-[0.35rem] pt-[0.35rem] text-xs font-normal leading-[1.2] text-[var(--muted-foreground)]">
                   {t('agent.chat.newThread')}
                 </DropdownMenuLabel>
-                {newConversationAgentTypes.map((type) => {
-                  const runtimeStatus = normalizeAgentRuntimeStatus(
-                    agentRuntimeStatusByType[type.id],
-                    agentRuntimeIsChecking,
-                  );
-                  const showNotInstalled = isAlwaysVisibleNewConversationAgent(type.id)
-                    && runtimeStatus.state === 'not-installed';
+                {newConversationSelection.options.map((type) => {
                   return (
                     <DropdownMenuItem
                       key={type.id}
@@ -569,11 +549,6 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                     >
                       <AgentIcon typeKey={type.id} alt="" className="h-4 w-4 shrink-0 object-contain" />
                       <span className="min-w-0 flex-1 truncate">{displayName(type)}</span>
-                      {showNotInstalled && (
-                        <span className="shrink-0 text-xs text-[var(--muted-foreground)] group-hover:text-[var(--primary-foreground)]">
-                          {t('agent.status.notInstalled')}
-                        </span>
-                      )}
                     </DropdownMenuItem>
                   );
                 })}
@@ -589,11 +564,11 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
           onScroll={handleListScroll}
         >
           {isLoading && scopedConversations.length === 0 ? (
-            <ListSurfaceLoadingState label={t('status.agent.loadingConversations')} />
+            <ListSurfaceLoadingState ariaLabel={t('status.agent.loadingConversations')} />
           ) : loadError && scopedConversations.length === 0 ? (
             <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-3 px-4 text-center text-sm text-[var(--muted-foreground)]" role="alert">
               <span>{t('status.agent.loadConversationsFailed')}</span>
-              <Button size="sm" onClick={retryFirstPage}>{t('error.retry')}</Button>
+              <Button size="sm" className="rounded-lg" onClick={retryFirstPage}>{t('error.retry')}</Button>
             </div>
           ) : scopedConversations.length === 0 ? (
             <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-[var(--muted-foreground)]">
@@ -605,13 +580,15 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
               loadError ? (
                 <div className="flex items-center justify-center gap-2 px-2 py-1 text-xs text-[var(--muted-foreground)]" role="alert">
                   <span>{t('status.agent.loadConversationsFailed')}</span>
-                  <Button size="xs" variant="ghost" onClick={retryFirstPage}>{t('error.retry')}</Button>
+                  <Button size="xs" variant="ghost" className="rounded-lg" onClick={retryFirstPage}>{t('error.retry')}</Button>
                 </div>
               ) : (
-                <ListSurfaceInlineLoadingState
-                  label={t('status.agent.loadingConversations')}
-                  className="py-1"
-                />
+                <div className="flex items-center justify-center px-2 py-1">
+                  <ListSurfaceSpinner
+                    className="h-3.5 w-3.5"
+                    ariaLabel={t('status.agent.loadingConversations')}
+                  />
+                </div>
               )
             )}
             <div className="relative min-h-full" style={{ height: totalSize }}>
@@ -634,12 +611,16 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
 
                 if (item.kind === 'loading') {
                   return (
-                    <ListSurfaceInlineLoadingState
+                    <div
                       key={item.key}
-                      label={t('status.agent.loadingMoreConversations')}
-                      className="absolute inset-x-0 top-0"
+                      className="absolute inset-x-0 top-0 flex items-center justify-center"
                       style={{ height: size, transform: `translateY(${start}px)` }}
-                    />
+                    >
+                      <ListSurfaceSpinner
+                        className="h-3.5 w-3.5"
+                        ariaLabel={t('status.agent.loadingMoreConversations')}
+                      />
+                    </div>
                   );
                 }
 
@@ -652,7 +633,7 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                       role="alert"
                     >
                       <span>{t('status.agent.loadConversationsFailed')}</span>
-                      <Button size="xs" variant="ghost" onClick={() => void loadMoreConversations(true)}>{t('error.retry')}</Button>
+                      <Button size="xs" variant="ghost" className="rounded-lg" onClick={() => void loadMoreConversations(true)}>{t('error.retry')}</Button>
                     </div>
                   );
                 }

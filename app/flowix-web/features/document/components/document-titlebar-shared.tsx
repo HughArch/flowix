@@ -42,7 +42,6 @@ import { FontSizeSwitcher, type FontSizeMode } from '@shared/ui/font-size-switch
 import { useUserSettingsStore } from '@features/preferences/store/user-settings-store';
 import {
   applyLoadedDocumentContent,
-  flushDocumentPath,
   saveDocumentPath,
   getDocumentBuffer,
 } from '@features/document/store/document-session-service';
@@ -257,7 +256,6 @@ export function ExternalDocumentActions({
           && note.relativePath === session?.relativePath ? { ...note, colors } : note),
       }));
       setFileColors(colors);
-      useNoteStore.getState().triggerRefresh();
     } catch (error) {
       logger.error('save path note colors failed', { error, filePath });
       toast.error(t('media.properties.saveFailed'));
@@ -289,7 +287,7 @@ export function ExternalDocumentActions({
       const session = useDocumentStore.getState().activeExternalSession;
       if (!session?.notebookId || !session.relativePath || session.fileIdentity.path !== filePath) throw new Error('Document session changed');
       const identity = documentIdentityFromFile(session.fileIdentity);
-      if (!await flushDocumentPath(identity, filePath, session.scopePath)) {
+      if (!await saveDocumentPath(identity, filePath, session.scopePath)) {
         toast.error(t('document.version.saveCurrentFailed'));
         return;
       }
@@ -547,7 +545,7 @@ export function SurfaceHeaderIcon({ icon }: { icon?: string | null }) {
 //   - 空数组 (无颜色) 时显示 `Palette` 图标
 //   - 至少 1 个颜色时显示叠加的小圆点 (右上偏移, 制造"多色"的视觉密度)
 // 7 个色块 + 1 个 "无" 按钮: 点色块 toggle, 点 "无" 清空全部。 每次切换
-// 把整组新颜色走 `onChange` 一次性写回后端, 由 memo-event 链路回灌 store。
+// 把整组新颜色走 `onChange` 一次性写回后端；行内状态即时更新，路径通知刷新查询投影。
 // =====================================================================
 
 const COLOR_LABEL_KEYS: Record<NoteColor, I18nKey> = {

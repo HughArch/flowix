@@ -93,7 +93,7 @@ export function addTableField(document: MultidimensionalTableDocument, field: Ta
     const key = builtinPresetTableField(item.id)?.property_key;
     return key !== undefined && canonicalizePropertyKey(key).toLocaleLowerCase() === propertyKey;
   });
-  if (!propertyKey || builtinKey || ['flowix_key', 'key'].includes(propertyKey)
+  if (!propertyKey || builtinKey
     || document.dataset.schema.fields.some((item) => item.property_key
     && canonicalizePropertyKey(item.property_key).toLocaleLowerCase() === propertyKey)) {
     throw new Error('属性键已存在或属于保留名称');

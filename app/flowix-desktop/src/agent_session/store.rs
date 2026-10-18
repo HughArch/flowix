@@ -69,13 +69,9 @@ impl ThreadManager {
         drop(old);
         let initialized = flowix_core::memo_file::with_database_rebuild(path, || {
             let mut conn = Connection::open(path).map_err(std::io::Error::other)?;
-            Self::run_migrations(&mut conn).map_err(|error| {
-                if matches!(error, ThreadError::UnsupportedSchemaVersion { .. }) {
-                    std::io::Error::new(std::io::ErrorKind::InvalidData, error)
-                } else {
-                    std::io::Error::other(error)
-                }
-            })?;
+            // A newer schema may contain user messages this binary cannot read.
+            // Unsupported versions are not corruption and must not be rebuilt.
+            Self::run_migrations(&mut conn).map_err(std::io::Error::other)?;
             Ok(conn)
         }).map_err(|error| ThreadError::Join(format!("initialize thread database: {error}")))?;
         *connection = initialized;

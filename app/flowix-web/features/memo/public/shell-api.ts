@@ -1,6 +1,6 @@
 import { useShallow } from 'zustand/react/shallow';
 import { useNoteStore } from '@features/memo/store/note-store';
-import { noteRepository } from '@features/memo/services/note-repository';
+import { noteRepository, notebookRepository } from '@features/memo/services/note-repository';
 
 export { MemoList } from '@features/memo/components/memo-list';
 export { NotebookTreeFileIcon } from '@features/memo/components/notebook-tree-file-icon';
@@ -19,6 +19,19 @@ export {
   type Notebook,
 } from '@features/memo/store';
 export { startNotebookImportWithMonitoring } from '@features/memo/services/notebook-creation-service';
+
+/** Persist a notebook template task; the application coordinator starts it when the workspace is ready. */
+export async function ensureShellNotebookTemplateSetup(
+  notebookId: string,
+  templateId: string,
+  overwriteExisting = false,
+) {
+  return notebookRepository.ensureTemplateSetup(notebookId, templateId, overwriteExisting);
+}
+
+export function confirmShellNotebookTemplateOverwrite(message: string) {
+  return notebookRepository.confirmPresetOverwrite(message);
+}
 
 export function useShellSelectedNotebook() {
   return useNoteStore((state) => state.selectedNotebook);

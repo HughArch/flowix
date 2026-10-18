@@ -1,6 +1,6 @@
 import { createTableDocument, serializeTableDocument } from '@features/multidimensional-table/public/create-api';
 import { createMediaLibrary, serializeMediaLibrary } from '@features/media-library/model';
-import { parseCollectionDocumentV2, serializeCollectionDocumentV2, type CollectionType } from './model';
+import { collectionDisplayName, parseCollectionDocumentV2, serializeCollectionDocumentV2, type CollectionType } from './model';
 import { externalDocuments } from '@platform/tauri/client';
 import { canonicalPath, notebookRelativeDirectoryPath } from '@/lib/path';
 
@@ -32,11 +32,11 @@ export async function switchFolderCollectionType(filePath: string, notebookPath:
   if (current.collection.type === type) return current.collection.id;
   const folderPath = canonicalPath(filePath).replace(/[\\/][^\\/]*$/, '');
   const relativeFolder = notebookRelativeDirectoryPath(notebookPath, folderPath) ?? '';
-  const template = parseCollectionDocumentV2(createFolderCollectionContent(type === 'table' ? 'notes' : 'media', current.collection.name, relativeFolder));
+  const folderName = collectionDisplayName(filePath, 'folder');
+  const template = parseCollectionDocumentV2(createFolderCollectionContent(type === 'table' ? 'notes' : 'media', folderName, relativeFolder));
   const next = {
     ...template.collection,
     id: current.collection.id,
-    name: current.collection.name,
     revision: current.collection.revision + 1,
     created_at: current.collection.created_at,
     updated_at: new Date().toISOString(),

@@ -1,18 +1,17 @@
 import { useDocumentStore } from '@features/document/store/document-store';
 
 /** Wait for the restored document's content load to finish before disk maintenance starts. */
-export function waitForInitialDocumentLoad(timeoutMs = 60_000): Promise<'settled' | 'skipped' | 'superseded' | 'timeout'> {
+export function waitForInitialDocumentLoad(timeoutMs = 60_000): Promise<'settled' | 'unavailable' | 'skipped' | 'timeout'> {
   const initial = useDocumentStore.getState();
   if (!initial.isDocumentTransitioning) {
-    return Promise.resolve(initial.activeExternalSession ? 'settled' : 'skipped');
+    if (!initial.activeExternalSession) return Promise.resolve('skipped');
+    return Promise.resolve(initial.documentLoadOutcome === 'unavailable' ? 'unavailable' : 'settled');
   }
-  const transitionId = initial.documentTransitionId;
-
   return new Promise((resolve) => {
     let finished = false;
     let unsubscribe = () => {};
     let timer: ReturnType<typeof setTimeout>;
-    const finish = (result: 'settled' | 'superseded' | 'timeout') => {
+    const finish = (result: 'settled' | 'unavailable' | 'skipped' | 'timeout') => {
       if (finished) return;
       finished = true;
       clearTimeout(timer);
@@ -20,13 +19,19 @@ export function waitForInitialDocumentLoad(timeoutMs = 60_000): Promise<'settled
       resolve(result);
     };
     unsubscribe = useDocumentStore.subscribe((state) => {
-      if (state.documentTransitionId !== transitionId) finish('superseded');
-      else if (!state.isDocumentTransitioning) finish('settled');
+      // A user action can replace the restored target while it is loading.
+      // Wait for the latest transition to settle before releasing startup.
+      if (!state.isDocumentTransitioning) {
+        finish(!state.activeExternalSession ? 'skipped'
+          : state.documentLoadOutcome === 'unavailable' ? 'unavailable' : 'settled');
+      }
     });
     timer = setTimeout(() => finish('timeout'), timeoutMs);
     // The transition may finish between the first snapshot and subscribe().
     const current = useDocumentStore.getState();
-    if (current.documentTransitionId !== transitionId) finish('superseded');
-    else if (!current.isDocumentTransitioning) finish('settled');
+    if (!current.isDocumentTransitioning) {
+      finish(!current.activeExternalSession ? 'skipped'
+        : current.documentLoadOutcome === 'unavailable' ? 'unavailable' : 'settled');
+    }
   });
 }

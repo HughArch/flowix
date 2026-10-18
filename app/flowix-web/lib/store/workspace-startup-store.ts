@@ -1,10 +1,10 @@
+import type { StartupStatus } from '@platform/tauri/client/general';
 import { create } from 'zustand';
 
 export type WorkspaceStartupStatus = 'idle' | 'running' | 'ready' | 'degraded' | 'failed';
 export type NativeStartupPhase = 'pending' | 'running' | 'ready' | 'failed';
-export type StartupTaskOutcome = 'pending' | 'ready' | 'failed';
 
-/** Process-local stage 2 barrier. Never persist startup progress across launches. */
+/** Process-local foreground startup state. Never persist it across launches. */
 export const useWorkspaceStartupStore = create<{
   nativePhase: NativeStartupPhase;
   nativeStage: 'initialization' | 'workspacePreparation';
@@ -12,42 +12,35 @@ export const useWorkspaceStartupStore = create<{
   nativeError: string | null;
   nativeProgress: { percent: number; completed: number; total: number; task: string } | null;
   status: WorkspaceStartupStatus;
+  workbenchMounted: boolean;
   task: string | null;
   error: string | null;
-  startupTasks: Record<string, StartupTaskOutcome>;
-  setStartupTask: (task: string, outcome: StartupTaskOutcome) => void;
-}>()((set) => ({
+}>()(() => ({
   nativePhase: 'pending',
   nativeStage: 'initialization',
   nativeStep: 'initialization',
   nativeError: null,
   nativeProgress: null,
   status: 'idle',
+  workbenchMounted: false,
   task: null,
   error: null,
-  startupTasks: {},
-  setStartupTask: (task, outcome) => set((state) => ({
-    startupTasks: { ...state.startupTasks, [task]: outcome },
-  })),
 }));
 
-export function waitForStartupTask(task: string | null, timeoutMs = 60_000): Promise<'ready' | 'failed' | 'timeout'> {
-  if (!task) return Promise.resolve('ready');
-  return new Promise((resolve) => {
-    let settled = false;
-    const finish = (result: 'ready' | 'failed' | 'timeout') => {
-      if (settled) return;
-      settled = true;
-      clearTimeout(timeout);
-      unsubscribe();
-      resolve(result);
-    };
-    const check = () => {
-      const outcome = useWorkspaceStartupStore.getState().startupTasks[task];
-      if (outcome === 'ready' || outcome === 'failed') finish(outcome);
-    };
-    const unsubscribe = useWorkspaceStartupStore.subscribe(check);
-    const timeout = setTimeout(() => finish('timeout'), timeoutMs);
-    check();
+/** Native responses and the foreground readiness promise can settle out of order. */
+export function applyNativeStartupStatus(status: StartupStatus): void {
+  const stage = status.stage ?? (status.step === 'versionInitialization' || status.step === 'initialization'
+    ? 'initialization' : 'workspacePreparation');
+  useWorkspaceStartupStore.setState((state) => {
+    if (state.nativePhase === 'ready' && status.phase !== 'ready') return state;
+    if (state.nativeStage === 'workspacePreparation' && stage === 'initialization') return state;
+    if (state.nativePhase === status.phase && state.nativeStage === stage
+      && state.nativeStep === status.step && state.nativeError === status.error
+      && state.nativeProgress?.percent === status.progress?.percent
+      && state.nativeProgress?.task === status.progress?.task
+      && state.nativeProgress?.completed === status.progress?.completed
+      && state.nativeProgress?.total === status.progress?.total) return state;
+    return { ...state, nativePhase: status.phase, nativeStage: stage,
+      nativeStep: status.step, nativeError: status.error, nativeProgress: status.progress ?? null };
   });
 }

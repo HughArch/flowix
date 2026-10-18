@@ -2,6 +2,7 @@ pub mod bootstrap;
 pub mod document_access;
 pub mod export_access;
 pub mod native_menu;
+pub mod notebook_background;
 pub mod panic;
 pub mod paths;
 pub mod startup;

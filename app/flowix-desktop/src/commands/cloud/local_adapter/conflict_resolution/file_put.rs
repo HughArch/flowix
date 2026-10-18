@@ -133,6 +133,12 @@ pub(crate) fn resolve_v2_file_put_conflict(
                     let _ = flowix_core::memo_file::rename_file_noclobber(&destination, &path);
                     return Err(sync_error(error));
                 }
+                crate::commands::document_list::rebase_collection_paths(
+                    &memo_file,
+                    &material.notebook_id,
+                    &material.remote.filename,
+                    &target.filename,
+                );
             }
             destination
         } else {
@@ -173,16 +179,24 @@ pub(crate) fn resolve_v2_file_put_conflict(
                     && destination.exists()
                     && flowix_core::memo_file::rename_file_noclobber(&destination, &path).is_ok()
                 {
-                    let _ = memo_file.move_media_resource_path(
+                    let restored = memo_file.move_media_resource_path(
                         &material.notebook_id,
                         material
                             .relocated
                             .as_ref()
                             .map_or(material.remote.filename.as_str(), |item| {
                                 item.filename.as_str()
-                            }),
+                        }),
                         &material.remote.filename,
                     );
+                    if restored.is_ok() {
+                        crate::commands::document_list::rebase_collection_paths(
+                            &memo_file,
+                            &material.notebook_id,
+                            material.relocated.as_ref().map_or(material.remote.filename.as_str(), |item| item.filename.as_str()),
+                            &material.remote.filename,
+                        );
+                    }
                 }
                 return Err(
                     "CLOUD_CONFLICT_LOCAL_CHANGED: attachment changed during recovery".into(),
@@ -219,16 +233,10 @@ pub(crate) fn resolve_v2_file_put_conflict(
                 .map_err(sync_error)
         };
     }
-    let memo = memo_file
-        .find_memo_by_relative_path_for_notebook_id(
-            &material.notebook_id,
-            &material.remote.filename,
-        )
-        .ok_or_else(|| "CLOUD_CONFLICT_LOCAL_NOTE_NOT_FOUND".to_string())?;
-    if material.remote.filename != memo.relative_path {
-        return Err("CLOUD_PATH_OR_DELETE_CONFLICT: local changes preserved".to_string());
+    let path = safe_cloud_note_path(Path::new(&notebook.path), &material.remote.filename)?;
+    if !path.is_file() {
+        return Err("CLOUD_CONFLICT_LOCAL_NOTE_NOT_FOUND".to_string());
     }
-    let path = notebook_path_from_relative(Path::new(&notebook.path), &memo.relative_path)?;
     let conflict_copy = path.with_file_name(format!(
         "{} (Flowix conflict {}).md",
         path.file_stem()
@@ -288,14 +296,10 @@ pub(crate) fn resolve_v2_file_put_conflict(
             }
         }
         crate::watcher::runtime::mark_self_write_for(app, &path);
-        if !memo_file
-            .prune_deleted_memo_for_notebook_id(
-                &material.notebook_id,
-                &material.remote.filename,
-                &memo.id,
-            )
-            .map_err(sync_error)?
-        {
+        memo_file
+            .refresh_note_path(&material.notebook_id, &material.remote.filename)
+            .map_err(sync_error)?;
+        if path.exists() {
             return Err(
                 "CLOUD_CONFLICT_LOCAL_CHANGED: local note reappeared during recovery".into(),
             );
@@ -336,10 +340,10 @@ pub(crate) fn resolve_v2_file_put_conflict(
         crate::watcher::runtime::mark_self_write_for(app, &destination);
         flowix_core::memo_file::rename_file_noclobber(&path, &destination).map_err(sync_error)?;
         if let Err(error) =
-            memo_file.rename_memo_file_for_notebook_id(&material.notebook_id, &path, &destination)
+            memo_file.refresh_note_path(&material.notebook_id, &material.remote.filename)
         {
             let _ = flowix_core::memo_file::rename_file_noclobber(&destination, &path);
-            return Err(error);
+            return Err(sync_error(error));
         }
         destination
     } else {
@@ -379,34 +383,29 @@ pub(crate) fn resolve_v2_file_put_conflict(
                 && destination.exists()
                 && flowix_core::memo_file::rename_file_noclobber(&destination, &path).is_ok()
             {
-                let _ = memo_file.rename_memo_file_for_notebook_id(
-                    &material.notebook_id,
+                if let Ok(relative) = flowix_core::memo_file::notebook_relative_path(
+                    Path::new(&notebook.path),
                     &destination,
-                    &path,
-                );
+                ) {
+                    let _ = memo_file.refresh_note_path(&material.notebook_id, &relative);
+                }
+                let _ =
+                    memo_file.refresh_note_path(&material.notebook_id, &material.remote.filename);
             }
             return Err("CLOUD_CONFLICT_LOCAL_CHANGED: local note changed during recovery".into());
         }
     }
     crate::watcher::runtime::mark_self_write_content_for(app, &destination, &next);
-    let updated = memo_file
-        .register_existing_file_for_notebook_id(&material.notebook_id, &destination)
+    let relative_path =
+        flowix_core::memo_file::notebook_relative_path(Path::new(&notebook.path), &destination)?;
+    memo_file
+        .refresh_note_path(&material.notebook_id, &relative_path)
         .map_err(sync_error)?;
-    memo_events::emit(
-        app,
-        MemoEvent::Updated {
-            id: updated.id.clone(),
-            path: destination.to_string_lossy().into_owned(),
-            notebook_id: material.notebook_id.clone(),
-            derived_changed: MemoDerivedChanged {
-                tags: true,
-                todos: true,
-                agents: true,
-            },
-            memo: updated,
-            source: MemoChangeSource::CloudSync,
-        },
-    );
+    crate::commands::path_change::NotebookPathInvalidated::new(
+        material.notebook_id.clone(),
+        relative_path,
+    )
+    .emit(app);
     if let Some(target) = &material.relocated {
         state
             .cloud_sync

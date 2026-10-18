@@ -222,7 +222,9 @@ export function attachMessageActions(
     forkButton.setAttribute("aria-label", forkButton.title);
     forkButton.append(createLucideIcon(GitBranch));
     let activeConfirmation: HTMLSpanElement | null = null;
+    let isForking = false;
     function handleOutsidePointerDown(event: PointerEvent): void {
+      if (isForking) return;
       if (!actions.isConnected) {
         closeConfirmation();
         return;
@@ -238,11 +240,14 @@ export function attachMessageActions(
       document.removeEventListener("pointerdown", handleOutsidePointerDown, true);
     };
     disposeForkConfirmation = () => {
+      isForking = false;
+      item.classList.remove("agent-thread-card__message--forking");
       closeConfirmation();
     };
     forkButton.addEventListener("mousedown", (event) => event.stopPropagation());
     forkButton.addEventListener("click", (event) => {
       event.stopPropagation();
+      if (isForking) return;
       if (activeConfirmation) {
         closeConfirmation();
         return;
@@ -269,6 +274,8 @@ export function attachMessageActions(
         // the only visible state made a successful click look like a no-op.
         confirmButton.disabled = true;
         cancelButton.disabled = true;
+        isForking = true;
+        item.classList.add("agent-thread-card__message--forking");
         const loadingIcon = createLucideIcon(LoaderCircle);
         loadingIcon.classList.add(
           "agent-thread-card__message-fork-loading-icon",
@@ -278,16 +285,21 @@ export function attachMessageActions(
         loadingLabel.textContent = language === "zh-CN" ? "分叉中…" : "Forking…";
         confirmButton.replaceChildren(loadingIcon, loadingLabel);
         let result: void | Promise<void>;
+        const finishFork = () => {
+          isForking = false;
+          item.classList.remove("agent-thread-card__message--forking");
+          closeConfirmation();
+        };
         try {
           result = onFork?.(message);
         } catch (error) {
-          closeConfirmation();
+          finishFork();
           throw error;
         }
         if (result && typeof result.then === "function") {
-          void result.then(closeConfirmation, closeConfirmation);
+          void result.then(finishFork, finishFork);
         } else {
-          closeConfirmation();
+          finishFork();
         }
       });
 

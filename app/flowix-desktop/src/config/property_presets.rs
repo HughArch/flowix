@@ -410,8 +410,6 @@ impl PropertyPresetStore {
             if change.field.key.trim().is_empty()
                 || [
                     "flowix_property_types",
-                    "flowix_key",
-                    "key",
                     "flowix_plugin",
                 ]
                 .contains(&change.field.key.as_str())

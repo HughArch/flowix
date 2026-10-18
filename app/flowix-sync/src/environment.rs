@@ -30,6 +30,5 @@ impl CloudEnvironment {
 }
 
 pub fn default_cloud_environment() -> CloudEnvironment {
-    CloudEnvironment::parse(env!("FLOWIX_CLOUD_ENVIRONMENT"))
-        .unwrap_or(CloudEnvironment::Prod)
+    CloudEnvironment::parse(env!("FLOWIX_CLOUD_ENVIRONMENT")).unwrap_or(CloudEnvironment::Prod)
 }

@@ -9,9 +9,12 @@ use std::collections::HashMap;
 use std::fs;
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{RwLock, RwLockReadGuard, RwLockWriteGuard};
-
+use std::sync::{
+    atomic::{AtomicBool, Ordering},
+    RwLock, RwLockReadGuard, RwLockWriteGuard,
+};
 use serde::{Deserialize, Serialize};
+use tokio::sync::Notify;
 
 use crate::agent_external::cli_resolver::{
     is_executable_file, set_external_cli_registry, update_external_cli_path,
@@ -42,6 +45,20 @@ fn is_supported_external_agent_key(agent_key: &str) -> bool {
 pub struct AgentExternalConfig {
     path: PathBuf,
     data: RwLock<AgentExternalConfigFile>,
+    startup_detect_complete: AtomicBool,
+    startup_detect_notify: Notify,
+}
+
+struct StartupDetectCompletion<'a> {
+    complete: &'a AtomicBool,
+    notify: &'a Notify,
+}
+
+impl Drop for StartupDetectCompletion<'_> {
+    fn drop(&mut self) {
+        self.complete.store(true, Ordering::Release);
+        self.notify.notify_waiters();
+    }
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -118,6 +135,8 @@ impl AgentExternalConfig {
         let config = Self {
             path,
             data: RwLock::new(data),
+            startup_detect_complete: AtomicBool::new(false),
+            startup_detect_notify: Notify::new(),
         };
         if removed_unsupported_entries {
             let sanitized = config.read_data().clone();
@@ -134,6 +153,8 @@ impl AgentExternalConfig {
         Self {
             path,
             data: RwLock::new(AgentExternalConfigFile::default()),
+            startup_detect_complete: AtomicBool::new(false),
+            startup_detect_notify: Notify::new(),
         }
     }
 
@@ -219,6 +240,10 @@ impl AgentExternalConfig {
     /// 此刻注册表尚�?���?(`REGISTRY = None`), �?`resolve_*_binary` 会走原探测链
     /// (env > PATH > 鍊欓€?> shell), 涓庢敼閫犲墠琛屼负涓€鑷淬€?
     pub fn run_startup_detect(&self) {
+        let _completion = StartupDetectCompletion {
+            complete: &self.startup_detect_complete,
+            notify: &self.startup_detect_notify,
+        };
         let started = std::time::Instant::now();
         let pending: Vec<&str> = {
             let data = self.read_data();
@@ -260,6 +285,21 @@ impl AgentExternalConfig {
             elapsed_ms = started.elapsed().as_millis(),
             "[startup] external CLI detection completed"
         );
+    }
+
+    /// Wait until startup discovery has published all detected CLI paths.
+    /// Register the notification before checking the flag so completion cannot
+    /// be missed between the check and the wait.
+    pub async fn wait_for_startup_detect(&self) {
+        loop {
+            let notified = self.startup_detect_notify.notified();
+            tokio::pin!(notified);
+            notified.as_mut().enable();
+            if self.startup_detect_complete.load(Ordering::Acquire) {
+                return;
+            }
+            notified.await;
+        }
     }
 
     /// 把当�?JSON �?path 内存镜像灌进 `REGISTRY`�?

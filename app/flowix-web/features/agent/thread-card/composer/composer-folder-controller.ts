@@ -13,6 +13,7 @@ export interface ComposerFolderReference {
 }
 
 const NOTE_SEARCH_DEBOUNCE_MS = 150;
+const MENU_SCROLLBAR_HIDE_DELAY_MS = 700;
 
 export interface ComposerFolderControllerOptions {
   editor: Editor;
@@ -49,6 +50,7 @@ export class ComposerFolderController {
   private notesLoading = false;
   private notesRequestGeneration = 0;
   private notesSearchTimer: ReturnType<typeof setTimeout> | null = null;
+  private menuScrollbarHideTimer: ReturnType<typeof setTimeout> | null = null;
   private activeIndex = 0;
   private isKeyboardNavigation = true;
   private dismissedValue: string | null = null;
@@ -296,11 +298,26 @@ export class ComposerFolderController {
       this.menu.className = "agent-composer-slash-menu agent-composer-slash-menu--folder";
       this.menu.setAttribute("role", "listbox");
       this.menu.setAttribute("aria-label", "资料和笔记");
+      this.menu.setAttribute("data-flowix-surface", "popover");
+      this.menu.addEventListener("scroll", this.handleMenuScroll, { passive: true });
       document.body.append(this.menu);
     }
     this.renderMenuItems();
     this.updateMenuPosition();
   }
+
+  private readonly handleMenuScroll = (): void => {
+    const menu = this.menu;
+    if (!menu) return;
+    menu.dataset.scrolling = "true";
+    if (this.menuScrollbarHideTimer !== null) {
+      clearTimeout(this.menuScrollbarHideTimer);
+    }
+    this.menuScrollbarHideTimer = setTimeout(() => {
+      if (this.menu === menu) delete menu.dataset.scrolling;
+      this.menuScrollbarHideTimer = null;
+    }, MENU_SCROLLBAR_HIDE_DELAY_MS);
+  };
 
   private renderMenuItems(): void {
     const menu = this.menu;
@@ -439,6 +456,10 @@ export class ComposerFolderController {
   }
 
   private closeMenu(): void {
+    if (this.menuScrollbarHideTimer !== null) {
+      clearTimeout(this.menuScrollbarHideTimer);
+      this.menuScrollbarHideTimer = null;
+    }
     this.menu?.remove();
     this.menu = null;
     this.mentionRange = null;

@@ -2,7 +2,7 @@
 
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
 import { CenteredLoadingSpinner } from "@shared/ui/centered-loading-spinner";
-import { useWorkspaceStartupStore } from "@/lib/store/workspace-startup-store";
+import { useWorkspaceStartupStore, applyNativeStartupStatus } from "@/lib/store/workspace-startup-store";
 import { ErrorBoundary } from "@shared/error-boundary";
 import { Toaster, toast } from "sonner";
 import { useAppPreferencesViewModel } from "@features/preferences/public/app-api";
@@ -15,10 +15,12 @@ import { TooltipProvider } from "@shared/ui/tooltip";
 import "@features/shortcuts/actions";
 import { boot, listenToUserConfigChanges, windows } from "@platform/tauri/client";
 import { syncUserConfigChange } from "./user-config-sync";
-import { useAgentWorkspaceWindowSync } from "./use-agent-workspace-window-sync";
+import { useAgentWorkspaceWindowLifecycle } from "./use-agent-workspace-window-lifecycle";
 import { invalidateDshModelConfigs } from "@features/agent/public/app-api";
 import { createLogger } from "@/lib/logger";
 import { ActionableNoticeHost } from "@features/notifications/actionable-notice-host";
+import { NotebookSetupNoticeHost } from "@features/memo/components/notebook-setup-notice-host";
+import { NotebookSetupCoordinator } from "@features/memo/components/notebook-setup-coordinator";
 import { useAgentPersistenceError } from "@features/agent/public/app-api";
 import { translate, type AppLanguage } from "@/lib/i18n";
 
@@ -87,9 +89,14 @@ function StartupLoadingOverlay() {
   const nativeStep = useWorkspaceStartupStore((state) => state.nativeStep);
   const nativeProgress = useWorkspaceStartupStore((state) => state.nativeProgress);
   const workspaceStatus = useWorkspaceStartupStore((state) => state.status);
+  const workbenchMounted = useWorkspaceStartupStore((state) => state.workbenchMounted);
   const { t } = useI18n();
   const visible = nativePhase === 'pending' || nativePhase === 'running'
-    || (nativePhase === 'ready' && (workspaceStatus === 'idle' || workspaceStatus === 'running'));
+    || (nativePhase === 'ready' && (
+      workspaceStatus === 'idle'
+      || workspaceStatus === 'running'
+      || (workspaceStatus === 'ready' && !workbenchMounted)
+    ));
   if (!visible) return null;
   return (
     <div className="fixed inset-0 z-[2147483646] flex items-center justify-center bg-[var(--frame-bg)]">
@@ -146,6 +153,8 @@ function AppToaster({ language }: { language: AppLanguage }) {
       closeButton={false}
     />
     <Suspense fallback={null}><DocumentSaveNotifications /></Suspense>
+    <NotebookSetupCoordinator />
+    <NotebookSetupNoticeHost />
     <ActionableNoticeHost />
     </>
   );
@@ -197,8 +206,8 @@ function useUnexpectedControlInputGuard() {
 
 function App() {
   useUnexpectedControlInputGuard();
-  useAgentWorkspaceWindowSync();
   const [hash, setHash] = useState(() => window.location.hash);
+  useAgentWorkspaceWindowLifecycle({ deferUntilStage3: !hash.startsWith('#preferences') });
   const {
     language,
     format,
@@ -224,33 +233,15 @@ function App() {
       return;
     }
     let active = true;
+    let inFlight = false;
     let timer: number | undefined;
     const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
       try {
         const status = await boot.getStartupStatus();
         if (!active) return;
-        const nativeStage = status.stage ?? (status.step === 'versionInitialization'
-          ? 'initialization'
-          : 'workspacePreparation');
-        useWorkspaceStartupStore.setState((state) => (
-          state.nativePhase === status.phase
-            && state.nativeStage === nativeStage
-            && state.nativeStep === status.step
-            && state.nativeError === status.error
-            && state.nativeProgress?.percent === status.progress?.percent
-            && state.nativeProgress?.task === status.progress?.task
-            && state.nativeProgress?.completed === status.progress?.completed
-            && state.nativeProgress?.total === status.progress?.total
-            ? state
-            : {
-                ...state,
-                nativePhase: status.phase,
-                nativeStage,
-                nativeStep: status.step,
-                nativeError: status.error,
-                nativeProgress: status.progress ?? null,
-              }
-        ));
+        applyNativeStartupStatus(status);
         if (status.phase === 'ready' || status.phase === 'failed') {
           if (timer !== undefined) window.clearInterval(timer);
           timer = undefined;
@@ -259,7 +250,7 @@ function App() {
         if (active) setNativeReady();
         if (timer !== undefined) window.clearInterval(timer);
         timer = undefined;
-      }
+      } finally { inFlight = false; }
     };
     void refresh();
     timer = window.setInterval(() => void refresh(), 250);
@@ -335,8 +326,8 @@ function App() {
     const tab = hash.split("/")[1] || undefined;
     return (
       <ErrorBoundary language={language}>
-        <AppToaster language={language} />
         <I18nProvider language={language}>
+          <AppToaster language={language} />
           <ThemeProvider>
             <TooltipProvider>
               <ShortcutsProvider overrides={shortcutOverrides}>
@@ -355,8 +346,8 @@ function App() {
 
   return (
     <ErrorBoundary language={language}>
-      <AppToaster language={language} />
       <I18nProvider language={language}>
+        <AppToaster language={language} />
         <ThemeProvider>
           <StartupLoadingOverlay />
           <Suspense fallback={null}>

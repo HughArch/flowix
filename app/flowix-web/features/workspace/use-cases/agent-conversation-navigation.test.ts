@@ -8,6 +8,7 @@ const mocks = vi.hoisted(() => ({
   isCurrentNavigation: vi.fn().mockReturnValue(true),
   activeAgentConversationId: 'conversation-a',
   activeFilter: 'all',
+  navigationRevision: 1,
   hydrateInstance: vi.fn(),
   selectAgentConversation: vi.fn(),
   setDesiredTarget: vi.fn(),
@@ -62,7 +63,7 @@ vi.mock('@features/workspace/store/workspace-restore-store', () => ({
 vi.mock('@features/workspace/store/work-column-store', () => ({
   useWorkColumnStore: {
     getState: () => ({
-      navigation: { phase: 'committed', showWorkColumnLoading: false, requestId: 1, target: { kind: 'plugin-workbench', plugin: { manifest: { id: 'plugin-a' } } }, pendingTarget: null, previousTarget: null, failure: null, retryToken: null },
+      navigation: { phase: 'committed', showWorkColumnLoading: false, requestId: mocks.navigationRevision, target: { kind: 'plugin-workbench', plugin: { manifest: { id: 'plugin-a' } } }, pendingTarget: null, previousTarget: null, failure: null, retryToken: null },
       beginNavigation: mocks.beginNavigation,
       commitNavigation: mocks.commitNavigation,
       failNavigation: mocks.failNavigation,
@@ -79,6 +80,7 @@ describe('agent conversation navigation', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.activeFilter = 'all';
+    mocks.navigationRevision = 1;
     mocks.activeAgentConversationId = 'conversation-a';
     mocks.clearDocument.mockImplementation(async () => { mocks.activeAgentConversationId = ''; });
     mocks.hydrateInstance.mockResolvedValue({ instanceId: 'conversation-a' });
@@ -128,6 +130,19 @@ describe('agent conversation navigation', () => {
     expect(mocks.clearDocument).toHaveBeenCalledOnce();
     expect(mocks.clearAgentConversation).toHaveBeenCalledOnce();
     expect(mocks.openAgentConversation).not.toHaveBeenCalled();
+  });
+
+  it.each([null, { instanceId: 'conversation-a' }])('does not replace later navigation after delayed hydration (%j)', async (result) => {
+    let finish!: (value: typeof result) => void;
+    mocks.hydrateInstance.mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const { restoreAgentConversationWorkspace } = await import('./agent-conversation-navigation');
+    const restoring = restoreAgentConversationWorkspace();
+    mocks.navigationRevision = 2;
+    finish(result);
+    await restoring;
+    expect(mocks.openAgentConversation).not.toHaveBeenCalled();
+    expect(mocks.clearDocument).not.toHaveBeenCalled();
+    expect(mocks.clearAgentConversation).not.toHaveBeenCalled();
   });
 
   it('restores the work-column conversation even when the middle column is on notes', async () => {

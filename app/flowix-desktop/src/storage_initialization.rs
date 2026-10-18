@@ -42,7 +42,10 @@ impl GlobalInitializationJob {
     }
 
     fn is_optional(self) -> bool {
-        matches!(self, Self::AgentLayout | Self::Templates)
+        matches!(
+            self,
+            Self::AgentLayout | Self::WatcherSettings | Self::Templates
+        )
     }
 
     fn run(
@@ -75,7 +78,7 @@ const RETIRED_INITIALIZATION_JOB_IDS: [&str; 6] = [
 pub fn prepare_database_paths(config_dir: &Path) -> io::Result<PathBuf> {
     let database_dir = flowix_core::memo_file::prepare_database_directory(
         config_dir,
-        &["local.db", "index.db", "sync.db", "thread.db", "default.db"],
+        &["local.db", "sync.db", "thread.db", "default.db"],
     )?;
     // Credentials in the secret store must remain private after VACUUM INTO
     // publishes the migrated snapshot.
@@ -88,6 +91,17 @@ pub fn prepare_database_paths(config_dir: &Path) -> io::Result<PathBuf> {
         )?;
     }
     Ok(database_dir)
+}
+
+/// Retire the unused global index only after current storage initialization succeeds.
+/// Preserve both layouts and SQLite companions for manual recovery; never open or
+/// import the retired database. Cleanup failures never block initialization.
+pub fn retire_global_index_databases(config_dir: &Path) {
+    for path in [config_dir.join("index.db"), config_dir.join("db/index.db")] {
+        if let Err(error) = flowix_core::memo_file::backup_database(&path) {
+            tracing::warn!(path = %path.display(), %error, "skipping retired index cleanup");
+        }
+    }
 }
 
 /// Run unfinished one-time initialization jobs and retry notebooks that were
@@ -120,7 +134,7 @@ pub fn initialize_legacy_storage_with_progress(
     let notebooks = memo_file
         .read_notebook_configs()
         .map_err(|error| error.to_string())?;
-    // Four global jobs, six retired markers, and two per-notebook jobs.
+    // Four global jobs, six retired markers, and the per-notebook jobs.
     // Offline notebook jobs resolve as deferred units instead of stalling progress.
     let total = GlobalInitializationJob::ALL.len()
         + RETIRED_INITIALIZATION_JOB_IDS.len()
@@ -223,7 +237,7 @@ fn reset_pending_notebooks(memo_file: &MemoFile) -> Result<(), String> {
     let notebooks = memo_file
         .read_notebook_configs()
         .map_err(|error| format!("read notebooks for storage reset retry failed: {error}"))?;
-    let total = notebooks.len() * 2;
+    let total = notebooks.len() * NotebookInitializationJob::ALL.len();
     let mut completed = 0;
     reset_pending_notebooks_with_progress(
         memo_file,
@@ -248,6 +262,23 @@ fn reset_pending_notebooks_with_progress(
                 .local_migration_completed(&key)
                 .map_err(|error| error.to_string())?
             {
+                // This job is recorded once, but notebook schemas evolve over
+                // time. Re-run the idempotent schema initializers on every
+                // startup so existing notebooks receive newer columns and
+                // data migrations after the one-time job has completed.
+                if matches!(job, NotebookInitializationJob::InitializeSchema) {
+                    if !Path::new(&notebook.path).is_dir() {
+                        tracing::warn!(job_id = %key, notebook = %notebook.id,
+                            "notebook schema refresh deferred until the notebook is available");
+                        break;
+                    }
+                    memo_file
+                        .retire_legacy_memo_index(&notebook.id)
+                        .and_then(|_| memo_file.initialize_media_resource_schema(&notebook.id))
+                        .map_err(|error| {
+                            format!("refresh notebook {} database schema failed: {error}", notebook.id)
+                        })?;
+                }
                 report(*completed, total, &key);
                 *completed += 1;
                 report(*completed, total, &key);
@@ -280,8 +311,7 @@ fn reset_pending_notebooks_with_progress(
                         // Retrying schema preparation must preserve a database
                         // already rebuilt by a successful reset job.
                         memo_file
-                            .initialize_memo_index_schema(&notebook.id)
-                            .and_then(|_| memo_file.initialize_note_index_schema(&notebook.id))
+                            .retire_legacy_memo_index(&notebook.id)
                             .and_then(|_| memo_file.initialize_media_resource_schema(&notebook.id))
                             .map_err(|error| {
                                 format!(
@@ -290,6 +320,13 @@ fn reset_pending_notebooks_with_progress(
                                 )
                             })
                     }
+                    NotebookInitializationJob::MigrateMediaResourceIdentity => memo_file
+                        .migrate_media_resource_identities(&notebook.id)
+                        .map(|count| {
+                            tracing::info!(notebook_id = %notebook.id, changed = count,
+                                "media resource identity migration completed");
+                        })
+                        .map_err(|error| format!("migrate notebook {} media identities failed: {error}", notebook.id)),
                 },
                 report,
                 completed,
@@ -375,9 +412,10 @@ fn legacy_notebook_database(path: &Path) -> io::Result<bool> {
         rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_to_io)?
     };
     let has_old_memos = names.iter().any(|name| name == "memos");
-    let has_current_notes = names.iter().any(|name| name == "notes");
     let has_old_v2_projection = names.iter().any(|name| name.starts_with("v2_"));
-    Ok((has_old_memos && !has_current_notes) || has_old_v2_projection)
+    // Memo tables are migrated in place by the schema job so their
+    // non-derivable properties can be preserved before they are retired.
+    Ok(has_old_v2_projection && !has_old_memos)
 }
 
 fn path_entry_exists(path: &Path) -> io::Result<bool> {
@@ -416,8 +454,14 @@ fn reset_notebook(memo_file: &MemoFile, notebook: &NotebookConfig) -> Result<(),
         ));
     }
 
-    flowix_core::memo_file::backup_database(&flowix_dir.join("notebook.db"))
-        .map_err(|error| format!("remove notebook derived database failed: {error}"))?;
+    // Rebuild the path index from Markdown, then discard the old Memo-ID
+    // projection. Derived note metadata is recreated from the source files.
+    memo_file
+        .retire_legacy_memo_index(&notebook.id)
+        .map_err(|error| format!("migrate notebook note index failed: {error}"))?;
+    memo_file
+        .initialize_media_resource_schema(&notebook.id)
+        .map_err(|error| format!("initialize notebook media schema failed: {error}"))?;
     memo_file.invalidate_caches();
     for name in [
         "view-preferences.json",
@@ -632,5 +676,57 @@ mod tests {
         assert!(!memo.local_migration_completed("test_retry").unwrap());
         run_job(&memo, "test_retry", || Ok(())).unwrap();
         run_job(&memo, "test_retry", || panic!("completed job ran again")).unwrap();
+    }
+}
+
+#[cfg(test)]
+mod retired_index_tests {
+    use super::*;
+
+    #[test]
+    fn cleanup_failure_does_not_prevent_retiring_the_other_layout() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir(root.join("db")).unwrap();
+        fs::write(root.join("index.db"), b"blocked legacy database").unwrap();
+        // A file where the backup directory belongs fails on every platform,
+        // including when tests run with elevated filesystem permissions.
+        fs::write(root.join("rebuild-backups"), b"blocked").unwrap();
+        fs::write(root.join("db/index.db"), b"other legacy database").unwrap();
+
+        retire_global_index_databases(root);
+
+        assert_eq!(fs::read(root.join("index.db")).unwrap(), b"blocked legacy database");
+        assert!(!root.join("db/index.db").exists());
+        assert!(root.join("db/rebuild-backups").is_dir());
+    }
+
+    #[test]
+    fn retirement_preserves_both_layouts_and_sidecars_without_touching_current_stores() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path();
+        fs::create_dir(root.join("db")).unwrap();
+        for directory in [root.to_path_buf(), root.join("db")] {
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                fs::write(directory.join(format!("index.db{suffix}")), suffix.as_bytes()).unwrap();
+            }
+        }
+        fs::write(root.join("db/local.db"), b"current registry").unwrap();
+        fs::write(root.join("db/default.db"), b"credentials").unwrap();
+        for _ in 0..2 {
+            retire_global_index_databases(root);
+        }
+        for directory in [root.to_path_buf(), root.join("db")] {
+            let backups: Vec<_> = fs::read_dir(directory.join("rebuild-backups"))
+                .unwrap().map(|entry| entry.unwrap().path()).collect();
+            assert_eq!(backups.len(), 1);
+            for suffix in ["", "-wal", "-shm", "-journal"] {
+                let name = format!("index.db{suffix}");
+                assert!(!directory.join(&name).exists());
+                assert_eq!(fs::read(backups[0].join(name)).unwrap(), suffix.as_bytes());
+            }
+        }
+        assert_eq!(fs::read(root.join("db/local.db")).unwrap(), b"current registry");
+        assert_eq!(fs::read(root.join("db/default.db")).unwrap(), b"credentials");
     }
 }

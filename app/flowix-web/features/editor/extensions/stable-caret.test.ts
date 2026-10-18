@@ -190,6 +190,7 @@ describe('separate StableCaret instances in nested editors', () => {
     });
     const mount = document.createElement('div');
     mount.contentEditable = 'false';
+    mount.className = 'agent-composer__input-row';
     const NestedComposer = TiptapNode.create({
       name: 'nestedComposer', group: 'block', atom: true,
       renderHTML: () => ['div'],
@@ -259,5 +260,251 @@ describe('separate StableCaret instances in nested editors', () => {
     expect(parentCaret.style.width).toBe(caret.style.width);
     expect(parentCaret.style.height).toBe(caret.style.height);
     expect(caret.hidden).toBe(true);
+    expect(frames.size).toBe(0);
+    editor.view.dom.focus();
+    flush();
+    expect(frames.size).toBe(0);
+    editor.view.dom.dispatchEvent(new Event('compositionend'));
+    expect(frames.size).toBeGreaterThan(0);
+    editor.destroy();
+    editors.splice(editors.indexOf(editor), 1);
+    expect(frames.size).toBe(0);
+  });
+});
+
+describe('composer local caret layer', () => {
+  let editor: Editor;
+  let layer: HTMLElement;
+  let caret: HTMLElement;
+  let frames: Map<number, FrameRequestCallback>;
+  let resize: (target: Element) => void;
+  let disconnect: ReturnType<typeof vi.fn>;
+
+  function flush() {
+    const callbacks = [...frames.values()];
+    frames.clear();
+    callbacks.forEach((callback) => callback(0));
+  }
+
+  function mount() {
+    frames = new Map();
+    let nextId = 0;
+    vi.stubGlobal('requestAnimationFrame', (callback: FrameRequestCallback) => {
+      frames.set(++nextId, callback);
+      return nextId;
+    });
+    vi.stubGlobal('cancelAnimationFrame', (id: number) => frames.delete(id));
+    const targets = new Set<Element>();
+    disconnect = vi.fn(() => targets.clear());
+    vi.stubGlobal('ResizeObserver', class {
+      constructor(callback: ResizeObserverCallback) {
+        resize = (target) => {
+          if (targets.has(target)) callback([], this as unknown as ResizeObserver);
+        };
+      }
+      observe(target: Element) { targets.add(target); }
+      unobserve(target: Element) { targets.delete(target); }
+      disconnect = disconnect;
+    });
+    const host = document.createElement('div');
+    host.className = 'agent-composer__input-row';
+    host.contentEditable = 'false';
+    const input = document.createElement('div');
+    host.append(input);
+    document.body.append(host);
+    editor = new Editor({
+      element: { mount: input },
+      extensions: [StarterKit, ComposerStableCaret],
+      content: '<p>hello</p>',
+      editorProps: { attributes: {
+        class: 'agent-composer__input-content', style: 'font-size: 16px', tabindex: '0',
+      } },
+    });
+    layer = host.querySelector<HTMLElement>('.agent-composer__caret-layer')!;
+    caret = layer.querySelector<HTMLElement>('.agent-composer__stable-caret')!;
+    setRect(layer, { left: 40, right: 600, top: 30, bottom: 130, width: 560, height: 100 });
+    setRect(input, { left: 60, right: 560, top: 40, bottom: 120, width: 500, height: 80 });
+    const coords = vi.spyOn(editor.view, 'coordsAtPos')
+      .mockReturnValue({ left: 100, right: 100, top: 50, bottom: 76 });
+    input.focus();
+    editor.commands.setTextSelection(3);
+    flush();
+    return { input, coords };
+  }
+
+  afterEach(() => {
+    if (!editor.isDestroyed) editor.destroy();
+    vi.restoreAllMocks();
+    vi.unstubAllGlobals();
+    document.body.replaceChildren();
+  });
+
+  it('uses local coordinates outside the editable DOM and stays idle when its row translates', async () => {
+    const { input, coords } = mount();
+    expect(layer.parentElement).toBe(input.parentElement);
+    expect(input.contains(caret)).toBe(false);
+    expect(layer.contentEditable).toBe('false');
+    expect(caret.hidden).toBe(false);
+    expect(caret.style.left).toBe('60px');
+    expect(Number.parseFloat(caret.style.top)).toBeCloseTo(23.8);
+    expect(layer.style.clipPath).toBe('inset(10px 40px 10px 20px)');
+    await Promise.resolve();
+    flush();
+    await Promise.resolve();
+    expect(frames.size).toBe(0);
+    coords.mockClear();
+    setRect(layer, { left: 140, right: 700, top: 80, bottom: 180, width: 560, height: 100 });
+    setRect(input, { left: 160, right: 660, top: 90, bottom: 170, width: 500, height: 80 });
+    coords.mockReturnValue({ left: 200, right: 200, top: 100, bottom: 126 });
+    flush();
+    expect(coords).not.toHaveBeenCalled();
+    expect(caret.style.left).toBe('60px');
+    resize(input);
+    flush();
+    expect(caret.style.left).toBe('60px');
+    expect(Number.parseFloat(caret.style.top)).toBeCloseTo(23.8);
+  });
+
+  it('coalesces viewport and internal token/paragraph resize notifications', () => {
+    const { input, coords } = mount();
+    coords.mockClear();
+    coords.mockReturnValue({ left: 120, right: 120, top: 80, bottom: 106 });
+    resize(input);
+    resize(input.querySelector('p')!);
+    resize(input);
+    expect(frames.size).toBe(1);
+    flush();
+    expect(coords).toHaveBeenCalledTimes(1);
+    expect(caret.style.left).toBe('80px');
+    expect(Number.parseFloat(caret.style.top)).toBeCloseTo(53.8);
+    expect(frames.size).toBe(0);
+  });
+
+  it('tracks new paragraphs and stops observing removed content', async () => {
+    const { input, coords } = mount();
+    editor.commands.setContent('<p>new</p><p>paragraph</p>');
+    await Promise.resolve();
+    flush();
+    const addedParagraph = input.querySelector('p:last-child')!;
+    coords.mockClear();
+    resize(addedParagraph);
+    flush();
+    expect(coords).toHaveBeenCalledTimes(1);
+    editor.commands.setContent('<p>remaining</p>');
+    await Promise.resolve();
+    flush();
+    expect(addedParagraph.isConnected).toBe(false);
+    coords.mockClear();
+    resize(addedParagraph);
+    flush();
+    expect(coords).not.toHaveBeenCalled();
+  });
+
+  it('hides outside the input viewport and restores on internal scroll', () => {
+    const { input, coords } = mount();
+    coords.mockReturnValue({ left: 100, right: 100, top: 130, bottom: 156 });
+    input.dispatchEvent(new Event('scroll'));
+    flush();
+    expect(caret.hidden).toBe(true);
+    coords.mockReturnValue({ left: 100, right: 100, top: 110, bottom: 136 });
+    input.dispatchEvent(new Event('scroll'));
+    flush();
+    expect(caret.hidden).toBe(false);
+    expect(layer.style.clipPath).toBe('inset(10px 40px 10px 20px)');
+  });
+
+  it('converts scaled viewport coordinates to CSS coordinates', () => {
+    const { input, coords } = mount();
+    Object.defineProperties(layer, {
+      offsetWidth: { configurable: true, value: 280 },
+      offsetHeight: { configurable: true, value: 50 },
+    });
+    coords.mockReturnValue({ left: 100, right: 100, top: 50, bottom: 102 });
+    resize(input);
+    flush();
+    expect(caret.style.left).toBe('30px');
+    expect(Number.parseFloat(caret.style.top)).toBeCloseTo(13.8);
+    expect(layer.style.clipPath).toBe('inset(5px 20px 5px 10px)');
+  });
+
+  it.each([2, 4])('keeps the full %ipx caret visible when text fills the input width', (width) => {
+    const { input, coords } = mount();
+    input.style.setProperty('--agent-composer-caret-width', `${width}px`);
+    // The layer has no spare space beyond the input, as in production.
+    setRect(layer, { left: 60, right: 560, top: 40, bottom: 120, width: 500, height: 80 });
+    coords.mockReturnValue({ left: 560, right: 560, top: 50, bottom: 76 });
+    resize(input);
+    flush();
+    expect(caret.hidden).toBe(false);
+    expect(caret.style.width).toBe(`${width}px`);
+    expect(Number.parseFloat(caret.style.left)).toBe(500 - width);
+    expect(layer.style.clipPath).toBe('inset(0px 0px 0px 0px)');
+    expect(input.classList.contains('has-composer-stable-caret')).toBe(true);
+  });
+
+  it('keeps the right-edge caret inside a scaled viewport without showing offscreen positions', () => {
+    const { input, coords } = mount();
+    Object.defineProperties(layer, {
+      offsetWidth: { configurable: true, value: 280 },
+      offsetHeight: { configurable: true, value: 50 },
+    });
+    coords.mockReturnValue({ left: 559, right: 559, top: 50, bottom: 76 });
+    resize(input);
+    flush();
+    expect(caret.hidden).toBe(false);
+    expect(Number.parseFloat(caret.style.left)).toBe(258);
+    coords.mockReturnValue({ left: 562, right: 562, top: 50, bottom: 76 });
+    resize(input);
+    flush();
+    expect(caret.hidden).toBe(true);
+  });
+
+  it('updates after internal style changes without observing its own render in a loop', async () => {
+    const { input, coords } = mount();
+    await Promise.resolve();
+    flush();
+    coords.mockClear();
+    coords.mockReturnValue({ left: 125, right: 125, top: 50, bottom: 76 });
+    input.style.fontSize = '20px';
+    await Promise.resolve();
+    expect(frames.size).toBe(1);
+    flush();
+    expect(coords).toHaveBeenCalledTimes(1);
+    expect(caret.style.left).toBe('85px');
+    await Promise.resolve();
+    expect(frames.size).toBe(0);
+  });
+
+  it('restores the native caret during composition and hides for a range selection', () => {
+    const { input } = mount();
+    const composing = vi.spyOn(editor.view, 'composing', 'get').mockReturnValue(true);
+    input.dispatchEvent(new Event('compositionstart'));
+    expect(caret.hidden).toBe(true);
+    expect(input.classList.contains('has-composer-stable-caret')).toBe(false);
+    composing.mockReturnValue(false);
+    input.dispatchEvent(new Event('compositionend'));
+    flush();
+    expect(caret.hidden).toBe(false);
+    editor.commands.setTextSelection({ from: 1, to: 3 });
+    flush();
+    expect(caret.hidden).toBe(true);
+    expect(frames.size).toBe(0);
+  });
+
+  it('releases observers, pending frames and the layer when destroyed', async () => {
+    const { input, coords } = mount();
+    resize(input);
+    expect(frames.size).toBe(1);
+    editor.destroy();
+    expect(disconnect).toHaveBeenCalledTimes(1);
+    expect(layer.isConnected).toBe(false);
+    expect(frames.size).toBe(0);
+    coords.mockClear();
+    input.style.fontSize = '20px';
+    input.dispatchEvent(new Event('load'));
+    resize(input);
+    await Promise.resolve();
+    flush();
+    expect(coords).not.toHaveBeenCalled();
   });
 });

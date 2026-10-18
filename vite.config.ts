@@ -70,6 +70,11 @@ export default defineConfig(({ command }) => {
     // public 閮藉湪鍚屼竴鐩綍, 閬垮厤 Tauri / Vite 璺緞浜掔浉绌胯秺銆?
     root: frontendRoot,
     publicDir: resolve(frontendRoot, "public"),
+    // Module workers need ES output so lazy Shiki grammars and WASM can stay
+    // in separate chunks instead of forcing every language into one bundle.
+    worker: {
+      format: "es",
+    },
     build: {
       outDir: resolve(__dirname, ".build/web-dist"),
       emptyOutDir: true,

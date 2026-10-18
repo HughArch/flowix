@@ -1,10 +1,10 @@
 use std::path::Path;
 
 use super::local_adapter::{
-    cloud_conflict_copy_path, register_preserved_conflict_copy, safely_remove_conflict_file,
-    ConflictFileOutcome,
+    cloud_conflict_copy_path, register_preserved_conflict_copy, safe_cloud_note_path,
+    safely_remove_conflict_file, ConflictFileOutcome,
 };
-use flowix_core::memo_file::{notebook_path_from_relative, Memo, MemoFile};
+use flowix_core::memo_file::MemoFile;
 use flowix_sync::{v2_content_hash, v2_local_content_diverged, SyncManager};
 
 pub(super) fn delete_cloud_note_locked(
@@ -14,16 +14,12 @@ pub(super) fn delete_cloud_note_locked(
     note_id: &str,
     relative_path: &str,
     before_delete: impl FnOnce(&Path),
-) -> Result<Option<Memo>, String> {
-    // Cloud v2 note ids are path-derived; the local note is addressed by the
-    // same relative path. Legacy id-based lookup is no longer supported.
-    let memo = memo_file.find_memo_by_relative_path_for_notebook_id(notebook_id, relative_path);
-    let Some(memo) = memo else { return Ok(None) };
+) -> Result<bool, String> {
     let notebook = memo_file
         .get_notebook_config_by_id(notebook_id)
         .ok_or_else(|| "NOTEBOOK_NOT_FOUND".to_string())?;
-    let path = notebook_path_from_relative(Path::new(&notebook.path), &memo.relative_path)
-        .unwrap_or_else(|_| Path::new(&notebook.path).join(&memo.filename));
+    let path = safe_cloud_note_path(Path::new(&notebook.path), relative_path)?;
+
     let local_bytes = match std::fs::read(&path) {
         Ok(bytes) => Some(bytes),
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
@@ -54,6 +50,7 @@ pub(super) fn delete_cloud_note_locked(
         ));
     }
     before_delete(&path);
+    let had_local_file = local_bytes.is_some();
     if let Some(expected) = local_bytes.as_deref() {
         let copy = cloud_conflict_copy_path(&path, note_id);
         match safely_remove_conflict_file(&path, expected, note_id, &copy)? {
@@ -79,16 +76,16 @@ pub(super) fn delete_cloud_note_locked(
             }
         }
     }
-    if !memo_file
-        .prune_deleted_memo_for_notebook_id(notebook_id, &memo.relative_path, &memo.id)
-        .map_err(|error| error.to_string())?
-    {
+    memo_file
+        .refresh_note_path(notebook_id, relative_path)
+        .map_err(|error| format!("CLOUD_DELETE_INDEX_FAILED: {error}"))?;
+    if path.exists() {
         return Err(format!(
             "CLOUD_DELETE_CONFLICT: path was recreated: {}",
             path.display()
         ));
     }
-    Ok(Some(memo))
+    Ok(had_local_file)
 }
 
 #[cfg(test)]

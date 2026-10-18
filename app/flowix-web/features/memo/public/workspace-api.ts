@@ -29,6 +29,7 @@ export function getWorkspaceMemoState(): WorkspaceMemoState {
 /** Reactive workspace selectors for app-level notebook navigation. */
 export function useWorkspaceMemoViewModel() {
   return useNoteStore(useShallow((state) => ({
+    notebooks: state.notebooks,
     selectedNotebook: state.selectedNotebook,
     startupPhase: state.startupPhase,
     setActiveFilter: state.setActiveFilter,

@@ -6,7 +6,10 @@ import { createMediaLibrary, parseMediaLibrary, serializeMediaLibrary } from '@f
 import { createFolderCollectionContent } from './folder-collection';
 import { repairCollectionFile } from './recovery';
 
-vi.mock('@platform/tauri/client', () => ({ externalDocuments: { read: vi.fn(), write: vi.fn() } }));
+vi.mock('@platform/tauri/client', () => ({
+  externalDocuments: { read: vi.fn(), write: vi.fn() },
+  notebooks: { getAll: vi.fn().mockResolvedValue([{ id: 'book', path: '/book' }]) },
+}));
 
 beforeEach(() => {
   vi.clearAllMocks();
@@ -35,7 +38,7 @@ it.each([
   expect(write).toMatchObject({ filePath: path, scopePath: '/book', expectedContent: damaged });
   expect(result.placement).toBe(placement);
   expect(repaired.collection.id).toBe(wire.collection.id);
-  expect(repaired.dataset.records.include).toEqual([record]);
+  expect(repaired.dataset.records.include).toEqual([type === 'notes' ? record : { ...record, resource_id: 'book::photo.png' }]);
   expect(repaired.views).toEqual(wire.payload.views);
   if (placement === 'folder') expect(repaired.dataset.source).toEqual({ scope: 'containing_folder', depth: 'descendants' });
 });

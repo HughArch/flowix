@@ -310,7 +310,6 @@ impl SystemData {
             .notebooks
             .entry(notebook_id.to_string())
             .or_default();
-        notebook.order = layout.iter().map(|item| item.id.clone()).collect();
         notebook.layout = layout;
         self.flush(&data)
     }

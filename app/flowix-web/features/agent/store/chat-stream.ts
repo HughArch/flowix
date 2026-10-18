@@ -5,7 +5,8 @@ import type {
 } from "@/types/agent";
 import { buildAgentRuntimeConfig } from "@features/agent/runtime/agent-runtime-spec";
 import { agentClient } from "@features/agent/store/agent-client";
-import { useAgentDataStore, ensureAgentWorkspaceReady } from "@features/agent/store/agent-data-store";
+import { ensureAgentPreferencesReady, useAgentDataStore } from "@features/agent/store/agent-data-store";
+import { ensureAgentWorkspaceReady, useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-store";
 import type { OutgoingUserPayload } from "@features/agent/store/user-message";
 import {
   markConversationWorkspaceStarted,
@@ -48,7 +49,7 @@ export async function dispatchChatStream({
   imagePaths,
   conversationTitle,
 }: DispatchChatStreamArgs): Promise<void> {
-  if (agentType === "pi") await useAgentDataStore.getState().initializePiMode();
+  await ensureAgentPreferencesReady(agentType);
   // Thread Card 首次运行前会冻结 workspaceSnapshot，后续 turn 只使用快照。
   // 没有快照的调用读取 local.db notebook add-dirs。
   const workspaceSnapshot =
@@ -58,7 +59,7 @@ export async function dispatchChatStream({
   if (!workspaceSnapshot && notebookId) await ensureAgentWorkspaceReady();
   const userDefaults = useAgentDataStore.getState().agents;
   const defaultFiles = !workspaceSnapshot && notebookId
-    ? useAgentDataStore.getState().workspaceActions.getNotebookFiles(notebookId)
+    ? useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles(notebookId)
     : undefined;
   const preferences = resolveAgentPreferenceRuntimeConfig(agentType, instanceRuntimeConfig);
   const runtimeConfig = buildAgentRuntimeConfig({

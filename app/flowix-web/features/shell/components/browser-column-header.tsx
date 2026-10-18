@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from 'react';
+import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from 'react';
 import { flushSync } from 'react-dom';
 import { Check, ChevronDown, ChevronRight, Code2, FilePlus2, Globe, MessageCirclePlus, X } from 'lucide-react';
 import { ContentIcon, classifyFileContent } from '@features/content/public/content-api';
@@ -11,7 +11,12 @@ import {
   useDocumentEditorMode,
   useFullscreenAgentThreadCardInfo,
 } from '@features/document/public/shell-api';
-import { AgentIcon, isAgentRuntimeInstalledState, normalizeAgentRuntimeStatus, useBrowserColumnAgentHeaderModel } from '@features/agent/public/shell-api';
+import {
+  AgentIcon,
+  requestNewConversationAgentSelection,
+  useBrowserColumnAgentHeaderModel,
+} from '@features/agent/public/shell-api';
+import { useNewConversationAgentSelection } from '@features/agent/hooks/use-new-conversation-agent-selection';
 import type { BrowserColumnSurfaceChrome } from '@features/surface/public/shell-api';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
@@ -33,7 +38,6 @@ import {
 } from '@shared/ui/dropdown-menu';
 import { documentIdentityFromFile } from '@features/document/public/shell-api';
 import { requireFileDisplayIdentity } from '@/lib/file-display-registry';
-import { AGENT_TYPES, isAgentTypeSelectable, isAlwaysVisibleNewConversationAgent } from '@/lib/agent-types';
 import type { AgentTypeKey } from '@/types/agent';
 
 function isWindowsPlatform(): boolean {
@@ -163,20 +167,8 @@ export function BrowserColumnHeader({
 }: BrowserColumnHeaderProps) {
   const { t } = useI18n();
   const [agentTypeMenuAnchor, setAgentTypeMenuAnchor] = useState<{ left: number; top: number } | null>(null);
-  const {
-    statusByType: agentRuntimeStatusByType,
-    isChecking: agentRuntimeIsChecking,
-    conversationInstances,
-    refreshIfStale: refreshAgentRuntimeIfStale,
-  } = useBrowserColumnAgentHeaderModel();
-  const newConversationAgentTypes = useMemo(() => AGENT_TYPES.filter((type) => {
-    if (!isAgentTypeSelectable(type.id)) return false;
-    if (isAlwaysVisibleNewConversationAgent(type.id)) return true;
-    return isAgentRuntimeInstalledState(normalizeAgentRuntimeStatus(
-      agentRuntimeStatusByType[type.id],
-      agentRuntimeIsChecking,
-    ));
-  }), [agentRuntimeIsChecking, agentRuntimeStatusByType]);
+  const { conversationInstances } = useBrowserColumnAgentHeaderModel();
+  const newConversationSelection = useNewConversationAgentSelection();
   const tabButtons = useRef(new Map<string, HTMLButtonElement>());
   const selectionRequest = useRef(0);
   const activeTabIdRef = useRef(activeTabId);
@@ -238,14 +230,23 @@ export function BrowserColumnHeader({
     }
   }, [displayedActiveTabId]);
 
-  useEffect(() => {
-    if (agentTypeMenuAnchor) void refreshAgentRuntimeIfStale();
-  }, [agentTypeMenuAnchor, refreshAgentRuntimeIfStale]);
-
   const openAgentTypeMenu = (event: MouseEvent<HTMLButtonElement>) => {
+    const selection = requestNewConversationAgentSelection();
+    if (selection.kind === 'create') {
+      setAgentTypeMenuAnchor(null);
+      onCreateAgentConversation(selection.agentType);
+      return;
+    }
+    if (selection.kind === 'none') return;
     const rect = event.currentTarget.getBoundingClientRect();
     setAgentTypeMenuAnchor({ left: rect.right + 2, top: rect.top });
   };
+
+  useEffect(() => {
+    if (agentTypeMenuAnchor && newConversationSelection.kind !== 'choose') {
+      setAgentTypeMenuAnchor(null);
+    }
+  }, [agentTypeMenuAnchor, newConversationSelection]);
 
   const handleKeyDown = (event: KeyboardEvent<HTMLButtonElement>, index: number) => {
     let nextIndex = index;
@@ -466,7 +467,7 @@ export function BrowserColumnHeader({
           </ContextMenuTrigger>
           <ContextMenuContent className="w-[180px] space-y-0.5 rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
             <ContextMenuItem
-              disabled={!canCreate}
+              disabled={!canCreate || newConversationSelection.kind === 'none'}
               onClick={onCreateNote}
               className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
             >
@@ -507,13 +508,7 @@ export function BrowserColumnHeader({
           <DropdownMenuLabel className="flex items-center gap-1.5 px-[0.375rem] pb-[0.35rem] pt-[0.35rem] text-xs font-normal leading-[1.2] text-[var(--muted-foreground)]">
             {t('tabWindow.context.newConversation')}
           </DropdownMenuLabel>
-          {newConversationAgentTypes.map((type) => {
-            const status = normalizeAgentRuntimeStatus(
-              agentRuntimeStatusByType[type.id],
-              agentRuntimeIsChecking,
-            );
-            const showNotInstalled = isAlwaysVisibleNewConversationAgent(type.id)
-              && status.state === 'not-installed';
+          {newConversationSelection.options.map((type) => {
             const name = type.nameKey
               ? t(type.nameKey as Parameters<typeof t>[0])
               : type.name;
@@ -528,11 +523,6 @@ export function BrowserColumnHeader({
               >
                 <AgentIcon typeKey={type.id} alt="" className="h-4 w-4 shrink-0 object-contain" />
                 <span className="min-w-0 flex-1 truncate">{name}</span>
-                {showNotInstalled && (
-                  <span className="shrink-0 text-xs text-[var(--muted-foreground)] group-hover:text-[var(--primary-foreground)]">
-                    {t('agent.status.notInstalled')}
-                  </span>
-                )}
               </DropdownMenuItem>
             );
           })}

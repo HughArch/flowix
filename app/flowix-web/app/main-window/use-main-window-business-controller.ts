@@ -14,12 +14,16 @@ import {
 } from '@features/memo/public/workspace-api';
 import {
   clearPluginWorkbenchTarget,
-  flushWorkspaceDocument,
   reconcileDeletedNotebook,
   selectNotebook,
   useWorkspaceNavigationPhase,
   useWorkspaceTargetKind,
 } from '@features/workspace/public/main-window-api';
+import {
+  documentIdentityFromFile,
+  getWorkspaceDocumentState,
+  saveWorkspaceDocumentPath,
+} from '@features/document/public/workspace-api';
 import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { switchFolderCollectionType, type CollectionType } from '@features/collection/public/folder-api';
 
@@ -103,7 +107,17 @@ export function useMainWindowBusinessController(): MainWindowBusinessController 
     const target = notebookToDelete;
     if (!target) return;
     try {
-      if (selectedNotebook?.id === target.id) await flushWorkspaceDocument();
+      if (selectedNotebook?.id === target.id) {
+        const active = getWorkspaceDocumentState().activeExternalSession;
+        if (active && !await saveWorkspaceDocumentPath(
+          documentIdentityFromFile(active.fileIdentity),
+          active.fileIdentity.path,
+          active.scopePath,
+        )) {
+          toast.error(t('notebook.delete.saveCurrentDocumentFailed'));
+          return;
+        }
+      }
       const deleted = await notebooksClient.delete(target.id, deleteLocalFiles);
       if (!deleted) {
         toast.error(t('shell.notebook.deleteFailed'));

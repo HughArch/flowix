@@ -42,7 +42,6 @@ pub fn set_tag_system_layout(
 ) -> Result<(), String> {
     let mut file = load_notebook_system(&notebook_id, &state)?;
     let notebook = file.tag.notebooks.entry(notebook_id.clone()).or_default();
-    notebook.order = layout.iter().map(|item| item.id.clone()).collect();
     notebook.layout = layout;
     persist_notebook_system(&notebook_id, &state, &file)
 }

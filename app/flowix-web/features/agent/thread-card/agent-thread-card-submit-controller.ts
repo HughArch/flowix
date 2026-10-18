@@ -1,4 +1,4 @@
-import { ensureAgentWorkspaceReady } from "@features/agent/store/agent-data-store";
+import { ensureAgentWorkspaceReady } from "@features/agent/store/agent-workspace-store";
 import type { AgentTypeKey } from "@/types/agent";
 import type { AgentConversationSource } from "@features/agent/store/agent-conversation-types";
 import { createConversationInstanceId } from "@features/agent/store/conversation-slice";

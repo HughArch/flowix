@@ -1,7 +1,7 @@
 import { resolveDatasetFilterForLocation } from '@features/collection/dataset-filter-location';
 import { reuseCollectionValue } from '@features/collection/content-equality';
 import { useCallback, useEffect, useRef, useState } from 'react';
-import { Node as TiptapNode, mergeAttributes, type Editor, type MarkdownToken } from '@tiptap/core';
+import { Node as TiptapNode, mergeAttributes, type Editor } from '@tiptap/core';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import type { EditorView, NodeView as ProseMirrorNodeView } from '@tiptap/pm/view';
 import { createRoot, type Root } from 'react-dom/client';
@@ -14,6 +14,7 @@ import { openWorkspaceSurface } from '@features/workspace/public/open-surface-ap
 import { canonicalDirectoryPath, canonicalPath, joinNotebookMemoPath, notebookRelativeDirectoryPath } from '@/lib/path';
 import { displayTitleFromFilename } from '@/lib/utils';
 import { useCollectionReference } from '@features/collection/use-collection-reference';
+import { collectionDisplayName } from '@features/collection/model';
 import { toast } from '@/lib/toast';
 import { Button } from '@shared/ui/button';
 import { useTitleEditCaret } from '@shared/hooks/use-title-edit-caret';
@@ -26,39 +27,16 @@ import { renameMediaLibrary } from './rename-media-library';
 import { MediaLibraryPhotoWall } from './media-library-photo-wall';
 import { PHOTO_WALL_CANDIDATE_LIMIT } from './photo-wall-layout';
 import { MediaLibraryFilterPanel } from './media-library-filter-panel';
+import {
+  MEDIA_LIBRARY_REFERENCE_MARKER,
+  MEDIA_LIBRARY_REFERENCE_VERSION,
+  mediaLibraryReferenceMarkdownSpec,
+  normalizeMediaLibraryReferenceAttrs,
+  type MediaLibraryReferenceAttrs,
+} from './media-library-reference-markdown';
 import { canEditMediaLibraryFilter, hasMediaDatasetFilter, mediaCollectionFilterForSave, mediaLibraryFileCondition, matchesMediaCollectionFilter, normalizeMediaLibraryFileCondition, parseMediaLibrary, serializeMediaLibrary, type MediaLibraryDocument, type MediaLibraryKind, type MediaLibraryRecord } from './model';
 
-const MEDIA_LIBRARY_REFERENCE_MARKER = 'flowix:media-library-reference';
-const MEDIA_LIBRARY_REFERENCE_VERSION = 1;
 const EMBED_RESOURCE_LIMIT = PHOTO_WALL_CANDIDATE_LIMIT;
-
-export interface MediaLibraryReferenceAttrs {
-  notebookId: string | null;
-  relativePath: string | null;
-  collectionId: string | null;
-}
-
-function normalizeText(value: unknown): string | null {
-  return typeof value === 'string' && value.trim() ? value.trim() : null;
-}
-
-function normalizeAttrs(value: unknown): MediaLibraryReferenceAttrs {
-  const attrs = value && typeof value === 'object' ? value as Record<string, unknown> : {};
-  return {
-    notebookId: normalizeText(attrs.notebookId),
-    relativePath: normalizeText(attrs.relativePath)?.replace(/\\/g, '/').replace(/^\/+/, '') ?? null,
-    collectionId: normalizeText(attrs.collectionId),
-  };
-}
-
-function metadataFromSource(source: string): Record<string, unknown> | null {
-  const match = new RegExp(`^<!--[ \\t]*${MEDIA_LIBRARY_REFERENCE_MARKER}[ \\t]+(\\{[^\\r\\n]*\\})[ \\t]*-->(?:\\r?\\n|$)`).exec(source);
-  if (!match) return null;
-  try {
-    const parsed: unknown = JSON.parse(match[1]);
-    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null;
-  } catch { return null; }
-}
 
 class MediaLibraryReferenceNodeView implements ProseMirrorNodeView {
   readonly dom: HTMLElement;
@@ -83,7 +61,7 @@ class MediaLibraryReferenceNodeView implements ProseMirrorNodeView {
     if (this.destroyed) return;
     this.root.render(<MediaLibraryReferenceSurface
       key={`${this.node.attrs.notebookId}:${this.node.attrs.collectionId}`}
-      attrs={normalizeAttrs(this.node.attrs)}
+      attrs={normalizeMediaLibraryReferenceAttrs(this.node.attrs)}
       editable={this.editor.isEditable}
       onRemove={() => this.removeNode()}
       onReplace={(anchor) => this.replaceNode(anchor)}
@@ -553,12 +531,14 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
   }, [addingMedia, attrs.collectionId, attrs.relativePath, document, editable, editingName, filePath, notebook, onRelativePathChange, renaming, t]);
   const beginRename = useCallback(() => {
     if (!editable || renaming || addingMedia || !filePath) return;
-    setNameDraft(document?.collection.name ?? reference.item?.name ?? '');
+    setNameDraft(document ? collectionDisplayName(filePath, document.collection.placement) : reference.item?.name ?? '');
     setEditingName(true);
-  }, [addingMedia, document?.collection.name, reference.item?.name, editable, filePath, renaming]);
+  }, [addingMedia, document?.collection.placement, reference.item?.name, editable, filePath, renaming]);
   const renameLibrary = useCallback(async (rawTitle: string) => {
     const title = rawTitle.trim();
-    const currentTitle = document?.collection.name ?? reference.item?.name ?? '';
+    const currentTitle = document && filePath
+      ? collectionDisplayName(filePath, document.collection.placement)
+      : reference.item?.name ?? '';
     if (renaming) return;
     if (!editable || !notebook || !filePath || !title || title === currentTitle) {
       setEditingName(false);
@@ -592,8 +572,10 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
       setRenaming(false);
       setEditingName(false);
     }
-  }, [attrs.collectionId, document?.collection.name, reference.item?.name, editable, filePath, notebook, onRelativePathChange, renaming]);
-  const displayName = document?.collection.name ?? reference.item?.name ?? attrs.relativePath?.split('/').pop()?.replace(/\.lib\.ya?ml$/i, '') ?? '媒体库';
+  }, [attrs.collectionId, document?.collection.placement, reference.item?.name, editable, filePath, notebook, onRelativePathChange, renaming]);
+  const displayName = document && filePath
+    ? collectionDisplayName(filePath, document.collection.placement)
+    : reference.item?.name ?? attrs.relativePath?.split('/').pop()?.replace(/\.(?:index\.ya?ml|(?:table|lib)\.ya?ml)$/i, '') ?? '媒体库';
 
   return <section ref={sectionRef} className="my-3 overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--editor-block-bg)] px-3 pb-3 pt-1.5" contentEditable={false} aria-label={`媒体库：${displayName}`}>
     <div className="mb-1.5 flex items-center gap-2">
@@ -609,7 +591,7 @@ function MediaLibraryReferenceSurface({ attrs, editable, onRemove, onReplace, on
           onKeyDown={(event) => {
             if (event.key === 'Enter' && (event.nativeEvent.isComposing || event.keyCode === 229)) return;
             if (event.key === 'Enter') { event.preventDefault(); event.currentTarget.blur(); }
-            else if (event.key === 'Escape') { event.preventDefault(); setEditingName(false); setNameDraft(document?.collection.name ?? reference.item?.name ?? ''); }
+            else if (event.key === 'Escape') { event.preventDefault(); setEditingName(false); setNameDraft(document && filePath ? collectionDisplayName(filePath, document.collection.placement) : reference.item?.name ?? ''); }
           }}
           className="box-border h-[22px] min-w-[2em] max-w-full flex-[0_1_auto] rounded px-0.5 py-1 [field-sizing:content] border-0 bg-[var(--muted)] text-sm font-medium leading-none text-[var(--foreground)] outline-none"
         /> : <button
@@ -688,7 +670,7 @@ export const MediaLibraryReference = TiptapNode.create({
   parseHTML() { return [{ tag: 'div[data-flowix-media-library-reference]' }]; },
 
   renderHTML({ node, HTMLAttributes }) {
-    const attrs = normalizeAttrs(node.attrs);
+    const attrs = normalizeMediaLibraryReferenceAttrs(node.attrs);
     return ['div', mergeAttributes(HTMLAttributes, {
       'data-flowix-media-library-reference': 'true',
       'data-notebook-id': attrs.notebookId ?? '',
@@ -703,28 +685,9 @@ export const MediaLibraryReference = TiptapNode.create({
     return ({ node, editor, view, getPos }) => new MediaLibraryReferenceNodeView(node, editor, view, typeof getPos === 'function' ? getPos : () => undefined);
   },
 
-  markdownTokenizer: {
-    name: 'mediaLibraryReference',
-    level: 'block' as const,
-    start(source: string) {
-      const match = new RegExp(`^<!--[ \\t]*${MEDIA_LIBRARY_REFERENCE_MARKER}[ \\t]+\\{`, 'm').exec(source);
-      return match?.index ?? -1;
-    },
-    tokenize(source: string) {
-      const metadata = metadataFromSource(source);
-      if (!metadata) return undefined;
-      const match = new RegExp(`^<!--[ \\t]*${MEDIA_LIBRARY_REFERENCE_MARKER}[ \\t]+\\{[^\\r\\n]*\\}[ \\t]*-->(?:\\r?\\n|$)`).exec(source);
-      return match ? { type: 'mediaLibraryReference', raw: match[0], metadata } : undefined;
-    },
-  },
-
-  parseMarkdown(token: MarkdownToken) {
-    const metadata = token.metadata && typeof token.metadata === 'object' ? token.metadata as Record<string, unknown> : metadataFromSource(token.raw ?? '') ?? {};
-    const attrs = metadata.version === MEDIA_LIBRARY_REFERENCE_VERSION ? metadata : {};
-    return { type: 'mediaLibraryReference', attrs: normalizeAttrs(attrs) };
-  },
+  ...mediaLibraryReferenceMarkdownSpec,
 
   renderMarkdown(node) {
-    return `<!-- ${MEDIA_LIBRARY_REFERENCE_MARKER} ${JSON.stringify({ version: MEDIA_LIBRARY_REFERENCE_VERSION, ...normalizeAttrs(node.attrs) })} -->\n`;
+    return `<!-- ${MEDIA_LIBRARY_REFERENCE_MARKER} ${JSON.stringify({ version: MEDIA_LIBRARY_REFERENCE_VERSION, ...normalizeMediaLibraryReferenceAttrs(node.attrs) })} -->\n`;
   },
 });

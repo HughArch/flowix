@@ -45,12 +45,13 @@ function normalizeRuntimeStatusReport(report: unknown): RuntimeStatusByType {
 
     // Compatibility with the former { available, installed, reason } shape.
     const installed = value.installed === true || value.available === true;
-    result[agentId] = {
-      installation: installed ? 'installed' : 'missing',
-      readiness: installed ? (value.available === false ? 'blocked' : 'ready') : 'unknown',
+    const details = {
       reasonCode: null,
       reason: typeof value.reason === 'string' ? value.reason : null,
     };
+    result[agentId] = installed
+      ? { ...details, installation: 'installed', readiness: value.available === false ? 'blocked' : 'ready' }
+      : { ...details, installation: 'missing', readiness: 'unknown' };
   }
 
   return result;

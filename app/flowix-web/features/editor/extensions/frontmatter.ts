@@ -7,11 +7,7 @@ import { FrontmatterPropertyNodeView } from '@features/editor/extensions/frontma
 import { updateVisibleFrontmatterProperty } from '@features/document/properties/frontmatter-model';
 import { resolvePropertyPreset } from '@features/document/properties/presets';
 import { getPropertyPresets } from '@features/properties/public-api';
-
-// Consume a BOM both at the true file boundary and immediately after the
-// frontmatter block. The latter repairs legacy imports where key injection
-// displaced the UTF-8 signature into the Markdown body.
-const FRONTMATTER_TOKEN_RE = /^\uFEFF?(?:[ \t]*\r?\n)*---\r?\n([\s\S]*?)\r?\n---(?:\r?\n\uFEFF?|$)/;
+import { frontmatterMarkdownSpec } from './frontmatter-markdown';
 
 const Frontmatter = Node.create({
   name: 'frontmatter',
@@ -123,28 +119,7 @@ const Frontmatter = Node.create({
     ];
   },
 
-  markdownTokenizer: {
-    name: 'frontmatter',
-    level: 'block',
-    start(src: string) {
-      return /^\uFEFF?(?:[ \t]*\r?\n)*---/.test(src) ? 0 : -1;
-    },
-    tokenize(src: string, tokens?: unknown[]): { type: string; raw: string } | undefined {
-      if (tokens && tokens.length > 0) return undefined;
-      const match = FRONTMATTER_TOKEN_RE.exec(src);
-      return match ? { type: 'frontmatter', raw: match[0] } : undefined;
-    },
-  },
-
-  parseMarkdown(token) {
-    const raw = token.raw ?? '';
-    const match = FRONTMATTER_TOKEN_RE.exec(raw);
-    if (!match) return { type: 'text', text: raw };
-    return {
-      type: 'frontmatter',
-      attrs: { yamlContent: match[1].trim() },
-    };
-  },
+  ...frontmatterMarkdownSpec,
 
   renderMarkdown(node) {
     return `---\n${String(node.attrs?.yamlContent ?? '')}\n---\n`;

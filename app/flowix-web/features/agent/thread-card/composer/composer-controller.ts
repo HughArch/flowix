@@ -353,7 +353,6 @@ export class ComposerController {
     content.push({
       type: "noteReference",
       attrs: {
-        memoId: null,
         notebookId: ref.notebookId,
         relativePath: ref.relativePath,
         notebookName: "",

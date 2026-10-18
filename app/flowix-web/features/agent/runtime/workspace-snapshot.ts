@@ -1,4 +1,4 @@
-import { useAgentDataStore } from "@features/agent/store/agent-data-store";
+import { useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-store";
 import type { RuntimeConfig, WorkspaceSnapshot } from "@/types/agent";
 import { resolvePrimaryWorkspace } from "@features/agent/runtime/primary-workspace";
 import { normalizeWorkspacePath } from "@features/agent/runtime/workspace-path";
@@ -145,7 +145,7 @@ export function ensureConversationWorkspaceSnapshot(
 
   let snapshot = migrateLegacyWorkspace(runtimeConfig, notebookId, notebookPath);
   if (!snapshot) {
-    const defaultFiles = useAgentDataStore.getState().workspaceActions.getNotebookFiles(notebookId);
+    const defaultFiles = useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles(notebookId);
     const primary = resolvePrimaryWorkspace({ defaultFiles, notebookPath });
     if (primary.kind === "empty") {
       // Do not permanently freeze an empty startup/hydration race.

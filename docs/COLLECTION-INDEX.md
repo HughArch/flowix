@@ -9,6 +9,7 @@
 - 文件夹专用的 `.index.yaml` 始终不在笔记本文件树、访问空间文件树和目录文件列表中展示，也不能通过文件可见性设置显示；点击文件夹时仍会读取它并加载集合。
 - 文件夹的 `.index.yaml` 通过 `collection.placement: folder` 标明用途；独立文件通过 `placement: standalone` 标明用途。文件名不决定集合类型，`collection.type` 决定是 `notes` 还是 `media`。
 - `.table.yaml`、`.table.yml`、`.lib.yaml`、`.lib.yml` 继续作为旧文件名读取。新建及重命名后的独立集合使用 `.index.yaml`。
+- 集合展示名称直接从路径推导：独立集合取文件名去掉扩展名；文件夹集合取 `.index.yaml` 的父目录名。新文件不写 `collection.name`；读取旧文件时忽略该兼容字段。
 - 集合 ID 为创建时生成的 `col_` + 32 位 UUIDv7 十六进制字符串。名称、文件名和相对路径均不构成集合身份。
 
 ## 数据结构
@@ -24,7 +25,6 @@ collection:
   id: col_01900000000070008000000000000000
   type: notes                 # notes | media
   placement: folder           # standalone | folder
-  name: 开发任务管理
   revision: 0
   created_at: "2026-10-11T00:00:00.000Z"
   updated_at: "2026-10-11T00:00:00.000Z"

@@ -2,7 +2,7 @@
 use crate::{errors::CliError, fmt, paths};
 use flowix_core::{
     memo_file::{MemoFile, NotebookConfig},
-    MemoService, NoteService,
+    NoteService,
 };
 use std::collections::HashMap;
 
@@ -13,9 +13,19 @@ pub fn open() -> Result<MemoFile, CliError> {
 
 pub(crate) fn notebooks_list_data() -> Result<(Vec<NotebookConfig>, Option<String>), CliError> {
     let mf = open()?;
-    let notebooks = MemoService::new(&mf).list_notebooks()?;
+    let notebooks = mf.read_notebook_configs()?;
     let selected = mf.read_selected_notebook_id()?;
     Ok((notebooks, selected))
+}
+
+pub(crate) fn resolve_notebook_config(
+    mf: &MemoFile,
+    key: &str,
+) -> Result<NotebookConfig, CliError> {
+    let configs = mf.read_notebook_configs()?;
+    find_notebook(&configs, key)
+        .cloned()
+        .ok_or_else(|| CliError::NotFound(format!("notebook not found: {key}")))
 }
 
 pub(crate) fn notebook_note_counts(
@@ -81,7 +91,7 @@ pub(crate) fn resolve_notebook_key(notebook: Option<&str>) -> Result<String, Cli
 pub(crate) fn notebook_tags(notebook: Option<&str>) -> Result<serde_json::Value, CliError> {
     let key = resolve_notebook_key(notebook)?;
     let mf = open()?;
-    let config = MemoService::new(&mf).resolve_notebook(&key)?;
+    let config = resolve_notebook_config(&mf, &key)?;
     mf.reconcile_note_index_blocking(&config.id)?;
     let tags = mf.read_used_tag_ids_for_notebook_id(Some(&config.id))?;
     Ok(

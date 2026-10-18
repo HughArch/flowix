@@ -232,13 +232,13 @@ mod storage_rebuild_tests {
         let backups = fs::read_dir(temp.path().join("db/rebuild-backups"))
             .unwrap()
             .count();
-        assert_eq!(backups, 2);
+        assert_eq!(backups, 1);
         memo.initialize_registry_storage().unwrap();
         assert_eq!(
             fs::read_dir(temp.path().join("db/rebuild-backups"))
                 .unwrap()
                 .count(),
-            2
+            1
         );
     }
 

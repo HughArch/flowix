@@ -82,4 +82,7 @@ pub struct AppState {
     /// Native startup migrations are independent from WebView startup but
     /// remain a gate for commands that depend on a consistent memo library.
     pub startup: Arc<StartupCoordinator>,
+    pub notebook_background: Arc<crate::app::notebook_background::NotebookBackground>,
+    /// Stops the independent retry loop for offline notebook watcher roots.
+    pub watcher_retry_stop: Arc<std::sync::atomic::AtomicBool>,
 }

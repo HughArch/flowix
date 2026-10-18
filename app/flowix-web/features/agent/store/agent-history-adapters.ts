@@ -302,7 +302,7 @@ const historyAdapters: Partial<Record<AgentTypeKey, AgentHistoryAdapter>> = {
   // Codex history is projected by the backend from Codex App Server threads.
   codex: createCodexHistoryAdapter(),
   pi: createPiHistoryAdapter(),
-  claude: createClaudeHistoryAdapter(),
+  claudecode: createClaudeHistoryAdapter(),
   hermes: createHermesHistoryAdapter(),
   // OpenCode reads its provider session through the ACP session/load path.
   opencode: createOpenCodeHistoryAdapter(),

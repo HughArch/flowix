@@ -10,7 +10,7 @@ use rusqlite::{params, Connection};
 
 use super::error::ThreadError;
 
-pub(super) const THREAD_DB_SCHEMA_VERSION: i64 = 14;
+pub(super) const THREAD_DB_SCHEMA_VERSION: i64 = 16;
 pub(super) const WAL_AUTOCHECKPOINT_PAGES: i64 = 4000;
 pub(super) const WAL_JOURNAL_SIZE_LIMIT_BYTES: i64 = 64 * 1024 * 1024;
 
@@ -105,11 +105,7 @@ impl super::store::ThreadManager {
                 source_kind TEXT NOT NULL DEFAULT 'thread-card',
                 source_document_path TEXT,
                 source_relative_path TEXT,
-                source_memo_id TEXT,
                 source_notebook_id TEXT,
-                role_memo_id TEXT,
-                role_address TEXT,
-                role_name TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 FOREIGN KEY(thread_id) REFERENCES threads(thread_id) ON DELETE CASCADE
@@ -161,14 +157,9 @@ impl super::store::ThreadManager {
         // cut-over happens in a later migration once all callers are moved.
         Self::ensure_simplified_thread_schema(conn)?;
         Self::ensure_pi_thread_metadata_columns(conn)?;
-        Self::ensure_path_and_legacy_role_columns(conn)?;
+        Self::ensure_path_columns(conn)?;
         Self::migrate_agent_identity_ids(conn)?;
-        // Role files are no longer part of conversations. Clear values from
-        // historical columns before marking the schema current.
-        conn.execute_batch(
-            "UPDATE agent_conversation_instances SET role_memo_id = NULL, role_address = NULL, role_name = NULL;
-             UPDATE agent_instances SET role_memo_id = NULL, role_address = NULL, role_name = NULL;",
-        )?;
+        Self::drop_obsolete_note_reference_columns(conn)?;
         conn.execute_batch(
             "
             CREATE INDEX IF NOT EXISTS idx_agent_external_events_thread
@@ -182,6 +173,31 @@ impl super::store::ThreadManager {
         )?;
         conn.pragma_update(None, "user_version", THREAD_DB_SCHEMA_VERSION)?;
 
+        Ok(())
+    }
+
+    /// Note references are addressed by notebook and relative path. Discard
+    /// retired identity and role-file columns while keeping session data.
+    fn drop_obsolete_note_reference_columns(conn: &Connection) -> Result<(), ThreadError> {
+        for (table, column) in [
+            ("agent_instances", "memo_id"),
+            ("agent_instances", "role_memo_id"),
+            ("agent_instances", "role_address"),
+            ("agent_instances", "role_name"),
+            ("agent_conversation_instances", "source_memo_id"),
+            ("agent_conversation_instances", "role_memo_id"),
+            ("agent_conversation_instances", "role_address"),
+            ("agent_conversation_instances", "role_name"),
+        ] {
+            let exists: bool = conn.query_row(
+                &format!("SELECT EXISTS(SELECT 1 FROM pragma_table_info('{table}') WHERE name = ?1)"),
+                [column],
+                |row| row.get(0),
+            )?;
+            if exists {
+                conn.execute_batch(&format!("ALTER TABLE {table} DROP COLUMN {column}"))?;
+            }
+        }
         Ok(())
     }
 
@@ -250,11 +266,7 @@ impl super::store::ThreadManager {
                 source TEXT NOT NULL DEFAULT 'thread-card',
                 document_path TEXT,
                 relative_path TEXT,
-                memo_id TEXT,
                 notebook_id TEXT,
-                role_memo_id TEXT,
-                role_address TEXT,
-                role_name TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL
             );
@@ -332,13 +344,12 @@ impl super::store::ThreadManager {
         tx.execute_batch(
             "
             INSERT OR IGNORE INTO agent_instances (
-                id, agent, config_json, source, document_path, memo_id,
-                notebook_id, role_memo_id, role_name, created_at, updated_at
+                id, agent, config_json, source, document_path,
+                notebook_id, created_at, updated_at
             )
             SELECT
                 instance_id, agent_type, runtime_config, source_kind,
-                source_document_path, source_memo_id, source_notebook_id,
-                role_memo_id, role_name, created_at, updated_at
+                source_document_path, source_notebook_id, created_at, updated_at
             FROM agent_conversation_instances;
 
             -- Preserve legacy product threads that predate an instance row by
@@ -543,13 +554,13 @@ impl super::store::ThreadManager {
         Ok(())
     }
 
-    fn ensure_path_and_legacy_role_columns(conn: &Connection) -> Result<(), ThreadError> {
+    fn ensure_path_columns(conn: &Connection) -> Result<(), ThreadError> {
         for (table, required) in [
             (
                 "agent_conversation_instances",
-                &["role_address", "source_relative_path"][..],
+                &["source_relative_path"][..],
             ),
-            ("agent_instances", &["role_address", "relative_path"][..]),
+            ("agent_instances", &["relative_path"][..]),
         ] {
             let mut stmt = conn.prepare(&format!("PRAGMA table_info({table})"))?;
             let columns = stmt
@@ -621,8 +632,8 @@ impl super::store::ThreadManager {
                 -- The unique index was added after some releases had already
                 -- written more than one instance for the same product thread.
                 -- Pick one canonical row before creating the constraint. Prefer
-                -- the newest row; on a timestamp tie, retain the row with the
-                -- richer source linkage, then use instance_id for determinism.
+                -- the newest row; on a timestamp tie, retain the row with a
+                -- document path, then use instance_id for determinism.
                 DELETE FROM agent_conversation_instances
                 WHERE thread_id IS NOT NULL
                   AND EXISTS (
@@ -634,15 +645,9 @@ impl super::store::ThreadManager {
                         OR (
                             newer.updated_at = agent_conversation_instances.updated_at
                             AND (
-                                (newer.source_memo_id IS NOT NULL AND agent_conversation_instances.source_memo_id IS NULL)
+                                (newer.source_document_path IS NOT NULL AND agent_conversation_instances.source_document_path IS NULL)
                                 OR (
-                                    (newer.source_memo_id IS NOT NULL) = (agent_conversation_instances.source_memo_id IS NOT NULL)
-                                    AND newer.source_document_path IS NOT NULL
-                                    AND agent_conversation_instances.source_document_path IS NULL
-                                )
-                                OR (
-                                    (newer.source_memo_id IS NOT NULL) = (agent_conversation_instances.source_memo_id IS NOT NULL)
-                                    AND (newer.source_document_path IS NOT NULL) = (agent_conversation_instances.source_document_path IS NOT NULL)
+                                    (newer.source_document_path IS NOT NULL) = (agent_conversation_instances.source_document_path IS NOT NULL)
                                     AND newer.instance_id > agent_conversation_instances.instance_id
                                 )
                             )
@@ -745,10 +750,7 @@ impl super::store::ThreadManager {
                 frozen_cwd TEXT,
                 source_kind TEXT NOT NULL DEFAULT 'thread-card',
                 source_document_path TEXT,
-                source_memo_id TEXT,
                 source_notebook_id TEXT,
-                role_memo_id TEXT,
-                role_name TEXT,
                 created_at INTEGER NOT NULL,
                 updated_at INTEGER NOT NULL,
                 FOREIGN KEY(thread_id) REFERENCES threads(thread_id) ON DELETE CASCADE
@@ -756,13 +758,13 @@ impl super::store::ThreadManager {
 
             INSERT INTO agent_conversation_instances (
                 instance_id, agent_type, thread_id, runtime_config, frozen_cwd,
-                source_kind, source_document_path, source_memo_id, source_notebook_id,
-                role_memo_id, role_name, created_at, updated_at
+                source_kind, source_document_path, source_notebook_id,
+                created_at, updated_at
             )
             SELECT
                 instance_id, agent_type, thread_id, runtime_config, frozen_cwd,
-                source_kind, source_document_path, source_memo_id, source_notebook_id,
-                role_memo_id, role_name, created_at, updated_at
+                source_kind, source_document_path, source_notebook_id,
+                created_at, updated_at
             FROM agent_conversation_instances_legacy;
 
             DROP TABLE agent_conversation_instances_legacy;
@@ -1055,7 +1057,6 @@ impl super::store::ThreadManager {
                     LIMIT 1
                 ), i.thread_id) AS canonical_thread_id,
                 i.updated_at,
-                i.source_memo_id,
                 i.source_document_path
             FROM agent_conversation_instances i
             WHERE i.thread_id IS NOT NULL;
@@ -1071,21 +1072,14 @@ impl super::store::ThreadManager {
                     OR (
                         newer.updated_at = stale.updated_at
                         AND (
-                            (newer.source_memo_id IS NOT NULL AND stale.source_memo_id IS NULL)
+                            (newer.source_document_path IS NOT NULL AND stale.source_document_path IS NULL)
                             OR (
-                                (newer.source_memo_id IS NOT NULL) = (stale.source_memo_id IS NOT NULL)
-                                AND newer.source_document_path IS NOT NULL
-                                AND stale.source_document_path IS NULL
-                            )
-                            OR (
-                                (newer.source_memo_id IS NOT NULL) = (stale.source_memo_id IS NOT NULL)
-                                AND (newer.source_document_path IS NOT NULL) = (stale.source_document_path IS NOT NULL)
+                                (newer.source_document_path IS NOT NULL) = (stale.source_document_path IS NOT NULL)
                                 AND newer.instance_id > stale.instance_id
                             )
-                        )
                     )
                  )
-            );
+              ));
 
             UPDATE agent_conversation_instances
             SET thread_id = (

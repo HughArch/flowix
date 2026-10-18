@@ -14,11 +14,9 @@ import { Button } from '@shared/ui/button';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@shared/ui/select';
 import { Field, SectionHeader, FIELD_INPUT_CLASS } from '@features/preferences/sections/primitives';
 import { useI18n } from '@/lib/i18n';
-import { errorMessage } from '@/lib/error-message';
 import { toast } from '@/lib/toast';
 import { useAgentDataStore } from '@features/agent/store/agent-data-store';
 import { PiMcpSettings } from '@features/preferences/sections/pi-mcp-settings';
-import { cloud } from '@platform/tauri/client';
 import { useCloudAccountState } from '@features/preferences/hooks/use-cloud-account-state';
 
 type Draft = Omit<PiProviderConfig, 'credentialConfigured'>;
@@ -92,7 +90,6 @@ export function PiSettingsSection() {
   const [modelListExpanded, setModelListExpanded] = useState(false);
   const [loading, setLoading] = useState(true);
   const [busy, setBusy] = useState(false);
-  const [cloudProviderBusy, setCloudProviderBusy] = useState(false);
   const [testing, setTesting] = useState(false);
   const [discovering, setDiscovering] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -145,28 +142,6 @@ export function PiSettingsSection() {
     finally { setLoading(false); }
   }, []);
 
-  const connectCloudProvider = async () => {
-    setCloudProviderBusy(true);
-    try {
-      await cloud.connectPiModelProvider();
-      await reload();
-      toast.success(t('preferences.pi.cloudConnected'));
-    } catch (value) {
-      toast.error(errorMessage(value));
-    } finally { setCloudProviderBusy(false); }
-  };
-
-  const disconnectCloudProvider = async () => {
-    setCloudProviderBusy(true);
-    try {
-      await cloud.disconnectPiModelProvider();
-      await reload();
-      toast.success(t('preferences.pi.cloudDisconnected'));
-    } catch (value) {
-      toast.error(errorMessage(value));
-    } finally { setCloudProviderBusy(false); }
-  };
-
   useEffect(() => { void reload(); }, [reload, cloudAuthenticated]);
 
   useEffect(() => {
@@ -187,7 +162,6 @@ export function PiSettingsSection() {
   const catalogProviders = useMemo(() => providerCatalog?.providers ?? [], [providerCatalog]);
   const compatibleProviders = catalogProviders;
   const selectedCatalogProvider = catalogProviders.find((provider) => provider.id === draft?.id);
-  const cloudProvider = providers.find((provider) => provider.source === FLOWIX_CLOUD_SOURCE);
   const byokProviders = providers.filter((provider) => provider.source !== FLOWIX_CLOUD_SOURCE);
 
   const beginEdit = (provider?: PiProviderConfig) => {
@@ -334,16 +308,6 @@ export function PiSettingsSection() {
     } finally { setBusy(false); }
   };
 
-  const setDefaultModel = async (provider: PiProviderConfig, modelId: string) => {
-    setBusy(true);
-    try {
-      await piModels.save({ ...provider, apiKey: '', defaultModelId: modelId === '__none__' ? undefined : modelId });
-      await reload();
-    } catch (value) {
-      toast.error(value instanceof Error ? value.message : String(value));
-    } finally { setBusy(false); }
-  };
-
   const cancelDraft = () => {
     setDraft(null);
     setEditingId(null);
@@ -451,57 +415,8 @@ export function PiSettingsSection() {
 
   return (
     <div className="space-y-5">
-      <SectionHeader title={t('preferences.pi.title')} description={t('preferences.pi.description')} />
-      <section className="space-y-3 rounded-xl border border-[var(--divider)] bg-[var(--card)] p-4">
-        <div className="flex flex-wrap items-start justify-between gap-3">
-          <div className="min-w-0">
-            <p className="text-sm font-semibold text-[var(--foreground)]">{t('preferences.pi.cloudTitle')}</p>
-            <p className="mt-0.5 text-xs text-[var(--muted-foreground)]">
-              {cloudProvider
-                ? t('preferences.pi.cloudConnectedStatus')
-                : t(cloudState?.authenticated ? 'preferences.pi.cloudSignedIn' : 'preferences.pi.cloudSignInRequired')}
-            </p>
-          </div>
-          <div className="flex shrink-0 items-center gap-2">
-            {cloudProvider && <span className="text-xs text-[var(--muted-foreground)]">{cloudProvider.models.length} {t('preferences.pi.cloudModelCount')}</span>}
-            <Button type="button" variant="outline" className="h-8" disabled={!cloudState?.authenticated || cloudProviderBusy || busy || Boolean(draft)} onClick={() => void connectCloudProvider()}>
-              {cloudProviderBusy && <Loader2 className="mr-2 size-3.5 flowix-spin" />}
-              {cloudProvider ? t('preferences.pi.cloudRefresh') : t('preferences.pi.cloudConnect')}
-            </Button>
-            {cloudProvider && (
-              <Button type="button" variant="ghost" className="h-8" disabled={cloudProviderBusy || busy || Boolean(draft)} onClick={() => void disconnectCloudProvider()}>
-                {t('preferences.pi.cloudDisconnect')}
-              </Button>
-            )}
-          </div>
-        </div>
-        {cloudProvider && cloudProvider.models.length > 0 && (
-          <div className="flex flex-wrap items-center gap-2 border-t border-[var(--divider)] pt-3">
-            <span className="shrink-0 text-sm text-[var(--foreground)]">{t('preferences.pi.cloudDefaultModel')}</span>
-            <Select
-              value={cloudProvider.defaultModelId ?? '__none__'}
-              disabled={busy || cloudProviderBusy || cloudProvider.models.length < 2 || Boolean(draft)}
-              onValueChange={(modelId) => void setDefaultModel(cloudProvider, modelId)}
-            >
-              <SelectTrigger className="w-full max-w-[24rem]">
-                <SelectValue>
-                  {cloudProvider.models.find((model) => model.id === cloudProvider.defaultModelId)?.name
-                    || cloudProvider.defaultModelId
-                    || t('preferences.pi.noDefault')}
-                </SelectValue>
-              </SelectTrigger>
-              <SelectContent align="start" fitViewport maxHeight={240} className={PREFERENCES_SELECT_CONTENT_CLASS}>
-                {cloudProvider.models.map((model) => (
-                  <SelectItem key={model.id} value={model.id}>{model.name || model.id}</SelectItem>
-                ))}
-              </SelectContent>
-            </Select>
-          </div>
-        )}
-      </section>
-
       <section className="space-y-3">
-        <SectionHeader title={t('preferences.pi.byokTitle')} description={t('preferences.pi.byokDescription')} />
+        <SectionHeader title={t('preferences.pi.byokTitle')} />
         {loading && <div className="flex justify-center py-8"><Loader2 className="size-5 flowix-spin" /></div>}
         {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
         {!loading && !error && byokProviders.length === 0 && !draft && (
@@ -522,15 +437,24 @@ export function PiSettingsSection() {
                     <Button type="button" variant="ghost" size="icon" className="size-7 hover:text-[var(--destructive)]" aria-label={t('preferences.pi.delete')} title={t('preferences.pi.delete')} disabled={busy || Boolean(draft)} onClick={() => void remove(provider.id)}><TrashSimpleIcon className="h-4 w-4" aria-hidden="true" /></Button>
                   </div>
                 </div>
-                <div className="flex items-center justify-start gap-2">
-                  <span className="shrink-0 text-sm text-[var(--foreground)]">{t('preferences.pi.defaultModel')}</span>
-                  <Select value={provider.defaultModelId ?? '__none__'} disabled={busy || Boolean(draft)} onValueChange={(modelId) => void setDefaultModel(provider, modelId)}>
-                    <SelectTrigger className="w-[16rem]"><SelectValue>{provider.defaultModelId ? provider.models.find((model) => model.id === provider.defaultModelId)?.name || provider.defaultModelId : t('preferences.pi.noDefault')}</SelectValue></SelectTrigger>
-                    <SelectContent align="start" fitViewport maxHeight={240} className={PREFERENCES_SELECT_CONTENT_CLASS}>
-                      {provider.models.length === 0 && <SelectItem value="__none__">{t('preferences.pi.noDefault')}</SelectItem>}
-                      {provider.models.map((model) => <SelectItem key={model.id} value={model.id}>{model.name || model.id}</SelectItem>)}
-                    </SelectContent>
-                  </Select>
+                <div className="mt-2">
+                  {provider.models.length > 0 ? (
+                    <div className="flex flex-wrap gap-1.5" aria-label={t('preferences.pi.modelIds')}>
+                      {provider.models.map((model) => (
+                        <span
+                          key={model.id}
+                          className="rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-xs text-[var(--foreground)]"
+                          title={model.name && model.name !== model.id ? model.id : undefined}
+                        >
+                          {model.id === provider.defaultModelId
+                            ? t('preferences.pi.defaultModelTag', { name: model.name || model.id })
+                            : model.name || model.id}
+                        </span>
+                      ))}
+                    </div>
+                  ) : (
+                    <p className="text-xs text-[var(--muted-foreground)]">{t('preferences.pi.noModels')}</p>
+                  )}
                 </div>
               </>
             )}
@@ -554,7 +478,7 @@ export function PiSettingsSection() {
                 modeLoad.error ? (
                   <div className="flex items-center gap-2">
                     <span role="alert" className="text-xs text-[var(--destructive)]">{t('preferences.agent.loadFailed')}</span>
-                    <Button type="button" variant="outline" className="h-7" onClick={() => void initializePiMode().catch(() => undefined)}>{t('error.retry')}</Button>
+                    <Button type="button" variant="outline" className="h-7 rounded-lg" onClick={() => void initializePiMode().catch(() => undefined)}>{t('error.retry')}</Button>
                   </div>
                 ) : <Loader2 className="size-4 flowix-spin text-[var(--muted-foreground)]" />
               ) : <button

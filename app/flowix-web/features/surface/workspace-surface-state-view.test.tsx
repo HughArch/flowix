@@ -1,8 +1,8 @@
-import { act, useEffect } from 'react';
+import { act, Suspense, useEffect, type ComponentType } from 'react';
 import type { SurfaceState } from '@features/workspace/model/surface-contract';
 import { createRoot, type Root } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { WorkspaceSurfaceStateView } from './workspace-surface-state-view';
+import { useWorkspaceSurfaceRendererLazy, WorkspaceSurfaceErrorBoundary, WorkspaceSurfaceStateView } from './workspace-surface-state-view';
 
 vi.mock('@shared/ui/centered-loading-spinner', () => ({
   CenteredLoadingSpinner: () => <div data-testid="surface-spinner" />,
@@ -75,5 +75,52 @@ describe('WorkspaceSurfaceStateView', () => {
     expect(host.textContent).toContain('artifact missing');
     await act(async () => host.querySelector('button')?.click());
     expect(retry).toHaveBeenCalledOnce();
+  });
+
+  it('settles initial loading when Suspense wraps the lazy-renderer hook', async () => {
+    host = document.createElement('div');
+    root = createRoot(host);
+    let resolve!: (value: { default: ComponentType }) => void;
+    const load = vi.fn(() => new Promise<{ default: ComponentType }>((done) => { resolve = done; }));
+    function LazyRenderer() {
+      const Renderer = useWorkspaceSurfaceRendererLazy(load);
+      return <Renderer />;
+    }
+    await act(async () => root.render(<WorkspaceSurfaceErrorBoundary appearance={appearance}>
+      <Suspense fallback={<div>loading</div>}><LazyRenderer /></Suspense>
+    </WorkspaceSurfaceErrorBoundary>));
+    expect(host.textContent).toBe('loading');
+    await act(async () => resolve({ default: () => <div>content ready</div> }));
+    expect(host.textContent).toBe('content ready');
+    expect(load).toHaveBeenCalledOnce();
+  });
+
+  it('retries a rejected lazy renderer with a fresh React lazy wrapper', async () => {
+    host = document.createElement('div');
+    root = createRoot(host);
+    const load = vi.fn(async (): Promise<{ default: ComponentType }> => {
+      if (load.mock.calls.length === 1) throw new Error('temporary chunk failure');
+      return { default: () => <div>renderer recovered</div> };
+    });
+    function LazyRenderer() {
+      const Renderer = useWorkspaceSurfaceRendererLazy(load);
+      return <Suspense fallback={<div>loading</div>}><Renderer /></Suspense>;
+    }
+    const logError = vi.spyOn(console, 'error').mockImplementation(() => {});
+
+    await act(async () => root.render(<WorkspaceSurfaceErrorBoundary appearance={appearance}>
+      <LazyRenderer />
+    </WorkspaceSurfaceErrorBoundary>));
+    expect(host.textContent).toContain('error.unexpected');
+
+    await act(async () => {
+      host.querySelector('button')?.click();
+      await Promise.resolve();
+      await Promise.resolve();
+    });
+
+    expect(host.textContent).toContain('renderer recovered');
+    expect(load).toHaveBeenCalledTimes(2);
+    logError.mockRestore();
   });
 });

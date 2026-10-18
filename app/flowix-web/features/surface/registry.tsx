@@ -23,7 +23,7 @@ import { workspaceSurfaceRendererDataFromWorkSurface } from './work-column-surfa
 import { registerStartupSurfaceHostView, registerWorkspaceSurfacePresentationOwner, reportEmptyWorkspaceSurfaceForIdentity, reportWorkspaceSurfacePresentation } from './workspace-surface-runtime';
 import type { SurfacePresentationUpdate } from '@features/workspace/model/surface-contract';
 import type { SurfaceLifecycle } from '@features/workspace/model/surface-contract';
-import { registerWorkspaceSurfaceLifecycle, registerWorkspaceSurfaceHostView } from '@features/workspace/public/surface-lifecycle-api';
+import { registerWorkspaceSurfaceLifecycle } from '@features/workspace/public/surface-lifecycle-api';
 
 export interface WorkColumnSurfaceDefinition {
   appearance: Readonly<SurfaceAppearance>;

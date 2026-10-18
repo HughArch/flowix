@@ -5,7 +5,7 @@ import { TrashSimpleIcon } from "@phosphor-icons/react";
 import { getToolIconPath } from "@features/agent/message/tools";
 
 export const ICON_STOP_PATH =
-  "M216,56V200a16,16,0,0,1-16,16H56a16,16,0,0,1-16-16V56A16,16,0,0,1,56,40H200A16,16,0,0,1,216,56Z";
+  "M216,68V188a28,28,0,0,1-28,28H68a28,28,0,0,1-28-28V68a28,28,0,0,1,28-28H188a28,28,0,0,1,28,28Z";
 
 const ICON_CHEVRON_UP_PATH = "M6 15l6-6 6 6";
 const ICON_CHEVRON_DOWN_PATH = "M6 9l6 6 6-6";

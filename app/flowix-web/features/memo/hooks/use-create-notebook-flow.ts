@@ -138,6 +138,7 @@ export function useCreateNotebookFlow({
                 path: notebookPath,
                 icon,
                 templateId,
+                reuseExisting: true,
               });
             } catch (error) {
               if (!templateId || !String(error).includes('NOTEBOOK_PRESET_OVERWRITE_CONFIRM_REQUIRED')) {
@@ -153,6 +154,7 @@ export function useCreateNotebookFlow({
                 icon,
                 templateId,
                 overwriteExisting: true,
+                reuseExisting: true,
               });
             }
           }

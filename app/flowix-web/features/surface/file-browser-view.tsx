@@ -5,7 +5,7 @@ import { FolderFileTree } from '@features/memo/components/folder-file-tree';
 import { useFolderTree } from '@features/memo/components/use-folder-tree';
 import { useNoteStore } from '@features/memo/store';
 import type { FileBrowserContext } from '@features/workspace/store/file-browser-target';
-import { useAgentDataStore } from '@features/agent/store/agent-data-store';
+import { useAgentWorkspaceStore } from '@features/agent/store/agent-workspace-store';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
 import { openPath } from '@platform/tauri/opener';
@@ -321,15 +321,15 @@ function BrowserBreadcrumbs({
 
 export function FileBrowserView({ surface: input }: { surface: FileBrowserViewSurface }) {
   const { t } = useI18n();
-  const addFolderFromPicker = useAgentDataStore((state) => state.workspaceActions.addFolderFromPicker);
-  const detachFolderFromNotebook = useAgentDataStore((state) => state.workspaceActions.detachFolderFromNotebook);
+  const addFolderFromPicker = useAgentWorkspaceStore((state) => state.workspaceActions.addFolderFromPicker);
+  const detachFolderFromNotebook = useAgentWorkspaceStore((state) => state.workspaceActions.detachFolderFromNotebook);
   const selectedNotebookId = useNoteStore((state) => state.selectedNotebookId ?? state.selectedNotebook?.id ?? null);
   const legacyNotebookRef = useRef<string | null>(null);
   if (input.restoreNotebookContext && !legacyNotebookRef.current && selectedNotebookId) {
     legacyNotebookRef.current = selectedNotebookId;
   }
   const notebookId = input.restoreNotebookContext ? legacyNotebookRef.current : input.notebookId;
-  const workspaceNotebook = useAgentDataStore((state) =>
+  const workspaceNotebook = useAgentWorkspaceStore((state) =>
     notebookId ? state.workspace.byNotebookId[notebookId] : undefined,
   );
   useEffect(() => {

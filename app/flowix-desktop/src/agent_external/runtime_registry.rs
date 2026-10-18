@@ -1157,17 +1157,17 @@ mod tests {
 
         let keys = registry
             .iter()
-            .map(ExternalCliRuntime::key)
+            .map(|runtime| runtime.id())
             .collect::<Vec<_>>();
         assert_eq!(
             keys,
             [
-                "codex",
-                "claude",
-                "hermes",
-                "opencode",
-                "pi",
-                "deepseek-harness"
+                CODEX_AGENT_TYPE,
+                CLAUDE_AGENT_TYPE,
+                HERMES_AGENT_TYPE,
+                OPENCODE_AGENT_TYPE,
+                PI_AGENT_TYPE,
+                DSH_AGENT_TYPE,
             ]
         );
         for kind in ExternalRuntimeKind::ALL {

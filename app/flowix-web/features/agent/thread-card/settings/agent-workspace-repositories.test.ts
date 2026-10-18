@@ -56,13 +56,10 @@ vi.mock("@features/workspace/use-cases/browser-column-navigation", () => ({
   openBrowserColumnNotebookNote: vi.fn(),
 }));
 
-vi.mock("@features/agent/store/agent-data-store", async (importOriginal) => {
-  const actual = await importOriginal<typeof import("@features/agent/store/agent-data-store")>();
-  return { ...actual, useAgentDataStore: Object.assign(
-    (selector: Parameters<typeof actual.useAgentDataStore>[0]) => actual.useAgentDataStore(selector),
-    actual.useAgentDataStore,
-    { getState: () => ({
-      ...actual.useAgentDataStore.getState(),
+vi.mock("@features/agent/store/agent-workspace-store", async (importOriginal) => {
+  const actual = await importOriginal<typeof import("@features/agent/store/agent-workspace-store")>();
+  const getState = () => ({
+      ...actual.useAgentWorkspaceStore.getState(),
       workspace: actual.projectAgentWorkspace({
         notebooks: [{ id: "notebook-1", name: "项目", path: "/repo/project" }],
         notebookConfigs: Object.fromEntries(Object.entries(accessState.notebookConfigs).map(([id, config]) => [id, {
@@ -70,13 +67,17 @@ vi.mock("@features/agent/store/agent-data-store", async (importOriginal) => {
         }])),
       }),
       workspaceActions: {
-        ...actual.useAgentDataStore.getState().workspaceActions,
+        ...actual.useAgentWorkspaceStore.getState().workspaceActions,
         addFolderFromPicker,
         attachFolderToNotebook,
         detachFolderFromNotebook,
         getNotebookFiles: () => undefined,
       },
-    }) },
+    });
+  return { ...actual, useAgentWorkspaceStore: Object.assign(
+    (selector: Parameters<typeof actual.useAgentWorkspaceStore>[0]) => selector ? selector(getState()) : getState(),
+    actual.useAgentWorkspaceStore,
+    { getState },
   ) };
 });
 
@@ -98,6 +99,7 @@ vi.mock("@features/agent/store/dsh-model-config-store", () => ({
 import { ExternalAgentSettingsController } from "./external-agent-settings-controller";
 import { AgentThreadCardSubscriptionsController } from "../runtime/thread-card-subscriptions-controller";
 import { useAgentDataStore } from "@features/agent/store/agent-data-store";
+import { useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-store";
 
 function folderEntry(path: string, name: string, missing = false): AgentAccessEntry {
   return {
@@ -195,16 +197,16 @@ describe("agent workspace popover repositories page", () => {
   }
 
   it("keeps the DSH mode button and open picker subscribed to the user's choice", () => {
-    useAgentDataStore.getState().setUserPreference("deepseek-harness", { mode: "code" });
+    useAgentDataStore.getState().setUserPreference("dsh", { mode: "code" });
     const modeController = new ExternalAgentSettingsController({
-      popover, getTypeKey: () => "deepseek-harness", getInstanceId: () => "mode-conversation",
+      popover, getTypeKey: () => "dsh", getInstanceId: () => "mode-conversation",
       getLanguage: () => "zh-CN", t: (key) => key, isDestroyed: () => false,
     });
     const button = modeController.createComposerModeButton()!;
     document.body.append(button);
     const subscriptions = new AgentThreadCardSubscriptionsController({
       getRuntimeThreadId: () => null, getRenderThreadId: () => null, getStoredThreadId: () => null,
-      getTypeKey: () => "deepseek-harness", getInstanceId: () => "mode-conversation",
+      getTypeKey: () => "dsh", getInstanceId: () => "mode-conversation",
       getResolvedSessionId: () => null, renderThreadState: vi.fn(), refreshAttrs: vi.fn(),
       refreshExternalAgentEmptySettings: () => modeController.refreshEmptySettings(),
       isExternalSettingsOpen: () => true,
@@ -216,12 +218,39 @@ describe("agent workspace popover repositories page", () => {
       expect(button.textContent).toContain("agent.mode.code");
       button.click();
       expect(popover.querySelector('[aria-checked="true"]')?.textContent).toContain("agent.mode.code");
-      useAgentDataStore.getState().setUserPreference("deepseek-harness", { mode: "minimal" });
+      useAgentDataStore.getState().setUserPreference("dsh", { mode: "minimal" });
       expect(button.textContent).toContain("agent.mode.minimal");
       expect(popover.querySelector('[aria-checked="true"]')?.textContent).toContain("agent.mode.minimal");
     } finally {
       subscriptions.dispose();
       modeController.dispose();
+    }
+  });
+
+  it("refreshes Agent settings when the workspace snapshot changes", () => {
+    const refreshAttrs = vi.fn();
+    const refreshExternalAgentEmptySettings = vi.fn();
+    const subscriptions = new AgentThreadCardSubscriptionsController({
+      getRuntimeThreadId: () => null, getRenderThreadId: () => null, getStoredThreadId: () => null,
+      getTypeKey: () => "dsh", getInstanceId: () => null,
+      getResolvedSessionId: () => null, renderThreadState: vi.fn(), refreshAttrs,
+      refreshExternalAgentEmptySettings, isExternalSettingsOpen: () => false,
+      renderCodexSettingsPopover: vi.fn(), applyResolvedExternalSessionId: vi.fn(), syncRuntimeBadge: vi.fn(),
+    });
+    const previousWorkspace = useAgentWorkspaceStore.getState().workspace;
+    subscriptions.subscribe();
+    try {
+      useAgentWorkspaceStore.setState({ workspace: {
+        ...previousWorkspace,
+        resources: [...previousWorkspace.resources, {
+          id: "folder-1", path: "/folder-1", name: "folder-1", enabled: true, missing: false,
+        }],
+      } });
+      expect(refreshAttrs).toHaveBeenCalledOnce();
+      expect(refreshExternalAgentEmptySettings).toHaveBeenCalledOnce();
+    } finally {
+      subscriptions.dispose();
+      useAgentWorkspaceStore.setState({ workspace: previousWorkspace });
     }
   });
 

@@ -12,13 +12,22 @@ use flowix_core::secret::{entry_name, SecretStore};
 
 /// AI 模型配置文件�?── TOML 格式, 便于人手编辑与注释�?///
 /// TOML 格式便于用户手改磁盘配置时写注释 (TOML 原生 `# ...`), 避免�?��字�?�?/// �?Flowix 的其它配�?���?(`boot/preference.json` /
-///    `boot/system.json` / `index.db`) 鍖哄垎寰楁洿鏄剧溂
+///    `boot/system.json` / `local.db`) 鍖哄垎寰楁洿鏄剧溂
 ///    (TOML 格式 + 显式 `agent-` 前缀, 不会出现"�?��文件该用 JSON"的�?�?
 pub const AI_CONFIG_FILE_NAME: &str = "agent-config.toml";
 /// DeepSeek Harness uses its official user-global home (`~/.dsh`). Flowix
 /// owns a profile below that home, but does not introduce a second harness
 /// root below `~/.flowix`.
 pub const DSH_DIR_NAME: &str = ".dsh";
+
+/// Resolve the official DSH home for both profile installation and runtime IO.
+pub(crate) fn resolve_dsh_home(home: &Path) -> PathBuf {
+    std::env::var_os("DSH_HOME")
+        .filter(|path| !path.is_empty())
+        .map(PathBuf::from)
+        .unwrap_or_else(|| home.join(DSH_DIR_NAME))
+}
+
 pub const DSH_SESSIONS_DIR_NAME: &str = "sessions";
 pub const DSH_SETTINGS_FILE_NAME: &str = "settings.yaml";
 pub const DSH_PLUGIN_SETTINGS_FILE_NAME: &str = "plugin-settings.json";
@@ -182,6 +191,9 @@ pub struct PreferenceFile {
     /// Installation region detected by the frontend on first launch.
     #[serde(default)]
     pub region: String,
+    /// Explicit path to the user's DSH CLI, when automatic discovery is insufficient.
+    #[serde(default)]
+    pub dsh_cli_path: Option<String>,
     /// Saved Cloud target name for development builds. Unknown legacy values
     /// fall back to the build default; release builds always use production.
     #[serde(default)]
@@ -226,6 +238,7 @@ impl Default for PreferenceFile {
             theme: Theme::default(),
             language: String::default(),
             region: String::default(),
+            dsh_cli_path: None,
             cloud_environment: String::default(),
             memo_card_variant: String::default(),
             memo_list_view: String::default(),
@@ -649,7 +662,7 @@ impl UserConfigStore {
 
     pub fn new(home_dir: PathBuf) -> Self {
         // 凭据数据库位于 config_dir/db/default.db (生产环境 ~/.flowix/db/default.db),
-        // �?index.db 同目�?── �?0o700 �?�� + 0o600 文件权限保护�?
+        // �?local.db 同目�?── �?0o700 �?�� + 0o600 文件权限保护�?
         let db_path = home_dir
             .join(USER_CONFIG_DIR_NAME)
             .join("db")
@@ -783,10 +796,11 @@ impl UserConfigStore {
     /// `profiles/flowix` namespace inside it and leaves plugin/profile state
     /// to the official DSH CLI.
     pub fn dsh_dir(&self) -> PathBuf {
-        self.config_dir
-            .parent()
-            .unwrap_or(self.config_dir.as_path())
-            .join(DSH_DIR_NAME)
+        resolve_dsh_home(
+            self.config_dir
+                .parent()
+                .unwrap_or(self.config_dir.as_path()),
+        )
     }
 
     pub fn dsh_settings_path(&self) -> PathBuf {
@@ -879,17 +893,19 @@ impl UserConfigStore {
         Ok(())
     }
 
+    /// Stage-2 defaults are process-local. Persisting them is background work.
+    pub fn prepare_runtime_watcher_exclusions(&self) {
+        let defaults = crate::watcher::WhitelistConfig::default();
+        let mut preference = self.write_preference();
+        preference.watcher.skip_dirs = defaults.skip_dirs;
+        preference.watcher.skip_files = defaults.skip_files;
+    }
+
     /// Clear the legacy global watcher name exclusions. New file-management
     /// rules are notebook-local and are initialized from their current defaults.
     pub fn clear_legacy_watcher_exclusions(&self) -> Result<(), UserConfigError> {
         let mut preference = self.write_preference();
         let defaults = crate::watcher::WhitelistConfig::default();
-        if preference.watcher.skip_dirs == defaults.skip_dirs
-            && preference.watcher.skip_files == defaults.skip_files
-        {
-            return Ok(());
-        }
-
         // Patch the raw document so unknown or newer preference fields survive
         // this one-time cleanup as well.
         let path = preference_file_path(&self.config_dir);
@@ -911,6 +927,13 @@ impl UserConfigStore {
                 "preference.json watcher must contain a JSON object".into(),
             )
         })?;
+        if watcher.get("skip_dirs") == Some(&serde_json::to_value(&defaults.skip_dirs)?)
+            && watcher.get("skip_files") == Some(&serde_json::to_value(&defaults.skip_files)?)
+        {
+            preference.watcher.skip_dirs = defaults.skip_dirs;
+            preference.watcher.skip_files = defaults.skip_files;
+            return Ok(());
+        }
         watcher.insert(
             "skip_dirs".into(),
             serde_json::to_value(&defaults.skip_dirs)?,
