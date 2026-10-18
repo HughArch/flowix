@@ -52,7 +52,7 @@ export function createExternalAgentWorkspaceDisplay(
   const valueEl = document.createElement("span");
   valueEl.className = "agent-conversation__workspace-value";
   valueEl.textContent = value;
-  display.append(labelEl, valueEl, createDropdownChevron());
+  display.append(labelEl, valueEl);
   display.title = `${label}: ${value}`;
   display.addEventListener("click", (event) => {
     event.stopPropagation();
@@ -122,8 +122,7 @@ export function createExternalAgentEmptyControl(
   const valueEl = document.createElement("span");
   valueEl.className = "agent-conversation__control-value";
   valueEl.textContent = value;
-  button.append(labelEl, valueEl, createDropdownChevron());
-
+  button.append(labelEl, valueEl);
   button.addEventListener("click", (event) => {
     event.stopPropagation();
     onClick(kind, button);
