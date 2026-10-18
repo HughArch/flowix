@@ -1396,6 +1396,130 @@ describe("AgentThreadCard NodeView streaming", () => {
     await vi.waitFor(() => expect(agent.chatStream).toHaveBeenCalledTimes(1));
   });
 
+  it.each(["accepted", "rejected"] as const)("shows the first independent Pi message before persistence and handles %s binding", async (outcome) => {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { AgentConversationDetail } = await import("@features/agent/components/agent-conversation-detail");
+    const { useAgentSessionStore } = await import("@features/agent/store/agent-session-store");
+    const { agent } = await import("@platform/tauri/client");
+    let release!: () => void;
+    const pending = new Promise<void>((resolve, reject) => {
+      release = () => outcome === "accepted" ? resolve() : reject(new Error("binding failed"));
+    });
+    const persist = vi.mocked(agent.upsertConversationInstance);
+    const original = persist.getMockImplementation();
+    persist.mockImplementation(async (instance) => {
+      if (instance.threadId) await pending;
+      return { ...instance, threadTitle: instance.initialTitle };
+    });
+    const instance = useAgentSessionStore.getState().createInstance({
+      agentType: "pi", title: "First Pi message", threadId: null, source: { kind: "dedicated" },
+      runtimeConfig: { cwd: "/tmp/first-pi-message" },
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => { root.render(createElement(AgentConversationDetail, { instanceId: instance.instanceId })); });
+      const card = host.querySelector<HTMLElement>(".agent-thread-card")!;
+      await act(async () => {
+        setComposerText(getComposerInput(card), "immediate Pi message");
+      });
+      const send = await waitForEnabledSendButton(card);
+      await act(async () => {
+        send.click();
+        await flushPromises();
+      });
+      const preview = card.querySelector(".agent-thread-card__message--user");
+      expect(preview?.textContent).toContain("immediate Pi message");
+      expect(agent.chatStream).not.toHaveBeenCalled();
+      expect(card.querySelector(".agent-thread-card__empty")).toBeNull();
+      expect(card.querySelector(".agent-thread-card__skeleton")).toBeNull();
+      await act(async () => { release(); await flushPromises(); });
+      if (outcome === "rejected") {
+        await vi.waitFor(() => expect(toastMock.error).toHaveBeenCalled());
+        expect(agent.chatStream).not.toHaveBeenCalled();
+        expect(card.querySelector(".agent-thread-card__message--user")).toBeNull();
+        expect(getComposerValue(getComposerInput(card))).toContain("immediate Pi message");
+        return;
+      }
+      await vi.waitFor(() => expect(agent.chatStream).toHaveBeenCalledTimes(1));
+      await act(async () => { await flushStreamingRender(); });
+      expect(card.querySelectorAll(".agent-thread-card__message--user")).toHaveLength(1);
+      expect(card.querySelector(".agent-thread-card__message--user")).toBe(preview);
+      const threadId = useAgentSessionStore.getState().getInstance(instance.instanceId)!.threadId!;
+      // Pi may still return an empty native snapshot after local dispatch.
+      await act(async () => {
+        await useAgentSessionStore.getState().loadMessages("pi", threadId);
+        await flushStreamingRender();
+      });
+      expect(card.querySelector(".agent-thread-card__empty")).toBeNull();
+      expect(card.querySelector(".agent-thread-card__message--user")).toBe(preview);
+      const runId = useAgentSessionStore.getState().threadProjections[threadId].runs.activeRunId!;
+      await act(async () => {
+        useAgentSessionStore.getState().dispatch({
+          kind: "user_message", agentType: "pi", threadId, runId,
+          timestamp: Date.now(), id: "pi-native-first-message", text: "immediate Pi message",
+        });
+        await flushStreamingRender();
+      });
+      expect(card.querySelectorAll(".agent-thread-card__message--user")).toHaveLength(1);
+      expect(card.querySelector(".agent-thread-card__message--user")).toBe(preview);
+    } finally {
+      release();
+      await act(async () => { root.unmount(); });
+      host.remove();
+      if (original) persist.mockImplementation(original);
+      else persist.mockReset();
+    }
+  });
+
+  it("keeps the empty Pi card free of history skeletons throughout its first send", async () => {
+    const { AgentThreadCard } = await import("@features/agent/thread-card");
+    const { agent } = await import("@platform/tauri/client");
+    let releaseInitialization!: () => void;
+    const initializationPending = new Promise<void>((resolve) => {
+      releaseInitialization = resolve;
+    });
+    vi.mocked(agent.upsertConversationInstance).mockImplementationOnce(async (instance) => {
+      await initializationPending;
+      return { ...instance, threadTitle: instance.initialTitle };
+    });
+    const host = document.createElement("div");
+    document.body.append(host);
+    editor = new Editor({
+      element: host,
+      extensions: [StarterKit, AgentThreadCard],
+      content: {
+        type: "doc",
+        content: [{ type: "agentThreadCard", attrs: { threadId: null, typeKey: "pi", collapsed: false } }],
+      },
+    });
+    const card = host.querySelector<HTMLElement>(".agent-thread-card")!;
+    const skeletons: Node[] = [];
+    const observer = new MutationObserver((records) => {
+      for (const record of records) for (const node of record.addedNodes) {
+        if (node instanceof Element && node.matches(".agent-thread-card__skeleton")) skeletons.push(node);
+      }
+    });
+    observer.observe(card, { childList: true, subtree: true });
+    try {
+      setComposerText(getComposerInput(card), "first Pi message");
+      (await waitForEnabledSendButton(card)).click();
+      await flushPromises();
+      expect(agent.chatStream).not.toHaveBeenCalled();
+      expect(card.querySelector(".agent-thread-card__skeleton")).toBeNull();
+      releaseInitialization();
+      await vi.waitFor(() => expect(agent.chatStream).toHaveBeenCalledTimes(1));
+      await flushAnimationFrame();
+      expect(card.querySelector(".agent-thread-card__message--user")?.textContent).toContain("first Pi message");
+      expect(skeletons).toHaveLength(0);
+    } finally {
+      releaseInitialization();
+      observer.disconnect();
+    }
+  });
+
   it("does not start chat when first-send title initialization fails", async () => {
     const { AgentThreadCard } = await import("@features/agent/thread-card");
     const { agent } = await import("@platform/tauri/client");

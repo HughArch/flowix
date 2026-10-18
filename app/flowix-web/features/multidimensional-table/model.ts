@@ -1,6 +1,8 @@
+import type { PropertyFieldConfig } from '@/lib/constants';
 import { createCollectionMetadata, createCollectionId, createUuidV7, parseCollectionDocumentV2, serializeCollectionDocumentV2, validateCollectionMetadata, reviseCollection, hasOnlyKeys, type CollectionMetadata, type CollectionSource } from '@features/collection/model';
 export { createUuidV7 } from '@features/collection/model';
 import { isTablePropertyKind, type TablePropertyKind } from '@/lib/property-types';
+import { TAG_COLUMN_MIN_WIDTH, TAG_COLUMN_MAX_WIDTH } from './tag-column-width';
 
 import { NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID, NOTE_CALENDAR_DATE_FIELD_ID, NOTE_TAGS_FIELD_ID, NOTE_ICON_FIELD_ID, NOTE_STATUS_FIELD_ID, BUILTIN_TABLE_FIELDS, builtinPresetTableField, isBuiltinTableFieldId } from './builtin-fields';
 export { NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID } from './builtin-fields';
@@ -43,6 +45,10 @@ export interface TableAutoCollectConfig {
 
 export interface TableField {
   id: string;
+  /** Portable definition snapshot version; the user preset owns this ID. */
+  preset_revision?: number;
+  /** A local edit saved before its shared definition could be synchronized. */
+  preset_pending?: boolean;
   type: TableFieldType;
   name?: string;
   /** Frontmatter property key shared by every view. */
@@ -77,7 +83,7 @@ export interface MultidimensionalTableDocument {
   collection: CollectionMetadata;
   dataset: {
     source: CollectionSource;
-    schema: { primary_field_id: string; fields: TableField[]; field_order: string[]; preset_fields: string[] };
+    schema: { primary_field_id: string; fields: TableField[]; field_order: string[]; preset_fields: string[]; deleted_presets?: Array<Omit<PropertyFieldConfig, 'options'> & { options?: string[]; optionIds?: string[] }> };
     records: { include: TableRecord[]; exclude: Array<{ note_path: string }> };
     filter: Record<string, unknown> | null;
   };
@@ -335,11 +341,16 @@ export function validateTableDocument(parsed: unknown): MultidimensionalTableDoc
       || !value.views || !Array.isArray(value.views.items) || !value.dataset.records || !Array.isArray(value.dataset.records.include)) {
     throw new Error('不支持的多维表格文件格式');
   }
+  // Keep older saved tables readable, then return the canonical type on the next save.
+  for (const field of value.dataset.schema.fields) {
+    const legacyField = field as unknown as { type?: unknown };
+    if (legacyField?.type === 'Tags' || legacyField?.type === 'noteTag') legacyField.type = 'Tag';
+  }
   if (!hasOnlyKeys(value, ['collection', 'dataset', 'views'])) throw new Error('多维表格文件包含未知字段');
   const fieldIds = new Set<string>();
   const fieldKeys = new Set<string>();
   for (const field of value.dataset?.schema.fields) {
-    if (!field || !hasOnlyKeys(field, ['id', 'type', 'name', 'property_key', 'options', 'multiple'])
+    if (!field || !hasOnlyKeys(field, ['id', 'type', 'name', 'property_key', 'options', 'multiple', 'preset_revision', 'preset_pending'])
       || !/^fld_[0-9a-f]{32}$/.test(field.id) || fieldIds.has(field.id) || !(field.type === 'primary' || (String(field.type) !== 'Note' && isTablePropertyKind(field.type)))) {
       throw new Error('表格字段 ID 或类型无效');
     }
@@ -348,16 +359,23 @@ export function validateTableDocument(parsed: unknown): MultidimensionalTableDoc
     }
     if (field.name !== undefined && (typeof field.name !== 'string' || !field.name.trim())) throw new Error('表格字段显示名无效');
     if (field.type === 'primary' && field.property_key !== 'note') throw new Error('主字段的属性键必须是 note');
+    if (field.preset_pending !== undefined && typeof field.preset_pending !== 'boolean') throw new Error('预设同步状态无效');
+    if (field.preset_revision !== undefined && (!Number.isSafeInteger(field.preset_revision) || field.preset_revision < 1)) throw new Error('预设版本无效');
     const fieldKey = field.property_key?.trim().toLocaleLowerCase();
+    if (fieldKey === 'flowix_property_types') throw new Error('类型元数据不能作为表格属性');
     if (fieldKey) {
       if (fieldKeys.has(fieldKey)) throw new Error(`属性键重复：${field.property_key}`);
       fieldKeys.add(fieldKey);
     }
     const optionIds = new Set<string>();
+    const optionLabels = new Set<string>();
     if (field.options !== undefined && !Array.isArray(field.options)) throw new Error('表格字段选项格式无效');
     for (const option of field.options ?? []) {
       if (!option || !hasOnlyKeys(option, ['id', 'label']) || !/^opt_[0-9a-f]{32}$/.test(option.id) || optionIds.has(option.id) || typeof option.label !== 'string' || !option.label.trim()) throw new Error(`字段“${field.property_key ?? '笔记文档'}”的选项定义无效`);
       optionIds.add(option.id);
+      const label = option.label.trim();
+      if (optionLabels.has(label)) throw new Error(`字段“${field.property_key}”的选项名称重复`);
+      optionLabels.add(label);
     }
     fieldIds.add(field.id);
   }
@@ -373,20 +391,29 @@ export function validateTableDocument(parsed: unknown): MultidimensionalTableDoc
   const presetFieldIds = new Set<string>(BUILTIN_TABLE_FIELDS.filter((field) => builtinPresetTableField(field.id)).map((field) => field.id));
   if (presetFields !== undefined && (!Array.isArray(presetFields) || new Set(presetFields).size !== presetFields.length
     || presetFields.some((id) => typeof id !== 'string' || !presetFieldIds.has(id)))) throw new Error('预设属性列表无效');
+  const deletedPresets = value.dataset.schema.deleted_presets;
+  if (deletedPresets !== undefined) {
+    if (!Array.isArray(deletedPresets)) throw new Error('已删除预设列表无效');
+    const deletedIds = new Set<string>();
+    for (const preset of deletedPresets) {
+      if (!preset || typeof preset !== 'object' || !/^fld_[0-9a-f]{32}$/.test(preset.id ?? '')
+        || deletedIds.has(preset.id!) || typeof preset.key !== 'string' || !preset.key.trim()
+        || !isTablePropertyKind(preset.type)
+        || !Number.isSafeInteger(preset.revision) || (preset.revision ?? 0) < 1
+        || (preset.options !== undefined && (!Array.isArray(preset.options) || preset.options.some((option) => typeof option !== 'string')))
+        || (preset.optionIds !== undefined && (!Array.isArray(preset.optionIds) || preset.optionIds.some((id) => typeof id !== 'string' || !/^opt_[0-9a-f]{32}$/.test(id))))) {
+        throw new Error('已删除预设定义无效');
+      }
+      deletedIds.add(preset.id!);
+    }
+  }
   const viewIds = new Set<string>();
   if (typeof value.views.default_id !== 'string' || !hasOnlyKeys(value.views, ['default_id', 'items'])) throw new Error('表格视图定义无效');
   if (value.views?.items.length === 0) throw new Error('多维表格至少需要一个视图');
   for (const view of value.views?.items) {
     if (!view || !hasOnlyKeys(view, ['id', 'name', 'layout', 'filter', 'sort', 'config']) || !/^view_[0-9a-f]{32}$/.test(view.id) || viewIds.has(view.id) || typeof view.name !== 'string' || !view.name.trim() || !['table', 'kanban', 'calendar', 'gallery'].includes(view.layout) || !view.config || typeof view.config !== 'object' || Array.isArray(view.config)) throw new Error('表格视图定义无效');
     viewIds.add(view.id);
-    const referencedFields = [view.config.group_by, view.config.title_field]
-      .filter((item): item is string => typeof item === 'string');
-    if (typeof view.config.date_field === 'string'
-      && view.config.date_field !== NOTE_CREATED_AT_FIELD_ID
-      && view.config.date_field !== NOTE_UPDATED_AT_FIELD_ID
-      && view.config.date_field !== NOTE_CALENDAR_DATE_FIELD_ID) {
-      referencedFields.push(view.config.date_field);
-    }
+    const referencedFields: string[] = [];
     const visibleFields = view.config.visible_fields;
     if ((view.layout === 'table' || view.layout === 'gallery')
       && (!Array.isArray(visibleFields) || visibleFields.some((item) => typeof item !== 'string'))) {
@@ -396,21 +423,27 @@ export function validateTableDocument(parsed: unknown): MultidimensionalTableDoc
       referencedFields.push(...(visibleFields as string[]).filter((id) => view.layout !== 'table' || !isBuiltinTableFieldId(id)));
     }
     if (referencedFields.some((id) => !fieldIds.has(id))) throw new Error(`视图“${view.name}”引用了不存在的字段`);
-    const allowedConfigKeys = view.layout === 'table' || view.layout === 'gallery'
-      ? ['visible_fields']
+    // Keep accepting the old manual width so saved table documents remain readable.
+    const allowedConfigKeys = view.layout === 'table'
+      ? ['visible_fields', 'tag_column_width']
+      : view.layout === 'gallery'
+        ? ['visible_fields']
       : view.layout === 'kanban' ? ['group_by'] : ['date_field', 'title_field', 'week_start'];
     if (!hasOnlyKeys(view.config, allowedConfigKeys)) throw new Error(`视图“${view.name}”包含未知配置`);
-    if (view.layout === 'kanban') {
-      const groupField = value.dataset?.schema.fields.find((field) => field.id === view.config.group_by);
-      if (!groupField || groupField.type !== 'Select') throw new Error(`看板视图“${view.name}”需要单选属性`);
+    if (view.layout === 'kanban' && view.config.group_by !== undefined && typeof view.config.group_by !== 'string') {
+      throw new Error(`看板视图“${view.name}”的分组字段配置无效`);
+    }
+    if (view.layout === 'calendar'
+      && ((view.config.date_field !== undefined && typeof view.config.date_field !== 'string')
+        || (view.config.title_field !== undefined && typeof view.config.title_field !== 'string'))) {
+      throw new Error(`日历视图“${view.name}”的字段配置无效`);
+    }
+    if (view.layout === 'table' && view.config.tag_column_width !== undefined
+      && (typeof view.config.tag_column_width !== 'number' || !Number.isFinite(view.config.tag_column_width)
+        || view.config.tag_column_width < TAG_COLUMN_MIN_WIDTH || view.config.tag_column_width > TAG_COLUMN_MAX_WIDTH)) {
+      throw new Error(`视图“${view.name}”的标签列宽度无效`);
     }
     if (view.layout === 'calendar') {
-      const dateFieldId = view.config.date_field;
-      const dateField = typeof dateFieldId === 'string' ? value.dataset?.schema.fields.find((field) => field.id === dateFieldId) : undefined;
-      if (dateFieldId !== NOTE_CREATED_AT_FIELD_ID && dateFieldId !== NOTE_UPDATED_AT_FIELD_ID && dateFieldId !== NOTE_CALENDAR_DATE_FIELD_ID && dateField?.type !== 'Date') {
-        throw new Error(`日历视图“${view.name}”需要日期属性`);
-      }
-      if (typeof view.config.title_field !== 'string') throw new Error(`日历视图“${view.name}”的标题字段无效`);
       if (view.config.week_start !== undefined && view.config.week_start !== 1) throw new Error(`日历视图“${view.name}”的周起始日无效`);
     }
   }
@@ -450,5 +483,5 @@ export function validateTableDocument(parsed: unknown): MultidimensionalTableDoc
 export function serializeTableDocument(document: MultidimensionalTableDocument): string {
   const { views } = validateTableDocument(document);
   return serializeCollectionDocumentV2({ format: 'flowix.collection', schema_version: 2, collection: document.collection,
-    payload: { schema_version: 2, dataset: document.dataset, views } });
+    payload: { schema_version: 2, dataset: { ...document.dataset, schema: { ...document.dataset.schema, deleted_presets: undefined } }, views } });
 }

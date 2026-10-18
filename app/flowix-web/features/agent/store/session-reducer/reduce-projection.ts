@@ -1,3 +1,4 @@
+import type { ChatMessage } from "@/types";
 import type { AgentEvent } from "@/types/agent";
 import { completedRunUserMessageId } from "@features/agent/events/message-identity";
 import {
@@ -88,9 +89,13 @@ function applyUserMessageToProjection(
   // well so the live view matches history before the turn finishes.
   if (isLiveDshPlanPrompt(p, event.text)) return p;
 
+  const isOptimisticPiUser = event.agentType === "pi" &&
+    event.id === completedRunUserMessageId(event.agentType, event.runId);
   const next = applyUserMessageChunk(p, event.text, {
     id: event.id,
-    nativeMessageId: event.agentType === "pi" ? event.id : undefined,
+    nativeMessageId: !isOptimisticPiUser && (event.agentType === "pi" || event.agentType === "codex")
+      ? event.id : undefined,
+    isOptimistic: isOptimisticPiUser,
     messageType: event.messageType,
     phase: "completed",
     contentMode: "snapshot",
@@ -149,14 +154,14 @@ function applyTextDeltaToProjection(
   const next = applyTextChunk(p, event.text, {
     id: event.agentType === "pi" && event.messageId && event.sourceSubsequence !== undefined
       ? `${event.messageId}:block:${event.sourceSubsequence}` : event.messageId,
-    nativeMessageId: event.agentType === "pi" ? event.messageId : undefined,
+    nativeMessageId: event.agentType === "pi" || event.agentType === "codex" ? event.messageId : undefined,
     blockIndex: event.agentType === "pi" ? event.sourceSubsequence : undefined,
     phase: event.messagePhase,
     contentMode: event.contentMode,
     sourceTimestamp: event.sourceTimestamp,
     sourceSequence: event.sourceSequence,
     sourceSubsequence: event.sourceSubsequence,
-    adoptPendingId: event.agentType === "pi",
+    adoptPendingId: event.agentType === "pi" || event.agentType === "codex",
     draftScope: event.agentType === "pi" ? event.runId : undefined,
     codexTurnId: event.codexTurnId,
     messageType: event.messageType,
@@ -179,14 +184,14 @@ function applyReasoningDeltaToProjection(
   const next = applyReasoningChunk(p, event.text, {
     id: event.agentType === "pi" && event.messageId && event.sourceSubsequence !== undefined
       ? `${event.messageId}:block:${event.sourceSubsequence}` : event.messageId,
-    nativeMessageId: event.agentType === "pi" ? event.messageId : undefined,
+    nativeMessageId: event.agentType === "pi" || event.agentType === "codex" ? event.messageId : undefined,
     blockIndex: event.agentType === "pi" ? event.sourceSubsequence : undefined,
     phase: event.messagePhase,
     contentMode: event.contentMode,
     sourceTimestamp: event.sourceTimestamp,
     sourceSequence: event.sourceSequence,
     sourceSubsequence: event.sourceSubsequence,
-    adoptPendingId: event.agentType === "pi",
+    adoptPendingId: event.agentType === "pi" || event.agentType === "codex",
     draftScope: event.agentType === "pi" ? event.runId : undefined,
     codexTurnId: event.codexTurnId,
     messageType: event.messageType,
@@ -229,11 +234,13 @@ function applyFinalMessageToProjection(
   // final_message 形态与 text_delta 一致, 仅 contentMode="snapshot" 且 phase="completed".
   const next = applyTextChunk(p, event.text, {
     id: event.messageId,
+    nativeMessageId: event.agentType === "codex" ? event.messageId : undefined,
     phase: event.messagePhase,
     contentMode: event.contentMode,
     sourceTimestamp: event.sourceTimestamp,
     sourceSequence: event.sourceSequence,
     sourceSubsequence: event.sourceSubsequence,
+    adoptPendingId: event.agentType === "codex",
     codexTurnId: event.codexTurnId,
     messageType: event.messageType,
   });
@@ -258,11 +265,13 @@ function applyToolCallToProjection(
     event.agentType,
     {
       id: event.messageId,
+      messageType: event.messageType,
       phase: event.messagePhase,
       sourceTimestamp: event.sourceTimestamp,
       sourceSequence: event.sourceSequence,
       sourceSubsequence: event.sourceSubsequence,
       parentMessageId: event.parentMessageId,
+      codexTurnId: event.codexTurnId,
     },
   );
   // tool_call 是流中断点 ── 清 pendingAssistantId, 记录当前 tool 名到 run.
@@ -297,11 +306,13 @@ function applyToolResultToProjection(
     event.agentType,
     {
       id: event.messageId,
+      messageType: event.messageType,
       phase: event.messagePhase,
       sourceTimestamp: event.sourceTimestamp,
       sourceSequence: event.sourceSequence,
       sourceSubsequence: event.sourceSubsequence,
       parentMessageId: event.parentMessageId,
+      codexTurnId: event.codexTurnId,
     },
   );
   // tool_result 关闭 tool_call: currentTool 清空 (result 抵达后流回归 assistant 文本).
@@ -436,16 +447,16 @@ function applyStreamEndToProjection(
 ): ThreadProjection {
   const runsNext = applyRunEndedCore(p.runs, event);
   if (runsNext === p.runs) return p;
-  // run 结束时把仍 loading 的 tool 行收尾为 isLoading=false (避免中断 tool 永久转圈);
-  // 若还有 pending reasoning, 同步把它收尾为 isCompleted=true. 这两条收尾独立但都
-  // 仅在 run 真正结束 (!runsNext.isLoading) 时触发, 避免误关并发 run 的消息.
+  // run 结束时把仍 loading 的 tool 行收尾为 isLoading=false (避免中断 tool 永久转圈)，
+  // 并完成仍 pending 的 reasoning 行。助手文本即使没有单独的 final 事件也要保留。
+  // 仅在最后一个 run 结束时执行，避免误改并发 run 的消息。
   const terminalMessages = !runsNext.isLoading
     ? closeLoadingToolRows(
         p.pending.reasoningId
-          ? p.messages.map((m) =>
-              m.id === p.pending.reasoningId && m.role === "reasoning"
-                ? { ...m, isCompleted: true }
-                : m,
+          ? p.messages.map((message) =>
+              message.id === p.pending.reasoningId && message.role === "reasoning"
+                ? { ...message, isCompleted: true }
+                : message,
             )
           : p.messages,
       )
@@ -493,23 +504,40 @@ function applyErrorToProjection(
   if (p.runs.lastRun?.runId === event.runId &&
     ["completed", "failed", "cancelled"].includes(p.runs.lastRun.status)) return p;
   if (p.runs.activeRunId && p.runs.activeRunId !== event.runId && !p.runs.runs[event.runId]) return p;
-  const next = applyErrorChunk(p, event.message, {
+  const runsNext = applyRunFailedCore(p.runs, event, event.message);
+  const terminalRun = !runsNext.isLoading &&
+    (!p.runs.activeRunId || p.runs.activeRunId === event.runId);
+  const messages = terminalRun
+    ? closeLoadingToolRows(clearUnfinishedAssistantDrafts(p.messages))
+    : p.messages;
+  const next = applyErrorChunk({
+    messages,
+    // A late error from a previous run must not close the newer run's draft.
+    pending: p.runs.activeRunId && p.runs.activeRunId !== event.runId
+      ? { assistantId: null, reasoningId: null }
+      : p.pending,
+  }, event.message, {
     id: event.messageId,
     notice: shouldUseDeepSeekHarnessReconnectNotice(event)
       ? "deepseek-harness-reconnect-failed"
       : undefined,
     errorDetails: event.errorDetails,
   });
-  const runsNext = applyRunFailedCore(p.runs, event, event.message);
   return {
     ...p,
     messages: next.messages,
     pending: {
-      assistantId: runsNext.isLoading ? p.pending.assistantId : null,
-      reasoningId: runsNext.isLoading ? p.pending.reasoningId : null,
+      assistantId: terminalRun ? null : p.pending.assistantId,
+      reasoningId: terminalRun ? null : p.pending.reasoningId,
     },
     runs: runsNext,
   };
+}
+
+function clearUnfinishedAssistantDrafts(messages: ChatMessage[]): ChatMessage[] {
+  return messages.filter((message) =>
+    (message.role !== "assistant" && message.role !== "reasoning") || message.isCompleted === true,
+  );
 }
 
 function shouldUseDeepSeekHarnessReconnectNotice(

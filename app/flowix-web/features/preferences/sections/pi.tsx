@@ -16,6 +16,7 @@ import { Field, SectionHeader, FIELD_INPUT_CLASS } from '@features/preferences/s
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { useAgentAccessStore } from '@features/agent/store/agent-access-store';
+import { PiMcpSettings } from '@features/preferences/sections/pi-mcp-settings';
 
 type Draft = Omit<PiProviderConfig, 'credentialConfigured'>;
 const CUSTOM_PROVIDER = '__pi_custom_provider__';
@@ -94,6 +95,8 @@ export function PiSettingsSection() {
     state.config.defaults?.runtime?.pi?.piCodeMode ?? false,
   );
   const agentAccessLoaded = useAgentAccessStore((state) => state.hasLoaded);
+  const agentAccessError = useAgentAccessStore((state) => state.loadError);
+  const reloadAgentAccess = useAgentAccessStore((state) => state.loadInitial);
   const [featuresLoading, setFeaturesLoading] = useState(true);
   const [featuresSaving, setFeaturesSaving] = useState(false);
   const [featuresError, setFeaturesError] = useState<string | null>(null);
@@ -124,6 +127,7 @@ export function PiSettingsSection() {
   }, [agentAccessLoaded, featuresLoading, features.codeMode]);
   const setFeature = async (key: 'codeMode' | 'toolSearch', value: boolean) => {
     if (key === 'codeMode') {
+      if (!agentAccessLoaded) return;
       await useAgentAccessStore.getState().setDefaultRuntime('pi', { piCodeMode: value });
       return;
     }
@@ -475,7 +479,14 @@ export function PiSettingsSection() {
           ] as const).map(([key, label]) => (
             <div key={key} className="flex items-center justify-between gap-3 rounded-xl border border-[var(--divider)] bg-[var(--card)] p-3 text-sm">
               <span>{label}</span>
-              <button
+              {key === 'codeMode' && !agentAccessLoaded ? (
+                agentAccessError ? (
+                  <div className="flex items-center gap-2">
+                    <span role="alert" className="text-xs text-[var(--destructive)]">{t('preferences.agent.loadFailed')}</span>
+                    <Button type="button" variant="outline" className="h-7" onClick={() => void reloadAgentAccess()}>{t('error.retry')}</Button>
+                  </div>
+                ) : <Loader2 className="size-4 animate-spin text-[var(--muted-foreground)]" />
+              ) : <button
                 type="button"
                 role="switch"
                 aria-label={label}
@@ -485,10 +496,13 @@ export function PiSettingsSection() {
                 className={`relative h-5 w-9 shrink-0 rounded-full transition-colors disabled:cursor-not-allowed disabled:opacity-50 ${(key === 'codeMode' ? codeMode : features[key]) ? 'bg-[var(--primary)]' : 'bg-[var(--muted)]'}`}
               >
                 <span className={`absolute left-0.5 top-0.5 h-4 w-4 rounded-full bg-[var(--card)] shadow-sm transition-transform ${(key === 'codeMode' ? codeMode : features[key]) ? 'translate-x-4' : 'translate-x-0'}`} />
-              </button>
+              </button>}
             </div>
           ))}
         </div>
+      </div>
+      <div className="space-y-5" style={{ marginTop: '36px' }}>
+        <PiMcpSettings />
       </div>
     </div>
   );

@@ -56,19 +56,26 @@ describe("assistant message chunks", () => {
     });
   });
 
-  it("keeps every reference intact when a completed snapshot repeats streamed content", () => {
+  it("marks the stream completed once and keeps references for duplicate completed snapshots", () => {
     const streamed = applyTextChunk(emptyState(), "final", {
       id: "assistant-item-1",
       codexTurnId: "turn-1",
     });
-    const duplicate = applyTextChunk(streamed, "final", {
+    const completed = applyTextChunk(streamed, "final", {
+      id: "assistant-item-1",
+      phase: "completed",
+      contentMode: "snapshot",
+      codexTurnId: "turn-1",
+    });
+    const duplicate = applyTextChunk(completed, "final", {
       id: "assistant-item-1",
       phase: "completed",
       contentMode: "snapshot",
       codexTurnId: "turn-1",
     });
 
-    expect(duplicate.messages).toBe(streamed.messages);
+    expect(completed.messages[0].isCompleted).toBe(true);
+    expect(duplicate.messages).toBe(completed.messages);
     expect(duplicate.pending.assistantId).toBeNull();
   });
 

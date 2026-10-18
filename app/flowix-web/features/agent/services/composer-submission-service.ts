@@ -19,6 +19,7 @@ export interface ComposerConversationBinding {
   title: string;
   runtimeConfig: RuntimeConfig | null;
   isFirstMessage: boolean;
+  runId?: string;
 }
 
 const logger = createLogger("composer-submission");
@@ -36,6 +37,7 @@ export async function acceptComposerSubmission(
       bound.threadId, snapshot.prompt, bound.typeKey, {
         instanceId: bound.instanceId, conversationTitle: bound.title,
         runtimeConfig: bound.runtimeConfig, isFirstMessage: bound.isFirstMessage,
+        runId: bound.runId,
         currentNoteContent: documentContext, imagePaths, rejectOnFailure: true,
       },
     );

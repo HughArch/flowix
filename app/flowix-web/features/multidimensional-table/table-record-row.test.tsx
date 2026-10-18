@@ -10,7 +10,7 @@ vi.mock('@shared/ui/popover', () => ({
   PopoverContent: ({ children }: { children: React.ReactNode }) => renderPopupContent ? <>{children}</> : null,
 }));
 
-import { BUILTIN_TABLE_FIELDS, builtinPresetTableField } from './builtin-fields';
+import { BUILTIN_TABLE_FIELDS, NOTE_PATH_FIELD_ID, NOTE_SIZE_FIELD_ID, builtinPresetTableField } from './builtin-fields';
 import { TableRecordRow } from './table-record-row';
 
 const record: TableRecord = {
@@ -117,8 +117,10 @@ describe('TableRecordRow builtin metadata', () => {
     const view = renderRow('linked', { ...linkedNote, relativePath: '项目/方案.md', sizeBytes: 1_250_000, createdAt: 0, updatedAt: 0 }, true);
     const cells = view.container.querySelectorAll('td');
     expect(cells).toHaveLength(3 + BUILTIN_TABLE_FIELDS.length);
-    expect(cells[4].textContent).toBe('notebook/项目/');
-    expect(cells[5].textContent).toBe('1.25 MB');
+    const pathIndex = BUILTIN_TABLE_FIELDS.findIndex((field) => field.id === NOTE_PATH_FIELD_ID);
+    const sizeIndex = BUILTIN_TABLE_FIELDS.findIndex((field) => field.id === NOTE_SIZE_FIELD_ID);
+    expect(cells[pathIndex + 2].textContent).toBe('notebook/项目/');
+    expect(cells[sizeIndex + 2].textContent).toBe('1.25 MB');
     BUILTIN_TABLE_FIELDS.forEach((field, index) => {
       const editor = cells[index + 2].querySelector('input,button,textarea');
       if (builtinPresetTableField(field.id)) expect(editor).toBeTruthy();

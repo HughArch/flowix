@@ -59,6 +59,7 @@ async function openHistoryEntry(entry: DocumentHistoryEntry): Promise<DocumentHi
     await selectAndOpenAgentConversation(entry.instanceId, {
       history: 'skip',
       destination: 'main-third',
+      ...(entry.blankIfMissing ? { blankIfMissing: true as const } : {}),
     });
     return entry;
   }

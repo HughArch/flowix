@@ -53,6 +53,7 @@ export interface ComposerSlashCommandControllerOptions {
   agentType?: AgentTypeKey;
   listDshSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   listCodexSkills?: () => Promise<readonly ComposerSlashSkill[]>;
+  listPiSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   onModelSelect?: () => void;
   onPermissionSelect?: () => void;
   onDirectCommand?: (command: ComposerSlashCommand) => void;
@@ -76,6 +77,7 @@ export class ComposerSlashCommandController {
   private readonly agentType: AgentTypeKey | undefined;
   private readonly listDshSkills: (() => Promise<readonly ComposerSlashSkill[]>) | undefined;
   private readonly listCodexSkills: (() => Promise<readonly ComposerSlashSkill[]>) | undefined;
+  private readonly listPiSkills: (() => Promise<readonly ComposerSlashSkill[]>) | undefined;
   private readonly onModelSelect: (() => void) | undefined;
   private readonly onPermissionSelect: (() => void) | undefined;
   private readonly canExecuteCommand: ComposerSlashCommandControllerOptions["canExecuteCommand"];
@@ -102,6 +104,7 @@ export class ComposerSlashCommandController {
     this.agentType = options.agentType;
     this.listDshSkills = options.listDshSkills;
     this.listCodexSkills = options.listCodexSkills;
+    this.listPiSkills = options.listPiSkills;
     this.onModelSelect = options.onModelSelect;
     this.onPermissionSelect = options.onPermissionSelect;
     this.onDirectCommand = options.onDirectCommand;
@@ -180,7 +183,7 @@ export class ComposerSlashCommandController {
 
     // Refresh once per slash entry, including after a transient failure.
     // Filtering an open slash must not start another catalog request.
-    if (this.agentType === "deepseek-harness" && !this.slashActive &&
+    if ((this.agentType === "deepseek-harness" || this.agentType === "pi") && !this.slashActive &&
       (this.skillsStatus === "ready" || this.skillsStatus === "error")) {
       this.skillsStatus = "idle";
     }
@@ -464,7 +467,11 @@ export class ComposerSlashCommandController {
 
   private async ensureSkillsLoaded(): Promise<void> {
     if (!this.agentType || this.skillsStatus === "ready" || this.skillsStatus === "loading" || this.skillsStatus === "error") return;
-    const listSkills = this.agentType === "codex" ? this.listCodexSkills : this.listDshSkills;
+    const listSkills = this.agentType === "codex"
+      ? this.listCodexSkills
+      : this.agentType === "pi"
+        ? this.listPiSkills
+        : this.listDshSkills;
     if (!listSkills) {
       this.skillsStatus = "ready";
       return;
@@ -490,6 +497,8 @@ export class ComposerSlashCommandController {
     this.closeMenu();
     if (this.agentType === "codex") {
       insertComposerSkillToken(this.editor, skill.name, skill.displayName);
+    } else if (this.agentType === "pi") {
+      insertComposerSlashToken(this.editor, `skill:${skill.name}`, "pi");
     } else {
       insertComposerSlashToken(this.editor, skill.name, "deepseek-harness");
     }

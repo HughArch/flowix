@@ -89,16 +89,18 @@ import { MemoListNavigationDrawer } from './memo-list-navigation-drawer';
 import { NotebookFolderView } from './notebook-folder-view';
 import type { NotebookNoteCreateRequest } from './notebook-file-tree';
 import { parentRelativePathForTreeCreate } from './memo-create-location';
-import { useMemoListWindow } from './memo-list/use-memo-list-window';
-import { useDynamicVirtualList } from './memo-list/use-dynamic-virtual-list';
+import { useMemoListPagination } from './memo-list/use-memo-list-pagination';
+import { useDynamicVirtualList } from '@features/memo/hooks/use-dynamic-virtual-list';
 import {
   findRunningAgentTypeForMemo,
   useRunningAgentTypeIndex,
 } from './memo-list/running-agent-index';
 const logger = createLogger('memo-list');
 
-// 先以 10 条验证动态虚拟化在真实列表中的行为，稳定后再提升到 50。
+// Keep small result sets in normal flow and virtualize larger lists.
 const MEMO_VIRTUALIZATION_THRESHOLD = 10;
+// Matches the scroller's py-2 top padding; virtual offsets include this space.
+const MEMO_LIST_TOP_PADDING_PX = 8;
 
 function EmptyState() {
   const { t } = useI18n();
@@ -560,14 +562,11 @@ export function MemoList({
   // 仅当 activeFilter === 'color' 时启用, 其他 filter 原样透传。
   const {
     filteredMemos,
-    renderedMemos,
     onScroll: handleMemoListScroll,
-  } = useMemoListWindow({
+  } = useMemoListPagination({
     memos: listItems,
     activeFilter,
     colorFilter,
-    selectedItemKey: selectedListItemKey,
-    queryKey: currentMemoListQueryKey,
     loading: showMemoListLoading,
     hasMorePages: memoListHasMore,
     loadingMorePages: memoListLoadingMore,
@@ -575,8 +574,6 @@ export function MemoList({
     scrollerRef: listContainerRef,
     isActive: isActive && dataLoadingEnabled && memoListView !== 'folders',
   });
-  const listRenderedMemos = renderedMemos;
-  const listFilteredMemosCount = filteredMemos.length;
   const handleSetDefaultCreateFolder = useCallback(async (folderPath: string) => {
     if (!selectedNotebook) return;
     const root = canonicalDirectoryPath(selectedNotebook.path);
@@ -600,7 +597,7 @@ export function MemoList({
     }
   }, [defaultCreateFolder, selectedNotebook, t]);
   const memoVirtualizationEnabled =
-    listFilteredMemosCount > MEMO_VIRTUALIZATION_THRESHOLD;
+    filteredMemos.length > MEMO_VIRTUALIZATION_THRESHOLD;
   // ResizeObserver is required for dynamic rows. Older/non-browser test
   // environments gracefully keep the existing document-flow renderer.
   const canVirtualizeMemos =
@@ -615,27 +612,20 @@ export function MemoList({
     virtualItems,
     getMeasureRef,
     isVirtualizationReady,
-    onScroll: handleVirtualListScroll,
   } = useDynamicVirtualList({
-    items: listRenderedMemos,
+    items: filteredMemos,
     getKey: getMemoKey,
     estimateSize: estimateMemoSize,
     scrollerRef: listContainerRef,
     enabled: canVirtualizeMemos,
     resetKey: currentMemoListQueryKey,
-    keepAliveKeys: [selectedListItemKey].filter(
-      (key): key is string => Boolean(key),
-    ),
+    scrollMargin: MEMO_LIST_TOP_PADDING_PX,
   });
-  // A width change invalidates the prefix offsets, not just the visible row.
-  // The hook temporarily renders the loaded prefix in normal flow until the
-  // new geometry has been measured and the scroll anchor restored.
+  // Selection lives in the store; virtualized rows do not need to stay mounted
+  // after scrolling out of view.
   const shouldVirtualizeMemos = canVirtualizeMemos && isVirtualizationReady;
 
-  // ─── row ref 缓存 ──────────────────────────────────────────────
-  // 同一路径 key 跨 render 拿到**稳定**的 ref 回调, 避免 React 在重渲时
-  // 反复调 null/node (动态 virtualizer 仍通过 cardRefs 拿节点做入场动画,
-  // 稳定 ref 让它能稳定命中)。
+  // Keep one stable row ref per key for both entry animation and measurement.
   const rowRefCacheRef = useRef<
     Map<string, (el: HTMLDivElement | null) => void>
   >(new Map());
@@ -644,27 +634,13 @@ export function MemoList({
   const getMemoRowRef = (id: string) => {
     const cached = rowRefCacheRef.current.get(id);
     if (cached) return cached;
+    const measureRef = getMeasureRef(id);
     const cb = (el: HTMLDivElement | null) => {
       registerCardRef.current(id)(el);
+      measureRef(el);
       if (!el) rowRefCacheRef.current.delete(id);
     };
     rowRefCacheRef.current.set(id, cb);
-    return cb;
-  };
-  const measuredRowRefCacheRef = useRef<
-    Map<string, (el: HTMLDivElement | null) => void>
-  >(new Map());
-  const getMeasuredMemoRowRef = (id: string) => {
-    const cached = measuredRowRefCacheRef.current.get(id);
-    if (cached) return cached;
-    const cardRef = getMemoRowRef(id);
-    const measureRef = getMeasureRef(id);
-    const cb = (el: HTMLDivElement | null) => {
-      cardRef(el);
-      measureRef(el);
-      if (!el) measuredRowRefCacheRef.current.delete(id);
-    };
-    measuredRowRefCacheRef.current.set(id, cb);
     return cb;
   };
   const handleSelectMemo = useCallback((memo: NoteListItem) => {
@@ -708,9 +684,15 @@ export function MemoList({
           notes: state.notes.filter((item) =>
             item.notebookId !== memo.notebookId || item.relativePath !== memo.relativePath),
         }));
+        triggerRefresh();
+        toast.success(t('memo.favorite.missingCleaned'));
+        return;
       }
+      useNoteStore.getState().updateMemoListItem({
+        ...memo,
+        favorited: !memo.favorited,
+      });
       triggerRefresh();
-      if (outcome === 'missingCleaned') toast.success(t('memo.favorite.missingCleaned'));
     } catch (error) {
       toast.error(error instanceof Error ? error.message : String(error));
     }
@@ -721,18 +703,25 @@ export function MemoList({
       useNoteStore.getState().selectedNotebook?.path ?? '',
       noteListItemRelativePath(memo),
     ) ?? '';
-    await noteRepository.setColors(path, colors);
+    const saved = await noteRepository.setColors(path, colors);
+    if (!saved) {
+      triggerRefresh();
+      return;
+    }
+    useNoteStore.getState().updateMemoListItem({ ...memo, colors });
     triggerRefresh();
   }, [triggerRefresh]);
 
-  const renderMemoRow = (memo: NoteListItem, start?: number) => {
+  // JSX keeps data-index in sync when keyed rows change position.
+  const renderMemoRow = (memo: NoteListItem, start?: number, index?: number) => {
     const itemKey = noteListItemKey(memo);
-    const rowRef = getMeasuredMemoRowRef(itemKey);
+    const rowRef = getMemoRowRef(itemKey);
     const isVirtualRow = start !== undefined;
     return (
       <div
         key={itemKey}
         ref={rowRef}
+        data-index={index}
         className="min-w-0 w-full"
         style={
           isVirtualRow
@@ -764,8 +753,8 @@ export function MemoList({
   };
 
   const renderedMemoRows = shouldVirtualizeMemos
-    ? virtualItems.map(({ item, start }) => renderMemoRow(item, start))
-    : listRenderedMemos.map((memo) => renderMemoRow(memo));
+    ? virtualItems.map(({ item, start, index }) => renderMemoRow(item, start, index))
+    : filteredMemos.map((memo, index) => renderMemoRow(memo, undefined, index));
 
   const handleFilterChange = (filter: typeof activeFilter) => {
     if (filter !== 'tagged') {
@@ -1515,7 +1504,6 @@ export function MemoList({
             onScroll={(event) => {
               setShowScrollTopHint(event.currentTarget.scrollTop > 0);
               handleMemoListScroll(event);
-              handleVirtualListScroll(event);
             }}
           >
             {currentMemoListError?.kind === 'initial' ? (
@@ -1525,7 +1513,7 @@ export function MemoList({
               </div>
             ) : !hasCurrentMemoListData && showMemoListLoading ? (
               <ListSurfaceLoadingState label={t('memo.list.loadingLibrary')} />
-            ) : listRenderedMemos.length > 0 ? (
+            ) : filteredMemos.length > 0 ? (
               <div
                 className={cn(
                   'relative min-w-0 w-full',

@@ -44,6 +44,28 @@
   background: var(--muted);
 }
 
+.markdown-editor .agent-thread-card__message-pi-skill-tags {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 4px;
+  margin-bottom: 4px;
+}
+
+.markdown-editor .agent-thread-card__message-pi-skill-tag {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  max-width: 100%;
+  border: 1px solid color-mix(in srgb, var(--muted-foreground) 28%, transparent);
+  border-radius: 999px;
+  padding: 1px 7px;
+  color: var(--muted-foreground);
+  font-size: 0.76em;
+  font-weight: 600;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
 .markdown-editor .agent-thread-card__message-attachments {
   display: flex;
   justify-content: flex-end;
@@ -770,6 +792,26 @@
   line-height: 18px;
   white-space: pre-wrap;
   overflow-wrap: anywhere;
+}
+
+.markdown-editor .agent-thread-card__message-tool-payload {
+  display: none;
+  min-width: 0;
+  max-width: 100%;
+}
+
+.markdown-editor .agent-thread-card__message-tool-payload-label {
+  display: block;
+  padding-top: 4px;
+  color: var(--muted-foreground);
+  font-size: 11px;
+  line-height: 16px;
+}
+
+.markdown-editor
+  .agent-thread-card__message-tool-content--expanded
+  .agent-thread-card__message-tool-payload {
+  display: block;
 }
 
 .markdown-editor

@@ -522,6 +522,7 @@ function getSlashReferencePickerContext(editor: Editor, blockRange: { from: numb
     kind: 'slash' as const,
     rect: slashMenuRect ?? {
       left: cursorCoords.left,
+      right: cursorCoords.left,
       top: cursorCoords.bottom + 6,
       bottom: cursorCoords.bottom + 6,
     },

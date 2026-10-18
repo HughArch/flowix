@@ -32,6 +32,7 @@ describe("Pi history message identity", () => {
 
     expect(messages.map(({ messageId }) => messageId)).toEqual(["a58b853d", "67575cb5"]);
     expect(messages[1].id).toBe("67575cb5:block:0");
+    expect(messages[1].piBlockIndex).toBe(0);
   });
 
   it("keeps each native tool call as its own row under its assistant entry", () => {

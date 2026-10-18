@@ -112,18 +112,32 @@ impl ProviderThreadStore {
                 params![project_path, now, thread_id],
             )?;
         } else if self == Self::Pi {
-            let session_file = session_metadata
-                .and_then(|metadata| metadata.get("sessionFile"))
-                .and_then(serde_json::Value::as_str);
-            let cwd = session_metadata
-                .and_then(|metadata| metadata.get("cwd"))
-                .and_then(serde_json::Value::as_str);
+            let metadata_str = |key: &str| {
+                session_metadata
+                    .and_then(|metadata| metadata.get(key))
+                    .and_then(serde_json::Value::as_str)
+            };
+            let session_file = metadata_str("sessionFile");
+            let cwd = metadata_str("cwd");
+            let parent_thread_id = metadata_str("parentThreadId");
+            let parent_session_id = metadata_str("parentSessionId");
+            let fork_entry_id = metadata_str("forkEntryId");
             conn.execute(
                 "UPDATE threads_pi
                  SET session_file = COALESCE(?1, session_file),
-                     cwd = COALESCE(?2, cwd)
-                 WHERE thread_id = ?3",
-                params![session_file, cwd, thread_id],
+                     cwd = COALESCE(?2, cwd),
+                     parent_thread_id = COALESCE(?3, parent_thread_id),
+                     parent_session_id = COALESCE(?4, parent_session_id),
+                     fork_entry_id = COALESCE(?5, fork_entry_id)
+                 WHERE thread_id = ?6",
+                params![
+                    session_file,
+                    cwd,
+                    parent_thread_id,
+                    parent_session_id,
+                    fork_entry_id,
+                    thread_id
+                ],
             )?;
         }
         Ok(())

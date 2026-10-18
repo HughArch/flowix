@@ -27,3 +27,10 @@ export function collectionFilterUsesField(filter: CollectionRuleFilter | null, f
     : entry.field === field;
   return [...filter.all, ...filter.any].some(uses);
 }
+
+export function renameCollectionFilterField(filter: CollectionRuleFilter, previous: string, next: string): CollectionRuleFilter {
+  const rename = (entry: CollectionRuleEntry): CollectionRuleEntry => isGroup(entry)
+    ? renameCollectionFilterField(entry, previous, next)
+    : entry.field === previous ? { ...entry, field: next } : entry;
+  return { ...filter, all: filter.all.map(rename), any: filter.any.map(rename) };
+}

@@ -3,6 +3,11 @@
   "productName": "Flowix Dev",
   "mainBinaryName": "Flowix Dev",
   "identifier": "com.flowix.app.dev",
+  "plugins": {
+    "deep-link": {
+      "desktop": { "schemes": ["flowix-dev"] }
+    }
+  },
   "build": {
     "beforeDevCommand": "npm run dev",
     "devUrl": "http://localhost:1420",

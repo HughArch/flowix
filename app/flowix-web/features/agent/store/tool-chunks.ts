@@ -45,11 +45,13 @@ export function applyToolCallChunk(
   const toolMessage: ChatMessage = {
     id: metadata.id ?? `tool-${id || Date.now()}`,
     renderKey: metadata.id ?? id,
-    messageId: agentType === "pi" ? metadata.id ?? id : undefined,
+    messageId: agentType === "pi" || agentType === "codex" ? metadata.id ?? id : undefined,
     role: "tool",
+    messageType: metadata.messageType,
     content: "",
     timestamp: toolMessageTimestamp(metadata.sourceTimestamp),
     sourceTimestamp: metadata.sourceTimestamp,
+    codexTurnId: metadata.codexTurnId,
     sourceSequence: metadata.sourceSequence,
     sourceSubsequence: metadata.sourceSubsequence,
     parentMessageId: metadata.parentMessageId,
@@ -76,12 +78,15 @@ export function applyToolCallChunk(
       id: metadata.id ?? existing.id,
       toolName: name || existing.toolName,
       toolAgentType: agentType ?? existing.toolAgentType,
+      messageType: metadata.messageType ?? existing.messageType,
       toolInput: toolInput ?? existing.toolInput,
       // Recompute from the latest structured call metadata. This keeps a
       // repeated/live call and history replay on the same Flowix formatter.
       toolDisplay: toolMessage.toolDisplay ?? existing.toolDisplay,
       timestamp: existing.timestamp || toolMessage.timestamp,
       sourceTimestamp: existing.sourceTimestamp ?? metadata.sourceTimestamp,
+      codexTurnId: existing.codexTurnId ?? metadata.codexTurnId,
+      messageId: toolMessage.messageId ?? existing.messageId,
       sourceSequence: existing.sourceSequence ?? metadata.sourceSequence,
       sourceSubsequence:
         existing.sourceSubsequence ?? metadata.sourceSubsequence,
@@ -96,16 +101,15 @@ export function applyToolCallChunk(
     };
   }
   return {
-    messages: agentType === "pi" ? orderPiMessageBlocks([...st.messages, toolMessage]) : insertAgentMessageBySourceOrder(st.messages, toolMessage),
+    messages: agentType === "pi" ? orderPiMessageBlocks([...st.messages, toolMessage]) : insertAgentMessageBySourceOrder(st.messages, toolMessage, agentType === "codex" && !!metadata.codexTurnId),
     pending: { assistantId: null, reasoningId: st.pending.reasoningId },
   };
 }
 
 /**
  * tool_result chunk ── 找到对应 tool_call 行, 收尾 (isLoading=false) +
- * 注入 result 内容与摘要。摘要来自 summarizeToolResult, 对 command-style
- * 结果做字段裁剪 (command / exit_code / status / output preview), 其他
- * 类型直接 stringify。所有展示文本超限截断 + 标 truncation。
+ * 注入 result 内容。常规工具结果由 summarizeToolResult 做字段裁剪和长度
+ * 限制；Codex custom tool 保留原始 payload，交给对应的通用输入/输出卡片。
  *
  * Result is also a hard assistant boundary. The started event can be missing
  * or arrive late; retaining pendingAssistantId here would make the assistant
@@ -120,7 +124,9 @@ export function applyToolResultChunk(
   metadata: MessageChunkMetadata = {},
 ): MessageProjection {
   const resultToolName = name && name !== "tool_result" ? name : "";
-  const resultContent = summarizeToolResult(result, resultToolName);
+  const resultContent = metadata.messageType === "codex-custom-tool"
+    ? serializeRawToolPayload(result)
+    : summarizeToolResult(result, resultToolName);
   const hasMatchingCall = st.messages.some(
     (message) => message.role === "tool" && toolCallIdsMatch(message.toolCallId, id),
   );
@@ -130,6 +136,8 @@ export function applyToolResultChunk(
           ? {
               ...m,
               content: resultContent,
+              messageType: metadata.messageType ?? m.messageType,
+              codexTurnId: m.codexTurnId ?? metadata.codexTurnId,
               toolData: resultContent,
               // The started event owns the tool identity. Result sources in
               // external runtimes may use a generic/legacy name (for example
@@ -151,11 +159,13 @@ export function applyToolResultChunk(
     : insertAgentMessageBySourceOrder(st.messages, {
         id: metadata.id ?? `tool-${id || Date.now()}`,
         renderKey: metadata.id ?? id,
-        messageId: agentType === "pi" ? metadata.id ?? id : undefined,
+        messageId: agentType === "pi" || agentType === "codex" ? metadata.id ?? id : undefined,
         role: "tool" as const,
+        messageType: metadata.messageType,
         content: resultContent,
         timestamp: toolMessageTimestamp(metadata.sourceTimestamp),
         sourceTimestamp: metadata.sourceTimestamp,
+        codexTurnId: metadata.codexTurnId,
         sourceSequence: metadata.sourceSequence,
         sourceSubsequence: metadata.sourceSubsequence,
         parentMessageId: metadata.parentMessageId,
@@ -170,11 +180,21 @@ export function applyToolResultChunk(
         }),
         toolData: resultContent,
         isLoading: false,
-      }, agentType === "pi");
+      }, agentType === "pi" || agentType === "codex" && !!metadata.codexTurnId);
   return {
     messages,
     pending: { assistantId: null, reasoningId: st.pending.reasoningId },
   };
+}
+
+function serializeRawToolPayload(value: unknown): string {
+  if (value === undefined || value === null) return "";
+  if (typeof value === "string") return value;
+  try {
+    return JSON.stringify(value, null, 2) ?? String(value);
+  } catch {
+    return String(value);
+  }
 }
 
 /**

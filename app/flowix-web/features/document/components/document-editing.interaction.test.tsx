@@ -147,7 +147,8 @@ describe('live title and rich body during persistence', () => {
     act(() => { editor.commands.insertContent('unsaved '); });
     await act(async () => { await vi.advanceTimersByTimeAsync(300); });
     await act(async () => { await vi.advanceTimersByTimeAsync(10); });
-    expect(container.textContent).not.toContain('disk busy');
+    // The failure notice is an overlay; the editor content itself stays clean.
+    expect(editor.getMarkdown()).not.toContain('disk busy');
     expect(document.body.textContent).toContain('disk busy');
     expect(editor.isEditable).toBe(true); expect(editor).toBe(originalEditor); expect(mounts).toBe(1);
     expect(editor.getMarkdown()).toContain('unsaved');

@@ -6,6 +6,7 @@ import { getAgentType } from "@/lib/agent-types";
 import { supportsAgentEmptySettings } from "@features/agent/runtime/agent-runtime-spec";
 import {
   appendRenderedAgentMessagesToTail,
+  reconcileRenderedAgentMessages,
   createRenderedAgentMessageList,
   getRenderedAgentItems,
   isLastMessageInTurnAndAssistant,
@@ -247,6 +248,20 @@ export class ThreadMessageRenderController {
        */
       this.disposeRenderedMessages();
       this.renderEmptyState(input);
+      return;
+    }
+
+    const reconciled = reconcileRenderedAgentMessages(input.messages, {
+      list: this.renderedMessagesList, refs: this.renderedMessageRefs,
+    }, this.createMessageRenderContext(input.messages, input.isLoading),
+      scrollState.shouldFollowStreaming ? undefined : this.body);
+    if (reconciled && this.renderedMessagesList) {
+      recordMessageRenderPlan("reconcile-rows", input.messages.length);
+      this.rememberRenderedMessages(this.renderedMessagesList, reconciled);
+      this.applyBodyScrollAfterRender({
+        isLoading: input.isLoading, ...scrollState,
+        previousScrollTop: scrollState.shouldFollowStreaming ? scrollState.previousScrollTop : this.body.scrollTop,
+      });
       return;
     }
 

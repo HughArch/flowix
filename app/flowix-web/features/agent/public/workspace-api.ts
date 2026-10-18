@@ -14,6 +14,11 @@ export async function hydrateWorkspaceAgentConversation(instanceId: string) {
   return useAgentSessionStore.getState().hydrateInstance(instanceId);
 }
 
+/** Whether the current process already has this conversation instance in memory. */
+export function hasWorkspaceAgentConversation(instanceId: string): boolean {
+  return useAgentSessionStore.getState().getInstance(instanceId) !== null;
+}
+
 /** Resolve resource roots without exposing Agent access configuration stores. */
 export function getWorkspaceAgentResourceFolders(notebookId: string | null): string[] {
   const access = useAgentAccessStore.getState();

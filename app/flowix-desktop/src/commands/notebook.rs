@@ -967,7 +967,12 @@ pub fn update_notebook(
 }
 
 #[tauri::command]
-pub fn delete_notebook(id: String, state: State<AppState>, app: AppHandle) -> Result<bool, String> {
+pub fn delete_notebook(
+    id: String,
+    delete_local_files: bool,
+    state: State<AppState>,
+    app: AppHandle,
+) -> Result<bool, String> {
     let setup_guard = state
         .notebook_template_initializations
         .lock()
@@ -987,6 +992,32 @@ pub fn delete_notebook(id: String, state: State<AppState>, app: AppHandle) -> Re
             Some(idx) => idx,
             None => return Err("NOTEBOOK_NOT_FOUND".to_string()),
         };
+        if delete_local_files {
+            let notebook_root = match std::fs::canonicalize(&configs[index].path) {
+                Ok(root) => Some(root),
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+                Err(error) => return Err(format!("NOTEBOOK_PATH_INVALID: {error}")),
+            };
+            if let Some(notebook_root) = notebook_root {
+                if !notebook_root.is_dir() || notebook_root.parent().is_none() {
+                    return Err("NOTEBOOK_PATH_INVALID".to_string());
+                }
+                // A notebook may be configured inside another notebook (or
+                // vice versa). Do not let deleting one registered root erase another.
+                for other in configs.iter().filter(|config| config.id != id) {
+                    if let Ok(other_root) = std::fs::canonicalize(&other.path) {
+                        if notebook_root.starts_with(&other_root)
+                            || other_root.starts_with(&notebook_root)
+                        {
+                            return Err("NOTEBOOK_PATH_OVERLAPS_ANOTHER_NOTEBOOK".to_string());
+                        }
+                    }
+                }
+                std::fs::remove_dir_all(&notebook_root)
+                    .map_err(|error| format!("NOTEBOOK_FILES_DELETE_FAILED: {error}"))?;
+            }
+        }
+
         let was_current = memo_file.current_notebook_id_value().as_deref() == Some(id.as_str());
         configs.remove(index);
         let next_notebook_id = if was_current {

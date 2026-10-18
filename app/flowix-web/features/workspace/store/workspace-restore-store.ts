@@ -21,7 +21,7 @@ export type PersistedWorkspaceTarget =
       notebookPath: string | null;
       resourceKind: 'image' | 'video';
     }
-  | { kind: 'agent-conversation'; instanceId: string };
+  | { kind: 'agent-conversation'; instanceId: string; blankIfMissing?: true };
 
 export type WorkspaceRestoreStatus = 'idle' | 'restoring' | 'restored' | 'unavailable';
 

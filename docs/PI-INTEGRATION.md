@@ -43,6 +43,25 @@ and base installations on separate update channels.
 
 ## Models and permissions
 
+Flowix explicitly passes each enabled skill directory from the working
+directory's `.agents/skills` collection to Pi with `--skill`. This makes
+notebook skills available in RPC mode even without a saved Pi project-trust
+decision. Legacy or duplicate skill names receive a stable, valid command
+name at runtime; Flowix stages a Pi-compatible copy in the conversation's
+session directory and leaves the notebook file untouched. Saving that skill
+from the settings editor writes the canonical name into its frontmatter.
+This explicit skill loading does not grant trust to other project-local Pi
+settings, extensions, or MCP configuration.
+Pi discovers skills at process startup and advertises their descriptions to
+the model; `/skill:name` explicitly loads a skill. Flowix fingerprints enabled
+notebook skills, Pi's user-level `skills/` directory, the Pi user MCP file,
+and the current directory's `.pi/mcp.json` when opening a conversation.
+Hashing `.pi/mcp.json` does not load it or grant project trust. A changed
+fingerprint takes effect when the next prompt starts and replaces the existing
+RPC process; history reads keep using the current process.
+Notebook `.agents/mcp.json` is not a Pi MCP source; Pi's user MCP settings are
+managed in the Pi Preferences page.
+
 The model picker reads Pi's `get_available_models` RPC response and stores the
 selected provider ID and model ID together. The reasoning selector uses Pi's
 `off`, `minimal`, `low`, `medium`, `high`, `xhigh`, and `max` levels. Pi RPC

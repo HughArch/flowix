@@ -1,4 +1,5 @@
-import { subscribeAppLanguage, subscribePropertyFieldPreferences } from '@features/preferences/public/runtime-api';
+import { subscribeAppLanguage } from '@features/preferences/public/runtime-api';
+import { subscribePropertyPresets } from '@features/properties/public-api';
 import { useSettingsStore } from '@/lib/store/settings-store';
 
 interface FrontmatterViewHandlers {
@@ -6,6 +7,7 @@ interface FrontmatterViewHandlers {
   pointerDown: (event: Event) => void;
   selectStart: (event: Event) => void;
   addProperty: (event: Event) => void;
+  removeProperty?: (event: Event) => void;
   occupiedKeys: (event: Event) => void;
   pointerMove: (event: PointerEvent) => void;
   pointerUp: (event: PointerEvent) => void;
@@ -22,10 +24,11 @@ export function observeFrontmatterView(document: Document, handlers: Frontmatter
   const unsubscribeProperties = useSettingsStore.subscribe((state, previous) => {
     if (state.propertiesVisible !== previous.propertiesVisible) handlers.render();
   });
-  const unsubscribePresets = subscribePropertyFieldPreferences(handlers.render);
+  const unsubscribePresets = subscribePropertyPresets(handlers.render);
   document.addEventListener('pointerdown', handlers.pointerDown, { capture: true, signal });
   document.addEventListener('selectstart', handlers.selectStart, { capture: true, signal });
   view?.addEventListener('flowix:add-property', handlers.addProperty, { signal });
+  if (handlers.removeProperty) view?.addEventListener('flowix:remove-property', handlers.removeProperty, { signal });
   view?.addEventListener('flowix:query-occupied-property-keys', handlers.occupiedKeys, { signal });
   view?.addEventListener('pointermove', handlers.pointerMove, { signal });
   view?.addEventListener('pointerup', handlers.pointerUp, { signal });

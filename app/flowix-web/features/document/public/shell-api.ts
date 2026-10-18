@@ -1,6 +1,5 @@
 export { DocumentTitlebarWin } from '@features/document/components/document-titlebar-win';
 export { DocumentTitlebarMac } from '@features/document/components/document-titlebar-mac';
-export { NotePropertiesHost } from '@features/document/components/note-properties-host';
 export { useDocumentCommands } from '@features/document/components/use-document-commands';
 export {
   EXTERNAL_FILE_DROP_EVENT,

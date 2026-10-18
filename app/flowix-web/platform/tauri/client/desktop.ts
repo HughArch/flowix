@@ -308,6 +308,7 @@ export type NotebookAssetSaveOptions = {
   targetDirectoryPath?: string;
   deduplicate?: boolean;
   reuseNotebookFile?: boolean;
+  reuseExistingAttachment?: boolean;
 };
 
 export const notebookAssets = {
@@ -319,6 +320,7 @@ export const notebookAssets = {
       ...(options.notePath ? { notePath: options.notePath } : {}),
       deduplicate: options.deduplicate ?? true,
       reuseNotebookFile: options.reuseNotebookFile ?? false,
+      reuseExistingAttachment: options.reuseExistingAttachment ?? true,
       ...(options.targetDirectoryPath ? { targetDirectoryPath: options.targetDirectoryPath } : {}),
     }),
 };

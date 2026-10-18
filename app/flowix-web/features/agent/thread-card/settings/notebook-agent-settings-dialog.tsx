@@ -24,6 +24,7 @@ import { Button } from "@shared/ui/button";
 import { cn } from "@/lib/utils";
 import { displayNameForComposerSkill } from "@features/agent/thread-card/composer/composer-skill-token";
 import { parseCodexSkillCatalog, type CodexSkillCatalogItem } from "@features/agent/services/codex-slash-command-service";
+import { isValidPiSkillCommandName } from "@features/agent/services/pi-skill-name";
 
 type Tab = "mcp" | "skills" | "agents" | "plugins" | "other" | "memory";
 type FileKind = "skill" | "agent";
@@ -89,9 +90,11 @@ function mcpFormFrom(id: string, definition: NotebookMcpDefinition) {
 }
 
 function emptyFile(kind: FileKind): NotebookAgentFile {
+  const id = newId(kind);
   return {
-    id: newId(kind),
+    id,
     name: "",
+    ...(kind === "skill" ? { commandName: id } : {}),
     description: "",
     enabled: true,
     body: "",
@@ -277,9 +280,18 @@ function FileEditor({
           <input className={inputClass} value={form.name} onChange={(event) => onChange({ name: event.target.value })} placeholder={isSkill ? "例如 代码审查" : "例如 代码审查员"} autoFocus />
         </Field>
         <Field label="ID" hint="用于文件夹名">
-          <input className={cn(inputClass, "font-mono text-xs")} value={form.id} onChange={(event) => onChange({ id: event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-") })} placeholder={isSkill ? "code-review" : "code-reviewer"} />
+          <input className={cn(inputClass, "font-mono text-xs")} value={form.id} onChange={(event) => {
+            const id = event.target.value.toLowerCase().replace(/[^a-z0-9-]/g, "-");
+            onChange({
+              id,
+              ...(isSkill && (!form.commandName || form.commandName === form.id) ? { commandName: id } : {}),
+            });
+          }} placeholder={isSkill ? "code-review" : "code-reviewer"} />
         </Field>
       </div>
+      {isSkill && <Field label="Pi 命令名" hint="Pi 中使用 /skill:<命令名>；旧格式会自动使用安全名称">
+        <input className={cn(inputClass, "font-mono text-xs")} value={form.commandName ?? form.id} onChange={(event) => onChange({ commandName: event.target.value.toLowerCase() })} placeholder="code-review" />
+      </Field>}
       <Field label="一句话说明">
         <input className={inputClass} value={form.description} onChange={(event) => onChange({ description: event.target.value })} placeholder={isSkill ? "说明什么时候使用这个 Skill" : "说明这个 Agent 擅长处理什么"} />
       </Field>
@@ -1018,6 +1030,11 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
       setFormError(`${label} ID 只能使用小写字母、数字和连字符。`);
       return;
     }
+    const commandName = fileForm.commandName?.trim() || id;
+    if (editor.fileKind === "skill" && !isValidPiSkillCommandName(commandName)) {
+      setFormError("Pi Skill 命令名只能使用小写字母、数字和单个连字符，且不能以连字符开头或结尾。");
+      return;
+    }
     if (!fileForm.name.trim()) {
       setFormError(`请输入${label}名称。`);
       return;
@@ -1031,7 +1048,19 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
       setFormError(`这个${label} ID 已经存在，请换一个。`);
       return;
     }
-    const nextFile = { ...fileForm, id, name: fileForm.name.trim(), description: fileForm.description.trim(), body: fileForm.body.trim(), path: pathFor(editor.fileKind, id) };
+    if (editor.fileKind === "skill" && collection.some((item) => (item.commandName?.trim() || item.id) === commandName && item.id !== editor.id)) {
+      setFormError("这个 Pi 命令名已经被其他 Skill 使用，请换一个。");
+      return;
+    }
+    const nextFile = {
+      ...fileForm,
+      id,
+      ...(editor.fileKind === "skill" ? { commandName } : { commandName: undefined }),
+      name: fileForm.name.trim(),
+      description: fileForm.description.trim(),
+      body: fileForm.body.trim(),
+      path: pathFor(editor.fileKind, id),
+    };
     const nextCollection = editor.id
       ? collection.map((item) => (item.id === editor.id ? nextFile : item))
       : [...collection, nextFile];

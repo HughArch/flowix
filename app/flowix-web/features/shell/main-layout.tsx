@@ -14,7 +14,6 @@ import { lazy, Suspense, useState, useEffect, useRef, useCallback } from 'react'
 import {
   DocumentTitlebarWin,
   DocumentTitlebarMac,
-  NotePropertiesHost,
   navigateDocumentHistory,
   useDocumentCommands,
   useShellDocumentHistory,
@@ -108,7 +107,7 @@ export interface MainLayoutBusinessController {
   notebookToDelete: Notebook | null;
   notebookCreateRequest: number;
   cancelDeleteNotebook(): void;
-  confirmDeleteNotebook(): Promise<void>;
+  confirmDeleteNotebook(deleteLocalFiles: boolean): Promise<void>;
   createNotebook(): void;
   deleteNotebook(notebook: Notebook): void;
   editNotebook(notebook: Notebook): void;
@@ -885,6 +884,7 @@ export function MainLayout({
       </div>
 
       <NotebookDeleteDialog
+        key={notebookToDelete?.id ?? 'closed'}
         target={notebookToDelete ? { id: notebookToDelete.id, name: notebookToDelete.name } : null}
         onCancel={cancelDeleteNotebook}
         onConfirm={confirmDeleteNotebook}
@@ -895,8 +895,6 @@ export function MainLayout({
         onRefresh={triggerRefresh}
         suppressEmptyNotebookPrompt={onboardingLoading || onboardingOpen}
       />
-
-      <NotePropertiesHost />
 
       <MainPromptHost
         updater={updater}

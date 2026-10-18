@@ -611,7 +611,22 @@ impl ThreadManager {
             )
             .optional()?
             .flatten();
-        Ok(frozen_cwd.map(PathBuf::from))
+        if let Some(cwd) = frozen_cwd {
+            return Ok(Some(PathBuf::from(cwd)));
+        }
+        // A newly forked Pi session is bound before its conversation instance
+        // is persisted. Its provider binding already owns the working directory.
+        let pi_cwd = conn
+            .query_row(
+                "SELECT cwd FROM threads_pi
+                 WHERE thread_id = ?1 OR external_id = ?1
+                 LIMIT 1",
+                [thread_id],
+                |row| row.get::<_, Option<String>>(0),
+            )
+            .optional()?
+            .flatten();
+        Ok(pi_cwd.map(PathBuf::from))
     }
 
     /// Persist `cwd` as the frozen working directory for a conversation.

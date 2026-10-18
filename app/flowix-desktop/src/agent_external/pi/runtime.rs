@@ -1,5 +1,5 @@
 use std::collections::{HashMap, VecDeque};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::Arc;
@@ -18,6 +18,7 @@ use super::super::{
     persist_and_emit_external_chunk, resolve_and_freeze_runtime_cwd, resolve_run_id,
     AgentChunkMetadata, USER_STOPPED_REASON,
 };
+use super::skill_resources::{self, PiStartupResources};
 use super::AGENT_TYPE;
 use crate::agent_session::ThreadManager;
 use crate::agent_wire::{AgentChunk, AgentMessageAttachment, AgentUserMessage, RunInfo, UsageInfo};
@@ -26,6 +27,56 @@ const PI_IDLE_SESSION_TTL_MS: i64 = 10 * 60 * 1000;
 const PI_RPC_REQUEST_TIMEOUT: Duration = Duration::from_secs(15);
 const PI_HISTORY_LOCK_TIMEOUT: Duration = Duration::from_secs(30);
 const PI_ABORT_SETTLE_TIMEOUT: Duration = Duration::from_secs(5);
+const PI_FORK_TIMEOUT: Duration = Duration::from_secs(20);
+
+const PI_FORK_EXTENSION: &str = r#"
+import { renameSync, writeFileSync } from 'node:fs';
+
+function report(value) {
+  const target = process.env.FLOWIX_PI_FORK_RESULT;
+  if (target) {
+    writeFileSync(`${target}.tmp`, JSON.stringify(value));
+    renameSync(`${target}.tmp`, target);
+  }
+}
+
+export default function (pi) {
+  pi.registerCommand('flowix-fork', {
+    description: 'Create a Flowix session fork at a native Pi entry',
+    handler: async (args, ctx) => {
+      try {
+        const entryId = args.trim();
+        if (!entryId) throw new Error('Missing Pi entry ID');
+        const result = await ctx.fork(entryId, {
+          position: 'at',
+          withSession: async (next) => {
+            const leafId = next.sessionManager.getLeafId();
+            const branch = leafId ? next.sessionManager.getBranch(leafId) : [];
+            report({
+              sessionId: next.sessionManager.getSessionId(),
+              sessionFile: next.sessionManager.getSessionFile(),
+              parentSessionFile: next.sessionManager.getHeader().parentSession,
+              branchEntryIds: branch.map((entry) => entry.id),
+            });
+          },
+        });
+        if (result.cancelled) report({ error: 'Pi fork was cancelled' });
+      } catch (error) {
+        report({ error: error instanceof Error ? error.message : String(error) });
+      }
+    },
+  });
+}
+"#;
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct PiForkMetadata {
+    session_id: String,
+    session_file: PathBuf,
+    parent_session_file: PathBuf,
+    branch_entry_ids: Vec<String>,
+}
 
 fn next_pi_rpc_id() -> String {
     static NEXT_ID: AtomicU64 = AtomicU64::new(0);
@@ -240,6 +291,7 @@ struct PiSessionConfig {
     provider: Option<String>,
     model: Option<String>,
     thinking: Option<String>,
+    startup_resources: PiStartupResources,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, serde::Serialize, serde::Deserialize)]
@@ -1040,6 +1092,11 @@ impl PiRpcManager {
             .stdout(Stdio::piped())
             .stderr(Stdio::piped())
             .kill_on_drop(true);
+        // RPC cannot ask for project trust. Explicitly load the exact notebook
+        // skills represented by this session's startup-resource fingerprint.
+        for skill_directory in &config.startup_resources.skill_directories {
+            command.arg("--skill").arg(skill_directory);
+        }
         if let Some(session_id) = expected_id.as_deref() {
             command.arg("--session").arg(session_id);
         } else {
@@ -1302,6 +1359,82 @@ impl PiRpcManager {
         Ok(operation)
     }
 
+    pub async fn fork_session(
+        &self,
+        app: &tauri::AppHandle,
+        source_thread_id: &str,
+        entry_id: &str,
+        child_thread_id: &str,
+        cwd: &std::path::Path,
+    ) -> Result<String, String> {
+        if entry_id.is_empty()
+            || !entry_id
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err("Pi fork entry ID is invalid".into());
+        }
+        let expected_source_id = self
+            .thread_manager
+            .get_external_session(source_thread_id, AGENT_TYPE)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("Pi source conversation has not started yet")?;
+        // The source process holds its operation lock for the whole turn. Read
+        // its persisted session through an independent Pi process instead.
+        let source_file = self
+            .thread_manager
+            .get_pi_session_file(source_thread_id)
+            .await
+            .map_err(|error| error.to_string())?
+            .ok_or("Pi source session file is unavailable")?;
+        if !source_file.is_file() {
+            return Err("Pi source session has no persisted conversation to fork".into());
+        }
+
+        let child_dir = pi_session_dir(child_thread_id)?;
+        if child_dir.exists() {
+            return Err("Pi fork destination already exists".into());
+        }
+        std::fs::create_dir_all(&child_dir)
+            .map_err(|error| format!("could not create Pi fork directory: {error}"))?;
+        let result = run_pi_fork_extension(
+            app,
+            &expected_source_id,
+            &source_file,
+            &child_dir,
+            cwd,
+            entry_id,
+        )
+        .await;
+        let fork = match result {
+            Ok(value) => value,
+            Err(error) => {
+                let _ = std::fs::remove_dir_all(&child_dir);
+                return Err(error);
+            }
+        };
+        self.thread_manager
+            .upsert_external_session(
+                child_thread_id,
+                AGENT_TYPE,
+                &fork.session_id,
+                Some(serde_json::json!({
+                    "sessionFile": fork.session_file,
+                    "cwd": cwd.to_string_lossy(),
+                    "parentThreadId": source_thread_id,
+                    "parentSessionId": expected_source_id,
+                    "forkEntryId": entry_id,
+                })),
+            )
+            .await
+            .map_err(|error| {
+                let _ = std::fs::remove_dir_all(&child_dir);
+                error.to_string()
+            })?;
+        Ok(fork.session_id)
+    }
+
     /// Read history and native identities through Pi RPC. Flowix never opens
     /// or parses Pi's session JSONL files.
     pub async fn get_session_page(
@@ -1396,6 +1529,11 @@ impl PiRpcManager {
             provider: None,
             model: None,
             thinking: None,
+            startup_resources: skill_resources::capture(
+                &cwd,
+                &pi_config_dir()?,
+                &resolve_pi_session_dir(thread_id, true)?,
+            )?,
         };
         let session = self.ensure_session(app, thread_id, config, true).await?;
         let _operation = tokio::time::timeout(
@@ -1703,6 +1841,11 @@ impl PiRpcManager {
             provider: provider.clone().filter(|value| !value.trim().is_empty()),
             model: runtime_model.clone(),
             thinking,
+            startup_resources: skill_resources::capture(
+                &cwd,
+                &pi_config_dir()?,
+                &resolve_pi_session_dir(thread_id, true)?,
+            )?,
         };
         let session = self.ensure_session(app, thread_id, config, false).await?;
         *active.session.lock().await = Some(session.clone());
@@ -2640,6 +2783,208 @@ async fn write_rpc_locked(stdin: &mut ChildStdin, value: &Value) -> Result<(), S
         .write_all(&bytes)
         .await
         .map_err(|error| format!("Pi RPC stdin write failed: {error}"))
+}
+
+async fn pi_fork_process_request(
+    reader: &mut (impl AsyncBufRead + Unpin),
+    stdin: &mut ChildStdin,
+    kind: &str,
+) -> Result<Value, String> {
+    let id = next_pi_rpc_id();
+    write_rpc_locked(stdin, &serde_json::json!({"id": id, "type": kind})).await?;
+    tokio::time::timeout(PI_FORK_TIMEOUT, async {
+        let mut line = String::new();
+        loop {
+            line.clear();
+            if reader
+                .read_line(&mut line)
+                .await
+                .map_err(|error| error.to_string())?
+                == 0
+            {
+                return Err("Pi fork process exited before replying".to_string());
+            }
+            let record: Value = serde_json::from_str(&line)
+                .map_err(|error| format!("Pi fork process returned invalid JSON: {error}"))?;
+            if record.get("type").and_then(Value::as_str) == Some("response")
+                && record.get("id").and_then(Value::as_str) == Some(&id)
+            {
+                if record.get("success").and_then(Value::as_bool) != Some(true) {
+                    return Err(record
+                        .get("error")
+                        .and_then(Value::as_str)
+                        .unwrap_or("Pi fork RPC failed")
+                        .to_string());
+                }
+                return Ok(record);
+            }
+        }
+    })
+    .await
+    .map_err(|_| "Pi fork RPC timed out".to_string())?
+}
+
+async fn run_pi_fork_extension(
+    app: &tauri::AppHandle,
+    expected_source_id: &str,
+    source_file: &std::path::Path,
+    child_dir: &std::path::Path,
+    cwd: &std::path::Path,
+    entry_id: &str,
+) -> Result<PiForkMetadata, String> {
+    let extension_path = child_dir.join(".flowix-pi-fork-extension.ts");
+    let result_path = child_dir.join(".flowix-pi-fork-result.json");
+    std::fs::write(&extension_path, PI_FORK_EXTENSION)
+        .map_err(|error| format!("could not prepare Pi fork extension: {error}"))?;
+
+    let operation = async {
+        let config_dir = pi_config_dir()?;
+        let mut command = Command::new(resolve_pi_binary(app)?);
+        command
+            .args(["--mode", "rpc", "--session-dir"])
+            .arg(child_dir)
+            .args(["--tools", "read", "--extension"])
+            .arg(&extension_path)
+            .arg("--session")
+            .arg(source_file)
+            .current_dir(cwd)
+            .env("PI_CODING_AGENT_DIR", config_dir)
+            .env("FLOWIX_PI_FORK_RESULT", &result_path)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::null())
+            .kill_on_drop(true);
+        crate::agent_external::shared::configure_unix_process_group(&mut command);
+        crate::process_window::hide_command_window(&mut command);
+        let mut child = command
+            .spawn()
+            .map_err(|error| format!("failed to start Pi fork process: {error}"))?;
+        let mut stdin = child.stdin.take().ok_or("Pi fork stdin unavailable")?;
+        let stdout = child.stdout.take().ok_or("Pi fork stdout unavailable")?;
+        let mut reader = BufReader::new(stdout);
+
+        let state = pi_fork_process_request(&mut reader, &mut stdin, "get_state").await?;
+        let opened_id = state.pointer("/data/sessionId").and_then(Value::as_str);
+        if opened_id != Some(expected_source_id) {
+            let _ = child.kill().await;
+            return Err("Pi fork process opened a different source session".into());
+        }
+        let snapshot = pi_fork_process_request(&mut reader, &mut stdin, "get_entries").await?;
+        let entries = snapshot
+            .pointer("/data/entries")
+            .and_then(Value::as_array)
+            .ok_or("Pi fork process did not return session entries")?;
+        let leaf_id = snapshot.pointer("/data/leafId").and_then(Value::as_str);
+        let branch = pi_active_branch_entries(entries, leaf_id)?;
+        let selected = branch
+            .iter()
+            .find(|entry| entry.get("id").and_then(Value::as_str) == Some(entry_id))
+            .ok_or("Pi fork point is not on the active session branch")?;
+        if selected.get("type").and_then(Value::as_str) != Some("message")
+            || selected.pointer("/message/role").and_then(Value::as_str) != Some("assistant")
+        {
+            return Err("Pi fork point must be an assistant message".into());
+        }
+        let commands = pi_fork_process_request(&mut reader, &mut stdin, "get_commands").await?;
+        if !commands
+            .pointer("/data/commands")
+            .and_then(Value::as_array)
+            .is_some_and(|commands| {
+                commands.iter().any(|command| {
+                    command.get("name").and_then(Value::as_str) == Some("flowix-fork")
+                })
+            })
+        {
+            let _ = child.kill().await;
+            return Err("Pi did not load Flowix's fork extension".into());
+        }
+        let id = next_pi_rpc_id();
+        write_rpc_locked(
+            &mut stdin,
+            &serde_json::json!({
+                "id": id,
+                "type": "prompt",
+                "message": format!("/flowix-fork {entry_id}"),
+            }),
+        )
+        .await?;
+        tokio::time::timeout(PI_FORK_TIMEOUT, async {
+            let mut line = String::new();
+            loop {
+                line.clear();
+                if reader
+                    .read_line(&mut line)
+                    .await
+                    .map_err(|error| error.to_string())?
+                    == 0
+                {
+                    return Err("Pi fork process exited during the fork command".to_string());
+                }
+                let record: Value = serde_json::from_str(&line)
+                    .map_err(|error| format!("Pi fork process returned invalid JSON: {error}"))?;
+                if record.get("type").and_then(Value::as_str) == Some("response")
+                    && record.get("id").and_then(Value::as_str) == Some(&id)
+                {
+                    if record.get("success").and_then(Value::as_bool) != Some(true) {
+                        return Err(record
+                            .get("error")
+                            .and_then(Value::as_str)
+                            .unwrap_or("Pi rejected its fork command")
+                            .to_string());
+                    }
+                    break Ok::<(), String>(());
+                }
+            }
+        })
+        .await
+        .map_err(|_| "Pi fork command timed out".to_string())??;
+
+        let result = tokio::time::timeout(PI_FORK_TIMEOUT, async {
+            loop {
+                if let Ok(bytes) = tokio::fs::read(&result_path).await {
+                    let value: Value = serde_json::from_slice(&bytes)
+                        .map_err(|error| format!("Pi fork returned invalid metadata: {error}"))?;
+                    if let Some(error) = value.get("error").and_then(Value::as_str) {
+                        return Err(error.to_string());
+                    }
+                    let fork: PiForkMetadata = serde_json::from_value(value)
+                        .map_err(|error| format!("Pi fork returned incomplete metadata: {error}"))?;
+                    if fork.session_id.trim().is_empty() || fork.session_id == expected_source_id {
+                        return Err("Pi fork did not create a new session ID".into());
+                    }
+                    if fork.parent_session_file != source_file {
+                        return Err("Pi fork did not retain its native parent session".into());
+                    }
+                    if !fork.branch_entry_ids.iter().any(|id| id == entry_id) {
+                        return Err(
+                            "Pi fork did not retain the selected entry in its branch".into()
+                        );
+                    }
+                    if !fork.session_file.starts_with(child_dir) {
+                        return Err(
+                            "Pi fork created its session outside the child session directory"
+                                .into(),
+                        );
+                    }
+                    if fork.session_file == source_file || !fork.session_file.is_file() {
+                        return Err("Pi did not create an independent fork session".into());
+                    }
+                    return Ok(fork);
+                }
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        })
+        .await
+        .map_err(|_| "Pi fork did not report its new session".to_string())?;
+        let _ = child.kill().await;
+        let _ = child.wait().await;
+        result
+    }
+    .await;
+
+    let _ = std::fs::remove_file(&extension_path);
+    let _ = std::fs::remove_file(&result_path);
+    operation
 }
 
 pub(super) fn pi_config_dir() -> Result<PathBuf, String> {

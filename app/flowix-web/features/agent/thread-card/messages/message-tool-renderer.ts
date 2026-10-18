@@ -91,6 +91,10 @@ function createExpandableToolContent(options: {
   expandedContent?: HTMLElement;
   /** Whether to render the generic tool input block. */
   includeInput?: boolean;
+  /** Label the raw payload blocks used by Codex custom tools. */
+  inputLabel?: string;
+  outputText?: string;
+  outputLabel?: string;
 }): HTMLDivElement {
   const {
     message,
@@ -125,11 +129,21 @@ function createExpandableToolContent(options: {
 
   if (options.expandedContent) content.append(options.expandedContent);
   if (options.includeInput !== false) {
-    const fullInput = document.createElement("pre");
-    fullInput.className = "agent-thread-card__message-tool-input";
     const inputText = agentMessageValueToText(message.toolInput);
-    fullInput.textContent = inputText || translate(language, "agent.tools.noInput");
-    content.append(fullInput);
+    if (options.inputLabel) {
+      content.append(createToolPayloadSection(
+        options.inputLabel,
+        inputText || translate(language, "agent.tools.noInput"),
+      ));
+    } else {
+      const fullInput = document.createElement("pre");
+      fullInput.className = "agent-thread-card__message-tool-input";
+      fullInput.textContent = inputText || translate(language, "agent.tools.noInput");
+      content.append(fullInput);
+    }
+  }
+  if (options.outputLabel && options.outputText) {
+    content.append(createToolPayloadSection(options.outputLabel, options.outputText));
   }
 
   let isExpanded = getDisplayExpanded(message);
@@ -207,6 +221,19 @@ function createExpandableToolContent(options: {
   return content;
 }
 
+function createToolPayloadSection(label: string, value: string): HTMLDivElement {
+  const section = document.createElement("div");
+  section.className = "agent-thread-card__message-tool-payload";
+  const heading = document.createElement("span");
+  heading.className = "agent-thread-card__message-tool-payload-label";
+  heading.textContent = label;
+  const payload = document.createElement("pre");
+  payload.className = "agent-thread-card__message-tool-input";
+  payload.textContent = value;
+  section.append(heading, payload);
+  return section;
+}
+
 export function createAgentThreadCardToolMessageParts(options: {
   message: AgentMessage;
   messageView: ReturnType<typeof createAgentMessageViewModel>;
@@ -221,6 +248,24 @@ export function createAgentThreadCardToolMessageParts(options: {
   const name = document.createElement("span");
   name.className = "agent-thread-card__message-tool-name";
   name.textContent = messageView.toolLabel;
+
+  if (message.messageType === "codex-custom-tool") {
+    // Custom tool inputs can be arbitrary text or structured payloads. Keep
+    // them in the raw expandable view instead of treating tools named `exec`
+    // as shell commands.
+    const content = createExpandableToolContent({
+      message,
+      text: messageView.toolSummary,
+      language: context.language,
+      getDisplayExpanded: context.getDisplayExpanded,
+      setDisplayExpanded: context.setDisplayExpanded,
+      alwaysShowToggle: true,
+      inputLabel: translate(context.language, "agent.tools.input"),
+      outputLabel: translate(context.language, "agent.tools.output"),
+      outputText: message.toolData || message.content || undefined,
+    });
+    return [iconWrap, name, content];
+  }
 
   const command = parseAgentCommandInput(message.toolInput);
   if (command) {

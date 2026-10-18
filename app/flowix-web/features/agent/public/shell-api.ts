@@ -43,7 +43,7 @@ export function createAndOpenAgentConversation(typeKey: AgentTypeKey, notebookId
     },
     runtimeConfig: buildInitialInstanceRuntimeConfig(typeKey),
   });
-  void selectAndOpenAgentConversation(instance.instanceId);
+  void selectAndOpenAgentConversation(instance.instanceId, { blankIfMissing: true });
 }
 
 /** Create and open a blank, notebook-scoped DSH conversation. */
@@ -60,7 +60,7 @@ export function createAndOpenDshConversation(): void {
     },
     runtimeConfig: buildInitialInstanceRuntimeConfig('deepseek-harness'),
   });
-  void selectAndOpenAgentConversation(instance.instanceId);
+  void selectAndOpenAgentConversation(instance.instanceId, { blankIfMissing: true });
 }
 
 /** Create and open a blank, notebook-scoped Pi conversation. */
@@ -77,5 +77,5 @@ export function createAndOpenPiConversation(): void {
     },
     runtimeConfig: buildInitialInstanceRuntimeConfig('pi'),
   });
-  void selectAndOpenAgentConversation(instance.instanceId);
+  void selectAndOpenAgentConversation(instance.instanceId, { blankIfMissing: true });
 }

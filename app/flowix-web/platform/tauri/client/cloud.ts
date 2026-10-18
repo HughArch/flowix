@@ -1,5 +1,5 @@
 import { invoke } from '@tauri-apps/api/core';
-import { subscribe } from '@platform/tauri/event-bus';
+import { subscribe, type SubscribeOptions } from '@platform/tauri/event-bus';
 import type { UnlistenFn } from '@tauri-apps/api/event';
 
 export interface CloudUser {
@@ -21,13 +21,15 @@ export interface CloudMembership {
 }
 
 export interface CloudState {
+  revision: number;
   authenticated: boolean;
+  authStatus: 'signed_out' | 'restoring' | 'authenticated';
+  authError?: string | null;
   account?: {
     user: CloudUser;
     protocolEpoch: 2;
   } | null;
   membership?: CloudMembership | null;
-  lastError?: string | null;
 }
 
 export interface CloudNotebookSyncState {
@@ -157,8 +159,9 @@ export const cloud = {
 
 export function listenToCloudStateChanges(
   handler: (state: CloudState) => void,
+  options?: SubscribeOptions,
 ): UnlistenFn {
-  return subscribe<CloudState>('cloud-state-changed', handler);
+  return subscribe<CloudState>('cloud-state-changed', handler, options);
 }
 
 export function listenToCloudSyncStatusChanges(

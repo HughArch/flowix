@@ -2,6 +2,9 @@ use std::collections::{HashMap, HashSet};
 mod coordinator;
 mod deletion;
 mod local_adapter;
+mod google_login;
+use google_login::PendingGoogleLogin;
+pub(crate) use google_login::GoogleCallback;
 pub(crate) use coordinator::{
     schedule_notebook_sync, schedule_notebook_sync_observation, start_cloud_sync_polling,
 };
@@ -25,8 +28,8 @@ use tokio::sync::{mpsc, oneshot};
 use tokio::time::Instant;
 use once_cell::sync::Lazy;
 
-static GOOGLE_OAUTH_VERIFIERS: Lazy<Mutex<HashMap<String, (Instant, String)>>> =
-    Lazy::new(|| Mutex::new(HashMap::new()));
+static GOOGLE_OAUTH_LOGIN: Lazy<Mutex<Option<PendingGoogleLogin>>> =
+    Lazy::new(|| Mutex::new(None));
 
 use crate::app::state::AppState;
 use crate::lock_utils::read_lock;
@@ -96,18 +99,6 @@ fn emit_cloud_state(app: &AppHandle, state: &CloudState) {
     let _ = app.emit("cloud-state-changed", state);
 }
 
-fn persist_rotated_token(state: &AppState) -> Result<(), String> {
-    state.cloud_sync.with_current_refresh_token(|token| {
-        if let Some(token) = token {
-            state
-                .user_config
-                .save_cloud_refresh_token(token)
-                .map_err(sync_error)?;
-        }
-        Ok(())
-    })
-}
-
 #[tauri::command]
 pub fn cloud_get_state(state: State<AppState>) -> Result<CloudState, String> {
     state.cloud_sync.state().map_err(sync_error)
@@ -119,16 +110,13 @@ pub async fn cloud_register(
     password: String,
     display_name: String,
     state: State<'_, AppState>,
-    app: AppHandle,
 ) -> Result<CloudState, String> {
     state
         .cloud_sync
         .register(email.trim(), &password, display_name.trim())
         .await
         .map_err(sync_error)?;
-    persist_rotated_token(state.inner())?;
     let next_state = state.cloud_sync.state().map_err(sync_error)?;
-    emit_cloud_state(&app, &next_state);
     Ok(next_state)
 }
 
@@ -137,16 +125,13 @@ pub async fn cloud_login(
     email: String,
     password: String,
     state: State<'_, AppState>,
-    app: AppHandle,
 ) -> Result<CloudState, String> {
     state
         .cloud_sync
         .login(email.trim(), &password)
         .await
         .map_err(sync_error)?;
-    persist_rotated_token(state.inner())?;
     let next_state = state.cloud_sync.state().map_err(sync_error)?;
-    emit_cloud_state(&app, &next_state);
     Ok(next_state)
 }
 
@@ -154,7 +139,6 @@ pub async fn cloud_login(
 pub async fn cloud_sign_in_with_apple(
     window: WebviewWindow,
     state: State<'_, AppState>,
-    app: AppHandle,
 ) -> Result<CloudState, String> {
     let challenge = state
         .cloud_sync
@@ -167,9 +151,7 @@ pub async fn cloud_sign_in_with_apple(
         .sign_in_with_apple(&authorization)
         .await
         .map_err(sync_error)?;
-    persist_rotated_token(state.inner())?;
     let next_state = state.cloud_sync.state().map_err(sync_error)?;
-    emit_cloud_state(&app, &next_state);
     Ok(next_state)
 }
 
@@ -181,15 +163,13 @@ pub async fn cloud_start_google_sign_in(app: AppHandle) -> Result<(), String> {
     use base64::Engine;
     use sha2::{Digest, Sha256};
 
+    let generation = app.state::<AppState>().cloud_sync.begin_google_sign_in();
     let state = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
     let code_verifier = format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple());
     let code_challenge = URL_SAFE_NO_PAD.encode(Sha256::digest(code_verifier.as_bytes()));
     {
-        let mut verifiers = GOOGLE_OAUTH_VERIFIERS
-            .lock()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        verifiers.retain(|_, (created_at, _)| created_at.elapsed() < Duration::from_secs(300));
-        verifiers.insert(state.clone(), (Instant::now(), code_verifier));
+        *GOOGLE_OAUTH_LOGIN.lock().unwrap_or_else(|p| p.into_inner()) =
+            Some(PendingGoogleLogin::new(state.clone(), code_verifier, generation));
     }
     let mut url = url::Url::parse(&format!(
         "{}/v1/auth/google/start",
@@ -197,7 +177,7 @@ pub async fn cloud_start_google_sign_in(app: AppHandle) -> Result<(), String> {
     ))
     .map_err(|error| error.to_string())?;
     url.query_pairs_mut()
-        .append_pair("mode", "desktop")
+        .append_pair("mode", if option_env!("FLOWIX_DEV_MODE") == Some("1") { "desktop-dev" } else { "desktop" })
         .append_pair("state", &state)
         .append_pair("code_challenge", &code_challenge);
     app.opener()
@@ -207,25 +187,35 @@ pub async fn cloud_start_google_sign_in(app: AppHandle) -> Result<(), String> {
 
 pub(crate) async fn complete_google_deep_link(
     app: AppHandle,
-    code: String,
-    oauth_state: String,
+    callback: GoogleCallback,
 ) -> Result<(), String> {
-    let code_verifier = GOOGLE_OAUTH_VERIFIERS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .remove(&oauth_state)
-        .map(|(_, verifier)| verifier)
-        .ok_or_else(|| "Google sign-in expired; please try again".to_string())?;
-    let state = app.state::<AppState>();
-    state
-        .cloud_sync
-        .sign_in_with_google_desktop(&code, &oauth_state, &code_verifier)
-        .await
-        .map_err(sync_error)?;
-    persist_rotated_token(state.inner())?;
-    let next_state = state.cloud_sync.state().map_err(sync_error)?;
-    emit_cloud_state(&app, &next_state);
-    Ok(())
+    match callback {
+        GoogleCallback::Success { code, state: oauth_state } => {
+            let claimed = {
+                let mut pending = GOOGLE_OAUTH_LOGIN.lock().unwrap_or_else(|p| p.into_inner());
+                let attempt = pending.as_mut().ok_or_else(|| {
+                    "No Google sign-in is pending in this App; start sign-in again here".to_string()
+                })?;
+                attempt.claim(&oauth_state).map_err(str::to_string)?
+            };
+            let Some((code_verifier, generation)) = claimed else { return Ok(()); };
+            let state = app.state::<AppState>();
+            state.cloud_sync
+                .sign_in_with_google_desktop(&code, &oauth_state, &code_verifier, generation)
+                .await
+                .map_err(sync_error)
+                .map(|_| ())
+        }
+        GoogleCallback::Failure { error, state: oauth_state } => {
+            let accepted = {
+                let mut pending = GOOGLE_OAUTH_LOGIN.lock().unwrap_or_else(|p| p.into_inner());
+                let Some(attempt) = pending.as_mut() else { return Ok(()); };
+                attempt.claim_failure(&oauth_state).map_err(str::to_string)?
+            };
+            if accepted { let _ = app.emit("cloud-google-auth-error", error); }
+            Ok(())
+        }
+    }
 }
 
 #[tauri::command]
@@ -244,27 +234,15 @@ pub async fn cloud_link_apple(
         .link_apple(&authorization)
         .await
         .map_err(sync_error)?;
-    persist_rotated_token(state.inner())?;
     Ok(next_state)
 }
 
 #[tauri::command]
 pub async fn cloud_logout(
     state: State<'_, AppState>,
-    app: AppHandle,
 ) -> Result<CloudState, String> {
-    let logout_result = state
-        .cloud_sync
-        .logout_with_cleanup(|| {
-            state
-                .user_config
-                .delete_cloud_refresh_token()
-                .map_err(|error| SyncError::InvalidState(error.to_string()))
-        })
-        .await
-        .map_err(sync_error);
+    let logout_result = state.cloud_sync.logout().await.map_err(sync_error);
     let next_state = state.cloud_sync.state().map_err(sync_error)?;
-    emit_cloud_state(&app, &next_state);
     logout_result?;
     Ok(next_state)
 }
@@ -300,7 +278,6 @@ pub async fn cloud_list_notebooks(
     state: State<'_, AppState>,
 ) -> Result<Vec<CloudNotebook>, String> {
     let notebooks_result = state.cloud_sync.v2_remote_notebooks().await;
-    persist_rotated_token(state.inner())?;
     notebooks_result.map_err(sync_error)
 }
 
@@ -326,7 +303,6 @@ pub async fn cloud_link_notebook(
         },
         true,
     );
-    persist_rotated_token(state.inner())?;
     let link = link_result.map_err(cloud_error)?;
     if let Ok(next_state) = state.cloud_sync.state() {
         emit_cloud_state(&app, &next_state);
@@ -353,7 +329,6 @@ pub async fn cloud_set_notebook_enabled(
         },
         enabled,
     );
-    persist_rotated_token(state.inner())?;
     let link = link_result.map_err(cloud_error)?;
     if let Ok(next_state) = state.cloud_sync.state() {
         emit_cloud_state(&app, &next_state);
@@ -366,7 +341,6 @@ pub async fn cloud_refresh_membership(
     state: State<'_, AppState>,
 ) -> Result<CloudMembership, String> {
     let membership_result = state.cloud_sync.refresh_membership().await;
-    persist_rotated_token(state.inner())?;
     membership_result.map_err(sync_error)
 }
 
@@ -385,7 +359,6 @@ pub async fn cloud_create_checkout(
         .cloud_sync
         .create_checkout(&product_id, &idempotency_key)
         .await;
-    persist_rotated_token(state.inner())?;
     checkout_result.map_err(sync_error)
 }
 

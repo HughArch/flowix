@@ -143,7 +143,7 @@ export function TableGalleryView({ records, titleField, fields, renderValue, ima
   </div>;
 }
 
-export function TableKanbanView({ groupField, titleField, records, groups, renderValue, recordStatus, onDropRecord, onReorderLane, onAddTask, onAddLane, onOpenRecord, onRenameRecord, onDeleteRecord, canAddTask = true, canAddLane = true }: {
+export function TableKanbanView({ groupField, titleField, records, groups, renderValue, recordStatus, onDropRecord, onReorderLane, onAddTask, onAddLane, onOpenRecord, onRenameRecord, onDeleteRecord, canAddTask = true, canAddLane = true, embeddedInEditor = false }: {
   groupField: TableField;
   titleField: TableField;
   records?: TableRecord[];
@@ -159,6 +159,7 @@ export function TableKanbanView({ groupField, titleField, records, groups, rende
   onDeleteRecord?: (recordId: string) => void;
   canAddTask?: boolean;
   canAddLane?: boolean;
+  embeddedInEditor?: boolean;
 }) {
   const [draggingRecordId, setDraggingRecordId] = useState<string | null>(null);
   const [editingRecord, setEditingRecord] = useState<TableRecord | null>(null);
@@ -177,7 +178,9 @@ export function TableKanbanView({ groupField, titleField, records, groups, rende
   const allRecords = useMemo(() => records ?? [...new Map([...groups.values()].flat().map((record) => [record.id, record])).values()], [groups, records]);
   const assignedRecordIds = new Set(laneOptions.flatMap((option) => groups.get(option.id) ?? []).map((record) => record.id));
   const unassignedRecords = allRecords.filter((record) => !assignedRecordIds.has(record.id));
-  const visibleUnassignedRecords = unassignedRecords.filter((record) => record.id !== draggingRecordId);
+  // The dragged card stays mounted (dimmed) as its own origin placeholder; a
+  // floating preview follows the cursor and a ghost shows the drop slot.
+  const visibleUnassignedRecords = unassignedRecords;
   const draggedRecord = useMemo(() => draggingRecordId
     ? allRecords.find((record) => record.id === draggingRecordId) ?? null
     : null, [allRecords, draggingRecordId]);
@@ -188,7 +191,7 @@ export function TableKanbanView({ groupField, titleField, records, groups, rende
     return <article key={record.id} data-kanban-record={record.id} onPointerDown={(event) => {
       if ((event.target as HTMLElement).closest('button')) return;
       onCardPointerDown(event, record.id);
-    }} className="multidimensional-table__kanban-card relative cursor-default select-none touch-none rounded-lg border border-[var(--border)] px-2 py-2 active:cursor-grabbing">
+    }} className={`multidimensional-table__kanban-card relative cursor-default select-none touch-none rounded-lg border border-[var(--border)] px-2 py-2 active:cursor-grabbing ${draggingRecordId === record.id ? 'opacity-50' : ''}`}>
       <div className="flex min-w-0 items-center gap-2">
         <div className={`min-w-0 flex-1 break-words text-sm font-medium leading-5 ${(onRenameRecord || onDeleteRecord) ? 'pr-7' : ''} ${status === 'missing' ? 'text-[var(--muted-foreground)]' : 'text-[var(--foreground)]'}`}>
           {status === 'missing' && <span className="mr-1">未找到</span>}
@@ -278,9 +281,12 @@ export function TableKanbanView({ groupField, titleField, records, groups, rende
 
   const targetAt = (x: number, y: number, draggedId: string) => {
     const element = document.elementFromPoint(x, y) as HTMLElement | null;
+    // Dropping onto the dragged card itself is a no-op: keep its origin slot and
+    // suppress the insertion ghost.
+    if (element?.closest<HTMLElement>('[data-kanban-record]')?.dataset.kanbanRecord === draggedId) return null;
     const lane = element?.closest<HTMLElement>('[data-kanban-lane], [data-kanban-unassigned="true"]');
     const groupId = lane?.dataset.kanbanLane ?? (lane?.dataset.kanbanUnassigned === 'true' ? KANBAN_UNASSIGNED_GROUP_ID : undefined);
-    if (!groupId) return null;
+    if (!lane || !groupId) return null;
     const beforeCard = [...lane.querySelectorAll<HTMLElement>('[data-kanban-record]')]
       .filter((card) => card.dataset.kanbanRecord !== draggedId)
       .find((card) => {
@@ -325,7 +331,13 @@ export function TableKanbanView({ groupField, titleField, records, groups, rende
     if (drag.active) {
       const target = targetAt(event.clientX, event.clientY, drag.recordId);
       if (target) {
-        Promise.resolve(onDropRecord(drag.recordId, target.groupId, target.beforeRecordId)).then(resetDrag, resetDrag);
+        // Drop synchronously, then clear the drag UI right away so the floating
+        // preview disappears with the pointerup, even if the write is async.
+        let result: unknown;
+        try { result = onDropRecord(drag.recordId, target.groupId, target.beforeRecordId); }
+        catch { result = null; }
+        resetDrag();
+        void Promise.resolve(result).catch(() => {});
         return;
       }
     } else {
@@ -336,7 +348,7 @@ export function TableKanbanView({ groupField, titleField, records, groups, rende
   };
 
   return <div ref={kanbanBoardRef} onPointerMove={onCardPointerMove} onPointerUp={onCardPointerUp} onPointerCancel={resetDrag} className="flex min-h-0 flex-1 flex-col">
-    <div className="multidimensional-table__kanban-lanes flex w-max items-stretch gap-3 px-5 py-3">
+    <div className={`multidimensional-table__kanban-lanes flex w-max items-stretch gap-3 ${embeddedInEditor ? 'px-5 py-3' : 'px-4 py-1'}`}>
       <section data-kanban-unassigned="true" className={`multidimensional-table__kanban-lane flex shrink-0 flex-col rounded-xl border border-[var(--border)] ${unassignedCollapsed ? 'w-10 min-w-10 max-w-10' : 'w-64'}`}>
         <header className={`flex min-h-10 items-center gap-3 ${unassignedCollapsed ? 'w-full min-w-0 flex-col px-1.5 pt-3 pb-1.5' : 'justify-between px-3.5 pt-3.5 pb-1.5'}`}>
           {unassignedCollapsed ? <>
@@ -358,7 +370,7 @@ export function TableKanbanView({ groupField, titleField, records, groups, rende
       </section>
       {previewLaneOptions.map((option) => {
         const group = groups.get(option.id) ?? [];
-        const visibleGroup = group.filter((record) => record.id !== draggingRecordId);
+        const visibleGroup = group;
         const showEndPreview = showInsertionPreview && dropTarget?.groupId === option.id && dropTarget.beforeRecordId === null;
         return <section key={option.id} data-kanban-lane={option.id} className={`multidimensional-table__kanban-lane flex w-64 shrink-0 flex-col rounded-xl border border-[var(--border)] transition-opacity ${draggingLaneId === option.id ? 'opacity-50' : ''}`}>
           <header title="拖动调整泳道顺序" className="flex min-h-10 touch-none select-none cursor-grab items-center justify-between gap-3 px-3.5 pt-3.5 pb-1.5 active:cursor-grabbing" onPointerDown={(event) => onLanePointerDown(event, option.id)} onPointerMove={onLanePointerMove} onPointerUp={onLanePointerUp} onPointerCancel={onLanePointerCancel}>
@@ -553,14 +565,14 @@ export function TableCalendarView({ cursor, onCursorChange, days, groups, dateFi
             <DropdownMenuTrigger asChild>
               <button type="button" aria-label="选择日期字段" title={dateFieldLabel} disabled={!onDateFieldChange} className="flex h-7 max-w-48 items-center gap-1 rounded-md px-1 text-sm font-medium text-[var(--muted-foreground)] hover:bg-transparent hover:text-[var(--foreground)] data-[state=open]:bg-transparent disabled:cursor-default disabled:hover:bg-transparent">
                 <span className="truncate">{dateFieldLabel}</span>
-                {dateFieldReadOnly && <span title={dateFieldReadOnlyReason} className="shrink-0 rounded-md border border-[var(--border)] bg-[var(--muted)] px-1 py-px text-xs font-normal text-[var(--muted-foreground)]">只读</span>}
+                {dateFieldReadOnly && <span title={dateFieldReadOnlyReason} className="shrink-0 rounded-md border border-[var(--border)] bg-[var(--muted)] px-1 py-0 text-xs leading-4 font-normal text-[var(--muted-foreground)]">只读</span>}
                 <ChevronDown className="h-3 w-3 shrink-0" aria-hidden="true" />
               </button>
             </DropdownMenuTrigger>
             <DropdownMenuContent align="start" side="bottom" sideOffset={4} className="max-h-72 w-48 overflow-y-auto rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
               {dateFieldOptions.map((field) => <DropdownMenuItem key={field.id} onClick={() => { if (field.id !== dateFieldId) void onDateFieldChange?.(field.id); }} className="!h-8 justify-start gap-1 rounded-lg px-2 py-0 text-left hover:bg-[var(--hover-bg)]">
                 <span className="min-w-0 truncate">{field.label}</span>
-                {field.readOnly && <span title="创建时间和更新时间由系统维护，不能通过拖动修改" className="shrink-0 rounded-md border border-[var(--border)] bg-[var(--muted)] px-1 py-px text-xs font-normal text-[var(--muted-foreground)]">只读</span>}
+                {field.readOnly && <span title="创建时间和更新时间由系统维护，不能通过拖动修改" className="shrink-0 rounded-md border border-[var(--border)] bg-[var(--muted)] px-1 py-0 text-xs leading-4 font-normal text-[var(--muted-foreground)]">只读</span>}
                 {field.id === dateFieldId && <Check className="ml-auto h-3.5 w-3.5" aria-hidden="true" />}
               </DropdownMenuItem>)}
               {onCustomDateField && <>

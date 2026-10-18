@@ -1,6 +1,6 @@
 import type { NoteEntry } from '@platform/tauri/client';
 import { BUILTIN_PRESETS } from '@features/document/properties/presets';
-import type { TableField } from './model';
+import type { TableField, TableFieldType } from './model';
 import type { I18nKey } from '@/lib/i18n';
 import { getPropertyTypeDefinition, type PropertyIconKind } from '@/lib/property-types';
 
@@ -22,8 +22,8 @@ export interface BuiltinTableField {
   id: string;
   propertyKey?: string;
   label: string;
+  type: TableFieldType;
   iconKind: PropertyIconKind;
-  width: number;
   defaultInFolder: boolean;
 }
 
@@ -51,15 +51,15 @@ export const BUILTIN_TABLE_FIELDS: readonly BuiltinTableField[] = [
       id,
       propertyKey: preset.key,
       label: PRESET_FALLBACK_LABELS[preset.key] ?? preset.key,
+      type: preset.kind,
       iconKind: getPropertyTypeDefinition(preset.kind).iconKind,
-      width: preset.key === 'name' || preset.key === 'description' ? 240 : 160,
       defaultInFolder: false,
     }];
   }),
-  { id: NOTE_CREATED_AT_FIELD_ID, label: '创建时间', iconKind: 'date', width: 160, defaultInFolder: true },
-  { id: NOTE_UPDATED_AT_FIELD_ID, label: '更新时间', iconKind: 'date', width: 160, defaultInFolder: true },
-  { id: NOTE_PATH_FIELD_ID, label: '相对路径', iconKind: 'text', width: 240, defaultInFolder: true },
-  { id: NOTE_SIZE_FIELD_ID, label: '文档大小', iconKind: 'number', width: 160, defaultInFolder: false },
+  { id: NOTE_CREATED_AT_FIELD_ID, label: '创建时间', type: 'Date', iconKind: 'date', defaultInFolder: true },
+  { id: NOTE_UPDATED_AT_FIELD_ID, label: '更新时间', type: 'Date', iconKind: 'date', defaultInFolder: true },
+  { id: NOTE_PATH_FIELD_ID, label: '相对路径', type: 'Text', iconKind: 'text', defaultInFolder: true },
+  { id: NOTE_SIZE_FIELD_ID, label: '文档大小', type: 'Number', iconKind: 'number', defaultInFolder: false },
 ];
 
 export function isBuiltinTableFieldId(id: string): boolean {
@@ -73,8 +73,7 @@ export function builtinTableFieldLabel(field: BuiltinTableField, t: (key: I18nKe
 
 export function builtinPresetTableField(id: string): TableField | null {
   const field = BUILTIN_TABLE_FIELDS.find((item) => item.id === id);
-  const preset = field?.propertyKey && BUILTIN_PRESETS.find((item) => item.key === field.propertyKey);
-  return field && preset ? { id, property_key: field.propertyKey, type: preset.kind } : null;
+  return field?.propertyKey ? { id, property_key: field.propertyKey, type: field.type } : null;
 }
 
 /** Frontmatter includes pending local writes; index projections are the fallback. */

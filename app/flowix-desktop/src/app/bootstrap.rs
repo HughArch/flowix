@@ -85,22 +85,6 @@ pub fn run() {
     }
     let thread_db_path = user_config_dir.join("thread.db");
     let user_config = Arc::new(user_config::UserConfigStore::new(home_dir.clone()));
-    let cloud_sync = Arc::new(
-        flowix_sync::SyncManager::new(
-            flowix_sync::DEFAULT_CLOUD_API_BASE,
-            user_config_dir.join("sync.db"),
-        )
-        .unwrap_or_else(|error| {
-            tracing::error!(
-                "failed to initialize cloud sync database: {error}; using a temporary database"
-            );
-            flowix_sync::SyncManager::new(
-                flowix_sync::DEFAULT_CLOUD_API_BASE,
-                std::env::temp_dir().join(format!("flowix-sync-{}.db", std::process::id())),
-            )
-            .expect("failed to initialize temporary cloud sync database")
-        }),
-    );
 
     // 笔�?�?��册表真源�?~/.flowix/index.db (SQLite); `MemoFile::open_index_db`
     // 首�?�??时建表�?这里不需要任何�?盘迁�?── �?`notebook.json` �?��已废�?
@@ -168,7 +152,6 @@ pub fn run() {
     // 这里把构�?AppState 需要的子结�?clone 出来 (�?�� `move` 捕获),
     // 同时把另一�?clone 喂给 sub-component 构造函数�?
     let user_config_for_state = user_config_arc.clone();
-    let cloud_sync_for_state = cloud_sync.clone();
     let memo_file_for_state = memo_file_arc.clone();
     let agent_access_for_state = agent_access_arc.clone();
     let security_bookmarks_for_state = security_bookmarks_arc.clone();
@@ -281,6 +264,34 @@ pub fn run() {
             // can spawn processes, so run it after the first workspace paint.
             agent_external_config.load_into_registry();
 
+            let cloud_state_app = app.handle().clone();
+            let cloud_state_notifier: Arc<dyn Fn(flowix_sync::CloudState) + Send + Sync> =
+                Arc::new(move |state| {
+                    if let Err(error) = cloud_state_app.emit("cloud-state-changed", state) {
+                        tracing::warn!("failed to emit cloud state notification: {error}");
+                    }
+                });
+            let cloud_sync_for_state = Arc::new(
+                flowix_sync::SyncManager::new_with_session_dependencies(
+                    flowix_sync::DEFAULT_CLOUD_API_BASE,
+                    user_config_dir_for_device.join("sync.db"),
+                    user_config_for_state.clone(),
+                    cloud_state_notifier.clone(),
+                )
+                .unwrap_or_else(|error| {
+                    tracing::error!(
+                        "failed to initialize cloud sync database: {error}; using a temporary database"
+                    );
+                    flowix_sync::SyncManager::new_with_session_dependencies(
+                        flowix_sync::DEFAULT_CLOUD_API_BASE,
+                        std::env::temp_dir().join(format!("flowix-sync-{}.db", std::process::id())),
+                        user_config_for_state.clone(),
+                        cloud_state_notifier.clone(),
+                    )
+                    .expect("failed to initialize temporary cloud sync database")
+                }),
+            );
+
             let app_state = AppState {
                 upload_sessions: Default::default(),
                 document_access: Default::default(),
@@ -308,6 +319,10 @@ pub fn run() {
             };
             app_state.upload_sessions.start_cleanup();
             app.manage(app_state);
+            let session_manager = cloud_sync_for_state.clone();
+            tauri::async_runtime::spawn(async move {
+                session_manager.run_session_service().await;
+            });
             external_runtimes.listen_for_terminal_events(app.handle());
             if let Some(window) = app.get_webview_window("main") {
                 // �?��即�?齐主题背�?��, 消除冷启动白�?(尤其深色主�?)�?
@@ -360,8 +375,7 @@ pub fn run() {
                     .start_accessing_for_path(std::path::Path::new(&entry.path));
             }
             // �?��时把 preference.json::watcher 应用�?MemoWatcher;
-            // 同时注册 user-config-changed 监听做热更新 (前�?�?            // update_watcher_config IPC �?settings::update_watcher_config
-            // 写后 emit 该事�? 这里收到�?set_whitelist)�?
+            // 同时监听 user-config-changed，在偏好更新后热加载 watcher 规则。
             {
                 let watcher_cfg = user_config_for_watcher.get_preference().watcher.clone();
                 memo_watcher
@@ -375,11 +389,9 @@ pub fn run() {
                 let w_for_evt = memo_watcher.clone();
                 let uc_for_evt = user_config_for_watcher.clone();
                 app.listen("user-config-changed", move |event| {
-                    // payload �?kind 字�?�?("preference" / "ai_config" / "watcher")
-                    // event.payload() 返回 serde_json 序列化结�?(带引�? �?"\"preference\""),
-                    // 直接 == 比�?会恒�?false, 这里反序列化还原成裸字�?串�?
+                    // Tauri serializes the event payload as a JSON string.
                     let kind = serde_json::from_str::<String>(event.payload()).unwrap_or_default();
-                    if kind == "preference" || kind == "watcher" {
+                    if kind == "preference" {
                         let new_cfg = uc_for_evt.get_preference().watcher.clone();
                         w_for_evt
                             .write()
@@ -403,8 +415,6 @@ pub fn run() {
                 memo_watcher.clone(),
                 user_config_for_watcher.clone(),
                 startup_coordinator.clone(),
-                cloud_sync_for_state.clone(),
-                user_config_for_state.clone(),
                 external_runtimes.clone(),
                 user_config_dir_for_device.clone(),
                 thread_manager_for_state.clone(),
@@ -420,7 +430,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // 偏好 (JSON, �?user_config)
             commands::product::get_product_info,
-            commands::product::get_diagnostics,
             commands::product::open_log_dir,
             commands::product::open_file_with_default_app,
             commands::product::reveal_in_file_manager,
@@ -439,6 +448,8 @@ pub fn run() {
             commands::artifact::artifact_resolve,
             commands::settings::get_preference,
             commands::settings::patch_preference,
+            commands::settings::get_property_presets,
+            commands::settings::patch_property_presets,
             commands::settings::get_deepseek_harness_config,
             commands::settings::get_deepseek_harness_configs,
             commands::settings::set_deepseek_harness_config,
@@ -449,6 +460,9 @@ pub fn run() {
             commands::settings::set_deepseek_harness_plugin_enabled,
             commands::settings::discover_deepseek_harness_models,
             commands::settings::get_pi_model_configs,
+            commands::settings::get_pi_mcp_servers,
+            commands::settings::save_pi_mcp_server,
+            commands::settings::delete_pi_mcp_server,
             commands::settings::get_pi_features,
             commands::settings::save_pi_features,
             commands::settings::get_pi_model_catalog,
@@ -470,8 +484,6 @@ pub fn run() {
             crate::app_update::check_app_update,
             crate::app_update::consume_app_update_result,
             crate::app_update::cancel_app_update,
-            commands::settings::get_watcher_config,
-            commands::settings::update_watcher_config,
             commands::boot::get_boot_features,
             commands::boot::set_boot_intro_displayed,
             commands::boot::set_boot_onboarding_completed,
@@ -513,7 +525,6 @@ pub fn run() {
             // System metadata (JSON, ~/.flowix/boot/system.json)
             commands::kv::get_tag_system_metadata,
             commands::kv::set_tag_system_layout,
-            commands::kv::set_tag_system_hidden,
             commands::kv::set_tag_system_pinned,
             // Notebook-scoped metadata (<notebook>/.flowix/system.json)
             commands::kv::get_featured_note_filter,
@@ -535,8 +546,6 @@ pub fn run() {
             commands::media::update_media_resource,
             commands::media::delete_media_resource,
             commands::memo::reads::get_used_memo_tag_ids,
-            commands::memo::reads::get_memo_todo_metadata,
-            commands::memo::reads::get_memo_todo_count,
             commands::memo::reads::read_document,
             commands::memo::reads::note_path_status,
             commands::memo::reads::get_document_modified_at,
@@ -633,7 +642,6 @@ pub fn run() {
             commands::font::get_font_cache_status,
             commands::font::ensure_font_cached,
             commands::font::get_cached_font_bytes,
-            commands::font::remove_cached_font,
             // web page metadata
             commands::web::parse_web_page,
             // dialog
@@ -643,8 +651,6 @@ pub fn run() {
             commands::dialog::write_export_file,
             commands::export::export_pdf,
             commands::dialog::save_notebook_asset,
-            commands::dialog::upload_journal::list_attachment_import_records,
-            commands::dialog::attachment_audit::scan_attachment_references,
             commands::dialog::upload_sessions::begin_attachment_upload,
             commands::dialog::upload_sessions::append_attachment_upload,
             commands::dialog::upload_sessions::finish_attachment_upload,
@@ -676,7 +682,6 @@ pub fn run() {
             commands::agent::chat::agent_running_threads,
             commands::agent::chat::agent_background_terminals,
             commands::agent::chat::agent_background_jobs,
-            commands::agent::chat::agent_external_events,
             commands::agent::chat::codex_approval_respond,
             commands::agent::chat::codex_approval_pending,
             commands::agent::chat::codex_thread_settings_update,
@@ -701,6 +706,7 @@ pub fn run() {
             commands::thread::pi_thread_get_snapshot,
             commands::thread::pi_thread_get_page,
             commands::thread::pi_thread_session_id,
+            commands::thread::pi_thread_fork,
             commands::thread::codex_thread_list,
             commands::thread::codex_thread_get,
             commands::thread::codex_thread_get_page,
@@ -718,6 +724,7 @@ pub fn run() {
             commands::agent::codex_catalog::codex_project_mcp_upsert,
             commands::agent::codex_catalog::codex_project_skill_write,
             commands::agent::notebook_agents::notebook_agent_workspace_read,
+            commands::agent::notebook_agents::notebook_agent_skills_read,
             commands::agent::notebook_agents::notebook_agent_workspace_write,
             commands::thread::claude_thread_list,
             commands::thread::claude_thread_get,
@@ -767,8 +774,6 @@ fn spawn_startup_reconciliation(
     memo_watcher: Arc<RwLock<MemoWatcher>>,
     user_config_for_watcher: Arc<user_config::UserConfigStore>,
     startup: Arc<crate::app::startup::StartupCoordinator>,
-    cloud_sync: Arc<flowix_sync::SyncManager>,
-    user_config: Arc<user_config::UserConfigStore>,
     external_runtimes: Arc<ExternalRuntimeRegistry>,
     user_config_dir: PathBuf,
     thread_manager: Arc<ThreadManager>,
@@ -818,12 +823,7 @@ fn spawn_startup_reconciliation(
                     user_config_dir,
                     thread_manager,
                 );
-                start_post_startup_services(
-                    app.clone(),
-                    cloud_sync,
-                    user_config,
-                    external_runtimes,
-                );
+                start_post_startup_services(app.clone(), external_runtimes);
                 let current_notebook_id = crate::lock_utils::read_lock(&memo_file, "memo_file")
                     .current_notebook_id_value();
                 {
@@ -1052,121 +1052,12 @@ fn reconcile_startup_notebook(
     record_slow_notebook_stage(&notebook.id, "markdown-reconcile", started.elapsed());
     Ok(())
 }
-async fn restore_cloud_session_until_ready(
-    app: tauri::AppHandle,
-    cloud_sync: Arc<flowix_sync::SyncManager>,
-    user_config: Arc<user_config::UserConfigStore>,
-    refresh_token: String,
-    restore_generation: u64,
-) {
-    let mut retry_delay = Duration::from_secs(2);
-    loop {
-        // An explicit login or logout supersedes startup restoration. Keeping
-        // this generation fixed prevents a delayed retry from winning a race
-        // against a user-initiated authentication attempt.
-        if cloud_sync.session_restore_generation() != restore_generation {
-            break;
-        }
-        if cloud_sync.state().is_ok_and(|state| state.authenticated) {
-            break;
-        }
-        match user_config.load_cloud_refresh_token() {
-            Ok(Some(stored)) if stored == refresh_token => {}
-            Ok(_) => break,
-            Err(error) => {
-                tracing::warn!("failed to read Flowix Cloud refresh token during restore: {error}");
-                tokio::time::sleep(retry_delay).await;
-                retry_delay = (retry_delay * 2).min(Duration::from_secs(60));
-                continue;
-            }
-        }
-
-        match cloud_sync
-            .restore_at_generation(&refresh_token, restore_generation)
-            .await
-        {
-            Ok(_) => {
-                if let Err(error) = cloud_sync.with_current_refresh_token(|token| match token {
-                    Some(token) => user_config.save_cloud_refresh_token(token),
-                    None => Ok(()),
-                }) {
-                    tracing::warn!("failed to persist rotated cloud refresh token: {error}");
-                }
-                break;
-            }
-            Err(error) if error.is_invalid_refresh_token() => {
-                tracing::warn!("stored Flowix Cloud refresh token is invalid or expired");
-                cloud_sync.with_current_refresh_token(|current| {
-                    if current.is_none()
-                        && user_config
-                            .load_cloud_refresh_token()
-                            .ok()
-                            .flatten()
-                            .as_deref()
-                            == Some(refresh_token.as_str())
-                    {
-                        let _ = user_config.delete_cloud_refresh_token();
-                    }
-                });
-                break;
-            }
-            Err(error) if cloud_restore_error_is_retryable(&error) => {
-                tracing::warn!("failed to restore Flowix Cloud session; retrying: {error}");
-                if let Ok(state) = cloud_sync.state() {
-                    let _ = app.emit("cloud-state-changed", state);
-                }
-                if cloud_sync.session_restore_generation() != restore_generation {
-                    break;
-                }
-                tokio::time::sleep(retry_delay).await;
-                retry_delay = (retry_delay * 2).min(Duration::from_secs(60));
-            }
-            Err(error) => {
-                tracing::warn!("Flowix Cloud session restore cannot be retried: {error}");
-                break;
-            }
-        }
-    }
-
-    if let Ok(state) = cloud_sync.state() {
-        let _ = app.emit("cloud-state-changed", state);
-    }
-}
-
-fn cloud_restore_error_is_retryable(error: &flowix_sync::SyncError) -> bool {
-    matches!(
-        error,
-        flowix_sync::SyncError::Http(_)
-            | flowix_sync::SyncError::Api {
-                status: 408 | 429 | 500..=599,
-                ..
-            }
-    )
-}
-
 fn start_post_startup_services(
     app: tauri::AppHandle,
-    cloud_sync: Arc<flowix_sync::SyncManager>,
-    user_config: Arc<user_config::UserConfigStore>,
     external_runtimes: Arc<ExternalRuntimeRegistry>,
 ) {
     commands::cloud::start_cloud_sync_polling(app.clone());
-    spawn_external_agent_watchdog(app.clone(), external_runtimes);
-
-    if let Ok(Some(refresh_token)) = user_config.load_cloud_refresh_token() {
-        let app_handle = app.clone();
-        let restore_generation = cloud_sync.session_restore_generation();
-        tauri::async_runtime::spawn(async move {
-            restore_cloud_session_until_ready(
-                app_handle,
-                cloud_sync,
-                user_config,
-                refresh_token,
-                restore_generation,
-            )
-            .await;
-        });
-    }
+    spawn_external_agent_watchdog(app, external_runtimes);
 }
 
 fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
@@ -1181,6 +1072,9 @@ fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
         emit_open_target_batch_if_needed(&app, &paths);
 
         for arg in args {
+            if dispatch_google_callback(&app, &arg) {
+                continue;
+            }
             if !paths.contains(&arg) {
                 emit_open_target_if_resolved(&app, &arg);
             }
@@ -1189,11 +1083,52 @@ fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
 }
 
 #[cfg(desktop)]
+fn dispatch_google_callback(app: &tauri::AppHandle, raw: &str) -> bool {
+    let Ok(url) = url::Url::parse(raw) else { return false; };
+    let expected_scheme = if option_env!("FLOWIX_DEV_MODE") == Some("1") {
+        "flowix-dev"
+    } else {
+        "flowix"
+    };
+    if url.scheme() != expected_scheme || url.host_str() != Some("auth") ||
+        url.path() != "/google/callback" {
+        return false;
+    }
+    let mut code = None;
+    let mut oauth_state = None;
+    let mut auth_error = None;
+    for (key, value) in url.query_pairs() {
+        match key.as_ref() {
+            "code" => code = Some(value.into_owned()),
+            "state" => oauth_state = Some(value.into_owned()),
+            "error" => auth_error = Some(value.into_owned()),
+            _ => {}
+        }
+    }
+    let callback = match (auth_error, code, oauth_state) {
+        (Some(error), _, Some(state)) => Some(commands::cloud::GoogleCallback::Failure { error, state }),
+        (None, Some(code), Some(state)) => Some(commands::cloud::GoogleCallback::Success { code, state }),
+        _ => None,
+    };
+    if let Some(callback) = callback {
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            if let Err(error) = commands::cloud::complete_google_deep_link(app.clone(), callback).await {
+                let _ = app.emit("cloud-google-auth-error", error);
+            }
+        });
+    }
+    true
+}
+
+#[cfg(desktop)]
 fn register_deep_links(app: &mut tauri::App) {
     use tauri_plugin_deep_link::DeepLinkExt;
 
-    // 开发期每�?�?��都注册一次幂等；正式打包�?installer 会接管，运�?时注册仍�?��漏�?
-    let _ = app.deep_link().register("flowix");
+    let callback_scheme = if option_env!("FLOWIX_DEV_MODE") == Some("1") { "flowix-dev" } else { "flowix" };
+    // Bundled app metadata owns registration on macOS; runtime registration
+    // remains useful on platforms where the deep-link plugin supports it.
+    let _ = app.deep_link().register(callback_scheme);
 
     // macOS / Windows: OS 把深链投�?running app, 通过 deep-link 插件回调派发�?
     let app_handle = app.handle().clone();
@@ -1212,41 +1147,7 @@ fn register_deep_links(app: &mut tauri::App) {
                 return;
             }
             for url in urls {
-                let Ok(url) = url::Url::parse(&url) else {
-                    continue;
-                };
-                if url.scheme() == "flowix"
-                    && url.host_str() == Some("auth")
-                    && url.path() == "/google/callback"
-                {
-                    let mut code = None;
-                    let mut oauth_state = None;
-                    let mut auth_error = None;
-                    for (key, value) in url.query_pairs() {
-                        match key.as_ref() {
-                            "code" => code = Some(value.into_owned()),
-                            "state" => oauth_state = Some(value.into_owned()),
-                            "error" => auth_error = Some(value.into_owned()),
-                            _ => {}
-                        }
-                    }
-                    if let Some(error) = auth_error {
-                        let _ = app.emit("cloud-google-auth-error", error);
-                    } else if let (Some(code), Some(oauth_state)) = (code, oauth_state) {
-                        let app = app.clone();
-                        tauri::async_runtime::spawn(async move {
-                            if let Err(error) = commands::cloud::complete_google_deep_link(
-                                app.clone(),
-                                code,
-                                oauth_state,
-                            )
-                            .await
-                            {
-                                let _ = app.emit("cloud-google-auth-error", error);
-                            }
-                        });
-                    }
-                } else {
+                if !dispatch_google_callback(&app, &url) {
                     emit_open_target_if_resolved(&app, url.as_str());
                 }
             }

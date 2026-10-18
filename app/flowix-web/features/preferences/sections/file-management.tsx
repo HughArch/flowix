@@ -14,6 +14,54 @@ type NotebookOption = Awaited<ReturnType<typeof notebooks.getAll>>[number];
 type NotebookSettingsTreeEntry = Awaited<ReturnType<typeof files.getNotebookSettingsTree>>[number];
 type SettingsTreeEntry = NotebookSettingsTreeEntry & { depth: number };
 
+function normalizeNotebookOptions(value: unknown): NotebookOption[] {
+  if (!Array.isArray(value)) return [];
+  return value.filter((item): item is NotebookOption => Boolean(
+    item
+    && typeof item === 'object'
+    && typeof item.id === 'string'
+    && typeof item.path === 'string'
+  ));
+}
+
+function normalizeSettingsTree(value: unknown): NotebookSettingsTreeEntry[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): NotebookSettingsTreeEntry[] => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const entry = item as Partial<NotebookSettingsTreeEntry>;
+    if (typeof entry.relativePath !== 'string') return [];
+    return [{
+      relativePath: entry.relativePath,
+      isDirectory: entry.isDirectory === true,
+      locked: entry.locked === true,
+      hidden: entry.hidden === true,
+      defaultHidden: entry.defaultHidden === true,
+      collapsed: entry.collapsed === true,
+    }];
+  });
+}
+
+function normalizeNotebookPreferences(value: unknown): NotebookViewPreferences {
+  const source = value && typeof value === 'object' && !Array.isArray(value)
+    ? value as Partial<NotebookViewPreferences>
+    : {};
+  const fileManagement = source.fileManagement && typeof source.fileManagement === 'object'
+    ? source.fileManagement
+    : undefined;
+  const stringArray = (items: unknown): string[] => Array.isArray(items)
+    ? items.filter((item): item is string => typeof item === 'string')
+    : [];
+  return {
+    defaultCreateFolder: typeof source.defaultCreateFolder === 'string' ? source.defaultCreateFolder : null,
+    fileManagement: {
+      includedPaths: stringArray(fileManagement?.includedPaths),
+      hiddenPaths: stringArray(fileManagement?.hiddenPaths),
+      excludedIndexPaths: stringArray(fileManagement?.excludedIndexPaths),
+    },
+    refreshPending: source.refreshPending === true,
+  };
+}
+
 function pathLeafName(path: string): string {
   const segments = path.split(/[\\/]/).filter(Boolean);
   return segments[segments.length - 1] ?? path;
@@ -27,7 +75,7 @@ async function collectSettingsTree(notebookPath: string): Promise<NotebookSettin
   return files.getNotebookSettingsTree(notebookPath);
 }
 
-export function FileManagementSection() {
+export function FileManagementSection({ hideSectionHeader = false }: { hideSectionHeader?: boolean }) {
   const { t } = useI18n();
   const selectedNotebookId = useNoteStore((state) => state.selectedNotebookId);
   const [notebookOptions, setNotebookOptions] = useState<NotebookOption[]>([]);
@@ -50,8 +98,9 @@ export function FileManagementSection() {
     let active = true;
     viewGenerationRef.current += 1;
     pendingCountRef.current = 0;
-    void notebooks.getAll().then((items) => {
+    void notebooks.getAll().then((result) => {
       if (!active) return;
+      const items = normalizeNotebookOptions(result);
       setNotebookOptions(items);
       setNotebookPath((current) => current
         || items.find((notebook) => notebook.id === selectedNotebookId)?.path
@@ -72,8 +121,10 @@ export function FileManagementSection() {
     void Promise.all([
       files.getNotebookViewPreferences(notebookPath),
       collectSettingsTree(notebookPath),
-    ]).then(([nextPreferences, nextTreeEntries]) => {
+    ]).then(([nextPreferencesResult, nextTreeEntriesResult]) => {
       if (!active) return;
+      const nextPreferences = normalizeNotebookPreferences(nextPreferencesResult);
+      const nextTreeEntries = normalizeSettingsTree(nextTreeEntriesResult);
       preferencesRef.current = nextPreferences;
       setPreferences(nextPreferences);
       setSettingsTreeEntries(nextTreeEntries);
@@ -134,9 +185,10 @@ export function FileManagementSection() {
             collectSettingsTree(targetNotebook),
           ]);
           if (viewGenerationRef.current === refreshGeneration && pendingCountRef.current === 0) {
-            preferencesRef.current = latest;
-            setPreferences(latest);
-            setSettingsTreeEntries(nextTreeEntries);
+            const safePreferences = normalizeNotebookPreferences(latest);
+            preferencesRef.current = safePreferences;
+            setPreferences(safePreferences);
+            setSettingsTreeEntries(normalizeSettingsTree(nextTreeEntries));
           }
         } catch {
           toast.error(t('preferences.fileManagement.loadFailed'));
@@ -182,9 +234,10 @@ export function FileManagementSection() {
             collectSettingsTree(targetNotebook),
           ]);
           if (viewGenerationRef.current === refreshGeneration && pendingCountRef.current === 0) {
-            preferencesRef.current = latest;
-            setPreferences(latest);
-            setSettingsTreeEntries(nextTreeEntries);
+            const safePreferences = normalizeNotebookPreferences(latest);
+            preferencesRef.current = safePreferences;
+            setPreferences(safePreferences);
+            setSettingsTreeEntries(normalizeSettingsTree(nextTreeEntries));
           }
         } catch {
           toast.error(t('preferences.fileManagement.loadFailed'));
@@ -203,7 +256,7 @@ export function FileManagementSection() {
     const target = notebookPath;
     setRetrying(true);
     try {
-      const latest = await files.getNotebookViewPreferences(target);
+      const latest = normalizeNotebookPreferences(await files.getNotebookViewPreferences(target));
       if (notebookPathRef.current === target) {
         preferencesRef.current = latest;
         setPreferences(latest);
@@ -242,10 +295,12 @@ export function FileManagementSection() {
   );
 
   return <section className="space-y-4">
-    <SectionHeader
-      title={t('preferences.fileManagement.locationAndIndexTitle')}
-      description={t('preferences.fileManagement.locationAndIndexDescription')}
-    />
+    {!hideSectionHeader && (
+      <SectionHeader
+        title={t('preferences.fileManagement.locationAndIndexTitle')}
+        description={t('preferences.fileManagement.locationAndIndexDescription')}
+      />
+    )}
     <div className="flex items-center gap-3 text-sm">
       <span className="w-16 shrink-0 font-medium">{t('preferences.fileManagement.notebook')}</span>
       <div className="min-w-0 flex-1">

@@ -5,6 +5,7 @@ import { Check, GripVertical, Plus, X } from 'lucide-react';
 import { PencilSimpleIcon, TrashSimpleIcon } from '@phosphor-icons/react';
 import { toast } from '@/lib/toast';
 import type { PropertyFieldConfig, PropertyFieldType } from '@/lib/constants';
+import { createPropertyOptionId } from '@/lib/property-identity';
 import { getPropertyTypeDefinition } from '@/lib/property-types';
 import { cn } from '@/lib/utils';
 import {
@@ -12,9 +13,11 @@ import {
   isBuiltinPresetKey,
   PROPERTY_KINDS,
 } from '@features/document/properties/presets';
-import { canonicalizePropertyKey } from '@features/document/properties/property-key';
+import { canonicalizePropertyKey } from '@features/properties/property-key';
 import { useI18n } from '@/lib/i18n';
-import { useUserSettingsStore } from '@features/preferences/store/user-settings-store';
+import { persistPropertyRegistry, usePropertyPresetStore } from '@features/properties/property-preset-store';
+import { countPresetTableReferences, deletePresetEverywhere, migrateNotePropertyKey, updatePresetFromTable } from '@features/properties/property-preset-service';
+import { DeletePresetDialog } from '@features/properties/delete-preset-dialog';
 import { SectionHeader } from '@features/preferences/sections/primitives';
 import { Button } from '@shared/ui/button';
 import { Input } from '@shared/ui/input';
@@ -22,6 +25,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 
 type DraftField = {
   key: string;
+  revision: number | null;
   type: PropertyFieldType;
   optionsText: string;
 };
@@ -38,8 +42,9 @@ function normalizeOptions(type: PropertyFieldType, optionsText: string): string[
 function fieldToDraft(field: PropertyFieldConfig): DraftField {
   return {
     key: field.key,
+    revision: field.revision ?? 1,
     type: field.type,
-    optionsText: field.options?.join(', ') ?? '',
+    optionsText: field.options?.map((option) => option.label).join(', ') ?? '',
   };
 }
 
@@ -136,14 +141,18 @@ function OptionTagsInput({
   );
 }
 
-export function DocumentPropertiesSection() {
+export function DocumentPropertiesSection({ hideSectionHeader = false }: { hideSectionHeader?: boolean }) {
   const { t } = useI18n();
-  const fields = useUserSettingsStore((store) => store.settings.properties.fields);
-  const systemPresets = getBuiltinPresets(t);
-  const updateSettings = useUserSettingsStore((store) => store.updateSettings);
+  const fields = usePropertyPresetStore((store) => store.registry.fields);
+  const systemFields = usePropertyPresetStore((store) => store.registry.systemFields ?? []);
+  const properties = usePropertyPresetStore((store) => store.registry);
+  const systemPresets = getBuiltinPresets(t, systemFields);
   const [editingKey, setEditingKey] = useState<string | null>(null);
   const [draft, setDraft] = useState<DraftField | null>(null);
   const [isAdding, setIsAdding] = useState(false);
+  const [deletingPreset, setDeletingPreset] = useState<PropertyFieldConfig | null>(null);
+  const [deletingTableCount, setDeletingTableCount] = useState(0);
+  const [deletingBusy, setDeletingBusy] = useState(false);
   const [draggedFieldKey, setDraggedFieldKey] = useState<string | null>(null);
   const [dragOverField, setDragOverField] = useState<{ key: string; insertAfter: boolean } | null>(null);
   const fieldListRef = useRef<HTMLDivElement | null>(null);
@@ -244,7 +253,7 @@ export function DocumentPropertiesSection() {
         const next = movePropertyField(fields, session.key, target.key, target.insertAfter);
         if (next) {
           captureFieldPositions();
-          void updateSettings({ properties: { fields: next } });
+          void persistPropertyRegistry(next, properties.deletedFields ?? [], properties.systemFields ?? []).catch((error) => toast.error(error instanceof Error ? error.message : '保存预设顺序失败'));
         }
       } else {
         captureFieldPositions();
@@ -268,7 +277,7 @@ export function DocumentPropertiesSection() {
       window.removeEventListener('lostpointercapture', cancelPointerDrag);
       window.removeEventListener('blur', cancelActiveDrag);
     };
-  }, [fields, updateSettings]);
+  }, [fields, properties.deletedFields, properties.systemFields]);
 
   const startEdit = (field: PropertyFieldConfig) => {
     setEditingKey(field.key);
@@ -282,7 +291,7 @@ export function DocumentPropertiesSection() {
 
   const startAdd = () => {
     setEditingKey(null);
-    setDraft({ key: '', type: 'Text', optionsText: '' });
+    setDraft({ key: '', revision: null, type: 'Text', optionsText: '' });
     setIsAdding(true);
   };
 
@@ -293,7 +302,7 @@ export function DocumentPropertiesSection() {
 
   const saveDraft = async () => {
     if (!draft) return;
-    const key = draft.key.trim();
+    const key = canonicalizePropertyKey(draft.key.trim());
     if (!key) {
       toast.error(t('preferences.documentProperties.emptyKey'));
       return;
@@ -309,15 +318,29 @@ export function DocumentPropertiesSection() {
       toast.error(t('preferences.documentProperties.duplicateKey'));
       return;
     }
+    const previous = fields.find((item) => item.key === editingKey);
+    const options = normalizeOptions(draft.type, draft.optionsText);
     const nextField: PropertyFieldConfig = {
+      ...(previous ? { ...previous, revision: (previous.revision ?? 1) + 1 } : {}),
       key,
       type: draft.type,
-      options: normalizeOptions(draft.type, draft.optionsText),
+      options: options?.map((label, index) => ({ label, id: previous?.options?.find((option) => option.label === label)?.id
+        ?? (previous?.options?.[index] && !options.includes(previous.options[index].label) ? previous.options[index].id : createPropertyOptionId()) })),
     };
     const nextFields = isAdding
       ? [nextField, ...fields]
       : fields.map((item) => (item.key === editingKey ? nextField : item));
-    await updateSettings({ properties: { fields: nextFields } });
+    try {
+      if (previous?.id) {
+        await updatePresetFromTable({ id: previous.id, type: previous.type, property_key: previous.key, preset_revision: draft.revision ?? 1 }, nextField);
+        if (previous.key !== key) await migrateNotePropertyKey(previous.key, key);
+      } else {
+        await persistPropertyRegistry(nextFields, properties.deletedFields ?? []);
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '保存属性预设失败');
+      return;
+    }
     if (isAdding) {
       cancelAdd();
       toast.success(t('preferences.documentProperties.addSuccess'));
@@ -328,70 +351,86 @@ export function DocumentPropertiesSection() {
   };
 
   const deleteField = async (field: PropertyFieldConfig) => {
-    const confirmed = window.confirm(
-      t('preferences.documentProperties.deleteConfirm').replace('{key}', field.key),
-    );
-    if (!confirmed) return;
+    const tableCount = field.id ? await countPresetTableReferences(field.id) : 0;
+    setDeletingPreset(field);
+    setDeletingTableCount(tableCount);
+  };
 
-    await updateSettings({
-      properties: {
-        fields: fields.filter((item) => item.key !== field.key),
-      },
-    });
-    if (editingKey === field.key) cancelEdit();
-    toast.success(t('preferences.documentProperties.deleteSuccess'));
+  const confirmDeletePreset = async () => {
+    const field = deletingPreset;
+    if (!field) return;
+    setDeletingBusy(true);
+    try {
+      const result = await deletePresetEverywhere(field);
+      if (result.failed) {
+        toast.error(t('preferences.documentProperties.deleteNoteValuesFailed').replace('{count}', String(result.failed)));
+      } else {
+        toast.success(t('preferences.documentProperties.deleteSuccess'));
+      }
+      if (editingKey === field.key) cancelEdit();
+      setDeletingPreset(null);
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : '删除属性预设失败');
+    } finally {
+      setDeletingBusy(false);
+    }
   };
 
   return (
-    <div className="space-y-4 pt-2">
-      <SectionHeader
-        title={t('preferences.documentProperties.title')}
-        description={t('preferences.documentProperties.description')}
-      />
+    <div className="space-y-4">
+      {!hideSectionHeader && (
+        <SectionHeader
+          title={t('preferences.documentProperties.title')}
+          description={t('preferences.documentProperties.description')}
+        />
+      )}
 
-      <div className="flex justify-start">
-        <Button type="button" variant="outline" className="h-8 gap-0.5" onClick={startAdd} disabled={isAdding}>
-          <Plus className="size-3.5" />
-          {t('preferences.documentProperties.add')}
-        </Button>
-      </div>
-
-      {isAdding && draft ? (
-        <div className="rounded-xl border border-[var(--primary)] bg-[var(--card)] p-3">
-          <div className="grid gap-2 sm:grid-cols-[136px_1fr]">
-            <Select value={draft.type} onValueChange={(value) => setDraft({ ...draft, type: value as PropertyFieldType })}>
-              <SelectTrigger className="bg-[var(--background)]"><SelectValue>{t(getPropertyTypeDefinition(draft.type).labelKey)}</SelectValue></SelectTrigger>
-              <SelectContent align="end" fitViewport className="flowix-preferences-select-content max-w-[calc(100vw-1rem)]">
-                {PROPERTY_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{t(getPropertyTypeDefinition(kind).labelKey)}</SelectItem>)}
-              </SelectContent>
-            </Select>
-            <Input value={draft.key} onChange={(event) => setDraft({ ...draft, key: event.target.value })} placeholder={t('preferences.documentProperties.keyPlaceholder')} />
-          </div>
-          {draft.type === 'Select' ? (
-            <div className="mt-2">
-              <OptionTagsInput
-                value={draft.optionsText}
-                onChange={(optionsText) => setDraft({ ...draft, optionsText })}
-                placeholder={t('preferences.documentProperties.optionsPlaceholder')}
-              />
-            </div>
-          ) : draft.type === 'MultiSelect' ? (
-            <Input className="mt-2" value={draft.optionsText} onChange={(event) => setDraft({ ...draft, optionsText: event.target.value })} placeholder={t('preferences.documentProperties.optionsPlaceholder')} />
-          ) : null}
-          <div className="mt-2 flex justify-start gap-1">
-            <Button type="button" variant="outline" size="sm" className="rounded-lg" onClick={cancelAdd}>{t('preferences.documentProperties.cancel')}</Button>
-            <Button type="button" size="sm" className="rounded-lg" onClick={() => void saveDraft()}>{t('preferences.documentProperties.save')}</Button>
-          </div>
+      <section className="space-y-2" aria-labelledby="document-properties-mine-heading">
+        <div className="flex items-center justify-between pt-2">
+          <h4 id="document-properties-mine-heading" className="text-xs font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
+            {t('preferences.documentProperties.group.mine')}
+          </h4>
+          <Button type="button" variant="outline" className="h-8 gap-0.5" onClick={startAdd} disabled={isAdding}>
+            <Plus className="size-3.5" />
+            {t('preferences.documentProperties.add')}
+          </Button>
         </div>
-      ) : null}
 
-      <div className="space-y-2">
-        {fields.length > 0 && <div ref={fieldListRef} className="space-y-2">
+        {isAdding && draft ? (
+          <div className="rounded-xl border border-[var(--primary)] bg-[var(--card)] p-3">
+            <div className="grid gap-2 sm:grid-cols-[136px_1fr]">
+              <Select value={draft.type} onValueChange={(value) => setDraft({ ...draft, type: value as PropertyFieldType })}>
+                <SelectTrigger className="bg-[var(--background)]"><SelectValue>{t(getPropertyTypeDefinition(draft.type).labelKey)}</SelectValue></SelectTrigger>
+                <SelectContent align="end" fitViewport className="flowix-preferences-select-content max-w-[calc(100vw-1rem)]">
+                  {PROPERTY_KINDS.map((kind) => <SelectItem key={kind} value={kind}>{t(getPropertyTypeDefinition(kind).labelKey)}</SelectItem>)}
+                </SelectContent>
+              </Select>
+              <Input value={draft.key} onChange={(event) => setDraft({ ...draft, key: event.target.value })} placeholder={t('preferences.documentProperties.keyPlaceholder')} />
+            </div>
+            {draft.type === 'Select' ? (
+              <div className="mt-2">
+                <OptionTagsInput
+                  value={draft.optionsText}
+                  onChange={(optionsText) => setDraft({ ...draft, optionsText })}
+                  placeholder={t('preferences.documentProperties.optionsPlaceholder')}
+                />
+              </div>
+            ) : draft.type === 'MultiSelect' ? (
+              <Input className="mt-2" value={draft.optionsText} onChange={(event) => setDraft({ ...draft, optionsText: event.target.value })} placeholder={t('preferences.documentProperties.optionsPlaceholder')} />
+            ) : null}
+            <div className="mt-2 flex justify-start gap-1">
+              <Button type="button" variant="outline" size="sm" className="rounded-lg" onClick={cancelAdd}>{t('preferences.documentProperties.cancel')}</Button>
+              <Button type="button" size="sm" className="rounded-lg" onClick={() => void saveDraft()}>{t('preferences.documentProperties.save')}</Button>
+            </div>
+          </div>
+        ) : null}
+
+        {fields.length > 0 ? <div ref={fieldListRef} className="space-y-2">
           {visibleFields.map((field) => {
             const isEditing = editingKey === field.key;
             const currentDraft = isEditing ? draft : null;
             const typeLabel = t(getPropertyTypeDefinition(field.type).labelKey);
-            const optionsLabel = field.options?.length ? field.options.join(', ') : '';
+            const optionsLabel = field.options?.length ? field.options.map((option) => option.label).join(', ') : '';
 
             return (
               <div
@@ -422,11 +461,7 @@ export function DocumentPropertiesSection() {
                           ))}
                         </SelectContent>
                       </Select>
-                      <Input
-                        value={currentDraft.key}
-                        onChange={(event) => setDraft({ ...currentDraft, key: event.target.value })}
-                        placeholder={t('preferences.documentProperties.keyPlaceholder')}
-                      />
+                      <Input value={currentDraft.key} onChange={(event) => setDraft({ ...currentDraft, key: event.target.value })} placeholder={t('preferences.documentProperties.keyPlaceholder')} />
                     </div>
                     {currentDraft.type === 'Select' ? (
                       <OptionTagsInput
@@ -523,7 +558,15 @@ export function DocumentPropertiesSection() {
               </div>
             );
           })}
-        </div>}
+        </div> : <p className="px-1 py-2 text-sm text-[var(--muted-foreground)]">{t('preferences.documentProperties.empty')}</p>}
+      </section>
+
+      <section className="space-y-2" aria-labelledby="document-properties-presets-heading">
+        <div className="flex items-center justify-between pt-2">
+          <h4 id="document-properties-presets-heading" className="text-xs font-medium uppercase tracking-wider text-[var(--muted-foreground)]">
+            {t('preferences.documentProperties.group.presets')}
+          </h4>
+        </div>
         {systemPresets.map((preset) => (
           <div key={preset.key} className="rounded-xl border border-[var(--border)] bg-[var(--card)] px-3 py-[5px]">
             <div className="flex min-h-8 items-center gap-3">
@@ -540,7 +583,15 @@ export function DocumentPropertiesSection() {
             </div>
           </div>
         ))}
-      </div>
+      </section>
+
+      <DeletePresetDialog
+        preset={deletingPreset}
+        tableCount={deletingTableCount}
+        busy={deletingBusy}
+        onCancel={() => { if (!deletingBusy) setDeletingPreset(null); }}
+        onConfirm={() => { void confirmDeletePreset(); }}
+      />
     </div>
   );
 }

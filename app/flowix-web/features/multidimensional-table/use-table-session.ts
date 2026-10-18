@@ -1,3 +1,5 @@
+import { hydrateTablePresets } from './table-preset-bindings';
+import { subscribePropertyPresets } from '@features/properties/public-api';
 import { collectionSessionKey } from '@/lib/collection-session-key';
 import { canonicalDirectoryPath } from '@/lib/path';
 import { reuseCollectionValue } from '@features/collection/content-equality';
@@ -9,6 +11,7 @@ import { findFileDisplayPath, type FileDisplayIdentity } from '@/lib/file-displa
 import { parseTableDocumentAsync } from './parse-table-document';
 import { serializeTableDocument, parseTableDocument, validateTableDocument, type MultidimensionalTableDocument } from './model';
 import { isLegacyCollectionSource } from '@features/collection/model';
+import { bindTablePresetsFromSnapshot } from '@features/properties/property-preset-service';
 
 interface TableSessionOptions {
   expectedCollectionId?: string | null;
@@ -55,11 +58,14 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
   const [saveFailed, setSaveFailed] = useState(false);
   const savingRef = useRef(false);
   const setSaving = useCallback((next: boolean) => {
+    if (next && !savingRef.current) setSaveFailed(false);
     savingRef.current = next;
     setSavingState(next);
-    if (next) setSaveFailed(false);
   }, []);
   const [notes, setNotes] = useState<NoteEntry[]>([]);
+  useEffect(() => subscribePropertyPresets(() => {
+    setDocument((current) => current ? hydrateTablePresets(current) : current);
+  }), []);
   const [resolvedNotebookId, setResolvedNotebookId] = useState<string | null>(notebookId);
   const [notesLoadError, setNotesLoadError] = useState<string | null>(null);
   const [stateSessionKey, setStateSessionKey] = useState(sessionKey);
@@ -81,7 +87,10 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
   ), [isCurrentSession, sessionKey]);
 
   const reportSaveFailure = useCallback((sequence: number) => {
-    if (isCurrentSession(sequence, sessionKey)) setSaveFailed(true);
+    if (isCurrentSession(sequence, sessionKey)) {
+      setSaveFailed(true);
+      pendingTableSyncRef.current = true;
+    }
   }, [isCurrentSession, sessionKey]);
 
   const load = useCallback(async () => {
@@ -119,6 +128,12 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
           sourceContent = migration.diskContent;
         } else if (migration.status === 'error') throw new Error(migration.message);
       }
+
+      const bound = await bindTablePresetsFromSnapshot(next);
+      if (!isCurrentSession(sequence, key)) return;
+      // DB definitions are a runtime projection. Persist it with the next explicit
+      // table edit, rather than making opening a table depend on a rewrite.
+      next = bound;
 
       let noteLoadError: string | null = null;
       let resolvedId = notebookId;
@@ -181,6 +196,10 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
     if (!notebook || event.notebookId !== notebook) return;
     const key = sessionKey;
     if (loadedSessionKeyRef.current !== key) return;
+    if (savingRef.current) {
+      pendingTableSyncRef.current = true;
+      return;
+    }
     const baselineAtStart = sourceContentRef.current?.content;
     const generation = loadSequenceRef.current;
     const syncSequence = ++syncSequenceRef.current;
@@ -196,6 +215,10 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
       }
       const entries = needsTableSync ? await notesClient.list(notebook) : singleEntry ? [singleEntry] : [];
       if (!isCurrent()) return;
+      if (savingRef.current) {
+        pendingTableSyncRef.current = true;
+        return;
+      }
       const mergeEntries = (current: NoteEntry[]) => {
         const pending = pendingNotePropertiesRef.current;
         const currentByPath = new Map(current.map((note) => [note.relativePath.replace(/\\/g, '/'), note]));
@@ -267,6 +290,12 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
     }
   }, [getCurrentFilePath, isCurrentSession, notebookPath, resolvedNotebookId, sessionKey]);
 
+  useEffect(() => {
+    if (!saving && !savingRef.current && pendingTableSyncRef.current && resolvedNotebookId) {
+      void syncNotes({ notebookId: resolvedNotebookId, kind: 'path' });
+    }
+  }, [resolvedNotebookId, saving, syncNotes]);
+
   useEffect(() => subscribe<NoteChangeEvent>(
     'flowix:path-note-changed',
     (event) => {
@@ -331,10 +360,6 @@ export function useTableSession({ filePath, fileIdentity, notebookPath: rawNoteb
       return false;
     } finally {
       writeLocksRef.current.delete(lockKey);
-      savingRef.current = false;
-      if (pendingTableSyncRef.current && mountedRef.current && currentSessionKeyRef.current === key) {
-        void syncNotes({ notebookId: resolvedNotebookId ?? '', kind: 'path' });
-      }
       if (!keepSaving && isCurrentSession(sequence, key)) setSaving(false);
     }
   }, [getCurrentFilePath, isCurrentSession, load, notebookPath, resolvedNotebookId, sessionKey, syncNotes]);

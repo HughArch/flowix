@@ -196,17 +196,17 @@
 
 .mcp-supported-agent-icon {
 	display: inline-flex;
-	width: 24px;
-	height: 24px;
+	width: 18px;
+	height: 18px;
 	align-items: center;
 	justify-content: center;
-	flex: 0 0 24px;
+	flex: 0 0 18px;
 }
 
 .mcp-supported-agent-icon__image,
 .mcp-supported-agent-icon__mask {
-	width: 24px;
-	height: 24px;
+	width: 18px;
+	height: 18px;
 	object-fit: contain;
 }
 

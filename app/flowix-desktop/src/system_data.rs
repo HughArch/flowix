@@ -329,17 +329,6 @@ impl SystemData {
         self.flush(&data)
     }
 
-    pub fn set_hidden_tags(&self, notebook_id: &str, hidden: Vec<String>) -> std::io::Result<()> {
-        let mut data = self.write_data();
-        let notebook = data
-            .tag
-            .notebooks
-            .entry(notebook_id.to_string())
-            .or_default();
-        notebook.hidden = hidden;
-        self.flush(&data)
-    }
-
     /// 写回某 parent 下的 pinned 列表（MRU 顺序）。
     /// - `parent_id` 为 `None` 时使用 root 哨兵 `""`。
     /// - `pinned` 为空 Vec 时直接 `remove` 该 key，保持 `pinned_by_parent` 干净。

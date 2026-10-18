@@ -1,0 +1,72 @@
+import { describe, expect, it } from 'vitest';
+import { Editor } from '@tiptap/core';
+import StarterKit from '@tiptap/starter-kit';
+import { Markdown } from '@tiptap/markdown';
+import Frontmatter from './frontmatter';
+
+function fixture() {
+  const host = document.createElement('div');
+  document.body.append(host);
+  const editor = new Editor({
+    element: host,
+    extensions: [StarterKit, Markdown, Frontmatter],
+    content: '---\nenabled: false\nfirst: old\nsecond: next\n---\nBody',
+    contentType: 'markdown',
+  });
+  const setEditable = (editable: boolean) => {
+    editor.view.dom.dispatchEvent(new Event('flowix:editor-flush-drafts'));
+    editor.setEditable(editable, false);
+    editor.view.dom.dispatchEvent(new Event('flowix:editor-editability-change'));
+  };
+  const value = (key: string) => host.querySelector<HTMLElement>(`[data-property-key="${key}"] .frontmatter-property__display-value`)!;
+  const draft = () => document.body.querySelector<HTMLTextAreaElement>('.frontmatter-property__edit-input')!;
+  return { host, editor, setEditable, value, draft, dispose: () => { editor.destroy(); host.remove(); } };
+}
+
+describe('frontmatter workspace interactions', () => {
+  it('updates the same checkbox across read-only transitions and guards stale change events', () => {
+    const f = fixture();
+    try {
+      const checkbox = f.host.querySelector<HTMLInputElement>('.frontmatter-property__value-checkbox')!;
+      f.setEditable(false);
+      expect(checkbox.disabled).toBe(true);
+      checkbox.checked = true;
+      checkbox.dispatchEvent(new Event('change', { bubbles: true }));
+      expect(f.editor.getMarkdown()).toContain('enabled: false');
+      f.setEditable(true);
+      expect(f.host.querySelector('.frontmatter-property__value-checkbox')).toBe(checkbox);
+      expect(checkbox.disabled).toBe(false);
+      checkbox.checked = false;
+      checkbox.click();
+      expect(f.editor.getMarkdown()).toContain('enabled: true');
+    } finally { f.dispose(); }
+  });
+
+  it('commits a draft before the editor becomes read-only', () => {
+    const f = fixture();
+    try {
+      f.value('first').click();
+      f.draft().value = 'saved';
+      f.setEditable(false);
+      expect(f.editor.getMarkdown()).toContain('first: saved');
+      expect(document.body.querySelector('.frontmatter-property__edit-popover')).toBeNull();
+    } finally { f.dispose(); }
+  });
+
+  it('preserves the next pointer target while saving another property', () => {
+    const f = fixture();
+    try {
+      f.value('first').click();
+      f.draft().value = 'saved';
+      const next = f.value('second');
+      const list = next.closest('.frontmatter-property__list');
+      next.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+      expect(f.editor.getMarkdown()).toContain('first: saved');
+      expect(f.value('second')).toBe(next);
+      expect(next.isConnected).toBe(true);
+      expect(next.closest('.frontmatter-property__list')).toBe(list);
+      next.click();
+      expect(f.draft().value).toBe('next');
+    } finally { f.dispose(); }
+  });
+});

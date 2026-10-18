@@ -24,7 +24,7 @@ export async function createAttachmentUpload(
     saveFile?: AttachmentFileSaver,
     ownerPath?: string,
     signal?: AbortSignal,
-    deduplicate = false,
+    deduplicate = true,
 ): Promise<{ assets: StoredAsset[] }> {
     const assets: StoredAsset[] = [];
     if (!ownerPath && !saveContent && !saveFile) {
@@ -87,7 +87,7 @@ export async function createAttachmentUpload(
 
 export async function createAttachmentUploadFromPaths(
     paths: string[],
-    { ownerPath, notebookId, signal, deduplicate = false }: AttachmentPathUploadOptions = {},
+    { ownerPath, notebookId, signal, deduplicate = true }: AttachmentPathUploadOptions = {},
 ): Promise<{ assets: StoredAsset[] }> {
     const assets: StoredAsset[] = [];
     if (!ownerPath && !notebookId) {
@@ -108,7 +108,9 @@ export async function createAttachmentUploadFromPaths(
             const saved = await notebookAssets.saveFromPath(path, {
                 ...(notebookId ? { notebookId } : { notePath: ownerPath }),
                 deduplicate,
-                reuseNotebookFile: true,
+                // Note attachments always live in attachments/, even when the
+                // selected source is already somewhere else in the notebook.
+                reuseNotebookFile: false,
             });
             if (!saved?.path) throw new Error('Attachment save returned no path');
             storageKey = saved.path;

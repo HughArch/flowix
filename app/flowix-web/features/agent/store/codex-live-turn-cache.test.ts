@@ -30,6 +30,13 @@ describe("codex live turn cache", () => {
     expect(liveTurnMessages([message("old", "assistant", "old")], "missing")).toEqual([]);
   });
 
+  it("keeps a native command turn without a user row", () => {
+    const tool = { ...message("tool", "tool", "result"), codexTurnId: "command-turn" };
+    const answer = { ...message("answer", "assistant", "done"), codexTurnId: "command-turn" };
+    expect(liveTurnMessages([message("older", "assistant", "old"), tool, answer], "command-run", "command-turn"))
+      .toEqual([tool, answer]);
+  });
+
   it("anchors on the provider user row once the optimistic id has been adopted", () => {
     const runId = "run-3";
     const messages = [

@@ -5,7 +5,12 @@
 //! separately from the per-thread run registry.
 
 mod history_projection;
+mod tool_items;
 use history_projection::*;
+use tool_items::{
+    codex_custom_tool_message_type, codex_tool_call_identity, codex_tool_call_input,
+    codex_tool_result_identity, codex_tool_result_value, is_custom_tool_call_item,
+};
 
 use std::collections::{HashMap, HashSet};
 use std::path::PathBuf;
@@ -130,6 +135,8 @@ struct ActiveTurn {
     /// per active turn so the terminal payload remains a true fallback
     /// instead of a second delivery.
     completed_agent_messages: Arc<Mutex<Vec<CompletedAgentMessage>>>,
+    /// Runtime-owned receipts survive webview reloads until userMessage consumption.
+    pending_steers: Vec<Value>,
 }
 
 #[derive(Clone)]
@@ -454,6 +461,7 @@ async fn bind_automatically_started_queue_turn(
                 last_event_at: started_at,
                 stream_end_emitted: stream_end_emitted.clone(),
                 completed_agent_messages: completed_agent_messages.clone(),
+                pending_steers: Vec::new(),
             },
         );
     }
@@ -1076,6 +1084,7 @@ impl CodexAppServerManager {
                 last_event_at: chrono::Utc::now().timestamp_millis(),
                 stream_end_emitted: stream_end_emitted.clone(),
                 completed_agent_messages: completed_agent_messages.clone(),
+                pending_steers: Vec::new(),
             });
             let mut turn_params = json!({
                 "threadId": codex_thread_id,
@@ -1212,16 +1221,56 @@ impl CodexAppServerManager {
             .map(|turn| (turn.codex_thread_id.clone(), turn.codex_turn_id.clone()))
             .ok_or_else(|| "Codex has no steerable active turn".to_string())?;
         let input = codex_user_input(&message);
-        self.request(
-            "turn/steer",
-            json!({
-                "threadId": active.0,
-                "expectedTurnId": active.1,
-                "clientUserMessageId": client_user_message_id,
-                "input": input,
-            }),
-        )
-        .await?;
+        // Register before the RPC: item/completed can beat its response. An
+        // acknowledgement removes the receipt and the response never recreates it.
+        {
+            let mut turns = self.inner.active_turns.lock().await;
+            let turn = turns
+                .get_mut(flowix_thread_id)
+                .filter(|turn| {
+                    turn.codex_turn_id == active.1
+                        && !turn.stream_end_emitted.load(Ordering::Acquire)
+                })
+                .ok_or_else(|| "Codex has no steerable active turn".to_string())?;
+            if turn
+                .pending_steers
+                .iter()
+                .any(|item| item["clientUserMessageId"] == client_user_message_id)
+            {
+                return Err("Codex steering already submitted".to_string());
+            }
+            turn.pending_steers.push(json!({
+                "id": client_user_message_id, "clientUserMessageId": client_user_message_id,
+                "input": input, "content": message.content, "runId": turn.run_id,
+                "queuedAt": chrono::Utc::now().timestamp_millis(),
+                "deliveryStatus": "submitting"
+            }));
+        }
+        let result = self
+            .request(
+                "turn/steer",
+                json!({
+                    "threadId": active.0,
+                    "expectedTurnId": active.1,
+                    "clientUserMessageId": client_user_message_id,
+                    "input": input,
+                }),
+            )
+            .await;
+        {
+            let mut turns = self.inner.active_turns.lock().await;
+            if let Some(turn) = turns
+                .get_mut(flowix_thread_id)
+                .filter(|turn| turn.codex_turn_id == active.1)
+            {
+                finish_pending_steer(
+                    &mut turn.pending_steers,
+                    &client_user_message_id,
+                    result.is_ok(),
+                );
+            }
+        }
+        result?;
         let _ = app_handle;
         Ok(())
     }
@@ -1416,8 +1465,20 @@ impl CodexAppServerManager {
     pub async fn list_queued_follow_ups(&self, flowix_thread_id: &str) -> Result<Value, String> {
         let codex_thread_id = self.resolve_queue_thread_id(flowix_thread_id).await?;
         let _queue_operation = lock_follow_up_operations(&self.inner, flowix_thread_id).await;
-        self.list_queued_follow_ups_unlocked(flowix_thread_id, &codex_thread_id)
-            .await
+        let result = self
+            .list_queued_follow_ups_unlocked(flowix_thread_id, &codex_thread_id)
+            .await?;
+        Ok(self.with_pending_steers(flowix_thread_id, result).await)
+    }
+
+    async fn with_pending_steers(&self, flowix_thread_id: &str, mut result: Value) -> Value {
+        let turns = self.inner.active_turns.lock().await;
+        result["pendingDeliveries"] = json!(turns
+            .get(flowix_thread_id)
+            .filter(|turn| !turn.stream_end_emitted.load(Ordering::Acquire))
+            .map(|turn| turn.pending_steers.clone())
+            .unwrap_or_default());
+        result
     }
 
     /// Restore an idle provider queue into the normal run lifecycle. This is
@@ -1468,7 +1529,7 @@ impl CodexAppServerManager {
                 }
             }
         }
-        Ok(result)
+        Ok(self.with_pending_steers(flowix_thread_id, result).await)
     }
 
     pub async fn delete_queued_follow_up(
@@ -1605,6 +1666,7 @@ impl CodexAppServerManager {
                     last_event_at: chrono::Utc::now().timestamp_millis(),
                     stream_end_emitted: stream_end_emitted.clone(),
                     completed_agent_messages: completed_agent_messages.clone(),
+                    pending_steers: Vec::new(),
                 },
             );
         }
@@ -2553,6 +2615,7 @@ impl CodexAppServerManager {
                 last_event_at: chrono::Utc::now().timestamp_millis(),
                 stream_end_emitted: ended.clone(),
                 completed_agent_messages: completed_agent_messages.clone(),
+                pending_steers: Vec::new(),
             },
         );
         self.emit_codex_command(
@@ -3157,6 +3220,28 @@ async fn write_server_error(stdin: &Arc<Mutex<ChildStdin>>, id: &Value, method: 
     }
 }
 
+fn finish_pending_steer(pending: &mut Vec<Value>, client_id: &str, accepted: bool) {
+    if !accepted {
+        pending.retain(|item| item["clientUserMessageId"] != client_id);
+    } else if let Some(item) = pending
+        .iter_mut()
+        .find(|item| item["clientUserMessageId"] == client_id)
+    {
+        item["deliveryStatus"] = json!("steering");
+    }
+}
+
+fn acknowledge_pending_steers(pending: &mut Vec<Value>, item: &Value) {
+    if item.get("type").and_then(Value::as_str) != Some("userMessage") {
+        return;
+    }
+    if let Some(client_id) = item.get("clientId").and_then(Value::as_str) {
+        pending.retain(|receipt| {
+            receipt.get("clientUserMessageId").and_then(Value::as_str) != Some(client_id)
+        });
+    }
+}
+
 async fn dispatch_notification(inner: &Arc<Inner>, message: &Value) {
     let _dispatch = inner.notification_dispatch.lock().await;
     dispatch_notification_inner(inner, message).await;
@@ -3268,6 +3353,11 @@ async fn dispatch_notification_inner(inner: &Arc<Inner>, message: &Value) {
                 if let Some(turn_id) = turn_id {
                     active.codex_turn_id = turn_id.to_string();
                     active.turn_ready.notify_one();
+                }
+            }
+            if method == "item/completed" {
+                if let Some(item) = params.get("item") {
+                    acknowledge_pending_steers(&mut active.pending_steers, item);
                 }
             }
             if active.cancel_requested && !active.codex_turn_id.is_empty() {
@@ -3389,19 +3479,16 @@ async fn dispatch_notification_inner(inner: &Arc<Inner>, message: &Value) {
         }
         "item/started" => {
             if let Some(item) = params.get("item") {
-                if let Some((id, name)) = tool_identity(item) {
+                if let Some((chunk, metadata)) =
+                    tool_call_notification_chunk(&flowix_thread_id, item, turn_id)
+                {
                     emit_notification_chunk_with_metadata(
                         inner,
                         &flowix_thread_id,
                         &run_id,
                         &app,
-                        AgentChunk::ToolCall {
-                            thread_id: flowix_thread_id.clone(),
-                            id,
-                            name,
-                            input: item.clone(),
-                        },
-                        item_metadata(item),
+                        chunk,
+                        metadata,
                     )
                     .await;
                 }
@@ -3427,19 +3514,47 @@ async fn dispatch_notification_inner(inner: &Arc<Inner>, message: &Value) {
                         )
                         .await;
                     }
-                } else if let Some((id, name)) = tool_identity(item) {
+                } else if is_custom_tool_call_item(item) {
+                    // Some App Server versions only expose the completed
+                    // snapshot for custom tools. Replaying the call is
+                    // idempotent with item/started and preserves a visible
+                    // row when that notification was absent.
+                    if let Some((chunk, metadata)) =
+                        tool_call_notification_chunk(&flowix_thread_id, item, turn_id)
+                    {
+                        emit_notification_chunk_with_metadata(
+                            inner,
+                            &flowix_thread_id,
+                            &run_id,
+                            &app,
+                            chunk,
+                            metadata,
+                        )
+                        .await;
+                    }
+                    if let Some((chunk, metadata)) =
+                        tool_result_notification_chunk(&flowix_thread_id, item, turn_id)
+                    {
+                        emit_notification_chunk_with_metadata(
+                            inner,
+                            &flowix_thread_id,
+                            &run_id,
+                            &app,
+                            chunk,
+                            metadata,
+                        )
+                        .await;
+                    }
+                } else if let Some((chunk, metadata)) =
+                    tool_result_notification_chunk(&flowix_thread_id, item, turn_id)
+                {
                     emit_notification_chunk_with_metadata(
                         inner,
                         &flowix_thread_id,
                         &run_id,
                         &app,
-                        AgentChunk::ToolResult {
-                            thread_id: flowix_thread_id.clone(),
-                            id,
-                            name,
-                            result: item.clone(),
-                        },
-                        item_metadata(item),
+                        chunk,
+                        metadata,
                     )
                     .await;
                 }
@@ -3737,6 +3852,45 @@ fn with_turn_id(mut metadata: AgentChunkMetadata, turn_id: Option<&str>) -> Agen
     metadata
 }
 
+fn tool_call_notification_chunk(
+    thread_id: &str,
+    item: &Value,
+    turn_id: Option<&str>,
+) -> Option<(AgentChunk, AgentChunkMetadata)> {
+    let (id, name) = codex_tool_call_identity(item)?;
+    let mut metadata = with_turn_id(item_metadata(item), turn_id);
+    metadata.message_type = codex_custom_tool_message_type(item);
+    Some((
+        AgentChunk::ToolCall {
+            thread_id: thread_id.to_string(),
+            id,
+            name,
+            input: codex_tool_call_input(item),
+        },
+        metadata,
+    ))
+}
+
+fn tool_result_notification_chunk(
+    thread_id: &str,
+    item: &Value,
+    turn_id: Option<&str>,
+) -> Option<(AgentChunk, AgentChunkMetadata)> {
+    let (id, name) = codex_tool_result_identity(item)?;
+    let result = codex_tool_result_value(item)?;
+    let mut metadata = with_turn_id(item_metadata(item), turn_id);
+    metadata.message_type = codex_custom_tool_message_type(item);
+    Some((
+        AgentChunk::ToolResult {
+            thread_id: thread_id.to_string(),
+            id,
+            name,
+            result,
+        },
+        metadata,
+    ))
+}
+
 fn completed_message_chunk(
     thread_id: &str,
     item: &Value,
@@ -3934,28 +4088,6 @@ fn annotate_goal_turn(turns: &mut [Value], response: &Value) {
     );
 }
 
-fn tool_identity(item: &Value) -> Option<(String, String)> {
-    let kind = item.get("type").and_then(Value::as_str)?;
-    let name = canonical_codex_tool_name(kind)?;
-    let id = item.get("id").and_then(Value::as_str)?.to_string();
-    Some((id, name.to_string()))
-}
-
-fn canonical_codex_tool_name(kind: &str) -> Option<&'static str> {
-    match kind {
-        "commandExecution" => Some("command_execution"),
-        "fileChange" => Some("file_change"),
-        "mcpToolCall" => Some("mcp_tool_call"),
-        "dynamicToolCall" => Some("dynamic_tool_call"),
-        // `collabToolCall` is current; retain the older spelling as an alias.
-        "collabToolCall" | "collabAgentToolCall" => Some("collab_agent_tool_call"),
-        "webSearch" => Some("web_search"),
-        "imageView" => Some("view_image"),
-        "imageGeneration" => Some("image_generation"),
-        _ => None,
-    }
-}
-
 /// Translate Flowix permission names into the App Server sandbox object.
 /// Keep this separate from the App Server v2 `permissions` profile API.
 fn app_server_sandbox(permission: Option<&str>) -> Value {
@@ -3996,6 +4128,32 @@ fn app_server_approval_policy(permission: Option<&str>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn consumes_only_the_correlated_pending_steer_and_never_recreates_a_receipt() {
+        let mut receipts = vec![
+            json!({ "clientUserMessageId": "first", "deliveryStatus": "submitting" }),
+            json!({ "clientUserMessageId": "second", "deliveryStatus": "steering" }),
+        ];
+        acknowledge_pending_steers(
+            &mut receipts,
+            &json!({ "type": "agentMessage", "clientId": "first" }),
+        );
+        assert_eq!(receipts.len(), 2);
+        acknowledge_pending_steers(
+            &mut receipts,
+            &json!({ "type": "userMessage", "clientId": "first" }),
+        );
+        assert_eq!(receipts.len(), 1);
+        assert_eq!(receipts[0]["clientUserMessageId"], "second");
+        finish_pending_steer(&mut receipts, "first", true);
+        assert_eq!(receipts.len(), 1);
+        acknowledge_pending_steers(
+            &mut receipts,
+            &json!({ "type": "userMessage", "clientId": "first" }),
+        );
+        assert_eq!(receipts.len(), 1);
+    }
 
     #[test]
     fn identifies_queue_entries_already_consumed_by_codex() {
@@ -4116,7 +4274,7 @@ mod tests {
             "command": "git status --short"
         });
         assert_eq!(
-            tool_identity(&item),
+            codex_tool_call_identity(&item),
             Some(("item-1".to_string(), "command_execution".to_string()))
         );
     }
@@ -4129,15 +4287,15 @@ mod tests {
         let image_generation = json!({ "id": "item-generation", "type": "imageGeneration" });
 
         assert_eq!(
-            tool_identity(&collab),
+            codex_tool_call_identity(&collab),
             Some(("item-c".to_string(), "collab_agent_tool_call".to_string()))
         );
         assert_eq!(
-            tool_identity(&image_view),
+            codex_tool_call_identity(&image_view),
             Some(("item-view".to_string(), "view_image".to_string()))
         );
         assert_eq!(
-            tool_identity(&image_generation),
+            codex_tool_call_identity(&image_generation),
             Some((
                 "item-generation".to_string(),
                 "image_generation".to_string()
@@ -4222,7 +4380,7 @@ mod tests {
     #[test]
     fn ignores_non_tool_items() {
         assert_eq!(
-            tool_identity(&json!({ "id": "message-1", "type": "agentMessage" })),
+            codex_tool_call_identity(&json!({ "id": "message-1", "type": "agentMessage" })),
             None
         );
     }
@@ -4961,6 +5119,28 @@ Budget:
         );
         assert_eq!(messages[2].role, "tool");
         assert_eq!(messages[3].content, "Codex turn interrupted");
+    }
+
+    #[test]
+    fn omits_unfinished_assistant_items_from_interrupted_turn_history() {
+        let turns = vec![json!({
+            "id": "turn-interrupted",
+            "startedAt": 1_730_910_000,
+            "status": "interrupted",
+            "items": [
+                { "id": "u1", "type": "userMessage", "content": [{ "type": "text", "text": "Inspect" }] },
+                { "id": "draft", "type": "agentMessage", "status": "inProgress", "text": "unfinished" },
+                { "id": "answer", "type": "agentMessage", "status": "completed", "text": "Completed before stop" }
+            ]
+        })];
+
+        let messages = app_server_turn_messages(&turns);
+        assert_eq!(
+            messages.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(),
+            ["u1", "answer", "codex-turn-error-turn-interrupted"],
+        );
+        assert_eq!(messages[1].content, "Completed before stop");
+        assert_eq!(messages[1].is_completed, Some(true));
     }
 
     #[test]

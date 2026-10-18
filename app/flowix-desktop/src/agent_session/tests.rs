@@ -711,7 +711,7 @@ mod tests {
     }
 
     #[tokio::test]
-    async fn agent_external_events_store_payloads_and_page_by_thread_id() {
+    async fn agent_external_events_store_and_deduplicate_payloads() {
         let manager = ThreadManager::for_tests();
         let first = NewAgentExternalEvent {
             runtime: "test-runtime".to_string(),
@@ -743,18 +743,6 @@ mod tests {
         assert_eq!(duplicate_id, id1);
         assert!(id2 > id1);
 
-        let all = manager
-            .list_agent_external_events_by_thread("thread-1", None, 10)
-            .await
-            .expect("list all events");
-        assert_eq!(all.len(), 2);
-        assert_eq!(all[0].id, id1);
-        assert_eq!(all[1].id, id2);
-        assert_eq!(
-            all[1].normalized_json,
-            r#"{"kind":"tool_call","id":"call-1"}"#
-        );
-        assert_eq!(all[0].raw_json.as_deref(), Some(r#"{"type":"event_msg"}"#));
         let structured = manager
             .lock_conn()
             .query_row(
@@ -781,12 +769,15 @@ mod tests {
             )
         );
 
-        let delta = manager
-            .list_agent_external_events_by_thread("thread-1", Some(id1), 10)
-            .await
-            .expect("list delta events");
-        assert_eq!(delta.len(), 1);
-        assert_eq!(delta[0].id, id2);
+        let stored: i64 = manager
+            .lock_conn()
+            .query_row(
+                "SELECT COUNT(*) FROM agent_external_events WHERE thread_id = 'thread-1'",
+                [],
+                |row| row.get(0),
+            )
+            .expect("count persisted events");
+        assert_eq!(stored, 2);
     }
 
     #[tokio::test]
@@ -1247,18 +1238,16 @@ mod tests {
         }
 
         let manager = Arc::new(ThreadManager::new(db_path).expect("migrate legacy db"));
-        let events = manager
-            .list_agent_external_events_by_thread("thread-legacy", None, 10)
-            .await
-            .expect("list migrated events");
-
-        assert_eq!(events.len(), 1);
-        assert_eq!(events[0].id, 7);
-        assert_eq!(events[0].runtime, "codex");
-        assert_eq!(events[0].thread_id, "thread-legacy");
-        assert_eq!(events[0].normalized_json, "{}");
-        assert_eq!(events[0].raw_json, None);
-        assert_eq!(events[0].created_at, 123);
+        let migrated: (i64, String, String, String, Option<String>, i64) = manager
+            .lock_conn()
+            .query_row(
+                "SELECT id, runtime, thread_id, normalized_json, raw_json, created_at
+                 FROM agent_external_events WHERE thread_id = 'thread-legacy'",
+                [],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
+            )
+            .expect("read migrated event");
+        assert_eq!(migrated, (7, "codex".into(), "thread-legacy".into(), "{}".into(), None, 123));
     }
 
     #[tokio::test]
@@ -1341,6 +1330,41 @@ mod tests {
             version,
             crate::agent_session::migrations::THREAD_DB_SCHEMA_VERSION
         );
+    }
+
+    #[test]
+    fn migration_adds_pi_fork_origin_to_version_12_database() {
+        let dir = tempfile::tempdir().expect("tempdir");
+        let db_path = dir.path().join("thread.db");
+        drop(ThreadManager::new(db_path.clone()).expect("create database"));
+
+        let conn = rusqlite::Connection::open(&db_path).expect("open database");
+        conn.execute_batch(
+            "DROP TABLE threads_pi;
+             CREATE TABLE threads_pi (
+                 thread_id TEXT PRIMARY KEY,
+                 external_id TEXT NOT NULL UNIQUE,
+                 session_file TEXT,
+                 cwd TEXT,
+                 schema_version INTEGER NOT NULL DEFAULT 1,
+                 FOREIGN KEY(thread_id) REFERENCES threads_index(id) ON DELETE CASCADE
+             );
+             PRAGMA user_version = 12;",
+        )
+        .expect("restore version 12 Pi schema");
+        drop(conn);
+
+        drop(ThreadManager::new(db_path.clone()).expect("migrate database"));
+        let conn = rusqlite::Connection::open(&db_path).expect("inspect migrated database");
+        let mut stmt = conn.prepare("PRAGMA table_info(threads_pi)").expect("inspect Pi columns");
+        let columns = stmt
+            .query_map([], |row| row.get::<_, String>(1))
+            .expect("query Pi columns")
+            .collect::<Result<Vec<_>, _>>()
+            .expect("collect Pi columns");
+        for column in ["parent_thread_id", "parent_session_id", "fork_entry_id"] {
+            assert!(columns.iter().any(|existing| existing == column));
+        }
     }
 
     #[test]
@@ -1578,11 +1602,34 @@ mod tests {
                 "pi-provider-id",
                 Some(serde_json::json!({
                     "sessionFile": "/sessions/pi-session.jsonl",
-                    "cwd": "/workspace/pi"
+                    "cwd": "/workspace/pi",
+                    "parentThreadId": "source-thread",
+                    "parentSessionId": "source-session",
+                    "forkEntryId": "assistant-entry"
                 })),
             )
             .await
             .expect("bind Pi provider session");
+        manager
+            .upsert_external_session(
+                "thread-simplified-index",
+                "pi",
+                "pi-provider-id",
+                Some(serde_json::json!({
+                    "sessionFile": "/sessions/pi-session.jsonl",
+                    "cwd": "/workspace/pi"
+                })),
+            )
+            .await
+            .expect("resume Pi provider session without changing its fork origin");
+        assert_eq!(
+            manager
+                .read_frozen_cwd("thread-simplified-index")
+                .await
+                .expect("read Pi cwd before a conversation instance exists")
+                .as_deref(),
+            Some(std::path::Path::new("/workspace/pi"))
+        );
         manager
             .insert_agent_external_event(NewAgentExternalEvent {
                 runtime: "claude".to_string(),
@@ -1661,11 +1708,12 @@ mod tests {
                 Some("/workspace/claude".to_string())
             )
         );
-        let pi: (String, Option<String>, Option<String>) = conn
+        let pi: (String, Option<String>, Option<String>, Option<String>, Option<String>, Option<String>) = conn
             .query_row(
-                "SELECT external_id, session_file, cwd FROM threads_pi WHERE thread_id = ?1",
+                "SELECT external_id, session_file, cwd, parent_thread_id, parent_session_id, fork_entry_id
+                 FROM threads_pi WHERE thread_id = ?1",
                 ["thread-simplified-index"],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?, row.get(4)?, row.get(5)?)),
             )
             .expect("read Pi binding and runtime metadata");
         assert_eq!(
@@ -1673,7 +1721,10 @@ mod tests {
             (
                 "pi-provider-id".to_string(),
                 Some("/sessions/pi-session.jsonl".to_string()),
-                Some("/workspace/pi".to_string())
+                Some("/workspace/pi".to_string()),
+                Some("source-thread".to_string()),
+                Some("source-session".to_string()),
+                Some("assistant-entry".to_string())
             )
         );
         let claude_event_count: i64 = conn
@@ -2159,14 +2210,15 @@ mod tests {
             instances[0].thread_id.as_deref(),
             Some("codex-local-card-3")
         );
-        let events = manager
-            .list_agent_external_events_by_thread("codex-local-card-3", None, 10)
-            .await
+        let event_count: i64 = manager
+            .lock_conn()
+            .query_row(
+                "SELECT COUNT(*) FROM agent_external_events WHERE thread_id = 'codex-local-card-3'",
+                [],
+                |row| row.get(0),
+            )
             .unwrap();
-        assert_eq!(events.len(), 2);
-        assert!(events
-            .iter()
-            .all(|event| event.thread_id == "codex-local-card-3"));
+        assert_eq!(event_count, 2);
         let listed = manager.list_external_threads("codex").await.unwrap();
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].thread_id, "codex-local-card-3");
@@ -2282,10 +2334,14 @@ mod tests {
             .await
             .unwrap()
             .is_none());
-        assert!(manager
-            .list_agent_external_events_by_thread("codex-local-delete", None, 10)
-            .await
-            .unwrap()
-            .is_empty());
+        let event_count: i64 = manager
+            .lock_conn()
+            .query_row(
+                "SELECT COUNT(*) FROM agent_external_events WHERE thread_id = 'codex-local-delete'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(event_count, 0);
     }
 }

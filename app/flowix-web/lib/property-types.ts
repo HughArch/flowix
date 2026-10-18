@@ -9,15 +9,14 @@ export const PROPERTY_TYPE_CATALOG = [
   { kind: 'Boolean', labelKey: 'document.properties.type.boolean', displayKind: 'boolean', iconKind: 'boolean', custom: true, preset: true, table: true, tableAddable: true },
   { kind: 'Number', labelKey: 'document.properties.type.number', displayKind: 'number', iconKind: 'number', custom: true, preset: true, table: true, tableAddable: true },
   { kind: 'Date', labelKey: 'document.properties.type.date', displayKind: 'date', iconKind: 'date', custom: true, preset: true, table: true, tableAddable: true },
-  { kind: 'URL', labelKey: 'document.properties.type.url', displayKind: 'url', iconKind: 'url', custom: false, preset: false, table: true, tableAddable: true },
+  { kind: 'URL', labelKey: 'document.properties.type.url', displayKind: 'url', iconKind: 'url', custom: false, preset: true, table: true, tableAddable: true },
   { kind: 'Select', labelKey: 'document.properties.type.select', displayKind: 'text', iconKind: 'select', custom: false, preset: true, table: true, tableAddable: true },
   { kind: 'MultiSelect', labelKey: 'document.properties.type.multiSelect', displayKind: 'array', iconKind: 'select', custom: false, preset: true, table: true, tableAddable: true },
   { kind: 'Tag', labelKey: 'document.properties.type.tag', displayKind: 'array', iconKind: 'array', custom: true, preset: true, table: true, tableAddable: true },
-  { kind: 'Tags', labelKey: 'document.properties.type.tags', displayKind: 'array', iconKind: 'array', custom: false, preset: true, table: true, tableAddable: true },
   { kind: 'Color', labelKey: 'document.properties.type.color', displayKind: 'color', iconKind: 'color', custom: false, preset: true, table: true, tableAddable: true },
   { kind: 'Icon', labelKey: 'document.properties.type.icon', displayKind: 'icon', iconKind: 'icon', custom: false, preset: true, table: true, tableAddable: true },
   { kind: 'Note', labelKey: 'document.properties.type.note', displayKind: 'url', iconKind: 'note', custom: false, preset: false, table: true, tableAddable: false },
-  { kind: 'Image', labelKey: 'document.properties.type.image', displayKind: 'array', iconKind: 'image', custom: false, preset: false, table: true, tableAddable: true },
+  { kind: 'Image', labelKey: 'document.properties.type.image', displayKind: 'array', iconKind: 'image', custom: false, preset: true, table: true, tableAddable: true },
 ] as const satisfies readonly {
   kind: string;
   labelKey: I18nKey;
@@ -75,4 +74,32 @@ export function isPresetPropertyKind(value: unknown): value is PresetPropertyKin
 
 export function isTablePropertyKind(value: unknown): value is TablePropertyKind {
   return typeof value === 'string' && PROPERTY_KIND_SETS.table.has(value as PropertyKind);
+}
+
+/** Shared property definition shapes. Kept in the low layer so `lib` and
+ * `features` can both consume them without a reverse dependency.
+ */
+export type PropertyFieldType = PresetPropertyKind;
+
+export interface PropertyPresetOption {
+  id: string;
+  label: string;
+}
+
+export interface PropertyFieldConfig {
+  position?: number;
+  /** Optional only for legacy inputs; normalized settings always provide an ID. */
+  id?: string;
+  name?: string;
+  revision?: number;
+  multiple?: boolean;
+  key: string;
+  type: PropertyFieldType;
+  options?: PropertyPresetOption[];
+}
+
+export interface PropertiesConfig {
+  systemFields?: PropertyFieldConfig[];
+  fields: PropertyFieldConfig[];
+  deletedFields?: PropertyFieldConfig[];
 }

@@ -6,7 +6,7 @@ import type { Selection } from '@tiptap/pm/state';
 import { FrontmatterPropertyNodeView } from '@features/editor/extensions/frontmatter-node-view';
 import { updateVisibleFrontmatterProperty } from '@features/document/properties/frontmatter-model';
 import { resolvePropertyPreset } from '@features/document/properties/presets';
-import { getPropertyFieldPreferences } from '@features/preferences/public/runtime-api';
+import { getPropertyPresets } from '@features/properties/public-api';
 
 // Consume a BOM both at the true file boundary and immediately after the
 // frontmatter block. The latter repairs legacy imports where key injection
@@ -26,6 +26,7 @@ const Frontmatter = Node.create({
     return {
       propertyTargetId: undefined as string | undefined,
       onViewSourceMode: undefined as (() => void) | undefined,
+      getAttachmentNotebookId: undefined as (() => string | undefined) | undefined,
     };
   },
 
@@ -45,6 +46,7 @@ const Frontmatter = Node.create({
       getPos,
       this.options.propertyTargetId,
       this.options.onViewSourceMode,
+      this.options.getAttachmentNotebookId,
     );
   },
 
@@ -66,7 +68,7 @@ const Frontmatter = Node.create({
             // When a preset is requested, seed the frontmatter with that preset's
             // key/kind so the first row matches the user's pick.
             const preset = detail?.presetKey
-              ? resolvePropertyPreset(detail.presetKey, getPropertyFieldPreferences())
+              ? resolvePropertyPreset(detail.presetKey, getPropertyPresets())
               : null;
             const yamlContent = updateVisibleFrontmatterProperty(
               '',

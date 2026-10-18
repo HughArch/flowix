@@ -9,7 +9,7 @@ use crate::lock_utils::read_lock;
 use flowix_core::memo_file::{
     normalize_markdown_encoding_boundaries,
     notebook_path_from_relative, notebook_relative_path, Memo, MemoFile,
-    NoteEntry, PathTodoEntry,
+    NoteEntry,
 };
 use flowix_core::service::NoteSaveOutcome;
 use flowix_core::{FlowixError, MemoPage, MemoService, NoteService};
@@ -200,30 +200,6 @@ pub async fn get_used_memo_tag_ids(
     .map_err(|error| format!("tag summary task failed: {error}"))
 }
 
-#[tauri::command]
-pub fn get_memo_todo_metadata(
-    notebook_id: Option<String>,
-    sort: Option<String>,
-    state: State<AppState>,
-) -> Vec<PathTodoEntry> {
-    let memo_file = read_lock(&state.memo_file, "memo_file");
-    let notebooks = memo_file.read_notebook_configs().unwrap_or_default();
-    let mut entries = notebooks.into_iter()
-        .filter(|notebook| notebook_id.as_deref().is_none_or(|id| notebook.id == id))
-        .flat_map(|notebook| memo_file.read_note_path_todos(&notebook.id, sort.as_deref().unwrap_or("createdAt")).unwrap_or_default())
-        .collect::<Vec<_>>();
-    if sort.as_deref() == Some("updatedAt") {
-        entries.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    } else {
-        entries.sort_by(|a, b| b.created_at.cmp(&a.created_at));
-    }
-    entries
-}
-
-#[tauri::command]
-pub fn get_memo_todo_count(notebook_id: Option<String>, state: State<AppState>) -> usize {
-    get_memo_todo_metadata(notebook_id, None, state).len()
-}
 #[tauri::command]
 pub async fn read_document(
     window: tauri::WebviewWindow,

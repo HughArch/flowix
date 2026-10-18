@@ -6,7 +6,13 @@ import {
   type ComposerSubmissionKind,
 } from "./composer-submission-state";
 
-export type ComposerSubmissionPhase = "idle" | "preparing" | "binding" | "accepting" | "accepted" | "failed";
+export type ComposerSubmissionPhase =
+  | "idle"
+  | "preparing"
+  | "binding"
+  | "accepting"
+  | "accepted"
+  | "failed";
 
 export interface ComposerSubmissionSnapshot {
   markdown: string;
@@ -14,24 +20,57 @@ export interface ComposerSubmissionSnapshot {
   images: AgentThreadCardInputImage[];
 }
 
-/** Input stays intact until acceptance; binding/IPC failures remain retryable. */
+type SubmissionComposer = Pick<
+  ComposerController,
+  | "getPrompt"
+  | "getDraftMarkdown"
+  | "flushPendingDraft"
+  | "clearDraft"
+  | "clear"
+  | "setHistoryValue"
+  | "resetHistoryNavigation"
+  | "updateMultiLineState"
+>;
+
+function combineDraftsForRetry(submitted: string, current: string): string {
+  if (!submitted) return current;
+  if (!current) return submitted;
+  return `${submitted}\n${current}`;
+}
+
+function restoreDraftForRetry(composer: SubmissionComposer, submitted: string): void {
+  const current = composer.getDraftMarkdown();
+  const restored = combineDraftsForRetry(submitted, current);
+  if (restored !== current) composer.setHistoryValue(restored, { persistDraft: true });
+}
+
+/** Clears on dispatch for responsive feedback and restores the draft on rejection. */
 export class ComposerSubmissionController {
   phase: ComposerSubmissionPhase = "idle";
   snapshot: ComposerSubmissionSnapshot | null = null;
 
   get isSubmitting(): boolean {
-    return this.phase === "preparing" || this.phase === "binding" || this.phase === "accepting";
+    return (
+      this.phase === "preparing" ||
+      this.phase === "binding" ||
+      this.phase === "accepting"
+    );
   }
 
   async submit<T>(options: {
-    composer: Pick<ComposerController, "getPrompt" | "getDraftMarkdown" | "flushPendingDraft" |
-      "clearDraft" | "clear" | "resetHistoryNavigation" | "updateMultiLineState">;
-    images: Pick<ComposerImageController, "hasImages" | "hasPending" | "readyImages" |
-      "setLocked" | "clearAfterSubmit">;
+    composer: SubmissionComposer;
+    images: Pick<
+      ComposerImageController,
+      "hasImages" | "hasPending" | "readyImages" | "setLocked" | "clearAfterSubmit"
+    >;
     getRuntime: () => ComposerRuntimeState;
     isDisposed: () => boolean;
-    bind: (snapshot: ComposerSubmissionSnapshot) => Promise<T>;
-    accept: (bound: T, snapshot: ComposerSubmissionSnapshot, kind: ComposerSubmissionKind) => Promise<void>;
+    bind: (snapshot: ComposerSubmissionSnapshot, kind: ComposerSubmissionKind) => Promise<T>;
+    accept: (
+      bound: T,
+      snapshot: ComposerSubmissionSnapshot,
+      kind: ComposerSubmissionKind,
+    ) => Promise<void>;
     clearPersistedDraft: () => void;
     onPhaseChange: () => void;
     onError: (error: unknown) => void;
@@ -56,37 +95,70 @@ export class ComposerSubmissionController {
       this.phase = phase;
       if (!options.isDisposed()) options.onPhaseChange();
     };
+    let submittedDraftCleared = false;
+    const clearSubmittedDraft = (): unknown => {
+      if (options.isDisposed() || composer.getDraftMarkdown() !== snapshot.markdown) {
+        return undefined;
+      }
+      try {
+        composer.clearDraft();
+        composer.clear();
+        composer.resetHistoryNavigation();
+        submittedDraftCleared = true;
+        options.clearPersistedDraft();
+        return undefined;
+      } catch (error) {
+        // Cleanup can fail after the editor has cleared. Track that case so a
+        // rejected request still restores the input.
+        submittedDraftCleared ||= composer.getDraftMarkdown() !== snapshot.markdown;
+        return error;
+      }
+    };
     transition("preparing");
     images.setLocked(true);
     try {
       composer.flushPendingDraft();
       transition("binding");
-      const bound = await options.bind(snapshot);
+      const bound = await options.bind(snapshot, state.kind);
       if (options.isDisposed()) return;
       transition("accepting");
       // Recheck thread work after asynchronous binding. A newly pending
       // command/stop must not turn a prepared request into an invalid send.
       if (!selectComposerSubmissionState({
-        ...options.getRuntime(), isSubmitting: false,
-        prompt: snapshot.prompt, hasAttachments: snapshot.images.length > 0,
-        hasPendingAttachments: false, kind: state.kind,
-      }).canSubmit) throw new Error("Agent is busy; please retry when the current operation finishes.");
-      await options.accept(bound, snapshot, state.kind);
+        ...options.getRuntime(),
+        isSubmitting: false,
+        prompt: snapshot.prompt,
+        hasAttachments: snapshot.images.length > 0,
+        hasPendingAttachments: false,
+        kind: state.kind,
+      }).canSubmit) {
+        throw new Error("Agent is busy; please retry when the current operation finishes.");
+      }
+      // Dispatch can update the message list before its promise resolves.
+      // Clear now and keep the snapshot for rollback if the request is rejected.
+      const acceptance = options.accept(bound, snapshot, state.kind);
+      const cleanupError = clearSubmittedDraft();
+      await acceptance;
       if (options.isDisposed()) return;
       // Acceptance is irreversible. A subsequent UI cleanup error must
       // never describe the request as rejected and invite an unsafe retry.
       transition("accepted");
-      if (composer.getDraftMarkdown() === snapshot.markdown) {
-        composer.clearDraft();
-        composer.clear();
-        composer.resetHistoryNavigation();
-        options.clearPersistedDraft();
-      }
+      if (cleanupError !== undefined) throw cleanupError;
       images.clearAfterSubmit();
       this.snapshot = null;
     } catch (error) {
       if (this.phase !== "accepted") transition("failed");
-      if (!options.isDisposed()) options.onError(error);
+      if (!options.isDisposed()) {
+        if (this.phase !== "accepted" && submittedDraftCleared) {
+          try {
+            restoreDraftForRetry(composer, snapshot.markdown);
+          } catch {
+            // Keep the original rejection as the actionable error. The
+            // submission snapshot also remains available for recovery.
+          }
+        }
+        options.onError(error);
+      }
     } finally {
       // A disposed surface must not receive late callbacks or DOM writes.
       if (!options.isDisposed()) {

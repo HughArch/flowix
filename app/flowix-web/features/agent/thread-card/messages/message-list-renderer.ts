@@ -88,8 +88,6 @@ export function isCurrentTurnMessage(
     return true;
   }
 
-  if (index < latestUserIndex) return false;
-
   const latestUser = messages[latestUserIndex];
   let currentTurnId = latestUser.codexTurnId;
   if (!currentTurnId) {
@@ -109,7 +107,7 @@ export function isCurrentTurnMessage(
   if (currentTurnId && message.codexTurnId) {
     return currentTurnId === message.codexTurnId;
   }
-  return true;
+  return index >= latestUserIndex;
 }
 
 export function isLastMessageInTurnAndAssistant(
@@ -119,11 +117,12 @@ export function isLastMessageInTurnAndAssistant(
   const message = messages[index];
   if (message.role !== "assistant") return false;
 
-  // A later user row always starts another turn, regardless of whether its
-  // provider metadata has arrived yet.
+  // A steer user row stays inside the same native turn. For providers or
+  // legacy rows without turn ids, a user row remains the fallback boundary.
   for (let i = index + 1; i < messages.length; i += 1) {
     const laterMessage = messages[i];
-    if (laterMessage.role === "user") break;
+    if (laterMessage.role === "user" &&
+      (!message.codexTurnId || !laterMessage.codexTurnId || laterMessage.codexTurnId !== message.codexTurnId)) break;
 
     // Codex turn ids are authoritative when both rows provide one. Rows
     // without an id are tolerated inside the user-delimited turn because
@@ -472,21 +471,11 @@ export function appendRenderedAgentMessagesToTail(
   return newRendered;
 }
 
-export function createRenderedAgentMessageList(
-  messages: ThreadState["messages"],
+function createRenderItem(
+  renderItem: AgentRenderItem, messages: ThreadState["messages"],
   context: AgentThreadCardMessageRenderContext,
-): {
-  list: HTMLDivElement;
-  rememberedMessages: ThreadState["messages"];
-} {
-  const list = document.createElement("div");
-  list.className = "agent-thread-card__messages";
-  const rememberedMessages: ThreadState["messages"] = [];
-
-  const renderItems = getRenderedAgentItems(messages, context.isLoading);
-  for (let index = 0; index < renderItems.length; index += 1) {
-    const renderItem = renderItems[index];
-    const rendered = renderItem.kind === "tool-group"
+) {
+  return renderItem.kind === "tool-group"
       ? { element: createToolGroupElement({ group: renderItem, context }), shouldRemember: false }
       : renderItem.kind === "generated-images"
         ? {
@@ -517,6 +506,71 @@ export function createRenderedAgentMessageList(
           ),
           onForkMessage: context.onForkMessage,
         });
+}
+
+/** Reconcile existing DOM by stable identity. Unchanged rows, tool groups and
+ * image strips stay mounted when an older turn is corrected or reordered. */
+export function reconcileRenderedAgentMessages(
+  messages: ThreadState["messages"], cache: RenderedAgentMessageCache,
+  context: AgentThreadCardMessageRenderContext,
+  preserveViewport?: HTMLElement,
+): AgentRenderItem[] | null {
+  const list = cache.list;
+  if (!list || list.children.length !== cache.refs.length) return null;
+  const key = (item: AgentRenderItem) => item.kind === "message"
+    ? `message:${messageRenderKey(item.message)}` : `${item.kind}:${item.id}`;
+  const previous = new Map(cache.refs.map((item, index) =>
+    [key(item), { item, element: list.children[index] as HTMLElement }]));
+  const next = getRenderedAgentItems(messages, context.isLoading);
+  if (previous.size !== cache.refs.length || new Set(next.map(key)).size !== next.length) return null;
+  const elements: HTMLElement[] = [];
+  for (const item of next) {
+    const retained = previous.get(key(item));
+    if (retained && areAgentRenderItemsEqual(retained.item, item)) {
+      elements.push(retained.element);
+    } else {
+      const rendered = createRenderItem(item, messages, context);
+      if (rendered?.element) elements.push(rendered.element);
+    }
+  }
+  // Measure only on structural reconciliation while the reader is detached.
+  // Streaming tail updates retain their existing fast path without layout reads.
+  const kept = new Set(elements);
+  const viewportTop = preserveViewport?.getBoundingClientRect().top ?? 0;
+  const anchor = preserveViewport ? Array.from(list.children).find((child) =>
+    kept.has(child as HTMLElement) && child.getBoundingClientRect().bottom > viewportTop) : undefined;
+  const anchorTop = anchor?.getBoundingClientRect().top;
+
+  for (const child of Array.from(list.children)) {
+    if (kept.has(child as HTMLElement)) continue;
+    disposeAgentThreadCardMessageTree(child as HTMLElement);
+    child.remove();
+  }
+  elements.forEach((element, index) => {
+    if (list.children[index] !== element) list.insertBefore(element, list.children[index] ?? null);
+  });
+  syncMessageActions(messages, list, context);
+  if (preserveViewport && anchor && anchorTop !== undefined) {
+    preserveViewport.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+  }
+  return elements.length === next.length ? next : null;
+}
+
+export function createRenderedAgentMessageList(
+  messages: ThreadState["messages"],
+  context: AgentThreadCardMessageRenderContext,
+): {
+  list: HTMLDivElement;
+  rememberedMessages: ThreadState["messages"];
+} {
+  const list = document.createElement("div");
+  list.className = "agent-thread-card__messages";
+  const rememberedMessages: ThreadState["messages"] = [];
+
+  const renderItems = getRenderedAgentItems(messages, context.isLoading);
+  for (let index = 0; index < renderItems.length; index += 1) {
+    const renderItem = renderItems[index];
+    const rendered = createRenderItem(renderItem, messages, context);
     if (!rendered?.element) continue;
     if (rendered.shouldRemember && renderItem.kind === "message") {
       rememberedMessages.push(renderItem.message);

@@ -1,11 +1,14 @@
 import YAML, { isMap, isScalar, isSeq, type YAMLMap } from 'yaml';
 import type { PropertyKind } from '@features/document/properties/presets';
-import { canonicalizePropertyKey } from '@features/document/properties/property-key';
+import { canonicalizePropertyKey } from '@features/properties/property-key';
+import { getPropertyPresets } from '@features/properties/public-api';
+import { resolvePropertyType } from './property-type';
+import { PROPERTY_TYPES_KEY, backfillPropertyTypes, patchPropertyTypes, readPropertyTypes } from './property-type-metadata';
 import { isValidTagPath } from '@/lib/tag-path';
 import { NOTE_COLORS } from '@/types/note-item';
 
 export const FRONTMATTER_RE = /^\uFEFF?(?:[ \t]*\r?\n)*---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
-export const SYSTEM_FRONTMATTER_KEYS = new Set(['flowix_key', 'key']);
+export const SYSTEM_FRONTMATTER_KEYS = new Set(['flowix_key', 'key', PROPERTY_TYPES_KEY]);
 
 const FLOWIX_COLOR_SET = new Set<string>(NOTE_COLORS);
 
@@ -294,13 +297,13 @@ function parsePropertyInput(
       return value.trim() === 'true';
     case 'MultiSelect':
     case 'Tag':
-    case 'Tags':
     case 'Color':
       return parseMultiSelect(value);
     case 'Text':
     case 'Date':
     case 'URL':
     case 'Icon':
+    case 'Image':
     case 'Select':
       return value;
     default:
@@ -346,6 +349,7 @@ export function updateVisibleFrontmatterProperty(
   nextKeyInput: string,
   nextValueInput: string,
   kind?: FrontmatterInputKind,
+  semanticKind: FrontmatterInputKind | undefined = kind,
 ): string {
   const nextKey = canonicalizePropertyKey(nextKeyInput);
   if (!nextKey) {
@@ -384,7 +388,7 @@ export function updateVisibleFrontmatterProperty(
   const parsedValue = nextKey === 'flowix_plugin'
     ? parsePluginMetadataJson(nextValueInput)
     : parsePropertyInput(nextValueInput, kind, previousValue);
-  const collectionKey = kind === 'Tag' || kind === 'Tags' || kind === 'Color'
+  const collectionKey = kind === 'Tag' || kind === 'Color'
     || nextKey === 'tags' || nextKey === 'flowix_colors';
   // A key-only edit starts with the old scalar value. Switch collection
   // properties to an empty collection until the user chooses their items,
@@ -393,7 +397,7 @@ export function updateVisibleFrontmatterProperty(
   const collectionValue = collectionKey && kind === undefined && !Array.isArray(parsedValue)
     ? []
     : parsedValue;
-  const nextValue = kind === 'Tags' || nextKey === 'tags'
+  const nextValue = nextKey === 'tags'
     ? normalizeDocumentTags(collectionValue)
     : kind === 'Color' || nextKey === 'flowix_colors'
       ? normalizeFlowixColors(collectionValue)
@@ -403,7 +407,7 @@ export function updateVisibleFrontmatterProperty(
     : document.createNode(nextValue);
   if (
     Array.isArray(nextValue)
-    && (kind === 'MultiSelect' || kind === 'Tag' || kind === 'Tags' || kind === 'Color' || nextKey === 'tags' || nextKey === 'flowix_colors')
+    && (kind === 'MultiSelect' || kind === 'Tag' || kind === 'Color' || nextKey === 'tags' || nextKey === 'flowix_colors')
     && isSeq(valueNode)
   ) {
     valueNode.flow = true;
@@ -415,6 +419,16 @@ export function updateVisibleFrontmatterProperty(
     map.add(document.createPair(nextKey, valueNode));
   }
 
+  const previousTypes = readPropertyTypes(asRecord(document.toJS())[PROPERTY_TYPES_KEY]);
+  const previousCanonicalKey = previousKey ? canonicalizePropertyKey(previousKey) : nextKey;
+  const resolvedKind = semanticKind ?? (previousKey
+    ? resolvePropertyType(previousKey, previousValue, false, getPropertyPresets(), previousTypes).kind
+    : previousTypes[nextKey]);
+  patchPropertyTypes(map, {
+    ...(previousCanonicalKey !== nextKey ? { [previousCanonicalKey]: null } : {}),
+    [nextKey]: resolvedKind,
+  });
+  backfillPropertyTypes(map, asRecord(document.toJS()));
   return document.toString({ lineWidth: 0 }).trimEnd();
 }
 
@@ -437,6 +451,7 @@ export function moveVisibleFrontmatterProperty(
   const offset = direction === 'up' ? -1 : 1;
   const nextIndex = currentIndex + offset;
   if (nextIndex < 0 || nextIndex >= visiblePairs.length) {
+    backfillPropertyTypes(map, asRecord(document.toJS()));
     return document.toString({ lineWidth: 0 }).trimEnd();
   }
 
@@ -449,6 +464,7 @@ export function moveVisibleFrontmatterProperty(
     map.items[currentMapIndex],
   ];
 
+  backfillPropertyTypes(map, asRecord(document.toJS()));
   return document.toString({ lineWidth: 0 }).trimEnd();
 }
 
@@ -471,6 +487,7 @@ export function reorderVisibleFrontmatterProperty(
     (pair) => nodeKeyToString(pair.key) === targetPropertyKey,
   );
   if (sourceIndex < 0 || targetIndex < 0 || sourceIndex === targetIndex) {
+    backfillPropertyTypes(map, asRecord(document.toJS()));
     return document.toString({ lineWidth: 0 }).trimEnd();
   }
 
@@ -487,6 +504,7 @@ export function reorderVisibleFrontmatterProperty(
     map.items[mapIndex] = visiblePairs[index];
   });
 
+  backfillPropertyTypes(map, asRecord(document.toJS()));
   return document.toString({ lineWidth: 0 }).trimEnd();
 }
 
@@ -500,7 +518,11 @@ export function deleteVisibleFrontmatterProperty(
     nodeKeyToString(pair.key) === propertyKey
     && !SYSTEM_FRONTMATTER_KEYS.has(propertyKey)
   ));
-  if (propertyIndex >= 0) map.items.splice(propertyIndex, 1);
+  if (propertyIndex >= 0) {
+    map.items.splice(propertyIndex, 1);
+    patchPropertyTypes(map, { [propertyKey]: null });
+  }
+  backfillPropertyTypes(map, asRecord(document.toJS()));
   return document.toString({ lineWidth: 0 }).trimEnd();
 }
 
@@ -515,6 +537,9 @@ export function mergeFrontmatterYaml(currentYaml: string, pastedYaml: string): s
   Object.entries(pasted.userData).forEach(([key, value]) => {
     map.set(key, value);
   });
+  const pastedTypes = readPropertyTypes(pasted.data[PROPERTY_TYPES_KEY]);
+  patchPropertyTypes(map, Object.fromEntries(Object.keys(pasted.userData).map((key) => [key, pastedTypes[key] ?? null])));
+  backfillPropertyTypes(map, asRecord(currentDocument.toJS()));
   return currentDocument.toString({ lineWidth: 0 }).trimEnd();
 }
 
@@ -531,11 +556,13 @@ export function replaceVisibleFrontmatterProperties(
     const key = nodeKeyToString(map.items[index].key);
     if (!SYSTEM_FRONTMATTER_KEYS.has(key) && !desiredKeys.has(key)) {
       map.items.splice(index, 1);
+      patchPropertyTypes(map, { [key]: null });
     }
   }
   properties.forEach(({ key, value, kind }) => {
     const canonicalKey = canonicalizePropertyKey(key);
     if (SYSTEM_FRONTMATTER_KEYS.has(canonicalKey)) return;
+    patchPropertyTypes(map, { [canonicalKey]: kind });
     if (canonicalKey === 'flowix_plugin') {
       const plugin = typeof value === 'string' ? parsePluginMetadataJson(value) : value;
       map.set(canonicalKey, YAML.parseDocument(JSON.stringify(plugin)).contents);
@@ -543,7 +570,7 @@ export function replaceVisibleFrontmatterProperties(
     }
     map.set(
       canonicalKey,
-      kind === 'Tags' || canonicalKey === 'tags'
+      canonicalKey === 'tags'
         ? normalizeDocumentTags(value)
         : kind === 'Color' || canonicalKey === 'flowix_colors'
           ? normalizeFlowixColors(value)
@@ -551,6 +578,7 @@ export function replaceVisibleFrontmatterProperties(
     );
   });
 
+  backfillPropertyTypes(map, asRecord(document.toJS()));
   const yamlContent = document.toString({ lineWidth: 0 }).trimEnd() || '{}';
   return `---\n${yamlContent}\n---\n${extracted.body.replace(/^\r?\n/, '')}`;
 }

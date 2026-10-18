@@ -826,9 +826,12 @@ mod tests {
         assert_eq!(value["note"]["sizeBytes"], 12);
         assert!(value.get("operation_id").is_none());
         let deletion = serde_json::to_value(V2PushOperation::NotebookDelete {
-            operation_id: "op_delete_123".into(), base_revision: Some("rev_1".into()),
-            notebook_id: "nb_1".into(), base_tree_seq: 42,
-        }).unwrap();
+            operation_id: "op_delete_123".into(),
+            base_revision: Some("rev_1".into()),
+            notebook_id: "nb_1".into(),
+            base_tree_seq: 42,
+        })
+        .unwrap();
         assert_eq!(deletion["baseTreeSeq"], 42);
     }
 

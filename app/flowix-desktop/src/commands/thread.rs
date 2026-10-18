@@ -32,6 +32,14 @@ pub struct DeepSeekHarnessForkResponse {
 
 #[derive(Serialize)]
 #[serde(rename_all = "camelCase")]
+pub struct PiForkResponse {
+    pub thread: ThreadInfo,
+    pub pi_session_id: String,
+    pub cwd: String,
+}
+
+#[derive(Serialize)]
+#[serde(rename_all = "camelCase")]
 pub struct AgentConversationPage {
     pub items: Vec<AgentConversationInstance>,
     pub has_more: bool,
@@ -119,6 +127,64 @@ pub async fn pi_thread_session_id(
         .get_external_session(&thread_id, "pi")
         .await
         .map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+pub async fn pi_thread_fork(
+    thread_id: String,
+    entry_id: String,
+    app: AppHandle,
+    state: State<'_, AppState>,
+) -> Result<PiForkResponse, String> {
+    let source = state
+        .thread_manager
+        .get_thread(&thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| "Pi thread not found".to_string())?;
+    if source.info.agent_id.0 != "pi" {
+        return Err("Thread is not a Pi conversation".into());
+    }
+    let cwd = state
+        .thread_manager
+        .read_frozen_cwd(&thread_id)
+        .await
+        .map_err(|error| error.to_string())?
+        .filter(|cwd| cwd.is_dir())
+        .unwrap_or_else(|| {
+            std::env::current_dir().unwrap_or_else(|_| std::path::PathBuf::from("."))
+        });
+    let child = state
+        .thread_manager
+        .create_thread(
+            crate::agent_types::AgentId("pi".into()),
+            if source.info.title.trim().is_empty() {
+                "Forked Pi session".to_string()
+            } else {
+                format!("{} (fork)", source.info.title)
+            },
+        )
+        .await
+        .map_err(|error| error.to_string())?;
+    match state
+        .pi
+        .fork_session(&app, &thread_id, &entry_id, &child.thread_id, &cwd)
+        .await
+    {
+        Ok(pi_session_id) => Ok(PiForkResponse {
+            thread: child,
+            pi_session_id,
+            cwd: cwd.to_string_lossy().into_owned(),
+        }),
+        Err(error) => {
+            let _ = state.pi.delete_session(&child.thread_id).await;
+            let _ = state
+                .thread_manager
+                .delete_thread_with_agent_conversations(&child.thread_id)
+                .await;
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]

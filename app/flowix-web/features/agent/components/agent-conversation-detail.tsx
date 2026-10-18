@@ -53,10 +53,14 @@ import {
 import {
   listCodexSkills,
 } from '@features/agent/services/codex-slash-command-service';
+import { listPiSkills } from '@features/agent/services/pi-slash-command-service';
 import { isCodexGoalCommand } from '@features/agent/thread-card/agent-thread-card-selectors';
 import { acceptComposerSubmission, type ComposerConversationBinding } from '@features/agent/services/composer-submission-service';
 import { WorkspaceEmptyState } from '@shared/ui/workspace-empty-state';
 import { Button } from '@shared/ui/button';
+import { createRunId } from '@features/agent/events/agent-event-mapper';
+import { completedRunUserMessageId } from '@features/agent/events/message-identity';
+import { createAgentMessageAttachments, prepareUserMessage } from '@features/agent/store/user-message';
 
 const BOTTOM_FOLLOW_THRESHOLD_PX = 96;
 const TOP_HISTORY_LOAD_THRESHOLD_PX = 48;
@@ -228,6 +232,7 @@ function AgentConversationDetailContent({
   const threadIdRef = useRef(threadId);
   const runtimeHandleRef = useRef<string | null>(null);
   const submissionRef = useRef(new ComposerSubmissionController());
+  const pendingFirstMessageRef = useRef<{ runId: string; messages: ThreadState['messages'] } | null>(null);
   const languageRef = useRef(language);
   const tRef = useRef(t);
   const submitRef = useRef<() => void>(() => undefined);
@@ -237,21 +242,27 @@ function AgentConversationDetailContent({
     const currentInstance = instanceRef.current;
     const sourceThreadId = threadIdRef.current;
     const agentType = currentInstance?.agentType;
-    if (!currentInstance || !sourceThreadId || (agentType !== 'codex' && agentType !== 'deepseek-harness')) return;
+    if (!currentInstance || !sourceThreadId || (agentType !== 'codex' && agentType !== 'deepseek-harness' && agentType !== 'pi')) return;
     if (agentType === 'codex' && !message.codexTurnId) return;
     if (agentType === 'deepseek-harness' && message.sourceSequence === undefined) return;
+    if (agentType === 'pi' && !message.messageId) return;
 
     if (destroyedRef.current) return;
 
     try {
       const result = agentType === 'codex'
         ? await agent.forkCodexThread(sourceThreadId, message.codexTurnId!)
-        : await agent.forkDeepSeekHarnessThread(sourceThreadId, message.sourceSequence!);
+        : agentType === 'deepseek-harness'
+          ? await agent.forkDeepSeekHarnessThread(sourceThreadId, message.sourceSequence!)
+          : await agent.forkPiThread(sourceThreadId, message.messageId!);
       const fork = useAgentSessionStore.getState().createInstance({
         agentType,
         title: `${currentInstance.title || defaultThreadTitle(agentType)} (fork)`,
         threadId: result.thread.threadId,
-        runtimeConfig: currentInstance.runtimeConfig ?? buildInitialInstanceRuntimeConfig(agentType),
+        runtimeConfig: {
+          ...(currentInstance.runtimeConfig ?? buildInitialInstanceRuntimeConfig(agentType)),
+          ...(agentType === 'pi' && 'cwd' in result ? { cwd: result.cwd } : {}),
+        },
         source: { kind: 'dedicated', notebookId: currentInstance.source.notebookId ?? null },
       });
       await selectAndOpenAgentConversation(fork.instanceId);
@@ -271,6 +282,25 @@ function AgentConversationDetailContent({
   threadIdRef.current = threadId;
   languageRef.current = language;
   tRef.current = t;
+
+  const renderCurrentMessages = useCallback(() => {
+    const id = renderThreadIdRef.current ?? threadIdRef.current;
+    const current = id ? useAgentSessionStore.getState().threadProjections[id] : undefined;
+    const pending = pendingFirstMessageRef.current;
+    const visibleMessages = current?.messages.length
+      ? current.messages
+      : pending?.messages ?? current?.messages ?? EMPTY_MESSAGES;
+    messagesControllerRef.current?.render({
+      messages: visibleMessages,
+      isLoading: current ? (
+        isAgentThreadWorking({ ...current.runs, messages: current.messages }) ||
+        current.runs.dshCommand?.status === 'pending' ||
+        current.runs.codexCommand?.status === 'pending'
+      ) : false,
+      shouldRenderMessages: true,
+      isInitialHistoryLoading: shouldShowInitialHistorySkeleton(id, visibleMessages.length, current?.pagination.initialStatus),
+    });
+  }, []);
 
   const clearComposerAfterSettingsCommand = useCallback(() => {
     composerControllerRef.current?.clear();
@@ -351,7 +381,7 @@ function AgentConversationDetailContent({
     const isDisposed = () => destroyedRef.current || composerControllerRef.current !== composer;
     await submissionRef.current.submit({
       composer, images, getRuntime: composerRuntimeState, isDisposed,
-      bind: async (snapshot): Promise<ComposerConversationBinding> => {
+      bind: async (snapshot, kind): Promise<ComposerConversationBinding> => {
         const targetThreadId = threadIdRef.current;
         if (targetThreadId) return {
           instanceId: currentInstance.instanceId,
@@ -361,6 +391,19 @@ function AgentConversationDetailContent({
           runtimeConfig: ensureConversationWorkspaceSnapshot(currentInstance.instanceId),
           isFirstMessage: false,
         };
+        if (kind === 'message') {
+          const runId = createRunId(currentInstance.instanceId);
+          const { userMessage } = prepareUserMessage({
+            content: snapshot.prompt,
+            agentType: currentInstance.agentType,
+            isFirstMessage: true,
+            attachments: createAgentMessageAttachments(snapshot.images.map((image) => image.path)),
+          });
+          userMessage.id = completedRunUserMessageId(currentInstance.agentType, runId);
+          userMessage.renderKey = userMessage.id;
+          pendingFirstMessageRef.current = { runId, messages: [userMessage] };
+          renderCurrentMessages();
+        }
         runtimeHandleRef.current ??= createExternalAgentRuntimeHandle();
         const ensured = await ensureAgentConversationDetailThread({
           instanceId: currentInstance.instanceId,
@@ -370,21 +413,26 @@ function AgentConversationDetailContent({
         });
         if (!isDisposed()) threadIdRef.current = ensured.threadId;
         return { ...ensured, instanceId: currentInstance.instanceId,
-          typeKey: currentInstance.agentType, isFirstMessage: true };
+          typeKey: currentInstance.agentType, isFirstMessage: true,
+          runId: pendingFirstMessageRef.current?.runId };
       },
       accept: acceptComposerSubmission,
       clearPersistedDraft: () => {
         draftRef.current = null;
         persistDetailDraft(currentInstance.instanceId, null);
       },
-      onPhaseChange: () => composer.setSendButtonState(),
+      onPhaseChange: () => {
+        if (!submissionRef.current.isSubmitting) pendingFirstMessageRef.current = null;
+        composer.setSendButtonState();
+        renderCurrentMessages();
+      },
       onError: (error) => {
         logger.error('Failed to submit Agent message', { error });
         toast.error(error instanceof Error ? error.message : tRef.current('agent.chat.sendFailed'));
       },
     });
     if (!isDisposed()) composer.focus();
-  }, [composerRuntimeState]);
+  }, [composerRuntimeState, renderCurrentMessages]);
   submitRef.current = submit;
 
   useEffect(() => {
@@ -512,21 +560,7 @@ function AgentConversationDetailContent({
         ),
         getMessageCount: () => messagesRef.current.length,
         shouldLoadThreadMessages: () => false,
-        renderThreadState: () => {
-          messageController.render({
-            messages: messagesRef.current,
-            isLoading: isLoadingRef.current || isDshCommandRunningRef.current || isCodexCommandRunningRef.current,
-            shouldRenderMessages: true,
-            isInitialHistoryLoading: shouldShowInitialHistorySkeleton(
-              renderThreadIdRef.current,
-              messagesRef.current.length,
-              renderThreadIdRef.current
-                ? useAgentSessionStore.getState()
-                    .threadProjections[renderThreadIdRef.current]?.pagination.initialStatus
-                : undefined,
-            ),
-          });
-        },
+        renderThreadState: renderCurrentMessages,
         renderResolvedSessionMessages: (resolvedMessages) => {
           const id = renderThreadIdRef.current;
           if (id) useAgentSessionStore.getState().applyHistoryPage(id, typeKeyRef.current, { messages: resolvedMessages, coverage: "partial" });
@@ -566,6 +600,16 @@ function AgentConversationDetailContent({
           const ensured = await ensureCodexCommandConversation('/skill');
           const cwd = ensured.runtimeConfig.workspaceSnapshot?.cwd ?? ensured.runtimeConfig.cwd;
           return listCodexSkills(cwd ?? '');
+        },
+        listPiSkills: async () => {
+          if (typeKeyRef.current !== 'pi') return [];
+          const currentInstance = instanceRef.current;
+          if (!currentInstance) return [];
+          const runtimeConfig = ensureConversationWorkspaceSnapshot(currentInstance.instanceId);
+          const cwd = runtimeConfig.workspaceSnapshot?.notebookPath
+            ?? runtimeConfig.workspaceSnapshot?.cwd
+            ?? runtimeConfig.cwd;
+          return listPiSkills(cwd ?? '');
         },
         listFolders: () => getCurrentNotebookComposerFolders(),
         folderGroupLabel: tRef.current("agent.files.referenceLocal"),
@@ -635,19 +679,7 @@ function AgentConversationDetailContent({
     // history request starts in a passive effect, so waiting for the normal
     // subscription effect would leave one blank frame between item selection
     // and the skeleton.
-    messageController.render({
-      messages: messagesRef.current,
-      isLoading: isLoadingRef.current || isDshCommandRunningRef.current || isCodexCommandRunningRef.current,
-      shouldRenderMessages: true,
-      isInitialHistoryLoading: shouldShowInitialHistorySkeleton(
-        renderThreadIdRef.current,
-        messagesRef.current.length,
-        renderThreadIdRef.current
-          ? useAgentSessionStore.getState()
-              .threadProjections[renderThreadIdRef.current]?.pagination.initialStatus
-          : undefined,
-      ),
-    });
+    renderCurrentMessages();
 
     return () => {
       destroyedRef.current = true;
@@ -668,17 +700,13 @@ function AgentConversationDetailContent({
       surfaceRef.current = null;
       composerImagesControllerRef.current = null;
       addMenuRef.current = null;
+      pendingFirstMessageRef.current = null;
     };
-  }, [instanceId]);
+  }, [instanceId, renderCurrentMessages]);
 
   useEffect(() => {
-    messagesControllerRef.current?.render({
-      messages,
-      isLoading: isLoading || isCommandRunning,
-      shouldRenderMessages: true,
-      isInitialHistoryLoading,
-    });
-  }, [isInitialHistoryLoading, isLoading, isCommandRunning, messages]);
+    renderCurrentMessages();
+  }, [isInitialHistoryLoading, isLoading, isCommandRunning, messages, renderCurrentMessages]);
 
   useEffect(() => {
     composerControllerRef.current?.setSendButtonState();

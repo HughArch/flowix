@@ -69,7 +69,7 @@ function splitAsciiToken(token: string): string[] {
 }
 
 // 改为 async: 中文属性名需 pinyin-pro 转写, 模块动态加载 (独立 chunk)。
-// 调用方 (note-properties-dialog 的 addCustomField / updateRowFromEdit) 已改 async。
+// 属性创建流程可通过此方法将中文展示名转换为稳定的属性 key。
 export async function generatePropertyKey(displayName: string): Promise<string> {
   const name = displayName.trim();
   if (!name) return '';
@@ -110,4 +110,11 @@ export async function generatePropertyKey(displayName: string): Promise<string> 
 
   flushAscii();
   return tokens.join('-') || 'property';
+}
+
+export const SYSTEM_PROPERTY_KEYS = new Set([
+  'name', 'description', 'tags', 'flowix_colors', 'flowix_icon', 'flowix_favorited', 'status', 'calendar_date',
+]);
+export function isSystemPropertyKey(key: string): boolean {
+  return SYSTEM_PROPERTY_KEYS.has(canonicalizePropertyKey(key).toLowerCase());
 }

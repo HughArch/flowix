@@ -10,6 +10,7 @@ import {
 } from '@shared/ui/dropdown-menu';
 import { useI18n } from '@/lib/i18n';
 import { PREFERENCE_TAB_GROUPS } from '@features/preferences/public/app-api';
+import { AgentIcon } from '@features/agent/components/agent-icon';
 import productLogo from '@/assets/productlogo.png';
 import { cn } from '@/lib/utils';
 import { openUrl } from '@platform/tauri/opener';
@@ -48,7 +49,9 @@ export function NotebookIconMenu({
   const closeTimerRef = useRef<number | null>(null);
   const visiblePreferenceGroups = PREFERENCE_TAB_GROUPS.map((group) => ({
     ...group,
-    tabs: group.tabs.filter((tab) => !['cloudSync', 'connections', 'tools', 'history'].includes(tab.id)),
+    tabs: group.tabs.filter(
+      (tab) => !['cloudSync', 'connections', 'tools', 'history', 'dsh', 'aiAgent'].includes(tab.id),
+    ),
   }));
 
   const cancelOpen = useCallback(() => {
@@ -142,8 +145,12 @@ export function NotebookIconMenu({
                 onClick={() => onOpenPreferences(tab.id)}
                 className={NOTEBOOK_ICON_MENU_ITEM_CLASS}
               >
-                {tab.icon}
-                <span>{t(tab.labelKey)}</span>
+                {tab.id === 'pi' ? (
+                  <AgentIcon typeKey="pi" alt="" className="h-4 w-4 shrink-0 object-contain" />
+                ) : (
+                  tab.icon
+                )}
+                <span>{tab.id === 'mcp' ? 'MCP' : t(tab.labelKey)}</span>
               </DropdownMenuItem>
             ))}
           </div>

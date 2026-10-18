@@ -34,7 +34,17 @@ function moveTemplate(
   return next;
 }
 
-export function TemplatesSection() {
+function normalizeTemplates(value: unknown): NoteTemplate[] {
+  if (!Array.isArray(value)) return [];
+  return value.flatMap((item): NoteTemplate[] => {
+    if (!item || typeof item !== 'object' || Array.isArray(item)) return [];
+    const { id, name } = item as { id?: unknown; name?: unknown };
+    if (typeof id !== 'string' || !id.trim() || typeof name !== 'string' || !name.trim()) return [];
+    return [{ id: id.trim(), name: name.trim() }];
+  });
+}
+
+export function TemplatesSection({ hideSectionHeader = false }: { hideSectionHeader?: boolean }) {
   const { t } = useI18n();
   const [templates, setTemplates] = useState<NoteTemplate[]>([]);
   const [loading, setLoading] = useState(true);
@@ -59,7 +69,8 @@ export function TemplatesSection() {
   const loadTemplates = useCallback(async () => {
     setLoading(true);
     try {
-      setTemplates(orderNoteTemplates(await notes.listTemplates()));
+      const result: unknown = await notes.listTemplates();
+      setTemplates(orderNoteTemplates(normalizeTemplates(result)));
     } catch (error) {
       console.warn('[TemplatesSection] listTemplates failed:', error);
       toast.error(t('preferences.templates.loadFailed'));
@@ -236,7 +247,7 @@ export function TemplatesSection() {
 
   return (
     <div className="space-y-4">
-      <SectionHeader title={t('preferences.templates.title')} />
+      {!hideSectionHeader && <SectionHeader title={t('preferences.templates.title')} />}
 
       {loading ? (
         <div className="flex h-[100px] items-center justify-center text-center text-sm text-[var(--muted-foreground)]">

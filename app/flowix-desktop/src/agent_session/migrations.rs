@@ -10,7 +10,7 @@ use rusqlite::{params, Connection};
 
 use super::error::ThreadError;
 
-pub(super) const THREAD_DB_SCHEMA_VERSION: i64 = 12;
+pub(super) const THREAD_DB_SCHEMA_VERSION: i64 = 13;
 pub(super) const WAL_AUTOCHECKPOINT_PAGES: i64 = 4000;
 pub(super) const WAL_JOURNAL_SIZE_LIMIT_BYTES: i64 = 64 * 1024 * 1024;
 
@@ -260,6 +260,10 @@ impl super::store::ThreadManager {
                 external_id TEXT NOT NULL UNIQUE,
                 session_file TEXT,
                 cwd TEXT,
+                -- Flowix origin mapping; Pi's own header retains parentSession.
+                parent_thread_id TEXT,
+                parent_session_id TEXT,
+                fork_entry_id TEXT,
                 schema_version INTEGER NOT NULL DEFAULT 1,
                 FOREIGN KEY(thread_id) REFERENCES threads_index(id) ON DELETE CASCADE
             );
@@ -384,6 +388,11 @@ impl super::store::ThreadManager {
         }
         if !columns.iter().any(|column| column == "cwd") {
             conn.execute("ALTER TABLE threads_pi ADD COLUMN cwd TEXT", [])?;
+        }
+        for column in ["parent_thread_id", "parent_session_id", "fork_entry_id"] {
+            if !columns.iter().any(|existing| existing == column) {
+                conn.execute(&format!("ALTER TABLE threads_pi ADD COLUMN {column} TEXT"), [])?;
+            }
         }
         Ok(())
     }

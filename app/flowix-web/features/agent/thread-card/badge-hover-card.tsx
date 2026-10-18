@@ -7,30 +7,25 @@ import {
 } from "@shared/ui/hover-card";
 import { useI18n } from "@/lib/i18n";
 import { cn } from "@/lib/utils";
-import type { UsageInfo } from "@/types/agent";
-import type { CodexRuntimeInfo } from "@platform/tauri/client/agent";
+import type { AgentTypeKey, UsageInfo } from "@/types/agent";
+import { useBadgeRuntimeInfo, type BadgeHoverCardRuntimeInfo } from "./runtime/use-badge-runtime-info";
 
 interface BadgeHoverCardProps {
   /** Internal identity only; never rendered. */
   threadId?: string;
   /** Provider session id already loaded with the conversation instance. */
   sessionId?: string;
+  /** Latest or active run identity; scopes fetched data to one run. */
+  runId?: string;
   /** 当前 run 锁定的 LLM model id(由通用 metadata 协议填入) */
   model?: string;
   /** 当前 run 累计 token 用量(undefined 表示未上报) */
   usage?: UsageInfo;
   onRequestRuntimeInfo?: () => Promise<BadgeHoverCardRuntimeInfo | null>;
-  codex?: boolean;
+  agentType: AgentTypeKey;
+  piMode?: "code" | "writing";
   cwd?: string;
   onOpenChange?: (open: boolean) => void;
-}
-
-export interface BadgeHoverCardRuntimeInfo {
-  model?: string;
-  usage: UsageInfo;
-  codex?: CodexRuntimeInfo;
-  /** Provider session id — the only value rendered in the popover's first row. */
-  sessionId?: string;
 }
 
 function formatTokens(n: number): string {
@@ -54,13 +49,6 @@ function formatTokenCount(value: number | null | undefined): string {
 function lastPathSegment(path: string): string {
   const segments = path.replace(/[\\/]+$/, "").split(/[\\/]/).filter(Boolean);
   return segments[segments.length - 1] ?? "";
-}
-
-function hasUsageContent(usage: UsageInfo | undefined): boolean {
-  if (!usage) return false;
-  return [usage.input_tokens, usage.cached_input_tokens, usage.output_tokens].some(
-    (value) => typeof value === "number" && Number.isFinite(value) && value > 0,
-  );
 }
 
 function HoverCardSkeleton({ width }: { width: string }) {
@@ -113,109 +101,40 @@ function percentageFromRate(rate: number | undefined): string {
  *
  * 通用 metadata 协议字段均通过 props 传入,组件本身不读取 store。
  *
- * 展示会话、模型和 token 明细 + 可选 cwd 行:
- *   1. Provider Session ID + 复制按钮(优先使用持久化值,必要时 hover 解析)
- *   2. Model(可选, 由 run.model 填充)
- *   3. 输入 / 输出 / 缓存命中
- *   4. 空间 (可选, instance.runtimeConfig 解出, 文本溢出走原生 title tooltip)
- *   5. Codex 会员 / 5小时 / 1周配额(懒加载)
+ * Pi 显示 model、session id、token 用量、缓存命中、工作目录和运行模式；
+ * 其他 agent 保留通用模型/用量信息，并按需展示 Codex 配额。
  */
 export function BadgeHoverCard({
   threadId,
   sessionId,
+  runId,
   model,
   usage,
   onRequestRuntimeInfo,
-  codex = false,
+  agentType,
+  piMode,
   cwd,
   onOpenChange,
 }: BadgeHoverCardProps) {
   const { t, language } = useI18n();
+  const pi = agentType === "pi";
+  const codex = agentType === "codex";
   const [copied, setCopied] = React.useState(false);
-  const [displayModel, setDisplayModel] = React.useState(model);
-  const [displayUsage, setDisplayUsage] = React.useState(usage);
-  const [displaySessionId, setDisplaySessionId] = React.useState<string | null>(
-    sessionId ?? null,
-  );
-  const [codexInfo, setCodexInfo] = React.useState<CodexRuntimeInfo>();
-  const [runtimeInfoPending, setRuntimeInfoPending] = React.useState(
-    Boolean(onRequestRuntimeInfo),
-  );
-  const runtimeInfoLoadedRef = React.useRef(hasUsageContent(usage));
-  const sessionIdLoadedRef = React.useRef(Boolean(sessionId));
-  const accountLoadedRef = React.useRef(false);
-  const runtimeInfoRequestRef = React.useRef<Promise<BadgeHoverCardRuntimeInfo | null> | null>(null);
-  const residentIdentityRef = React.useRef(`${threadId ?? ""}:${sessionId ?? ""}`);
-
-  React.useEffect(() => {
-    const nextIdentity = `${threadId ?? ""}:${sessionId ?? ""}`;
-    const nextSessionId = sessionId ?? null;
-    if (residentIdentityRef.current !== nextIdentity) {
-      residentIdentityRef.current = nextIdentity;
-      runtimeInfoLoadedRef.current = hasUsageContent(usage);
-      sessionIdLoadedRef.current = Boolean(sessionId);
-      accountLoadedRef.current = false;
-      runtimeInfoRequestRef.current = null;
-      setCodexInfo(undefined);
-      setRuntimeInfoPending(Boolean(onRequestRuntimeInfo));
-      setDisplayModel(model);
-      setDisplayUsage(usage);
-      setDisplaySessionId(nextSessionId);
-      return;
-    }
-    if (!runtimeInfoLoadedRef.current || hasUsageContent(usage)) {
-      setDisplayModel(model);
-      setDisplayUsage(usage);
-    }
-    if (hasUsageContent(usage)) runtimeInfoLoadedRef.current = true;
-    if (sessionId && !displaySessionId) {
-      sessionIdLoadedRef.current = true;
-      setDisplaySessionId(sessionId);
-    }
-  }, [displaySessionId, model, onRequestRuntimeInfo, sessionId, threadId, usage]);
-
-  const requestRuntimeInfo = React.useCallback(() => {
-    if (
-      (runtimeInfoLoadedRef.current && sessionIdLoadedRef.current &&
-        (!codex || accountLoadedRef.current)) ||
-      runtimeInfoRequestRef.current !== null ||
-      !onRequestRuntimeInfo
-    ) {
-      return;
-    }
-    let request: Promise<BadgeHoverCardRuntimeInfo | null>;
-    try {
-      request = onRequestRuntimeInfo();
-    } catch {
-      return;
-    }
-    runtimeInfoRequestRef.current = request;
-    setRuntimeInfoPending(true);
-    void request
-      .then((info) => {
-        if (info === null) return;
-        if (hasUsageContent(info.usage)) runtimeInfoLoadedRef.current = true;
-        setDisplayModel(info.model ?? model);
-        setDisplayUsage(info.usage);
-        if (info.sessionId) {
-          sessionIdLoadedRef.current = true;
-          setDisplaySessionId(info.sessionId);
-        }
-        if (info.codex) {
-          accountLoadedRef.current = true;
-          setCodexInfo(info.codex);
-        }
-      })
-      .catch(() => {
-        // 保留现有快照，下一次 hover 允许重试。
-      })
-      .finally(() => {
-        if (runtimeInfoRequestRef.current === request) {
-          runtimeInfoRequestRef.current = null;
-          setRuntimeInfoPending(false);
-        }
-      });
-  }, [codex, model, onRequestRuntimeInfo]);
+  const runtimeInfo = useBadgeRuntimeInfo({
+    identity: `${threadId ?? ""}:${sessionId ?? ""}:${runId ?? ""}`,
+    model,
+    usage,
+    sessionId,
+    onRequest: onRequestRuntimeInfo,
+  });
+  const {
+    displayModel,
+    displayUsage,
+    displaySessionId,
+    codexInfo,
+    runtimeInfoPending,
+    requestRuntimeInfo,
+  } = runtimeInfo;
 
   const handleOpenChange = React.useCallback(
     (open: boolean) => {
@@ -253,6 +172,9 @@ export function BadgeHoverCard({
       ? resetAt.toLocaleTimeString(language, { hour: "2-digit", minute: "2-digit", hour12: false })
       : resetAt.toLocaleDateString(language, { month: "long", day: "numeric" })}`;
   };
+  const piModelParts = displayModel?.includes("/")
+    ? displayModel.slice(displayModel.indexOf("/") + 1)
+    : displayModel ?? "";
 
   const handleCopy = React.useCallback(async () => {
     if (!displaySessionId) return;
@@ -282,11 +204,13 @@ export function BadgeHoverCard({
         side="bottom"
         align="start"
         sideOffset={6}
-        className="w-[14.4rem] rounded-xl border-[var(--border-popup)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)] px-3 py-2.5"
+        className={cn(
+          "w-[14.4rem] rounded-xl border-[var(--border-popup)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)] px-3 py-2.5",
+          pi && "w-[17rem]",
+        )}
       >
         <div className="flex flex-col gap-1.5">
-          {/* Provider Session ID 行: 只展示 provider-owned id, 不展示本地
-              Flowix thread id。 */}
+          {/* Provider-owned session id; never expose Flowix's local thread id. */}
           <div className="flex items-center gap-2">
             <span
               className="min-w-0 flex-1 truncate font-mono text-[11px] text-[var(--foreground)]"
@@ -313,22 +237,31 @@ export function BadgeHoverCard({
             </button>
           </div>
 
-          {/* Model 行 */}
-          <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 text-[11px]">
-            <span className="text-[var(--muted-foreground)]">
-              {t("editor.threadCard.model")}
-            </span>
-            <span
-              className={cn(
+          {pi && (
+            <>
+              <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 text-[11px]">
+                <span className="text-[var(--muted-foreground)]">{t("editor.threadCard.model")}</span>
+                <span className={cn(
+                  "agent-thread-card__model-value min-w-0 font-mono",
+                  piModelParts ? "text-[var(--foreground)]" : "text-[var(--muted-foreground)]",
+                )}>
+                  {modelPending ? <HoverCardSkeleton width="4rem" /> : piModelParts || "-"}
+                </span>
+              </div>
+            </>
+          )}
+
+          {!pi && (
+            <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 text-[11px]">
+              <span className="text-[var(--muted-foreground)]">{t("editor.threadCard.model")}</span>
+              <span className={cn(
                 "agent-thread-card__model-value min-w-0 font-mono",
-                displayModel
-                  ? "text-[var(--foreground)]"
-                  : "text-[var(--muted-foreground)]",
-              )}
-            >
-              {modelPending ? <HoverCardSkeleton width="4rem" /> : displayModel || "-"}
-            </span>
-          </div>
+                displayModel ? "text-[var(--foreground)]" : "text-[var(--muted-foreground)]",
+              )}>
+                {modelPending ? <HoverCardSkeleton width="4rem" /> : displayModel || "-"}
+              </span>
+            </div>
+          )}
 
           {/* Token 明细: Harness 的 inputTokens 不包含 cacheReadTokens。 */}
           <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 text-[11px]">
@@ -359,7 +292,7 @@ export function BadgeHoverCard({
             </span>
           </div>
 
-          <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 text-[11px]">
+          {!pi && <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 text-[11px]">
             <span className="text-[var(--muted-foreground)]">
               {t("editor.threadCard.contextUsage")}
             </span>
@@ -380,18 +313,26 @@ export function BadgeHoverCard({
                 />
               )}
             </span>
-          </div>
+          </div>}
 
           {displayCwd ? (
             <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-start gap-2 text-[11px]">
               <span className="shrink-0 text-[var(--muted-foreground)]">
-                {t("editor.threadCard.cwd")}
+                {t(pi ? "editor.threadCard.workingDirectory" : "editor.threadCard.cwd")}
               </span>
               <span
                 className="agent-thread-card__cwd-value"
                 title={cwd}
               >
                 {displayCwd}
+              </span>
+            </div>
+          ) : null}
+          {piMode ? (
+            <div className="grid grid-cols-[4.5rem_minmax(0,1fr)] items-center gap-2 text-[11px]">
+              <span className="text-[var(--muted-foreground)]">{t("editor.threadCard.mode")}</span>
+              <span className="text-right text-[var(--foreground)]">
+                {t(piMode === "code" ? "editor.threadCard.piCodeMode" : "editor.threadCard.piWritingMode")}
               </span>
             </div>
           ) : null}

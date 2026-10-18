@@ -8,6 +8,7 @@
 import { useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { useI18n, translate } from '@/lib/i18n';
+import { stableTextHue } from '@/lib/color';
 import { cn } from '@/lib/utils';
 import { useComposingValue } from '@shared/hooks/use-composing-value';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@shared/ui/dropdown-menu';
@@ -73,17 +74,28 @@ export function MultiSelectValueInput({
             type="button"
             disabled={disabled}
             className={cn(
-              'flex h-8 w-full items-center justify-between gap-2 rounded-lg px-2 text-left text-sm',
+              'flex min-h-8 w-full items-center justify-between gap-2 rounded-lg px-2 text-left text-sm',
               variant === 'table'
-                ? 'multidimensional-table__select-trigger border-0 bg-transparent px-0 text-left shadow-none hover:bg-transparent focus-visible:border-0'
+                ? 'multidimensional-table__select-trigger h-auto flex-wrap border-0 bg-transparent px-0 text-left shadow-none hover:bg-transparent focus-visible:border-0'
                 : 'border border-input bg-background hover:bg-[var(--muted)]/40 focus-visible:border-[var(--primary)]',
               'focus-visible:outline-none',
               disabled && 'cursor-not-allowed opacity-50 disabled:cursor-not-allowed',
             )}
           >
-            <span className="min-w-0 flex-1 truncate">
+            <span className={cn('min-w-0 flex-1', variant === 'table' ? 'flex flex-wrap items-center gap-1 py-1' : 'truncate')}>
               {tags.length > 0
-                ? tags.map((tag) => normalizedOptions.find((option) => option.value === tag)?.label ?? tag).join(', ')
+                ? variant === 'table'
+                  ? tags.map((tag) => (
+                    <span
+                      key={tag}
+                      className="multidimensional-table__option-chip max-w-full"
+                      title={normalizedOptions.find((option) => option.value === tag)?.label ?? tag}
+                      style={{ '--multidimensional-table-option-hue': stableTextHue(normalizedOptions.find((option) => option.value === tag)?.label ?? tag) } as React.CSSProperties}
+                    >
+                      <span className="min-w-0 truncate">{normalizedOptions.find((option) => option.value === tag)?.label ?? tag}</span>
+                    </span>
+                  ))
+                  : tags.map((tag) => normalizedOptions.find((option) => option.value === tag)?.label ?? tag).join(', ')
                 : variant === 'table' ? null : <span className="text-[var(--muted-foreground)]">{t('document.properties.select.placeholder')}</span>}
             </span>
             <ChevronDown className="h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)]" />
@@ -91,7 +103,7 @@ export function MultiSelectValueInput({
         </DropdownMenuTrigger>
         <DropdownMenuContent
           align="start"
-          className={cn('min-w-[200px] rounded-xl border-[var(--border-popup)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' ? 'p-0.5' : 'p-1')}
+          className="min-w-[200px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]"
         >
           {normalizedOptions.length === 0 ? (
             <div className="px-3 py-2 text-xs text-[var(--muted-foreground)]">
@@ -107,11 +119,16 @@ export function MultiSelectValueInput({
                 onMouseDown={(event) => event.preventDefault()}
                 onClick={() => toggleOption(option.value)}
                 className={cn(
-                  'flex h-7 w-full items-center justify-between gap-2 rounded-lg px-2 text-left text-sm',
+                  'flex h-8 w-full items-center justify-between gap-2 rounded-lg px-2 text-left text-sm',
                   'hover:bg-[var(--hover-bg)] focus-visible:bg-[var(--hover-bg)] focus-visible:outline-none',
                 )}
               >
-                <span className="min-w-0 truncate">{option.label}</span>
+                <span
+                  className="multidimensional-table__option-chip min-w-0 max-w-full truncate"
+                  style={{ '--multidimensional-table-option-hue': stableTextHue(option.label) } as React.CSSProperties}
+                >
+                  {option.label}
+                </span>
                 {selected && <Check className="h-4 w-4 shrink-0 text-[var(--brand)]" aria-hidden="true" />}
               </button>
             );

@@ -81,7 +81,8 @@ fn apply_v2_note_changes(
     changes: &[&V2RemoteApply],
 ) -> Result<(), String> {
     let memo_file = read_lock(&state.memo_file, "memo_file");
-    let _write_guard = memo_file.operation_locks()
+    let _write_guard = memo_file
+        .operation_locks()
         .notebook_change(&[notebook_id], "apply_cloud_note_changes")
         .map_err(sync_error)?;
     let notebook = memo_file

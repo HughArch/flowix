@@ -48,21 +48,6 @@ pub fn set_tag_system_layout(
     persist_notebook_system(&notebook_id, &state, &file)
 }
 
-#[tauri::command]
-pub fn set_tag_system_hidden(
-    notebook_id: String,
-    hidden: Vec<String>,
-    state: State<AppState>,
-) -> Result<(), String> {
-    let mut file = load_notebook_system(&notebook_id, &state)?;
-    file.tag
-        .notebooks
-        .entry(notebook_id.clone())
-        .or_default()
-        .hidden = hidden;
-    persist_notebook_system(&notebook_id, &state, &file)
-}
-
 /// Write the MRU pinned list for one parent. An empty list removes that key.
 #[tauri::command]
 pub fn set_tag_system_pinned(

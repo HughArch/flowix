@@ -247,18 +247,6 @@ pub fn get_cached_font_bytes(
     Ok(tauri::ipc::Response::new(bytes))
 }
 
-#[tauri::command]
-pub async fn remove_cached_font(font_id: String) -> Result<(), String> {
-    ensure_supported_font_id(&font_id)?;
-    let font_lock = font_cache_lock(&font_id).await;
-    let _guard = font_lock.lock().await;
-    let dir = font_dir(&font_id);
-    if dir.exists() {
-        fs::remove_dir_all(&dir).map_err(|e| e.to_string())?;
-    }
-    Ok(())
-}
-
 async fn font_cache_lock(font_id: &str) -> Arc<Mutex<()>> {
     let mut locks = FONT_CACHE_LOCKS.lock().await;
     locks
@@ -523,17 +511,6 @@ fn font_result(definition: &FontDefinition, downloaded: bool) -> CachedFontResul
                 style: font.style.to_string(),
             })
             .collect(),
-    }
-}
-
-fn ensure_supported_font_id(font_id: &str) -> Result<(), String> {
-    if FONT_DEFINITIONS
-        .iter()
-        .any(|definition| definition.id == font_id)
-    {
-        Ok(())
-    } else {
-        Err(format!("unsupported font id: {font_id}"))
     }
 }
 

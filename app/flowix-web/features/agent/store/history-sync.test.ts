@@ -45,8 +45,8 @@ describe("reconcileHistorySnapshot", () => {
 
   it("aligns the latest unchanged turn when native history proves it complete", () => {
     const user = { ...message("u1", "user", "first"), codexTurnId: "turn-1" };
-    const live = { ...message("live-answer", "assistant", "draft"), codexTurnId: "turn-1" };
-    const persisted = { ...message("native-answer", "assistant", "finished"), codexTurnId: "turn-1", isCompleted: true };
+    const live = { ...message("native-answer", "assistant", "finished"), messageId: "native-answer", codexTurnId: "turn-1", isCompleted: true };
+    const persisted = { ...live };
     const current = [user, live];
     const result = reconcileHistorySnapshot({
       agentType: "codex", current, requestProjection: current, reason: "run_completed",

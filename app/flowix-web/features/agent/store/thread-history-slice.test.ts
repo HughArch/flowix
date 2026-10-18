@@ -54,6 +54,24 @@ function store(messages: ChatMessage[]) {
 describe("Pi history request fences", () => {
   beforeEach(() => { adapter.getInitialHistory.mockReset(); adapter.getFullHistory.mockReset(); adapter.getPage.mockReset(); });
 
+  it("keeps known-empty Pi history ready while refreshing before the first message", async () => {
+    const get = store([]);
+    get().updateThreadHistory("thread", (projection) => ({
+      ...projection, pagination: { ...projection.pagination, initialStatus: "ready" },
+    }));
+    const pending = deferred<ThreadHistoryPage>();
+    adapter.getInitialHistory.mockReturnValueOnce(pending.promise);
+    const loading = get().loadMessages("pi", "thread");
+    expect(get().threadProjections.thread.pagination.initialStatus).toBe("ready");
+    expect(get().threadProjections.thread.pagination.loadingInitial).toBe(false);
+    const firstMessage = { ...row("first"), role: "user" as const };
+    get().updateThreadHistory("thread", (projection) => ({ ...projection, messages: [firstMessage] }));
+    pending.resolve(page([], "empty"));
+    await loading;
+    expect(get().threadProjections.thread.messages).toEqual([firstMessage]);
+    expect(get().threadProjections.thread.pagination.initialStatus).toBe("ready");
+  });
+
   it("loads older Pi turns with the backend native cursor and revision", async () => {
     const get = store([row("u2"), row("a2")]);
     const revision = { sessionId: "native-session", appendCursor: "a2", leafId: "a2" };

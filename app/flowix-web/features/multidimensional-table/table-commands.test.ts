@@ -17,14 +17,16 @@ describe('table field commands', () => {
     const document = createTableDocument();
     const preset = getAllPresets([], (key) => key).find((item) => item.key === 'flowix_colors')!;
     const added = addPresetField(document, preset);
-    expect(added.dataset.schema.preset_fields).toContain('__note_colors__');
-    expect(added.views.items[0].config.visible_fields).toContain('__note_colors__');
+    const fieldId = added.dataset.schema.fields.find((field) => field.property_key === 'flowix_colors')!.id;
+    expect(fieldId).toMatch(/^fld_/);
+    expect(added.dataset.schema.preset_fields).not.toContain('__note_colors__');
+    expect(added.views.items[0].config.visible_fields).toContain(fieldId);
     expect(() => removePresetField(added, preset)).toThrow('仅支持移除隐藏字段');
 
-    const hidden = toggleDatasetTableFieldVisibility(added, '__note_colors__');
+    const hidden = toggleDatasetTableFieldVisibility(added, fieldId);
     const removed = removePresetField(hidden, preset);
     expect(removed.dataset.schema.preset_fields).not.toContain('__note_colors__');
-    expect(removed.dataset.schema.field_order).not.toContain('__note_colors__');
+    expect(removed.dataset.schema.field_order).not.toContain(fieldId);
   });
 
   it('adds and removes custom presets through the same field lifecycle', () => {
@@ -69,11 +71,13 @@ describe('table field commands', () => {
     expect(document.views.items.map((view) => view.layout)).toEqual(['table', 'kanban']);
   });
 
-  it('rejects changing a field type required by a view', () => {
+  it('keeps a dependent view configured when its field type changes', () => {
     const { document, fieldId } = documentWithField();
     document.dataset.schema.fields[1].type = 'Select';
     document.views.items.push({ id: `view_${createUuidV7()}`, name: '看板', layout: 'kanban', filter: { all: [], any: [] }, sort: [], config: { group_by: fieldId } });
-    expect(() => changeFieldType(document, fieldId, 'Text')).toThrow('请先调整依赖此属性的视图');
+    const next = changeFieldType(document, fieldId, 'Text');
+    expect(next.dataset.schema.fields[1].type).toBe('Text');
+    expect(next.views.items[1]).toMatchObject({ layout: 'kanban', config: { group_by: fieldId } });
   });
 });
 

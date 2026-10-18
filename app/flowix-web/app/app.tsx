@@ -13,6 +13,7 @@ import { TooltipProvider } from "@shared/ui/tooltip";
 import "@features/shortcuts/actions";
 import { listenToUserConfigChanges, windows } from "@platform/tauri/client";
 import { syncUserConfigChange } from "./user-config-sync";
+import { useAgentAccessWindowSync } from "./use-agent-access-window-sync";
 import { invalidateDshModelConfigs } from "@features/agent/public/app-api";
 import { createLogger } from "@/lib/logger";
 import { ActionableNoticeHost } from "@features/notifications/actionable-notice-host";
@@ -111,6 +112,7 @@ function useUnexpectedControlInputGuard() {
 
 function App() {
   useUnexpectedControlInputGuard();
+  useAgentAccessWindowSync();
   const [hash, setHash] = useState(() => window.location.hash);
   const {
     language,

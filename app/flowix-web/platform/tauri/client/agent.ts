@@ -13,11 +13,27 @@ import type {
   UsageInfo,
 } from '@/types/agent';
 
+interface CodexFollowUpQueueSnapshot {
+  data: Array<{ id: string; input: unknown[]; clientUserMessageId: string }>;
+  pendingDeliveries?: Array<{
+    id: string;
+    input: unknown[];
+    clientUserMessageId: string;
+    content?: string;
+    runId?: string;
+    queuedAt: number;
+    deliveryStatus: "submitting" | "steering";
+  }>;
+  nextCursor: string | null;
+}
+
 export type NotebookAgentFileKind = 'skill' | 'agent';
 
 export interface NotebookAgentFile {
   id: string;
   name: string;
+  /** Pi's /skill:<name> identifier; distinct from the human-readable label. */
+  commandName?: string;
   description: string;
   enabled: boolean;
   body: string;
@@ -307,11 +323,11 @@ export const agent = {
       'queue_codex_follow_up', { threadId, message, clientUserMessageId },
     ),
   listCodexFollowUps: (threadId: string) =>
-    invoke<{ data: Array<{ id: string; input: unknown[]; clientUserMessageId: string }>; nextCursor: string | null }>(
+    invoke<CodexFollowUpQueueSnapshot>(
       'list_codex_follow_ups', { threadId },
     ),
   restoreCodexFollowUps: (threadId: string) =>
-    invoke<{ data: Array<{ id: string; input: unknown[]; clientUserMessageId: string }>; nextCursor: string | null }>(
+    invoke<CodexFollowUpQueueSnapshot>(
       'restore_codex_follow_ups', { threadId },
     ),
   deleteCodexFollowUp: (threadId: string, queuedSubmissionId: string) =>
@@ -361,6 +377,8 @@ export const agent = {
     invoke<Array<Record<string, unknown>>>('pi_thread_get_messages', { threadId }),
   getPiSessionId: (threadId: string) =>
     invoke<string | null>('pi_thread_session_id', { threadId }),
+  forkPiThread: (threadId: string, entryId: string) =>
+    invoke<{ thread: ThreadInfo; piSessionId: string; cwd: string }>('pi_thread_fork', { threadId, entryId }),
   createThread: (title: string) =>
     invoke<ThreadInfo>('thread_create', { title }),
   getThread: (threadId: string) =>
@@ -452,6 +470,8 @@ export const agent = {
     invoke<{ path: string }>('codex_project_skill_write', { cwd, name, description, instructions }),
   readNotebookAgentWorkspace: (cwd: string) =>
     invoke<NotebookAgentWorkspace>('notebook_agent_workspace_read', { cwd }),
+  readNotebookAgentSkills: (cwd: string) =>
+    invoke<NotebookAgentFile[]>('notebook_agent_skills_read', { cwd }),
   writeNotebookAgentWorkspace: (cwd: string, workspace: NotebookAgentWorkspace) =>
     invoke<NotebookAgentWorkspace>('notebook_agent_workspace_write', { cwd, workspace }),
   updateCodexThreadSettings: (args: {
@@ -667,7 +687,7 @@ export function listenToCodexApprovalRequests(
 // 璺ㄧ獥鍙ｅ悓姝?// ============================================
 // 鍚庣 set_preference / set_deepseek_harness_config 鎴愬姛鍚?emit 'user-config-changed',
 // payload 鏄?"preference" | "ai_config" 鎸囨槑鍝釜鏂囦欢鍙樹簡銆?// 鍏跺畠绐楀彛鏀跺埌鍚庝粠纾佺洏閲嶆柊 load, 瑙ｅ喅: 涓や釜 Tauri 绐楀彛鍚勮窇鐙珛 React 鏍?// + 鐙珛 zustand store, 涓€杈规敼鍔ㄥ彟涓€杈圭湅涓嶅埌鐨勯棶棰樸€?
-export type UserConfigChangeKind = 'preference' | 'dsh_config' | 'pi_config';
+export type UserConfigChangeKind = 'preference' | 'property_presets' | 'dsh_config' | 'pi_config';
 type UserConfigChangeHandler = (kind: UserConfigChangeKind) => void;
 
 export function listenToUserConfigChanges(
@@ -691,8 +711,9 @@ type AgentAccessChangeHandler = () => void;
 
 export function listenToAgentAccessChanges(
   handler: AgentAccessChangeHandler,
+  options?: SubscribeOptions,
 ): UnlistenFn {
-  return subscribe<unknown>('agent-access-changed', () => handler());
+  return subscribe<unknown>('agent-access-changed', () => handler(), options);
 }
 
 export function listenToNotebookImportComplete(

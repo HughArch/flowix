@@ -72,6 +72,59 @@ describe("agent-access-store workspace selection", () => {
       config: { version: 1, entries: [] },
       isLoading: false,
       hasLoaded: false,
+      loadError: null,
+    });
+  });
+
+  it('exposes initial load failures and clears them after retry', async () => {
+    const { useAgentAccessStore } = await import('@features/agent/store/agent-access-store');
+    agentAccessMock.get.mockRejectedValueOnce(new Error('read failed'));
+    await useAgentAccessStore.getState().loadInitial();
+    expect(useAgentAccessStore.getState()).toMatchObject({
+      hasLoaded: false, isLoading: false, loadError: 'read failed',
+    });
+    agentAccessMock.config = {
+      version: 1, entries: [], defaults: { runtime: { pi: { piCodeMode: true } } },
+    };
+    await useAgentAccessStore.getState().loadInitial();
+    expect(useAgentAccessStore.getState()).toMatchObject({
+      hasLoaded: true, isLoading: false, loadError: null,
+      config: agentAccessMock.config,
+    });
+
+    agentAccessMock.get.mockRejectedValueOnce(new Error('refresh failed'));
+    await useAgentAccessStore.getState().loadInitial();
+    expect(useAgentAccessStore.getState()).toMatchObject({
+      hasLoaded: true, isLoading: false, loadError: 'refresh failed',
+      config: agentAccessMock.config,
+    });
+  });
+
+  it.each([true, false])('keeps the newest overlapping snapshot (newest resolves first: %s)', async (newestFirst) => {
+    const { useAgentAccessStore } = await import('@features/agent/store/agent-access-store');
+    let resolveOld!: (config: typeof agentAccessMock.config) => void;
+    let resolveNew!: (config: typeof agentAccessMock.config) => void;
+    agentAccessMock.get
+      .mockReturnValueOnce(new Promise((resolve) => { resolveOld = resolve; }))
+      .mockReturnValueOnce(new Promise((resolve) => { resolveNew = resolve; }));
+    const oldLoad = useAgentAccessStore.getState().loadInitial();
+    const newLoad = useAgentAccessStore.getState().loadInitial();
+    const oldConfig = { version: 1 as const, entries: [], defaults: { runtime: { pi: { piCodeMode: false } } } };
+    const newConfig = { version: 1 as const, entries: [], defaults: { runtime: { pi: { piCodeMode: true } } } };
+    if (newestFirst) {
+      resolveNew(newConfig);
+      await newLoad;
+      resolveOld(oldConfig);
+      await oldLoad;
+    } else {
+      resolveOld(oldConfig);
+      await oldLoad;
+      expect(useAgentAccessStore.getState().hasLoaded).toBe(false);
+      resolveNew(newConfig);
+      await newLoad;
+    }
+    expect(useAgentAccessStore.getState()).toMatchObject({
+      config: newConfig, hasLoaded: true, isLoading: false, loadError: null,
     });
   });
 

@@ -380,6 +380,93 @@ describe("useAgentSessionStore", () => {
       .toEqual(["queued", "starting", "cleanup_failed"]);
   });
 
+  it("finalizes the cached turn and never inherits its identity into the next run", () => {
+    const threadId = "codex-cache-turn-ownership";
+    const store = useAgentSessionStore.getState();
+    store.bindThreadType(threadId, "codex");
+    store.dispatch({ ...streamStart("first", threadId), agentType: "codex" });
+    store.dispatch({ kind: "user_message", agentType: "codex", threadId, runId: "first", timestamp: 1,
+      id: "native-user", text: "prompt", codexTurnId: "turn-first" });
+    store.dispatch({ ...textDelta("answer", "first", threadId), agentType: "codex", messageId: "native-answer", codexTurnId: "turn-first", sourceTimestamp: undefined, sourceSequence: undefined, sourceSubsequence: undefined, messagePhase: "completed", contentMode: "snapshot" });
+    store.dispatch({ ...streamEnd("first", threadId), agentType: "codex", durationMs: 50 });
+    const cached = useAgentSessionStore.getState().codexLiveTurns[threadId];
+    expect(cached.status).toBe("completed");
+    expect(cached.messages.find((item) => item.role === "assistant")?.isCompleted).toBe(true);
+    expect(cached.messages.find((item) => item.role === "assistant")?.turnDurationMs).toBe(50);
+    store.dispatch({ kind: "usage", agentType: "codex", threadId, runId: "first", timestamp: 3, usage: { input_tokens: 1, output_tokens: 1 } });
+    expect(useAgentSessionStore.getState().codexLiveTurns[threadId]).toBe(cached);
+    store.dispatch({ ...streamStart("second", threadId), agentType: "codex" });
+    expect(useAgentSessionStore.getState().codexLiveTurns[threadId].turnId).toBeUndefined();
+  });
+
+  it("keeps provider queue order when a locally known tail has an older timestamp", async () => {
+    const threadId = "provider-order-after-restore";
+    const store = useAgentSessionStore.getState();
+    store.bindThreadType(threadId, "codex");
+    store.enqueueSteeringMessage({ id: "tail", threadId, content: "tail", queuedAt: 1,
+      clientUserMessageId: "tail-client", providerQueueId: "tail-provider", deliveryMode: "follow_up", deliveryStatus: "queued" });
+    const restore = vi.spyOn(agentClient, "restoreCodexFollowUps").mockResolvedValue({ data: [
+      { id: "head-provider", clientUserMessageId: "head-client", input: [{ type: "text", text: "head" }] },
+      { id: "tail-provider", clientUserMessageId: "tail-client", input: [{ type: "text", text: "tail" }] },
+    ], nextCursor: null });
+    await store.hydrateCodexFollowUps(threadId);
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId].map((item) => item.content)).toEqual(["head", "tail"]);
+    restore.mockRestore();
+  });
+
+  it("restores backend-owned accepted steering after a webview reload without resubmitting", async () => {
+    const threadId = "restored-pending-steer";
+    const store = useAgentSessionStore.getState();
+    store.bindThreadType(threadId, "codex");
+    const restore = vi.spyOn(agentClient, "restoreCodexFollowUps").mockResolvedValue({
+      data: [], nextCursor: null,
+      pendingDeliveries: [{ id: "client", clientUserMessageId: "client", queuedAt: 1,
+        input: [{ type: "text", text: "private model context" }, { type: "localImage", path: "/tmp/image.png" }],
+        content: "visible steer", deliveryStatus: "steering" }],
+    });
+    const deliver = vi.spyOn(agentClient, "deliverCodexFollowUpNow");
+    await store.hydrateCodexFollowUps(threadId);
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]).toEqual([
+      expect.objectContaining({ content: "visible steer", deliveryMode: "steer", deliveryStatus: "steering", canDelete: false, imagePaths: ["/tmp/image.png"] }),
+    ]);
+    expect(deliver).not.toHaveBeenCalled();
+    restore.mockRestore(); deliver.mockRestore();
+  });
+
+  it("does not keep a restored submitting receipt after the runtime has removed it", async () => {
+    const threadId = "runtime-receipt-rejected";
+    const store = useAgentSessionStore.getState();
+    store.bindThreadType(threadId, "codex");
+    store.dispatch({ ...streamStart("active", threadId), agentType: "codex" });
+    const restore = vi.spyOn(agentClient, "restoreCodexFollowUps")
+      .mockResolvedValueOnce({ data: [], nextCursor: null, pendingDeliveries: [{
+        id: "client", clientUserMessageId: "client", input: [{ type: "text", text: "submitting" }], queuedAt: 1, deliveryStatus: "submitting",
+      }] })
+      .mockResolvedValueOnce({ data: [], nextCursor: null, pendingDeliveries: [] });
+    await store.hydrateCodexFollowUps(threadId);
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]?.[0].runtimeOwned).toBe(true);
+    await store.hydrateCodexFollowUps(threadId);
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]).toBeUndefined();
+    restore.mockRestore();
+  });
+
+  it("does not resurrect a steering receipt consumed while its snapshot was in flight", async () => {
+    const threadId = "pending-steer-consumed-during-read";
+    const store = useAgentSessionStore.getState();
+    store.bindThreadType(threadId, "codex");
+    let resolve!: (value: Awaited<ReturnType<typeof agentClient.restoreCodexFollowUps>>) => void;
+    const response = new Promise<Awaited<ReturnType<typeof agentClient.restoreCodexFollowUps>>>((done) => { resolve = done; });
+    const restore = vi.spyOn(agentClient, "restoreCodexFollowUps").mockReturnValue(response);
+    const read = store.hydrateCodexFollowUps(threadId);
+    store.removeSteeringMessageByClientId(threadId, "consumed");
+    resolve({ data: [], nextCursor: null, pendingDeliveries: [{
+      id: "consumed", clientUserMessageId: "consumed", input: [{ type: "text", text: "already consumed" }], queuedAt: 1, deliveryStatus: "steering",
+    }] });
+    await read;
+    expect(useAgentSessionStore.getState().pendingSteeringMessages[threadId]).toBeUndefined();
+    restore.mockRestore();
+  });
+
   it("reconciles orphaned accepted steering from an idle Codex queue snapshot", async () => {
     const threadId = "codex-idle-orphan";
     const store = useAgentSessionStore.getState();

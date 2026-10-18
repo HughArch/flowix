@@ -163,16 +163,26 @@ pub struct CloudCheckout {
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct CloudState {
+    pub revision: u64,
     pub authenticated: bool,
+    pub auth_status: CloudAuthStatus,
+    pub auth_error: Option<String>,
     pub account: Option<crate::v2::V2CloudAccount>,
     pub membership: Option<CloudMembership>,
-    pub last_error: Option<String>,
 }
 
-#[derive(Debug, Clone)]
-pub struct AuthOutcome {
-    pub state: CloudState,
-    pub refresh_token: String,
+#[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+pub enum CloudAuthStatus {
+    SignedOut,
+    Restoring,
+    Authenticated,
+}
+
+pub trait RefreshTokenStore: Send + Sync {
+    fn load(&self) -> Result<Option<String>, String>;
+    fn save(&self, token: &str) -> Result<(), String>;
+    fn delete(&self) -> Result<(), String>;
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]

@@ -10,7 +10,6 @@ import { DEFAULT_THEME_ID, type ThemeId } from '@/lib/theme';
 import type { ShortcutOverrides } from '@/lib/shortcuts';
 import { DEFAULT_APP_LANGUAGE, type AppLanguage, type Region } from '@/lib/i18n';
 import type { AgentTypeKey } from '@/types/agent';
-import type { PresetPropertyKind } from './property-types';
 
 // 文件类型
 export const BINARY_EXTENSIONS = [
@@ -69,17 +68,7 @@ export interface FormatConfig {
   documentWidth: number;
 }
 
-export type PropertyFieldType = PresetPropertyKind;
-
-export interface PropertyFieldConfig {
-  key: string;
-  type: PropertyFieldType;
-  options?: string[];
-}
-
-export interface PropertiesConfig {
-  fields: PropertyFieldConfig[];
-}
+export type { PropertyFieldType, PropertyPresetOption, PropertyFieldConfig, PropertiesConfig } from './property-types';
 
 export type MemoListView = 'detailed' | 'folders';
 
@@ -118,7 +107,6 @@ export interface UserSettings {
    */
   shortcuts: ShortcutOverrides;
   /** 用户主动配置过的自定义属性字段定义, 持久化到 preference.json。 */
-  properties: PropertiesConfig;
   agents: AgentsConfig;
   productUpdates: ProductUpdatesConfig;
 }
@@ -246,9 +234,6 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   autoOpenCreatedNotesInBrowser: true,
   // 启动时无任何用户覆盖, 所有 action 走 ActionDefinition.defaultBinding。
   shortcuts: {},
-  properties: {
-    fields: [],
-  },
   agents: {
     enabledByType: {},
   },

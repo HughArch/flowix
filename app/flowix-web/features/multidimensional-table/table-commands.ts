@@ -1,7 +1,9 @@
+import { createPropertyOptionId } from '@/lib/property-identity';
+import { tableFieldFromPreset } from './table-preset-bindings';
 import { reviseCollection } from '@features/collection/model';
-import { canonicalizePropertyKey } from '@features/document/properties/property-key';
+import { canonicalizePropertyKey } from '@features/properties/property-key';
 import type { PropertyPreset } from '@features/document/properties/presets';
-import { createUuidV7, type MultidimensionalTableDocument, type TableField, type TableFieldType, type TableView } from './model';
+import { type MultidimensionalTableDocument, type TableField, type TableFieldType, type TableView } from './model';
 import { collectionFilterUsesField, type CollectionRuleFilter } from '@features/collection/rule-filter';
 import { BUILTIN_TABLE_FIELDS, builtinPresetTableField } from './builtin-fields';
 
@@ -9,11 +11,6 @@ export function viewsRequiringField(document: MultidimensionalTableDocument, fie
   return document.views.items.filter((view) =>
     (view.layout === 'kanban' && view.config.group_by === fieldId)
     || (view.layout === 'calendar' && view.config.date_field === fieldId));
-}
-
-export function viewsIncompatibleWithFieldType(document: MultidimensionalTableDocument, fieldId: string, type: TableFieldType): TableView[] {
-  return viewsRequiringField(document, fieldId).filter((view) =>
-    (view.layout === 'kanban' && type !== 'Select') || (view.layout === 'calendar' && type !== 'Date'));
 }
 
 export function renameField(document: MultidimensionalTableDocument, fieldId: string, name: string): MultidimensionalTableDocument {
@@ -37,7 +34,6 @@ export function changeFieldType(
   if (type === 'primary') throw new Error('不能改变主字段类型');
   const field = document.dataset.schema.fields.find((item) => item.id === fieldId);
   if (!field || field.type === 'primary') throw new Error('无法改变此列类型');
-  if (viewsIncompatibleWithFieldType(document, fieldId, type).length) throw new Error('请先调整依赖此属性的视图');
   const nextField: TableField = { ...field, type };
   if (options) nextField.options = options;
   else delete nextField.options;
@@ -106,38 +102,14 @@ export function addTableField(document: MultidimensionalTableDocument, field: Ta
 }
 
 export function addPresetField(document: MultidimensionalTableDocument, preset: PropertyPreset): MultidimensionalTableDocument {
-  const propertyKey = canonicalizePropertyKey(preset.key).toLocaleLowerCase();
-  const builtin = BUILTIN_TABLE_FIELDS.find((field) => builtinPresetTableField(field.id)?.property_key === propertyKey);
-  if (preset.source === 'builtin' && builtin) {
-    if (document.dataset.schema.fields.some((field) => field.property_key
-      && canonicalizePropertyKey(field.property_key).toLocaleLowerCase() === propertyKey)) {
-      throw new Error('属性键已存在或属于保留名称');
-    }
-    if (document.dataset.schema.preset_fields.includes(builtin.id)) return document;
-    return {
-      ...document,
-      collection: reviseCollection(document.collection),
-      dataset: { ...document.dataset, schema: {
-        ...document.dataset.schema,
-        preset_fields: [...document.dataset.schema.preset_fields, builtin.id],
-        field_order: [...document.dataset.schema.field_order, builtin.id],
-      } },
-      views: { ...document.views, items: document.views.items.map((view) => view.layout === 'table'
-        ? { ...view, config: { ...view.config, visible_fields: [...new Set([...view.config.visible_fields as string[], builtin.id])] } }
-        : view) },
-    };
+  const propertyKey = canonicalizePropertyKey(preset.key).toLowerCase();
+  if (document.dataset.schema.fields.some((field) => canonicalizePropertyKey(field.property_key ?? '').toLowerCase() === propertyKey)) {
+    throw new Error('属性键已存在');
   }
-  if (builtin) throw new Error('预设属性键已存在');
-  const optionLabels = [...new Set((preset.options ?? []).map((label) => label.trim()).filter(Boolean))];
-  const options = (preset.kind === 'Select' || preset.kind === 'MultiSelect')
-    ? optionLabels.map((label) => ({ id: `opt_${createUuidV7()}`, label }))
-    : undefined;
-  return addTableField(document, {
-    id: `fld_${createUuidV7()}`,
-    type: preset.kind,
-    property_key: preset.key,
-    ...(options?.length ? { options } : {}),
-  });
+  return appendFieldToDataset(document, tableFieldFromPreset({
+    id: preset.id, key: preset.key,
+    type: preset.kind, revision: preset.revision, options: preset.options?.map((label, index) => ({ label, id: preset.optionIds?.[index] ?? createPropertyOptionId() })), multiple: preset.multiple,
+  }));
 }
 
 /** Removes a preset only after all table views have hidden its field. */

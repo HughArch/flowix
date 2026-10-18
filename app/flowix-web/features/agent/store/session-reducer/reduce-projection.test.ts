@@ -360,18 +360,13 @@ describe("reduceProjection / text streaming lifecycle", () => {
     });
   });
 
-  it("stream_end completes the reasoning row and clears pending", () => {
+  it("stream_end clears an unfinished reasoning draft and pending state", () => {
     let p = emptyProjection();
     p = reduceProjection(p, streamStart("r1"));
     p = reduceProjection(p, reasoningDelta("only thinking"));
     p = reduceProjection(p, streamEnd("r1"));
 
-    expect(p.messages).toHaveLength(1);
-    expect(p.messages[0]).toMatchObject({
-      role: "reasoning",
-      content: "only thinking",
-      isCompleted: true,
-    });
+    expect(p.messages).toHaveLength(0);
     expect(p.runs.isLoading).toBe(false);
     expect(p.runs.activeRunId).toBeNull();
     expect(p.runs.lastRun?.status).toBe("completed");
@@ -379,10 +374,80 @@ describe("reduceProjection / text streaming lifecycle", () => {
     expect(p.pending.reasoningId).toBeNull();
   });
 
+  it.each([
+    ["user stop", "user_stopped"],
+    ["provider completion", null],
+  ] as const)("clears assistant drafts on %s", (_label, reason) => {
+    let p = emptyProjection();
+    p = reduceProjection(p, streamStart("r1"));
+    p = reduceProjection(p, textDelta("unfinished answer"));
+    p = reduceProjection(p, streamEnd("r1", reason));
+
+    expect(p.messages).toHaveLength(0);
+    expect(p.pending.assistantId).toBeNull();
+  });
+
+  it("clears unfinished output on provider error and retains the terminal error row", () => {
+    let p = emptyProjection();
+    p = reduceProjection(p, streamStart("r1"));
+    p = reduceProjection(p, textDelta("partial answer"));
+    p = reduceProjection(p, errorEvent("provider failed"));
+
+    expect(p.messages).toHaveLength(1);
+    expect(p.messages[0]).toMatchObject({ content: "provider failed", isCompleted: true });
+    expect(p.pending.assistantId).toBeNull();
+  });
+
+  it("adopts a native Codex item id into the streamed draft", () => {
+    let p = emptyProjection();
+    p = reduceProjection(p, streamStart("r1"));
+    p = reduceProjection(p, event("text_delta", {
+      agentType: "codex",
+      threadId: "t1",
+      runId: "r1",
+      timestamp: 100,
+      text: "answer",
+      messagePhase: "updated",
+      contentMode: "delta",
+      codexTurnId: "turn-1",
+    }));
+    const renderKey = p.messages[0].renderKey;
+    p = reduceProjection(p, event("final_message", {
+      agentType: "codex",
+      threadId: "t1",
+      runId: "r1",
+      timestamp: 200,
+      text: "answer",
+      messageId: "native-answer",
+      messagePhase: "completed",
+      contentMode: "snapshot",
+      codexTurnId: "turn-1",
+    }));
+
+    expect(p.messages).toHaveLength(1);
+    expect(p.messages[0]).toMatchObject({
+      id: "native-answer",
+      messageId: "native-answer",
+      renderKey,
+      content: "answer",
+      isCompleted: true,
+    });
+  });
+
   it("attaches a provider turn duration to the final assistant row", () => {
     let p = emptyProjection();
     p = reduceProjection(p, streamStart("r1"));
     p = reduceProjection(p, textDelta("answer"));
+    p = reduceProjection(p, event("final_message", {
+      agentType: "deepseek-harness",
+      threadId: "t1",
+      runId: "r1",
+      timestamp: 8000,
+      text: "answer",
+      messageId: "assistant-r1",
+      messagePhase: "completed",
+      contentMode: "snapshot",
+    }));
     p = reduceProjection(p, streamEnd("r1", null, 69078));
 
     expect(p.messages).toHaveLength(1);
@@ -399,10 +464,10 @@ describe("reduceProjection / text streaming lifecycle", () => {
     p = reduceProjection(p, reasoningDelta("thinking"));
     p = reduceProjection(p, errorEvent("boom"));
 
-    const reasoning = p.messages.find((m) => m.role === "reasoning");
-    expect(reasoning?.isCompleted).toBe(true);
+    expect(p.messages.some((m) => m.role === "reasoning")).toBe(false);
     const assistant = p.messages.find((m) => m.role === "assistant");
     expect(assistant?.content).toBe("boom");
+    expect(assistant?.isCompleted).toBe(true);
     expect(p.runs.lastRun?.status).toBe("failed");
     expect(p.runs.isLoading).toBe(false);
   });

@@ -6,7 +6,7 @@ impl SyncManager {
         email: &str,
         password: &str,
         display_name: &str,
-    ) -> Result<AuthOutcome, SyncError> {
+    ) -> Result<CloudState, SyncError> {
         let generation = self.begin_auth_attempt();
         let auth = self.client.register(email, password, display_name).await?;
         self.accept_auth(
@@ -17,23 +17,19 @@ impl SyncManager {
             },
             auth.session.into(),
         )
-        .await
     }
 
-    pub async fn login(&self, email: &str, password: &str) -> Result<AuthOutcome, SyncError> {
+    pub async fn login(&self, email: &str, password: &str) -> Result<CloudState, SyncError> {
         let generation = self.begin_auth_attempt();
         let auth = self.client.login(email, password).await?;
-        let runtime: RuntimeSession = auth.session.into();
-        let me = self.client.me(&runtime.access_token).await?;
         self.accept_auth(
             generation,
             V2CloudAccount {
-                user: me.user,
+                user: auth.user,
                 protocol_epoch: crate::v2::PROTOCOL_EPOCH,
             },
-            runtime,
+            auth.session.into(),
         )
-        .await
     }
 
     pub async fn apple_challenge(&self) -> Result<AppleAuthChallenge, SyncError> {
@@ -43,20 +39,22 @@ impl SyncManager {
     pub async fn sign_in_with_apple(
         &self,
         authorization: &AppleAuthorization,
-    ) -> Result<AuthOutcome, SyncError> {
+    ) -> Result<CloudState, SyncError> {
         let generation = self.begin_auth_attempt();
         let auth = self.client.apple_exchange(authorization).await?;
-        let runtime: RuntimeSession = auth.session.into();
-        let me = self.client.me(&runtime.access_token).await?;
         self.accept_auth(
             generation,
             V2CloudAccount {
-                user: me.user,
+                user: auth.user,
                 protocol_epoch: crate::v2::PROTOCOL_EPOCH,
             },
-            runtime,
+            auth.session.into(),
         )
-        .await
+    }
+
+    /// Starts an external login; later authentication actions supersede its callback.
+    pub fn begin_google_sign_in(&self) -> u64 {
+        self.begin_auth_attempt()
     }
 
     pub async fn sign_in_with_google_desktop(
@@ -64,20 +62,21 @@ impl SyncManager {
         code: &str,
         state: &str,
         code_verifier: &str,
-    ) -> Result<AuthOutcome, SyncError> {
-        let generation = self.begin_auth_attempt();
-        let auth = self.client.google_desktop_exchange(code, state, code_verifier).await?;
-        let runtime: RuntimeSession = auth.session.into();
-        let me = self.client.me(&runtime.access_token).await?;
+        generation: u64,
+    ) -> Result<CloudState, SyncError> {
+        drop(self.require_auth_generation(generation)?);
+        let auth = self
+            .client
+            .google_desktop_exchange(code, state, code_verifier)
+            .await?;
         self.accept_auth(
             generation,
             V2CloudAccount {
-                user: me.user,
+                user: auth.user,
                 protocol_epoch: crate::v2::PROTOCOL_EPOCH,
             },
-            runtime,
+            auth.session.into(),
         )
-        .await
     }
 
     pub async fn link_apple(
@@ -97,82 +96,97 @@ impl SyncManager {
         self.state()
     }
 
-    pub async fn restore(&self, refresh_token: &str) -> Result<AuthOutcome, SyncError> {
-        self.restore_at_generation(refresh_token, self.session_restore_generation())
-            .await
-    }
-
-    pub fn session_restore_generation(&self) -> u64 {
+    pub fn session_generation(&self) -> u64 {
         self.auth_generation()
     }
 
-    pub async fn restore_at_generation(
+    pub(super) async fn restore_at_generation(
         &self,
         refresh_token: &str,
         generation: u64,
-    ) -> Result<AuthOutcome, SyncError> {
+    ) -> Result<CloudState, SyncError> {
         {
             let _generation = self.require_auth_generation(generation)?;
             if self
-                .session
+                .auth
                 .read()
-                .unwrap_or_else(|poisoned| poisoned.into_inner())
+                .unwrap_or_else(|p| p.into_inner())
+                .session
                 .is_some()
             {
                 return Err(SyncError::NotAuthenticated);
             }
         }
-        let account = self
-            .store
-            .v2_account()?
-            .ok_or(SyncError::NotAuthenticated)?;
-        let refreshed = self.client.refresh(refresh_token).await?;
-        self.accept_auth(generation, account, refreshed.session.into())
-            .await
+        let account = self.store.v2_account()?;
+        let refreshed = match self.client.refresh(refresh_token).await {
+            Ok(refreshed) => refreshed,
+            Err(error) if error.is_invalid_refresh_token() => {
+                let (_, cleanup) = self.clear_auth_at_generation(generation, || {
+                    self.delete_persisted_refresh_token()
+                })?;
+                if let Err(cleanup_error) = cleanup {
+                    tracing::warn!("failed to remove invalid cloud refresh token: {cleanup_error}");
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
+        let runtime: RuntimeSession = refreshed.session.into();
+        // Preserve rotation before any fallible account metadata work.
+        {
+            let _generation = self.require_auth_generation(generation)?;
+            let mut auth = self.auth.write().unwrap_or_else(|p| p.into_inner());
+            self.persist_auth_token(&mut auth, &runtime.refresh_token);
+        }
+        let account = match account {
+            Some(account) => account,
+            None => V2CloudAccount {
+                user: self.client.me(&runtime.access_token).await?.user,
+                protocol_epoch: crate::v2::PROTOCOL_EPOCH,
+            },
+        };
+        self.accept_auth(generation, account, runtime)
     }
 
-    async fn accept_auth(
+    fn accept_auth(
         &self,
         generation: u64,
         account: V2CloudAccount,
         runtime: RuntimeSession,
-    ) -> Result<AuthOutcome, SyncError> {
-        let refresh_token = runtime.refresh_token.clone();
-        let committed_generation =
-            self.install_authenticated_session(generation, account, runtime)?;
-        let _ = self.refresh_membership().await;
-        let _generation = self.require_auth_generation(committed_generation)?;
-        Ok(AuthOutcome {
-            state: self.state()?,
-            refresh_token,
-        })
+    ) -> Result<CloudState, SyncError> {
+        self.install_authenticated_session(generation, account, runtime)?;
+        self.state()
     }
 
-    fn install_authenticated_session(
+    pub(super) fn install_authenticated_session(
         &self,
         generation: u64,
         account: V2CloudAccount,
         runtime: RuntimeSession,
     ) -> Result<u64, SyncError> {
         let mut current_generation = self.require_auth_generation(generation)?;
+        let mut auth = self.auth.write().unwrap_or_else(|p| p.into_inner());
         self.store.save_v2_account(&account)?;
-        *self
-            .session
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = Some(runtime);
-        *self
-            .last_error
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        self.persist_auth_token(&mut auth, &runtime.refresh_token);
+        auth.error = None;
+        auth.session = Some(runtime);
+        *self.membership.write().unwrap_or_else(|p| p.into_inner()) = None;
+        auth.status = CloudAuthStatus::Authenticated;
+        auth.revision = auth.revision.saturating_add(1);
         *current_generation = current_generation.saturating_add(1);
-        Ok(*current_generation)
+        let next_generation = *current_generation;
+        drop(auth);
+        drop(current_generation);
+        self.notify_state_change();
+        Ok(next_generation)
     }
 
     pub async fn logout(&self) -> Result<(), SyncError> {
-        self.logout_with_cleanup(|| Ok(())).await
+        self.logout_with_cleanup(|| self.delete_persisted_refresh_token())
+            .await
     }
 
-    pub async fn logout_with_cleanup(
+    async fn logout_with_cleanup(
         &self,
         cleanup: impl FnOnce() -> Result<(), SyncError>,
     ) -> Result<(), SyncError> {
@@ -184,7 +198,9 @@ impl SyncManager {
         };
         if let Err(error) = local_cleanup {
             if let Err(remote_error) = remote_logout {
-                tracing::warn!("failed to revoke Flowix Cloud session during local logout: {remote_error}");
+                tracing::warn!(
+                    "failed to revoke Flowix Cloud session during local logout: {remote_error}"
+                );
             }
             return Err(error);
         }
@@ -195,24 +211,49 @@ impl SyncManager {
         &self,
         cleanup: impl FnOnce() -> Result<(), SyncError>,
     ) -> (Option<String>, Result<(), SyncError>) {
+        self.clear_auth_inner(None, cleanup)
+            .expect("unconditional logout cannot be superseded")
+    }
+
+    fn clear_auth_at_generation(
+        &self,
+        expected_generation: u64,
+        cleanup: impl FnOnce() -> Result<(), SyncError>,
+    ) -> Result<(Option<String>, Result<(), SyncError>), SyncError> {
+        self.clear_auth_inner(Some(expected_generation), cleanup)
+    }
+
+    fn clear_auth_inner(
+        &self,
+        expected_generation: Option<u64>,
+        cleanup: impl FnOnce() -> Result<(), SyncError>,
+    ) -> Result<(Option<String>, Result<(), SyncError>), SyncError> {
         let mut generation = self
             .auth_generation
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if expected_generation.is_some_and(|expected| *generation != expected) {
+            return Err(SyncError::NotAuthenticated);
+        }
         *generation = generation.saturating_add(1);
-        let token = self
-            .session
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
-            .take()
-            .map(|session| session.refresh_token);
-        *self
-            .membership
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner()) = None;
+        let mut auth = self.auth.write().unwrap_or_else(|p| p.into_inner());
+        let token = auth.session.take().map(|session| session.refresh_token);
+        *self.membership.write().unwrap_or_else(|p| p.into_inner()) = None;
+        auth.pending_credential = None;
+        auth.status = CloudAuthStatus::SignedOut;
+        auth.revision = auth.revision.saturating_add(1);
         let account_result = self.store.clear_v2_account();
         let cleanup_result = cleanup();
-        (token, account_result.and(cleanup_result))
+        if cleanup_result.is_err() {
+            auth.pending_credential = Some(CredentialWrite::Delete);
+            self.credential_retry.notify_one();
+        }
+        auth.error = account_result.as_ref().err().map(ToString::to_string);
+        auth.credential_error = cleanup_result.as_ref().err().map(ToString::to_string);
+        drop(auth);
+        drop(generation);
+        self.notify_state_change();
+        Ok((token, account_result.and(cleanup_result)))
     }
 
     fn begin_auth_attempt(&self) -> u64 {
@@ -221,7 +262,20 @@ impl SyncManager {
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
         *generation = generation.saturating_add(1);
-        *generation
+        let next = *generation;
+        let mut auth = self.auth.write().unwrap_or_else(|p| p.into_inner());
+        let changed = auth.status == CloudAuthStatus::Restoring;
+        if changed {
+            auth.status = CloudAuthStatus::SignedOut;
+            auth.error = None;
+            auth.revision = auth.revision.saturating_add(1);
+        }
+        drop(auth);
+        drop(generation);
+        if changed {
+            self.notify_state_change();
+        }
+        next
     }
 
     pub(super) fn auth_generation(&self) -> u64 {
@@ -251,27 +305,31 @@ impl SyncManager {
         expected_refresh_token: &str,
         next: RuntimeSession,
     ) -> Result<String, SyncError> {
-        let _generation = self.require_auth_generation(generation)?;
-        let mut session = self
+        let guard = self.require_auth_generation(generation)?;
+        let mut auth = self.auth.write().unwrap_or_else(|p| p.into_inner());
+        if !auth
             .session
-            .write()
-            .unwrap_or_else(|poisoned| poisoned.into_inner());
-        if !session
             .as_ref()
-            .is_some_and(|current| current.refresh_token == expected_refresh_token)
+            .is_some_and(|session| session.refresh_token == expected_refresh_token)
         {
             return Err(SyncError::NotAuthenticated);
         }
         let access_token = next.access_token.clone();
-        *session = Some(next);
+        self.persist_auth_token(&mut auth, &next.refresh_token);
+        auth.session = Some(next);
+        auth.revision = auth.revision.saturating_add(1);
+        drop(auth);
+        drop(guard);
+        self.notify_state_change();
         Ok(access_token)
     }
 
     fn session_for_generation(&self, generation: u64) -> Result<RuntimeSession, SyncError> {
-        let _generation = self.require_auth_generation(generation)?;
-        self.session
+        let _guard = self.require_auth_generation(generation)?;
+        self.auth
             .read()
-            .unwrap_or_else(|poisoned| poisoned.into_inner())
+            .unwrap_or_else(|p| p.into_inner())
+            .session
             .clone()
             .ok_or(SyncError::NotAuthenticated)
     }
@@ -283,6 +341,11 @@ impl SyncManager {
             return Ok(current.access_token);
         }
         if current.refresh_token_expires_at <= now {
+            let (_, cleanup) = self
+                .clear_auth_at_generation(generation, || self.delete_persisted_refresh_token())?;
+            if let Err(error) = cleanup {
+                tracing::warn!("failed to remove expired cloud refresh token: {error}");
+            }
             return Err(SyncError::NotAuthenticated);
         }
         self.refresh_access_token(&current.access_token, generation)
@@ -312,9 +375,24 @@ impl SyncManager {
             return Ok(current.access_token);
         }
         if current.refresh_token_expires_at <= chrono::Utc::now().timestamp_millis() {
+            let (_, cleanup) = self
+                .clear_auth_at_generation(generation, || self.delete_persisted_refresh_token())?;
+            cleanup?;
             return Err(SyncError::NotAuthenticated);
         }
-        let refreshed = self.client.refresh(&current.refresh_token).await?;
+        let refreshed = match self.client.refresh(&current.refresh_token).await {
+            Ok(refreshed) => refreshed,
+            Err(error) if error.is_invalid_refresh_token() => {
+                let (_, cleanup) = self.clear_auth_at_generation(generation, || {
+                    self.delete_persisted_refresh_token()
+                })?;
+                if let Err(cleanup_error) = cleanup {
+                    tracing::warn!("failed to remove invalid cloud refresh token: {cleanup_error}");
+                }
+                return Err(error);
+            }
+            Err(error) => return Err(error),
+        };
         self.install_refreshed_session(generation, &current.refresh_token, refreshed.session.into())
     }
 }
@@ -482,7 +560,7 @@ mod tests {
         )
         .unwrap();
         let generation = manager.begin_auth_attempt();
-        *manager.session.write().unwrap() = Some(runtime("first"));
+        manager.auth.write().unwrap().session = Some(runtime("first"));
         assert_eq!(
             manager.clear_auth_with_cleanup(|| Ok(())).0.as_deref(),
             Some("first")
@@ -490,7 +568,7 @@ mod tests {
         assert!(manager
             .install_refreshed_session(generation, "first", runtime("late"))
             .is_err());
-        assert!(manager.current_refresh_token().is_none());
+        assert!(manager.auth.read().unwrap().session.is_none());
         assert!(!manager.state().unwrap().authenticated);
     }
 
@@ -505,7 +583,7 @@ mod tests {
         let first = manager.begin_auth_attempt();
         let second = manager.begin_auth_attempt();
         assert!(manager.require_auth_generation(first).is_err());
-        *manager.session.write().unwrap() = Some(runtime("current"));
+        manager.auth.write().unwrap().session = Some(runtime("current"));
         assert!(manager
             .install_refreshed_session(second, "wrong", runtime("bad"))
             .is_err());
@@ -515,7 +593,16 @@ mod tests {
                 .unwrap(),
             "access-next"
         );
-        assert_eq!(manager.current_refresh_token().as_deref(), Some("next"));
+        assert_eq!(
+            manager
+                .auth
+                .read()
+                .unwrap()
+                .session
+                .as_ref()
+                .map(|session| session.refresh_token.as_str()),
+            Some("next")
+        );
     }
 
     #[test]
@@ -526,12 +613,295 @@ mod tests {
             directory.path().join("sync.db"),
         )
         .unwrap();
-        *manager.session.write().unwrap() = Some(runtime("current"));
+        manager.auth.write().unwrap().session = Some(runtime("current"));
         let (_, cleanup) = manager.clear_auth_with_cleanup(|| {
             Err(SyncError::InvalidState("secret store unavailable".into()))
         });
         assert!(cleanup.is_err());
-        manager.with_current_refresh_token(|token| assert!(token.is_none()));
+        assert!(manager.auth.read().unwrap().session.is_none());
         assert!(!manager.state().unwrap().authenticated);
+    }
+    #[test]
+    fn token_save_is_serialized_with_logout() {
+        struct BlockingStore {
+            token: std::sync::Mutex<Option<String>>,
+            entered: std::sync::mpsc::Sender<()>,
+            release: std::sync::Mutex<std::sync::mpsc::Receiver<()>>,
+        }
+        impl RefreshTokenStore for BlockingStore {
+            fn load(&self) -> Result<Option<String>, String> {
+                Ok(self.token.lock().unwrap().clone())
+            }
+            fn save(&self, token: &str) -> Result<(), String> {
+                self.entered.send(()).unwrap();
+                self.release.lock().unwrap().recv().unwrap();
+                *self.token.lock().unwrap() = Some(token.into());
+                Ok(())
+            }
+            fn delete(&self) -> Result<(), String> {
+                *self.token.lock().unwrap() = None;
+                Ok(())
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+        let (release_tx, release_rx) = std::sync::mpsc::channel();
+        let store = Arc::new(BlockingStore {
+            token: std::sync::Mutex::new(None),
+            entered: entered_tx,
+            release: std::sync::Mutex::new(release_rx),
+        });
+        let manager = SyncManager::new_with_token_store(
+            "https://cloud.example.test",
+            directory.path().join("sync.db"),
+            store.clone(),
+        )
+        .unwrap();
+        let login_manager = manager.clone();
+        let login = std::thread::spawn(move || sign_in(&login_manager, "current"));
+        entered_rx
+            .recv_timeout(std::time::Duration::from_secs(5))
+            .unwrap();
+        assert!(manager.auth_generation.try_lock().is_err());
+        let logout_manager = manager.clone();
+        let logout = std::thread::spawn(move || {
+            logout_manager
+                .clear_auth_with_cleanup(|| logout_manager.delete_persisted_refresh_token())
+                .1
+        });
+        release_tx.send(()).unwrap();
+        login.join().unwrap();
+        logout.join().unwrap().unwrap();
+        assert!(store.token.lock().unwrap().is_none());
+        let state = manager.state().unwrap();
+        assert!(!state.authenticated);
+        assert_eq!(state.auth_status, CloudAuthStatus::SignedOut);
+    }
+
+    #[test]
+    fn failed_persistence_is_a_login_warning_and_retries_only_current_session() {
+        struct Store {
+            fail: std::sync::atomic::AtomicBool,
+            token: std::sync::Mutex<Option<String>>,
+        }
+        impl RefreshTokenStore for Store {
+            fn load(&self) -> Result<Option<String>, String> {
+                Ok(self.token.lock().unwrap().clone())
+            }
+            fn save(&self, token: &str) -> Result<(), String> {
+                if self.fail.load(std::sync::atomic::Ordering::SeqCst) {
+                    return Err("disk unavailable".into());
+                }
+                *self.token.lock().unwrap() = Some(token.into());
+                Ok(())
+            }
+            fn delete(&self) -> Result<(), String> {
+                *self.token.lock().unwrap() = None;
+                Ok(())
+            }
+        }
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(Store {
+            fail: std::sync::atomic::AtomicBool::new(true),
+            token: std::sync::Mutex::new(None),
+        });
+        let manager = SyncManager::new_with_token_store(
+            "https://cloud.example.test",
+            directory.path().join("sync.db"),
+            store.clone(),
+        )
+        .unwrap();
+        let first = sign_in(&manager, "first");
+        let state = manager.state().unwrap();
+        assert!(state.authenticated);
+        assert!(state.auth_error.is_some());
+        let second = sign_in(&manager, "second");
+        store.fail.store(false, std::sync::atomic::Ordering::SeqCst);
+        assert!(manager.session_for_generation(first).is_err());
+        assert!(store.token.lock().unwrap().is_none());
+        manager.flush_pending_credentials();
+        assert_eq!(
+            ready(manager.access_token(second)).unwrap(),
+            "access-second"
+        );
+        assert_eq!(store.token.lock().unwrap().as_deref(), Some("second"));
+        assert!(manager.state().unwrap().auth_error.is_none());
+    }
+    struct FaultyStore {
+        token: std::sync::Mutex<Option<String>>,
+        fail_save: std::sync::atomic::AtomicBool,
+        fail_delete: std::sync::atomic::AtomicBool,
+    }
+    impl RefreshTokenStore for FaultyStore {
+        fn load(&self) -> Result<Option<String>, String> {
+            Ok(self.token.lock().unwrap().clone())
+        }
+        fn save(&self, token: &str) -> Result<(), String> {
+            if self.fail_save.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("disk unavailable".into());
+            }
+            *self.token.lock().unwrap() = Some(token.into());
+            Ok(())
+        }
+        fn delete(&self) -> Result<(), String> {
+            if self.fail_delete.load(std::sync::atomic::Ordering::SeqCst) {
+                return Err("disk unavailable".into());
+            }
+            *self.token.lock().unwrap() = None;
+            Ok(())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_save_recovers_in_background_without_another_cloud_request() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(FaultyStore {
+            token: std::sync::Mutex::new(None),
+            fail_save: std::sync::atomic::AtomicBool::new(true),
+            fail_delete: std::sync::atomic::AtomicBool::new(false),
+        });
+        let manager = SyncManager::new_with_token_store(
+            "https://cloud.example.test",
+            directory.path().join("sync.db"),
+            store.clone(),
+        )
+        .unwrap();
+        sign_in(&manager, "current");
+        let revision = manager.state().unwrap().revision;
+        let service_manager = manager.clone();
+        let service = tokio::spawn(async move {
+            service_manager.run_session_service().await;
+        });
+        tokio::task::yield_now().await;
+        assert!(store.token.lock().unwrap().is_none());
+        store
+            .fail_save
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(store.token.lock().unwrap().as_deref(), Some("current"));
+        let state = manager.state().unwrap();
+        assert!(state.authenticated);
+        assert!(state.auth_error.is_none());
+        assert!(state.revision > revision);
+        service.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn failed_logout_deletion_is_retried_without_restoring_the_session() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(FaultyStore {
+            token: std::sync::Mutex::new(None),
+            fail_save: std::sync::atomic::AtomicBool::new(false),
+            fail_delete: std::sync::atomic::AtomicBool::new(true),
+        });
+        let manager = SyncManager::new_with_token_store(
+            "https://cloud.example.test",
+            directory.path().join("sync.db"),
+            store.clone(),
+        )
+        .unwrap();
+        sign_in(&manager, "current");
+        let (_, cleanup) =
+            manager.clear_auth_with_cleanup(|| manager.delete_persisted_refresh_token());
+        assert!(cleanup.is_err());
+        assert!(!manager.state().unwrap().authenticated);
+        let service_manager = manager.clone();
+        let service = tokio::spawn(async move {
+            service_manager.run_session_service().await;
+        });
+        tokio::task::yield_now().await;
+        store
+            .fail_delete
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        assert!(store.token.lock().unwrap().is_none());
+        let state = manager.state().unwrap();
+        assert_eq!(state.auth_status, CloudAuthStatus::SignedOut);
+        assert!(state.auth_error.is_none());
+        service.abort();
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn pending_logout_deletion_cannot_delete_a_new_accounts_credentials() {
+        let directory = tempfile::tempdir().unwrap();
+        let store = Arc::new(FaultyStore {
+            token: std::sync::Mutex::new(None),
+            fail_save: std::sync::atomic::AtomicBool::new(false),
+            fail_delete: std::sync::atomic::AtomicBool::new(true),
+        });
+        let manager = SyncManager::new_with_token_store(
+            "https://cloud.example.test",
+            directory.path().join("sync.db"),
+            store.clone(),
+        )
+        .unwrap();
+        sign_in(&manager, "old");
+        manager
+            .clear_auth_with_cleanup(|| manager.delete_persisted_refresh_token())
+            .1
+            .unwrap_err();
+        let service_manager = manager.clone();
+        let service = tokio::spawn(async move {
+            service_manager.run_session_service().await;
+        });
+        tokio::task::yield_now().await;
+        sign_in(&manager, "new");
+        store
+            .fail_delete
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        tokio::time::advance(std::time::Duration::from_secs(2)).await;
+        tokio::task::yield_now().await;
+        assert_eq!(store.load().unwrap().as_deref(), Some("new"));
+        assert_eq!(manager.state().unwrap().account.unwrap().user.id, "new");
+        service.abort();
+    }
+    #[test]
+    fn google_callback_is_superseded_by_login_logout_and_new_attempts() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = SyncManager::new(
+            "https://cloud.example.test",
+            directory.path().join("sync.db"),
+        )
+        .unwrap();
+        let first = manager.begin_google_sign_in();
+        sign_in(&manager, "email");
+        assert!(matches!(
+            ready(manager.sign_in_with_google_desktop("code", "state", "verifier", first)),
+            Err(SyncError::NotAuthenticated)
+        ));
+        let second = manager.begin_google_sign_in();
+        manager.clear_auth_with_cleanup(|| Ok(()));
+        assert!(matches!(
+            ready(manager.sign_in_with_google_desktop("code", "state", "verifier", second)),
+            Err(SyncError::NotAuthenticated)
+        ));
+        let third = manager.begin_google_sign_in();
+        let fourth = manager.begin_google_sign_in();
+        assert!(manager.require_auth_generation(third).is_err());
+        assert!(manager.require_auth_generation(fourth).is_ok());
+    }
+
+    #[test]
+    fn credential_retry_preserves_unrelated_database_error() {
+        let directory = tempfile::tempdir().unwrap();
+        let manager = SyncManager::new(
+            "https://cloud.example.test",
+            directory.path().join("sync.db"),
+        )
+        .unwrap();
+        {
+            let mut auth = manager.auth.write().unwrap();
+            auth.error = Some("database cleanup failed".into());
+            auth.credential_error = Some("token delete failed".into());
+            auth.pending_credential = Some(CredentialWrite::Delete);
+        }
+        assert!(manager.flush_pending_credentials());
+        assert_eq!(
+            manager.state().unwrap().auth_error.as_deref(),
+            Some("database cleanup failed")
+        );
+        assert!(manager.auth.read().unwrap().credential_error.is_none());
     }
 }

@@ -36,7 +36,7 @@ vi.mock('@shared/ui/select', () => ({
 }));
 
 import { TableDatasetMenu } from './table-dataset-menu';
-import { TableFieldHeader } from './table-field-header';
+import { TableFieldHeader, TablePresetMenu } from './table-field-header';
 
 const field: TableField = { id: `fld_${'a'.repeat(32)}`, type: 'Text', property_key: 'title' };
 
@@ -59,6 +59,10 @@ function HeaderHarness({
   initialOpen = false,
   pendingOption,
   unmountOnClose = false,
+  systemPreset = false,
+  allowDelete = true,
+  compact = false,
+  trailingLabel,
 }: {
   field?: TableField;
   label?: string;
@@ -75,6 +79,10 @@ function HeaderHarness({
   initialOpen?: boolean;
   pendingOption?: TableFieldOption;
   unmountOnClose?: boolean;
+  systemPreset?: boolean;
+  allowDelete?: boolean;
+  compact?: boolean;
+  trailingLabel?: string;
 }) {
   const [open, setOpen] = useState(initialOpen);
   const datasetProps = {
@@ -89,6 +97,9 @@ function HeaderHarness({
   if (conditionOnly) return <TableDatasetMenu {...datasetProps} open={open} onOpenChange={setOpen} />;
   return <table><thead><tr><th><TableFieldHeader
     field={currentField}
+    systemPreset={systemPreset}
+    compact={compact}
+    trailingLabel={trailingLabel}
     pendingOption={pendingOption}
     label={label}
     saving={false}
@@ -105,7 +116,8 @@ function HeaderHarness({
     onApplyPreset={vi.fn(async () => true)}
     isPresetAdded={isPresetAdded}
     onRemovePreset={onRemovePreset}
-    onDelete={vi.fn(async () => true)}
+    onDelete={allowDelete ? vi.fn(async () => true) : undefined}
+    onHide={allowDelete ? undefined : vi.fn()}
     onManagePresets={vi.fn()}
     datasetMenu={showAutoCollect ? (onFilterOpenChange) => <TableDatasetMenu {...datasetProps} filterOnly onFilterOpenChange={onFilterOpenChange} /> : undefined}
   /></th></tr></thead></table>;
@@ -118,7 +130,62 @@ afterEach(() => {
 });
 
 describe('TableFieldHeader', () => {
-  it('removes an already-added preset when selected from the header menu', async () => {
+  it('uses the dataset property picker labels', async () => {
+    const preset: PropertyPreset = { source: 'custom', category: 'custom', key: 'status', label: '状态', kind: 'Text' };
+    container = document.createElement('div');
+    root = createRoot(container);
+    await act(async () => root?.render(<TablePresetMenu
+      triggerLabel="选择属性"
+      customGroupLabel="我的"
+      customPresets={[preset]}
+      systemPresets={[]}
+      disabled={false}
+      open
+      onOpenChange={vi.fn()}
+      t={(key) => key}
+      onSelect={vi.fn()}
+      onManage={vi.fn()}
+    />));
+
+    expect([...container.querySelectorAll('button')].some((button) => button.textContent?.includes('选择属性'))).toBe(true);
+    expect([...container.querySelectorAll('p')].some((item) => item.textContent === '我的')).toBe(true);
+  });
+
+  it('uses a smaller label for read-only fields in the field manager list', async () => {
+    container = document.createElement('div');
+    root = createRoot(container);
+    await act(async () => root?.render(<HeaderHarness
+      compact
+      trailingLabel="只读"
+      onSaveEdits={vi.fn(async () => true)}
+      onSaveAutoCollect={vi.fn(async () => true)}
+    />));
+
+    const label = [...container.querySelectorAll('span')].find((span) => span.textContent === '只读');
+    expect(label?.className).toContain('text-xs');
+    expect(label?.className).toContain('leading-4');
+    expect(label?.className).toContain('py-0');
+    expect(container.querySelector('[aria-label="编辑属性 Title"]')?.className).toContain('pl-0.5');
+  });
+
+  it('keeps the hide action but omits delete when a system preset has no delete handler', async () => {
+    container = document.createElement('div');
+    root = createRoot(container);
+    await act(async () => root?.render(<HeaderHarness
+      systemPreset
+      allowDelete={false}
+      onSaveEdits={vi.fn(async () => true)}
+      onSaveAutoCollect={vi.fn(async () => true)}
+    />));
+
+    const trigger = [...container.querySelectorAll('button')].find((button) => button.getAttribute('aria-label') === '编辑属性 Title');
+    await act(async () => trigger?.click());
+
+    expect(container.querySelector('button[aria-label="删除此列"]')).toBeNull();
+    expect(container.querySelector('button[aria-label="隐藏此列"]')).toBeTruthy();
+  });
+
+  it('does not show preset properties in the header editor', async () => {
     const preset: PropertyPreset = {
       source: 'custom',
       category: 'custom',
@@ -126,28 +193,36 @@ describe('TableFieldHeader', () => {
       label: '状态',
       kind: 'Text',
     };
-    const onRemovePreset = vi.fn();
-    const onSaveEdits = vi.fn(async () => true);
-    const onSaveAutoCollect = vi.fn(async () => true);
     container = document.createElement('div');
     root = createRoot(container);
     await act(async () => root?.render(<HeaderHarness
       customPresets={[preset]}
       isPresetAdded={(item) => item.key === preset.key}
-      onRemovePreset={onRemovePreset}
-      onSaveEdits={onSaveEdits}
-      onSaveAutoCollect={onSaveAutoCollect}
+      onSaveEdits={vi.fn(async () => true)}
+      onSaveAutoCollect={vi.fn(async () => true)}
     />));
 
     const headerTrigger = [...container.querySelectorAll('button')].find((button) => button.getAttribute('aria-label') === '编辑属性 Title');
     await act(async () => headerTrigger?.click());
-    const presetMenuTrigger = [...container.querySelectorAll('button')].find((button) => button.textContent?.includes('预设属性'));
-    await act(async () => presetMenuTrigger?.click());
-    const selectedPreset = [...container.querySelectorAll('button')].find((button) => button.textContent?.includes('状态'));
-    expect(selectedPreset?.getAttribute('aria-pressed')).toBe('true');
-    await act(async () => selectedPreset?.click());
+    expect([...container.querySelectorAll('button')].some((button) => button.textContent?.includes('预设属性'))).toBe(false);
+  });
 
-    expect(onRemovePreset).toHaveBeenCalledWith(preset);
+  it('styles the select option list without row hover and uses px-2 for its heading', async () => {
+    const option = { id: `opt_${'d'.repeat(32)}`, label: 'Open' };
+    container = document.createElement('div');
+    root = createRoot(container);
+    await act(async () => root?.render(<HeaderHarness
+      field={{ ...field, type: 'Select', options: [option] }}
+      initialOpen
+      onSaveEdits={vi.fn(async () => true)}
+      onSaveAutoCollect={vi.fn(async () => true)}
+    />));
+
+    const heading = [...container.querySelectorAll('p')].find((item) => item.textContent === '选项');
+    const row = container.querySelector<HTMLElement>(`[data-field-id="${option.id}"]`);
+    expect(heading?.className).toContain('px-2');
+    expect(heading?.className).not.toContain('mx-2');
+    expect(row?.className).not.toContain('hover:bg-');
   });
 
   it('saves its name draft when the header menu closes', async () => {

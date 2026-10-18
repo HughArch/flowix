@@ -379,6 +379,7 @@ export function DocumentContainer({
         // enables the incoming surface. Disk persistence remains debounced.
         const active = document.activeElement;
         if (active instanceof HTMLElement && containerRef.current?.contains(active)) active.blur();
+        editorHandleRef.current?.commitPropertyDraft?.();
         captureLatestDocumentContent(documentIdentity, hostId);
       }
     });

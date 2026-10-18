@@ -446,7 +446,7 @@ describe('MemoTitleEditor property submenu', () => {
       expect(submenu.textContent).toContain('预设');
       const submenuItems = Array.from(submenu.querySelectorAll('[role="menuitem"]'));
       expect(submenuItems.map((item) => item.textContent))
-        .toEqual(['名称', '描述', '标签', '颜色', '图标']);
+        .toEqual(['名称', '描述', '标签', '颜色', '图标', '状态', '日期']);
       // Rows are label-only: no leading icon slot is rendered inside the submenu.
       expect(submenuItems.every((item) => item.querySelector('svg') === null)).toBe(true);
     });

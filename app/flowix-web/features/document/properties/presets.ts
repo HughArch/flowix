@@ -1,9 +1,9 @@
 /**
  * Note property preset catalog.
  *
- * Preset-specific metadata for the guided property input in
- * `note-properties-dialog.tsx`. Shared property type metadata lives in
- * `lib/property-types.ts`. This catalog is render-time only — preset metadata
+ * Preset-specific metadata shared by frontmatter and table property editors.
+ * Shared property type metadata lives in `lib/property-types.ts`. This catalog
+ * is render-time only — preset metadata
  * (category, icon, mapped label) is never written to YAML frontmatter.
  *
  * Adding a built-in preset:
@@ -11,7 +11,7 @@
  *  2. Add its label / hint / option i18n keys to `locales.ts` (both
  *     `zh-CN` and `en-US`).
  *  3. Add or change property kinds in `lib/property-types.ts`, then update
- *     the dialog's value-column editor when a kind needs new value behavior.
+ *     the relevant editor when a kind needs new value behavior.
  */
 
 import type { Icon } from '@phosphor-icons/react';
@@ -28,7 +28,7 @@ import {
 import type { I18nKey } from '@/lib/i18n';
 import type { PropertyFieldConfig } from '@/lib/constants';
 import { CUSTOM_PROPERTY_KINDS, PROPERTY_KINDS, type PresetPropertyKind, type PropertyKind } from '@/lib/property-types';
-import { canonicalizePropertyKey } from './property-key';
+import { canonicalizePropertyKey } from '@features/properties/property-key';
 
 export { CUSTOM_PROPERTY_KINDS, PROPERTY_KINDS };
 export type { PropertyKind };
@@ -53,6 +53,10 @@ export type PropertyPresetSource = 'builtin' | 'custom';
 
 /** Unified runtime definition consumed by every property picker/editor. */
 export interface PropertyPreset {
+  id?: string;
+  revision?: number;
+  optionIds?: readonly string[];
+  multiple?: boolean;
   source: PropertyPresetSource;
   /** Built-in category slot. Custom presets do not require a category. */
   category: PropertyCategory;
@@ -102,7 +106,7 @@ export const BUILTIN_PRESETS: readonly BuiltinPropertyPreset[] = [
     category: 'tags',
     key: 'tags',
     labelKey: 'document.properties.category.tags',
-    kind: 'Tags',
+    kind: 'Tag',
     icon: TagIcon,
   },
   {
@@ -160,11 +164,15 @@ export function isBuiltinPresetKey(key: string): boolean {
   return BUILTIN_PRESET_KEY_SET.has(comparablePresetKey(key));
 }
 
-export function getBuiltinPresets(labelResolver: (key: I18nKey) => string): PropertyPreset[] {
-  return BUILTIN_PRESETS.map((preset) => ({
-    ...preset,
-    label: labelResolver(preset.labelKey),
-  }));
+export function getBuiltinPresets(labelResolver: (key: I18nKey) => string, storedFields: readonly PropertyFieldConfig[] = []): PropertyPreset[] {
+  return BUILTIN_PRESETS.map((preset) => {
+    const stored = storedFields.find((field) => comparablePresetKey(field.key) === comparablePresetKey(preset.key));
+    return {
+      ...preset,
+      ...(stored ? { id: stored.id, revision: stored.revision, optionIds: stored.options?.map((option) => option.id), multiple: stored.multiple, kind: stored.type, options: stored.options?.map((option) => option.label) } : {}),
+      label: labelResolver(preset.labelKey),
+    };
+  });
 }
 
 export function getCustomPresets(fields: readonly PropertyFieldConfig[]): PropertyPreset[] {
@@ -175,13 +183,16 @@ export function getCustomPresets(fields: readonly PropertyFieldConfig[]): Proper
     if (!key || seenKeys.has(comparableKey)) return [];
     seenKeys.add(comparableKey);
     return [{
+      ...(field.id ? { id: field.id, revision: field.revision, optionIds: field.options?.map((option) => option.id), multiple: field.multiple } : {}),
       source: 'custom' as const,
       category: 'custom' as const,
       key,
+      // A user preset's key IS its user-facing name. Only system presets own a
+      // display name separate from their key (resolved from the builtin catalog).
       label: key,
       kind: field.type,
       options: field.type === 'Select' || field.type === 'MultiSelect'
-        ? field.options
+        ? field.options?.map((option) => option.label)
         : undefined,
     }];
   });
@@ -191,7 +202,7 @@ export function getAllPresets(
   fields: readonly PropertyFieldConfig[],
   labelResolver: (key: I18nKey) => string,
 ): PropertyPreset[] {
-  return [...getBuiltinPresets(labelResolver), ...getCustomPresets(fields)];
+  return [...getBuiltinPresets(labelResolver, fields), ...getCustomPresets(fields)];
 }
 
 export function resolvePropertyPreset(
@@ -205,8 +216,10 @@ export function resolvePropertyPreset(
     (preset) => comparablePresetKey(preset.key) === comparablePresetKey(trimmed),
   );
   if (builtin) {
+    const stored = fields.find((field) => comparablePresetKey(field.key) === comparablePresetKey(builtin.key));
     return {
       ...builtin,
+      ...(stored ? { id: stored.id, revision: stored.revision, optionIds: stored.options?.map((option) => option.id), multiple: stored.multiple, kind: stored.type, options: stored.options?.map((option) => option.label) } : {}),
       label: labelResolver?.(builtin.labelKey) ?? builtin.labelKey,
     };
   }

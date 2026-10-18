@@ -73,6 +73,34 @@ function createController(
   };
 }
 
+describe("Codex history DOM reconciliation", () => {
+  it("keeps the list, older rows and the next turn mounted when replacing an old turn", () => {
+    const { body, controller } = createController("codex");
+    const message = (id: string, role: "user" | "assistant", turn: string) => ({
+      id, role, codexTurnId: turn, content: id, timestamp: "2026-01-01T00:00:00Z", isCompleted: true,
+    });
+    const prefix = message("prefix", "user", "older");
+    const user = message("user", "user", "t1");
+    const draft = message("draft", "assistant", "t1");
+    const next = message("next", "user", "t2");
+    const render = (messages: import("@/types").ChatMessage[]) => controller.render({
+      messages, isLoading: false, shouldRenderMessages: true,
+      isThreadCachePresentationHidden: false, isThreadCacheLoading: false,
+    });
+    render([prefix, user, draft, next]);
+    const list = body.querySelector(".agent-thread-card__messages")!;
+    const first = list.children[0];
+    const latest = list.children[3];
+    render([prefix, user, message("native", "assistant", "t1"), next]);
+    expect(body.querySelector(".agent-thread-card__messages")).toBe(list);
+    expect(list.children[0]).toBe(first);
+    expect(list.children[3]).toBe(latest);
+    expect(list.textContent).toContain("native");
+    expect(list.textContent).not.toContain("draft");
+    controller.dispose();
+  });
+});
+
 describe("ThreadMessageRenderController empty settings", () => {
   it.each(["assistant", "tool"] as const)("highlights a retained streaming reply when a later %s is appended", async (nextRole) => {
     const frames: FrameRequestCallback[] = [];
@@ -546,6 +574,7 @@ describe("ThreadMessageRenderController run-end re-parse", () => {
 
 describe("ThreadMessageRenderController tool group regions", () => {
   it("keeps completed tools in the details region and running tools in the trailing region", () => {
+    vi.useFakeTimers();
     vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
       cb(0);
       return undefined as unknown as number;
@@ -635,16 +664,19 @@ describe("ThreadMessageRenderController tool group regions", () => {
         isThreadCachePresentationHidden: false,
         isThreadCacheLoading: false,
       });
+      vi.advanceTimersByTime(300);
       expect(body.querySelectorAll(
         ".agent-thread-card__tool-group-running-tools > .agent-thread-card__message",
       )).toHaveLength(0);
       controller.dispose();
     } finally {
+      vi.useRealTimers();
       vi.unstubAllGlobals();
     }
   });
 
   it("moves a tool from the running region into completed details", () => {
+    vi.useFakeTimers();
     vi.stubGlobal("requestAnimationFrame", (cb: FrameRequestCallback) => {
       cb(0);
       return undefined as unknown as number;
@@ -671,6 +703,7 @@ describe("ThreadMessageRenderController tool group regions", () => {
         isThreadCacheLoading: false,
       });
 
+      vi.advanceTimersByTime(300);
       expect(body.querySelectorAll(
         ".agent-thread-card__tool-group-running-tools > .agent-thread-card__message",
       )).toHaveLength(1);
@@ -694,6 +727,7 @@ describe("ThreadMessageRenderController tool group regions", () => {
       )).toHaveLength(2);
       controller.dispose();
     } finally {
+      vi.useRealTimers();
       vi.unstubAllGlobals();
     }
   });

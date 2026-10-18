@@ -69,6 +69,13 @@ pub struct PiFeatures {
     pub tool_search: bool,
 }
 
+#[derive(Clone, Debug, Deserialize, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct PiMcpServer {
+    pub name: String,
+    pub config: Value,
+}
+
 pub fn features() -> Result<PiFeatures, String> {
     let dir = pi_config_dir()?;
     let settings = read_json(&dir.join("settings.json"))?;
@@ -86,6 +93,149 @@ pub fn save_features(features: PiFeatures) -> Result<(), String> {
     settings["flowixFeatures"] =
         serde_json::to_value(features).map_err(|error| error.to_string())?;
     write_json(&path, &settings)
+}
+
+fn mcp_config_path() -> Result<std::path::PathBuf, String> {
+    Ok(pi_config_dir()?.join("mcp.json"))
+}
+
+fn read_mcp_config() -> Result<(std::path::PathBuf, Value), String> {
+    let path = mcp_config_path()?;
+    let config = read_json(&path)?;
+    let root = config
+        .as_object()
+        .ok_or_else(|| format!("invalid {}: root must be a JSON object", path.display()))?;
+    if root
+        .get("mcpServers")
+        .is_some_and(|servers| !servers.is_object())
+    {
+        return Err(format!(
+            "invalid {}: mcpServers must be a JSON object",
+            path.display()
+        ));
+    }
+    Ok((path, config))
+}
+
+pub fn list_mcp_servers() -> Result<Vec<PiMcpServer>, String> {
+    let (_, config) = read_mcp_config()?;
+    let servers = config
+        .get("mcpServers")
+        .and_then(Value::as_object)
+        .cloned()
+        .unwrap_or_default();
+    Ok(servers
+        .into_iter()
+        .map(|(name, config)| PiMcpServer { name, config })
+        .collect())
+}
+
+fn validate_mcp_server(name: &str, config: &Value) -> Result<(), String> {
+    if name.is_empty()
+        || !name
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'_' || byte == b'-')
+    {
+        return Err("Pi MCP server names may contain only letters, digits, _ and -".into());
+    }
+    let object = config
+        .as_object()
+        .ok_or_else(|| "Pi MCP server configuration must be a JSON object".to_string())?;
+    if object.get("sse").is_some() || object.get("type").and_then(Value::as_str) == Some("sse") {
+        return Err("Pi does not support the legacy SSE transport; use streamable HTTP".into());
+    }
+    let command = object
+        .get("command")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    let url = object
+        .get("url")
+        .and_then(Value::as_str)
+        .is_some_and(|value| !value.trim().is_empty());
+    if (object.contains_key("command") && !command) || (object.contains_key("url") && !url) {
+        return Err("Pi MCP command and url values must be non-empty strings".into());
+    }
+    if command == url {
+        return Err("Configure exactly one Pi MCP transport: command (stdio) or url (streamable HTTP)".into());
+    }
+    if let Some(kind) = object.get("type").and_then(Value::as_str) {
+        if !matches!(kind, "stdio" | "http" | "streamable-http") {
+            return Err("Pi MCP type must be stdio, http or streamable-http".into());
+        }
+        if (kind == "stdio" && !command) || (matches!(kind, "http" | "streamable-http") && !url) {
+            return Err("Pi MCP type does not match its command or url".into());
+        }
+    }
+    if object.get("args").is_some_and(|value| {
+        !value
+            .as_array()
+            .is_some_and(|args| args.iter().all(Value::is_string))
+    }) {
+        return Err("Pi MCP args must be an array of strings".into());
+    }
+    for key in ["env", "headers", "toolExposure"] {
+        if object.get(key).is_some_and(|value| !value.is_object()) {
+            return Err(format!("Pi MCP {key} must be an object"));
+        }
+    }
+    for key in ["env", "headers"] {
+        if object.get(key).and_then(Value::as_object).is_some_and(|values| {
+            values.values().any(|value| !value.is_string())
+        }) {
+            return Err(format!("Pi MCP {key} values must be strings"));
+        }
+    }
+    if object
+        .get("enabled")
+        .is_some_and(|value| !value.is_boolean())
+    {
+        return Err("Pi MCP enabled must be a boolean".into());
+    }
+    if object
+        .get("timeout")
+        .is_some_and(|value| !value.as_f64().is_some_and(|timeout| timeout > 0.0))
+    {
+        return Err("Pi MCP timeout must be a positive number of seconds".into());
+    }
+    for key in ["cwd", "description"] {
+        if object.get(key).is_some_and(|value| !value.is_string()) {
+            return Err(format!("Pi MCP {key} must be a string"));
+        }
+    }
+    if let Some(exposure) = object.get("exposure").and_then(Value::as_str) {
+        if !matches!(exposure, "codemode" | "codemode-deferred" | "deferred" | "direct" | "hidden") {
+            return Err("Pi MCP exposure must be codemode, deferred, direct or hidden".into());
+        }
+    }
+    Ok(())
+}
+
+pub fn save_mcp_server(name: &str, config: Value) -> Result<(), String> {
+    validate_mcp_server(name, &config)?;
+    let (path, mut file) = read_mcp_config()?;
+    let servers = object_at(&mut file, "mcpServers")?;
+    let normalized = name.replace('-', "_");
+    if servers.keys().any(|existing| existing != name && existing.replace('-', "_") == normalized) {
+        return Err("Pi treats server names that differ only by - and _ as the same name".into());
+    }
+    servers.insert(name.to_string(), config);
+    write_json(&path, &file)
+}
+
+pub fn delete_mcp_server(name: &str) -> Result<(), String> {
+    let (path, mut file) = read_mcp_config()?;
+    let is_empty = if let Some(servers) = file.get_mut("mcpServers").and_then(Value::as_object_mut) {
+        servers.remove(name);
+        servers.is_empty()
+    } else {
+        false
+    };
+    if is_empty {
+        if let Some(root) = file.as_object_mut() {
+            root.remove("mcpServers");
+        }
+    }
+    write_json(&path, &file)
 }
 
 fn catalog_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {

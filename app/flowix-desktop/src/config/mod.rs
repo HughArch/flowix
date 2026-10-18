@@ -23,6 +23,7 @@
 
 pub mod access;
 pub mod path_scope;
+pub mod property_presets;
 pub mod security_bookmark;
 pub mod user;
 
@@ -30,6 +31,7 @@ pub mod user;
 // write `crate::config::UserConfigStore` without dropping into `user`.
 pub use access::{AgentAccessConfig, AgentAccessEntry, AgentAccessKind, AgentAccessStore};
 pub use path_scope::{path_is_inside, path_is_inside_reserved_directory};
+pub use property_presets::{PropertyPresetChange, PropertyPresetRegistry, PropertyPresetStore};
 #[cfg(target_os = "macos")]
 pub use security_bookmark::pick_directory_with_bookmark;
 pub use security_bookmark::SecurityBookmarkStore;

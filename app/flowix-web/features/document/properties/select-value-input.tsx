@@ -11,6 +11,7 @@ import {
   SelectValue,
 } from '@shared/ui/select';
 import { useI18n } from '@/lib/i18n';
+import { stableTextHue } from '@/lib/color';
 import { cn } from '@/lib/utils';
 
 interface SelectValueInputProps {
@@ -33,6 +34,7 @@ export function SelectValueInput({
     ? { value: option, label: option }
     : option);
   const selectedOption = normalizedOptions.find((option) => option.value === value);
+  const selectedLabel = selectedOption?.label ?? value;
   return (
     <Select
       value={value}
@@ -49,13 +51,19 @@ export function SelectValueInput({
       >
         <SelectValue placeholder={variant === 'table' ? '' : t('document.properties.select.placeholder')}>
           {variant === 'table'
-            ? <span className="min-w-0 flex-1 truncate">{selectedOption?.label ?? value}</span>
+            ? selectedLabel
+              ? <span
+                className="multidimensional-table__option-chip min-w-0 max-w-full truncate"
+                title={selectedLabel}
+                style={{ '--multidimensional-table-option-hue': stableTextHue(selectedLabel) } as React.CSSProperties}
+              >{selectedLabel}</span>
+              : null
             : selectedOption?.label}
         </SelectValue>
       </SelectTrigger>
       <SelectContent
         align="start"
-        className={cn('min-w-[160px] rounded-xl border-[var(--border-popup)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' ? 'p-0.5' : 'p-1')}
+        className="min-w-[160px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]"
       >
         {normalizedOptions.length === 0 ? (
           <div className="px-3 py-2 text-xs text-[var(--muted-foreground)]">
@@ -66,9 +74,14 @@ export function SelectValueInput({
             <SelectItem
               key={option.value}
               value={option.value}
-              className="h-7 !min-h-7 rounded-lg px-2 py-0 text-left hover:bg-[var(--hover-bg)]"
+              className="h-8 !min-h-8 rounded-lg px-2 py-0 text-left hover:bg-[var(--hover-bg)]"
             >
-              {option.label}
+              <span
+                className="multidimensional-table__option-chip max-w-full truncate"
+                style={{ '--multidimensional-table-option-hue': stableTextHue(option.label) } as React.CSSProperties}
+              >
+                {option.label}
+              </span>
             </SelectItem>
           ))
         )}

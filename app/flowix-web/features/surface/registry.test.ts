@@ -39,8 +39,6 @@ function surface(kind: WorkColumnSurfaceKind): WorkColumnSurface {
       };
     case 'media-library-file':
       return { kind, instanceKey: 'library:1', fileIdentity: fileIdentity('/workspace/Media.lib.yaml'), notebookPath: '/workspace', notebookId: null };
-    case 'table-file':
-      return { kind, instanceKey: 'table:1', fileIdentity: fileIdentity('/workspace/r1.table.yml'), props: { filePath: '/workspace/r1.table.yml', notebookPath: '/workspace', notebookId: null } };
     case 'html-file':
       return {
         kind, instanceKey: 'html-file:1', fileIdentity: fileIdentity('/workspace/index.html'), scopePath: '/workspace',
@@ -110,6 +108,8 @@ describe('workColumnSurfaceRegistry', () => {
     expect(Object.keys(workColumnSurfaceRegistry).sort()).toEqual([
       'agent-conversation',
       'code',
+      'csv-file',
+      'document-list',
       'html',
       'html-file',
       'image-file',
@@ -120,10 +120,10 @@ describe('workColumnSurfaceRegistry', () => {
       'mindmap',
       'plugin-artifact',
       'plugin-workbench',
+      'table-file',
       'text',
       'unavailable-file',
       'video-file',
-      'table-file',
       'web',
     ]);
   });

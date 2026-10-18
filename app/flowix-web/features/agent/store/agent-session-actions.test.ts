@@ -195,6 +195,46 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     useAgentSessionStore.setState(useAgentSessionStore.getInitialState(), true);
   });
 
+  it("publishes known-empty history before binding a new independent Pi conversation", async () => {
+    const { agent } = await import("@platform/tauri/client");
+    const { useAgentSessionStore } = await import("@features/agent/store/agent-session-store");
+    const { ensureAgentConversationDetailThread } = await import("@features/agent/components/agent-conversation-detail-submit");
+    const persist = vi.mocked(agent.upsertConversationInstance);
+    const original = persist.getMockImplementation();
+    let release!: () => void;
+    const pending = new Promise<void>((resolve) => { release = resolve; });
+    persist.mockImplementation(async (instance) => {
+      if (instance.threadId) await pending;
+      return { ...instance, threadTitle: instance.initialTitle };
+    });
+    const instance = useAgentSessionStore.getState().createInstance({
+      agentType: "pi", title: "New Pi conversation", threadId: null,
+      source: { kind: "dedicated" }, runtimeConfig: { cwd: "/tmp/pi-conversation" },
+    });
+    const observed: Array<string | undefined> = [];
+    const unsubscribe = useAgentSessionStore.subscribe((state) => {
+      const id = state.getInstance(instance.instanceId)?.threadId;
+      if (id) observed.push(state.threadProjections[id]?.pagination.initialStatus);
+    });
+    const binding = ensureAgentConversationDetailThread({
+      instanceId: instance.instanceId, typeKey: "pi", prompt: "first message",
+      runtimeHandleId: `detail-first-send:${instance.instanceId}`,
+    });
+    try {
+      await vi.waitFor(() => expect(observed.length).toBeGreaterThan(0));
+      expect(observed.every((status) => status === "ready")).toBe(true);
+      release();
+      const result = await binding;
+      expect(useAgentSessionStore.getState().threadProjections[result.threadId].messages).toEqual([]);
+    } finally {
+      release();
+      await binding;
+      unsubscribe();
+      if (original) persist.mockImplementation(original);
+      else persist.mockReset();
+    }
+  });
+
   it("serializes persistence writes for the same conversation instance", async () => {
     const { agent } = await import("@platform/tauri/client");
     const { useAgentSessionStore } = await import(

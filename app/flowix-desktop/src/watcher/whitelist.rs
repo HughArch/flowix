@@ -184,7 +184,6 @@ mod tests {
     }
 
     #[test]
-    #[test]
     fn flowix_dir_is_always_skipped_when_hidden_watching_is_enabled() {
         let mut w = WhitelistConfig::default();
         w.watch_hidden = true;

@@ -1,3 +1,4 @@
+import { sanitizePropertiesConfig } from '@features/properties/property-preset-store';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { preferences } from '@platform/tauri/client';
 
@@ -6,6 +7,8 @@ vi.mock('@platform/tauri/client', () => ({
   preferences: {
     get: vi.fn(async () => ({})),
     patch: vi.fn(async () => undefined),
+    getPropertyPresets: vi.fn(async () => ({ systemFields: [], fields: [], deletedFields: [] })),
+    replacePropertyPresets: vi.fn(async () => undefined),
   },
 }));
 
@@ -50,7 +53,6 @@ describe('user-settings-store · region loadInitial', () => {
         memoListView: 'detailed',
         autoOpenCreatedNotesInBrowser: true,
         shortcuts: {},
-        properties: { fields: [] },
         agents: { enabledByType: {} },
         productUpdates: { enabled: true, lastCheckedAt: 0 },
       },
@@ -86,7 +88,6 @@ describe('user-settings-store · legacy quickPhrases migration', () => {
         memoListView: 'detailed',
         autoOpenCreatedNotesInBrowser: true,
         shortcuts: {},
-        properties: { fields: [] },
         agents: { enabledByType: {} },
         productUpdates: { enabled: true, lastCheckedAt: 0 },
       },
@@ -108,7 +109,7 @@ describe('user-settings-store · legacy quickPhrases migration', () => {
 });
 
 describe('user-settings-store · property preset sanitization', () => {
-  it('drops legacy names, built-in key collisions, and removed URL fields', async () => {
+  it('drops built-in collisions, keeps supported URL presets, and assigns stable IDs', async () => {
     const fields = [
       { key: 'name', name: '旧别名', type: 'Text' },
       { key: 'priority', name: '旧别名', type: 'Number' },
@@ -116,22 +117,22 @@ describe('user-settings-store · property preset sanitization', () => {
       { key: 'legacy-url', name: '旧链接', type: 'URL' },
     ] as unknown as PropertyFieldConfig[];
 
-    await useUserSettingsStore.getState().updateSettings({ properties: { fields } });
-
-    expect(useUserSettingsStore.getState().settings.properties.fields).toEqual([
-      { key: 'priority', type: 'Number', options: undefined },
-    ]);
+    const sanitized = sanitizePropertiesConfig({ fields }).fields;
+    expect(sanitized.map(({ key, type }) => [key, type])).toEqual([['priority', 'Number'], ['legacy-url', 'URL']]);
+    expect(sanitized.every((field) => /^fld_[0-9a-f]{32}$/.test(field.id ?? ''))).toBe(true);
   });
 
-  it('migrates the removed List preset type to MultiSelect', async () => {
+  it('migrates legacy List, Tags and noteTag preset types to their canonical types', async () => {
     const fields = [
       { key: 'labels', name: '旧标签别名', type: 'List' },
+      { key: 'note-tags', name: '旧笔记标签类型', type: 'Tags' },
+      { key: 'topics', type: 'noteTag' },
     ] as unknown as PropertyFieldConfig[];
 
-    await useUserSettingsStore.getState().updateSettings({ properties: { fields } });
-
-    expect(useUserSettingsStore.getState().settings.properties.fields).toEqual([
-      { key: 'labels', type: 'MultiSelect', options: undefined },
+    const sanitized = sanitizePropertiesConfig({ fields }).fields;
+    expect(sanitized.map(({ key, type }) => [key, type])).toEqual([
+      ['labels', 'MultiSelect'], ['note-tags', 'Tag'], ['topics', 'Tag'],
     ]);
+    expect(sanitized.every((field) => /^fld_[0-9a-f]{32}$/.test(field.id ?? ''))).toBe(true);
   });
 });

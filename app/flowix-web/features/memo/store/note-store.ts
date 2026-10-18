@@ -4,7 +4,11 @@ import { noteRepository, notebookRepository, type FilterType, type SortType } fr
 import { getNoteQueryKey } from '@features/memo/services/note-query-key';
 import { STORAGE_KEYS } from '@/lib/constants';
 import { useTagStore } from '@features/memo/store/tag-store';
-import { memoMatchesCustomFilter, useCustomFilterStore } from '@features/memo/store/custom-filter-store';
+import {
+  memoMatchesCustomFilter,
+  useCustomFilterStore,
+  type CustomFilter,
+} from '@features/memo/store/custom-filter-store';
 import { normalizePluginId } from '@features/plugin/plugin-note';
 
 import type { NoteColor, NoteListItem } from '@/types/note-item';
@@ -43,6 +47,8 @@ interface MemoListPageQuery {
   pluginId: string | null;
   customFilterId: string | null;
 }
+
+const MEMO_LIST_PAGE_SIZE = 50;
 
 export interface SelectedNoteIdentity {
   notebookId: string;
@@ -176,6 +182,7 @@ export interface NoteLibraryStore {
   // Data loading
   loadNotes: (params?: { notebookId?: string; filter?: ExtendedFilterType; sort?: SortType; tagId?: string }) => Promise<boolean>;
   upsertCreatedNote: (created: CreatedNoteDocument) => void;
+  updateMemoListItem: (memo: NoteListItem) => void;
   loadMoreMemos: () => Promise<boolean>;
   loadNotebooks: () => Promise<void>;
   createNote: (tag: string | undefined, notebookId: string) => Promise<CreatedNoteDocument>;
@@ -217,6 +224,36 @@ function isSidebarNavigationFilter(
 }
 
 let loadMemosRequestSeq = 0;
+
+function getCustomFilter(notebookId: string, filterId: string | null): CustomFilter | null {
+  if (!filterId) return null;
+  return useCustomFilterStore.getState().filtersByNotebook[notebookId]
+    ?.find((filter) => filter.id === filterId) ?? null;
+}
+
+function mapMemoPage(
+  notes: Awaited<ReturnType<typeof noteRepository.listByPath>>['notes'],
+  notebookId: string,
+  customFilter: CustomFilter | null,
+): NoteListItem[] {
+  return notes
+    .map((note) => toNoteListItem(note, notebookId))
+    .filter((note) => !customFilter || memoMatchesCustomFilter(note, customFilter));
+}
+
+function mergeMemoListItems(
+  existing: readonly NoteListItem[],
+  incoming: readonly NoteListItem[],
+): NoteListItem[] {
+  const byPath = new Map(existing.map((note) => [
+    `${note.notebookId}\u0000${note.relativePath}`,
+    note,
+  ]));
+  for (const note of incoming) {
+    byPath.set(`${note.notebookId}\u0000${note.relativePath}`, note);
+  }
+  return [...byPath.values()];
+}
 
 function invalidatePendingMemoLoads(): void {
   loadMemosRequestSeq += 1;
@@ -366,6 +403,7 @@ export const useNoteStore = create<NoteLibraryStore>()(
         const notebookId = params?.notebookId || state.selectedNotebook?.id;
         if (!notebookId) return false;
         await useCustomFilterStore.getState().loadNotebookFilters(notebookId);
+        if (requestSeq !== loadMemosRequestSeq) return false;
         const filter = params?.filter || state.activeFilter;
         const pluginId = state.activePluginId;
         const customFilterId = filter === 'custom' ? state.activeCustomFilterId : null;
@@ -382,51 +420,56 @@ export const useNoteStore = create<NoteLibraryStore>()(
           pluginId,
           customFilterId,
         );
-        if (pluginId) {
-          const indexed = await noteRepository.listAllByPath(notebookId);
-          if (requestSeq !== loadMemosRequestSeq) return false;
-          set({
-            notes: indexed
-              .filter((note) => normalizePluginId(note.properties.flowix_plugin) === pluginId)
-              .map((note) => toNoteListItem(note, notebookId)),
-            memoListQueryKey: queryKey,
-            memoListQuery: {
-              notebookId, filter, sort, tagId, color, pluginId, customFilterId,
-            },
-            memoListNextCursor: null,
-            memoListHasMore: false,
-            memoListLoadingMore: false,
-          });
-          return true;
-        }
-
-        const customFilter = customFilterId
-          ? useCustomFilterStore.getState().filtersByNotebook[notebookId]
-            ?.find((item) => item.id === customFilterId)
-          : null;
-        const response = await noteRepository.listByPath({
+        const customFilter = getCustomFilter(notebookId, customFilterId);
+        const query: MemoListPageQuery & { notebookId: string } = {
           notebookId,
-          filter: toBackendFilter(filter),
+          filter,
           sort,
           tagId,
           color,
-          limit: 50,
-        });
-        if (requestSeq !== loadMemosRequestSeq) return false;
-        const notes = response.notes
-          .map((note) => toNoteListItem(note, notebookId))
-          .filter((note) => customFilter ? memoMatchesCustomFilter(note, customFilter) : true);
-        set({
-          notes,
-          memoListQueryKey: queryKey,
-          memoListQuery: {
-            notebookId, filter, sort, tagId, color, pluginId: null, customFilterId,
-          },
-          memoListNextCursor: response.nextCursor,
-          memoListHasMore: response.hasMore,
-          memoListLoadingMore: false,
-        });
-        return true;
+          pluginId,
+          customFilterId,
+        };
+        try {
+          if (query.pluginId) {
+            const indexed = await noteRepository.listAllByPath(query.notebookId);
+            if (requestSeq !== loadMemosRequestSeq) return false;
+            set({
+              notes: indexed
+                .filter((note) => normalizePluginId(note.properties.flowix_plugin) === query.pluginId)
+                .map((note) => toNoteListItem(note, query.notebookId)),
+              memoListQueryKey: queryKey,
+              memoListQuery: query,
+              memoListNextCursor: null,
+              memoListHasMore: false,
+            });
+            return true;
+          }
+
+          const response = await noteRepository.listByPath({
+            notebookId: query.notebookId,
+            filter: toBackendFilter(query.filter),
+            sort: query.sort,
+            tagId: query.tagId,
+            color: query.color,
+            limit: MEMO_LIST_PAGE_SIZE,
+          });
+          if (requestSeq !== loadMemosRequestSeq) return false;
+          const notes = mapMemoPage(response.notes, query.notebookId, customFilter);
+
+          set({
+            notes,
+            memoListQueryKey: queryKey,
+            memoListQuery: query,
+            memoListNextCursor: response.nextCursor ?? null,
+            memoListHasMore: response.hasMore ?? Boolean(response.nextCursor),
+          });
+          return true;
+        } finally {
+          if (requestSeq === loadMemosRequestSeq) {
+            set({ memoListLoadingMore: false });
+          }
+        }
       },
 
       upsertCreatedNote: (created) => {
@@ -457,6 +500,29 @@ export const useNoteStore = create<NoteLibraryStore>()(
           memoListLoadingMore: false,
         }));
       },
+
+      updateMemoListItem: (memo) => set((state) => {
+        const index = state.notes.findIndex((item) => (
+          item.notebookId === memo.notebookId && item.relativePath === memo.relativePath
+        ));
+        if (index < 0) return state;
+
+        const query = state.memoListQuery;
+        const noLongerMatchesFavoriteFilter = query?.filter === 'favorited' && !memo.favorited;
+        const noLongerMatchesColorFilter = query?.filter === 'color' && query.color
+          ? query.color === 'none'
+            ? memo.colors.length > 0
+            : query.color !== 'any' && !memo.colors.includes(query.color)
+          : false;
+        const notes = [...state.notes];
+        if (noLongerMatchesFavoriteFilter || noLongerMatchesColorFilter) {
+          notes.splice(index, 1);
+        } else {
+          notes[index] = memo;
+          notes.sort(compareNotes(query?.sort ?? state.activeSort));
+        }
+        return { notes };
+      }),
 
       loadMoreMemos: async () => {
         const state = get();
@@ -492,38 +558,23 @@ export const useNoteStore = create<NoteLibraryStore>()(
         set({ memoListLoadingMore: true });
         try {
           const response = await noteRepository.listByPath({
-                notebookId: query.notebookId,
-                filter: toBackendFilter(query.filter),
-                sort: query.sort,
-                tagId: query.tagId,
-                color: query.color,
-                cursor,
-                limit: 50,
-              });
+            notebookId: query.notebookId,
+            filter: toBackendFilter(query.filter),
+            sort: query.sort,
+            tagId: query.tagId,
+            color: query.color,
+            cursor,
+            limit: MEMO_LIST_PAGE_SIZE,
+          });
           if (requestSeq !== loadMemosRequestSeq) return false;
 
-            const customFilter = query.customFilterId
-              ? useCustomFilterStore.getState().filtersByNotebook[query.notebookId!]
-                ?.find((item) => item.id === query.customFilterId)
-              : null;
-            const notes = response.notes
-              .map((note) => toNoteListItem(note, query.notebookId!))
-              .filter((note) => customFilter ? memoMatchesCustomFilter(note, customFilter) : true);
-            set((current) => {
-              const byPath = new Map(current.notes.map((note) => [
-                `${note.notebookId}\u0000${note.relativePath}`,
-                note,
-              ]));
-              for (const note of notes) {
-                byPath.set(`${note.notebookId}\u0000${note.relativePath}`, note);
-              }
-              return {
-                notes: [...byPath.values()],
-                memoListNextCursor: response.nextCursor ?? null,
-                memoListHasMore: response.hasMore ?? Boolean(response.nextCursor),
-                memoListLoadingMore: false,
-              };
-            });
+          const customFilter = getCustomFilter(query.notebookId, query.customFilterId);
+          const notes = mapMemoPage(response.notes, query.notebookId, customFilter);
+          set((current) => ({
+            notes: mergeMemoListItems(current.notes, notes),
+            memoListNextCursor: response.nextCursor ?? null,
+            memoListHasMore: response.hasMore ?? Boolean(response.nextCursor),
+          }));
           return true;
         } finally {
           if (requestSeq === loadMemosRequestSeq) {

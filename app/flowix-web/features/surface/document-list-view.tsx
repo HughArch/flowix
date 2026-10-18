@@ -339,6 +339,13 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [creating, setCreating] = useState(false);
+  const addMedia = () => {
+    if (addingMedia || !onAddMedia) return;
+    setAddingMedia(true);
+    void onAddMedia().then((changed) => { if (changed) refresh(); }).catch((error) => {
+      toast.error(error instanceof Error ? error.message : t('mediaLibrary.addMediaFailed'));
+    }).finally(() => setAddingMedia(false));
+  };
   useEffect(() => {
     if (!hasMore || moreError || !endRef.current || !scrollRef.current) return;
     const observer = new IntersectionObserver((entries) => {
@@ -603,13 +610,7 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
               aria-label={t('mediaLibrary.addMedia')}
               title={t('mediaLibrary.addMedia')}
               disabled={addingMedia || libraryActionsDisabled}
-              onClick={() => {
-                if (addingMedia) return;
-                setAddingMedia(true);
-                void onAddMedia().then((changed) => { if (changed) refresh(); }).catch((error) => {
-                  toast.error(error instanceof Error ? error.message : t('mediaLibrary.addMediaFailed'));
-                }).finally(() => setAddingMedia(false));
-              }}
+              onClick={addMedia}
               className="h-7 w-7 rounded-lg p-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
             ><PlusIcon size={14} weight="bold" aria-hidden="true" /></Button>}
           </div>
@@ -635,10 +636,18 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
               <div className="flex flex-col items-center text-center">
                 {!mediaLibrary && <Inbox className="mb-3 h-10 w-10 opacity-50" strokeWidth={1.25} aria-hidden="true" />}
                 {mediaLibrary && !hasMediaDataset && !hasLinkedMedia ? <div className="flex items-center gap-1">
-                  <span>未设置数据集合，</span>
+                  <span>未添加图片或视频，</span>
                   <button type="button" disabled={libraryActionsDisabled || !onMediaLibraryFilterChange} onClick={openMediaDatasetMenu} className="inline-flex items-center gap-0.5 text-[var(--foreground)] hover:text-[var(--brand)] disabled:opacity-50">
-                    添加<ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                    选择数据<ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
                   </button>
+                  {onAddMedia && <button type="button" disabled={libraryActionsDisabled || addingMedia} onClick={addMedia} className="inline-flex items-center gap-0.5 text-[var(--foreground)] hover:text-[var(--brand)] disabled:opacity-50">
+                    添加<ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>}
+                </div> : mediaLibrary && mediaLibraryFolderPath !== undefined ? <div className="flex items-center gap-1">
+                  <span>未添加图片或视频，</span>
+                  {onAddMedia && <button type="button" disabled={libraryActionsDisabled || addingMedia} onClick={addMedia} className="inline-flex items-center gap-0.5 text-[var(--foreground)] hover:text-[var(--brand)] disabled:opacity-50">
+                    添加<ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                  </button>}
                 </div> : <span>列表内容为空</span>}
               </div>
             </div>
