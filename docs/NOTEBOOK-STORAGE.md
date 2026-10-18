@@ -9,7 +9,7 @@ Flowix-owned metadata.
 
 ```text
 ~/.flowix/
-  index.db                         Device-local notebook registry
+  db/local.db                      Device-local notebook registry
 
 <notebook>/
   *.md                             Note content; source of truth
@@ -30,8 +30,8 @@ migration still moves plugin output from `.plugin-output/` into that directory.
 
 | Store | Ownership | Contents | Rebuild policy |
 | --- | --- | --- | --- |
-| `~/.flowix/index.db` | Device | Notebook registry and legacy source rows for import | Preserve; it is not a notebook cache |
-| `<notebook>/.flowix/notebook.db` | Notebook | Path-keyed note and full-text projections, the multidimensional-table listing catalog, legacy memo-ID compatibility records, media identities and properties | Rebuild note, search, and table-listing projections selectively; preserve user-owned media properties and compatibility data |
+| `~/.flowix/db/local.db` | Device | Notebook registry, workspace mounts and setup state | Preserve; it is not a notebook cache |
+| `<notebook>/.flowix/notebook.db` | Notebook | Path-keyed note and full-text projections, the multidimensional-table listing catalog, media identities and properties | Rebuild note, search, and table-listing projections selectively; preserve user-owned media properties |
 
 The notebook database deliberately remains one file. Its tables have different
 lifecycles, so maintenance code must target the relevant tables and must not
@@ -40,6 +40,22 @@ delete the whole database to rebuild the note projection.
 Media bytes remain in notebook files. The `media_resources` table stores a
 notebook-relative path, resource identity, file fingerprint, and user
 properties. Those properties cannot be reconstructed from the media file.
+
+## Notebook template setup lifecycle
+
+The device-local registry stores notebook template setup jobs. A stable
+`job_id` identifies the selected template task across retries; each execution
+gets a new `run_id`; a registry-wide revision orders events across task
+deletion and recreation. Registration leaves a task pending until the selected
+notebook's workspace is ready. The application coordinator requests its pending
+job after the active workspace switch settles; requested pending jobs and
+interrupted running jobs resume after workspace preparation.
+
+The worker persists the `indexing` stage and its aggregate write report before
+removing the initialization marker. Indexing retries therefore continue from
+that checkpoint without reapplying template files. Terminal state remains
+owned by the worker until it is durably stored. The frontend combines status
+events with a complete registry snapshot; taking a snapshot never starts work.
 
 The multidimensional-table listing is a rebuildable file catalog. Its
 view-group membership preference is stored separately by stable `table_id`,
@@ -54,16 +70,18 @@ different visibility semantics and should remain separate.
 - **Note** is a Markdown document identified by `(notebook_id, relative_path)`.
   Moving or renaming it changes that identity. The file remains the content
   source of truth.
-- **Memo ID** is an opaque compatibility identity. It is not the identity of a
-  path-based Note and must not be generated for new Note writes.
+- Note identity is `(notebook_id, relative_path)` across storage and APIs.
 - **Media resource** is a separate image or video identity with notebook-owned
-  properties. Its ID is independent from both Note paths and Memo IDs.
+  properties. Its ID is independent from Note paths.
+- Frontmatter properties, including `flowix_key`, are user data. The application
+  does not generate, interpret, or use `flowix_key` as a document identity.
 - **File entry** is any filesystem file or directory shown by the browser; it
   has a path but does not automatically need a database identity.
 - Use `registry_db_path()` and `notebook_db_path(id)` when opening a database.
-- `MemoFile` remains a compatibility storage façade. `NotebookRegistry` owns
-  the device-local registry path, connection setup and config cache; Note,
-  media, revision and Memo-ID implementations live in their own modules.
+- `MemoFile` remains the storage façade used by existing core operations;
+  document identity is path-based. `NotebookRegistry` owns the device-local
+  registry path, connection setup and config cache; Note, media and revision
+  implementations live in their own modules.
 - Note projection tables use `note_*` names. Existing `v2_*` projection tables
   are discarded transactionally on first open. The current projection is kept
   when both sets exist; when only V2 exists, Markdown files rebuild the new
@@ -71,48 +89,27 @@ different visibility semantics and should remain separate.
 - Keep generic file-tree enumeration on the filesystem. Do not add database
   rows for ordinary files unless a feature needs durable metadata for them.
 
-### Memo ID compatibility boundary
+The Rust service boundary exposes path-keyed `NoteService` operations. The
+`MemoService` facade and `resolve_memo` service lookup have been removed. The
+Web Note list is keyed by `(notebookId, relativePath)`, and path-identified
+operations use the `notes` Tauri client. On notebook initialization, legacy
+Memo properties are copied into Markdown before the old Memo tables are
+dropped; tags, todos, and agents are rebuilt from Markdown into the `notes`
+row. The old `v2_*` SQLite projection tables are discarded on first use.
 
-Memo ID is still a real compatibility identity in several persisted and public
-surfaces. Keep those uses explicit; do not treat every remaining `Memo` string
-as a naming cleanup that can be mechanically replaced.
-
-| Surface | Current Memo-ID dependency | Direction |
-| --- | --- | --- |
-| Notebook database | `memos.id` and `memo_lifecycles.memo_id` retain old identity and lifecycle state. `memo_tags`, `memo_colors`, `memo_todos`, and `memo_agents` attach persisted associations to that identity. | Preserve until each association has a path-keyed migration and a rollback/read-compatibility policy. These rows are not part of the rebuildable Note projection. |
-| Revisions | Legacy memo versions and content-revision records are addressed by Memo ID; existing version archives may be stored under that ID. | Keep old-version reads and writes behind compatibility operations. Path-based Note revision history is separate and should not need an ID. |
-| IPC and links | Existing `get_memos`-style commands, Memo-shaped payloads, ID lookup, plugin artifact references, and older deep links can carry a Memo ID. | Keep command strings and ID resolvers as adapters while callers migrate. New Note operations should pass `(notebookId, relativePath)`. |
-| Web state | `notes` is the path-keyed source for the main Note list. Legacy Memo IPC events still carry IDs, but the Web store now treats them as invalidation signals instead of retaining a Memo-ID list cache. | Keep ID-shaped event payloads in the IPC adapter. New view state should use Note paths. |
-| CLI and integrations | Older CLI/MCP requests and external callers can address notes by Memo ID. | Preserve the old address form as an adapter; new address forms use notebook ID plus relative path. |
-
-Path-based Note list, search, create, edit, move, delete, and Note-version
-operations should use Note types and APIs. Keep compatibility adapters at the
-service/IPC boundary; do not copy Memo IDs into Markdown or make them a second
-Note key. Migrating any persisted association requires its own data migration
-and compatibility plan.
-
-The Rust path API exposes `NoteEntry`, `NoteDocument`, `NotePage`, and
-`NoteService`; `MemoService` handles the remaining Memo-ID use cases. The old
-`v2_*` SQLite projection tables are discarded on first use.
-On the Web side, path-identified operations use the `notes` Tauri client,
-`noteRepository`, and `useNoteStore` / `NoteLibraryStore`. The `memos` Tauri
-client retains commands that still operate on Memo IDs. Existing Tauri command
-strings stay stable while Rust and Web callers migrate.
-
-The Web store's Note list is keyed by `(notebookId, relativePath)`. Legacy Memo
-events invalidate that list; the Web store no longer retains a parallel list
-keyed by Memo ID. Remaining Memo-ID consumers are confined to compatibility
-commands and integration surfaces that still explicitly request Memo data.
-
-The persisted filenames `index.db` and `notebook.db` are retained for backward
-compatibility. Their meanings are made explicit by the APIs above; changing
-those filenames requires a separate, downgrade-aware migration.
+The persisted filename `notebook.db` is retained for backward
+compatibility. Its meaning is made explicit by the APIs above; changing
+that filename requires a separate, downgrade-aware migration.
 
 ## Index update model
 
 - Note writes and Markdown watcher events refresh one path. Startup and
   directory-level recovery reconcile the notebook tree against the note
   projection.
+- The `notes.tags`, `notes.todos`, and `notes.agents` columns are the query
+  source for tag navigation and note task/agent summaries. Tags are derived
+  from Markdown; notebooks do not store standalone empty tags or a separate
+  tag catalog.
 - The `note_search_fts` FTS5 table caches note titles, tags and body text. A
   path refresh updates it in the same transaction as the note projection.
   Existing notebooks backfill it once on the first path-based search, using
@@ -130,5 +127,7 @@ those filenames requires a separate, downgrade-aware migration.
 - The file tree and folder document list read the current directory directly;
   folder document lists do not keep a separate file-entry catalog. The notebook
   watcher writes the media catalog.
-- The legacy memo-ID search remains an in-memory projection. Search caches may
-  be rebuilt; user properties and media metadata must be preserved.
+- Note storage and queries use notebook-relative paths. Markdown remains the
+  source for rebuildable note metadata; the note index has no document ID key.
+
+The global `index.db` is retired. Version initialization no longer copies or imports it. After current stores initialize successfully, both old locations and their SQLite companions are archived under `rebuild-backups/<UUID>/` before initialization is marked complete. Cleanup failures are logged and skipped independently for each location; they do not block initialization or schedule a retry on normal startup. Old-only installations must re-register their notebook folders; Markdown files are unchanged.

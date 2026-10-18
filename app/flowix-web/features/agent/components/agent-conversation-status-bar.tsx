@@ -8,7 +8,7 @@ import {
   type ConversationRunSummary,
 } from '@features/agent/store/conversation-run-index';
 import { useWorkspaceRestoreStore } from '@features/workspace/store/workspace-restore-store';
-import { selectAndOpenAgentConversation } from '@features/workspace/use-cases/agent-conversation-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { getAgentType } from '@/lib/agent-types';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
@@ -87,7 +87,7 @@ export function AgentConversationStatusBar() {
 
   const openConversation = useCallback((instance: AgentConversationInstance) => {
     if (instance.threadId) markThreadRead(instance.threadId);
-    void selectAndOpenAgentConversation(instance.instanceId).catch((error) => {
+    void openWorkspaceSurface({ target: { kind: 'agent-conversation', instanceId: instance.instanceId } }).catch((error) => {
       toast.error(error instanceof Error ? error.message : t('status.agent.conversationNotFound'));
     });
   }, [markThreadRead, t]);
@@ -130,7 +130,7 @@ export function AgentConversationStatusBar() {
               aria-label={title}
             >
               <AgentIcon
-                typeKey={agent.key}
+                typeKey={agent.id}
                 alt=""
                 className="h-3.5 w-3.5 object-contain"
               />

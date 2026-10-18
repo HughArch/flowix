@@ -259,6 +259,9 @@ describe("tool chunk idempotency", () => {
       { content: "tool output" },
       "codex",
     );
+    expect(toolResult.messages[1].id).toBe(
+      "flowix:codex:tool-call:unbound:future-result-only",
+    );
     const afterTool = applyTextChunk(toolResult, "after", {
       contentMode: "delta",
     });
@@ -273,6 +276,44 @@ describe("tool chunk idempotency", () => {
       "tool output",
       "after",
     ]);
+  });
+
+  it("uses stable turn and call identities for Codex custom tools without item IDs", () => {
+    const started = applyToolCallChunk(
+      emptyState(), "call-a", "future_connector", { query: "x" }, "codex",
+      { messageType: "codex-custom-tool", codexTurnId: "turn-tools" },
+    );
+    expect(started.messages[0]).toMatchObject({
+      id: "flowix:codex:tool-call:turn-tools:call-a",
+      messageId: "flowix:codex:tool-call:turn-tools:call-a",
+      toolCallId: "call-a",
+    });
+
+    const orphan = applyToolResultChunk(
+      emptyState(), "call-b", "future_connector", { content: "done" }, "codex",
+      { messageType: "codex-custom-tool", codexTurnId: "turn-tools" },
+    );
+    expect(orphan.messages[0]).toMatchObject({
+      id: "flowix:codex:tool-output:turn-tools:call-b",
+      messageId: "flowix:codex:tool-output:turn-tools:call-b",
+      toolCallId: "call-b",
+      content: "{\n  \"content\": \"done\"\n}",
+    });
+
+    const nativeTool = applyToolCallChunk(
+      emptyState(), "call-c", "exec_command", { cmd: "pwd" }, "codex",
+      { codexTurnId: "turn-tools" },
+    );
+    expect(nativeTool.messages[0].id).toBe(
+      "flowix:codex:tool-call:turn-tools:call-c",
+    );
+
+    const unboundTool = applyToolCallChunk(
+      emptyState(), "call-d", "exec_command", { cmd: "pwd" }, "codex",
+    );
+    expect(unboundTool.messages[0].id).toBe(
+      "flowix:codex:tool-call:unbound:call-d",
+    );
   });
 
   it("inserts a reconciled tool before a later assistant by source time", () => {
@@ -314,14 +355,14 @@ describe("tool chunk idempotency", () => {
           { content: "修复展示", status: "pending" },
         ],
       },
-      "deepseek-harness",
+      "dsh",
     );
     const completed = applyToolResultChunk(
       started,
       "plan-1",
       "tool",
       { content: "ok" },
-      "deepseek-harness",
+      "dsh",
     );
 
     expect(completed.messages[0]).toMatchObject({

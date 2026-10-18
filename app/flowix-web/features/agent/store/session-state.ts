@@ -22,6 +22,7 @@ export interface AgentSessionMeta {
   currentThreadTitles: Partial<Record<string, string | undefined>>;
   externalSessionResolutions: Record<string, string>;
   lastRunningRunsReconciledAt: number | null;
+  /** Legacy migration input; active preferences live in Agent Data Store. */
   settings: {
     agentPermissionMode: AgentPermissionMode;
     agentCodexModel: AgentCodexModel;

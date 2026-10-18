@@ -11,8 +11,10 @@ import {
   MediaActions,
   DOCUMENT_TITLEBAR_ICON_BUTTON_WIN,
   AgentThreadCardFullscreenExitButton,
+  AgentThreadCardFullscreenMoreMenu,
   AgentThreadCardFullscreenIdentity,
   useAgentThreadCardFullscreenActive,
+  SurfaceHeaderIcon,
 } from '@features/document/components/document-titlebar-shared';
 import { useI18n } from '@/lib/i18n';
 import {
@@ -37,6 +39,7 @@ export function DocumentTitlebarWin({
     onNavigateForward,
     visible: showNavigationButtons = true,
     title: navigationTitle,
+    icon: navigationIcon,
   },
   contentCapabilities: {
     copyFullText: canCopyFullText,
@@ -114,12 +117,10 @@ export function DocumentTitlebarWin({
             </Tooltip>
           </>
         )}
-        {navigationTitle && (
-          <span
-            className="ml-2 min-w-0 max-w-[320px] truncate text-sm font-medium text-[var(--foreground)]"
-            title={navigationTitle}
-          >
-            {navigationTitle}
+        {(navigationTitle || navigationIcon) && (
+          <span className="ml-2 flex min-w-0 max-w-[320px] items-center gap-2 text-sm font-medium text-[var(--foreground)]" title={navigationTitle ?? undefined}>
+            <SurfaceHeaderIcon icon={navigationIcon} />
+            {navigationTitle && <span className="truncate">{navigationTitle}</span>}
           </span>
         )}
       </div>
@@ -153,7 +154,11 @@ export function DocumentTitlebarWin({
             canViewVersionHistory={canViewVersionHistory}
             folderCollectionViewType={folderCollectionViewType}
             showEditorFontSwitcher={showEditorFontSwitcher}
+            showMoreActions={!isAgentThreadCardFullscreen}
           />
+        )}
+        {isAgentThreadCardFullscreen && (
+          <AgentThreadCardFullscreenMoreMenu iconButtonClass={ICON_BTN} />
         )}
         {isMediaSurface && mediaActions && (
           <MediaActions

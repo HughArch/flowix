@@ -109,7 +109,7 @@ describe("ThreadMessageRenderController empty settings", () => {
       return frames.length;
     });
     vi.stubGlobal("cancelAnimationFrame", () => undefined);
-    const { body, controller } = createController("claude");
+    const { body, controller } = createController("claudecode");
     try {
       const first = {
         id: "code-reply", role: "assistant" as const,
@@ -174,7 +174,7 @@ describe("ThreadMessageRenderController empty settings", () => {
     });
     vi.stubGlobal("cancelAnimationFrame", () => undefined);
     try {
-      const { body, controller } = createController("claude");
+      const { body, controller } = createController("claudecode");
       const messages = Array.from({ length: 31 }, (_, index) => ({
         id: `end-${index}`,
         role: "end" as const,
@@ -251,7 +251,7 @@ describe("ThreadMessageRenderController empty settings", () => {
   });
 
   it("defers completed reasoning Markdown until the collapsed row is expanded", () => {
-    const { body, controller } = createController("claude");
+    const { body, controller } = createController("claudecode");
 
     controller.render({
       messages: [{
@@ -325,7 +325,7 @@ describe("ThreadMessageRenderController empty settings", () => {
 
   it("DeepSeek Harness empty card renders runtime settings", () => {
     const { body, controller, createExternalAgentEmptySettings } =
-      createController("deepseek-harness");
+      createController("dsh");
 
     controller.render({
       messages: [],
@@ -432,7 +432,7 @@ describe("ThreadMessageRenderController empty settings", () => {
 
   it("does not render runtime settings while thread cache is loading", () => {
     const { body, controller, createExternalAgentEmptySettings } =
-      createController("deepseek-harness");
+      createController("dsh");
 
     controller.render({
       messages: [],
@@ -455,7 +455,7 @@ describe("ThreadMessageRenderController run-end re-parse", () => {
     });
     vi.stubGlobal("cancelAnimationFrame", () => undefined);
     try {
-      const { body, controller } = createController("deepseek-harness");
+      const { body, controller } = createController("dsh");
       const history = [
         {
           id: "u1",
@@ -535,7 +535,7 @@ describe("ThreadMessageRenderController run-end re-parse", () => {
     });
     vi.stubGlobal("cancelAnimationFrame", () => undefined);
     try {
-      const { body, controller } = createController("deepseek-harness");
+      const { body, controller } = createController("dsh");
       const streaming = {
         id: "a1",
         role: "assistant" as const,

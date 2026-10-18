@@ -1,97 +1,73 @@
 'use client';
 
+import { ArrowCircleUpIcon } from '@phosphor-icons/react';
 import type { AppUpdaterState } from '@features/shell/hooks/use-app-updater';
 import { useI18n } from '@/lib/i18n';
-import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 
-/** Compact signed-app-update CTA for the desktop status bar. */
+/** Status-bar action that installs the prepared app update. */
 export function ProductUpdatePill({ updater }: { updater: AppUpdaterState }) {
   const { t } = useI18n();
-  const { status, update, installNow } = updater;
-
-  async function handleClick() {
-    if (!update || status === 'downloading' || status === 'installing') return;
-    try {
-      await installNow();
-    } catch {
-      toast.error(t('appUpdates.installFailed'));
-    }
-  }
+  const { status, update } = updater;
 
   if (!update || !update.notify || status === 'error' || status === 'none' || status === 'idle' || status === 'checking') {
     return null;
   }
 
-  const downloading = status === 'downloading';
-  const installing = status === 'installing';
-  const contentLength = updater.progress && 'contentLength' in updater.progress
-    ? updater.progress.contentLength
-    : undefined;
-  const downloadedBytes = updater.progress && 'downloadedBytes' in updater.progress
-    ? updater.progress.downloadedBytes
-    : undefined;
-  const percent = downloading && contentLength && contentLength > 0 && downloadedBytes != null
-    ? Math.min(100, Math.max(0, Math.round((downloadedBytes / contentLength) * 100)))
-    : null;
-  const label = downloading
-    ? percent == null
-      ? t('appUpdates.statusDownloading')
-      : t('appUpdates.statusDownloadingProgress').replace('{percent}', String(percent))
-    : installing
-      ? t('appUpdates.statusInstalling')
-      : t('appUpdates.install');
+  const versionLabel = t('appUpdates.statusBarVersion', {
+    version: update.version.replace(/^v/i, ''),
+  });
+  const isUpdating = status === 'downloading' || status === 'installing';
 
   return (
     <button
       type="button"
-      onClick={handleClick}
-      disabled={downloading || installing}
-      title={`${t('appUpdates.available')}: ${update.version}`}
-      className={cn(
-        'inline-flex h-[22px] items-center gap-0.5 rounded-md px-2',
-        'text-xs leading-none text-[var(--primary)] hover:bg-[var(--muted)]',
-        'disabled:cursor-wait',
-      )}
-      aria-label={label}
+      onClick={() => {
+        void updater.installNow().catch(() => {
+          toast.error(t('appUpdates.installFailed'));
+        });
+      }}
+      disabled={isUpdating}
+      title={versionLabel}
+      className="inline-flex h-[22px] items-center justify-center gap-1 rounded-md px-2 text-xs leading-none text-[var(--primary)] hover:bg-[var(--muted)]"
+      aria-label={versionLabel}
     >
-      <UpdateProgressIcon percent={percent ?? (installing ? 100 : 0)} spinning={downloading && percent == null} />
-      <span>{label}</span>
+      {isUpdating
+        ? <DownloadProgressIcon progress={updater.progress} />
+        : <ArrowCircleUpIcon className="h-[18px] w-[18px]" weight="fill" aria-hidden="true" />}
+      <span>{versionLabel}</span>
     </button>
   );
 }
 
-function UpdateProgressIcon({ percent, spinning }: { percent: number; spinning: boolean }) {
-  const radius = 5;
+function DownloadProgressIcon({ progress }: { progress: AppUpdaterState['progress'] }) {
+  let hasProgress = false;
+  let percent = 0;
+  if (progress?.phase === 'progress' && progress.contentLength && progress.contentLength > 0) {
+    hasProgress = true;
+    percent = Math.min(1, Math.max(0, progress.downloadedBytes / progress.contentLength));
+  }
+  const radius = 9;
   const circumference = 2 * Math.PI * radius;
-  const progress = Math.min(100, Math.max(0, percent)) / 100;
 
   return (
     <svg
       aria-hidden="true"
-      className={`h-3.5 w-3.5 shrink-0${spinning ? ' animate-spin' : ''}`}
-      viewBox="0 0 12 12"
+      className={`h-[18px] w-[18px] shrink-0${hasProgress ? '' : ' flowix-spin'}`}
+      viewBox="0 0 24 24"
     >
+      <circle cx="12" cy="12" r={radius} fill="none" stroke="currentColor" strokeOpacity="0.24" strokeWidth="3" />
       <circle
-        cx="6"
-        cy="6"
-        r={radius}
-        fill="none"
-        stroke="currentColor"
-        strokeOpacity="0.25"
-        strokeWidth="1.5"
-      />
-      <circle
-        cx="6"
-        cy="6"
+        cx="12"
+        cy="12"
         r={radius}
         fill="none"
         stroke="currentColor"
         strokeLinecap="round"
-        strokeWidth="1.5"
-        strokeDasharray={circumference}
-        strokeDashoffset={circumference * (1 - progress)}
-        transform="rotate(-90 6 6)"
+        strokeWidth="3"
+        strokeDasharray={hasProgress ? circumference : `${circumference * 0.28} ${circumference * 0.72}`}
+        strokeDashoffset={hasProgress ? circumference * (1 - percent) : 0}
+        transform="rotate(-90 12 12)"
       />
     </svg>
   );

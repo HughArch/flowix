@@ -47,12 +47,13 @@ vi.mock("@features/memo/store/note-store", () => ({
   },
 }));
 
-vi.mock("@features/memo/use-cases/open-by-target", () => ({
+vi.mock("@features/memo/public/note-navigation-api", () => ({
   openNoteByMemoId: vi.fn(),
 }));
 
 vi.mock("@features/workspace/use-cases/browser-column-navigation", () => ({
   openBrowserColumnFileBrowser: vi.fn(),
+  openBrowserColumnNotebookNote: vi.fn(),
 }));
 
 import { ExternalAgentSettingsController } from "./external-agent-settings-controller";
@@ -62,7 +63,7 @@ let storedFilter = { key: "", operator: "", value: "" };
 
 function memo(id: string, properties: Record<string, unknown>): MemoItem {
   return {
-    id,
+    relativePath: `${id}.md`,
     filename: `${id}.md`,
     preview: `${id} description`,
     thumbnail: null,
@@ -147,7 +148,7 @@ describe("ExternalAgentSettingsController featured notes", () => {
 
     const children = Array.from(empty.children);
     const iconIndex = children.findIndex((node) => node.classList.contains("agent-thread-card__empty-agent-icon"));
-    const controlsIndex = children.findIndex((node) => node.classList.contains("agent-thread-card__empty-controls"));
+    const controlsIndex = children.findIndex((node) => node.classList.contains("agent-conversation__controls"));
     const notesIndex = children.findIndex((node) => node.classList.contains("agent-thread-card__featured-notes"));
     expect(iconIndex).toBeGreaterThanOrEqual(0);
     expect(controlsIndex).toBeGreaterThan(iconIndex);

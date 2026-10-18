@@ -103,7 +103,7 @@ export function MultiSelectValueInput({
         </DropdownMenuTrigger>
         <DropdownMenuContent
           align="start"
-          className="min-w-[200px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]"
+          className={cn('min-w-[200px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' && '!z-[170]')}
         >
           {normalizedOptions.length === 0 ? (
             <div className="px-3 py-2 text-xs text-[var(--muted-foreground)]">

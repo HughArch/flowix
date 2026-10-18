@@ -1,7 +1,7 @@
 'use client';
 
 import { useEffect, useMemo, useState } from 'react';
-import { ArrowBendDownRightIcon, TrashSimpleIcon } from '@phosphor-icons/react';
+import { ArrowBendDownRightIcon } from '@phosphor-icons/react';
 import { useI18n } from '@/lib/i18n';
 import { agentClient } from '@features/agent/store/agent-client';
 
@@ -36,7 +36,7 @@ function readTerminals(value: unknown): BackgroundTerminal[] {
   });
 }
 
-export function AgentBackgroundTerminals({ threadId, agentType, enabled, queuedMessages = [], onPromoteFollowUp, onDeleteQueuedMessage }: { threadId: string | null; agentType: 'codex' | 'deepseek-harness'; enabled: boolean; queuedMessages?: readonly QueuedAgentMessage[]; onPromoteFollowUp?: (messageId: string) => void; onDeleteQueuedMessage?: (messageId: string) => void }) {
+export function AgentBackgroundTerminals({ threadId, agentType, enabled, queuedMessages = [], onPromoteFollowUp, onDeleteQueuedMessage }: { threadId: string | null; agentType: 'codex' | 'dsh'; enabled: boolean; queuedMessages?: readonly QueuedAgentMessage[]; onPromoteFollowUp?: (messageId: string) => void; onDeleteQueuedMessage?: (messageId: string) => void }) {
   const { t } = useI18n();
   const [terminals, setTerminals] = useState<BackgroundTerminal[]>([]);
   const [expanded, setExpanded] = useState(false);
@@ -145,19 +145,19 @@ function QueuedMessages({ messages, label, onPromoteFollowUp, onDeleteQueuedMess
               {message.deliveryStatus === 'starting' && (
                 <span className="agent-background-terminals__queue-soon" role="status">{t('agent.queue.sendingSoon')}</span>
               )}
-              {message.deliveryMode === 'follow_up' && message.deliveryStatus !== 'starting' && onPromoteFollowUp && (
-                <button type="button" className="agent-background-terminals__queue-steer" disabled={message.actionsDisabled} onClick={() => onPromoteFollowUp(message.id)}>
-                  {t('agent.queue.steerNow')}
-                </button>
-              )}
               {message.deliveryMode === 'steer' && onDeleteQueuedMessage && (
                 <span className="agent-background-terminals__queue-soon" role="status">
                   {message.deliveryStatus === 'cleanup_failed' ? t('agent.queue.cleanupFailed') : t('agent.queue.sendingSoon')}
                 </span>
               )}
               {onDeleteQueuedMessage && message.canDelete !== false && <button type="button" className="agent-background-terminals__queue-delete" disabled={message.actionsDisabled} aria-label={t('agent.queue.deleteQueued')} title={t('agent.queue.deleteQueued')} onClick={() => onDeleteQueuedMessage(message.id)}>
-                <TrashSimpleIcon aria-hidden="true" />
+                {t('agent.queue.deleteQueued')}
               </button>}
+              {message.deliveryMode === 'follow_up' && message.deliveryStatus !== 'starting' && onPromoteFollowUp && (
+                <button type="button" className="agent-background-terminals__queue-steer" disabled={message.actionsDisabled} onClick={() => onPromoteFollowUp(message.id)}>
+                  {t('agent.queue.steerNow')}
+                </button>
+              )}
             </span>
           )}
         </div>

@@ -9,7 +9,7 @@ Flowix 是一款桌面笔记应用（**Tauri 2 + Rust 后端，React 19 + TS + T
 
 ```bash
 export PATH="$HOME/.cargo/bin:/opt/homebrew/bin:/usr/local/bin:$PATH"
-npm run tauri:dev        # 推荐：独立 dev bundle ID (com.flowix.app.dev / "Flowix Dev")，可与生产 app 并存
+npm run tauri:dev        # 推荐：独立 dev bundle ID (com.flowix-dev.app / "Flowix Dev")，可与生产 app 并存
 npm run tauri:dev:win    # Windows 开发启动：使用 app/flowix-desktop/tauri.windows.dev.conf.json
 npm run tauri dev        # ⚠️ 走默认 tauri.conf.json，与生产同 bundle ID (com.flowix.app)，已被生产占住时会立刻 exit 0
 npm run dev              # 仅前端 (localhost:1420)
@@ -35,12 +35,12 @@ cargo test --workspace --lib                         # 跑全部
 
 通过差异化 Tauri 配置，让 dev 版与已安装的生产版同时运行：
 
-- **dev**：`npm run tauri:dev` → `app/flowix-desktop/tauri.conf.dev.json` → bundle ID `com.flowix.app.dev` / `Flowix Dev`
+- **dev**：`npm run tauri:dev` → `app/flowix-desktop/tauri.conf.dev.json` → bundle ID `com.flowix-dev.app` / `Flowix Dev`
 - **生产**：`npm run tauri:build:prod` → `tauri.conf.json` + 平台覆盖层 + 签名覆盖层 → 平台专用 `tauri.*.production.local.json` → bundle ID `com.flowix.app` / `Flowix`
 
 `tauri:dev` 通过 `--config` 指向独立配置，**不要**改 `tauri.conf.json` 的 `identifier` / `productName` / `mainBinaryName` / `bundle.macOS.bundleName` —— 这四个字段是生产身份的锚点。`tauri.conf.production.json` 作为覆盖层被 `tauri build --config` 深合并在 `tauri.conf.json` 之上，因此 dev 配置改动不会污染生产链路。
 
-dev 与生产现使用不同 bundle ID（`com.flowix.app.dev` vs `com.flowix.app`），可同时运行且互不冲突（Tauri `app_data_dir` / `tauri-plugin-single-instance` lock 都按 identifier 派生）。代价：dev 首次运行需要重新授予一次 user-selected folder 授权（TCC 按 identifier 记忆授权），prod 已授予的不会带过来。视觉上仍通过 bundle name / 窗口标题区分（`Flowix Dev` vs `Flowix`）。URL scheme `flowix://` 仍共用，让浏览器深链能落到任一已装实例。
+dev 与生产现使用不同 bundle ID（`com.flowix-dev.app` vs `com.flowix.app`），可同时运行且互不冲突（Tauri `app_data_dir` / `tauri-plugin-single-instance` lock 都按 identifier 派生）。代价：dev 首次运行需要重新授予一次 user-selected folder 授权（TCC 按 identifier 记忆授权），prod 已授予的不会带过来。视觉上仍通过 bundle name / 窗口标题区分（`Flowix Dev` vs `Flowix`）。Dev 使用独立 URL scheme `flowix-dev://`，以便浏览器回调明确交给 Dev 实例。
 
 ### macOS 本地生产包 ad-hoc 签名
 

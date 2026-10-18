@@ -18,9 +18,8 @@ import {
   type PluginDescriptor,
   type PluginField,
 } from '@platform/tauri/client';
-import {
-  openBrowserColumnMarkdown,
-} from '@features/workspace/use-cases/browser-column-navigation';
+import type { SurfaceNotice, SurfacePresentationUpdate } from '@features/workspace/public/surface-api';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import { runPlugin } from './plugin-runner';
 import {
@@ -54,11 +53,13 @@ export function AgentPluginWorkbench({
   notebookPath,
   currentNotePath,
   currentNoteContent,
+  reportPresentation,
 }: {
   plugin: PluginDescriptor;
   notebookPath: string | undefined;
   currentNotePath: string | null;
   currentNoteContent: string;
+  reportPresentation?: (update: SurfacePresentationUpdate) => void;
 }) {
   const [values, setValues] = useState<Record<string, PluginFieldValue>>({ prompt: '' });
   const [agentType, setAgentType] = useState<AgentTypeKey>(DEFAULT_AGENT_TYPE_KEY);
@@ -81,7 +82,7 @@ export function AgentPluginWorkbench({
   const runStatus = run?.status ?? null;
   const hasCanvasControls = artifact?.renderer === 'markmap';
   const agentOptions = useMemo(
-    () => AGENT_TYPES.filter((item) => isAgentTypeSelectable(item.key)),
+    () => AGENT_TYPES.filter((item) => isAgentTypeSelectable(item.id)),
     [],
   );
   const fields = useMemo(() => fieldList(plugin), [plugin]);
@@ -100,13 +101,23 @@ export function AgentPluginWorkbench({
 
   const handleOpenArtifact = useCallback(() => {
     if (!artifact) return;
-    const opening = openBrowserColumnMarkdown(artifact.path);
+    const opening = openWorkspaceSurface({
+      host: 'browser-column',
+      target: { kind: 'external', path: artifact.path, scopePath: null, transitionId: null },
+    });
     void opening.catch((error) => {
       console.error('[AgentPluginWorkbench] Failed to open artifact', error);
     });
   }, [artifact]);
 
   useEffect(() => { ensurePluginRunStoreSubscription(); }, [plugin.manifest.id]);
+  useEffect(() => {
+    const notices: SurfaceNotice[] = [];
+    if (running) notices.push({ id: 'plugin-generation', severity: 'info', message: { key: 'plugin.workbench.generating' } });
+    if (error) notices.push({ id: 'plugin-generation-error', severity: 'error',
+      message: { key: 'error.unexpected', fallbackText: error } });
+    reportPresentation?.({ state: { status: 'ready', notices } });
+  }, [error, reportPresentation, running]);
   useEffect(() => {
     const handleFullscreenChange = () => setIsFullscreen(document.fullscreenElement === canvasRef.current);
     document.addEventListener('fullscreenchange', handleFullscreenChange);
@@ -223,11 +234,11 @@ export function AgentPluginWorkbench({
             );
           })}
           <button disabled={!canGenerate} onClick={() => void handleGenerate()} className="inline-flex items-center justify-center gap-2 rounded-lg bg-[var(--brand)] px-3 py-2 text-sm font-medium text-[var(--primary-foreground)] disabled:cursor-not-allowed disabled:opacity-50">
-            {running ? <SpinnerIcon size={16} weight="bold" className="animate-spin" /> : <MagicWandIcon size={16} weight="bold" />}
+            {running ? <SpinnerIcon size={16} weight="bold" className="flowix-spin" /> : <MagicWandIcon size={16} weight="bold" />}
             {running ? '生成中…' : runStatus === 'completed' ? '重新生成' : '生成插件产物'}
           </button>
           {missingRequiredField && <p className="text-xs text-[var(--muted-foreground)]">请填写必填项：{pluginFieldLabel(missingRequiredField)}</p>}
-          {error && <p className="rounded-lg bg-[color-mix(in_oklch,var(--destructive)_10%,transparent)] p-3 text-xs text-[var(--destructive)]">{error}</p>}
+          {error && !reportPresentation && <p className="rounded-lg bg-[color-mix(in_oklch,var(--destructive)_10%,transparent)] p-3 text-xs text-[var(--destructive)]">{error}</p>}
         </div>
       )}
       <div className="min-h-0 flex-1 overflow-hidden">

@@ -3,9 +3,9 @@ import { useWorkColumnStore } from '@features/workspace/store/work-column-store'
 export {
   clearPluginWorkbenchTarget,
   dismissNavigationFailure,
-  flushWorkspaceDocument,
-  openCollectionTarget,
-  openPluginWorkbench,
+  prepareActiveWorkColumnDocumentLeave,
+  openFolderCollection,
+  openFolderCollectionFromFolder,
   reconcileDeletedNotebook,
   retryLastNavigation,
   selectNotebook,

@@ -2,12 +2,13 @@
 
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
 import { ArchiveIcon, PencilSimpleIcon, SquareSplitHorizontalIcon, StarIcon, TrashSimpleIcon } from '@phosphor-icons/react';
-import { ChevronRight, MoreHorizontal, Plus } from 'lucide-react';
+import { ArrowRight, ChevronRight, MoreHorizontal, Plus } from 'lucide-react';
 import { AgentIcon } from '@features/agent/components/agent-icon';
-import { AGENT_TYPES, isAgentTypeSelectable, isAlwaysVisibleNewConversationAgent } from '@/lib/agent-types';
-import { buildInitialInstanceRuntimeConfig } from '@features/agent/store/initial-runtime-config';
-import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
-import { isAgentRuntimeInstalledState, normalizeAgentRuntimeStatus } from '@features/agent/runtime/agent-runtime-status';
+import { useNewConversationAgentSelection } from '@features/agent/hooks/use-new-conversation-agent-selection';
+import {
+  createAndOpenAgentConversation,
+  requestNewConversationAgentSelection,
+} from '@features/agent/use-cases/new-conversation';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@shared/ui/dropdown-menu';
 import {
   isSyntheticOpenCodeHistoryInstance,
@@ -17,10 +18,8 @@ import { agentClient } from '@features/agent/store/agent-client';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
 import { isAgentConversationRunning } from '@features/agent/store/conversation-run-index';
-import { selectAndOpenAgentConversation } from '@features/workspace/use-cases/agent-conversation-navigation';
-import { openBrowserColumnAgentConversation } from '@features/workspace/use-cases/browser-column-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
-import { showAgentConversationsView } from '@features/memo/public/shell-api';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { readFavoriteConversationIds, subscribeToFavoriteConversationChanges, toggleFavoriteConversation } from '@features/agent/conversation-favorites';
@@ -37,12 +36,14 @@ export function AgentTasksSection({
   edgeGutter = 6,
   order,
   onHeightChange,
+  onShowAllConversations,
   sectionActions,
 }: {
   notebookId: string;
   edgeGutter?: number;
   order: number;
   onHeightChange: (height: number) => void;
+  onShowAllConversations: () => void;
   sectionActions?: ReactNode;
 }) {
   const { t } = useI18n();
@@ -60,9 +61,6 @@ export function AgentTasksSection({
   const conversationRunIndex = useAgentSessionStore((state) => state.threadRunSignatures);
   const latestCompletedRunIds = useAgentSessionStore((state) => state.latestCompletedRunIds);
   const readThroughRunIds = useAgentSessionStore((state) => state.readThroughRunIds);
-  const agentRuntimeStatusByType = useAgentRuntimeStore((state) => state.statusByType);
-  const agentRuntimeIsChecking = useAgentRuntimeStore((state) => state.isChecking);
-  const refreshAgentRuntimeIfStale = useAgentRuntimeStore((state) => state.refreshIfStale);
   const activeConversationInstanceId = useWorkColumnStore((state) => (
     state.navigation.target.kind === 'agent-conversation'
       ? state.navigation.target.instanceId
@@ -131,7 +129,7 @@ export function AgentTasksSection({
         activeAgentTypeKey: instance.agentType,
       }));
     }
-    await selectAndOpenAgentConversation(instance.instanceId);
+    await openWorkspaceSurface({ target: { kind: 'agent-conversation', instanceId: instance.instanceId } });
   }, []);
 
   const prepareConversation = useCallback((instance: AgentConversationInstance) => {
@@ -150,7 +148,7 @@ export function AgentTasksSection({
 
   const openConversationInBrowserColumn = useCallback((instance: AgentConversationInstance) => {
     prepareConversation(instance);
-    void openBrowserColumnAgentConversation(instance.instanceId).catch((error) => {
+    void openWorkspaceSurface({ host: 'browser-column', target: { kind: 'agent-conversation', instanceId: instance.instanceId } }).catch((error) => {
       logger.error('Failed to open conversation in browser column', { error });
       toast.error(error instanceof Error ? error.message : String(error));
     });
@@ -208,28 +206,17 @@ export function AgentTasksSection({
     setOpenMenuId(instanceId);
   }, []);
 
-  const newConversationAgentTypes = useMemo(
-    () => AGENT_TYPES.filter((type) => {
-      if (!isAgentTypeSelectable(type.key)) return false;
-      if (isAlwaysVisibleNewConversationAgent(type.key)) return true;
-      return isAgentRuntimeInstalledState(normalizeAgentRuntimeStatus(
-        agentRuntimeStatusByType[type.key],
-        agentRuntimeIsChecking,
-      ));
-    }),
-    [agentRuntimeIsChecking, agentRuntimeStatusByType],
-  );
+  const newConversationSelection = useNewConversationAgentSelection();
 
   const createConversation = useCallback((typeKey: AgentConversationInstance['agentType']) => {
-    const instance = useAgentSessionStore.getState().createInstance({
-      agentType: typeKey,
-      title: '',
-      threadId: null,
-      source: { kind: 'dedicated', notebookId, documentPath: null },
-      runtimeConfig: buildInitialInstanceRuntimeConfig(typeKey),
-    });
-    void selectAndOpenAgentConversation(instance.instanceId, { blankIfMissing: true });
+    createAndOpenAgentConversation(typeKey, notebookId);
   }, [notebookId]);
+
+  useEffect(() => {
+    if (createMenuOpen && newConversationSelection.kind !== 'choose') {
+      setCreateMenuOpen(false);
+    }
+  }, [createMenuOpen, newConversationSelection]);
 
   const width = `calc(100% - ${edgeGutter * 2}px)`;
 
@@ -256,17 +243,36 @@ export function AgentTasksSection({
           <ChevronRight className={`h-3.5 w-3.5 opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-within:opacity-100 ${collapsed ? 'opacity-100' : 'rotate-90'}`} />
         </button>
         <div className="ml-auto flex items-center">
+          <button
+            type="button"
+            onClick={onShowAllConversations}
+            aria-label={t('memo.fileTree.openAllConversations')}
+            title={t('memo.fileTree.openAllConversations')}
+            className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] opacity-0 transition-[color,opacity] hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] group-hover:opacity-100"
+          >
+            <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+          </button>
           {sectionActions}
           <DropdownMenu
             open={createMenuOpen}
             onOpenChange={(open) => {
-              setCreateMenuOpen(open);
-              if (open) void refreshAgentRuntimeIfStale();
+              if (!open) {
+                setCreateMenuOpen(false);
+                return;
+              }
+              const selection = requestNewConversationAgentSelection();
+              if (selection.kind === 'create') {
+                createConversation(selection.agentType);
+                setCreateMenuOpen(false);
+                return;
+              }
+              setCreateMenuOpen(selection.kind === 'choose');
             }}
           >
             <DropdownMenuTrigger asChild>
               <button
                 type="button"
+                disabled={newConversationSelection.kind === 'none'}
                 aria-label={t('agent.chat.newThread')}
                 title={t('agent.chat.newThread')}
                 className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
@@ -278,27 +284,16 @@ export function AgentTasksSection({
               <DropdownMenuLabel className="flex items-center gap-1.5 px-[0.375rem] pb-[0.35rem] pt-[0.35rem] text-xs font-normal leading-[1.2] text-[var(--muted-foreground)]">
                 {t('agent.chat.newThread')}
               </DropdownMenuLabel>
-              {newConversationAgentTypes.map((type) => {
-                const runtimeStatus = normalizeAgentRuntimeStatus(
-                  agentRuntimeStatusByType[type.key],
-                  agentRuntimeIsChecking,
-                );
-                const showNotInstalled = isAlwaysVisibleNewConversationAgent(type.key)
-                  && runtimeStatus.state === 'not-installed';
+              {newConversationSelection.options.map((type) => {
                 const name = type.nameKey ? t(type.nameKey as Parameters<typeof t>[0]) : type.name;
                 return (
                   <DropdownMenuItem
-                    key={type.key}
-                    onClick={() => createConversation(type.key)}
+                    key={type.id}
+                    onClick={() => createConversation(type.id)}
                     className="agent-conversation-new-agent-item group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
                   >
-                    <AgentIcon typeKey={type.key} alt="" className="h-4 w-4 shrink-0 object-contain" />
+                    <AgentIcon typeKey={type.id} alt="" className="h-4 w-4 shrink-0 object-contain" />
                     <span className="min-w-0 flex-1 truncate">{name}</span>
-                    {showNotInstalled && (
-                      <span className="shrink-0 text-xs text-[var(--muted-foreground)] group-hover:text-[var(--primary-foreground)]">
-                        {t('agent.status.notInstalled')}
-                      </span>
-                    )}
                   </DropdownMenuItem>
                 );
               })}
@@ -397,16 +392,6 @@ export function AgentTasksSection({
           {t('memo.fileTree.agentsEmpty')}
         </div>
       ))}
-      {!collapsed && tasks.length > 5 && (
-        <button
-          type="button"
-          onClick={showAgentConversationsView}
-          className="flex h-7 items-center rounded-lg px-1.5 text-left text-xs text-[color-mix(in_oklch,var(--muted-foreground)_67%,var(--background))] transition-colors hover:text-[var(--foreground)]"
-          style={{ marginLeft: edgeGutter, width }}
-        >
-          {t('memo.fileTree.moreAgents')}
-        </button>
-      )}
       <Dialog open={renameTarget !== null} onOpenChange={(open) => !open && !renameSaving && setRenameTarget(null)}>
         <DialogContent className="rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
           <DialogHeader><DialogTitle>{t('agent.chat.conversation.rename')}</DialogTitle></DialogHeader>

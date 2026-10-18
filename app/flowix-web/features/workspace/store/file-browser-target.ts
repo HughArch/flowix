@@ -1,23 +1,5 @@
-import type { CollectionDisplayDescriptor } from '@/lib/collection-display-registry';
 import { canonicalPath } from '@/lib/path';
-
-export interface FileBrowserContext {
-  /** Only legacy tabs lack a notebook binding; bind them once when restored. */
-  restoreNotebookContext?: boolean;
-  folderPath: string | null;
-  notebookId: string | null;
-  scopePath: string | null;
-  fileTreeVisible: boolean;
-  fileTreeWidth: number;
-}
-
-export interface FileBrowserTarget extends FileBrowserContext {
-  kind: 'file-browser';
-  activeFilePath: string | null;
-  collectionDisplay?: CollectionDisplayDescriptor;
-  collectionType?: 'table' | 'media_library';
-  collectionUnavailableReason?: string;
-}
+export type { FileBrowserContext, FileBrowserTarget } from '../model/surface-target';
 
 /** Longest directory-boundary match; preserve filesystem case semantics. */
 export function resolveFileBrowserRoot(path: string | null, folders: readonly string[]): string | null {

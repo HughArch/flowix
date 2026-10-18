@@ -222,9 +222,6 @@ pub fn begin_attachment_upload(
     let store = read_lock(&state.memo_file, "memo_file");
     let (notebook_id, owner_note) = attachments::resolve_note_owner(&store, None, Some(&note_path))
         .map_err(|error| error.to_string())?;
-    let root = attachments::notebook_root(&store, Some(&notebook_id))
-        .map_err(|error| error.to_string())?;
-    super::start_security_bookmark_access(&state, &root);
     state.upload_sessions.begin(
         window.label(),
         generation,

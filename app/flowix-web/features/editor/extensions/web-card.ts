@@ -1,8 +1,13 @@
-import { Node as TiptapNode, mergeAttributes, type JSONContent, type MarkdownToken } from '@tiptap/core';
+import { Node as TiptapNode, mergeAttributes, type JSONContent } from '@tiptap/core';
+import { DEFAULT_WEB_CARD_ATTRS as DEFAULT_ATTRS, normalizeWebCardAttrs as normalizeAttrs, type WebCardAttrs, webCardMarkdownSpec } from './web-card-markdown';
 import { openUrl } from '@platform/tauri/opener';
 import { web, type WebPageMetadata } from '@platform/tauri/client';
 import { translate, type I18nKey } from '@/lib/i18n';
 import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api';
+
+function normalizeText(value: unknown): string {
+  return typeof value === 'string' ? value.trim() : '';
+}
 
 declare module '@tiptap/core' {
   interface Commands<ReturnType> {
@@ -10,35 +15,6 @@ declare module '@tiptap/core' {
       insertWebCard: (url?: string) => ReturnType;
     };
   }
-}
-
-type WebCardAttrs = {
-  url: string;
-  title: string;
-  description: string;
-  image: string;
-};
-
-const DEFAULT_ATTRS: WebCardAttrs = {
-  url: '',
-  title: '',
-  description: '',
-  image: '',
-};
-
-const WEB_CARD_RE = /^::webcard\s*(\{[\s\S]*?\})(?:\n|$)/;
-
-function normalizeText(value: unknown): string {
-  return typeof value === 'string' ? value.trim() : '';
-}
-
-function normalizeAttrs(attrs: Partial<WebCardAttrs> | null | undefined): WebCardAttrs {
-  return {
-    url: normalizeText(attrs?.url),
-    title: normalizeText(attrs?.title),
-    description: normalizeText(attrs?.description),
-    image: normalizeText(attrs?.image),
-  };
 }
 
 function normalizeUrlInput(value: string): string {
@@ -325,36 +301,7 @@ export const WebCard = TiptapNode.create({
     };
   },
 
-  markdownTokenizer: {
-    name: 'webCard',
-    level: 'block' as const,
-    start(src: string) {
-      return src.indexOf('::webcard');
-    },
-    tokenize(src: string) {
-      const match = WEB_CARD_RE.exec(src);
-      if (!match) return undefined;
-      return {
-        type: 'webCard',
-        raw: match[0],
-        text: match[1],
-      };
-    },
-  },
-
-  parseMarkdown(token: MarkdownToken) {
-    try {
-      return {
-        type: 'webCard',
-        attrs: normalizeAttrs(JSON.parse(token.text ?? '')),
-      };
-    } catch {
-      return {
-        type: 'webCard',
-        attrs: DEFAULT_ATTRS,
-      };
-    }
-  },
+  ...webCardMarkdownSpec,
 
   renderMarkdown(node: JSONContent) {
     const attrs = normalizeAttrs(node.attrs);

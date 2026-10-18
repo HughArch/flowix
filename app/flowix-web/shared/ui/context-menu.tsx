@@ -6,13 +6,18 @@ import { POPUP_SEPARATOR_CLASS } from "@shared/ui/popup-separator";
 
 interface ContextMenuTriggerChildProps extends React.HTMLAttributes<HTMLElement> {}
 
+type ContextMenuCloseReason = 'select' | 'escape' | 'outside' | 'scroll' | 'resize' | 'replace' | 'tab';
+
 // Context for managing context-menu state. Position is captured at the moment
 // of the right-click, so the menu opens exactly at the cursor.
 interface ContextMenuContextValue {
 	open: boolean;
 	position: { x: number; y: number } | null;
 	setOpen: (open: boolean) => void;
-	openAt: (x: number, y: number) => void;
+	openAt: (x: number, y: number, trigger?: HTMLElement) => void;
+	triggerRef: React.RefObject<HTMLElement | null>;
+	menuId: string;
+	close: (reason: ContextMenuCloseReason) => void;
 }
 
 const ContextMenuContext = React.createContext<ContextMenuContextValue | null>(null);
@@ -35,10 +40,27 @@ function ContextMenu({ children, onOpenChange }: ContextMenuProps) {
 	const [open, setOpen] = React.useState(false);
 	const [position, setPosition] = React.useState<{ x: number; y: number } | null>(null);
 	const ownerRef = React.useRef({});
+	const triggerRef = React.useRef<HTMLElement | null>(null);
+	const menuId = React.useId();
 	const updateOpen = React.useCallback((nextOpen: boolean) => {
 		setOpen(nextOpen);
 		onOpenChange?.(nextOpen);
 	}, [onOpenChange]);
+	const close = React.useCallback((reason: ContextMenuCloseReason) => {
+		const active = document.activeElement;
+		const ownsFocus = active instanceof Element
+			&& active.closest('[data-context-menu-owner]')?.getAttribute('data-context-menu-owner') === menuId;
+		const trigger = triggerRef.current;
+		if (ownsFocus && trigger?.isConnected && (reason === 'escape' || reason === 'select' || reason === 'tab')) {
+			// Non-tabbable cards can receive programmatic return focus. Never
+			// restore the editor that happened to be active before right-click.
+			const temporaryTabIndex = trigger.tabIndex < 0 && !trigger.hasAttribute('tabindex');
+			if (temporaryTabIndex) trigger.setAttribute('tabindex', '-1');
+			trigger.focus({ preventScroll: true });
+			if (temporaryTabIndex) trigger.removeAttribute('tabindex');
+		}
+		updateOpen(false);
+	}, [menuId, updateOpen]);
 
 	// Context menus are rendered independently (for example, one per file-tree
 	// row), so coordinate them through a document-level event. Opening one menu
@@ -46,29 +68,27 @@ function ContextMenu({ children, onOpenChange }: ContextMenuProps) {
 	React.useEffect(() => {
 		const handleAnotherMenuOpen = (event: Event) => {
 			const owner = (event as CustomEvent<object>).detail;
-			if (owner !== ownerRef.current) updateOpen(false);
+			if (owner !== ownerRef.current) close('replace');
 		};
 		document.addEventListener(CONTEXT_MENU_OPEN_EVENT, handleAnotherMenuOpen);
 		return () => document.removeEventListener(CONTEXT_MENU_OPEN_EVENT, handleAnotherMenuOpen);
-	}, [updateOpen]);
+	}, [close]);
 
-	const openAt = React.useCallback((x: number, y: number) => {
+	const openAt = React.useCallback((x: number, y: number, trigger?: HTMLElement) => {
 		document.dispatchEvent(new CustomEvent(CONTEXT_MENU_OPEN_EVENT, {
 			detail: ownerRef.current,
 		}));
+		triggerRef.current = trigger ?? null;
 		setPosition({ x, y });
 		updateOpen(true);
 	}, [updateOpen]);
 
-	const close = React.useCallback(() => {
-		updateOpen(false);
-		// Keep the last position until the menu finishes its close animation; the
-		// content is unmounted when open is false so position becomes invisible
-		// to the user either way.
-	}, [updateOpen]);
+	const setMenuOpen = React.useCallback((nextOpen: boolean) => {
+		if (!nextOpen) close('select');
+	}, [close]);
 
 	return (
-		<ContextMenuContext.Provider value={{ open, position, setOpen: close, openAt }}>
+		<ContextMenuContext.Provider value={{ open, position, setOpen: setMenuOpen, openAt, triggerRef, menuId, close }}>
 			{children}
 		</ContextMenuContext.Provider>
 	);
@@ -90,7 +110,7 @@ function ContextMenuTrigger({ children, className, onContextMenu, asChild, ...pr
 		if (e.defaultPrevented) return;
 		e.preventDefault();
 		e.stopPropagation();
-		openAt(e.clientX, e.clientY);
+		openAt(e.clientX, e.clientY, e.currentTarget);
 	};
 
 	if (asChild && React.Children.count(children) === 1) {
@@ -118,9 +138,34 @@ interface ContextMenuContentProps {
 	style?: React.CSSProperties;
 }
 
+function menuItems(menu: HTMLElement): HTMLElement[] {
+	return Array.from(menu.querySelectorAll<HTMLElement>('[role="menuitem"], [role="menuitemcheckbox"], [role="menuitemradio"]'))
+		.filter((item) => item.closest('[role="menu"]') === menu
+			&& !item.hasAttribute('disabled') && item.getAttribute('aria-disabled') !== 'true');
+}
+
+function navigateMenu(event: React.KeyboardEvent<HTMLDivElement>) {
+	if (event.defaultPrevented || !(event.target instanceof Element)
+		|| event.target.closest('[role="menu"]') !== event.currentTarget) return;
+	if (!['ArrowDown', 'ArrowUp', 'Home', 'End'].includes(event.key)) return;
+	event.preventDefault();
+	event.stopPropagation();
+	const items = menuItems(event.currentTarget);
+	if (!items.length) return;
+	const current = items.indexOf(document.activeElement as HTMLElement);
+	const index = event.key === 'Home' ? 0
+		: event.key === 'End' ? items.length - 1
+			: event.key === 'ArrowDown' ? (current + 1) % items.length
+				: current < 0 ? items.length - 1 : (current - 1 + items.length) % items.length;
+	items[index].focus({ preventScroll: true });
+}
+
 function ContextMenuContent({ children, className, style }: ContextMenuContentProps) {
-	const { open, position, setOpen } = useContextMenuContext();
+	const { open, position, triggerRef, menuId, close } = useContextMenuContext();
 	const contentRef = React.useRef<HTMLDivElement>(null);
+	React.useLayoutEffect(() => {
+		if (open) contentRef.current?.focus({ preventScroll: true });
+	}, [open, position]);
 
 	// Clamp the position so the menu never spills off-screen. The content can
 	// change size after opening (for example, a tree menu first renders a
@@ -172,32 +217,37 @@ function ContextMenuContent({ children, className, style }: ContextMenuContentPr
 		const handlePointerDown = (e: PointerEvent) => {
 			const target = e.target as Node;
 			if (contentRef.current?.contains(target)) return;
+			if (target instanceof Element && target.closest("[data-flowix-menu-child]")) return;
 			if (target instanceof Element && target.closest("[data-context-menu-submenu]")) return;
-			setOpen(false);
+			close('outside');
 		};
 
-		document.addEventListener("pointerdown", handlePointerDown);
-		return () => document.removeEventListener("pointerdown", handlePointerDown);
-	}, [open, setOpen]);
+		document.addEventListener("pointerdown", handlePointerDown, true);
+		return () => document.removeEventListener("pointerdown", handlePointerDown, true);
+	}, [open, close]);
 
 	// Close on Escape, scroll, or resize.
 	React.useEffect(() => {
 		if (!open) return;
 
 		const handleKeyDown = (e: KeyboardEvent) => {
-			if (e.key === "Escape") setOpen(false);
+			if (e.defaultPrevented) return;
+			if (e.key === 'Escape') {
+				e.preventDefault();
+				close('escape');
+			} else if (e.key === 'Tab') close('tab');
 		};
-		// scroll 触发场景里, 部分容器是"自身内容增长驱动的滚动" (例如 agent
-		// thread card 在 streaming 期间每帧 `body.scrollTop = scrollHeight`) ──
-		// 滚动事件是组件自身的内部行为, 不应牵连到全局右键菜单. 业务侧声明豁免
-		// 容器: 在元素上加 `data-no-context-menu-scroll`, 这里的 closest 命中即
-		// 跳过 setOpen(false)。`shared/ui/` 不依赖任何业务类名。
+		// A viewport-anchored menu only becomes stale when its trigger moves.
+		// Sibling editor scrolling and scrolling inside the menu cannot dismiss
+		// an in-flight pointer gesture before the menu item's click runs.
 		const handleScroll = (e: Event) => {
-			const target = e.target as Element | null;
-			if (target?.closest?.("[data-no-context-menu-scroll]")) return;
-			setOpen(false);
+			const target = e.target;
+			const trigger = triggerRef.current;
+			if (target instanceof Element && target.closest('[data-no-context-menu-scroll]')) return;
+			if (target === document || target === window
+				|| (target instanceof Element && trigger && target.contains(trigger))) close('scroll');
 		};
-		const handleResize = () => setOpen(false);
+		const handleResize = () => close('resize');
 
 		document.addEventListener("keydown", handleKeyDown);
 		window.addEventListener("scroll", handleScroll, true);
@@ -207,7 +257,7 @@ function ContextMenuContent({ children, className, style }: ContextMenuContentPr
 			window.removeEventListener("scroll", handleScroll, true);
 			window.removeEventListener("resize", handleResize);
 		};
-	}, [open, setOpen]);
+	}, [open, close, triggerRef]);
 
 	if (!open) return null;
 	if (typeof document === "undefined") return null;
@@ -216,7 +266,14 @@ function ContextMenuContent({ children, className, style }: ContextMenuContentPr
 		<div
 			ref={contentRef}
 			role="menu"
+			tabIndex={-1}
+			data-context-menu-owner={menuId}
 			data-flowix-surface="context-menu"
+			onKeyDown={navigateMenu}
+			onPointerDown={(event) => event.stopPropagation()}
+			onMouseDown={(event) => event.stopPropagation()}
+			onClick={(event) => event.stopPropagation()}
+			onFocus={(event) => event.stopPropagation()}
 			// Start at the cursor position; the layout effect above clamps
 			// these values once the element's true size is known.
 			style={{ left: position?.x ?? 0, top: position?.y ?? 0, ...style }}
@@ -239,6 +296,7 @@ interface ContextMenuItemProps {
 	onSelect?: () => void;
 	disabled?: boolean;
 	inset?: boolean;
+	keepOpenOnClick?: boolean;
 }
 
 function ContextMenuItem({
@@ -249,6 +307,7 @@ function ContextMenuItem({
 	onSelect,
 	disabled,
 	inset,
+	keepOpenOnClick = false,
 }: ContextMenuItemProps) {
 	const { setOpen } = useContextMenuContext();
 
@@ -257,18 +316,18 @@ function ContextMenuItem({
 		if (disabled) return;
 		onClick?.(e);
 		onSelect?.();
-		setOpen(false);
+		if (!keepOpenOnClick) setOpen(false);
 	};
 
 	return (
 		<button
 			type="button"
 			role="menuitem"
+			tabIndex={-1}
 			aria-describedby={ariaDescribedBy}
 			disabled={disabled}
 			onClick={handleClick}
 			onMouseDown={(e) => {
-				e.preventDefault();
 				e.stopPropagation();
 			}}
 			className={cn(
@@ -292,11 +351,13 @@ function ContextMenuSubmenu({
 	icon?: React.ReactNode;
 	children: React.ReactNode;
 }) {
+	const { menuId } = useContextMenuContext();
 	const [open, setOpen] = React.useState(false);
 	const [position, setPosition] = React.useState<{ left: number; top: number } | null>(null);
 	const triggerRef = React.useRef<HTMLButtonElement | null>(null);
 	const submenuRef = React.useRef<HTMLDivElement | null>(null);
 	const skipFocusOpenRef = React.useRef(false);
+	const focusFirstOnOpenRef = React.useRef(false);
 	const closeTimerRef = React.useRef<number | null>(null);
 
 	const cancelClose = () => {
@@ -312,6 +373,11 @@ function ContextMenuSubmenu({
 		}, 160);
 	};
 	React.useEffect(() => () => cancelClose(), []);
+	React.useLayoutEffect(() => {
+		if (!open || !focusFirstOnOpenRef.current || !submenuRef.current) return;
+		focusFirstOnOpenRef.current = false;
+		menuItems(submenuRef.current)[0]?.focus({ preventScroll: true });
+	}, [open]);
 
 	const alignToTrigger = React.useCallback((trigger: HTMLButtonElement) => {
 		const rect = trigger.getBoundingClientRect();
@@ -357,6 +423,7 @@ function ContextMenuSubmenu({
 			<button
 				type="button"
 				role="menuitem"
+				tabIndex={-1}
 				aria-haspopup="menu"
 				aria-expanded={open}
 				onMouseEnter={(event) => show(event.currentTarget)}
@@ -367,16 +434,20 @@ function ContextMenuSubmenu({
 					}
 					show(event.currentTarget);
 				}}
-				onClick={(event) => show(event.currentTarget)}
+				onClick={(event) => { event.stopPropagation(); show(event.currentTarget); }}
 				onKeyDown={(event) => {
 					if (event.key === "ArrowRight") {
 						event.preventDefault();
+						event.stopPropagation();
+						focusFirstOnOpenRef.current = true;
 						show(event.currentTarget);
-						window.requestAnimationFrame(() => submenuRef.current?.querySelector<HTMLElement>('[role="menuitem"]')?.focus());
+						if (submenuRef.current) {
+							focusFirstOnOpenRef.current = false;
+							menuItems(submenuRef.current)[0]?.focus({ preventScroll: true });
+						}
 					}
-					if (event.key === "Escape") setOpen(false);
 				}}
-				onMouseDown={(event) => { event.preventDefault(); event.stopPropagation(); }}
+				onMouseDown={(event) => event.stopPropagation()}
 				className="flex h-7 w-full items-center justify-between rounded-lg px-2 text-left text-sm text-[var(--foreground)] outline-none hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)] focus-visible:bg-[var(--brand)] focus-visible:text-[var(--primary-foreground)]"
 			>
 				<span className="flex min-w-0 items-center gap-2">{icon}{label}</span>
@@ -386,13 +457,22 @@ function ContextMenuSubmenu({
 				<div
 					ref={submenuRef}
 					data-context-menu-submenu="true"
+					data-context-menu-owner={menuId}
 					role="menu"
+					onPointerDown={(event) => event.stopPropagation()}
+					onMouseDown={(event) => event.stopPropagation()}
+					onClick={(event) => event.stopPropagation()}
+					onFocus={(event) => event.stopPropagation()}
 					onKeyDown={(event) => {
-						if (event.key !== "ArrowLeft") return;
+						if (event.key !== 'ArrowLeft' && event.key !== 'Escape') {
+							navigateMenu(event);
+							return;
+						}
 						event.preventDefault();
+						event.stopPropagation();
 						setOpen(false);
 						skipFocusOpenRef.current = true;
-						triggerRef.current?.focus();
+						triggerRef.current?.focus({ preventScroll: true });
 					}}
 					onMouseEnter={cancelClose}
 					onMouseLeave={scheduleClose}

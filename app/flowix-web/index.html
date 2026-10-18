@@ -20,28 +20,8 @@
         background: var(--background, #f5f5f4);
         pointer-events: none;
       }
-      #app-loading::before {
-        width: 24px;
-        height: 24px;
-        box-sizing: border-box;
-        border: 2px solid color-mix(in srgb, var(--foreground, #78716c) 28%, transparent);
-        border-top-color: var(--foreground, #78716c);
-        border-radius: 50%;
-        content: "";
-        animation: app-loading-spin 0.72s linear infinite;
-      }
       html[data-theme="dark"] #app-loading {
         background: var(--background, #171717);
-      }
-      html[data-theme="dark"] #app-loading::before {
-        border-color: color-mix(in srgb, var(--foreground, #d6d3d1) 24%, transparent);
-        border-top-color: var(--foreground, #d6d3d1);
-      }
-      @keyframes app-loading-spin {
-        to { transform: rotate(360deg); }
-      }
-      @media (prefers-reduced-motion: reduce) {
-        #app-loading::before { animation-duration: 1.4s; }
       }
     </style>
     <!--

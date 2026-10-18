@@ -1,22 +1,25 @@
 use futures::future::{AbortHandle, Abortable};
 use serde_json::json;
-use std::sync::{
-    atomic::{AtomicBool, AtomicU64, Ordering},
-    Arc, Mutex,
-};
+use std::sync::{Arc, Mutex};
 use tauri::{AppHandle, Emitter, State};
+use tauri_plugin_updater::Update;
 use tauri_plugin_updater::UpdaterExt;
+
+#[path = "app_update_cache.rs"]
+mod update_cache;
+#[path = "app_update_state.rs"]
+mod update_state;
+use self::update_cache::{prepare_update_package, verify_cached_package, PreparedUpdate};
+use self::update_state::UpdatePhase;
 
 #[cfg(target_os = "windows")]
 use std::path::PathBuf;
 
-#[path = "app_update_state.rs"]
-mod update_state;
-use update_state::UpdatePhase;
-
-#[derive(Default)]
+#[derive(Clone, Default)]
 pub struct AppUpdateState {
     active: Arc<Mutex<ActiveUpdate>>,
+    check_lock: Arc<tokio::sync::Mutex<()>>,
+    prepared: Arc<Mutex<Option<PreparedUpdate>>>,
 }
 
 #[derive(Default)]
@@ -168,15 +171,10 @@ fn updater(app: &AppHandle) -> Result<tauri_plugin_updater::Updater, String> {
         .map_err(|error| format!("failed to initialize updater: {error}"))
 }
 
-#[tauri::command]
-pub async fn check_app_update(app: AppHandle) -> Result<Option<AppUpdateInfo>, String> {
-    let update = updater(&app)?
-        .check()
-        .await
-        .map_err(|error| format!("failed to check for update: {error}"))?;
-    Ok(update.map(|update| AppUpdateInfo {
-        current_version: update.current_version,
-        version: update.version,
+fn update_info(update: &Update) -> AppUpdateInfo {
+    AppUpdateInfo {
+        current_version: update.current_version.clone(),
+        version: update.version.clone(),
         // Unknown manifest fields are preserved by tauri-plugin-updater in
         // raw_json. Keep notifications enabled for older manifests.
         notify: update
@@ -184,14 +182,90 @@ pub async fn check_app_update(app: AppHandle) -> Result<Option<AppUpdateInfo>, S
             .get("notify")
             .and_then(serde_json::Value::as_bool)
             .unwrap_or(true),
-        date: update.date.map(|date| date.to_string()),
-        body: update.body,
-    }))
+        date: update.date.as_ref().map(|date| date.to_string()),
+        body: update.body.clone(),
+    }
+}
+
+fn ensure_update_is_idle(state: &AppUpdateState) -> Result<(), String> {
+    let active = state
+        .active
+        .lock()
+        .map_err(|_| "application update state is unavailable".to_string())?;
+    if active.phase == UpdatePhase::Idle {
+        Ok(())
+    } else {
+        Err("an application update is already in progress".to_string())
+    }
+}
+
+async fn download_requested_update(
+    app: &AppHandle,
+    prepared_state: &Arc<Mutex<Option<PreparedUpdate>>>,
+    version: &str,
+) -> Result<(Update, Vec<u8>), String> {
+    let update = updater(app)?
+        .check()
+        .await
+        .map_err(|error| format!("failed to check for update: {error}"))?
+        .ok_or_else(|| "no application update is available".to_string())?;
+    if update.version != version {
+        return Err(format!("requested update {version} is no longer available"));
+    }
+
+    let prepared = prepare_update_package(app, update, true).await?;
+    let bytes = tokio::fs::read(&prepared.package_path)
+        .await
+        .map_err(|error| format!("failed to read prepared application update: {error}"))?;
+    verify_cached_package(app, &prepared.update, &bytes)?;
+    *prepared_state
+        .lock()
+        .map_err(|_| "application update state is unavailable".to_string())? =
+        Some(prepared.clone());
+    Ok((prepared.update, bytes))
+}
+
+#[tauri::command]
+pub async fn check_app_update(
+    app: AppHandle,
+    state: State<'_, AppUpdateState>,
+) -> Result<Option<AppUpdateInfo>, String> {
+    ensure_update_is_idle(state.inner())?;
+    let _check_guard = state.check_lock.lock().await;
+    ensure_update_is_idle(state.inner())?;
+
+    let update = updater(&app)?
+        .check()
+        .await
+        .map_err(|error| format!("failed to check for update: {error}"))?;
+    let Some(update) = update else {
+        *state
+            .prepared
+            .lock()
+            .map_err(|_| "application update state is unavailable".to_string())? = None;
+        return Ok(None);
+    };
+
+    let info = update_info(&update);
+    if info.notify {
+        let prepared = prepare_update_package(&app, update, false).await?;
+        *state
+            .prepared
+            .lock()
+            .map_err(|_| "application update state is unavailable".to_string())? = Some(prepared);
+    } else {
+        *state
+            .prepared
+            .lock()
+            .map_err(|_| "application update state is unavailable".to_string())? = None;
+    }
+    Ok(Some(info))
 }
 
 #[tauri::command]
 pub async fn install_app_update(
     app: AppHandle,
+    version: String,
     state: State<'_, AppUpdateState>,
 ) -> Result<(), String> {
     let (abort_handle, abort_registration) = AbortHandle::new_pair();
@@ -208,56 +282,42 @@ pub async fn install_app_update(
     let active_guard = ActiveUpdateGuard(state.active.clone());
 
     let download_app = app.clone();
-    let downloaded_bytes = Arc::new(AtomicU64::new(0));
-    let started = Arc::new(AtomicBool::new(false));
+    let check_lock = state.check_lock.clone();
+    let prepared_state = state.prepared.clone();
     let task = async move {
-        let update = updater(&download_app)?
-            .check()
-            .await
-            .map_err(|error| format!("failed to check for update: {error}"))?
-            .ok_or_else(|| "no application update is available".to_string())?;
-        let progress_bytes = downloaded_bytes.clone();
-        let progress_started = started.clone();
-        let bytes = update
-            .download(
-                |chunk_length, content_length| {
-                    if !progress_started.swap(true, Ordering::Relaxed) {
-                        let _ = download_app.emit(
-                            "app-update-progress",
-                            json!({
-                                "phase": "started",
-                                "contentLength": content_length,
-                            }),
-                        );
+        let (update, bytes) = {
+            let _check_guard = check_lock.lock().await;
+            let prepared = prepared_state
+                .lock()
+                .map_err(|_| "application update state is unavailable".to_string())?
+                .clone()
+                .filter(|prepared| prepared.update.version == version);
+
+            if let Some(prepared) = prepared {
+                if let Ok(bytes) = tokio::fs::read(&prepared.package_path).await {
+                    if verify_cached_package(&download_app, &prepared.update, &bytes).is_ok() {
+                        (prepared.update, bytes)
+                    } else {
+                        let _ = tokio::fs::remove_file(&prepared.package_path).await;
+                        *prepared_state
+                            .lock()
+                            .map_err(|_| "application update state is unavailable".to_string())? =
+                            None;
+                        download_requested_update(&download_app, &prepared_state, &version).await?
                     }
-                    let downloaded = progress_bytes
-                        .fetch_add(chunk_length as u64, Ordering::Relaxed)
-                        + chunk_length as u64;
-                    let _ = download_app.emit(
-                        "app-update-progress",
-                        json!({
-                            "phase": "progress",
-                            "downloadedBytes": downloaded,
-                            "contentLength": content_length,
-                        }),
-                    );
-                },
-                || {
-                    let _ = download_app.emit(
-                        "app-update-progress",
-                        json!({
-                            "phase": "finished",
-                            "downloadedBytes": progress_bytes.load(Ordering::Relaxed),
-                        }),
-                    );
-                },
-            )
-            .await
-            .map_err(|error| format!("failed to download update: {error}"))?;
+                } else {
+                    download_requested_update(&download_app, &prepared_state, &version).await?
+                }
+            } else {
+                download_requested_update(&download_app, &prepared_state, &version).await?
+            }
+        };
+
+        verify_cached_package(&download_app, &update, &bytes)?;
 
         #[cfg(windows)]
         let document_guard =
-            crate::commands::document_shutdown::prepare_for_update(&download_app).await?;
+            crate::commands::window_shutdown::prepare_for_update(&download_app).await?;
         #[cfg(not(windows))]
         let document_guard = ();
         Ok::<_, String>((update, bytes, document_guard))

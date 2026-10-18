@@ -3,12 +3,13 @@
 import { subscribe } from '@platform/tauri/event-bus';
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 
-import { files, type DocTreeItem } from '@platform/tauri/client';
+import { files, type CollectionChangedEvent, type DocTreeItem } from '@platform/tauri/client';
 import { canonicalDirectoryPath, canonicalPath } from '@/lib/path';
 import { createLogger } from '@/lib/logger';
 
 const logger = createLogger('folder-tree');
 const REFRESH_DEDUP_WINDOW_MS = 350;
+const WATCHER_REFRESH_DEBOUNCE_MS = 250;
 
 function deleteCachedSubtree(nodes: Map<string, DocTreeItem>, path: string): void {
   const key = canonicalPath(path);
@@ -19,6 +20,37 @@ function deleteCachedSubtree(nodes: Map<string, DocTreeItem>, path: string): voi
     }
   }
   nodes.delete(key);
+}
+
+function pruneExpandedSubtrees(expanded: Set<string>, removedFolderPaths: string[]): Set<string> {
+  if (removedFolderPaths.length === 0) return expanded;
+  const removedKeys = removedFolderPaths.map(canonicalDirectoryPath);
+  let changed = false;
+  const next = new Set<string>();
+  for (const path of expanded) {
+    const isRemoved = removedKeys.some((root) => path === root || path.startsWith(`${root}/`));
+    if (isRemoved) changed = true;
+    else next.add(path);
+  }
+  return changed ? next : expanded;
+}
+
+function isPathAtOrBelow(path: string, directoryPath: string): boolean {
+  return path === directoryPath || path.startsWith(`${directoryPath}/`);
+}
+
+function rebasePathSet(paths: Set<string>, previousPath: string, nextPath: string): Set<string> {
+  let changed = false;
+  const next = new Set<string>();
+  for (const path of paths) {
+    if (isPathAtOrBelow(path, previousPath)) {
+      next.add(`${nextPath}${path.slice(previousPath.length)}`);
+      changed = true;
+    } else {
+      next.add(path);
+    }
+  }
+  return changed ? next : paths;
 }
 
 function reconcileDirectoryChildren(
@@ -111,11 +143,13 @@ export interface FolderTreeOptions {
 
 export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
   const enabled = options?.enabled !== false;
+  const rootKey = canonicalDirectoryPath(folderPath);
   const [rootChildren, setRootChildren] = useState<DocTreeItem[]>([]);
   const [nodes, setNodes] = useState<Map<string, DocTreeItem>>(() => new Map());
   const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
   const [dirtyDirectories, setDirtyDirectories] = useState<Set<string>>(() => new Set());
   const [loading, setLoading] = useState(true);
+  const [loadedRootPath, setLoadedRootPath] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [loadingDirectories, setLoadingDirectories] = useState<Set<string>>(() => new Set());
   const [directoryErrors, setDirectoryErrors] = useState<Set<string>>(() => new Set());
@@ -125,66 +159,195 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
   const directoryRefreshesRef = useRef(new Map<string, Promise<void>>());
   const directoryRefreshSequenceRef = useRef(new Map<string, number>());
   const lastRefreshAtRef = useRef(new Map<string, number>());
+  const pendingWatcherDirectoriesRef = useRef(new Set<string>());
+  const watcherRefreshTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const rootRefreshRef = useRef<Promise<void> | null>(null);
   const rootRefreshSequenceRef = useRef(0);
   const rootChildrenRef = useRef(rootChildren);
   rootChildrenRef.current = rootChildren;
   const nodesRef = useRef(nodes);
   nodesRef.current = nodes;
+  const expandedRef = useRef(expanded);
+  expandedRef.current = expanded;
+  const pendingRenamesRef = useRef(0);
+  const pendingRenameRefreshDirectoriesRef = useRef(new Set<string>());
+
+  /** Keep path-keyed tree data and UI state attached to a renamed/moved path. */
+  const rebasePath = useCallback((
+    previousPath: string,
+    nextPath: string,
+  ) => {
+    const previous = canonicalDirectoryPath(previousPath);
+    const nextPathKey = canonicalDirectoryPath(nextPath);
+    if (previous === nextPathKey || isPathAtOrBelow(nextPathKey, previous)) return;
+
+    const oldParent = canonicalDirectoryPath(previous.slice(0, previous.lastIndexOf('/')) || '/');
+    const newParent = canonicalDirectoryPath(nextPathKey.slice(0, nextPathKey.lastIndexOf('/')) || '/');
+    const nextName = nextPathKey.slice(nextPathKey.lastIndexOf('/') + 1);
+    const currentNodes = nodesRef.current;
+    // Discard reads started before the path changed, including parent reads.
+    rootRefreshSequenceRef.current += 1;
+    for (const parent of new Set([oldParent, newParent])) {
+      directoryRefreshSequenceRef.current.set(parent, (directoryRefreshSequenceRef.current.get(parent) ?? 0) + 1);
+    }
+    const source = currentNodes.get(previous)
+      ?? rootChildrenRef.current.find((item) => canonicalPath(item.fullPath) === previous);
+    const nextParentId = currentNodes.get(newParent)?.id ?? null;
+
+    const mapPath = (path: string) => {
+      const canonical = canonicalPath(path);
+      return isPathAtOrBelow(canonical, previous)
+        ? `${nextPathKey}${canonical.slice(previous.length)}`
+        : canonical;
+    };
+    const mapItem = (item: DocTreeItem): DocTreeItem => {
+      const canonical = canonicalPath(item.fullPath);
+      const isRoot = canonical === previous;
+      return {
+        ...item,
+        fullPath: mapPath(item.fullPath),
+        ...(isRoot ? { name: nextName, ...(oldParent !== newParent ? { parentId: nextParentId } : {}) } : {}),
+        ...(item.children ? { children: item.children.map(mapItem) } : {}),
+      };
+    };
+
+    const rebasedNodes = new Map<string, DocTreeItem>();
+    for (const [key, item] of currentNodes) {
+      const rebasedItem = mapItem(item);
+      rebasedNodes.set(mapPath(key), rebasedItem);
+    }
+
+    const rebasedSource = source ? mapItem(source) : undefined;
+    if (oldParent === newParent && rebasedSource) {
+      const parent = rebasedNodes.get(newParent);
+      if (parent?.children) {
+        rebasedNodes.set(newParent, {
+          ...parent,
+          children: [...parent.children.filter((child) => canonicalPath(child.fullPath) !== nextPathKey), rebasedSource],
+        });
+      }
+    }
+    if (oldParent !== newParent) {
+      const oldParentNode = rebasedNodes.get(oldParent);
+      if (oldParentNode?.children) {
+        rebasedNodes.set(oldParent, {
+          ...oldParentNode,
+          children: oldParentNode.children.filter((child) => canonicalPath(child.fullPath) !== nextPathKey),
+        });
+      }
+      const newParentNode = rebasedNodes.get(newParent);
+      if (newParentNode?.children && rebasedSource) {
+        rebasedNodes.set(newParent, {
+          ...newParentNode,
+          children: [
+            ...newParentNode.children.filter((child) => canonicalPath(child.fullPath) !== nextPathKey),
+            rebasedSource,
+          ],
+        });
+      }
+    }
+
+    nodesRef.current = rebasedNodes;
+    setNodes(rebasedNodes);
+    const rebasedRootChildren = rootChildrenRef.current.map(mapItem);
+    let nextRootChildren = rebasedRootChildren;
+    if (oldParent === newParent && newParent === rootKey && rebasedSource) {
+      nextRootChildren = [...nextRootChildren.filter((child) => canonicalPath(child.fullPath) !== nextPathKey), rebasedSource];
+    }
+    if (oldParent !== newParent) {
+      if (oldParent === rootKey) {
+        nextRootChildren = nextRootChildren.filter((child) => canonicalPath(child.fullPath) !== nextPathKey);
+      }
+      if (newParent === rootKey && rebasedSource) {
+        nextRootChildren = [
+          ...nextRootChildren.filter((child) => canonicalPath(child.fullPath) !== nextPathKey),
+          rebasedSource,
+        ];
+      }
+    }
+    rootChildrenRef.current = nextRootChildren;
+    setRootChildren(nextRootChildren);
+    const rebasedExpanded = rebasePathSet(expandedRef.current, previous, nextPathKey);
+    expandedRef.current = rebasedExpanded;
+    setExpanded(rebasedExpanded);
+    setDirtyDirectories((current) => rebasePathSet(current, previous, nextPathKey));
+    setDirectoryErrors((current) => rebasePathSet(current, previous, nextPathKey));
+    // Requests started under the old path must not repopulate stale cache entries.
+    for (const key of directoryRefreshSequenceRef.current.keys()) {
+      if (isPathAtOrBelow(key, previous)) {
+        directoryRefreshSequenceRef.current.set(key, (directoryRefreshSequenceRef.current.get(key) ?? 0) + 1);
+      }
+    }
+    setLoadingDirectories((current) => {
+      const next = new Set(current);
+      for (const key of current) {
+        if (isPathAtOrBelow(key, previous)) next.delete(key);
+      }
+      return next.size === current.size ? current : next;
+    });
+    for (const [key, value] of lastRefreshAtRef.current) {
+      if (!isPathAtOrBelow(key, previous)) continue;
+      lastRefreshAtRef.current.delete(key);
+      lastRefreshAtRef.current.set(`${nextPathKey}${key.slice(previous.length)}`, value);
+    }
+    pendingWatcherDirectoriesRef.current = rebasePathSet(
+      pendingWatcherDirectoriesRef.current,
+      previous,
+      nextPathKey,
+    );
+    pendingRenameRefreshDirectoriesRef.current = rebasePathSet(
+      pendingRenameRefreshDirectoriesRef.current,
+      previous,
+      nextPathKey,
+    );
+  }, [rootKey]);
 
   const mutationPathsRef = useRef(new Set<string>());
+  const mutationDirectoriesRef = useRef(new Set<string>());
   const ignoreCollectionPathEvents = useCallback((paths: readonly string[] | undefined) => {
     if (!paths?.length) return false;
     const known = mutationPathsRef.current;
-    if (!paths.every((path) => known.has(canonicalPath(path)) || /__collection_rename_/.test(path))) return false;
+    const knownDirectories = mutationDirectoriesRef.current;
+    if (!paths.every((path) => {
+      const canonical = canonicalPath(path);
+      return known.has(canonical)
+        || [...knownDirectories].some((directory) => isPathAtOrBelow(canonical, directory))
+        || /__collection_rename_/.test(path);
+    })) return false;
     return true;
   }, []);
   useEffect(() => {
     const root = canonicalPath(folderPath).replace(/\/$/, '');
     const applied = new Map<string, number>();
     mutationPathsRef.current.clear();
+    mutationDirectoriesRef.current.clear();
     const timers = new Set<ReturnType<typeof setTimeout>>();
-    const stop = subscribe<{ notebookPath: string; collectionId: string; previousRelativePath: string; relativePath: string; indexSequence: number }>('collection-changed', (event) => {
+    const stop = subscribe<CollectionChangedEvent>('collection-changed', (event) => {
       if (!event.notebookPath || !event.previousRelativePath || !event.relativePath) return;
       if (event.indexSequence < (applied.get(event.collectionId) ?? -1)) return;
       applied.set(event.collectionId, event.indexSequence);
-      const previous = canonicalPath(`${event.notebookPath}/${event.previousRelativePath}`);
-      const nextPath = canonicalPath(`${event.notebookPath}/${event.relativePath}`);
+      const previous = canonicalPath(`${event.notebookPath}/${event.directoryMove?.previousRelativePath ?? event.previousRelativePath}`);
+      const nextPath = canonicalPath(`${event.notebookPath}/${event.directoryMove?.relativePath ?? event.relativePath}`);
       if (!previous.startsWith(`${root}/`) || !nextPath.startsWith(`${root}/`)) return;
       const known = mutationPathsRef.current;
       known.add(previous); known.add(nextPath);
+      const previousDirectory = event.directoryMove ? previous : null;
+      const nextDirectory = event.directoryMove ? nextPath : null;
+      if (previousDirectory) mutationDirectoriesRef.current.add(previousDirectory);
+      if (nextDirectory) mutationDirectoriesRef.current.add(nextDirectory);
       // Bound suppression to the immediately following filesystem notifications.
-      const timer = setTimeout(() => { known.delete(previous); known.delete(nextPath); timers.delete(timer); }, 2000);
+      const timer = setTimeout(() => {
+        known.delete(previous); known.delete(nextPath);
+        if (previousDirectory) mutationDirectoriesRef.current.delete(previousDirectory);
+        if (nextDirectory) mutationDirectoriesRef.current.delete(nextDirectory);
+        timers.delete(timer);
+      }, 2000);
       timers.add(timer);
       if (previous === nextPath) return;
-      const oldParent = previous.slice(0, previous.lastIndexOf('/'));
-      const newParent = nextPath.slice(0, nextPath.lastIndexOf('/'));
-      const source = nodesRef.current.get(previous);
-      const name = nextPath.split('/').pop()!;
-      const rename = (item: DocTreeItem): DocTreeItem => canonicalPath(item.fullPath) === previous ? { ...item, fullPath: nextPath, name, parentId: nodesRef.current.get(newParent)?.id ?? null } : item;
-      setNodes((current) => {
-        const cached = current.get(previous);
-        if (!cached) return current;
-        const result = new Map(current);
-        result.delete(previous);
-        result.set(nextPath, rename(cached));
-        for (const [path, item] of current) {
-          if (!item.children) continue;
-          if (oldParent === newParent && path === oldParent) result.set(path, { ...item, children: item.children.map(rename) });
-          else if (path === oldParent) result.set(path, { ...item, children: item.children.filter((child) => canonicalPath(child.fullPath) !== previous) });
-          else if (path === newParent) result.set(path, { ...item, children: [...item.children.filter((child) => canonicalPath(child.fullPath) !== nextPath), rename(cached)] });
-        }
-        return result;
-      });
-      setRootChildren((items) => {
-        if (oldParent === root && newParent === root) return items.some((item) => canonicalPath(item.fullPath) === previous) ? items.map(rename) : items;
-        if (oldParent === root) return items.filter((item) => canonicalPath(item.fullPath) !== previous);
-        if (newParent === root && source) return [...items.filter((item) => canonicalPath(item.fullPath) !== nextPath), rename(source)];
-        return items;
-      });
+      rebasePath(previous, nextPath);
     });
     return () => { stop(); for (const timer of timers) clearTimeout(timer); };
-  }, [folderPath]);
+  }, [folderPath, rebasePath]);
   useEffect(() => {
     mountedRef.current = true;
     return () => {
@@ -192,8 +355,19 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
     };
   }, []);
 
+  useEffect(() => {
+    return () => {
+      if (watcherRefreshTimerRef.current) {
+        clearTimeout(watcherRefreshTimerRef.current);
+        watcherRefreshTimerRef.current = null;
+      }
+      pendingWatcherDirectoriesRef.current.clear();
+    };
+  }, [folderPath]);
+
   const loadRoot = useCallback(async () => {
     const generation = ++generationRef.current;
+    setLoadedRootPath(null);
     setLoading(true);
     setError(null);
     setLoadingDirectories(new Set());
@@ -223,11 +397,11 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
     } finally {
       if (mountedRef.current && generation === generationRef.current) {
         setLoading(false);
+        setLoadedRootPath(canonicalDirectoryPath(folderPath));
       }
     }
   }, [folderPath]);
 
-  const rootKey = canonicalDirectoryPath(folderPath);
   const autoLoadKey = rootKey;
   const lastAutoLoadKeyRef = useRef<string | null>(null);
 
@@ -239,6 +413,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
 
   /** Coalesce concurrent reads of the same directory (manual action + watcher). */
   const refreshDirectory = useCallback((dirPath: string, force = false) => {
+    if (pendingRenamesRef.current > 0) return Promise.resolve();
     const key = canonicalDirectoryPath(dirPath);
     const pending = directoryRefreshesRef.current.get(key);
     if (pending && !force) return pending;
@@ -258,9 +433,20 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
       .then((children) => {
         if (
           !mountedRef.current
+          || pendingRenamesRef.current > 0
           || generation !== generationRef.current
           || directoryRefreshSequenceRef.current.get(key) !== requestSequence
         ) return;
+        const previousChildren = nodesRef.current.get(key)?.children ?? [];
+        const nextChildKeys = new Set(children.map((child) => canonicalPath(child.fullPath)));
+        const removedFolders = previousChildren
+          .filter((child) => child.type === 'folder' && !nextChildKeys.has(canonicalPath(child.fullPath)))
+          .map((child) => child.fullPath);
+        if (removedFolders.length > 0) {
+          // Expansion state is path-based. Drop removed folder paths as well as
+          // cached nodes so a later same-name import starts collapsed.
+          setExpanded((previous) => pruneExpandedSubtrees(previous, removedFolders));
+        }
         // Preserve loaded descendants that still exist, but remove deleted or
         // moved-away children (and their cached subtrees) from the flat node
         // table. Without pruning, long-running watcher refreshes retain stale
@@ -282,7 +468,9 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
       })
       .catch((err) => {
         logger.warn('refresh directory failed', { dirPath, err });
-        if (!mountedRef.current || generation !== generationRef.current) return;
+        if (!mountedRef.current || generation !== generationRef.current
+          || pendingRenamesRef.current > 0
+          || directoryRefreshSequenceRef.current.get(key) !== requestSequence) return;
         setDirectoryErrors((previous) => new Set(previous).add(key));
       })
       .finally(() => {
@@ -375,6 +563,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
 
   /** Watcher-only root refresh; unlike the manual reload it preserves expansion. */
   const refreshRootPreservingExpansion = useCallback((force = false) => {
+    if (pendingRenamesRef.current > 0) return Promise.resolve();
     if (rootRefreshRef.current && !force) return rootRefreshRef.current;
     const requestSequence = rootRefreshSequenceRef.current + 1;
     rootRefreshSequenceRef.current = requestSequence;
@@ -383,6 +572,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
       .then((items) => {
         if (
           !mountedRef.current
+          || pendingRenamesRef.current > 0
           || generation !== generationRef.current
           || rootRefreshSequenceRef.current !== requestSequence
         ) return;
@@ -393,6 +583,13 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
           setDirtyDirectories(new Set());
           setError('unreadable');
           return;
+        }
+        const nextChildKeys = new Set(items.map((item) => canonicalPath(item.fullPath)));
+        const removedFolders = rootChildrenRef.current
+          .filter((item) => item.type === 'folder' && !nextChildKeys.has(canonicalPath(item.fullPath)))
+          .map((item) => item.fullPath);
+        if (removedFolders.length > 0) {
+          setExpanded((previous) => pruneExpandedSubtrees(previous, removedFolders));
         }
         setRootChildren(items);
         setNodes((prev) => reconcileRootChildren(prev, rootChildrenRef.current, items));
@@ -422,6 +619,10 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
 
   /** 局部刷新某个目录的子级 (新建/删除/重命名后调用)。 */
   const refresh = useCallback(async (dirPath?: string) => {
+    if (pendingRenamesRef.current > 0) {
+      pendingRenameRefreshDirectoriesRef.current.add(canonicalDirectoryPath(dirPath ?? rootKey));
+      return;
+    }
     try {
       if (dirPath && canonicalDirectoryPath(dirPath) !== rootKey) {
         await refreshDirectory(dirPath, true);
@@ -438,14 +639,18 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
 
   /**
    * Reconcile native watcher notifications without throwing away expansion
-   * state. Expanded directories are refreshed immediately; collapsed ones are
-   * marked dirty and reread on their next expand.
+   * state. Expanded directories are refreshed; collapsed ones are marked dirty
+   * and reread on their next expand.
    */
-  const refreshDirectories = useCallback(async (dirPaths: string[]) => {
+  const refreshDirectoriesNow = useCallback(async (dirPaths: string[]) => {
     const keys = [...new Set(dirPaths.map((path) => canonicalDirectoryPath(path)))];
     if (keys.length === 0) return;
+    if (pendingRenamesRef.current > 0) {
+      for (const key of keys) pendingWatcherDirectoriesRef.current.add(key);
+      return;
+    }
 
-    const expandedSnapshot = expanded;
+    const expandedSnapshot = expandedRef.current;
     const now = Date.now();
     const refreshNow = keys.filter((key) => (
       (key === rootKey || expandedSnapshot.has(key))
@@ -469,7 +674,59 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
 
       await refreshDirectory(key);
     }));
-  }, [expanded, refresh, refreshRootPreservingExpansion, rootKey]);
+  }, [refreshRootPreservingExpansion, rootKey]);
+
+  /** Merge a burst of native watcher events and refresh after it settles. */
+  const refreshDirectories = useCallback((dirPaths: string[]) => {
+    for (const path of dirPaths) {
+      pendingWatcherDirectoriesRef.current.add(canonicalDirectoryPath(path));
+    }
+    if (watcherRefreshTimerRef.current) clearTimeout(watcherRefreshTimerRef.current);
+    watcherRefreshTimerRef.current = setTimeout(() => {
+      watcherRefreshTimerRef.current = null;
+      const pending = [...pendingWatcherDirectoriesRef.current];
+      pendingWatcherDirectoriesRef.current.clear();
+      void refreshDirectoriesNow(pending);
+    }, WATCHER_REFRESH_DEBOUNCE_MS);
+  }, [refreshDirectoriesNow]);
+
+  /** Keep watcher refreshes from publishing the gap between disk rename and index completion. */
+  const renameFolder = useCallback(async (path: string, name: string, scopePath: string) => {
+    pendingRenamesRef.current += 1;
+    const sourcePath = canonicalDirectoryPath(path);
+    let renamedPath: string | null = null;
+    try {
+      renamedPath = await files.renameFolder(path, name, scopePath);
+      rebasePath(path, renamedPath);
+      return renamedPath;
+    } finally {
+      const sourceParent = sourcePath.slice(0, sourcePath.lastIndexOf('/')) || '/';
+      pendingRenameRefreshDirectoriesRef.current.add(sourceParent);
+      if (renamedPath) {
+        const nextPath = canonicalDirectoryPath(renamedPath);
+        pendingRenameRefreshDirectoriesRef.current.add(nextPath.slice(0, nextPath.lastIndexOf('/')) || '/');
+      }
+      pendingRenamesRef.current -= 1;
+      if (pendingRenamesRef.current === 0) {
+        if (watcherRefreshTimerRef.current) {
+          clearTimeout(watcherRefreshTimerRef.current);
+          watcherRefreshTimerRef.current = null;
+        }
+        const parents = [...pendingRenameRefreshDirectoriesRef.current];
+        pendingRenameRefreshDirectoriesRef.current.clear();
+        const watcherDirectories = [...pendingWatcherDirectoriesRef.current];
+        pendingWatcherDirectoriesRef.current.clear();
+        void Promise.all(parents.map((parent) => refresh(parent)))
+          .then(() => {
+            const refreshedParents = new Set(parents);
+            return refreshDirectoriesNow(watcherDirectories.filter((directory) => !refreshedParents.has(directory)));
+          })
+          .catch((error) => {
+            logger.warn('refresh after folder rename failed', { path, error });
+          });
+      }
+    }
+  }, [rebasePath, refresh, refreshDirectoriesNow]);
 
   const state: FolderTreeState = useMemo(
     () => ({ rootChildren, nodes, expanded, loading, error, loadingDirectories, directoryErrors }),
@@ -478,6 +735,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
 
   return useMemo(() => ({
     ...state,
+    loadedRootPath,
     toggle,
     expandTo,
     collapseAll,
@@ -485,8 +743,10 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
     refreshDirectories,
     reload: loadRoot,
     retryDirectory,
+    rebasePath,
+    renameFolder,
     ignoreCollectionPathEvents,
-  }), [ignoreCollectionPathEvents, state, toggle, expandTo, collapseAll, refresh, refreshDirectories, loadRoot, retryDirectory]);
+  }), [ignoreCollectionPathEvents, loadedRootPath, state, toggle, expandTo, collapseAll, refresh, refreshDirectories, loadRoot, retryDirectory, rebasePath, renameFolder]);
 }
 
 export type FolderTreeController = ReturnType<typeof useFolderTree>;
@@ -537,8 +797,10 @@ function compareTreeItems(sort: FolderTreeSort, a: DocTreeItem, b: DocTreeItem):
     return sort === 'filenameDesc' ? -order : order;
   }
 
-  const aTime = sort === 'updatedAt' ? a.modifiedMs : a.createdMs;
-  const bTime = sort === 'updatedAt' ? b.modifiedMs : b.createdMs;
+  // Notebook notes have an indexed creation timestamp that survives atomic
+  // file replacement. Prefer it over filesystem birth time for created sorting.
+  const aTime = sort === 'updatedAt' ? a.modifiedMs : (a.memoCreatedMs ?? a.createdMs);
+  const bTime = sort === 'updatedAt' ? b.modifiedMs : (b.memoCreatedMs ?? b.createdMs);
   if (aTime === null && bTime !== null) return 1;
   if (aTime !== null && bTime === null) return -1;
   if (aTime !== null && bTime !== null && aTime !== bTime) return bTime - aTime;

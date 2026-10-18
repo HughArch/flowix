@@ -1,4 +1,11 @@
 import { Node, type Editor, type JSONContent, type MarkdownToken } from "@tiptap/core";
+import skillLibraryIconSvg from "@/assets/skill-library.svg?raw";
+import {
+  createInlineAtomCloseIcon,
+  createInlineAtomNodeView,
+  deleteInlineAtomNode,
+  deleteAdjacentInlineAtom,
+} from "@features/editor/extensions/shared/inline-atom-nodeview";
 
 export interface ComposerSkillTokenValue {
   name: string;
@@ -64,7 +71,7 @@ export const ComposerSkillToken = Node.create({
     return ["span", {
       "data-composer-skill": name,
       ...(displayName ? { "data-composer-skill-display-name": displayName } : {}),
-      class: "agent-thread-card__skill-token",
+      class: "agent-composer__skill-token",
     }, displayNameForComposerSkill(name, displayName)];
   },
 
@@ -115,20 +122,34 @@ export const ComposerSkillToken = Node.create({
         name,
         typeof node.attrs.displayName === "string" ? node.attrs.displayName : undefined,
       );
-      const button = document.createElement("button");
-      button.type = "button";
-      button.className = "agent-thread-card__skill-token";
-      button.textContent = displayName;
-      button.title = `$${name}`;
-      button.setAttribute("aria-label", `移除 Skill ${displayName}`);
-      button.addEventListener("mousedown", (event) => event.preventDefault());
-      button.addEventListener("click", () => {
-        const pos = typeof getPos === "function" ? getPos() : undefined;
-        if (pos === undefined) return;
-        view.dispatch(view.state.tr.delete(pos, pos + node.nodeSize));
-        view.focus();
+      const iconTemplate = document.createElement("template");
+      iconTemplate.innerHTML = skillLibraryIconSvg;
+      const nodeView = createInlineAtomNodeView({
+        caretGeometry: 'single-line',
+        wrapperClassName: "agent-composer__inline-atom-wrapper agent-composer__skill-token-wrapper",
+        cardClassName: "agent-composer__skill-token",
+        leadingIcon: iconTemplate.content.firstElementChild ?? undefined,
+        label: displayName,
+        labelClassName: "agent-composer__skill-token-label",
+        title: `$${name}`,
+        hoverActions: [{
+          ariaLabel: `移除 Skill ${displayName}`,
+          icon: createInlineAtomCloseIcon(),
+          onClick: () => deleteInlineAtomNode(
+            view,
+            node,
+            () => typeof getPos === "function" ? getPos() : undefined,
+          ),
+        }],
       });
-      return { dom: button };
+      return nodeView;
+    };
+  },
+
+  addKeyboardShortcuts() {
+    return {
+      Backspace: () => deleteAdjacentInlineAtom(this.editor, "composerSkillToken", "before"),
+      Delete: () => deleteAdjacentInlineAtom(this.editor, "composerSkillToken", "after"),
     };
   },
 });

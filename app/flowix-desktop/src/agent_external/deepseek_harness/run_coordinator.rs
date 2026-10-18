@@ -200,7 +200,7 @@ mod tests {
         runs.register("t", "r1", Some("s1"), Arc::new(AtomicBool::new(false)))
             .await.unwrap();
         runs.mark_stopping("t", "r1").await;
-        let snapshot = runs.running_threads("deepseek-harness").await;
+        let snapshot = runs.running_threads("dsh").await;
         assert_eq!(snapshot["t"].phase.as_deref(), Some("stopping"));
         assert!(runs.register("t", "r2", None, Arc::new(AtomicBool::new(false))).await.is_err());
         assert!(runs.remove_if_matches("t", "r1").await);

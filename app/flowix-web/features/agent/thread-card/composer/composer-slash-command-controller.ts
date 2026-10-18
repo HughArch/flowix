@@ -11,7 +11,10 @@ import {
 import type { AgentTypeKey } from "@/types/agent";
 
 import { COMPOSER_SLASH_COMMANDS, type ComposerSlashCommand } from "./composer-commands";
+import { useAgentDataStore } from "@features/agent/store/agent-data-store";
 export { COMPOSER_SLASH_COMMANDS, type ComposerSlashCommand } from "./composer-commands";
+
+const MENU_SCROLLBAR_HIDE_DELAY_MS = 700;
 
 export interface ComposerSlashSkill {
   name: string;
@@ -51,6 +54,7 @@ export interface ComposerSlashCommandControllerOptions {
   composer: HTMLElement;
   commands?: readonly ComposerSlashCommand[];
   agentType?: AgentTypeKey;
+  getSkillsScopeId?: () => string | undefined;
   listDshSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   listCodexSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   listPiSkills?: () => Promise<readonly ComposerSlashSkill[]>;
@@ -75,6 +79,7 @@ export class ComposerSlashCommandController {
   private readonly composer: HTMLElement;
   private readonly commands: readonly ComposerSlashCommand[];
   private readonly agentType: AgentTypeKey | undefined;
+  private readonly getSkillsScopeId: (() => string | undefined) | undefined;
   private readonly listDshSkills: (() => Promise<readonly ComposerSlashSkill[]>) | undefined;
   private readonly listCodexSkills: (() => Promise<readonly ComposerSlashSkill[]>) | undefined;
   private readonly listPiSkills: (() => Promise<readonly ComposerSlashSkill[]>) | undefined;
@@ -95,6 +100,7 @@ export class ComposerSlashCommandController {
   private dismissedValue: string | null = null;
   private slashActive = false;
   private disposed = false;
+  private menuScrollbarHideTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(options: ComposerSlashCommandControllerOptions) {
     this.editor = options.editor;
@@ -102,6 +108,7 @@ export class ComposerSlashCommandController {
     this.composer = options.composer;
     this.commands = options.commands ?? COMPOSER_SLASH_COMMANDS;
     this.agentType = options.agentType;
+    this.getSkillsScopeId = options.getSkillsScopeId;
     this.listDshSkills = options.listDshSkills;
     this.listCodexSkills = options.listCodexSkills;
     this.listPiSkills = options.listPiSkills;
@@ -115,10 +122,11 @@ export class ComposerSlashCommandController {
       this.editor.view.focus();
     });
 
-    this.inputRow = document.createElement("div");
-    this.inputRow.className = "agent-thread-card__composer-input-row";
-    this.input.before(this.inputRow);
-    this.inputRow.append(this.input);
+    const inputRow = this.input.parentElement;
+    if (!inputRow?.classList.contains("agent-composer__input-row")) {
+      throw new Error("Composer DOM must provide its input row before initialization");
+    }
+    this.inputRow = inputRow as HTMLDivElement;
 
     this.input.addEventListener("keydown", this.handleKeydown, true);
     // The row is the actual expanded/fullscreen grid item. It has clickable
@@ -151,10 +159,7 @@ export class ComposerSlashCommandController {
     window.removeEventListener("scroll", this.updateMenuPosition, true);
     this.closeMenu();
     removeComposerSlashToken(this.editor);
-    if (this.inputRow.isConnected) {
-      this.inputRow.before(this.input);
-      this.inputRow.remove();
-    }
+
   }
 
   refresh(): void {
@@ -183,7 +188,7 @@ export class ComposerSlashCommandController {
 
     // Refresh once per slash entry, including after a transient failure.
     // Filtering an open slash must not start another catalog request.
-    if ((this.agentType === "deepseek-harness" || this.agentType === "pi") && !this.slashActive &&
+    if ((this.agentType === "dsh" || this.agentType === "pi") && !this.slashActive &&
       (this.skillsStatus === "ready" || this.skillsStatus === "error")) {
       this.skillsStatus = "idle";
     }
@@ -324,11 +329,26 @@ export class ComposerSlashCommandController {
       this.menu.className = "agent-composer-slash-menu";
       this.menu.setAttribute("role", "listbox");
       this.menu.setAttribute("aria-label", "Slash commands");
+      this.menu.setAttribute("data-flowix-surface", "popover");
+      this.menu.addEventListener("scroll", this.handleMenuScroll, { passive: true });
       document.body.append(this.menu);
     }
     this.renderMenuItems();
     this.updateMenuPosition();
   }
+
+  private readonly handleMenuScroll = (): void => {
+    const menu = this.menu;
+    if (!menu) return;
+    menu.dataset.scrolling = "true";
+    if (this.menuScrollbarHideTimer !== null) {
+      clearTimeout(this.menuScrollbarHideTimer);
+    }
+    this.menuScrollbarHideTimer = setTimeout(() => {
+      if (this.menu === menu) delete menu.dataset.scrolling;
+      this.menuScrollbarHideTimer = null;
+    }, MENU_SCROLLBAR_HIDE_DELAY_MS);
+  };
 
   private renderMenuItems(): void {
     const menu = this.menu;
@@ -476,17 +496,25 @@ export class ComposerSlashCommandController {
       this.skillsStatus = "ready";
       return;
     }
-    this.skillsStatus = "loading";
+    const scopeId = this.getSkillsScopeId?.()?.trim() || "global";
+    const cached = useAgentDataStore.getState().agents[this.agentType].catalog.skillsByNotebookId[scopeId];
+    if (cached) this.skills = cached.items;
+    this.skillsStatus = cached ? "ready" : "loading";
     this.renderMenuItems();
-    this.skillsPromise = Promise.resolve().then(() => listSkills());
+    this.skillsPromise = useAgentDataStore.getState().loadSkillCatalog(
+      this.agentType,
+      scopeId,
+      async () => [...await listSkills()],
+    );
     try {
       const skills = await this.skillsPromise;
-      if (this.disposed) return;
+      const currentScopeId = this.getSkillsScopeId?.()?.trim() || "global";
+      if (this.disposed || currentScopeId !== scopeId) return;
       this.skills = skills;
       this.skillsStatus = "ready";
     } catch (error) {
       if (this.disposed) return;
-      this.skillsStatus = "error";
+      this.skillsStatus = this.skills.length ? "ready" : "error";
       console.warn(`Failed to load ${this.agentType} skills`, error);
     }
     this.activeIndex = Math.min(this.activeIndex, Math.max(0, this.filtered.length - 1));
@@ -498,9 +526,9 @@ export class ComposerSlashCommandController {
     if (this.agentType === "codex") {
       insertComposerSkillToken(this.editor, skill.name, skill.displayName);
     } else if (this.agentType === "pi") {
-      insertComposerSlashToken(this.editor, `skill:${skill.name}`, "pi");
+      insertComposerSlashToken(this.editor, `skill:${skill.name}`, "pi", skill.displayName);
     } else {
-      insertComposerSlashToken(this.editor, skill.name, "deepseek-harness");
+      insertComposerSlashToken(this.editor, skill.name, "dsh");
     }
     this.onCommandChange();
   }
@@ -513,6 +541,10 @@ export class ComposerSlashCommandController {
   }
 
   private closeMenu(): void {
+    if (this.menuScrollbarHideTimer !== null) {
+      clearTimeout(this.menuScrollbarHideTimer);
+      this.menuScrollbarHideTimer = null;
+    }
     this.menu?.remove();
     this.menu = null;
   }

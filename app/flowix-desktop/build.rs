@@ -72,8 +72,10 @@ fn main() {
         let info_plist = if dev_mode {
             let source = std::fs::read_to_string(manifest_dir.join("Info.plist"))
                 .expect("failed to read Info.plist");
+            println!("cargo:rerun-if-changed={}", manifest_dir.join("Info.plist").display());
             let dev = source.replace("<string>flowix</string>", "<string>flowix-dev</string>")
-                .replace("com.flowix.app.deeplink", "com.flowix.app.dev.deeplink");
+                .replace("<string>Flowix</string>", "<string>Flowix Dev</string>")
+                .replace("com.flowix.app.deeplink", "com.flowix-dev.app.deeplink");
             let generated = std::path::PathBuf::from(
                 std::env::var_os("OUT_DIR").expect("OUT_DIR is set"),
             ).join("Flowix-Dev-Info.plist");

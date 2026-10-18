@@ -39,9 +39,9 @@ pub(crate) async fn start_plugin_chat(
     app_handle: &tauri::AppHandle,
 ) -> Result<(), String> {
     let runtime = runtime_from_message(&message)?;
-    if let Some(cwd) = message.cwd_for_runtime(runtime.key()) {
-        let workspace_paths = message.workspace_paths_for_runtime(runtime.key());
-        sync_native_agent_instructions(std::path::Path::new(cwd), runtime.key(), &workspace_paths)?;
+    if let Some(cwd) = message.cwd_for_runtime(runtime.id()) {
+        let workspace_paths = message.workspace_paths_for_runtime(runtime.id());
+        sync_native_agent_instructions(std::path::Path::new(cwd), runtime.id(), &workspace_paths)?;
     }
     state.external_runtimes
         .dispatch_chat(thread_id, runtime, message, app_handle)

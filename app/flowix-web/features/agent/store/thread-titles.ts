@@ -18,18 +18,16 @@ function isExternalAgentType(_type: AgentTypeKey): boolean {
 // title has been reviewed and localized.
 const AGENT_SESSION_TITLE_KEYS: Record<AgentTypeKey, I18nKey> = {
   codex: "agent.codexSession.title",
-  claude: "agent.claudeSession.title",
-  gemini: "agent.geminiSession.title",
+  claudecode: "agent.claudeSession.title",
   hermes: "agent.hermesSession.title",
-  openclaw: "agent.openclawSession.title",
   opencode: "agent.opencodeSession.title",
   pi: "agent.piSession.title",
-  "deepseek-harness": "agent.deepseekHarnessSession.title",
+  dsh: "agent.deepseekHarnessSession.title",
 };
 
 const AGENT_THREAD_CARD_TITLE_KEYS: Record<AgentTypeKey, I18nKey> = {
   ...AGENT_SESSION_TITLE_KEYS,
-  "deepseek-harness": "agent.deepseekHarnessChat.title",
+  dsh: "agent.deepseekHarnessChat.title",
 };
 
 function translateAgentTitle(

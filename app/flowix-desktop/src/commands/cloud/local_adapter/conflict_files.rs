@@ -337,9 +337,9 @@ pub(crate) fn register_preserved_conflict_copy(
             .refresh_media_resource_path(notebook_id, &relative)
             .map_err(sync_error)
     } else {
+        let relative = flowix_core::memo_file::notebook_relative_path(notebook_root, path)?;
         memo_file
-            .register_existing_file_for_notebook_id(notebook_id, path)
-            .map(|_| ())
+            .refresh_note_path(notebook_id, &relative)
             .map_err(sync_error)
     }
 }

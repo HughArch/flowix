@@ -87,7 +87,7 @@ impl AgentLifecycleService {
             if registry.insert(runtime, adapter).is_some() {
                 return Err(format!(
                     "lifecycle adapter is registered more than once for {}",
-                    runtime.key()
+                    runtime.id()
                 ));
             }
         }
@@ -204,7 +204,7 @@ impl ThreadLifecycleAdapter for CodexLifecycleAdapter {
         //   3. otherwise the conversation never reached the provider
         let codex_thread_id = match self
             .threads
-            .get_external_session(thread_id, self.runtime().key())
+            .get_external_session(thread_id, self.runtime().id())
             .await
             .map_err(|error| error.to_string())?
         {
@@ -273,9 +273,9 @@ mod tests {
             .apply("claude", "thread-1", LifecycleAction::Delete)
             .await
             .unwrap());
-        // Unparseable types (local agents) keep local-only semantics too.
+        // Unsupported types keep local-only semantics too.
         assert!(!service
-            .apply("gemini", "thread-1", LifecycleAction::Delete)
+            .apply("unsupported-agent", "thread-1", LifecycleAction::Delete)
             .await
             .unwrap());
         // A never-started Codex conversation has no provider thread, so no

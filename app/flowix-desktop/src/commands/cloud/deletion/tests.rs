@@ -1,6 +1,6 @@
 use super::*;
 use flowix_core::memo_file::NotebookConfig;
-use flowix_core::MemoService;
+use flowix_core::NoteService;
 use flowix_sync::{V2EntityType, V2NoteState, V2OperationKind};
 use std::path::PathBuf;
 
@@ -28,15 +28,10 @@ fn fixture() -> (
             updated_at: 1,
         }])
         .unwrap();
-    let created = MemoService::new(&store)
-        .create_memo_named_with_tag_in_directory(
-            Some("work"),
-            None,
-            "Untitled",
-            "# Note\noriginal\n",
-            None,
-        )
+    let created = NoteService::new(&store)
+        .create("work", None, "Untitled", "# Note\noriginal\n")
         .unwrap();
+    let note_id = "remote-note-id".to_string();
     let sync = SyncManager::new(
         "https://cloud.example.test",
         directory.path().join("sync.db"),
@@ -45,11 +40,11 @@ fn fixture() -> (
     let content = std::fs::read(&created.path).unwrap();
     sync.store()
         .save_v2_note_state(&V2NoteState {
-            note_id: created.memo.id.clone(),
+            note_id: note_id.clone(),
             notebook_id: "work".into(),
             revision: "revision-1".into(),
             content_hash: Some(v2_content_hash(&content)),
-            filename: created.memo.filename.clone(),
+            filename: "Untitled.md".to_string(),
             deleted: false,
             last_seq: 1,
             attachments: Vec::new(),
@@ -59,9 +54,9 @@ fn fixture() -> (
         directory,
         store,
         sync,
-        created.memo.id,
+        note_id,
         created.path,
-        created.memo.relative_path,
+        created.entry.relative_path,
     )
 }
 
@@ -82,7 +77,8 @@ fn remote_delete_preserves_edits_before_watcher_marks_dirty() {
     assert!(error.starts_with("CLOUD_DELETE_CONFLICT:"));
     assert_eq!(std::fs::read_to_string(&path).unwrap(), edited);
     assert!(store
-        .find_memo_by_relative_path_for_notebook_id("work", &relative)
+        .read_note_entry_by_path("work", &relative)
+        .unwrap()
         .is_some());
     assert_eq!(sync.v2_note_state(&id).unwrap(), baseline);
     assert_eq!(sync.store().v2_cursor().unwrap(), cursor);
@@ -111,7 +107,8 @@ fn remote_delete_preserves_pending_changes_even_when_body_hash_matches() {
     );
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert!(store
-        .find_memo_by_relative_path_for_notebook_id("work", &relative)
+        .read_note_entry_by_path("work", &relative)
+        .unwrap()
         .is_some());
     let dirty_after = sync.store().v2_dirty_entities().unwrap();
     assert_eq!(dirty_after.len(), dirty_before.len());
@@ -136,15 +133,14 @@ fn remote_delete_removes_unchanged_file_and_index_entry() {
     )
     .unwrap();
     assert!(acknowledged);
-    assert_eq!(removed.unwrap().id, id);
+    assert!(removed);
     assert!(!path.exists());
     assert!(store
-        .find_memo_by_relative_path_for_notebook_id("work", &relative)
+        .read_note_entry_by_path("work", &relative)
+        .unwrap()
         .is_none());
     assert!(
-        delete_cloud_note_locked(&store, &sync, "work", &id, relative.as_str(), |_| {})
-            .unwrap()
-            .is_none()
+        !delete_cloud_note_locked(&store, &sync, "work", &id, relative.as_str(), |_| {}).unwrap()
     );
 }
 
@@ -166,7 +162,8 @@ fn remote_delete_preserves_external_save_during_delete() {
     assert!(error.starts_with("CLOUD_DELETE_CONFLICT:"));
     assert_eq!(std::fs::read(&path).unwrap(), b"external save");
     assert!(store
-        .find_memo_by_relative_path_for_notebook_id("work", &relative)
+        .read_note_entry_by_path("work", &relative)
+        .unwrap()
         .is_some());
 }
 
@@ -183,7 +180,8 @@ fn remote_delete_does_not_treat_read_failure_as_a_missing_file() {
     );
     assert!(path.is_dir());
     assert!(store
-        .find_memo_by_relative_path_for_notebook_id("work", &relative)
+        .read_note_entry_by_path("work", &relative)
+        .unwrap()
         .is_some());
 }
 
@@ -194,13 +192,12 @@ fn remote_delete_ignores_a_note_path_missing_in_the_target_notebook() {
     // Path-based lookup: the same relative path simply does not exist in the
     // other notebook, so the deletion is a no-op there.
     assert!(
-        delete_cloud_note_locked(&store, &sync, "other", &id, relative.as_str(), |_| {})
-            .unwrap()
-            .is_none()
+        delete_cloud_note_locked(&store, &sync, "other", &id, relative.as_str(), |_| {}).unwrap()
     );
     assert!(path.exists());
     assert!(store
-        .find_memo_by_relative_path_for_notebook_id("work", &relative)
+        .read_note_entry_by_path("work", &relative)
+        .unwrap()
         .is_some());
 }
 
@@ -219,7 +216,8 @@ fn remote_delete_preserves_a_local_file_without_an_acknowledged_hash() {
     );
     assert_eq!(std::fs::read(&path).unwrap(), original);
     assert!(store
-        .find_memo_by_relative_path_for_notebook_id("work", &relative)
+        .read_note_entry_by_path("work", &relative)
+        .unwrap()
         .is_some());
 }
 
@@ -229,11 +227,10 @@ fn remote_delete_cleans_an_already_missing_file_from_the_index() {
     store.delete_file(&path).unwrap();
     let _guard = store.acquire_cross_process_write_lock().unwrap();
     assert!(
-        delete_cloud_note_locked(&store, &sync, "work", &id, relative.as_str(), |_| {})
-            .unwrap()
-            .is_some()
+        !delete_cloud_note_locked(&store, &sync, "work", &id, relative.as_str(), |_| {}).unwrap()
     );
     assert!(store
-        .find_memo_by_relative_path_for_notebook_id("work", &relative)
+        .read_note_entry_by_path("work", &relative)
+        .unwrap()
         .is_none());
 }

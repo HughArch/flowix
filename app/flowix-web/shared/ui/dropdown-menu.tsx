@@ -262,7 +262,8 @@ function DropdownMenuContent({
 			const target = e.target as Node;
 			if (
 				contentRef.current?.contains(target) ||
-				triggerRef.current?.contains(target)
+				triggerRef.current?.contains(target) ||
+				(target instanceof Element && target.closest("[data-flowix-menu-child]"))
 			) {
 				return;
 			}
@@ -331,6 +332,7 @@ function DropdownMenuItem({
 	trailingActionLabel,
 	inset,
 	title,
+	keepOpenOnClick = false,
 }: {
 	children: React.ReactNode;
 	className?: string;
@@ -342,6 +344,7 @@ function DropdownMenuItem({
 	trailingActionLabel?: string;
 	inset?: boolean;
 	title?: string;
+	keepOpenOnClick?: boolean;
 }) {
 	const { setOpen } = useDropdownContext();
 
@@ -349,7 +352,7 @@ function DropdownMenuItem({
 		e.stopPropagation();
 		if (disabled) return;
 		onClick?.(e);
-		setOpen(false);
+	if (!keepOpenOnClick) setOpen(false);
 	};
 
 	const handleMouseDown = (e: React.MouseEvent<HTMLButtonElement>) => {

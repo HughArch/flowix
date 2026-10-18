@@ -2,38 +2,36 @@ import { beforeEach, expect, it, vi } from 'vitest';
 import { deleteExternalDocument } from './delete-external-document';
 
 const mocks = vi.hoisted(() => ({
-  flush: vi.fn(), settled: vi.fn(), dirty: vi.fn(), remove: vi.fn(),
+  save: vi.fn(), dirty: vi.fn(), remove: vi.fn(),
   capture: vi.fn(), discard: vi.fn(), cancel: vi.fn(), expectDelete: vi.fn(),
 }));
 vi.mock('../store/document-session-service', () => ({
   captureLatestDocumentContent: mocks.capture, discardDocumentDraft: mocks.discard,
-  flushDocumentPath: mocks.flush, hasDocumentUnsavedChanges: mocks.dirty,
+  saveDocumentPath: mocks.save, hasDocumentUnsavedChanges: mocks.dirty,
 }));
-vi.mock('../store/save-queue', () => ({ waitForSaveQueue: mocks.settled }));
 vi.mock('../store/external-document-operation', () => ({ expectExternalDocumentDelete: mocks.expectDelete }));
 vi.mock('./local-document-operations', () => ({ localDocumentOperations: { delete: mocks.remove } }));
 const session = { fileIdentity: { path: '/notes/file.md', displayId: 'live-file' }, scopePath: '/notes', openedAt: 1, transitionId: 1 };
 
 beforeEach(() => {
   vi.resetAllMocks();
-  mocks.flush.mockResolvedValue(true);
-  mocks.settled.mockResolvedValue(true);
+  mocks.save.mockResolvedValue(true);
   mocks.dirty.mockReturnValue(false);
   mocks.expectDelete.mockReturnValue(mocks.cancel);
   mocks.remove.mockResolvedValue({ path: session.fileIdentity.path });
 });
 
-it.each(['flush', 'settled', 'dirty'] as const)('preserves the file when the %s persistence barrier rejects deletion', async barrier => {
+it.each(['save', 'dirty'] as const)('preserves the file when the %s persistence barrier rejects deletion', async barrier => {
   if (barrier === 'dirty') mocks.dirty.mockReturnValue(true);
-  else mocks[barrier].mockResolvedValue(false);
+  else mocks.save.mockResolvedValue(false);
   expect(await deleteExternalDocument(session)).toBe(false);
   expect(mocks.remove).not.toHaveBeenCalled();
   expect(mocks.discard).not.toHaveBeenCalled();
 });
 
-it('waits for queued writes, deletes inside the file scope and then releases the draft', async () => {
+it('waits for the save barrier, deletes inside the file scope and then releases the draft', async () => {
   let settle!: (value: boolean) => void;
-  mocks.settled.mockReturnValue(new Promise<boolean>(resolve => { settle = resolve; }));
+  mocks.save.mockReturnValue(new Promise<boolean>(resolve => { settle = resolve; }));
   const pending = deleteExternalDocument(session);
   await Promise.resolve();
   expect(mocks.remove).not.toHaveBeenCalled();

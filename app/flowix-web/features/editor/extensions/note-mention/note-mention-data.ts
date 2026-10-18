@@ -67,7 +67,6 @@ export function queryMentionNotes(query: string): Promise<MentionNoteItem[]> {
 
 export function toNoteReferenceAttrs(item: MentionNoteItem): NoteReferenceAttrs {
   return {
-    memoId: null,
     notebookId: item.notebookId,
     relativePath: item.relativePath,
     notebookName: item.notebookName,

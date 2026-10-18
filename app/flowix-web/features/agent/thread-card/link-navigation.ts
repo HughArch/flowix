@@ -5,18 +5,15 @@ import { toast } from '@/lib/toast';
 import { translate } from '@/lib/i18n';
 import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api';
 import { externalFileViewKind } from '@features/editor/code-file';
-import { openNoteByDeepLink } from '@features/memo/use-cases/open-by-target';
-import {
-  openBrowserColumnFileBrowser,
-  openBrowserColumnText,
-  openBrowserColumnWebpage,
-  type BrowserColumnOpenResult,
-} from '@features/workspace/use-cases/browser-column-navigation';
+import { openNoteByDeepLink } from '@features/memo/public/note-navigation-api';
+import { createFileBrowserTarget } from '@features/workspace/public/browser-column-api';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
+import type { WorkspaceSurfaceOpenResult } from '@features/workspace/public/open-surface-api';
 import {
   cancelAgentLocationRequest,
   publishAgentLocationRequest,
 } from '@features/document/use-cases/agent-location-navigation';
-import { locationViewId } from '@features/document/use-cases/heading-anchor-publish';
+import { locationViewId } from '@features/document/public/heading-navigation-api';
 import {
   parseAgentLink,
   type AgentLinkParseResult,
@@ -126,10 +123,13 @@ export async function openAgentLink(
     case 'anchor':
       return;
     case 'flowix':
-      await openNoteByDeepLink(target.url);
+      // Notes and code share the same right-column destination. Opening a note
+      // deep link must not replace the conversation already shown by the work
+      // column (that is what the note card's “打开笔记” action does too).
+      await openNoteByDeepLink(target.url, null, { destination: 'browser-column' });
       return;
     case 'web':
-      await openBrowserColumnWebpage(target.url);
+      await openWorkspaceSurface({ host: 'browser-column', target: { kind: 'web', url: target.url } });
       return;
     case 'external':
       await openUrl(target.url);
@@ -146,11 +146,17 @@ export async function openAgentLink(
       latestLocalNavigationByPath.set(pathKey, navigationId);
       cancelAgentLocationRequest(target.path);
       const scopePath = agentFileScopePathForRuntime(target.path, runtimeConfig);
-      let opened: BrowserColumnOpenResult | null;
+      let opened: WorkspaceSurfaceOpenResult;
       try {
         opened = scopePath
-          ? await openBrowserColumnFileBrowser(scopePath, target.path)
-          : await openBrowserColumnText(target.path, null);
+          ? await openWorkspaceSurface({
+            host: 'browser-column',
+            target: createFileBrowserTarget(target.path, scopePath, scopePath),
+          })
+          : await openWorkspaceSurface({
+            host: 'browser-column',
+            target: { kind: 'external', path: target.path, scopePath: null, transitionId: null },
+          });
       } catch (error) {
         if (latestLocalNavigationByPath.get(pathKey) === navigationId) {
           latestLocalNavigationByPath.delete(pathKey);
@@ -159,7 +165,7 @@ export async function openAgentLink(
       }
       if (latestLocalNavigationByPath.get(pathKey) !== navigationId) return;
       latestLocalNavigationByPath.delete(pathKey);
-      if (!opened || (!target.location && !target.anchor)) return;
+      if (opened.status === 'cancelled' || (!target.location && !target.anchor)) return;
       const viewKind = externalFileViewKind(target.path);
       if (viewKind !== 'markdown' && viewKind !== 'code') {
         toast.info(translate(getCurrentAppLanguage(), 'document.file.locationUnsupported'));
@@ -169,8 +175,8 @@ export async function openAgentLink(
         path: target.path,
         ...(target.location ? { location: target.location } : {}),
         ...(target.anchor ? { anchor: target.anchor } : {}),
-        host: opened.host,
-        viewId: locationViewId(opened),
+        host: opened.location.host,
+        viewId: locationViewId(opened.location),
       });
       return;
     }

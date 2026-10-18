@@ -12,14 +12,13 @@ vi.mock("@features/agent/store/agent-session-store", () => ({
     reloadMessagesFromHistory: mocks.reload,
   }) },
 }));
-vi.mock("@features/agent/store/agent-access-store", () => ({
-  useAgentAccessStore: { getState: () => ({ config: { entries: [] } }) },
-}));
 vi.mock("@features/memo/store/note-store", () => ({
   useNoteStore: { getState: () => ({ selectedNotebook: null, notebooks: [] }) },
 }));
 vi.mock("@features/agent/runtime/agent-runtime-spec", () => ({
   buildAgentRuntimeConfig: () => ({}),
+  getAgentAccessOptions: () => [],
+  getAgentModeOptions: () => [],
 }));
 
 import { runDshCommand } from "./dsh-command-service";

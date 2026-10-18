@@ -1,6 +1,7 @@
 import { create } from 'zustand';
+import type { WorkspaceHostId } from '@features/workspace/public/host-api';
 
-export type WorkspaceHostId = 'main-third' | 'browser-column';
+export type { WorkspaceHostId } from '@features/workspace/public/host-api';
 
 interface WorkspaceFocusState {
   focusedHostId: WorkspaceHostId;
@@ -10,6 +11,8 @@ interface WorkspaceFocusState {
 
 export const useWorkspaceFocusStore = create<WorkspaceFocusState>((set) => ({
   focusedHostId: 'main-third',
-  focusHost: (focusedHostId) => set({ focusedHostId }),
+  focusHost: (focusedHostId) => set((state) => (
+    state.focusedHostId === focusedHostId ? state : { focusedHostId }
+  )),
   reset: () => set({ focusedHostId: 'main-third' }),
 }));

@@ -1,5 +1,6 @@
 ﻿'use client';
 
+import type { SurfacePresentationUpdate } from '@features/workspace/public/surface-api';
 import { getDocumentSession } from '../store/document-runtime-session';
 
 import { useEffect, useCallback, useRef, useMemo, useState } from 'react';
@@ -54,6 +55,7 @@ import { useI18n } from '@/lib/i18n';
 import { CenteredLoadingSpinner } from '@shared/ui/centered-loading-spinner';
 import { WorkspaceEmptyState } from '@shared/ui/workspace-empty-state';
 import { useWorkspaceFocusStore } from '@features/workspace/store/workspace-focus-store';
+import { focusWorkspaceHostFromEvent } from '@features/workspace/public/host-api';
 import { getBuffer, subscribeDocumentBufferChanges } from '@features/document/store/buffer-registry';
 import { documentIdentityKey } from '@features/document/store/document-identity';
 import {
@@ -61,7 +63,7 @@ import {
   isExternalDocumentRenameInProgress,
 } from '@features/document/store/external-document-operation';
 import { rebaseActiveDocumentPath } from '@features/document/store/document-session-service';
-import type { Editor } from '@tiptap/core';
+import type { Editor, JSONContent } from '@tiptap/core';
 import { replaceExternalDocumentPath } from '@features/workspace/use-cases/workspace-navigation';
 import { openDocumentLocalLink } from '@features/document/use-cases/open-document-local-link';
 import {
@@ -70,6 +72,15 @@ import {
   peekAgentLocationRequest,
   subscribeAgentLocationRequest,
 } from '@features/document/use-cases/agent-location-navigation';
+import { parseMarkdownInWorker } from '@features/editor/markdown-parser';
+import { markDocumentOpenTrace } from '@/lib/document-open-perf';
+
+type ParsedMarkdownDocument = {
+  key: string;
+  source: string;
+  /** `null` keeps the editor's compatibility fallback after Worker failure. */
+  document: JSONContent | null;
+};
 
 export function DocumentContainer({
   fileIdentity,
@@ -83,16 +94,19 @@ export function DocumentContainer({
   toolbarCollapsed = false,
   onToolbarCollapsedChange,
   documentSessionMode = 'main',
+  workspaceHost,
   navigationViewId,
   readOnly: forcedReadOnly = false,
   initialFocus,
   onEditorReady,
+  onSurfaceLifecycleReady,
+  onContentStateChange,
   onFlushReady,
 }: DocumentContainerProps) {
   const filePath = fileIdentity.path;
   const displayId = fileIdentity.displayId;
   const { t } = useI18n();
-  const hostId = documentSessionMode === 'isolated' ? 'browser-column' : 'main-third';
+  const hostId = workspaceHost ?? (documentSessionMode === 'isolated' ? 'browser-column' : 'main-third');
   const locationViewId = navigationViewId ?? hostId;
   const focusedHostId = useWorkspaceFocusStore((store) => store.focusedHostId);
   const readOnly = forcedReadOnly || focusedHostId !== hostId;
@@ -117,9 +131,15 @@ export function DocumentContainer({
   // 编辑器懒加载完成后递增，驱动待消费的定位请求在 handle 就绪后重试，
   // 避免用固定计时器猜测加载状态。
   const [editorReadyTick, setEditorReadyTick] = useState(0);
+  const [richEditorMount, setRichEditorMount] = useState<{ key: string; ready: boolean } | null>(null);
+  const [codeEditorReadyFor, setCodeEditorReadyFor] = useState<string | null>(null);
+  const richEditorMountReadyFor = richEditorMount?.key ?? null;
+  const richEditorReadyFor = richEditorMount?.ready ? richEditorMount.key : null;
+  const [parsedMarkdownDocument, setParsedMarkdownDocument] = useState<ParsedMarkdownDocument | null>(null);
   const titleEditorRef = useRef<MemoTitleEditorHandle | null>(null);
   const memoFilename = fileNameFromPath(filePath);
   const renameInProgressRef = useRef(false);
+  const previousFilePathRef = useRef(filePath);
   const getCurrentFilePath = useCallback(() => documentIdentity.path, [documentIdentity]);
   const getAttachmentNotebookId = useCallback(() => {
     return resolveNotebookIdForPath(documentIdentity.path, getWorkspaceMemoState().notebooks);
@@ -138,6 +158,92 @@ export function DocumentContainer({
     transitionId,
     isolatedSession: documentSessionMode === 'isolated',
   });
+
+  const markdownParserKey = JSON.stringify([documentInstanceKey, filePath]);
+  const parsedMarkdownMatches = parsedMarkdownDocument?.key === markdownParserKey
+    && parsedMarkdownDocument.source === state.fullContent;
+  const shouldMountRichEditor = state.isLoaded && !state.isLoading && !state.error && !usesCodeEditor;
+  const needsWorkerMarkdownParse = richEditorMountReadyFor !== documentInstanceKey
+    && !parsedMarkdownMatches;
+  const canMountRichEditor = shouldMountRichEditor && !needsWorkerMarkdownParse;
+  const editorIsReady = state.isLoaded && !state.isLoading && !state.error
+    && (usesCodeEditor ? codeEditorReadyFor === documentInstanceKey : richEditorReadyFor === documentInstanceKey);
+
+  useEffect(() => {
+    if (!shouldMountRichEditor
+      || richEditorMountReadyFor === documentInstanceKey || parsedMarkdownMatches) return;
+
+    let cancelled = false;
+    const source = state.fullContent;
+    const startedAt = performance.now();
+    markDocumentOpenTrace(transitionId, 'editor:markdown-worker-start', {
+      contentChars: source.length,
+      path: filePath,
+    });
+    const finishWith = (document: JSONContent | null, error?: string, workerMs?: number) => {
+      if (cancelled) return;
+      const elapsedMs = Math.round((performance.now() - startedAt) * 10) / 10;
+      setParsedMarkdownDocument({ key: markdownParserKey, source, document });
+      console.info('[perf:open-doc]', 'MarkdownParser:worker', {
+        elapsedMs,
+        workerMs,
+        contentChars: source.length,
+        success: !error,
+        ...(error ? { error } : {}),
+      });
+      markDocumentOpenTrace(transitionId, error ? 'editor:markdown-worker-error' : 'editor:markdown-worker-ready', {
+        elapsedMs,
+        workerMs,
+        contentChars: source.length,
+        error,
+      });
+    };
+
+    void parseMarkdownInWorker(source).then((reply) => {
+      finishWith(reply.document ?? null, undefined, reply.workerMs);
+    }).catch((error) => {
+      finishWith(null, error instanceof Error ? error.message : String(error));
+    });
+
+    return () => {
+      cancelled = true;
+    };
+  }, [
+    documentInstanceKey,
+    filePath,
+    markdownParserKey,
+    parsedMarkdownMatches,
+    richEditorMountReadyFor,
+    shouldMountRichEditor,
+    state.fullContent,
+    transitionId,
+  ]);
+
+  useEffect(() => {
+    if (!canMountRichEditor) {
+      setRichEditorMount(null);
+      return;
+    }
+    if (richEditorMountReadyFor === documentInstanceKey) return;
+    setRichEditorMount({ key: documentInstanceKey, ready: false });
+  }, [canMountRichEditor, documentInstanceKey, richEditorMountReadyFor]);
+
+  useEffect(() => {
+    if (!onContentStateChange) return;
+    if (state.error) {
+      const retry = () => reloadDocument(filePath, { showLoading: true });
+      if (isExternalDocument && /\.(?:md|markdown)$/i.test(filePath)
+        && state.errorKind === 'missing-note') {
+        onContentStateChange({ status: 'missing-note', path: filePath, retry });
+      } else {
+        onContentStateChange({ status: 'error', message: state.error, retry });
+      }
+    } else if (!editorIsReady) {
+      onContentStateChange({ status: 'loading', retainContent: true });
+    } else {
+      onContentStateChange({ status: 'ready' });
+    }
+  }, [editorIsReady, filePath, isExternalDocument, onContentStateChange, reloadDocument, state.error, state.errorKind]);
 
   useEffect(() => {
     if (!filePath) return;
@@ -394,6 +500,33 @@ export function DocumentContainer({
     return () => onFlushReady?.(null, null);
   }, [discardDocument, flushDocument, onFlushReady]);
   useEffect(() => {
+    if (!editorIsReady) return;
+    let active = true;
+    onSurfaceLifecycleReady?.({
+      status: 'ready', flush: flushDocument, discard: discardDocument,
+      focus: (target = 'body') => {
+        if (!active || !containerRef.current?.getClientRects().length) return false;
+        const focus = target === 'title'
+          ? titleEditorRef.current?.focusEnd
+          : editorHandleRef.current?.focusStart;
+        if (!focus) return false;
+        useWorkspaceFocusStore.getState().focusHost(hostId);
+        requestAnimationFrame(() => {
+          if (active && containerRef.current?.isConnected
+            && useWorkspaceFocusStore.getState().focusedHostId === hostId) {
+            if (target === 'title') titleEditorRef.current?.focusEnd();
+            else editorHandleRef.current?.focusStart?.();
+          }
+        });
+        return true;
+      },
+    });
+    return () => {
+      active = false;
+      onSurfaceLifecycleReady?.(null);
+    };
+  }, [discardDocument, editorIsReady, flushDocument, hostId, onSurfaceLifecycleReady]);
+  useEffect(() => {
     if (!filePath) {
       useDocumentMetricsStore.getState().clear(documentInstanceKey);
       return;
@@ -413,12 +546,24 @@ export function DocumentContainer({
 
     const loadedDocumentInstanceKey = loadedDocumentInstanceKeyRef.current;
     const instanceKeyChanged = loadedDocumentInstanceKey !== documentInstanceKey;
+    const pathChanged = previousFilePathRef.current !== filePath;
+    previousFilePathRef.current = filePath;
     loadedDocumentInstanceKeyRef.current = documentInstanceKey;
 
     // A path is an attribute of this session, never an editor lifecycle key.
     // Actual external content changes arrive through the content watchers.
     if (!instanceKeyChanged) {
       rebaseActiveDocumentPath(documentIdentity, filePath);
+      if (pathChanged) {
+        if (state.isLoading) return;
+        if (state.error || !state.isLoaded) {
+          reloadDocument(filePath, {
+            preservePending: hasDocumentUnsavedChanges(documentIdentity),
+            showLoading: true,
+          });
+          return;
+        }
+      }
       if (documentSessionMode !== 'isolated' && transitionId !== null) {
         useDocumentStore.getState().finishDocumentTransition(transitionId);
       }
@@ -496,15 +641,15 @@ export function DocumentContainer({
     <div
       ref={containerRef}
       data-document-session-mode={documentSessionMode}
-      onFocusCapture={() => useWorkspaceFocusStore.getState().focusHost(hostId)}
-      onPointerDownCapture={() => useWorkspaceFocusStore.getState().focusHost(hostId)}
+      onFocusCapture={(event) => focusWorkspaceHostFromEvent(event, hostId)}
+      onPointerDownCapture={(event) => focusWorkspaceHostFromEvent(event, hostId)}
       className="document-container h-full w-full min-w-0 flex flex-col bg-transparent relative overflow-hidden"
     >
-      <div className="flex-1 min-h-0 min-w-0 overflow-hidden">
-        {state.isLoading && (
-          <CenteredLoadingSpinner className="h-full w-full" />
+      <div className="relative flex-1 min-h-0 min-w-0 overflow-hidden">
+        {!state.error && !editorIsReady && (
+          <CenteredLoadingSpinner className="absolute inset-0 z-10 bg-[var(--document-bg)]" />
         )}
-        {!state.isLoading && usesCodeEditor && (
+        {state.isLoaded && !state.isLoading && usesCodeEditor && (
           <LazyCodeEditor
             ref={editorHandleRef}
             key={documentInstanceKey}
@@ -515,21 +660,28 @@ export function DocumentContainer({
             autoFocus={initialFocus === 'body'}
             onEditorScroll={handleEditorScroll}
             onEditingFinished={flushPendingEditorChanges}
+            onReadyChange={(ready) => {
+              setCodeEditorReadyFor((current) => ready
+                ? documentInstanceKey : current === documentInstanceKey ? null : current);
+            }}
             scrollHeader={documentHeader ?? undefined}
             searchPanelOpen={searchPanelOpen}
             onSearchPanelOpenChange={onSearchPanelOpenChange}
           />
         )}
-        {!state.isLoading && state.isLoaded && !usesCodeEditor && (
+        {canMountRichEditor && richEditorMountReadyFor === documentInstanceKey && (
           <LazyDocumentEditor
+            ownerPath={documentIdentity.path}
             getAttachmentOwnerPath={getAttachmentOwnerPath}
             getAttachmentNotebookId={getAttachmentNotebookId}
+            workspaceHost={hostId}
             propertyTargetId={propertyTargetId}
             onViewSourceMode={handleToggleEditorMode}
             transitionId={transitionId}
             ref={editorHandleRef}
             key={documentInstanceKey}
             content={state.fullContent}
+            initialParsedContent={parsedMarkdownMatches ? parsedMarkdownDocument?.document ?? undefined : undefined}
             header={documentHeader}
             editable={!readOnly}
             onDirty={handleDirty}
@@ -552,6 +704,11 @@ export function DocumentContainer({
             onSearchPanelOpenChange={onSearchPanelOpenChange}
             onBeforeCreate={(editor: Editor) => {
               onEditorReady?.(editor);
+              setRichEditorMount({ key: documentInstanceKey, ready: true });
+              // The editor has consumed the initial tree; release the duplicate.
+              setParsedMarkdownDocument((parsed) => (
+                parsed?.key === markdownParserKey ? null : parsed
+              ));
               setEditorReadyTick((tick) => tick + 1);
             }}
             linkContext={{
@@ -571,13 +728,31 @@ export function UnavailableFileView({
   filePath,
   openContainingFolder = false,
   scopePath,
+  reportPresentation,
 }: {
   filePath: string;
   openContainingFolder?: boolean;
   scopePath?: string | null;
+  reportPresentation?: (update: SurfacePresentationUpdate) => void;
 }) {
   const { t } = useI18n();
   const filename = filePath.split(/[\\/]/).filter(Boolean).pop() ?? filePath;
+  const reveal = useCallback(async () => {
+    try { await product.revealInFileManager(filePath); }
+    catch { toast.error(t('memo.fileTree.openFailed')); }
+  }, [filePath, t]);
+  const openDefault = useCallback(async () => {
+    try { await externalDocuments.openWithDefaultApp(filePath, scopePath); }
+    catch { toast.error(t('memo.fileTree.openFailed')); }
+  }, [filePath, scopePath, t]);
+  useEffect(() => {
+    const actions = [{ id: 'reveal', label: { key: openContainingFolder ? 'document.file.openContainingFolder' : 'document.file.reveal' }, enabled: true, run: reveal }];
+    if (openContainingFolder) actions.push({ id: 'open-default', label: { key: 'document.file.openWithDefaultApp' }, enabled: true, run: openDefault });
+    reportPresentation?.({ title: filename, actions,
+      state: { status: 'unavailable', reason: 'unsupported', message: { key: 'document.file.unavailable', fallbackText: filename }, actions } });
+  }, [filename, openContainingFolder, openDefault, reportPresentation, reveal]);
+  if (reportPresentation) return null;
+
   return (
     <div className="flex h-full w-full flex-col items-center justify-center gap-3 px-6 text-sm text-[var(--muted-foreground)]">
       <span className="max-w-full truncate text-[var(--foreground)]" title={filename}>{filename}</span>
@@ -585,25 +760,16 @@ export function UnavailableFileView({
       <div className="flex items-center gap-2">
         <button
           type="button"
-          onClick={() => {
-            const action = product.revealInFileManager(filePath);
-            void action.catch(() => {
-              toast.error(t('memo.fileTree.openFailed'));
-            });
-          }}
-          className="inline-flex h-8 items-center rounded-lg border border-[var(--border)] px-3 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--muted)]"
+          onClick={() => { void reveal(); }}
+          className="inline-flex h-8 items-center rounded-lg border border-[var(--border)] px-3 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
         >
           {t(openContainingFolder ? 'document.file.openContainingFolder' : 'document.file.reveal')}
         </button>
         {openContainingFolder && (
           <button
             type="button"
-            onClick={() => {
-              void externalDocuments.openWithDefaultApp(filePath, scopePath).catch(() => {
-                toast.error(t('memo.fileTree.openFailed'));
-              });
-            }}
-            className="inline-flex h-8 items-center rounded-lg border border-[var(--border)] px-3 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--muted)]"
+            onClick={() => { void openDefault(); }}
+            className="inline-flex h-8 items-center rounded-lg border border-[var(--border)] px-3 text-xs text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)]"
           >
             {t('document.file.openWithDefaultApp')}
           </button>

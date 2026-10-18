@@ -3,6 +3,7 @@
 import type { AgentTypeKey } from '@/types/agent';
 import { AGENT_TYPES } from '@/lib/agent-types';
 import type { PluginField } from '@platform/tauri/client';
+import { FlowixCheckbox } from '@shared/ui/flowix-checkbox';
 
 export type PluginFieldValue = string | boolean;
 
@@ -37,7 +38,7 @@ export function PluginFieldControl({
   const className = 'rounded-lg border border-[var(--border)] bg-[var(--background)] p-2 text-sm outline-none focus:border-[var(--brand)]';
   const options = field.options?.length
     ? field.options
-    : agentOptions.map((item) => ({ value: item.key, label: item.name }));
+    : agentOptions.map((item) => ({ value: item.id, label: item.name }));
 
   if (field.type === 'agent-select' || field.id === 'agentType') {
     return (
@@ -70,16 +71,14 @@ export function PluginFieldControl({
 
   if (field.type === 'checkbox') {
     return (
-      <label className="flex items-center gap-2 text-sm text-[var(--foreground)]" htmlFor={id}>
-        <input
-          id={id}
-          type="checkbox"
+      <div className="flex items-center gap-2 text-sm text-[var(--foreground)]">
+        <FlowixCheckbox
           checked={value === true}
-          onChange={(event) => onChange(event.target.checked)}
-          className="h-4 w-4 accent-[var(--brand)]"
+          aria-label={field.placeholder || pluginFieldLabel(field)}
+          onCheckedChange={onChange}
         />
-        <span>{field.placeholder || pluginFieldLabel(field)}</span>
-      </label>
+        <span className="cursor-pointer" onClick={() => onChange(value !== true)}>{field.placeholder || pluginFieldLabel(field)}</span>
+      </div>
     );
   }
 

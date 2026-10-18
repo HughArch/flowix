@@ -6,12 +6,14 @@ import { cloud, listenToCloudStateChanges, type CloudState } from '@platform/tau
 
 const MEMBERSHIP_FOCUS_REFRESH_INTERVAL_MS = 30_000;
 
+type MembershipRefreshResult = 'refreshed' | 'failed' | 'stale' | 'skipped';
+
 export function useCloudAccountState() {
   const [state, setState] = useState<CloudState | null>(null);
   const [membershipLoading, setMembershipLoading] = useState(false);
   const [membershipError, setMembershipError] = useState<string | null>(null);
   const membershipRequest = useRef(0);
-  const membershipInFlight = useRef<{ userId: string; promise: Promise<void> } | null>(null);
+  const membershipInFlight = useRef<{ userId: string; promise: Promise<MembershipRefreshResult> } | null>(null);
   const lastMembershipRefresh = useRef<{ userId: string; at: number } | null>(null);
   const [loadError, setLoadError] = useState<string | null>(null);
 
@@ -41,28 +43,31 @@ export function useCloudAccountState() {
     return () => { active = false; unlisten(); };
   }, [applyState]);
 
-  const refreshMembership = useCallback(async (force = true) => {
-    if (!state?.authenticated) return;
+  const refreshMembership = useCallback(async (force = true): Promise<MembershipRefreshResult> => {
+    if (!state?.authenticated) return 'skipped';
     const userId = state.account?.user.id ?? '';
     if (membershipInFlight.current?.userId === userId) return membershipInFlight.current.promise;
     const now = Date.now();
     if (!force && lastMembershipRefresh.current?.userId === userId &&
-      now - lastMembershipRefresh.current.at < MEMBERSHIP_FOCUS_REFRESH_INTERVAL_MS) return;
+      now - lastMembershipRefresh.current.at < MEMBERSHIP_FOCUS_REFRESH_INTERVAL_MS) return 'skipped';
     lastMembershipRefresh.current = { userId, at: now };
     const request = ++membershipRequest.current;
     setMembershipLoading(true);
     setMembershipError(null);
-    const promise = (async () => {
+    const promise = (async (): Promise<MembershipRefreshResult> => {
       try {
         await cloud.refreshMembership();
+        return request === membershipRequest.current ? 'refreshed' : 'stale';
       } catch (error) {
-        if (request === membershipRequest.current) setMembershipError(errorMessage(error));
+        if (request !== membershipRequest.current) return 'stale';
+        setMembershipError(errorMessage(error));
+        return 'failed';
       } finally {
         if (request === membershipRequest.current) setMembershipLoading(false);
       }
     })();
     membershipInFlight.current = { userId, promise };
-    try { await promise; }
+    try { return await promise; }
     finally {
       if (membershipInFlight.current?.promise === promise) membershipInFlight.current = null;
     }

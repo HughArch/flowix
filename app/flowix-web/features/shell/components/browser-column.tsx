@@ -1,4 +1,5 @@
 import { ColumnResizeHandle } from './column-resize-handle';
+import { focusWorkspaceHostFromEvent } from '@features/workspace/public/host-api';
 import { useCallback, useEffect, useState } from 'react';
 import {
   closeAllBrowserColumnTabs,
@@ -6,21 +7,21 @@ import {
   closeBrowserColumnTabsToRight,
   closeOtherBrowserColumnTabs,
   hideBrowserColumn,
-  openBrowserColumnAgentConversation,
-  openBrowserColumnNotebookNote,
-  openBrowserColumnTabInMainWorkColumn,
+  openBrowserColumnTabInWorkColumn,
   registerBrowserColumnFlush,
   reorderBrowserColumnTab,
   selectBrowserColumnTab,
   useBrowserColumnFocusViewModel,
   useBrowserColumnViewModel,
 } from '@features/workspace/public/browser-column-api';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { BrowserColumnHeader } from './browser-column-header';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { createShellNote, useShellSelectedNotebook } from '@features/memo/public/shell-api';
 import { createBrowserColumnAgentConversation } from '@features/agent/public/shell-api';
 import type { AgentTypeKey } from '@/types/agent';
+import { workspaceSurfaceAppearance } from '@features/workspace/public/surface-api';
 import {
   captureLatestDocumentContent,
   getDocumentEditorMode,
@@ -31,8 +32,10 @@ import { requireFileDisplayIdentity } from '@/lib/file-display-registry';
 import {
   BrowserColumnSurfaceHost,
   getBrowserColumnSurfaceDefinition,
+  useWorkspaceSurfacePresentation,
   type BrowserColumnFlushRegistration,
   resolveBrowserColumnSurface,
+  WorkspaceSurfaceStateView,
 } from '@features/surface/public/shell-api';
 
 export interface BrowserColumnProps {
@@ -85,13 +88,17 @@ export function BrowserColumn({
     activeWebRuntime,
     activePathHasDuplicateTab,
   } = useBrowserColumnViewModel();
-  const { isFocused, focusBrowserColumn } = useBrowserColumnFocusViewModel();
+  const { isFocused } = useBrowserColumnFocusViewModel();
   const selectedNotebook = useShellSelectedNotebook();
   const handleCreateNote = useCallback(async () => {
     if (!selectedNotebook) return;
     try {
       const created = await createShellNote(selectedNotebook.id);
-      await openBrowserColumnNotebookNote(created.path, selectedNotebook.id, selectedNotebook.path);
+      await openWorkspaceSurface({
+        host: 'browser-column',
+        target: { kind: 'external', path: created.path, scopePath: selectedNotebook.path, transitionId: null },
+        options: { notebookId: selectedNotebook.id },
+      });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('tabWindow.createNote.failed'));
     }
@@ -100,7 +107,7 @@ export function BrowserColumn({
     if (!selectedNotebook) return;
     const instanceId = createBrowserColumnAgentConversation(typeKey, selectedNotebook.id);
     try {
-      await openBrowserColumnAgentConversation(instanceId);
+      await openWorkspaceSurface({ host: 'browser-column', target: { kind: 'agent-conversation', instanceId } });
     } catch (error) {
       toast.error(error instanceof Error ? error.message : t('tabWindow.createConversation.failed'));
     }
@@ -181,16 +188,16 @@ export function BrowserColumn({
         onToolbarCollapsedChange,
       )
     : null;
-  const activeSurfaceChrome = activeSurface
-    ? getBrowserColumnSurfaceDefinition(activeSurface).chrome
-    : 'document';
+  const activeSurfaceRuntime = useWorkspaceSurfacePresentation(activeSurface?.tabId ?? '');
+  const activeSurfaceChrome = activeSurfaceRuntime.appearance?.headerStyle
+    ?? (activeSurface ? getBrowserColumnSurfaceDefinition(activeSurface).chrome : 'document');
   return (
     <section
       data-workspace-host="browser-column"
       data-workspace-focused={isFocused ? '' : undefined}
       aria-label="浏览器列辅助工作区"
-      onPointerDown={focusBrowserColumn}
-      onFocusCapture={focusBrowserColumn}
+      onPointerDown={(event) => focusWorkspaceHostFromEvent(event, 'browser-column')}
+      onFocusCapture={(event) => focusWorkspaceHostFromEvent(event, 'browser-column')}
       className={'relative flex h-full min-w-0 shrink-0 flex-col border-l border-[var(--divider)] bg-[var(--document-bg)]'}
       style={{ width }}
     >
@@ -205,7 +212,7 @@ export function BrowserColumn({
         onCloseTabsToRight={handleCloseTabsToRight}
         onCloseAllTabs={handleCloseAllTabs}
         onToggleMemoEditorMode={handleToggleMemoEditorMode}
-        onOpenTabInWorkColumn={(tabId) => { void openBrowserColumnTabInMainWorkColumn(tabId); }}
+        onOpenTabInWorkColumn={(tabId) => { void openBrowserColumnTabInWorkColumn(tabId); }}
         onReorderTab={reorderBrowserColumnTab}
         isTabMenuOpen={isTabMenuOpen}
         onTabMenuOpenChange={setIsTabMenuOpen}
@@ -221,11 +228,14 @@ export function BrowserColumn({
           <BrowserColumnSurfaceHost
             key={activeSurface.instanceKey}
             surface={activeSurface}
+            focused={isFocused}
           />
         ) : (
-          <div className="flex h-full items-center justify-center px-8 text-center text-sm text-[var(--muted-foreground)]">
-            选择一个 tab 打开内容
-          </div>
+          <WorkspaceSurfaceStateView
+            appearance={{ ...workspaceSurfaceAppearance('file-markdown'), emptyDecoration: 'none' }}
+            state={{ status: 'empty', reason: 'no-target', message: { key: 'document.file.loading' } }}
+            messageOverride="选择一个 tab 打开内容"
+          />
         )}
       </div>
     </section>

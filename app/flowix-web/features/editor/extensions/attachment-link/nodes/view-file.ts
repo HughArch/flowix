@@ -5,13 +5,11 @@ import type { ViewMutationRecord } from '@tiptap/pm/view';
 import { Node, mergeAttributes } from '@tiptap/core';
 import { NodeSelection, Plugin, PluginKey, type EditorState } from '@tiptap/pm/state';
 import { assetUrl } from '@features/editor/extensions/attachment-link/utils';
-import { readMarkdownLinkDestination } from '@features/editor/extensions/shared/markdown-link-destination';
 import { setInlineAtomTextSelectionFromMouse } from '@features/editor/extensions/shared/inline-atom-selection';
 import { createTerminalInlineAtomCaretDecorations } from '@features/editor/extensions/shared/terminal-inline-atom-caret';
 import { dialogs } from '@platform/tauri/client';
 import {
-    isAttachmentMarkdownUrl,
-    parseFileAttachmentMarkdown,
+    fileAttachmentMarkdownSpec,
     renderFileAttachmentMarkdown,
 } from '@features/editor/extensions/attachment-link/markdown/file-markdown';
 
@@ -402,32 +400,7 @@ export const FileAttachment = Node.create({
         };
     },
 
-    markdownTokenizer: {
-        name: 'fileAttachment',
-        level: 'inline' as const,
-        start(src: string) {
-            const assetLink = /\[[^\]]*\]\((?:asset:\/\/|https?:\/\/asset\.localhost\/)/.exec(src);
-            return assetLink?.index ?? -1;
-        },
-        tokenize(src: string) {
-            const closeBracket = src.indexOf(']');
-            if (!src.startsWith('[') || closeBracket === -1 || src[closeBracket + 1] !== '(') {
-                return undefined;
-            }
-
-            const destination = readMarkdownLinkDestination(src, closeBracket + 1);
-            if (!destination || !isAttachmentMarkdownUrl(destination.url)) return undefined;
-
-            return {
-                type: 'fileAttachment',
-                raw: src.slice(0, destination.end + 1),
-                url: destination.url,
-                title: src.slice(1, closeBracket),
-            };
-        },
-    },
-
-    parseMarkdown: parseFileAttachmentMarkdown,
+    ...fileAttachmentMarkdownSpec,
 
     renderMarkdown: renderFileAttachmentMarkdown,
 });

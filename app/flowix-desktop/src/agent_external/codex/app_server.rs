@@ -43,7 +43,64 @@ const MAX_PENDING_TURN_NOTIFICATIONS: usize = 4096;
 const CONTEXT_COMPACTION_MESSAGE_TYPE: &str = "context-compaction";
 const CODEX_COMMAND_MESSAGE_TYPE: &str = "codex-command";
 const CODEX_COMMENTARY_MESSAGE_TYPE: &str = "agent-commentary";
+const CODEX_MISSING_USER_ITEM_ID: &str = "flowix:codex:missing-user-item";
 const MIN_PAGINATED_CODEX_VERSION: &str = "0.150.0";
+
+fn codex_turn_error_message_id(turn_id: &str) -> String {
+    format!("msg:codex:turn-error:{turn_id}")
+}
+
+fn codex_command_message_id(turn_id: Option<&str>, source_id: &str) -> String {
+    match turn_id.filter(|id| !id.trim().is_empty()) {
+        Some(turn_id) => format!("flowix:codex:command:{turn_id}"),
+        // History has no shared turn key for older records that omit turn IDs.
+        None => format!("flowix:codex:command:unbound:{source_id}"),
+    }
+}
+
+fn codex_tool_call_message_id(turn_id: Option<&str>, call_id: &str) -> String {
+    format!(
+        "flowix:codex:tool-call:{}:{call_id}",
+        turn_id
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or("unbound")
+    )
+}
+
+fn codex_custom_tool_output_message_id(turn_id: Option<&str>, call_id: &str) -> String {
+    format!(
+        "flowix:codex:tool-output:{}:{call_id}",
+        turn_id
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or("unbound")
+    )
+}
+
+fn codex_fallback_item_message_id(
+    turn_id: &str,
+    role: &str,
+    content: &str,
+    occurrence: usize,
+) -> String {
+    let mut first = 0x811c_9dc5_u32;
+    let mut second = 0x9e37_79b9_u32;
+    for byte in content.as_bytes() {
+        first = (first ^ u32::from(*byte)).wrapping_mul(0x0100_0193);
+        second = (second ^ u32::from(*byte)).wrapping_mul(0x85eb_ca6b);
+    }
+    format!("flowix:codex:item:{turn_id}:{role}:{first:08x}{second:08x}:{occurrence}")
+}
+
+fn codex_turn_error_metadata(turn_id: Option<&str>) -> AgentChunkMetadata {
+    let Some(turn_id) = turn_id.filter(|id| !id.trim().is_empty()) else {
+        return AgentChunkMetadata::default();
+    };
+    AgentChunkMetadata {
+        codex_turn_id: Some(turn_id.to_string()),
+        message_id: Some(codex_turn_error_message_id(turn_id)),
+        ..AgentChunkMetadata::default()
+    }
+}
 
 fn is_stale_queued_submission_error(error: &str) -> bool {
     error
@@ -116,6 +173,7 @@ struct ActiveTurn {
     /// Turn-scoped notifications can beat the `turn/start` response. Ordinary
     /// chats keep them here until that response supplies the authoritative id.
     pending_notifications: Vec<Value>,
+    dropped_notifications: u64,
     turn_ready: Arc<tokio::sync::Notify>,
     /// The UI can stop a native command before Codex announces its provider
     /// turn. Keep the registry entry until that turn id arrives so the
@@ -134,7 +192,7 @@ struct ActiveTurn {
     /// `item/completed` and in the terminal turn payload. Keep the snapshots
     /// per active turn so the terminal payload remains a true fallback
     /// instead of a second delivery.
-    completed_agent_messages: Arc<Mutex<Vec<CompletedAgentMessage>>>,
+    completed_agent_messages: Arc<Mutex<Vec<SeenCompletedAgentMessage>>>,
     /// Runtime-owned receipts survive webview reloads until userMessage consumption.
     pending_steers: Vec<Value>,
 }
@@ -149,10 +207,15 @@ struct QueuedCodexFollowUp {
     run_id: String,
 }
 
-#[derive(Clone, Debug)]
-struct CompletedAgentMessage {
+struct CompletedAgentMessageCandidate {
     id: Option<String>,
     text: String,
+}
+
+struct SeenCompletedAgentMessage {
+    id: Option<String>,
+    text: String,
+    fallback_occurrence: Option<usize>,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -190,9 +253,31 @@ fn unbound_notification_action(
 
 fn buffer_turn_notification(active: &mut ActiveTurn, message: &Value) {
     if active.pending_notifications.len() == MAX_PENDING_TURN_NOTIFICATIONS {
+        active.dropped_notifications = active.dropped_notifications.saturating_add(1);
+        if active.dropped_notifications.is_power_of_two() {
+            tracing::warn!(
+                thread_id = %active.flowix_thread_id,
+                run_id = %active.run_id,
+                dropped = active.dropped_notifications,
+                limit = MAX_PENDING_TURN_NOTIFICATIONS,
+                "Codex startup notification buffer overflow; oldest notifications dropped"
+            );
+        }
         active.pending_notifications.remove(0);
     }
     active.pending_notifications.push(message.clone());
+}
+
+/// Called under active_turns when registering ordinary work, so Stop cannot
+/// fall between publishing a cancellation and registering the active turn.
+fn take_pending_cancellation(
+    pending: &mut HashMap<String, String>,
+    thread_id: &str,
+    run_id: &str,
+) -> bool {
+    pending
+        .remove(thread_id)
+        .is_some_and(|expected| expected == run_id)
 }
 
 struct Inner {
@@ -451,6 +536,7 @@ async fn bind_automatically_started_queue_turn(
                 codex_turn_id: codex_turn_id.to_string(),
                 binding: TurnBinding::StartedNotification,
                 pending_notifications: Vec::new(),
+                dropped_notifications: 0,
                 turn_ready: Arc::new(tokio::sync::Notify::new()),
                 cancel_requested: false,
                 stopping: false,
@@ -1066,26 +1152,48 @@ impl CodexAppServerManager {
             // so the real `item/completed(userMessage)` acknowledgement is not
             // dropped during that window. `turn/started` (or the RPC result)
             // fills in the concrete turn id below.
-            self.inner.active_turns.lock().await.insert(flowix_thread_id.clone(), ActiveTurn {
-                flowix_thread_id: flowix_thread_id.clone(),
-                run_id: run_id.clone(),
-                client_user_message_id: None,
-                codex_thread_id: codex_thread_id.clone(),
-                codex_turn_id: String::new(),
-                binding: TurnBinding::StartResponse,
-                pending_notifications: Vec::new(),
-                turn_ready: Arc::new(tokio::sync::Notify::new()),
-                cancel_requested: false,
-                stopping: false,
-                command_id: None,
-                command: None,
-                app_handle: app_handle.clone(),
-                started_at: chrono::Utc::now().timestamp_millis(),
-                last_event_at: chrono::Utc::now().timestamp_millis(),
-                stream_end_emitted: stream_end_emitted.clone(),
-                completed_agent_messages: completed_agent_messages.clone(),
-                pending_steers: Vec::new(),
-            });
+            let cancelled_before_start = {
+                let mut turns = self.inner.active_turns.lock().await;
+                let cancelled = take_pending_cancellation(
+                    &mut *self.inner.pending_cancellations.lock().await,
+                    &flowix_thread_id,
+                    &run_id,
+                );
+                if !cancelled {
+                    turns.insert(flowix_thread_id.clone(), ActiveTurn {
+                        flowix_thread_id: flowix_thread_id.clone(),
+                        run_id: run_id.clone(),
+                        client_user_message_id: None,
+                        codex_thread_id: codex_thread_id.clone(),
+                        codex_turn_id: String::new(),
+                        binding: TurnBinding::StartResponse,
+                        pending_notifications: Vec::new(),
+                        dropped_notifications: 0,
+                        turn_ready: Arc::new(tokio::sync::Notify::new()),
+                        cancel_requested: false,
+                        stopping: false,
+                        command_id: None,
+                        command: None,
+                        app_handle: app_handle.clone(),
+                        started_at: chrono::Utc::now().timestamp_millis(),
+                        last_event_at: chrono::Utc::now().timestamp_millis(),
+                        stream_end_emitted: stream_end_emitted.clone(),
+                        completed_agent_messages: completed_agent_messages.clone(),
+                        pending_steers: Vec::new(),
+                    });
+                }
+                cancelled
+            };
+            if cancelled_before_start {
+                self.emit_stream_end(
+                    app_handle,
+                    &flowix_thread_id,
+                    &run_id,
+                    Some(USER_STOPPED_REASON.to_string()),
+                    &stream_end_emitted,
+                ).await;
+                return Ok(());
+            }
             let mut turn_params = json!({
                 "threadId": codex_thread_id,
                 "input": input,
@@ -1656,6 +1764,7 @@ impl CodexAppServerManager {
                     codex_turn_id: String::new(),
                     binding: TurnBinding::StartResponse,
                     pending_notifications: Vec::new(),
+                    dropped_notifications: 0,
                     turn_ready: Arc::new(tokio::sync::Notify::new()),
                     cancel_requested: false,
                     stopping: false,
@@ -1925,17 +2034,16 @@ impl CodexAppServerManager {
         run_id: Option<&str>,
         app_handle: &tauri::AppHandle,
     ) -> bool {
-        if let Some(expected_run_id) = run_id.filter(|id| !id.trim().is_empty()) {
-            let turns = self.inner.active_turns.lock().await;
-            if turns
-                .get(thread_id)
-                .is_some_and(|active| active.run_id != expected_run_id)
-            {
-                return false;
-            }
-        }
         let active = {
             let mut active_turns = self.inner.active_turns.lock().await;
+            if let Some(expected) = run_id.filter(|id| !id.trim().is_empty()) {
+                if active_turns
+                    .get(thread_id)
+                    .is_some_and(|active| active.run_id != expected)
+                {
+                    return false;
+                }
+            }
             match active_turns.get_mut(thread_id) {
                 Some(active) if active.stopping => return false,
                 Some(active) if active.codex_turn_id.is_empty() => {
@@ -1945,29 +2053,27 @@ impl CodexAppServerManager {
                     // must receive turn/interrupt.
                     active.cancel_requested = true;
                     active.stopping = true;
-                    Some(active.clone())
+                    active.clone()
                 }
                 Some(active) => {
                     active.stopping = true;
-                    Some(active.clone())
+                    active.clone()
                 }
-                None => None,
+                None => {
+                    // Ordinary chat and slash commands can both be stopped
+                    // before registering a native turn. Hold active_turns until
+                    // the scoped cancellation is visible to the startup path.
+                    if let Some(run_id) = run_id.filter(|id| !id.trim().is_empty()) {
+                        self.inner
+                            .pending_cancellations
+                            .lock()
+                            .await
+                            .insert(thread_id.to_string(), run_id.to_string());
+                        return true;
+                    }
+                    return false;
+                }
             }
-        };
-        let Some(active) = active else {
-            // The frontend can expose the command stop control before the
-            // slash-command task has entered active_turns. Remember only a
-            // scoped command run id; execute_slash_command consumes it before
-            // issuing any Codex RPC.
-            if let Some(run_id) = run_id.filter(|id| !id.trim().is_empty()) {
-                self.inner
-                    .pending_cancellations
-                    .lock()
-                    .await
-                    .insert(thread_id.to_string(), run_id.to_string());
-                return true;
-            }
-            return false;
         };
         if !active.codex_turn_id.is_empty() {
             if let Err(error) = self
@@ -2545,24 +2651,53 @@ impl CodexAppServerManager {
             .filter(|id| !id.is_empty())
             .map(str::to_string)
             .unwrap_or_else(|| format!("codex-command-{}", uuid::Uuid::new_v4()));
+        let waits_for_provider_turn =
+            is_codex_compact_command(command) || is_codex_goal_mutation_command(command);
+        let ended = Arc::new(AtomicBool::new(false));
+        let completed_agent_messages = Arc::new(Mutex::new(Vec::new()));
+        // Native commands can either be an immediate thread operation or
+        // return/start a provider turn. `/goal` is a mutation RPC whose
+        // response is followed by an autonomous provider turn, as shown by
+        // Codex's `thread_goal_updated -> task_started` event sequence. Keep
+        // an empty turn id temporarily: `turn/started` can arrive before the
+        // command RPC response and fills it in. Register before emitting the
+        // optimistic lifecycle events so an immediate stop cannot miss it.
         let cancelled_before_start = {
-            let mut pending = self.inner.pending_cancellations.lock().await;
-            match pending.get(flowix_thread_id) {
-                Some(expected_run_id) if expected_run_id == &run_id => {
-                    pending.remove(flowix_thread_id);
-                    true
-                }
-                Some(_) => {
-                    // A stale stop for an older command must not affect this
-                    // newly-created command.
-                    pending.remove(flowix_thread_id);
-                    false
-                }
-                None => false,
+            let mut turns = self.inner.active_turns.lock().await;
+            let cancelled = take_pending_cancellation(
+                &mut *self.inner.pending_cancellations.lock().await,
+                flowix_thread_id,
+                &run_id,
+            );
+            if !cancelled {
+                turns.insert(
+                    flowix_thread_id.to_string(),
+                    ActiveTurn {
+                        flowix_thread_id: flowix_thread_id.to_string(),
+                        run_id: run_id.clone(),
+                        client_user_message_id: None,
+                        codex_thread_id: codex_thread_id.clone(),
+                        codex_turn_id: String::new(),
+                        binding: TurnBinding::StartedNotification,
+                        pending_notifications: Vec::new(),
+                        dropped_notifications: 0,
+                        turn_ready: Arc::new(tokio::sync::Notify::new()),
+                        cancel_requested: false,
+                        stopping: false,
+                        command_id: Some(command_id.clone()),
+                        command: Some(command.to_string()),
+                        app_handle: app_handle.clone(),
+                        started_at,
+                        last_event_at: chrono::Utc::now().timestamp_millis(),
+                        stream_end_emitted: ended.clone(),
+                        completed_agent_messages: completed_agent_messages.clone(),
+                        pending_steers: Vec::new(),
+                    },
+                );
             }
+            cancelled
         };
         if cancelled_before_start {
-            let ended = Arc::new(AtomicBool::new(false));
             self.emit_codex_command(
                 app_handle,
                 flowix_thread_id,
@@ -2584,40 +2719,6 @@ impl CodexAppServerManager {
             .await;
             return Ok(json!({ "cancelled": true }));
         }
-        let waits_for_provider_turn =
-            is_codex_compact_command(command) || is_codex_goal_mutation_command(command);
-        let ended = Arc::new(AtomicBool::new(false));
-        let completed_agent_messages = Arc::new(Mutex::new(Vec::new()));
-        // Native commands can either be an immediate thread operation or
-        // return/start a provider turn. `/goal` is a mutation RPC whose
-        // response is followed by an autonomous provider turn, as shown by
-        // Codex's `thread_goal_updated -> task_started` event sequence. Keep
-        // an empty turn id temporarily: `turn/started` can arrive before the
-        // command RPC response and fills it in. Register before emitting the
-        // optimistic lifecycle events so an immediate stop cannot miss it.
-        self.inner.active_turns.lock().await.insert(
-            flowix_thread_id.to_string(),
-            ActiveTurn {
-                flowix_thread_id: flowix_thread_id.to_string(),
-                run_id: run_id.clone(),
-                client_user_message_id: None,
-                codex_thread_id: codex_thread_id.clone(),
-                codex_turn_id: String::new(),
-                binding: TurnBinding::StartedNotification,
-                pending_notifications: Vec::new(),
-                turn_ready: Arc::new(tokio::sync::Notify::new()),
-                cancel_requested: false,
-                stopping: false,
-                command_id: Some(command_id.clone()),
-                command: Some(command.to_string()),
-                app_handle: app_handle.clone(),
-                started_at,
-                last_event_at: chrono::Utc::now().timestamp_millis(),
-                stream_end_emitted: ended.clone(),
-                completed_agent_messages: completed_agent_messages.clone(),
-                pending_steers: Vec::new(),
-            },
-        );
         self.emit_codex_command(
             app_handle,
             flowix_thread_id,
@@ -3499,11 +3600,16 @@ async fn dispatch_notification_inner(inner: &Arc<Inner>, message: &Value) {
                 if let Some((chunk, metadata)) =
                     completed_message_chunk(&flowix_thread_id, item, turn_id.as_deref())
                 {
-                    let should_emit = item.get("type").and_then(Value::as_str)
-                        != Some("agentMessage")
-                        || should_emit_completed_agent_message(&completed_agent_messages, item)
-                            .await;
-                    if should_emit {
+                    let mut metadata = metadata;
+                    if should_emit_completed_agent_message(
+                        &completed_agent_messages,
+                        item,
+                        turn_id.as_deref(),
+                        None,
+                        &mut metadata,
+                    )
+                    .await
+                    {
                         emit_notification_chunk_with_metadata(
                             inner,
                             &flowix_thread_id,
@@ -3583,35 +3689,42 @@ async fn dispatch_notification_inner(inner: &Arc<Inner>, message: &Value) {
                 // App Server normally finalizes messages through item/completed.
                 // The completed turn also carries the final agent message, so
                 // project it as an idempotent fallback before ending the stream.
-                if let Some(item) = params
-                    .pointer("/turn/items")
-                    .and_then(Value::as_array)
-                    .and_then(|items| {
-                        items.iter().rev().find(|item| {
+                if let Some(items) = params.pointer("/turn/items").and_then(Value::as_array) {
+                    if let Some((item_index, item)) =
+                        items.iter().enumerate().rev().find(|(_, item)| {
                             item.get("type").and_then(Value::as_str) == Some("agentMessage")
                         })
-                    })
-                {
-                    if let Some((chunk, metadata)) =
-                        completed_message_chunk(&flowix_thread_id, item, turn_id.as_deref())
                     {
-                        if should_emit_completed_agent_message(&completed_agent_messages, item)
-                            .await
+                        if let Some((chunk, metadata)) =
+                            completed_message_chunk(&flowix_thread_id, item, turn_id.as_deref())
                         {
-                            emit_notification_chunk_with_metadata(
-                                inner,
-                                &flowix_thread_id,
-                                &run_id,
-                                &app,
-                                chunk,
-                                metadata,
+                            let occurrence =
+                                codex_fallback_agent_message_occurrence(items, item_index, status);
+                            let mut metadata = metadata;
+                            if should_emit_completed_agent_message(
+                                &completed_agent_messages,
+                                item,
+                                turn_id.as_deref(),
+                                Some(occurrence),
+                                &mut metadata,
                             )
-                            .await;
+                            .await
+                            {
+                                emit_notification_chunk_with_metadata(
+                                    inner,
+                                    &flowix_thread_id,
+                                    &run_id,
+                                    &app,
+                                    chunk,
+                                    metadata,
+                                )
+                                .await;
+                            }
                         }
                     }
                 }
                 if let Some(reason) = &reason {
-                    emit_notification_chunk(
+                    emit_notification_chunk_with_metadata(
                         inner,
                         &flowix_thread_id,
                         &run_id,
@@ -3624,6 +3737,7 @@ async fn dispatch_notification_inner(inner: &Arc<Inner>, message: &Value) {
                                 "app-server",
                             )),
                         },
+                        codex_turn_error_metadata(turn_id.as_deref()),
                     )
                     .await;
                 }
@@ -3786,6 +3900,7 @@ fn item_metadata(item: &Value) -> AgentChunkMetadata {
     metadata.codex_turn_id = item
         .get("turnId")
         .and_then(Value::as_str)
+        .filter(|id| !id.trim().is_empty())
         .map(str::to_string);
     metadata.client_user_message_id = item
         .get("clientId")
@@ -3802,11 +3917,11 @@ fn item_metadata_from_id(item_id: Option<String>) -> AgentChunkMetadata {
     }
 }
 
-fn completed_agent_message(item: &Value) -> Option<CompletedAgentMessage> {
+fn completed_agent_message(item: &Value) -> Option<CompletedAgentMessageCandidate> {
     if item.get("type").and_then(Value::as_str) != Some("agentMessage") {
         return None;
     }
-    let message = CompletedAgentMessage {
+    let message = CompletedAgentMessageCandidate {
         id: item
             .get("id")
             .and_then(Value::as_str)
@@ -3822,33 +3937,97 @@ fn completed_agent_message(item: &Value) -> Option<CompletedAgentMessage> {
 }
 
 async fn should_emit_completed_agent_message(
-    messages: &Arc<Mutex<Vec<CompletedAgentMessage>>>,
+    messages: &Arc<Mutex<Vec<SeenCompletedAgentMessage>>>,
     item: &Value,
+    turn_id: Option<&str>,
+    terminal_occurrence: Option<usize>,
+    metadata: &mut AgentChunkMetadata,
 ) -> bool {
     let Some(candidate) = completed_agent_message(item) else {
         return true;
     };
     let mut seen = messages.lock().await;
-    let duplicate = seen
-        .iter()
-        .any(|previous| match (&candidate.id, &previous.id) {
-            // Stable provider ids are authoritative. Two different ids remain
-            // distinct even when the rendered text happens to match.
-            (Some(candidate_id), Some(previous_id)) => candidate_id == previous_id,
-            // If one side lacks an id, text is the only compatibility identity
-            // available for the terminal fallback. This branch is deliberately
-            // limited to that malformed/legacy boundary.
-            _ => candidate.text == previous.text,
-        });
-    if duplicate {
+    let fallback_occurrence = candidate.id.is_none().then(|| {
+        terminal_occurrence.unwrap_or_else(|| {
+            seen.iter()
+                .filter(|previous| previous.id.is_none() && previous.text == candidate.text)
+                .count()
+        })
+    });
+    let duplicate_id = candidate.id.as_deref().is_some_and(|candidate_id| {
+        seen.iter()
+            .any(|previous| previous.id.as_deref() == Some(candidate_id))
+    });
+    let terminal_duplicate = terminal_occurrence.is_some_and(|occurrence| {
+        seen.iter().any(|previous| {
+            previous.id.is_none()
+                && previous.text == candidate.text
+                && previous.fallback_occurrence == Some(occurrence)
+        })
+    });
+    if duplicate_id || terminal_duplicate {
         return false;
     }
-    seen.push(candidate);
+
+    if metadata.message_id.is_none() {
+        metadata.message_id = candidate.id.clone().or_else(|| {
+            let occurrence = fallback_occurrence.unwrap_or_default();
+            turn_id.filter(|id| !id.trim().is_empty()).map(|turn_id| {
+                codex_fallback_item_message_id(turn_id, "assistant", &candidate.text, occurrence)
+            })
+        });
+    }
+    seen.push(SeenCompletedAgentMessage {
+        id: candidate.id,
+        text: candidate.text,
+        fallback_occurrence,
+    });
     true
 }
 
+fn codex_fallback_agent_message_occurrence(
+    items: &[Value],
+    item_index: usize,
+    turn_status: &str,
+) -> usize {
+    let Some(item) = items.get(item_index) else {
+        return 0;
+    };
+    let Some(text) = item.get("text").and_then(Value::as_str) else {
+        return 0;
+    };
+    let interrupted_turn = matches!(turn_status, "failed" | "interrupted" | "cancelled");
+    items[..item_index]
+        .iter()
+        .filter(|previous| {
+            if previous.get("type").and_then(Value::as_str) != Some("agentMessage")
+                || previous
+                    .get("id")
+                    .and_then(Value::as_str)
+                    .is_some_and(|id| !id.trim().is_empty())
+                || previous.get("text").and_then(Value::as_str) != Some(text)
+            {
+                return false;
+            }
+            let interrupted_item =
+                previous
+                    .get("status")
+                    .and_then(Value::as_str)
+                    .is_some_and(|status| {
+                        matches!(
+                            status,
+                            "inProgress" | "failed" | "interrupted" | "cancelled"
+                        )
+                    });
+            !(interrupted_turn && interrupted_item)
+        })
+        .count()
+}
+
 fn with_turn_id(mut metadata: AgentChunkMetadata, turn_id: Option<&str>) -> AgentChunkMetadata {
-    metadata.codex_turn_id = turn_id.map(str::to_string);
+    metadata.codex_turn_id = turn_id
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_string);
     metadata
 }
 
@@ -3902,10 +4081,17 @@ fn completed_message_chunk(
             .get("id")
             .and_then(Value::as_str)
             .filter(|id| !id.trim().is_empty())
-            .unwrap_or("codex-context-compaction")
-            .to_string();
+            .map(str::to_string)
+            .or_else(|| {
+                turn_id
+                    .filter(|id| !id.trim().is_empty())
+                    .map(|turn_id| codex_fallback_item_message_id(turn_id, "system", "", 0))
+            })
+            .unwrap_or_else(|| "codex-context-compaction".to_string());
         let mut metadata = item_metadata(item);
-        metadata.codex_turn_id = turn_id.map(str::to_string);
+        metadata.codex_turn_id = turn_id
+            .filter(|id| !id.trim().is_empty())
+            .map(str::to_string);
         metadata.message_phase = Some("completed");
         metadata.content_mode = Some("snapshot");
         return Some((
@@ -3957,13 +4143,15 @@ fn completed_message_chunk(
         return None;
     }
     let chunk = if kind == "userMessage" {
+        let user_id = item
+            .get("id")
+            .and_then(Value::as_str)
+            .filter(|id| !id.trim().is_empty())
+            .unwrap_or(CODEX_MISSING_USER_ITEM_ID)
+            .to_string();
         AgentChunk::UserMessage {
             thread_id: thread_id.to_string(),
-            id: item
-                .get("id")
-                .and_then(Value::as_str)
-                .unwrap_or("codex-user")
-                .to_string(),
+            id: user_id,
             text,
             timestamp: chrono::Utc::now().timestamp_millis(),
             attachments: app_server_image_attachments(item.get("content")),
@@ -3980,7 +4168,9 @@ fn completed_message_chunk(
         }
     };
     let mut metadata = item_metadata(item);
-    metadata.codex_turn_id = turn_id.map(str::to_string);
+    metadata.codex_turn_id = turn_id
+        .filter(|id| !id.trim().is_empty())
+        .map(str::to_string);
     metadata.message_type = codex_message_type(item);
     // Completed item notifications do not repeat turnId in the item. The
     // caller fills it from the notification context before emitting.
@@ -4128,6 +4318,29 @@ fn app_server_approval_policy(permission: Option<&str>) -> &'static str {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn startup_cancellation_is_scoped_and_consumed_once() {
+        let mut pending = HashMap::from([
+            ("thread-a".to_string(), "run-a".to_string()),
+            ("thread-b".to_string(), "run-b".to_string()),
+        ]);
+        assert!(take_pending_cancellation(&mut pending, "thread-a", "run-a"));
+        assert!(!take_pending_cancellation(
+            &mut pending,
+            "thread-a",
+            "run-a"
+        ));
+        assert!(!take_pending_cancellation(
+            &mut pending,
+            "thread-b",
+            "new-run"
+        ));
+        assert!(
+            pending.is_empty(),
+            "a stale Stop must not cancel a later run"
+        );
+    }
 
     #[test]
     fn consumes_only_the_correlated_pending_steer_and_never_recreates_a_receipt() {
@@ -4467,6 +4680,20 @@ mod tests {
     }
 
     #[test]
+    fn context_compaction_without_native_identity_uses_the_live_fallback() {
+        let messages = app_server_turn_messages(&[json!({
+            "status": "completed",
+            "items": [{ "type": "contextCompaction" }]
+        })]);
+
+        let marker = messages
+            .iter()
+            .find(|message| message.role == "system")
+            .expect("context compaction marker");
+        assert_eq!(marker.id, "codex-context-compaction");
+    }
+
+    #[test]
     fn codex_history_only_confirms_assistant_rows_with_native_terminal_evidence() {
         let active = app_server_turn_messages(&[json!({
             "id": "turn-active", "status": "inProgress",
@@ -4527,13 +4754,170 @@ mod tests {
             messages[0].message_type.as_deref(),
             Some(CODEX_COMMAND_MESSAGE_TYPE)
         );
-        assert_eq!(messages[0].id, "codex-command-history-compaction-1");
+        assert_eq!(
+            messages[0].id,
+            codex_command_message_id(Some("turn-compact"), "")
+        );
+        assert_eq!(messages[0].id, "flowix:codex:command:turn-compact");
         assert_eq!(messages[0].codex_turn_id.as_deref(), Some("turn-compact"));
         assert_eq!(messages[1].role, "system");
         assert_eq!(
             messages[1].message_type.as_deref(),
             Some(CONTEXT_COMPACTION_MESSAGE_TYPE)
         );
+    }
+
+    #[test]
+    fn history_commands_without_turn_ids_use_the_unbound_namespace() {
+        let compact = app_server_compact_command_message(
+            &json!({ "id": "compact-item", "type": "contextCompaction" }),
+            "2026-01-01T00:00:00Z",
+            0,
+            0,
+            None,
+        );
+        let goal = app_server_goal_command_message("Ship it", "2026-01-01T00:00:00Z", 2, None);
+
+        assert_eq!(compact.id, "flowix:codex:command:unbound:compact-item");
+        assert_eq!(goal.id, "flowix:codex:command:unbound:turn-2");
+    }
+
+    #[test]
+    fn codex_missing_item_ids_use_turn_content_and_occurrence() {
+        let messages = app_server_turn_messages(&[json!({
+            "id": "turn-fallback",
+            "status": "completed",
+            "items": [
+                { "type": "agentMessage", "text": "same reply" },
+                { "type": "agentMessage", "text": "same reply" },
+                { "type": "reasoning", "summary": "same thought" },
+                { "type": "reasoning", "summary": "same thought" }
+            ]
+        })]);
+
+        assert_eq!(messages.len(), 4);
+        assert_eq!(
+            messages[0].id,
+            codex_fallback_item_message_id("turn-fallback", "assistant", "same reply", 0)
+        );
+        assert_eq!(
+            messages[0].id,
+            "flowix:codex:item:turn-fallback:assistant:c9c3d78b64eaec57:0"
+        );
+        assert_eq!(
+            codex_fallback_item_message_id("t", "assistant", "你好🙂", 0),
+            "flowix:codex:item:t:assistant:71b13a3934f0304d:0"
+        );
+        assert_eq!(
+            messages[1].id,
+            codex_fallback_item_message_id("turn-fallback", "assistant", "same reply", 1)
+        );
+        assert_ne!(messages[0].id, messages[1].id);
+        assert_eq!(
+            messages[2].id,
+            codex_fallback_item_message_id("turn-fallback", "reasoning", "same thought", 0)
+        );
+        assert_eq!(
+            messages[3].id,
+            codex_fallback_item_message_id("turn-fallback", "reasoning", "same thought", 1)
+        );
+    }
+
+    #[test]
+    fn repeated_codex_user_items_without_ids_match_the_live_fallback_policy() {
+        let messages = app_server_turn_messages(&[json!({
+            "id": "turn-users",
+            "status": "completed",
+            "items": [
+                { "type": "userMessage", "content": "repeat" },
+                { "type": "userMessage", "content": "repeat" }
+            ]
+        })]);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(
+            messages[0].id,
+            codex_fallback_item_message_id("turn-users", "user", "repeat", 0)
+        );
+        assert_eq!(
+            messages[1].id,
+            codex_fallback_item_message_id("turn-users", "user", "repeat", 1)
+        );
+    }
+
+    #[test]
+    fn orphan_custom_tool_history_uses_provider_output_id_or_call_fallback() {
+        let messages = app_server_turn_messages(&[json!({
+            "id": "turn-tools",
+            "status": "completed",
+            "items": [
+                { "id": "output-item", "type": "custom_tool_call_output", "call_id": "call-a", "output": "done" },
+                { "type": "custom_tool_call_output", "call_id": "call-b", "output": "done" }
+            ]
+        })]);
+
+        assert_eq!(messages.len(), 2);
+        assert_eq!(messages[0].id, "output-item");
+        assert_eq!(
+            messages[1].id,
+            codex_custom_tool_output_message_id(Some("turn-tools"), "call-b")
+        );
+        assert_eq!(messages[1].id, "flowix:codex:tool-output:turn-tools:call-b");
+    }
+
+    #[test]
+    fn custom_tool_call_without_item_id_uses_the_live_call_fallback() {
+        let messages = app_server_turn_messages(&[json!({
+            "id": "turn-tools",
+            "status": "completed",
+            "items": [{
+                "type": "custom_tool_call",
+                "call_id": "call-a",
+                "name": "future_connector",
+                "input": { "query": "x" }
+            }]
+        })]);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].id,
+            codex_tool_call_message_id(Some("turn-tools"), "call-a")
+        );
+        assert_eq!(messages[0].id, "flowix:codex:tool-call:turn-tools:call-a");
+        assert_eq!(messages[0].tool_call_id.as_deref(), Some("call-a"));
+    }
+
+    #[test]
+    fn codex_tool_call_without_turn_or_item_id_uses_the_unbound_live_fallback() {
+        let messages = app_server_turn_messages(&[json!({
+            "status": "completed",
+            "items": [{
+                "type": "custom_tool_call",
+                "call_id": "call-a",
+                "name": "future_connector",
+                "input": { "query": "x" }
+            }]
+        })]);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(messages[0].id, codex_tool_call_message_id(None, "call-a"));
+        assert_eq!(messages[0].id, "flowix:codex:tool-call:unbound:call-a");
+    }
+
+    #[test]
+    fn cancelled_turn_history_emits_the_same_error_identity_as_live() {
+        let messages = app_server_turn_messages(&[json!({
+            "id": "turn-cancelled",
+            "status": "cancelled",
+            "items": []
+        })]);
+
+        assert_eq!(messages.len(), 1);
+        assert_eq!(
+            messages[0].id,
+            codex_turn_error_message_id("turn-cancelled")
+        );
+        assert_eq!(messages[0].content, "Codex turn failed");
     }
 
     #[test]
@@ -4775,38 +5159,119 @@ Budget:
     }
 
     #[tokio::test]
-    async fn suppresses_a_terminal_agent_snapshot_already_forwarded_for_the_turn() {
+    async fn preserves_distinct_identical_idless_agent_items_and_suppresses_terminal_replay() {
         let messages = Arc::new(Mutex::new(Vec::new()));
-        let completed = json!({
-            "id": "message-1",
-            "type": "agentMessage",
-            "text": "Final answer"
-        });
+        let first = json!({ "type": "agentMessage", "text": "Final answer" });
+        let second = json!({ "type": "agentMessage", "text": "Final answer" });
+        let mut first_metadata = AgentChunkMetadata::default();
+        let mut second_metadata = AgentChunkMetadata::default();
+        let first_should_emit = should_emit_completed_agent_message(
+            &messages,
+            &first,
+            Some("turn-1"),
+            None,
+            &mut first_metadata,
+        )
+        .await;
+        let second_should_emit = should_emit_completed_agent_message(
+            &messages,
+            &second,
+            Some("turn-1"),
+            None,
+            &mut second_metadata,
+        )
+        .await;
 
-        assert!(should_emit_completed_agent_message(&messages, &completed).await);
-        assert!(!should_emit_completed_agent_message(&messages, &completed).await);
+        assert!(first_should_emit);
+        assert_eq!(
+            first_metadata.message_id.as_deref(),
+            Some(codex_fallback_item_message_id("turn-1", "assistant", "Final answer", 0).as_str())
+        );
+        assert!(second_should_emit);
+        assert_eq!(
+            second_metadata.message_id.as_deref(),
+            Some(codex_fallback_item_message_id("turn-1", "assistant", "Final answer", 1).as_str())
+        );
+
+        let history = app_server_turn_messages(&[json!({
+            "id": "turn-1",
+            "status": "completed",
+            "items": [first.clone(), second.clone()]
+        })]);
+        assert_eq!(
+            history
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            [
+                first_metadata.message_id.as_deref().unwrap(),
+                second_metadata.message_id.as_deref().unwrap(),
+            ]
+        );
+
+        let partial_stream = Arc::new(Mutex::new(Vec::new()));
+        let mut partial_metadata = AgentChunkMetadata::default();
         assert!(
             should_emit_completed_agent_message(
+                &partial_stream,
+                &first,
+                Some("turn-1"),
+                None,
+                &mut partial_metadata,
+            )
+            .await
+        );
+        let mut terminal_second_metadata = AgentChunkMetadata::default();
+        assert!(
+            should_emit_completed_agent_message(
+                &partial_stream,
+                &second,
+                Some("turn-1"),
+                Some(1),
+                &mut terminal_second_metadata,
+            )
+            .await
+        );
+        assert_eq!(
+            terminal_second_metadata.message_id.as_deref(),
+            Some(codex_fallback_item_message_id("turn-1", "assistant", "Final answer", 1).as_str())
+        );
+
+        let mut terminal_metadata = AgentChunkMetadata::default();
+        assert!(
+            !should_emit_completed_agent_message(
                 &messages,
-                &json!({ "id": "message-2", "type": "agentMessage", "text": "Final answer" }),
+                &second,
+                Some("turn-1"),
+                Some(1),
+                &mut terminal_metadata,
             )
             .await
         );
     }
 
     #[tokio::test]
-    async fn matches_legacy_terminal_snapshots_when_one_side_lacks_an_id() {
-        let messages = Arc::new(Mutex::new(Vec::new()));
-        let completed = json!({ "type": "agentMessage", "text": "Final answer" });
+    async fn uses_terminal_item_order_for_an_unseen_idless_snapshot() {
+        let items = vec![
+            json!({ "type": "agentMessage", "text": "Repeated", "status": "completed" }),
+            json!({ "type": "agentMessage", "text": "Repeated", "status": "completed" }),
+        ];
+        let occurrence = codex_fallback_agent_message_occurrence(&items, 1, "completed");
+        assert_eq!(occurrence, 1);
 
-        assert!(should_emit_completed_agent_message(&messages, &completed).await);
-        assert!(!should_emit_completed_agent_message(&messages, &completed).await);
-        assert!(
-            !should_emit_completed_agent_message(
-                &messages,
-                &json!({ "id": "message-1", "type": "agentMessage", "text": "Final answer" }),
-            )
-            .await
+        let mut metadata = AgentChunkMetadata::default();
+        let should_emit = should_emit_completed_agent_message(
+            &Arc::new(Mutex::new(Vec::new())),
+            &items[1],
+            Some("turn-1"),
+            Some(occurrence),
+            &mut metadata,
+        )
+        .await;
+        assert!(should_emit);
+        assert_eq!(
+            metadata.message_id.as_deref(),
+            Some(codex_fallback_item_message_id("turn-1", "assistant", "Repeated", 1).as_str())
         );
     }
 
@@ -4824,9 +5289,37 @@ Budget:
             "text": "Final answer"
         });
 
-        assert!(should_emit_completed_agent_message(&messages, &empty).await);
-        assert!(should_emit_completed_agent_message(&messages, &complete).await);
-        assert!(!should_emit_completed_agent_message(&messages, &complete).await);
+        let mut metadata = AgentChunkMetadata::default();
+        assert!(
+            should_emit_completed_agent_message(
+                &messages,
+                &empty,
+                Some("turn-1"),
+                None,
+                &mut metadata,
+            )
+            .await
+        );
+        assert!(
+            should_emit_completed_agent_message(
+                &messages,
+                &complete,
+                Some("turn-1"),
+                None,
+                &mut metadata,
+            )
+            .await
+        );
+        assert!(
+            !should_emit_completed_agent_message(
+                &messages,
+                &complete,
+                Some("turn-1"),
+                None,
+                &mut metadata,
+            )
+            .await
+        );
     }
 
     #[test]
@@ -4956,6 +5449,25 @@ Budget:
     }
 
     #[test]
+    fn context_compaction_without_provider_ids_uses_shared_fallback_identity() {
+        for turn_id in [None, Some("")] {
+            let (chunk, metadata) = completed_message_chunk(
+                "thread-1",
+                &json!({ "type": "contextCompaction" }),
+                turn_id,
+            )
+            .expect("completed context compaction");
+
+            assert!(matches!(
+                chunk,
+                AgentChunk::ContextCompaction { id, .. }
+                    if id == "codex-context-compaction"
+            ));
+            assert!(metadata.message_id.is_none());
+        }
+    }
+
+    #[test]
     fn projects_completed_reasoning_summary_as_authoritative_snapshot() {
         let (chunk, metadata) = completed_message_chunk(
             "thread-1",
@@ -5081,8 +5593,17 @@ Budget:
         assert_eq!(messages.len(), 2);
         assert_eq!(messages[1].role, "assistant");
         assert_eq!(messages[1].content, "rate limit exceeded");
-        assert_eq!(messages[1].id, "codex-turn-error-turn-1");
+        assert_eq!(messages[1].id, codex_turn_error_message_id("turn-1"));
         assert!(messages[1].error_details.is_some());
+    }
+
+    #[test]
+    fn live_turn_error_metadata_uses_the_history_identity() {
+        let metadata = codex_turn_error_metadata(Some("turn-1"));
+        let expected_id = codex_turn_error_message_id("turn-1");
+
+        assert_eq!(metadata.codex_turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(metadata.message_id.as_deref(), Some(expected_id.as_str()));
     }
 
     #[test]
@@ -5115,7 +5636,14 @@ Budget:
                 .iter()
                 .map(|message| message.id.as_str())
                 .collect::<Vec<_>>(),
-            ["u1", "a1", "tool-1", "codex-turn-error-turn-1", "u2", "a2"],
+            [
+                "u1",
+                "a1",
+                "tool-1",
+                "msg:codex:turn-error:turn-1",
+                "u2",
+                "a2"
+            ],
         );
         assert_eq!(messages[2].role, "tool");
         assert_eq!(messages[3].content, "Codex turn interrupted");
@@ -5136,11 +5664,39 @@ Budget:
 
         let messages = app_server_turn_messages(&turns);
         assert_eq!(
-            messages.iter().map(|message| message.id.as_str()).collect::<Vec<_>>(),
-            ["u1", "answer", "codex-turn-error-turn-interrupted"],
+            messages
+                .iter()
+                .map(|message| message.id.as_str())
+                .collect::<Vec<_>>(),
+            ["u1", "answer", "msg:codex:turn-error:turn-interrupted"],
         );
         assert_eq!(messages[1].content, "Completed before stop");
         assert_eq!(messages[1].is_completed, Some(true));
+    }
+
+    #[test]
+    fn history_fallback_ids_ignore_omitted_interrupted_items() {
+        let items = vec![
+            json!({ "type": "agentMessage", "status": "inProgress", "text": "Repeated" }),
+            json!({ "type": "agentMessage", "status": "completed", "text": "Repeated" }),
+        ];
+        let turn_id = "turn-interrupted";
+        let occurrence = codex_fallback_agent_message_occurrence(&items, 1, "interrupted");
+        let history = app_server_turn_messages(&[json!({
+            "id": turn_id,
+            "status": "interrupted",
+            "items": items
+        })]);
+        let assistant = history
+            .iter()
+            .find(|message| message.role == "assistant")
+            .expect("completed assistant message");
+
+        assert_eq!(occurrence, 0);
+        assert_eq!(
+            assistant.id,
+            codex_fallback_item_message_id(turn_id, "assistant", "Repeated", occurrence)
+        );
     }
 
     #[test]

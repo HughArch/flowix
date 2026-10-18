@@ -9,7 +9,7 @@ import { notes, type PathArchiveSummary, type PathVersionMeta } from '@platform/
 import { Button } from '@shared/ui/button';
 import { useDocumentStore } from '@features/document/store/document-store';
 import { documentIdentityFromFile } from '@features/document/store/document-identity';
-import { applyLoadedDocumentContent, flushDocumentPath } from '@features/document/store/document-session-service';
+import { applyLoadedDocumentContent, saveDocumentPath } from '@features/document/store/document-session-service';
 
 export function HistorySection() {
   const { t } = useI18n();
@@ -47,7 +47,7 @@ export function HistorySection() {
         && session.relativePath === archive.relativePath ? session : null;
       if (active) {
         const identity = documentIdentityFromFile(active.fileIdentity);
-        if (!await flushDocumentPath(identity, active.fileIdentity.path, active.scopePath)) {
+        if (!await saveDocumentPath(identity, active.fileIdentity.path, active.scopePath)) {
           toast.error(t('document.version.saveCurrentFailed'));
           return;
         }

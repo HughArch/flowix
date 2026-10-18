@@ -1,4 +1,7 @@
-export { NoteReference } from '@features/editor/extensions/note-link/view-note';
+export {
+  ComposerNoteReference,
+  NoteReference,
+} from '@features/editor/extensions/note-link/view-note';
 export type { NoteReferenceAttrs } from '@features/editor/extensions/note-link/view-note';
 export {
   tryMatchPhysicalMemoPath,

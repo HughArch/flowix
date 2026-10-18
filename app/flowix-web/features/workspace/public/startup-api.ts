@@ -2,11 +2,12 @@ import { restoreAgentConversationWorkspace as restore } from '@features/workspac
 import { useWorkspaceRestoreStore } from '@features/workspace/store/workspace-restore-store';
 export {
   captureWorkspaceRestoreTarget,
-  restoreDocumentListWorkspace,
+  restoreLegacyFolderListWorkspace,
   restoreExternalDocumentWorkspace,
   restoreMediaWorkspace,
   restoreTableWorkspace,
   restoreCollectionWorkspace,
+  restoreFolderCollectionWorkspace,
 } from '@features/workspace/use-cases/workspace-navigation';
 export type { PersistedWorkspaceTarget } from '@features/workspace/store/workspace-restore-store';
 
@@ -15,6 +16,6 @@ export function setWorkspaceRestoreStatus(status: 'restoring' | 'restored' | 'un
 }
 
 /** Application bootstrap contract; keeps startup imports isolated from the use-case module graph. */
-export async function restoreAgentConversationWorkspace(): Promise<void> {
-  await restore();
+export async function restoreAgentConversationWorkspace(restoreRequestId?: number): Promise<void> {
+  await restore(restoreRequestId);
 }

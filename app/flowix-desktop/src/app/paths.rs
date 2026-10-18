@@ -1,6 +1,6 @@
 use std::path::PathBuf;
 
-/// 用户配置�?���?(~/.<NAME>/ 下放 index.db / boot/preference.json /
+/// 用户配置�?���?(~/.<NAME>/ 下放 db/*.db / boot/preference.json /
 /// agent-config.toml / boot/system.json 绛?銆?
 pub const USER_CONFIG_DIR_NAME: &str = ".flowix";
 

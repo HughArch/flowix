@@ -97,7 +97,7 @@ function percentageFromRate(rate: number | undefined): string {
 }
 
 /**
- * Agent Thread Card hover Agent 类型徽章弹出的卡片。
+ * Agent conversation identity badge 的运行信息卡片。
  *
  * 通用 metadata 协议字段均通过 props 传入,组件本身不读取 store。
  *
@@ -196,7 +196,7 @@ export function BadgeHoverCard({
       <HoverCardTrigger asChild>
         <span
           aria-hidden="true"
-          className="agent-thread-card__badge-hover-trigger"
+          className="agent-conversation-identity__badge-trigger"
           onPointerEnter={requestRuntimeInfo}
         />
       </HoverCardTrigger>

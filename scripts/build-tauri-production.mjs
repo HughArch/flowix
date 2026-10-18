@@ -7,8 +7,13 @@ import { applyTauriSigningKey } from './resolve-tauri-signing-key.mjs'
 
 const repoRoot = path.resolve(import.meta.dirname, '..')
 // Pi is part of every production desktop package. Keep --with-pi accepted for
-// backwards compatibility, but do not require it for the normal build command.
-process.env.FLOWIX_BUNDLE_PI = '1'
+// backwards compatibility; it is no longer a product feature switch.
+delete process.env.FLOWIX_BUNDLE_PI
+// Production packages always target the production Cloud, regardless of the
+// caller's shell environment or any local development override.
+process.env.FLOWIX_CLOUD_ENVIRONMENT = 'prod'
+delete process.env.FLOWIX_CLOUD_API_BASE
+delete process.env.FLOWIX_DEV_MODE
 applyTauriSigningKey()
 const npmEntrypoint = process.env.npm_execpath
 const tauriEntrypoint = path.resolve(repoRoot, 'node_modules/@tauri-apps/cli/tauri.js')
@@ -95,13 +100,9 @@ if (targetPlatform === 'darwin') {
 }
 else npmRun('cli:build:prod')
 
-if (process.env.FLOWIX_BUNDLE_PI === '1') {
-  const piArgs = ['scripts/prepare-pi-bundle.mjs', '--platform', targetPlatform]
-  if (requestedArch) piArgs.push('--arch', requestedArch)
-  run(process.execPath, piArgs)
-} else {
-  run(process.execPath, ['scripts/prepare-pi-catalog.mjs'])
-}
+const piArgs = ['scripts/prepare-pi-bundle.mjs', '--platform', targetPlatform]
+if (requestedArch) piArgs.push('--arch', requestedArch)
+run(process.execPath, piArgs)
 
 const tauriTargets = targetPlatform === 'darwin'
   ? requestedArch

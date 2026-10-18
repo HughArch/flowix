@@ -4,7 +4,7 @@ mod events;
 mod history;
 mod stream;
 
-pub const AGENT_TYPE: &str = "claude";
+pub const AGENT_TYPE: &str = "claudecode";
 
 // History API —— 读取 ~/.claude/projects/<encoded>/*.jsonl，还原为 ChatMessage 流。
 pub use history::{get_session, get_session_page, is_claude_session_id};

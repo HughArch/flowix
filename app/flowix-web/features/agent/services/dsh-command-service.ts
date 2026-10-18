@@ -1,3 +1,5 @@
+import { resolveAgentPreferenceRuntimeConfig } from "@features/agent/store/agent-user-preferences";
+import { useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-store";
 import type { ChatMessage } from "@/types";
 import { errorMessage } from "@/lib/error-message";
 import type { AgentRuntimeConfig, AgentTypeKey, RuntimeConfig } from "@/types/agent";
@@ -6,13 +8,12 @@ import {
   normalizeWorkspaceSnapshot,
 } from "@features/agent/runtime/workspace-snapshot";
 import { normalizeConversationWorkspaceState } from "@features/agent/runtime/conversation-workspace";
-import { resolveNotebookAgentFiles } from "@/lib/agent-access-defaults";
-import { useAgentAccessStore } from "@features/agent/store/agent-access-store";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
+import { ensureAgentPreferencesReady } from "@features/agent/store/agent-data-store";
 import { useNoteStore } from "@features/memo/store/note-store";
 import { agentClient } from "@features/agent/store/agent-client";
 
-export const DSH_AGENT_TYPE = "deepseek-harness" as const satisfies AgentTypeKey;
+export const DSH_AGENT_TYPE = "dsh" as const satisfies AgentTypeKey;
 
 export function isDshCompactCommand(command: string): boolean {
   return /^\/compact(?:[\t\n\r ]*)$/iu.test(command.trim());
@@ -73,8 +74,7 @@ export function buildDshCommandMessage(
   instanceRuntimeConfig?: RuntimeConfig | null,
   imagePaths: string[] = [],
 ): DshCommandMessage {
-  const session = useAgentSessionStore.getState();
-  const settings = session.sessionMeta.settings;
+  const preferences = resolveAgentPreferenceRuntimeConfig(DSH_AGENT_TYPE, instanceRuntimeConfig ?? undefined);
   const workspaceSnapshot =
     normalizeConversationWorkspaceState(instanceRuntimeConfig)?.desired ??
     normalizeWorkspaceSnapshot(instanceRuntimeConfig?.workspaceSnapshot);
@@ -82,18 +82,17 @@ export function buildDshCommandMessage(
   const notebook = notebookId
     ? useNoteStore.getState().notebooks.find((item) => item.id === notebookId)
     : useNoteStore.getState().selectedNotebook;
-  const accessState = useAgentAccessStore.getState();
   const defaultFiles = !workspaceSnapshot && notebookId
-    ? resolveNotebookAgentFiles(accessState.config, accessState.notebookConfigs, notebookId)
+    ? useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles(notebookId)
     : undefined;
 
   const runtimeConfig = buildAgentRuntimeConfig({
     typeKey: DSH_AGENT_TYPE,
     notebookPath: workspaceSnapshot?.notebookPath ?? notebook?.path,
-    permissionMode: settings.agentPermissionMode,
-    codexModel: settings.agentCodexModel,
-    codexReasoningEffort: settings.agentCodexReasoningEffort,
-    instanceRuntimeConfig: instanceRuntimeConfig ?? undefined,
+    permissionMode: preferences.access?.sandbox ?? "danger-full-access",
+    codexModel: preferences.model?.key ?? "inherit",
+    codexReasoningEffort: preferences.reasoningEffort ?? "medium",
+    instanceRuntimeConfig: preferences,
     defaultFiles,
     workspaceSnapshot,
   });
@@ -113,6 +112,7 @@ export async function executeDshCommand(input: {
   runtimeConfig?: RuntimeConfig | null;
   imagePaths?: string[];
 }): Promise<unknown> {
+  await ensureAgentPreferencesReady(DSH_AGENT_TYPE);
   return agentClient.executeDeepSeekHarnessCommand(
     input.threadId,
     input.command,

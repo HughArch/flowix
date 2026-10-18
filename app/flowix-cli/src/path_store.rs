@@ -1,6 +1,6 @@
 //! Path-addressed note operations shared by the CLI, MCP and operation API.
 use crate::{errors::CliError, store};
-use flowix_core::{memo_file::NotebookConfig, MemoService, NoteService};
+use flowix_core::{memo_file::NotebookConfig, NoteService};
 use serde_json::{json, Value};
 use std::{io::Read, path::Path};
 
@@ -67,7 +67,7 @@ fn document_json(document: &flowix_core::service::NoteDocument) -> Value {
 
 pub(crate) fn list(notebook_key: &str) -> Result<Value, CliError> {
     let mf = store::open()?;
-    let notebook = MemoService::new(&mf).resolve_notebook(notebook_key)?;
+    let notebook = store::resolve_notebook_config(&mf, notebook_key)?;
     mf.reconcile_note_index_blocking(&notebook.id)?;
     let notes = NoteService::new(&mf).list(&notebook.id)?;
     Ok(json!({"notebookId": notebook.id, "notes": notes}))
@@ -84,7 +84,7 @@ pub(crate) fn create(notebook_key: &str, content: &str) -> Result<Value, CliErro
         return Err(CliError::Usage("create: content is empty".into()));
     }
     let mf = store::open()?;
-    let notebook = MemoService::new(&mf).resolve_notebook(notebook_key)?;
+    let notebook = store::resolve_notebook_config(&mf, notebook_key)?;
     let parent = flowix_core::memo_file::default_create_folder_for_notebook(Path::new(&notebook.path))
         .map_err(CliError::Other)?;
     let document = NoteService::new(&mf).create(
@@ -181,9 +181,9 @@ pub(crate) fn search(
         })
         .transpose()?;
     let mf = store::open()?;
-    let configs = MemoService::new(&mf).list_notebooks()?;
+    let configs = mf.read_notebook_configs()?;
     let selected = if let Some(key) = notebook_filter {
-        vec![MemoService::new(&mf).resolve_notebook(key)?]
+        vec![store::resolve_notebook_config(&mf, key)?]
     } else {
         configs
     };

@@ -149,7 +149,7 @@ impl PropertyPresetStore {
         if let Some(parent) = self.path.parent() {
             std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        let mut connection = Connection::open(&self.path).map_err(|error| error.to_string())?;
+        let connection = Connection::open(&self.path).map_err(|error| error.to_string())?;
         connection
             .busy_timeout(Duration::from_secs(10))
             .map_err(|error| error.to_string())?;
@@ -158,8 +158,8 @@ impl PropertyPresetStore {
                 "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
             )
             .map_err(|error| error.to_string())?;
-        migrate_legacy_schema(&mut connection)?;
-        connection.execute_batch(
+        let migration_connection = connection;
+        migration_connection.execute_batch(
             "CREATE TABLE IF NOT EXISTS property_presets (
                 scope TEXT NOT NULL CHECK(scope IN ('system', 'user', 'deleted_user')),
                 id TEXT NOT NULL,
@@ -188,25 +188,30 @@ impl PropertyPresetStore {
                 completed_at INTEGER NOT NULL
              );",
         ).map_err(|error| error.to_string())?;
-        let has_position = {
-            let mut statement = connection
-                .prepare("PRAGMA table_info(property_presets)")
-                .map_err(|error| error.to_string())?;
-            let columns = statement
-                .query_map([], |row| row.get::<_, String>(1))
-                .map_err(|error| error.to_string())?
-                .collect::<Result<Vec<_>, _>>()
-                .map_err(|error| error.to_string())?;
-            columns.iter().any(|column| column == "position")
-        };
-        if !has_position {
-            connection
-                .execute_batch(
-                    "ALTER TABLE property_presets ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
-                )
-                .map_err(|error| error.to_string())?;
+        Ok(migration_connection)
+    }
+
+    /// Apply legacy SQLite shape changes from the explicit startup
+    /// initialization phase. Normal reads only open the current schema.
+    pub fn initialize_legacy_schema(&self) -> Result<(), String> {
+        if let Some(parent) = self.path.parent() {
+            std::fs::create_dir_all(parent).map_err(|error| error.to_string())?;
         }
-        Ok(connection)
+        let mut connection = Connection::open(&self.path).map_err(|error| error.to_string())?;
+        connection
+            .busy_timeout(Duration::from_secs(10))
+            .map_err(|error| error.to_string())?;
+        connection
+            .execute_batch(
+                "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
+            )
+            .map_err(|error| error.to_string())?;
+        flowix_core::memo_file::initialize_local_migration_table(&mut connection)
+            .map_err(|error| error.to_string())?;
+        migrate_legacy_schema(&mut connection)?;
+        drop(connection);
+        let _ = self.open()?;
+        Ok(())
     }
 
     pub fn get(&self) -> Result<PropertyPresetRegistry, String> {
@@ -405,8 +410,6 @@ impl PropertyPresetStore {
             if change.field.key.trim().is_empty()
                 || [
                     "flowix_property_types",
-                    "flowix_key",
-                    "key",
                     "flowix_plugin",
                 ]
                 .contains(&change.field.key.as_str())
@@ -471,6 +474,7 @@ impl PropertyPresetStore {
     /// Import the former preference.json registry once. Existing DB data wins.
     /// The marker and imported rows are committed atomically.
     pub fn migrate_legacy_once(&self, registry: &PropertyPresetRegistry) -> Result<bool, String> {
+        self.initialize_legacy_schema()?;
         let mut connection = self.open()?;
         let transaction = connection
             .transaction_with_behavior(TransactionBehavior::Immediate)

@@ -1,5 +1,3 @@
-use std::collections::HashMap;
-
 use super::*;
 
 impl MemoFile {
@@ -8,43 +6,11 @@ impl MemoFile {
         notebook_id: &str,
         parent: Option<&str>,
     ) -> std::io::Result<Vec<String>> {
-        if self.note_index_is_ready(notebook_id)? {
-            return self.note_occupied_filenames(notebook_id, parent);
+        if !self.note_index_is_ready(notebook_id)? {
+            self.reconcile_note_index_blocking(notebook_id)?;
         }
-        let conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
-        let mut stmt = conn
-            .prepare(
-                "SELECT filename FROM memos WHERE notebook_id = ?1 AND \
-             CASE WHEN relative_path = filename THEN '' \
-             ELSE substr(relative_path, 1, length(relative_path) - length(filename) - 1) END = ?2",
-            )
-            .map_err(sqlite_to_io)?;
-        let rows = stmt
-            .query_map(params![notebook_id, parent.unwrap_or("")], |row| row.get(0))
-            .map_err(sqlite_to_io)?;
-        rows.collect::<Result<Vec<_>, _>>().map_err(sqlite_to_io)
+        self.note_occupied_filenames(notebook_id, parent)
     }
-    /// Read every notebook's memo count from its notebook-local index.
-    pub fn memo_counts_by_notebook(&self) -> std::io::Result<HashMap<String, usize>> {
-        let mut counts = HashMap::new();
-        for notebook in self.read_notebook_configs()? {
-            if self.note_index_is_ready(&notebook.id)? {
-                counts.insert(notebook.id.clone(), self.note_count(&notebook.id)?);
-                continue;
-            }
-            let conn = self.open_memo_index_db_for_notebook_id(&notebook.id)?;
-            let count: i64 = conn
-                .query_row(
-                    "SELECT COUNT(*) FROM memos WHERE notebook_id = ?1",
-                    params![notebook.id],
-                    |row| row.get(0),
-                )
-                .map_err(sqlite_to_io)?;
-            counts.insert(notebook.id, usize::try_from(count).unwrap_or(0));
-        }
-        Ok(counts)
-    }
-
     pub fn read_index(&self) -> Option<MemoIndexFile> {
         let notebook_id = self.current_notebook_id_for_index();
         if let Ok(Some(cached)) = self.current_cached_index(&notebook_id) {
@@ -82,14 +48,19 @@ impl MemoFile {
         self.read_index_from_db(&conn, &notebook_id)
     }
 
-    pub fn resolve_memo_location(&self, memo_id: &str) -> std::io::Result<Option<MemoLocation>> {
-        for notebook_config in self.read_notebook_configs()? {
-            let conn = self.open_memo_index_db_for_notebook_id(&notebook_config.id)?;
-            let row = conn
+    pub fn resolve_note_location_for_notebook_id(
+        &self,
+        notebook_id: &str,
+        relative_path: &str,
+    ) -> std::io::Result<Option<MemoLocation>> {
+        let notebook_config = self.get_notebook_config_by_id(notebook_id).ok_or_else(|| {
+            std::io::Error::new(std::io::ErrorKind::NotFound, format!("notebook not found: {notebook_id}"))
+        })?;
+        let conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
+        let row = conn
                 .query_row(
                     r#"
                 SELECT
-                    m.id,
                     m.filename,
                     m.relative_path,
                     m.preview,
@@ -108,42 +79,40 @@ impl MemoFile {
                     n.updated_at
                 FROM memos m
                 JOIN notebooks n ON n.id = m.notebook_id
-                WHERE m.id = ?1
+                WHERE m.notebook_id = ?1 AND m.relative_path = ?2
                 LIMIT 1
                 "#,
-                    params![memo_id],
+                    params![notebook_id, relative_path],
                     |row| {
-                        let memo_id: String = row.get(0)?;
-                        let is_default: i64 = row.get(14)?;
+                        let is_default: i64 = row.get(13)?;
                         Ok((
                             MemoIndexEntry {
-                                id: memo_id,
-                                filename: row.get(1)?,
-                                relative_path: row.get(2)?,
-                                preview: row.get(3)?,
-                                thumbnail: row.get(4)?,
+                                filename: row.get(0)?,
+                                relative_path: row.get(1)?,
+                                preview: row.get(2)?,
+                                thumbnail: row.get(3)?,
                                 tags: Vec::new(),
                                 todos: Vec::new(),
                                 agents: Vec::new(),
-                                created_at: row.get(5)?,
-                                updated_at: row.get(6)?,
-                                favorited: row.get::<_, i64>(7)? != 0,
-                                icon: row.get(8)?,
+                                created_at: row.get(4)?,
+                                updated_at: row.get(5)?,
+                                favorited: row.get::<_, i64>(6)? != 0,
+                                icon: row.get(7)?,
                                 colors: Vec::new(),
                                 properties: serde_json::from_str::<serde_json::Value>(
-                                    &row.get::<_, String>(9)?,
+                                    &row.get::<_, String>(8)?,
                                 )
                                 .unwrap_or_else(|_| serde_json::json!({})),
                             },
                             NotebookConfig {
-                                id: row.get(10)?,
-                                name: row.get(11)?,
-                                icon: row.get(12)?,
-                                path: row.get(13)?,
+                                id: notebook_config.id.clone(),
+                                name: notebook_config.name.clone(),
+                                icon: notebook_config.icon.clone(),
+                                path: notebook_config.path.clone(),
                                 is_default: is_default != 0,
-                                sort: 0,
-                                created_at: row.get(15)?,
-                                updated_at: row.get(16)?,
+                                sort: notebook_config.sort,
+                                created_at: notebook_config.created_at,
+                                updated_at: notebook_config.updated_at,
                             },
                         ))
                     },
@@ -151,13 +120,11 @@ impl MemoFile {
                 .optional()
                 .map_err(sqlite_to_io)?;
 
-            let Some((mut memo, notebook)) = row else {
-                continue;
-            };
-            memo.tags = self.read_entry_tags(&conn, &memo.id)?;
-            memo.colors = self.read_entry_colors(&conn, &memo.id)?;
-            memo.todos = self.read_entry_todos(&conn, &memo.id)?;
-            memo.agents = self.read_entry_agents(&conn, &memo.id)?;
+        let Some((mut memo, notebook)) = row else {
+            return Ok(None);
+        };
+            memo.colors = self.read_entry_colors(&conn, &memo.relative_path)?;
+            memo.agents = self.read_entry_agents(&conn, &memo.relative_path)?;
             self.backfill_missing_properties(
                 &conn,
                 &notebook.id,
@@ -177,10 +144,7 @@ impl MemoFile {
                 std::slice::from_mut(&mut memo),
             )?;
 
-            return Ok(Some(MemoLocation { memo, notebook }));
-        }
-
-        Ok(None)
+        Ok(Some(MemoLocation { memo, notebook }))
     }
 
     pub fn read_index_result(&self) -> std::io::Result<Option<MemoIndexFile>> {
@@ -216,7 +180,6 @@ impl MemoFile {
 
     pub fn memo_to_index_entry(memo: &Memo) -> MemoIndexEntry {
         MemoIndexEntry {
-            id: memo.id.clone(),
             filename: memo.filename.clone(),
             relative_path: memo.relative_path.clone(),
             preview: memo.preview.clone(),
@@ -235,7 +198,6 @@ impl MemoFile {
 
     pub fn index_entry_to_memo(entry: &MemoIndexEntry) -> Memo {
         Memo {
-            id: entry.id.clone(),
             filename: entry.filename.clone(),
             relative_path: entry.relative_path.clone(),
             preview: entry.preview.clone(),
@@ -267,28 +229,19 @@ impl MemoFile {
         notebook_id: &str,
         memo: &Memo,
     ) -> std::io::Result<()> {
-        self.sync_index_on_write_for_notebook_id_locked_inner(notebook_id, memo, true)
-    }
-
-    pub(crate) fn sync_index_on_write_for_notebook_id_locked_without_projection(
-        &self,
-        notebook_id: &str,
-        memo: &Memo,
-    ) -> std::io::Result<()> {
-        self.sync_index_on_write_for_notebook_id_locked_inner(notebook_id, memo, false)
+        self.sync_index_on_write_for_notebook_id_locked_inner(notebook_id, memo)
     }
 
     fn sync_index_on_write_for_notebook_id_locked_inner(
         &self,
         notebook_id: &str,
         memo: &Memo,
-        refresh_projection: bool,
     ) -> std::io::Result<()> {
         let mut conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
         let old_path: Option<String> = conn
             .query_row(
-                "SELECT relative_path FROM memos WHERE notebook_id = ?1 AND id = ?2",
-                params![notebook_id, memo.id],
+                "SELECT relative_path FROM memos WHERE notebook_id = ?1 AND relative_path = ?2",
+                params![notebook_id, memo.relative_path],
                 |row| row.get(0),
             )
             .optional()
@@ -305,17 +258,15 @@ impl MemoFile {
             updated_at,
         )?;
         tx.commit().map_err(sqlite_to_io)?;
-        if refresh_projection {
-            if let Some(path) = old_path.filter(|path| path != &memo.relative_path) {
-                self.refresh_note_path(notebook_id, &path)?;
-            }
-            self.refresh_note_path(notebook_id, &memo.relative_path)?;
+        if let Some(path) = old_path.filter(|path| path != &memo.relative_path) {
+            self.refresh_note_path(notebook_id, &path)?;
         }
+        self.refresh_note_path(notebook_id, &memo.relative_path)?;
         if self.current_notebook_id_for_index() == notebook_id {
             let mut cache = self.index_cache.write().expect("index_cache poisoned");
             if let Some(index) = cache.as_mut() {
                 let entry = Self::memo_to_index_entry(memo);
-                if let Some(existing) = index.memos.iter_mut().find(|item| item.id == memo.id) {
+                if let Some(existing) = index.memos.iter_mut().find(|item| item.relative_path == memo.relative_path) {
                     *existing = entry;
                 } else {
                     index.memos.push(entry);
@@ -334,26 +285,26 @@ impl MemoFile {
         self.sync_index_on_write(memo)
     }
 
-    pub fn sync_index_on_delete(&self, memo_id: &str) -> std::io::Result<()> {
+    pub fn sync_index_on_delete(&self, relative_path: &str) -> std::io::Result<()> {
         let _guard = self.current_index_io.lock().expect("index_io poisoned");
-        self.sync_index_on_delete_locked(memo_id)
+        self.sync_index_on_delete_locked(relative_path)
     }
 
-    pub fn sync_index_on_delete_locked(&self, memo_id: &str) -> std::io::Result<()> {
+    pub fn sync_index_on_delete_locked(&self, relative_path: &str) -> std::io::Result<()> {
         let notebook_id = self.current_notebook_id_for_index();
-        self.sync_index_on_delete_for_notebook_id_locked(&notebook_id, memo_id)
+        self.sync_index_on_delete_for_notebook_id_locked(&notebook_id, relative_path)
     }
 
     pub fn sync_index_on_delete_for_notebook_id_locked(
         &self,
         notebook_id: &str,
-        memo_id: &str,
+        relative_path: &str,
     ) -> std::io::Result<()> {
         let mut conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
         let old_path: Option<String> = conn
             .query_row(
-                "SELECT relative_path FROM memos WHERE notebook_id = ?1 AND id = ?2",
-                params![notebook_id, memo_id],
+                "SELECT relative_path FROM memos WHERE notebook_id = ?1 AND relative_path = ?2",
+                params![notebook_id, relative_path],
                 |row| row.get(0),
             )
             .optional()
@@ -362,8 +313,8 @@ impl MemoFile {
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sqlite_to_io)?;
         tx.execute(
-            "DELETE FROM memos WHERE notebook_id = ?1 AND id = ?2",
-            params![notebook_id, memo_id],
+            "DELETE FROM memos WHERE notebook_id = ?1 AND relative_path = ?2",
+            params![notebook_id, relative_path],
         )
         .map_err(sqlite_to_io)?;
         self.mark_index_state(

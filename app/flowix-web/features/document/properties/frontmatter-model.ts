@@ -8,7 +8,9 @@ import { isValidTagPath } from '@/lib/tag-path';
 import { NOTE_COLORS } from '@/types/note-item';
 
 export const FRONTMATTER_RE = /^\uFEFF?(?:[ \t]*\r?\n)*---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
-export const SYSTEM_FRONTMATTER_KEYS = new Set(['flowix_key', 'key', PROPERTY_TYPES_KEY]);
+// Only editor metadata is hidden. Historical memo identity fields are ordinary
+// YAML properties and are no longer interpreted by note indexing.
+export const SYSTEM_FRONTMATTER_KEYS = new Set([PROPERTY_TYPES_KEY]);
 
 const FLOWIX_COLOR_SET = new Set<string>(NOTE_COLORS);
 
@@ -358,7 +360,7 @@ export function updateVisibleFrontmatterProperty(
   if (SYSTEM_FRONTMATTER_KEYS.has(nextKey)) {
     throw new FrontmatterPropertyError(
       'reserved-key',
-      'The system key property is managed by Flowix',
+      'This property is managed by the editor',
     );
   }
 

@@ -4,8 +4,7 @@ import type { ReactNode } from 'react';
 import { AGENT_TYPES, isAgentTypeComingSoon } from '@/lib/agent-types';
 import { cn } from '@/lib/utils';
 import { useI18n, type I18nKey } from '@/lib/i18n';
-import type { AgentTypeKey } from '@/types/agent';
-import type { AgentRuntimeAvailability } from '@platform/tauri/client';
+import type { AgentRuntimeSnapshot, AgentTypeKey } from '@/types/agent';
 import {
   normalizeAgentRuntimeStatus,
   type AgentRuntimeStatusView,
@@ -14,7 +13,7 @@ import { Button } from '@shared/ui/button';
 import { useAgentVisibilityPreferences } from '@features/preferences/public/runtime-api';
 import { AgentIcon } from '@features/agent/components/agent-icon';
 
-type AgentRuntimeStatusByType = Partial<Record<AgentTypeKey, AgentRuntimeAvailability>>;
+type AgentRuntimeStatusByType = Partial<Record<AgentTypeKey, AgentRuntimeSnapshot>>;
 
 interface AgentRuntimeStatusListProps {
   statusByType: AgentRuntimeStatusByType;
@@ -42,9 +41,8 @@ interface AgentRuntimeStatusListProps {
    */
   onCardClick?: (typeKey: AgentTypeKey) => void;
   /**
-   * 需要隐藏的 agent key 集合 ── 调用方传进来后, 这些 agent 既不渲染行
-   * 也不计入后续的 `renderAfterRow` / `onCardClick` 调用。偏好设置用来
-   * 临时下线尚未发布的 agent (openclaw / gemini) 而不影响其他入口。
+   * 需要隐藏的 agent key 集合。隐藏项既不渲染，也不会传给
+   * `renderAfterRow` / `onCardClick`。
    */
   hiddenKeys?: ReadonlySet<AgentTypeKey>;
 }
@@ -56,7 +54,7 @@ export function getAgentRuntimeStatusText({
   t,
 }: {
   typeKey?: AgentTypeKey;
-  status: AgentRuntimeAvailability | undefined;
+  status: AgentRuntimeSnapshot | undefined;
   isChecking: boolean;
   t?: (key: I18nKey) => string;
 }): string {
@@ -97,9 +95,9 @@ export function AgentRuntimeStatusList({
 }: AgentRuntimeStatusListProps) {
   const isVisible = (typeKey: AgentTypeKey) =>
     !hiddenKeys?.has(typeKey);
-  const visibleAgentTypes = AGENT_TYPES.filter((type) => isVisible(type.key));
+  const visibleAgentTypes = AGENT_TYPES.filter((type) => isVisible(type.id));
   const { t } = useI18n();
-  const { enabledByType: agentVisibility, setEnabled } = useAgentVisibilityPreferences();
+  const { enabledByType: agentEnabledByType, setEnabled } = useAgentVisibilityPreferences();
 
   // 解析 i18n 文案 ── 卡片有 nameKey/descKey 就走 t(), 缺省回退到 type.name
   // / type.desc 的硬编码英文 (供编辑器节点等非 React 上下文用)。
@@ -108,7 +106,7 @@ export function AgentRuntimeStatusList({
   const displayDesc = (type: (typeof AGENT_TYPES)[number]): string =>
     type.descKey ? t(type.descKey as Parameters<typeof t>[0]) : type.desc;
 
-  const setAgentSlashEnabled = (typeKey: AgentTypeKey, enabled: boolean) => {
+  const setAgentEnabled = (typeKey: AgentTypeKey, enabled: boolean) => {
     void setEnabled(typeKey, enabled);
   };
 
@@ -116,21 +114,21 @@ export function AgentRuntimeStatusList({
     return (
       <div>
         {visibleAgentTypes.map((type) => {
-          const status = statusByType[type.key];
-          const comingSoon = isAgentTypeComingSoon(type.key);
+          const status = statusByType[type.id];
+          const comingSoon = isAgentTypeComingSoon(type.id);
           const runtimeStatus = normalizeAgentRuntimeStatus(status, isChecking);
           const unavailable = comingSoon || isRuntimeUnavailable(runtimeStatus);
-          const statusText = getAgentRuntimeStatusText({ typeKey: type.key, status, isChecking, t });
+          const statusText = getAgentRuntimeStatusText({ typeKey: type.id, status, isChecking, t });
           const canSetup = !comingSoon && isRuntimeUnavailable(runtimeStatus) && Boolean(onSetupClick);
           const available = !comingSoon && runtimeStatus.state === 'ready';
-          const slashEnabled = agentVisibility[type.key] ?? true;
+          const agentEnabled = agentEnabledByType[type.id] ?? true;
 
           return (
             <div
-              key={type.key}
+              key={type.id}
               className={cn(
                 'rounded-lg border border-[var(--border)] overflow-hidden px-3 [&+&]:mt-3',
-                highlightedKey === type.key && 'bg-[var(--document-bg)]',
+                highlightedKey === type.id && 'bg-[var(--document-bg)]',
               )}
             >
               <div
@@ -141,12 +139,12 @@ export function AgentRuntimeStatusList({
                   // 行内已有的 stopPropagation 子节点 (switch / Setup 按钮 /
                   // headerAction) 不会冒泡到这里; 其它位置 (icon / name /
                   // desc / 空白) 落到这里触发展开。
-                  onCardClick(type.key);
+                  onCardClick(type.id);
                 } : undefined}
                 onKeyDown={onCardClick ? (e) => {
                   if (e.key === 'Enter' || e.key === ' ') {
                     e.preventDefault();
-                    onCardClick(type.key);
+                    onCardClick(type.id);
                   }
                 } : undefined}
                 className={cn(
@@ -158,7 +156,7 @@ export function AgentRuntimeStatusList({
                 <div className="flex min-w-0 items-center gap-3">
                   <span className="flex h-7 w-7 shrink-0 items-center justify-center rounded-full border border-[var(--border)] p-1">
                     <AgentIcon
-                      typeKey={type.key}
+                      typeKey={type.id}
                       alt={displayName(type)}
                       className={cn(
                         'h-full w-full object-contain',
@@ -191,13 +189,13 @@ export function AgentRuntimeStatusList({
                     <button
                       type="button"
                       role="switch"
-                      aria-checked={slashEnabled}
-                      aria-label={`${displayName(type)} slash menu visibility`}
-                      onClick={() => setAgentSlashEnabled(type.key, !slashEnabled)}
+                      aria-checked={agentEnabled}
+                      aria-label={t('preferences.agents.enableAgent', { name: displayName(type) })}
+                      onClick={() => setAgentEnabled(type.id, !agentEnabled)}
                       className={cn(
                         'relative h-5 w-9 rounded-full border transition-colors outline-none',
                         'focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2',
-                        slashEnabled
+                        agentEnabled
                           ? 'border-[var(--primary)] bg-[var(--primary)]'
                           : 'border-[var(--border)] bg-[var(--muted)]'
                       )}
@@ -205,11 +203,11 @@ export function AgentRuntimeStatusList({
                       <span
                         className={cn(
                           'absolute left-0.5 top-1/2 h-4 w-4 -translate-y-1/2 rounded-full bg-[var(--card)] shadow-sm transition-transform',
-                          slashEnabled ? 'translate-x-4' : 'translate-x-0'
+                          agentEnabled ? 'translate-x-4' : 'translate-x-0'
                         )}
                       />
                     </button>
-                    {headerAction?.(type.key)}
+                    {headerAction?.(type.id)}
                   </div>
                 ) : canSetup ? (
                   <div
@@ -219,11 +217,11 @@ export function AgentRuntimeStatusList({
                     <Button
                       variant="outline"
                       className="px-3"
-                      onClick={() => onSetupClick?.(type.key)}
+                      onClick={() => onSetupClick?.(type.id)}
                     >
                       {t('agent.status.setup')}
                     </Button>
-                    {headerAction?.(type.key)}
+                    {headerAction?.(type.id)}
                   </div>
                 ) : (
                   <div
@@ -238,11 +236,11 @@ export function AgentRuntimeStatusList({
                     >
                       {statusText}
                     </span>
-                    {headerAction?.(type.key)}
+                    {headerAction?.(type.id)}
                   </div>
                 )}
               </div>
-              {renderAfterRow?.(type.key)}
+              {renderAfterRow?.(type.id)}
             </div>
           );
         })}
@@ -253,19 +251,19 @@ export function AgentRuntimeStatusList({
   return (
     <div className="space-y-0.5">
       {visibleAgentTypes.map((type) => {
-        const status = statusByType[type.key];
-        const comingSoon = isAgentTypeComingSoon(type.key);
+        const status = statusByType[type.id];
+        const comingSoon = isAgentTypeComingSoon(type.id);
         const runtimeStatus = normalizeAgentRuntimeStatus(status, isChecking);
         const unavailable = comingSoon || isRuntimeUnavailable(runtimeStatus);
-        const statusText = getAgentRuntimeStatusText({ typeKey: type.key, status, isChecking, t });
+        const statusText = getAgentRuntimeStatusText({ typeKey: type.id, status, isChecking, t });
         const interactive = !comingSoon && isRuntimeUnavailable(runtimeStatus) && Boolean(onSetupClick);
 
         return (
           <button
-            key={type.key}
+            key={type.id}
             type="button"
             disabled={!interactive}
-            onClick={() => onSetupClick?.(type.key)}
+            onClick={() => onSetupClick?.(type.id)}
             title={comingSoon ? statusText : unavailable ? runtimeStatus.reason ?? `${displayName(type)} is unavailable` : displayDesc(type)}
             className={cn(
               'group flex h-7 w-full items-center gap-2 rounded-md px-2 text-left outline-none transition-colors',
@@ -276,7 +274,7 @@ export function AgentRuntimeStatusList({
           >
             <span className="flex h-6 w-6 shrink-0 items-center justify-center rounded-full border border-[var(--border)] p-1">
               <AgentIcon
-                typeKey={type.key}
+                typeKey={type.id}
                 alt=""
                 className={cn(
                   'h-full w-full object-contain',

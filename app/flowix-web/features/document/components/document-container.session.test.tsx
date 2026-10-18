@@ -1,7 +1,7 @@
-import { act } from 'react';
+import { act, type ComponentProps } from 'react';
 import { invoke } from '@platform/tauri/core';
 import { createRoot, type Root } from 'react-dom/client';
-import type { Editor } from '@tiptap/core';
+import type { Editor, JSONContent } from '@tiptap/core';
 import { beforeEach, afterEach, describe, it, expect, vi } from 'vitest';
 import { DocumentContainer } from './document-container';
 import { DocumentSaveNotifications } from './document-save-status';
@@ -21,14 +21,27 @@ import { EditorView } from '@codemirror/view';
 import { publishAgentLocationRequest, peekAgentLocationRequest } from '../use-cases/agent-location-navigation';
 import * as attachmentIo from '@features/editor/extensions/attachment-link/upload/io';
 
-const mocks = vi.hoisted(() => ({ recoveryRead: vi.fn().mockResolvedValue(null), read: vi.fn(), write: vi.fn(), rename: vi.fn(), publish: vi.fn() }));
+const mocks = vi.hoisted(() => ({
+  recoveryRead: vi.fn().mockResolvedValue(null),
+  read: vi.fn(),
+  write: vi.fn(),
+  rename: vi.fn(),
+  publish: vi.fn(),
+  parseMarkdown: vi.fn<(markdown: string) => Promise<{
+    id: number;
+    ok: boolean;
+    document?: JSONContent;
+    workerMs?: number;
+    error?: string;
+  }>>(),
+}));
 vi.mock('@platform/tauri/core', () => ({ invoke: vi.fn(), convertFileSrc: (path: string) => `asset://localhost/${encodeURIComponent(path)}` }));
+vi.mock('@features/editor/markdown-parser', () => ({ parseMarkdownInWorker: mocks.parseMarkdown }));
 vi.mock('./lazy-document-editor', async () => ({
   LazyDocumentEditor: (await import('@features/editor/markdown-editor')).MarkdownEditor,
   preloadDocumentEditor: () => {},
 }));
-vi.mock('../use-cases/local-document-operations', async importOriginal => ({
-  ...await importOriginal<typeof import('../use-cases/local-document-operations')>(),
+vi.mock('../use-cases/local-document-operations', () => ({
   markdownFilenameForTitle: (path: string, title: string) => {
     const extension = path.match(/(\.markdown|\.md)$/i)?.[0] ?? '';
     const trimmed = title.trim();
@@ -67,7 +80,6 @@ vi.mock('@platform/tauri/window', () => ({ getCurrentWindow: () => ({ label: 'ma
 
 let root: Root; let container: HTMLDivElement; let sequence = 0;
 const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
-
 function pasteScreenshot(editor: Editor): ClipboardEvent {
   const event = new Event('paste', { bubbles: true, cancelable: true }) as ClipboardEvent;
   Object.defineProperty(event, 'clipboardData', {
@@ -81,7 +93,7 @@ function pasteScreenshot(editor: Editor): ClipboardEvent {
   return event;
 }
 
-function setup(initialBoth = true) {
+function setup(initialBoth = true, callbacks: Pick<ComponentProps<typeof DocumentContainer>, 'onContentStateChange' | 'onSurfaceLifecycleReady'> = {}) {
   const identity = { kind: 'md' as const, ...ensureFileDisplayIdentity('/container-' + ++sequence + '/A.md') };
   reconcileFileDisplays([identity]);
   let path = identity.path; let both = initialBoth; let mounts = 0;
@@ -90,7 +102,7 @@ function setup(initialBoth = true) {
   const leftReady = ready('left'); const rightReady = ready('right');
   const render = () => root.render(<I18nProvider language="en-US"><ShortcutsProvider overrides={{}}>
     <Toaster /><DocumentSaveNotifications /><ActionableNoticeHost />
-    <DocumentContainer fileIdentity={{ ...identity, path }} isExternalDocument externalEditorMode="markdown" externalScopePath={path.replace(/\/[^/]+$/, '')} onEditorReady={leftReady} />
+    <DocumentContainer {...callbacks} fileIdentity={{ ...identity, path }} isExternalDocument externalEditorMode="markdown" externalScopePath={path.replace(/\/[^/]+$/, '')} onEditorReady={leftReady} />
     {both && <DocumentContainer fileIdentity={{ ...identity, path }}
       isExternalDocument externalEditorMode="markdown" externalScopePath={path.replace(/\/[^/]+$/, '')} documentSessionMode="isolated" onEditorReady={rightReady} />}
   </ShortcutsProvider></I18nProvider>);
@@ -108,6 +120,39 @@ function setup(initialBoth = true) {
 }
 
 describe('real document container session lifecycle', () => {
+  it('reports loading until the editor is mounted, then registers its ready lifecycle', async () => {
+    const onContentStateChange = vi.fn();
+    const onSurfaceLifecycleReady = vi.fn();
+    const doc = setup(false, { onContentStateChange, onSurfaceLifecycleReady });
+    let finishParse!: (reply: {
+      id: number;
+      ok: boolean;
+      document?: JSONContent;
+      workerMs?: number;
+      error?: string;
+    }) => void;
+    mocks.parseMarkdown.mockImplementationOnce(() => new Promise((resolve) => { finishParse = resolve; }));
+    await act(async () => { doc.render(); });
+    expect(mocks.read).toHaveBeenCalled();
+    expect(mocks.parseMarkdown).toHaveBeenCalledWith('Body');
+    expect(doc.editors.left).toBeUndefined();
+    expect(onContentStateChange).toHaveBeenLastCalledWith({ status: 'loading', retainContent: true });
+    expect(onSurfaceLifecycleReady).not.toHaveBeenCalled();
+    expect(container.querySelector('[role="status"]')).not.toBeNull();
+    await act(async () => {
+      finishParse({
+        id: 1,
+        ok: true,
+        document: { type: 'doc', content: [{ type: 'paragraph' }] },
+        workerMs: 1,
+      });
+    });
+    expect(doc.editors.left).toBeDefined();
+    expect(onContentStateChange).toHaveBeenLastCalledWith({ status: 'ready' });
+    expect(onSurfaceLifecycleReady).toHaveBeenLastCalledWith(expect.objectContaining({ status: 'ready' }));
+    expect(container.querySelector('[role="status"]')).toBeNull();
+  });
+
   it('switches a rich Markdown view to source and consumes a pending Agent location after load', async () => {
     const doc = setup(false);
     mocks.read.mockResolvedValue('first\nsecond\nthird');
@@ -181,8 +226,9 @@ describe('real document container session lifecycle', () => {
   });
   beforeEach(() => {
     vi.useFakeTimers(); environment.IS_REACT_ACT_ENVIRONMENT = true;
-    vi.mocked(invoke).mockReset();
+    vi.mocked(invoke).mockReset().mockResolvedValue(undefined);
     useNoteStore.setState({ notebooks: [], selectedNotebook: null });
+    mocks.parseMarkdown.mockReset().mockRejectedValue(new Error('Web Workers are unavailable'));
     mocks.read.mockReset().mockResolvedValue('Body');
     mocks.recoveryRead.mockReset().mockResolvedValue(null);
     mocks.write.mockReset().mockImplementation(async request => ({ status: 'saved', path: request.path, content: request.content }));
@@ -315,8 +361,8 @@ describe('real document container session lifecycle', () => {
     await act(async () => { doc.render(); });
     vi.mocked(invoke).mockClear();
     await act(async () => { doc.editors.left!.commands.openFileDialog(); });
+    // The watch lease is unrelated lifecycle noise; assert no asset was saved.
     expect(invoke).not.toHaveBeenCalledWith('save_notebook_asset', expect.anything());
-    expect(vi.mocked(invoke).mock.calls.map(([command]) => command)).toEqual(['select_files']);
     expect(doc.editors.left!.getMarkdown()).toBe('Body');
   });
   it('opening a second view preserves scheduled autosave', async () => {
@@ -369,11 +415,11 @@ describe('real document container session lifecycle', () => {
     await act(async () => { await vi.advanceTimersByTimeAsync(300); });
     expect(findFileDisplayPath(doc.identity.displayId)).toBe(doc.identity.path);
     expect(mocks.write).toHaveBeenLastCalledWith(expect.objectContaining({ path: doc.identity.path, content: expect.stringContaining('retained body') }));
-    expect((container.querySelector('textarea.memo-title-editor') as HTMLTextAreaElement).value).toBe('A');
-    expect(getDocumentSession(doc.identity).restoredTitle?.draft).toBe('Taken');
     // A rejected rename restores the confirmed title and keeps the attempted
     // title recoverable through an explicit action.
+    expect((container.querySelector('textarea.memo-title-editor') as HTMLTextAreaElement).value).toBe('A');
     expect(container.textContent).toContain('Recover unsaved title');
+    expect(getDocumentSession(doc.identity).restoredTitle?.draft).toBe('Taken');
     expect(doc.mounts()).toBe(2);
   });
   it('autosaves committed content without submitting or closing an active property draft', async () => {

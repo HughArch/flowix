@@ -7,15 +7,15 @@ import {
   type MediaHistoryEntry,
 } from '@features/document/store/document-history-store';
 import {
-  flushDocumentPath,
+  prepareDocumentLeave,
+  saveDocumentPath,
   rebaseActiveDocumentPath,
 } from '@features/document/store/document-session-service';
-import { findFileDisplayId, rebaseFileDisplayPath } from '@/lib/file-display-registry';
+import { findFileDisplayId, findFileDisplayPath, rebaseFileDisplayPath } from '@/lib/file-display-registry';
 import { canonicalPath } from '@/lib/path';
 import type { DocumentIdentity } from '@features/document/store/document-identity';
 import { rebaseRecoveryDraftPath } from '@features/document/store/recovery-draft-store';
-import { waitForSaveQueue } from '@features/document/store/save-queue';
-import { documentIdentityKey } from '@features/document/store/document-identity';
+export { rebaseStoredRecoveryDraftPaths } from '@features/document/store/recovery-draft-store';
 import { listDocumentSessions } from '@features/document/store/document-runtime-session';
 import { applyLoadedDocumentContent, captureLatestDocumentContent, hasDocumentUnsavedChanges } from '@features/document/store/document-session-service';
 import { subscribeDocumentBufferChanges } from '@features/document/store/buffer-registry';
@@ -51,11 +51,6 @@ export function subscribeWorkspaceDocumentSaves(listener: () => void): () => voi
   return subscribeDocumentBufferChanges((_identity, reason) => {
     if (reason === 'save_settled') listener();
   });
-}
-
-/** Navigation waits for document persistence without knowing queue keys. */
-export function waitForWorkspaceDocumentSaves(identity: DocumentIdentity): Promise<boolean> {
-  return waitForSaveQueue(documentIdentityKey(identity));
 }
 
 export function getWorkspaceDocumentPaths(): string[] {
@@ -103,13 +98,17 @@ export function recordWorkspaceDocumentNavigation(
 export function replaceWorkspaceDocumentPath(
   identity: DocumentIdentity,
   path: string,
-): void {
+): boolean {
   const previous = canonicalPath(identity.path);
   const next = canonicalPath(path);
-  if (!previous || !next || previous === next) return;
-  if (!rebaseWorkspaceDocumentPath(identity, next)) return;
+  if (!previous || !next) return false;
+  // A command response and its broadcast can confirm the same move. Allow
+  // callers to finish projections, but never rebase a display already at C.
+  if (findFileDisplayPath(identity.displayId) === next) return true;
+  if (!rebaseWorkspaceDocumentPath(identity, next)) return false;
   useDocumentStore.getState().replaceActiveExternalPath(identity.displayId, next);
   useDocumentHistoryStore.getState().replaceFilePath(previous, next);
+  return true;
 }
 
 /** Rebase the shared live document identity after either a Memo or file rename. */
@@ -129,12 +128,21 @@ export function rebaseWorkspaceDocumentPath(
   return true;
 }
 
-export async function flushWorkspaceDocumentPath(
+export async function prepareWorkspaceDocumentLeave(
   identity: DocumentIdentity,
   path: string,
   scopePath?: string | null,
 ): Promise<boolean> {
-  return flushDocumentPath(identity, path, scopePath);
+  return prepareDocumentLeave(identity, path, scopePath);
+}
+
+/** Destructive writes must wait until the current editor body and title are durable. */
+export async function saveWorkspaceDocumentPath(
+  identity: DocumentIdentity,
+  path: string,
+  scopePath?: string | null,
+): Promise<boolean> {
+  return saveDocumentPath(identity, path, scopePath);
 }
 
 export type {
@@ -146,6 +154,11 @@ export type {
 export function getWorkspaceDocumentHistory(): DocumentHistoryEntry[] {
   const state = useDocumentHistoryStore.getState();
   return [...state.backStack, ...state.forwardStack];
+}
+
+/** History remains addressable even when no live display owns its old path. */
+export function replaceWorkspaceDocumentHistoryPath(previousPath: string, path: string): void {
+  useDocumentHistoryStore.getState().replaceFilePath(previousPath, path);
 }
 export function subscribeWorkspaceDocumentHistory(listener: () => void): () => void {
   return useDocumentHistoryStore.subscribe(listener);

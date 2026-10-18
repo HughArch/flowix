@@ -1,10 +1,7 @@
-use std::fs::{self, OpenOptions};
-use std::io::Write;
+use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 include!(concat!(env!("OUT_DIR"), "/notebook_template_assets.rs"));
-
-const LEGACY_NOTES_MIGRATION_MARKER: &str = ".notes-template-migration-v1-complete";
 
 pub fn initialize(user_config_dir: &Path) -> Result<(), String> {
     initialize_notebook_templates(user_config_dir)?;
@@ -12,16 +9,18 @@ pub fn initialize(user_config_dir: &Path) -> Result<(), String> {
     let templates_dir = user_config_dir.join("templates");
     let notes_templates_dir = templates_dir.join("notes");
 
-    fs::create_dir_all(&notes_templates_dir)
+    flowix_core::memo_file::ensure_storage_directory(&notes_templates_dir)
         .map_err(|error| format!("create note template directory failed: {error}"))?;
-    migrate_legacy_note_templates(user_config_dir, &templates_dir, &notes_templates_dir)?;
+    migrate_legacy_note_templates(user_config_dir, &notes_templates_dir)?;
 
     Ok(())
 }
 
 pub fn initialize_notebook_templates(user_config_dir: &Path) -> Result<(), String> {
-    let notebook_templates_dir = user_config_dir.join("templates").join("notebook-templates");
-    fs::create_dir_all(&notebook_templates_dir)
+    let templates_dir = user_config_dir.join("templates");
+    flowix_core::memo_file::ensure_storage_directory(&templates_dir).map_err(|error| error.to_string())?;
+    let notebook_templates_dir = templates_dir.join("notebook-templates");
+    flowix_core::memo_file::ensure_storage_directory(&notebook_templates_dir)
         .map_err(|error| format!("create notebook template directory failed: {error}"))?;
     seed_notebook_templates_if_needed(&notebook_templates_dir)
 }
@@ -36,10 +35,23 @@ pub fn notes_templates_dir(user_config_dir: &Path) -> PathBuf {
 
 fn seed_notebook_templates_if_needed(target_dir: &Path) -> Result<(), String> {
     let index_path = target_dir.join("index.json");
+    if index_path.is_file() {
+        let bytes = fs::read(&index_path).map_err(|error| error.to_string())?;
+        let valid = serde_json::from_slice::<serde_json::Value>(&bytes).ok()
+            .and_then(|index| index.get("templates").cloned())
+            .and_then(|templates| serde_json::from_value::<Vec<crate::commands::memo::creates::NotebookTemplate>>(templates).ok())
+            .is_some_and(|templates| {
+                let mut ids = std::collections::HashSet::new();
+                templates.iter().all(|template| crate::commands::memo::creates::validate_notebook_template(template).is_ok() && ids.insert(template.id.clone()))
+            });
+        if !valid {
+            flowix_core::memo_file::backup_storage_file(&index_path).map_err(|error| error.to_string())?;
+        }
+    }
     if index_path.exists() {
         if !is_legacy_builtin_notebook_template_index(&index_path)? {
             migrate_builtin_scenario_ids_and_cover_urls(&index_path)?;
-            return Ok(());
+            return ensure_bundled_template_files(target_dir);
         }
 
         // Replace the previous built-in collection on upgrade. A custom
@@ -65,6 +77,12 @@ fn seed_notebook_templates_if_needed(target_dir: &Path) -> Result<(), String> {
             .map_err(|error| format!("replace legacy notebook template index failed: {error}"))?;
     }
 
+    ensure_bundled_template_files(target_dir)
+}
+
+// Called when templates are used, so partial deletion does not require a
+// version change or a startup scan. Existing files and custom indexes survive.
+fn ensure_bundled_template_files(target_dir: &Path) -> Result<(), String> {
     for &(relative, content) in NOTEBOOK_TEMPLATE_ASSETS
         .iter()
         .filter(|(relative, _)| *relative != "index.json")
@@ -90,7 +108,7 @@ fn seed_notebook_templates_if_needed(target_dir: &Path) -> Result<(), String> {
         .iter()
         .find_map(|(relative, content)| (*relative == "index.json").then_some(*content))
         .ok_or_else(|| "bundled notebook template index is missing".to_string())?;
-    write_if_missing(&index_path, index_content)?;
+    write_if_missing(&target_dir.join("index.json"), index_content)?;
 
     Ok(())
 }
@@ -258,61 +276,99 @@ fn migrate_builtin_scenario_ids_and_cover_urls(index_path: &Path) -> Result<(), 
 
 fn migrate_legacy_note_templates(
     user_config_dir: &Path,
-    templates_dir: &Path,
     notes_templates_dir: &Path,
 ) -> Result<(), String> {
     let legacy_dir = user_config_dir.join("template");
-    if !legacy_dir.is_dir() {
-        return Ok(());
+    let metadata = match fs::symlink_metadata(&legacy_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("inspect legacy note template directory failed: {error}")),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Err("legacy note template path is not a regular directory".to_string());
     }
+    copy_legacy_template_tree(&legacy_dir, &legacy_dir, notes_templates_dir)?;
 
-    let marker = templates_dir.join(LEGACY_NOTES_MIGRATION_MARKER);
-    if marker.exists() {
-        return Ok(());
-    }
+    fs::remove_dir_all(&legacy_dir)
+        .map_err(|error| format!("remove legacy note template directory failed: {error}"))
+}
 
-    let entries = fs::read_dir(&legacy_dir)
+fn copy_legacy_template_tree(
+    root: &Path,
+    source: &Path,
+    destination: &Path,
+) -> Result<(), String> {
+    let entries = fs::read_dir(source)
         .map_err(|error| format!("read legacy note template directory failed: {error}"))?;
     for entry in entries {
         let entry = entry.map_err(|error| format!("read legacy note template failed: {error}"))?;
         let file_type = entry
             .file_type()
             .map_err(|error| format!("inspect legacy note template failed: {error}"))?;
-        if !file_type.is_file() {
+        if file_type.is_symlink() {
             continue;
         }
-
-        let source = entry.path();
-        let extension = source
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .unwrap_or_default();
-        if !matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown") {
+        let path = entry.path();
+        let relative = path
+            .strip_prefix(root)
+            .map_err(|error| format!("resolve legacy note template path failed: {error}"))?;
+        if relative.components().any(|component| {
+            !matches!(component, Component::Normal(_))
+        }) {
             continue;
         }
-
-        let filename = source
-            .file_name()
-            .ok_or_else(|| "invalid legacy note template filename".to_string())?;
-        let target = notes_templates_dir.join(filename);
-        let content = fs::read(&source)
-            .map_err(|error| format!("read legacy note template failed: {error}"))?;
-        write_if_missing(&target, &content)?;
+        let target = destination.join(relative);
+        if file_type.is_dir() {
+            fs::create_dir_all(&target)
+                .map_err(|error| format!("create note template directory failed: {error}"))?;
+            copy_legacy_template_tree(root, &path, destination)?;
+        } else if file_type.is_file() {
+            let content = fs::read(&path)
+                .map_err(|error| format!("read legacy note template failed: {error}"))?;
+            write_if_missing(&target, &content)?;
+        }
     }
-
-    write_if_missing(&marker, b"completed\n")
+    Ok(())
 }
 
 fn write_if_missing(path: &Path, content: &[u8]) -> Result<(), String> {
-    let mut file = match OpenOptions::new().write(true).create_new(true).open(path) {
-        Ok(file) => file,
-        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => return Ok(()),
-        Err(error) => return Err(format!("create template file failed: {error}")),
-    };
-
-    if let Err(error) = file.write_all(content) {
-        let _ = fs::remove_file(path);
-        return Err(format!("write template file failed: {error}"));
+    match flowix_core::memo_file::atomic_create_bytes(path, content) {
+        Ok(()) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => Ok(()),
+        Err(error) => Err(format!("create template file failed: {error}")),
     }
-    Ok(())
+}
+
+#[cfg(test)]
+mod missing_dependency_tests {
+    use super::*;
+
+    #[test]
+    fn storage_rebuild_replaces_invalid_template_index() {
+        let temp = tempfile::tempdir().unwrap();
+        initialize_notebook_templates(temp.path()).unwrap();
+        let root = notebook_templates_dir(temp.path());
+        fs::write(root.join("index.json"), b"{broken").unwrap();
+        initialize_notebook_templates(temp.path()).unwrap();
+        let index: serde_json::Value =
+            serde_json::from_slice(&fs::read(root.join("index.json")).unwrap()).unwrap();
+        assert!(index["templates"].is_array());
+        assert!(root.join("rebuild-backups").exists());
+    }
+
+    #[test]
+    fn missing_runtime_dependencies_recreate_template_file_with_existing_index() {
+        let temp = tempfile::tempdir().unwrap();
+        initialize_notebook_templates(temp.path()).unwrap();
+        let root = notebook_templates_dir(temp.path());
+        let (relative, content) = NOTEBOOK_TEMPLATE_ASSETS
+            .iter()
+            .find(|(path, _)| *path != "index.json")
+            .unwrap();
+        let index = fs::read(root.join("index.json")).unwrap();
+        fs::remove_file(root.join(relative)).unwrap();
+        initialize_notebook_templates(temp.path()).unwrap();
+        assert_eq!(fs::read(root.join(relative)).unwrap(), *content);
+        assert_eq!(fs::read(root.join("index.json")).unwrap(), index);
+    }
 }

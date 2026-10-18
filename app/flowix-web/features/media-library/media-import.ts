@@ -43,7 +43,7 @@ export async function importMediaLibraryFiles({ paths, notebookId, notebookPath,
       const previous = imported.get(key);
       imported.set(key, {
         path, created: saved.created || previous?.created === true,
-        record: previous?.record ?? createMediaLibraryRecord(path.slice(rootPrefix.length), resource?.resource.id),
+        record: previous?.record ?? createMediaLibraryRecord(notebookId, path.slice(rootPrefix.length), resource?.resource.id),
       });
     } catch (error) {
       console.error('[MediaLibrary] Failed to import media:', error);

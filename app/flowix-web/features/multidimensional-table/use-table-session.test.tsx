@@ -33,10 +33,19 @@ it('reports external write failures, clears them for retry, and ignores stale se
     expect(session.document).toBeTruthy();
     const sequence = session.loadSequenceRef.current;
     act(() => session.setSaving(true));
+    const failedFlush = session.flush();
+    let completed = false;
+    void failedFlush.then(() => { completed = true; });
+    await Promise.resolve();
+    expect(completed).toBe(false);
     act(() => session.reportSaveFailure(sequence));
+    act(() => session.setSaving(true));
+    expect(session.saveFailed).toBe(true);
     act(() => session.setSaving(false));
     expect(session.saveFailed).toBe(true);
     expect(session.saving).toBe(false);
+    await expect(failedFlush).resolves.toBe(false);
+    await expect(session.flush()).resolves.toBe(false);
 
     act(() => session.setSaving(true));
     expect(session.saveFailed).toBe(false);
@@ -45,6 +54,7 @@ it('reports external write failures, clears them for retry, and ignores stale se
     await act(async () => { expect(await session.save(session.document!)).toBe(true); });
     expect(session.saveFailed).toBe(false);
     expect(session.saving).toBe(false);
+    await expect(session.flush()).resolves.toBe(true);
 
     await act(async () => session.load());
     act(() => session.reportSaveFailure(sequence));
@@ -75,9 +85,12 @@ it('retains data and pending writes across views, but reloads for another collec
     expect(mocks.read).toHaveBeenCalledTimes(1);
     act(() => session.reportSaveFailure(generation));
     expect(session.saveFailed).toBe(true);
+    const previousFlush = session.flush();
     await act(async () => root.render(<Probe displayId="other-view" collectionId="collection-b" />));
     expect(mocks.read).toHaveBeenCalledTimes(2);
     expect(session.loadSequenceRef.current).toBeGreaterThan(generation);
     expect(session.saveFailed).toBe(false);
+    await expect(previousFlush).resolves.toBe(false);
+    await expect(session.flush()).resolves.toBe(true);
   } finally { act(() => root.unmount()); }
 });

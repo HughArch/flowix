@@ -1,6 +1,6 @@
 import { create } from 'zustand';
 
-import type { WorkspaceHostId } from '@features/workspace/store/workspace-focus-store';
+import type { WorkspaceHostId } from '@features/workspace/public/host-api';
 import { subscribeFileDisplayRelease } from '@/lib/file-display-registry';
 import {
   documentIdentityKey,

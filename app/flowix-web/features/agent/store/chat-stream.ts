@@ -1,14 +1,12 @@
+import { resolveAgentPreferenceRuntimeConfig } from "./agent-user-preferences";
 import type {
-  AgentCodexModel,
-  AgentCodexReasoningEffort,
-  AgentPermissionMode,
   AgentTypeKey,
   RuntimeConfig,
 } from "@/types/agent";
 import { buildAgentRuntimeConfig } from "@features/agent/runtime/agent-runtime-spec";
 import { agentClient } from "@features/agent/store/agent-client";
-import { useAgentAccessStore } from "@features/agent/store/agent-access-store";
-import { resolveNotebookAgentFiles } from "@/lib/agent-access-defaults";
+import { ensureAgentPreferencesReady, useAgentDataStore } from "@features/agent/store/agent-data-store";
+import { ensureAgentWorkspaceReady, useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-store";
 import type { OutgoingUserPayload } from "@features/agent/store/user-message";
 import {
   markConversationWorkspaceStarted,
@@ -24,9 +22,6 @@ export interface DispatchChatStreamArgs {
   runId: string;
   userPayload: OutgoingUserPayload;
   agentType: AgentTypeKey;
-  permissionMode: AgentPermissionMode;
-  codexModel: AgentCodexModel;
-  codexReasoningEffort: AgentCodexReasoningEffort;
   /** Runtime config snapshot from the conversation instance. */
   runtimeConfig?: RuntimeConfig;
   imagePaths?: string[];
@@ -50,33 +45,33 @@ export async function dispatchChatStream({
   runId,
   userPayload,
   agentType,
-  permissionMode,
-  codexModel,
-  codexReasoningEffort,
   runtimeConfig: instanceRuntimeConfig,
   imagePaths,
   conversationTitle,
 }: DispatchChatStreamArgs): Promise<void> {
+  await ensureAgentPreferencesReady(agentType);
   // Thread Card 首次运行前会冻结 workspaceSnapshot，后续 turn 只使用快照。
-  // 没有快照的调用读取 notebook-local `.flowix/agent.json` add-dirs。
+  // 没有快照的调用读取 local.db notebook add-dirs。
   const workspaceSnapshot =
     normalizeConversationWorkspaceState(instanceRuntimeConfig)?.desired ??
     normalizeWorkspaceSnapshot(instanceRuntimeConfig?.workspaceSnapshot);
   const notebookId = instanceRuntimeConfig?.notebookId;
-  const accessState = useAgentAccessStore.getState();
+  if (!workspaceSnapshot && notebookId) await ensureAgentWorkspaceReady();
+  const userDefaults = useAgentDataStore.getState().agents;
   const defaultFiles = !workspaceSnapshot && notebookId
-    ? resolveNotebookAgentFiles(accessState.config, accessState.notebookConfigs, notebookId)
+    ? useAgentWorkspaceStore.getState().workspaceActions.getNotebookFiles(notebookId)
     : undefined;
+  const preferences = resolveAgentPreferenceRuntimeConfig(agentType, instanceRuntimeConfig);
   const runtimeConfig = buildAgentRuntimeConfig({
     typeKey: agentType,
     notebookPath: userPayload.systemReminderDirectory,
-    permissionMode,
-    codexModel,
-    codexReasoningEffort,
-    codexServiceTier: accessState.config.defaults?.runtime?.codex?.serviceTier,
-    instanceRuntimeConfig,
+    permissionMode: preferences.access?.sandbox ?? "danger-full-access",
+    codexModel: preferences.model?.key ?? "inherit",
+    codexReasoningEffort: preferences.reasoningEffort ?? "medium",
+    codexServiceTier: preferences.serviceTier,
+    instanceRuntimeConfig: preferences,
     defaultFiles,
-    piCodeMode: accessState.config.defaults?.runtime?.pi?.piCodeMode,
+    piCodeMode: userDefaults.pi.user.mode === "code",
     workspaceSnapshot,
   });
   if (instanceId) markConversationWorkspaceStarted(instanceId);

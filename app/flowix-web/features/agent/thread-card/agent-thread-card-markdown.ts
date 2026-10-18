@@ -2,7 +2,11 @@ import { Marked } from "marked";
 import { createLogger } from "@/lib/logger";
 import { normalizeAgentTypeKey } from "@/lib/agent-types";
 import { sanitizeLinkHref } from "@/lib/safe-link";
-import type { AgentThreadCardInputImage } from "@features/agent/thread-card/composer/composer-image-controller";
+import type { AgentThreadCardInputAttachment } from "@features/agent/thread-card/composer/composer-attachment-types";
+import {
+  LEGACY_THREAD_CARD_IMAGES_ATTRIBUTE,
+  THREAD_CARD_ATTACHMENTS_ATTRIBUTE,
+} from "@features/agent/thread-card/composer/composer-attachment-compat";
 import {
   getShiki,
   loadHighlighter,
@@ -25,7 +29,6 @@ interface FlowixAgentThreadCardMetadata {
   collapsed: boolean;
   fullscreen: boolean;
   inputDraft: string;
-  inputImages: AgentThreadCardInputImage[];
 }
 
 function isRecord(value: unknown): value is Record<string, unknown> {
@@ -252,39 +255,39 @@ export function decodeAgentThreadCardInputDraft(
   }
 }
 
-export function encodeAgentThreadCardInputImages(
-  images: AgentThreadCardInputImage[] | null | undefined,
+export function encodeAgentThreadCardInputAttachments(
+  attachments: AgentThreadCardInputAttachment[] | null | undefined,
 ): string {
-  return encodeURIComponent(JSON.stringify(images ?? []));
+  return encodeURIComponent(JSON.stringify(attachments ?? []));
 }
 
-export function decodeAgentThreadCardInputImages(
+export function decodeAgentThreadCardInputAttachments(
   value: string | null | undefined,
-): AgentThreadCardInputImage[] {
+): AgentThreadCardInputAttachment[] {
   if (!value) return [];
   try {
     const parsed = JSON.parse(decodeURIComponent(value));
     if (!Array.isArray(parsed)) return [];
     return parsed.filter(
-      (image): image is AgentThreadCardInputImage =>
-        !!image &&
-        typeof image.path === "string" &&
-        typeof image.mimeType === "string" &&
-        typeof image.name === "string",
+      (attachment): attachment is AgentThreadCardInputAttachment =>
+        !!attachment &&
+        typeof attachment.path === "string" &&
+        typeof attachment.mimeType === "string" &&
+        typeof attachment.name === "string",
     );
   } catch {
     return [];
   }
 }
 
-function parseAgentThreadCardInputImages(value: unknown): AgentThreadCardInputImage[] {
+function parseAgentThreadCardInputAttachments(value: unknown): AgentThreadCardInputAttachment[] {
   if (!Array.isArray(value)) return [];
   return value.filter(
-    (image): image is AgentThreadCardInputImage =>
-      !!image &&
-      typeof image.path === "string" &&
-      typeof image.mimeType === "string" &&
-      typeof image.name === "string",
+    (attachment): attachment is AgentThreadCardInputAttachment =>
+      !!attachment &&
+      typeof attachment.path === "string" &&
+      typeof attachment.mimeType === "string" &&
+      typeof attachment.name === "string",
   );
 }
 
@@ -295,6 +298,8 @@ function parseAgentThreadCardNodeAttrs(
   const stringValue = (value: unknown): string =>
     typeof value === "string" ? value : "";
   const inputDraftValue = stringValue(values.inputDraft);
+  const attachmentValue = values[THREAD_CARD_ATTACHMENTS_ATTRIBUTE]
+    ?? values[LEGACY_THREAD_CARD_IMAGES_ATTRIBUTE];
 
   return {
     threadId: stringValue(values.threadId) || null,
@@ -310,11 +315,11 @@ function parseAgentThreadCardNodeAttrs(
         ? decodeAgentThreadCardInputDraft(inputDraftValue)
         : inputDraftValue
       : null,
-    inputImages: inputDraftEncoded
-      ? decodeAgentThreadCardInputImages(
-        typeof values.inputImages === "string" ? values.inputImages : undefined,
+    [THREAD_CARD_ATTACHMENTS_ATTRIBUTE]: inputDraftEncoded
+      ? decodeAgentThreadCardInputAttachments(
+        typeof attachmentValue === "string" ? attachmentValue : undefined,
       )
-      : parseAgentThreadCardInputImages(values.inputImages),
+      : parseAgentThreadCardInputAttachments(attachmentValue),
   };
 }
 
@@ -511,9 +516,124 @@ cardMarked.use({
   ],
 });
 
+function splitPipeTableRow(line: string): string[] | null {
+  const trimmed = line.trim();
+  if (!trimmed.includes("|")) return null;
+
+  const cells: string[] = [];
+  let cell = "";
+  let escaped = false;
+  for (const character of trimmed) {
+    if (character === "|" && !escaped) {
+      cells.push(cell.trim());
+      cell = "";
+    } else {
+      cell += character;
+    }
+    if (character === "\\" && !escaped) escaped = true;
+    else escaped = false;
+  }
+  cells.push(cell.trim());
+
+  if (trimmed.startsWith("|") && cells[0] === "") cells.shift();
+  if (trimmed.endsWith("|") && cells[cells.length - 1] === "") cells.pop();
+  return cells.length > 1 ? cells : null;
+}
+
+function isPipeTableSeparator(line: string): boolean {
+  const cells = splitPipeTableRow(line);
+  return !!cells?.length && cells.every((cell) => /^:?-{1,}:?$/.test(cell));
+}
+
+/**
+ * Normalize Markdown for every Agent message role. Join blank-separated GFM
+ * table rows, and demote Setext headings so `xxx\n---` becomes text plus a
+ * horizontal rule. Fenced code is left untouched.
+ */
+function normalizeAgentThreadCardMarkdown(markdown: string): string {
+  const lines = markdown.split("\n");
+  const output: string[] = [];
+  let inFence = false;
+  let fenceCharacter = "";
+
+  for (let index = 0; index < lines.length;) {
+    const line = lines[index];
+    const fence = line.match(/^ {0,3}(`{3,}|~{3,})/);
+    if (inFence) {
+      output.push(line);
+      if (fence && fence[1][0] === fenceCharacter) inFence = false;
+      index += 1;
+      continue;
+    }
+    if (fence) {
+      inFence = true;
+      fenceCharacter = fence[1][0];
+      output.push(line);
+      index += 1;
+      continue;
+    }
+
+    if (
+      /^ {0,3}(?:-{1,}|={1,})[ \t]*$/.test(line) &&
+      output.length > 0 &&
+      output[output.length - 1].trim()
+    ) {
+      if (/^ {0,3}-{3,}[ \t]*$/.test(line)) {
+        output.push("", line);
+      } else {
+        const indent = line.match(/^ */)?.[0] ?? "";
+        output.push(`${indent}\\${line.trim()}`);
+      }
+      index += 1;
+      continue;
+    }
+
+    const headerCells = splitPipeTableRow(line);
+    if (headerCells) {
+      let separatorIndex = index + 1;
+      while (separatorIndex < lines.length && !lines[separatorIndex].trim()) {
+        separatorIndex += 1;
+      }
+      const separatorLine = lines[separatorIndex] ?? "";
+      const separatorCells = splitPipeTableRow(separatorLine);
+      if (
+        separatorCells &&
+        isPipeTableSeparator(separatorLine) &&
+        separatorCells.length === headerCells.length
+      ) {
+        output.push(line, separatorLine);
+        let rowIndex = separatorIndex + 1;
+        while (rowIndex < lines.length) {
+          let nextRowIndex = rowIndex;
+          while (nextRowIndex < lines.length && !lines[nextRowIndex].trim()) {
+            nextRowIndex += 1;
+          }
+          const rowCells = splitPipeTableRow(lines[nextRowIndex] ?? "");
+          if (!rowCells) {
+            output.push(...lines.slice(rowIndex, nextRowIndex));
+            index = nextRowIndex;
+            break;
+          }
+          output.push(lines[nextRowIndex]);
+          rowIndex = nextRowIndex + 1;
+          index = rowIndex;
+        }
+        if (rowIndex >= lines.length) index = rowIndex;
+        continue;
+      }
+    }
+
+    output.push(line);
+    index += 1;
+  }
+
+  return output.join("\n");
+}
+
 export function renderAgentThreadCardMarkdownToHtml(content: string): string {
   if (!content || !content.trim()) return "";
-  const html = cardMarked.parse(content) as string;
+  const normalizedContent = normalizeAgentThreadCardMarkdown(content);
+  const html = cardMarked.parse(normalizedContent) as string;
   // A Thread Card is a ProseMirror NodeView and therefore lives below the
   // editor's `.tiptap` element. Mark fenced blocks so editor-wide `pre`
   // selectors can explicitly leave agent message content alone.
@@ -670,7 +790,7 @@ export function renderAgentThreadCardMarkdown(node: {
 }): string {
   const stringValue = (value: unknown): string =>
     typeof value === "string" ? value : "";
-  const metadata: FlowixAgentThreadCardMetadata = {
+  const metadata: FlowixAgentThreadCardMetadata & Record<string, unknown> = {
     version: FLOWIX_AGENT_THREAD_CARD_METADATA_VERSION,
     instanceId: stringValue(node.attrs?.instanceId),
     threadId: stringValue(node.attrs?.threadId),
@@ -680,7 +800,11 @@ export function renderAgentThreadCardMarkdown(node: {
     collapsed: !!node.attrs?.collapsed,
     fullscreen: !!node.attrs?.fullscreen,
     inputDraft: stringValue(node.attrs?.inputDraft),
-    inputImages: parseAgentThreadCardInputImages(node.attrs?.inputImages),
   };
+  // Keep writing the established metadata key for older Flowix versions;
+  // parsed editor attributes and application code use `inputAttachments`.
+  metadata[LEGACY_THREAD_CARD_IMAGES_ATTRIBUTE] = parseAgentThreadCardInputAttachments(
+    node.attrs?.[THREAD_CARD_ATTACHMENTS_ATTRIBUTE],
+  );
   return `<!-- ${FLOWIX_AGENT_THREAD_CARD_MARKER} ${JSON.stringify(metadata)} -->\n`;
 }

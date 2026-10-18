@@ -1,3 +1,4 @@
+import { useAgentDataStore } from "./agent-data-store";
 import type {
   AgentCodexModel,
   AgentCodexReasoningEffort,
@@ -76,16 +77,16 @@ export function createSessionMetaSlice(
           ...state.sessionMeta,
           threadLists: {
             ...state.sessionMeta.threadLists,
-            "deepseek-harness": list,
+            dsh: list,
           },
         },
       })),
     setActiveThreadId: (threadId) =>
-      setActiveThread("deepseek-harness", threadId, false),
+      setActiveThread("dsh", threadId, false),
     setActiveCodexThreadId: (threadId) =>
       setActiveThread("codex", threadId, false),
     setActiveClaudeThreadId: (threadId) =>
-      setActiveThread("claude", threadId, false),
+      setActiveThread("claudecode", threadId, false),
     setActiveAgentTypeKey: (typeKey) =>
       set((state) => ({
         sessionMeta: { ...state.sessionMeta, activeAgentTypeKey: typeKey },
@@ -105,31 +106,12 @@ export function createSessionMetaSlice(
       }));
     },
     setAgentPermissionMode: (mode) =>
-      set((state) => ({
-        sessionMeta: {
-          ...state.sessionMeta,
-          settings: {
-            ...state.sessionMeta.settings,
-            agentPermissionMode: mode,
-          },
-        },
-      })),
+      useAgentDataStore.getState().setUserPreference("codex", { permission: mode }),
     setAgentCodexModel: (model) =>
-      set((state) => ({
-        sessionMeta: {
-          ...state.sessionMeta,
-          settings: { ...state.sessionMeta.settings, agentCodexModel: model },
-        },
-      })),
-    setAgentCodexReasoningEffort: (effort) =>
-      set((state) => ({
-        sessionMeta: {
-          ...state.sessionMeta,
-          settings: {
-            ...state.sessionMeta.settings,
-            agentCodexReasoningEffort: effort,
-          },
-        },
-      })),
+      useAgentDataStore.getState().setUserPreference("codex", { model: { id: model } }),
+    setAgentCodexReasoningEffort: (effort) => {
+      const store = useAgentDataStore.getState();
+      store.rememberModelReasoning("codex", store.agents.codex.user.model, effort);
+    },
   };
 }

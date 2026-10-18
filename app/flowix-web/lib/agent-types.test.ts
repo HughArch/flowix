@@ -1,32 +1,29 @@
 import { describe, expect, it } from 'vitest';
 
-import {
-  isAlwaysVisibleNewConversationAgent,
-  pickFirstAvailableAgent,
-} from './agent-types';
+import { pickFirstAvailableAgent } from './agent-types';
 
 describe('pickFirstAvailableAgent', () => {
   it('uses the requested priority when several runtimes are available', () => {
     expect(pickFirstAvailableAgent({
-      'deepseek-harness': { available: true },
+      'dsh': { available: true },
       opencode: { available: true },
-      claude: { available: true },
+      claudecode: { available: true },
       codex: { available: true },
-    })).toBe('deepseek-harness');
+    })).toBe('dsh');
   });
 
   it('falls through unavailable runtimes in priority order', () => {
     expect(pickFirstAvailableAgent({
-      claude: { available: true },
+      claudecode: { available: true },
       opencode: { available: true },
-      'deepseek-harness': { available: false },
-    })).toBe('claude');
+      'dsh': { available: false },
+    })).toBe('claudecode');
   });
 
   it('returns DeepSeek Harness when it is the only preferred runtime', () => {
     expect(pickFirstAvailableAgent({
-      'deepseek-harness': { available: true },
-    })).toBe('deepseek-harness');
+      'dsh': { available: true },
+    })).toBe('dsh');
   });
 
   it('returns null when no runtime is available', () => {
@@ -35,13 +32,4 @@ describe('pickFirstAvailableAgent', () => {
       opencode: { available: false },
     })).toBeNull();
   });
-});
-
-describe('new conversation agent menu visibility', () => {
-  it.each(['deepseek-harness', 'codex', 'claude'] as const)(
-    'always shows %s even when its runtime is unavailable or unchecked',
-    (typeKey) => {
-      expect(isAlwaysVisibleNewConversationAgent(typeKey)).toBe(true);
-    },
-  );
 });

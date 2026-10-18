@@ -1,6 +1,6 @@
 import type { NoteEntry } from '@platform/tauri/client';
 import type { TableField } from './model';
-import { matchesCollectionFilter, type CollectionRuleFilter } from '@features/collection/rule-filter';
+import { matchesDatasetFilter, type DatasetFilter } from '@features/collection/rule-filter';
 
 export function noteMatchesCollectionFilter(
   note: NoteEntry,
@@ -11,9 +11,9 @@ export function noteMatchesCollectionFilter(
   const path = note.relativePath.replace(/\\/g, '/');
   const filename = path.split('/').pop() ?? path;
   const directory = path.split('/').slice(0, -1).join('/');
-  const ruleMatches = (rule: Record<string, unknown>): boolean => {
-    const field = String(rule.field ?? '');
-    const operator = String(rule.op ?? '');
+  const ruleMatches = (rule: { field: string; op: string; value: unknown }): boolean => {
+    const field = rule.field;
+    const operator = rule.op;
     const expected = rule.value;
     let actual: unknown;
     if (field === 'kind') actual = 'note';
@@ -49,5 +49,5 @@ export function noteMatchesCollectionFilter(
       return normalized.includes(expected);
     });
   };
-  return matchesCollectionFilter(filter as unknown as CollectionRuleFilter, ruleMatches);
+  return matchesDatasetFilter(filter as unknown as DatasetFilter, ruleMatches);
 }

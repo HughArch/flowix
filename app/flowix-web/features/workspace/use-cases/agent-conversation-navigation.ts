@@ -8,29 +8,38 @@ import { clearWorkspaceDocument, closeAgentTarget, openAgentTarget } from './wor
 
 export async function selectAndOpenAgentConversation(
   instanceId: string,
-  options?: { history?: 'push' | 'skip'; destination?: 'main-third'; blankIfMissing?: true },
+  options?: { history?: 'push' | 'skip'; destination?: 'main-third'; blankIfMissing?: true; restoreRequestId?: number },
 ): Promise<void> {
   const normalized = instanceId.trim();
-  if (!normalized) return;
+  if (!normalized || !isRestoreRequestCurrent(options?.restoreRequestId)) return;
 
   if (options?.blankIfMissing && !hasWorkspaceAgentConversation(normalized)) {
     const requestId = useWorkColumnStore.getState().navigation.requestId;
     try {
       const restored = await hydrateWorkspaceAgentConversation(normalized);
-      if (useWorkColumnStore.getState().navigation.requestId !== requestId) return;
+      if (useWorkColumnStore.getState().navigation.requestId !== requestId
+        || !isRestoreRequestCurrent(options?.restoreRequestId)) return;
       if (!restored) {
         await clearWorkspaceDocument();
         useWorkspaceRestoreStore.getState().clearAgentConversation(normalized);
         return;
       }
     } catch {
-      if (useWorkColumnStore.getState().navigation.requestId !== requestId) return;
+      if (useWorkColumnStore.getState().navigation.requestId !== requestId
+        || !isRestoreRequestCurrent(options?.restoreRequestId)) return;
       // A backend error is not proof that an empty draft has vanished. Keep
       // the target so the detail can show its normal loading error and retry.
     }
   }
 
-  const host = await openAgentTarget(normalized, options);
+  // A list click targets Work. Browser placement is a separate explicit
+  // openWorkspaceSurface request.
+  const host = await openAgentTarget(normalized, {
+    ...options,
+    destination: options?.destination ?? 'main-third',
+  });
+  const activeTarget = useWorkColumnStore.getState().navigation.target;
+  if (activeTarget.kind !== 'agent-conversation' || activeTarget.instanceId !== normalized) return;
   useWorkspaceRestoreStore.getState().selectAgentConversation(
     normalized,
     host === 'main-third',
@@ -46,7 +55,10 @@ export function clearRestoredAgentConversation(instanceId: string): void {
   useWorkspaceRestoreStore.getState().clearAgentConversation(instanceId);
 }
 
-export async function restoreAgentConversationWorkspace(): Promise<void> {
+export async function restoreAgentConversationWorkspace(
+  restoreRequestId = useWorkColumnStore.getState().navigation.requestId,
+): Promise<void> {
+  if (!isRestoreRequestCurrent(restoreRequestId)) return;
   const store = useWorkspaceRestoreStore.getState();
   const desiredTarget = store.desiredTarget;
   const instanceId = desiredTarget?.kind === 'agent-conversation'
@@ -56,6 +68,7 @@ export async function restoreAgentConversationWorkspace(): Promise<void> {
 
   const blankIfMissing = desiredTarget?.kind === 'agent-conversation'
     && desiredTarget.blankIfMissing === true;
+  const navigationRevision = restoreRequestId;
   let restored: Awaited<ReturnType<typeof hydrateWorkspaceAgentConversation>> = null;
   let restoreFailed = false;
 
@@ -68,17 +81,21 @@ export async function restoreAgentConversationWorkspace(): Promise<void> {
 
   const currentTarget = useWorkspaceRestoreStore.getState().desiredTarget;
   if (
-    currentTarget?.kind !== 'agent-conversation'
+    useWorkColumnStore.getState().navigation.requestId !== navigationRevision
+    || !isRestoreRequestCurrent(restoreRequestId)
+    || currentTarget?.kind !== 'agent-conversation'
     || currentTarget.instanceId.trim() !== instanceId
     || useWorkColumnStore.getState().navigation.phase === 'loading'
   ) return;
 
-  if (blankIfMissing && !restoreFailed && restored === null) {
-    // Empty drafts are intentionally memory-only. Their stale restore target
-    // should become the ordinary empty work column, not a missing-session page.
+  if (!restoreFailed && restored === null) {
+    // A rebuilt session store also invalidates formerly persisted selections.
+    // Confirmed absence returns to the ordinary empty work column.
     try {
       await clearWorkspaceDocument();
-      useWorkspaceRestoreStore.getState().clearAgentConversation(instanceId);
+      const latest = useWorkspaceRestoreStore.getState().desiredTarget;
+      if (latest?.kind !== 'agent-conversation' || latest.instanceId.trim() !== instanceId) return;
+      useWorkspaceRestoreStore.getState().clearAgentConversation();
       return;
     } catch (error) {
       console.error('Failed to clear missing empty conversation target:', error);
@@ -96,6 +113,11 @@ export async function restoreAgentConversationWorkspace(): Promise<void> {
   // target visible even when this eager lookup did not return an instance.
   await selectAndOpenAgentConversation(instanceId, {
     history: 'skip',
+    restoreRequestId,
     ...(blankIfMissing && restoreFailed ? { blankIfMissing: true as const } : {}),
   });
+}
+
+function isRestoreRequestCurrent(requestId: number | undefined): boolean {
+  return requestId === undefined || useWorkColumnStore.getState().navigation.requestId === requestId;
 }

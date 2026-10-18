@@ -10,7 +10,7 @@ import { DEFAULT_AGENT_TYPE_KEY } from "@/lib/agent-types";
 
 const streamStart = (runId: string, threadId = "t1") => ({
   kind: "stream_start" as const,
-  agentType: "deepseek-harness" as const,
+  agentType: "dsh" as const,
   threadId,
   runId,
   timestamp: 0,
@@ -19,7 +19,7 @@ const streamStart = (runId: string, threadId = "t1") => ({
 
 const textDelta = (text: string, runId: string, threadId = "t1") => ({
   kind: "text_delta" as const,
-  agentType: "deepseek-harness" as const,
+  agentType: "dsh" as const,
   threadId,
   runId,
   timestamp: 1000,
@@ -34,7 +34,7 @@ const textDelta = (text: string, runId: string, threadId = "t1") => ({
 
 const streamEnd = (runId: string, threadId = "t1") => ({
   kind: "stream_end" as const,
-  agentType: "deepseek-harness" as const,
+  agentType: "dsh" as const,
   threadId,
   runId,
   timestamp: 2000,
@@ -626,7 +626,7 @@ describe("useAgentSessionStore", () => {
     const store = useAgentSessionStore.getState();
     const threadId = "steer-stop-thread";
 
-    store.bindThreadType(threadId, "deepseek-harness");
+    store.bindThreadType(threadId, "dsh");
     store.dispatch(streamStart("steer-stop-run", threadId));
     store.enqueueSteeringMessage({
       id: "pending-steer-stop",
@@ -646,7 +646,7 @@ describe("useAgentSessionStore", () => {
     const threadId = "steer-error-thread";
     const runId = "steer-error-run";
 
-    store.bindThreadType(threadId, "deepseek-harness");
+    store.bindThreadType(threadId, "dsh");
     store.dispatch(streamStart(runId, threadId));
     store.enqueueSteeringMessage({
       id: "pending-steer-error",
@@ -657,7 +657,7 @@ describe("useAgentSessionStore", () => {
 
     store.dispatchAgentChunk({
       kind: "stream_end",
-      agent_type: "deepseek-harness",
+      agent_type: "dsh",
       thread_id: threadId,
       run_id: runId,
       reason: "provider exited unexpectedly",
@@ -670,7 +670,7 @@ describe("useAgentSessionStore", () => {
     const store = useAgentSessionStore.getState();
     const threadId = "steer-stale-end-thread";
 
-    store.bindThreadType(threadId, "deepseek-harness");
+    store.bindThreadType(threadId, "dsh");
     store.dispatch(streamStart("steer-old-run", threadId));
     store.dispatch(streamStart("steer-new-run", threadId));
     store.enqueueSteeringMessage({
@@ -682,7 +682,7 @@ describe("useAgentSessionStore", () => {
 
     store.dispatchAgentEvent({
       kind: "stream_end",
-      agentType: "deepseek-harness",
+      agentType: "dsh",
       threadId,
       runId: "steer-old-run",
       timestamp: 2,
@@ -737,7 +737,7 @@ describe("useAgentSessionStore", () => {
     const before = useAgentSessionStore.getState();
     before.dispatch({
       kind: "session_resolved",
-      agentType: "deepseek-harness",
+      agentType: "dsh",
       threadId: "t1",
       runId: "test-run",
       timestamp: 0,
@@ -811,7 +811,7 @@ describe("useAgentSessionStore persist", () => {
   });
 
   it("starts with current defaults when only obsolete CHAT data exists", async () => {
-    localStorage.setItem(STORAGE_KEYS.CHAT, JSON.stringify({ state: { activeAgentTypeKey: "claude" } }));
+    localStorage.setItem(STORAGE_KEYS.CHAT, JSON.stringify({ state: { activeAgentTypeKey: "claudecode" } }));
     const { useAgentSessionStore } = await import("@features/agent/store/agent-session-store");
     expect(useAgentSessionStore.getState().sessionMeta.activeAgentTypeKey).toBe(DEFAULT_AGENT_TYPE_KEY);
   });
@@ -852,7 +852,7 @@ describe("useAgentSessionStore persist", () => {
   it("ignores the obsolete CHAT key when AGENT_SESSION is present", async () => {
     localStorage.setItem(
       STORAGE_KEYS.CHAT,
-      JSON.stringify({ state: { activeAgentTypeKey: "claude" } }),
+      JSON.stringify({ state: { activeAgentTypeKey: "claudecode" } }),
     );
     localStorage.setItem(
       STORAGE_KEYS.AGENT_SESSION,

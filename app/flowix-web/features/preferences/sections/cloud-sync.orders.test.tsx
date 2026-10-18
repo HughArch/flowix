@@ -1,0 +1,144 @@
+import { act } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
+import { CloudSyncSection } from './cloud-sync';
+
+const mocks = vi.hoisted(() => ({
+  listBillingOrders: vi.fn(), checkBillingOrder: vi.fn(), listProducts: vi.fn(),
+  refreshMembership: vi.fn(), success: vi.fn(), info: vi.fn(), error: vi.fn(),
+  cloudState: { authenticated: true, account: { user: { id: 'usr_1', displayName: 'User' } } },
+}));
+vi.mock('@platform/tauri/client', () => ({ cloud: {
+  listBillingOrders: mocks.listBillingOrders,
+  checkBillingOrder: mocks.checkBillingOrder,
+  listProducts: mocks.listProducts,
+} }));
+vi.mock('@features/preferences/sections/pi-cloud-models-section', () => ({
+  PiCloudModelsSection: () => 'PI_MEMBER_MODELS_SECTION',
+}));
+vi.mock('@features/preferences/hooks/use-cloud-account-state', () => ({
+  useCloudAccountState: () => ({
+    state: mocks.cloudState,
+    refreshMembership: mocks.refreshMembership,
+  }),
+}));
+vi.mock('@/lib/i18n', async (importOriginal) => ({
+  ...await importOriginal<typeof import('@/lib/i18n')>(),
+  useI18n: () => ({ t: (key: string) => key }),
+}));
+vi.mock('@/lib/toast', () => ({ toast: { success: mocks.success, info: mocks.info, error: mocks.error } }));
+vi.mock('@platform/tauri/event-bus', () => ({ subscribe: () => () => {} }));
+vi.mock('@platform/tauri/opener', () => ({ openUrl: vi.fn() }));
+
+let container: HTMLDivElement;
+let root: Root;
+beforeEach(() => {
+  vi.clearAllMocks();
+  mocks.cloudState.authenticated = true;
+  mocks.listProducts.mockResolvedValue([]);
+  mocks.listBillingOrders.mockResolvedValue([{
+    id: 'ord_1', productName: 'Plan', amount: 390, currency: 'CNY', status: 'pending', createdAt: 0,
+  }]);
+  mocks.refreshMembership.mockResolvedValue('refreshed');
+  container = document.createElement('div');
+  document.body.append(container);
+  root = createRoot(container);
+});
+afterEach(async () => {
+  await act(async () => root.unmount());
+  container.remove();
+});
+
+async function clickCheck() {
+  await act(async () => root.render(<CloudSyncSection />));
+  const button = Array.from(container.querySelectorAll('button')).find(
+    (item) => item.textContent === 'preferences.cloud.order.check',
+  );
+  expect(button).toBeDefined();
+  await act(async () => button!.click());
+}
+
+it('hides Pi Cloud models while signed out', async () => {
+  mocks.cloudState.authenticated = false;
+  await act(async () => root.render(<CloudSyncSection />));
+  expect(container.textContent).not.toContain('PI_MEMBER_MODELS_SECTION');
+});
+
+it('shows Pi Cloud models while signed in', async () => {
+  await act(async () => root.render(<CloudSyncSection />));
+  expect(container.textContent).toContain('PI_MEMBER_MODELS_SECTION');
+});
+
+it.each([
+  ['unsupported', 'error', 'needsReview'],
+  ['dead_letter', 'error', 'needsReview'],
+  ['failed', 'error', 'syncFailed'],
+  ['processing', 'info', 'processing'],
+  ['pending', 'info', 'notConfirmed'],
+  ['unavailable', 'error', 'unavailable'],
+  ['refunded', 'info', 'refunded'],
+  ['future_status', 'error', 'unknownResult'],
+] as const)('presents %s accurately without reporting successful membership recovery', async (checkStatus, kind, message) => {
+  mocks.checkBillingOrder.mockResolvedValue({ status: 'pending', confirmed: false, checkStatus });
+  await clickCheck();
+  expect(mocks[kind]).toHaveBeenCalledWith(`preferences.cloud.order.${message}`);
+  expect(mocks.success).not.toHaveBeenCalled();
+  expect(mocks.refreshMembership).not.toHaveBeenCalled();
+  if (checkStatus === 'failed') {
+    expect(container.textContent).toContain('preferences.cloud.retry');
+  }
+});
+
+it('refreshes membership after a confirmed payment', async () => {
+  mocks.checkBillingOrder.mockResolvedValue({ status: 'paid', confirmed: true, checkStatus: 'processed' });
+  await clickCheck();
+  expect(mocks.refreshMembership).toHaveBeenCalledOnce();
+  expect(mocks.success).toHaveBeenCalledWith('preferences.cloud.order.confirmed');
+  expect(mocks.listBillingOrders).toHaveBeenCalledTimes(2);
+});
+
+it('shows the localized rate limit message and keeps retry available', async () => {
+  mocks.checkBillingOrder.mockRejectedValue('cloud API error 429 BILLING_RATE_LIMITED: too many checks');
+  await clickCheck();
+  expect(mocks.error).toHaveBeenCalledWith('preferences.cloud.order.rateLimited');
+  expect(container.textContent).toContain('preferences.cloud.retry');
+});
+
+it('reports a confirmed payment with a failed local refresh without showing success', async () => {
+  mocks.checkBillingOrder.mockResolvedValue({ status: 'paid', confirmed: true, checkStatus: 'processed' });
+  mocks.refreshMembership.mockResolvedValue('failed');
+  await clickCheck();
+  expect(mocks.error).toHaveBeenCalledWith('preferences.cloud.order.refreshFailed');
+  expect(mocks.success).not.toHaveBeenCalled();
+});
+
+it.each(['stale', 'skipped'])('does not show recovery feedback for a %s membership refresh', async (result) => {
+  mocks.checkBillingOrder.mockResolvedValue({ status: 'paid', confirmed: true, checkStatus: 'processed' });
+  mocks.refreshMembership.mockResolvedValue(result);
+  await clickCheck();
+  expect(mocks.success).not.toHaveBeenCalled();
+  expect(mocks.error).not.toHaveBeenCalled();
+});
+
+
+it('blocks purchases while an order is pending and enables them after payment confirmation', async () => {
+  mocks.listProducts.mockResolvedValue([{
+    id: 'product_1', name: 'Flowix Go', description: '',
+    price: { amount: 390, currency: 'CNY' },
+    entitlement: { storageBytes: 200 * 1024 * 1024, duration: { unit: 'month', count: 1 }, features: {} },
+  }]);
+  await act(async () => root.render(<CloudSyncSection />));
+  const purchaseButton = () => Array.from(container.querySelectorAll('button')).find(
+    (button) => button.textContent === 'preferences.cloud.plan.go.get',
+  )!;
+  expect(purchaseButton().disabled).toBe(true);
+  expect(container.textContent).toContain('preferences.cloud.order.pendingCheckout');
+
+  mocks.listBillingOrders.mockResolvedValue([{
+    id: 'ord_1', productName: 'Plan', amount: 390, currency: 'CNY', status: 'paid', createdAt: 0,
+  }]);
+  mocks.checkBillingOrder.mockResolvedValue({ status: 'paid', confirmed: true, checkStatus: 'processed' });
+  await clickCheck();
+  expect(purchaseButton().disabled).toBe(false);
+  expect(container.textContent).not.toContain('preferences.cloud.order.pendingCheckout');
+});

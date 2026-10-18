@@ -1,27 +1,37 @@
 'use client';
 
-import { lazy, Suspense, useEffect, useState } from "react";
+import { lazy, Suspense, useEffect, useRef, useState } from "react";
+import { CenteredLoadingSpinner } from "@shared/ui/centered-loading-spinner";
+import { useWorkspaceStartupStore, applyNativeStartupStatus } from "@/lib/store/workspace-startup-store";
 import { ErrorBoundary } from "@shared/error-boundary";
-import { Toaster } from "sonner";
+import { Toaster, toast } from "sonner";
 import { useAppPreferencesViewModel } from "@features/preferences/public/app-api";
 import { useAppAgentRuntimeViewModel } from "@features/agent/public/app-api";
 import { useApplyFontSettings } from "@features/preferences/public/app-api";
 import { ThemeProvider } from "@features/theme";
 import { NativeEditMenuBridge, ShortcutsProvider } from "@features/shortcuts";
-import { I18nProvider } from "@/lib/i18n";
+import { I18nProvider, useI18n, type I18nKey } from "@/lib/i18n";
 import { TooltipProvider } from "@shared/ui/tooltip";
 import "@features/shortcuts/actions";
-import { listenToUserConfigChanges, windows } from "@platform/tauri/client";
+import { boot, listenToUserConfigChanges, windows } from "@platform/tauri/client";
 import { syncUserConfigChange } from "./user-config-sync";
-import { useAgentAccessWindowSync } from "./use-agent-access-window-sync";
+import { useAgentWorkspaceWindowLifecycle } from "./use-agent-workspace-window-lifecycle";
 import { invalidateDshModelConfigs } from "@features/agent/public/app-api";
 import { createLogger } from "@/lib/logger";
 import { ActionableNoticeHost } from "@features/notifications/actionable-notice-host";
+import { NotebookSetupNoticeHost } from "@features/memo/components/notebook-setup-notice-host";
+import { NotebookSetupCoordinator } from "@features/memo/components/notebook-setup-coordinator";
+import { useAgentPersistenceError } from "@features/agent/public/app-api";
+import { translate, type AppLanguage } from "@/lib/i18n";
 
 const DocumentSaveNotifications = lazy(() => import('@features/document/public/app-api')
   .then(module => ({ default: module.DocumentSaveNotifications })));
 
 const logger = createLogger("app");
+
+function removeAppLoading() {
+  document.getElementById("app-loading")?.remove();
+}
 
 const MainWindow = lazy(() =>
   import("./main-window/main-window")
@@ -47,7 +57,93 @@ const AgentWindowEffects = lazy(() =>
   import("./agent-window-effects").then((module) => ({ default: module.AgentWindowEffects }))
 );
 
-function AppToaster() {
+function isTauriRuntime(): boolean {
+  return typeof window !== 'undefined'
+    && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
+}
+
+const startupProgressLabels: Record<string, I18nKey> = {
+  prepareDatabasePaths: 'startup.progress.prepareDatabasePaths',
+  prepareThreadDatabase: 'startup.progress.prepareThreadDatabase',
+  prepareSyncDatabase: 'startup.progress.prepareSyncDatabase',
+  prepareNotebookRegistry: 'startup.progress.prepareNotebookRegistry',
+  runMigrations: 'startup.progress.runMigrations',
+  config_dsh_layout_v2: 'startup.progress.migrateAgentLayout',
+  config_local_migrations_v1: 'startup.progress.migrateLocalConfiguration',
+  config_watcher_exclusions_v1: 'startup.progress.migrateWatcherSettings',
+  templates_v1: 'startup.progress.prepareTemplates',
+  prepareRuntimeStorage: 'startup.progress.prepareRuntimeStorage',
+  activateRuntime: 'startup.progress.activateRuntime',
+  completeInitialization: 'startup.progress.completeInitialization',
+};
+
+function startupProgressLabel(task: string): I18nKey {
+  if (task.startsWith('deferred:')) return 'startup.progress.deferredNotebookJobs';
+  if (task.includes(':notebook:')) return 'startup.progress.migrateNotebookStorage';
+  return startupProgressLabels[task] ?? 'startup.progress.runMigrations';
+}
+
+function StartupLoadingOverlay() {
+  const nativePhase = useWorkspaceStartupStore((state) => state.nativePhase);
+  const nativeStage = useWorkspaceStartupStore((state) => state.nativeStage);
+  const nativeStep = useWorkspaceStartupStore((state) => state.nativeStep);
+  const nativeProgress = useWorkspaceStartupStore((state) => state.nativeProgress);
+  const workspaceStatus = useWorkspaceStartupStore((state) => state.status);
+  const workbenchMounted = useWorkspaceStartupStore((state) => state.workbenchMounted);
+  const { t } = useI18n();
+  const visible = nativePhase === 'pending' || nativePhase === 'running'
+    || (nativePhase === 'ready' && (
+      workspaceStatus === 'idle'
+      || workspaceStatus === 'running'
+      || (workspaceStatus === 'ready' && !workbenchMounted)
+    ));
+  if (!visible) return null;
+  return (
+    <div className="fixed inset-0 z-[2147483646] flex items-center justify-center bg-[var(--frame-bg)]">
+      {nativePhase === 'running' && nativeStage === 'initialization' && nativeProgress ? (
+        <div className="flex w-72 flex-col items-center gap-3 text-sm text-[var(--muted-foreground)]">
+          <CenteredLoadingSpinner label={t('memo.navigation.preparingVersion')} />
+          <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--muted)]" role="progressbar"
+            aria-label={t('memo.navigation.preparingVersion')}
+            aria-valuemin={0} aria-valuemax={100} aria-valuenow={nativeProgress.percent}>
+            <div className="h-full rounded-full bg-[var(--brand)] transition-[width] duration-300 ease-out"
+              style={{ width: `${nativeProgress.percent}%` }} />
+          </div>
+          <span className="text-xs">
+            {t(startupProgressLabel(nativeProgress.task))}
+            {(!['prepareDatabasePaths', 'prepareThreadDatabase', 'prepareSyncDatabase', 'prepareNotebookRegistry',
+              'prepareRuntimeStorage', 'activateRuntime', 'completeInitialization'].includes(nativeProgress.task))
+              ? ` (${nativeProgress.completed}/${nativeProgress.total})`
+              : ''}
+          </span>
+        </div>
+      ) : (
+        <CenteredLoadingSpinner
+          label={nativePhase === 'running'
+            && nativeStage === 'initialization'
+            && nativeStep === 'versionInitialization'
+            ? t('memo.navigation.preparingVersion')
+            : undefined}
+        />
+      )}
+    </div>
+  );
+}
+
+function AppToaster({ language }: { language: AppLanguage }) {
+  const persistenceError = useAgentPersistenceError();
+  const lastPersistenceError = useRef<string | null>(null);
+
+  useEffect(() => {
+    if (!persistenceError) {
+      lastPersistenceError.current = null;
+      return;
+    }
+    if (lastPersistenceError.current === persistenceError) return;
+    lastPersistenceError.current = persistenceError;
+    toast.error(translate(language, "preferences.agents.cacheWriteFailed"));
+  }, [language, persistenceError]);
+
   return (
     <>
     <Toaster
@@ -57,13 +153,11 @@ function AppToaster() {
       closeButton={false}
     />
     <Suspense fallback={null}><DocumentSaveNotifications /></Suspense>
+    <NotebookSetupCoordinator />
+    <NotebookSetupNoticeHost />
     <ActionableNoticeHost />
     </>
   );
-}
-
-function removeAppLoading() {
-  document.getElementById("app-loading")?.remove();
 }
 
 function AppReadySignal() {
@@ -112,8 +206,8 @@ function useUnexpectedControlInputGuard() {
 
 function App() {
   useUnexpectedControlInputGuard();
-  useAgentAccessWindowSync();
   const [hash, setHash] = useState(() => window.location.hash);
+  useAgentWorkspaceWindowLifecycle({ deferUntilStage3: !hash.startsWith('#preferences') });
   const {
     language,
     format,
@@ -123,6 +217,62 @@ function App() {
   } = useAppPreferencesViewModel();
   const { refreshAgentRuntime } = useAppAgentRuntimeViewModel();
   useApplyFontSettings(format);
+
+  useEffect(() => {
+    const setNativeReady = () => useWorkspaceStartupStore.setState((state) => (
+      state.nativePhase === 'ready'
+        && state.nativeStage === 'workspacePreparation'
+        && state.nativeStep === 'ready'
+        && state.nativeError === null
+        && state.nativeProgress === null
+        ? state
+        : { ...state, nativePhase: 'ready', nativeStage: 'workspacePreparation', nativeStep: 'ready', nativeError: null, nativeProgress: null }
+    ));
+    if (hash.startsWith("#preferences") || !isTauriRuntime()) {
+      setNativeReady();
+      return;
+    }
+    let active = true;
+    let inFlight = false;
+    let timer: number | undefined;
+    const refresh = async () => {
+      if (inFlight) return;
+      inFlight = true;
+      try {
+        const status = await boot.getStartupStatus();
+        if (!active) return;
+        applyNativeStartupStatus(status);
+        if (status.phase === 'ready' || status.phase === 'failed') {
+          if (timer !== undefined) window.clearInterval(timer);
+          timer = undefined;
+        }
+      } catch {
+        if (active) setNativeReady();
+        if (timer !== undefined) window.clearInterval(timer);
+        timer = undefined;
+      } finally { inFlight = false; }
+    };
+    void refresh();
+    timer = window.setInterval(() => void refresh(), 250);
+    return () => {
+      active = false;
+      if (timer !== undefined) window.clearInterval(timer);
+    };
+  }, [hash]);
+
+  useEffect(() => {
+    const root = document.documentElement;
+    const handleFocus = () => { root.dataset.windowFocused = "true"; };
+    const handleBlur = () => { root.dataset.windowFocused = "false"; };
+    root.dataset.windowFocused = String(document.hasFocus());
+    window.addEventListener("focus", handleFocus);
+    window.addEventListener("blur", handleBlur);
+    return () => {
+      window.removeEventListener("focus", handleFocus);
+      window.removeEventListener("blur", handleBlur);
+      delete root.dataset.windowFocused;
+    };
+  }, []);
 
   useEffect(() => {
     void windows.applyMenuLanguage(language).catch((error) => {
@@ -176,8 +326,8 @@ function App() {
     const tab = hash.split("/")[1] || undefined;
     return (
       <ErrorBoundary language={language}>
-        <AppToaster />
         <I18nProvider language={language}>
+          <AppToaster language={language} />
           <ThemeProvider>
             <TooltipProvider>
               <ShortcutsProvider overrides={shortcutOverrides}>
@@ -196,9 +346,10 @@ function App() {
 
   return (
     <ErrorBoundary language={language}>
-      <AppToaster />
       <I18nProvider language={language}>
+        <AppToaster language={language} />
         <ThemeProvider>
+          <StartupLoadingOverlay />
           <Suspense fallback={null}>
             <AgentWindowEffects />
           </Suspense>
@@ -208,6 +359,7 @@ function App() {
           <TooltipProvider>
             <ShortcutsProvider overrides={shortcutOverrides}>
               <NativeEditMenuBridge />
+              {/* The root startup overlay stays mounted while this code loads. */}
               <Suspense fallback={null}>
                 <MainWindow />
                 <MainWindowReadySignal />

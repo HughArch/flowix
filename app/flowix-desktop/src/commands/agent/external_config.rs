@@ -12,26 +12,66 @@ use crate::app::state::AppState;
 const CODEX_VERSION_TOO_LOW_CODE: &str = "version-too-low";
 const CODEX_VERSION_TOO_LOW_REASON: &str = "Codex CLI version below 0.150.0";
 const MIN_CODEX_CLI_VERSION: (u64, u64, u64) = (0, 150, 0);
+const STARTUP_CLI_DETECTION_WAIT: std::time::Duration = std::time::Duration::from_secs(30);
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum InstallationState {
+    Unknown,
+    Installed,
+    Missing,
+}
+
+#[derive(Clone, Copy, Debug, Serialize)]
+#[serde(rename_all = "kebab-case")]
+enum ReadinessState {
+    Unknown,
+    Ready,
+    Blocked,
+}
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
-pub struct AgentRuntimeAvailability {
-    available: bool,
-    installed: bool,
+pub struct AgentRuntimeSnapshot {
+    installation: InstallationState,
+    readiness: ReadinessState,
     reason_code: Option<String>,
     reason: Option<String>,
+}
+
+impl AgentRuntimeSnapshot {
+    fn new(
+        installation: InstallationState,
+        readiness: ReadinessState,
+        reason_code: Option<&str>,
+        reason: Option<String>,
+    ) -> Self {
+        Self {
+            installation,
+            readiness,
+            reason_code: reason_code.map(str::to_string),
+            reason,
+        }
+    }
+}
+
+#[derive(Clone, Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct AgentRuntimeAgents {
+    pi: AgentRuntimeSnapshot,
+    codex: AgentRuntimeSnapshot,
+    #[serde(rename = "claudecode")]
+    claude_code: AgentRuntimeSnapshot,
+    opencode: AgentRuntimeSnapshot,
+    hermes: AgentRuntimeSnapshot,
+    #[serde(rename = "dsh")]
+    dsh: AgentRuntimeSnapshot,
 }
 
 #[derive(Clone, Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeStatus {
-    codex: AgentRuntimeAvailability,
-    claude: AgentRuntimeAvailability,
-    hermes: AgentRuntimeAvailability,
-    opencode: AgentRuntimeAvailability,
-    pi: AgentRuntimeAvailability,
-    #[serde(rename = "deepseek-harness")]
-    deepseek_harness: AgentRuntimeAvailability,
+    agents: AgentRuntimeAgents,
 }
 
 fn executable_available(path: &Path) -> bool {
@@ -50,24 +90,37 @@ fn executable_available(path: &Path) -> bool {
 
 /// 基于 `agent-external-config` 里�?录的 path 算单�?external agent 的可用性�?/// `path = None` -> �?���?(�?��探测没探�?; `path = Some` 但失�?-> not found;
 /// �?�� -> `None` (调用方再叠加 preflight 错�?, �?codex �?Node 依赖)�?
-fn external_availability(entry: AgentExternalEntry, label: &str) -> AgentRuntimeAvailability {
+fn external_availability(entry: AgentExternalEntry, label: &str) -> AgentRuntimeSnapshot {
     let available = entry
         .path
         .as_ref()
         .map(|p| executable_available(p))
         .unwrap_or(false);
-    let reason = match &entry.path {
-        None => Some(format!(
-            "{label} not configured (click Redetect in preferences)"
-        )),
-        Some(p) if !available => Some(format!("{label} not found ({})", p.display())),
-        Some(_) => None,
-    };
-    AgentRuntimeAvailability {
-        available,
-        installed: available,
-        reason_code: None,
-        reason,
+    match (&entry.path, available, entry.detected) {
+        (None, _, false) => AgentRuntimeSnapshot::new(
+            InstallationState::Unknown,
+            ReadinessState::Unknown,
+            Some("path-not-detected"),
+            Some(format!("{label} path has not been detected")),
+        ),
+        (None, _, true) => AgentRuntimeSnapshot::new(
+            InstallationState::Missing,
+            ReadinessState::Unknown,
+            Some("runtime-not-installed"),
+            Some(format!("{label} was not found")),
+        ),
+        (Some(path), false, _) => AgentRuntimeSnapshot::new(
+            InstallationState::Missing,
+            ReadinessState::Unknown,
+            Some("configured-path-missing"),
+            Some(format!("{label} not found ({})", path.display())),
+        ),
+        (Some(_), true, _) => AgentRuntimeSnapshot::new(
+            InstallationState::Installed,
+            ReadinessState::Ready,
+            None,
+            None,
+        ),
     }
 }
 
@@ -105,67 +158,70 @@ pub async fn agent_runtime_status(
     app: tauri::AppHandle,
     state: State<'_, AppState>,
 ) -> Result<AgentRuntimeStatus, String> {
+    let startup_detection_finished = tokio::time::timeout(
+        STARTUP_CLI_DETECTION_WAIT,
+        state.agent_external_config.wait_for_startup_detect(),
+    )
+    .await
+    .is_ok();
+    if !startup_detection_finished {
+        tracing::warn!(
+            wait_seconds = STARTUP_CLI_DETECTION_WAIT.as_secs(),
+            "startup CLI detection did not finish before the runtime status deadline"
+        );
+    }
     // The external CLI path comes from agent-external-config.json. Runtime
     // preflight can still add dependency details without hiding the entry.
     let cfg = &state.agent_external_config;
     let mut codex = external_availability(cfg.get_entry("codex"), "Codex CLI");
-    if codex.available {
+    if matches!(codex.installation, InstallationState::Installed) {
         if codex_version_is_too_low().await {
-            codex.available = false;
+            codex.readiness = ReadinessState::Blocked;
             codex.reason_code = Some(CODEX_VERSION_TOO_LOW_CODE.to_string());
             codex.reason = Some(CODEX_VERSION_TOO_LOW_REASON.to_string());
         } else {
-            codex.reason = crate::agent_external::codex::preflight_codex().err();
+            if let Err(reason) = crate::agent_external::codex::preflight_codex() {
+                codex.readiness = ReadinessState::Blocked;
+                codex.reason_code = Some("preflight-failed".to_string());
+                codex.reason = Some(reason);
+            }
         }
     }
-    let claude = external_availability(cfg.get_entry("claude"), "Claude Code CLI");
+    let claude_code = external_availability(cfg.get_entry("claudecode"), "Claude Code CLI");
     let hermes = external_availability(cfg.get_entry("hermes"), "Hermes Agent CLI");
     let opencode = external_availability(cfg.get_entry("opencode"), "OpenCode CLI");
-    let pi = {
-        use tauri::Manager;
-        let platform = match std::env::consts::OS {
-            "macos" => "darwin",
-            other => other,
-        };
-        let bundled = app.path().resource_dir().ok().is_some_and(|resources| {
-            let name = if cfg!(windows) { "pi.exe" } else { "pi" };
-            let arch = match std::env::consts::ARCH {
-                "aarch64" => "arm64",
-                "x86_64" => "x64",
-                other => other,
-            };
-            let root = resources.join("pi").join(format!("{platform}-{arch}"));
-            root.join("dist").join(name).is_file() || root.join(name).is_file()
-        });
-        let env_path_available = std::env::var_os("PI_CLI_PATH")
-            .map(PathBuf::from)
-            .as_deref()
-            .is_some_and(crate::agent_external::cli_resolver::is_executable_file);
-        let path_available = crate::agent_external::cli_resolver::which_in_path(
-            if cfg!(windows) { "pi.exe" } else { "pi" },
-            std::env::var_os("PATH").as_deref(),
+    let pi = if crate::agent_external::pi::resolve_pi_binary(&app).is_ok() {
+        AgentRuntimeSnapshot::new(
+            InstallationState::Installed,
+            ReadinessState::Ready,
+            None,
+            None,
         )
-        .is_some();
-        let installed_flowix = crate::agent_external::pi::installed_flowix_pi_binary().is_some();
-        let available = bundled || env_path_available || path_available || installed_flowix;
-        AgentRuntimeAvailability {
-            available,
-            installed: available,
-            reason_code: None,
-            reason: (!available)
-                .then(|| "Pi runtime not installed (or not included in this build)".to_string()),
-        }
+    } else {
+        AgentRuntimeSnapshot::new(
+            InstallationState::Missing,
+            ReadinessState::Unknown,
+            Some("runtime-not-installed"),
+            Some("The bundled Pi runtime is missing or not executable".to_string()),
+        )
     };
     let dsh_status = crate::dsh::status();
     let deepseek_harness = if !dsh_status.installed {
-        AgentRuntimeAvailability {
-            available: false,
-            installed: false,
-            reason_code: None,
-            reason: dsh_status
+        AgentRuntimeSnapshot::new(
+            InstallationState::Missing,
+            ReadinessState::Unknown,
+            Some("runtime-not-installed"),
+            dsh_status
                 .message
                 .or_else(|| Some("DeepSeek Harness runtime is not installed".to_string())),
-        }
+        )
+    } else if !dsh_status.app_server_profile_installed {
+        AgentRuntimeSnapshot::new(
+            InstallationState::Installed,
+            ReadinessState::Blocked,
+            Some("appserver-profile-not-installed"),
+            Some("Install the DSH App Server plugin from Flowix Preferences".to_string()),
+        )
     } else {
         match state.deepseek_harness.dsh_model_configs().await {
             Ok(configs)
@@ -177,41 +233,43 @@ pub async fn agent_runtime_status(
                     .is_ok()
                 }) =>
             {
-                AgentRuntimeAvailability {
-                    available: true,
-                    installed: true,
-                    reason_code: None,
-                    reason: None,
-                }
+                AgentRuntimeSnapshot::new(
+                    InstallationState::Installed,
+                    ReadinessState::Ready,
+                    None,
+                    None,
+                )
             }
-            Ok(configs) if configs.is_empty() => AgentRuntimeAvailability {
-                available: false,
-                installed: true,
-                reason_code: None,
-                reason: Some("No DeepSeek Harness model is configured".to_string()),
-            },
-            Ok(_) => AgentRuntimeAvailability {
-                available: false,
-                installed: true,
-                reason_code: None,
-                reason: Some("DeepSeek Harness has no usable model configuration".to_string()),
-            },
-            Err(error) => AgentRuntimeAvailability {
-                available: false,
-                installed: true,
-                reason_code: None,
-                reason: Some(format!("Could not read DeepSeek Harness models: {error}")),
-            },
+            Ok(configs) if configs.is_empty() => AgentRuntimeSnapshot::new(
+                InstallationState::Installed,
+                ReadinessState::Blocked,
+                Some("no-model-configured"),
+                Some("No DeepSeek Harness model is configured".to_string()),
+            ),
+            Ok(_) => AgentRuntimeSnapshot::new(
+                InstallationState::Installed,
+                ReadinessState::Blocked,
+                Some("no-usable-model"),
+                Some("DeepSeek Harness has no usable model configuration".to_string()),
+            ),
+            Err(error) => AgentRuntimeSnapshot::new(
+                InstallationState::Installed,
+                ReadinessState::Unknown,
+                Some("status-check-failed"),
+                Some(format!("Could not read DeepSeek Harness models: {error}")),
+            ),
         }
     };
 
     Ok(AgentRuntimeStatus {
-        codex,
-        claude,
-        hermes,
-        opencode,
-        pi,
-        deepseek_harness,
+        agents: AgentRuntimeAgents {
+            pi,
+            codex,
+            claude_code,
+            opencode,
+            hermes,
+            dsh: deepseek_harness,
+        },
     })
 }
 

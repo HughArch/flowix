@@ -1,24 +1,27 @@
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
-import { createTableDocument, serializeTableDocument } from '@features/multidimensional-table/model';
+import { createTableDocument, parseTableDocument, serializeTableDocument } from '@features/multidimensional-table/model';
 import { createMediaLibrary, serializeMediaLibrary } from '@features/media-library/model';
 import { ensureCollectionDisplay, reconcileCollectionDisplays } from '@/lib/collection-display-registry';
+import { workColumnTargetFilePath } from '../store/work-column-target';
+import { resolveWorkColumnContent } from '@features/surface/resolver';
 import { useWorkColumnStore } from '../store/work-column-store';
 import { useBrowserColumnStore } from '../store/browser-column-store';
 
-const mocks = vi.hoisted(() => ({ resolve: vi.fn(), read: vi.fn(), clear: vi.fn(async () => {}) }));
+const mocks = vi.hoisted(() => ({ resolve: vi.fn(), read: vi.fn(), write: vi.fn(), getAll: vi.fn(), clear: vi.fn(async () => {}) }));
 vi.mock('@platform/tauri/client', async (importOriginal) => ({
   ...await importOriginal<typeof import('@platform/tauri/client')>(),
-  collections: { resolve: mocks.resolve }, externalDocuments: { read: mocks.read },
+  collections: { resolve: mocks.resolve }, externalDocuments: { read: mocks.read, write: mocks.write }, notebooks: { getAll: mocks.getAll },
 }));
 vi.mock('@features/memo/public/workspace-api', () => ({ getWorkspaceMemoState: () => ({ notebooks: [{ id: 'book', path: '/book' }] }) }));
 vi.mock('@features/document/public/workspace-api', () => ({
   getWorkspaceDocumentState: () => ({ activeExternalSession: null, activeAgentConversationId: null, clearDocument: mocks.clear }),
   recordWorkspaceDocumentNavigation: vi.fn(),
 }));
-import { openCollectionTarget } from './workspace-navigation';
+import { openCollectionTarget, openTableTarget, openFolderCollection, resetCurrentCollectionView } from './workspace-navigation';
 
 beforeEach(() => {
   vi.clearAllMocks();
+  mocks.getAll.mockResolvedValue([{ id: 'book', path: '/book' }]);
   useBrowserColumnStore.getState().reset();
   const store = useWorkColumnStore.getState();
   store.commitNavigation(store.beginNavigation({ kind: 'empty' }, null), { kind: 'empty' });
@@ -77,4 +80,55 @@ it('revalidates an unavailable collection without clearing an identity conflict'
   expect(mocks.resolve).toHaveBeenCalledTimes(1);
   expect(mocks.read).not.toHaveBeenCalled();
   expect(useWorkColumnStore.getState().navigation.target).toMatchObject({ unavailableReason: '集合身份冲突，请先为副本生成新 ID' });
+});
+
+it('retains the selected file when a previously resolved collection disappears from the index', async () => {
+  const document = createTableDocument();
+  mocks.resolve.mockResolvedValueOnce({ relativePath: '11测试/新建多维日历.index.yaml', parseState: 'valid', collectionType: 'table', name: '日历', indexSequence: 1 })
+    .mockRejectedValue(new Error('COLLECTION_NOT_FOUND'));
+  const reference = { notebookId: 'book', collectionId: document.collection.id };
+  await openCollectionTarget(reference);
+  await openCollectionTarget(reference, { refresh: true });
+  expect(useWorkColumnStore.getState().navigation.target).toMatchObject({
+    filePath: '/book/11测试/新建多维日历.index.yaml', unavailableReason: '集合不存在或暂时无法读取',
+  });
+});
+
+it('opens a malformed calendar without withdrawing selection, then repairs it even while the index is unavailable', async () => {
+  const document = createTableDocument('calendar', '新建多维日历', 'standalone');
+  const damaged = serializeTableDocument(document).replace('placement: standalone', 'placement: standalone1');
+  const path = '/book/11测试/新建多维日历.index.yaml';
+  mocks.read.mockResolvedValue(damaged);
+  mocks.resolve.mockRejectedValue(new Error('COLLECTION_NOT_FOUND'));
+  mocks.write.mockResolvedValue({ status: 'saved' });
+  await openTableTarget(path, '/book/11测试', null);
+  const navigation = useWorkColumnStore.getState().navigation;
+  expect(navigation.phase).toBe('committed');
+  expect(workColumnTargetFilePath(navigation.target)).toBe(path);
+  expect(navigation.target).toMatchObject({ kind: 'table', notebookPath: '/book', notebookId: 'book', unavailableReason: '集合文件格式无效' });
+  const presentation = resolveWorkColumnContent({ navigation, document: null, pluginWorkbench: null, emptyMessage: '' });
+  expect(presentation).toMatchObject({ status: 'empty', actions: [{ id: 'reset-current-collection-view', enabled: true }] });
+
+  await resetCurrentCollectionView(path, '/book/11测试', null);
+  const write = mocks.write.mock.calls[0][0];
+  expect(write).toMatchObject({ filePath: path, scopePath: '/book', expectedContent: damaged });
+  const repaired = parseTableDocument(write.content);
+  expect(repaired.collection).toMatchObject({ id: document.collection.id, name: '新建多维日历', placement: 'standalone' });
+  expect(repaired.views.items).toEqual(document.views.items);
+  expect(useWorkColumnStore.getState().navigation.target).toMatchObject({ kind: 'table', filePath: path });
+  expect(useWorkColumnStore.getState().navigation.target).not.toHaveProperty('unavailableReason');
+});
+
+it('keeps a malformed folder collection selected and recoverable', async () => {
+  const document = createTableDocument('table', '项目', 'folder');
+  document.dataset.source = { scope: 'containing_folder', depth: 'descendants' };
+  mocks.read.mockResolvedValue(serializeTableDocument(document).replace('placement: folder', 'placement: broken'));
+  const { files } = await import('@platform/tauri/client');
+  const read = vi.spyOn(files, 'read').mockResolvedValue(await mocks.read());
+  try {
+    await openFolderCollection('book', '/book/项目');
+    expect(useWorkColumnStore.getState().navigation.target).toMatchObject({
+      kind: 'table', filePath: '/book/项目/.index.yaml', unavailableReason: '集合文件格式无效',
+    });
+  } finally { read.mockRestore(); }
 });

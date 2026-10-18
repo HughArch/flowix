@@ -156,7 +156,7 @@ impl SystemData {
         if let Some(parent) = path.parent() {
             fs::create_dir_all(parent)?;
         }
-        let data = Self::read_from_disk(&path).unwrap_or_default();
+        let data = flowix_core::memo_file::read_or_create_json(&path, SystemFile::default)?;
         Ok(Self {
             path,
             data: RwLock::new(data),
@@ -186,20 +186,6 @@ impl SystemData {
             tracing::error!("system data lock poisoned, recovering");
             poisoned.into_inner()
         })
-    }
-
-    fn read_from_disk(path: &PathBuf) -> Option<SystemFile> {
-        if !path.exists() {
-            return None;
-        }
-        let content = fs::read_to_string(path).ok()?;
-        match serde_json::from_str::<SystemFile>(&content) {
-            Ok(data) => Some(data),
-            Err(e) => {
-                tracing::warn!("system.json parse error: {e}, falling back to empty");
-                None
-            }
-        }
     }
 
     fn flush(&self, data: &SystemFile) -> std::io::Result<()> {
@@ -324,7 +310,6 @@ impl SystemData {
             .notebooks
             .entry(notebook_id.to_string())
             .or_default();
-        notebook.order = layout.iter().map(|item| item.id.clone()).collect();
         notebook.layout = layout;
         self.flush(&data)
     }

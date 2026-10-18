@@ -1,11 +1,12 @@
 import { canonicalPath } from '@/lib/path';
-import { findFileDisplayId } from '@/lib/file-display-registry';
-import { getWorkspaceDocumentState } from '@features/document/public/workspace-api';
+import { findFileDisplayId, listFileDisplayIdentities, suspendFileDisplayReconciliation } from '@/lib/file-display-registry';
+import { getWorkspaceDocumentState, getWorkspaceDocumentHistory, replaceWorkspaceDocumentHistoryPath } from '@features/document/public/workspace-api';
 import { getWorkspaceMemoState, updateNoteLinksAfterMove } from '@features/memo/public/workspace-api';
 import { useBrowserColumnStore } from '../store/browser-column-store';
 import { useWorkColumnStore } from '../store/work-column-store';
 import { useWorkspaceRestoreStore } from '../store/workspace-restore-store';
 import { replaceExternalDocumentPath } from './workspace-navigation';
+import { rebaseWorkspaceTargetPath } from '../model/path-move';
 
 /** Apply only a confirmed filesystem rename pair, never a guessed path match. */
 export function applyNotebookPathMove(input: {
@@ -22,7 +23,9 @@ export function applyNotebookPathMove(input: {
     || previousRelative.split('/').includes('..') || nextRelative.split('/').includes('..')) return;
   const previous = `${root}/${previousRelative}`;
   const next = `${root}/${nextRelative}`;
-  updateNoteLinksAfterMove(previous, next, input.directory);
+  if (input.directory || /\.(?:md|markdown)$/i.test(previous)) {
+    updateNoteLinksAfterMove(previous, next, input.directory);
+  }
   const movedPath = (candidate: string): string | null => {
     const path = canonicalPath(candidate);
     if (path === previous) return next;
@@ -33,18 +36,48 @@ export function applyNotebookPathMove(input: {
   const document = getWorkspaceDocumentState().activeExternalSession;
   const navigation = useWorkColumnStore.getState().navigation;
   const desired = useWorkspaceRestoreStore.getState().desiredTarget;
-  const candidates = [document?.fileIdentity.path];
+  const candidates = [document?.fileIdentity.path, ...listFileDisplayIdentities().map((identity) => identity.path)];
+  for (const entry of getWorkspaceDocumentHistory()) {
+    if (entry.kind === 'external') candidates.push(entry.path);
+    if (entry.kind === 'media') candidates.push(entry.filePath);
+  }
   for (const target of [navigation.target, navigation.pendingTarget, navigation.previousTarget, desired]) {
     if (target?.kind === 'external') candidates.push(target.path);
   }
   for (const tab of useBrowserColumnStore.getState().tabs) {
     if (tab.target.kind === 'file-browser') candidates.push(tab.target.activeFilePath ?? undefined);
   }
-  for (const path of new Set(candidates.filter((value): value is string => Boolean(value)))) {
-    const replacement = movedPath(path);
-    const displayId = findFileDisplayId(path);
-    if (replacement && displayId) replaceExternalDocumentPath(displayId, path, replacement);
-  }
+  const resume = suspendFileDisplayReconciliation();
+  try {
+    for (const path of new Set(candidates.filter((value): value is string => Boolean(value)))) {
+      const replacement = movedPath(path);
+      if (!replacement) continue;
+      const displayId = findFileDisplayId(path);
+      if (displayId) replaceExternalDocumentPath(displayId, path, replacement);
+      replaceWorkspaceDocumentHistoryPath(path, replacement);
+    }
+    const workspace = useWorkColumnStore.getState();
+    const navigation = workspace.navigation;
+    const rebase = <T extends Parameters<typeof rebaseWorkspaceTargetPath>[0]>(target: T) =>
+      rebaseWorkspaceTargetPath(target, previous, next, input.directory);
+    const target = rebase(navigation.target);
+    const pendingTarget = navigation.pendingTarget ? rebase(navigation.pendingTarget) : null;
+    const previousTarget = navigation.previousTarget ? rebase(navigation.previousTarget) : null;
+    if (target !== navigation.target || pendingTarget !== navigation.pendingTarget || previousTarget !== navigation.previousTarget) {
+      useWorkColumnStore.setState({ navigation: { ...navigation, target, pendingTarget, previousTarget } });
+    }
+    const browser = useBrowserColumnStore.getState();
+    const tabs = browser.tabs.map((tab) => {
+      const target = rebase(tab.target);
+      return target === tab.target ? tab : { ...tab, target };
+    });
+    if (tabs.some((tab, index) => tab !== browser.tabs[index])) useBrowserColumnStore.setState({ tabs });
+    const desired = useWorkspaceRestoreStore.getState().desiredTarget;
+    if (desired) {
+      const updated = rebase(desired);
+      if (updated !== desired) useWorkspaceRestoreStore.getState().setDesiredTarget(updated);
+    }
+  } finally { resume(); }
 
   const memo = getWorkspaceMemoState();
   const selected = memo.selectedNote;

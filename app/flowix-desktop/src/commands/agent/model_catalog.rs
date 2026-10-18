@@ -33,7 +33,7 @@ pub async fn agent_supported_models(
         "codex" => state.codex_app_server.supported_models().await,
         "opencode" => state.opencode.supported_models().await,
         "pi" => state.pi.supported_models(&app).await,
-        "deepseek-harness" | "deepseek_harness" | "dsh" => {
+        "dsh" => {
             state.deepseek_harness.supported_models().await
         }
         _ => Ok(Vec::new()),

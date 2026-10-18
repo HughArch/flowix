@@ -9,10 +9,16 @@ export {
 } from "./composer-draft-controller";
 export { getPersistableInputDraft } from "./composer-draft";
 export {
-  ComposerImageController,
-  type AgentThreadCardInputImage,
-  type ComposerImageControllerOptions,
-} from "./composer-image-controller";
+  ComposerAttachmentController,
+  type AgentThreadCardInputAttachment,
+  type ComposerAttachmentControllerOptions,
+} from "./composer-attachment-controller";
+export {
+  ComposerAttachmentToken,
+  composerAttachmentMarkdownToPrompt,
+} from "./composer-attachment-token";
+export { ComposerAttachmentDocument, type ComposerAttachmentDocumentPort } from "./composer-attachment-document";
+export { insertComposerAttachmentToken } from "./composer-attachment-document";
 export {
   ComposerAddMenuController,
   type ComposerAddMenuControllerOptions,

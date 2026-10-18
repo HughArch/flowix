@@ -11,18 +11,50 @@ export interface ThreadListItem {
 }
 
 // Core message type used throughout the app
-export type AgentTypeKey =
-  | "codex"
-  | "claude"
-  | "gemini"
-  | "hermes"
-  | "openclaw"
-  | "opencode"
-  | "pi"
-  | "deepseek-harness";
+/** Stable identity values used by frontend state and the backend protocol. */
+export type AgentId = "pi" | "codex" | "claudecode" | "opencode" | "hermes" | "dsh";
+
+export type ActiveAgentTypeKey = AgentId;
+export type AgentTypeKey = AgentId;
+
+export type AgentRuntimeKind = "builtin" | "external-cli";
+
+/** `missing` means detection completed and found no executable/runtime. */
+export type AgentInstallationState = "unknown" | "installed" | "missing";
+
+/** Readiness describes whether a known installed runtime can be started. */
+export type AgentReadinessState = "unknown" | "ready" | "blocked";
+
+export type AgentRuntimeReasonCode =
+  | "path-not-detected"
+  | "runtime-not-installed"
+  | "configured-path-missing"
+  | "version-too-low"
+  | "preflight-failed"
+  | "no-model-configured"
+  | "no-usable-model"
+  | "status-check-failed";
+
+interface AgentRuntimeSnapshotDetail {
+  /** Machine-readable cause for a blocked or unknown result. */
+  reasonCode?: AgentRuntimeReasonCode | null;
+  /** Human-readable detail for tooltip/setup UI. */
+  reason?: string | null;
+}
+
+/** Runtime presence is separate from whether the runtime can currently start. */
+export type AgentRuntimeSnapshot = AgentRuntimeSnapshotDetail & (
+  | { installation: "unknown"; readiness: "unknown" }
+  | { installation: "missing"; readiness: "unknown" }
+  | { installation: "installed"; readiness: AgentReadinessState }
+);
+
+export type AgentRuntimeStatusById = Record<AgentId, AgentRuntimeSnapshot>;
 
 export interface AgentType {
-  key: AgentTypeKey;
+  /** Stable runtime protocol identity. */
+  id: AgentId;
+  runtimeKind: AgentRuntimeKind;
   /** 图标资源路径 (Vite 静态资源 import 解析后的 URL)。所有 agent 图标统一在 agent-types.ts 集中管理。 */
   icon: string;
   name: string;
@@ -115,18 +147,15 @@ export interface ClaudeRuntimeConfig extends AgentRuntimeConfigBase {
   permissionMode?: AgentPermissionMode;
 }
 
-export interface SimpleCliRuntimeConfig extends AgentRuntimeConfigBase {}
-
 export interface HermesRuntimeConfig extends AgentRuntimeConfigBase {
   permissionMode?: AgentPermissionMode;
 }
 
 export interface AgentRuntimeConfig {
+  notebookId?: string;
   codex?: CodexRuntimeConfig;
   claude?: ClaudeRuntimeConfig;
-  gemini?: SimpleCliRuntimeConfig;
   hermes?: HermesRuntimeConfig;
-  openclaw?: SimpleCliRuntimeConfig;
   opencode?: CodexRuntimeConfig;
   pi?: PiRuntimeConfig;
   deepseekHarness?: DeepSeekHarnessRuntimeConfig;
@@ -156,7 +185,7 @@ export interface FilesConfig {
   workspace?: string | null;
   /** 启用目录列表 (path 数组) */
   folders: string[];
-  /** 笔记本路径列表 (path 数组, 与 agent-access-store 同语义) */
+  /** 笔记本路径列表 (path 数组, 由 Agent Store 的 workspace 解析) */
   notebooks: string[];
   /**
    * 旧冻结模型的兼容字段。新数据使用 `RuntimeConfig.workspaceSnapshot`。
@@ -206,7 +235,7 @@ export interface RuntimeConfig {
   serviceTier?: AgentCodexServiceTier;
   /** DeepSeek Harness Agent preset, locked per thread card. */
   deepseekHarness?: Pick<DeepSeekHarnessRuntimeConfig, "mode">;
-  /** Pi coding-agent presentation mode, locked per thread card. */
+  /** Legacy Pi snapshot, read only for compatibility. New conversations omit it. */
   pi?: Pick<PiRuntimeConfig, "codeMode">;
   /** 预留：工具白名单 */
   tools?: string[];
@@ -216,16 +245,8 @@ export interface RuntimeConfig {
   workspaceSnapshot?: WorkspaceSnapshot;
   /** Canonical conversation workspace state. Legacy snapshots are read-only migration input. */
   workspaceState?: ConversationWorkspaceState;
-  /**
-   * 创建该 instance 时所属 notebook 的 id 快照 (如 `nb_<ts>` / `nb_default`)。
-   *
-   * 非运行时配置 ── 它不发给 LLM, 仅用于把卡片关联到所属 notebook 的
-   * `.flowix/agent.json` add-dir 配置。借 `runtimeConfig` 的
-   * JSON 透传通道一起落 SQLite (后端 `runtime_config` 是裸 TEXT, 不解析内部),
-   * 与 `_frozen` 同构 ── 无需 backend schema 升级。
-   *
-   * 缺失时仅保留历史会话兼容，不再写入全局资料默认。
-   */
+  /** Owning notebook identity. Persisted with the conversation and forwarded
+   * as backend workspace-validation metadata; local.db owns its mounts. */
   notebookId?: string;
 }
 
@@ -503,7 +524,7 @@ export interface AgentChunkStreamStart {
   run_id?: string;
   /**
    * 通用 metadata 协议字段 —— 该 run 锁定的 LLM model id. 后端在 spawn 时确定 (从用户配置 / CLI override 解析), 对 OpenAI /
-   * Codex / Claude / Gemini 等所有 provider 一致, 字段不识别时为 undefined. 前端读 `run.model ?? threadStates[tid].runs[activeRunId].model` 取值.
+   * Codex / Claude 等所有 provider 一致, 字段不识别时为 undefined. 前端读 `run.model ?? threadStates[tid].runs[activeRunId].model` 取值.
    */
   model?: string;
   /**
@@ -657,7 +678,7 @@ interface AgentEventBase {
 export type AgentEvent =
   | (AgentEventBase & {
       kind: "stream_start";
-      /** 通用 metadata 协议字段 —— 该 run 锁定的 LLM model id。后端在 spawn 时确定 (从用户配置 / CLI override 解析), 对 OpenAI / Codex / Claude / Gemini 等所有 provider 一致, 字段不识别时为 undefined。前端读 `run.model ?? threadStates[tid].runs[activeRunId].model` 取值。 */
+      /** 通用 metadata 协议字段 —— 该 run 锁定的 LLM model id。后端在 spawn 时确定 (从用户配置 / CLI override 解析), 对 OpenAI / Codex / Claude 等所有 provider 一致, 字段不识别时为 undefined。前端读 `run.model ?? threadStates[tid].runs[activeRunId].model` 取值。 */
       model?: string;
       /** 通用 metadata 协议 —— reasoning effort ("low"/"medium"/"high"/"xhigh")。Provider 不支持时为 undefined。 */
       reasoning_effort?: string;
@@ -740,7 +761,7 @@ export interface RunInfo {
  * 通用 metadata 协议 —— session 的最近一次 run 展示快照。写在
  * `ThreadState.lastRun` 中, run 从 `runs` map 清理后仍作为常驻展示信息保留；
  * 迟到的 usage 事件也会继续合并到这个快照。Provider-agnostic: 对 Codex /
- * Claude / Gemini / Hermes / OpenClaw / DeepSeek Harness 全部适用, 字段不识别时为 undefined。
+ * Claude / Hermes / DeepSeek Harness 全部适用, 字段不识别时为 undefined。
  */
 
 export interface LastRunSnapshot {

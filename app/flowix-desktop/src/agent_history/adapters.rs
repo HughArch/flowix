@@ -60,7 +60,7 @@ impl HistoryAdapter for CodexHistoryAdapter {
     ) -> Result<ThreadMessagesPage, String> {
         let session_id = self
             .threads
-            .get_external_session(request.thread_id, self.runtime().key())
+            .get_external_session(request.thread_id, self.runtime().id())
             .await
             .map_err(|error| error.to_string())?
             .unwrap_or_else(|| request.thread_id.to_string());
@@ -144,7 +144,7 @@ impl HistoryAdapter for ClaudeHistoryAdapter {
     }
     async fn list_threads(&self) -> Result<Vec<ThreadInfo>, String> {
         self.threads
-            .list_external_threads(self.runtime().key())
+            .list_external_threads(self.runtime().id())
             .await
             .map_err(|error| error.to_string())
     }
@@ -187,7 +187,7 @@ impl HistoryAdapter for HermesHistoryAdapter {
     }
     async fn list_threads(&self) -> Result<Vec<ThreadInfo>, String> {
         self.threads
-            .list_external_threads(self.runtime().key())
+            .list_external_threads(self.runtime().id())
             .await
             .map_err(|error| error.to_string())
     }
@@ -198,7 +198,7 @@ impl HistoryAdapter for HermesHistoryAdapter {
         if let Some(page) = self
             .threads
             .get_external_event_messages_page(
-                self.runtime().key(),
+                self.runtime().id(),
                 request.thread_id,
                 request.before_sequence,
                 request.limit,

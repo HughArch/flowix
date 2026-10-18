@@ -3,7 +3,7 @@ import type { CurrentBlockInfo } from '@features/editor/components/drag-context-
 /**
  * Y offset from block top edge, in px. Computed dynamically from the user's
  * font size / line height settings so the handle stays aligned when those
- * change. At the default `fontSize=15, lineHeight=1.8`, body text blocks use
+ * change. At the default `fontSize=16, lineHeight=1.8`, body text blocks use
  * a 27px line box and a 4.5px centered offset; heading offsets remain 5/3/3/2px
  * and scale linearly with user settings otherwise.
  *
@@ -39,7 +39,7 @@ const HEADING_LINE_HEIGHT = 1.3
 
 /**
  * 标题字号 — 走 `calc(Nrem * var(--editor-scale))`, 而
- * `--editor-scale = var(--app-font-size, 15px) / 16px`, 两者相消后
+ * `--editor-scale = var(--editor-font-size, 16px) / 16px`, 两者相消后
  * 渲染字号 = `fontSize × N` px。h5/h6 没有显式声明, 走 fallback `1`
  * (即继承 body 字号), 在 getYOffset 里会落到 body 居中分支。
  */

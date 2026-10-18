@@ -13,7 +13,7 @@ import { useI18n } from '@/lib/i18n';
 import { matchesMediaCollectionFilter, normalizeMediaLibraryFileCondition, type MediaLibraryFileCondition, type MediaLibraryRecord } from '@features/media-library/model';
 import { NotebookTreeFileIcon } from '@features/memo/components/notebook-tree-file-icon';
 import { NotebookTreeResourceIcon } from '@features/memo/components/file-type-icon';
-import type { DocumentListSurface } from './types';
+import type { DocumentListViewContext } from './document-list-view-model';
 import { useDocumentListData } from './use-document-list-data';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import { requestMediaPreview } from './media-preview-tasks';
@@ -30,6 +30,8 @@ import folderCardPlaceholder from '@/assets/placeholder-folder-card.png';
 
 // Keep the loading effect stable when ordinary folders omit media records.
 const EMPTY_MEDIA_LIBRARY_RECORDS: MediaLibraryRecord[] = [];
+const MEDIA_CARD_MIN_WIDTH = 160;
+const MEDIA_COLUMN_GAP = 2;
 
 function cardPlaceholder(item: DocumentPageItem): string {
   if (item.resourceKind === 'folder') return folderCardPlaceholder;
@@ -195,8 +197,8 @@ const DocumentCard = memo(function DocumentCard({ item, notebookPath, openItem, 
   </button>;
 });
 
-export function DocumentListView({ surface, mediaLibrary = false, libraryName = '媒体库', libraryFilePath, mediaLibraryFolderPath, mediaLibraryFilter = {}, mediaLibraryRecords = EMPTY_MEDIA_LIBRARY_RECORDS, mediaLibraryExcludedPaths = [], mediaLibraryDatasetFilter, mediaLibraryViewFilter, onMediaLibraryFilterChange, onRenameLibrary, onAddMedia, onDeleteMedia, onSwitchToTable, libraryActionsDisabled = false, refreshPaused = false }: {
-  surface: DocumentListSurface;
+export function DocumentListView({ listContext, mediaLibrary = false, libraryName = '媒体库', libraryFilePath, mediaLibraryFolderPath, mediaLibraryFilter = {}, mediaLibraryRecords = EMPTY_MEDIA_LIBRARY_RECORDS, mediaLibraryExcludedPaths = [], mediaLibraryDatasetFilter, mediaLibraryViewFilter, onMediaLibraryFilterChange, onRenameLibrary, onAddMedia, onDeleteMedia, onSwitchToTable, libraryActionsDisabled = false, refreshPaused = false, workspaceHost = 'main-third' }: {
+  listContext: DocumentListViewContext;
   mediaLibrary?: boolean;
   libraryName?: string;
   libraryFilePath?: string;
@@ -213,13 +215,14 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
   onSwitchToTable?: () => void;
   libraryActionsDisabled?: boolean;
   refreshPaused?: boolean;
+  workspaceHost?: 'main-third' | 'browser-column';
 }) {
   const { t } = useI18n();
-  const resourceKindsKey = (surface.filters.resourceKinds ?? []).join('\u0000');
+  const resourceKindsKey = (listContext.filters.resourceKinds ?? []).join('\u0000');
   const {
     items, linkedItems, folders, hasMediaDataset, hasLinkedMedia, loading, loadingLinkedItems,
     moreError, hasMore, error, loadMore, refresh,
-  } = useDocumentListData({ surface, mediaLibrary, mediaLibraryRecords, refreshPaused });
+  } = useDocumentListData({ listContext, mediaLibrary, mediaLibraryRecords, refreshPaused });
   const [addingMedia, setAddingMedia] = useState(false);
   const [mediaToDelete, setMediaToDelete] = useState<DocumentPageItem | null>(null);
   const [deletingMedia, setDeletingMedia] = useState(false);
@@ -318,16 +321,16 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
   }, [mediaLibrary]);
   useEffect(() => {
     scrollRef.current?.scrollTo(0, 0);
-  }, [surface.displayId]);
+  }, [listContext.displayId]);
   useEffect(() => {
     if (!mediaLibrary) return;
     scrollRef.current?.scrollTo(0, 0);
   }, [mediaLibrary, mediaLibraryFilter.file_name_contains, mediaLibraryFilter.file_type, mediaLibraryFilter.path_contains, resourceKindsKey]);
   useEffect(() => {
-    if (!folderPickerOpen || !surface.notebookPath) return;
+    if (!folderPickerOpen || !listContext.notebookPath) return;
     let active = true;
     setFolderOptionsLoading(true);
-    void files.getNotebookFolderOptions(surface.notebookPath).then((options) => {
+    void files.getNotebookFolderOptions(listContext.notebookPath).then((options) => {
       if (active) setFolderOptions(options);
     }).catch(() => {
       if (active) setFolderOptions([]);
@@ -335,7 +338,7 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
       if (active) setFolderOptionsLoading(false);
     });
     return () => { active = false; };
-  }, [folderPickerOpen, surface.notebookPath]);
+  }, [folderPickerOpen, listContext.notebookPath]);
   const [createOpen, setCreateOpen] = useState(false);
   const [newTitle, setNewTitle] = useState('');
   const [creating, setCreating] = useState(false);
@@ -359,13 +362,13 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
   const excludedMediaPathSet = new Set(mediaLibraryExcludedPaths.map((path) => path.replace(/\\/g, '/').replace(/^\/+|\/+$/g, '').toLocaleLowerCase()));
   const visibleItems = mediaLibrary
     ? [...new Map([
-      ...linkedItems.filter((item) => !excludedMediaPathSet.has(mediaItemRelativePath(item.fullPath, surface.notebookPath).toLocaleLowerCase())
-        && matchesMediaRuleFilter(item, surface.notebookPath, mediaLibraryViewFilter)),
+      ...linkedItems.filter((item) => !excludedMediaPathSet.has(mediaItemRelativePath(item.fullPath, listContext.notebookPath).toLocaleLowerCase())
+        && matchesMediaRuleFilter(item, listContext.notebookPath, mediaLibraryViewFilter)),
       ...(hasMediaDataset ? items.filter((item) => (
         (item.resourceKind === 'image' || item.resourceKind === 'video')
-        && !excludedMediaPathSet.has(mediaItemRelativePath(item.fullPath, surface.notebookPath).toLocaleLowerCase())
-        && matchesMediaRuleFilter(item, surface.notebookPath, mediaLibraryDatasetFilter)
-        && matchesMediaRuleFilter(item, surface.notebookPath, mediaLibraryViewFilter)
+        && !excludedMediaPathSet.has(mediaItemRelativePath(item.fullPath, listContext.notebookPath).toLocaleLowerCase())
+        && matchesMediaRuleFilter(item, listContext.notebookPath, mediaLibraryDatasetFilter)
+        && matchesMediaRuleFilter(item, listContext.notebookPath, mediaLibraryViewFilter)
       )) : []),
     ].map((item) => [canonicalPath(item.fullPath), item])).values()]
     : [...folders, ...items];
@@ -409,7 +412,7 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
       folderPickerOpen={folderPickerOpen}
       folderOptions={folderOptions}
       folderOptionsLoading={folderOptionsLoading}
-      notebookAvailable={Boolean(surface.notebookPath)}
+      notebookAvailable={Boolean(listContext.notebookPath)}
       autoFocus={!locationOnly}
       locationOnly={locationOnly}
       showLocationMenu={false}
@@ -444,58 +447,70 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
     }
   }, [deletingMedia, mediaToDelete, onDeleteMedia, t]);
   const columnCount = Math.max(1, Math.floor((viewport.width + 14) / 214));
+  const mediaColumnCount = Math.min(
+    Math.max(1, Math.floor((viewport.width + MEDIA_COLUMN_GAP) / (MEDIA_CARD_MIN_WIDTH + MEDIA_COLUMN_GAP))),
+    Math.max(1, visibleItems.length),
+  );
+  const mediaColumns: DocumentPageItem[][] = Array.from({ length: mediaColumnCount }, () => []);
+  // Appending a page keeps existing cards in their columns while the column count is unchanged.
+  visibleItems.forEach((item, index) => mediaColumns[index % mediaColumnCount].push(item));
   const rowHeight = 224;
   const rowCount = Math.ceil(visibleItems.length / columnCount);
   const firstRow = Math.min(Math.max(0, rowCount - 1), Math.max(0, Math.floor(viewport.top / rowHeight) - 2));
   const lastRow = Math.min(rowCount, Math.ceil((viewport.top + viewport.height) / rowHeight) + 2);
   const visibleCards = visibleItems.slice(firstRow * columnCount, lastRow * columnCount);
-  const folderTitle = surface.folderPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || surface.folderPath;
+  const folderTitle = listContext.folderPath.replace(/[\\/]+$/, '').split(/[\\/]/).pop() || listContext.folderPath;
   const createNote = useCallback(async () => {
     const title = newTitle.trim();
-    if (!title || creating || !surface.notebookId) return;
+    if (!title || creating || !listContext.notebookId) return;
     setCreating(true);
     try {
       let path: string;
       const { noteRepository } = await import('@features/memo/services/note-repository');
-      const root = canonicalPath(surface.notebookPath).replace(/\/$/, '');
-      const folder = canonicalPath(surface.folderPath).replace(/\/$/, '');
+      const root = canonicalPath(listContext.notebookPath).replace(/\/$/, '');
+      const folder = canonicalPath(listContext.folderPath).replace(/\/$/, '');
       const relative = folder === root ? '' : folder.slice(root.length + 1);
-      const created = await noteRepository.create(undefined, surface.notebookId, relative, title);
+      const created = await noteRepository.create(undefined, listContext.notebookId, relative, title);
       path = created.path;
       setCreateOpen(false);
       setNewTitle('');
       refresh();
-      const { openExternalTarget } = await import('@features/workspace/use-cases/workspace-navigation');
-      await openExternalTarget(path, { destination: 'main-third', scopePath: surface.notebookPath });
+      const { openWorkspaceSurface } = await import('@features/workspace/public/open-surface-api');
+      await openWorkspaceSurface({
+        host: 'main-third',
+        target: { kind: 'external', path, scopePath: listContext.notebookPath, transitionId: null },
+      });
     } catch {
       toast.error('新建笔记失败');
     } finally {
       setCreating(false);
     }
-  }, [creating, newTitle, surface.folderPath, surface.notebookId, surface.notebookPath]);
+  }, [creating, newTitle, listContext.folderPath, listContext.notebookId, listContext.notebookPath]);
   const openItem = useCallback(async (item: DocumentPageItem) => {
     try {
       if (item.resourceKind === 'folder') {
-        const [{ openDocumentListTarget }, { createDocumentListTarget }] = await Promise.all([
-          import('@features/workspace/use-cases/workspace-navigation'),
-          import('@features/workspace/store/work-column-target'),
-        ]);
-        openDocumentListTarget(createDocumentListTarget({
-          kind: 'folder', path: item.fullPath, notebookPath: surface.notebookPath, notebookId: surface.notebookId,
-        }, {}));
+        if (!listContext.notebookId) throw new Error('无法确定文件夹所属笔记本');
+        const { openFolderCollectionFromFolder } = await import('@features/workspace/public/main-window-api');
+        await openFolderCollectionFromFolder(listContext.notebookId, item.fullPath, workspaceHost);
         return;
       }
-      const { openExternalTarget, openMediaTarget } = await import('@features/workspace/use-cases/workspace-navigation');
+      const { openWorkspaceSurface } = await import('@features/workspace/public/open-surface-api');
       const kind = item.resourceKind ?? resourceKindFromPath(item.fullPath);
       if (kind === 'image' || kind === 'video') {
-        await openMediaTarget({ filePath: item.fullPath, notebookId: surface.notebookId, notebookPath: surface.notebookPath, resourceKind: kind });
+        await openWorkspaceSurface({ host: 'browser-column', target: {
+          kind: 'media', filePath: item.fullPath, notebookId: listContext.notebookId,
+          notebookPath: listContext.notebookPath, resourceKind: kind,
+        }, options: { browserDisposition: 'focus-existing' } });
       } else {
-        await openExternalTarget(item.fullPath, { destination: 'main-third', scopePath: surface.notebookPath });
+        await openWorkspaceSurface({
+          host: 'main-third',
+          target: { kind: 'external', path: item.fullPath, scopePath: listContext.notebookPath, transitionId: null },
+        });
       }
     } catch {
       toast.error('打开文件失败');
     }
-  }, [surface.notebookId, surface.notebookPath]);
+  }, [listContext.notebookId, listContext.notebookPath, workspaceHost]);
   return <section className="flex h-full min-h-0 flex-col bg-transparent text-[var(--foreground)]">
     <OverlayScrollbar
       className="flex h-full min-h-0 min-w-0 flex-1"
@@ -540,7 +555,7 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
               className="inline-flex min-w-[2em] flex-[0_1_auto] items-center truncate rounded border-0 bg-transparent px-0.5 py-1 text-left text-sm font-medium leading-none text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] disabled:opacity-100"
             >{libraryName}</button>}
             {renamingLibraryTitle && <span role="status" aria-label={t('memo.fileTree.renaming')} className="inline-flex shrink-0 items-center text-[var(--muted-foreground)]">
-              <LoaderCircle className="h-3.5 w-3.5 animate-spin" aria-hidden="true" />
+              <LoaderCircle className="h-3.5 w-3.5 flowix-spin" aria-hidden="true" />
             </span>}
           </div>
           {onSwitchToTable && <>
@@ -586,21 +601,25 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
                 ><FunnelIcon size={14} weight="bold" aria-hidden="true" /></Button>
               </PopoverTrigger>
               <PopoverContent align="end" side="bottom" sideOffset={0} fitViewport style={{ zIndex: 150 }} ignorePopoverOutside={folderPickerOpen || mediaDataFiltersOpen} className="w-[220px] max-w-[calc(100vw-16px)] rounded-xl p-1.5 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-                {renderMediaFilterPanel(true)}
-                <Popover open={mediaDataFiltersOpen} onOpenChange={setMediaDataFiltersOpen}>
-                  <PopoverTrigger asChild>
-                    <button type="button" className="flex h-8 w-full items-center justify-between rounded-lg px-1.5 text-left text-sm hover:bg-[var(--hover-bg)]">
-                      <span>数据条件</span>
-                      <span className="flex items-center gap-1 text-xs text-[var(--muted-foreground)]">
-                        {mediaNameQuery.trim() || mediaTypeQuery !== 'any' ? '已设置' : '未设置'}
-                        <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
-                      </span>
-                    </button>
-                  </PopoverTrigger>
-                  <PopoverContent side="right" align="start" sideOffset={0} fitViewport style={{ zIndex: 160 }} ignorePopoverOutside={folderPickerOpen} className="max-h-[min(70vh,420px)] w-[320px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl px-1 py-2 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-                    {renderMediaFilterPanel(false)}
-                  </PopoverContent>
-                </Popover>
+                <div className="space-y-0.5">
+                  {renderMediaFilterPanel(true)}
+                  <Popover open={mediaDataFiltersOpen} onOpenChange={setMediaDataFiltersOpen}>
+                    <div className={`rounded-lg transition-colors ${mediaDataFiltersOpen ? 'bg-[var(--hover-bg)]' : 'hover:bg-[var(--hover-bg)]'}`}>
+                      <PopoverTrigger asChild>
+                        <button type="button" className="flex h-8 w-full items-center justify-between rounded-lg px-1.5 text-left text-sm">
+                          <span>数据条件</span>
+                          <span className="flex items-center gap-1 text-sm text-[var(--muted-foreground)]">
+                            {mediaNameQuery.trim() || mediaTypeQuery !== 'any' ? '已设置' : '未设置'}
+                            <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
+                          </span>
+                        </button>
+                      </PopoverTrigger>
+                    </div>
+                    <PopoverContent side="left" align="start" sideOffset={0} fitViewport style={{ zIndex: 160 }} ignorePopoverOutside={folderPickerOpen} className="max-h-[min(70vh,420px)] w-[320px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl p-1.5 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+                      {renderMediaFilterPanel(false)}
+                    </PopoverContent>
+                  </Popover>
+                </div>
               </PopoverContent>
             </Popover>
             {onAddMedia && <Button
@@ -624,7 +643,7 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
         ><Folder className="h-3.5 w-3.5" aria-hidden="true" /><span className="max-w-[500px] truncate">{folderTitle}</span></button>
       </div>
       <div className="flex items-center gap-2">
-        <Button type="button" className="px-3" onClick={() => setCreateOpen(true)} disabled={!surface.notebookId}>{t('memo.documentList.new')}</Button>
+        <Button type="button" className="px-3" onClick={() => setCreateOpen(true)} disabled={!listContext.notebookId}>{t('memo.documentList.new')}</Button>
       </div>
       </>}
     </div>
@@ -654,10 +673,25 @@ export function DocumentListView({ surface, mediaLibrary = false, libraryName = 
           : mediaLibrary && visibleItems.length === 0 && hasMore
             ? <div className="flex h-full min-h-[160px] items-center justify-center text-sm text-[var(--muted-foreground)]">{t('mediaLibrary.searchingMore')}</div>
           : mediaLibrary
-            ? <div className="gap-0.5 pt-0" style={{ columns: '220px', columnGap: '2px', contentVisibility: 'auto', containIntrinsicSize: '1px 1000px' }}>{visibleItems.map((item) => {
-              return <div key={item.fullPath} className="break-inside-avoid py-px"><DocumentCard item={item} notebookPath={surface.notebookPath} openItem={openItem} mediaLibrary observeMediaCard={observeMediaCard} onRequestDelete={onDeleteMedia ? setMediaToDelete : undefined} deleteLabel={t('media.fileTree.delete')} deleteDisabled={libraryActionsDisabled || deletingMedia} /></div>;
-            })}</div>
-            : <div style={{ paddingTop: firstRow * rowHeight, paddingBottom: Math.max(0, rowCount - lastRow) * rowHeight }}><div className="grid w-full grid-cols-[repeat(auto-fill,minmax(min(100%,200px),1fr))] items-stretch gap-3.5 pt-3">{visibleCards.map((item) => <DocumentCard key={item.fullPath} item={item} notebookPath={surface.notebookPath} openItem={openItem} />)}</div></div>}
+            ? <div className="flex w-full items-start pt-0" style={{ gap: MEDIA_COLUMN_GAP }}>{mediaColumns.map((column, columnIndex) => (
+              <div key={columnIndex} className="flex min-w-0 flex-1 flex-col" style={{ gap: MEDIA_COLUMN_GAP }}>
+                {column.map((item) => (
+                  <div key={item.fullPath} className="min-w-0 py-px">
+                    <DocumentCard
+                      item={item}
+                      notebookPath={listContext.notebookPath}
+                      openItem={openItem}
+                      mediaLibrary
+                      observeMediaCard={observeMediaCard}
+                      onRequestDelete={onDeleteMedia ? setMediaToDelete : undefined}
+                      deleteLabel={t('media.fileTree.delete')}
+                      deleteDisabled={libraryActionsDisabled || deletingMedia}
+                    />
+                  </div>
+                ))}
+              </div>
+            ))}</div>
+            : <div style={{ paddingTop: firstRow * rowHeight, paddingBottom: Math.max(0, rowCount - lastRow) * rowHeight }}><div className="grid w-full grid-cols-[repeat(auto-fill,minmax(min(100%,200px),1fr))] items-stretch gap-3.5 pt-3">{visibleCards.map((item) => <DocumentCard key={item.fullPath} item={item} notebookPath={listContext.notebookPath} openItem={openItem} />)}</div></div>}
       {moreError && <button type="button" className="mt-4 rounded-lg px-2 py-1 text-sm text-[var(--brand)] hover:bg-[var(--muted)]" onClick={loadMore}>加载失败，点击重试</button>}
       {hasMore && !moreError && <div ref={endRef} className="h-1" aria-hidden="true" />}
     </OverlayScrollbar>

@@ -19,7 +19,8 @@ export interface CollectionMetadata {
   id: string;
   type: CollectionType;
   placement: CollectionPlacement;
-  name: string;
+  /** Legacy name retained when reading old files; the path is authoritative. */
+  name?: string;
   revision: number;
   created_at: string;
   updated_at: string;
@@ -46,11 +47,16 @@ export function createUuidV7(): string {
 export const createCollectionId = () => `col_${createUuidV7()}`;
 export function createCollectionMetadata(
   type: CollectionType,
-  name: string,
+  _name: string,
   placement: CollectionPlacement = 'standalone',
 ): CollectionMetadata {
   const now = new Date().toISOString();
-  return { id: createCollectionId(), type, placement, name: name.trim(), revision: 0, created_at: now, updated_at: now, properties: {} };
+  return { id: createCollectionId(), type, placement, revision: 0, created_at: now, updated_at: now, properties: {} };
+}
+export function collectionDisplayName(filePath: string, placement: CollectionPlacement): string {
+  const parts = filePath.split(/[\\/]/).filter(Boolean);
+  if (placement === 'folder') return parts[parts.length - 2] ?? '';
+  return (parts[parts.length - 1] ?? '').replace(/\.(?:index\.ya?ml|(?:table|lib)\.ya?ml)$/i, '');
 }
 export function isRecord(value: unknown): value is Record<string, unknown> {
   return Boolean(value) && typeof value === 'object' && !Array.isArray(value);
@@ -91,6 +97,19 @@ function ruleFilterMatchesCollectionType(filter: unknown, type: CollectionType):
     return false;
   });
 }
+function datasetFilterMatchesCollectionType(filter: unknown, type: CollectionType): boolean {
+  if (!isRecord(filter) || !hasOnlyKeys(filter, ['path', 'match', 'conditions'])) {
+    return ruleFilterMatchesCollectionType(filter, type);
+  }
+  if (!(filter.path === null || filter.path === '' || isNotebookRelativePath(filter.path))
+    || (filter.match !== 'all' && filter.match !== 'any')
+    || !Array.isArray(filter.conditions)
+    || filter.conditions.some((condition) => !isRecord(condition) || 'all' in condition || 'any' in condition)) return false;
+  if (type === 'media_library' && filter.match !== 'all') return false;
+  const legacyShape = { all: filter.conditions, any: [] };
+  if (!filter.conditions.every((condition) => isRecord(condition) && condition.field !== 'path')) return false;
+  return ruleFilterMatchesCollectionType(legacyShape, type);
+}
 export function hasOnlyKeys(value: object, keys: readonly string[]): boolean {
   return Object.keys(value).every((key) => keys.includes(key));
 }
@@ -116,7 +135,7 @@ export function validateCollectionMetadata(value: unknown, type?: CollectionType
     || typeof value.id !== 'string' || !/^col_[0-9a-f]{32}$/.test(value.id)
     || !['table', 'media_library'].includes(String(normalizedType)) || (type && normalizedType !== type)
     || (value.placement !== undefined && !['standalone', 'folder'].includes(String(value.placement)))
-    || typeof value.name !== 'string' || !value.name.trim() || value.name !== value.name.trim()
+    || (value.name !== undefined && (typeof value.name !== 'string' || !value.name.trim() || value.name !== value.name.trim()))
     || !Number.isSafeInteger(value.revision) || Number(value.revision) < 0
     || typeof value.created_at !== 'string' || !Number.isFinite(Date.parse(value.created_at))
     || typeof value.updated_at !== 'string' || !Number.isFinite(Date.parse(value.updated_at))
@@ -186,7 +205,7 @@ function validateV2Envelope(value: Record<string, unknown>): { collection: Colle
       || (collection.type === 'media_library' && (sort.field !== 'created_at' || sort.direction !== 'desc')))))) throw new Error('集合视图筛选、排序或布局无效');
   // A deleted remembered table view is recoverable; the table model selects the first view.
   if (collection.type !== 'table' && !viewItems.some((view) => isRecord(view) && view.id === views.default_id)) throw new Error('默认集合视图不存在');
-  if (value.payload.dataset.filter !== null && value.payload.dataset.filter !== undefined && !ruleFilterMatchesCollectionType(value.payload.dataset.filter, collection.type)) {
+  if (value.payload.dataset.filter !== null && value.payload.dataset.filter !== undefined && !datasetFilterMatchesCollectionType(value.payload.dataset.filter, collection.type)) {
     throw new Error('集合规则筛选格式无效');
   }
 
@@ -357,7 +376,6 @@ export function serializeCollectionDocumentV2(document: CollectionDocumentV2): s
     id: checked.id,
     type: checked.type === 'table' ? 'notes' : 'media',
     placement: checked.placement,
-    name: checked.name,
     revision: checked.revision,
     created_at: checked.created_at,
     updated_at: checked.updated_at,

@@ -4,7 +4,7 @@ import type { CollectionDisplayDescriptor } from '@/lib/collection-display-regis
 import { create } from 'zustand';
 import { canonicalPath, fileLocatorKey } from '@/lib/path';
 import { canonicalUrl } from '@/lib/url';
-import type { DocumentListFilters, DocumentListScope } from '@features/workspace/store/work-column-target';
+import type { LegacyFolderListTarget } from '@features/workspace/model/legacy-folder-list';
 
 type ExternalHistoryEntry = {
   kind: 'external';
@@ -13,13 +13,7 @@ type ExternalHistoryEntry = {
   openedAt: number;
 };
 
-export type DocumentListHistoryEntry = {
-  kind: 'document-list';
-  displayId: string;
-  scope: DocumentListScope;
-  filters: DocumentListFilters;
-  openedAt: number;
-};
+export type LegacyFolderListHistoryEntry = LegacyFolderListTarget & { openedAt: number };
 
 export type AgentConversationHistoryEntry = {
   kind: 'agent-conversation';
@@ -47,7 +41,7 @@ export type CollectionHistoryEntry = CollectionDisplayDescriptor & { kind: 'coll
 
 export type DocumentHistoryEntry =
   | CollectionHistoryEntry
-  | DocumentListHistoryEntry
+  | LegacyFolderListHistoryEntry
   | ExternalHistoryEntry
   | AgentConversationHistoryEntry
   | WebHistoryEntry

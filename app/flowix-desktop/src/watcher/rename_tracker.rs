@@ -11,6 +11,7 @@ use std::time::{Duration, Instant};
 
 #[derive(Default)]
 pub struct RenameTracker {
+    roots: HashSet<PathBuf>,
     known: HashMap<PathBuf, (u64, u64)>,
     known_directories: HashSet<PathBuf>,
     pending: HashMap<PathBuf, ((u64, u64), Instant)>,
@@ -43,30 +44,52 @@ impl RenameTracker {
     pub fn seed(roots: &[NotebookWatchContext]) -> Self {
         let mut tracker = Self::default();
         for root in roots {
-            let policy = FileManagementPolicy::from_notebook_root(&root.root);
-            for entry in walkdir::WalkDir::new(&root.root)
-                .follow_links(false)
-                .into_iter()
-                .filter_entry(|entry| {
-                    entry
-                        .path()
-                        .strip_prefix(&root.root)
-                        .is_ok_and(|relative| !policy.is_index_ignored_at(&root.root, relative))
-                })
-                .filter_map(Result::ok)
-            {
-                if entry.file_type().is_dir()
-                    || entry
-                        .path()
-                        .extension()
-                        .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
-                    || media_kind_for_path(entry.path()).is_some()
-                {
-                    tracker.observe(entry.path());
-                }
-            }
+            tracker.add_root(root);
         }
         tracker
+    }
+    pub fn seed_root(root: &NotebookWatchContext) -> Self {
+        let mut tracker = Self::default();
+        tracker.add_root(root);
+        tracker
+    }
+    pub fn merge_seed(&mut self, seed: Self) {
+        self.roots.extend(seed.roots);
+        self.known.extend(seed.known);
+        self.known_directories.extend(seed.known_directories);
+    }
+    pub fn add_root(&mut self, root: &NotebookWatchContext) {
+        self.roots.insert(root.root.clone());
+        let policy = FileManagementPolicy::from_notebook_root(&root.root);
+        for entry in walkdir::WalkDir::new(&root.root)
+            .follow_links(false)
+            .into_iter()
+            .filter_entry(|entry| {
+                entry
+                    .path()
+                    .strip_prefix(&root.root)
+                    .is_ok_and(|relative| !policy.is_index_ignored_at(&root.root, relative))
+            })
+            .filter_map(Result::ok)
+        {
+            if entry.file_type().is_dir()
+                || entry
+                    .path()
+                    .extension()
+                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+                || media_kind_for_path(entry.path()).is_some()
+            {
+                self.observe(entry.path());
+            }
+        }
+    }
+    pub fn forget_root(&mut self, root: &Path) {
+        self.roots.remove(root);
+        let roots = &self.roots;
+        let belongs_to_watched_root = |path: &Path| roots.iter().any(|base| path.starts_with(base));
+        self.known.retain(|path, _| belongs_to_watched_root(path));
+        self.known_directories.retain(|path| belongs_to_watched_root(path));
+        self.pending.retain(|path, _| belongs_to_watched_root(path));
     }
     fn observe(&mut self, path: &Path) {
         if let Some(identity) = filesystem_identity(path) {

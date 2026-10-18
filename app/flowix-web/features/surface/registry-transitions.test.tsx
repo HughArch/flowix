@@ -1,4 +1,4 @@
-import { act, type ReactNode } from 'react';
+import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, describe, expect, it, vi } from 'vitest';
 
@@ -13,14 +13,11 @@ vi.mock('@features/document/components/document-container', () => ({
     openContainingFolder?: boolean;
   }) => <div data-file-path={filePath} data-open-folder={String(Boolean(openContainingFolder))}>unavailable</div>,
 }));
-vi.mock('@features/editor/use-external-file-mime', () => ({
-  useExternalFileMime: () => ({ mimeType: 'application/octet-stream', loading: false }),
+vi.mock('@features/editor/use-external-file-content-detection', () => ({
+  useExternalFileContentDetection: () => ({ isTextContent: false, loading: false }),
 }));
 vi.mock('./media-resource-view', () => ({ MediaResourceView: () => <div>media loading</div> }));
 vi.mock('./html-resource-view', () => ({ HtmlResourceView: () => <div>html reader</div> }));
-vi.mock('@shared/ui/surface-suspense-host', () => ({
-  SurfaceSuspenseHost: ({ children }: { children: ReactNode }) => children,
-}));
 
 const initialDocumentState = useDocumentStore.getState();
 
@@ -81,7 +78,10 @@ describe('work column external-file transition completion', () => {
         await act(async () => root.render(<WorkColumnSurfaceHost surface={externalSurface(kind, 12)} />));
         expect(useDocumentStore.getState().isDocumentTransitioning).toBe(false);
         if (kind === 'unavailable-file') {
-          expect(element.querySelector('[data-file-path]')?.getAttribute('data-file-path')).toBe('/notebook/report.pdf');
+          await vi.waitFor(async () => {
+            await act(async () => {});
+            expect(element.querySelector('[data-file-path]')?.getAttribute('data-file-path')).toBe('/notebook/report.pdf');
+          });
           expect(element.querySelector('[data-open-folder]')?.getAttribute('data-open-folder')).toBe('true');
         }
       } finally {

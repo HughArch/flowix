@@ -16,12 +16,13 @@ const mocks = vi.hoisted(() => ({
   replaceActiveMemoPath: vi.fn(),
   discardMemoDocument: vi.fn(),
   closeAgentConversation: vi.fn(),
-  flushDocumentPath: vi.fn(),
+  prepareDocumentLeave: vi.fn(),
   setCurrentNotebook: vi.fn(),
   beginNavigation: vi.fn().mockReturnValue(1),
   commitNavigation: vi.fn().mockReturnValue(true),
   failNavigation: vi.fn().mockReturnValue(true),
   isCurrentNavigation: vi.fn().mockReturnValue(true),
+  navigationRevision: 1,
   navigationTarget: pluginWorkbenchTarget('plugin-a') as WorkColumnTarget,
   memoState: {
     selectedNotebook: null as { id: string; path: string } | null,
@@ -60,7 +61,7 @@ vi.mock('@features/document/store/document-store', () => ({
 }));
 
 vi.mock('@features/document/store/document-session-service', () => ({
-  flushDocumentPath: mocks.flushDocumentPath,
+  prepareDocumentLeave: mocks.prepareDocumentLeave,
 }));
 
 vi.mock('@platform/tauri/client', () => ({
@@ -72,7 +73,7 @@ vi.mock('@platform/tauri/client', () => ({
 vi.mock('@features/workspace/store/work-column-store', () => ({
   useWorkColumnStore: {
     getState: () => ({
-      navigation: { phase: 'committed', showWorkColumnLoading: false, requestId: 1, target: mocks.navigationTarget, pendingTarget: null, previousTarget: null, failure: null, retryToken: null },
+      navigation: { phase: 'committed', showWorkColumnLoading: false, requestId: mocks.navigationRevision, target: mocks.navigationTarget, pendingTarget: null, previousTarget: null, failure: null, retryToken: null },
       beginNavigation: mocks.beginNavigation,
       commitNavigation: mocks.commitNavigation,
       failNavigation: mocks.failNavigation,
@@ -88,20 +89,103 @@ vi.mock('@features/memo/store/note-store', () => ({
 }));
 
 import {
+  captureWorkspaceRestoreTarget,
   closePluginWorkbench,
   openPluginWorkbench,
 } from './workspace-navigation';
 
 describe('workspace navigation', () => {
+  it('does not replace user navigation after a delayed Markdown restore lookup', async () => {
+    const { notes } = await import('@platform/tauri/client');
+    const { restoreExternalDocumentWorkspace } = await import('./workspace-navigation');
+    let finish!: (value: Awaited<ReturnType<typeof notes.resolveLocation>>) => void;
+    vi.mocked(notes.resolveLocation).mockImplementationOnce(() => new Promise((resolve) => { finish = resolve; }));
+    const restored = restoreExternalDocumentWorkspace({ kind: 'external', path: '/old.md', scopePath: null });
+    mocks.navigationRevision = 2;
+    finish({ path: '/old.md', notebookId: null, relativePath: null, notebookPath: null, indexable: false });
+    await restored;
+    expect(mocks.beginNavigation).not.toHaveBeenCalled();
+    expect(mocks.openExternalDocument).not.toHaveBeenCalled();
+  });
+
+  it('publishes loading before metadata work and skips a superseded request after yielding', async () => {
+    const { notes } = await import('@platform/tauri/client');
+    const { openExternalTarget } = await import('./workspace-navigation');
+    const opening = openExternalTarget('/new.md', { destination: 'main-third' });
+    expect(mocks.beginNavigation).toHaveBeenCalledWith(
+      expect.objectContaining({ kind: 'external', path: '/new.md' }), expect.any(String), false, true,
+    );
+    expect(notes.resolveLocation).not.toHaveBeenCalled();
+    mocks.isCurrentNavigation.mockReturnValueOnce(false);
+    await opening;
+    expect(notes.resolveLocation).not.toHaveBeenCalled();
+    expect(mocks.openExternalDocument).not.toHaveBeenCalled();
+  });
+
+  it('keeps A selected when B metadata resolves after the user clicks back to A', async () => {
+    const { notes } = await import('@platform/tauri/client');
+    const { openExternalTarget } = await import('./workspace-navigation');
+    const { useWorkColumnStore: mockedStore } = await import('../store/work-column-store');
+    const { useWorkColumnStore: realStore } = await vi.importActual<typeof import('../store/work-column-store')>(
+      '../store/work-column-store',
+    );
+    const previousState = realStore.getState();
+    const getState = vi.spyOn(mockedStore, 'getState').mockImplementation(realStore.getState);
+    realStore.setState({ navigation: {
+      phase: 'committed', showWorkColumnLoading: false, requestId: 10,
+      target: { kind: 'external', path: '/A.md', scopePath: null, transitionId: null },
+      pendingTarget: null, previousTarget: null, failure: null, retryToken: null,
+    } });
+    mocks.documentState.activeExternalSession = {
+      fileIdentity: { displayId: 'test-A', path: '/A.md' }, scopePath: null, transitionId: 1,
+    };
+    let finishB!: () => void;
+    const previousResolveLocation = vi.mocked(notes.resolveLocation).getMockImplementation();
+    vi.mocked(notes.resolveLocation).mockImplementation((path) => {
+      const location = { path, notebookId: null, relativePath: null, notebookPath: null, indexable: false };
+      return path === '/B.md'
+        ? new Promise((resolve) => { finishB = () => resolve(location); })
+        : Promise.resolve(location);
+    });
+    const openingB = openExternalTarget('/B.md', { destination: 'main-third' }).catch(() => undefined);
+    try {
+      await vi.waitFor(() => expect(notes.resolveLocation).toHaveBeenCalledWith('/B.md'));
+      await openExternalTarget('/A.md', { destination: 'main-third' });
+      finishB();
+      await openingB;
+      expect(mocks.openExternalDocument.mock.calls.some(([path]) => path === '/B.md')).toBe(false);
+      expect(realStore.getState().navigation).toMatchObject({
+        phase: 'committed', target: { kind: 'external', path: '/A.md' }, pendingTarget: null,
+      });
+    } finally {
+      finishB?.();
+      await openingB;
+      getState.mockRestore();
+      realStore.setState(previousState, true);
+      if (previousResolveLocation) vi.mocked(notes.resolveLocation).mockImplementation(previousResolveLocation);
+    }
+  });
+
+  it('clears a restored notebook target after registry rebuild', async () => {
+    const { useWorkspaceRestoreStore } = await import('../store/workspace-restore-store');
+    useWorkspaceRestoreStore.getState().setDesiredTarget({
+      kind: 'table', notebookId: 'removed-notebook', notebookPath: '/old', filePath: '/old/table.csv',
+    });
+    mocks.memoState.notebooks = [];
+    expect(captureWorkspaceRestoreTarget()).toBeNull();
+    expect(useWorkspaceRestoreStore.getState().desiredTarget).toBeNull();
+  });
+
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.clearDocument.mockResolvedValue(undefined);
     mocks.openExternalDocument.mockResolvedValue(undefined);
     mocks.openAgentConversation.mockResolvedValue(undefined);
     mocks.discardMemoDocument.mockResolvedValue(undefined);
-    mocks.flushDocumentPath.mockResolvedValue(true);
+    mocks.prepareDocumentLeave.mockResolvedValue(true);
     mocks.setCurrentNotebook.mockResolvedValue(undefined);
     mocks.navigationTarget = pluginWorkbenchTarget('plugin-a');
+    mocks.navigationRevision = 1;
     mocks.documentState.activeExternalSession = null;
     mocks.documentState.activeAgentConversationId = null;
     mocks.memoState.selectedNotebook = null;

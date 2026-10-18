@@ -1,4 +1,4 @@
-/** Memo-ID compatibility payload mirrored from the legacy Core Memo DTO. */
+/** Path-keyed memo event projection mirrored from the Core note DTO. */
 import {
   noteListItemKey,
   noteListItemRelativePath,
@@ -16,12 +16,11 @@ export {
   noteListItemTitle,
 } from './note-item';
 
-/** @deprecated Use NoteColor for path-identified Notes. */
+/** @deprecated Use NoteListItem for path-identified Notes. */
 export interface MemoItem {
-  id: string;
   filename: string;
   /** Path relative to the notebook root, using `/` separators. */
-  relativePath?: string;
+  relativePath: string;
   preview: string;
   thumbnail?: string | null;
   tags: string[];

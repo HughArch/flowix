@@ -33,9 +33,9 @@ function createEditorFixture() {
   card.className = 'agent-thread-card'
   card.dataset.agentThreadCard = 'true'
   const composer = document.createElement('div')
-  composer.className = 'agent-thread-card__composer'
+  composer.className = 'agent-composer'
   const input = document.createElement('div')
-  input.className = 'agent-thread-card__composer-input'
+  input.className = 'agent-composer__input'
   input.contentEditable = 'true'
   input.tabIndex = 0
   composer.append(input)

@@ -52,11 +52,14 @@ export function IconValueInput({
             <img
               src={selected.src}
               alt=""
-              className="h-5 w-5 shrink-0 object-contain"
+              className={cn('h-5 w-5 shrink-0 object-contain', variant === 'table' && 'multidimensional-table__icon-value')}
               draggable={false}
             />
           ) : (
-            <span className="h-5 w-5 shrink-0 rounded-md border border-dashed border-[var(--border)]" />
+            <span className={cn(
+              'h-5 w-5 shrink-0 rounded-md border border-dashed',
+              variant === 'table' ? 'multidimensional-table__icon-placeholder' : 'border-[var(--border)]',
+            )} />
           )}
           {selected && !disabled && (
             <span
@@ -74,7 +77,7 @@ export function IconValueInput({
       <PopoverContent
         align="start"
         sideOffset={6}
-        className={cn('z-[150] w-[280px] rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' ? 'p-1' : 'p-2')}
+        className={cn('z-[150] w-[280px] rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' ? '!z-[170] p-1' : 'p-2')}
       >
         <div className="max-h-[240px] overflow-y-auto [scrollbar-gutter:stable]">
           <div className="grid grid-cols-5 gap-1">

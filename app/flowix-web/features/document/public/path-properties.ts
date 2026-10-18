@@ -19,11 +19,11 @@ export function patchDocumentProperties(content: string, properties: Record<stri
   const previousData = document.toJS() ?? {};
   const previousTypes = readPropertyTypes(previousData[PROPERTY_TYPES_KEY]);
   for (const [key, value] of Object.entries(properties)) {
-    if (key === 'flowix_key' || key === 'key' || key === PROPERTY_TYPES_KEY) throw new Error('Identity properties cannot be generated');
+    if (key === PROPERTY_TYPES_KEY) throw new Error('Editor metadata cannot be generated');
     document.set(key, value);
   }
   for (const key of removedProperties) {
-    if (key === 'flowix_key' || key === 'key' || key === PROPERTY_TYPES_KEY) throw new Error('Identity properties cannot be removed');
+    if (key === PROPERTY_TYPES_KEY) throw new Error('Editor metadata cannot be removed');
     document.delete(key);
   }
   const typeChanges: Record<string, PropertyKind | null | undefined> = {

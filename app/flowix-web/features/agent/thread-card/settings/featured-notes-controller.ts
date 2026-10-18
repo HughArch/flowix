@@ -1,6 +1,6 @@
 import type { I18nKey, I18nParams } from '@/lib/i18n';
 import { notes as notesClient, files, externalDocuments } from '@platform/tauri/client';
-import { openNoteByNotebookPath } from '@features/memo/use-cases/open-by-target';
+import { openNoteByNotebookPath } from '@features/memo/public/note-navigation-api';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { joinNotebookMemoPath } from '@/lib/path';
 import { parseTableDocumentAsync } from '@features/multidimensional-table/parse-table-document';
@@ -133,9 +133,7 @@ export class FeaturedNotesController {
     settingsFooter.append(settingsButton, navigation);
 
     const settingsPopover = this.createTableSelectionPopover(notebookId, selection, onFilterChange, () => {
-      settingsPopover.hidden = true;
-      settingsButton.setAttribute("aria-expanded", "false");
-      settingsButton.focus();
+      setSettingsOpen(false);
     });
     document.body.append(settingsPopover);
     const positionSettingsPopover = (): void => {
@@ -154,15 +152,21 @@ export class FeaturedNotesController {
     };
     const popoverResizeObserver = new ResizeObserver(positionSettingsPopover);
     popoverResizeObserver.observe(settingsPopover);
-    const setSettingsOpen = (open: boolean): void => {
+    const setSettingsOpen = (open: boolean, restoreFocus = false): void => {
+      // Outside pointers must keep their own focus destination. Only an
+      // explicit keyboard dismissal may return focus from this popover.
+      if (open === !settingsPopover.hidden) return;
+      const returnFocus = !open && restoreFocus
+        && settingsPopover.contains(document.activeElement);
       settingsPopover.hidden = !open;
       settingsButton.setAttribute("aria-expanded", String(open));
       if (open) {
         positionSettingsPopover();
         (settingsPopover.querySelector<HTMLElement>(".agent-thread-card__featured-notes-view-option")
-          ?? settingsPopover.querySelector<HTMLElement>(".agent-thread-card__featured-notes-view-create"))?.focus();
+          ?? settingsPopover.querySelector<HTMLElement>(".agent-thread-card__featured-notes-view-create"))?.focus({ preventScroll: true });
+      } else if (returnFocus) {
+        settingsButton.focus({ preventScroll: true });
       }
-      else settingsButton.focus();
     };
     settingsButton.addEventListener("click", (event) => {
       event.stopPropagation();
@@ -204,6 +208,7 @@ export class FeaturedNotesController {
     const handleViewportChange = (): void => renderPage();
     const handleWindowResize = (): void => positionSettingsPopover();
     const handleOutsidePointer = (event: PointerEvent): void => {
+      if (settingsPopover.hidden) return;
       // 下拉层单独挂在 body, 点击内容区不关闭; 点击其他位置关闭。
       const target = event.target as Node;
       if (panel.contains(target) || settingsPopover.contains(target)) return;
@@ -213,7 +218,7 @@ export class FeaturedNotesController {
       if (settingsPopover.hidden) return;
       if (event.key !== "Escape") return;
       event.preventDefault();
-      setSettingsOpen(false);
+      setSettingsOpen(false, true);
     };
     mobileQuery.addEventListener("change", handleViewportChange);
     window.addEventListener("resize", handleWindowResize);
@@ -335,6 +340,7 @@ export class FeaturedNotesController {
     const create = document.createElement("button");
     create.type = "button";
     create.className = "flex h-8 w-full items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] text-sm text-[var(--foreground)] hover:bg-[var(--muted)] disabled:opacity-50";
+    create.classList.add("agent-thread-card__featured-notes-view-create");
     create.textContent = this.t("editor.threadCard.featuredNotes.createTable");
     create.addEventListener("click", async () => {
       onCreateTable();

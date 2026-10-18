@@ -18,7 +18,6 @@ export {
   applyRecoveryDraftContent,
   prepareDocumentLeave,
   saveDocumentContent,
-  flushDocumentPath,
   getDocumentBuffer,
   hasDocumentUnsavedChanges,
   discardDocumentDraft,

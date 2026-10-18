@@ -40,7 +40,7 @@
   position: relative;
   width: 100%;
   color: var(--muted-foreground);
-  font-size: var(--app-font-size, 15px);
+  font-size: var(--editor-font-size, 16px);
   line-height: 1.25rem;
 }
 
@@ -138,7 +138,7 @@
   align-items: center;
   padding: 0.2rem 0 0.55rem;
   color: var(--foreground);
-  font-size: var(--app-font-size, 15px);
+  font-size: var(--editor-font-size, 16px);
   font-weight: 600;
   line-height: 1.4;
 }
@@ -327,8 +327,8 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   background: var(--card);
   box-shadow: 0 8px 28px -6px rgb(0 0 0 / 24%);
   font-family: var(--font-sans);
-  font-size: var(--app-font-size, 15px);
-  line-height: var(--app-line-height, 1.8);
+  font-size: var(--editor-font-size, 16px);
+  line-height: var(--editor-line-height, 1.8);
   padding: 0.5rem 0.6rem;
 }
 
@@ -346,8 +346,8 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   background: var(--card);
   box-shadow: 0 0 24px -3px rgb(0 0 0 / 24%);
   font-family: var(--font-sans);
-  font-size: var(--app-font-size, 15px);
-  line-height: var(--app-line-height, 1.8);
+  font-size: var(--editor-font-size, 16px);
+  line-height: var(--editor-line-height, 1.8);
   padding: 4px;
 }
 
@@ -404,7 +404,7 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   color: var(--foreground);
   caret-color: var(--brand);
   font: inherit;
-  font-size: var(--app-font-size, 15px);
+  font-size: var(--editor-font-size, 16px);
   line-height: 1.5;
   padding: 0;
 }
@@ -585,7 +585,7 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   color: var(--document-foreground);
   padding: 0.25rem 0.4rem;
   font: inherit;
-  font-size: var(--app-font-size, 15px);
+  font-size: var(--editor-font-size, 16px);
   line-height: 1.25;
   text-align: left;
   white-space: nowrap;
@@ -714,7 +714,7 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
 .markdown-editor .frontmatter-property__value-chip.tag-node .tag-node-prefix {
   /* Property chips wrap the prefix in a 92% outer chip, so restore the
    * editor's surrounding text size for the # glyph itself. */
-  font-size: var(--app-font-size, 15px);
+  font-size: var(--editor-font-size, 16px);
 }
 
 .frontmatter-property__edit-tags-input {
@@ -910,14 +910,6 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   width: 100%;
   min-height: 1.5rem;
   align-items: center;
-}
-
-.frontmatter-property__edit-checkbox {
-  width: 1rem;
-  height: 1rem;
-  margin: 0;
-  accent-color: var(--brand);
-  cursor: pointer;
 }
 
 .frontmatter-property__edit-type-row {
@@ -1121,19 +1113,6 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
 
 .markdown-editor .frontmatter-property__display-value:has(.frontmatter-property__value-chips--tag-values) {
   align-items: baseline;
-}
-
-.markdown-editor .frontmatter-property__value-checkbox {
-  width: 14px;
-  height: 14px;
-  margin: 0;
-  accent-color: var(--brand);
-  cursor: pointer;
-}
-
-.markdown-editor .frontmatter-property__value-checkbox:disabled {
-  cursor: default;
-  opacity: 0.6;
 }
 
 .markdown-editor .frontmatter-property__key {

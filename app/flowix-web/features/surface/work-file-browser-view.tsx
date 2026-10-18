@@ -1,8 +1,6 @@
 import { useCallback, useRef } from 'react';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
-import { openExternalTarget } from '@features/workspace/use-cases/workspace-navigation';
-import { openMediaTarget } from '@features/workspace/use-cases/workspace-navigation';
-import { openBrowserColumnTarget } from '@features/workspace/use-cases/browser-column-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { CodeSurfaceView } from './code-surface-view';
 import type { FileBrowserContext } from '@features/workspace/store/file-browser-target';
 import { toast } from '@/lib/toast';
@@ -41,24 +39,16 @@ export function CodeSurfaceFileBrowser({ surface }: { surface: CodeSurface }) {
       const current = useWorkColumnStore.getState().navigation;
       if (current.phase === 'loading' || current.target.kind !== 'external' || current.target.path !== target.path) return;
       const fileKind = externalFileViewKind(path);
-      if (fileKind === 'unavailable' || fileKind === 'docx') {
-        await openBrowserColumnTarget({
-          ...context,
-          kind: 'file-browser',
-          activeFilePath: path,
-          folderPath: null,
-        });
-        return;
-      }
       if ((fileKind === 'image' || fileKind === 'video') && context.scopePath) {
-        await openMediaTarget({
-          filePath: path,
-          notebookId: context.notebookId,
-          notebookPath: context.scopePath,
-          resourceKind: fileKind,
+        await openWorkspaceSurface({
+          host: 'main-third',
+          target: { kind: 'media', filePath: path, notebookId: context.notebookId, notebookPath: context.scopePath, resourceKind: fileKind },
         });
       } else {
-        await openExternalTarget(path, { destination: 'main-third', scopePath: context.scopePath, fileBrowser: context });
+        await openWorkspaceSurface({
+          host: 'main-third',
+          target: { kind: 'external', path, scopePath: context.scopePath, transitionId: null, fileBrowser: context },
+        });
       }
     } catch {
       toast.error(t('tabWindow.switchFailed'));
@@ -75,7 +65,11 @@ export function CodeSurfaceFileBrowser({ surface }: { surface: CodeSurface }) {
       ...context, kind: 'file-browser', activeFilePath: target.path,
       onSelectFile: (path) => { void selectFile(path); },
       onOpenFileInNewTab: (path) => {
-        void openBrowserColumnTarget({ ...context, kind: 'file-browser', activeFilePath: path, folderPath: null }, 'open-in-column');
+        void openWorkspaceSurface({
+          host: 'browser-column',
+          target: { ...context, kind: 'file-browser', activeFilePath: path, folderPath: null },
+          options: { browserDisposition: 'open-in-column' },
+        });
       },
       onContextChange: updateView,
       onTreeVisibleChange: (fileTreeVisible) => updateView({ fileTreeVisible }),

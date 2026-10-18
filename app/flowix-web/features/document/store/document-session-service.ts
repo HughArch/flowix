@@ -120,14 +120,17 @@ export async function protectDocumentDraft(
   path: string,
   reason: 'autosave' | 'save-timeout' | 'save-error' | 'shutdown',
 ): Promise<boolean> {
+  // A filesystem rename keeps the runtime display identity and may happen
+  // while an external-change or shutdown callback is preparing this checkpoint.
+  const recoveryPath = findFileDisplayPath(identity.displayId) ?? path;
   const buffer = getOrCreateBuffer(identity);
   const title = getTitleDraft(identity.displayId);
   if (!hasUnsavedLocalChanges(identity) && !title) return true;
   const bodyRevision = buffer.capturedRevision;
   const revision = getDocumentSession(identity).recoveryRevision;
   const protectedByDraft = await waitWithTimeout(persistRecoveryDraft({
-    identity: { ...identity, path: canonicalPath(path) },
-    originalPath: canonicalPath(path),
+    identity: { ...identity, path: canonicalPath(recoveryPath) },
+    originalPath: canonicalPath(recoveryPath),
     revision,
     bodyRevision,
     title: title ?? undefined,
@@ -159,6 +162,11 @@ export async function reconcileUnsavedExternalDocumentChange(
   const protectedDraft = await protectDocumentDraft(identity, path, 'autosave').catch(() => false);
   captureLatestDocumentContent(identity);
   if (!hasUnsavedLocalChanges(identity)) return;
+  const latestPath = findFileDisplayPath(identity.displayId);
+  if (!latestPath || canonicalPath(latestPath) !== canonicalPath(path)) {
+    if (latestPath) scheduleDocumentSessionSave(identity);
+    return;
+  }
   if (!protectedDraft || buffer.capturedRevision !== revision) {
     scheduleDocumentSessionSave(identity);
     return;
@@ -316,14 +324,6 @@ export async function saveDocumentContent({
   return flushDocument(identity, path, { scopePath, force, ...callbacks });
 }
 
-export function flushDocumentPath(
-  identity: DocumentIdentity,
-  path: string,
-  scopePath: string | null = null,
-): Promise<boolean> {
-  return prepareDocumentLeave(identity, path, scopePath);
-}
-
 /** Wait until the current editor buffer is on disk before reading it for a snapshot or preview. */
 export async function saveDocumentPath(
   identity: DocumentIdentity,
@@ -431,32 +431,72 @@ subscribeDocumentBufferChanges((identity) => {
 
 /** Called by the desktop close/quit handshake, not fire-and-forget unload. */
 export async function flushAllDocumentSessions(): Promise<boolean> {
-  const registrations = listDocumentSessions().flatMap(session => {
-    const adapter = [...session.adapters].slice(-1)[0] ?? session.retainedAdapter;
-    return adapter ? [{ identity: session.identity, adapter }] : [];
-  });
-  const results = await Promise.all(registrations.map(async ({ identity, adapter }) => {
-    const key = documentIdentityKey(identity);
-    cancelDocumentCapture(key);
-    captureLatestDocumentContent(identity);
-    adapter.capture();
-    const titleSave = flushTitleDraft(identity.displayId);
-    const bodySave = flushDocument(identity, adapter.path(), { scopePath: adapter.scopePath });
-    const protectedDraft = protectDocumentDraft(identity, adapter.path(), 'shutdown');
-    const result = await waitWithTimeout(Promise.all([titleSave, bodySave, waitForDocumentCommits(key)])
-      .then(values => values.every(Boolean)), 5_000);
-    captureLatestDocumentContent(identity);
-    if (result === true && !hasUnsavedLocalChanges(identity) && !hasTitleDraft(identity.displayId)) return true;
-    // A timed-out mutation may have renamed the file. Do not close the process
-    // until its outcome is known, even when a recovery checkpoint exists.
-    if (hasDocumentCommit(key)) return false;
-    if (await waitWithTimeout(protectedDraft, 3_000) !== true) return false;
-    const protectedLatest = await waitWithTimeout(protectDocumentDraft(identity, adapter.path(), 'shutdown'), 3_000);
-    captureLatestDocumentContent(identity);
-    const buffer = getDocumentBuffer(identity);
-    return protectedLatest && buffer.durableRevision >= buffer.capturedRevision
-      && isTitleProtected(identity.displayId) && !hasDocumentCommit(key);
-  }));
-  const recoverySettled = await waitWithTimeout(flushRecoveryOperations(), 3_000);
-  return results.every(Boolean) && recoverySettled === true && documentCommitDiagnostics().active === 0;
+  // The user can still edit and open a document while a close handshake is
+  // waiting for I/O. Flush the current owners, then make one bounded pass for
+  // sessions or adapters that appeared during that wait. If the workspace is
+  // still changing after that, keep the window open and let the user retry.
+  for (let pass = 0; pass < 2; pass += 1) {
+    const sessionsAtStart = listDocumentSessions();
+    const ownersAtStart = new Map(sessionsAtStart.map(session => [session.identity.displayId, {
+      adapter: [...session.adapters].slice(-1)[0] ?? session.retainedAdapter,
+      captures: new Set(session.captures),
+    }] as const));
+    const registrations = sessionsAtStart.flatMap(session => {
+      const adapter = [...session.adapters].slice(-1)[0] ?? session.retainedAdapter;
+      return adapter ? [{ identity: session.identity, adapter }] : [];
+    });
+    const results = await Promise.all(registrations.map(async ({ identity, adapter }) => {
+      const key = documentIdentityKey(identity);
+      cancelDocumentCapture(key);
+      captureLatestDocumentContent(identity);
+      adapter.capture();
+      const titleSave = flushTitleDraft(identity.displayId);
+      const bodySave = flushDocument(identity, adapter.path(), { scopePath: adapter.scopePath });
+      const protectedDraft = protectDocumentDraft(identity, adapter.path(), 'shutdown');
+      const result = await waitWithTimeout(Promise.all([titleSave, bodySave, waitForDocumentCommits(key)])
+        .then(values => values.every(Boolean)), 5_000);
+      captureLatestDocumentContent(identity);
+      if (result === true && !hasUnsavedLocalChanges(identity) && !hasTitleDraft(identity.displayId)) return true;
+      // A timed-out mutation may have renamed the file. Do not close the process
+      // until its outcome is known, even when a recovery checkpoint exists.
+      if (hasDocumentCommit(key)) return false;
+      if (await waitWithTimeout(protectedDraft, 3_000) !== true) return false;
+      const protectedLatest = await waitWithTimeout(protectDocumentDraft(identity, adapter.path(), 'shutdown'), 3_000);
+      captureLatestDocumentContent(identity);
+      const buffer = getDocumentBuffer(identity);
+      return protectedLatest && buffer.durableRevision >= buffer.capturedRevision
+        && isTitleProtected(identity.displayId) && !hasDocumentCommit(key);
+    }));
+    if (!results.every(Boolean)) return false;
+
+    const recoverySettled = await waitWithTimeout(flushRecoveryOperations(), 3_000);
+    if (recoverySettled !== true) return false;
+
+    const sessionsNow = listDocumentSessions();
+    const newOwnerAppeared = sessionsNow.some(session => {
+      const adapter = [...session.adapters].slice(-1)[0] ?? session.retainedAdapter;
+      const initial = ownersAtStart.get(session.identity.displayId);
+      if (!initial) return Boolean(adapter || session.captures.size);
+      if (adapter && initial.adapter !== adapter) return true;
+      return [...session.captures].some(capture => !initial.captures.has(capture));
+    });
+    const hasUnretainedWork = sessionsNow.some(session => {
+      const buffer = getBuffer(session.identity);
+      const bodyNeedsProtection = Boolean(buffer
+        && hasUnsavedLocalChanges(session.identity)
+        && buffer.durableRevision < buffer.capturedRevision);
+      const titleNeedsProtection = hasTitleDraft(session.identity.displayId)
+        && !isTitleProtected(session.identity.displayId);
+      return bodyNeedsProtection || titleNeedsProtection;
+    });
+    const diagnostics = documentCommitDiagnostics();
+    const persistenceStillActive = diagnostics.active > 0 || diagnostics.pending > 0 || diagnostics.clocks > 0;
+    if (newOwnerAppeared || hasUnretainedWork || persistenceStillActive) {
+      if (pass === 0) continue;
+      return false;
+    }
+
+    return true;
+  }
+  return false;
 }

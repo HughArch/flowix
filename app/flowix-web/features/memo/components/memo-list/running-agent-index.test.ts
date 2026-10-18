@@ -23,9 +23,8 @@ function instance(
   };
 }
 
-function memo(input: Partial<Pick<MemoItem, 'id' | 'agents'>> = {}): Pick<MemoItem, 'id' | 'agents'> {
+function memo(input: Partial<Pick<MemoItem, 'agents'>> = {}): Pick<MemoItem, 'agents'> {
   return {
-    id: 'memo-1',
     agents: [],
     ...input,
   };
@@ -41,7 +40,7 @@ describe('running agent index', () => {
 
     expect(findRunningAgentForMemo(index, memo())).toBeNull();
     expect(
-      findRunningAgentForMemo(index, memo({ id: 'memo-2', agents: [
+      findRunningAgentForMemo(index, memo({ agents: [
         { threadId: 'thread-1', title: 'Thread', agentType: 'codex' },
       ] })),
     ).toBe(byThread);
@@ -69,13 +68,13 @@ describe('running agent index', () => {
     const byThread = instance({
       instanceId: 'by-thread',
       threadId: 'thread-1',
-      agentType: 'deepseek-harness',
+      agentType: 'dsh',
     });
     const index = buildRunningAgentTypeIndex([byThread]);
 
     expect(findRunningAgentTypeForMemo(index, memo({
       agents: [{ threadId: 'thread-1', title: 'Thread', agentType: 'codex' }],
-    }))).toBe('deepseek-harness');
-    expect(findRunningAgentTypeForMemo(index, memo({ id: 'memo-2' }))).toBeNull();
+    }))).toBe('dsh');
+    expect(findRunningAgentTypeForMemo(index, memo())).toBeNull();
   });
 });

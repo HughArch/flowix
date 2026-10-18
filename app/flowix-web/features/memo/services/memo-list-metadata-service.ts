@@ -38,7 +38,7 @@ export interface MemoTagTreeItem extends MemoTagLayoutItem {
   fullPath: string;
   depth: number;
   /** prefix count: 挂了"以 fullPath 起始的 tag"的去重 memo 数 (后端
-   *  get_tag_prefix_counts 用 HashSet<memo_id> 去重, 同一 memo 多个子
+   *  get_tag_prefix_counts 按笔记去重，同一篇笔记多个子
    *  tag 在父 prefix 下只算 1)。 */
   count: number;
 }
@@ -135,8 +135,8 @@ export function buildTagTreeOptions({
 }): MemoTagTreeItem[] {
   // Step 3+: 每个 tag 路径 (e.g. `中国/湖南/长沙`) 拆成多个 segment 节点
   // (中国 / 湖南 / 长沙) ── 选中任一节点即按其 fullPath 做 prefix 过滤。
-  // 兄弟顺序由 layout 里的全路径条目首次出现位置决定 (savedOrder 仍是
-  // 真实 tag 全路径的列表, 这里展开时按出现顺序插入 segment)。
+  // 兄弟顺序由 layout (或旧数据的 order 回退值) 中全路径首次出现位置决定;
+  // 展开时按该顺序插入 segment。
   //
   // count 来源: 后端 `get_tag_prefix_counts` 已经是按 distinct memo
   // 算好的, 直接读 fullPath 即可。比起累加 tagCounts 的好处:
@@ -242,12 +242,18 @@ export async function loadMemoLibraryMetadata({
   ]);
 
   const tagMap: Record<string, string> = {};
-  const allTagDefinitions = tagsResult.tags ?? [];
-  for (const tag of allTagDefinitions) {
-    tagMap[tag.id] = tag.name;
+  // The notes index is the source of truth for tags used by notes. The tag
+  // catalog only contains explicitly-created notebook tags, so tags parsed
+  // from Markdown would otherwise be omitted from the sidebar.
+  const catalogById = new Map(
+    (tagsResult.tags ?? []).map((tag) => [tag.id, tag.name]),
+  );
+  const allTagIds = [...new Set(usedTagIdsResult.usedTagIds ?? [])];
+  for (const id of allTagIds) {
+    tagMap[id] = catalogById.get(id) ?? id;
   }
 
-  const allTagIds = allTagDefinitions.map((tag) => tag.id);
+  const allTagDefinitions = allTagIds.map((id) => ({ id, name: tagMap[id] }));
   const allTagIdSet = new Set(allTagIds);
 
   const savedOrder = normalizeSavedStringArray(tagSystemMetadata.order);

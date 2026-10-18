@@ -1,9 +1,7 @@
 import {
   lazy,
   Suspense,
-  useCallback,
   useEffect,
-  useLayoutEffect,
   useState,
   type ReactNode,
 } from 'react';
@@ -12,6 +10,8 @@ import {
   type NoteNavigationDrawerPhase,
 } from '@features/memo/public/shell-api';
 import { createLogger } from '@/lib/logger';
+import { useI18n } from '@/lib/i18n';
+import { ListSurfaceLoadingState } from '@shared/ui/list-surface';
 
 const logger = createLogger('main-middle-column-controller');
 
@@ -30,19 +30,12 @@ function loadAgentConversationList() {
 
 const AgentConversationList = lazy(loadAgentConversationList);
 
-function AgentConversationListReadySignal({
-  onReady,
-  isActive,
-}: {
-  onReady(): void;
-  isActive: boolean;
-}) {
-  useLayoutEffect(() => onReady(), [onReady]);
-  return <AgentConversationList isActive={isActive} />;
+function AgentConversationListLoadingFallback() {
+  const { t } = useI18n();
+  return <ListSurfaceLoadingState ariaLabel={t('status.agent.loadingConversations')} />;
 }
 
 export interface MainMiddleColumnController {
-  agentConversationListReady: boolean;
   shouldRenderAgentConversationList: boolean;
   showMemoListSurface: boolean;
   showAgentConversationSurface: boolean;
@@ -69,10 +62,6 @@ export function useMainMiddleColumnController({
   const [agentConversationListMounted, setAgentConversationListMounted] = useState(
     () => isAgentConversationView,
   );
-  const [agentConversationListReady, setAgentConversationListReady] = useState(false);
-  const handleAgentConversationListReady = useCallback(() => {
-    setAgentConversationListReady(true);
-  }, []);
 
   useEffect(() => {
     if (isAgentConversationView) setAgentConversationListMounted(true);
@@ -97,11 +86,9 @@ export function useMainMiddleColumnController({
   const shouldRenderAgentConversationList = agentConversationListMounted || isAgentConversationView;
 
   return {
-    agentConversationListReady,
     shouldRenderAgentConversationList,
-    // The selected surface must follow the store immediately.  Readiness is
-    // only a loading concern for the lazy conversation chunk; it must not keep
-    // the previous notes surface visible after the user has switched views.
+    // The selected surface follows the store immediately; a lazy chunk uses
+    // its own Suspense fallback instead of keeping the previous notes visible.
     showMemoListSurface: !isAgentConversationView,
     showAgentConversationSurface: isAgentConversationView,
     memoListPreviewVisible,
@@ -113,11 +100,8 @@ export function useMainMiddleColumnController({
     handleMemoListPreviewCompanionEnter: preview.handleCompanionSurfaceEnter,
     handleMemoListPreviewCompanionLeave: preview.handleCompanionSurfaceLeave,
     agentConversationListNode: (
-      <Suspense fallback={null}>
-        <AgentConversationListReadySignal
-          onReady={handleAgentConversationListReady}
-          isActive={agentConversationListActive}
-        />
+      <Suspense fallback={<AgentConversationListLoadingFallback />}>
+        <AgentConversationList isActive={agentConversationListActive} />
       </Suspense>
     ),
   };

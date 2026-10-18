@@ -4,7 +4,6 @@
 //! stored in each notebook's `.flowix/system.json`. The legacy global system
 //! store is read only to migrate a notebook the first time it is accessed.
 
-use std::collections::HashMap;
 use std::path::PathBuf;
 
 use tauri::State;
@@ -12,7 +11,7 @@ use tauri::State;
 use crate::app::state::AppState;
 use crate::system_data::{
     NotebookCustomViewsData, NotebookFeaturedNotesData,
-    NotebookFileTreePreferences, NotebookTagSystemData, SystemFile, TagLayoutItem, TagSystemData,
+    NotebookFileTreePreferences, NotebookTagSystemData, SystemFile, TagLayoutItem,
 };
 
 const FEATURED_NOTES_ALLOWED_OPERATORS: [&str; 3] = ["equals", "contains", "excludes"];
@@ -43,7 +42,6 @@ pub fn set_tag_system_layout(
 ) -> Result<(), String> {
     let mut file = load_notebook_system(&notebook_id, &state)?;
     let notebook = file.tag.notebooks.entry(notebook_id.clone()).or_default();
-    notebook.order = layout.iter().map(|item| item.id.clone()).collect();
     notebook.layout = layout;
     persist_notebook_system(&notebook_id, &state, &file)
 }
@@ -88,15 +86,9 @@ fn load_notebook_system(notebook_id: &str, state: &State<AppState>) -> Result<Sy
     {
         return Ok(file);
     }
-    let legacy = state.system_data.get_tag_metadata(notebook_id);
-    let mut notebooks = HashMap::new();
-    notebooks.insert(notebook_id.to_string(), legacy);
-    let file = SystemFile {
-        tag: TagSystemData { notebooks },
-        featured_notes: Default::default(),
-        custom_views: Default::default(),
-        file_tree: Default::default(),
-    };
+    // Legacy global tag metadata is intentionally not imported. A reset starts
+    // notebook-scoped system data with defaults; users can configure it again.
+    let file = SystemFile::default();
     crate::system_data::SystemData::write_notebook(&root, &file)
         .map_err(|error| error.to_string())?;
     Ok(file)

@@ -5,7 +5,7 @@ import {
 } from "@features/agent/events/message-identity";
 
 describe("canonical agent message identity", () => {
-  it.each(["claude", "hermes", "opencode", "deepseek-harness"] as const)(
+  it.each(["claudecode", "hermes", "opencode", "dsh"] as const)(
     "uses the shared rule for %s",
     (agentType) => {
       expect(
@@ -44,8 +44,15 @@ describe("canonical agent message identity", () => {
     expect(
       canonicalAgentMessageId("codex", "run-1", "assistant", canonical),
     ).toBe(canonical);
-    expect(completedRunUserMessageId("deepseek-harness", "run-1")).toBe(
-      "msg:deepseek-harness:run-1:user:user-run-1",
+    expect(completedRunUserMessageId("dsh", "run-1")).toBe(
+      "msg:dsh:run-1:user:user-run-1",
     );
+  });
+
+  it("preserves the shared Codex turn-error identity", () => {
+    const turnErrorId = "msg:codex:turn-error:turn-1";
+    expect(
+      canonicalAgentMessageId("codex", "run-1", "error", turnErrorId),
+    ).toBe(turnErrorId);
   });
 });

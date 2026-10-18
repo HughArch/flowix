@@ -102,7 +102,9 @@ it('shows membership failures and allows a successful retry', async () => {
   await act(async () => root.render(<Harness />));
   expect(current.membershipError).toBe('offline');
   expect(current.membershipLoading).toBe(false);
-  await act(async () => current.refreshMembership());
+  let result: string | undefined;
+  await act(async () => { result = await current.refreshMembership(); });
+  expect(result).toBe('refreshed');
   expect(current.membershipError).toBeNull();
   expect(mocks.refreshMembership).toHaveBeenCalledTimes(2);
 });
@@ -142,4 +144,36 @@ it('clears the focus throttle after logout so the next session reloads membershi
   await act(async () => mocks.receive!(snapshot(2)));
   await act(async () => mocks.receive!({ ...snapshot(3), authenticated: true, authStatus: 'authenticated', account: { user: { id: 'user-1' } } } as CloudState));
   expect(mocks.refreshMembership).toHaveBeenCalledTimes(2);
+});
+
+it('returns failure to callers and success after retry without an unhandled rejection', async () => {
+  mocks.getState.mockResolvedValue({ ...snapshot(1), authenticated: true, authStatus: 'authenticated' });
+  await act(async () => root.render(<Harness />));
+  mocks.refreshMembership.mockRejectedValueOnce(new Error('offline'));
+  let result: string | undefined;
+  await act(async () => { result = await current.refreshMembership(); });
+  expect(result).toBe('failed');
+  expect(current.membershipError).toBe('offline');
+  await act(async () => { result = await current.refreshMembership(); });
+  expect(result).toBe('refreshed');
+  expect(current.membershipError).toBeNull();
+});
+
+it('returns stale to all coalesced callers after the session changes', async () => {
+  mocks.getState.mockResolvedValue({ ...snapshot(1), authenticated: true, authStatus: 'authenticated' });
+  await act(async () => root.render(<Harness />));
+  let finish!: () => void;
+  mocks.refreshMembership.mockReturnValueOnce(new Promise<void>((resolve) => { finish = resolve; }));
+  let first!: ReturnType<typeof current.refreshMembership>;
+  let second!: ReturnType<typeof current.refreshMembership>;
+  await act(async () => {
+    first = current.refreshMembership();
+    second = current.refreshMembership();
+  });
+  await act(async () => mocks.receive!(snapshot(2)));
+  await act(async () => finish());
+  await expect(first).resolves.toBe('stale');
+  await expect(second).resolves.toBe('stale');
+  expect(current.membershipError).toBeNull();
+  expect(current.membershipLoading).toBe(false);
 });

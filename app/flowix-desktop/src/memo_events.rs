@@ -1,8 +1,9 @@
-//! Unified memo event bus for UI, Agent, cloud, and external-editor writes.
+//! Event bus for writes that still use the legacy Memo-shaped domain model.
 //!
 //! Created, updated, and deleted mutations share `MEMO_EVENT`. Content
 //! commits carry revision/changeId metadata, while in-app editor writes also
 //! carry originWindowLabel so only sibling windows reload the committed bytes.
+//! Path-first notebook writes use `flowix:path-note-changed` instead.
 use serde::Serialize;
 use tauri::{AppHandle, Emitter, Manager};
 
@@ -12,8 +13,7 @@ use flowix_core::memo_file::Memo;
 
 pub const MEMO_EVENT: &str = "memo-event";
 
-/// 写者标�?—�?informational, 前�?不用于分�?��由�?///
-/// Plan B �?Agent 不再手动 emit, watcher �?Agent / 外部工具的�?�?/// 变更统一归到 `ExternalTool`。`AgentEdit` / `AgentWrite` 这两�?���?/// 已删�?(历史 comment 提到「前�?��用它分支�? 合并后�?义一�?�?
+/// MemoEvent 写者来源，供前端展示行为与诊断使用。
 #[derive(Serialize, Clone, Debug)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoChangeSource {
@@ -27,8 +27,9 @@ pub enum MemoChangeSource {
     UserEdit,
     /// User explicitly deleted a note.
     UserDelete,
-    /// 外部编辑�?/ 其他 AI / Agent 改�?�? 文件监听器�?察到 ──
-    /// v3 鍚庢墍鏈夐潪鐢ㄦ埛涓诲姩淇濆瓨鐨勮矾寰勯兘鍚堝埌杩欓噷
+    /// Reserved for external-tool writes that still produce a MemoEvent.
+    /// Path-based Agent/CLI writes instead publish notebook path changes;
+    /// they do not fabricate a legacy Memo row.
     ExternalTool,
     /// Flowix Cloud pull applied this write locally. Automatic push scheduling
     /// must ignore this source to avoid a sync loop.
@@ -76,7 +77,7 @@ impl MemoDerivedChanged {
 #[derive(Serialize, Clone, Debug)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum MemoEvent {
-    /// 新笔记落�?(新建 / 拖拽 / 粘贴 / import / Agent write 新文�?
+    /// A note created through the legacy Memo-shaped command surface.
     Created {
         memo: Memo,
         #[serde(rename = "notebookId")]
@@ -89,7 +90,6 @@ pub enum MemoEvent {
     /// Agent edit / 外部工具改�?�?/ 收藏状态变�?。`path` 用于前�?编辑�?
     /// path 匹配�?
     Updated {
-        id: String,
         path: String,
         #[serde(rename = "notebookId")]
         notebook_id: String,
@@ -104,7 +104,6 @@ pub enum MemoEvent {
     },
     /// 笔�?�?���?(用户删除 / `clear_memos` / 外部工具 rm 文件)
     Deleted {
-        id: String,
         path: String,
         /// Notebook-relative path of the deleted note; the path-keyed
         /// identity that survives the deletion of the legacy id.
@@ -120,7 +119,7 @@ pub enum MemoEvent {
     /// 之前每个 affected memo 都发一次 Updated 的方案。后端已经批量改写
     /// 了所有受影响 memo 的 .md body + 同步了 memo index, 这里告诉前端:
     /// - 哪些路径被重命名 ([old, new], 可能多个 — move 整棵子树时一并改)
-    /// - 哪些 memo 的 tags 字段需要被前端局部 patch (affected_memo_ids)
+    /// - 哪些笔记的 tags 字段需要被前端局部 patch (affected_relative_paths)
     ///
     /// 跟 Updated 区别: 这是 metadata 操作, 不是单条 memo 写入。前端不
     /// 需要把 memo 整体替换 (body/preview/todos 都未变, 只有 tags 数组
@@ -144,13 +143,13 @@ pub enum MemoEvent {
     },
     /// 整棵 tag 子树删除完成 (delete_memo_tag IPC): 一次性发出, 替代
     /// 之前每个 affected memo 都发一次 Updated 的方案。后端已经从
-    /// memo_tags + memo index 移除所有相关条目, 也从 .md body 里清理了
+    /// notes.tags 投影移除相关条目, 也从 Markdown 中清理了标签来源
     /// `#tag` token, 这里告诉前端:
     /// - 哪些 tag 路径被删除 (deleted_tags, 含 tag_path 自身 + 子树)
-    /// - 哪些 memo 的 tags 字段需要被前端局部清理 (affected_memo_ids)
+    /// - 哪些笔记的 tags 字段需要被前端局部清理 (affected_relative_paths)
     ///
     /// 跟 TagsRenamed 是对称的姊妹事件, 但语义不同: rename 是改写 token,
-    /// delete 是移除 token。 前端 dispatch 路径用同一套 memo.ids 收窄,
+    /// delete 是移除 token。前端按相对路径定位受影响的笔记，
     /// 但处理逻辑不同 (rename → rebase, delete → filter out)。
     TagsDeleted {
         #[serde(rename = "notebookId")]
@@ -165,24 +164,6 @@ pub enum MemoEvent {
         #[serde(rename = "affectedRelativePaths")]
         affected_relative_paths: Vec<String>,
     },
-}
-
-impl MemoEvent {
-    /// 事件关联�?memo id。Deleted 总是�?id; Created �?memo 里拿; Updated
-    /// 直接读字段。没�?id (例�? unregister_memo_by_path 后的 Deleted) 返回
-    /// 当前�?��业务逻辑�?���?���? 保留作内部接口�?
-    pub(crate) fn memo_id(&self) -> &str {
-        match self {
-            MemoEvent::Created { memo, .. } => &memo.id,
-            MemoEvent::Updated { id, .. } => id,
-            MemoEvent::Deleted { id, .. } => id,
-            // TagsRenamed / TagsDeleted 不是单条 memo 事件; 调用方按
-            // affected_memo_ids 自行处理。 这里返回空串兜底 (不参与
-            // memo-event dedup 的 key)。
-            MemoEvent::TagsRenamed { .. } => "",
-            MemoEvent::TagsDeleted { .. } => "",
-        }
-    }
 }
 
 /// 触发 emit 的薄包�?。失败不 panic (let _ = 吞掉 emit 错�?, �?`agent-chunk`
@@ -237,27 +218,27 @@ pub(crate) fn emit_with_recorded_commit_from_window(
             ..
         } if !matches!(source, MemoChangeSource::CloudSync) => Some((
             notebook_id.clone(),
-            memo.id.clone(),
+            memo.relative_path.clone(),
             flowix_sync::LocalChangeKind::Put,
         )),
         MemoEvent::Updated {
-            id,
+            memo,
             notebook_id,
             source,
             ..
         } if !matches!(source, MemoChangeSource::CloudSync) => Some((
             notebook_id.clone(),
-            id.clone(),
+            memo.relative_path.clone(),
             flowix_sync::LocalChangeKind::Put,
         )),
         MemoEvent::Deleted {
-            id,
+            relative_path,
             notebook_id,
             source,
             ..
         } if !matches!(source, MemoChangeSource::CloudSync) => Some((
             notebook_id.clone(),
-            id.clone(),
+            relative_path.clone(),
             flowix_sync::LocalChangeKind::Delete,
         )),
         _ => None,
@@ -294,7 +275,7 @@ pub(crate) fn emit_with_recorded_commit_from_window(
                 _ => None,
             };
             let Some(relative_path) = relative_path else {
-                tracing::warn!(notebook_id, memo_id = %note_id, "cloud change has no valid notebook-relative path");
+                tracing::warn!(notebook_id, note_path = %note_id, "cloud change has no valid notebook-relative path");
                 return commit;
             };
             let note_id = flowix_sync::v2_path_note_id(&notebook_id, &relative_path);
@@ -425,7 +406,6 @@ fn emit_committed_via_dispatcher(
     commit: Option<&DocumentCommit>,
     origin_window_label: Option<&str>,
 ) {
-    let _ = event.memo_id();
     let payload = serde_json::to_value(MemoEventPayload {
         derived_only: false,
         event,
@@ -438,14 +418,13 @@ fn emit_committed_via_dispatcher(
 
 #[cfg(test)]
 mod tests {
-    //! serde wire-format 测试 —保证与前�?TypeScript 镜像 (app/flowix-web/types/memo.ts)
-    //! 的硬契约。`kind` 必须�?snake_case, 字�?命名 (memo/id/path/source) �?    //! �?IPC 边界的硬约定, 不�?随便改�?
+    //! Serde wire-format tests for the TypeScript MemoEvent mirror. Event fields
+    //! are the IPC contract; note entries are addressed by relative path.
     use super::*;
     use flowix_core::memo_file::Memo;
 
     fn sample_memo() -> Memo {
         Memo {
-            id: "abc123".to_string(),
             filename: "Sample.md".to_string(),
             relative_path: "Sample.md".to_string(),
             preview: "preview text".to_string(),
@@ -479,8 +458,8 @@ mod tests {
         assert_eq!(v["source"], "user_new");
         assert_eq!(v["notebookId"], "nb_default");
         assert_eq!(v["derivedChanged"]["tags"], true);
-        // memo 字�?保持 camelCase (Memo struct �?���?#[serde(rename = "createdAt")] �?
-        assert_eq!(v["memo"]["id"], "abc123");
+        assert_eq!(v["memo"]["relativePath"], "Sample.md");
+        assert!(v["memo"].get("id").is_none());
         assert_eq!(v["memo"]["filename"], "Sample.md");
         assert_eq!(v["memo"]["thumbnail"], "https://example.com/cover.png");
         assert_eq!(v["memo"]["createdAt"], 1_700_000_000_000i64);
@@ -489,7 +468,6 @@ mod tests {
     #[test]
     fn updated_serializes_with_snake_case_tag() {
         let event = MemoEvent::Updated {
-            id: "m_abc".to_string(),
             path: "/tmp/foo.md".to_string(),
             notebook_id: "nb_default".to_string(),
             memo: sample_memo(),
@@ -498,7 +476,7 @@ mod tests {
         };
         let v: serde_json::Value = serde_json::to_value(&event).unwrap();
         assert_eq!(v["kind"], "updated");
-        assert_eq!(v["id"], "m_abc");
+        assert!(v.get("id").is_none());
         assert_eq!(v["path"], "/tmp/foo.md");
         assert_eq!(v["source"], "external_tool");
     }
@@ -506,7 +484,6 @@ mod tests {
     #[test]
     fn committed_event_flattens_revision_contract_in_camel_case() {
         let event = MemoEvent::Updated {
-            id: "m_abc".to_string(),
             path: "/tmp/foo.md".to_string(),
             notebook_id: "nb_default".to_string(),
             memo: sample_memo(),
@@ -545,7 +522,6 @@ mod tests {
     #[test]
     fn deleted_serializes_with_snake_case_tag() {
         let event = MemoEvent::Deleted {
-            id: "m_abc".to_string(),
             path: "/tmp/foo.md".to_string(),
             relative_path: "foo.md".to_string(),
             notebook_id: "nb_default".to_string(),
@@ -558,7 +534,7 @@ mod tests {
         };
         let v: serde_json::Value = serde_json::to_value(&event).unwrap();
         assert_eq!(v["kind"], "deleted");
-        assert_eq!(v["id"], "m_abc");
+        assert!(v.get("id").is_none());
         assert_eq!(v["path"], "/tmp/foo.md");
         assert_eq!(v["notebookId"], "nb_default");
         assert_eq!(v["derivedChanged"]["todos"], true);

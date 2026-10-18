@@ -283,13 +283,13 @@ export function createFollowUpQueueSlice(set: SessionSet, get: SessionGet): Foll
       const pending = get().pendingSteeringMessages[threadId]?.find((message) => message.id === messageId);
       if (!pending?.clientUserMessageId || pending.deliveryMode !== "follow_up") return;
       const type = getAgentType(get().sessionMeta.threadTypes[threadId] ?? get().sessionMeta.activeAgentTypeKey);
-      if (type.key === "pi") {
+      if (type.id === "pi") {
         if (!canActOnQueuedMessage(pending, "pi")) return;
         await agentClient.promotePiFollowUpToSteer(threadId, pending.clientUserMessageId);
         updateSteeringMessage(threadId, messageId, { deliveryMode: "steer", deliveryStatus: "queued" });
         return;
       }
-      if (type.key !== "codex" || !canActOnQueuedMessage(pending, "codex")) return;
+      if (type.id !== "codex" || !canActOnQueuedMessage(pending, "codex")) return;
 
       // Lock immediately, including the queue refresh, so the UI can show
       // pending delivery and repeated clicks cannot submit the same item.
@@ -348,13 +348,13 @@ export function createFollowUpQueueSlice(set: SessionSet, get: SessionGet): Foll
       const pending = get().pendingSteeringMessages[threadId]?.find((message) => message.id === messageId);
       if (!pending?.clientUserMessageId) return;
       const type = getAgentType(get().sessionMeta.threadTypes[threadId] ?? get().sessionMeta.activeAgentTypeKey);
-      if (type.key === "pi") {
+      if (type.id === "pi") {
         if (!canActOnQueuedMessage(pending, "pi")) return;
         await agentClient.deletePiQueuedMessage(threadId, pending.clientUserMessageId);
         removeMessage(set, threadId, messageId);
         return;
       }
-      if (type.key !== "codex" || !canActOnQueuedMessage(pending, "codex")) return;
+      if (type.id !== "codex" || !canActOnQueuedMessage(pending, "codex")) return;
       if (pending.deliveryMode === "steer" && pending.deliveryStatus !== "cleanup_failed") return;
       const current = get().pendingSteeringMessages[threadId]?.find((message) => message.id === messageId);
       if (!current || !current.providerQueueId) return;

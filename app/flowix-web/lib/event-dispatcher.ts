@@ -1,47 +1,7 @@
 /**
- * 通用事件分发器 — 给应用层事件 (如 `MemoEvent`) 一个中央路由。
- *
- * 背景: 项目里 `useMemoEvents.ts` 早期是 "hook 集中分发 (kind switch)"
- * 形态 — 单订阅点, 内部 switch 派发到 note-store 的 handleMemo* action,
- * 已经有中央化的雏形。但有 3 个缺陷:
- *
- * 1. 双订阅绕过中央路由 — `useExternalDocumentChangeWatch` 直接 subscribe
- *    Tauri 'memo-event', 跟 useMemoEvents 并列, 不走中央 switch。未来
- *    第 3 个订阅者会继续散开。
- * 2. 同 id 快速连续事件不合并 — N 次 set() 触发 N 次 rerender。 这是
- *    后端 fs_watcher FSEvents 双触发 / 编辑器 debounce save 期间的常态。
- * 3. source 字段闲置 — 6 种 source 前端仅用 `user_edit` 做一次排除,
- *    handler 想拿上下文得自己实现。
- *
- * 本模块提供 (Phase 1 启用, Phase 2 增强):
- *
- * - `subscribe(handler, filter?)` — 每个 handler 就近声明自己关心的
- *   kind / source / path, filter 在 dispatcher 内统一执行, 跨订阅者
- *   一致。
- * - `dispatch(event)` — 同步派发到所有匹配 filter 的 handler, handler
- *   抛错被捕获不影响其他。
- * - `use(middleware)` — koa-style middleware 链, 可包装 dispatch 实现
- *   dedup / coalesce / log。当前 (Phase 2) 上一个 dedup middleware。
- *
- * 不替代 `lib/tauri/event-bus.ts`: 那个是 Tauri `listen` 适配层
- * (多 handler 共享 1 个 Tauri listener), 这个是应用层语义层 (filter +
- * middleware + 分发策略)。两者职责正交, 一般用法是
- * event-bus.subscribe(tauri event) → dispatcher.dispatch(payload)。
- *
- * 使用范式 (MemoEvent 场景):
- *
- *   // lib/memo-dispatcher.ts (side-effect module)
- *   import { memoDispatcher } from '@/lib/event-dispatcher';
- *   subscribe<MemoEvent>('memo-event', (e) => memoDispatcher.dispatch(e));
- *
- *   memoDispatcher.subscribe(
- *     (e) => useNoteStore.getState().handleMemoUpdated(e.memo),
- *     (e) => e.kind === 'updated',
- *   );
- *
- * 注意: dispatcher 是模块级单例, 多个 webview (主窗口 / 偏好窗口) 各持
- * 一份独立实例, 互不影响。 这是预期行为 — 偏好窗口没有 document-pane,
- * 它的 reload handler 就根本不订阅, 不需要跨 webview 协调 dispatcher。
+ * Application-level event routing with optional filters and middleware.
+ * Tauri transport subscriptions live in `platform/tauri/event-bus`; this class
+ * handles typed events after they enter the application layer.
  */
 
 export type DispatcherMiddleware<T> = (next: DispatchFn<T>) => DispatchFn<T>;

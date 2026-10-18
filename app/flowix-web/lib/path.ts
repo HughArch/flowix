@@ -2,9 +2,8 @@
  * Cross-platform path utilities for joining notebook and memo paths.
  * On Mac/Linux, uses forward slashes; on Windows, handles both \\ and /.
  *
- * v3 改造: filename 改成磁盘文件名 (含 .md, 不再带 #memoid 后缀),
- * 因此 extractMemoIdFromPath / generateMemoFilename / MEMO_ID_FILENAME_PATTERN
- * 全部移除。memo id 由后端 memo index 持有, 前端从 memo 结构读。
+ * Notes use their notebook-relative path as the stable address. Filenames
+ * are the physical disk names, including `.md`; no memo ID is encoded there.
  */
 
 export function joinNotebookMemoPath(notebookPath: string, memoPath: string | null | undefined): string | null {
@@ -68,6 +67,14 @@ export function samePath(left: string, right: string): boolean {
   return canonicalPath(left) === canonicalPath(right);
 }
 
+/** Whether a path is the directory itself or one of its descendants. */
+export function isPathInDirectory(path: string, directoryPath: string): boolean {
+  const candidate = canonicalDirectoryPath(path);
+  const directory = canonicalDirectoryPath(directoryPath);
+  return candidate === directory
+    || candidate.startsWith(directory === '/' ? '/' : `${directory}/`);
+}
+
 export function uniquePaths(paths: string[]): string[] {
   const seen = new Set<string>();
   return paths.filter((path) => {
@@ -83,6 +90,7 @@ export function fileNameFromPath(filePath: string): string {
   return canonicalFilePath.slice(canonicalFilePath.lastIndexOf('/') + 1);
 }
 
+/** Destination when moving a file into a directory; discards its original parent directories. */
 export function pathInDirectory(directoryPath: string, filePath: string): string {
   const directory = canonicalDirectoryPath(directoryPath);
   const name = fileNameFromPath(filePath);

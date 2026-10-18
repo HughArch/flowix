@@ -20,7 +20,7 @@ export interface MemoListDataLoaderProps {
   colorFilter: ColorFilterValue;
   activePluginId: string | null;
   activeCustomFilterId?: string | null;
-  refreshTrigger: number;
+  memoListRefreshTrigger: number;
   loadNotes: NoteLibraryStore['loadNotes'];
   setLoadedMemoListQueryKey: (queryKey: string | null) => void;
   setIsMemoListLoading: (loading: boolean) => void;
@@ -46,7 +46,7 @@ export function MemoListDataLoader({
   colorFilter,
   activePluginId,
   activeCustomFilterId,
-  refreshTrigger,
+  memoListRefreshTrigger,
   loadNotes,
   setLoadedMemoListQueryKey,
   setIsMemoListLoading,
@@ -55,6 +55,11 @@ export function MemoListDataLoader({
   onLoadSuccess,
 }: MemoListDataLoaderProps) {
   const startupQuerySkippedRef = useRef<string | null>(null);
+  const inFlightRequestRef = useRef<{
+    fingerprint: string;
+    promise: Promise<boolean>;
+  } | null>(null);
+  const completedRequestFingerprintRef = useRef<string | null>(null);
 
   useEffect(() => {
     let cancelled = false;
@@ -89,34 +94,71 @@ export function MemoListDataLoader({
     );
     async function loadMemoListOnly() {
       onLoadStart?.(queryKey);
+      const fingerprint = JSON.stringify([queryKey, memoListRefreshTrigger]);
       // The startup orchestrator has already loaded this exact query. Mark it
       // as rendered locally without issuing a duplicate IPC request.
       if (
         initialMemoQueryKey === queryKey
         && memoListQueryKey === queryKey
-        && refreshTrigger === 0
+        && memoListRefreshTrigger === 0
         && startupQuerySkippedRef.current !== queryKey
       ) {
         startupQuerySkippedRef.current = queryKey;
+        completedRequestFingerprintRef.current = fingerprint;
         setLoadedMemoListQueryKey(queryKey);
         setIsMemoListLoading(false);
         onLoadSuccess?.(queryKey);
         return;
       }
+      // A completed list request updates memoListQueryKey, which is also an
+      // effect dependency. Remember that query revision so this state update
+      // cannot immediately issue the same request again.
+      if (completedRequestFingerprintRef.current === fingerprint) {
+        setLoadedMemoListQueryKey(queryKey);
+        setIsMemoListLoading(false);
+        return;
+      }
       setIsMemoListLoading(true);
+      let request = inFlightRequestRef.current;
+      // Effect re-entry for the exact same query revision shares its request;
+      // a newer invalidation has a different fingerprint and fetches again.
+      if (!request || request.fingerprint !== fingerprint) {
+        request = {
+          fingerprint,
+          promise: loadNotes({
+            notebookId: selectedNotebookId,
+            filter: activeFilter,
+            sort: activeSort,
+            tagId: activeTagId ?? undefined,
+            source: 'memo-list-loader',
+          }),
+        };
+        inFlightRequestRef.current = request;
+      }
       try {
-        const applied = await loadNotes({
-          notebookId: selectedNotebookId,
-          filter: activeFilter,
-          sort: activeSort,
-          tagId: activeTagId ?? undefined,
-        });
-        if (cancelled || !applied) return;
+        const applied = await request.promise;
+        if (cancelled) return;
+        if (!applied) {
+          // Another request may have loaded the same query while this one was
+          // superseded. Accept only that exact applied query; otherwise the
+          // rerendered current query owns the next readiness report.
+          if (memoListQueryKey === queryKey) {
+            completedRequestFingerprintRef.current = fingerprint;
+            setLoadedMemoListQueryKey(queryKey);
+          }
+          return;
+        }
+        completedRequestFingerprintRef.current = fingerprint;
         setLoadedMemoListQueryKey(queryKey);
         onLoadSuccess?.(queryKey);
       } catch (error) {
-        if (!cancelled) onLoadError(error);
+        if (!cancelled) {
+          onLoadError(error);
+        }
       } finally {
+        if (inFlightRequestRef.current === request) {
+          inFlightRequestRef.current = null;
+        }
         if (!cancelled) {
           setIsMemoListLoading(false);
         }
@@ -142,7 +184,7 @@ export function MemoListDataLoader({
     onLoadError,
     onLoadStart,
     onLoadSuccess,
-    refreshTrigger,
+    memoListRefreshTrigger,
     selectedNotebookId,
     setIsMemoListLoading,
     setLoadedMemoListQueryKey,

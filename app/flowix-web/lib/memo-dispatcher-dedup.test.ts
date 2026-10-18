@@ -4,11 +4,11 @@ import { createMemoDedupMiddleware } from './memo-dispatcher-dedup';
 
 function updated(revision: number, notebookId = 'notebook'): Extract<MemoEvent, { kind: 'updated' }> {
   return {
-    kind: 'updated', id: 'memo', path: '/note.md', notebookId, revision,
+    kind: 'updated', path: '/note.md', notebookId, revision,
     changeId: `change-${revision}`, source: 'user_edit',
     derivedChanged: { tags: false, todos: false, agents: false },
     memo: {
-      id: 'memo', filename: 'note.md', relativePath: 'note.md', preview: '', tags: [], todos: [], agents: [],
+      filename: 'note.md', relativePath: 'note.md', preview: '', tags: [], todos: [], agents: [],
       createdAt: 1, updatedAt: 1, favorited: false, icon: null, colors: [], properties: {},
     },
   };

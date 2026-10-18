@@ -1,6 +1,9 @@
-import { Node as TiptapNode, mergeAttributes, type JSONContent, type MarkdownToken } from '@tiptap/core';
+import { Node as TiptapNode, mergeAttributes, type JSONContent } from '@tiptap/core';
+import { mathBlockMarkdownSpec, normalizeLatex } from './math-block-markdown';
 import { translate, type I18nKey } from '@/lib/i18n';
 import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api';
+
+export { normalizeLatex };
 
 // katex + 其 CSS 动态 import (独立 chunk, 首个数学块渲染时加载)。
 // 参照 codeblock-shiki/mermaid-renderer.ts 的懒加载模式。
@@ -32,40 +35,10 @@ declare module '@tiptap/core' {
 
 const DEFAULT_LATEX = '';
 const PLACEHOLDER_LATEX = '\\frac{a}{b}';
-const BLOCK_MATH_RE = /^\$\$\s*\n?([\s\S]*?)\n?\s*\$\$(?:\n|$)/;
 
 // NodeView 不在 React 树内, 不能用 useI18n, 走 user-settings-store 直读当前语言。
 function tKey(key: I18nKey, params?: Record<string, string | number>): string {
   return translate(getCurrentAppLanguage(), key, params);
-}
-
-export function normalizeLatex(value: unknown): string {
-  if (typeof value !== 'string') return '';
-
-  let normalized = value.trim();
-
-  // The math-block input stores the formula body, while users commonly paste
-  // a complete display-math snippet from Markdown/MathJax. Accept both forms
-  // at the boundary and keep the node attribute canonical.
-  let unwrapped = true;
-  while (unwrapped) {
-    unwrapped = false;
-
-    const bracketed = /^\\\[\s*([\s\S]*?)\s*\\\]$/.exec(normalized);
-    if (bracketed) {
-      normalized = bracketed[1].trim();
-      unwrapped = true;
-      continue;
-    }
-
-    const dollarWrapped = /^\$\$\s*([\s\S]*?)\s*\$\$$/.exec(normalized);
-    if (dollarWrapped) {
-      normalized = dollarWrapped[1].trim();
-      unwrapped = true;
-    }
-  }
-
-  return normalized;
 }
 
 function renderKatex(target: HTMLElement, latex: string) {
@@ -244,31 +217,7 @@ export const MathBlock = TiptapNode.create({
     };
   },
 
-  markdownTokenizer: {
-    name: 'mathBlock',
-    level: 'block' as const,
-    start(src: string) {
-      return src.indexOf('$$');
-    },
-    tokenize(src: string) {
-      const match = BLOCK_MATH_RE.exec(src);
-      if (!match) return undefined;
-      return {
-        type: 'mathBlock',
-        raw: match[0],
-        text: match[1],
-      };
-    },
-  },
-
-  parseMarkdown(token: MarkdownToken) {
-    return {
-      type: 'mathBlock',
-      attrs: {
-        latex: normalizeLatex(token.text),
-      },
-    };
-  },
+  ...mathBlockMarkdownSpec,
 
   renderMarkdown(node: JSONContent) {
     const latex = normalizeLatex(node.attrs?.latex);

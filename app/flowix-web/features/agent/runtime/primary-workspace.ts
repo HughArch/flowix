@@ -1,6 +1,6 @@
 /**
  * Resolve the sole primary workspace.  A notebook is always the agent cwd;
- * folders from `.flowix/agent.json` are add-dir roots and never participate
+ * folders from `local.db` are add-dir roots and never participate
  * in cwd selection.  The `defaultFiles` argument remains for API compatibility
  * with persisted/legacy callers, but is intentionally ignored here.
  */

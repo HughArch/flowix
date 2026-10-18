@@ -199,7 +199,7 @@ describe('agent thread card selectors', () => {
       }),
       isCreating: false,
       isLoading: false,
-      typeKey: 'deepseek-harness',
+      typeKey: 'dsh',
     });
 
     expect(runtime.status).toBe('running');

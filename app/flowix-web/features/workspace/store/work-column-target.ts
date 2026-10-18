@@ -1,99 +1,11 @@
-import type { FileBrowserContext } from './file-browser-target';
-import type { PluginDescriptor } from '@platform/tauri/client';
-import { canonicalPath } from '@/lib/path';
+import type {
+  CollectionSurfaceTarget, WorkspaceContentTarget,
+} from '../model/surface-target';
+export type CollectionWorkspaceTarget = CollectionSurfaceTarget;
 
-export type DocumentListScope = {
-  kind: 'folder';
-  path: string;
-  notebookPath: string;
-  notebookId: string | null;
-};
-
-export type DocumentListFilters = {
-  resourceKinds?: string[];
-  tags?: string[];
-  customFilterId?: string;
-};
-
-export type DocumentListTarget = {
-  kind: 'document-list';
-  displayId: string;
-  scope: DocumentListScope;
-  filters: DocumentListFilters;
-};
-
-/** Stable identity for a folder list and its active filter set. */
-export function createDocumentListTarget(
-  scope: DocumentListScope,
-  filters: DocumentListFilters,
-): DocumentListTarget {
-  const normalizedScope = {
-    ...scope,
-    path: canonicalPath(scope.path),
-    notebookPath: canonicalPath(scope.notebookPath),
-  };
-  const normalizedFilters: DocumentListFilters = {
-    ...(filters.resourceKinds ? { resourceKinds: [...new Set(filters.resourceKinds)].sort() } : {}),
-    ...(filters.tags ? { tags: [...new Set(filters.tags)].sort() } : {}),
-    ...(filters.customFilterId ? { customFilterId: filters.customFilterId } : {}),
-  };
-  const displayId = `document-list:${JSON.stringify([
-    normalizedScope.path,
-    normalizedScope.notebookPath,
-    normalizedScope.notebookId,
-    normalizedFilters,
-  ])}`;
-  return { kind: 'document-list', displayId, scope: normalizedScope, filters: normalizedFilters };
-}
-
-/**
- * The stable target currently owned by the workColumn.
- *
- * The selected notebook remains in NoteLibraryStore; folder-list destinations are
- * explicit targets so they can be restored independently of that selection.
- */
-export interface CollectionWorkspaceTarget {
-  kind: 'collection';
-  displayId: string;
-  notebookId: string;
-  collectionId: string;
-  viewId: string | null;
-  collectionType: 'table' | 'media_library';
-  filePath: string;
-  notebookPath: string;
-  name: string;
-  unavailableReason?: string;
-}
-
-export type WorkColumnTarget =
-  | { kind: 'empty' }
-  | CollectionWorkspaceTarget
-  | DocumentListTarget
-  | {
-      kind: 'external';
-      fileBrowser?: FileBrowserContext;
-      path: string;
-      scopePath: string | null;
-      transitionId: number | null;
-    }
-  | { kind: 'table'; filePath: string; notebookPath: string | null; notebookId: string | null }
-  | {
-      kind: 'media';
-      filePath: string;
-      notebookId: string | null;
-      notebookPath: string | null;
-      resourceKind: 'image' | 'video';
-    }
-  | { kind: 'media-library'; filePath: string; notebookPath: string | null; notebookId: string | null }
-  | {
-      kind: 'agent-conversation';
-      instanceId: string;
-      /** A temporary empty draft should restore as an empty work column if it has vanished. */
-      blankIfMissing?: true;
-    }
-  /** View identity only. Plugin run state and artifacts live in host stores. */
-  | { kind: 'plugin-workbench'; plugin: PluginDescriptor }
-  | { kind: 'web'; url: string };
+/** Stored Work targets require the transaction ID which is optional at the public boundary. */
+export type WorkColumnTarget = Exclude<WorkspaceContentTarget, { kind: 'external' }>
+  | (Extract<WorkspaceContentTarget, { kind: 'external' }> & { transitionId: number | null });
 
 /** Local file path for the last successfully committed workColumn target. */
 export function workColumnTargetFilePath(target: WorkColumnTarget): string | null {

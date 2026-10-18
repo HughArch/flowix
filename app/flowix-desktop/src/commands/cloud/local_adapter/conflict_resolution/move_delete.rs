@@ -70,15 +70,9 @@ pub(crate) fn resolve_v2_move_conflict(
             memo_file
                 .refresh_media_resource_path(&movement.notebook_id, &movement.to_path)
                 .map_err(sync_error)?;
-        } else if let Some(memo) = memo_file
-            .find_memo_by_relative_path_for_notebook_id(&movement.notebook_id, &movement.to_path)
-        {
-            let _ = memo_file
-                .prune_deleted_memo_for_notebook_id(
-                    &movement.notebook_id,
-                    &movement.to_path,
-                    &memo.id,
-                )
+        } else {
+            memo_file
+                .refresh_note_path(&movement.notebook_id, &movement.to_path)
                 .map_err(sync_error)?;
         }
     }

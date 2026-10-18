@@ -59,6 +59,11 @@ export function findFileDisplayId(path: string): string | null {
   return displayIdsByFile.get(fileLocatorKey(path)) ?? null;
 }
 
+/** Snapshot before a directory move; includes pinned, temporarily hidden sessions. */
+export function listFileDisplayIdentities(): FileDisplayIdentity[] {
+  return [...pathsByDisplay].map(([displayId, path]) => ({ displayId, path }));
+}
+
 /** Resolve the latest path at the instant a queued write executes. */
 export function findFileDisplayPath(displayId: string): string | null {
   return findCollectionDisplayPath(displayId) ?? pathsByDisplay.get(displayId) ?? null;

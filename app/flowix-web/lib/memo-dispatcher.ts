@@ -111,21 +111,7 @@ function installMemoDedup(): void {
 }
 installMemoDedup();
 
-// ---- 跨订阅者注册接口 -------------------------------------------------------
-//
-// 给 `useExternalDocumentChangeWatch` 等需要"按 kind + source + path
-// 自定义"的 hook 用: 它们走 `memoDispatcher.subscribe(...)` 注册自己
-// 的 handler, 不再直接监听 Tauri 通道，并共享同一份 dedup / filter / log
-// 中间件。
-//
-// 这正是 Phase 1 的核心收益: 把双订阅从"event-bus 层并列"统一到
-// "memoDispatcher 层声明式 filter"。
-
-/**
- * 给 `useExternalDocumentChangeWatch` 等外部组件使用的注册接口。
- * 等价于 `memoDispatcher.subscribe` 但带命名空间前缀, 阅读时一眼看出
- * "这是 reload 类 handler, 不是 note-store 类"。
- */
+/** Register an application-level MemoEvent consumer with an optional filter. */
 export function registerMemoEventHandler(
   handler: (event: MemoEvent) => void,
   filter?: (event: MemoEvent) => boolean,

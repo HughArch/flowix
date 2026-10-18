@@ -29,10 +29,7 @@ import {
 
 function memo(overrides: Partial<MemoItem>): MemoItem {
   return {
-    id: "memo-1",
-    // Path-keyed identity: card ids derive from relativePath, so keep it in
-    // sync with the fixture id to preserve the existing assertions.
-    relativePath: overrides.relativePath ?? overrides.id ?? "memo-1",
+    relativePath: overrides.relativePath ?? "memo-1.md",
     filename: "Getting started.md",
     preview: "Fallback preview",
     thumbnail: null,
@@ -59,14 +56,14 @@ describe("featured note cards", () => {
   it("uses type=skill by default and supports a custom property filter", () => {
     const memos = [
       memo({ properties: { type: "skill", name: "Writing", desc: "Draft clearly", icon: "🖋️" } }),
-      memo({ id: "memo-2", filename: "Pinned.md", properties: { pin: true } }),
-      memo({ id: "memo-3", filename: "Hidden.md", properties: { type: "reference" } }),
+      memo({ relativePath: "memo-2.md", filename: "Pinned.md", properties: { pin: true } }),
+      memo({ relativePath: "memo-3.md", filename: "Hidden.md", properties: { type: "reference" } }),
     ];
     const cards = getFeaturedNoteCards(memos);
 
     expect(cards).toEqual([
       {
-        id: "memo-1",
+        id: "memo-1.md",
         icon: "🖋️",
         name: "Writing",
         title: "Getting started",
@@ -77,17 +74,17 @@ describe("featured note cards", () => {
       memos,
       { conditions: [{ key: "pin", operator: "equals", value: "true" }] },
     ).map((card) => card.id))
-      .toEqual(["memo-2"]);
+      .toEqual(["memo-2.md"]);
     expect(getFeaturedNoteCards(
       memos,
       { conditions: [{ key: "type", operator: "contains", value: "feren" }] },
     ).map((card) => card.id))
-      .toEqual(["memo-3"]);
+      .toEqual(["memo-3.md"]);
     expect(getFeaturedNoteCards(
       memos,
       { conditions: [{ key: "type", operator: "excludes", value: "skill" }] },
     ).map((card) => card.id))
-      .toEqual(["memo-3"]);
+      .toEqual(["memo-3.md"]);
   });
 
   it("persists and restores the condition list through the notebook store", async () => {
@@ -154,9 +151,9 @@ describe("featured note cards", () => {
   it("unions multiple conditions instead of intersecting them", () => {
     // 并集语义: 命中任意一条即入选。若误写成交集, memo-1 / memo-2 会一起被排除。
     const memos = [
-      memo({ id: "memo-1", filename: "Skill.md", properties: { type: "skill" } }),
-      memo({ id: "memo-2", filename: "Pinned.md", properties: { pin: true } }),
-      memo({ id: "memo-3", filename: "Other.md", properties: { type: "reference" } }),
+      memo({ relativePath: "memo-1.md", filename: "Skill.md", properties: { type: "skill" } }),
+      memo({ relativePath: "memo-2.md", filename: "Pinned.md", properties: { pin: true } }),
+      memo({ relativePath: "memo-3.md", filename: "Other.md", properties: { type: "reference" } }),
     ];
     const cards = getFeaturedNoteCards(memos, {
       conditions: [
@@ -165,65 +162,65 @@ describe("featured note cards", () => {
       ],
     });
 
-    expect(cards.map((card) => card.id)).toEqual(["memo-1", "memo-2"]);
+    expect(cards.map((card) => card.id)).toEqual(["memo-1.md", "memo-2.md"]);
   });
 
   it("matches array-valued YAML keys element by element", () => {
     // YAML 里 tags 这类多值字段解析成数组 (见后端 frontmatter.rs: 统一成
     // Value::Array<String>)。逐元素比较才能用 equals / contains 命中。
     const memos = [
-      memo({ id: "ai", filename: "AI.md", properties: { tags: ["AI", "AI/flowix"] } }),
-      memo({ id: "cloud", filename: "Cloud.md", properties: { tags: ["云存储"] } }),
-      memo({ id: "none", filename: "None.md", properties: { tags: [] } }),
-      memo({ id: "scalar", filename: "Scalar.md", properties: { tags: "AI" } }),
+      memo({ relativePath: "ai.md", filename: "AI.md", properties: { tags: ["AI", "AI/flowix"] } }),
+      memo({ relativePath: "cloud.md", filename: "Cloud.md", properties: { tags: ["云存储"] } }),
+      memo({ relativePath: "none.md", filename: "None.md", properties: { tags: [] } }),
+      memo({ relativePath: "scalar.md", filename: "Scalar.md", properties: { tags: "AI" } }),
     ];
 
     // equals: 任一元素完全相等即命中。
     expect(getFeaturedNoteCards(memos, {
       conditions: [{ key: "tags", operator: "equals", value: "AI" }],
-    }).map((card) => card.id)).toEqual(["ai", "scalar"]);
+    }).map((card) => card.id)).toEqual(["ai.md", "scalar.md"]);
 
     // contains: 任一元素包含子串即命中 (含路径形式的标签)。
     expect(getFeaturedNoteCards(memos, {
       conditions: [{ key: "tags", operator: "contains", value: "flowix" }],
-    }).map((card) => card.id)).toEqual(["ai"]);
+    }).map((card) => card.id)).toEqual(["ai.md"]);
 
     // 空数组不命中任何条件。
     expect(getFeaturedNoteCards(memos, {
       conditions: [{ key: "tags", operator: "contains", value: "AI" }],
-    }).map((card) => card.id)).toEqual(["ai", "scalar"]);
+    }).map((card) => card.id)).toEqual(["ai.md", "scalar.md"]);
   });
 
   it("treats excludes on arrays as no element matching", () => {
     // excludes 的数组语义是「没有任何元素匹配」, 而不是「存在某个元素不匹配」——
     // 后者会让任何多值字段几乎永远满足 excludes。
     const memos = [
-      memo({ id: "ai", filename: "AI.md", properties: { tags: ["AI", "AI/flowix"] } }),
-      memo({ id: "cloud", filename: "Cloud.md", properties: { tags: ["云存储"] } }),
+      memo({ relativePath: "ai.md", filename: "AI.md", properties: { tags: ["AI", "AI/flowix"] } }),
+      memo({ relativePath: "cloud.md", filename: "Cloud.md", properties: { tags: ["云存储"] } }),
     ];
 
     expect(getFeaturedNoteCards(memos, {
       conditions: [{ key: "tags", operator: "excludes", value: "AI" }],
-    }).map((card) => card.id)).toEqual(["cloud"]);
+    }).map((card) => card.id)).toEqual(["cloud.md"]);
   });
 
   it("paginates after three cards and clamps invalid page indexes", () => {
     const notes = getFeaturedNoteCards([
-      memo({ id: "1", filename: "One.md", properties: { pin: true } }),
-      memo({ id: "2", filename: "Two.md", properties: { pin: true } }),
-      memo({ id: "3", filename: "Three.md", properties: { pin: true } }),
-      memo({ id: "4", filename: "Four.md", properties: { pin: true } }),
-      memo({ id: "5", filename: "Five.md", properties: { pin: true } }),
-      memo({ id: "6", filename: "Six.md", properties: { pin: true } }),
-      memo({ id: "7", filename: "Seven.md", properties: { pin: true } }),
+      memo({ relativePath: "1.md", filename: "One.md", properties: { pin: true } }),
+      memo({ relativePath: "2.md", filename: "Two.md", properties: { pin: true } }),
+      memo({ relativePath: "3.md", filename: "Three.md", properties: { pin: true } }),
+      memo({ relativePath: "4.md", filename: "Four.md", properties: { pin: true } }),
+      memo({ relativePath: "5.md", filename: "Five.md", properties: { pin: true } }),
+      memo({ relativePath: "6.md", filename: "Six.md", properties: { pin: true } }),
+      memo({ relativePath: "7.md", filename: "Seven.md", properties: { pin: true } }),
     ], { conditions: [{ key: "pin", operator: "equals", value: "true" }] });
 
     expect(getFeaturedNotePageCount(3)).toBe(1);
     expect(getFeaturedNotePageCount(4)).toBe(2);
     expect(getFeaturedNotePageCount(notes.length)).toBe(3);
-    expect(getFeaturedNotePage(notes, 0).map((item) => item.id)).toEqual(["1", "2", "3"]);
-    expect(getFeaturedNotePage(notes, 1).map((item) => item.id)).toEqual(["4", "5", "6"]);
-    expect(getFeaturedNotePage(notes, 99).map((item) => item.id)).toEqual(["7"]);
+    expect(getFeaturedNotePage(notes, 0).map((item) => item.id)).toEqual(["1.md", "2.md", "3.md"]);
+    expect(getFeaturedNotePage(notes, 1).map((item) => item.id)).toEqual(["4.md", "5.md", "6.md"]);
+    expect(getFeaturedNotePage(notes, 99).map((item) => item.id)).toEqual(["7.md"]);
   });
 
   it("keeps the narrow layout to three cards per page", () => {
@@ -243,12 +240,12 @@ describe("featured note cards", () => {
   it("loads and filters every memo page", async () => {
     const loadPage = vi.fn(async (cursor?: string) => cursor
       ? {
-          memos: [memo({ id: "skill-2", properties: { type: "skill" } })],
+          memos: [memo({ relativePath: "skill-2.md", properties: { type: "skill" } })],
           nextCursor: null,
           hasMore: false,
         }
       : {
-          memos: [memo({ id: "hidden", properties: {} }), memo({ id: "skill-1", properties: { type: "skill" } })],
+          memos: [memo({ relativePath: "hidden.md", properties: {} }), memo({ relativePath: "skill-1.md", properties: { type: "skill" } })],
           nextCursor: "page-2",
           hasMore: true,
         });
@@ -257,7 +254,7 @@ describe("featured note cards", () => {
 
     expect(loadPage).toHaveBeenNthCalledWith(1, undefined);
     expect(loadPage).toHaveBeenNthCalledWith(2, "page-2");
-    expect(cards.map((item) => item.id)).toEqual(["skill-1", "skill-2"]);
+    expect(cards.map((item) => item.id)).toEqual(["skill-1.md", "skill-2.md"]);
   });
 });
 
@@ -300,7 +297,7 @@ describe("featured note icon rendering", () => {
     // 默认图标是一个真实的图标 id (不再是被当文本显示的 "✦"), 因此会解析成
     // 内联 SVG; 解析失败时才会退化成字面量文本。
     const cards = getFeaturedNoteCards([
-      memo({ id: "plain", filename: "Plain.md", properties: { type: "skill" }, icon: null }),
+      memo({ relativePath: "plain.md", filename: "Plain.md", properties: { type: "skill" }, icon: null }),
     ]);
     expect(cards[0]?.icon).toBe(DEFAULT_FEATURED_NOTE_ICON);
 

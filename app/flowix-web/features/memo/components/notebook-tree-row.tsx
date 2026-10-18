@@ -37,8 +37,7 @@ import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } f
 import folderIcon from '@/assets/folder-outline.svg?raw';
 import { getPropertyIconOption } from '@features/document/properties/property-icons';
 import { resourceKindFromPath } from '@features/editor/code-file';
-import { NotebookTreeFileIcon } from '@features/memo/components/notebook-tree-file-icon';
-import { NotebookTreeResourceIcon } from '@features/memo/components/file-type-icon';
+import { ContentIcon } from '@features/content/public/content-api';
 import { files, notes, product, type DocTreeItem } from '@platform/tauri/client';
 import { logNativeContextMenuError } from '@platform/tauri/native-context-menu';
 import type { TableViewType } from '@features/multidimensional-table/public/create-api';
@@ -96,6 +95,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   onCreateView,
   onCreateMediaLibrary,
   onImportFiles,
+  onImportFolder,
   onRename,
   onDeleteFolder,
   onDeleteFile,
@@ -133,7 +133,8 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   onCreateView: (parentPath: string, viewType?: TableViewType) => void;
   onCreateMediaLibrary: (parentPath: string) => void;
   onImportFiles?: (parentPath: string) => void;
-  onRename: (item: DocTreeItem, nextName: string) => Promise<void> | void;
+  onImportFolder?: (parentPath: string) => void;
+  onRename: (item: DocTreeItem, nextName: string) => Promise<boolean | void> | boolean | void;
   onPointerDown: (item: DocTreeItem, event: ReactPointerEvent<HTMLDivElement>) => void;
   onDeleteFolder?: (path: string) => Promise<void>;
   onDeleteFile?: (item: DocTreeItem) => Promise<void>;
@@ -224,12 +225,15 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   const [renameValue, setRenameValue] = useState(
     isFolder || !isExtensionlessDocument ? item.name : displayTitleFromFilename(item.name),
   );
+  const [renameSaving, setRenameSaving] = useState(false);
+  const [optimisticName, setOptimisticName] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [confirmFileDelete, setConfirmFileDelete] = useState(false);
   const [deleting, setDeleting] = useState(false);
 
   const keepsVirtualRowAlive = contextMenuOpen
     || renaming
+    || renameSaving
     || confirmDelete
     || confirmFileDelete
     || deleting;
@@ -341,11 +345,26 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
     }
   }, [deleting, item, onDeleteFile, t]);
 
-  const submitRename = useCallback(() => {
-    if (!renaming) return;
+  const submitRename = useCallback(async () => {
+    if (!renaming || renameSaving) return;
+    const nextName = renameValue.trim();
+    if (!nextName) {
+      setRenaming(false);
+      setRenameValue(isFolder || !isExtensionlessDocument ? item.name : displayTitleFromFilename(item.name));
+      return;
+    }
     setRenaming(false);
-    void onRename(item, renameValue);
-  }, [item, onRename, renameValue, renaming]);
+    setRenameSaving(true);
+    setOptimisticName(nextName);
+    try {
+      const saved = await onRename(item, nextName);
+      if (saved === false) setOptimisticName(null);
+    } catch {
+      setOptimisticName(null);
+    } finally {
+      setRenameSaving(false);
+    }
+  }, [isExtensionlessDocument, isFolder, item, onRename, renameSaving, renameValue, renaming]);
 
   const cancelRename = useCallback(() => {
     setRenaming(false);
@@ -360,6 +379,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
       }}>
       <ContextMenuTrigger asChild>
         <div
+          data-folder-selection={isFolder ? '' : undefined}
           role="treeitem"
           aria-expanded={isFolder ? expanded : undefined}
           aria-selected={active || selected}
@@ -425,9 +445,9 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
                 {isDefaultFolder && <DefaultFolderCheck />}
               </>
             ) : isNote ? (
-              <NotebookTreeFileIcon className="notebook-file-tree__default-file-icon h-[18px] w-[18px]" />
+              <ContentIcon content={{ kind: 'note' }} className="notebook-file-tree__default-file-icon h-[18px] w-[18px]" />
             ) : (
-              <NotebookTreeResourceIcon path={item.name} collectionType={isMediaLibrary ? 'media_library' : isTableDocument ? 'table' : undefined} className="h-[18px] w-[18px]" />
+              <ContentIcon content={isMediaLibrary ? { kind: 'media-library' } : isTableDocument ? { kind: 'multidimensional-table' } : { kind: 'file', path: item.name }} className="h-[18px] w-[18px]" />
             )}
           </span>
           <input
@@ -482,9 +502,9 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
                   draggable={false}
                 />
               ) : isNote ? (
-                <NotebookTreeFileIcon className="notebook-file-tree__default-file-icon h-[18px] w-[18px]" />
+                <ContentIcon content={{ kind: 'note' }} className="notebook-file-tree__default-file-icon h-[18px] w-[18px]" />
               ) : (
-                <NotebookTreeResourceIcon path={item.name} collectionType={isMediaLibrary ? 'media_library' : isTableDocument ? 'table' : undefined} className="h-[18px] w-[18px]" />
+                <ContentIcon content={isMediaLibrary ? { kind: 'media-library' } : isTableDocument ? { kind: 'multidimensional-table' } : { kind: 'file', path: item.name }} className="h-[18px] w-[18px]" />
               )}
             </span>
           )}
@@ -508,9 +528,9 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
             'ml-1.5',
             active || selected ? 'opacity-100' : 'opacity-[0.82]',
           )}>
-            {isFolder || !isExtensionlessDocument
+            {optimisticName ?? (isFolder || !isExtensionlessDocument
               ? item.name
-              : displayTitleFromFilename(item.name)}
+              : displayTitleFromFilename(item.name))}
           </span>
           {isFolder && isDefaultFolder && !renaming && (
             <span className="ml-2 shrink-0 text-xs text-[var(--muted-foreground)] opacity-50 transition-opacity duration-150 group-hover:opacity-0">
@@ -518,12 +538,15 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
             </span>
           )}
           {isFolder && isLoadingChildren && (
-            <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 animate-spin text-[var(--muted-foreground)]" aria-label={t('memo.fileTree.loading')} />
+            <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 flowix-spin text-[var(--muted-foreground)]" aria-label={t('memo.fileTree.loading')} />
+          )}
+          {renameSaving && (
+            <Loader2 className="ml-1 h-3.5 w-3.5 shrink-0 flowix-spin text-[var(--muted-foreground)]" aria-label={t('memo.fileTree.loading')} />
           )}
           {isFolder && expanded && childrenError && (
             <button
               type="button"
-              className="ml-1 shrink-0 rounded px-1.5 py-0.5 text-[11px] text-[var(--foreground)] hover:bg-[var(--muted)]"
+              className="ml-1 shrink-0 rounded-lg px-1.5 py-0.5 text-[11px] text-[var(--foreground)] hover:bg-[var(--muted)]"
               aria-label={t('memo.fileTree.unreadableHint')}
               title={t('memo.fileTree.unreadableHint')}
               onPointerDown={(event) => event.stopPropagation()}
@@ -543,7 +566,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
           className="ml-1 flex h-6 w-6 shrink-0 items-center justify-center text-[var(--brand)]"
         >
           {moveStatus === 'moving' ? (
-            <span aria-hidden="true" className="notebook-file-tree__moving-indicator" />
+            <span aria-hidden="true" className="notebook-file-tree__moving-indicator flowix-spin" />
           ) : (
             <span aria-hidden="true" className="text-xs font-semibold">✓</span>
           )}
@@ -569,11 +592,13 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
           onCreateFolder={() => onCreateFolder(actionParentPath)}
           onCreateTable={(viewType) => onCreateView(actionParentPath, viewType)}
           onCreateMediaLibrary={() => onCreateMediaLibrary(actionParentPath)}
-          onImport={onImportFiles ? () => onImportFiles(actionParentPath) : undefined}
+          onImportFiles={onImportFiles ? () => onImportFiles(actionParentPath) : undefined}
+          onImportFolder={onImportFolder ? () => onImportFolder(actionParentPath) : undefined}
         />
         <ContextMenuItem
           onClick={() => {
             setRenameValue(isFolder || !isExtensionlessDocument ? item.name : displayTitleFromFilename(item.name));
+            setOptimisticName(null);
             setRenaming(true);
           }}
           className={TREE_MENU_ITEM_CLASS}
@@ -755,7 +780,7 @@ function NotebookTreeMoreButton({ label, active }: { label: string; active: bool
       onClick={(event) => {
         event.stopPropagation();
         const rect = event.currentTarget.getBoundingClientRect();
-        openAt(rect.left, rect.bottom);
+        openAt(rect.left, rect.bottom, event.currentTarget);
       }}
       onKeyDown={(event) => event.stopPropagation()}
       className={cn(

@@ -1,6 +1,5 @@
 import type { AgentSessionStore } from '@features/agent/store/agent-session-store';
 import { createAgentChunkBridge } from '@features/agent/store/agent-chunk-bridge';
-import { installGlobalAgentSettingsSync } from '@features/agent/store/global-agent-settings-sync';
 import { resolveIncomingChunkThreadId } from '@features/agent/store/agent-chunk-routing';
 import { hasThreadInterest } from '@features/agent/store/thread-interest';
 
@@ -9,8 +8,6 @@ interface AgentSessionStoreAccess {
 }
 
 export function installAgentSessionRuntimeBridges(store: AgentSessionStoreAccess) {
-  installGlobalAgentSettingsSync((updater) => store.getState().setSessionMeta(updater));
-
   return createAgentChunkBridge((chunk) => {
     const canonicalThreadId = resolveIncomingChunkThreadId(chunk, store.getState());
     const runId = chunk.run_id?.trim();

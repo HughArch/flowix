@@ -77,6 +77,31 @@ fn chunk_payload_scopes_codex_fallback_identity_per_run() {
 }
 
 #[test]
+fn chunk_payload_preserves_stable_codex_turn_error_identity() {
+    let turn_error_id = "msg:codex:turn-error:turn-1";
+    let chunk = AgentChunk::Error {
+        thread_id: "thread-1".to_string(),
+        message: "user_stopped".to_string(),
+        error_details: None,
+    };
+    let payload = chunk_payload_value(
+        &chunk,
+        "codex",
+        "run-1",
+        &AgentChunkMetadata {
+            codex_turn_id: Some("turn-1".to_string()),
+            message_id: Some(turn_error_id.to_string()),
+            ..AgentChunkMetadata::default()
+        },
+    )
+    .expect("serialize stable turn error");
+
+    assert_eq!(payload["codex_turn_id"], "turn-1");
+    assert_eq!(payload["message_id"], turn_error_id);
+    assert_eq!(payload["source_message_id"], turn_error_id);
+}
+
+#[test]
 fn pi_deltas_stay_draft_until_the_native_session_entry_id_arrives() {
     let text = AgentChunk::Text {
         thread_id: "thread-1".to_string(),

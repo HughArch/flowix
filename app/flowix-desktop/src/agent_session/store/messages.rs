@@ -204,8 +204,8 @@ impl ThreadManager {
     /// Startup cleanup: reset all `is_loading = 1` rows, regardless of role.
     ///
     /// This handles crashes after a tool_use row was persisted but before its
-    /// tool_result arrived. The synchronous version is intentional: startup calls
-    /// this before the Tauri runtime is available, and the work is a single SQLite UPDATE.
+    /// tool_result arrived. Startup calls this before publishing native ready,
+    /// so it cannot clear loading rows created by a new interactive run.
     /// Returns the affected row count for startup logging.
     pub fn clear_all_loading(&self) -> Result<u64, ThreadError> {
         let conn = self.lock_conn();

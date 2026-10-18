@@ -224,7 +224,7 @@ export const MemoTitleEditor = forwardRef<MemoTitleEditorHandle, MemoTitleEditor
       if (occupiedPropertyKeys.has(key)
         || getPropertyPresets().some((field) => canonicalizePropertyKey(field.key).toLocaleLowerCase() === normalizedKey)
         || SYSTEM_FRONTMATTER_KEYS.has(normalizedKey)
-        || ['flowix_key', 'flowix_property_types', 'flowix_plugin'].includes(normalizedKey)) {
+        || ['flowix_property_types', 'flowix_plugin'].includes(normalizedKey)) {
         toast.error(t('document.properties.commonKey.alreadyExists'));
         return;
       }

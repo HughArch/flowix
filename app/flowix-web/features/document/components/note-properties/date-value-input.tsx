@@ -143,7 +143,7 @@ export function DateValueInput({
       <PopoverContent
         align="start"
         sideOffset={6}
-        className={cn('frontmatter-property__date-picker-popover w-[272px] rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' ? 'p-1' : 'p-2')}
+        className={cn('frontmatter-property__date-picker-popover w-[272px] rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' ? '!z-[170] p-1' : 'p-2')}
       >
         <div className="rounded-lg bg-[var(--card)]">
           <div className="mb-2 flex items-center justify-between px-1">

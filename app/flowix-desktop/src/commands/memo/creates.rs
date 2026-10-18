@@ -13,12 +13,12 @@ use std::path::{Component, Path, PathBuf};
 use tauri::{AppHandle, Emitter, Manager, State};
 
 use crate::lock_utils::read_lock;
-use crate::memo_events::{self, MemoChangeSource, MemoDerivedChanged, MemoEvent};
+use crate::commands::helpers::FileOperationFailure;
 use crate::USER_CONFIG_DIR_NAME;
 use flowix_core::memo_file::{
     atomic_create_bytes, atomic_write_bytes, extract_body_content, extract_document_metadata,
     FileManagementPolicy, Memo, MemoFile, NotebookSetupJob, NotebookSetupJobStatus,
-    NotebookSetupReport,
+    NotebookSetupReport, NotebookSetupStage,
 };
 use flowix_core::NoteService;
 
@@ -44,6 +44,13 @@ pub struct CreatedPathDocumentResult {
     path: String,
     initial_content: String,
     entry: flowix_core::memo_file::NoteEntry,
+    notebook_change: super::super::path_change::NotebookPathCreated,
+}
+
+impl CreatedPathDocumentResult {
+    fn publish_created(&self, app: &AppHandle) {
+        self.notebook_change.emit(app);
+    }
 }
 
 fn default_parent_relative_path(
@@ -64,8 +71,10 @@ pub async fn add_path_document(
     notebook_id: String,
     // None uses the notebook's default create folder; Some("") explicitly uses its root.
     parent_relative_path: Option<String>,
+    window: tauri::WebviewWindow,
     app: AppHandle,
 ) -> Result<CreatedPathDocumentResult, MemoCreateError> {
+    let origin_window_label = window.label().to_string();
     let title = title.filter(|value| !value.trim().is_empty())
         .unwrap_or_else(|| chrono::Local::now().format("%Y-%m-%d").to_string());
     crate::document_io::run("create_path_document", move || {
@@ -83,13 +92,21 @@ pub async fn add_path_document(
         let created = NoteService::new(&memo_file)
             .create(&notebook_id, effective_parent.as_deref(), &title, &body)?;
         mark_self_write_for(&app, &created.path);
-        Ok::<_, MemoCreateError>(CreatedPathDocumentResult {
+        let notebook_change = super::super::path_change::NotebookPathCreated::from_window(
+            created.notebook.id.clone(),
+            created.entry.relative_path.clone(),
+            origin_window_label,
+        );
+        let result = CreatedPathDocumentResult {
             notebook_id: created.notebook.id,
             relative_path: created.entry.relative_path.clone(),
             path: created.path.to_string_lossy().to_string(),
             initial_content: created.body,
             entry: created.entry,
-        })
+            notebook_change,
+        };
+        result.publish_created(&app);
+        Ok::<_, MemoCreateError>(result)
     }).await.map_err(|message| MemoCreateError { code: "INTERNAL_ERROR", message })?
 }
 
@@ -232,6 +249,7 @@ pub fn create_path_from_template(
     template_id: String,
     notebook_id: String,
     state: State<AppState>,
+    window: tauri::WebviewWindow,
     app: AppHandle,
 ) -> Result<CreatedPathDocumentResult, String> {
     let template_name = Path::new(&template_id).file_name().and_then(|name| name.to_str())
@@ -250,13 +268,21 @@ pub fn create_path_from_template(
         .create(&notebook_id, parent.as_deref(), &title, body)
         .map_err(|e| e.to_string())?;
     mark_self_write_for(&app, &created.path);
-    Ok(CreatedPathDocumentResult {
+    let notebook_change = super::super::path_change::NotebookPathCreated::from_window(
+        created.notebook.id.clone(),
+        created.entry.relative_path.clone(),
+        window.label().to_string(),
+    );
+    let result = CreatedPathDocumentResult {
         notebook_id: created.notebook.id,
         relative_path: created.entry.relative_path.clone(),
         path: created.path.to_string_lossy().to_string(),
         initial_content: created.body,
         entry: created.entry,
-    })
+        notebook_change,
+    };
+    result.publish_created(&app);
+    Ok(result)
 }
 
 #[tauri::command]
@@ -266,6 +292,7 @@ pub fn import_external_document_by_path(
     content: String,
     notebook_id: String,
     state: State<AppState>,
+    window: tauri::WebviewWindow,
     app: AppHandle,
 ) -> Result<CreatedPathDocumentResult, String> {
     let title = Path::new(&file_path).file_stem().and_then(|stem| stem.to_str())
@@ -277,13 +304,21 @@ pub fn import_external_document_by_path(
         .create(&notebook_id, parent.as_deref(), title, &content)
         .map_err(|error| error.to_string())?;
     mark_self_write_for(&app, &created.path);
-    Ok(CreatedPathDocumentResult {
+    let notebook_change = super::super::path_change::NotebookPathCreated::from_window(
+        created.notebook.id.clone(),
+        created.entry.relative_path.clone(),
+        window.label().to_string(),
+    );
+    let result = CreatedPathDocumentResult {
         notebook_id: created.notebook.id,
         relative_path: created.entry.relative_path.clone(),
         path: created.path.to_string_lossy().to_string(),
         initial_content: created.body,
         entry: created.entry,
-    })
+        notebook_change,
+    };
+    result.publish_created(&app);
+    Ok(result)
 }
 
 #[derive(serde::Deserialize, serde::Serialize, Clone)]
@@ -315,7 +350,7 @@ const MAX_NOTEBOOK_TEMPLATE_FILES: usize = 2_000;
 const MAX_NOTEBOOK_TEMPLATE_BYTES: usize = 10 * 1024 * 1024;
 const NOTEBOOK_TEMPLATE_INIT_MARKER: &str = ".flowix/notebook-template-initializing.json";
 
-fn validate_notebook_template(template: &NotebookTemplate) -> Result<(), String> {
+pub(crate) fn validate_notebook_template(template: &NotebookTemplate) -> Result<(), String> {
     if template.id.trim().is_empty()
         || template.id.len() > 128
         || template.id.chars().any(char::is_control)
@@ -334,6 +369,8 @@ fn validate_notebook_template(template: &NotebookTemplate) -> Result<(), String>
 }
 
 fn read_notebook_template_index() -> Result<Vec<NotebookTemplate>, String> {
+    let home = dirs::home_dir().ok_or_else(|| "template directory not available".to_string())?;
+    template_store::initialize_notebook_templates(&home.join(USER_CONFIG_DIR_NAME))?;
     let directory =
         notebook_template_dir().ok_or_else(|| "template directory not available".to_string())?;
     let path = directory.join("index.json");
@@ -354,10 +391,10 @@ fn read_notebook_template_index() -> Result<Vec<NotebookTemplate>, String> {
 }
 
 #[tauri::command]
-pub fn list_notebook_templates() -> Result<Vec<NotebookTemplate>, String> {
-    let home = dirs::home_dir().ok_or_else(|| "template directory not available".to_string())?;
-    template_store::initialize_notebook_templates(&home.join(USER_CONFIG_DIR_NAME))?;
-    read_notebook_template_index()
+pub async fn list_notebook_templates() -> Result<Vec<NotebookTemplate>, String> {
+    tauri::async_runtime::spawn_blocking(read_notebook_template_index)
+        .await
+        .map_err(|error| format!("notebook template list task failed: {error}"))?
 }
 
 pub(crate) fn validate_notebook_template_id(template_id: &str) -> Result<(), String> {
@@ -374,86 +411,42 @@ pub(crate) fn validate_notebook_template_id(template_id: &str) -> Result<(), Str
     }
 }
 
-/// Attach a deferred template to an already registered notebook.
-/// This is used by retry-safe onboarding when its chosen default path was
-/// registered before the current onboarding attempt.
-#[tauri::command]
-pub fn ensure_notebook_template_setup(
-    notebook_id: String,
-    template_id: String,
-    overwrite_existing: Option<bool>,
-    state: State<AppState>,
-) -> Result<NotebookSetupJob, String> {
-    validate_notebook_template_id(&template_id)?;
-    let running = state
-        .notebook_template_initializations
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner());
-    let memo_file = read_lock(&state.memo_file, "memo_file");
-    let notebook = memo_file
-        .get_notebook_config_by_id(&notebook_id)
-        .ok_or_else(|| "NOTEBOOK_NOT_FOUND".to_string())?;
-    let existing = memo_file
-        .get_notebook_setup_job(&notebook_id)
-        .map_err(|error| format!("read notebook setup status failed: {error}"))?;
-    if let Some(existing) = &existing {
-        if existing.template_id.as_deref() != Some(template_id.as_str()) {
-            return Err("NOTEBOOK_TEMPLATE_SELECTION_CONFLICT".to_string());
-        }
-    }
+pub(crate) fn resolve_notebook_template(template_id: &str) -> Result<NotebookTemplate, String> {
+    let templates = read_notebook_template_index()?;
+    find_notebook_template(&templates, template_id)
+        .cloned()
+        .ok_or_else(|| "UNKNOWN_NOTEBOOK_TEMPLATE".to_string())
+}
 
-    let notebook_root = PathBuf::from(&notebook.path);
-    if !notebook_root.is_dir() {
-        return Err("PATH_MISSING".to_string());
-    }
-    let overwrite_existing = overwrite_existing.unwrap_or(false);
-    if existing.is_none()
-        && !overwrite_existing
-        && super::super::notebook::notebook_folder_has_content(&notebook_root)?
-    {
-        return Err("NOTEBOOK_PRESET_OVERWRITE_CONFIRM_REQUIRED".to_string());
-    }
-    if overwrite_existing
-        && existing.as_ref().is_some_and(|job| !job.overwrite_existing)
-        && running.contains(&notebook_id)
-    {
-        return Err("NOTEBOOK_TEMPLATE_SETUP_IN_PROGRESS".to_string());
-    }
-    MemoFile::ensure_notebook_scene_id(&notebook, &template_id)
-        .map_err(|error| format!("NOTEBOOK_SCENE_ID_WRITE_FAILED: {error}"))?;
+fn find_notebook_template<'a>(
+    templates: &'a [NotebookTemplate],
+    template_id: &str,
+) -> Option<&'a NotebookTemplate> {
+    templates
+        .iter()
+        .find(|template| template.id == template_id)
+        .or_else(|| {
+            // Preserve the legacy scene-to-preset mapping for durable jobs and markers.
+            template_id
+                .strip_prefix("scene-")
+                .and_then(|number| number.parse::<usize>().ok())
+                .and_then(|number| number.checked_sub(1))
+                .and_then(|index| templates.get(index))
+        })
+}
 
-    if let Some(mut existing) = existing {
-        if overwrite_existing && !existing.overwrite_existing {
-            existing.overwrite_existing = true;
-            existing.status = NotebookSetupJobStatus::Pending;
-            existing.stage = "template".to_string();
-            existing.completed_files = 0;
-            existing.total_files = 0;
-            existing.message = None;
-            existing.report = None;
-            existing.updated_at = chrono::Utc::now().timestamp_millis();
-            memo_file
-                .write_notebook_setup_job(&existing)
-                .map_err(|error| format!("persist notebook setup status failed: {error}"))?;
-        }
-        return Ok(existing);
+pub(crate) fn notebook_template_ids_match(left: &str, right: &str) -> Result<bool, String> {
+    if left == right {
+        return Ok(true);
     }
-    let job = NotebookSetupJob {
-        notebook_id,
-        template_id: Some(template_id),
-        overwrite_existing,
-        status: NotebookSetupJobStatus::Pending,
-        stage: "template".to_string(),
-        completed_files: 0,
-        total_files: 0,
-        message: None,
-        report: None,
-        updated_at: chrono::Utc::now().timestamp_millis(),
-    };
-    memo_file
-        .write_notebook_setup_job(&job)
-        .map_err(|error| format!("persist notebook setup status failed: {error}"))?;
-    Ok(job)
+    let templates = read_notebook_template_index()?;
+    Ok(match (
+        find_notebook_template(&templates, left),
+        find_notebook_template(&templates, right),
+    ) {
+        (Some(left), Some(right)) => left.id == right.id,
+        _ => false,
+    })
 }
 
 fn load_notebook_template_files(
@@ -497,9 +490,8 @@ fn load_notebook_template_files_with_failures(
         return Err("INVALID_NOTEBOOK_TEMPLATE_DIRECTORY".to_string());
     }
 
-    let mut files = Vec::new();
     let mut failures = Vec::new();
-    let mut total_bytes = 0usize;
+    let mut sources = Vec::new();
     let mut scanned_files = 0usize;
     for entry in walkdir::WalkDir::new(&source).follow_links(false) {
         let entry = match entry {
@@ -544,7 +536,13 @@ fn load_notebook_template_files_with_failures(
         if scanned_files > MAX_NOTEBOOK_TEMPLATE_FILES {
             return Err("NOTEBOOK_TEMPLATE_TOO_LARGE".to_string());
         }
-        match fs::read(entry.path()) {
+        sources.push((path, entry.path().to_path_buf()));
+    }
+
+    let mut files = Vec::with_capacity(sources.len());
+    let mut total_bytes = 0usize;
+    for (path, source_path) in sources {
+        match fs::read(source_path) {
             Ok(content) => {
                 total_bytes = total_bytes
                     .checked_add(path.len())
@@ -557,7 +555,6 @@ fn load_notebook_template_files_with_failures(
             }
             Err(error) => failures.push((path, error.to_string())),
         }
-
     }
 
     files.sort_by(|left, right| left.path.cmp(&right.path));
@@ -723,15 +720,15 @@ mod notebook_template_content_tests {
         validate_notebook_template_path, NotebookTemplateIndex,
     };
     use flowix_core::memo_file::{
-        atomic_write_bytes, extract_frontmatter_key, is_ignored_notebook_relative_path, MemoFile,
+        atomic_write_bytes, is_ignored_notebook_relative_path, MemoFile,
         NotebookConfig,
     };
-    use flowix_core::MemoService;
+    use flowix_core::NoteService;
     use std::fs;
     use std::path::Path;
 
     #[test]
-    fn scenario_template_creates_all_indexed_notes_and_replaces_source_keys() {
+    fn scenario_template_indexes_markdown_notes_by_path() {
         let directory = tempfile::tempdir().expect("temporary template test directory");
         let config_dir = directory.path().join("config");
         crate::template_store::initialize_notebook_templates(&config_dir)
@@ -802,16 +799,10 @@ mod notebook_template_content_tests {
                     .unwrap_or_else(|error| panic!("decode {}: {error}", file.path));
                 let parent_relative =
                     parent_relative.map(|parent| parent.to_string_lossy().replace('\\', "/"));
-                let created = MemoService::new(&memo_file)
-                    .create_memo_named_with_tag_in_directory(
-                        Some("nb_template_test"),
-                        parent_relative.as_deref(),
-                        title,
-                        content,
-                        None,
-                    )
+                let created = NoteService::new(&memo_file)
+                    .create("nb_template_test", parent_relative.as_deref(), title, content)
                     .unwrap_or_else(|error| panic!("create {}: {error}", file.path));
-                created_notes.push((created.memo.id, created.path));
+                created_notes.push(created.path);
             } else {
                 atomic_write_bytes(&parent.join(filename), &file.content)
                     .unwrap_or_else(|error| panic!("copy {}: {error}", file.path));
@@ -819,9 +810,9 @@ mod notebook_template_content_tests {
         }
 
         assert_eq!(created_notes.len(), expected_note_count);
-        for (_id, path) in created_notes {
+        for path in created_notes {
             let content = fs::read_to_string(path).expect("read created template note");
-            assert_eq!(extract_frontmatter_key(&content), None);
+            assert!(!content.contains("flowix_key:"));
         }
     }
 }
@@ -853,13 +844,58 @@ fn read_notebook_template_init_marker(path: &Path) -> Result<Option<String>, Str
     Ok(Some(marker.template_id))
 }
 
+/// Remove a template initialization marker left behind if the process exited
+/// after persisting the indexing stage but before normal marker cleanup.
+pub(crate) fn clear_notebook_template_init_marker(
+    notebook_id: &str,
+    template_id: &str,
+    state: &AppState,
+) -> Result<(), String> {
+    let notebook_root = read_lock(&state.memo_file, "memo_file")
+        .get_notebook_config_by_id(notebook_id)
+        .map(|config| PathBuf::from(config.path))
+        .ok_or_else(|| "NOTEBOOK_NOT_FOUND".to_string())?;
+    let notebook_root = fs::canonicalize(&notebook_root)
+        .map_err(|error| format!("resolve notebook directory failed: {error}"))?;
+    let internal_dir = notebook_root.join(".flowix");
+    let internal_metadata = match fs::symlink_metadata(&internal_dir) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => return Err(format!("inspect notebook metadata directory failed: {error}")),
+    };
+    if !internal_metadata.is_dir() && !internal_metadata.file_type().is_symlink() {
+        return Err("TEMPLATE_PATH_OUTSIDE_NOTEBOOK".to_string());
+    }
+    let canonical_internal_dir = fs::canonicalize(&internal_dir)
+        .map_err(|error| format!("resolve notebook metadata directory failed: {error}"))?;
+    if !canonical_internal_dir.starts_with(&notebook_root)
+        || !fs::metadata(&canonical_internal_dir)
+            .map_err(|error| format!("inspect notebook metadata directory failed: {error}"))?
+            .is_dir()
+    {
+        return Err("TEMPLATE_PATH_OUTSIDE_NOTEBOOK".to_string());
+    }
+
+    let marker_path = canonical_internal_dir.join("notebook-template-initializing.json");
+    match read_notebook_template_init_marker(&marker_path)? {
+        None => Ok(()),
+        Some(existing) => {
+            if !notebook_template_ids_match(&existing, template_id)? {
+                return Err("NOTEBOOK_TEMPLATE_INITIALIZATION_IN_PROGRESS".to_string());
+            }
+            fs::remove_file(&marker_path)
+                .map_err(|error| format!("remove template initialization marker failed: {error}"))
+        }
+    }
+}
+
 fn begin_notebook_template_initialization(
     notebook_root: &Path,
     template_id: &str,
 ) -> Result<PathBuf, String> {
     let marker_path = notebook_root.join(NOTEBOOK_TEMPLATE_INIT_MARKER);
     if let Some(existing_template_id) = read_notebook_template_init_marker(&marker_path)? {
-        if existing_template_id == template_id {
+        if notebook_template_ids_match(&existing_template_id, template_id)? {
             return Ok(marker_path);
         }
         return Err("NOTEBOOK_TEMPLATE_INITIALIZATION_IN_PROGRESS".to_string());
@@ -898,7 +934,7 @@ fn begin_notebook_template_initialization(
         Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
             let existing_template_id = read_notebook_template_init_marker(&marker_path)?
                 .ok_or_else(|| "INVALID_NOTEBOOK_TEMPLATE_MARKER".to_string())?;
-            if existing_template_id != template_id {
+            if !notebook_template_ids_match(&existing_template_id, template_id)? {
                 return Err("NOTEBOOK_TEMPLATE_INITIALIZATION_IN_PROGRESS".to_string());
             }
         }
@@ -930,14 +966,12 @@ pub async fn initialize_notebook_template(
             false,
             state.inner(),
             &app,
+            None,
             |_| Ok(()),
         )?;
 
         let index_report = {
             let memo_file = read_lock(&state.memo_file, "memo_file");
-            memo_file
-                .ensure_notebook_migrations(&notebook_id)
-                .map_err(|error| format!("notebook import migration failed: {error}"))?;
             memo_file
                 .reconcile_note_index(&notebook_id)
                 .map_err(|error| format!("notebook path reconciliation failed: {error}"))?
@@ -955,6 +989,19 @@ pub async fn initialize_notebook_template(
     .map_err(|error| format!("notebook template initialization task failed: {error}"))?
 }
 
+struct NotebookTemplateWatchSuspension<'a> {
+    state: &'a AppState,
+    app: &'a AppHandle,
+    notebook_id: &'a str,
+}
+
+impl Drop for NotebookTemplateWatchSuspension<'_> {
+    fn drop(&mut self) {
+        crate::commands::helpers::set_notebook_watching_suspended(self.app, self.notebook_id, false);
+        crate::commands::helpers::refresh_notebook_watcher(self.state, self.app, self.notebook_id);
+    }
+}
+
 pub(crate) fn initialize_notebook_template_for_notebook(
     notebook_id: &str,
     template_id: &str,
@@ -962,10 +1009,17 @@ pub(crate) fn initialize_notebook_template_for_notebook(
     overwrite_existing: bool,
     state: &AppState,
     app: &AppHandle,
+    setup_job: Option<&NotebookSetupJob>,
     after_template_files_written: impl FnOnce(&NotebookSetupReport) -> Result<(), String>,
 ) -> Result<NotebookSetupReport, String> {
     let watched_notebook_id = notebook_id.to_string();
     let started = std::time::Instant::now();
+    // Drop restores the watch even when template loading or writing panics.
+    let watching_suspension = NotebookTemplateWatchSuspension {
+        state,
+        app,
+        notebook_id,
+    };
     // A retried template may already be watched; unbind it before any writes.
     crate::commands::helpers::set_notebook_watching_suspended(app, notebook_id, true);
     crate::commands::helpers::refresh_notebook_watcher(state, app, notebook_id);
@@ -978,12 +1032,12 @@ pub(crate) fn initialize_notebook_template_for_notebook(
         _is_new_notebook,
         state,
         app,
+        setup_job,
         after_template_files_written,
     );
     let write_ms = write_started.elapsed().as_millis();
     let resume_started = std::time::Instant::now();
-    crate::commands::helpers::set_notebook_watching_suspended(app, notebook_id, false);
-    crate::commands::helpers::refresh_notebook_watcher(state, app, notebook_id);
+    drop(watching_suspension);
     crate::runtime_log::record_event(
         "info", "notebook.template.timing",
         format!("notebook={} suspend_ms={} write_ms={} resume_ms={} total_ms={} success={} created={}",
@@ -1001,28 +1055,23 @@ fn initialize_notebook_template_inner(
     _is_new_notebook: bool,
     state: &AppState,
     app: &AppHandle,
+    setup_job: Option<&NotebookSetupJob>,
     after_template_files_written: impl FnOnce(&NotebookSetupReport) -> Result<(), String>,
 ) -> Result<NotebookSetupReport, String> {
     if notebook_id.trim().is_empty() {
         return Err("INVALID_NOTEBOOK_TEMPLATE".to_string());
     }
 
-    let templates = read_notebook_template_index()?;
-    let template = templates
-        .iter()
-        .find(|template| template.id == template_id)
-        .or_else(|| {
-            // Resume setup jobs written by earlier versions before the scene
-            // IDs were renamed to preset IDs.
-            template_id
-                .strip_prefix("scene-")
-                .and_then(|number| number.parse::<usize>().ok())
-                .filter(|number| (1..=templates.len()).contains(number))
-                .and_then(|number| templates.get(number - 1))
-        })
-        .cloned()
-        .ok_or_else(|| "UNKNOWN_NOTEBOOK_TEMPLATE".to_string())?;
+    let template = resolve_notebook_template(&template_id)?;
     let template_id = template.id.clone();
+    if let Some(setup_job) = setup_job {
+        let mut preparing = setup_job.clone();
+        preparing.stage = NotebookSetupStage::Preparing;
+        preparing.message = None;
+        preparing.report = None;
+        preparing.updated_at = chrono::Utc::now().timestamp_millis();
+        super::super::notebook_setup::persist_notebook_setup_job(state, app, preparing)?;
+    }
     let (files, source_failures) = load_notebook_template_files(&template)?;
 
     let notebook_root = read_lock(&state.memo_file, "memo_file")
@@ -1044,99 +1093,109 @@ fn initialize_notebook_template_inner(
     for (path, reason) in source_failures {
         record_notebook_template_failure(&mut report, &path, reason);
     }
+    if let Some(setup_job) = setup_job {
+        let mut writing_status = setup_job.clone();
+        writing_status.stage = NotebookSetupStage::Writing;
+        writing_status.message = None;
+        writing_status.report = Some(report.clone());
+        writing_status.updated_at = chrono::Utc::now().timestamp_millis();
+        super::super::notebook_setup::persist_notebook_setup_job(state, app, writing_status)?;
+    }
     for file in files {
-        let relative = match validate_notebook_template_path(&file.path) {
-            Ok(relative) => relative,
-            Err(error) => {
-                record_notebook_template_failure(&mut report, &file.path, error);
-                continue;
-            }
-        };
-        if !seen_paths.insert(relative.clone()) {
-            record_notebook_template_failure(
-                &mut report,
-                &file.path,
-                "DUPLICATE_TEMPLATE_PATH",
-            );
-            continue;
-        }
-
-        let parent_relative = relative
-            .parent()
-            .filter(|parent| !parent.as_os_str().is_empty());
-        let parent = match ensure_notebook_template_parent(&notebook_root, parent_relative) {
-            Ok(parent) => parent,
-            Err(error) => {
-                record_notebook_template_failure(&mut report, &file.path, error);
-                continue;
-            }
-        };
-
-        let Some(filename) = relative.file_name() else {
-            record_notebook_template_failure(&mut report, &file.path, "INVALID_TEMPLATE_PATH");
-            continue;
-        };
-        let target = parent.join(filename);
-        match fs::symlink_metadata(&target) {
-            Ok(metadata) if metadata.file_type().is_file() && !overwrite_existing => {
-                report.skipped_existing_files += 1;
-                continue;
-            }
-            Ok(metadata) if metadata.file_type().is_file() => {}
-            Ok(_) => {
+        'process_file: {
+            let relative = match validate_notebook_template_path(&file.path) {
+                Ok(relative) => relative,
+                Err(error) => {
+                    record_notebook_template_failure(&mut report, &file.path, error);
+                    break 'process_file;
+                }
+            };
+            if !seen_paths.insert(relative.clone()) {
                 record_notebook_template_failure(
                     &mut report,
                     &file.path,
-                    "template destination exists but is not a regular file",
+                    "DUPLICATE_TEMPLATE_PATH",
                 );
-                continue;
+                break 'process_file;
             }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-            Err(error) => {
-                record_notebook_template_failure(&mut report, &file.path, error);
-                continue;
-            }
-        }
 
-        let is_markdown = relative
-            .extension()
-            .and_then(|extension| extension.to_str())
-            .is_some_and(|extension| extension.eq_ignore_ascii_case("md"));
-        if is_markdown && !file_management_policy.is_ignored_at(&notebook_root, &relative) {
-            let content = match std::str::from_utf8(&file.content) {
-                Ok(content) => content,
+            let parent_relative = relative
+                .parent()
+                .filter(|parent| !parent.as_os_str().is_empty());
+            let parent = match ensure_notebook_template_parent(&notebook_root, parent_relative) {
+                Ok(parent) => parent,
                 Err(error) => {
+                    record_notebook_template_failure(&mut report, &file.path, error);
+                    break 'process_file;
+                }
+            };
+
+            let Some(filename) = relative.file_name() else {
+                record_notebook_template_failure(&mut report, &file.path, "INVALID_TEMPLATE_PATH");
+                break 'process_file;
+            };
+            let target = parent.join(filename);
+            match fs::symlink_metadata(&target) {
+                Ok(metadata) if metadata.file_type().is_file() && !overwrite_existing => {
+                    report.skipped_existing_files += 1;
+                    break 'process_file;
+                }
+                Ok(metadata) if metadata.file_type().is_file() => {}
+                Ok(_) => {
                     record_notebook_template_failure(
                         &mut report,
                         &file.path,
-                        format!("invalid markdown template encoding: {error}"),
+                        "template destination exists but is not a regular file",
                     );
-                    continue;
+                    break 'process_file;
                 }
-            };
-            if let Err(error) = extract_document_metadata(content) {
-                record_notebook_template_failure(&mut report, &file.path, error);
-                continue;
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    record_notebook_template_failure(&mut report, &file.path, error);
+                    break 'process_file;
+                }
             }
-        }
 
-        // Use an exclusive atomic create for every template file. In
-        // particular, a user-created file racing this background task must
-        // never be replaced by atomic_write_bytes.
-        let write_result = if overwrite_existing {
-            atomic_write_bytes(&target, &file.content)
-        } else {
-            atomic_create_bytes(&target, &file.content)
-        };
-        match write_result {
-            Ok(()) => {
-                report.written_files += 1;
-                mark_self_write_for(app, &target);
+            let is_markdown = relative
+                .extension()
+                .and_then(|extension| extension.to_str())
+                .is_some_and(|extension| extension.eq_ignore_ascii_case("md"));
+            if is_markdown && !file_management_policy.is_ignored_at(&notebook_root, &relative) {
+                let content = match std::str::from_utf8(&file.content) {
+                    Ok(content) => content,
+                    Err(error) => {
+                        record_notebook_template_failure(
+                            &mut report,
+                            &file.path,
+                            format!("invalid markdown template encoding: {error}"),
+                        );
+                        break 'process_file;
+                    }
+                };
+                if let Err(error) = extract_document_metadata(content) {
+                    record_notebook_template_failure(&mut report, &file.path, error);
+                    break 'process_file;
+                }
             }
-            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
-                report.skipped_existing_files += 1;
+
+            // Use an exclusive atomic create for every template file. In
+            // particular, a user-created file racing this background task must
+            // never be replaced by atomic_write_bytes.
+            let write_result = if overwrite_existing {
+                atomic_write_bytes(&target, &file.content)
+            } else {
+                atomic_create_bytes(&target, &file.content)
+            };
+            match write_result {
+                Ok(()) => {
+                    report.written_files += 1;
+                    mark_self_write_for(app, &target);
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {
+                    report.skipped_existing_files += 1;
+                }
+                Err(error) => record_notebook_template_failure(&mut report, &file.path, error),
             }
-            Err(error) => record_notebook_template_failure(&mut report, &file.path, error),
         }
     }
 
@@ -1170,6 +1229,7 @@ fn record_notebook_template_failure(
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct RenameMemoTitleResult {
+    pub notebook_change: super::super::path_change::NotebookPathMove,
     pub memo: Option<Memo>,
     pub path: String,
     pub filename: String,
@@ -1178,11 +1238,11 @@ pub struct RenameMemoTitleResult {
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct MoveMemoResult {
+    pub notebook_change: super::super::path_change::NotebookPathMove,
     pub path: String,
 }
 
-/// Move a notebook note by relative path. Updating the legacy memo projection
-/// is optional and happens only when a compatibility row already exists.
+/// Move a notebook note by relative path.
 #[tauri::command]
 pub fn move_memo_to_directory(
     file_path: String,
@@ -1190,12 +1250,13 @@ pub fn move_memo_to_directory(
     parent_relative_path: String,
     state: State<AppState>,
     app: AppHandle,
-) -> Result<MoveMemoResult, String> {
+) -> Result<MoveMemoResult, FileOperationFailure> {
     let requested_path = Path::new(&file_path);
     if !requested_path.is_absolute() {
         return Err("absolute document path required".into());
     }
-    let (moved, before, compatibility_memo, old_relative, old_path) = {
+    let _watch_move = crate::commands::external_document_watch::begin_path_move(&app, requested_path);
+    let (moved, old_relative, old_path) = {
         let memo_file = read_lock(&state.memo_file, "memo_file");
         let (source_notebook_id, relative_path) =
             notebook_note_address(&memo_file, requested_path)?.ok_or_else(|| {
@@ -1204,29 +1265,19 @@ pub fn move_memo_to_directory(
         if source_notebook_id != notebook_id {
             return Err("note does not belong to the selected notebook".into());
         }
-        let before = memo_file
-            .find_memo_by_relative_path_for_notebook_id(&source_notebook_id, &relative_path);
         let mut service = NoteService::new(&memo_file);
         let original = service
             .get(&source_notebook_id, &relative_path)
-            .map_err(|error| error.to_string())?;
+            .map_err(FileOperationFailure::from)?;
         mark_self_write_for(&app, &original.path);
         let moved = service
             .move_to(&source_notebook_id, &relative_path, &parent_relative_path)
-            .map_err(|error| error.to_string())?;
+            .map_err(FileOperationFailure::from)?;
         drop(service);
         mark_self_write_for(&app, &moved.path);
-        let compatibility_memo = before.as_ref().and_then(|_| {
-            memo_file
-                .rename_memo_file_for_notebook_id(
-                    &source_notebook_id,
-                    &original.path,
-                    &moved.path,
-                )
-                .ok()
-        });
-        (moved, before, compatibility_memo, relative_path, original.path)
+        (moved, relative_path, original.path)
     };
+    crate::commands::external_document_watch::rebase_path(&app, requested_path, &moved.path);
     {
         let memo_file = read_lock(&state.memo_file, "memo_file");
         crate::commands::document_list::rebase_collection_paths(
@@ -1247,31 +1298,12 @@ pub fn move_memo_to_directory(
             "note was moved but agent note references could not be rebased: {error}"
         );
     }
-    let _ = app.emit("flowix:path-note-changed", serde_json::json!({
-        "notebookId": notebook_id.clone(),
-        "relativePath": moved.entry.relative_path.clone(),
-        "deleted": false,
-    }));
-    if let Some(memo) = compatibility_memo.as_ref() {
-        let derived_changed = MemoDerivedChanged::from_memos(before.as_ref(), memo);
-        emit_updated_memo_event(
-            &app,
-            &memo.id,
-            moved.path.to_string_lossy().into_owned(),
-            memo.clone(),
-            moved.notebook.id.clone(),
-            derived_changed,
-            MemoChangeSource::UserEdit,
-            None,
-        );
-    } else if before.is_some() {
-        tracing::warn!(
-            notebook_id = %moved.notebook.id,
-            relative_path = %moved.entry.relative_path,
-            "path-based note move succeeded; legacy memo projection could not be updated"
-        );
-    }
+    let notebook_change = super::super::path_change::NotebookPathMove::new(
+        notebook_id.clone(), old_relative, moved.entry.relative_path.clone(), false,
+    );
+    notebook_change.emit(&app);
     Ok(MoveMemoResult {
+        notebook_change,
         path: moved.path.to_string_lossy().into_owned(),
     })
 }
@@ -1326,6 +1358,7 @@ fn rename_memo_title_blocking(
     if !requested_path.is_absolute() {
         return Err("absolute document path required".into());
     }
+    let _watch_move = crate::commands::external_document_watch::begin_path_move(&app, requested_path);
     let (renamed, old_relative, old_path) = {
         let memo_file = read_lock(&state.memo_file, "memo_file");
         let (notebook_id, relative_path) = notebook_note_address(&memo_file, requested_path)?
@@ -1350,6 +1383,7 @@ fn rename_memo_title_blocking(
         mark_self_write_for(&app, &renamed.path);
         (renamed, relative_path, original.path)
     };
+    crate::commands::external_document_watch::rebase_path(&app, requested_path, &renamed.path);
     {
         let memo_file = read_lock(&state.memo_file, "memo_file");
         crate::commands::document_list::rebase_collection_paths(
@@ -1371,11 +1405,12 @@ fn rename_memo_title_blocking(
         );
     }
     let path = renamed.path.to_string_lossy().into_owned();
-    let _ = app.emit("flowix:path-note-changed", serde_json::json!({
-        "notebookId": renamed.notebook.id,
-        "relativePath": renamed.entry.relative_path,
-    }));
+    let notebook_change = super::super::path_change::NotebookPathMove::new(
+        renamed.notebook.id.clone(), old_relative, renamed.entry.relative_path.clone(), false,
+    );
+    notebook_change.emit(&app);
     Ok(RenameMemoTitleResult {
+        notebook_change,
         memo: None,
         path,
         filename: renamed

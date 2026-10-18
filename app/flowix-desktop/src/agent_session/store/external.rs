@@ -11,8 +11,8 @@ use crate::agent_types::AgentId;
 use rusqlite::{params, Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, HashSet};
-use std::sync::Arc;
 use std::path::PathBuf;
+use std::sync::Arc;
 
 const MAX_EXTERNAL_EVENTS_PER_THREAD: i64 = 10_000;
 const EXTERNAL_HISTORY_TRUNCATED_JSON: &str = r#"{"kind":"history_truncated","version":1}"#;
@@ -488,11 +488,11 @@ impl ThreadManager {
     ) -> Result<Option<ThreadMessagesPage>, ThreadError> {
         let thread_id = thread_id.to_string();
         self.run_blocking(move |tm| {
-            if !tm.external_event_history_exists_inner("claude", &thread_id)? {
+            if !tm.external_event_history_exists_inner("claudecode", &thread_id)? {
                 return Ok(None);
             }
             tm.get_external_event_messages_page_inner(
-                "claude",
+                "claudecode",
                 &thread_id,
                 before_event_id,
                 turn_limit,
@@ -649,7 +649,7 @@ impl ThreadManager {
 
         let messages = materialize_external_messages(events);
         Ok(ThreadMessagesPage {
-            messages: if runtime == "deepseek-harness" {
+            messages: if runtime == "dsh" {
                 normalize_legacy_deepseek_thinking(messages)
             } else {
                 messages
@@ -747,7 +747,7 @@ pub(crate) fn materialize_external_messages(events: Vec<AgentExternalEvent>) -> 
                 };
                 let mut message_id =
                     external_run_scoped_id(&event.runtime, &payload, role, &message_id);
-                if event.runtime == "deepseek-harness" {
+                if event.runtime == "dsh" {
                     if let Some(run_key) = external_event_run_key(&event.runtime, &payload) {
                         let segment_key = format!("{run_key}:{message_id}");
                         let current_id = dsh_current_assistant_ids
@@ -804,7 +804,7 @@ pub(crate) fn materialize_external_messages(events: Vec<AgentExternalEvent>) -> 
                 messages.push(message);
             }
             Some("tool_call") => {
-                if event.runtime == "deepseek-harness" {
+                if event.runtime == "dsh" {
                     if let Some(run_key) = external_event_run_key(&event.runtime, &payload) {
                         dsh_pending_assistant_segment.insert(run_key);
                     }
@@ -854,7 +854,7 @@ pub(crate) fn materialize_external_messages(events: Vec<AgentExternalEvent>) -> 
                 }
             }
             Some("tool_result") => {
-                if event.runtime == "deepseek-harness" {
+                if event.runtime == "dsh" {
                     if let Some(run_key) = external_event_run_key(&event.runtime, &payload) {
                         dsh_pending_assistant_segment.insert(run_key);
                     }

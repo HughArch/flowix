@@ -2,13 +2,16 @@
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type UIEventHandler, type WheelEventHandler } from 'react';
 
+import type { SurfacePresentationUpdate } from '@features/workspace/model/surface-contract';
 import { DEFAULT_AGENT_TYPE_KEY } from '@/lib/agent-types';
 import type { AgentTypeKey } from '@/types/agent';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { createLogger } from '@/lib/logger';
 import { agent } from '@platform/tauri/client/agent';
+import { useAgentConversationSurface } from './use-agent-conversation-surface';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
+import { createAndOpenAgentConversation } from '@features/agent/use-cases/new-conversation';
 import { canActOnQueuedMessage } from '@features/agent/store/follow-up-queue-slice';
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
 import { useNoteStore } from '@features/memo/store/note-store';
@@ -23,7 +26,8 @@ import {
   ComposerSubmissionController,
   getComposerRuntimeState,
   ComposerDraftController,
-  ComposerImageController,
+  ComposerAttachmentController,
+  ComposerAttachmentDocument,
   ComposerAddMenuController,
   getCurrentNotebookComposerFolders,
   createAgentComposerDom,
@@ -41,7 +45,7 @@ import { AgentBackgroundTerminals } from '@features/agent/components/agent-backg
 import { CodexApprovalQueue } from '@features/agent/components/codex-approval-queue';
 import { buildInitialInstanceRuntimeConfig } from '@features/agent/store/initial-runtime-config';
 import { defaultThreadTitle } from '@features/agent/store/thread-titles';
-import { selectAndOpenAgentConversation } from '@features/workspace/use-cases/agent-conversation-navigation';
+import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import {
   agentFileScopePathForRuntime,
@@ -61,6 +65,13 @@ import { Button } from '@shared/ui/button';
 import { createRunId } from '@features/agent/events/agent-event-mapper';
 import { completedRunUserMessageId } from '@features/agent/events/message-identity';
 import { createAgentMessageAttachments, prepareUserMessage } from '@features/agent/store/user-message';
+import { isAgentThreadCardImageAttachment } from '@features/agent/thread-card/composer/composer-attachment-types';
+import {
+  getAgentMessageTypographyCssVars,
+  useAgentMessageFontStore,
+} from '@features/agent/store/agent-message-font-store';
+import { ensureDownloadedFontRegistered } from '@features/preferences/public/font-api';
+import { getTypographyFontId } from '@/lib/typography-font-mode';
 
 const BOTTOM_FOLLOW_THRESHOLD_PX = 96;
 const TOP_HISTORY_LOAD_THRESHOLD_PX = 48;
@@ -68,6 +79,12 @@ const SCROLL_DELTA_EPSILON_PX = 0.5;
 const INPUT_DRAFT_MAX_CHARS = 500;
 const EMPTY_MESSAGES: ThreadState['messages'] = [];
 const EMPTY_PENDING_CODEX_MESSAGES: readonly [] = [];
+
+function isMissingHistorySession(error: string | null | undefined): boolean {
+  if (!error) return false;
+  return Boolean(error.match(/session\s+["'][^"']+["']\s+not found/i)
+    ?? error.match(/session\s+not found:\s*["']?[\w.-]+["']?/i));
+}
 const DETAIL_DRAFT_KEY_PREFIX = 'flowix:agent-conversation-draft:';
 const logger = createLogger('agent-conversation-detail');
 
@@ -115,48 +132,26 @@ function persistDetailDraft(instanceId: string, draft: string | null): void {
  */
 export function AgentConversationDetail({
   instanceId,
+  reportPresentation,
 }: {
   instanceId: string;
+  reportPresentation?: (update: SurfacePresentationUpdate) => void;
 }) {
   const { t } = useI18n();
-  const instance = useAgentSessionStore((state) => state.getInstance(instanceId));
-  const [loadState, setLoadState] = useState<{
-    instanceId: string;
-    status: 'loading' | 'not-found' | 'error';
-  } | null>(null);
-  const [retryCount, setRetryCount] = useState(0);
-  useEffect(() => {
-    if (instance) return;
-
-    let cancelled = false;
-    setLoadState({ instanceId, status: 'loading' });
-    void useAgentSessionStore.getState().hydrateInstance(instanceId)
-      .then((restored) => {
-        if (!cancelled && !restored) setLoadState({ instanceId, status: 'not-found' });
-      })
-      .catch(() => {
-        if (!cancelled) setLoadState({ instanceId, status: 'error' });
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [instance, instanceId, retryCount]);
+  const { instance, status, retry } = useAgentConversationSurface(instanceId, reportPresentation);
 
   if (instance) {
     return <AgentConversationDetailContent key={instanceId} instanceId={instanceId} instance={instance} />;
   }
 
-  const status = loadState?.instanceId === instanceId ? loadState.status : 'loading';
+  if (reportPresentation) return null;
   return (
     <WorkspaceEmptyState
       tone="agent"
       message={status === 'loading' ? t('status.agent.loadingConversations') : (
         <span className="flex flex-col items-center gap-3">
           <span>{t(status === 'error' ? 'status.agent.loadConversationsFailed' : 'status.agent.conversationNotFound')}</span>
-          <Button variant="outline" size="sm" className="rounded-lg" onClick={() => {
-            setLoadState({ instanceId, status: 'loading' });
-            setRetryCount((count) => count + 1);
-          }}>
+          <Button variant="outline" size="sm" className="rounded-lg" onClick={retry}>
             {t('error.retry')}
           </Button>
         </span>
@@ -174,6 +169,17 @@ function AgentConversationDetailContent({
   instance: AgentConversationInstance;
 }) {
   const { language, t } = useI18n();
+  const selectedNotebookId = useNoteStore((state) => state.selectedNotebook?.id ?? null);
+  const messageFontMode = useAgentMessageFontStore((state) => state.fontMode);
+  const messageSizeMode = useAgentMessageFontStore((state) => state.sizeMode);
+  useEffect(() => {
+    if (messageFontMode === 'standard') return;
+    const fontId = getTypographyFontId(messageFontMode);
+    void ensureDownloadedFontRegistered(fontId).catch((error) => {
+      const message = error instanceof Error ? error.message : String(error);
+      toast.error(t('preferences.format.fontDownloadFailed', { message }));
+    });
+  }, [messageFontMode, t]);
   const threadId = instance.threadId;
   const renderThreadId = threadId;
   const projection = useAgentSessionStore((state) => (
@@ -202,12 +208,14 @@ function AgentConversationDetailContent({
   );
   const initialHistoryStatus = projection?.pagination.initialStatus ?? 'idle';
   const initialHistoryError = projection?.pagination.initialError;
+  const missingSession = isMissingHistorySession(initialHistoryError);
   const isInitialHistoryLoading = shouldShowInitialHistorySkeleton(
     threadId,
     messages.length,
     initialHistoryStatus,
   );
   const showHistoryError = initialHistoryStatus === 'error' && messages.length === 0;
+  const showHistoryWarning = initialHistoryStatus === 'error' && messages.length > 0;
   const domRef = useRef<HTMLDivElement>(null);
   const bodyRef = useRef<HTMLDivElement>(null);
   const composerMountRef = useRef<HTMLDivElement>(null);
@@ -215,7 +223,7 @@ function AgentConversationDetailContent({
   const inputRef = useRef<HTMLDivElement>(null);
   const messagesControllerRef = useRef<AgentThreadCardMessagesController | null>(null);
   const composerControllerRef = useRef<ComposerController | null>(null);
-  const composerImagesControllerRef = useRef<ComposerImageController | null>(null);
+  const composerAttachmentsControllerRef = useRef<ComposerAttachmentController | null>(null);
   const externalSettingsRef = useRef<ExternalAgentSettingsController | null>(null);
   const addMenuRef = useRef<ComposerAddMenuController | null>(null);
   const notebookAgentSettingsDialogRef = useRef<NotebookAgentSettingsDialogController | null>(null);
@@ -242,9 +250,9 @@ function AgentConversationDetailContent({
     const currentInstance = instanceRef.current;
     const sourceThreadId = threadIdRef.current;
     const agentType = currentInstance?.agentType;
-    if (!currentInstance || !sourceThreadId || (agentType !== 'codex' && agentType !== 'deepseek-harness' && agentType !== 'pi')) return;
+    if (!currentInstance || !sourceThreadId || (agentType !== 'codex' && agentType !== 'dsh' && agentType !== 'pi')) return;
     if (agentType === 'codex' && !message.codexTurnId) return;
-    if (agentType === 'deepseek-harness' && message.sourceSequence === undefined) return;
+    if (agentType === 'dsh' && message.sourceSequence === undefined) return;
     if (agentType === 'pi' && !message.messageId) return;
 
     if (destroyedRef.current) return;
@@ -252,7 +260,7 @@ function AgentConversationDetailContent({
     try {
       const result = agentType === 'codex'
         ? await agent.forkCodexThread(sourceThreadId, message.codexTurnId!)
-        : agentType === 'deepseek-harness'
+        : agentType === 'dsh'
           ? await agent.forkDeepSeekHarnessThread(sourceThreadId, message.sourceSequence!)
           : await agent.forkPiThread(sourceThreadId, message.messageId!);
       const fork = useAgentSessionStore.getState().createInstance({
@@ -265,7 +273,7 @@ function AgentConversationDetailContent({
         },
         source: { kind: 'dedicated', notebookId: currentInstance.source.notebookId ?? null },
       });
-      await selectAndOpenAgentConversation(fork.instanceId);
+      await openWorkspaceSurface({ target: { kind: 'agent-conversation', instanceId: fork.instanceId } });
     } catch (error) {
       logger.error(`Failed to fork ${agentType} conversation`, { error });
       toast.error(error instanceof Error ? error.message : String(error));
@@ -310,7 +318,7 @@ function AgentConversationDetailContent({
   }, [instanceId]);
 
   const ensureDshCommandConversation = useCallback(async (command: string) => {
-    if (typeKeyRef.current !== 'deepseek-harness') {
+    if (typeKeyRef.current !== 'dsh') {
       throw new Error('This slash command is only available for DSH');
     }
     const currentInstance = instanceRef.current;
@@ -322,7 +330,7 @@ function AgentConversationDetailContent({
       }
       const ensured = await ensureAgentConversationDetailThread({
         instanceId: currentInstance.instanceId,
-        typeKey: 'deepseek-harness',
+        typeKey: 'dsh',
         prompt: command,
         runtimeHandleId: runtimeHandleRef.current,
       });
@@ -375,7 +383,7 @@ function AgentConversationDetailContent({
 
   const submit = useCallback(async () => {
     const composer = composerControllerRef.current;
-    const images = composerImagesControllerRef.current;
+    const images = composerAttachmentsControllerRef.current;
     const currentInstance = instanceRef.current;
     if (!composer || !images || !currentInstance) return;
     const isDisposed = () => destroyedRef.current || composerControllerRef.current !== composer;
@@ -397,7 +405,9 @@ function AgentConversationDetailContent({
             content: snapshot.prompt,
             agentType: currentInstance.agentType,
             isFirstMessage: true,
-            attachments: createAgentMessageAttachments(snapshot.images.map((image) => image.path)),
+            attachments: createAgentMessageAttachments(
+              snapshot.attachments.filter(isAgentThreadCardImageAttachment),
+            ),
           });
           userMessage.id = completedRunUserMessageId(currentInstance.agentType, runId);
           userMessage.renderKey = userMessage.id;
@@ -465,7 +475,6 @@ function AgentConversationDetailContent({
     composerMount.append(composerParts.composer);
     const {
       composer,
-      composerImages,
       composerActions,
       composerRoleIcon: composerRoleButton,
       input,
@@ -516,10 +525,9 @@ function AgentConversationDetailContent({
         persistDetailDraft(instanceId, draft);
       },
     });
-    const composerImagesController = new ComposerImageController({
+    const composerAttachmentsController = new ComposerAttachmentController({
       input,
-      container: composerImages,
-      initialImages: [],
+      initialAttachments: [],
       onChange: () => undefined,
       onStateChange: () => composerControllerRef.current?.setSendButtonState(),
       onError: (message) => toast.error(message),
@@ -574,7 +582,7 @@ function AgentConversationDetailContent({
       t: (key) => tRef.current(key),
         createThreadCacheSkeleton: () => createThreadCacheSkeleton(tRef.current('editor.threadCard.loadingThreadCache')),
         createExternalAgentEmptySettings: () =>
-          externalSettings.createEmptySettings({ showControls: false }),
+          externalSettings.createEmptySettings({ presentation: "expanded" }),
         onForkMessage: forkFromMessage,
       },
       composerOptions: {
@@ -584,11 +592,20 @@ function AgentConversationDetailContent({
         getUserHistoryMessages: () => getAgentThreadCardUserHistoryMessagesFromMessages(messagesRef.current),
         getSendLabel: (label) => tRef.current(`editor.threadCard.${label}`),
         getRuntimeState: composerRuntimeState,
-        getHasAttachments: () => composerImagesController.hasImages,
-        getHasPendingAttachments: () => composerImagesController.hasPending,
+        getHasAttachments: () => composerAttachmentsController.hasAttachments,
+        getHasPendingAttachments: () => composerAttachmentsController.hasPending,
         agentType: typeKeyRef.current,
+        getSkillsScopeId: () => {
+          const current = instanceRef.current;
+          const runtime = current?.runtimeConfig;
+          return runtime?.notebookId
+            ?? runtime?.workspaceSnapshot?.notebookId
+            ?? current?.source.notebookId
+            ?? runtime?.workspaceSnapshot?.notebookPath
+            ?? runtime?.cwd;
+        },
         listDshSkills: async () => {
-          if (typeKeyRef.current !== 'deepseek-harness') return [];
+          if (typeKeyRef.current !== 'dsh') return [];
           const ensured = await ensureDshCommandConversation('/skill');
           return listDshSkills({
             threadId: ensured.threadId,
@@ -632,6 +649,9 @@ function AgentConversationDetailContent({
     });
     messageController = surface.messages;
     const composerController = surface.composer;
+    composerAttachmentsController.connectDocument(
+      new ComposerAttachmentDocument(composerController.editorInstance),
+    );
     const notePicker = new NotePickerController({
       trigger: composerRoleButton,
       popover: rolePopover,
@@ -647,7 +667,7 @@ function AgentConversationDetailContent({
       popover: addPopover,
       notePopover: rolePopover,
       notePicker,
-      images: composerImagesController,
+      attachments: composerAttachmentsController,
       t: (key) => tRef.current(key),
       isDestroyed: () => destroyedRef.current,
       openNotebookAgentSettings: () => {
@@ -672,7 +692,7 @@ function AgentConversationDetailContent({
     messagesControllerRef.current = messageController;
     composerControllerRef.current = composerController;
     surfaceRef.current = surface;
-    composerImagesControllerRef.current = composerImagesController;
+    composerAttachmentsControllerRef.current = composerAttachmentsController;
     addMenuRef.current = addMenu;
     composerController.updateMultiLineState();
     // Paint the selected thread's initial state in the same layout pass. The
@@ -686,7 +706,7 @@ function AgentConversationDetailContent({
       body.removeEventListener('click', handleMessageLinkClick);
       composerController.flushPendingDraft();
       surface.dispose();
-      composerImagesController.dispose();
+      composerAttachmentsController.dispose();
       notePicker.dispose();
       addMenu.dispose();
       externalSettings.dispose();
@@ -698,7 +718,7 @@ function AgentConversationDetailContent({
       messagesControllerRef.current = null;
       composerControllerRef.current = null;
       surfaceRef.current = null;
-      composerImagesControllerRef.current = null;
+      composerAttachmentsControllerRef.current = null;
       addMenuRef.current = null;
       pendingFirstMessageRef.current = null;
     };
@@ -742,7 +762,10 @@ function AgentConversationDetailContent({
   );
 
   return (
-    <section className="agent-conversation-detail markdown-editor flex h-full min-h-0 flex-col">
+    <section
+      className="agent-conversation-detail agent-conversation-surface markdown-editor flex h-full min-h-0 flex-col"
+      style={getAgentMessageTypographyCssVars(messageFontMode, messageSizeMode) as CSSProperties}
+    >
       <div ref={domRef} className="agent-thread-card agent-conversation-detail__card flex min-h-0 flex-1 flex-col">
         <div className="agent-conversation-detail__body-shell" data-no-context-menu-scroll>
           {document.documentElement.dataset.platform === 'mac' ? (
@@ -781,25 +804,65 @@ function AgentConversationDetailContent({
                 tone="agent"
                 message={(
                   <span className="flex flex-col items-center gap-3">
-                    <span>{t('status.agent.loadHistoryFailed')}</span>
-                    {initialHistoryError && (
-                      <span className="max-w-xl break-words text-center text-xs text-[var(--muted-foreground)]">
-                        {initialHistoryError}
-                      </span>
+                    <span>{missingSession ? t('status.agent.historySessionNotFound') : t('status.agent.loadHistoryFailed')}</span>
+                    {missingSession ? (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-lg"
+                        onClick={() => {
+                          const notebookId = instance.source.notebookId ?? selectedNotebookId;
+                          if (notebookId) createAndOpenAgentConversation(instance.agentType, notebookId);
+                        }}
+                        disabled={!instance.source.notebookId && !selectedNotebookId}
+                      >
+                        {t('status.agent.newConversation')}
+                      </Button>
+                    ) : (
+                      <Button
+                        variant="outline"
+                        size="sm"
+                        className="rounded-lg"
+                        onClick={() => {
+                          if (threadId) void useAgentSessionStore.getState().loadMessages(instance.agentType, threadId);
+                        }}
+                      >
+                        {t('error.retry')}
+                      </Button>
                     )}
-                    <Button
-                      variant="outline"
-                      size="sm"
-                      className="rounded-lg"
-                      onClick={() => {
-                        if (threadId) void useAgentSessionStore.getState().loadMessages(instance.agentType, threadId);
-                      }}
-                    >
-                      {t('error.retry')}
-                    </Button>
                   </span>
                 )}
               />
+            </div>
+          )}
+          {showHistoryWarning && (
+            <div className="absolute inset-x-3 top-3 z-[4] flex items-center justify-center gap-3 rounded-lg border border-[var(--border)] bg-[var(--background)]/95 px-3 py-2 text-xs text-[var(--muted-foreground)] shadow-sm" role="alert">
+              <span>{missingSession ? t('status.agent.historySessionNotFound') : t('status.agent.historyRefreshFailed')}</span>
+              {missingSession ? (
+                <Button
+                  variant="outline"
+                  size="xs"
+                  className="rounded-lg"
+                  onClick={() => {
+                    const notebookId = instance.source.notebookId ?? selectedNotebookId;
+                    if (notebookId) createAndOpenAgentConversation(instance.agentType, notebookId);
+                  }}
+                  disabled={!instance.source.notebookId && !selectedNotebookId}
+                >
+                  {t('status.agent.newConversation')}
+                </Button>
+              ) : (
+                <Button
+                  variant="ghost"
+                  size="xs"
+                  className="rounded-lg"
+                  onClick={() => {
+                    if (threadId) void useAgentSessionStore.getState().loadMessages(instance.agentType, threadId);
+                  }}
+                >
+                  {t('error.retry')}
+                </Button>
+              )}
             </div>
           )}
         </div>
@@ -807,8 +870,8 @@ function AgentConversationDetailContent({
           {instance.agentType === 'codex' && <CodexApprovalQueue threadId={threadId} />}
           <AgentBackgroundTerminals
             threadId={threadId}
-            agentType={instance.agentType === 'codex' ? 'codex' : 'deepseek-harness'}
-            enabled={instance.agentType === 'codex' || instance.agentType === 'deepseek-harness'}
+            agentType={instance.agentType === 'codex' ? 'codex' : 'dsh'}
+            enabled={instance.agentType === 'codex' || instance.agentType === 'dsh'}
             queuedMessages={pendingSteeringMessages.map((message) => ({
               ...message,
               actionsDisabled: !canActOnQueuedMessage(

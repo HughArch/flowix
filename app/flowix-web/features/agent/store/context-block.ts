@@ -49,17 +49,17 @@ const FLOWIX_CLI_PROMPT_BLOCK = [
   "# flowix CLI",
   "非交互笔记与插件产物 CLI，--json 取 JSON 输出。",
   "",
-  '只在显式触发时调:用户说"搜/列/改/删/新建笔记",或给了 8 位 ID / 笔记本名要求"看/改/删"。',
+  '只在显式触发时调:用户说"搜/列/改/删/新建笔记",或给了笔记地址 / 笔记本名要求"看/改/删"。',
   "如果上下文包含当前任务标签, 创建新笔记时必须在正文写入该 #标签。",
   "",
   "- `flowix notebooks` — list all notebooks.",
   "- `flowix list <notebook>` — list notes in a notebook.",
-  "- `flowix show <id>` — print a note to stdout.",
+  "- `flowix show <address>` — print a note to stdout.",
   "- `flowix search <query> [-b <notebook>] [-l N]` — full-text search.",
-  "- `flowix edit <id> --old <text> --new <text>` — exact-string replace (always `read` first).",
-  "- `flowix write <id>` (body from stdin) — overwrite a note.",
+  "- `flowix edit <address> --old <text> --new <text>` — exact-string replace (always `read` first).",
+  "- `flowix write <address>` (body from stdin) — overwrite a note.",
   "- `flowix create <notebook>` (body from stdin) — create a note.",
-  "- `flowix delete <id>` — delete a note.",
+  "- `flowix delete <address>` — delete a note.",
   "- `flowix plugin create mindmap --notebook <name|id|path> [--source-note <id|path>] --json` — read final Markmap Markdown from stdin and create a Flowix mindmap document.",
   "",
   "仅当用户明确要求生成/创建思维导图时调用 mindmap 工具。先自行整理最终 Markdown（恰好一个一级根标题，分支使用二/三级标题和无序列表），再传给 stdin；不要手工创建 `.plugin-output` 文件。成功后向用户返回 title 和 noteId。",
@@ -67,7 +67,7 @@ const FLOWIX_CLI_PROMPT_BLOCK = [
 
 const NATIVE_AGENTS_INSTRUCTION_AGENT_TYPES = new Set<AgentTypeKey>([
   "codex",
-  "deepseek-harness",
+  "dsh",
 ]);
 
 export function appendFirstMessageContext(

@@ -80,6 +80,32 @@ fn apply_v2_note_changes(
     notebook_id: &str,
     changes: &[&V2RemoteApply],
 ) -> Result<(), String> {
+    apply_v2_note_changes_locked(state, app, notebook_id, changes)?;
+    let memo_file = read_lock(&state.memo_file, "memo_file");
+    for relative_path in changes.iter().filter_map(|change| {
+        let V2RemoteApply::Note {
+            filename, deleted, ..
+        } = *change
+        else {
+            return None;
+        };
+        (*deleted && !filename.starts_with("attachments/")).then_some(filename.as_str())
+    }) {
+        crate::commands::document_list::remove_table_note_records(
+            &memo_file,
+            notebook_id,
+            relative_path,
+        );
+    }
+    Ok(())
+}
+
+fn apply_v2_note_changes_locked(
+    state: &AppState,
+    app: &AppHandle,
+    notebook_id: &str,
+    changes: &[&V2RemoteApply],
+) -> Result<(), String> {
     let memo_file = read_lock(&state.memo_file, "memo_file");
     let _write_guard = memo_file
         .operation_locks()
@@ -194,29 +220,19 @@ fn apply_v2_note_changes(
             continue;
         }
         if *deleted {
-            if let Some(memo) = deletion::delete_cloud_note_locked(
+            deletion::delete_cloud_note_locked(
                 &memo_file,
                 &state.cloud_sync,
                 notebook_id,
                 note_id,
                 filename,
                 |path| crate::watcher::runtime::mark_self_write_for(app, path),
-            )? {
-                let path = notebook_path_from_relative(&base, &memo.relative_path)
-                    .unwrap_or_else(|_| base.join(&memo.filename));
-                let derived_changed = MemoDerivedChanged::from_deleted(&memo);
-                memo_events::emit(
-                    app,
-                    MemoEvent::Deleted {
-                        id: memo.id.clone(),
-                        path: path.to_string_lossy().into_owned(),
-                        relative_path: memo.relative_path.clone(),
-                        notebook_id: notebook_id.to_string(),
-                        derived_changed,
-                        source: MemoChangeSource::CloudSync,
-                    },
-                );
-            }
+            )?;
+            crate::commands::path_change::NotebookPathDeleted::new(
+                notebook_id.to_string(),
+                filename.to_string(),
+            )
+            .emit(app);
         } else {
             let bytes = content
                 .as_ref()
@@ -233,17 +249,30 @@ fn apply_v2_note_changes(
             let markdown = std::str::from_utf8(bytes)
                 .map_err(|_| format!("CLOUD_NOTE_NOT_UTF8: {note_id}"))?;
             write_cloud_attachments(&base, attachments)?;
-            let current_memo =
-                memo_file.find_memo_by_relative_path_for_notebook_id(notebook_id, filename);
-            let old_path = current_memo.as_ref().map(|memo| {
-                notebook_path_from_relative(&base, &memo.relative_path)
-                    .unwrap_or_else(|_| base.join(&memo.filename))
-            });
             let desired_path = safe_cloud_note_path(&base, filename)?;
+            let is_indexed = match memo_file.read_note_entry_by_path(notebook_id, filename) {
+                Ok(entry) => entry.is_some(),
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    memo_file
+                        .reconcile_note_index(notebook_id)
+                        .map_err(sync_error)?;
+                    memo_file
+                        .read_note_entry_by_path(notebook_id, filename)
+                        .map_err(sync_error)?
+                        .is_some()
+                }
+                Err(error) => return Err(sync_error(error)),
+            };
+            let old_path = is_indexed.then(|| desired_path.clone());
             if desired_path.exists() && old_path.as_ref() != Some(&desired_path) {
                 memo_file
-                    .register_existing_file_for_notebook_id(notebook_id, &desired_path)
+                    .refresh_note_path(notebook_id, filename)
                     .map_err(sync_error)?;
+                crate::commands::path_change::NotebookPathInvalidated::new(
+                    notebook_id.to_string(),
+                    filename.to_string(),
+                )
+                .emit(app);
                 if std::fs::read(&desired_path).map_err(sync_error)? != *bytes {
                     return Err(format!(
                         "CLOUD_PATH_COLLISION: local file preserved at {filename}"
@@ -270,10 +299,9 @@ fn apply_v2_note_changes(
             if matches!(&old_path, Some(path) if path == &desired_path)
                 && disk_hash.as_deref() == Some(expected_hash)
             {
-                let memo = memo_file
-                    .register_existing_file_for_notebook_id(notebook_id, &desired_path)
+                memo_file
+                    .refresh_note_path(notebook_id, filename)
                     .map_err(sync_error)?;
-                let _ = memo;
                 continue;
             }
 
@@ -338,29 +366,19 @@ fn apply_v2_note_changes(
                     ));
                 }
             }
-            let memo = memo_file
-                .register_existing_file_for_notebook_id(notebook_id, &desired_path)
+            memo_file
+                .refresh_note_path(notebook_id, filename)
                 .map_err(sync_error)?;
             if let Some(path) = old_path.filter(|path| path != &desired_path) {
                 if path.exists() {
                     std::fs::remove_file(&path).map_err(sync_error)?;
                 }
             }
-            memo_events::emit(
-                app,
-                MemoEvent::Updated {
-                    id: memo.id.clone(),
-                    path: desired_path.to_string_lossy().into_owned(),
-                    notebook_id: notebook_id.to_string(),
-                    derived_changed: MemoDerivedChanged {
-                        tags: true,
-                        todos: true,
-                        agents: true,
-                    },
-                    memo,
-                    source: MemoChangeSource::CloudSync,
-                },
-            );
+            crate::commands::path_change::NotebookPathInvalidated::new(
+                notebook_id.to_string(),
+                filename.to_string(),
+            )
+            .emit(app);
         }
     }
     Ok(())
@@ -412,13 +430,6 @@ pub(crate) fn apply_v2_report(
                 .is_some_and(|(_, _, _, deleted)| *deleted);
             if deleted {
                 changed = true;
-                if state.agent_access.remove_notebook(&config.id) {
-                    crate::events::emit_to(
-                        app,
-                        crate::commands::agent_access::AGENT_ACCESS_CHANGED_EVENT,
-                        (),
-                    );
-                }
             }
             !deleted
         });
@@ -451,6 +462,11 @@ pub(crate) fn apply_v2_report(
                 .write_notebook_configs(&configs)
                 .map_err(sync_error)?;
             drop(memo_file);
+            crate::events::emit_to(
+                app,
+                crate::commands::agent_workspace::AGENT_WORKSPACE_CHANGED_EVENT,
+                (),
+            );
             crate::events::emit_to(app, crate::commands::notebook::NOTEBOOKS_CHANGED_EVENT, ());
             crate::commands::helpers::refresh_watcher_roots(state, app);
         }

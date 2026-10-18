@@ -58,7 +58,7 @@ async function baseEntries(runtimeRoot, { realLlm = false } = {}) {
  * Provision a real-model DSH home exactly the way a Flowix desktop harness
  * session does: provider routes come from the user's `~/.dsh/settings.yaml`
  * (env references only, no secrets), and the DeepSeek key is read from the
- * Flowix secret store (`~/.flowix/default.db`) into an isolated version-1
+ * Flowix secret store (`~/.flowix/db/default.db`) into an isolated version-1
  * credentials document. The key never appears in logs or process output.
  */
 async function provisionRealLlm(dshHome) {
@@ -67,10 +67,10 @@ async function provisionRealLlm(dshHome) {
   await copyFile(userSettings, join(dshHome, 'settings.yaml'))
 
   const { DatabaseSync } = await import('node:sqlite')
-  const secretDb = new DatabaseSync(join(process.env.HOME, '.flowix/default.db'), { readOnly: true })
+  const secretDb = new DatabaseSync(join(process.env.HOME, '.flowix/db/default.db'), { readOnly: true })
   const row = secretDb.prepare("SELECT value FROM secret_kv WHERE key = 'DeepSeek::default'").get()
   secretDb.close()
-  if (!row?.value) throw new Error("no DeepSeek key found in ~/.flowix/default.db (entry 'DeepSeek::default')")
+  if (!row?.value) throw new Error("no DeepSeek key found in ~/.flowix/db/default.db (entry 'DeepSeek::default')")
   const credentialsPath = join(dshHome, '.credentials.yaml')
   await writeFile(credentialsPath, `version: 1\nrefs:\n  FLOWIX_DSH_DEEPSEEK_API_KEY: ${row.value}\n`, { mode: 0o600 })
   await chmod(credentialsPath, 0o600)

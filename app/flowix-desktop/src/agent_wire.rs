@@ -64,6 +64,8 @@ pub struct RuntimePathConfig {
 #[derive(Serialize, Deserialize, Clone, Default)]
 #[serde(rename_all = "camelCase")]
 pub struct AgentRuntimeConfig {
+    /// Notebook scope used to validate persisted workspace paths before each run.
+    pub notebook_id: Option<String>,
     pub codex: Option<RuntimePathConfig>,
     pub claude: Option<RuntimePathConfig>,
     pub hermes: Option<RuntimePathConfig>,
@@ -165,11 +167,11 @@ impl AgentUserMessage {
         let config = self.runtime_config.as_ref()?;
         match runtime {
             "codex" => config.codex.as_ref(),
-            "claude" => config.claude.as_ref(),
+            "claudecode" => config.claude.as_ref(),
             "hermes" => config.hermes.as_ref(),
             "opencode" => config.opencode.as_ref(),
             "pi" => config.pi.as_ref(),
-            "deepseek-harness" => config.deepseek_harness.as_ref(),
+            "dsh" => config.deepseek_harness.as_ref(),
             _ => None,
         }
     }

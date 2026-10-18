@@ -40,7 +40,7 @@ export function selectComposerSubmissionState(input: ComposerRuntimeState & {
 }): ComposerSubmissionState {
   const kind = input.kind ?? getComposerSubmissionKind(input.agentType, input.prompt);
   const hasInput = !!input.prompt.trim() || input.hasAttachments;
-  const supportsQueue = ["codex", "deepseek-harness", "pi"].includes(input.agentType);
+  const supportsQueue = ["codex", "dsh", "pi"].includes(input.agentType);
   // Codex's native command endpoint has no attachment payload.
   const supportsAttachments = kind !== "command" || input.agentType !== "codex" || !input.hasAttachments;
   const canSubmit = input.isAvailable && hasInput &&

@@ -1,6 +1,6 @@
 //! Serializes manual, automatic and polling sync work, including retries.
-use super::*;
 use super::local_adapter::*;
+use super::*;
 
 static ACCOUNT_SYNC_LOCK: OnceLock<Arc<tokio::sync::Mutex<()>>> = OnceLock::new();
 
@@ -255,22 +255,37 @@ async fn sync_v2_account_pass(
         "snapshot",
         None,
     );
-    let (mut notebooks, mut notes) = v2_account_snapshot(state, full_local_snapshot, notebook_scope)?;
+    let (mut notebooks, mut notes) =
+        v2_account_snapshot(state, full_local_snapshot, notebook_scope)?;
     if full_local_snapshot {
         let present: HashSet<_> = notes.iter().map(|note| note.id.as_str()).collect();
-        let moving: HashSet<_> = state.cloud_sync.v2_pending_moves().map_err(sync_error)?
-            .into_iter().map(|item| item.from_note_id).collect();
-        let enabled_ids: HashSet<_> = enabled.iter().map(|item| item.notebook_id.as_str()).collect();
+        let moving: HashSet<_> = state
+            .cloud_sync
+            .v2_pending_moves()
+            .map_err(sync_error)?
+            .into_iter()
+            .map(|item| item.from_note_id)
+            .collect();
+        let enabled_ids: HashSet<_> = enabled
+            .iter()
+            .map(|item| item.notebook_id.as_str())
+            .collect();
         for previous in state.cloud_sync.v2_all_note_states().map_err(sync_error)? {
-            if !previous.deleted && enabled_ids.contains(previous.notebook_id.as_str())
+            if !previous.deleted
+                && enabled_ids.contains(previous.notebook_id.as_str())
                 && notebook_scope.is_none_or(|scope| scope == previous.notebook_id)
                 && !present.contains(previous.note_id.as_str())
                 && !moving.contains(&previous.note_id)
             {
-                state.cloud_sync.record_v2_local_change(
-                    &previous.notebook_id, &previous.note_id,
-                    flowix_sync::LocalChangeKind::Delete, "deleted",
-                ).map_err(sync_error)?;
+                state
+                    .cloud_sync
+                    .record_v2_local_change(
+                        &previous.notebook_id,
+                        &previous.note_id,
+                        flowix_sync::LocalChangeKind::Delete,
+                        "deleted",
+                    )
+                    .map_err(sync_error)?;
             }
         }
     }
@@ -303,19 +318,27 @@ async fn sync_v2_account_pass(
         match result {
             Err(SyncError::MoveConflict { operation_id, .. }) if conflict_attempts < 3 => {
                 conflict_attempts += 1;
-                let movement = state.cloud_sync.v2_pending_move(&operation_id)
+                let movement = state
+                    .cloud_sync
+                    .v2_pending_move(&operation_id)
                     .map_err(sync_error)?
                     .ok_or_else(|| "CLOUD_MOVE_CONFLICT_QUEUE_MISSING".to_string())?;
                 resolve_v2_move_conflict(state, app, &movement)?;
                 (notebooks, notes) = v2_account_snapshot(state, true, notebook_scope)?;
             }
             Err(SyncError::RevisionConflict {
-                notebook_id, note_id, operation_id, operation_kind, ..
+                notebook_id,
+                note_id,
+                operation_id,
+                operation_kind,
+                ..
             }) if matches!(operation_kind.as_str(), "put" | "delete") && conflict_attempts < 3 => {
                 conflict_attempts += 1;
-                let material = state.cloud_sync
+                let material = state
+                    .cloud_sync
                     .v2_conflict_material(&notebook_id, &note_id, &operation_id)
-                    .await.map_err(cloud_error)?;
+                    .await
+                    .map_err(cloud_error)?;
                 if operation_kind == "delete" {
                     resolve_v2_delete_conflict(state, app, &material)?;
                 } else {
@@ -341,7 +364,9 @@ async fn sync_v2_account_pass(
             apply_v2_report(state, app, &report).map_err(SyncError::InvalidState)
         })
         .map_err(sync_error)?;
-    if full_local_snapshot { record_full_local_snapshot(notebook_scope); }
+    if full_local_snapshot {
+        record_full_local_snapshot(notebook_scope);
+    }
     Ok(report)
 }
 
@@ -569,7 +594,15 @@ async fn run_sync_activity(
         let mut first_head = None;
         let mut previous_cursor = None;
         loop {
-            let mut report = match sync_v2_account_pass(state.inner(), app, &target, &enabled, &activity).await {
+            let mut report = match sync_v2_account_pass(
+                state.inner(),
+                app,
+                &target,
+                &enabled,
+                &activity,
+            )
+            .await
+            {
                 Ok(report) => report,
                 Err(error) => {
                     return Err(fail_sync_activity(
@@ -587,19 +620,25 @@ async fn run_sync_activity(
                     async {
                         let next = tokio::time::timeout(
                             CLOUD_SYNC_PASS_TIMEOUT,
-                            state.cloud_sync.v2_continue_bootstrap(&report, target.notebook_scope()),
+                            state
+                                .cloud_sync
+                                .v2_continue_bootstrap(&report, target.notebook_scope()),
                         )
                         .await
                         .map_err(|_| {
-                            "云端笔记初始化超过 3 分钟仍未完成，请检查网络后重试。"
-                                .to_string()
+                            "云端笔记初始化超过 3 分钟仍未完成，请检查网络后重试。".to_string()
                         })?
                         .map_err(cloud_error)?;
-                        state.cloud_sync.complete_v2_sync_with_apply(&next, target.notebook_scope(), || {
-                            apply_v2_report(state.inner(), app, &next).map_err(SyncError::InvalidState)
-                        }).map_err(sync_error)?;
+                        state
+                            .cloud_sync
+                            .complete_v2_sync_with_apply(&next, target.notebook_scope(), || {
+                                apply_v2_report(state.inner(), app, &next)
+                                    .map_err(SyncError::InvalidState)
+                            })
+                            .map_err(sync_error)?;
                         Ok::<_, String>(next)
-                    }.await
+                    }
+                    .await
                 };
                 report = match next {
                     Ok(next) => next,
@@ -612,7 +651,9 @@ async fn run_sync_activity(
                 activity.absorb_report(&report);
             }
             let head = *first_head.get_or_insert(report.head_cursor);
-            if report.cursor >= head { break; }
+            if report.cursor >= head {
+                break;
+            }
             if previous_cursor.is_some_and(|cursor| report.cursor <= cursor) {
                 return Err(fail_sync_activity(
                     app,
@@ -757,7 +798,10 @@ pub(crate) fn start_cloud_sync_polling(app: AppHandle) {
                 let cloud_state = state.cloud_sync.state().ok();
                 matches!(
                     cloud_state,
-                    Some(CloudState { authenticated: true, .. })
+                    Some(CloudState {
+                        authenticated: true,
+                        ..
+                    })
                 ) && !state
                     .cloud_sync
                     .v2_enabled_notebooks()
@@ -772,7 +816,6 @@ pub(crate) fn start_cloud_sync_polling(app: AppHandle) {
         }
     });
 }
-
 
 pub(super) async fn sync_now(
     notebook_id: Option<String>,
@@ -789,11 +832,12 @@ pub(super) async fn sync_now(
     )?;
     match tokio::time::timeout(MANUAL_SYNC_TIMEOUT, response).await {
         Ok(Ok(result)) => result,
-        Ok(Err(_)) => Err("cloud sync coordinator stopped before completing the request".to_string()),
+        Ok(Err(_)) => {
+            Err("cloud sync coordinator stopped before completing the request".to_string())
+        }
         Err(_) => Err("云同步超过 5 分钟仍未完成，请检查网络后重试。".to_string()),
     }
 }
-
 
 #[cfg(test)]
 mod tests {

@@ -9,6 +9,7 @@ import {
 } from '@shared/ui/dialog';
 import { useI18n } from '@/lib/i18n';
 import { useState } from 'react';
+import { FlowixCheckbox } from '@shared/ui/flowix-checkbox';
 
 interface NotebookDeleteDialogProps {
   /** When non-null, the dialog is open and confirming will delete this notebook. */
@@ -38,15 +39,14 @@ export function NotebookDeleteDialog({ target, onCancel, onConfirm }: NotebookDe
           <DialogDescription>{t('notebook.delete.description')}</DialogDescription>
         </DialogHeader>
         <div className="mt-4 flex items-center justify-between gap-3">
-          <label className="flex cursor-pointer items-center gap-2 text-sm text-[var(--foreground)]">
-            <input
-              type="checkbox"
+          <div className="flex items-center gap-2 text-sm text-[var(--foreground)]">
+            <FlowixCheckbox
               checked={deleteLocalFiles}
-              onChange={(event) => setDeleteLocalFiles(event.currentTarget.checked)}
-              className="h-4 w-4 accent-[var(--brand)]"
+              aria-label={t('notebook.delete.deleteLocalFiles')}
+              onCheckedChange={setDeleteLocalFiles}
             />
-            {t('notebook.delete.deleteLocalFiles')}
-          </label>
+            <span className="cursor-pointer" onClick={() => setDeleteLocalFiles((checked) => !checked)}>{t('notebook.delete.deleteLocalFiles')}</span>
+          </div>
           <div className="flex shrink-0 justify-end gap-2">
             <button
               type="button"

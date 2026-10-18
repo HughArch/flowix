@@ -23,7 +23,7 @@ export function patchPropertyTypes(map: YAMLMap, changes: Record<string, Propert
   const forced = new Set(forceNonPresetKeys.map(canonicalizePropertyKey));
   for (const [rawKey, kind] of Object.entries(changes)) {
     const key = canonicalizePropertyKey(rawKey);
-    if (kind === undefined || key === PROPERTY_TYPES_KEY || key === 'key' || key === 'flowix_key') continue;
+    if (kind === undefined || key === PROPERTY_TYPES_KEY) continue;
     // Text is the default fallback and Date is inferred from the value, so
     // neither is worth persisting. Declarations for them are removed even when
     // forced: the value alone recovers the same kind.
@@ -46,7 +46,7 @@ export function patchPropertyTypes(map: YAMLMap, changes: Record<string, Propert
 export function backfillPropertyTypes(map: YAMLMap, data: Record<string, unknown>, skipKeys: readonly string[] = [], forceNonPresetKeys: readonly string[] = []): void {
   const declared = readPropertyTypes(data[PROPERTY_TYPES_KEY]);
   const changes: Record<string, PropertyKind | null> = {};
-  const excluded = new Set(['flowix_key', 'key', 'flowix_plugin', PROPERTY_TYPES_KEY, ...skipKeys]);
+  const excluded = new Set(['flowix_plugin', PROPERTY_TYPES_KEY, ...skipKeys]);
   const existing = map.get(PROPERTY_TYPES_KEY, true);
   if (isMap(existing)) {
     for (const pair of existing.items) {

@@ -6,7 +6,6 @@ export interface CloudUser {
   id: string;
   email: string;
   displayName: string;
-  systemRole: string;
 }
 
 export interface CloudMembership {
@@ -18,6 +17,10 @@ export interface CloudMembership {
   availableBytes: number;
   noteCount: number;
   readOnly: boolean;
+}
+
+export interface CloudAiCreditBalance {
+  balanceMicrocredits: number;
 }
 
 export interface CloudState {
@@ -100,6 +103,29 @@ export interface CloudCheckout {
   expiresAt?: number | null;
 }
 
+export interface CloudOrder {
+  id: string;
+  productId: string;
+  productName: string;
+  amount: number;
+  currency: string;
+  status: string;
+  createdAt: number;
+  paidAt?: number | null;
+}
+
+export interface CloudOrderCheck {
+  status: string;
+  confirmed: boolean;
+  checkStatus: string;
+}
+
+export interface CloudFeedbackAttachment {
+  filename: string;
+  contentType: string;
+  dataBase64: string;
+}
+
 export interface CloudNoteHistory {
   noteId: string;
   notebookId: string;
@@ -138,9 +164,26 @@ export const cloud = {
     invoke<CloudNotebookSyncState>('cloud_set_notebook_enabled', { notebookId, enabled }),
   refreshMembership: () =>
     invoke<CloudMembership>('cloud_refresh_membership'),
+  getAiCreditBalance: () =>
+    invoke<CloudAiCreditBalance>('cloud_ai_credit_balance'),
+  connectPiModelProvider: () => invoke<void>('cloud_connect_pi_model_provider'),
+  refreshPiModelProvider: () => invoke<boolean>('cloud_refresh_pi_model_provider'),
+  refreshPiModelProviderAtStartup: () =>
+    invoke<boolean>('cloud_refresh_pi_model_provider_at_startup'),
   listProducts: () => invoke<CloudProduct[]>('cloud_list_products'),
+  listBillingOrders: () => invoke<CloudOrder[]>('cloud_list_billing_orders'),
+  checkBillingOrder: (orderId: string) =>
+    invoke<CloudOrderCheck>('cloud_check_billing_order', { orderId }),
   createCheckout: (productId: string) =>
     invoke<CloudCheckout>('cloud_create_checkout', { productId }),
+  submitFeedback: (
+    deviceId: string,
+    kind: 'product_suggestion' | 'usage_issue',
+    content: string,
+    appVersion: string,
+    platform: string,
+    attachments: CloudFeedbackAttachment[],
+  ) => invoke<void>('cloud_submit_feedback', { deviceId, kind, content, appVersion, platform, attachments }),
   syncNow: (notebookId?: string) =>
     invoke<CloudSyncResult>('cloud_sync_now', { notebookId }),
   noteHistory: (notebookId: string, relativePath: string) =>

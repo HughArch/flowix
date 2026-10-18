@@ -1,22 +1,11 @@
-﻿export {
+export {
   openNotebookById,
   openNoteByPhysicalPath,
   openNoteByNotebookPath,
-} from '@features/memo/use-cases/open-by-target';
+} from '@features/memo/public/note-navigation-api';
 
-// 鐗╃悊璺緞绮樿创 鈫?noteReference 鍗＄墖銆?//
-// 鐢ㄦ埛浠?Finder / 缁堢澶嶅埗涓€浠?`~/Documents/flowix/<notebook>/<title>.md`
-// 杩欑绗旇鏈唴鐨勭粷瀵硅矾寰勭矘璐村埌缂栬緫鍣? 杩欓噷璐熻矗:
-//   1. 瑙ｆ瀽璺緞鏂囦欢鍚?鈹€鈹€ v3 鍚?filename 宸茬粡鏄鐩樻枃浠跺悕 (鍚?.md),
-//      涓嶅啀甯?`#<id>` 鍚庣紑, 鎵€浠?memoId 蹇呴』浠?memo index 鍙嶆煡銆?//   2. 鎸?notebook.path 鍋氬墠缂€姣斿, 鍛戒腑鍚庣敤璇?notebook 涓?memo index
-//      `filename` 瀛楁鍖归厤 鈹€鈹€ 鍛戒腑鍚庣粰鍑?attrs 璁╀笂娓告瀯閫?noteReference 鑺傜偣
-//
-// 璁捐瑕佺偣:
-// - **涓嶅厑璁稿瓙鐩綍**: 鏂囦欢蹇呴』鐩存帴鍦?notebook 鏍圭洰褰曚笅 (`path === notebook.path + filename`),
-//   璺熷悗绔?`reconcile_with_disk` 鍙壂鏍圭洰褰曠殑琛屼负瀵归綈, 閬垮厤鍑虹幇鏍规湰涓嶄細琚储寮曠殑寮曠敤銆?// - **鍓嶇紑鎸夐暱搴﹀€掑簭姣?*: 闃叉 `/a/b/c-notebook/` 鎶婃洿鐭殑 `/a/b/` notebook 璇懡涓€?// - **notebook 鍒楄〃 + 姣忎釜 notebook 鐨?filename鈫抜d 鏄犲皠閮借蛋妯″潡绾х紦瀛?*:
-//   绮樿创灞炰簬楂橀閿洏浜嬩欢, 涓嶈兘姣忔璧?IPC銆侫pp.tsx 鍚姩鏃?//   `prewarmNotebookCache()`, notebook 鍙樻洿鏃?`invalidateNotebookCache()`銆?//   鍐峰惎鍔ㄦ湭鍒颁綅鏃惰繑鍥?null, 璧版櫘閫氭枃鏈矾寰?鈥?涓嶉樆濉炵矘璐淬€?//
-// v3 鏀归€? 涓嶅啀瑙ｆ瀽 filename 鏈熬鐨?`#<id>`, 鏀规垚 IPC 鎷?memo index
-// 鍚庢寜 filename 鍙嶆煡 memoId銆?
+// Physical notebook paths pasted from Finder or a terminal become path-based
+// note references. Notebook paths are cached so paste handling stays synchronous.
 import { notebooks } from '@platform/tauri/client';
 import { buildNoteOpenLinkFromPath } from '@platform/open-target/path-link';
 
@@ -29,7 +18,6 @@ interface NotebookLite {
 }
 
 export interface NoteReferenceAttrs {
-  memoId: string | null;
   notebookId: string;
   notebookName: string;
   title: string;
@@ -87,7 +75,7 @@ export function prewarmNotebookCache(): Promise<void> {
 }
 
 /**
- * notebook 澧炲垹鏀?/ memo 澧炲垹鏀瑰悕鏃惰皟 鈥?鎶婄紦瀛樻竻鎺? 涓嬫绮樿创浼氳Е鍙? * 閲嶆柊鎷夊彇銆備笂娓稿彲鎸傚湪 `agent-access-changed` / `memo-event` 浜嬩欢
+ * notebook 澧炲垹鏀?/ memo 澧炲垹鏀瑰悕鏃惰皟 鈥?鎶婄紦瀛樻竻鎺? 涓嬫绮樿创浼氳Е鍙? * 閲嶆柊鎷夊彇銆備笂娓稿彲鎸傚湪 `agent-workspace-changed` / `memo-event` 浜嬩欢
  * (notebook CRUD 涓?memo CRUD 鏃朵細 emit)銆? */
 export function invalidateNotebookCache(): void {
   cached = null;
@@ -218,7 +206,6 @@ export function tryMatchPhysicalMemoPath(raw: string): NoteReferenceAttrs | null
     const title = filename.replace(/\.md$/i, '');
 
     return {
-      memoId: null,
       notebookId: nb.id,
       notebookName: nb.name,
       title,

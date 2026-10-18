@@ -31,3 +31,20 @@ export {
   type BrowserColumnSurfaceChrome,
 } from '@features/surface/browser-column-registry';
 export { resolveBrowserColumnSurface } from '@features/surface/browser-column-registry';
+export {
+  WorkspaceSurfaceRendererView,
+  getWorkspaceSurfaceRendererDefinition,
+  workspaceSurfaceRendererRegistry,
+  workspaceSurfaceRendererSupportsHost,
+} from '@features/surface/workspace-surface-renderer-registry';
+export type {
+  WorkspaceSurfaceRendererData,
+  WorkspaceSurfaceRendererDefinition,
+  WorkspaceSurfaceRenderContext,
+} from '@features/surface/workspace-surface-renderer-registry';
+export { WorkspaceSurfaceStateView } from '@features/surface/workspace-surface-state-view';
+export {
+  beginWorkspaceSurfaceStartup,
+  waitForWorkspaceSurfaceStartup,
+  useWorkspaceSurfacePresentation,
+} from '@features/surface/workspace-surface-runtime';

@@ -1,8 +1,10 @@
+import { resolveWorkspaceFileSurfaceKind, workspaceSurfaceSupportsHost } from '../surface-registry';
+import { createWorkspaceWebRuntime, navigateWorkspaceWebRuntime, moveWorkspaceWebHistory, reloadWorkspaceWebRuntime } from '../model/web-navigation';
 import type { FileBrowserContext, FileBrowserTarget } from './file-browser-target';
 import { create } from 'zustand';
 import { createJSONStorage, persist } from 'zustand/middleware';
 import { STORAGE_KEYS } from '@/lib/constants';
-import { canonicalPath } from '@/lib/path';
+import { canonicalPath, canonicalDirectoryPath, isPathInDirectory, parentDirectoryPath } from '@/lib/path';
 import { displayTitleFromFilename } from '@/lib/utils';
 import {
   canonicalUrl,
@@ -12,6 +14,13 @@ import {
 import { useWorkspaceFocusStore } from './workspace-focus-store';
 
 export type BrowserColumnTarget =
+  | {
+      kind: 'folder-collection';
+      folderPath: string;
+      notebookId: string;
+      notebookPath: string;
+      folderName: string;
+    }
   | {
       kind: 'media';
       filePath: string;
@@ -29,11 +38,21 @@ export type BrowserColumnTarget =
       instanceId: string;
     };
 
-/** Only targets with a usable work-column surface can be moved there. */
-export function canMoveBrowserColumnTargetToWorkColumn(target: BrowserColumnTarget): boolean {
-  return target.kind !== 'web'
-    && (target.kind !== 'file-browser' || Boolean(target.activeFilePath));
+/** Opening in Work uses the same public support declaration as normal navigation. */
+export function canOpenBrowserColumnTargetInWorkColumn(target: BrowserColumnTarget): boolean {
+  if (target.kind === 'file-browser') {
+    if (!target.activeFilePath) return false;
+    const fileKind = target.collectionType === 'table' ? 'table'
+      : target.collectionType === 'media_library' ? 'media-library'
+      : resolveWorkspaceFileSurfaceKind(target.activeFilePath);
+    return workspaceSurfaceSupportsHost(`file-${fileKind}`, 'main-third');
+  }
+  return workspaceSurfaceSupportsHost(target.kind === 'agent_conversation' ? 'agent-conversation'
+    : target.kind === 'folder-collection' ? 'collection' : target.kind, 'main-third');
 }
+
+/** Compatibility name for callers from before dual-host views were supported. */
+export const canMoveBrowserColumnTargetToWorkColumn = canOpenBrowserColumnTargetInWorkColumn;
 
 export interface BrowserColumnTab {
   id: string;
@@ -43,18 +62,13 @@ export interface BrowserColumnTab {
 }
 
 /** Runtime-only state for a web tab. It is intentionally not persisted with tabs. */
-export interface BrowserColumnWebRuntime {
-  currentUrl: string;
-  history: string[];
-  historyIndex: number;
-  reloadToken: number;
-  isLoading: boolean;
-  error: string | null;
-}
+export type { WorkspaceWebRuntime as BrowserColumnWebRuntime } from '../model/surface-contract';
+import type { WorkspaceWebRuntime as BrowserColumnWebRuntime } from '../model/surface-contract';
 
 export type BrowserColumnWebNavigationPhase = 'navigating' | 'started' | 'finished';
 
-export type BrowserColumnOpenDisposition = 'focus-existing' | 'replace-active' | 'open-in-column';
+import type { BrowserSurfaceOpenDisposition } from '../model/surface-opening';
+export type BrowserColumnOpenDisposition = BrowserSurfaceOpenDisposition;
 
 interface BrowserColumnState {
   visible: boolean;
@@ -65,7 +79,7 @@ interface BrowserColumnState {
   setVisible: (visible: boolean) => void;
   setSplitRatio: (ratio: number) => void;
   updateFileBrowserContext: (tabId: string, patch: Partial<FileBrowserContext>) => void;
-  selectFileBrowserFile: (tabId: string, filePath: string | null, collectionDisplay?: FileBrowserTarget['collectionDisplay'], collectionType?: FileBrowserTarget['collectionType']) => void;
+  selectFileBrowserFile: (tabId: string, filePath: string | null, collectionDisplay?: FileBrowserTarget['collectionDisplay'], collectionType?: FileBrowserTarget['collectionType'], collectionUnavailableReason?: string) => void;
   switchFileBrowserFolder: (tabId: string, folderPath: string) => void;
   setFileBrowserTreeVisible: (tabId: string, visible: boolean) => void;
   setFileBrowserTreeWidth: (tabId: string, width: number) => void;
@@ -77,6 +91,7 @@ interface BrowserColumnState {
   closeAllTabs: () => void;
   replaceExternalPath: (previousPath: string, path: string) => void;
   clearExternalPath: (path: string) => void;
+  clearTargetsUnderDirectory: (directoryPath: string) => void;
   removeTabsByFilePath: (path: string) => string[];
   reorderTab: (tabId: string, beforeTabId: string | null) => void;
   updateTabMetadata: (tabId: string, metadata: Partial<Pick<BrowserColumnTab, 'title' | 'icon'>>) => void;
@@ -102,6 +117,7 @@ export const BROWSER_COLUMN_FILE_TREE_MAX_WIDTH = 420;
 
 export function browserColumnTargetIdentity(target: BrowserColumnTarget): ContentIdentity {
   switch (target.kind) {
+    case 'folder-collection': return { kind: 'folder-collection', notebookId: target.notebookId, folderPath: target.folderPath };
     case 'media': return { kind: 'media', path: target.filePath };
     case 'file-browser': return target.collectionDisplay ? { kind: 'collection', ...target.collectionDisplay } : target.activeFilePath
       ? { kind: 'external', path: target.activeFilePath }
@@ -140,17 +156,6 @@ function clampFileTreeWidth(width: number): number {
     : BROWSER_COLUMN_FILE_TREE_DEFAULT_WIDTH;
 }
 
-function initialWebRuntime(url: string): BrowserColumnWebRuntime {
-  return {
-    currentUrl: url,
-    history: [url],
-    historyIndex: 0,
-    reloadToken: 0,
-    isLoading: false,
-    error: null,
-  };
-}
-
 function isWebTab(tab: BrowserColumnTab | undefined): tab is BrowserColumnTab & {
   target: Extract<BrowserColumnTarget, { kind: 'web' }>;
 } {
@@ -162,7 +167,7 @@ function withWebRuntime(
   tab: BrowserColumnTab | undefined,
 ): BrowserColumnWebRuntime | null {
   if (!isWebTab(tab)) return null;
-  return runtimes[tab.id] ?? initialWebRuntime(tab.target.url);
+  return runtimes[tab.id] ?? createWorkspaceWebRuntime(tab.target.url);
 }
 
 function updateWebTabTarget(
@@ -181,9 +186,10 @@ function updateFileBrowserTabTarget(
   filePath: string | null,
   collectionDisplay?: FileBrowserTarget['collectionDisplay'],
   collectionType?: FileBrowserTarget['collectionType'],
+  collectionUnavailableReason?: string,
 ): BrowserColumnTab[] {
   return tabs.map((tab) => tab.id === tabId && tab.target.kind === 'file-browser'
-    ? { ...tab, title: filePath ? displayTitleFromFilename(filePath.split(/[\\/]/).pop() ?? filePath) : tab.title, target: { ...tab.target, activeFilePath: filePath, collectionDisplay, collectionType, collectionUnavailableReason: undefined } }
+    ? { ...tab, title: filePath ? displayTitleFromFilename(filePath.split(/[\\/]/).pop() ?? filePath) : tab.title, target: { ...tab.target, activeFilePath: filePath, collectionDisplay, collectionType, collectionUnavailableReason } }
     : tab);
 }
 
@@ -232,6 +238,12 @@ function parseBrowserColumnTarget(value: unknown): BrowserColumnTarget | null {
   if (!isRecord(value) || typeof value.kind !== 'string') return null;
 
   switch (value.kind) {
+    case 'folder-collection':
+      return nonEmptyString(value.folderPath) && nonEmptyString(value.notebookId)
+        && nonEmptyString(value.notebookPath) && typeof value.folderName === 'string'
+        ? { kind: 'folder-collection', folderPath: value.folderPath, notebookId: value.notebookId,
+            notebookPath: value.notebookPath, folderName: value.folderName }
+        : null;
     case 'media':
       return nonEmptyString(value.filePath)
         && typeof value.notebookId === 'string'
@@ -432,10 +444,10 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
       updateFileBrowserContext: (tabId, patch) => {
         set({ tabs: updateFileBrowserTabTree(get().tabs, tabId, patch) });
       },
-      selectFileBrowserFile: (tabId, filePath, collectionDisplay, collectionType) => {
+      selectFileBrowserFile: (tabId, filePath, collectionDisplay, collectionType, collectionUnavailableReason) => {
         const tab = get().tabs.find((candidate) => candidate.id === tabId);
         if (!tab || tab.target.kind !== 'file-browser') return;
-        set({ tabs: updateFileBrowserTabTarget(get().tabs, tabId, filePath, collectionDisplay, collectionType) });
+        set({ tabs: updateFileBrowserTabTarget(get().tabs, tabId, filePath, collectionDisplay, collectionType, collectionUnavailableReason) });
       },
       switchFileBrowserFolder: (tabId, folderPath) => {
         if (!folderPath.trim()) return;
@@ -466,7 +478,7 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
             : updatedTabs;
           const webRuntimes = { ...state.webRuntimes };
           if (isWebTab(existing)) {
-            webRuntimes[existing.id] ??= initialWebRuntime(existing.target.url);
+            webRuntimes[existing.id] ??= createWorkspaceWebRuntime(existing.target.url);
           } else {
             delete webRuntimes[existing.id];
           }
@@ -489,7 +501,7 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
           delete webRuntimes[state.activeTabId];
         }
         if (isWebTab(tab)) {
-          webRuntimes[id] = initialWebRuntime(tab.target.url);
+          webRuntimes[id] = createWorkspaceWebRuntime(tab.target.url);
         }
         useWorkspaceFocusStore.getState().focusHost('browser-column');
         set({
@@ -607,6 +619,70 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
             : tab),
         }));
       },
+      clearTargetsUnderDirectory: (directoryPath) => {
+        const directory = canonicalDirectoryPath(directoryPath);
+        const state = get();
+        const removedIds = new Set<string>();
+        let changed = false;
+        const tabs = state.tabs.flatMap((tab) => {
+          const target = tab.target;
+          if (target.kind === 'media' && isPathInDirectory(target.filePath, directory)) {
+            changed = true;
+            removedIds.add(tab.id);
+            return [];
+          }
+          if (target.kind === 'folder-collection' && isPathInDirectory(target.folderPath, directory)) {
+            changed = true;
+            removedIds.add(tab.id);
+            return [];
+          }
+          if (target.kind !== 'file-browser') return [tab];
+
+          const activeFileRemoved = Boolean(
+            target.activeFilePath && isPathInDirectory(target.activeFilePath, directory),
+          );
+          const folderRemoved = Boolean(
+            target.folderPath && isPathInDirectory(target.folderPath, directory),
+          );
+          if (!activeFileRemoved && !folderRemoved) return [tab];
+
+          changed = true;
+          const folderPath = folderRemoved
+            ? parentDirectoryPath(directory, directory)
+            : target.folderPath;
+          const folderName = folderPath?.split(/[\\/]/).filter(Boolean).pop() ?? '';
+          return [{
+            ...tab,
+            title: displayTitleFromFilename(folderName),
+            target: {
+              ...target,
+              folderPath,
+              activeFilePath: activeFileRemoved ? null : target.activeFilePath,
+              collectionDisplay: activeFileRemoved ? undefined : target.collectionDisplay,
+              collectionType: activeFileRemoved ? undefined : target.collectionType,
+              collectionUnavailableReason: activeFileRemoved ? undefined : target.collectionUnavailableReason,
+            },
+          }];
+        });
+        if (!changed) return;
+
+        const activeWasRemoved = state.activeTabId !== null && removedIds.has(state.activeTabId);
+        const activeIndex = state.tabs.findIndex((tab) => tab.id === state.activeTabId);
+        const activeTabId = activeWasRemoved
+          ? tabs[activeIndex - 1]?.id ?? tabs[activeIndex]?.id ?? null
+          : state.activeTabId;
+        const webRuntimes = Object.fromEntries(
+          tabs
+            .filter((tab) => state.webRuntimes[tab.id])
+            .map((tab) => [tab.id, state.webRuntimes[tab.id]]),
+        );
+        if (activeWasRemoved) {
+          useWorkspaceFocusStore.getState().focusHost(
+            tabs.length > 0 ? 'browser-column' : 'main-third',
+          );
+        }
+        set({ tabs, activeTabId, visible: tabs.length > 0 && state.visible, webRuntimes });
+      },
       removeTabsByFilePath: (path) => {
         const targetPath = canonicalPath(path);
         if (!targetPath) return [];
@@ -711,22 +787,10 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
         const tab = state.tabs.find((candidate) => candidate.id === tabId);
         const current = withWebRuntime(state.webRuntimes, tab);
         if (!current || !isWebTab(tab)) return false;
-        const history = current.history.slice(0, current.historyIndex + 1);
-        if (history[history.length - 1] !== normalized) history.push(normalized);
+        const runtime = navigateWorkspaceWebRuntime(current, normalized);
         set({
-          tabs: updateWebTabTarget(state.tabs, tabId, normalized),
-          webRuntimes: {
-            ...state.webRuntimes,
-            [tabId]: {
-              ...current,
-              currentUrl: normalized,
-              history,
-              historyIndex: history.length - 1,
-              reloadToken: current.reloadToken + 1,
-              isLoading: true,
-              error: null,
-            },
-          },
+          tabs: updateWebTabTarget(state.tabs, tabId, runtime.currentUrl),
+          webRuntimes: { ...state.webRuntimes, [tabId]: runtime },
         });
         return true;
       },
@@ -734,21 +798,11 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
         const state = get();
         const tab = state.tabs.find((candidate) => candidate.id === tabId);
         const current = withWebRuntime(state.webRuntimes, tab);
-        if (!current || current.historyIndex <= 0) return false;
-        const historyIndex = current.historyIndex - 1;
+        const runtime = current ? moveWorkspaceWebHistory(current, -1) : null;
+        if (!runtime) return false;
         set({
-          tabs: updateWebTabTarget(state.tabs, tabId, current.history[historyIndex]),
-          webRuntimes: {
-            ...state.webRuntimes,
-            [tabId]: {
-              ...current,
-              currentUrl: current.history[historyIndex],
-              historyIndex,
-              reloadToken: current.reloadToken + 1,
-              isLoading: true,
-              error: null,
-            },
-          },
+          tabs: updateWebTabTarget(state.tabs, tabId, runtime.currentUrl),
+          webRuntimes: { ...state.webRuntimes, [tabId]: runtime },
         });
         return true;
       },
@@ -756,21 +810,11 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
         const state = get();
         const tab = state.tabs.find((candidate) => candidate.id === tabId);
         const current = withWebRuntime(state.webRuntimes, tab);
-        if (!current || current.historyIndex >= current.history.length - 1) return false;
-        const historyIndex = current.historyIndex + 1;
+        const runtime = current ? moveWorkspaceWebHistory(current, 1) : null;
+        if (!runtime) return false;
         set({
-          tabs: updateWebTabTarget(state.tabs, tabId, current.history[historyIndex]),
-          webRuntimes: {
-            ...state.webRuntimes,
-            [tabId]: {
-              ...current,
-              currentUrl: current.history[historyIndex],
-              historyIndex,
-              reloadToken: current.reloadToken + 1,
-              isLoading: true,
-              error: null,
-            },
-          },
+          tabs: updateWebTabTarget(state.tabs, tabId, runtime.currentUrl),
+          webRuntimes: { ...state.webRuntimes, [tabId]: runtime },
         });
         return true;
       },
@@ -779,17 +823,7 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
         const tab = state.tabs.find((candidate) => candidate.id === tabId);
         const current = withWebRuntime(state.webRuntimes, tab);
         if (!current) return false;
-        set({
-          webRuntimes: {
-            ...state.webRuntimes,
-            [tabId]: {
-              ...current,
-              reloadToken: current.reloadToken + 1,
-              isLoading: true,
-              error: null,
-            },
-          },
-        });
+        set({ webRuntimes: { ...state.webRuntimes, [tabId]: reloadWorkspaceWebRuntime(current) } });
         return true;
       },
       reset: () => {

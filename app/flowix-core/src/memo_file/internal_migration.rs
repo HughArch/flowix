@@ -29,6 +29,29 @@ impl NotebookInternalMigrationReport {
 }
 
 impl MemoFile {
+    /// Whether a registered notebook still has the old plugin artifact paths.
+    /// New notebooks use `.flowix/plugin` from creation and do not need this
+    /// migration.
+    pub fn has_legacy_notebook_internal_data(&self, notebook_id: &str) -> io::Result<bool> {
+        let base = self
+            .get_notebook_config_by_id(notebook_id)
+            .map(|config| PathBuf::from(config.path))
+            .ok_or_else(|| {
+                io::Error::new(
+                    io::ErrorKind::NotFound,
+                    format!("notebook not found: {notebook_id}"),
+                )
+            })?;
+        if !base.is_dir() {
+            return Err(io::Error::new(
+                io::ErrorKind::NotFound,
+                format!("notebook directory missing: {}", base.display()),
+            ));
+        }
+        Ok(has_legacy_content(&base.join(".plugin-output"))?
+            || has_legacy_content(&base.join(".flowix/artifacts"))?)
+    }
+
     /// Move legacy notebook-local data to `.flowix/`.
     ///
     /// This method is safe to call on every notebook open/switch. The marker
@@ -106,6 +129,18 @@ impl MemoFile {
         }
         Ok(report)
     }
+}
+
+fn has_legacy_content(path: &Path) -> io::Result<bool> {
+    let metadata = match fs::symlink_metadata(path) {
+        Ok(metadata) => metadata,
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(error),
+    };
+    if metadata.file_type().is_symlink() || !metadata.is_dir() {
+        return Ok(true);
+    }
+    Ok(fs::read_dir(path)?.next().is_some())
 }
 
 fn migrate_legacy_artifacts(

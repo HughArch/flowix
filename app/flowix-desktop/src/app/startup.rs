@@ -19,12 +19,30 @@ pub enum StartupPhase {
     Failed,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum StartupStage {
+    Initialization,
+    WorkspacePreparation,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct StartupProgress {
+    pub percent: u8,
+    pub completed: usize,
+    pub total: usize,
+    pub task: String,
+}
+
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct StartupStatus {
     pub phase: StartupPhase,
+    pub stage: StartupStage,
     pub step: String,
     pub error: Option<String>,
+    pub progress: Option<StartupProgress>,
 }
 
 struct StartupState {
@@ -52,8 +70,10 @@ impl StartupCoordinator {
             state: Mutex::new(StartupState {
                 status: StartupStatus {
                     phase: StartupPhase::Pending,
-                    step: "initializing".to_string(),
+                    stage: StartupStage::Initialization,
+                    step: "initialization".to_string(),
                     error: None,
+                    progress: None,
                 },
                 interactive: false,
             }),
@@ -73,28 +93,83 @@ impl StartupCoordinator {
         self.started_at.elapsed().as_millis()
     }
 
-    pub fn mark_running(&self, step: impl Into<String>) {
+    pub fn mark_running(&self, stage: StartupStage, step: impl Into<String>) {
         self.update(StartupStatus {
             phase: StartupPhase::Running,
+            stage,
             step: step.into(),
             error: None,
+            progress: None,
         });
+    }
+
+    pub fn set_progress(
+        &self,
+        percent: u8,
+        completed: usize,
+        total: usize,
+        task: impl Into<String>,
+    ) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.status.stage != StartupStage::Initialization
+            || state.status.phase != StartupPhase::Running
+        {
+            return;
+        }
+        state.status.progress = Some(StartupProgress {
+            percent: percent.min(100),
+            completed,
+            total,
+            task: task.into(),
+        });
+        self.changed.notify_all();
     }
 
     pub fn mark_ready(&self) {
         self.update(StartupStatus {
             phase: StartupPhase::Ready,
+            stage: StartupStage::WorkspacePreparation,
             step: "ready".to_string(),
             error: None,
+            progress: None,
         });
     }
 
     pub fn mark_failed(&self, error: impl Into<String>) {
-        self.update(StartupStatus {
-            phase: StartupPhase::Failed,
-            step: "failed".to_string(),
-            error: Some(error.into()),
-        });
+        // Preserve the stage and task that failed for retry UI and diagnostics.
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        state.status.phase = StartupPhase::Failed;
+        state.status.error = Some(error.into());
+        state.status.progress = None;
+        self.changed.notify_all();
+    }
+
+    /// Only a failed attempt may be retried; the existing worker owns all attempts.
+    pub fn request_retry(&self) -> Result<(), String> {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        if state.status.phase != StartupPhase::Failed {
+            return Err("startup is not failed".into());
+        }
+        state.status = StartupStatus {
+            phase: StartupPhase::Pending,
+            stage: state.status.stage,
+            step: match state.status.stage {
+                StartupStage::Initialization => "initialization",
+                StartupStage::WorkspacePreparation => "preparingData",
+            }
+            .into(),
+            error: None,
+            progress: None,
+        };
+        self.changed.notify_all();
+        Ok(())
+    }
+
+    pub fn wait_for_retry(&self) {
+        let mut state = self.state.lock().unwrap_or_else(|p| p.into_inner());
+        while state.status.phase == StartupPhase::Failed {
+            state = self.changed.wait(state).unwrap_or_else(|p| p.into_inner());
+        }
     }
 
     pub fn wait_until_ready(&self) -> Result<(), String> {
@@ -156,6 +231,14 @@ impl StartupCoordinator {
             .state
             .lock()
             .unwrap_or_else(|poisoned| poisoned.into_inner());
+        // Once stage 2 starts, neither retries nor later maintenance may reopen
+        // version initialization. Keep this invariant at the status boundary.
+        if state.status.stage == StartupStage::WorkspacePreparation
+            && status.stage == StartupStage::Initialization
+        {
+            tracing::warn!(step = %status.step, "ignored startup transition back to initialization");
+            return;
+        }
         state.status = status;
         self.changed.notify_all();
     }
@@ -163,10 +246,24 @@ impl StartupCoordinator {
 
 #[cfg(test)]
 mod tests {
-    use super::{StartupCoordinator, StartupPhase};
+    use super::{StartupCoordinator, StartupPhase, StartupStage};
     use std::sync::Arc;
     use std::thread;
     use std::time::Duration;
+
+    #[test]
+    fn retry_only_reopens_failed_startup() {
+        let coordinator = StartupCoordinator::new();
+        assert!(coordinator.request_retry().is_err());
+        coordinator.mark_failed("interrupted");
+        coordinator.request_retry().unwrap();
+        coordinator.wait_for_retry();
+        assert_eq!(coordinator.status().phase, StartupPhase::Pending);
+        assert!(coordinator.status().error.is_none());
+        assert!(coordinator.request_retry().is_err());
+        coordinator.mark_ready();
+        assert!(coordinator.request_retry().is_err());
+    }
 
     #[test]
     fn waiters_are_released_when_startup_is_ready() {
@@ -174,7 +271,7 @@ mod tests {
         let waiter = coordinator.clone();
         let handle = thread::spawn(move || waiter.wait_until_ready());
 
-        coordinator.mark_running("migrating");
+        coordinator.mark_running(StartupStage::Initialization, "migrating");
         coordinator.mark_ready();
 
         assert_eq!(handle.join().unwrap(), Ok(()));
@@ -190,6 +287,45 @@ mod tests {
             coordinator.wait_until_ready(),
             Err("disk unavailable".to_string())
         );
+    }
+
+    #[test]
+    fn failure_retains_the_stage_and_task() {
+        let coordinator = StartupCoordinator::new();
+        coordinator.mark_running(StartupStage::WorkspacePreparation, "load-current-notebook");
+        coordinator.mark_failed("disk unavailable");
+        let status = coordinator.status();
+        assert_eq!(status.stage, StartupStage::WorkspacePreparation);
+        assert_eq!(status.step, "load-current-notebook");
+        coordinator.request_retry().unwrap();
+        assert_eq!(
+            coordinator.status().stage,
+            StartupStage::WorkspacePreparation
+        );
+    }
+
+    #[test]
+    fn workspace_preparation_cannot_return_to_initialization_or_publish_its_progress() {
+        let coordinator = StartupCoordinator::new();
+        coordinator.mark_running(StartupStage::Initialization, "migrating");
+        coordinator.set_progress(50, 1, 2, "migration");
+        assert!(coordinator.status().progress.is_some());
+        coordinator.mark_running(StartupStage::WorkspacePreparation, "preparingData");
+
+        for _ in 0..2 {
+            coordinator.mark_running(StartupStage::Initialization, "versionInitialization");
+            coordinator.set_progress(30, 0, 2, "prepareNotebookRegistry");
+            let status = coordinator.status();
+            assert_eq!(status.stage, StartupStage::WorkspacePreparation);
+            assert!(status.progress.is_none());
+            coordinator.mark_failed("database unavailable");
+            coordinator.request_retry().unwrap();
+            assert_eq!(
+                coordinator.status().stage,
+                StartupStage::WorkspacePreparation
+            );
+            coordinator.mark_running(StartupStage::WorkspacePreparation, "preparingData");
+        }
     }
 
     #[test]

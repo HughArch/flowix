@@ -25,7 +25,12 @@ export function syncUserConfigChange(
     void actions.reloadPreferences();
     return;
   }
-  if (kind === 'pi_config') return;
+  if (kind === 'pi_config') {
+    void import('@features/agent/services/agent-catalog-service')
+      .then(({ refreshAgentModelCatalog }) => refreshAgentModelCatalog('pi'))
+      .catch((error) => console.warn('Failed to refresh the Pi model catalog after its configuration changed', error));
+    return;
+  }
 
   // Runtime freshness currently has one timestamp for the complete status
   // snapshot. Refresh the complete snapshot so unrelated agent statuses are

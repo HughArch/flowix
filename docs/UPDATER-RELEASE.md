@@ -21,8 +21,8 @@ either client into a self-install loop.
 
 Manifests include `notify: true` by default. Set `FLOWIX_UPDATE_NOTIFY=false`
 when publishing a release that should remain available to manual checks but must
-not show the automatic update prompt or status-bar update button. The release is
-still detected by the updater and can be installed from Preferences.
+not show the automatic status-bar update button. The release is still detected
+by the updater and can be installed from Preferences.
 
 ## Manifest layout
 

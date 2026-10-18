@@ -79,7 +79,7 @@ describe("Codex command lifecycle", () => {
     let projection = useAgentSessionStore.getState().threadProjections[threadId];
     expect(projection?.messages).toMatchObject([
       {
-        id: `codex-command:live:${lifecycle.commandId}`,
+        id: `flowix:codex:command:pending:${lifecycle.commandId}`,
         content: command,
         isLoading: true,
       },

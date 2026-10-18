@@ -28,11 +28,12 @@
 
 // 子模块一�?`pub` —`tauri::generate_handler![commands::<sub>::xxx]` �?// `lib.rs::run()` 里走完整�?��, 需�?`pub` �??性。`#[tauri::command]` �?// 生成�?`__cmd__xxx` 兄弟宏也要求子模块是 `pub`, 否则宏解析不到�?
 pub mod agent;
-pub mod agent_access;
+pub mod agent_workspace;
 pub mod artifact;
 pub mod boot;
 pub mod cli;
 pub mod cloud;
+pub mod path_change;
 pub mod dialog;
 pub mod dsh;
 pub mod export;
@@ -48,10 +49,12 @@ pub mod kv;
 pub mod media;
 pub mod memo;
 pub mod notebook;
+pub mod notebook_setup;
 pub mod plugin;
 pub mod product;
 pub mod recovery;
-pub mod document_shutdown;
+pub mod window_shutdown;
+pub mod window_input;
 pub mod document_operations;
 pub mod settings;
 pub mod tag;

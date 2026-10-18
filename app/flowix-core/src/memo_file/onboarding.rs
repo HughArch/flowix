@@ -39,8 +39,12 @@ impl MemoFile {
     /// Safety guard: if the target folder already contains memos (for example,
     /// the user registered a folder full of notes), this is a no-op.
     pub fn seed_onboarding_docs(&self) -> std::io::Result<bool> {
-        let index = self.read_index_result()?.unwrap_or_default();
-        seed_onboarding_docs_if_empty(self, self.get_memo_base(), index.memos.is_empty(), None)
+        let notebook_id = self.current_notebook_id_for_index();
+        if !self.note_index_is_ready(&notebook_id)? {
+            self.reconcile_note_index_blocking(&notebook_id)?;
+        }
+        let empty = self.note_count(&notebook_id)? == 0;
+        seed_onboarding_docs_if_empty(self, self.get_memo_base(), empty, None)
     }
 
     /// Seed onboarding documents into a notebook without changing the
@@ -48,13 +52,14 @@ impl MemoFile {
     /// imports: importing a newly registered notebook must not change the
     /// user's active notebook while they are browsing another one.
     pub fn seed_onboarding_docs_for_notebook_id(&self, notebook_id: &str) -> std::io::Result<bool> {
-        let index = self
-            .read_index_for_notebook_id(Some(notebook_id))?
-            .unwrap_or_default();
+        if !self.note_index_is_ready(notebook_id)? {
+            self.reconcile_note_index_blocking(notebook_id)?;
+        }
+        let empty = self.note_count(notebook_id)? == 0;
         let base = self
             .memo_base_for_notebook_id_result(notebook_id)
             .map_err(std::io::Error::other)?;
-        seed_onboarding_docs_if_empty(self, base, index.memos.is_empty(), Some(notebook_id))
+        seed_onboarding_docs_if_empty(self, base, empty, Some(notebook_id))
     }
 }
 
@@ -233,7 +238,7 @@ mod tests {
             content.contains(original),
             "original Markdown body must survive"
         );
-        assert_eq!(crate::memo_file::extract_frontmatter_key(&content), None);
+        assert!(!content.contains("flowix_key:"));
     }
 
     #[test]

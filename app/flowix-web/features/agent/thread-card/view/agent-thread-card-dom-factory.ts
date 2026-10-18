@@ -44,7 +44,7 @@ export interface AgentThreadCardDomParts {
   loadingIndicator: HTMLDivElement;
   queuedMessages: HTMLDivElement;
   composer: HTMLElement;
-  composerImages: HTMLDivElement;
+  inputRow: HTMLDivElement;
   composerActions: HTMLDivElement;
   composerRoleIcon: HTMLButtonElement;
   composerAddPopover: HTMLDivElement;
@@ -58,7 +58,7 @@ export function createAgentThreadCardDom(
   options: AgentThreadCardDomFactoryOptions,
 ): AgentThreadCardDomParts {
   const dom = document.createElement("section");
-  dom.className = "agent-thread-card";
+  dom.className = "agent-thread-card agent-conversation-surface";
   dom.contentEditable = "false";
   dom.tabIndex = -1;
   dom.dataset.agentThreadCard = "true";
@@ -166,7 +166,9 @@ export function createAgentThreadCardDom(
   body.dataset.noContextMenuScroll = "";
   body.addEventListener("click", options.onBodyClick);
   body.addEventListener("scroll", options.onBodyScroll, { passive: true });
-  body.addEventListener("wheel", options.onBodyWheel, { passive: true });
+  // Inline cards may route wheel input to the document until the message
+  // viewport is explicitly activated, so this listener must be cancellable.
+  body.addEventListener("wheel", options.onBodyWheel, { passive: false });
   const disposeBodyScrollbar = () => bodyScrollbar?.destroy();
 
   const loadingIndicator = document.createElement("div");
@@ -203,7 +205,7 @@ export function createAgentThreadCardDom(
   });
   const {
     composer,
-    composerImages,
+    inputRow,
     composerActions,
     composerRoleIcon,
     composerAddPopover,
@@ -263,7 +265,7 @@ export function createAgentThreadCardDom(
     loadingIndicator,
     queuedMessages,
     composer,
-    composerImages,
+    inputRow,
     composerActions,
     composerRoleIcon,
     composerAddPopover,

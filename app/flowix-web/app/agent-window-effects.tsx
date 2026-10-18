@@ -6,8 +6,11 @@ import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store'
 import { invalidateNotebookCache, prewarmNotebookCache } from '@features/editor/extensions/note-link';
 import { invalidateMentionNotes } from '@features/editor/extensions/note-mention';
 import { invalidateMentionTags } from '@features/editor/extensions/tag-mention';
-import { listenToAgentAccessChanges } from '@platform/tauri/client';
+import { cloud, listenToAgentWorkspaceChanges } from '@platform/tauri/client';
+import { refreshAgentModelCatalog } from '@features/agent/services/agent-catalog-service';
 import { acquireMemoEventBridge } from '@/lib/memo-dispatcher';
+import { runStartupStage3Task } from '@/lib/startup-stage3';
+import { waitForWorkspaceRestoration } from './main-window-startup';
 
 /**
  * Agent infrastructure shared by every content-capable Webview.
@@ -17,24 +20,38 @@ import { acquireMemoEventBridge } from '@/lib/memo-dispatcher';
  * infrastructure; preferences intentionally does not mount this component.
  */
 export function AgentWindowEffects() {
-  useAgentEvents();
+  useAgentEvents(waitForWorkspaceRestoration);
   useEffect(() => acquireMemoEventBridge(), []);
   const refreshAgentRuntime = useAgentRuntimeStore((state) => state.refresh);
   useEffect(() => {
-    void refreshAgentRuntime({ force: true });
+    void runStartupStage3Task('agent-runtime-status-refresh', () => {
+      // The native status command owns the CLI-discovery dependency for every
+      // consumer, including refreshes initiated by feature-specific views.
+      return refreshAgentRuntime({ force: true });
+    });
   }, [refreshAgentRuntime]);
 
   useEffect(() => {
-    return listenToAgentAccessChanges(() => {
+    void runStartupStage3Task('pi-cloud-model-catalog-refresh', async () => {
+      // Stage 3 releases low-priority work after the shell paints, while the
+      // selected workspace may still be restoring its initial surface.
+      await waitForWorkspaceRestoration();
+      const connected = await cloud.refreshPiModelProviderAtStartup();
+      if (connected) await refreshAgentModelCatalog('pi');
+    });
+  }, []);
+
+  useEffect(() => {
+    void runStartupStage3Task('agent-note-link-cache-prewarm', prewarmNotebookCache);
+  }, []);
+
+  useEffect(() => {
+    return listenToAgentWorkspaceChanges(() => {
       invalidateNotebookCache();
       invalidateMentionNotes();
       invalidateMentionTags();
       void prewarmNotebookCache();
     });
-  }, []);
-
-  useEffect(() => {
-    void prewarmNotebookCache();
   }, []);
 
   return null;

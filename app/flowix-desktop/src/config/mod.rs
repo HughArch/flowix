@@ -1,43 +1,20 @@
-//! Configuration & access-control layer for the agent runtime.
+//! Configuration and access-control layer for the agent runtime.
 //!
-//! Four closely related concerns live here:
-//!
-//! - [`user`] 鈥?user-level settings: legacy AI migration data, preferences
-//!   (json), theme, agent persona. Legacy data is persisted at
-//!   `~/.flowix/agent-config.toml`; active DSH settings use its own YAML file.
-//!   Owns the `atomic_write_json`
-//!   helper used by sibling stores.
-//! - [`access`] 鈥?agent-access registry: which folders + notebooks the AI
-//!   agent is allowed to see. Persisted at `~/.flowix/agent-access.json`.
-//!   Distinct from the notebook registry so users can grant/revoke AI access
-//!   without touching the notebook registry itself.
-//! - [`path_scope`] 鈥?tiny pure helper: is `path` inside `root`? Used by
-//!   access checks, dialog code, and security-bookmark filtering.
-//! - [`security_bookmark`] 鈥?macOS security-scoped bookmarks for
-//!   user-selected directories that survive across launches. Sibling of
-//!   `user`/`access` but only meaningful on macOS; on other platforms the
-//!   store is still constructed but never gains entries.
-//!
-//! All four write through `user::atomic_write_json` so disk failures never
-//! leave the in-memory state ahead of disk.
+//! `user` stores user-level preferences; `db/local.db` stores notebook mounts,
+//! and `path_scope` provides the shared path containment checks.
 
-pub mod access;
 pub mod path_scope;
 pub mod property_presets;
 pub mod security_bookmark;
 pub mod user;
 
-// Re-export the public surface at the `config::` namespace so callers can
-// write `crate::config::UserConfigStore` without dropping into `user`.
-pub use access::{AgentAccessConfig, AgentAccessEntry, AgentAccessKind, AgentAccessStore};
 pub use path_scope::{path_is_inside, path_is_inside_reserved_directory};
 pub use property_presets::{PropertyPresetChange, PropertyPresetRegistry, PropertyPresetStore};
-#[cfg(target_os = "macos")]
-pub use security_bookmark::pick_directory_with_bookmark;
 pub use security_bookmark::SecurityBookmarkStore;
 pub use user::{
-    dsh_credential_ref_for_route, AiConfigFile, AiModelConfig, AiModelEntry, PreferenceFile, Theme,
-    UserConfigError, UserConfigStore, DSH_SETTINGS_FILE_NAME,
+    dsh_credential_ref_for_route, AiConfigFile, AiModelConfig, AiModelEntry,
+    CloudDevRefreshTokenStore, PreferenceFile, Theme, UserConfigError, UserConfigStore,
+    DSH_SETTINGS_FILE_NAME,
 };
 pub(crate) use user::{
     merge_harness_provider, DeepSeekHarnessProviderSettings, DeepSeekHarnessSettingsFile,

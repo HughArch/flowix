@@ -136,3 +136,24 @@ describe('user-settings-store · property preset sanitization', () => {
     expect(sanitized.every((field) => /^fld_[0-9a-f]{32}$/.test(field.id ?? ''))).toBe(true);
   });
 });
+
+describe('shutdown preference flush', () => {
+  it('awaits writes already dispatched by the debounce timer', async () => {
+    await useUserSettingsStore.getState().flushPending();
+    vi.useFakeTimers();
+    let finish!: () => void;
+    mockedPreferences.patch.mockImplementationOnce(() => new Promise(resolve => {
+      finish = () => resolve();
+    }));
+    try {
+      await useUserSettingsStore.getState().updateSettings({ memoListView: 'folders' });
+      await vi.advanceTimersByTimeAsync(200);
+      let settled = false;
+      const flushing = useUserSettingsStore.getState().flushPending().then(() => { settled = true; });
+      await Promise.resolve();
+      expect(settled).toBe(false);
+      finish(); await flushing;
+      expect(settled).toBe(true);
+    } finally { vi.useRealTimers(); }
+  });
+});

@@ -1,30 +1,22 @@
-//! Legacy memo-ID CRUD and reconciliation operations.
-//!
-//! Markdown remains the content source. This module maintains an ID-bearing
-//! cache for older callers; path-based operations and the rebuildable Note
-//! index also live in `note_index`. New internal IDs contain eight `[0-9a-z]`
-//! characters; older six-character IDs remain readable. New writes do not
-//! append an ID to filenames or frontmatter.
+//! Markdown CRUD and reconciliation operations keyed by notebook-relative path.
 //!
 //! `Memo` / `MemoIndexEntry::filename` stores the disk filename including
 //! `.md`; `relative_path` identifies nested files within the notebook.
 //!
 //! ## 锁模型
 //!
-//! ID-cache mutations use `current_index_io` to serialize their read-modify-
-//! write sequence. Internal `_locked` methods are called while holding it.
+//! Index mutations use `current_index_io` to serialize their read-modify-write
+//! sequence. Internal `_locked` methods are called while holding it.
 
 use std::fs;
 use std::path::{Path, PathBuf};
-
-use rusqlite::OptionalExtension;
 
 use super::derivation::{apply_derived_memo_fields, extract_title_and_preview};
 pub(super) use super::file_io::{atomic_create_bytes, atomic_write_bytes, rename_file_noclobber};
 use super::frontmatter::extract_document_metadata_preserving_invalid_tag_paths;
 use super::frontmatter::{
     extract_document_metadata_tolerant,
-    is_system_frontmatter_key, merge_frontmatter, replace_frontmatter_tags,
+    merge_frontmatter, replace_frontmatter_tags,
     replace_frontmatter_tags_preserving_invalid_paths, MergeOverrides,
 };
 use super::extract_document_metadata;
@@ -216,15 +208,6 @@ fn normalize_for_compare(path: &Path) -> PathBuf {
 }
 
 impl MemoFile {
-    fn generate_global_memo_id(&self) -> String {
-        loop {
-            let id = nanoid::nanoid!(8, &super::MEMO_ID_ALPHABET);
-            if self.resolve_memo_location(&id).ok().flatten().is_none() {
-                return id;
-            }
-        }
-    }
-
     pub(crate) fn memo_base_for_notebook_id_result(
         &self,
         notebook_id: &str,
@@ -234,13 +217,17 @@ impl MemoFile {
             .ok_or_else(|| format!("notebook {notebook_id} not found"))
     }
 
-    pub fn read_memo_for_notebook_id(&self, notebook_id: &str, id: &str) -> Option<Memo> {
+    pub fn read_memo_for_notebook_id(
+        &self,
+        notebook_id: &str,
+        relative_path: &str,
+    ) -> Option<Memo> {
         self.read_index_for_notebook_id(Some(notebook_id))
             .ok()
             .flatten()?
             .memos
             .into_iter()
-            .find(|entry| entry.id == id)
+            .find(|entry| entry.relative_path == relative_path)
             .map(|entry| MemoFile::index_entry_to_memo(&entry))
     }
 

@@ -19,17 +19,19 @@ export async function handleFileUpload(
 
         await runTrackedUpload(view, async (signal) =>
             (await createAttachmentUpload(filteredFiles, undefined, undefined, ownerPath, signal, true)).assets,
-        position, replaceRange, ownerPath);
+        position, replaceRange);
     } catch (err) {
         console.error('[FileUpload] Upload failed:', err);
     }
 }
 
 export function createFileUploadPlugin(options: {
+    ownerPath?: string;
     getOwnerPath?: () => string | undefined;
     ingest: { drop: boolean; paste: boolean; allowedMimeTypes?: string[] };
 }) {
     const { ingest } = options;
+    const getOwnerPath = () => options.getOwnerPath ? options.getOwnerPath() : options.ownerPath;
 
     return new Plugin({
         key: fileUploadPluginKey,
@@ -48,7 +50,7 @@ export function createFileUploadPlugin(options: {
                 event.stopPropagation();
                 const coords = { left: event.clientX, top: event.clientY };
                 const pos = view.posAtCoords(coords)?.pos;
-                handleFileUpload(view, filteredFiles, pos, undefined, options.getOwnerPath?.());
+                handleFileUpload(view, filteredFiles, pos, undefined, getOwnerPath());
                 return true;
             },
             handlePaste(view, event) {
@@ -64,7 +66,7 @@ export function createFileUploadPlugin(options: {
                 event.preventDefault();
                 event.stopPropagation();
                 const pos = view.state.selection.from;
-                handleFileUpload(view, files, pos, undefined, options.getOwnerPath?.());
+                handleFileUpload(view, files, pos, undefined, getOwnerPath());
                 return true;
             },
         },

@@ -9,6 +9,7 @@ import { displayTitleFromFilename } from '@/lib/utils';
 import { canonicalizePropertyKey } from '@features/properties/property-key';
 import { useComposingValue } from '@shared/hooks/use-composing-value';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
+import { FlowixCheckbox } from '@shared/ui/flowix-checkbox';
 import { DateValueInput } from '@features/document/components/note-properties/date-value-input';
 import { ColorValueInput } from '@features/document/properties/color-value-input';
 import { ImageValueInput } from '@features/document/properties/image-value-input';
@@ -23,9 +24,10 @@ import type { TableCellSaveStatus } from './use-table-cell-writer';
 
 const EMPTY_AVAILABLE_NOTES: NoteEntry[] = [];
 
-function TableBooleanInput({ value, disabled, onChange }: {
+export function TableBooleanInput({ value, disabled, ariaLabel, onChange }: {
   value: unknown;
   disabled: boolean;
+  ariaLabel: string;
   onChange: (value: boolean) => void;
 }) {
   const [checked, setChecked] = useState(Boolean(value));
@@ -60,13 +62,11 @@ function TableBooleanInput({ value, disabled, onChange }: {
     if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
   }, []);
 
-  return <input
-    type="checkbox"
-    className="h-4 w-4 accent-[var(--brand)]"
+  return <FlowixCheckbox
+    aria-label={ariaLabel}
     checked={checked}
     disabled={disabled}
-    onChange={(event) => {
-      const nextValue = event.target.checked;
+    onCheckedChange={(nextValue) => {
       pendingValueRef.current = nextValue;
       setChecked(nextValue);
       if (commitTimerRef.current) clearTimeout(commitTimerRef.current);
@@ -78,7 +78,7 @@ function TableBooleanInput({ value, disabled, onChange }: {
   />;
 }
 
-function TableNumberInput({
+export function TableNumberInput({
   value: initialValue,
   disabled,
   placeholder,
@@ -146,6 +146,7 @@ function TableNumberInput({
 
 interface TableRecordRowProps {
   record: TableRecord;
+  isDropPreview?: boolean;
   showBottomBorder?: boolean;
   imagePaths: (value: unknown) => string[];
   notePropertyEditorValue: (note: NoteEntry | undefined, field: TableField) => unknown;
@@ -180,6 +181,7 @@ interface TableRecordRowProps {
 
 export const TableRecordRow = memo(function TableRecordRow({
   record,
+  isDropPreview = false,
   showBottomBorder = true,
   imagePaths,
   notePropertyEditorValue,
@@ -309,7 +311,12 @@ export const TableRecordRow = memo(function TableRecordRow({
     }
   };
 
-  return <tr className="hover:bg-[var(--muted)]/25">
+  return <tr
+    data-table-record={isDropPreview ? undefined : record.id}
+    aria-hidden={isDropPreview || undefined}
+    inert={isDropPreview || undefined}
+    className={`hover:bg-[var(--muted)]/25 ${isDropPreview ? 'pointer-events-none opacity-50' : ''}`}
+  >
     {sortFields([...[...fields, ...builtinFields.flatMap((field) => {
       const preset = builtinPresetTableField(field.id);
       return preset ? [preset] : [];
@@ -500,7 +507,7 @@ export const TableRecordRow = memo(function TableRecordRow({
                   variant="table"
                   onChange={(next) => onUpdateCell(record, note, field, next || null)}
                 />
-                  : field.type === 'Boolean' ? <TableBooleanInput value={value} disabled={cellDisabled} onChange={(nextValue) => onUpdateCell(record, note, field, nextValue)} />
+                  : field.type === 'Boolean' ? <TableBooleanInput value={value} disabled={cellDisabled} ariaLabel={field.name || field.property_key || field.id} onChange={(nextValue) => onUpdateCell(record, note, field, nextValue)} />
                     : field.type === 'MultiSelect' ? <MultiSelectValueInput
                       value={Array.isArray(value) ? value.map(String).join(', ') : typeof value === 'string' ? value : ''}
                       options={field.options?.map((option) => ({ value: option.id, label: option.label })) ?? []}

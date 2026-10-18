@@ -9,14 +9,17 @@ import {
 import { parseAgentLink } from './agent-link-parser';
 
 const navigation = vi.hoisted(() => ({
-  fileBrowser: vi.fn(async () => ({ host: 'browser-column' as const, tabId: 'files', alreadyOpen: false })),
-  text: vi.fn(async () => ({ host: 'browser-column' as const, tabId: 'text', alreadyOpen: false })),
-  web: vi.fn(async () => ({ host: 'browser-column' as const, tabId: 'web', alreadyOpen: false })),
+  openSurface: vi.fn(async () => ({ status: 'opened' as const, host: 'browser-column' as const, location: { host: 'browser-column' as const, tabId: 'text' } })),
 }));
-vi.mock('@features/workspace/use-cases/browser-column-navigation', () => ({
-  openBrowserColumnFileBrowser: navigation.fileBrowser,
-  openBrowserColumnText: navigation.text,
-  openBrowserColumnWebpage: navigation.web,
+vi.mock('@features/workspace/public/browser-column-api', () => ({
+  createFileBrowserTarget: (path: string, scopePath: string) => ({
+    kind: 'file-browser', activeFilePath: path, folderPath: scopePath, scopePath,
+    notebookId: null, restoreNotebookContext: true, fileTreeVisible: true, fileTreeWidth: 220,
+  }),
+}));
+vi.mock('@features/workspace/public/open-surface-api', () => ({ openWorkspaceSurface: navigation.openSurface }));
+vi.mock('@features/memo/public/note-navigation-api', () => ({
+  openNoteByDeepLink: vi.fn(async () => undefined),
 }));
 
 function target(href: string, context: Parameters<typeof parseAgentLink>[1] = {}) {
@@ -132,7 +135,7 @@ describe("localFilePathFromAgentHref", () => {
 
 describe('shared Agent link click dispatcher', () => {
   it('intercepts a raw DOM href and sends the same local-file target to navigation', async () => {
-    navigation.text.mockClear();
+    navigation.openSurface.mockClear();
     const root = document.createElement('div');
     root.innerHTML = '<a href="/Users/u/a%20b.md">source</a>';
     let handled = false;
@@ -144,29 +147,46 @@ describe('shared Agent link click dispatcher', () => {
     await Promise.resolve();
     expect(handled).toBe(true);
     expect(event.defaultPrevented).toBe(true);
-    expect(navigation.text).toHaveBeenCalledWith('/Users/u/a b.md', null);
+    expect(navigation.openSurface).toHaveBeenCalledWith({
+      host: 'browser-column',
+      target: { kind: 'external', path: '/Users/u/a b.md', scopePath: null, transitionId: null },
+    });
   });
 
   it('keeps the location from the latest click when an earlier open resolves later', async () => {
     const { peekAgentLocationRequest, consumeAgentLocationRequest } = await import(
       '@features/document/use-cases/agent-location-navigation',
     );
-    let resolveFirst!: (value: { host: 'browser-column'; tabId: string; alreadyOpen: false }) => void;
-    let resolveSecond!: (value: { host: 'browser-column'; tabId: string; alreadyOpen: false }) => void;
-    navigation.text
+    type OpenResult = { status: 'opened'; host: 'browser-column'; location: { host: 'browser-column'; tabId: string } };
+    let resolveFirst!: (value: OpenResult) => void;
+    let resolveSecond!: (value: OpenResult) => void;
+    navigation.openSurface
       .mockImplementationOnce(() => new Promise((resolve) => { resolveFirst = resolve; }))
       .mockImplementationOnce(() => new Promise((resolve) => { resolveSecond = resolve; }));
 
     const first = openAgentLink('/Users/u/a.md:10', null);
     const second = openAgentLink('/Users/u/a.md:144', null);
-    resolveSecond({ host: 'browser-column', tabId: 'a', alreadyOpen: false });
+    resolveSecond({ status: 'opened', host: 'browser-column', location: { host: 'browser-column', tabId: 'a' } });
     await second;
-    resolveFirst({ host: 'browser-column', tabId: 'a', alreadyOpen: false });
+    resolveFirst({ status: 'opened', host: 'browser-column', location: { host: 'browser-column', tabId: 'a' } });
     await first;
 
     const request = peekAgentLocationRequest('/Users/u/a.md');
     expect(request?.location).toEqual({ line: 144 });
     if (request) consumeAgentLocationRequest(request.path, request.id);
+  });
+
+  it('routes flowix note links through the browser column', async () => {
+    const { openNoteByDeepLink } = await import('@features/memo/public/note-navigation-api');
+    vi.mocked(openNoteByDeepLink).mockClear();
+
+    await openAgentLink('flowix://open?b=Notes&f=Projects%2FPlan.md', null);
+
+    expect(openNoteByDeepLink).toHaveBeenCalledWith(
+      'flowix://open?b=Notes&f=Projects%2FPlan.md',
+      null,
+      { destination: 'browser-column' },
+    );
   });
 });
 

@@ -137,7 +137,7 @@ function getToolGroupLabel(group: ToolGroup, language: AppLanguage): string {
         ? "agent.tools.runningSteps"
         : "agent.tools.processing"
       : group.status === "failed"
-        ? "agent.tools.failedSteps"
+        ? "agent.tools.finishedSteps"
         : "agent.tools.completedSteps";
   return translate(language, key, {
     count: group.status === "failed" ? group.totalCount : completedCount,
@@ -227,10 +227,8 @@ export function createToolGroupElement(options: {
   };
 
   const syncCompletedTools = () => {
-    const visibleTools = (expanded
-      ? currentGroup.completedTools
-      : currentGroup.completedTools.filter(isFailedToolMessage)
-    ).filter((tool) => !runningToolRows.has(tool.id));
+    const visibleTools = (expanded ? currentGroup.completedTools : [])
+      .filter((tool) => !runningToolRows.has(tool.id));
     if (visibleTools.length === 0) {
       replaceChildrenWithCleanup(completedTools);
       return;
@@ -354,14 +352,14 @@ export function createToolGroupElement(options: {
   headerLoadingIcon.setAttribute("aria-hidden", "true");
 
   const syncLabel = () => {
-    const baseLabel = getToolGroupLabel(currentGroup, currentContext.language);
+    label.textContent = getToolGroupLabel(currentGroup, currentContext.language);
     const duration = getToolGroupDurationMs(currentGroup);
     const formattedDuration = duration === null
       ? null
       : formatToolGroupDuration(duration);
-    label.textContent = formattedDuration === null
-      ? baseLabel
-      : `${baseLabel} · ${formattedDuration}`;
+    if (formattedDuration !== null) {
+      label.append(document.createTextNode(` · ${formattedDuration}`));
+    }
   };
 
   const syncDurationTimer = () => {

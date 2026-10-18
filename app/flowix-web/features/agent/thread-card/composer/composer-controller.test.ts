@@ -9,6 +9,7 @@ import {
   disposeAgentComposerDom,
   type ComposerControllerOptions,
 } from "./index";
+import { insertComposerAttachmentToken } from "./composer-attachment-document";
 import { insertComposerSkillToken } from "./composer-skill-token";
 
 const controllers: ComposerController[] = [];
@@ -84,7 +85,7 @@ describe("ComposerController note references", () => {
     controller.editorInstance.commands.setContent("hello", { contentType: "markdown" });
     const input = controller.getInputElement();
     input.dispatchEvent(new KeyboardEvent("keydown", { key: "Enter", bubbles: true, cancelable: true }));
-    const button = () => document.querySelector<HTMLButtonElement>(".agent-thread-card__send")!;
+    const button = () => document.querySelector<HTMLButtonElement>(".agent-composer__send")!;
     await vi.waitFor(() => expect(button()?.disabled).toBe(true));
     button().click();
     expect(submit).not.toHaveBeenCalled();
@@ -210,7 +211,7 @@ describe("ComposerController note references", () => {
       .getInputElement()
       .parentElement;
 
-    expect(row?.classList.contains("agent-thread-card__composer-input-row")).toBe(true);
+    expect(row?.classList.contains("agent-composer__input-row")).toBe(true);
     row?.dispatchEvent(
       new MouseEvent("pointerdown", {
         bubbles: true,
@@ -238,7 +239,7 @@ describe("ComposerController note references", () => {
     draft.flush();
 
     expect(controller.getPrompt()).toBe(
-      "before [Reference](flowix://open?notebookId=notebook-a&relativePath=reference.md) after",
+      "before [reference](flowix://open?notebookId=notebook-a&relativePath=reference.md) after",
     );
     expect(editor.getJSON().content?.[0]?.content).toEqual(
       expect.arrayContaining([
@@ -246,7 +247,7 @@ describe("ComposerController note references", () => {
       ]),
     );
     expect(getPersistedDraft()).toBe(
-      "before [Reference](flowix://open?notebookId=notebook-a&relativePath=reference.md) after",
+      "before [reference](flowix://open?notebookId=notebook-a&relativePath=reference.md) after",
     );
   });
 
@@ -274,7 +275,7 @@ describe("ComposerController note references", () => {
       { contentType: "markdown" },
     );
 
-    expect(controller.getInputElement().querySelector(".agent-thread-card__skill-token")?.textContent)
+    expect(controller.getInputElement().querySelector(".agent-composer__skill-token-label")?.textContent)
       .toBe("Browser");
     expect(controller.getPrompt()).toBe("$browser:control-in-app-browser");
     expect(editor.getMarkdown()).toBe(
@@ -290,7 +291,7 @@ describe("ComposerController note references", () => {
       { contentType: "markdown" },
     );
 
-    expect(controller.getInputElement().querySelector(".agent-thread-card__skill-token")?.textContent)
+    expect(controller.getInputElement().querySelector(".agent-composer__skill-token-label")?.textContent)
       .toBe("control-in-app-browser");
     expect(controller.getPrompt()).toBe("$browser:control-in-app-browser");
   });
@@ -303,8 +304,29 @@ describe("ComposerController note references", () => {
       "Browser",
     );
 
-    expect(controller.getInputElement().querySelector(".agent-thread-card__skill-token")?.textContent)
+    expect(controller.getInputElement().querySelector(".agent-composer__skill-token-label")?.textContent)
       .toBe("Browser");
     expect(controller.getPrompt()).toBe("$browser:control-in-app-browser ");
+  });
+});
+
+
+describe("composer draft history", () => {
+  it("restores inline attachments and skills when returning from message history", () => {
+    const { controller } = setup({ getUserHistoryMessages: () => ["previous message"] });
+    insertComposerSkillToken(controller.editorInstance, "figma:figma-use");
+    insertComposerAttachmentToken(controller.editorInstance, {
+      path: "/tmp/report.pdf",
+      name: "report.pdf",
+      mimeType: "application/pdf",
+    });
+    const draft = controller.getDraftMarkdown();
+    controller.editorInstance.commands.setTextSelection(1);
+    controller.getInputElement().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowUp", bubbles: true, cancelable: true }));
+    expect(controller.getPrompt()).toBe("previous message");
+    controller.getInputElement().dispatchEvent(new KeyboardEvent("keydown", { key: "ArrowDown", bubbles: true, cancelable: true }));
+    expect(controller.getDraftMarkdown()).toBe(draft);
+    expect(controller.getInputElement().querySelector(".agent-composer__attachment-token")).not.toBeNull();
+    expect(controller.getInputElement().querySelector(".agent-composer__skill-token")).not.toBeNull();
   });
 });

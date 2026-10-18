@@ -18,18 +18,20 @@ writeFileSync(path.join(contentsPath, 'Info.plist'), `<?xml version="1.0" encodi
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0"><dict>
 <key>CFBundleExecutable</key><string>flowix-desktop</string>
-<key>CFBundleIdentifier</key><string>com.flowix.app.dev</string>
+<key>CFBundleIdentifier</key><string>com.flowix-dev.app</string>
 <key>CFBundleName</key><string>Flowix Dev</string>
+<key>CFBundleDisplayName</key><string>Flowix Dev</string>
 <key>CFBundlePackageType</key><string>APPL</string>
 <key>CFBundleVersion</key><string>1</string>
 <key>CFBundleURLTypes</key><array><dict>
-<key>CFBundleURLName</key><string>com.flowix.app.dev.deeplink</string>
+<key>CFBundleURLName</key><string>com.flowix-dev.app.deeplink</string>
 <key>CFBundleTypeRole</key><string>Editor</string>
 <key>CFBundleURLSchemes</key><array><string>flowix-dev</string></array>
 </dict></array>
 </dict></plist>
 `)
 
+spawnSync(lsregister, ['-u', appPath], { stdio: 'ignore' })
 const result = spawnSync(lsregister, ['-f', '-R', appPath], { stdio: 'inherit' })
 if (result.error) throw result.error
 if (result.status !== 0) throw new Error(`Launch Services registration failed: ${result.status}`)
