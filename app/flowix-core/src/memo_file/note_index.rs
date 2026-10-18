@@ -659,6 +659,25 @@ impl MemoFile {
         self.read_indexed_note_entry_by_path(notebook_id, relative_path)
     }
 
+    /// Observe path presence before a watcher refresh. An absent row only proves
+    /// absence after a complete scan; a cold/rebuilding projection is unknown.
+    /// Never refresh from disk here: that would erase the before-state needed
+    /// to distinguish a new path from an atomic replacement.
+    pub fn indexed_note_path_presence(
+        &self,
+        notebook_id: &str,
+        relative_path: &str,
+    ) -> io::Result<Option<bool>> {
+        let conn = self.open_note_index_connection(notebook_id)?;
+        conn.query_row(
+            "SELECT CASE WHEN EXISTS(SELECT 1 FROM notes WHERE relative_path=?1) THEN 1 \
+             WHEN EXISTS(SELECT 1 FROM note_index_meta WHERE key='build_state' AND value='ready') THEN 0 \
+             ELSE NULL END",
+            params![relative_path],
+            |row| row.get(0),
+        ).map_err(io::Error::other)
+    }
+
     /// Query the existing projection without refreshing it from the file.
     /// Table references use index presence as the source of truth.
     pub fn read_indexed_note_entry_by_path(

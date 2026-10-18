@@ -72,24 +72,37 @@ export function ListColumnGuideCard({
 }) {
   const { t } = useI18n();
   const [dismissed, setDismissed] = useState(wasDismissed);
+  const [visitedPages, setVisitedPages] = useState<ReadonlySet<MemoListViewTab>>(
+    () => new Set(),
+  );
   const pageIndex = PAGES.findIndex(({ view }) => view === activeView);
   const page = PAGES[pageIndex];
+  const canStart = PAGES.every(({ view }) => visitedPages.has(view));
 
   const dismiss = () => {
     rememberDismissed();
     setDismissed(true);
   };
 
+  const markPageSeen = (view: MemoListViewTab) => {
+    setVisitedPages((seen) => {
+      if (seen.has(view)) return seen;
+      return new Set([...seen, view]);
+    });
+  };
+
   const selectPage = (index: number) => {
+    markPageSeen(PAGES[index].view);
     onViewChange(PAGES[index].view);
   };
 
   const goToNextPage = () => {
-    if (pageIndex === PAGES.length - 1) {
+    if (canStart) {
       dismiss();
       return;
     }
-    selectPage(pageIndex + 1);
+    markPageSeen(activeView);
+    selectPage((pageIndex + 1) % PAGES.length);
   };
 
   if (dismissed) return null;
@@ -157,8 +170,8 @@ export function ListColumnGuideCard({
               {...actionButtonHandlers(goToNextPage)}
               className="inline-flex h-8 items-center rounded-lg bg-[var(--primary)] px-3 text-xs font-medium text-[var(--primary-foreground)] transition-opacity hover:opacity-90 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--ring)] focus-visible:ring-offset-2 focus-visible:ring-offset-[var(--card)]"
             >
-              {t(pageIndex === PAGES.length - 1 ? 'memo.guide.done' : 'memo.guide.next')}
-              {pageIndex < PAGES.length - 1 && <ChevronRight className="h-3.5 w-3.5" />}
+              {t(canStart ? 'memo.guide.done' : 'memo.guide.next')}
+              {!canStart && <ChevronRight className="h-3.5 w-3.5" />}
             </button>
           </div>
         </div>

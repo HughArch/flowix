@@ -306,7 +306,10 @@ impl ExternalDocumentWatchState {
         }
     }
 
-    pub fn begin_window_write(&self, path: &Path) {
+    pub fn begin_window_write(&self, app: &tauri::AppHandle, path: &Path) {
+        // Both notebook and open-document watchers observe this same write.
+        // Keep their self-write bookkeeping at one boundary.
+        crate::watcher::runtime::mark_self_write_for(app, path);
         if let Ok(mut registry) = self.registry.lock() {
             *registry
                 .active_writes
@@ -323,6 +326,10 @@ impl ExternalDocumentWatchState {
         saved_content: Option<&str>,
     ) {
         let saved = saved_content.is_some();
+        if let Some(content) = saved_content {
+            // Use the actual merged output, not the originally submitted draft.
+            crate::watcher::runtime::mark_self_write_content_for(app, path, content.as_bytes());
+        }
         let revision = file_revision(path);
         if let Ok(mut registry) = self.registry.lock() {
             if let Some(content) = saved_content {

@@ -201,7 +201,7 @@ pub struct PreferenceFile {
     /// Memo list card presentation ("detailed" | "compact").
     #[serde(default)]
     pub memo_card_variant: String,
-    /// Memo list surface ("cards" | "folders").
+    /// Memo list surface ("detailed" | "folders"); legacy "cards" is normalized by the frontend.
     #[serde(default)]
     pub memo_list_view: String,
     /// Whether newly created notes are automatically opened in the Browser Column.
@@ -241,7 +241,7 @@ impl Default for PreferenceFile {
             dsh_cli_path: None,
             cloud_environment: String::default(),
             memo_card_variant: String::default(),
-            memo_list_view: String::default(),
+            memo_list_view: "folders".to_string(),
             auto_open_created_notes_in_browser: true,
             shortcuts: HashMap::default(),
             properties: PropertiesConfig::default(),
@@ -2016,6 +2016,11 @@ apiKey = "k"
         let saved: PreferenceFile = serde_json::from_str(&content).unwrap();
         assert_eq!(saved.language, "en");
         assert_eq!(saved.memo_list_view, "folders");
+    }
+
+    #[test]
+    fn default_preferences_select_the_file_tree_view() {
+        assert_eq!(PreferenceFile::default().memo_list_view, "folders");
     }
 
     #[test]

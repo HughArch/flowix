@@ -17,14 +17,83 @@ fn fixture() -> (tempfile::TempDir, MemoFile, NotebookWatchContext) {
         updated_at: 0,
     }]).unwrap();
     memo_file.set_current_notebook(Some("nb_test".into()));
+    memo_file.reconcile_note_index("nb_test").unwrap();
     let ctx = NotebookWatchContext { notebook_id: "nb_test".into(), root };
     (temp, memo_file, ctx)
 }
 
 fn assert_path_indexed(outcome: DispatchOutcome, relative_path: &str) {
     match outcome {
-        DispatchOutcome::PathIndexed { relative_path: actual } => assert_eq!(actual, relative_path),
+        DispatchOutcome::PathIndexed { relative_path: actual, .. } => assert_eq!(actual, relative_path),
     }
+}
+
+fn change_kind(outcome: DispatchOutcome) -> PathChangeKind {
+    match outcome {
+        DispatchOutcome::PathIndexed { change, .. } => change,
+    }
+}
+
+#[test]
+fn atomic_replacement_reported_as_create_is_an_update() {
+    let (_temp, memo_file, ctx) = fixture();
+    let path = ctx.root.join("Note.md");
+    fs::write(&path, "original").unwrap();
+    assert_eq!(change_kind(dispatch_modify_event(&memo_file, &ctx, &path, FsEventKind::Create).unwrap()), PathChangeKind::Created);
+    for kind in [FsEventKind::Create, FsEventKind::Modify, FsEventKind::Create] {
+        flowix_core::memo_file::atomic_write_bytes(&path, b"saved draft").unwrap();
+        assert_eq!(change_kind(dispatch_modify_event(&memo_file, &ctx, &path, kind).unwrap()), PathChangeKind::Updated);
+    }
+}
+
+#[test]
+fn new_path_is_created_even_when_modify_arrives_before_create() {
+    let (_temp, memo_file, ctx) = fixture();
+    let path = ctx.root.join("New.md");
+    fs::write(&path, "new note").unwrap();
+    assert_eq!(change_kind(dispatch_modify_event(&memo_file, &ctx, &path, FsEventKind::Modify).unwrap()), PathChangeKind::Created);
+    assert_eq!(change_kind(dispatch_modify_event(&memo_file, &ctx, &path, FsEventKind::Create).unwrap()), PathChangeKind::Updated);
+}
+
+#[test]
+fn delayed_remove_after_replacement_does_not_delete_or_create() {
+    let (_temp, memo_file, ctx) = fixture();
+    let path = ctx.root.join("Note.md");
+    fs::write(&path, "original").unwrap();
+    memo_file.refresh_note_path(&ctx.notebook_id, "Note.md").unwrap();
+    fs::remove_file(&path).unwrap();
+    fs::write(&path, "replacement").unwrap();
+    assert_eq!(change_kind(dispatch_modify_event(&memo_file, &ctx, &path, FsEventKind::Remove).unwrap()), PathChangeKind::Updated);
+    fs::remove_file(&path).unwrap();
+    assert_eq!(change_kind(dispatch_modify_event(&memo_file, &ctx, &path, FsEventKind::Remove).unwrap()), PathChangeKind::Deleted);
+    fs::write(&path, "a genuinely recreated note").unwrap();
+    assert_eq!(change_kind(dispatch_modify_event(&memo_file, &ctx, &path, FsEventKind::Create).unwrap()), PathChangeKind::Created);
+}
+
+#[test]
+fn cold_projection_does_not_claim_existing_file_is_new() {
+    let (_temp, memo_file, ctx) = fixture();
+    let path = ctx.root.join("Existing.md");
+    fs::write(&path, "existing file").unwrap();
+    let connection = rusqlite::Connection::open(memo_file.notebook_db_path(&ctx.notebook_id).unwrap()).unwrap();
+    connection.execute("DELETE FROM note_index_meta WHERE key='build_state'", []).unwrap();
+    assert_eq!(memo_file.indexed_note_path_presence(&ctx.notebook_id, "Existing.md").unwrap(), None);
+    assert_eq!(change_kind(dispatch_modify_event(&memo_file, &ctx, &path, FsEventKind::Create).unwrap()), PathChangeKind::Updated);
+}
+
+#[test]
+fn watcher_baseline_detects_new_path_after_index_was_refreshed_early() {
+    let (_temp, memo_file, ctx) = fixture();
+    let path = ctx.root.join("New.md");
+    fs::write(&path, "new note").unwrap();
+
+    // A background reader may populate the projection before notify's event
+    // reaches the processor. The watcher's captured absent baseline wins.
+    memo_file.refresh_note_path(&ctx.notebook_id, "New.md").unwrap();
+    assert_eq!(
+        change_kind(refresh_path(&memo_file, &ctx, &path, Some(false)).unwrap()),
+        PathChangeKind::Created,
+    );
 }
 
 #[test]

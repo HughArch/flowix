@@ -44,6 +44,9 @@ pub struct RawFsEvent {
     pub rename_from: Option<PathBuf>,
     pub rename_from_notebook_id: Option<String>,
     pub rename_from_root: Option<PathBuf>,
+    /// Whether this path was present in the watcher's filesystem baseline
+    /// before the native event was observed. `None` means unknown.
+    pub path_was_known: Option<bool>,
     #[allow(dead_code)]
     pub time: Instant,
 }
@@ -57,6 +60,7 @@ impl RawFsEvent {
             rename_from: None,
             rename_from_notebook_id: None,
             rename_from_root: None,
+            path_was_known: None,
             time: Instant::now(),
         }
     }

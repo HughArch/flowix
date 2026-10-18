@@ -279,7 +279,7 @@ impl MemoWatcher {
                 let Ok(event) = res else {
                     return;
                 };
-                let (event, removed_known_directories) = {
+                let (event, removed_known_directories, path_history) = {
                     let mut rename_tracker = rename_tracker_for_callback
                         .lock()
                         .unwrap_or_else(|p| p.into_inner());
@@ -287,7 +287,8 @@ impl MemoWatcher {
                         .filter(|path| rename_tracker.was_directory(path))
                         .cloned()
                         .collect();
-                    (rename_tracker.correlate(event), removed_known_directories)
+                    let (event, path_history) = rename_tracker.correlate_with_path_history(event);
+                    (event, removed_known_directories, path_history)
                 };
                 handle_notify_event(
                     &remove_coalescer_for_callback,
@@ -296,6 +297,7 @@ impl MemoWatcher {
                     &worker_tx_for_callback,
                     event,
                     removed_known_directories,
+                    path_history,
                 );
             }) {
                 Ok(w) => w,
@@ -422,6 +424,7 @@ fn handle_notify_event(
     worker_tx: &std::sync::mpsc::Sender<(RawFsEvent, NotebookWatchContext)>,
     event: notify::Event,
     removed_known_directories: std::collections::HashSet<PathBuf>,
+    path_history: std::collections::HashMap<PathBuf, bool>,
 ) {
     let path_filter = PathFilter {
         whitelist: whitelist.clone(),
@@ -548,7 +551,8 @@ fn handle_notify_event(
             });
             continue;
         }
-        let raw = RawFsEvent::new(fs_kind, path.clone());
+        let mut raw = RawFsEvent::new(fs_kind, path.clone());
+        raw.path_was_known = path_history.get(&path).copied();
         match if matches!(fs_kind, FsEventKind::DirectoryChange)
             || media_kind_for_path(&path).is_some()
             || crate::commands::document_list::is_table_document_path(&path) {

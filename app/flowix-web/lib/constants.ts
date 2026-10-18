@@ -232,7 +232,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   // loadInitial 阶段会被 detectRegion() 覆盖为真实值; 默认 'mainland'
   // 让大陆特性 (MiniMax / GLM 等) 在 SSR / IPC 还没回来时也可见。
   region: 'mainland',
-  memoListView: 'detailed',
+  memoListView: 'folders',
   autoOpenCreatedNotesInBrowser: true,
   // 启动时无任何用户覆盖, 所有 action 走 ActionDefinition.defaultBinding。
   shortcuts: {},

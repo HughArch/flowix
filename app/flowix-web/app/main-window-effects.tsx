@@ -41,8 +41,8 @@ import {
   syncAppAgentConversationRestore,
   removeBrowserColumnTabsByPath,
   applyNotebookPathMove,
+  openExternallyCreatedNote,
 } from '@features/workspace/public/app-api';
-import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { clearWorkspaceTargetForDeletedFile } from '@features/workspace/public/shell-api';
 import {
   dismissNavigationFailure,
@@ -137,11 +137,7 @@ export function MainWindowEffects() {
             const notebookPath = await getAppNotebookPath(notebookId);
             const path = notebookPath && joinNotebookMemoPath(notebookPath, relativePath);
             if (disposed || !path || !notebookPath) return;
-            await openWorkspaceSurface({
-              host: 'browser-column',
-              target: { kind: 'external', path, scopePath: notebookPath, transitionId: null },
-              options: { notebookId },
-            });
+            await openExternallyCreatedNote(path, notebookPath, notebookId);
           }).catch((error) => logger.warn('open externally created note failed', { error, notebookId, relativePath }));
         }
         if (change.kind === 'path-moved') {
@@ -201,12 +197,8 @@ export function MainWindowEffects() {
           openPathInBrowserColumn: async (notebookId, relativePath) => {
             const notebookPath = await getAppNotebookPath(notebookId);
             const path = notebookPath && joinNotebookMemoPath(notebookPath, relativePath);
-            if (!path) throw new Error('Created note path is unavailable');
-            await openWorkspaceSurface({
-              host: 'browser-column',
-              target: { kind: 'external', path, scopePath: notebookPath, transitionId: null },
-              options: { notebookId },
-            });
+            if (!path || !notebookPath) throw new Error('Created note path is unavailable');
+            await openExternallyCreatedNote(path, notebookPath, notebookId);
           },
           reportOpenFailure: (error) => {
             logger.warn('open created note in browser column failed', { error });

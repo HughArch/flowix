@@ -15,6 +15,7 @@ pub struct RenameTracker {
     known: HashMap<PathBuf, (u64, u64)>,
     known_directories: HashSet<PathBuf>,
     pending: HashMap<PathBuf, ((u64, u64), Instant)>,
+    pending_removals: HashMap<PathBuf, Instant>,
 }
 impl RenameTracker {
     fn rebase_known(&mut self, old: &Path, path: &Path) {
@@ -76,7 +77,9 @@ impl RenameTracker {
                 || entry
                     .path()
                     .extension()
-                    .is_some_and(|ext| ext.eq_ignore_ascii_case("md"))
+                    .is_some_and(|ext| {
+                        ext.eq_ignore_ascii_case("md") || ext.eq_ignore_ascii_case("markdown")
+                    })
                 || media_kind_for_path(entry.path()).is_some()
             {
                 self.observe(entry.path());
@@ -90,6 +93,7 @@ impl RenameTracker {
         self.known.retain(|path, _| belongs_to_watched_root(path));
         self.known_directories.retain(|path| belongs_to_watched_root(path));
         self.pending.retain(|path, _| belongs_to_watched_root(path));
+        self.pending_removals.retain(|path, _| belongs_to_watched_root(path));
     }
     fn observe(&mut self, path: &Path) {
         if let Some(identity) = filesystem_identity(path) {
@@ -102,7 +106,30 @@ impl RenameTracker {
     pub fn was_directory(&self, path: &Path) -> bool {
         self.known_directories.contains(path)
     }
+    #[cfg(test)]
     pub fn correlate(&mut self, event: Event) -> Event {
+        self.correlate_with_path_history(event).0
+    }
+    pub fn correlate_with_path_history(
+        &mut self,
+        event: Event,
+    ) -> (Event, HashMap<PathBuf, bool>) {
+        let expired: Vec<_> = self.pending_removals.iter()
+            .filter(|(_, time)| time.elapsed() >= Duration::from_millis(450))
+            .map(|(path, _)| path.clone())
+            .collect();
+        for path in expired {
+            self.pending_removals.remove(&path);
+            self.known.remove(&path);
+            self.known_directories.remove(&path);
+        }
+        let history = event.paths.iter().map(|path| {
+            (path.clone(), self.known.contains_key(path))
+        }).collect();
+        let event = self.correlate_inner(event);
+        (event, history)
+    }
+    fn correlate_inner(&mut self, event: Event) -> Event {
         self.pending
             .retain(|_, (_, time)| time.elapsed() < Duration::from_secs(2));
         if matches!(event.kind, EventKind::Modify(ModifyKind::Name(RenameMode::Both)))
@@ -151,10 +178,10 @@ impl RenameTracker {
             }
         }
         if path.exists() {
+            self.pending_removals.remove(path);
             self.observe(path);
         } else if matches!(event.kind, EventKind::Remove(_)) {
-            self.known.remove(path);
-            self.known_directories.remove(path);
+            self.pending_removals.insert(path.clone(), Instant::now());
         }
         event
     }

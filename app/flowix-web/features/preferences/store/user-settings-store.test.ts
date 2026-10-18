@@ -14,11 +14,43 @@ vi.mock('@platform/tauri/client', () => ({
 
 // 必须在 mock 之后 import store, 让它拿到 mock 过的 client。
 import { useUserSettingsStore } from '@features/preferences/store/user-settings-store';
-import { DEFAULT_USER_SETTINGS, type PropertyFieldConfig } from '@/lib/constants';
+import { DEFAULT_USER_SETTINGS, type PropertyFieldConfig, type UserSettings } from '@/lib/constants';
 
 const mockedPreferences = vi.mocked(preferences);
 
 describe('user-settings-store · region loadInitial', () => {
+  it('defaults to the file tree while preserving an explicitly saved list view', async () => {
+    mockedPreferences.get.mockResolvedValueOnce({
+      language: 'zh-CN',
+    } as unknown as UserSettings);
+
+    await useUserSettingsStore.getState().loadInitial();
+
+    expect(useUserSettingsStore.getState().settings.memoListView).toBe('folders');
+
+    mockedPreferences.get.mockResolvedValueOnce({
+      ...DEFAULT_USER_SETTINGS,
+      language: 'zh-CN',
+      memoListView: 'detailed',
+    });
+
+    await useUserSettingsStore.getState().loadInitial();
+
+    expect(useUserSettingsStore.getState().settings.memoListView).toBe('detailed');
+  });
+
+  it('normalizes the legacy cards list view to detailed cards', async () => {
+    mockedPreferences.get.mockResolvedValueOnce({
+      ...DEFAULT_USER_SETTINGS,
+      language: 'zh-CN',
+      memoListView: 'cards' as UserSettings['memoListView'],
+    });
+
+    await useUserSettingsStore.getState().loadInitial();
+
+    expect(useUserSettingsStore.getState().settings.memoListView).toBe('detailed');
+  });
+
   it('persists the notebook folder view', async () => {
     await useUserSettingsStore.getState().updateSettings({ memoListView: 'folders' });
     const after = useUserSettingsStore.getState().settings;
@@ -140,6 +172,10 @@ describe('user-settings-store · property preset sanitization', () => {
 describe('shutdown preference flush', () => {
   it('awaits writes already dispatched by the debounce timer', async () => {
     await useUserSettingsStore.getState().flushPending();
+    const currentSettings = useUserSettingsStore.getState().settings;
+    useUserSettingsStore.setState({
+      settings: { ...currentSettings, memoListView: 'detailed' },
+    });
     vi.useFakeTimers();
     let finish!: () => void;
     mockedPreferences.patch.mockImplementationOnce(() => new Promise(resolve => {

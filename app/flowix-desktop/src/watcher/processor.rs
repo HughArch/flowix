@@ -20,7 +20,14 @@ pub struct PathNoteEventProcessor;
 
 #[derive(Debug)]
 pub(crate) enum DispatchOutcome {
-    PathIndexed { relative_path: String },
+    PathIndexed { relative_path: String, change: PathChangeKind },
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum PathChangeKind {
+    Created,
+    Updated,
+    Deleted,
 }
 
 fn is_markdown_path(path: &Path) -> bool {
@@ -44,18 +51,32 @@ pub(crate) fn dispatch_modify_event(
     path: &Path,
     _event_kind: FsEventKind,
 ) -> Result<DispatchOutcome, String> {
-    refresh_path(memo_file, ctx, path)
+    let path_was_known = memo_file
+        .indexed_note_path_presence(&ctx.notebook_id, &notebook_relative_path(&ctx.root, path)?)
+        .ok()
+        .flatten();
+    refresh_path(memo_file, ctx, path, path_was_known)
 }
 
 fn refresh_path(
     memo_file: &MemoFile,
     ctx: &NotebookWatchContext,
     path: &Path,
+    path_was_known: Option<bool>,
 ) -> Result<DispatchOutcome, String> {
     let relative_path = indexable_relative_path(ctx, path)?;
+    // Use the watcher's filesystem baseline. The note index is a mutable
+    // projection and can be refreshed by another reader before this event.
     memo_file.refresh_note_path(&ctx.notebook_id, &relative_path)
         .map_err(|error| error.to_string())?;
-    Ok(DispatchOutcome::PathIndexed { relative_path })
+    let change = if !path.is_file() {
+        PathChangeKind::Deleted
+    } else if path_was_known == Some(false) {
+        PathChangeKind::Created
+    } else {
+        PathChangeKind::Updated
+    };
+    Ok(DispatchOutcome::PathIndexed { relative_path, change })
 }
 
 fn emit_path_changed(app: &AppHandle, ctx: &NotebookWatchContext, relative_path: &str, deleted: bool) {
@@ -71,7 +92,7 @@ fn emit_path_changed_ui(app: &AppHandle, ctx: &NotebookWatchContext, relative_pa
     }));
 }
 
-fn record_cloud_path_change(app: &AppHandle, ctx: &NotebookWatchContext, relative_path: &str, deleted: bool) {
+pub(crate) fn record_cloud_path_change(app: &AppHandle, ctx: &NotebookWatchContext, relative_path: &str, deleted: bool) {
     if !relative_path.is_empty() {
         if let Some(state) = app.try_state::<crate::app::state::AppState>() {
             let cloud_id = flowix_sync::v2_path_note_id(&ctx.notebook_id, relative_path);
@@ -363,25 +384,20 @@ impl PathNoteEventProcessor {
         }
 
         match event.kind {
-            FsEventKind::Create => {
+            FsEventKind::Create | FsEventKind::Modify | FsEventKind::Remove => {
                 crate::commands::document_list::refresh_view_document_path(&memo_file, &event.path);
-                match refresh_path(&memo_file, ctx, &event.path) {
-                    Ok(DispatchOutcome::PathIndexed { relative_path }) => {
-                        crate::commands::path_change::NotebookPathCreated::from_external_tool(
-                            ctx.notebook_id.clone(),
-                            relative_path.clone(),
-                        )
-                        .emit(app);
-                        record_cloud_path_change(app, ctx, &relative_path, false);
-                    }
-                    Err(error) => tracing::debug!(path = %event.path.display(), "path refresh skipped: {error}"),
-                }
-            }
-            FsEventKind::Modify | FsEventKind::Remove => {
-                crate::commands::document_list::refresh_view_document_path(&memo_file, &event.path);
-                match refresh_path(&memo_file, ctx, &event.path) {
-                    Ok(DispatchOutcome::PathIndexed { relative_path }) => {
-                        emit_path_changed(app, ctx, &relative_path, !event.path.exists());
+                match refresh_path(&memo_file, ctx, &event.path, event.path_was_known) {
+                    Ok(DispatchOutcome::PathIndexed { relative_path, change }) => {
+                        tracing::debug!(path = %event.path.display(), native_kind = ?event.kind, ?change, "reconciled notebook path");
+                        if change == PathChangeKind::Created {
+                            crate::commands::path_change::NotebookPathCreated::from_external_tool(
+                                ctx.notebook_id.clone(),
+                                relative_path.clone(),
+                            ).emit(app);
+                            record_cloud_path_change(app, ctx, &relative_path, false);
+                        } else {
+                            emit_path_changed(app, ctx, &relative_path, change == PathChangeKind::Deleted);
+                        }
                     }
                     Err(error) => tracing::debug!(path = %event.path.display(), "path refresh skipped: {error}"),
                 }
@@ -417,8 +433,8 @@ impl PathNoteEventProcessor {
         let Ok(memo_file) = memo_file.read() else { return; };
         let Ok(_write_guard) = memo_file.operation_locks().notebook_read(&ctx.notebook_id, "watcher_path_refresh") else { return; };
         crate::commands::document_list::refresh_view_document_path(&memo_file, path);
-        if let Ok(DispatchOutcome::PathIndexed { relative_path }) = refresh_path(&memo_file, ctx, path) {
-            emit_path_changed(app, ctx, &relative_path, !path.exists());
+        if let Ok(DispatchOutcome::PathIndexed { relative_path, change }) = refresh_path(&memo_file, ctx, path, None) {
+            emit_path_changed(app, ctx, &relative_path, change == PathChangeKind::Deleted);
         }
     }
 }

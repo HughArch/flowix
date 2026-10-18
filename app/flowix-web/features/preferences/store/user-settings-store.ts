@@ -72,7 +72,9 @@ function normalizePreferredLanguage(preferredLanguage: string): string {
 
 function normalizeMemoListView(value: unknown): MemoListView {
   // `cards` is the legacy persisted value for the detailed list.
-  return value === 'folders' ? 'folders' : DEFAULT_USER_SETTINGS.memoListView;
+  if (value === 'folders') return 'folders';
+  if (value === 'detailed' || value === 'cards') return 'detailed';
+  return DEFAULT_USER_SETTINGS.memoListView;
 }
 
 /**
