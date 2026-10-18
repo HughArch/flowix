@@ -7,10 +7,40 @@
 use std::fs::{self, OpenOptions};
 use std::io;
 use std::path::{Path, PathBuf};
+use std::{error::Error, fmt};
 
 use fs2::FileExt;
 
 pub const DATABASE_DIRECTORY_NAME: &str = "db";
+
+#[derive(Debug)]
+struct DatabaseLayoutIoError {
+    operation: String,
+    source: io::Error,
+}
+
+impl fmt::Display for DatabaseLayoutIoError {
+    fn fmt(&self, formatter: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(formatter, "{}: {}", self.operation, self.source)
+    }
+}
+
+impl Error for DatabaseLayoutIoError {
+    fn source(&self) -> Option<&(dyn Error + 'static)> {
+        Some(&self.source)
+    }
+}
+
+fn with_io_context(error: io::Error, operation: impl Into<String>) -> io::Error {
+    let kind = error.kind();
+    io::Error::new(
+        kind,
+        DatabaseLayoutIoError {
+            operation: operation.into(),
+            source: error,
+        },
+    )
+}
 
 /// Create `db/` and snapshot existing named databases from the config root.
 /// The source is retained with its sidecars. An existing canonical database
@@ -19,21 +49,47 @@ pub fn prepare_database_directory(
     config_dir: &Path,
     database_names: &[&str],
 ) -> io::Result<PathBuf> {
-    super::ensure_storage_directory(config_dir)?;
+    super::ensure_storage_directory(config_dir).map_err(|error| {
+        with_io_context(
+            error,
+            format!("prepare configuration directory {}", config_dir.display()),
+        )
+    })?;
     let lock_path = config_dir.join(".database-layout.lock");
     if fs::symlink_metadata(&lock_path).is_ok_and(|metadata| !metadata.file_type().is_file()) {
-        super::backup_storage_file(&lock_path)?;
+        super::backup_storage_file(&lock_path).map_err(|error| {
+            with_io_context(
+                error,
+                format!("preserve invalid database layout lock {}", lock_path.display()),
+            )
+        })?;
     }
     let lock = OpenOptions::new()
         .create(true)
         .read(true)
         .write(true)
-        .open(lock_path)?;
-    FileExt::lock_exclusive(&lock)?;
+        .open(&lock_path)
+        .map_err(|error| {
+            with_io_context(
+                error,
+                format!("open database layout lock {}", lock_path.display()),
+            )
+        })?;
+    FileExt::lock_exclusive(&lock).map_err(|error| {
+        with_io_context(
+            error,
+            format!("acquire database layout lock {}", lock_path.display()),
+        )
+    })?;
 
     let result = (|| {
         let database_dir = config_dir.join(DATABASE_DIRECTORY_NAME);
-        super::ensure_storage_directory(&database_dir)?;
+        super::ensure_storage_directory(&database_dir).map_err(|error| {
+            with_io_context(
+                error,
+                format!("prepare database directory {}", database_dir.display()),
+            )
+        })?;
         for name in database_names {
             validate_database_name(name)?;
             move_database_with_sidecars(config_dir, &database_dir, name)?;
@@ -69,13 +125,33 @@ fn move_database_with_sidecars(root: &Path, database_dir: &Path, name: &str) -> 
 
     // The canonical database wins as a complete group. Never attach sidecars
     // from an older copy, even when the two main files happen to be identical.
-    if fs::symlink_metadata(&destination).is_ok() {
-        return Ok(());
+    match fs::symlink_metadata(&destination) {
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => {}
+        Err(error) => {
+            return Err(with_io_context(
+                error,
+                format!("inspect canonical database {}", destination.display()),
+            ));
+        }
     }
     // Orphan WAL files cannot belong to a new main database.
-    super::backup_database(&destination)?;
-    if !source.is_file() {
-        return Ok(());
+    super::backup_database(&destination).map_err(|error| {
+        with_io_context(
+            error,
+            format!("preserve orphan database files for {}", destination.display()),
+        )
+    })?;
+    match fs::metadata(&source) {
+        Ok(metadata) if metadata.is_file() => {}
+        Ok(_) => return Ok(()),
+        Err(error) if error.kind() == io::ErrorKind::NotFound => return Ok(()),
+        Err(error) => {
+            return Err(with_io_context(
+                error,
+                format!("inspect legacy database {}", source.display()),
+            ));
+        }
     }
     // VACUUM INTO includes committed WAL contents in a standalone database.
     // Only publish after SQLite has closed the snapshot. Never split the
@@ -84,17 +160,61 @@ fn move_database_with_sidecars(root: &Path, database_dir: &Path, name: &str) -> 
     let snapshot = (|| -> io::Result<()> {
         let conn = rusqlite::Connection::open_with_flags(
             &source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
-        ).map_err(io::Error::other)?;
+        )
+        .map_err(|error| {
+            with_io_context(
+                io::Error::other(error),
+                format!("open legacy database {} read-only", source.display()),
+            )
+        })?;
         conn.execute("VACUUM INTO ?1", [temporary.to_string_lossy().as_ref()])
-            .map_err(io::Error::other)?;
+            .map_err(|error| {
+                with_io_context(
+                    io::Error::other(error),
+                    format!(
+                        "snapshot legacy database {} to {}",
+                        source.display(),
+                        temporary.display()
+                    ),
+                )
+            })?;
         drop(conn);
-        fs::File::open(&temporary)?.sync_all()?;
-        fs::rename(&temporary, &destination)
+        OpenOptions::new()
+            .write(true)
+            .open(&temporary)
+            .map_err(|error| {
+                with_io_context(
+                    error,
+                    format!("open database snapshot {}", temporary.display()),
+                )
+            })?
+            .sync_all()
+            .map_err(|error| {
+                with_io_context(
+                    error,
+                    format!("flush database snapshot {}", temporary.display()),
+                )
+            })?;
+        fs::rename(&temporary, &destination).map_err(|error| {
+            with_io_context(
+                error,
+                format!(
+                    "publish database snapshot {} as {}",
+                    temporary.display(),
+                    destination.display()
+                ),
+            )
+        })
     })();
     if let Err(error) = snapshot {
         let _ = fs::remove_file(&temporary);
         if super::is_rebuildable_storage_error(&error) {
-            super::backup_database(&source)?;
+            super::backup_database(&source).map_err(|error| {
+                with_io_context(
+                    error,
+                    format!("preserve unreadable legacy database {}", source.display()),
+                )
+            })?;
             return Ok(()); // The normal initializer creates an empty canonical DB.
         }
         return Err(error);
