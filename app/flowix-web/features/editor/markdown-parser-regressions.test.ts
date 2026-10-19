@@ -89,6 +89,7 @@ describe('worker parses content that previously forced the browser parser', () =
     ['hard break', 'line one\n<br>\nline two'],
     ['void html', 'Before\n\n<img src="a.png" alt="pic">\n\nAfter'],
     ['html comment', 'Before\n\n<!-- secret -->\n\nAfter'],
+    ['escaped html table', 'Before\n\n&lt;table&gt;&lt;tbody&gt;&lt;tr&gt;&lt;td&gt;&lt;p&gt;&lt;/p&gt;&lt;p&gt;哈哈好&lt;/p&gt;&lt;/td&gt;&lt;/tr&gt;&lt;/tbody&gt;&lt;/table&gt;\n\nAfter'],
     ['html table', 'Before\n\n<table><thead><tr><th>h</th></tr></thead><tbody><tr><td>1</td></tr></tbody></table>\n\nAfter'],
   ])('parses raw HTML (%s) instead of rejecting the note', (_name, source) => {
     const workerDocument = parseInWorker(source);

@@ -1,6 +1,9 @@
 import type { JSONContent } from '@tiptap/core'
 import { MarkdownManager } from '@tiptap/markdown'
 import { createMarkdownParserExtensions } from './markdown-parser-extensions'
+import { installMarkdownWorkerDOM } from './markdown-worker-dom'
+
+installMarkdownWorkerDOM()
 
 interface WorkerRequest {
   id: number

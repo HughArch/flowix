@@ -81,6 +81,7 @@
     "docx-preview": "^0.4.1",
     "github-slugger": "^2.0.0",
     "katex": "^0.17.0",
+    "linkedom": "^0.18.13",
     "lucide-react": "^1.33.0",
     "mammoth": "^1.13.0",
     "markmap-lib": "^0.18.12",

@@ -300,13 +300,26 @@ export const FlowixTable = Table.extend({
     level: 'block' as const,
     start: (src: string) => {
       const head = scanHead(src);
+      const escapedTableIndex = head.search(/^[ \t]*&lt;table(?:[ \t]|&gt;)/mi);
       const versionedIndex = head.search(/^<!--[ \t]*flowix:table[ \t]+\{/m);
       const legacyIndex = head.search(/^<!--[ \t]*flowix:table-widths=/m);
-      if (versionedIndex < 0) return legacyIndex;
-      if (legacyIndex < 0) return versionedIndex;
-      return Math.min(versionedIndex, legacyIndex);
+      const indices = [escapedTableIndex, versionedIndex, legacyIndex].filter(index => index >= 0);
+      return indices.length ? Math.min(...indices) : -1;
     },
     tokenize(src, _tokens, lexer) {
+      // Older notes can contain a whole HTML table escaped as text. Decode one
+      // layer only for a complete standalone table, leaving inline examples and
+      // code blocks to the standard Markdown tokenizers.
+      const escaped = /^[ \t]*&lt;table(?:[ \t][^\r\n]*?)?&gt;[\s\S]*?&lt;\/table&gt;[ \t]*(?=\r?\n|$)/i.exec(src);
+      if (escaped) {
+        const entities: Record<string, string> = { lt: '<', gt: '>', amp: '&', quot: '"', '#39': "'" };
+        const html = escaped[0].replace(/&(lt|gt|amp|quot|#39);/g, (_match, name: string) => entities[name]);
+        const tokens = lexer.blockTokens(html);
+        if (tokens.length === 1 && tokens[0].type === 'html') {
+          return { ...tokens[0], raw: escaped[0], text: html };
+        }
+      }
+
       const metadata = parseTableMetadata(src);
       if (!metadata) return undefined;
 
