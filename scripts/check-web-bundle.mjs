@@ -137,8 +137,9 @@ if (!markdownParserWorker) {
 } else {
   const parserWorkerPath = join(DIST, 'assets', markdownParserWorker);
   const parserWorkerSource = readFileSync(parserWorkerPath, 'utf8');
-  if (statSync(parserWorkerPath).size > 700_000) {
-    failures.push(`Markdown parser Worker is ${statSync(parserWorkerPath).size} bytes, budget is 700000`);
+  // Includes the worker-safe DOM parser required to preserve raw HTML tables.
+  if (statSync(parserWorkerPath).size > 750_000) {
+    failures.push(`Markdown parser Worker is ${statSync(parserWorkerPath).size} bytes, budget is 750000`);
   }
   if (/\blocalStorage\b/.test(parserWorkerSource)) {
     failures.push('Markdown parser Worker includes browser storage code; keep feature stores out of its dependency graph');
