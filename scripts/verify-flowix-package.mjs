@@ -22,7 +22,12 @@ const forbidden = [
   /dsh-web-ui/iu,
   /dsh-client-ui-/iu,
 ]
-const matches = listing.filter((entry) => forbidden.some((pattern) => pattern.test(entry)))
+// Production bundles the Flowix-owned DSH profile as app resources; it is
+// copied into DSH_HOME only after the user installs the App Server plugin.
+// Keep rejecting standalone DSH runtimes and UI packages everywhere else.
+const bundledFlowixProfile = /(?:^|[/\\])dsh-profile[/\\]flowix[/\\]node_modules[/\\]dsh-flowix-memory(?:[/\\]|$)/iu
+const matches = listing.filter((entry) =>
+  !bundledFlowixProfile.test(entry) && forbidden.some((pattern) => pattern.test(entry)))
 if (matches.length > 0) {
   console.error(`ERROR: Flowix artifact contains DSH files: ${matches.join(', ')}`)
   process.exit(1)
