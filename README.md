@@ -57,6 +57,14 @@ Use agents inside Flowix or connect **Codex**, **Claude Code**, **OpenCode**, **
 
 ---
 
+## Join the Flowix community
+
+Scan the QR code to join our group and discuss Flowix with the community.
+
+<p align="center"><img src="./docs/images/community-qr.png" width="240" alt="QR code to join the Flowix discussion group" /></p>
+
+---
+
 ## dsh-flowix-memory plugin
 
 [dsh-flowix-memory](dsh-flowix-memory/README.md) is a [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) plugin that connects any Harness agent to your **local Flowix notes** through the bundled `flowix-cli` MCP server: the agent gets the `mcp__flowix__memo` tool to search, read, create, and edit Flowix memos (including mind maps).

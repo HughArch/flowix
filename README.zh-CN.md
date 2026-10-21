@@ -55,6 +55,14 @@
 
 ---
 
+## 加入 Flowix 社群
+
+扫描下方二维码加入交流群，一起交流和讨论 Flowix。
+
+<p align="center"><img src="./docs/images/community-qr.png" width="240" alt="Flowix 交流群二维码" /></p>
+
+---
+
 ## dsh-flowix-memory 插件
 
 [dsh-flowix-memory](dsh-flowix-memory/README.md) 是一个 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 插件，通过捆绑的 `flowix-cli` MCP server 把任何 Harness Agent 连接到你的**本地 Flowix 笔记**：安装后 Agent 获得 `mcp__flowix__memo` 工具，可搜索、读取、创建和编辑 Flowix 笔记（包括思维导图）。
