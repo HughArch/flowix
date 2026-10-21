@@ -89,6 +89,23 @@ describe('work-column store', () => {
     });
   });
 
+  it('does not publish a creation reveal policy from failed or superseded navigation', () => {
+    const store = useWorkColumnStore.getState();
+    const created = {
+      kind: 'external' as const, path: '/notes/new.md', scopePath: '/notes',
+      transitionId: null, treeReveal: 'created-note' as const,
+    };
+    const failedId = store.beginNavigation(created, null);
+    store.failNavigation(failedId, new Error('open failed'));
+    expect(useWorkColumnStore.getState().navigation.target).toEqual({ kind: 'empty' });
+    const staleId = store.beginNavigation(created, null);
+    const ordinary = { kind: 'external' as const, path: '/notes/other.md', scopePath: '/notes', transitionId: null };
+    const currentId = store.beginNavigation(ordinary, null);
+    expect(store.commitNavigation(staleId, created)).toBe(false);
+    expect(store.commitNavigation(currentId, ordinary)).toBe(true);
+    expect(useWorkColumnStore.getState().navigation.target).toEqual(ordinary);
+  });
+
   it('records the latest navigation failure without discarding the last surface', () => {
     const requestId = useWorkColumnStore.getState().beginNavigation({ kind: 'web', url: 'https://one.test' }, 'retry-1');
     useWorkColumnStore.getState().commitNavigation(requestId, { kind: 'web', url: 'https://one.test' });

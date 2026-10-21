@@ -1,5 +1,7 @@
 ﻿import { beforeEach, describe, expect, it, vi } from "vitest";
 
+import type { HistoryLoadResult } from "@features/agent/store/thread-history-slice";
+
 const agentConversationStoreMock = vi.hoisted(() => ({
   // 测试内部消息 fixture 数据载体 (历史命名); 生产代码已不读 conv-store.
   messageStates: {},
@@ -8,8 +10,9 @@ const agentConversationStoreMock = vi.hoisted(() => ({
 // Mock 这里让 loadMessages 同步更新 threadProjections 的对应 entry, 模拟
 // 真实环境会话 store 的历史投影更新行为.
 const sessionStoreMock = vi.hoisted(() => ({
+  bindProviderSessionId: vi.fn(),
   loadMessages: vi.fn(
-    async (_typeKey: string, _threadId: string) => undefined,
+    async (_typeKey: string, _threadId: string): Promise<HistoryLoadResult> => "ready",
   ),
   threadProjections: {} as Record<
     string,
@@ -89,6 +92,7 @@ describe("agent thread card cache helper", () => {
             },
           };
         }
+        return "ready";
       },
     );
   });
@@ -113,7 +117,7 @@ describe("agent thread card cache helper", () => {
     });
   });
 
-  it("loads a resolved Codex session before replacing its local id", async () => {
+  it("binds a resolved Codex session before loading history under the product id", async () => {
     const { resolveExternalSessionId } =
       await import("@features/agent/services/external-agent-runtime-service");
     vi.mocked(resolveExternalSessionId).mockResolvedValueOnce(
@@ -129,13 +133,18 @@ describe("agent thread card cache helper", () => {
 
     expect(result).toEqual({
       resolvedSessionId: "codex-real-session",
-      loadedThreadId: "codex-real-session",
+      loadedThreadId: "codex-local-inst-1",
       messages: [],
     });
     expect(sessionStoreMock.loadMessages).toHaveBeenCalledWith(
       "codex",
-      "codex-real-session",
+      "codex-local-inst-1",
     );
+    expect(sessionStoreMock.bindProviderSessionId).toHaveBeenCalledWith(
+      "codex-local-inst-1", "codex-real-session", "codex",
+    );
+    expect(sessionStoreMock.bindProviderSessionId.mock.invocationCallOrder[0])
+      .toBeLessThan(sessionStoreMock.loadMessages.mock.invocationCallOrder[0]);
   });
 
   it("loads Codex history for a resolved session id", async () => {
@@ -194,6 +203,7 @@ describe("agent thread card cache helper", () => {
           },
           runs: { isLoading: false, activeRunId: null, runs: {} },
         };
+        return "ready";
       },
     );
     const { loadAgentThreadCardCache } =
@@ -210,4 +220,29 @@ describe("agent thread card cache helper", () => {
     );
     expect(result.messages).toEqual(messages);
   });
+});
+
+
+it("does not treat a failed history request as a successful empty cache", async () => {
+  sessionStoreMock.loadMessages.mockResolvedValueOnce("error");
+  const { loadAgentThreadCardCache } = await import("./agent-thread-card-cache");
+  await expect(loadAgentThreadCardCache({ threadId: "failed-history", typeKey: "codex" }))
+    .rejects.toThrow("Thread history load error");
+});
+
+
+it("shares session resolution and history loading across views of the same product thread", async () => {
+  const { resolveExternalSessionId } = await import("@features/agent/services/external-agent-runtime-service");
+  let resolve!: (sessionId: string) => void;
+  vi.mocked(resolveExternalSessionId).mockImplementationOnce(() => new Promise((done) => { resolve = done; }));
+  const { loadAgentThreadCardCache } = await import("./agent-thread-card-cache");
+  const input = { threadId: "codex-local-shared-history", typeKey: "codex" as const };
+  const first = loadAgentThreadCardCache(input);
+  const second = loadAgentThreadCardCache(input);
+  expect(second).toBe(first);
+  const callsBefore = sessionStoreMock.loadMessages.mock.calls.length;
+  resolve("native-shared-history");
+  await Promise.all([first, second]);
+  expect(sessionStoreMock.loadMessages.mock.calls.length).toBe(callsBefore + 1);
+  expect(sessionStoreMock.loadMessages).toHaveBeenLastCalledWith("codex", input.threadId);
 });

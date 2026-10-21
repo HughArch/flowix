@@ -22,7 +22,6 @@ export const memos = {
       agentMemoCount: number;
       todoMemoCount: number;
     }>('get_used_memo_tag_ids', { notebookId }),
-  getLaunchOpenFiles: () => invoke<string[]>('get_launch_open_files'),
 };
 
 export type ExternalDocumentWriteOutcome =

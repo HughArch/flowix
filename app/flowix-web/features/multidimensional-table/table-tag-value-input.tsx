@@ -13,6 +13,9 @@ interface TableTagValueInputProps {
   value: string[];
   disabled?: boolean;
   isNoteTags?: boolean;
+  singleValue?: boolean;
+  keepParentMenuOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
   onChange: (next: string[]) => void;
 }
 
@@ -42,6 +45,9 @@ export function TableTagValueInput({
   value,
   disabled = false,
   isNoteTags = false,
+  singleValue = false,
+  keepParentMenuOpen = false,
+  onOpenChange,
   onChange,
 }: TableTagValueInputProps) {
   const { t } = useI18n();
@@ -62,7 +68,7 @@ export function TableTagValueInput({
   const cancelCloseRef = useRef(false);
   const closeStartedRef = useRef(false);
   const initialTagsRef = useRef<string[]>(value);
-  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  useEffect(() => { if (disabled) { setOpen(false); onOpenChange?.(false); } }, [disabled, onOpenChange]);
 
   useEffect(() => {
     if (!open || disabled || !isNoteTags) {
@@ -90,7 +96,7 @@ export function TableTagValueInput({
   const selectSuggestion = (name: string) => {
     const tag = normalizeTagInput(name);
     if (disabled || !tag) return;
-    setTags((current) => current.includes(tag) ? current : [...current, tag]);
+    setTags((current) => singleValue ? [tag] : current.includes(tag) ? current : [...current, tag]);
     setDraft('');
     setActiveTagIndex(null);
     setActiveSuggestion(0);
@@ -111,16 +117,19 @@ export function TableTagValueInput({
   const closeEditor = (shouldOpen: boolean) => {
     if (disabled) {
       setOpen(false);
+      onOpenChange?.(false);
       setDraft('');
       return;
     }
     if (shouldOpen) {
       openEditor();
+      onOpenChange?.(true);
       return;
     }
     if (!open || closeStartedRef.current) return;
     closeStartedRef.current = true;
     setOpen(false);
+    onOpenChange?.(false);
     if (cancelCloseRef.current) {
       cancelCloseRef.current = false;
       setTags(initialTagsRef.current);
@@ -128,7 +137,9 @@ export function TableTagValueInput({
       return;
     }
     const nextDraft = normalizeDraft(draft, isNoteTags);
-    const nextTags = [...tags, ...(nextDraft ? [nextDraft] : [])];
+    const nextTags = singleValue
+      ? (nextDraft ? [nextDraft] : tags)
+      : [...tags, ...(nextDraft ? [nextDraft] : [])];
     const uniqueTags = nextTags.filter((tag, index) => nextTags.indexOf(tag) === index);
     if (JSON.stringify(uniqueTags) !== JSON.stringify(initialTagsRef.current)) onChange(uniqueTags);
     setDraft('');
@@ -138,7 +149,7 @@ export function TableTagValueInput({
   const commitDraft = () => {
     if (disabled) return;
     const nextTag = normalizeDraft(draft, isNoteTags);
-    if (nextTag && !tags.includes(nextTag)) setTags((current) => [...current, nextTag]);
+    if (nextTag && !tags.includes(nextTag)) setTags((current) => singleValue ? [nextTag] : [...current, nextTag]);
     setDraft('');
     setActiveTagIndex(null);
   };
@@ -211,6 +222,7 @@ export function TableTagValueInput({
     <PopoverContent
       align="start"
       sideOffset={4}
+      keepParentMenuOpen={keepParentMenuOpen}
       className="frontmatter-property__edit-popover !z-[170] rounded-xl p-1"
       matchAnchorWidth={1.2}
       style={{ maxWidth: 'calc(100vw - 8px)', maxHeight: '280px', overflowY: 'auto' }}

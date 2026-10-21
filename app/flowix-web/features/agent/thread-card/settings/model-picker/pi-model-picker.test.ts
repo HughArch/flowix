@@ -21,7 +21,43 @@ function createModelItem(model: AgentModelOption): HTMLElement {
 }
 
 describe("Pi model picker provider icons", () => {
-  it("uses the personal model item layout when member tabs are hidden", () => {
+  it("shows member and personal models in stacked sections", () => {
+    const picker = createPiModelPicker({
+      models: [
+        {
+          id: "member-model",
+          label: "Member model",
+          providerId: "flowix-cloud-member",
+          providerName: "Flowix Cloud",
+        },
+        {
+          id: "custom-model",
+          label: "Custom model",
+          providerId: "custom-provider",
+          providerName: "My provider",
+        },
+      ],
+      showMemberSection: true,
+      selectedModelId: "custom-model",
+      selectedProviderId: "custom-provider",
+      memberLabel: "会员模型",
+      mineLabel: "我的模型",
+      emptyLabel: "没有模型",
+      personalEmptyLabel: "还没有自定义模型",
+      createModelItem,
+    });
+
+    const categories = picker.querySelectorAll(".pi-model-picker__category");
+    expect(Array.from(categories).map((category) =>
+      category.querySelector(".pi-model-picker__category-label")?.textContent,
+    )).toEqual(["会员模型", "我的模型"]);
+    expect(categories[0]?.querySelector(".pi-model-picker__item")?.textContent)
+      .toContain("Member model");
+    expect(categories[1]?.querySelector(".pi-model-picker__item")?.textContent)
+      .toContain("Custom model");
+  });
+
+  it("uses the personal model item layout when the member section is hidden", () => {
     const picker = createPiModelPicker({
       models: [
         {
@@ -32,12 +68,11 @@ describe("Pi model picker provider icons", () => {
           providerName: "My provider",
         },
       ],
-      showMemberTab: false,
+      showMemberSection: false,
       selectedModelId: "custom-model",
       selectedProviderId: "custom-provider",
-      memberLabel: "会员",
-      mineLabel: "我的",
-      modelLabel: "模型",
+      memberLabel: "会员模型",
+      mineLabel: "我的模型",
       emptyLabel: "没有模型",
       personalEmptyLabel: "还没有自定义模型",
       createModelItem,
@@ -45,7 +80,7 @@ describe("Pi model picker provider icons", () => {
 
     const item = picker.querySelector<HTMLButtonElement>(".pi-model-picker__item");
     const providerName = item?.querySelector(".pi-model-picker__provider-name");
-    expect(picker.querySelector(".pi-model-picker__tabs")).toBeNull();
+    expect(picker.querySelector(".pi-model-picker__category-label")).toBeNull();
     expect(picker.querySelector(".pi-model-picker__panel > .pi-model-picker__models"))
       .not.toBeNull();
     expect(picker.querySelector(".pi-model-picker__provider-label")).toBeNull();
@@ -58,7 +93,7 @@ describe("Pi model picker provider icons", () => {
     expect(providerName?.nextElementSibling).toBe(checkmarkPlaceholder);
   });
 
-  it("shows the provider icon before the model key in both member and personal tabs", () => {
+  it("shows the provider icon before the model key in both stacked sections", () => {
     const picker = createPiModelPicker({
       models: [
         {
@@ -78,18 +113,18 @@ describe("Pi model picker provider icons", () => {
           providerName: "My provider",
         },
       ],
-      showMemberTab: true,
+      showMemberSection: true,
       selectedModelId: "deepseek-v3.2",
       selectedProviderId: "flowix-cloud-member",
-      memberLabel: "会员",
-      mineLabel: "我的",
-      modelLabel: "模型",
+      memberLabel: "会员模型",
+      mineLabel: "我的模型",
       emptyLabel: "没有模型",
       personalEmptyLabel: "还没有自定义模型",
       createModelItem,
     });
 
-    const memberItem = picker.querySelector<HTMLButtonElement>(".pi-model-picker__item");
+    const categories = picker.querySelectorAll(".pi-model-picker__category");
+    const memberItem = categories[0]?.querySelector<HTMLButtonElement>(".pi-model-picker__item");
     expect(memberItem?.title).toBe("稳定高速模型");
     const memberIcon = memberItem?.querySelector(".pi-model-picker__provider-icon");
     expect(memberIcon).not.toBeNull();
@@ -101,8 +136,7 @@ describe("Pi model picker provider icons", () => {
     expect(multiplier?.textContent).toBe("1.25x");
     expect(multiplier?.nextElementSibling).toBe(checkmark);
 
-    picker.querySelector<HTMLButtonElement>(".pi-model-picker__tab:nth-child(2)")?.click();
-    const personalItem = picker.querySelector<HTMLButtonElement>(".pi-model-picker__item");
+    const personalItem = categories[1]?.querySelector<HTMLButtonElement>(".pi-model-picker__item");
     const personalIcon = personalItem?.querySelector(".pi-model-picker__provider-icon");
     expect(personalIcon).not.toBeNull();
     expect(personalItem?.firstElementChild).toBe(personalIcon);

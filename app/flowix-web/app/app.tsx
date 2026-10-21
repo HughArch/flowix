@@ -99,7 +99,7 @@ function StartupLoadingOverlay() {
     ));
   if (!visible) return null;
   return (
-    <div data-window-material-overlay className="fixed inset-0 z-[2147483646] flex items-center justify-center bg-[var(--frame-bg)]">
+    <div data-window-material-overlay className="fixed inset-0 z-[2147483646] flex items-center justify-center bg-transparent">
       {nativePhase === 'running' && nativeStage === 'initialization' && nativeProgress ? (
         <div className="flex w-72 flex-col items-center gap-3 text-sm text-[var(--muted-foreground)]">
           <CenteredLoadingSpinner label={t('memo.navigation.preparingVersion')} />

@@ -442,7 +442,7 @@ const cardMarked = new Marked({
       const titleAttribute = title
         ? ` title="${escapeAgentThreadCardHtmlAttr(title)}"`
         : "";
-      return `<img src="${escapeAgentThreadCardHtmlAttr(safeHref)}" alt="${escapeAgentThreadCardHtmlAttr(text)}"${titleAttribute} data-agent-image-preview tabindex="0" role="button" aria-haspopup="dialog" aria-label="Preview image: ${escapeAgentThreadCardHtmlAttr(text || title || "image")}" loading="lazy" decoding="async" referrerpolicy="no-referrer">`;
+      return `<img width="120" height="120" src="${escapeAgentThreadCardHtmlAttr(safeHref)}" alt="${escapeAgentThreadCardHtmlAttr(text)}"${titleAttribute} data-agent-image-preview tabindex="0" role="button" aria-haspopup="dialog" aria-label="Preview image: ${escapeAgentThreadCardHtmlAttr(text || title || "image")}" loading="lazy" decoding="async" referrerpolicy="no-referrer">`;
     },
   },
 });

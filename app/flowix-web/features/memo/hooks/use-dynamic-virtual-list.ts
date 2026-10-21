@@ -200,10 +200,21 @@ export function useDynamicVirtualList<T>({
     (index: number) => Math.max(MIN_ITEM_SIZE, estimateSize(items[index], index)),
     [estimateSize, items],
   );
-  const measureElement = useCallback((element: HTMLDivElement) => Math.max(
-    MIN_ITEM_SIZE,
-    Math.ceil(element.getBoundingClientRect().height),
-  ), []);
+  const measureElement = useCallback((
+    element: HTMLDivElement,
+    _entry: ResizeObserverEntry | undefined,
+    instance: Virtualizer<HTMLDivElement, HTMLDivElement>,
+  ) => {
+    const height = element.getBoundingClientRect().height;
+    const viewport = instance.scrollElement?.getBoundingClientRect();
+    if (height <= 0 || !viewport || viewport.width <= 0 || viewport.height <= 0) {
+      // Hidden panes must not replace usable row heights with zero-height measurements.
+      const index = Number(element.dataset.index);
+      return instance.getVirtualItems().find((item) => item.index === index)?.size
+        ?? getEstimatedSize(index);
+    }
+    return Math.max(MIN_ITEM_SIZE, Math.ceil(height));
+  }, [getEstimatedSize]);
   const observeRect = useMemo(
     () => observeUsableRect(
       lastUsableRectRef,
@@ -340,6 +351,10 @@ export function useDynamicVirtualList<T>({
     };
   });
 
+  const scrollToIndex = useCallback((index: number) => {
+    virtualizer.scrollToIndex(index, { align: 'start', behavior: 'auto' });
+  }, [virtualizer]);
+
   return {
     totalSize: enabled ? totalSize : 0,
     virtualItems,
@@ -349,5 +364,6 @@ export function useDynamicVirtualList<T>({
       && viewportActive
       && viewportReadyState,
     getMeasureRef,
+    scrollToIndex,
   };
 }

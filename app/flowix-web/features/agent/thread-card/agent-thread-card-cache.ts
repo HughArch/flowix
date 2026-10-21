@@ -18,34 +18,29 @@ export interface LoadAgentThreadCardCacheResult {
   messages: ChatMessage[];
 }
 
-const inFlightThreadLoads = new Map<string, Promise<ChatMessage[]>>();
+const inFlightThreadLoads = new Map<string, Promise<LoadAgentThreadCardCacheResult>>();
 
-function loadThreadMessages(
-  typeKey: AgentTypeKey,
-  threadId: string
-): Promise<ChatMessage[]> {
-  const key = `${typeKey}:${threadId}`;
+async function loadThreadMessages(typeKey: AgentTypeKey, threadId: string): Promise<ChatMessage[]> {
+  const result = await useAgentSessionStore.getState().loadMessages(typeKey, threadId);
+  if (result !== "ready") throw new Error(`Thread history load ${result}`);
+  return useAgentSessionStore.getState().threadProjections[threadId]?.messages ?? [];
+}
+
+/** Coalesce session resolution and history loading across views of one thread. */
+export function loadAgentThreadCardCache(
+  input: LoadAgentThreadCardCacheInput,
+): Promise<LoadAgentThreadCardCacheResult> {
+  const key = JSON.stringify([input.typeKey, input.threadId]);
   const existing = inFlightThreadLoads.get(key);
   if (existing) return existing;
-
-  const load = (async () => {
-    // Runtime history is read through the session store.
-    await useAgentSessionStore.getState().loadMessages(typeKey, threadId);
-    return (
-      useAgentSessionStore.getState().threadProjections[threadId]?.messages ?? []
-    );
-  })().finally(() => {
-    if (inFlightThreadLoads.get(key) === load) {
-      inFlightThreadLoads.delete(key);
-    }
+  const load = readThreadHistory(input).finally(() => {
+    if (inFlightThreadLoads.get(key) === load) inFlightThreadLoads.delete(key);
   });
   inFlightThreadLoads.set(key, load);
   return load;
 }
 
-export async function loadAgentThreadCardCache(
-  input: LoadAgentThreadCardCacheInput
-): Promise<LoadAgentThreadCardCacheResult> {
+async function readThreadHistory(input: LoadAgentThreadCardCacheInput): Promise<LoadAgentThreadCardCacheResult> {
   const { threadId, typeKey } = input;
   const type = getAgentType(typeKey);
 
@@ -56,25 +51,11 @@ export async function loadAgentThreadCardCache(
       : threadId;
 
     if (isLocalThreadId && sessionId && sessionId !== threadId) {
-      const messages = await loadThreadMessages(typeKey, sessionId);
-      if (messages.length > 0) {
-        const store = useAgentSessionStore.getState();
-        const source = store.threadProjections[sessionId];
-        store.bindThreadType(threadId, typeKey);
-        store.applyHistoryPage(threadId, typeKey, { messages, coverage: "partial" });
-        if (source) {
-          store.updateThreadHistory(threadId, (projection) => ({
-            messages: projection.messages,
-            pagination: source.pagination,
-          }));
-          store.removeThreadProjection(sessionId);
-        }
-      }
-      return {
-        resolvedSessionId: sessionId,
-        loadedThreadId: sessionId,
-        messages: useAgentSessionStore.getState().threadProjections[threadId]?.messages ?? messages,
-      };
+      // Bind first so history and its opaque cursor are created under the
+      // product thread id. Native projections must never be copied into it.
+      useAgentSessionStore.getState().bindProviderSessionId(threadId, sessionId, typeKey);
+      const messages = await loadThreadMessages(typeKey, threadId);
+      return { resolvedSessionId: sessionId, loadedThreadId: threadId, messages };
     }
 
     if (sessionId) {

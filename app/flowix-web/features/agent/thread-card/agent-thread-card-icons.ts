@@ -1,7 +1,7 @@
 import type { AgentTypeKey } from "@/types/agent";
 import { createElement } from "react";
 import { renderToStaticMarkup } from "react-dom/server";
-import { TrashSimpleIcon } from "@phosphor-icons/react";
+import { ArrowUpRightIcon, TrashSimpleIcon } from "@phosphor-icons/react";
 import { getToolIconPath } from "@features/agent/message/tools";
 
 export const ICON_STOP_PATH =
@@ -110,6 +110,23 @@ export function createTrashSimpleIcon(): SVGSVGElement {
     throw new Error("Failed to render TrashSimpleIcon");
   }
   icon.classList.add("agent-icon__trash");
+  return icon;
+}
+
+export function createOpenInColumnIcon(): SVGSVGElement {
+  const template = document.createElement("template");
+  template.innerHTML = renderToStaticMarkup(
+    createElement(ArrowUpRightIcon, {
+      size: 14,
+      weight: "regular",
+      "aria-hidden": true,
+    }),
+  );
+  const icon = template.content.firstElementChild;
+  if (!(icon instanceof SVGSVGElement)) {
+    throw new Error("Failed to render ArrowUpRightIcon");
+  }
+  icon.classList.add("agent-thread-card__open-icon");
   return icon;
 }
 

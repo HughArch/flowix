@@ -253,6 +253,7 @@ export async function openWorkspaceSurface(
         notebookId: options?.notebookId,
         markdownLocation: options?.markdownLocation,
         initialFocus: options?.initialFocus,
+        treeReveal: target.treeReveal,
         destination: 'main-third',
       });
       return finishWorkOpen();

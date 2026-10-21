@@ -74,7 +74,7 @@ export const PREFERENCE_TAB_GROUPS = [
       {
         id: 'cloudSync', labelKey: 'preferences.tabs.cloudSync',
         icon: <UserIcon className="w-4 h-4" />, contentWidth: 'normal',
-        experimentalOnly: true, visibleInProductMenu: false,
+        visibleInProductMenu: false,
         ...lazyPreferenceTab(() => import('@features/preferences/sections/cloud-sync').then((module) => ({ default: module.CloudSyncSection }))),
       },
     ],

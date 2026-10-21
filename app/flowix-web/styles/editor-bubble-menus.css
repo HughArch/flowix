@@ -476,6 +476,21 @@
   color: var(--primary-foreground);
 }
 
+.memo-navigation-submenu-item--neutral-hover:hover,
+.memo-navigation-submenu-item--neutral-hover:focus-visible,
+.memo-navigation-submenu-item--neutral-hover:hover .mention-note-title,
+.memo-navigation-submenu-item--neutral-hover:focus-visible .mention-note-title,
+.memo-navigation-submenu-item--neutral-hover:hover .mention-note-notebook,
+.memo-navigation-submenu-item--neutral-hover:focus-visible .mention-note-notebook,
+.memo-navigation-submenu-item--neutral-hover:hover .mention-tag-separator,
+.memo-navigation-submenu-item--neutral-hover:focus-visible .mention-tag-separator,
+.memo-navigation-submenu-item--neutral-hover:hover .mention-tag-icon,
+.memo-navigation-submenu-item--neutral-hover:focus-visible .mention-tag-icon,
+.memo-navigation-submenu-item--neutral-hover:hover svg,
+.memo-navigation-submenu-item--neutral-hover:focus-visible svg {
+  color: var(--foreground);
+}
+
 .memo-navigation-submenu-trigger:hover > span:last-child,
 .memo-navigation-submenu-trigger:focus-visible > span:last-child,
 .memo-navigation-submenu-trigger:hover > span:last-child > *,

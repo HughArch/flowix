@@ -19,6 +19,9 @@ interface SelectValueInputProps {
   options: readonly (string | { value: string; label: string })[];
   disabled?: boolean;
   variant?: 'default' | 'table';
+  placeholder?: string;
+  outlined?: boolean;
+  keepParentMenuOpen?: boolean;
   onChange: (next: string) => void;
 }
 
@@ -27,6 +30,9 @@ export function SelectValueInput({
   options,
   disabled = false,
   variant = 'default',
+  placeholder,
+  outlined = false,
+  keepParentMenuOpen = false,
   onChange,
 }: SelectValueInputProps) {
   const { t } = useI18n();
@@ -45,11 +51,13 @@ export function SelectValueInput({
       <SelectTrigger
         className={cn(
           'h-8 gap-2 rounded-lg',
-          variant === 'table' && 'multidimensional-table__select-trigger border-0 bg-transparent px-0 text-left shadow-none hover:bg-transparent focus:border-0',
+          variant === 'table' && (outlined
+            ? 'multidimensional-table__select-trigger border border-[var(--border)] bg-transparent px-2 text-left shadow-none hover:bg-[var(--hover-bg)] focus:border-[var(--primary)]'
+            : 'multidimensional-table__select-trigger border-0 bg-transparent px-0 text-left shadow-none hover:bg-transparent focus:border-0'),
           disabled && 'cursor-not-allowed opacity-50 disabled:cursor-not-allowed'
         )}
       >
-        <SelectValue placeholder={variant === 'table' ? '' : t('document.properties.select.placeholder')}>
+        <SelectValue placeholder={placeholder ?? (variant === 'table' ? '' : t('document.properties.select.placeholder'))}>
           {variant === 'table'
             ? selectedLabel
               ? <span
@@ -63,6 +71,7 @@ export function SelectValueInput({
       </SelectTrigger>
       <SelectContent
         align="start"
+        keepParentMenuOpen={keepParentMenuOpen}
         className={cn('min-w-[160px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' && '!z-[170]')}
       >
         {normalizedOptions.length === 0 ? (

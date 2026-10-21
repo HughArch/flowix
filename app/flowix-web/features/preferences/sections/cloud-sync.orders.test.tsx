@@ -4,12 +4,14 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { CloudSyncSection } from './cloud-sync';
 
 const mocks = vi.hoisted(() => ({
-  listBillingOrders: vi.fn(), checkBillingOrder: vi.fn(), listProducts: vi.fn(),
+  listBillingOrders: vi.fn(), listSubscriptions: vi.fn(), checkBillingOrder: vi.fn(), listProducts: vi.fn(),
   refreshMembership: vi.fn(), success: vi.fn(), info: vi.fn(), error: vi.fn(),
+  membershipAccess: { active: false, lifetime: false, loading: false },
   cloudState: { authenticated: true, account: { user: { id: 'usr_1', displayName: 'User' } } },
 }));
 vi.mock('@platform/tauri/client', () => ({ cloud: {
   listBillingOrders: mocks.listBillingOrders,
+  listSubscriptions: mocks.listSubscriptions,
   checkBillingOrder: mocks.checkBillingOrder,
   listProducts: mocks.listProducts,
 } }));
@@ -21,6 +23,9 @@ vi.mock('@features/preferences/hooks/use-cloud-account-state', () => ({
     state: mocks.cloudState,
     refreshMembership: mocks.refreshMembership,
   }),
+}));
+vi.mock('@features/preferences/public/membership', () => ({
+  useMembershipAccess: () => mocks.membershipAccess,
 }));
 vi.mock('@/lib/i18n', async (importOriginal) => ({
   ...await importOriginal<typeof import('@/lib/i18n')>(),
@@ -35,7 +40,9 @@ let root: Root;
 beforeEach(() => {
   vi.clearAllMocks();
   mocks.cloudState.authenticated = true;
+  Object.assign(mocks.membershipAccess, { active: false, lifetime: false, loading: false });
   mocks.listProducts.mockResolvedValue([]);
+  mocks.listSubscriptions.mockResolvedValue([]);
   mocks.listBillingOrders.mockResolvedValue([{
     id: 'ord_1', productName: 'Plan', amount: 390, currency: 'CNY', status: 'pending', createdAt: 0,
   }]);
@@ -121,15 +128,19 @@ it.each(['stale', 'skipped'])('does not show recovery feedback for a %s membersh
 });
 
 
-it('blocks purchases while an order is pending and enables them after payment confirmation', async () => {
+it('blocks membership purchases while an order is pending and enables them after payment confirmation', async () => {
   mocks.listProducts.mockResolvedValue([{
-    id: 'product_1', name: 'Flowix Go', description: '',
-    price: { amount: 390, currency: 'CNY' },
-    entitlement: { storageBytes: 200 * 1024 * 1024, duration: { unit: 'month', count: 1 }, features: {} },
+    id: 'product_1', name: 'Year membership', description: '', billingType: 'subscription',
+    price: { amount: 2900, currency: 'USD' },
+    entitlement: {
+      storageBytes: 5 * 1024 * 1024 * 1024,
+      duration: { unit: 'year', count: 1 },
+      features: { membership: true },
+    },
   }]);
   await act(async () => root.render(<CloudSyncSection />));
   const purchaseButton = () => Array.from(container.querySelectorAll('button')).find(
-    (button) => button.textContent === 'preferences.cloud.plan.go.get',
+    (button) => button.textContent === 'preferences.cloud.member.purchase',
   )!;
   expect(purchaseButton().disabled).toBe(true);
   expect(container.textContent).toContain('preferences.cloud.order.pendingCheckout');
@@ -141,4 +152,50 @@ it('blocks purchases while an order is pending and enables them after payment co
   await clickCheck();
   expect(purchaseButton().disabled).toBe(false);
   expect(container.textContent).not.toContain('preferences.cloud.order.pendingCheckout');
+});
+
+it('hides membership plans and the lifetime upgrade card while membership is active', async () => {
+  mocks.membershipAccess.active = true;
+  mocks.listProducts.mockResolvedValue([
+    {
+      id: 'annual', name: 'Year membership', description: '', billingType: 'subscription',
+      price: { amount: 2900, currency: 'USD' },
+      entitlement: {
+        storageBytes: 5 * 1024 * 1024 * 1024,
+        duration: { unit: 'year', count: 1 },
+        features: { membership: true },
+      },
+    },
+    {
+      id: 'lifetime', name: 'Lifetime membership', description: '', billingType: 'one_time',
+      price: { amount: 9800, currency: 'USD' },
+      entitlement: {
+        storageBytes: 10 * 1024 * 1024 * 1024,
+        duration: { unit: 'year', count: 1 },
+        features: { membership: true, lifetime: true },
+      },
+    },
+  ]);
+  mocks.listBillingOrders.mockResolvedValue([]);
+
+  await act(async () => root.render(<CloudSyncSection />));
+
+  expect(container.textContent).not.toContain('preferences.cloud.member.active');
+  expect(container.textContent).not.toContain('preferences.cloud.member.title');
+  expect(container.textContent).not.toContain('preferences.cloud.member.upgrade');
+  expect(container.textContent).not.toContain('preferences.cloud.member.purchase');
+});
+
+it('omits the scheduled-cancellation message from the subscription card', async () => {
+  mocks.listSubscriptions.mockResolvedValue([{
+    id: 'sub_1', isAnnualMembership: true, status: 'active',
+    cancelAtPeriodEnd: true, currentPeriodEnd: Date.UTC(2027, 9, 21),
+  }]);
+  mocks.listBillingOrders.mockResolvedValue([]);
+
+  await act(async () => root.render(<CloudSyncSection />));
+
+  expect(container.textContent).not.toContain('preferences.cloud.subscription.cancelScheduled');
+  expect(container.textContent).not.toContain('preferences.cloud.subscription.renewal');
+  expect(container.textContent).not.toContain('preferences.cloud.subscription.cancel');
 });

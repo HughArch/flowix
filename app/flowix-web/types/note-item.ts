@@ -27,6 +27,7 @@ export interface NoteListItem {
   agents: AgentThreadItem[];
   createdAt: number;
   updatedAt: number;
+  sizeBytes?: number;
   favorited: boolean;
   icon: string | null;
   colors: NoteColor[];

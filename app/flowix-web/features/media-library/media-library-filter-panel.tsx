@@ -2,6 +2,8 @@ import { useEffect, useState } from 'react';
 import { ChevronRight, X } from 'lucide-react';
 import type { NotebookFolderOption } from '@platform/tauri/client';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
+import { DropdownMenuLabel } from '@shared/ui/dropdown-menu';
+import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@shared/ui/select';
 import { useI18n } from '@/lib/i18n';
 import { ResourceFolderIcon } from '@features/surface/resource-file-icon';
@@ -81,12 +83,12 @@ export function MediaLibraryFilterPanel({
   const canClearFolderPath = fixedFolderPath === undefined && Boolean(path || pathIsAll);
 
   const locationMenu = <Popover open={folderPickerOpen} onOpenChange={onFolderPickerOpenChange}>
-        <div data-media-library-location-menu className={`flex min-w-0 items-center gap-0.5 rounded-lg transition-colors ${busy || !notebookAvailable || fixedFolderPath !== undefined ? '' : folderPickerOpen ? 'bg-[var(--hover-bg)]' : 'hover:bg-[var(--hover-bg)]'}`}>
+        <div data-media-library-location-menu className={`flex min-w-0 items-center gap-0 rounded-lg transition-colors ${busy || !notebookAvailable || fixedFolderPath !== undefined ? '' : folderPickerOpen ? 'bg-[var(--hover-bg)]' : 'hover:bg-[var(--hover-bg)]'}`}>
           <PopoverTrigger asChild>
             <button type="button" disabled={busy || !notebookAvailable || fixedFolderPath !== undefined} className="flex h-8 min-w-0 flex-1 items-center justify-between gap-2 rounded-lg pl-1.5 text-left text-sm disabled:opacity-50">
-              <span className="min-w-0 truncate">浏览和保存</span>
-              <span className="flex min-w-0 flex-1 items-center justify-end gap-1 text-[var(--muted-foreground)]">
-                {folderPathLabel && <span title={fixedFolderPath !== undefined ? `固定：${folderPathLabel}` : folderPathLabel} className="max-w-[150px] truncate text-right text-sm">{folderPathLabel}</span>}
+              <span className="min-w-0 truncate">{t('multidimensionalTable.autoCollect.browseAndSave')}</span>
+              <span className="flex min-w-0 flex-1 items-center justify-end text-[var(--muted-foreground)]">
+                {folderPathLabel && <span title={fixedFolderPath !== undefined ? `固定：${folderPathLabel}` : folderPathLabel} className="max-w-[150px] truncate text-right text-xs">{folderPathLabel}</span>}
               </span>
             </button>
           </PopoverTrigger>
@@ -99,15 +101,17 @@ export function MediaLibraryFilterPanel({
               event.stopPropagation();
               void selectPath('');
             }}
-            className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] disabled:opacity-50"
+            className="inline-flex h-6 w-4 shrink-0 items-center justify-center rounded-md pl-1 text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)] disabled:opacity-50"
           ><X className="h-3 w-3" aria-hidden="true" /></button>}
           <PopoverTrigger asChild>
-            <button type="button" aria-label="浏览和保存" disabled={busy || !notebookAvailable || fixedFolderPath !== undefined} className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] disabled:opacity-50">
+            <button type="button" aria-label={t('multidimensionalTable.autoCollect.browseAndSave')} disabled={busy || !notebookAvailable || fixedFolderPath !== undefined} className="inline-flex h-6 w-6 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] disabled:opacity-50">
               <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
           </PopoverTrigger>
         </div>
-          <PopoverContent anchorSelector="[data-media-library-location-menu]" side="left" align="start" sideOffset={0} style={{ zIndex: 170 }} className="max-h-[min(60vh,280px)] w-[260px] max-w-[calc(100vw-16px)] overflow-y-auto rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+          <PopoverContent anchorSelector="[data-media-library-location-menu]" side="left" align="start" sideOffset={0} style={{ zIndex: 170 }} className="max-h-[min(60vh,280px)] w-[260px] max-w-[calc(100vw-16px)] overflow-hidden rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+            <OverlayScrollbar className="max-h-[calc(min(60vh,280px)_-_8px)]" scrollerClassName="max-h-[calc(min(60vh,280px)_-_8px)] overflow-y-auto overflow-x-hidden">
+            <DropdownMenuLabel className="px-2">{t('multidimensionalTable.autoCollect.browseLocation')}</DropdownMenuLabel>
             {folderOptionsLoading ? <p className="px-2 py-2 text-xs text-[var(--muted-foreground)]">{t('mediaLibrary.loadingFolders')}</p>
               : <div className="space-y-0.5">
                 <button
@@ -156,6 +160,7 @@ export function MediaLibraryFilterPanel({
                   </div>;
                 })}
               </div>}
+            </OverlayScrollbar>
           </PopoverContent>
       </Popover>;
 

@@ -109,6 +109,39 @@ it('shows membership failures and allows a successful retry', async () => {
   expect(mocks.refreshMembership).toHaveBeenCalledTimes(2);
 });
 
+it('keeps failed verification locked through retries and stale cached snapshots', async () => {
+  const member = { ...snapshot(5), authenticated: true, authStatus: 'authenticated',
+    account: { user: { id: 'member' } },
+    membership: { active: true, expiresAt: Date.now() + 60_000 } } as CloudState;
+  mocks.getState.mockResolvedValue(member);
+  await act(async () => root.render(<Harness />));
+  mocks.refreshMembership.mockRejectedValueOnce(new Error('offline'));
+  await act(async () => { await current.refreshMembership(); });
+  expect(current.membershipError).toBe('offline');
+
+  let resolve!: () => void;
+  mocks.refreshMembership.mockReturnValueOnce(new Promise((done) => { resolve = () => done({}); }));
+  let retry!: ReturnType<typeof current.refreshMembership>;
+  await act(async () => { retry = current.refreshMembership(); });
+  expect(current.membershipLoading).toBe(true);
+  expect(current.membershipError).toBe('offline');
+  await act(async () => { mocks.receive!({ ...member, revision: 4 }); mocks.ready!(); });
+  expect(current.membershipError).toBe('offline');
+  expect(current.state?.revision).toBe(5);
+  await act(async () => { resolve(); await retry; });
+  expect(current.membershipError).toBeNull();
+});
+
+it('accepts a successful membership refresh from another window after verification failed', async () => {
+  mocks.getState.mockResolvedValue({ ...snapshot(1), authenticated: true, authStatus: 'authenticated' });
+  mocks.refreshMembership.mockRejectedValueOnce(new Error('offline'));
+  await act(async () => root.render(<Harness />));
+  expect(current.membershipError).toBe('offline');
+  await act(async () => mocks.receive!({ ...snapshot(2), authenticated: true, authStatus: 'authenticated',
+    membership: { active: true, expiresAt: Date.now() + 60_000 } } as CloudState));
+  expect(current.membershipError).toBeNull();
+});
+
 it('ignores a membership failure from a previous session', async () => {
   let reject!: (error: Error) => void;
   mocks.getState.mockResolvedValue({ ...snapshot(1), authenticated: true, authStatus: 'authenticated' });

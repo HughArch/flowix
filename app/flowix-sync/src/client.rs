@@ -5,8 +5,8 @@ use serde_json::json;
 use crate::error::SyncError;
 use crate::models::{
     ApiErrorEnvelope, AppleAuthChallenge, AppleAuthorization, AuthData, CloudAiCredential,
-    CloudCheckout, CloudOrder, CloudOrderCheck, CloudProduct, DataEnvelope, EntitlementData,
-    MeData, RefreshData,
+    CloudCheckout, CloudOrder, CloudOrderCheck, CloudProduct, CloudSubscription, DataEnvelope,
+    EntitlementData, MeData, RefreshData,
 };
 use crate::v2::{
     V2BlobDownloadEnvelope, V2BlobReservationEnvelope, V2Bootstrap, V2ChangesPage, V2History,
@@ -169,6 +169,35 @@ impl CloudClient {
         )
         .await
         .map(|value| value.data)
+    }
+
+    pub(crate) async fn subscriptions(
+        &self,
+        access_token: &str,
+    ) -> Result<Vec<CloudSubscription>, SyncError> {
+        self.send::<DataEnvelope<Vec<CloudSubscription>>>(
+            Method::GET,
+            "/v1/account/subscriptions",
+            Some(access_token),
+            None,
+        )
+        .await
+        .map(|value| value.data)
+    }
+
+    pub(crate) async fn cancel_subscription(
+        &self,
+        access_token: &str,
+        subscription_id: &str,
+    ) -> Result<(), SyncError> {
+        self.send::<DataEnvelope<serde_json::Value>>(
+            Method::POST,
+            &format!("/v1/account/subscriptions/{subscription_id}/cancel"),
+            Some(access_token),
+            None,
+        )
+        .await
+        .map(|_| ())
     }
 
     pub(crate) async fn submit_feedback(
@@ -343,6 +372,20 @@ impl CloudClient {
             "/v1/ai/credentials",
             Some(access_token),
             Some(json!({})),
+        )
+        .await
+        .map(|value| value.data)
+    }
+
+    pub(crate) async fn ai_model_availability(
+        &self,
+        access_token: &str,
+    ) -> Result<crate::models::CloudAiModelAvailability, SyncError> {
+        self.send::<DataEnvelope<crate::models::CloudAiModelAvailability>>(
+            Method::GET,
+            "/v1/ai/model-availability",
+            Some(access_token),
+            None,
         )
         .await
         .map(|value| value.data)

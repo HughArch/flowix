@@ -8,12 +8,15 @@
  *   2. localStorage cache written by applyTheme();
  *   3. the default Rock theme.
  *
- * Keep VALID_RESOLVED_THEMES in sync with app/flowix-web/features/theme/palette.ts,
- * excluding "system" because this script only writes resolved data-theme values.
+ * Keep VALID_RESOLVED_THEMES aligned with the non-gated resolved themes in
+ * app/flowix-web/features/theme/palette.ts. Mist is applied later, after Cloud
+ * verifies the current account entitlement.
  */
 (function () {
   try {
-    var VALID_RESOLVED_THEMES = ['dark', 'light', 'mist', 'rock', 'ember'];
+    // Mist is membership-gated and can only be applied after Cloud confirms
+    // the current account entitlement in the React theme provider.
+    var VALID_RESOLVED_THEMES = ['dark', 'light', 'rock', 'ember'];
     var params = new URLSearchParams(window.location.search || '');
     var bootTheme = params.get('bootTheme');
     var cached = bootTheme || localStorage.getItem('flowix-theme');

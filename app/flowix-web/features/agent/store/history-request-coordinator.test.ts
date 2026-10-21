@@ -48,3 +48,15 @@ describe("Codex history reconciliation", () => {
     expect(requests.isCurrent(second)).toBe(false);
   });
 });
+
+
+it("keeps page and snapshot requests independent while fencing each lane", () => {
+  const requests = createHistoryRequestCoordinator({ binding: () => ({}), epoch: () => 0, isDeleted: () => false });
+  const snapshot = requests.begin("thread");
+  const page = requests.begin("thread", "more");
+  expect(requests.isCurrent(snapshot)).toBe(true);
+  expect(requests.isCurrent(page)).toBe(true);
+  requests.begin("thread");
+  expect(requests.isCurrent(snapshot)).toBe(false);
+  expect(requests.isCurrent(page)).toBe(true);
+});

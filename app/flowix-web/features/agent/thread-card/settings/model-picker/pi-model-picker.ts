@@ -1,26 +1,22 @@
 import type { AgentModelOption } from "./model-picker-types";
+import { isFlowixCloudModel } from "@features/agent/config/agent-model-source";
 
 type PiModelPickerProps = {
   models: readonly AgentModelOption[];
-  showMemberTab: boolean;
+  showMemberSection: boolean;
   selectedModelId: string;
   selectedProviderId?: string;
   memberLabel: string;
   mineLabel: string;
-  modelLabel: string;
   emptyLabel: string;
   personalEmptyLabel: string;
   createModelItem: (model: AgentModelOption) => HTMLElement;
 };
 
-type PiModelCategory = "member" | "mine";
 type ProviderLabelPlacement = "group" | "item" | "none";
 
-let nextTabSetId = 0;
-
 export function isFlowixCloudModelOption(model: AgentModelOption): boolean {
-  return model.providerName?.trim().toLocaleLowerCase() === "flowix cloud"
-    || model.providerId?.trim().toLocaleLowerCase().startsWith("flowix-cloud") === true;
+  return isFlowixCloudModel(model);
 }
 
 function groupModels(models: readonly AgentModelOption[]) {
@@ -113,6 +109,35 @@ function createModelGroups(
   return list;
 }
 
+function createModelCategory(
+  label: string,
+  models: readonly AgentModelOption[],
+  props: PiModelPickerProps,
+  providerLabelPlacement: ProviderLabelPlacement,
+  emptyLabel?: string,
+): HTMLElement {
+  const category = document.createElement("section");
+  category.className = "pi-model-picker__category";
+
+  const heading = document.createElement("div");
+  heading.className = "agent-thread-card__codex-settings-title pi-model-picker__category-label";
+  heading.setAttribute("role", "heading");
+  heading.setAttribute("aria-level", "3");
+  heading.textContent = label;
+  category.append(heading);
+
+  if (models.length > 0) {
+    category.append(createModelGroups(models, props, providerLabelPlacement));
+  } else if (emptyLabel) {
+    const empty = document.createElement("div");
+    empty.className = "pi-model-picker__empty pi-model-picker__empty--category";
+    empty.textContent = emptyLabel;
+    category.append(empty);
+  }
+
+  return category;
+}
+
 export function createPiModelPicker(props: PiModelPickerProps): HTMLElement {
   const root = document.createElement("div");
   root.className = "pi-model-picker";
@@ -127,7 +152,7 @@ export function createPiModelPicker(props: PiModelPickerProps): HTMLElement {
 
   const memberModels = props.models.filter(isFlowixCloudModelOption);
   const mineModels = props.models.filter((model) => !isFlowixCloudModelOption(model));
-  if (!props.showMemberTab || memberModels.length === 0) {
+  if (!props.showMemberSection || memberModels.length === 0) {
     const panel = document.createElement("div");
     panel.className = "pi-model-picker__panel";
     panel.append(createModelGroups(props.models, props, "item"));
@@ -135,95 +160,18 @@ export function createPiModelPicker(props: PiModelPickerProps): HTMLElement {
     return root;
   }
 
-  const tabSetId = `pi-model-picker-${++nextTabSetId}`;
-  const memberTabId = `${tabSetId}-member-tab`;
-  const mineTabId = `${tabSetId}-mine-tab`;
-  const panelId = `${tabSetId}-panel`;
-  const tabList = document.createElement("div");
-  tabList.className = "pi-model-picker__tabs";
-  tabList.setAttribute("role", "tablist");
-  tabList.setAttribute("aria-label", props.modelLabel);
-
-  const memberTab = document.createElement("button");
-  memberTab.type = "button";
-  memberTab.id = memberTabId;
-  memberTab.className = "pi-model-picker__tab";
-  memberTab.setAttribute("role", "tab");
-  memberTab.setAttribute("aria-controls", panelId);
-  memberTab.textContent = props.memberLabel;
-
-  const mineTab = document.createElement("button");
-  mineTab.type = "button";
-  mineTab.id = mineTabId;
-  mineTab.className = "pi-model-picker__tab";
-  mineTab.setAttribute("role", "tab");
-  mineTab.setAttribute("aria-controls", panelId);
-  mineTab.textContent = props.mineLabel;
-  tabList.append(memberTab, mineTab);
-
   const panel = document.createElement("div");
-  panel.id = panelId;
   panel.className = "pi-model-picker__panel";
-  panel.setAttribute("role", "tabpanel");
-
-  const selectedModel = props.models.find((model) =>
-    model.id === props.selectedModelId
-    && (model.providerId ?? "") === (props.selectedProviderId ?? ""),
+  panel.append(
+    createModelCategory(props.memberLabel, memberModels, props, "none"),
+    createModelCategory(
+      props.mineLabel,
+      mineModels,
+      props,
+      "item",
+      props.personalEmptyLabel,
+    ),
   );
-  const selectedModelIsCloud = selectedModel
-    ? isFlowixCloudModelOption(selectedModel)
-    : props.selectedProviderId?.trim().toLocaleLowerCase().startsWith("flowix-cloud") === true;
-  let activeCategory: PiModelCategory = selectedModelIsCloud ? "member" : "mine";
-
-  const selectCategory = (category: PiModelCategory, focusTab = false) => {
-    activeCategory = category;
-    const memberSelected = category === "member";
-    memberTab.setAttribute("aria-selected", String(memberSelected));
-    mineTab.setAttribute("aria-selected", String(!memberSelected));
-    memberTab.tabIndex = memberSelected ? 0 : -1;
-    mineTab.tabIndex = memberSelected ? -1 : 0;
-    memberTab.classList.toggle("pi-model-picker__tab--active", memberSelected);
-    mineTab.classList.toggle("pi-model-picker__tab--active", !memberSelected);
-    panel.setAttribute("aria-labelledby", memberSelected ? memberTabId : mineTabId);
-    panel.replaceChildren();
-
-    const categoryModels = memberSelected ? memberModels : mineModels;
-    if (categoryModels.length === 0) {
-      const empty = document.createElement("div");
-      empty.className = "pi-model-picker__empty";
-      empty.textContent = props.personalEmptyLabel;
-      panel.append(empty);
-    } else {
-      panel.append(createModelGroups(
-        categoryModels,
-        props,
-        memberSelected ? "none" : "item",
-      ));
-    }
-    if (focusTab) (memberSelected ? memberTab : mineTab).focus();
-  };
-
-  const handleTabKeyDown = (event: KeyboardEvent) => {
-    let next: PiModelCategory | undefined;
-    if (event.key === "ArrowRight" || event.key === "ArrowDown") {
-      next = activeCategory === "member" ? "mine" : "member";
-    } else if (event.key === "ArrowLeft" || event.key === "ArrowUp") {
-      next = activeCategory === "member" ? "mine" : "member";
-    } else if (event.key === "Home") {
-      next = "member";
-    } else if (event.key === "End") {
-      next = "mine";
-    }
-    if (!next) return;
-    event.preventDefault();
-    selectCategory(next, true);
-  };
-
-  memberTab.addEventListener("click", () => selectCategory("member"));
-  mineTab.addEventListener("click", () => selectCategory("mine"));
-  memberTab.addEventListener("keydown", handleTabKeyDown);
-  mineTab.addEventListener("keydown", handleTabKeyDown);
-  root.append(tabList, panel);
-  selectCategory(activeCategory);
+  root.append(panel);
   return root;
 }

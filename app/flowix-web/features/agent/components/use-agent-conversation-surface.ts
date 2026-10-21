@@ -10,9 +10,12 @@ import type { SurfacePresentationUpdate, SurfaceState } from '@features/workspac
 export function useAgentConversationSurface(instanceId: string, reportPresentation?: (update: SurfacePresentationUpdate) => void) {
   const { t } = useI18n();
   const instance = useAgentSessionStore((state) => state.getInstance(instanceId));
-  const threadProjection = useAgentSessionStore((state) => (
-    instance?.threadId ? state.threadProjections[instance.threadId] : undefined
-  ));
+  const isInitialHistoryLoading = useAgentSessionStore((state) => {
+    const projection = instance?.threadId ? state.threadProjections[instance.threadId] : undefined;
+    return isInitialConversationHistoryLoading(
+      instance?.threadId ?? null, projection?.messages.length ?? 0, projection?.pagination.initialStatus,
+    );
+  });
   const [loadState, setLoadState] = useState<{
     instanceId: string;
     status: 'loading' | 'not-found' | 'error';
@@ -40,11 +43,6 @@ export function useAgentConversationSurface(instanceId: string, reportPresentati
     setRetryCount((count) => count + 1);
   }, [instanceId]);
   const status = instance ? 'ready' : loadState?.instanceId === instanceId ? loadState.status : 'loading';
-  const isInitialHistoryLoading = isInitialConversationHistoryLoading(
-    instance?.threadId ?? null,
-    threadProjection?.messages.length ?? 0,
-    threadProjection?.pagination.initialStatus,
-  );
   const title = instance ? getAgentConversationPresentation(instance, t('common.untitled')).title : t('common.untitled');
   const icon = instance ? getAgentType(instance.agentType).icon : undefined;
   useEffect(() => {

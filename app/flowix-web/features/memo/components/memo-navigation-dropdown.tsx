@@ -1,13 +1,17 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { Check, ChevronDown, ChevronRight, Layers, ListTodo, X } from 'lucide-react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type ReactNode } from 'react';
+import { Check, ChevronDown, ChevronRight, ListFilter, ListTodo, X } from 'lucide-react';
 
-import { useI18n } from '@/lib/i18n';
+import { MapPinSimpleAreaIcon } from '@phosphor-icons/react';
+
+import { useI18n, type I18nKey } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { useTagStore } from '@features/memo/store/tag-store';
 import { TagMentionName } from '@features/editor/extensions/tag-mention/tag-mention-label';
+import { TableDatasetMenu } from '@features/multidimensional-table/table-dataset-menu';
+import type { TableAutoCollectConfig } from '@features/multidimensional-table/model';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -23,6 +27,8 @@ const MEMO_NAVIGATION_MENU_ITEM_CLASS =
   'group flex h-7 cursor-pointer items-center justify-between rounded-lg py-0 pl-[6px] pr-2 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]';
 
 export type MemoNavigationTarget = 'all' | 'todos' | 'tags';
+
+const EMPTY_AUTO_COLLECT_FIELDS: Array<{ id: string; label: string }> = [];
 
 interface NavigationSubmenuProps {
   label: ReactNode;
@@ -194,7 +200,10 @@ export function MemoNavigationSubmenu({
                     type="button"
                     title={item.secondary ? `${item.label} · ${item.secondary}` : item.label}
                     className={cn(
-                      'memo-navigation-submenu-item mention-note-item !h-7 !min-h-7 !rounded-lg !py-0 !pl-[6px] !pr-2 hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)] focus-visible:outline-none',
+                      'memo-navigation-submenu-item mention-note-item !h-7 !min-h-7 !rounded-lg !py-0 !pl-[6px] !pr-2 focus-visible:outline-none',
+                      itemKind === 'tag'
+                        ? 'memo-navigation-submenu-item--neutral-hover hover:bg-[var(--hover-bg)] focus-visible:bg-[var(--hover-bg)]'
+                        : 'hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)]',
                       itemKind === 'tag' && item.id === selectedTagId && 'is-selected',
                     )}
                     onMouseDown={(event) => event.preventDefault()}
@@ -245,6 +254,9 @@ interface MemoNavigationDropdownProps {
   onNavigate?: (target: MemoNavigationTarget) => void;
   showClear?: boolean;
   onClear?: () => void;
+  notebookPath?: string | null;
+  defaultCreateFolder?: string | null;
+  onSavePath?: (path: string | null) => Promise<boolean>;
   className?: string;
 }
 
@@ -265,6 +277,9 @@ export function MemoNavigationDropdown({
   onNavigate,
   showClear = false,
   onClear,
+  notebookPath,
+  defaultCreateFolder,
+  onSavePath,
   className,
 }: MemoNavigationDropdownProps) {
   const { t } = useI18n();
@@ -275,9 +290,17 @@ export function MemoNavigationDropdown({
   const setSelectedTagId = useTagStore((state) => state.setSelectedTagId);
   const tags = useTagStore((state) => state.tags);
   const loadTags = useTagStore((state) => state.loadTags);
+  const selectedNotebookId = selectedNotebook?.id ?? null;
   const [internalOpen, setInternalOpen] = useState(false);
   const [openSubmenu, setOpenSubmenu] = useState<'tags' | null>(null);
-  const selectedNotebookId = selectedNotebook?.id ?? null;
+  const dataCondition = useNoteStore(state => state.dataConditionsByNotebook?.[selectedNotebookId ?? ''] ?? null);
+  const setDataCondition = useNoteStore(state => state.setDataCondition);
+  const datasetConfig = useMemo<TableAutoCollectConfig>(() => ({
+    condition: {
+      ...(dataCondition ?? {}),
+      path: defaultCreateFolder ?? '',
+    },
+  }), [dataCondition, defaultCreateFolder]);
   const menuOpen = open ?? internalOpen;
 
   const handleMenuOpenChange = useCallback((nextOpen: boolean) => {
@@ -290,6 +313,10 @@ export function MemoNavigationDropdown({
   const closeMenu = useCallback(() => {
     handleMenuOpenChange(false);
   }, [handleMenuOpenChange]);
+
+  useEffect(() => {
+    if (!menuOpen) setOpenSubmenu(null);
+  }, [menuOpen]);
 
   useEffect(() => {
     if (!selectedNotebookId) return;
@@ -344,7 +371,7 @@ export function MemoNavigationDropdown({
             type="button"
             aria-label={t('memo.navigation.clearFilter')}
             title={t('memo.navigation.clearFilter')}
-            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-md text-[var(--muted-foreground)] opacity-0 transition-opacity hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] group-hover:opacity-100"
+            className="inline-flex h-3.5 w-3.5 shrink-0 items-center justify-center rounded-md text-[var(--foreground)] hover:bg-[var(--muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
             onClick={onClear}
           >
             <X aria-hidden="true" className="h-3.5 w-3.5" strokeWidth={2.5} />
@@ -353,19 +380,29 @@ export function MemoNavigationDropdown({
       </div>
       <DropdownMenuContent align="start" side="bottom" className={MEMO_NAVIGATION_MENU_CLASS}>
         {leadingContent}
-        <DropdownMenuItem
-          onClick={() => handleNavigate('all')}
-          className={cn(
-            MEMO_NAVIGATION_MENU_ITEM_CLASS,
-            isActive('all') && 'hover:bg-[var(--brand)]',
-          )}
-        >
-          <span className="flex min-w-0 items-center gap-2">
-            <Layers className="h-4 w-4 shrink-0" aria-hidden="true" />
-            <span>{t('memo.navigation.all')}</span>
-          </span>
-          {isActive('all') && <Check className="h-3.5 w-3.5 shrink-0 text-[var(--brand)] group-hover:text-[var(--primary-foreground)]" aria-hidden="true" />}
-        </DropdownMenuItem>
+        <TableDatasetMenu
+          key={selectedNotebookId ?? 'no-notebook'}
+          defaultFieldId=""
+          fields={EMPTY_AUTO_COLLECT_FIELDS}
+          config={datasetConfig}
+          notebookId={selectedNotebookId}
+          notebookPath={notebookPath}
+          saving={false}
+          embedded
+          folderLabel={t('memo.navigation.saveLocation')}
+          folderPickerTitle={t('multidimensionalTable.autoCollect.writeLocation')}
+          folderIcon={<MapPinSimpleAreaIcon className="h-4 w-4 shrink-0" aria-hidden="true" />}
+          filterIcon={<ListFilter className="h-4 w-4 shrink-0" aria-hidden="true" />}
+          t={(key: I18nKey) => t(key)}
+          open={menuOpen}
+          onOpenChange={handleMenuOpenChange}
+          onSave={async (condition) => {
+            if (!selectedNotebookId) return false;
+            setDataCondition(selectedNotebookId, condition);
+            return true;
+          }}
+          onSavePath={onSavePath}
+        />
         <DropdownMenuItem
           onClick={() => handleNavigate('todos')}
           className={cn(

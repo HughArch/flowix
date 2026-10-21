@@ -140,6 +140,8 @@ interface PopoverContentProps {
 	className?: string;
 	"aria-label"?: string;
 	style?: React.CSSProperties;
+	onMouseEnter?: React.MouseEventHandler<HTMLDivElement>;
+	onMouseLeave?: React.MouseEventHandler<HTMLDivElement>;
 	matchAnchorWidth?: boolean | number;
 	matchAnchorHeight?: boolean;
 	onExitComplete?: () => void;
@@ -164,6 +166,8 @@ function PopoverContent({
 	className,
 	"aria-label": ariaLabel,
 	style,
+	onMouseEnter,
+	onMouseLeave,
 	matchAnchorWidth = false,
 	matchAnchorHeight = false,
 	onExitComplete,
@@ -383,6 +387,8 @@ function PopoverContent({
 				top: position.top,
 				left: position.left,
 			}}
+			onMouseEnter={onMouseEnter}
+			onMouseLeave={onMouseLeave}
 			onClick={(e) => e.stopPropagation()}
 			onAnimationEnd={(event) => {
 				if (event.target === event.currentTarget && motionState === "closing") {

@@ -1,3 +1,7 @@
+import { tableAutoCollectFilter, type TableAutoCollectCondition, type TableField } from '@features/multidimensional-table/model';
+import { noteMatchesCollectionFilter } from '@features/multidimensional-table/record-filter';
+import { getAllPresets } from '@features/document/properties/presets';
+import { usePropertyPresetStore } from '@features/properties/property-preset-store';
 import { applyNoteListChanges, type NoteListChange } from './note-list-projection';
 import { NoteListSession } from './note-list-session';
 import { useNotebookBackgroundStore } from '@features/memo/store/notebook-background-store';
@@ -50,6 +54,7 @@ interface MemoListPageQuery {
   color?: ColorFilterValue;
   pluginId: string | null;
   customFilterId: string | null;
+  dataCondition?: TableAutoCollectCondition | null;
 }
 
 const MEMO_LIST_PAGE_SIZE = 50;
@@ -186,6 +191,8 @@ export interface NoteLibraryStore {
   activePluginId: string | null;
   activeCustomFilterId: string | null;
   activeSort: SortType;
+  dataConditionsByNotebook: Record<string, TableAutoCollectCondition>;
+  setDataCondition: (notebookId: string, condition: TableAutoCollectCondition) => void;
   // 'color' 二级弹窗用的具体颜色值。'any'/'none'/具体颜色 (NOTE_COLORS)。
   // 当 activeFilter !== 'color' 时此值仍然保留, 切回颜色筛选时恢复。
   colorFilter: ColorFilterValue;
@@ -286,6 +293,7 @@ function currentNoteQueryKey(state: NoteLibraryStore): string {
     state.activeFilter === 'tagged' ? useTagStore.getState().selectedTagId : null,
     state.colorFilter, state.activePluginId,
     state.activeFilter === 'custom' ? state.activeCustomFilterId : null,
+    state.dataConditionsByNotebook?.[state.selectedNotebook?.id ?? ''],
   );
 }
 
@@ -305,12 +313,65 @@ function mapMemoPage(
     .filter((note) => !customFilter || memoMatchesCustomFilter(note, customFilter));
 }
 
+let memoFilterPropertyRegistry: ReturnType<typeof usePropertyPresetStore.getState>['registry'] | null = null;
+let memoFilterPropertyFields: TableField[] = [];
+
+function getMemoFilterPropertyFields(): TableField[] {
+  const registry = usePropertyPresetStore.getState().registry;
+  if (registry !== memoFilterPropertyRegistry) {
+    memoFilterPropertyRegistry = registry;
+    memoFilterPropertyFields = getAllPresets(
+      [...(registry.systemFields ?? []), ...registry.fields],
+      (key) => key,
+    ).map((preset) => ({ id: preset.key, property_key: preset.key, type: preset.kind }));
+  }
+  return memoFilterPropertyFields;
+}
+
+function matchesMemoDataCondition(memo: NoteListItem, condition?: TableAutoCollectCondition | null): boolean {
+  return !condition || noteMatchesCollectionFilter(memo, getMemoFilterPropertyFields(), '', tableAutoCollectFilter(condition));
+}
+
+async function loadMatchingMemoPage(
+  query: MemoListPageQuery & { notebookId: string },
+  customFilter: CustomFilter | null,
+  isCurrent: () => boolean,
+  cursor?: string,
+) {
+  const notes: NoteListItem[] = [];
+  let nextCursor = cursor;
+  let hasMore = false;
+  do {
+    const response = await noteRepository.listByPath({
+      notebookId: query.notebookId,
+      filter: toBackendFilter(query.filter),
+      sort: query.sort,
+      tagId: query.tagId,
+      color: query.color,
+      ...(nextCursor ? { cursor: nextCursor } : {}),
+      limit: MEMO_LIST_PAGE_SIZE - notes.length,
+    });
+    if (!isCurrent()) return { notes: [], nextCursor: null, hasMore: false };
+    notes.push(...mapMemoPage(response.notes, query.notebookId, customFilter)
+      .filter(note => matchesMemoDataCondition(note, query.dataCondition)));
+    const previousCursor = nextCursor;
+    nextCursor = response.nextCursor ?? undefined;
+    hasMore = (response.hasMore ?? Boolean(nextCursor)) && Boolean(nextCursor);
+    if (nextCursor && nextCursor === previousCursor) {
+      hasMore = false;
+      break;
+    }
+  } while (query.dataCondition && hasMore && notes.length < MEMO_LIST_PAGE_SIZE);
+  return { notes, nextCursor: nextCursor ?? null, hasMore };
+}
+
 function matchesMemoListQuery(
   memo: NoteListItem,
   query: MemoListPageQuery,
   customFilter: CustomFilter | null,
   now = Date.now(),
 ): boolean {
+  if (!matchesMemoDataCondition(memo, query.dataCondition)) return false;
   if (query.pluginId) {
     return normalizePluginId(memo.properties.flowix_plugin) === query.pluginId;
   }
@@ -343,7 +404,10 @@ function applySessionUpdates(
   query: MemoListPageQuery,
   customFilter: CustomFilter | null,
 ): NoteListItem[] {
-  return applyNoteListChanges(notes, listSession.changes(), note => matchesMemoListQuery(note, query, customFilter));
+  const updated = applyNoteListChanges(notes, listSession.changes(), note => matchesMemoListQuery(note, query, customFilter));
+  return query.dataCondition
+    ? updated.filter(note => matchesMemoDataCondition(note, query.dataCondition))
+    : updated;
 }
 
 function mergeMemoListItems(
@@ -381,6 +445,32 @@ export const useNoteStore = create<NoteLibraryStore>()(
       activePluginId: null,
       activeCustomFilterId: null,
       activeSort: 'createdAt',
+      dataConditionsByNotebook: {},
+      setDataCondition: (notebookId, condition) => {
+        const properties = (condition.property_conditions ?? []).map(item => ({
+          ...item, field_id: item.field_id.trim(), value: item.value.trim(),
+        })).filter(item => item.field_id && item.value);
+        const file = condition.file_condition;
+        const normalized: TableAutoCollectCondition = {
+          match: condition.match ?? 'all',
+          ...(properties.length ? { property_conditions: properties } : {}),
+          file_condition: {
+            file_name_contains: file?.file_name_contains?.trim() ?? '',
+            file_type: file?.file_type ?? '',
+          },
+        };
+        set(state => {
+          const conditions = { ...state.dataConditionsByNotebook };
+          if (properties.length || normalized.file_condition?.file_name_contains || normalized.file_condition?.file_type) {
+            conditions[notebookId] = normalized;
+          } else {
+            delete conditions[notebookId];
+          }
+          if (JSON.stringify(state.dataConditionsByNotebook?.[notebookId]) === JSON.stringify(conditions[notebookId])) return state;
+          if (state.selectedNotebook?.id === notebookId) invalidatePendingMemoLoads();
+          return { dataConditionsByNotebook: conditions, memoListLoadingMore: false };
+        });
+      },
       colorFilter: 'any',
       refreshTrigger: 0,
       memoListRefreshTrigger: 0,
@@ -533,7 +623,9 @@ export const useNoteStore = create<NoteLibraryStore>()(
             color ?? state.colorFilter,
             pluginId,
             customFilterId,
+            state.dataConditionsByNotebook?.[notebookId],
           );
+          const dataCondition = state.dataConditionsByNotebook?.[notebookId] ?? null;
           const customFilter = getCustomFilter(notebookId, customFilterId);
           const query: MemoListPageQuery & { notebookId: string } = {
             notebookId,
@@ -543,14 +635,15 @@ export const useNoteStore = create<NoteLibraryStore>()(
             color,
             pluginId,
             customFilterId,
+            dataCondition,
           };
           if (query.pluginId) {
             recordMemoListRequest(queryKey, requestSeq, params?.source ?? 'unspecified');
             const indexed = await noteRepository.listAllByPath(query.notebookId);
             if (!listSession.isCurrent(requestSeq)) return false;
             const loadedNotes = indexed
-              .filter((note) => normalizePluginId(note.properties.flowix_plugin) === query.pluginId)
-              .map((note) => toNoteListItem(note, query.notebookId));
+              .map((note) => toNoteListItem(note, query.notebookId))
+              .filter(note => matchesMemoListQuery(note, query, customFilter));
             const notes = applySessionUpdates(
               loadedNotes,
               query,
@@ -568,18 +661,11 @@ export const useNoteStore = create<NoteLibraryStore>()(
           }
 
           recordMemoListRequest(queryKey, requestSeq, params?.source ?? 'unspecified');
-          const response = await noteRepository.listByPath({
-            notebookId: query.notebookId,
-            filter: toBackendFilter(query.filter),
-            sort: query.sort,
-            tagId: query.tagId,
-            color: query.color,
-            limit: MEMO_LIST_PAGE_SIZE,
-          });
+          const response = await loadMatchingMemoPage(query, customFilter, () => listSession.isCurrent(requestSeq));
           if (!listSession.isCurrent(requestSeq)) return false;
           const hasMore = response.hasMore ?? Boolean(response.nextCursor);
           const notes = applySessionUpdates(
-            mapMemoPage(response.notes, query.notebookId, customFilter),
+            response.notes,
             query,
             customFilter,
           );
@@ -616,6 +702,8 @@ export const useNoteStore = create<NoteLibraryStore>()(
         if (state.selectedNotebook?.id !== created.notebookId || state.activePluginId) return;
         const note = toNoteListItem(created.entry, created.notebookId);
         const filter = state.activeFilter;
+        const dataCondition = state.dataConditionsByNotebook?.[created.notebookId];
+        if (!matchesMemoDataCondition(note, dataCondition)) return;
         if (filter === 'favorited' && !note.favorited) return;
         if (filter === 'todos' && note.todos.length === 0) return;
         if (filter === 'agents' && note.agents.length === 0) return;
@@ -629,14 +717,19 @@ export const useNoteStore = create<NoteLibraryStore>()(
           if (!customFilter || !memoMatchesCustomFilter(note, customFilter)) return;
         }
         invalidatePendingMemoLoads();
-        set((current) => ({
-          // Explicit creation reveals the new card at the start of this browsing
-          // session. Subsequent query refreshes restore the backend sort order.
-          notes: [note, ...current.notes.filter((item) => (
+        set((current) => {
+          const remaining = current.notes.filter((item) => (
             item.notebookId !== created.notebookId || item.relativePath !== note.relativePath
-          ))],
-          memoListLoadingMore: false,
-        }));
+          ));
+          const firstUnpinned = remaining.findIndex((item) => !item.favorited);
+          const insertionIndex = note.favorited ? 0
+            : firstUnpinned < 0 ? remaining.length : firstUnpinned;
+          return {
+            // Explicit creation leads the unpinned notes without displacing pinned notes.
+            notes: [...remaining.slice(0, insertionIndex), note, ...remaining.slice(insertionIndex)],
+            memoListLoadingMore: false,
+          };
+        });
       },
 
       handleMemoListInvalidation: (notebookId) => {
@@ -661,7 +754,7 @@ export const useNoteStore = create<NoteLibraryStore>()(
         listSession.remember(change);
         const query = state.memoListQuery;
         const notes = query?.notebookId === notebookId
-          ? applyNoteListChanges(state.notes, [change], () => true)
+          ? applyNoteListChanges(state.notes, [change], note => matchesMemoListQuery(note, query, getCustomFilter(notebookId, query.customFilterId)))
           : state.notes;
         const selected = state.selectedNote;
         let selectedNote = selected;
@@ -671,7 +764,11 @@ export const useNoteStore = create<NoteLibraryStore>()(
             selectedNote = { ...selected, relativePath: `${destination}${selectedPath.slice(source.length)}` };
           }
         }
-        if (notes !== state.notes || selectedNote !== selected) set({ notes, selectedNote });
+        const filteredNotes = query?.dataCondition
+          ? notes.filter(note => matchesMemoDataCondition(note, query.dataCondition))
+          : notes;
+        if (filteredNotes !== state.notes || selectedNote !== selected) set({ notes: filteredNotes, selectedNote });
+        if (query?.dataCondition) get().triggerMemoListRefresh();
       },
 
       applyNoteListChange: (notebookId, relativePath, entry) => {
@@ -694,6 +791,11 @@ export const useNoteStore = create<NoteLibraryStore>()(
         const customFilter = getCustomFilter(query.notebookId, query.customFilterId);
         const notes = applyNoteListChanges(state.notes, changes, note => matchesMemoListQuery(note, query, customFilter));
         if (notes !== state.notes) set({ notes });
+        if (query.dataCondition && changes.some(change => change.kind === 'entry' && change.memo
+          && matchesMemoListQuery(change.memo, query, customFilter)
+          && !state.notes.some(note => note.relativePath === change.relativePath))) {
+          get().triggerMemoListRefresh();
+        }
       },
 
       loadMoreMemos: async () => {
@@ -720,23 +822,17 @@ export const useNoteStore = create<NoteLibraryStore>()(
         const cursor = state.memoListNextCursor;
         set({ memoListLoadingMore: true });
         try {
-          const response = await noteRepository.listByPath({
-            notebookId: query.notebookId,
-            filter: toBackendFilter(query.filter),
-            sort: query.sort,
-            tagId: query.tagId,
-            color: query.color,
-            cursor,
-            limit: MEMO_LIST_PAGE_SIZE,
-          });
+          const customFilter = getCustomFilter(query.notebookId, query.customFilterId);
+          const response = await loadMatchingMemoPage(
+            { ...query, notebookId: query.notebookId }, customFilter, () => listSession.isCurrent(requestSeq), cursor,
+          );
           if (!listSession.isCurrent(requestSeq)) return false;
 
-          const customFilter = getCustomFilter(query.notebookId, query.customFilterId);
           const hasMore = response.hasMore ?? Boolean(response.nextCursor);
           const notes = applySessionUpdates(
             mergeMemoListItems(
               get().notes,
-              mapMemoPage(response.notes, query.notebookId, customFilter),
+              response.notes,
             ),
             query,
             customFilter,
@@ -819,13 +915,14 @@ export const useNoteStore = create<NoteLibraryStore>()(
     {
       name: STORAGE_KEYS.NOTE,
       partialize: (state) => ({
-        // Persist identities only. Notebook and Note entities are backend data
+        // Persist identities and notebook-scoped list conditions. Entities are backend data
         // and may be renamed, deleted, or updated while the app is closed.
         selectedNotebookId: state.selectedNotebookId ?? state.selectedNotebook?.id ?? null,
         selectedNote: state.selectedNote,
         // 侧边栏入口要和中间列一起恢复。中间列的颜色 / 时间筛选不属于
         // 侧边栏导航，因此恢复时归位到“全部”。
         middleColumnView: state.middleColumnView,
+        dataConditionsByNotebook: state.dataConditionsByNotebook,
         activeFilter: isSidebarNavigationFilter(state.activeFilter)
           ? state.activeFilter
           : 'all',

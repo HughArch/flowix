@@ -71,22 +71,12 @@ function hasAssistantContent(message: ChatMessage): boolean {
   );
 }
 
-function isCodemodeChildTool(message: ChatMessage, messages: ChatMessage[]): boolean {
-  if (message.role !== "tool") return false;
+function isCodemodeChildTool(message: ChatMessage, parentIds: Set<string>): boolean {
   const callId = message.toolCallId ?? message.id;
-  if (!callId) return false;
-
-  // Pi's RPC records codemode subcalls under the codemode result, with child
-  // ids prefixed by the parent call id (for example, `<call-id>/1`). Some
-  // live projections also expose those calls as tool rows; keep them hidden
-  // from the ordinary tool group while retaining the codemode parent row.
-  return messages.some((candidate) => {
-    if (candidate.role !== "tool" || candidate.toolName?.toLowerCase() !== "codemode") {
-      return false;
-    }
-    const parentCallId = candidate.toolCallId ?? candidate.id;
-    return callId.startsWith(`${parentCallId}/`);
-  });
+  for (let index = callId.indexOf("/"); index >= 0; index = callId.indexOf("/", index + 1)) {
+    if (parentIds.has(callId.slice(0, index))) return true;
+  }
+  return false;
 }
 
 /**
@@ -101,6 +91,9 @@ export function groupAgentMessages(
   isLoading = false,
 ): AgentRenderItem[] {
   const items: AgentRenderItem[] = [];
+  const codemodeParentIds = new Set(messages
+    .filter((message) => message.role === "tool" && message.toolName?.toLowerCase() === "codemode")
+    .map((message) => message.toolCallId ?? message.id));
   let toolRun: ChatMessage[] = [];
   let lastToolIndex = -1;
 
@@ -149,7 +142,7 @@ export function groupAgentMessages(
   for (let index = 0; index < messages.length; index += 1) {
     const message = messages[index];
     if (message.role === "tool") {
-      if (isCodemodeChildTool(message, messages)) continue;
+      if (isCodemodeChildTool(message, codemodeParentIds)) continue;
       toolRun.push(message);
       lastToolIndex = index;
       continue;

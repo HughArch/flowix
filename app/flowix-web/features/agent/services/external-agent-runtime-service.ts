@@ -1,5 +1,6 @@
 import type { AgentTypeKey } from '@/types/agent';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
+import { readHistoryWithTimeout } from './history-read-timeout';
 import { getExternalAgentRuntimeAdapter } from './external-agent-runtime-adapters';
 
 const localThreadIdsByHandle = new Map<string, string>();
@@ -76,7 +77,7 @@ export async function resolveExternalSessionId(
   if (resolvingSessionIds.has(runtimeThreadId)) return null;
   resolvingSessionIds.add(runtimeThreadId);
   try {
-    const sessionId = await adapter.resolveSessionId(runtimeThreadId);
+    const sessionId = await readHistoryWithTimeout(() => adapter.resolveSessionId(runtimeThreadId));
     return sessionId ?? null;
   } finally {
     resolvingSessionIds.delete(runtimeThreadId);

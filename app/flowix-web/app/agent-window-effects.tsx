@@ -9,8 +9,8 @@ import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store'
 import { invalidateNotebookCache, prewarmNotebookCache } from '@features/editor/extensions/note-link/memo-resolver';
 import { invalidateMentionNotes } from '@features/editor/extensions/note-mention/note-mention-data';
 import { invalidateMentionTags } from '@features/editor/extensions/tag-mention/tag-mention-data';
-import { cloud, listenToAgentWorkspaceChanges } from '@platform/tauri/client';
-import { refreshAgentModelCatalog } from '@features/agent/services/agent-catalog-service';
+import { cloud, listenToAgentWorkspaceChanges, listenToCloudStateChanges, type CloudState } from '@platform/tauri/client';
+import { syncPiCloudModelCatalog } from '@features/agent/services/pi-cloud-model-service';
 import { acquireMemoEventBridge } from '@/lib/memo-dispatcher';
 import { runStartupStage3Task } from '@/lib/startup-stage3';
 import { waitForWorkspaceRestoration } from './main-window-startup';
@@ -35,13 +35,24 @@ export function AgentWindowEffects() {
   }, [refreshAgentRuntime]);
 
   useEffect(() => {
-    void runStartupStage3Task('pi-cloud-model-catalog-refresh', async () => {
-      // Stage 3 releases low-priority work after the shell paints, while the
-      // selected workspace may still be restoring its initial surface.
-      await waitForWorkspaceRestoration();
-      const connected = await cloud.refreshPiModelProviderAtStartup();
-      if (connected) await refreshAgentModelCatalog('pi');
-    });
+    let active = true;
+    const receiveCloudState = (state: CloudState) => {
+      if (!active) return;
+      void syncPiCloudModelCatalog(state).catch((error) => {
+        console.warn('[agent-catalog] failed to load Flowix Cloud Pi models after sign-in', error);
+      });
+    };
+    const refreshSnapshot = () => {
+      void cloud.getState().then(receiveCloudState).catch((error) => {
+        console.warn('[agent-catalog] failed to read Flowix Cloud session state', error);
+      });
+    };
+    const unlisten = listenToCloudStateChanges(receiveCloudState, { onListenerReady: refreshSnapshot });
+    refreshSnapshot();
+    return () => {
+      active = false;
+      unlisten();
+    };
   }, []);
 
   useEffect(() => {

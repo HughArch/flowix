@@ -1,4 +1,8 @@
-﻿import { beforeEach, describe, expect, it, vi } from 'vitest';
+﻿import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
+
+import { HISTORY_READ_TIMEOUT_MS, HistoryReadTimeoutError } from './history-read-timeout';
+
+afterEach(() => vi.useRealTimers());
 
 const chatStoreMock = vi.hoisted(() => ({
   state: {
@@ -136,4 +140,24 @@ describe('external agent runtime service', () => {
 
     expect(sessionStoreMock.state.stopThreadRun).toHaveBeenCalledWith(localThreadId, "run-1");
   });
+});
+
+
+it('releases the session-resolution guard after timeout so a retry can resolve', async () => {
+  vi.useFakeTimers();
+  const { agent } = await import('@platform/tauri/client');
+  const { resolveExternalSessionId } = await import('./external-agent-runtime-service');
+  let release!: (value: string) => void;
+  vi.mocked(agent.getCodexSessionId).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+  const first = resolveExternalSessionId('codex-local-timeout-retry', 'codex');
+  const expired = expect(first).rejects.toBeInstanceOf(HistoryReadTimeoutError);
+  await vi.advanceTimersByTimeAsync(HISTORY_READ_TIMEOUT_MS);
+  await expired;
+  vi.mocked(agent.getCodexSessionId).mockResolvedValueOnce('retry-session');
+  await expect(resolveExternalSessionId('codex-local-timeout-retry', 'codex')).resolves.toBe('retry-session');
+  release('late-session');
+  await vi.advanceTimersByTimeAsync(0);
+  expect(sessionStoreMock.state.bindProviderSessionId).not.toHaveBeenCalledWith(
+    'codex-local-timeout-retry', 'late-session', 'codex',
+  );
 });

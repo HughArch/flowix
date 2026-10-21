@@ -62,3 +62,25 @@ describe("MessageViewportController run-end scroll behavior", () => {
     expect(body.scrollTop).toBe(600);
   });
 });
+
+
+it("does not restore a request-time position after a failed history load", () => {
+  const body = document.createElement("div");
+  Object.defineProperties(body, { clientHeight: { value: 100 }, scrollHeight: { value: 1000 } });
+  const loadMore = vi.fn();
+  const controller = new MessageViewportController({
+    body, bottomFollowThresholdPx: 64, topHistoryLoadThresholdPx: 48, scrollDeltaEpsilonPx: 0.5,
+    isCollapsed: () => false, isFullscreen: () => true, getRuntimeThreadId: () => "thread",
+    getConversationMessageState: () => ({ loadingMore: false, hasMoreHistory: true, oldestSequence: 10 }),
+    loadMoreMessages: loadMore,
+  });
+  body.scrollTop = 20;
+  controller.handleScroll();
+  expect(loadMore).toHaveBeenCalledOnce();
+  // The failed request changed no rows. A later update must preserve the
+  // reader's new position, rather than the position when the request began.
+  body.scrollTop = 250;
+  controller.handleScroll();
+  controller.applyAfterRender({ isLoading: false, ...controller.captureRenderScrollState() });
+  expect(body.scrollTop).toBe(250);
+});

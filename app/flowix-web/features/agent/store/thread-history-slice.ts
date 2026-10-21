@@ -8,6 +8,8 @@ import { getAgentHistoryAdapter, HistoryChangedError } from "@features/agent/sto
 import type { ThreadHistoryPage } from "@features/agent/store/agent-history-adapters";
 import { createLogger } from "@/lib/logger";
 import { isKnownProductThreadId, resolveStoreThreadId } from "@features/agent/store/external-session";
+import { readHistoryWithTimeout } from "@features/agent/services/history-read-timeout";
+import { paginationAfterSnapshot, samePagination } from "./history-pagination";
 import { createHistoryRequestCoordinator } from "@features/agent/store/history-request-coordinator";
 import {
   filterRenderableHistoryMessages,
@@ -43,6 +45,8 @@ function wait(ms: number): Promise<void> {
   return ms > 0 ? new Promise((resolve) => setTimeout(resolve, ms)) : Promise.resolve();
 }
 
+export type HistoryLoadResult = "ready" | "error" | "stale";
+
 export interface ThreadHistorySlice {
   getMessageState(
     threadId: string | null | undefined,
@@ -53,7 +57,7 @@ export interface ThreadHistorySlice {
     page: Pick<ThreadHistoryPage, "messages"> & { coverage: "partial" },
   ): void;
   resetMessageStates(threadIds: string[]): void;
-  loadMessages(agentType: AgentTypeKey, threadId: string): Promise<void>;
+  loadMessages(agentType: AgentTypeKey, threadId: string): Promise<HistoryLoadResult>;
   /** Reload complete provider history while preserving newer live messages. */
   reloadMessagesFromHistory(
     agentType: AgentTypeKey,
@@ -84,17 +88,6 @@ export function createThreadHistorySlice(
       threadId, meta.externalSessionResolutions, agentType, meta.threadTypes,
       (id) => isKnownProductThreadId(id, get()),
     );
-  };
-  const clearStaleLoading = (threadId: string, request: ReturnType<typeof requests.begin>, kind: "initial" | "more") => {
-    if (!requests.isLatest(request) || get().threadTombstones[threadId]) return;
-    get().updateThreadHistory(threadId, (projection) => {
-      if (kind === "initial") {
-        if (!projection.pagination.loadingInitial) return projection;
-        return { ...projection, pagination: { ...projection.pagination, loadingInitial: false, initialStatus: "idle" } };
-      }
-      if (!projection.pagination.loadingMore) return projection;
-      return { ...projection, pagination: { ...projection.pagination, loadingMore: false } };
-    });
   };
 
   return {
@@ -133,14 +126,15 @@ export function createThreadHistorySlice(
     resetMessageStates: (threadIds) => get().resetThreadProjections(threadIds),
     loadMessages: async (agentType, threadId) => {
       const productThreadId = productThreadIdFor(threadId, agentType);
-      if (!productThreadId) return;
+      if (!productThreadId) return "stale";
       if (productThreadId !== threadId) return get().loadMessages(agentType, productThreadId);
-      if (get().threadTombstones[threadId]) return;
+      if (get().threadTombstones[threadId]) return "stale";
       const binding = requests.binding(threadId);
       if (get().threadProjections[threadId]?.pagination.loadingInitial &&
-        requests.hasInitial(threadId, agentType, binding)) return;
+        requests.hasInitial(threadId, agentType, binding)) return "stale";
       const historyReadVersion = requests.begin(threadId);
       const requestProjection = get().threadProjections[threadId]?.messages ?? [];
+      let applied = false;
       const isInitialLoad =
         (get().threadProjections[threadId]?.messages.length ?? 0) === 0 &&
         get().threadProjections[threadId]?.pagination.initialStatus !== "ready";
@@ -148,7 +142,7 @@ export function createThreadHistorySlice(
       // conversation must not enter loading or invalidate its projection just
       // because a silent snapshot request started.
       if (isInitialLoad) {
-        requests.startInitial(threadId, agentType, binding);
+        requests.startInitial(historyReadVersion, agentType, binding);
         get().updateThreadHistory(threadId, (projection) => ({
           ...projection,
           pagination: {
@@ -160,14 +154,9 @@ export function createThreadHistorySlice(
         }));
       }
       try {
-        const page = await getHistoryPage(
-          agentType,
-          threadId,
-          HISTORY_PAGE_SIZE,
-        );
+        const page = await readHistoryWithTimeout(() => getHistoryPage(agentType, threadId, HISTORY_PAGE_SIZE));
         if (!requests.isCurrent(historyReadVersion)) {
-          clearStaleLoading(threadId, historyReadVersion, "initial");
-          return;
+          return "stale";
         }
         const messages = filterRenderableHistoryMessages(page.messages);
         const cached = agentType === "codex" ? get().codexLiveTurns[threadId] : undefined;
@@ -203,26 +192,10 @@ export function createThreadHistorySlice(
             requestProjection, reason: completedRunId ? "run_completed" : "open",
             runId: cached?.runId ?? completedRunId, turnId: cached?.turnId,
           }).messages;
-          const pagination = {
-            initialStatus: "ready",
-            initialError: null,
-            oldestSequence: page.oldestSequence,
-            snapshotSequence: page.snapshotSequence ?? null,
-            nextCursor: page.nextCursor,
-            hasMoreHistory: page.hasMore,
-            loadingInitial: false,
-            loadingMore: false,
-          } as const;
+          const pagination = paginationAfterSnapshot(agentType, threadId, projection, page, reconciled);
+          applied = true;
           const messagesUnchanged = reconciled === projection.messages;
-          const paginationUnchanged =
-            projection.pagination.initialStatus === pagination.initialStatus &&
-            projection.pagination.oldestSequence === pagination.oldestSequence &&
-            (projection.pagination.snapshotSequence ?? null) ===
-              pagination.snapshotSequence &&
-            projection.pagination.nextCursor === pagination.nextCursor &&
-            projection.pagination.hasMoreHistory === pagination.hasMoreHistory &&
-            projection.pagination.loadingInitial === pagination.loadingInitial &&
-            projection.pagination.loadingMore === pagination.loadingMore;
+          const paginationUnchanged = samePagination(projection.pagination, pagination);
           return messagesUnchanged && paginationUnchanged
             ? projection
             : { ...projection, messages: reconciled, pagination };
@@ -234,11 +207,11 @@ export function createThreadHistorySlice(
         ) {
           get().clearCodexLiveTurn(threadId, cached.runId);
         }
+        return applied && requests.isCurrent(historyReadVersion) ? "ready" : "stale";
       } catch (error) {
         logger.error("Failed to load messages", { error: String(error) });
         if (!requests.isCurrent(historyReadVersion)) {
-          clearStaleLoading(threadId, historyReadVersion, "initial");
-          return;
+          return "stale";
         }
         if (isInitialLoad) {
           get().updateThreadHistory(threadId, (projection) => ({
@@ -251,8 +224,13 @@ export function createThreadHistorySlice(
             },
           }));
         }
+        return "error";
       } finally {
-        if (isInitialLoad) requests.finishInitial(historyReadVersion);
+        if (isInitialLoad && requests.finishInitial(historyReadVersion) && !get().threadTombstones[threadId]) {
+          get().updateThreadHistory(threadId, (projection) => projection.pagination.loadingInitial
+            ? { ...projection, pagination: { ...projection.pagination, loadingInitial: false, initialStatus: "idle" } }
+            : projection);
+        }
       }
     },
     reloadMessagesFromHistory: async (agentType, threadId) => {
@@ -268,7 +246,7 @@ export function createThreadHistorySlice(
       const requestProjection = get().threadProjections[threadId]?.messages ?? [];
       get().invalidateThread(threadId);
       const historyReadVersion = requests.begin(threadId);
-      const history = await getAgentHistoryAdapter(agentType).getFullHistory(threadId);
+      const history = await readHistoryWithTimeout(() => getAgentHistoryAdapter(agentType).getFullHistory(threadId));
       const { reconcileHistorySnapshot } = await loadHistorySync();
       if (!requests.isCurrent(historyReadVersion)) return [];
 
@@ -337,7 +315,7 @@ export function createThreadHistorySlice(
           for (const delay of agentType === "codex" ? CODEX_RECONCILE_DELAYS : [0]) {
             await wait(delay);
             requestProjection = get().threadProjections[threadId]?.messages ?? [];
-            page = await getHistoryPage(agentType, threadId, HISTORY_PAGE_SIZE);
+            page = await readHistoryWithTimeout(() => getHistoryPage(agentType, threadId, HISTORY_PAGE_SIZE));
             historicalMessages = filterRenderableHistoryMessages(page.messages);
             const cached = get().codexLiveTurns[threadId];
             cachedTurnId = cached?.runId === runId ? cached?.turnId : undefined;
@@ -384,26 +362,9 @@ export function createThreadHistorySlice(
             runId,
             turnId: cachedTurnId,
           }).messages;
-          const nextPagination = {
-            initialStatus: "ready" as const,
-            oldestSequence: page.oldestSequence,
-            snapshotSequence: page.snapshotSequence ?? null,
-            nextCursor: page.nextCursor,
-            hasMoreHistory: page.hasMore,
-            loadingInitial: false,
-            loadingMore: false,
-          };
-          const messagesUnchanged = areMessagesEquivalent(
-            projection.messages,
-            messages,
-          );
-          const paginationUnchanged =
-            projection.pagination.initialStatus === nextPagination.initialStatus &&
-            projection.pagination.oldestSequence === nextPagination.oldestSequence &&
-            projection.pagination.nextCursor === nextPagination.nextCursor &&
-            projection.pagination.hasMoreHistory === nextPagination.hasMoreHistory &&
-            projection.pagination.loadingInitial === nextPagination.loadingInitial &&
-            projection.pagination.loadingMore === nextPagination.loadingMore;
+          const nextPagination = paginationAfterSnapshot(agentType, threadId, projection, page, messages);
+          const messagesUnchanged = areMessagesEquivalent(projection.messages, messages);
+          const paginationUnchanged = samePagination(projection.pagination, nextPagination);
           if (messagesUnchanged && paginationUnchanged) return projection;
           return {
             ...projection,
@@ -448,32 +409,27 @@ export function createThreadHistorySlice(
       ) {
         return;
       }
-      const historyReadVersion = requests.begin(threadId);
+      const historyReadVersion = requests.begin(threadId, "more");
       get().updateThreadHistory(threadId, (projection) => ({
         ...projection,
         pagination: { ...projection.pagination, loadingMore: true },
       }));
       try {
-        const page = await getHistoryPage(
+        const page = await readHistoryWithTimeout(() => getHistoryPage(
           agentType, threadId, HISTORY_PAGE_SIZE, current.pagination.nextCursor,
-        );
+        ));
         if (!requests.isCurrent(historyReadVersion)) {
-          clearStaleLoading(threadId, historyReadVersion, "more");
           return;
         }
         const messages = filterRenderableHistoryMessages(page.messages);
+        const latest = get().threadProjections[threadId];
+        if (latest?.pagination.nextCursor !== current.pagination.nextCursor) return;
+        if (latest.pagination.snapshotSequence != null && page.snapshotSequence != null &&
+          latest.pagination.snapshotSequence !== page.snapshotSequence) throw new HistoryChangedError();
         get().updateThreadHistory(threadId, (projection) => {
-          if (!requests.isCurrent(historyReadVersion)) return projection;
+          if (!requests.isCurrent(historyReadVersion) ||
+            projection.pagination.nextCursor !== current.pagination.nextCursor) return projection;
           const currentSnapshot = projection.pagination.snapshotSequence;
-          if (
-            currentSnapshot != null && page.snapshotSequence != null &&
-            currentSnapshot !== page.snapshotSequence
-          ) {
-            return {
-              ...projection,
-              pagination: { ...projection.pagination, loadingMore: false },
-            };
-          }
           return {
             ...projection,
             messages: prependHistoricalMessages(
@@ -482,8 +438,8 @@ export function createThreadHistorySlice(
               agentType,
             ),
             pagination: {
-              oldestSequence:
-                page.oldestSequence ?? projection.pagination.oldestSequence,
+              ...projection.pagination,
+              oldestSequence: page.oldestSequence,
               snapshotSequence:
                 page.snapshotSequence ?? currentSnapshot ?? null,
               nextCursor: page.nextCursor,
@@ -494,19 +450,22 @@ export function createThreadHistorySlice(
           };
         });
       } catch (error) {
-        if (!requests.isCurrent(historyReadVersion)) {
-          clearStaleLoading(threadId, historyReadVersion, "more");
+        if (!requests.isCurrent(historyReadVersion) ||
+          get().threadProjections[threadId]?.pagination.nextCursor !== current.pagination.nextCursor) {
           return;
         }
-        get().updateThreadHistory(threadId, (projection) => ({
-          ...projection,
-          pagination: { ...projection.pagination, loadingMore: false },
-        }));
         if (error instanceof HistoryChangedError) {
           await get().loadMessages(agentType, threadId);
           return;
         }
         logger.error("Failed to load more messages", { error: String(error) });
+      } finally {
+        // Loading belongs to this page request, even when a snapshot read wins.
+        if (requests.isLatest(historyReadVersion) && !get().threadTombstones[threadId]) {
+          get().updateThreadHistory(threadId, (projection) => projection.pagination.loadingMore
+            ? { ...projection, pagination: { ...projection.pagination, loadingMore: false } }
+            : projection);
+        }
       }
     },
   };

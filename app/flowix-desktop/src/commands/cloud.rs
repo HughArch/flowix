@@ -18,7 +18,8 @@ use flowix_core::memo_file::{notebook_path_from_relative, notebook_relative_path
 use flowix_sync::{
     v2_content_hash, v2_local_content_diverged, CloudAiCreditBalance, CloudCheckout,
     CloudMembership, CloudNotebook, CloudOrder, CloudOrderCheck, CloudProduct, CloudState,
-    SyncError, V2AccountSyncReport, V2LocalNote, V2LocalNotebook, V2RemoteApply, V2SyncedNotebook,
+    CloudSubscription, SyncError, V2AccountSyncReport, V2LocalNote, V2LocalNotebook, V2RemoteApply,
+    V2SyncedNotebook,
 };
 use once_cell::sync::Lazy;
 use serde::Serialize;
@@ -408,6 +409,18 @@ pub async fn cloud_ai_credit_balance(
 }
 
 #[tauri::command]
+pub async fn cloud_pi_model_availability(
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    state
+        .cloud_sync
+        .ai_model_availability()
+        .await
+        .map(|availability| availability.enabled)
+        .map_err(sync_error)
+}
+
+#[tauri::command]
 pub async fn cloud_connect_pi_model_provider(
     app: AppHandle,
     state: State<'_, AppState>,
@@ -457,6 +470,25 @@ pub async fn cloud_check_billing_order(
     state
         .cloud_sync
         .check_billing_order(&order_id)
+        .await
+        .map_err(sync_error)
+}
+
+#[tauri::command]
+pub async fn cloud_list_subscriptions(
+    state: State<'_, AppState>,
+) -> Result<Vec<CloudSubscription>, String> {
+    state.cloud_sync.subscriptions().await.map_err(sync_error)
+}
+
+#[tauri::command]
+pub async fn cloud_cancel_subscription(
+    subscription_id: String,
+    state: State<'_, AppState>,
+) -> Result<(), String> {
+    state
+        .cloud_sync
+        .cancel_subscription(&subscription_id)
         .await
         .map_err(sync_error)
 }

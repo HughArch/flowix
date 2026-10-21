@@ -8,7 +8,7 @@ const client = vi.hoisted(() => ({
   getOpenCodeThreadPage: vi.fn(),
 }));
 vi.mock("@features/agent/store/agent-client", () => ({ agentClient: client }));
-import { getAgentHistoryAdapter, HistoryChangedError } from "./agent-history-adapters";
+import { attachHistoryCursor, rebaseHistoryCursor, getAgentHistoryAdapter, HistoryChangedError } from "./agent-history-adapters";
 
 const revision: PiHistoryRevision = { sessionId: "native-session", appendCursor: "append-last", leafId: "leaf" };
 
@@ -123,5 +123,21 @@ describe.each([
       .mockResolvedValueOnce({ messages: [{ id: "same" }], oldestSequence: 51, snapshotSequence: 100, hasMore: true });
     await expect(getAgentHistoryAdapter(runtime).getFullHistory("thread"))
       .rejects.toThrow(/did not move/);
+  });
+});
+
+
+it("rebases a Pi cursor revision without moving its native older boundary", () => {
+  const oldPage = { messages: [], oldestSequence: 10, snapshotSequence: 20, hasMore: true,
+    piBeforeEntryId: "oldest-loaded-entry", piRevision: revision };
+  const cursor = attachHistoryCursor("pi", "thread", oldPage).nextCursor!;
+  const nextRevision = { ...revision, leafId: "new-leaf", appendCursor: "new-append" };
+  const rebased = rebaseHistoryCursor("pi", "thread", cursor, {
+    ...oldPage, oldestSequence: 30, snapshotSequence: 40,
+    piBeforeEntryId: "latest-page-entry", piRevision: nextRevision,
+  })!;
+  expect(JSON.parse(decodeURIComponent(rebased))).toMatchObject({
+    beforeSequence: 10, snapshotSequence: 40,
+    piBeforeEntryId: "oldest-loaded-entry", piRevision: nextRevision,
   });
 });

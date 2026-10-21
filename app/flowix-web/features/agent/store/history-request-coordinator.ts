@@ -8,6 +8,7 @@ export interface HistoryBinding {
 export interface HistoryRequest {
   threadId: string;
   version: number;
+  kind: "snapshot" | "more";
   epoch: number;
   binding: HistoryBinding;
 }
@@ -19,6 +20,7 @@ interface HistoryRequestState {
 }
 
 interface InitialRead {
+  request: HistoryRequest;
   requestedAgentType: AgentTypeKey;
   binding: HistoryBinding;
 }
@@ -26,6 +28,7 @@ interface InitialRead {
 /** Local request bookkeeping. None of these values is conversation state. */
 export function createHistoryRequestCoordinator(state: HistoryRequestState) {
   const versions = new Map<string, number>();
+  const key = (threadId: string, kind: HistoryRequest["kind"]) => JSON.stringify([threadId, kind]);
   const initialReads = new Map<string, InitialRead>();
   const codexReconciles = new Map<string, Map<string, Promise<void>>>();
 
@@ -33,21 +36,22 @@ export function createHistoryRequestCoordinator(state: HistoryRequestState) {
     binding(threadId: string): HistoryBinding {
       return state.binding(threadId);
     },
-    begin(threadId: string): HistoryRequest {
-      const version = (versions.get(threadId) ?? 0) + 1;
-      versions.set(threadId, version);
-      return { threadId, version, epoch: state.epoch(threadId), binding: state.binding(threadId) };
+    begin(threadId: string, kind: HistoryRequest["kind"] = "snapshot"): HistoryRequest {
+      const requestKey = key(threadId, kind);
+      const version = (versions.get(requestKey) ?? 0) + 1;
+      versions.set(requestKey, version);
+      return { threadId, kind, version, epoch: state.epoch(threadId), binding: state.binding(threadId) };
     },
     isCurrent(request: HistoryRequest): boolean {
       const binding = state.binding(request.threadId);
       return !state.isDeleted(request.threadId) &&
-        versions.get(request.threadId) === request.version &&
+        versions.get(key(request.threadId, request.kind)) === request.version &&
         state.epoch(request.threadId) === request.epoch &&
         binding.providerSessionId === request.binding.providerSessionId &&
         binding.agentType === request.binding.agentType;
     },
     isLatest(request: HistoryRequest): boolean {
-      return versions.get(request.threadId) === request.version;
+      return versions.get(key(request.threadId, request.kind)) === request.version;
     },
     hasInitial(threadId: string, requestedAgentType: AgentTypeKey, binding: HistoryBinding): boolean {
       const pending = initialReads.get(threadId);
@@ -55,11 +59,13 @@ export function createHistoryRequestCoordinator(state: HistoryRequestState) {
         pending.binding.providerSessionId === binding.providerSessionId &&
         pending.binding.agentType === binding.agentType;
     },
-    startInitial(threadId: string, requestedAgentType: AgentTypeKey, binding: HistoryBinding): void {
-      initialReads.set(threadId, { requestedAgentType, binding });
+    startInitial(request: HistoryRequest, requestedAgentType: AgentTypeKey, binding: HistoryBinding): void {
+      initialReads.set(request.threadId, { request, requestedAgentType, binding });
     },
-    finishInitial(request: HistoryRequest): void {
-      if (versions.get(request.threadId) === request.version) initialReads.delete(request.threadId);
+    finishInitial(request: HistoryRequest): boolean {
+      if (initialReads.get(request.threadId)?.request !== request) return false;
+      initialReads.delete(request.threadId);
+      return true;
     },
     reconcileCodex(threadId: string, runId: string, execute: () => Promise<void>): Promise<void> {
       const pending = codexReconciles.get(threadId) ?? new Map<string, Promise<void>>();

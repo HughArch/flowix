@@ -7,6 +7,7 @@ import {
   historyCoversLiveTurn,
   historyConfirmsLiveMessages,
   mergeHistoricalMessages,
+  prependHistoricalMessages,
   mergeLiveMessagesIntoRenderableMessages,
   mergeMessagesForThreadRender,
   replaceCompletedRunWithHistory,
@@ -763,5 +764,32 @@ describe("message dedup keys (content fingerprint)", () => {
     // JSON.stringify over 2MB repeated content would dominate this budget.
     // Fingerprint should stay comfortably under 200ms even on slow CI.
     expect(elapsed).toBeLessThan(2000);
+  });
+});
+
+
+describe("prependHistoricalMessages identities", () => {
+  const row = (id: string): ChatMessage => message(id, "assistant", id, "2026-01-01T00:00:00Z");
+
+  it("deduplicates overlaps, repeated page rows and render aliases while keeping existing references", () => {
+    const visible = { ...row("native-current"), renderKey: "stable-current" };
+    const current = [visible];
+    const older = { ...row("older"), renderKey: "stable-older" };
+    const result = prependHistoricalMessages(current, [
+      older,
+      { ...older, renderKey: "another-render-key" },
+      { ...row("older-alias"), renderKey: "stable-older" },
+      { ...visible, renderKey: "history-current" },
+      { ...row("current-alias"), renderKey: "stable-current" },
+    ]);
+    expect(result).toEqual([older, visible]);
+    expect(result[1]).toBe(visible);
+    expect(prependHistoricalMessages(current, [{ ...visible }])).toBe(current);
+  });
+
+  it("deduplicates the first page while preserving distinct Pi blocks from one native message", () => {
+    const first = { ...row("entry:block:0"), messageId: "entry", piBlockIndex: 0 };
+    const second = { ...row("entry:block:2"), messageId: "entry", piBlockIndex: 2 };
+    expect(prependHistoricalMessages([], [first, { ...first }, second], "pi")).toEqual([first, second]);
   });
 });

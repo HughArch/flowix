@@ -27,7 +27,10 @@ import {
 } from "@features/agent/runtime/agent-runtime-spec";
 import { modelPreferenceKey, useAgentDataStore, type AgentModelCatalog } from "@features/agent/store/agent-data-store";
 import { useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-store";
-import { loadAgentModelCatalog } from "@features/agent/services/agent-catalog-service";
+import {
+  loadAgentModelCatalog,
+} from "@features/agent/services/agent-catalog-service";
+import { loadPiCloudModelCatalog } from "@features/agent/services/pi-cloud-model-service";
 import { useAgentRuntimeStore } from "@features/agent/store/agent-runtime-store";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
 import { useNoteStore } from "@features/memo/store/note-store";
@@ -242,6 +245,7 @@ export class ExternalAgentSettingsController {
   private localSupportedModelsTypeKey: AgentTypeKey | null = null;
   private localSupportedModels: AgentModelOption[] = [];
   private readonly unlistenCodexSettings: UnlistenFn;
+  private readonly unlistenPiCatalog: () => void;
   private readonly featuredNotes: FeaturedNotesController;
 
   readonly boundPosition = (): void => {
@@ -268,6 +272,12 @@ export class ExternalAgentSettingsController {
       "codex-thread-settings-updated",
       (payload) => { void this.applyCodexSettingsNotification(payload); },
     );
+    this.unlistenPiCatalog = useAgentDataStore.subscribe((state, previous) => {
+      if (this.getTypeKey() !== "pi") return;
+      if (state.piCloudAccountId === previous.piCloudAccountId
+        && state.agents.pi.catalog.models === previous.agents.pi.catalog.models) return;
+      this.applyModelCatalog("pi", state.agents.pi.catalog.models);
+    });
   }
 
   private async applyCodexSettingsNotification(
@@ -462,6 +472,10 @@ export class ExternalAgentSettingsController {
 
   loadDefaultModel(force = false): void {
     const typeKey = this.getTypeKey();
+    if (typeKey === "pi") {
+      this.loadPiModelCatalog(force);
+      return;
+    }
     const cached = useAgentDataStore.getState().agents[typeKey].catalog.models;
     if (cached.items.length) this.applyModelCatalog(typeKey, cached);
 
@@ -469,7 +483,6 @@ export class ExternalAgentSettingsController {
       .then((catalog) => this.applyModelCatalog(typeKey, catalog))
       .catch(() => {
         if (this.isDestroyed() || this.getTypeKey() !== typeKey) return;
-        if (typeKey === "pi") this.piModelsLoadFailed = !cached.items.length;
         if (!cached.items.length) {
           this.localSupportedModelsTypeKey = typeKey;
           this.localSupportedModels = [];
@@ -482,8 +495,28 @@ export class ExternalAgentSettingsController {
       });
   }
 
+  private loadPiModelCatalog(force: boolean): void {
+    const cached = useAgentDataStore.getState().agents.pi.catalog.models;
+    if (cached.items.length) this.applyModelCatalog("pi", cached);
+
+    void loadPiCloudModelCatalog({ force })
+      .then((catalog) => this.applyModelCatalog("pi", catalog))
+      .catch(() => {
+        if (this.isDestroyed() || this.getTypeKey() !== "pi") return;
+        if (!cached.items.length) this.piModelsLoadFailed = true;
+        this.refreshEmptySettings();
+        if (this.open && this.kind === "model") {
+          this.renderPopover();
+          this.schedulePosition();
+        }
+      });
+  }
+
   private applyModelCatalog(typeKey: AgentTypeKey, catalog: AgentModelCatalog): void {
     if (this.isDestroyed() || this.getTypeKey() !== typeKey) return;
+    // Pi's session-aware store is authoritative, including an empty directory
+    // after logout. A late promise must not revive the controller's old copy.
+    if (typeKey === "pi") catalog = useAgentDataStore.getState().agents.pi.catalog.models;
     this.localSupportedModelsTypeKey = typeKey;
     this.localSupportedModels = catalog.items as AgentModelOption[];
     if (typeKey === "codex") this.codexDefaultModel = catalog.defaultModel ?? "";
@@ -1489,6 +1522,7 @@ export class ExternalAgentSettingsController {
   dispose(): void {
     this.featuredNotes.dispose();
     this.unlistenCodexSettings();
+    this.unlistenPiCatalog();
     this.setSettingsPopoverOpen(false);
     this.stopPositionTracking();
     document.removeEventListener("pointerdown", this.handleOutsidePointer, true);
@@ -1634,6 +1668,22 @@ export class ExternalAgentSettingsController {
     this.writeRuntimeSetting("model", option.id, option.providerId);
   }
 
+  private selectExternalAgentModel(option: AgentModelOption): void {
+    if (this.getTypeKey() === "pi" && isFlowixCloudModelOption(option)) {
+      const state = useAgentDataStore.getState();
+      const isAvailableInCurrentSession = state.piCloudAccountId !== null
+        && state.agents.pi.catalog.models.items.some((model) =>
+          isFlowixCloudModelOption(model)
+          && model.id === option.id
+          && (model.providerId ?? "") === (option.providerId ?? ""),
+        );
+      if (!isAvailableInCurrentSession) return;
+      // Credit access is checked atomically by Cloud when a request starts.
+    }
+    this.setExternalAgentModel(option);
+    this.setSettingsPopoverOpen(false);
+  }
+
   // Returns the legacy inherit option label when a real default model is
   // available. Codex now renders the actual default model instead of this
   // synthetic label; DeepSeek Harness deliberately does not use inherit.
@@ -1678,6 +1728,7 @@ export class ExternalAgentSettingsController {
 
   private getLoadedModelOptions(): AgentModelOption[] {
     const catalogOptions = useAgentDataStore.getState().agents[this.getTypeKey()].catalog.models.items;
+    if (this.getTypeKey() === "pi") return catalogOptions as AgentModelOption[];
     if (catalogOptions.length > 0) return catalogOptions as AgentModelOption[];
     const localOptions =
       this.localSupportedModelsTypeKey === this.getTypeKey()
@@ -1983,16 +2034,15 @@ export class ExternalAgentSettingsController {
     if (this.getTypeKey() === "pi") {
       const picker = createPiModelPicker({
         models: options,
-        showMemberTab: this.getLoadedModelOptions().some(isFlowixCloudModelOption),
+        showMemberSection: this.getLoadedModelOptions().some(isFlowixCloudModelOption),
         selectedModelId: current,
         selectedProviderId: currentProviderId,
-        memberLabel: this.t("agent.pi.modelTab.member"),
-        mineLabel: this.t("agent.pi.modelTab.mine"),
-        modelLabel: this.t("agent.model.title"),
+        memberLabel: this.t("preferences.pi.cloudTitle"),
+        mineLabel: this.t("preferences.pi.byokTitle"),
         emptyLabel: this.t(
           this.piModelsLoadFailed ? "agent.model.loadFailed" : "agent.model.noneFound",
         ),
-        personalEmptyLabel: this.t("agent.pi.modelTab.mineEmpty"),
+        personalEmptyLabel: this.t("agent.pi.modelSection.mineEmpty"),
         createModelItem: (option) => this.createModelSettingsItem(option, current, currentProviderId),
       });
       this.popover.append(picker);
@@ -2211,8 +2261,7 @@ export class ExternalAgentSettingsController {
       option.id === current
         && (option.providerId ?? "") === (currentProviderId ?? ""),
       () => {
-        this.setExternalAgentModel(option);
-        this.setSettingsPopoverOpen(false);
+        void this.selectExternalAgentModel(option);
       },
       description,
       { icon: modelProviderIcon(option.iconUrl) },

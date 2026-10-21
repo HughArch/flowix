@@ -4,6 +4,7 @@ import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, typ
 import { ArchiveIcon, PencilSimpleIcon, SquareSplitHorizontalIcon, StarIcon, TrashSimpleIcon } from '@phosphor-icons/react';
 import { ArrowRight, ChevronRight, MoreHorizontal, Plus } from 'lucide-react';
 import { AgentIcon } from '@features/agent/components/agent-icon';
+import { AgentConversationTypeMenuItems } from '@features/agent/components/agent-conversation-type-menu-items';
 import { useNewConversationAgentSelection } from '@features/agent/hooks/use-new-conversation-agent-selection';
 import {
   createAndOpenAgentConversation,
@@ -284,19 +285,10 @@ export function AgentTasksSection({
               <DropdownMenuLabel className="flex items-center gap-1.5 px-[0.375rem] pb-[0.35rem] pt-[0.35rem] text-xs font-normal leading-[1.2] text-[var(--muted-foreground)]">
                 {t('agent.chat.newThread')}
               </DropdownMenuLabel>
-              {newConversationSelection.options.map((type) => {
-                const name = type.nameKey ? t(type.nameKey as Parameters<typeof t>[0]) : type.name;
-                return (
-                  <DropdownMenuItem
-                    key={type.id}
-                    onClick={() => createConversation(type.id)}
-                    className="agent-conversation-new-agent-item group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
-                  >
-                    <AgentIcon typeKey={type.id} alt="" className="h-4 w-4 shrink-0 object-contain" />
-                    <span className="min-w-0 flex-1 truncate">{name}</span>
-                  </DropdownMenuItem>
-                );
-              })}
+              <AgentConversationTypeMenuItems
+                options={newConversationSelection.options}
+                onSelect={createConversation}
+              />
             </DropdownMenuContent>
           </DropdownMenu>
         </div>

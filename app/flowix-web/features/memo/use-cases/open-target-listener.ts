@@ -4,6 +4,7 @@ import { subscribe, type UnlistenFn } from '@platform/tauri/event-bus';
 
 import { openNotebookById, openNoteByDeepLink } from './open-by-target';
 import { toast } from '@/lib/toast';
+import { subscribePendingOpenTargets } from '@platform/open-target/pending-requests';
 
 let currentNotebookUnlisten: UnlistenFn | null = null;
 let currentPathUnlisten: UnlistenFn | null = null;
@@ -15,13 +16,18 @@ function isMainWindow(): boolean {
 }
 
 /** Repeated mounts replace the previous subscriptions. */
-export function mountOpenTargetListener(): void {
+export function mountOpenTargetListener(whenReady: Promise<void> = Promise.resolve()): void {
   currentPathUnlisten?.();
-  currentPathUnlisten = subscribe<string>('flowix:open-path', (path) => {
-    if (isMainWindow()) void openNoteByDeepLink(path).catch((error) => {
+  currentPathUnlisten = subscribePendingOpenTargets('path', async ({ target }) => {
+    if (!isMainWindow()) return;
+    if (target.kind === 'error') { toast.error(target.message); return; }
+    if (target.kind !== 'path') return;
+    await whenReady;
+    try { await openNoteByDeepLink(target.path); }
+    catch (error) {
       console.warn('[openByTarget] path open failed:', error);
       toast.error(error instanceof Error ? error.message : String(error));
-    });
+    }
   });
   currentNotebookUnlisten?.();
   currentNotebookUnlisten = subscribe<string>('flowix:open-notebook', (notebookId) => {

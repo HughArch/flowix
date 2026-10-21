@@ -60,6 +60,7 @@ export interface OpenExternalTargetOptions {
   notebookId?: string | null;
   markdownLocation?: MarkdownLocation | null;
   initialFocus?: 'title' | 'body';
+  treeReveal?: 'created-note';
 }
 
 export interface OpenMediaTargetParams {
@@ -118,6 +119,7 @@ function pendingExternalTarget(
   return {
     kind: 'external',
     path: path ?? '',
+    ...(options?.treeReveal ? { treeReveal: options.treeReveal } : {}),
     scopePath: options?.scopePath ? canonicalPath(options.scopePath) : null,
     transitionId: null,
   };
@@ -811,6 +813,7 @@ function publishExternalTargetIfCurrent(
   scopePath: string | null,
   fileBrowser?: import('../store/file-browser-target').FileBrowserContext,
   history: 'push' | 'skip' = 'push',
+  treeReveal?: 'created-note',
 ): boolean {
   const document = getWorkspaceDocumentState();
   const session = document.activeExternalSession;
@@ -824,6 +827,7 @@ function publishExternalTargetIfCurrent(
   return commitNavigation(requestId, {
     kind: 'external',
     path: session.fileIdentity.path,
+    ...(treeReveal ? { treeReveal } : {}),
     ...(fileBrowser ? { fileBrowser } : {}),
     scopePath: session.scopePath,
     transitionId: session.transitionId,
@@ -964,6 +968,7 @@ export async function openExternalTarget(
         scopePath,
         fileBrowser,
         options?.history ?? 'push',
+        options?.treeReveal,
       )) {
         throw new Error(`External document session was not committed: ${path}`);
       }

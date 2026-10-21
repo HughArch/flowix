@@ -2,6 +2,7 @@ import type { I18nKey } from "@/lib/i18n";
 import {
   createChevronIcon,
   createFullscreenIcon,
+  createOpenInColumnIcon,
   createTrashIcon,
 } from "@features/agent/thread-card/agent-thread-card-icons";
 import { createAgentComposerDom } from "@features/agent/thread-card/composer";
@@ -13,6 +14,7 @@ export interface AgentThreadCardDomFactoryOptions {
   onCardMouseDown: (event: MouseEvent) => void;
   onTitleDoubleClick: (event: MouseEvent) => void;
   onDeleteClick: (event: MouseEvent) => void;
+  onOpenInBrowserColumnClick: (event: MouseEvent) => void;
   onFullscreenClick: (event: MouseEvent) => void;
   onCollapseClick: (event: MouseEvent) => void;
   onBodyClick: (event: MouseEvent) => void;
@@ -37,6 +39,7 @@ export interface AgentThreadCardDomParts {
   runStatusEl: HTMLSpanElement;
   actionsDivider: HTMLSpanElement;
   deleteButton: HTMLButtonElement;
+  openInBrowserColumnButton: HTMLButtonElement;
   fullscreenButton: HTMLButtonElement;
   collapseButton: HTMLButtonElement;
   body: HTMLElement;
@@ -115,6 +118,18 @@ export function createAgentThreadCardDom(
   deleteButton.append(createTrashIcon());
   deleteButton.addEventListener("click", options.onDeleteClick);
 
+  const openInBrowserColumnButton = document.createElement("button");
+  openInBrowserColumnButton.type = "button";
+  openInBrowserColumnButton.className =
+    "agent-thread-card__icon-btn agent-thread-card__open-in-browser-column";
+  openInBrowserColumnButton.setAttribute(
+    "aria-label",
+    options.t("editor.threadCard.openInBrowserColumn"),
+  );
+  openInBrowserColumnButton.title = options.t("editor.threadCard.openInBrowserColumn");
+  openInBrowserColumnButton.append(createOpenInColumnIcon());
+  openInBrowserColumnButton.addEventListener("click", options.onOpenInBrowserColumnClick);
+
   const fullscreenButton = document.createElement("button");
   fullscreenButton.type = "button";
   fullscreenButton.className =
@@ -144,6 +159,7 @@ export function createAgentThreadCardDom(
 
   actions.append(
     metaEl,
+    openInBrowserColumnButton,
     deleteButton,
     actionsDivider,
     fullscreenButton,
@@ -258,6 +274,7 @@ export function createAgentThreadCardDom(
     runStatusEl,
     actionsDivider,
     deleteButton,
+    openInBrowserColumnButton,
     fullscreenButton,
     collapseButton,
     body,

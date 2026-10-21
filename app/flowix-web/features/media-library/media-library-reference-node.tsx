@@ -287,8 +287,8 @@ function MediaLibraryDatasetPopover({ document, notebook, filePath, editable, bu
           <div className={`rounded-lg transition-colors ${filterMenuOpen ? 'bg-[var(--hover-bg)]' : 'hover:bg-[var(--hover-bg)]'}`}>
             <PopoverTrigger asChild>
               <button type="button" className="flex h-8 w-full items-center justify-between rounded-lg px-1.5 text-left text-sm hover:text-[var(--foreground)] data-[state=open]:text-[var(--foreground)]">
-                <span>数据条件</span>
-                <span className="flex items-center gap-1 text-sm text-[var(--muted-foreground)]">
+                <span>过滤</span>
+                <span className="flex items-center gap-1 text-xs text-[var(--muted-foreground)]">
                   {fileName.trim() || fileType !== 'any' ? '已设置' : '未设置'}
                   <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
                 </span>

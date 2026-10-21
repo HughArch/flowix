@@ -57,6 +57,7 @@ interface DropdownMenuContentProps {
 	sideOffset?: number;
 	className?: string;
 	style?: React.CSSProperties;
+	keepParentMenuOpen?: boolean;
 	// Content 经 portal 渲染到 body, 触发器的 onMouseLeave 在其移入菜单时会先触发;
 	// 由调用方配合延迟关闭实现 hover 型下拉窗。
 	onMouseEnter?: React.MouseEventHandler<HTMLDivElement>;
@@ -190,6 +191,7 @@ function DropdownMenuContent({
 	sideOffset = 4,
 	className,
 	style,
+	keepParentMenuOpen = false,
 	onMouseEnter,
 	onMouseLeave,
 }: DropdownMenuContentProps) {
@@ -301,6 +303,7 @@ function DropdownMenuContent({
 			ref={contentRef}
 				data-flowix-list-column-overlay={belongsToListColumnPreview ? "" : undefined}
 				data-flowix-surface="popover"
+			data-flowix-menu-child={keepParentMenuOpen ? "" : undefined}
 			onMouseEnter={onMouseEnter}
 			onMouseLeave={onMouseLeave}
 			className={cn(

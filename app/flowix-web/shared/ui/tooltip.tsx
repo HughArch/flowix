@@ -6,6 +6,7 @@ import { ShortcutKbd } from "@shared/ui/shortcut-kbd"
 
 type TooltipSide = "top" | "right" | "bottom" | "left"
 type TooltipAlign = "start" | "center" | "end"
+type TooltipPositionerProps = React.ComponentProps<typeof TooltipPrimitive.Positioner>
 
 interface TooltipProviderProps {
   children: React.ReactNode
@@ -41,6 +42,8 @@ interface TooltipProps extends Omit<React.HTMLAttributes<HTMLElement>, "content"
   side?: TooltipSide
   align?: TooltipAlign
   sideOffset?: number
+  anchor?: TooltipPositionerProps["anchor"]
+  positionMethod?: TooltipPositionerProps["positionMethod"]
   disabled?: boolean
   className?: string
 }
@@ -81,6 +84,8 @@ const Tooltip = React.forwardRef<HTMLElement, TooltipProps>(function Tooltip({
   side = "top",
   align = "center",
   sideOffset = 6,
+  anchor,
+  positionMethod,
   disabled,
   className,
   onClick,
@@ -114,6 +119,8 @@ const Tooltip = React.forwardRef<HTMLElement, TooltipProps>(function Tooltip({
       <TooltipPrimitive.Trigger render={trigger} />
       <TooltipPrimitive.Portal>
         <TooltipPrimitive.Positioner
+          anchor={anchor}
+          positionMethod={positionMethod}
           side={side}
           align={align}
           sideOffset={sideOffset}

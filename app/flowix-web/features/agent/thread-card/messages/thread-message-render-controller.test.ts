@@ -1,7 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { AgentTypeKey } from "@/types/agent";
 import { ThreadMessageRenderController } from "@features/agent/thread-card/messages/thread-message-render-controller";
-import { MessageViewportController } from "@features/agent/thread-card/messages/message-viewport-controller";
+import { MessageViewportController, type MessageViewportControllerOptions } from "@features/agent/thread-card/messages/message-viewport-controller";
 
 vi.mock("@tauri-apps/api/event", () => ({
   listen: vi.fn(async () => () => {}),
@@ -10,6 +10,7 @@ vi.mock("@tauri-apps/api/event", () => ({
 function createController(
   typeKey: AgentTypeKey,
   existing?: { body: HTMLElement; loadingIndicator: HTMLDivElement },
+  viewportOptions?: Partial<MessageViewportControllerOptions>,
 ) {
   const body = existing?.body ?? document.createElement("div");
   const loadingIndicator = existing?.loadingIndicator ?? document.createElement("div");
@@ -40,6 +41,7 @@ function createController(
     getRuntimeThreadId: () => null,
     getConversationMessageState: () => null,
     loadMoreMessages: vi.fn(),
+    ...viewportOptions,
   });
 
   const createExternalAgentEmptySettings = vi.fn(() => {
@@ -69,6 +71,7 @@ function createController(
     body,
     loadingIndicator,
     controller,
+    messageViewport,
     createExternalAgentEmptySettings,
   };
 }
@@ -801,4 +804,114 @@ describe("ThreadMessageRenderController tool group regions", () => {
       vi.unstubAllGlobals();
     }
   });
+});
+
+
+it("anchors a history prepend to the current visible row while other content grows", () => {
+  let loadingMore = false;
+  let extraHeight = 0;
+  const loadMoreMessages = vi.fn(() => { loadingMore = true; });
+  const { body, controller, messageViewport } = createController("codex", undefined, {
+    getRuntimeThreadId: () => "thread",
+    getConversationMessageState: () => ({ loadingMore, hasMoreHistory: true, oldestSequence: 10 }),
+    loadMoreMessages,
+  });
+  const row = (id: string) => ({ id, role: "assistant" as const, content: id,
+    timestamp: "2026-01-01T00:00:00Z", isCompleted: true });
+  const current = [row("first"), row("second"), row("third")];
+  Object.defineProperties(body, {
+    clientHeight: { value: 100 },
+    scrollHeight: { get: () => (body.querySelector(".agent-thread-card__messages")?.children.length ?? 0) * 100 + extraHeight },
+  });
+  const render = (messages: typeof current) => controller.render({
+    messages, isLoading: false, shouldRenderMessages: true,
+    isThreadCachePresentationHidden: false, isThreadCacheLoading: false,
+  });
+  render(current);
+  const list = body.querySelector(".agent-thread-card__messages")!;
+  const first = list.children[0];
+  for (const child of Array.from(list.children)) {
+    child.getBoundingClientRect = () => new DOMRect(0,
+      Array.from(list.children).indexOf(child) * 100 - body.scrollTop, 400, 100);
+  }
+  body.scrollTop = 20;
+  messageViewport.handleScroll();
+  expect(loadMoreMessages).toHaveBeenCalledOnce();
+  // The reader moves while the RPC is pending; unrelated height below the
+  // viewport changes too. Only the inserted row should offset the reader.
+  body.scrollTop = 80;
+  messageViewport.handleScroll();
+  extraHeight = 200;
+  render([row("older"), ...current]);
+  expect(body.querySelector(".agent-thread-card__messages")).toBe(list);
+  expect(list.children[1]).toBe(first);
+  expect(body.scrollTop).toBe(180);
+  controller.dispose();
+});
+
+
+it.each(["missing", "extra", "duplicate"])("repairs a %s DOM row without remounting the history list", (damage) => {
+  const { body, controller } = createController("claudecode");
+  const row = (id: string) => ({ id, role: "assistant" as const, content: id,
+    timestamp: "2026-01-01T00:00:00Z", isCompleted: true });
+  const current = [row("first"), row("second"), row("third")];
+  const render = (messages: typeof current) => controller.render({
+    messages, isLoading: false, shouldRenderMessages: true,
+    isThreadCachePresentationHidden: false, isThreadCacheLoading: false,
+  });
+  render(current);
+  const list = body.querySelector(".agent-thread-card__messages")!;
+  const first = list.children[0];
+  const second = list.children[1];
+  const third = list.children[2];
+  if (damage === "missing") list.children[0].remove();
+  if (damage === "extra") list.prepend(document.createElement("div"));
+  if (damage === "duplicate") list.prepend(list.children[0].cloneNode(true));
+  render([row("older"), ...current]);
+  expect(body.querySelector(".agent-thread-card__messages")).toBe(list);
+  expect(list.children).toHaveLength(4);
+  if (damage !== "missing") expect(list.children[1]).toBe(first);
+  expect(list.children[2]).toBe(second);
+  expect(list.children[3]).toBe(third);
+  expect(body.querySelector(".agent-thread-card__skeleton")).toBeNull();
+  controller.dispose();
+});
+
+it("keeps existing rows mounted when incoming history contains duplicate render keys", () => {
+  const { body, controller } = createController("pi");
+  const current = { id: "current", role: "assistant" as const, content: "current", timestamp: "2026-01-01T00:00:00Z" };
+  const older = { ...current, id: "older", renderKey: "older-stable", content: "older" };
+  const render = (messages: import("@/types").ChatMessage[]) => controller.render({
+    messages, isLoading: false, shouldRenderMessages: true,
+    isThreadCachePresentationHidden: false, isThreadCacheLoading: false,
+  });
+  render([current]);
+  const list = body.querySelector(".agent-thread-card__messages")!;
+  const retained = list.children[0];
+  render([older, { ...older, id: "older-alias" }, current]);
+  expect(body.querySelector(".agent-thread-card__messages")).toBe(list);
+  expect(list.children).toHaveLength(2);
+  expect(list.children[1]).toBe(retained);
+  controller.dispose();
+});
+
+
+it.each(["assistant", "tool"] as const)("retains a patched %s row through a later history prepend", (role) => {
+  const { body, controller } = createController("claudecode");
+  const prefix = { id: "user", role: "user" as const, content: "prompt", timestamp: "2026-01-01T00:00:00Z" };
+  const tail = { ...prefix, id: "tail", role, content: "initial", toolCallId: role === "tool" ? "call" : undefined };
+  const updated = { ...tail, content: "updated" };
+  const render = (messages: import("@/types").ChatMessage[]) => controller.render({
+    messages, isLoading: false, shouldRenderMessages: true,
+    isThreadCachePresentationHidden: false, isThreadCacheLoading: false,
+  });
+  render([prefix, tail]);
+  const list = body.querySelector(".agent-thread-card__messages")!;
+  const tailElement = list.lastElementChild;
+  render([prefix, updated]);
+  expect(list.lastElementChild).toBe(tailElement);
+  render([{ ...prefix, id: "older", content: "older" }, prefix, updated]);
+  expect(body.querySelector(".agent-thread-card__messages")).toBe(list);
+  expect(list.lastElementChild).toBe(tailElement);
+  controller.dispose();
 });

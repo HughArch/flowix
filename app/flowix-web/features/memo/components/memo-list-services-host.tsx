@@ -39,8 +39,8 @@ import { Kbd } from '@shared/ui/kbd';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@shared/ui/select';
 import { LazyGlobalSearchCommand } from '@features/memo/components/lazy-global-search-command';
-import { subscribe } from '@platform/tauri/event-bus';
 import { externalDocuments } from '@platform/tauri/client';
+import { subscribePendingOpenTargets } from '@platform/open-target/pending-requests';
 import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { documentIdentityFromFile, saveWorkspaceDocumentPath } from '@features/document/public/workspace-api';
 import { ensureFileDisplayIdentity } from '@/lib/file-display-registry';
@@ -113,17 +113,20 @@ function ExternalMarkdownOpenDialog() {
   const { t } = useI18n();
   const selectedNotebook = useNoteStore((state) => state.selectedNotebook);
   const notebooks = useNoteStore((state) => state.notebooks);
-  const [request, setRequest] = useState<ExternalMarkdownOpenRequest | null>(null);
+  const [requests, setRequests] = useState<ExternalMarkdownOpenRequest[]>([]);
+  const request = requests[0] ?? null;
+  const dismissCurrentRequest = useCallback(() => setRequests((current) => current.slice(1)), []);
   const [notebookId, setNotebookId] = useState('');
   const [opening, setOpening] = useState(false);
 
   useEffect(() => {
     const onRequest = (next: ExternalMarkdownOpenRequest) => {
       if (!next?.filePaths?.length) return;
-      setRequest(next);
-      setNotebookId((current) => current || selectedNotebook?.id || notebooks[0]?.id || '');
+      setRequests((current) => [...current, next]);
     };
-    const unlisten = subscribe<ExternalMarkdownOpenRequest>(FLOWIX_EXTERNAL_MARKDOWN_OPEN_EVENT, onRequest);
+    const unlisten = subscribePendingOpenTargets('external-markdown', ({ target }) => {
+      if (target.kind === 'external-markdown') onRequest({ filePaths: target.filePaths });
+    });
     const onWindowRequest = (event: Event) => {
       onRequest((event as CustomEvent<ExternalMarkdownOpenRequest>).detail);
     };
@@ -132,7 +135,7 @@ function ExternalMarkdownOpenDialog() {
       unlisten();
       window.removeEventListener(FLOWIX_EXTERNAL_MARKDOWN_OPEN_EVENT, onWindowRequest);
     };
-  }, [notebooks, selectedNotebook?.id, selectedNotebook?.path, t]);
+  }, []);
 
   useEffect(() => {
     if (!request) return;
@@ -144,8 +147,8 @@ function ExternalMarkdownOpenDialog() {
   }, [notebooks, request, selectedNotebook?.id]);
 
   const close = useCallback(() => {
-    if (!opening) setRequest(null);
-  }, [opening]);
+    if (!opening) dismissCurrentRequest();
+  }, [opening, dismissCurrentRequest]);
 
   const open = useCallback(async () => {
     if (!request || !notebookId) return;
@@ -158,7 +161,7 @@ function ExternalMarkdownOpenDialog() {
         imported.push(created.path);
         useNoteStore.getState().upsertCreatedNote(created);
       }
-      setRequest(null);
+      dismissCurrentRequest();
       const notebook = useNoteStore.getState().notebooks.find((item) => item.id === notebookId);
       if (notebook) await openNotebookNote(imported[imported.length - 1], notebook);
     } catch (error) {
@@ -166,7 +169,7 @@ function ExternalMarkdownOpenDialog() {
     } finally {
       setOpening(false);
     }
-  }, [notebookId, request, t]);
+  }, [notebookId, request, t, dismissCurrentRequest]);
 
   const openDirectly = useCallback(async () => {
     if (!request) return;
@@ -175,16 +178,16 @@ function ExternalMarkdownOpenDialog() {
       for (const filePath of request.filePaths) {
         await openWorkspaceSurface({
           host: 'main-third',
-          target: { kind: 'external', path: filePath, scopePath: selectedNotebook?.path ?? null, transitionId: null },
+          target: { kind: 'external', path: filePath, scopePath: null, transitionId: null },
         });
       }
-      setRequest(null);
+      dismissCurrentRequest();
     } catch (error) {
       toast.error(`${t('memo.externalOpen.failed')}: ${String(error)}`);
     } finally {
       setOpening(false);
     }
-  }, [request, selectedNotebook?.path, t]);
+  }, [request, t, dismissCurrentRequest]);
 
   const filenames = request?.filePaths.map((path) => path.split(/[\\/]/).pop() || path) ?? [];
   return (

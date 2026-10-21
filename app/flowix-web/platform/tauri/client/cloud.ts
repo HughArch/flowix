@@ -12,6 +12,8 @@ export interface CloudMembership {
   active: boolean;
   startsAt?: number | null;
   expiresAt?: number | null;
+  features?: Record<string, unknown>;
+  storageExpiresAt?: number | null;
   usedBytes: number;
   quotaBytes: number;
   availableBytes: number;
@@ -89,6 +91,7 @@ export interface CloudProduct {
   name: string;
   description: string;
   price: { amount: number; currency: string };
+  billingType?: 'subscription' | 'one_time';
   entitlement: {
     storageBytes: number;
     duration: { unit: string; count: number };
@@ -112,6 +115,16 @@ export interface CloudOrder {
   status: string;
   createdAt: number;
   paidAt?: number | null;
+}
+
+export interface CloudSubscription {
+  id: string;
+  status: string;
+  productId?: string | null;
+  productName?: string | null;
+  currentPeriodEnd?: number | null;
+  cancelAtPeriodEnd: boolean;
+  isAnnualMembership: boolean;
 }
 
 export interface CloudOrderCheck {
@@ -166,12 +179,16 @@ export const cloud = {
     invoke<CloudMembership>('cloud_refresh_membership'),
   getAiCreditBalance: () =>
     invoke<CloudAiCreditBalance>('cloud_ai_credit_balance'),
+  piModelAvailability: () => invoke<boolean>('cloud_pi_model_availability'),
   connectPiModelProvider: () => invoke<void>('cloud_connect_pi_model_provider'),
   refreshPiModelProvider: () => invoke<boolean>('cloud_refresh_pi_model_provider'),
   refreshPiModelProviderAtStartup: () =>
     invoke<boolean>('cloud_refresh_pi_model_provider_at_startup'),
   listProducts: () => invoke<CloudProduct[]>('cloud_list_products'),
   listBillingOrders: () => invoke<CloudOrder[]>('cloud_list_billing_orders'),
+  listSubscriptions: () => invoke<CloudSubscription[]>('cloud_list_subscriptions'),
+  cancelSubscription: (subscriptionId: string) =>
+    invoke<void>('cloud_cancel_subscription', { subscriptionId }),
   checkBillingOrder: (orderId: string) =>
     invoke<CloudOrderCheck>('cloud_check_billing_order', { orderId }),
   createCheckout: (productId: string) =>

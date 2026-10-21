@@ -82,7 +82,7 @@ pub(crate) fn open_preferences_window_inner(
         Theme::System => None,
         Theme::Light => Some("light"),
         Theme::Dark => Some("dark"),
-        Theme::Mist => Some("mist"),
+        Theme::Mist => Some("rock"),
         Theme::Rock => Some("rock"),
         Theme::Ember => Some("ember"),
     };
@@ -124,18 +124,37 @@ pub(crate) fn open_preferences_window_inner(
     let window = builder.build().map_err(|e| e.to_string())?;
     crate::commands::window_shutdown::install_window(&window);
     // 新窗口即刻�?齐主题背�?�� (与主窗口�?��一�?, 避免冷启动白�?�?
-    let theme = state.user_config.get_preference().theme;
+    let mut theme = state.user_config.get_preference().theme;
+    if theme == Theme::Mist {
+        theme = Theme::Rock;
+    }
     crate::window_chrome::apply_window_chrome_theme(&window, theme);
     window.show().map_err(|error| error.to_string())?;
     Ok(())
 }
 
-/// 前�?切换主�?时立即调�? 把新主�?应用到所有窗口的原生 chrome (`set_theme` + 背景�?,
-/// 不等 `set_preference` �?200ms 防抖落盘, 实现实时跟随。落盘仍�?debounced
-/// `set_preference`, 与这里解�?-- 视�?更新与持久化分�?�?
+/// Apply the effective theme to this window. Other windows independently follow
+/// shared preferences and account membership, without overwriting each other.
 #[tauri::command]
-pub fn apply_window_theme(theme: Theme, app: tauri::AppHandle) -> Result<(), String> {
-    crate::window_chrome::apply_window_chrome_theme_all(&app, theme);
+pub fn apply_window_theme(
+    theme: Theme,
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+) -> Result<(), String> {
+    let theme = if theme == Theme::Mist {
+        let cloud = state.cloud_sync.state().map_err(|error| error.to_string())?;
+        let now_ms = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map_err(|error| error.to_string())?.as_millis() as i64;
+        let has_membership = cloud.authenticated
+            && cloud.membership.as_ref().is_some_and(|membership| {
+                membership.is_active_at(now_ms)
+            });
+        if has_membership { Theme::Mist } else { Theme::Rock }
+    } else {
+        theme
+    };
+    crate::window_chrome::apply_window_chrome_theme(&window, theme);
     Ok(())
 }
 

@@ -675,6 +675,27 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   display: contents;
 }
 
+/* Property chips do not use the editor decoration wrappers. Keep their
+ * fragment backgrounds and spacing here, separate from shared typography. */
+.markdown-editor .frontmatter-property__value-chip > .tag-node-prefix,
+.frontmatter-property__edit-tag-chip > .tag-node-prefix {
+  background: var(--document-tag-background);
+  padding: var(--document-tag-padding-block) 0 var(--document-tag-padding-block) var(--document-tag-padding-inline);
+  padding-inline-end: var(--document-tag-hash-gap, 0.09em);
+  border-radius: 8px 0 0 8px;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
+.markdown-editor :is(.frontmatter-property__value-chip, .frontmatter-property__edit-tag-suggestion) > .tag-node-content,
+.frontmatter-property__edit-tag-chip > .tag-node-content {
+  background: var(--document-tag-background);
+  padding: var(--document-tag-padding-block) var(--document-tag-padding-inline) var(--document-tag-padding-block) 0;
+  border-radius: 0 8px 8px 0;
+  -webkit-box-decoration-break: clone;
+  box-decoration-break: clone;
+}
+
 .frontmatter-property__edit-tag-chip {
   display: inline-flex;
   align-items: baseline;
@@ -691,6 +712,13 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   caret-color: currentColor;
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
+}
+
+.frontmatter-property__edit-tag-chip:not(.frontmatter-property__edit-tag-chip--plain),
+.frontmatter-property__edit-tag-chip:not(.frontmatter-property__edit-tag-chip--plain) > .tag-node-prefix,
+.frontmatter-property__edit-tag-chip:not(.frontmatter-property__edit-tag-chip--plain) > .tag-node-content,
+.markdown-editor .frontmatter-property__edit-tag-suggestion > .tag-node-content {
+  background: var(--muted);
 }
 
 .frontmatter-property__edit-tag-chip:hover {
@@ -1243,7 +1271,13 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
 }
 
 .markdown-editor .frontmatter-property__value-chip.tag-node.frontmatter-property__value-chip--typed {
-  background: var(--document-tag-background);
+  background: var(--muted);
+}
+
+.markdown-editor .frontmatter-property__value-chip.tag-node,
+.markdown-editor .frontmatter-property__value-chip.tag-node > .tag-node-prefix,
+.markdown-editor .frontmatter-property__value-chip.tag-node > .tag-node-content {
+  background: var(--muted);
 }
 
 .markdown-editor .frontmatter-property__value-chip--tag {

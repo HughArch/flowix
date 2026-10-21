@@ -23,11 +23,10 @@
 	src: url('../assets/fonts/FlowixTagIcon.woff2') format('woff2');
 }
 
-/* Editable Windows tags use Consolas for their content. Match its Windows
- * ascent/descent (1884/2048 and 514/2048), multiplied by the content's 92%
- * font size: the prefix inherits 100%. Keep in sync with --document-tag-font-size.
- * These overrides change the inline box, without scaling or moving the glyph.
- * Keep this face separate so standalone tag icons retain their original metrics. */
+/* Preserve the editable Windows icon's existing line metrics and glyph.
+ * Tag text now follows the editor font; separate background wrappers align
+ * the backgrounds independently of these metrics. Standalone icons keep
+ * the original face above. */
 @font-face {
 	font-family: 'Flowix Tag Icon Consolas';
 	font-style: normal;

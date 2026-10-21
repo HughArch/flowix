@@ -1,3 +1,4 @@
+import type { TableAutoCollectCondition } from '@features/multidimensional-table/model';
 import type { ColorFilterValue } from '@features/memo/store';
 
 export function getNoteQueryKey(
@@ -8,6 +9,7 @@ export function getNoteQueryKey(
   colorFilter: ColorFilterValue,
   pluginId?: string | null,
   customFilterId?: string | null,
+  dataCondition?: TableAutoCollectCondition | null,
 ): string {
   const parts = [
     notebookId ?? '',
@@ -18,5 +20,6 @@ export function getNoteQueryKey(
     pluginId ?? '',
   ];
   if (filter === 'custom') parts.push(customFilterId ?? '');
+  if (dataCondition) parts.push(JSON.stringify(dataCondition));
   return parts.join(':');
 }

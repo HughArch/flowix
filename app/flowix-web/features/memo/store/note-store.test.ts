@@ -51,6 +51,7 @@ describe('note store list loading', () => {
     mocks.setSelectedTagId.mockReset();
     useNoteStore.setState({
       notes: [],
+      dataConditionsByNotebook: {},
       memoListQueryKey: null,
       memoListQuery: null,
       memoListNextCursor: null,
@@ -62,6 +63,32 @@ describe('note store list loading', () => {
       activeFilter: 'todos',
       activePluginId: null,
     });
+  });
+
+  it.each([0, 2, 4])('inserts a created note below %i pinned notes', (pinnedCount) => {
+    const entry = (relativePath: string, favorited = false) => ({
+      relativePath, title: relativePath, preview: '', thumbnail: null,
+      tags: [], todos: [], agents: [], createdAt: 1, updatedAt: 1,
+      favorited, icon: null, colors: [], properties: {},
+    });
+    const existing = Array.from({ length: 4 }, (_, index) => ({
+      ...entry(`${index}.md`, index < pinnedCount),
+      kind: 'path-note' as const, notebookId: 'notebook-1', filename: `${index}.md`,
+    }));
+    useNoteStore.setState({
+      selectedNotebook: { id: 'notebook-1', name: 'Book', path: '/book', createdAt: 0, updatedAt: 0, isDefault: false },
+      activeFilter: 'all', notes: existing,
+    });
+    const created = {
+      notebookId: 'notebook-1', relativePath: 'new.md', path: '/book/new.md',
+      initialContent: '', entry: entry('new.md'),
+    };
+    useNoteStore.getState().upsertCreatedNote(created);
+    useNoteStore.getState().upsertCreatedNote(created);
+    expect(useNoteStore.getState().notes.map((note) => note.relativePath)).toEqual([
+      ...existing.slice(0, pinnedCount).map((note) => note.relativePath),
+      'new.md', ...existing.slice(pinnedCount).map((note) => note.relativePath),
+    ]);
   });
 
   it('keeps a missing index as pending without treating it as an empty result', async () => {
@@ -417,4 +444,57 @@ describe('note store list loading', () => {
     expect(useNoteStore.getState().activeFilter).toBe('all');
     expect(useNoteStore.getState().activePluginId).toBeNull();
   });
+
+  it.each(['all', 'any'] as const)('applies %s across property and filename rules and ignores the save location', async (match) => {
+    useNoteStore.getState().setDataCondition('notebook-1', {
+      match, path: 'Save elsewhere',
+      property_conditions: [{ field_id: ' status ', operator: 'equals', value: ' ready ' }],
+      file_condition: { file_name_contains: 'release' },
+    });
+    mocks.listByPath.mockResolvedValueOnce({ notes: [
+      { ...entry(1), relativePath: 'release.md', properties: { status: 'ready' } },
+      { ...entry(2), relativePath: 'draft.md', properties: { status: 'ready' } },
+      { ...entry(3), relativePath: 'release-plan.md', properties: { status: 'draft' } },
+      entry(4),
+    ], nextCursor: null, hasMore: false });
+    await useNoteStore.getState().loadNotes({ notebookId: 'notebook-1', filter: 'all' });
+    expect(useNoteStore.getState().notes.map(note => note.relativePath)).toEqual(
+      match === 'all' ? ['release.md'] : ['release.md', 'draft.md', 'release-plan.md'],
+    );
+    const persisted = JSON.parse(localStorage.getItem('test-note-store')!);
+    expect(persisted.state.dataConditionsByNotebook['notebook-1'].path).toBeUndefined();
+    expect(persisted.state.dataConditionsByNotebook['notebook-1'].match).toBe(match);
+    useNoteStore.getState().setDataCondition('notebook-2', { file_condition: { file_name_contains: 'other' } });
+    useNoteStore.getState().setDataCondition('notebook-1', {});
+    expect(useNoteStore.getState().dataConditionsByNotebook['notebook-1']).toBeUndefined();
+    expect(useNoteStore.getState().dataConditionsByNotebook['notebook-2']).toBeDefined();
+  });
+
+  it('scans past empty filtered pages, continues pagination, and removes notes after a property edit', async () => {
+    useNoteStore.setState({
+      selectedNotebook: { id: 'notebook-1', name: 'Book', path: '/book', createdAt: 0, updatedAt: 0, isDefault: false },
+      activeFilter: 'all',
+    });
+    useNoteStore.getState().setDataCondition('notebook-1', {
+      match: 'all', property_conditions: [{ field_id: 'status', operator: 'equals', value: 'ready' }],
+    });
+    const ready = (i: number) => ({ ...entry(i), properties: { status: 'ready' } });
+    mocks.listByPath
+      .mockResolvedValueOnce({ notes: [entry(0)], nextCursor: 'second', hasMore: true })
+      .mockResolvedValueOnce({ notes: Array.from({ length: 50 }, (_, i) => ready(i + 1)), nextCursor: 'third', hasMore: true })
+      .mockResolvedValueOnce({ notes: [entry(100)], nextCursor: 'fourth', hasMore: true })
+      .mockResolvedValueOnce({ notes: [ready(101)], nextCursor: null, hasMore: false });
+    await useNoteStore.getState().loadNotes();
+    expect(useNoteStore.getState().notes).toHaveLength(50);
+    expect(useNoteStore.getState().memoListNextCursor).toBe('third');
+    await useNoteStore.getState().loadMoreMemos();
+    expect(useNoteStore.getState().notes).toHaveLength(51);
+    expect(useNoteStore.getState().memoListHasMore).toBe(false);
+    useNoteStore.getState().applyNoteListChange('notebook-1', 'note-1.md', entry(1));
+    expect(useNoteStore.getState().notes.some(note => note.relativePath === 'note-1.md')).toBe(false);
+    const revision = useNoteStore.getState().memoListRefreshTrigger;
+    useNoteStore.getState().applyNoteListChange('notebook-1', 'note-100.md', ready(100));
+    expect(useNoteStore.getState().memoListRefreshTrigger).toBe(revision + 1);
+  });
+
 });

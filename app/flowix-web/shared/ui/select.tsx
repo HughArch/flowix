@@ -196,10 +196,12 @@ interface SelectContentProps {
 	className?: string;
 	style?: React.CSSProperties;
 	align?: "start" | "center" | "end";
+	/** Keep an enclosing dropdown menu open while this portal is interacted with. */
+	keepParentMenuOpen?: boolean;
 	/** Keep the menu inside the viewport and scroll its items when necessary. */
 	fitViewport?: boolean;
-	/** Optional maximum popup height in pixels when fitViewport is enabled. */
-	maxHeight?: number;
+	/** Optional maximum popup height in pixels or viewport height when fitViewport is enabled. */
+	maxHeight?: number | `${number}vh`;
 }
 
 function SelectContent({
@@ -207,6 +209,7 @@ function SelectContent({
 	className,
 	style,
 	align = "end",
+	keepParentMenuOpen = false,
 	fitViewport = false,
 	maxHeight,
 }: SelectContentProps) {
@@ -260,8 +263,13 @@ function SelectContent({
 					window.innerHeight - rect.bottom - gap - viewportPadding,
 				);
 				const availableAbove = Math.max(0, rect.top - gap - viewportPadding);
+				const maxHeightPixels = typeof maxHeight === "number"
+					? maxHeight
+					: maxHeight
+						? window.innerHeight * Number.parseFloat(maxHeight) / 100
+						: Number.POSITIVE_INFINITY;
 				const preferredHeight = Math.min(
-					maxHeight ?? Number.POSITIVE_INFINITY,
+					maxHeightPixels,
 					contentRef.current?.scrollHeight ?? Number.POSITIVE_INFINITY,
 				);
 				const openAbove = availableBelow < preferredHeight && availableAbove > availableBelow;
@@ -366,6 +374,7 @@ function SelectContent({
 				className
 			)}
 			data-flowix-surface="select"
+			data-flowix-menu-child={keepParentMenuOpen ? "" : undefined}
 			data-scrolling={isScrolling ? "true" : "false"}
 		>
 			{children}

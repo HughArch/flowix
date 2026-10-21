@@ -65,11 +65,7 @@ function PiRuntimeStatusIndicator() {
         className="h-full flex items-center justify-center px-1.5 py-0 hover:bg-[var(--muted)]"
         aria-label={label}
       >
-        <AgentIcon
-          typeKey="pi"
-          alt=""
-          className="h-3.5 w-3.5"
-        />
+        <AgentIcon typeKey="pi" alt="" className="h-3.5 w-3.5" />
       </button>
     </Tooltip>
   );
@@ -99,6 +95,7 @@ export function StatusBar({
   updater,
 }: StatusBarProps) {
   const { t } = useI18n();
+  const statusBarRightEdgeRef = useRef<HTMLDivElement>(null);
   const [notebookPopupOpen, setNotebookPopupOpen] = useState(false);
   const [cloudSyncStatuses, setCloudSyncStatuses] = useState<Map<string, CloudSyncStatus>>(
     () => new Map(),
@@ -216,7 +213,7 @@ export function StatusBar({
         />
       </div>
       {/* Right column: full-width content area. */}
-      <div className="flex-1 min-w-0 flex items-center gap-0.5 pl-0.5 pr-2">
+      <div ref={statusBarRightEdgeRef} className="flex-1 min-w-0 flex items-center gap-0.5 pl-0.5 pr-2">
         <Tooltip content={t('shell.statusBar.noteNavTooltip')} shortcut="panel.noteNavigation.toggle">
           <button
             type="button"
@@ -237,7 +234,7 @@ export function StatusBar({
         </button>
         <AgentConversationStatusBar />
         <div className="flex-1" />
-        <ProductUpdatePill updater={updater} />
+        <ProductUpdatePill updater={updater} anchor={statusBarRightEdgeRef} />
         {cloudSyncInProgress && (
           <div
             className="inline-flex h-[22px] items-center gap-1 px-1.5 text-xs leading-none text-[var(--muted-foreground)]"

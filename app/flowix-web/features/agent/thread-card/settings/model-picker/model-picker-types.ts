@@ -4,6 +4,7 @@ import type {
 } from "@/types/agent";
 
 export type AgentModelOption = {
+  source?: "flowix-cloud" | "custom";
   id: AgentCodexModel;
   label: string;
   description?: string;

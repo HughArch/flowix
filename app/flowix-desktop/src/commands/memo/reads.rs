@@ -365,18 +365,6 @@ fn write_document_internal(
     }))
 }
 
-#[tauri::command]
-pub fn get_launch_open_files(window: tauri::WebviewWindow, state: State<AppState>) -> Vec<String> {
-    if window.label() != "main" {
-        return Vec::new();
-    }
-    crate::commands::helpers::markdown_paths_from_args(std::env::args())
-        .into_iter()
-        .filter_map(|path| dunce::canonicalize(path).ok())
-        .map(|path| path.to_string_lossy().into_owned())
-        .filter(|path| state.document_access.grant(window.label(), Path::new(path)))
-        .collect()
-}
 #[derive(serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PathNoteSearchHit {

@@ -24,7 +24,7 @@ export function resolveCollectionSaveDirectory({ filePath, notebookPath, placeme
       ? libraryDirectory : joinNotebookMemoPath(root, source.path);
     const relative = scope ? notebookRelativeDirectoryPath(scope, target) : null;
     if (relative === null || (relative !== '' && source.depth !== 'descendants')) {
-      throw new Error('保存目录不在集合数据范围内，请调整「浏览和保存」目录或集合数据范围');
+      throw new Error('保存目录不在集合数据范围内，请调整「位置」目录或集合数据范围');
     }
   }
   return canonicalDirectoryPath(target);

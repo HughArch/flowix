@@ -15,21 +15,17 @@ import {
   ChevronDown,
   Check,
   SwatchBook,
-  ListFilter,
   Loader2,
   MoreHorizontal,
   SquarePen,
   Table2,
   GalleryHorizontalEnd,
-  Files,
 } from 'lucide-react';
 import {
   getVisibleCreateFilter,
-  NOTE_COLOR_HEX,
   noteIndexFor,
   noteLookupKey,
   useNoteStore,
-  type ColorFilterValue,
 } from '@features/memo/store/note-store';
 import { useMemoLibraryMetadataStore } from '@features/memo/store/memo-library-metadata-store';
 import { useCustomFilterStore } from '@features/memo/store/custom-filter-store';
@@ -44,7 +40,7 @@ import {
 import { resolveSelectedTagId } from '@features/memo/services/memo-list-metadata-service';
 import { useMemoInsertAnimation } from '@features/memo/hooks/use-memo-insert-animation';
 import { toast } from '@/lib/toast';
-import { cn } from '@/lib/utils';
+import { cn, displayTitleFromFilename } from '@/lib/utils';
 import { Button } from '@shared/ui/button';
 import { Tooltip } from '@shared/ui/tooltip';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
@@ -69,13 +65,12 @@ import {
 } from '@features/preferences/public/runtime-api';
 import { createLogger } from '@/lib/logger';
 import { orderNoteTemplates } from '@/lib/note-template-order';
-import { useDocumentStore } from '@features/document/store';
 import { files as fileApi, notes as noteApi, type NoteTemplate } from '@platform/tauri/client';
 import { canonicalDirectoryPath } from '@/lib/path';
 import type { AgentTypeKey } from '@/types/agent';
-import { AgentIcon } from '@features/agent/components/agent-icon';
 import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
 import { useNewConversationAgentSelection } from '@features/agent/hooks/use-new-conversation-agent-selection';
+import { AgentConversationTypeMenuItems } from '@features/agent/components/agent-conversation-type-menu-items';
 import {
   createAndOpenAgentConversation,
 } from '@features/agent/public/shell-api';
@@ -91,16 +86,12 @@ import { createTableDocumentFile, type TableViewType } from '@features/multidime
 import { createMediaLibraryFile } from '@features/media-library/model';
 import { createWorkDocumentsCollectionFile } from '@features/work-documents/model';
 
-import {
-  COLOR_LABEL_KEYS,
-  ColorFilterSubmenuContent,
-} from './memo-list/color-filter-submenu';
+import { COLOR_LABEL_KEYS } from './memo-list/color-filter-submenu';
 import { MemoNavigationDropdown, MemoNavigationSubmenu } from './memo-navigation-dropdown';
 import { MemoListNavigationDrawer } from './memo-list-navigation-drawer';
 import { MEMO_CREATE_VIEW_OPTIONS } from './memo-create-view-options';
+import { WorkDocumentsIcon } from './work-documents-icon';
 import { NotebookFolderView } from './notebook-folder-view';
-import type { NotebookNoteCreateRequest } from './notebook-file-tree';
-import { parentRelativePathForTreeCreate } from './memo-create-location';
 import { useMemoListPagination } from './memo-list/use-memo-list-pagination';
 import { MemoListRows, type MemoRowKeepAliveChange } from './memo-list/memo-list-rows';
 import {
@@ -108,6 +99,18 @@ import {
   useRunningAgentTypeIndex,
 } from './memo-list/running-agent-index';
 const logger = createLogger('memo-list');
+
+async function nextUntitledNoteTitle(parentPath: string, baseTitle: string): Promise<string> {
+  const children = await fileApi.getDirChildren(parentPath);
+  const existingTitles = new Set(children
+    .filter((item) => item.type === 'document' && /\.(md|markdown)$/i.test(item.name))
+    .map((item) => displayTitleFromFilename(item.name).trim().toLowerCase()));
+  const normalizedBaseTitle = baseTitle.trim();
+  if (!existingTitles.has(normalizedBaseTitle.toLowerCase())) return normalizedBaseTitle;
+  let number = 1;
+  while (existingTitles.has(`${normalizedBaseTitle} ${number}`.toLowerCase())) number += 1;
+  return `${normalizedBaseTitle} ${number}`;
+}
 
 function EmptyState({ hasNotebooks }: { hasNotebooks: boolean }) {
   const { t } = useI18n();
@@ -214,6 +217,7 @@ export function MemoList({
   const activeFilter = useNoteStore((s) => s.activeFilter);
   const activePluginId = useNoteStore((s) => s.activePluginId);
   const activeCustomFilterId = useNoteStore((s) => s.activeCustomFilterId);
+  const dataCondition = useNoteStore(s => s.dataConditionsByNotebook?.[selectedNotebook?.id ?? ''] ?? null);
   const loadNotebookFilters = useCustomFilterStore((s) => s.loadNotebookFilters);
   const activeSort = useNoteStore((s) => s.activeSort);
   const colorFilter = useNoteStore((s) => s.colorFilter);
@@ -354,13 +358,15 @@ export function MemoList({
   const [notebookDropdownOpen, setNotebookDropdownOpen] = useState(false);
   const [isCreatingMemo, setIsCreatingMemo] = useState(false);
   const [localNavigationDrawerOpen, setLocalNavigationDrawerOpen] = useState(false);
-  const [colorSubmenuOpen, setColorSubmenuOpen] = useState(false);
   const [sortSubmenuOpen, setSortSubmenuOpen] = useState(false);
   const [createFolderRequest, setCreateFolderRequest] = useState<{
     id: number;
     parentPath: string;
   } | null>(null);
-  const [createNoteRequest, setCreateNoteRequest] = useState<NotebookNoteCreateRequest | null>(null);
+  const [createdCardRevealKey, setCreatedCardRevealKey] = useState<string | null>(null);
+  const handleCreatedCardRevealed = useCallback(() => {
+    setCreatedCardRevealKey(null);
+  }, []);
   const [tagMap, setTagMap] = useState<Record<string, string>>({});
   const [isMemoListLoading, setIsMemoListLoading] = useState(false);
   const [loadedMemoListQueryKey, setLoadedMemoListQueryKey] = useState<string | null>(null);
@@ -379,13 +385,12 @@ export function MemoList({
   useEffect(() => {
     if (!showFolderView) return;
     setNotebookDropdownOpen(false);
-    setColorSubmenuOpen(false);
     setSortSubmenuOpen(false);
   }, [showFolderView]);
 
   useEffect(() => {
     setCreateFolderRequest(null);
-    setCreateNoteRequest(null);
+    setCreatedCardRevealKey(null);
   }, [selectedNotebook?.id]);
 
   useEffect(() => {
@@ -445,6 +450,7 @@ export function MemoList({
       state.colorFilter,
       state.activePluginId,
       state.activeCustomFilterId,
+      state.dataConditionsByNotebook?.[state.selectedNotebook?.id ?? ''],
     );
     const kind = requestedKind
       ?? (state.memoListQueryKey === queryKey ? 'refresh' : 'initial');
@@ -467,6 +473,7 @@ export function MemoList({
       state.colorFilter,
       state.activePluginId,
       state.activeCustomFilterId,
+      state.dataConditionsByNotebook?.[state.selectedNotebook?.id ?? ''],
     );
     if (memoListError?.queryKey === queryKey && memoListError.kind === 'more') return;
     void loadMoreMemos().catch((error) => {
@@ -536,6 +543,7 @@ export function MemoList({
     colorFilter,
     activePluginId,
     activeCustomFilterId,
+    dataCondition,
   );
   const currentMemoListError = memoListError?.queryKey === currentMemoListQueryKey
     ? memoListError
@@ -609,7 +617,6 @@ export function MemoList({
       : { headerLabel: t('memo.navigation.allNotes'), hasActiveFilter: false };
   })();
 
-  const filteredMemos = listItems;
   const { onScroll: handleMemoListScroll } = useMemoListPagination({
     itemCount: listItems.length,
     loading: showMemoListLoading,
@@ -641,6 +648,26 @@ export function MemoList({
       toast.error(t('memo.fileTree.preferenceSaveFailed'));
     }
   }, [defaultCreateFolder, selectedNotebook, t]);
+  const handleSaveDefaultCreateFolder = useCallback(async (folderPath: string | null): Promise<boolean> => {
+    if (!selectedNotebook) return false;
+    const normalizedPath = folderPath?.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') || null;
+    try {
+      const preferences = await fileApi.getNotebookViewPreferences(selectedNotebook.path);
+      await fileApi.setNotebookViewPreferences(selectedNotebook.path, {
+        ...preferences,
+        defaultCreateFolder: normalizedPath,
+      });
+      setDefaultCreateFolderState({ notebookId: selectedNotebook.id, path: normalizedPath });
+      toast.success(t(normalizedPath
+        ? 'memo.fileTree.defaultCreateFolderSet'
+        : 'memo.fileTree.defaultCreateFolderCleared'));
+      return true;
+    } catch (error) {
+      logger.warn('save default note folder failed', { error, folderPath });
+      toast.error(t('memo.fileTree.preferenceSaveFailed'));
+      return false;
+    }
+  }, [selectedNotebook, t]);
   const handleSelectMemo = useCallback((memo: NoteListItem) => {
     flushSync(() => {
       void openPathNoteSession(memo, useNoteStore.getState().selectedNotebook);
@@ -758,41 +785,29 @@ export function MemoList({
     );
   };
 
-  const handleFilterChange = (filter: typeof activeFilter) => {
+  const handleFilterChange = useCallback((filter: typeof activeFilter) => {
     if (filter !== 'tagged') {
       setSelectedTagId(null);
     }
     // 切到非 color filter 时, 保留 colorFilter 值, 切回时恢复 — 用户预期
     // 切到其他筛选再回来, 之前选的颜色还在。
     setActiveFilter(filter);
-  };
+  }, [setActiveFilter, setSelectedTagId]);
 
   const handleClearFilter = useCallback(() => {
     setSelectedTagId(null);
     setColorFilter('any');
     setActiveFilter('all');
+    const state = useNoteStore.getState();
+    if (state.selectedNotebook) state.setDataCondition(state.selectedNotebook.id, {});
     setNotebookDropdownOpen(false);
   }, [setActiveFilter, setColorFilter, setSelectedTagId]);
 
-  // 颜色二级弹窗的选中回调: 同步 activeFilter='color' + colorFilter, 同时
-  // 显式关掉父 dropdown (子菜单 onMouseDown 阻止了冒泡, 父 dropdown
-  // setOpen 不会自动触发, 需要手动 setNotebookDropdownOpen(false))。
-  const handleColorSubmenuSelect = useCallback(
-    (value: ColorFilterValue) => {
-      setSelectedTagId(null);
-      setColorFilter(value);
-      setActiveFilter('color');
-      setColorSubmenuOpen(false);
-      setNotebookDropdownOpen(false);
-    },
-    [setActiveFilter, setColorFilter, setSelectedTagId, setNotebookDropdownOpen],
-  );
-
-  // 筛选二级弹窗的选中回调 (本周 / 本月): 同步 activeFilter + 关父 dropdown。
-  const handleFilterFromSubmenu = useCallback(
+  // 排序二级弹窗顶部的时间范围选中回调: 同步 activeFilter + 关闭菜单。
+  const handlePeriodFilterSelect = useCallback(
     (filter: typeof activeFilter) => {
       handleFilterChange(filter);
-      setColorSubmenuOpen(false);
+      setSortSubmenuOpen(false);
       setNotebookDropdownOpen(false);
     },
     [handleFilterChange, setNotebookDropdownOpen],
@@ -808,10 +823,9 @@ export function MemoList({
     [setActiveSort, setNotebookDropdownOpen],
   );
 
-  // 当 dropdown 关闭时, 同步把 filter / sort submenu 也收掉。
+  // 当 dropdown 关闭时, 同步把 sort submenu 收掉。
   useEffect(() => {
     if (!notebookDropdownOpen) {
-      setColorSubmenuOpen(false);
       setSortSubmenuOpen(false);
     }
   }, [notebookDropdownOpen]);
@@ -823,61 +837,68 @@ export function MemoList({
     if (!selectedNotebook) return;
     setIsCreatingMemo(true);
     try {
-    let customFilterForCreation = activeCustomFilter;
-    if (activeFilter === 'custom' && activeCustomFilterId && !customFilterForCreation) {
-      await loadNotebookFilters(selectedNotebook.id);
-      customFilterForCreation = useCustomFilterStore.getState().filtersByNotebook[selectedNotebook.id]
-        ?.find((filter) => filter.id === activeCustomFilterId) ?? null;
-    }
-    const shouldCreateIntoCustomFilter = activeFilter === 'custom'
-      && customFilterForCreation?.documentType === 'note';
-    const createFilter = shouldCreateIntoCustomFilter ? 'custom' : getVisibleCreateFilter(activeFilter);
-    if (createFilter !== activeFilter) {
-      setSelectedTagId(null);
-      setActiveFilter(createFilter);
-    }
-    const parentRelativePath = parentRelativePathOverride ?? (memoListView === 'folders'
-      ? parentRelativePathForTreeCreate(
-        useDocumentStore.getState().activeExternalSession,
+      let customFilterForCreation = activeCustomFilter;
+      if (activeFilter === 'custom' && activeCustomFilterId && !customFilterForCreation) {
+        await loadNotebookFilters(selectedNotebook.id);
+        customFilterForCreation = useCustomFilterStore.getState().filtersByNotebook[selectedNotebook.id]
+          ?.find((filter) => filter.id === activeCustomFilterId) ?? null;
+      }
+      const shouldCreateIntoCustomFilter = activeFilter === 'custom'
+        && customFilterForCreation?.documentType === 'note';
+      const createFilter = shouldCreateIntoCustomFilter ? 'custom' : getVisibleCreateFilter(activeFilter);
+      if (createFilter !== activeFilter) {
+        setSelectedTagId(null);
+        setActiveFilter(createFilter);
+      }
+      const parentRelativePath = parentRelativePathOverride
+        ?? (await fileApi.getNotebookViewPreferences(selectedNotebook.path)).defaultCreateFolder
+        ?? '';
+      const notebookRoot = selectedNotebook.path.replace(/[\\/]+$/, '');
+      const namingParentPath = parentRelativePath
+        ? `${notebookRoot}/${parentRelativePath}`
+        : notebookRoot;
+      const title = titleOverride?.trim()
+        || await nextUntitledNoteTitle(namingParentPath, t('memo.untitled'));
+      const result = await noteRepository.create(
+        activeTagId ?? undefined,
         selectedNotebook.id,
-        selectedNotebook.path,
-      ) ?? ''
-      : undefined);
-    const result = await noteRepository.create(
-      activeTagId ?? undefined,
-      selectedNotebook.id,
-      parentRelativePath,
-      titleOverride?.trim() || undefined,
-    );
-    if (shouldCreateIntoCustomFilter && customFilterForCreation) {
-      const saved = await setDocumentProperties(result.path, {
-        [customFilterForCreation.key]: customFilterForCreation.value,
-      });
-      if (!saved) throw new Error('Failed to apply the active custom view to the new note');
-    }
-    const shouldSelectNewMemo =
-      createFilter === 'all' ||
-      (createFilter === 'tagged' && Boolean(activeTagId)) ||
-      createFilter === 'thisWeek' ||
-      createFilter === 'thisMonth' ||
-      (createFilter === 'custom' && shouldCreateIntoCustomFilter);
+        parentRelativePath,
+        title,
+      );
+      if (shouldCreateIntoCustomFilter && customFilterForCreation) {
+        const saved = await setDocumentProperties(result.path, {
+          [customFilterForCreation.key]: customFilterForCreation.value,
+        });
+        if (!saved) throw new Error('Failed to apply the active custom view to the new note');
+      }
+      const shouldSelectNewMemo =
+        createFilter === 'all' ||
+        (createFilter === 'tagged' && Boolean(activeTagId)) ||
+        createFilter === 'thisWeek' ||
+        createFilter === 'thisMonth' ||
+        (createFilter === 'custom' && shouldCreateIntoCustomFilter);
+      if (shouldSelectNewMemo) {
+        const cardKey = `path:${selectedNotebook.id}:${result.relativePath}`;
+        setCreatedCardRevealKey(cardKey);
+        prepareForInsert(cardKey);
+      }
 
-    // Synchronously capture pre-render positions BEFORE the store update that
-    // adds the new memo. The animation itself runs in the useLayoutEffect below,
-    // after React commits the new list but before the browser paints it.
-    // 新 memo 永远渲染在列表最前，且初始窗口会包含它 ── 入场动画交给
-    // useMemoInsertAnimation.onListRendered 在 layout 阶段跑一次。
-    prepareForInsert(`path:${selectedNotebook.id}:${result.relativePath}`);
-    useNoteStore.getState().upsertCreatedNote(result);
-    // Opening is a workspace navigation transaction. Leave selection to the
-    // facade so a failed document open can restore the previous memo.
-    const opening = shouldSelectNewMemo
-      ? openNotebookNote(result.path, selectedNotebook, { initialFocus: 'title' })
-      : null;
-    // The document save emits a path invalidation after applying custom-view
-    // properties; the shared list query subscriber reloads this projection.
-    if (opening) await opening;
-    } finally { setIsCreatingMemo(false); }
+      // 新笔记插入置顶区域之后，虚拟列表负责定位，动画 hook 负责入场。
+      useNoteStore.getState().upsertCreatedNote(result);
+      // Opening is a workspace navigation transaction. Leave selection to the
+      // facade so a failed document open can restore the previous memo.
+      const opening = shouldSelectNewMemo
+        ? openNotebookNote(result.path, selectedNotebook, { initialFocus: 'title', treeReveal: 'created-note' })
+        : null;
+      // The document save emits a path invalidation after applying custom-view
+      // properties; the shared list query subscriber reloads this projection.
+      if (opening) await opening;
+    } catch (error) {
+      logger.warn('create memo failed', { error, notebookId: selectedNotebook.id });
+      toast.error(t('memo.list.createFailed'));
+    } finally {
+      setIsCreatingMemo(false);
+    }
   }, [
     activeFilter,
     activeTagId,
@@ -885,39 +906,21 @@ export function MemoList({
     activeCustomFilterId,
     loadNotebookFilters,
     prepareForInsert,
-    memoListView,
     selectedNotebook,
     setActiveFilter,
     setSelectedTagId,
+    t,
   ]);
 
-  const handleCreateNoteInFolder = useCallback((parentPath: string, title: string) => {
+  const handleCreateNoteInFolder = useCallback(async (parentPath?: string, title?: string) => {
     if (!selectedNotebook) return;
+    if (parentPath === undefined) return handleCreateMemo(undefined, title);
     const root = selectedNotebook.path.replace(/\/+$/, '');
     const parent = parentPath.replace(/\/+$/, '');
     if (parent !== root && !parent.startsWith(`${root}/`)) return;
     const relative = parent === root ? '' : parent.slice(root.length + 1);
-    return handleCreateMemo(relative, title).catch((error) => {
-      logger.warn('create memo in notebook folder failed', { error, parentPath });
-      throw error;
-    });
+    return handleCreateMemo(relative, title);
   }, [handleCreateMemo, selectedNotebook]);
-
-  const handleRequestCreateNote = useCallback(() => {
-    if (!selectedNotebook) return;
-    const parentRelativePath = parentRelativePathForTreeCreate(
-      useDocumentStore.getState().activeExternalSession,
-      selectedNotebook.id,
-      selectedNotebook.path,
-    );
-    const notebookRoot = selectedNotebook.path.replace(/\/+$/, '');
-    setCreateNoteRequest({
-      id: Date.now(),
-      parentPath: parentRelativePath
-        ? `${notebookRoot}/${parentRelativePath}`
-        : notebookRoot,
-    });
-  }, [selectedNotebook]);
 
   const handleCreateTable = useCallback(async () => {
     const targetNotebook = createTableDialogNotebookId
@@ -1026,21 +1029,10 @@ export function MemoList({
   // 询问 useMemoInsertAnimation 是否有 pending 新 card, 有就跑一次入场
   // 动画; 无就是 no-op。 在 paint 之前跑, 避免首帧闪烁。
   useLayoutEffect(() => {
-    onListRendered();
+    onListRendered(listContainerRef.current);
   }, [listItems, onListRendered]);
 
-  // 一级筛选 / 排序按钮尾部展示当前值。颜色组的取值是 colorFilter,其他筛选是
-  // activeFilter 本身 (thisWeek / thisMonth);排序直接读 activeSort。
-  const filterValueAdornment = (() => {
-    if (activeFilter === 'thisWeek') return t('memo.list.filterThisWeek');
-    if (activeFilter === 'thisMonth') return t('memo.list.filterThisMonth');
-    if (activeFilter === 'color') {
-      if (colorFilter === 'any') return t('memo.list.filterColorAny');
-      if (colorFilter === 'none') return t('memo.list.filterColorNone');
-      return t(COLOR_LABEL_KEYS[colorFilter]);
-    }
-    return null;
-  })();
+  // 排序入口尾部展示当前排序方式。
   const sortValueAdornment = activeSort === 'updatedAt'
     ? t('memo.list.sortUpdated')
     : activeSort === 'filenameAsc'
@@ -1056,8 +1048,7 @@ export function MemoList({
       <DropdownMenuItem
         disabled={!selectedNotebook}
         onClick={() => {
-          if (memoListView === 'folders') handleRequestCreateNote();
-          else void handleCreateMemo();
+          void handleCreateMemo();
         }}
         className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
       >
@@ -1140,7 +1131,7 @@ export function MemoList({
                 }}
               >
                 <span className="flex min-w-0 items-center gap-2">
-                  <Files className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <WorkDocumentsIcon className="h-5 w-5 shrink-0" />
                   <span className="mention-note-title">{t('memo.create.workDocuments')}</span>
                 </span>
                 <span className="mention-note-notebook opacity-50">{t('memo.create.workDocumentsTypes')}</span>
@@ -1154,22 +1145,11 @@ export function MemoList({
           <DropdownMenuLabel className="px-[0.375rem] pb-[0.35rem] pt-[0.35rem] text-xs font-normal leading-[1.2] text-[var(--muted-foreground)]">
             {t('memo.create.conversations')}
           </DropdownMenuLabel>
-          {newConversationSelection.options.map((type) => {
-            const name = type.nameKey
-              ? t(type.nameKey as Parameters<typeof t>[0])
-              : type.name;
-            return (
-              <DropdownMenuItem
-                key={type.id}
-                disabled={!selectedNotebook}
-                onClick={() => handleCreateAgentConversation(type.id)}
-                className="agent-conversation-new-agent-item group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
-              >
-                <AgentIcon typeKey={type.id} alt="" className="h-4 w-4 shrink-0 object-contain" />
-                <span className="min-w-0 flex-1 truncate">{name}</span>
-              </DropdownMenuItem>
-            );
-          })}
+          <AgentConversationTypeMenuItems
+            options={newConversationSelection.options}
+            disabled={!selectedNotebook}
+            onSelect={handleCreateAgentConversation}
+          />
         </>
       )}
     </DropdownMenuContent>
@@ -1188,6 +1168,7 @@ export function MemoList({
         colorFilter={colorFilter}
         activePluginId={activePluginId}
         activeCustomFilterId={activeCustomFilterId}
+        dataCondition={dataCondition}
         memoListRefreshTrigger={memoListRefreshTrigger}
         loadNotes={loadNotes}
         setLoadedMemoListQueryKey={setLoadedMemoListQueryKey}
@@ -1205,79 +1186,14 @@ export function MemoList({
             ariaLabel={t('memo.navigation.menuTitle')}
             open={notebookDropdownOpen}
             onOpenChange={setNotebookDropdownOpen}
-            showClear={hasActiveFilter}
+            showClear={hasActiveFilter || activeFilter !== 'all' || Boolean(dataCondition)}
             onClear={handleClearFilter}
+            notebookPath={selectedNotebook?.path}
+            defaultCreateFolder={defaultCreateFolder}
+            onSavePath={handleSaveDefaultCreateFolder}
           >
           <div className="space-y-0.5">
-            {/* Filter — 二级弹窗 (本周 / 本月 / 颜色组) */}
-            <MemoNavigationSubmenu
-              label={t('memo.list.filterLabel')}
-              icon={<ListFilter className="h-4 w-4 shrink-0" aria-hidden="true" />}
-              open={colorSubmenuOpen}
-              hideHeader
-              emptyText=""
-              loadingText=""
-              valueAdornment={filterValueAdornment && (
-                <span className="flex max-w-[100px] items-center gap-1.5 text-xs text-[var(--muted-foreground)]">
-                  <span className="truncate">{filterValueAdornment}</span>
-                  {activeFilter === 'color' && (
-                    <span
-                      aria-hidden
-                      className="inline-block h-2.5 w-2.5 shrink-0 rounded-full"
-                      style={{
-                        backgroundColor:
-                          colorFilter === 'none'
-                            ? 'transparent'
-                            : colorFilter === 'any'
-                              ? 'var(--muted-foreground)'
-                              : NOTE_COLOR_HEX[colorFilter],
-                        border: '1px solid var(--border)',
-                      }}
-                    />
-                  )}
-                </span>
-              )}
-              submenuContent={(
-                <div className="flex flex-col space-y-0.5">
-                  <button
-                    type="button"
-                    onClick={() => handleFilterFromSubmenu('thisWeek')}
-                    onMouseDown={(event) => event.preventDefault()}
-                    className={cn(
-                      'memo-navigation-submenu-item mention-note-item cursor-pointer hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)] focus-visible:outline-none',
-                      activeFilter === 'thisWeek' && 'is-selected',
-                    )}
-                  >
-                    <span className="mention-note-title">{t('memo.list.filterThisWeek')}</span>
-                    {activeFilter === 'thisWeek' && <Check className="w-4 h-4 text-[var(--brand)]" />}
-                  </button>
-                  <button
-                    type="button"
-                    onClick={() => handleFilterFromSubmenu('thisMonth')}
-                    onMouseDown={(event) => event.preventDefault()}
-                    className={cn(
-                      'memo-navigation-submenu-item mention-note-item cursor-pointer hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)] focus-visible:outline-none',
-                      activeFilter === 'thisMonth' && 'is-selected',
-                    )}
-                  >
-                    <span className="mention-note-title">{t('memo.list.filterThisMonth')}</span>
-                    {activeFilter === 'thisMonth' && <Check className="w-4 h-4 text-[var(--brand)]" />}
-                  </button>
-                  <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
-                  <div className="px-2 pb-1 pt-1 text-xs font-normal leading-[1.2] text-[var(--muted-foreground)]">
-                    {t('memo.list.filterColorGroup')}
-                  </div>
-                  <ColorFilterSubmenuContent
-                    value={colorFilter}
-                    onSelect={handleColorSubmenuSelect}
-                  />
-                </div>
-              )}
-              onOpenChange={setColorSubmenuOpen}
-              onCloseMenu={() => setNotebookDropdownOpen(false)}
-            />
-
-            {/* Sort — 二级弹窗 */}
+            {/* Sort — 二级弹窗，时间范围筛选置于排序项顶部。 */}
             <MemoNavigationSubmenu
               label={t('memo.list.sortLabel')}
               icon={<ArrowDownUp className="h-4 w-4 shrink-0" aria-hidden="true" />}
@@ -1294,10 +1210,35 @@ export function MemoList({
                 <div className="flex flex-col space-y-0.5">
                   <button
                     type="button"
+                    onClick={() => handlePeriodFilterSelect('thisWeek')}
+                    onMouseDown={(event) => event.preventDefault()}
+                    className={cn(
+                      'memo-navigation-submenu-item memo-navigation-submenu-item--neutral-hover mention-note-item cursor-pointer hover:bg-[var(--hover-bg)] focus-visible:bg-[var(--hover-bg)] focus-visible:outline-none',
+                      activeFilter === 'thisWeek' && 'is-selected',
+                    )}
+                  >
+                    <span className="mention-note-title">{t('memo.list.filterThisWeek')}</span>
+                    {activeFilter === 'thisWeek' && <Check className="w-4 h-4 text-[var(--brand)]" />}
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => handlePeriodFilterSelect('thisMonth')}
+                    onMouseDown={(event) => event.preventDefault()}
+                    className={cn(
+                      'memo-navigation-submenu-item memo-navigation-submenu-item--neutral-hover mention-note-item cursor-pointer hover:bg-[var(--hover-bg)] focus-visible:bg-[var(--hover-bg)] focus-visible:outline-none',
+                      activeFilter === 'thisMonth' && 'is-selected',
+                    )}
+                  >
+                    <span className="mention-note-title">{t('memo.list.filterThisMonth')}</span>
+                    {activeFilter === 'thisMonth' && <Check className="w-4 h-4 text-[var(--brand)]" />}
+                  </button>
+                  <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
+                  <button
+                    type="button"
                     onClick={() => handleSortFromSubmenu('createdAt')}
                     onMouseDown={(event) => event.preventDefault()}
                     className={cn(
-                      'memo-navigation-submenu-item mention-note-item cursor-pointer hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)] focus-visible:outline-none',
+                      'memo-navigation-submenu-item memo-navigation-submenu-item--neutral-hover mention-note-item cursor-pointer hover:bg-[var(--hover-bg)] focus-visible:bg-[var(--hover-bg)] focus-visible:outline-none',
                       activeSort === 'createdAt' && 'is-selected',
                     )}
                   >
@@ -1309,7 +1250,7 @@ export function MemoList({
                     onClick={() => handleSortFromSubmenu('updatedAt')}
                     onMouseDown={(event) => event.preventDefault()}
                     className={cn(
-                      'memo-navigation-submenu-item mention-note-item cursor-pointer hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)] focus-visible:outline-none',
+                      'memo-navigation-submenu-item memo-navigation-submenu-item--neutral-hover mention-note-item cursor-pointer hover:bg-[var(--hover-bg)] focus-visible:bg-[var(--hover-bg)] focus-visible:outline-none',
                       activeSort === 'updatedAt' && 'is-selected',
                     )}
                   >
@@ -1321,7 +1262,7 @@ export function MemoList({
                     onClick={() => handleSortFromSubmenu('filenameAsc')}
                     onMouseDown={(event) => event.preventDefault()}
                     className={cn(
-                      'memo-navigation-submenu-item mention-note-item cursor-pointer hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)] focus-visible:outline-none',
+                      'memo-navigation-submenu-item memo-navigation-submenu-item--neutral-hover mention-note-item cursor-pointer hover:bg-[var(--hover-bg)] focus-visible:bg-[var(--hover-bg)] focus-visible:outline-none',
                       activeSort === 'filenameAsc' && 'is-selected',
                     )}
                   >
@@ -1333,7 +1274,7 @@ export function MemoList({
                     onClick={() => handleSortFromSubmenu('filenameDesc')}
                     onMouseDown={(event) => event.preventDefault()}
                     className={cn(
-                      'memo-navigation-submenu-item mention-note-item cursor-pointer hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)] focus-visible:outline-none',
+                      'memo-navigation-submenu-item memo-navigation-submenu-item--neutral-hover mention-note-item cursor-pointer hover:bg-[var(--hover-bg)] focus-visible:bg-[var(--hover-bg)] focus-visible:outline-none',
                       activeSort === 'filenameDesc' && 'is-selected',
                     )}
                   >
@@ -1359,7 +1300,7 @@ export function MemoList({
                   disabled={!selectedNotebook || isCreatingMemo || isCreatingTable}
                   aria-busy={isCreatingMemo || isCreatingTable}
                   aria-label={t('memo.create.note')}
-                  onClick={handleRequestCreateNote}
+                  onClick={() => { void handleCreateMemo(); }}
                   className="h-[30px] w-[25px] justify-start rounded-none border-0 bg-transparent pl-[7px] pr-[2px] text-[var(--primary-foreground)] hover:bg-white/10"
                 >
                   {isCreatingMemo || isCreatingTable
@@ -1513,7 +1454,6 @@ export function MemoList({
               key={selectedNotebook.id}
               notebook={selectedNotebook}
               createFolderRequest={createFolderRequest}
-              createNoteRequest={createNoteRequest}
               onCreateFolder={handleCreateFolder}
               defaultCreateFolder={defaultCreateFolder}
               onSetDefaultCreateFolder={(folderPath) => { void handleSetDefaultCreateFolder(folderPath); }}
@@ -1548,17 +1488,19 @@ export function MemoList({
               </div>
             ) : !hasCurrentMemoListData && showMemoListLoading ? (
               <ListSurfaceLoadingState ariaLabel={t('memo.list.loadingLibrary')} />
-            ) : filteredMemos.length > 0 ? (
+            ) : listItems.length > 0 ? (
               <MemoListRows
-                items={filteredMemos}
+                items={listItems}
                 scrollElement={listScrollElement}
                 queryKey={currentMemoListQueryKey}
+                revealKey={createdCardRevealKey}
+                onRevealed={handleCreatedCardRevealed}
                 renderRow={renderMemoRow}
               />
             ) : (
               <EmptyState hasNotebooks={notebooks.length > 0} />
             )}
-            {memoListLoadingMore && filteredMemos.length > 0 && (
+            {memoListLoadingMore && listItems.length > 0 && (
               <div
                 className="flex h-10 items-center justify-center"
                 role="status"
