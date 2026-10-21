@@ -246,6 +246,36 @@ fn entitlement() -> Value {
 }
 
 #[tokio::test]
+async fn failed_membership_refresh_invalidates_shared_access_until_a_successful_retry() {
+    let fail = Arc::new(AtomicBool::new(false));
+    let server_fail = fail.clone();
+    let server = Server::new(move |path| match path {
+        "/v1/auth/login" => (200, json!({ "data": { "session": session("first"), "user": user("first") } })),
+        "/v2/entitlements/current" if server_fail.load(Ordering::SeqCst) =>
+            (503, json!({ "error": { "code": "UNAVAILABLE", "message": "offline" } })),
+        "/v2/entitlements/current" => (200, entitlement()),
+        _ => panic!("unexpected request {path}"),
+    });
+    let directory = tempfile::tempdir().unwrap();
+    let manager = SyncManager::new(&server.url, directory.path().join("sync.db")).unwrap();
+    manager.login("first@example.test", "password").await.unwrap();
+    manager.refresh_membership().await.unwrap();
+    let verified_revision = manager.state().unwrap().revision;
+    assert!(manager.state().unwrap().membership.is_some());
+    fail.store(true, Ordering::SeqCst);
+    assert!(manager.refresh_membership().await.is_err());
+    let invalidated = manager.state().unwrap();
+    assert!(invalidated.authenticated);
+    assert!(invalidated.membership.is_none());
+    assert!(invalidated.revision > verified_revision);
+    assert!(manager.refresh_membership().await.is_err());
+    assert!(manager.state().unwrap().membership.is_none());
+    fail.store(false, Ordering::SeqCst);
+    manager.refresh_membership().await.unwrap();
+    assert!(manager.state().unwrap().membership.is_some());
+}
+
+#[tokio::test]
 async fn concurrent_membership_requests_share_one_refresh_and_later_calls_refresh_again() {
     let requests = Arc::new(AtomicUsize::new(0));
     let counted = requests.clone();

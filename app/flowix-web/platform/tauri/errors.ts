@@ -78,6 +78,12 @@ function cloudErrorDetails(message: string): Record<string, unknown> {
 
 export function cloudSyncErrorMessage(error: unknown, t: Translate): string {
   const message = tauriErrorMessage(error);
+  if (hasTauriErrorCode(error, 'MEMBERSHIP_ALREADY_ACTIVE')) {
+    return t('preferences.cloud.member.alreadyActive');
+  }
+  if (hasTauriErrorCode(error, 'STORAGE_PLAN_REQUIRED')) {
+    return t('preferences.cloud.storagePlanRequired');
+  }
   if (['CHECKOUT_IN_PROGRESS', 'CHECKOUT_CREATION_IN_PROGRESS', 'CHECKOUT_PAYMENT_PROCESSING'].some((code) => hasTauriErrorCode(error, code))) {
     return t('preferences.cloud.order.pendingCheckout');
   }
@@ -104,6 +110,7 @@ export function cloudSyncErrorMessage(error: unknown, t: Translate): string {
 export function cloudModelAccessErrorMessage(error: unknown, t: Translate): string {
   const message = tauriErrorMessage(error);
   if (message.includes('INSUFFICIENT_CREDITS')) return t('agent.error.insufficientCredits');
+  if (message.includes('CLOUD_MODELS_DISABLED')) return t('agent.error.cloudModelsDisabled');
   if (message.includes('MODEL_NOT_FOUND')) return t('agent.error.cloudModelUnavailable');
   if (message.includes('MODEL_PRICING_NOT_CONFIGURED')) return t('agent.error.cloudPricingUnavailable');
   if (!FLOWIX_MEMBERSHIP_ERROR.test(message)) return message;

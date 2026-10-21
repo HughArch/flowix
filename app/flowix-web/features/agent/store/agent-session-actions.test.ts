@@ -409,7 +409,7 @@ describe("chat-store Agent Thread Card streaming flow", () => {
     );
     const loadMessages = vi
       .spyOn(useAgentSessionStore.getState(), "loadMessages")
-      .mockResolvedValueOnce();
+      .mockResolvedValueOnce("ready");
 
     await reconcileAgentRunsAndRefreshEndedHistory();
 

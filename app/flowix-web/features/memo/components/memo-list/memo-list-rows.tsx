@@ -1,4 +1,4 @@
-import { useCallback, useMemo, useState, type ReactNode } from 'react';
+import { useCallback, useLayoutEffect, useMemo, useState, type ReactNode } from 'react';
 import { noteListItemKey, type NoteListItem } from '@/types/note-item';
 import { useDynamicVirtualList } from '../../hooks/use-dynamic-virtual-list';
 
@@ -8,6 +8,8 @@ interface MemoListRowsProps {
   items: readonly NoteListItem[];
   scrollElement: HTMLDivElement | null;
   queryKey: string;
+  revealKey?: string | null;
+  onRevealed?: () => void;
   renderRow: (item: NoteListItem, onKeepAliveChange: MemoRowKeepAliveChange) => ReactNode;
 }
 
@@ -16,7 +18,7 @@ const estimateRowSize = () => ESTIMATED_ROW_HEIGHT;
 const INITIAL_ROW_COUNT = 16;
 
 /** Paging owns data; this component owns only row geometry and mounted rows. */
-export function MemoListRows({ items, scrollElement, queryKey, renderRow }: MemoListRowsProps) {
+export function MemoListRows({ items, scrollElement, queryKey, revealKey, onRevealed, renderRow }: MemoListRowsProps) {
   const scrollerRef = useMemo(() => ({ current: scrollElement }), [scrollElement]);
   const [keptAliveKeys, setKeptAliveKeys] = useState<readonly string[]>([]);
   const onKeepAliveChange = useCallback<MemoRowKeepAliveChange>((item, active) => {
@@ -26,7 +28,7 @@ export function MemoListRows({ items, scrollElement, queryKey, renderRow }: Memo
       return active ? [...current, key] : current.filter((candidate) => candidate !== key);
     });
   }, []);
-  const { virtualItems, totalSize, getMeasureRef, isVirtualizationReady } = useDynamicVirtualList({
+  const { virtualItems, totalSize, getMeasureRef, isVirtualizationReady, scrollToIndex } = useDynamicVirtualList({
     items,
     getKey: noteListItemKey,
     estimateSize: estimateRowSize,
@@ -37,6 +39,13 @@ export function MemoListRows({ items, scrollElement, queryKey, renderRow }: Memo
     preserveScrollAnchor: true,
     scrollMargin: 8, // The scroller's py-2 precedes this list.
   });
+  useLayoutEffect(() => {
+    if (!revealKey || !isVirtualizationReady || !scrollElement?.clientHeight) return;
+    const index = items.findIndex((item) => noteListItemKey(item) === revealKey);
+    if (index < 0) return;
+    scrollToIndex(index);
+    onRevealed?.();
+  }, [items, revealKey, isVirtualizationReady, scrollElement, scrollToIndex, onRevealed]);
   // A hidden pane has no measurable viewport. Avoid mounting the entire list
   // while waiting for its first usable rectangle.
   const mountedRows = isVirtualizationReady ? virtualItems : virtualItems.slice(0, INITIAL_ROW_COUNT);
@@ -48,8 +57,8 @@ export function MemoListRows({ items, scrollElement, queryKey, renderRow }: Memo
       key={key}
       ref={getMeasureRef(key)}
       data-index={index}
-      className="absolute left-0 top-0 min-w-0 w-full"
-      style={{ transform: `translateY(${start}px)` }}
+      className={isVirtualizationReady ? "absolute left-0 top-0 min-w-0 w-full" : "relative min-w-0 w-full"}
+      style={isVirtualizationReady ? { transform: `translateY(${start}px)` } : undefined}
     >{renderRow(item, onKeepAliveChange)}</div>)}
   </div>;
 }

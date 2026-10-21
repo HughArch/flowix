@@ -7,6 +7,7 @@ use crate::agent_external::pi::PiRpcManager;
 use crate::agent_external::runtime_registry::ExternalRuntimeRegistry;
 use crate::agent_external_config::AgentExternalConfig;
 use crate::agent_session::ThreadManager;
+use crate::app::open_targets;
 use crate::app::panic::install_panic_log_hook;
 use crate::app::paths::{get_app_data_path, get_user_config_dir};
 use crate::app::state::AppState;
@@ -14,7 +15,6 @@ use crate::app::watchdog::spawn_external_agent_watchdog;
 use crate::cli_link;
 use crate::commands;
 use crate::config::user as user_config;
-use crate::events as dispatcher;
 use crate::memo_events::{self, MemoChangeSource, MemoDerivedChanged, MemoEvent};
 use crate::runtime_log;
 use crate::system_data::SystemData;
@@ -200,6 +200,7 @@ pub fn run() {
         .plugin(tauri_plugin_updater::Builder::new().build())
         .plugin(crate::frame_scrollbar::init())
         .manage(crate::app_update::AppUpdateState::default())
+        .manage(open_targets::PendingOpenTargets::default())
         .manage(memo_watcher.clone())
         .on_window_event(commands::window_shutdown::on_window_event)
         .on_page_load(|webview, payload| {
@@ -367,7 +368,14 @@ pub fn run() {
             if let Some(window) = app.get_webview_window("main") {
                 commands::window_shutdown::install_window(&window);
                 // �?��即�?齐主题背�?��, 消除冷启动白�?(尤其深色主�?)�?
-                let theme = app.state::<AppState>().user_config.get_preference().theme;
+                let saved_theme = app.state::<AppState>().user_config.get_preference().theme;
+                // Mist is account-gated. Keep native chrome on Rock until the
+                // frontend has confirmed the signed-in account entitlement.
+                let theme = if saved_theme == crate::config::Theme::Mist {
+                    crate::config::Theme::Rock
+                } else {
+                    saved_theme
+                };
                 crate::window_material::apply_main_window_material(&window, theme);
                 crate::window_chrome::apply_window_chrome_theme(&window, theme);
 
@@ -539,12 +547,15 @@ pub fn run() {
             commands::cloud::cloud_set_notebook_enabled,
             commands::cloud::cloud_refresh_membership,
             commands::cloud::cloud_ai_credit_balance,
+            commands::cloud::cloud_pi_model_availability,
             commands::cloud::cloud_connect_pi_model_provider,
             commands::cloud::cloud_refresh_pi_model_provider_at_startup,
             commands::cloud::cloud_refresh_pi_model_provider,
             commands::cloud::cloud_list_products,
             commands::cloud::cloud_list_billing_orders,
             commands::cloud::cloud_check_billing_order,
+            commands::cloud::cloud_list_subscriptions,
+            commands::cloud::cloud_cancel_subscription,
             commands::cloud::cloud_create_checkout,
             commands::cloud::cloud_submit_feedback,
             commands::cloud::cloud_sync_now,
@@ -600,7 +611,8 @@ pub fn run() {
             commands::external_document::read_external_document,
             commands::external_document::detect_external_document_text,
             commands::external_document::write_external_document,
-            commands::memo::reads::get_launch_open_files,
+            open_targets::get_pending_open_targets,
+            open_targets::acknowledge_open_targets,
             commands::memo::reads::search_path_notes,
             commands::memo::creates::add_path_document,
             commands::memo::creates::list_notebook_templates,
@@ -864,7 +876,7 @@ fn spawn_workbench_startup(
                         elapsed_ms = started.elapsed().as_millis(),
                         "[startup] workspace ready"
                     );
-                    handle_cold_start_open_targets(&app);
+                    open_targets::dispatch(&app, std::env::args().skip(1).collect(), "cold-start");
                     if !startup.wait_until_interactive(Duration::from_secs(120)) {
                         tracing::warn!(
                             "[startup] first workspace paint was not reported within 120 seconds; releasing independent services as a degraded liveness fallback"
@@ -1229,53 +1241,16 @@ fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
     // Bring the already-running window forward before waiting for app startup
     // or parsing the URL, so even a malformed/stale callback cannot leave the
     // browser's transient launch as the only visible activation.
-    focus_main_window(&app);
+    open_targets::focus_main_window(&app);
     tauri::async_runtime::spawn_blocking(move || {
         if let Err(error) = app.state::<AppState>().startup.wait_until_ready() {
             tracing::warn!("second-instance target deferred because startup failed: {error}");
             return;
         }
-        let paths = commands::markdown_paths_from_args(args.clone());
-        emit_open_target_batch_if_needed(&app, &paths);
-
-        for arg in args {
-            if dispatch_google_callback(&app, &arg) {
-                continue;
-            }
-            if !paths.contains(&arg) {
-                emit_open_target_if_resolved(&app, &arg);
-            }
-        }
+        let targets = args.into_iter()
+            .filter(|arg| !dispatch_google_callback(&app, arg)).collect();
+        open_targets::dispatch(&app, targets, "second-instance");
     });
-}
-
-#[cfg(desktop)]
-fn focus_main_window(app: &tauri::AppHandle) {
-    #[cfg(target_os = "macos")]
-    {
-        // A protocol launch briefly activates its own helper process. Focusing
-        // the existing NSWindow alone does not reactivate the already-running
-        // app on macOS, so explicitly activate NSApp on the main thread first.
-        let app = app.clone();
-        let app_for_main_thread = app.clone();
-        let _ = app.run_on_main_thread(move || {
-            if let Some(mtm) = objc2::MainThreadMarker::new() {
-                objc2_app_kit::NSApp(mtm).activate();
-            }
-            if let Some(window) = app_for_main_thread.get_webview_window("main") {
-                let _ = window.show();
-                let _ = window.unminimize();
-                let _ = window.set_focus();
-            }
-        });
-    }
-
-    #[cfg(not(target_os = "macos"))]
-    if let Some(window) = app.get_webview_window("main") {
-        let _ = window.show();
-        let _ = window.unminimize();
-        let _ = window.set_focus();
-    }
 }
 
 #[cfg(desktop)]
@@ -1350,112 +1325,22 @@ fn register_deep_links(app: &mut tauri::App) {
             .map(|url| url.to_string())
             .collect::<Vec<_>>();
         let app = app_handle.clone();
-        focus_main_window(&app);
+        open_targets::focus_main_window(&app);
         let startup = startup.clone();
         tauri::async_runtime::spawn_blocking(move || {
             if let Err(error) = startup.wait_until_ready() {
                 tracing::warn!("deep-link target deferred because startup failed: {error}");
                 return;
             }
-            for url in urls {
-                if !dispatch_google_callback(&app, &url) {
-                    emit_open_target_if_resolved(&app, url.as_str());
-                }
-            }
+            let targets = urls.into_iter()
+                .filter(|url| !dispatch_google_callback(&app, url)).collect();
+            open_targets::dispatch(&app, targets, "deep-link");
         });
     });
 }
 
 #[cfg(not(desktop))]
 fn register_deep_links(_app: &mut tauri::App) {}
-
-fn handle_cold_start_open_targets(app: &tauri::AppHandle) {
-    let args = std::env::args().skip(1).collect::<Vec<_>>();
-    let paths = commands::markdown_paths_from_args(args.clone());
-    if !paths.is_empty() {
-        if let Some(main_window) = app.get_webview_window("main") {
-            main_window.hide().ok();
-        }
-        emit_open_target_batch_if_needed(app, &paths);
-    }
-    for arg in args {
-        if !paths.contains(&arg) {
-            emit_open_target_if_resolved(app, &arg);
-        }
-    }
-}
-
-fn emit_open_target_batch_if_needed(app: &tauri::AppHandle, paths: &[String]) {
-    if commands::window_shutdown::is_exiting() { return; }
-    let mut external_paths = Vec::new();
-    let state = app.state::<AppState>();
-    let configs = crate::lock_utils::read_lock(&state.memo_file, "memo_file")
-        .read_notebook_configs()
-        .unwrap_or_default();
-    for path in paths {
-        if path.to_ascii_lowercase().starts_with("flowix://memo/")
-            || path.to_ascii_lowercase().starts_with("flowix://open?")
-        {
-            emit_open_target_if_resolved(app, path);
-            continue;
-        }
-        if commands::markdown_paths_from_args([path.clone()]).is_empty() {
-            continue;
-        }
-        {
-            let canonical = dunce::canonicalize(path).unwrap_or_else(|_| PathBuf::from(path));
-            let inside_notebook = configs.iter().any(|config| {
-                let root = dunce::canonicalize(&config.path)
-                    .unwrap_or_else(|_| PathBuf::from(&config.path));
-                canonical == root || canonical.starts_with(root.join(""))
-            });
-            if !inside_notebook {
-                state.document_access.grant("main", &canonical);
-                external_paths.push(path.clone());
-            } else {
-                emit_open_target_if_resolved(app, path);
-            }
-        }
-    }
-    if !external_paths.is_empty() {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.show();
-            let _ = window.set_focus();
-            let _ = window.unminimize();
-        }
-        emit_external_markdown_open(app, external_paths);
-    }
-}
-
-fn emit_open_target_if_resolved(app: &tauri::AppHandle, raw: &str) {
-    if commands::window_shutdown::is_exiting() { return; }
-    let state = app.state::<AppState>();
-    let markdown_paths = commands::markdown_paths_from_args([raw.to_string()]);
-    for path in &markdown_paths {
-        if let Ok(path) = dunce::canonicalize(path) {
-            state.document_access.grant("main", &path);
-        }
-    }
-    if raw.to_ascii_lowercase().starts_with("flowix://open?")
-        || raw.to_ascii_lowercase().starts_with("flowix://memo/")
-        || !markdown_paths.is_empty()
-    {
-        if let Some(window) = app.get_webview_window("main") {
-            let _ = window.show();
-            let _ = window.set_focus();
-            let _ = window.unminimize();
-        }
-        dispatcher::emit_to(app, "flowix:open-path", raw.to_string());
-    }
-}
-
-fn emit_external_markdown_open(app: &tauri::AppHandle, paths: Vec<String>) {
-    dispatcher::emit_to(
-        app,
-        "flowix:external-markdown-open",
-        serde_json::json!({ "filePaths": paths }),
-    );
-}
 
 fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
     match event {
@@ -1488,18 +1373,10 @@ fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
                     tracing::warn!("macOS open target deferred because startup failed: {error}");
                     return;
                 }
-                let mut markdown_paths = Vec::new();
-                for url in urls {
-                    if url.scheme() == "file" {
-                        if let Ok(path) = url.to_file_path() {
-                            let path = path.to_string_lossy().to_string();
-                            if !commands::markdown_paths_from_args([path.clone()]).is_empty() {
-                                markdown_paths.push(path);
-                            }
-                        }
-                    }
-                }
-                emit_open_target_batch_if_needed(&app, &markdown_paths);
+                let paths = urls.into_iter().filter(|url| url.scheme() == "file")
+                    .filter_map(|url| url.to_file_path().ok())
+                    .map(|path| path.to_string_lossy().into_owned()).collect();
+                open_targets::dispatch(&app, paths, "macos-opened");
             });
         }
         tauri::RunEvent::ExitRequested { api, code, .. } => {

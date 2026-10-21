@@ -20,7 +20,7 @@ export function CenteredLoadingSpinner({
     >
       <div className="flex flex-col items-center gap-3 text-sm text-[var(--muted-foreground)]">
         <div
-          className="h-5 w-5 flowix-spin rounded-full border-2 border-[color-mix(in_oklch,var(--muted-foreground)_26%,transparent)] border-t-[var(--brand)]"
+          className="flowix-loading-ring flowix-spin"
           aria-hidden="true"
         />
         {label && <span>{label}</span>}

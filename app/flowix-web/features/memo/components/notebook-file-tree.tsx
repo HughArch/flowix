@@ -45,6 +45,7 @@ import { useCustomFilterStore } from '@features/memo/store/custom-filter-store';
 import { NotebookPinnedSection, NotebookViewsSection } from '@features/memo/components/notebook-file-tree-sections';
 import { useNotebookPinnedNotes } from '@features/memo/components/use-notebook-pinned-notes';
 import { createMediaLibraryFile } from '@features/media-library/model';
+import { createWorkDocumentsCollectionFile } from '@features/work-documents/model';
 import { updateNoteLinksAfterMove } from '@features/memo/services/note-link-rewriter';
 import { replaceExternalDocumentPath } from '@features/workspace/use-cases/workspace-navigation';
 import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
@@ -173,25 +174,20 @@ export interface NotebookFolderCreateRequest {
   parentPath: string;
 }
 
-export interface NotebookNoteCreateRequest {
-  id: number;
-  parentPath: string;
-}
-
 interface NotebookFileTreeProps {
   notebookId?: string;
   notebookPath: string;
   notebookName: string;
   activeFilePath?: string | null;
+  activeFileRevealRatio?: number;
   tree: FolderTreeController;
   isActive?: boolean;
   createFolderRequest?: NotebookFolderCreateRequest | null;
-  createNoteRequest?: NotebookNoteCreateRequest | null;
   onCreateFolder?: () => void;
   onNoteSelect: (filePath: string) => void;
   onFolderSelect?: (folderPath: string) => void;
   onNoteOpenInNewTab?: (filePath: string) => void;
-  onCreateNote: (parentPath: string, title: string) => Promise<void> | void;
+  onCreateNote: (parentPath?: string, title?: string) => Promise<void> | void;
   onMoveNote: (
     sources: NotebookMoveSource[],
     targetDirectoryPath: string,
@@ -205,7 +201,6 @@ interface NotebookFileTreeProps {
 interface NotebookTreeDraftState {
   requestId: number;
   parentPath: string;
-  kind: 'note' | 'folder';
   value: string;
 }
 
@@ -278,7 +273,6 @@ export function buildNotebookTreeRenderRows(
     }
   }
 
-  const requestedType = draft.kind === 'folder' ? 'folder' : 'document';
   let insertionIndex = -1;
   for (let index = rangeStart; index < rangeEnd; index += 1) {
     const row = rows[index];
@@ -286,20 +280,14 @@ export function buildNotebookTreeRenderRows(
       row.kind === 'node'
       && row.depth === childDepth
       && samePath(row.parentPath, parentPath)
-      && row.item.type === requestedType
+      && row.item.type === 'folder'
     ) {
       insertionIndex = index;
       break;
     }
   }
 
-  if (insertionIndex < 0) {
-    if (draft.kind === 'folder') {
-      insertionIndex = rangeStart;
-    } else {
-      insertionIndex = rangeEnd;
-    }
-  }
+  if (insertionIndex < 0) insertionIndex = rangeStart;
 
   rows.splice(insertionIndex, 0, {
     kind: 'draft',
@@ -320,10 +308,10 @@ export function NotebookFileTree({
   notebookPath,
   notebookName,
   activeFilePath = null,
+  activeFileRevealRatio,
   tree,
   isActive = true,
   createFolderRequest,
-  createNoteRequest,
   onCreateFolder,
   onNoteSelect,
   onFolderSelect,
@@ -397,6 +385,10 @@ export function NotebookFileTree({
   const [newLibraryInViews, setNewLibraryInViews] = useState(false);
   const [newLibraryParentFolder, setNewLibraryParentFolder] = useState<string | null>(null);
   const [isCreatingLibrary, setIsCreatingLibrary] = useState(false);
+  const [newWorkDocumentsDialogOpen, setNewWorkDocumentsDialogOpen] = useState(false);
+  const [newWorkDocumentsName, setNewWorkDocumentsName] = useState('');
+  const [newWorkDocumentsParentFolder, setNewWorkDocumentsParentFolder] = useState<string | null>(null);
+  const [isCreatingWorkDocuments, setIsCreatingWorkDocuments] = useState(false);
   const viewTableDocuments = useMemo(() => tableDocuments.filter((table) => table.inViews), [tableDocuments]);
   const viewMediaLibraries = useMemo(() => mediaLibraries.filter((library) => library.inViews), [mediaLibraries]);
   const tableDocumentByPath = useMemo(() => {
@@ -516,7 +508,6 @@ export function NotebookFileTree({
   }, [hiddenSections, notebookId, sectionOrder]);
   const treeHeaderRef = useRef<HTMLDivElement | null>(null);
   const handledFolderRequestIdRef = useRef<number | null>(null);
-  const handledNoteRequestIdRef = useRef<number | null>(null);
   const cancelledDraftRequestIdRef = useRef<number | null>(null);
   const submittingDraftRef = useRef(false);
   const [keptAlivePaths, setKeptAlivePaths] = useState<Set<string>>(() => new Set());
@@ -588,6 +579,8 @@ export function NotebookFileTree({
     treeScrollerRef,
     renderRowIndexByPath,
     treeContentOffset,
+    isActive,
+    activeFileRevealRatio,
     onNoteSelect,
   });
   const {
@@ -667,6 +660,18 @@ export function NotebookFileTree({
   const expandToRef = useRef(tree.expandTo);
   expandToRef.current = tree.expandTo;
 
+  const createNoteAtPath = useCallback(async (parentPath?: string) => {
+    try {
+      await onCreateNote(parentPath);
+    } catch (error) {
+      toast.error(t(
+        String(error).includes('FILE_EXISTS')
+          ? 'memo.fileTree.nameConflict'
+          : 'memo.fileTree.createFailed',
+      ));
+    }
+  }, [onCreateNote, t]);
+
   useEffect(() => {
     if (!isActive || !activeFilePath || !activeFileShouldReveal || tree.loading) return;
     void expandToRef.current(activeFilePath);
@@ -679,22 +684,9 @@ export function NotebookFileTree({
     setDraft({
       requestId: createFolderRequest.id,
       parentPath: createFolderRequest.parentPath,
-      kind: 'folder',
       value: '',
     });
   }, [createFolderRequest, tree.expandTo]);
-
-  useEffect(() => {
-    if (!createNoteRequest || handledNoteRequestIdRef.current === createNoteRequest.id) return;
-    handledNoteRequestIdRef.current = createNoteRequest.id;
-    void tree.expandTo(`${createNoteRequest.parentPath}/__new-note__`);
-    setDraft({
-      requestId: createNoteRequest.id,
-      parentPath: createNoteRequest.parentPath,
-      kind: 'note',
-      value: '',
-    });
-  }, [createNoteRequest, tree.expandTo]);
 
   const submitDraft = useCallback(async () => {
     if (!draft) return;
@@ -704,7 +696,7 @@ export function NotebookFileTree({
     }
     if (submittingDraftRef.current) return;
     submittingDraftRef.current = true;
-    const { parentPath, kind, value } = draft;
+    const { parentPath, value } = draft;
     const name = value.trim();
     if (!name) {
       setDraft(null);
@@ -712,12 +704,6 @@ export function NotebookFileTree({
       return;
     }
     try {
-      if (kind === 'note') {
-        await onCreateNote(parentPath, name);
-        await tree.refresh(parentPath);
-        setDraft(null);
-        return;
-      }
       const created = await files.createFolder(parentPath, name);
       if (!created) {
         toast.error(t('memo.fileTree.createFailed'));
@@ -734,7 +720,7 @@ export function NotebookFileTree({
     } finally {
       submittingDraftRef.current = false;
     }
-  }, [draft, onCreateNote, t, tree.refresh]);
+  }, [draft, t, tree.refresh]);
 
   const cancelDraft = useCallback(() => {
     if (!draft) return;
@@ -742,9 +728,9 @@ export function NotebookFileTree({
     setDraft(null);
   }, [draft]);
 
-  const requestCreateDraft = useCallback((parentPath: string, kind: 'note' | 'folder') => {
-    void tree.expandTo(`${parentPath}/__new-${kind}__`);
-    setDraft({ requestId: Date.now(), parentPath, kind, value: '' });
+  const requestCreateFolderDraft = useCallback((parentPath: string) => {
+    void tree.expandTo(`${parentPath}/__new-folder__`);
+    setDraft({ requestId: Date.now(), parentPath, value: '' });
   }, [tree.expandTo]);
 
   const handleRename = useCallback(async (item: DocTreeItem, nextName: string) => {
@@ -1096,6 +1082,33 @@ export function NotebookFileTree({
       setIsCreatingLibrary(false);
     }
   }, [defaultCreateFolder, isCreatingLibrary, newLibraryInViews, newLibraryName, newLibraryParentFolder, notebookId, notebookPath, refreshMediaLibraries]);
+  const openNewWorkDocumentsDialog = useCallback((parentFolderPath?: string) => {
+    setNewWorkDocumentsParentFolder(parentFolderPath ?? null);
+    setNewWorkDocumentsName(t('memo.create.workDocuments'));
+    setNewWorkDocumentsDialogOpen(true);
+  }, [t]);
+  const handleCreateWorkDocuments = useCallback(async () => {
+    if (!notebookId || isCreatingWorkDocuments) return;
+    setIsCreatingWorkDocuments(true);
+    try {
+      const relativeFolder = newWorkDocumentsParentFolder !== null
+        ? relativeFolderPath(notebookPath, newWorkDocumentsParentFolder)
+        : defaultCreateFolder;
+      const { filePath } = await createWorkDocumentsCollectionFile(notebookPath, relativeFolder, newWorkDocumentsName);
+      setNewWorkDocumentsDialogOpen(false);
+      setNewWorkDocumentsName('');
+      setNewWorkDocumentsParentFolder(null);
+      await openWorkspaceSurface({
+        host: 'main-third',
+        target: { kind: 'external', path: filePath, scopePath: notebookPath, transitionId: null },
+        options: { notebookId },
+      });
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('memo.create.workDocumentsCreateFailed'));
+    } finally {
+      setIsCreatingWorkDocuments(false);
+    }
+  }, [defaultCreateFolder, isCreatingWorkDocuments, newWorkDocumentsName, newWorkDocumentsParentFolder, notebookId, notebookPath, t]);
   const handleAddRepository = useCallback(async () => {
     if (!notebookId) return;
     const result = await useAgentWorkspaceStore.getState().workspaceActions.addFolderFromPicker(notebookId);
@@ -1123,11 +1136,11 @@ export function NotebookFileTree({
     onNoteOpenInNewTab?.(path);
   }, [onNoteOpenInNewTab, openMediaLibraryPath]);
   const handleCreateNoteAtPath = useCallback((parentPath: string) => {
-    requestCreateDraft(parentPath, 'note');
-  }, [requestCreateDraft]);
+    void createNoteAtPath(parentPath);
+  }, [createNoteAtPath]);
   const handleCreateFolderAtPath = useCallback((parentPath: string) => {
-    requestCreateDraft(parentPath, 'folder');
-  }, [requestCreateDraft]);
+    requestCreateFolderDraft(parentPath);
+  }, [requestCreateFolderDraft]);
   const handleFocusPath = useCallback((path: string) => setFocusedTreePath(path), []);
   const handleDeleteFolderPath = useCallback(async (path: string) => {
     await onDeleteFolder?.(path);
@@ -1269,6 +1282,7 @@ export function NotebookFileTree({
           onImportFolder={handleImportFolder}
           onCreateView={handleCreateViewAtPath}
           onCreateMediaLibrary={handleCreateMediaLibraryAtPath}
+          onCreateWorkDocuments={openNewWorkDocumentsDialog}
           tableViewVisibility={tableViewVisibility}
           mediaLibraryViewVisibility={mediaLibraryViewVisibility}
           onRename={handleRename}
@@ -1394,6 +1408,7 @@ export function NotebookFileTree({
                   onImportFolder={(path) => { void handleImportFolder(path); }}
                   onCreateView={(parentPath, viewType) => openNewTableDialog(false, parentPath, viewType)}
                   onCreateMediaLibrary={(parentPath) => openNewMediaLibraryDialog(false, parentPath)}
+                  onCreateWorkDocuments={(parentPath) => openNewWorkDocumentsDialog(parentPath)}
                   onRename={handleRename}
                   onDeleteFile={onDeleteFile}
                   onPointerDown={() => {}}
@@ -1423,6 +1438,7 @@ export function NotebookFileTree({
                   onMoveDown={() => moveTreeSection('views', 1)}
                   onCreateTable={(viewType) => openNewTableDialog(true, undefined, viewType)}
                   onCreateMediaLibrary={() => openNewMediaLibraryDialog(true)}
+                  onCreateWorkDocuments={() => openNewWorkDocumentsDialog()}
                   onCustomizeDisplay={openCustomizeDisplay}
                 />
               )}
@@ -1448,6 +1464,7 @@ export function NotebookFileTree({
                     onCreateFolder={handleCreateFolderAtPath}
                     onCreateView={(parentPath, viewType) => openNewTableDialog(true, parentPath, viewType)}
                     onCreateMediaLibrary={(parentPath) => openNewMediaLibraryDialog(true, parentPath)}
+                    onCreateWorkDocuments={(parentPath) => openNewWorkDocumentsDialog(parentPath)}
                     tableViewVisibility={{
                       collectionId: table.collectionId,
                       inViews: table.inViews,
@@ -1485,6 +1502,7 @@ export function NotebookFileTree({
                     onCreateFolder={handleCreateFolderAtPath}
                     onCreateView={(parentPath, viewType) => openNewTableDialog(true, parentPath, viewType)}
                     onCreateMediaLibrary={(parentPath) => openNewMediaLibraryDialog(true, parentPath)}
+                    onCreateWorkDocuments={(parentPath) => openNewWorkDocumentsDialog(parentPath)}
                     mediaLibraryViewVisibility={{
                       inViews: library.inViews,
                       identityConflict: library.identityConflict ?? false,
@@ -1539,9 +1557,10 @@ export function NotebookFileTree({
                 onMoveUp={() => moveTreeSection('files', -1)}
                 onMoveDown={() => moveTreeSection('files', 1)}
                 onCreateFolder={onCreateFolder}
-                onCreateNote={() => handleCreateNoteAtPath(notebookPath)}
+                onCreateNote={() => { void createNoteAtPath(); }}
                 onCreateTable={(viewType) => openNewTableDialog(false, undefined, viewType)}
                 onCreateMediaLibrary={() => openNewMediaLibraryDialog()}
+                onCreateWorkDocuments={() => openNewWorkDocumentsDialog()}
                 onImportFiles={() => { void handleImportFiles(notebookPath); }}
                 onImportFolder={() => { void handleImportFolder(notebookPath); }}
                 sort={fileTreeSort}
@@ -1639,6 +1658,7 @@ export function NotebookFileTree({
                 onCreateFolder={() => handleCreateFolderAtPath(notebookPath)}
                 onCreateTable={(viewType) => openNewTableDialog(false, notebookPath, viewType)}
                 onCreateMediaLibrary={() => openNewMediaLibraryDialog(false, notebookPath)}
+                onCreateWorkDocuments={() => openNewWorkDocumentsDialog(notebookPath)}
                 onImportFiles={() => { void handleImportFiles(notebookPath); }}
                 onImportFolder={() => { void handleImportFolder(notebookPath); }}
               />
@@ -1733,6 +1753,24 @@ export function NotebookFileTree({
               <Button type="submit" size="sm" className="rounded-lg" disabled={!newLibraryName.trim() || isCreatingLibrary}>
                 {isCreatingLibrary ? <Loader2 className="mr-1.5 h-4 w-4 flowix-spin" aria-hidden="true" /> : null}
                 {isCreatingLibrary ? t('memo.create.creating') : t('memo.create.confirm')}
+              </Button>
+            </div>
+          </form>
+        </DialogContent>
+      </Dialog>
+      <Dialog open={newWorkDocumentsDialogOpen} onOpenChange={setNewWorkDocumentsDialogOpen}>
+        <DialogContent className="max-w-sm">
+          <DialogHeader>
+            <DialogTitle>{t('memo.create.workDocumentsTitle')}</DialogTitle>
+            <DialogDescription>{t('memo.create.workDocumentsDescription')}</DialogDescription>
+          </DialogHeader>
+          <form className="mt-4 space-y-4" onSubmit={(event) => { event.preventDefault(); void handleCreateWorkDocuments(); }}>
+            <input autoFocus value={newWorkDocumentsName} onChange={(event) => setNewWorkDocumentsName(event.target.value)} placeholder={t('memo.create.workDocuments')} className="h-9 w-full rounded-lg border border-[var(--border)] bg-transparent px-3 text-sm outline-none focus:border-[var(--brand)]" />
+            <div className="flex justify-end gap-2">
+              <Button type="button" variant="outline" size="sm" className="rounded-lg" onClick={() => setNewWorkDocumentsDialogOpen(false)}>{t('dialog.cancel')}</Button>
+              <Button type="submit" size="sm" className="rounded-lg" disabled={!newWorkDocumentsName.trim() || isCreatingWorkDocuments}>
+                {isCreatingWorkDocuments ? <Loader2 className="mr-1.5 h-4 w-4 flowix-spin" aria-hidden="true" /> : null}
+                {isCreatingWorkDocuments ? t('memo.create.creating') : t('memo.create.confirm')}
               </Button>
             </div>
           </form>
@@ -1833,7 +1871,7 @@ function NotebookTreeDraft({
   style,
   'data-notebook-tree-depth': dataDepth,
 }: {
-  draft: { requestId: number; kind: 'note' | 'folder'; value: string };
+  draft: { requestId: number; value: string };
   depth: number;
   onChange: (value: string) => void;
   onSubmit: () => void;
@@ -1855,28 +1893,19 @@ function NotebookTreeDraft({
     >
       <span
         aria-hidden="true"
-        data-notebook-tree-draft-icon={draft.kind}
-        className={cn(
-          'relative flex h-[18px] w-[18px] shrink-0 items-center justify-center',
-          draft.kind === 'folder'
-            ? 'text-[var(--brand)]'
-            : 'text-[color-mix(in_oklch,var(--foreground)_90%,white_10%)]',
-        )}
+        data-notebook-tree-draft-icon="folder"
+        className="relative flex h-[18px] w-[18px] shrink-0 items-center justify-center text-[var(--brand)]"
       >
-        {draft.kind === 'folder' ? (
-          <span
-            className="absolute inset-0 flex items-center justify-center"
-            dangerouslySetInnerHTML={{ __html: folderIcon }}
-          />
-        ) : (
-          <NotebookTreeFileIcon className="notebook-file-tree__default-file-icon h-[18px] w-[18px]" />
-        )}
+        <span
+          className="absolute inset-0 flex items-center justify-center"
+          dangerouslySetInnerHTML={{ __html: folderIcon }}
+        />
       </span>
       <input
         key={draft.requestId}
         autoFocus
         value={draftInput.value}
-        placeholder={draft.kind === 'folder' ? t('memo.fileTree.newFolder') : t('memo.fileTree.newNote')}
+        placeholder={t('memo.fileTree.newFolder')}
         onChange={draftInput.onChange}
         onCompositionStart={draftInput.onCompositionStart}
         onCompositionEnd={draftInput.onCompositionEnd}

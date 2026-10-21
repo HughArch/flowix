@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import type { MouseEvent } from 'react';
 import { X } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
@@ -13,6 +13,8 @@ interface IconValueInputProps {
   value: string;
   disabled?: boolean;
   variant?: 'default' | 'table';
+  keepParentMenuOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
   onChange: (next: string) => void;
 }
 
@@ -20,12 +22,19 @@ export function IconValueInput({
   value,
   disabled = false,
   variant = 'default',
+  keepParentMenuOpen = false,
+  onOpenChange,
   onChange,
 }: IconValueInputProps) {
   const { t } = useI18n();
   const [open, setOpen] = useState(false);
   const selected = getPropertyIconOption(value);
-  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  const changeOpen = useCallback((nextOpen: boolean) => {
+    if (disabled) return;
+    setOpen(nextOpen);
+    onOpenChange?.(nextOpen);
+  }, [disabled, onOpenChange]);
+  useEffect(() => { if (disabled) { setOpen(false); onOpenChange?.(false); } }, [disabled, onOpenChange]);
 
   const clearValue = (event: MouseEvent) => {
     event.stopPropagation();
@@ -34,7 +43,7 @@ export function IconValueInput({
   };
 
   return (
-    <Popover open={disabled ? false : open} onOpenChange={(nextOpen) => { if (!disabled) setOpen(nextOpen); }} cellPopup={variant === 'table'}>
+    <Popover open={disabled ? false : open} onOpenChange={changeOpen} cellPopup={variant === 'table'}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -77,6 +86,7 @@ export function IconValueInput({
       <PopoverContent
         align="start"
         sideOffset={6}
+        keepParentMenuOpen={keepParentMenuOpen}
         className={cn('z-[150] w-[280px] rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' ? '!z-[170] p-1' : 'p-2')}
       >
         <div className="max-h-[240px] overflow-y-auto [scrollbar-gutter:stable]">
@@ -91,7 +101,7 @@ export function IconValueInput({
                 onClick={() => {
                   if (disabled) return;
                   onChange(option.value);
-                  setOpen(false);
+                  changeOpen(false);
                 }}
                 className={cn(
                   'flex h-10 w-10 items-center justify-center rounded-lg border transition-colors',

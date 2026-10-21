@@ -3,17 +3,21 @@
 import { useEffect, useState } from 'react';
 import { Check, Cloud, Info, Loader2 } from 'lucide-react';
 
+import appleLogo from '@/assets/apple.svg';
 import googleLogo from '@/assets/google.svg';
 import { errorMessage } from '@/lib/error-message';
 import { useI18n } from '@/lib/i18n';
+import { isMac } from '@/lib/shortcuts/platform';
 import { toast } from '@/lib/toast';
 import { openUrl } from '@platform/tauri/opener';
+import { isTauriDesktopRuntime } from '@platform/tauri/runtime';
 import { cloudSyncErrorMessage } from '@platform/tauri/errors';
 import { subscribe } from '@platform/tauri/event-bus';
 import {
   cloud,
   type CloudProduct,
   type CloudOrder,
+  type CloudSubscription,
   type CloudState,
 } from '@platform/tauri/client';
 import { Button } from '@shared/ui/button';
@@ -24,6 +28,7 @@ import { SectionHeader } from '@features/preferences/sections/primitives';
 import { cn } from '@/lib/utils';
 import { useCloudAccountState } from '@features/preferences/hooks/use-cloud-account-state';
 import { PiCloudModelsSection } from '@features/preferences/sections/pi-cloud-models-section';
+import { useMembershipAccess } from '@features/preferences/public/membership';
 
 function formatStorageCapacity(value: number): string {
   const units = ['B', 'KB', 'MB', 'GB', 'TB'];
@@ -49,42 +54,11 @@ function formatMembershipDate(value: number): string {
   return `${year}-${month}-${day}`;
 }
 
-function productPlan(product: CloudProduct): 'go' | 'pro' | null {
-  const capacity = formatStorageCapacity(product.entitlement.storageBytes);
-  const productText = `${product.name} ${product.description}`.toLowerCase();
-  if (capacity === '200 MB' || /flowix\s*go/.test(productText)) return 'go';
-  if (capacity === '2 GB' || /flowix\s*pro/.test(productText)) return 'pro';
-  return null;
-}
-
-type BillingPeriod = 'monthly' | 'yearly';
-
-function productBillingPeriod(product: CloudProduct): BillingPeriod | null {
-  const { unit, count } = product.entitlement.duration;
-  const normalizedUnit = unit.trim().toLowerCase();
-
-  if (
-    normalizedUnit.includes('year')
-    || (normalizedUnit.includes('month') && count >= 12)
-    || (normalizedUnit.includes('day') && count >= 360)
-  ) {
-    return 'yearly';
-  }
-  if (normalizedUnit.includes('month') || (normalizedUnit.includes('day') && count >= 28 && count <= 31)) {
-    return 'monthly';
-  }
-
-  const productText = `${product.name} ${product.description}`.toLowerCase();
-  if (/year|annual|每年|按年/.test(productText)) return 'yearly';
-  if (/month|monthly|每月|按月/.test(productText)) return 'monthly';
-  return null;
-}
-
 export function CloudSyncSection() {
   const { t } = useI18n();
   const { state, loadError: stateLoadError, loading: loadingLoginState, applyState, membershipLoading, membershipError, refreshMembership } = useCloudAccountState();
+  const canSignInWithApple = isTauriDesktopRuntime() && isMac();
   const [products, setProducts] = useState<CloudProduct[]>([]);
-  const [billingPeriod, setBillingPeriod] = useState<BillingPeriod>('monthly');
   const [email, setEmail] = useState('');
   const [password, setPassword] = useState('');
   const [busy, setBusy] = useState(false);
@@ -93,10 +67,28 @@ export function CloudSyncSection() {
   const [orders, setOrders] = useState<CloudOrder[]>([]);
   const [ordersLoading, setOrdersLoading] = useState(false);
   const [ordersLoadError, setOrdersLoadError] = useState<string | null>(null);
+  const [subscriptions, setSubscriptions] = useState<CloudSubscription[]>([]);
+  const [subscriptionsLoading, setSubscriptionsLoading] = useState(false);
+  const [subscriptionsLoadError, setSubscriptionsLoadError] = useState<string | null>(null);
+  const [cancelingSubscriptionId, setCancelingSubscriptionId] = useState<string | null>(null);
   const [checkingOrderId, setCheckingOrderId] = useState<string | null>(null);
   const [orderCheckFailedId, setOrderCheckFailedId] = useState<string | null>(null);
+  const [resumingOrderId, setResumingOrderId] = useState<string | null>(null);
 
   const hasPendingOrder = orders.some((order) => order.status === 'pending');
+  const storageExpiresAt = state?.membership?.storageExpiresAt ?? state?.membership?.expiresAt;
+  const { active: hasMembership, lifetime: hasLifetimeMembership, loading: memberAccessLoading } = useMembershipAccess();
+  const membershipProducts = products.filter((product) => {
+    if (product.entitlement.features.membership !== true) return false;
+    if (product.entitlement.features.lifetime === true) return product.billingType === 'one_time';
+    return product.billingType === 'subscription'
+      && product.entitlement.duration.unit === 'year'
+      && product.entitlement.duration.count === 1;
+  });
+  const annualMembershipSubscription = subscriptions.find((subscription) =>
+    subscription.isAnnualMembership
+      && ['active', 'trialing', 'past_due'].includes(subscription.status)
+  ) ?? null;
 
   const loadOrders = async () => {
     if (!state?.authenticated) {
@@ -112,6 +104,23 @@ export function CloudSyncSection() {
       setOrdersLoadError(errorMessage(error));
     } finally {
       setOrdersLoading(false);
+    }
+  };
+
+  const loadSubscriptions = async () => {
+    if (!state?.authenticated) {
+      setSubscriptions([]);
+      setSubscriptionsLoadError(null);
+      return;
+    }
+    setSubscriptionsLoading(true);
+    setSubscriptionsLoadError(null);
+    try {
+      setSubscriptions(await cloud.listSubscriptions());
+    } catch (error) {
+      setSubscriptionsLoadError(errorMessage(error));
+    } finally {
+      setSubscriptionsLoading(false);
     }
   };
 
@@ -142,6 +151,25 @@ export function CloudSyncSection() {
       if (active) setOrdersLoadError(errorMessage(error));
     }).finally(() => {
       if (active) setOrdersLoading(false);
+    });
+    return () => { active = false; };
+  }, [state?.authenticated, state?.account?.user.id]);
+
+  useEffect(() => {
+    let active = true;
+    if (!state?.authenticated) {
+      setSubscriptions([]);
+      setSubscriptionsLoadError(null);
+      return () => { active = false; };
+    }
+    setSubscriptionsLoading(true);
+    setSubscriptionsLoadError(null);
+    void cloud.listSubscriptions().then((next) => {
+      if (active) setSubscriptions(next);
+    }).catch((error) => {
+      if (active) setSubscriptionsLoadError(errorMessage(error));
+    }).finally(() => {
+      if (active) setSubscriptionsLoading(false);
     });
     return () => { active = false; };
   }, [state?.authenticated, state?.account?.user.id]);
@@ -180,6 +208,33 @@ export function CloudSyncSection() {
       toast.error(cloudSyncErrorMessage(error, t));
     } finally {
       setCheckingOrderId(null);
+    }
+  };
+
+  const resumeCheckout = async (order: CloudOrder) => {
+    setResumingOrderId(order.id);
+    try {
+      const checkout = await cloud.createCheckout(order.productId);
+      await openUrl(checkout.checkoutUrl);
+    } catch (error) {
+      toast.error(cloudSyncErrorMessage(error, t));
+    } finally {
+      await loadOrders();
+      setResumingOrderId(null);
+    }
+  };
+
+  const cancelAnnualSubscription = async (subscription: CloudSubscription) => {
+    if (!window.confirm(t('preferences.cloud.subscription.cancelConfirm'))) return;
+    setCancelingSubscriptionId(subscription.id);
+    try {
+      await cloud.cancelSubscription(subscription.id);
+      toast.success(t('preferences.cloud.subscription.cancelSuccess'));
+      await loadSubscriptions();
+    } catch (error) {
+      toast.error(cloudSyncErrorMessage(error, t));
+    } finally {
+      setCancelingSubscriptionId(null);
     }
   };
 
@@ -275,6 +330,17 @@ export function CloudSyncSection() {
             <img src={googleLogo} alt="" aria-hidden="true" className="h-4 w-4 object-contain" />
             {t('preferences.cloud.googleSignIn')}
           </Button>
+          {canSignInWithApple && (
+            <Button
+              variant="outline"
+              className="mx-auto flex h-10 w-[64%] gap-2 rounded-lg bg-[var(--card)]"
+              disabled={loadingLoginState || busy}
+              onClick={() => void run(() => cloud.signInWithApple())}
+            >
+              <img src={appleLogo} alt="" aria-hidden="true" className="h-4 w-4 dark:invert" />
+              {t('preferences.cloud.appleSignIn')}
+            </Button>
+          )}
         </div>
       ) : (
         <>
@@ -288,6 +354,16 @@ export function CloudSyncSection() {
                   <div className="truncate text-sm font-medium">
                     {state.account?.user.displayName}
                   </div>
+                  {state.membership && <span className={cn(
+                    'shrink-0 rounded-md px-1.5 py-0.5 text-xs',
+                    hasMembership
+                      ? 'bg-[color-mix(in_oklch,var(--success)_15%,transparent)] text-[var(--success)]'
+                      : 'bg-[color-mix(in_oklch,var(--warning)_15%,transparent)] text-[var(--warning)]',
+                  )}>
+                    {hasMembership
+                      ? t(hasLifetimeMembership ? 'preferences.cloud.member.lifetimeBadge' : 'preferences.cloud.member.annualBadge')
+                      : t('preferences.cloud.member.regular')}
+                  </span>}
                   {membershipLoading && (
                     <span className="flex shrink-0 items-center gap-1 whitespace-nowrap text-sm text-[var(--muted-foreground)]">
                       <Loader2 className="h-3.5 w-3.5 flowix-spin" aria-hidden="true" />
@@ -315,27 +391,19 @@ export function CloudSyncSection() {
             <div className="space-y-3 border-t border-[var(--border)] pt-4">
               <div className="flex flex-wrap items-center gap-x-1 gap-y-1">
                 <div className="text-sm font-medium">{t('preferences.cloud.membership')}</div>
-                {state.membership && <span className={cn(
-                  'rounded-md px-1.5 py-0.5 text-xs',
-                  state.membership?.active
-                    ? 'bg-[color-mix(in_oklch,var(--success)_15%,transparent)] text-[var(--success)]'
-                    : 'bg-[color-mix(in_oklch,var(--warning)_15%,transparent)] text-[var(--warning)]',
-                )}>
-                  {state.membership?.active
-                    ? t('preferences.cloud.active')
-                    : t('preferences.cloud.inactive')}
-                </span>}
-                {state.membership && (
+                {state.membership && state.membership.quotaBytes > 0 && (
                   <div className="ml-auto flex flex-wrap items-center gap-x-2 text-sm text-[var(--muted-foreground)]">
                     <span>
                       {t('preferences.cloud.usage')} {formatMembershipBytes(state.membership.usedBytes)} / {formatMembershipBytes(state.membership.quotaBytes)}
                     </span>
-                    {state.membership.expiresAt != null && (
+                    {storageExpiresAt != null && (
                       <>
                         <span aria-hidden="true">｜</span>
                         <span>
                           {t('preferences.cloud.expires')}{' '}
-                          {formatMembershipDate(state.membership.expiresAt)}
+                          {hasLifetimeMembership && new Date(storageExpiresAt).getUTCFullYear() >= 9999
+                            ? t('preferences.cloud.lifetime')
+                            : formatMembershipDate(storageExpiresAt)}
                         </span>
                       </>
                     )}
@@ -348,6 +416,48 @@ export function CloudSyncSection() {
                   {t('preferences.cloud.retry')}
                 </Button>
               </div>}
+              {(subscriptionsLoading || subscriptionsLoadError || (
+                annualMembershipSubscription && !annualMembershipSubscription.cancelAtPeriodEnd
+              )) && (
+                <div className="space-y-2">
+                  {subscriptionsLoading ? (
+                    <div aria-hidden="true" className="h-5 animate-pulse rounded bg-[var(--muted)]" />
+                  ) : subscriptionsLoadError ? (
+                    <div className="space-y-2">
+                      <p className="break-words text-sm text-[var(--destructive)]">
+                        {t('preferences.cloud.subscription.loadFailed')}: {subscriptionsLoadError}
+                      </p>
+                      <Button variant="outline" size="sm" className="rounded-lg" onClick={() => void loadSubscriptions()}>
+                        {t('preferences.cloud.retry')}
+                      </Button>
+                    </div>
+                  ) : annualMembershipSubscription && !annualMembershipSubscription.cancelAtPeriodEnd ? (
+                    <div className="flex flex-wrap items-center gap-3">
+                      <div className="min-w-0 flex-1">
+                        <div className="text-sm text-[var(--muted-foreground)]">
+                          {t('preferences.cloud.subscription.renewal', {
+                            date: annualMembershipSubscription.currentPeriodEnd == null
+                              ? t('preferences.cloud.subscription.periodEnd')
+                              : formatMembershipDate(annualMembershipSubscription.currentPeriodEnd),
+                          })}
+                        </div>
+                      </div>
+                      <Button
+                        type="button"
+                        variant="outline"
+                        size="sm"
+                        className="rounded-lg"
+                        disabled={cancelingSubscriptionId !== null}
+                        onClick={() => void cancelAnnualSubscription(annualMembershipSubscription)}
+                      >
+                        {cancelingSubscriptionId === annualMembershipSubscription.id
+                          ? t('preferences.cloud.subscription.canceling')
+                          : t('preferences.cloud.subscription.cancel')}
+                      </Button>
+                    </div>
+                  ) : null}
+                </div>
+              )}
             </div>
           </div>
 
@@ -408,7 +518,7 @@ export function CloudSyncSection() {
                                   variant="outline"
                                   size="sm"
                                   className="rounded-lg"
-                                  disabled={checkingOrderId !== null}
+                                  disabled={checkingOrderId !== null || resumingOrderId !== null}
                                   onClick={() => void checkOrder(order.id)}
                                 >
                                   {checkingOrderId === order.id
@@ -418,6 +528,20 @@ export function CloudSyncSection() {
                                     : t('preferences.cloud.order.check')}
                                 </Button>
                               </Tooltip>
+                            )}
+                            {order.status === 'pending' && (
+                              <Button
+                                type="button"
+                                variant="outline"
+                                size="sm"
+                                className="rounded-lg"
+                                disabled={checkingOrderId !== null || resumingOrderId !== null}
+                                onClick={() => void resumeCheckout(order)}
+                              >
+                                {resumingOrderId === order.id
+                                  ? t('preferences.cloud.order.resumingPayment')
+                                  : t('preferences.cloud.order.continuePayment')}
+                              </Button>
                             )}
                             <span className={cn(
                               'rounded-md px-1.5 py-0.5 text-xs',
@@ -435,160 +559,130 @@ export function CloudSyncSection() {
             </div>
           )}
 
-          {!state.membership?.active && (
+          {!hasMembership && !memberAccessLoading && !membershipError && (
             <div className="space-y-3">
-              {productsLoading ? (
-                <div aria-hidden="true" className="h-5 w-28 animate-pulse rounded bg-[var(--muted)]" />
-              ) : (
-                <div className="text-sm font-medium">{t('preferences.cloud.plans')}</div>
-              )}
+              <div>
+                <div className="text-sm font-medium">{t('preferences.cloud.member.title')}</div>
+              </div>
               {hasPendingOrder && !productsLoading && (
                 <p role="status" className="text-sm text-[var(--muted-foreground)]">
                   {t('preferences.cloud.order.pendingCheckout')}
                 </p>
               )}
-              {productsLoading ? (
-                <div aria-hidden="true" className="h-9 w-28 animate-pulse rounded-xl bg-[var(--muted)]" />
-              ) : (
-                <div
-                  role="group"
-                  aria-label={t('preferences.cloud.plans')}
-                  className="relative inline-flex h-9 shrink-0 items-center gap-0.5 rounded-xl border border-[var(--border)] bg-[color-mix(in_oklch,var(--foreground)_5%,transparent)] px-0.5 py-0"
-                >
-                  {(['monthly', 'yearly'] as const).map((period) => (
-                    <button
-                      key={period}
-                      type="button"
-                      aria-pressed={billingPeriod === period}
-                      className={cn(
-                        'relative flex h-[30px] items-center justify-center rounded-lg px-1.5 text-sm transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]',
-                        billingPeriod === period
-                          ? 'border border-[var(--border)] bg-[var(--card)] text-[var(--primary)]'
-                          : 'border border-transparent text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]',
-                      )}
-                      onClick={() => setBillingPeriod(period)}
-                    >
-                      {t(`preferences.cloud.${period}`)}
-                    </button>
-                  ))}
-                </div>
-              )}
               {productsLoadError && (
-                <p className="break-words text-sm text-[var(--destructive)]">
-                  {productsLoadError}
-                </p>
+                <p className="break-words text-sm text-[var(--destructive)]">{productsLoadError}</p>
               )}
-              <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
-                {productsLoading ? (
-                  <div aria-hidden="true" className="col-span-full h-48 animate-pulse rounded-xl bg-[var(--muted)]" />
-                ) : products.filter((product) => productBillingPeriod(product) === billingPeriod).map((product) => {
-                  const plan = productPlan(product);
-                  const storageCapacity = formatStorageCapacity(product.entitlement.storageBytes);
-                  const [storagePrefix, storageSuffix] = t('preferences.cloud.totalStorage', { capacity: storageCapacity }).split(storageCapacity);
+              {productsLoading ? (
+                <div aria-hidden="true" className="h-48 animate-pulse rounded-xl bg-[var(--muted)]" />
+              ) : (
+                <div className="grid grid-cols-1 gap-2 sm:grid-cols-2">
+                  {membershipProducts.map((product) => {
+                    const lifetime = product.entitlement.features.lifetime === true;
+                    const storageCapacity = formatStorageCapacity(product.entitlement.storageBytes);
+                    const [storagePrefix, storageSuffix] = t('preferences.cloud.totalStorage', {
+                      capacity: storageCapacity,
+                    }).split(storageCapacity);
 
-                  return (
-                    <div
-                      key={product.id}
-                      className="flex h-full min-h-[480px] flex-col rounded-xl border border-[var(--border)] bg-[var(--card)] p-2.5 pt-4 transition-colors hover:border-[var(--primary)]/40 sm:p-3 sm:pt-[18px]"
-                    >
-                      <div className="min-h-14 min-w-0">
-                        <div className="text-[22px] font-semibold leading-7 tracking-tight text-[var(--foreground)]">
-                          {plan
-                            ? t(`preferences.cloud.plan.${plan}.name`)
-                            : product.name}
-                        </div>
-                        {plan && (
-                          <div className="mt-1.5 text-sm leading-5 text-[var(--muted-foreground)]">
-                            {t(`preferences.cloud.plan.${plan}.subtitle`)}
+                    return (
+                      <div
+                        key={product.id}
+                        className="flex h-full min-h-[480px] flex-col rounded-xl border border-[var(--border)] bg-[var(--card)] p-2.5 pt-4 transition-colors hover:border-[var(--primary)]/40 sm:p-3 sm:pt-[18px]"
+                      >
+                        <div className="min-w-0">
+                          <div className="text-[22px] font-semibold leading-7 tracking-tight text-[var(--foreground)]">
+                            {lifetime
+                              ? t('preferences.cloud.member.lifetimePlan')
+                              : t('preferences.cloud.member.yearPlan')}
                           </div>
-                        )}
-                      </div>
-                      <div className="mt-1 flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-[var(--foreground)]" style={{ fontFamily: 'ui-monospace' }}>
-                        <span className="text-[32px] font-normal leading-10 tracking-tight tabular-nums">
-                          ${(product.price.amount / 100).toFixed(2)}
-                        </span>
-                        <span className="text-sm leading-5 text-[var(--muted-foreground)]">
-                          {t(`preferences.cloud.pricePeriod.${billingPeriod}`)}
-                        </span>
-                      </div>
-                      <div className="my-5 border-t border-[var(--border)]" />
-                      <div className="mb-3 text-sm font-medium leading-5 text-[var(--foreground)]">
-                        {t('preferences.cloud.plan.includes')}
-                      </div>
-                      <ul className="space-y-2.5 text-sm leading-5 text-[var(--muted-foreground)]">
-                        <li className="flex items-start gap-1.5">
-                          <Check className="mt-1 h-3 w-3 shrink-0" aria-hidden="true" />
-                        <span>
-                          {storagePrefix}<span className="font-medium text-[var(--brand)]">{storageCapacity}</span>{storageSuffix}
-                        </span>
-                        </li>
-                        <li className="flex items-start gap-1.5">
-                          <Check className="mt-1 h-3 w-3 shrink-0" aria-hidden="true" />
-                          <span>{t('preferences.cloud.unlimitedSyncedNotebooks')}</span>
-                        </li>
-                        <li className="flex items-start gap-1.5">
-                          <Check className="mt-1 h-3 w-3 shrink-0" aria-hidden="true" />
-                          <span>{t('preferences.cloud.maximumFileSize', { size: '5 MB' })}</span>
-                        </li>
-                        {([
-                          'piByok',
-                          'localAgents',
-                          'mcpCli',
-                          'earlyAccess',
-                        ] as const).map((benefit) => (
-                          <li key={benefit} className="flex items-start gap-1.5">
+                        </div>
+                        <div className="mt-1 flex flex-wrap items-baseline gap-x-1.5 gap-y-1 text-[var(--foreground)]" style={{ fontFamily: 'ui-monospace' }}>
+                          <span className="text-[32px] font-normal leading-10 tracking-tight tabular-nums">
+                            {new Intl.NumberFormat(undefined, {
+                              style: 'currency', currency: product.price.currency.toUpperCase(),
+                            }).format(product.price.amount / 100)}
+                          </span>
+                          {!lifetime && (
+                            <span className="text-sm leading-5 text-[var(--muted-foreground)]">
+                              {t('preferences.cloud.pricePeriod.yearly')}
+                            </span>
+                          )}
+                        </div>
+                        <div className="my-5 border-t border-[var(--border)]" />
+                        <div className="mb-3 text-sm font-medium leading-5 text-[var(--foreground)]">
+                          {t('preferences.cloud.plan.includes')}
+                        </div>
+                        <ul className="space-y-2.5 text-sm leading-5 text-[var(--muted-foreground)]">
+                          <li className="flex items-start gap-1.5">
                             <Check className="mt-1 h-3 w-3 shrink-0" aria-hidden="true" />
-                            <span>{t(`preferences.cloud.plan.benefit.${benefit}`)}</span>
-                            {benefit === 'localAgents' && (
-                              <div className="-ml-1.5">
-                                <Popover>
-                                  <PopoverTrigger asChild>
-                                    <button
-                                      type="button"
-                                      aria-label={t('preferences.cloud.plan.benefit.localAgentsInfo')}
-                                      className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
-                                    >
-                                      <Info className="h-3 w-3" aria-hidden="true" />
-                                    </button>
-                                  </PopoverTrigger>
-                                  <PopoverContent side="top" align="center" className="max-w-[240px] px-3 py-2 text-sm leading-5">
-                                    {t('preferences.cloud.plan.benefit.localAgentsInfo')}
-                                  </PopoverContent>
-                                </Popover>
-                              </div>
-                            )}
+                            <span>
+                              {storagePrefix}<span className="font-medium text-[var(--brand)]">{storageCapacity}</span>{storageSuffix}
+                            </span>
                           </li>
-                        ))}
-                      </ul>
-                      <div className="mt-auto">
-                        <Button
-                          size="lg"
-                          className="h-10 w-full rounded-xl bg-[var(--brand)] text-base font-medium text-[var(--primary-foreground)] hover:bg-[color-mix(in_oklch,var(--brand)_90%,black)]"
-                          disabled={busy || ordersLoading || ordersLoadError !== null || hasPendingOrder}
-                          onClick={() => {
-                            if (busy || ordersLoading || ordersLoadError !== null || hasPendingOrder) return;
-                            setBusy(true);
-                            void cloud.createCheckout(product.id)
-                              .then((checkout) => openUrl(checkout.checkoutUrl))
-                              .catch((error) => toast.error(cloudSyncErrorMessage(error, t)))
-                              .finally(async () => {
-                                await loadOrders();
-                                setBusy(false);
-                              });
-                          }}
-                        >
-                        {plan ? t(`preferences.cloud.plan.${plan}.get`) : t('preferences.cloud.buy')}
-                        </Button>
+                          <li className="flex items-start gap-1.5">
+                            <Check className="mt-1 h-3 w-3 shrink-0" aria-hidden="true" />
+                            <span>{t('preferences.cloud.unlimitedSyncedNotebooks')}</span>
+                          </li>
+                          <li className="flex items-start gap-1.5">
+                            <Check className="mt-1 h-3 w-3 shrink-0" aria-hidden="true" />
+                            <span>{t('preferences.cloud.maximumFileSize', { size: '5 MB' })}</span>
+                          </li>
+                          {(['memberThemes', 'piByok', 'localAgents', 'mcpCli', 'earlyAccess'] as const).map((benefit) => (
+                            <li key={benefit} className="flex items-start gap-1.5">
+                              <Check className="mt-1 h-3 w-3 shrink-0" aria-hidden="true" />
+                              <span>{t(`preferences.cloud.plan.benefit.${benefit}`)}</span>
+                              {benefit === 'localAgents' && (
+                                <div className="-ml-1.5">
+                                  <Popover>
+                                    <PopoverTrigger asChild>
+                                      <button
+                                        type="button"
+                                        aria-label={t('preferences.cloud.plan.benefit.localAgentsInfo')}
+                                        className="flex h-5 w-5 items-center justify-center rounded-md text-[var(--muted-foreground)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
+                                      >
+                                        <Info className="h-3 w-3" aria-hidden="true" />
+                                      </button>
+                                    </PopoverTrigger>
+                                    <PopoverContent side="top" align="center" className="max-w-[240px] px-3 py-2 text-sm leading-5">
+                                      {t('preferences.cloud.plan.benefit.localAgentsInfo')}
+                                    </PopoverContent>
+                                  </Popover>
+                                </div>
+                              )}
+                            </li>
+                          ))}
+                        </ul>
+                        <div className="mt-auto pt-5">
+                          <Button
+                            size="lg"
+                            className="h-10 w-full rounded-xl bg-[var(--brand)] text-base font-medium text-[var(--primary-foreground)] hover:bg-[color-mix(in_oklch,var(--brand)_90%,black)]"
+                            disabled={busy || membershipLoading || memberAccessLoading || ordersLoading || ordersLoadError !== null || hasPendingOrder}
+                            onClick={() => {
+                              if (busy || membershipLoading || memberAccessLoading || ordersLoading || ordersLoadError !== null || hasPendingOrder) return;
+                              setBusy(true);
+                              void cloud.createCheckout(product.id)
+                                .then((checkout) => openUrl(checkout.checkoutUrl))
+                                .catch((error) => toast.error(cloudSyncErrorMessage(error, t)))
+                                .finally(async () => {
+                                  await loadOrders();
+                                  setBusy(false);
+                                });
+                            }}
+                          >
+                            {busy ? t('preferences.cloud.working') : t('preferences.cloud.member.purchase')}
+                          </Button>
+                        </div>
                       </div>
-                    </div>
-                  );
-                })}
-              </div>
-              {!productsLoadError && products.length > 0 && !products.some((product) => productBillingPeriod(product) === billingPeriod) && (
-                <p className="text-sm text-[var(--muted-foreground)]">{t('preferences.cloud.noPlansForPeriod')}</p>
+                    );
+                  })}
+                  {!productsLoadError && membershipProducts.length === 0 && (
+                    <p className="text-sm text-[var(--muted-foreground)]">{t('preferences.cloud.member.unavailable')}</p>
+                  )}
+                </div>
               )}
             </div>
           )}
+
+
         </>
       )}
     </div>

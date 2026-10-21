@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { readHistoryWithTimeout, HISTORY_READ_TIMEOUT_MS } from "@features/agent/services/history-read-timeout";
 import type { ChatMessage } from "@/types";
 import { loadAgentThreadCardCache } from "@features/agent/thread-card/agent-thread-card-cache";
 import { ThreadCacheController } from "@features/agent/thread-card/messages/thread-cache-controller";
@@ -18,7 +19,7 @@ afterEach(() => {
 });
 
 describe("ThreadCacheController", () => {
-  it("leaves the skeleton state and renders when cache loading times out", () => {
+  it("releases loading and permits retry when the reader deadline expires", async () => {
     vi.useFakeTimers();
     let idleCallback: IdleRequestCallback | undefined;
     vi.stubGlobal(
@@ -30,7 +31,7 @@ describe("ThreadCacheController", () => {
     );
     vi.stubGlobal("cancelIdleCallback", vi.fn());
     vi.mocked(loadAgentThreadCardCache).mockImplementationOnce(
-      () => new Promise(() => {}),
+      () => readHistoryWithTimeout(() => new Promise(() => {})),
     );
 
     const render = vi.fn();
@@ -42,7 +43,6 @@ describe("ThreadCacheController", () => {
       getMessageCount: () => 0,
       shouldLoad: () => true,
       render,
-      renderResolvedSessionMessages: vi.fn(),
       applyResolvedSession: vi.fn(),
     });
 
@@ -51,10 +51,15 @@ describe("ThreadCacheController", () => {
     expect(controller.isLoading).toBe(true);
     expect(render).toHaveBeenCalledTimes(1);
 
-    vi.advanceTimersByTime(30_000);
+    await vi.advanceTimersByTimeAsync(HISTORY_READ_TIMEOUT_MS);
 
     expect(controller.isLoading).toBe(false);
     expect(render).toHaveBeenCalledTimes(2);
+    controller.requestIfNeeded();
+    idleCallback?.({ didTimeout: false, timeRemaining: () => 50 });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(loadAgentThreadCardCache).toHaveBeenCalledTimes(2);
+    expect(controller.isLoading).toBe(false);
     controller.dispose();
   });
 
@@ -76,7 +81,6 @@ describe("ThreadCacheController", () => {
       getMessageCount: () => 0,
       shouldLoad: () => true,
       render,
-      renderResolvedSessionMessages: vi.fn(),
       applyResolvedSession: vi.fn(),
     });
 
@@ -104,7 +108,7 @@ describe("ThreadCacheController", () => {
     controller.dispose();
   });
 
-  it("renders resolved session messages before replacing the local id", async () => {
+  it("applies resolved session metadata and renders from the canonical history", async () => {
     let idleCallback: IdleRequestCallback | undefined;
     vi.stubGlobal(
       "requestIdleCallback",
@@ -130,9 +134,6 @@ describe("ThreadCacheController", () => {
 
     const messages = [{ id: "message-1" }] as ChatMessage[];
     const callOrder: string[] = [];
-    const renderResolvedSessionMessages = vi.fn(() => {
-      callOrder.push("render");
-    });
     const applyResolvedSession = vi.fn(() => {
       callOrder.push("apply");
     });
@@ -144,7 +145,6 @@ describe("ThreadCacheController", () => {
       getMessageCount: () => 0,
       shouldLoad: () => true,
       render: vi.fn(),
-      renderResolvedSessionMessages,
       applyResolvedSession,
     });
 
@@ -169,9 +169,28 @@ describe("ThreadCacheController", () => {
         "codex",
       ),
     );
-    expect(renderResolvedSessionMessages).toHaveBeenCalledWith(messages);
-    expect(callOrder).toEqual(["render", "apply"]);
+    expect(callOrder).toEqual(["apply"]);
 
     controller.dispose();
   });
+});
+
+
+it("allows another load after history fails without marking the thread loaded", async () => {
+  let idleCallback: IdleRequestCallback | undefined;
+  vi.stubGlobal("requestIdleCallback", vi.fn((callback: IdleRequestCallback) => { idleCallback = callback; return 1; }));
+  vi.stubGlobal("cancelIdleCallback", vi.fn());
+  vi.mocked(loadAgentThreadCardCache).mockRejectedValueOnce(new Error("offline"));
+  const controller = new ThreadCacheController({
+    element: document.createElement("div"), isDestroyed: () => false,
+    getThreadId: () => "thread-1", getTypeKey: () => "codex", getMessageCount: () => 0,
+    shouldLoad: () => true, render: vi.fn(), applyResolvedSession: vi.fn(),
+  });
+  controller.requestIfNeeded();
+  idleCallback?.({ didTimeout: false, timeRemaining: () => 50 });
+  await vi.waitFor(() => expect(controller.isLoading).toBe(false));
+  controller.requestIfNeeded();
+  idleCallback?.({ didTimeout: false, timeRemaining: () => 50 });
+  await vi.waitFor(() => expect(loadAgentThreadCardCache).toHaveBeenCalledTimes(2));
+  controller.dispose();
 });

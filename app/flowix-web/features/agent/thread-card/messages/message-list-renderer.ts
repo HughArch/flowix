@@ -1,7 +1,8 @@
+import { createMessageActionStates } from "./message-action-state";
+export { isCurrentTurnMessage, isLastMessageInTurnAndAssistant, shouldShowMessageActions } from "./message-action-state";
 import { messageRenderKey } from "@features/agent/message/render-identity";
 import type { ThreadState } from "@features/agent/store/thread-runtime-state";
 import type {
-  AgentMessage,
   AgentThreadCardMessageRenderContext,
 } from "@features/agent/thread-card/messages/message-render-context";
 export type {
@@ -29,6 +30,9 @@ import {
   type AgentRenderItem,
 } from "@features/agent/thread-card/messages/tool-grouping";
 
+// Node-owned metadata survives reordering and excludes cloned/foreign DOM rows.
+const renderedItemByElement = new WeakMap<HTMLElement, AgentRenderItem>();
+
 export function getRenderedAgentMessages(
   messages: ThreadState["messages"],
 ): ThreadState["messages"] {
@@ -40,116 +44,29 @@ export interface RenderedAgentMessageCache {
   refs: AgentRenderItem[];
 }
 
+function agentRenderItemKey(item: AgentRenderItem): string {
+  return item.kind === "message"
+    ? `message:${messageRenderKey(item.message)}` : `${item.kind}:${item.id}`;
+}
+
 export function getRenderedAgentItems(
   messages: ThreadState["messages"],
   isLoading = false,
 ): AgentRenderItem[] {
-  return groupAgentMessages(messages, isLoading).filter(
-    (item) =>
-      item.kind === "tool-group" || item.kind === "generated-images" ||
-      shouldRenderAgentMessage(item.message),
-  );
-}
-
-/**
- * Returns whether a message belongs to the turn currently being submitted.
- *
- * Codex rows are grouped by their provider turn id when one is available.
- * Other agents do not expose that id, so their latest user row is the turn
- * boundary and all following rows belong to that turn until another user row
- * is appended.
- */
-export function isCurrentTurnMessage(
-  message: AgentMessage,
-  messages: ThreadState["messages"],
-): boolean {
-  const index = messages.indexOf(message);
-  if (index < 0) return false;
-
-  let latestUserIndex = -1;
-  for (let i = messages.length - 1; i >= 0; i -= 1) {
-    if (messages[i].role === "user") {
-      latestUserIndex = i;
-      break;
-    }
-  }
-
-  // A live stream can briefly contain provider rows before its user row is
-  // projected. In that state there is no historical boundary to preserve;
-  // use the newest known Codex turn id when possible and otherwise treat the
-  // available rows as the current turn.
-  if (latestUserIndex < 0) {
-    if (!message.codexTurnId) return true;
-    for (let i = messages.length - 1; i >= 0; i -= 1) {
-      if (messages[i].codexTurnId) {
-        return messages[i].codexTurnId === message.codexTurnId;
-      }
-    }
+  const seen = new Set<string>();
+  return groupAgentMessages(messages, isLoading).filter((item) => {
+    if (item.kind === "message" && !shouldRenderAgentMessage(item.message)) return false;
+    const key = agentRenderItemKey(item);
+    if (seen.has(key)) return false;
+    seen.add(key);
     return true;
-  }
-
-  const latestUser = messages[latestUserIndex];
-  let currentTurnId = latestUser.codexTurnId;
-  if (!currentTurnId) {
-    // The optimistic user row may not have adopted the provider id yet. A
-    // later Codex row in the same user-delimited segment can still establish
-    // the current turn id.
-    for (let i = messages.length - 1; i >= latestUserIndex; i -= 1) {
-      if (messages[i].codexTurnId) {
-        currentTurnId = messages[i].codexTurnId;
-        break;
-      }
-    }
-  }
-
-  // Missing ids on reasoning/tool rows are expected in the projected Codex
-  // state. The user boundary still keeps those rows in the current turn.
-  if (currentTurnId && message.codexTurnId) {
-    return currentTurnId === message.codexTurnId;
-  }
-  return index >= latestUserIndex;
+  });
 }
 
-export function isLastMessageInTurnAndAssistant(
-  messages: ThreadState["messages"],
-  index: number,
-): boolean {
-  const message = messages[index];
-  if (message.role !== "assistant") return false;
-
-  // A steer user row stays inside the same native turn. For providers or
-  // legacy rows without turn ids, a user row remains the fallback boundary.
-  for (let i = index + 1; i < messages.length; i += 1) {
-    const laterMessage = messages[i];
-    if (laterMessage.role === "user" &&
-      (!message.codexTurnId || !laterMessage.codexTurnId || laterMessage.codexTurnId !== message.codexTurnId)) break;
-
-    // Codex turn ids are authoritative when both rows provide one. Rows
-    // without an id are tolerated inside the user-delimited turn because
-    // reasoning/tool rows may omit the id. Any such later row still means
-    // that this assistant is not the final message of the turn.
-    if (
-      message.codexTurnId &&
-      laterMessage.codexTurnId &&
-      laterMessage.codexTurnId !== message.codexTurnId
-    ) {
-      break;
-    }
-    return false;
-  }
-  return message.isCompleted !== false;
-}
-
-export function shouldShowMessageActions(
-  message: AgentMessage,
-  messages: ThreadState["messages"],
-  isLoading: boolean,
-): boolean {
-  const index = messages.indexOf(message);
-  return (
-    isLastMessageInTurnAndAssistant(messages, index) &&
-    !(isLoading && isCurrentTurnMessage(message, messages))
-  );
+function withMessageActions(messages: ThreadState["messages"], context: AgentThreadCardMessageRenderContext): AgentThreadCardMessageRenderContext {
+  return context.messageActions ? context : { ...context,
+    messageActions: createMessageActionStates(messages, context.isLoading),
+  };
 }
 
 function syncMessageActions(
@@ -157,7 +74,8 @@ function syncMessageActions(
   list: HTMLDivElement,
   context: AgentThreadCardMessageRenderContext,
 ): void {
-  const renderItems = getRenderedAgentItems(messages, context.isLoading);
+  const renderItems = context.renderItems ?? getRenderedAgentItems(messages, context.isLoading);
+  const actionsByMessage = context.messageActions ?? createMessageActionStates(messages, context.isLoading);
   for (let index = 0; index < renderItems.length; index += 1) {
     const renderItem = renderItems[index];
     if (renderItem.kind !== "message") continue;
@@ -167,11 +85,7 @@ function syncMessageActions(
 
     // During a live turn only the current turn is provisional. Completed
     // historical turns keep their actions available.
-    const shouldShow = shouldShowMessageActions(
-      message,
-      messages,
-      context.isLoading,
-    );
+    const shouldShow = actionsByMessage.get(message)?.showActions === true;
     const actions = item.querySelector<HTMLElement>(
       ".agent-thread-card__message-actions",
     );
@@ -250,6 +164,7 @@ function updateChangedToolGroups(
     ) {
       return null;
     }
+    renderedItemByElement.set(element, next);
   }
   return true;
 }
@@ -262,7 +177,7 @@ export function updateRenderedAgentToolGroups(
   const list = cache.list;
   if (!list || !body.contains(list)) return null;
 
-  const nextItems = getRenderedAgentItems(messages, context.isLoading);
+  const nextItems = context.renderItems ?? getRenderedAgentItems(messages, context.isLoading);
   if (
     nextItems.length !== cache.refs.length ||
     list.children.length !== cache.refs.length
@@ -285,7 +200,7 @@ export function patchLastRenderedAgentMessage(
   const list = cache.list;
   if (!list || !body.contains(list)) return null;
 
-  const renderItems = getRenderedAgentItems(messages, context.isLoading);
+  const renderItems = context.renderItems ?? getRenderedAgentItems(messages, context.isLoading);
   if (
     renderItems.length === 0 ||
     renderItems.length !== cache.refs.length ||
@@ -375,6 +290,7 @@ export function patchLastRenderedAgentMessage(
   }
 
   syncMessageActions(messages, list, context);
+  renderedItemByElement.set(item, nextLast);
   afterRender();
   return [...cache.refs.slice(0, -1), nextLast];
 }
@@ -383,13 +299,14 @@ export function appendRenderedAgentMessagesToTail(
   messages: ThreadState["messages"],
   options: AgentThreadCardMessagePatchOptions,
 ): AgentRenderItem[] | null {
-  const { body, cache, context, afterRender } = options;
+  const { body, cache, afterRender } = options;
+  const context = withMessageActions(messages, options.context);
   const oldRefs = cache.refs;
   const list = cache.list;
   if (oldRefs.length === 0) return null;
   if (!list || !body.contains(list)) return null;
 
-  const newRendered = getRenderedAgentItems(messages, context.isLoading);
+  const newRendered = context.renderItems ?? getRenderedAgentItems(messages, context.isLoading);
   if (newRendered.length <= oldRefs.length) return null;
   if (list.children.length !== oldRefs.length) return null;
 
@@ -431,37 +348,7 @@ export function appendRenderedAgentMessagesToTail(
   const appended = newRendered.slice(oldRefs.length);
   let appendedCount = 0;
   for (const renderItem of appended) {
-    const rendered = renderItem.kind === "tool-group"
-      ? { element: createToolGroupElement({ group: renderItem, context }), shouldRemember: false }
-      : renderItem.kind === "generated-images"
-        ? {
-            element: createGeneratedImageStrip({
-              id: renderItem.id,
-              images: renderItem.images,
-              language: context.language,
-              getImageSpacePath: context.getImageSpacePath,
-            }),
-            shouldRemember: false,
-          }
-      : createAgentThreadCardMessageElement({
-          message: renderItem.message,
-          language: context.language,
-          getReasoningCollapsed: context.getReasoningCollapsed,
-          setReasoningCollapsed: context.setReasoningCollapsed,
-          getDisplayExpanded: context.getDisplayExpanded,
-          setDisplayExpanded: context.setDisplayExpanded,
-          isStreaming: context.isStreaming(renderItem.message),
-          showActions: shouldShowMessageActions(
-            renderItem.message,
-            messages,
-            context.isLoading,
-          ),
-          canFork: isLastMessageInTurnAndAssistant(
-            messages,
-            messages.indexOf(renderItem.message),
-          ),
-          onForkMessage: context.onForkMessage,
-        });
+    const rendered = createAgentRenderItem(renderItem, messages, context);
     if (!rendered?.element) continue;
     list.append(rendered.element);
     appendedCount += 1;
@@ -473,11 +360,14 @@ export function appendRenderedAgentMessagesToTail(
   return newRendered;
 }
 
-function createRenderItem(
+export function createAgentRenderItem(
   renderItem: AgentRenderItem, messages: ThreadState["messages"],
   context: AgentThreadCardMessageRenderContext,
 ) {
-  return renderItem.kind === "tool-group"
+  const actions = renderItem.kind === "message"
+    ? (context.messageActions ?? createMessageActionStates(messages, context.isLoading)).get(renderItem.message)
+    : undefined;
+  const rendered = renderItem.kind === "tool-group"
       ? { element: createToolGroupElement({ group: renderItem, context }), shouldRemember: false }
       : renderItem.kind === "generated-images"
         ? {
@@ -497,17 +387,12 @@ function createRenderItem(
           getDisplayExpanded: context.getDisplayExpanded,
           setDisplayExpanded: context.setDisplayExpanded,
           isStreaming: context.isStreaming(renderItem.message),
-          showActions: shouldShowMessageActions(
-            renderItem.message,
-            messages,
-            context.isLoading,
-          ),
-          canFork: isLastMessageInTurnAndAssistant(
-            messages,
-            messages.indexOf(renderItem.message),
-          ),
+          showActions: actions?.showActions,
+          canFork: actions?.canFork,
           onForkMessage: context.onForkMessage,
         });
+  if (rendered?.element) renderedItemByElement.set(rendered.element, renderItem);
+  return rendered;
 }
 
 /** Reconcile existing DOM by stable identity. Unchanged rows, tool groups and
@@ -517,21 +402,23 @@ export function reconcileRenderedAgentMessages(
   context: AgentThreadCardMessageRenderContext,
   preserveViewport?: HTMLElement,
 ): AgentRenderItem[] | null {
+  context = withMessageActions(messages, context);
   const list = cache.list;
-  if (!list || list.children.length !== cache.refs.length) return null;
-  const key = (item: AgentRenderItem) => item.kind === "message"
-    ? `message:${messageRenderKey(item.message)}` : `${item.kind}:${item.id}`;
-  const previous = new Map(cache.refs.map((item, index) =>
-    [key(item), { item, element: list.children[index] as HTMLElement }]));
-  const next = getRenderedAgentItems(messages, context.isLoading);
-  if (previous.size !== cache.refs.length || new Set(next.map(key)).size !== next.length) return null;
+  if (!list) return null;
+  const previous = new Map<string, { item: AgentRenderItem; element: HTMLElement }>();
+  for (const child of Array.from(list.children)) {
+    const element = child as HTMLElement;
+    const item = renderedItemByElement.get(element);
+    if (item) previous.set(agentRenderItemKey(item), { item, element });
+  }
+  const next = context.renderItems ?? getRenderedAgentItems(messages, context.isLoading);
   const elements: HTMLElement[] = [];
   for (const item of next) {
-    const retained = previous.get(key(item));
+    const retained = previous.get(agentRenderItemKey(item));
     if (retained && areAgentRenderItemsEqual(retained.item, item)) {
       elements.push(retained.element);
     } else {
-      const rendered = createRenderItem(item, messages, context);
+      const rendered = createAgentRenderItem(item, messages, context);
       if (rendered?.element) elements.push(rendered.element);
     }
   }
@@ -548,14 +435,28 @@ export function reconcileRenderedAgentMessages(
     disposeAgentThreadCardMessageTree(child as HTMLElement);
     child.remove();
   }
-  elements.forEach((element, index) => {
-    if (list.children[index] !== element) list.insertBefore(element, list.children[index] ?? null);
-  });
+  // Batch new rows off-DOM. Avoid repeatedly indexing a live HTMLCollection
+  // while prepending a page, and leave retained rows attached throughout.
+  let cursor = list.firstElementChild;
+  const pending = document.createDocumentFragment();
+  for (const element of elements) {
+    if (element === cursor) {
+      if (pending.childNodes.length) list.insertBefore(pending, cursor);
+      cursor = cursor.nextElementSibling;
+    } else if (element.parentElement === list) {
+      if (pending.childNodes.length) list.insertBefore(pending, cursor);
+      list.insertBefore(element, cursor);
+    } else {
+      pending.append(element);
+    }
+  }
+  if (pending.childNodes.length) list.insertBefore(pending, cursor);
   syncMessageActions(messages, list, context);
   if (preserveViewport && anchor && anchorTop !== undefined) {
-    preserveViewport.scrollTop += anchor.getBoundingClientRect().top - anchorTop;
+    const delta = anchor.getBoundingClientRect().top - anchorTop;
+    if (Math.abs(delta) > 0.5) preserveViewport.scrollTop += delta;
   }
-  return elements.length === next.length ? next : null;
+  return next;
 }
 
 export function createRenderedAgentMessageList(
@@ -565,14 +466,15 @@ export function createRenderedAgentMessageList(
   list: HTMLDivElement;
   rememberedMessages: ThreadState["messages"];
 } {
+  context = withMessageActions(messages, context);
   const list = document.createElement("div");
   list.className = "agent-thread-card__messages";
   const rememberedMessages: ThreadState["messages"] = [];
 
-  const renderItems = getRenderedAgentItems(messages, context.isLoading);
+  const renderItems = context.renderItems ?? getRenderedAgentItems(messages, context.isLoading);
   for (let index = 0; index < renderItems.length; index += 1) {
     const renderItem = renderItems[index];
-    const rendered = createRenderItem(renderItem, messages, context);
+    const rendered = createAgentRenderItem(renderItem, messages, context);
     if (!rendered?.element) continue;
     if (rendered.shouldRemember && renderItem.kind === "message") {
       rememberedMessages.push(renderItem.message);

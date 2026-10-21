@@ -248,6 +248,32 @@ describe('NotebookFileTree pointer dragging', () => {
     return new MouseEvent('click', { bubbles: true, button: 0, ...modifiers });
   }
 
+  it('uses the notebook default destination when creating from the files section header', async () => {
+    const { root, tree } = await mount(successfulMove);
+    const onCreateNote = vi.fn(async () => {});
+    try {
+      await act(async () => root.render(
+        <NotebookFileTree notebookPath="/notes" notebookName="Notes" tree={tree}
+          onNoteSelect={vi.fn()} onCreateNote={onCreateNote} onMoveNote={successfulMove}
+          defaultCreateFolder="drafts" />,
+      ));
+      const header = Array.from(host.querySelectorAll<HTMLElement>('.notebook-file-tree__section-header'))
+        .find((element) => element.textContent?.includes('memo.fileTree.sectionTitle'));
+      const trigger = header?.querySelector<HTMLButtonElement>(
+        'button[aria-label="memo.fileTree.moreSectionActions"]',
+      );
+      expect(trigger).not.toBeNull();
+      await act(async () => trigger!.click());
+      const create = Array.from(document.querySelectorAll<HTMLButtonElement>('button'))
+        .find((element) => element.textContent === 'memo.fileTree.newNote');
+      expect(create).toBeDefined();
+      await act(async () => create!.click());
+      expect(onCreateNote).toHaveBeenCalledExactlyOnceWith(undefined);
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
+
   it('keeps the expanded folder visible while Enter saves its new name', async () => {
     const { root, tree } = await mount(successfulMove);
     const folder = tree.rootChildren[0];
@@ -531,7 +557,7 @@ describe('NotebookFileTree pointer dragging', () => {
     await act(async () => root.unmount());
   });
 
-  async function mountDraft(kind: 'folder' | 'note', parentPath: string) {
+  async function mountFolderDraft(parentPath: string) {
     const rootFolder = item('/notes/projects', 'folder');
     const childFolder = item('/notes/projects/archive', 'folder');
     const childNote = item('/notes/projects/child.md', 'document');
@@ -551,20 +577,18 @@ describe('NotebookFileTree pointer dragging', () => {
       reload: vi.fn(async () => {}),
     } as unknown as FolderTreeController;
     const root = createRoot(host);
-    const onCreateNote = vi.fn(async () => {});
     await act(async () => root.render(
       <NotebookFileTree
         notebookPath="/notes/"
         notebookName="Notes"
         tree={tree}
-        createFolderRequest={kind === 'folder' ? { id: 1, parentPath } : null}
-        createNoteRequest={kind === 'note' ? { id: 1, parentPath } : null}
+        createFolderRequest={{ id: 1, parentPath }}
         onNoteSelect={vi.fn()}
-        onCreateNote={onCreateNote}
+        onCreateNote={vi.fn()}
         onMoveNote={vi.fn<TestMoveNote>(successfulMove)}
       />,
     ));
-    return { root, onCreateNote, tree };
+    return { root, tree };
   }
 
   function setInputValue(input: HTMLInputElement, value: string): void {
@@ -584,20 +608,14 @@ describe('NotebookFileTree pointer dragging', () => {
       .filter((row) => row.parentElement?.dataset.notebookTreeDepth === String(depth));
   }
 
-  it.each([
-    ['folder', '/notes'],
-    ['note', '/notes'],
-    ['folder', '/notes/projects'],
-    ['note', '/notes/projects'],
-  ] as const)('places the %s draft before the first matching item in %s', async (kind, parentPath) => {
-    const { root } = await mountDraft(kind, parentPath);
+  it.each(['/notes', '/notes/projects'])('places a folder draft before sibling folders in %s', async (parentPath) => {
+    const { root } = await mountFolderDraft(parentPath);
     const input = host.querySelector('input')!;
     const list = host.querySelector('[role="tree"]')!;
     const depth = parentPath === '/notes' ? 0 : 1;
     const rows = directRows(list, depth);
     const firstFolderIndex = rows.findIndex((row) => row.getAttribute('data-notebook-tree-kind') === 'folder');
-    const firstNoteIndex = rows.findIndex((row) => row.getAttribute('data-notebook-tree-kind') === 'note');
-    const firstMatchingRow = rows[kind === 'folder' ? firstFolderIndex : firstNoteIndex];
+    const firstMatchingRow = rows[firstFolderIndex];
     const virtualRows = Array.from(host.querySelectorAll<HTMLElement>('[data-notebook-virtual-row]'));
     const draftVirtualRow = input.closest<HTMLElement>('[data-notebook-virtual-row]')!;
     const matchingVirtualRow = firstMatchingRow.closest<HTMLElement>('[data-notebook-virtual-row]')!;
@@ -605,38 +623,29 @@ describe('NotebookFileTree pointer dragging', () => {
     expect(input.parentElement?.style.marginLeft).toBe(
       parentPath === '/notes' ? '6px' : '26px',
     );
-    if (kind === 'note') {
-      const folderVirtualRow = rows[firstFolderIndex].closest<HTMLElement>('[data-notebook-virtual-row]')!;
-      expect(virtualRows.indexOf(folderVirtualRow)).toBeLessThan(virtualRows.indexOf(draftVirtualRow));
-    }
     await act(async () => root.unmount());
   });
 
-  it.each(['note', 'folder'] as const)(
-    'renders the matching %s icon beside the draft input',
-    async (kind) => {
-      const { root } = await mountDraft(kind, '/notes');
-      const input = host.querySelector<HTMLInputElement>('input')!;
-      const icon = host.querySelector<HTMLElement>(`[data-notebook-tree-draft-icon="${kind}"]`)!;
+  it('renders a folder icon beside the folder draft input', async () => {
+    const { root } = await mountFolderDraft('/notes');
+    const input = host.querySelector<HTMLInputElement>('input')!;
+    const icon = host.querySelector<HTMLElement>('[data-notebook-tree-draft-icon="folder"]')!;
 
-      expect(icon).not.toBeNull();
-      expect(icon.nextElementSibling).toBe(input);
-      expect(icon.querySelector('svg')).not.toBeNull();
-      expect(input.classList.contains('ml-1.5')).toBe(true);
-      await act(async () => root.unmount());
-    },
-  );
+    expect(icon).not.toBeNull();
+    expect(icon.nextElementSibling).toBe(input);
+    expect(icon.querySelector('svg')).not.toBeNull();
+    expect(input.classList.contains('ml-1.5')).toBe(true);
+    await act(async () => root.unmount());
+  });
 
-  it.each(['note', 'folder'] as const)(
-    'keeps the new %s draft focused when Enter confirms an IME candidate',
-    async (kind) => {
-      const { root, onCreateNote, tree } = await mountDraft(kind, '/notes');
-      const createFolder = vi.spyOn(files, 'createFolder').mockResolvedValue(
-        item('/notes/新建', 'folder'),
-      );
-      const input = host.querySelector<HTMLInputElement>('input')!;
+  it('keeps the folder draft focused when Enter confirms an IME candidate', async () => {
+    const { root, tree } = await mountFolderDraft('/notes');
+    const createFolder = vi.spyOn(files, 'createFolder').mockResolvedValue(
+      item('/notes/新建', 'folder'),
+    );
+    const input = host.querySelector<HTMLInputElement>('input')!;
 
-      expect(document.activeElement).toBe(input);
+    expect(document.activeElement).toBe(input);
 
       await act(async () => {
         input.dispatchEvent(new CompositionEvent('compositionstart', { bubbles: true }));
@@ -648,7 +657,6 @@ describe('NotebookFileTree pointer dragging', () => {
       expect(host.querySelector('input')).toBe(input);
       expect(input.value).toBe('xin');
       expect(document.activeElement).toBe(input);
-      expect(onCreateNote).not.toHaveBeenCalled();
       expect(createFolder).not.toHaveBeenCalled();
 
       await act(async () => {
@@ -662,27 +670,19 @@ describe('NotebookFileTree pointer dragging', () => {
       expect(host.querySelector('input')).toBe(input);
       expect(input.value).toBe('新建');
       expect(document.activeElement).toBe(input);
-      expect(onCreateNote).not.toHaveBeenCalled();
       expect(createFolder).not.toHaveBeenCalled();
 
-      await act(async () => {
-        const event = dispatchInputKey(input, 'Enter', 13);
-        expect(event.defaultPrevented).toBe(true);
-        await Promise.resolve();
-      });
+    await act(async () => {
+      const event = dispatchInputKey(input, 'Enter', 13);
+      expect(event.defaultPrevented).toBe(true);
+      await Promise.resolve();
+    });
 
-      if (kind === 'note') {
-        expect(onCreateNote).toHaveBeenCalledWith('/notes', '新建');
-        expect(createFolder).not.toHaveBeenCalled();
-      } else {
-        expect(createFolder).toHaveBeenCalledWith('/notes', '新建');
-        expect(onCreateNote).not.toHaveBeenCalled();
-      }
-      expect(tree.refresh).toHaveBeenCalledWith('/notes');
-      expect(host.querySelector('input')).toBeNull();
-      await act(async () => root.unmount());
-    },
-  );
+    expect(createFolder).toHaveBeenCalledWith('/notes', '新建');
+    expect(tree.refresh).toHaveBeenCalledWith('/notes');
+    expect(host.querySelector('input')).toBeNull();
+    await act(async () => root.unmount());
+  });
 
   it('shows the folder target before release and moves the note on release', async () => {
     const onMoveNote = vi.fn<TestMoveNote>(successfulMove);

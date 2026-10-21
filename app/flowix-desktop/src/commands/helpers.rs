@@ -282,27 +282,6 @@ fn switch_notebook(state: &AppState, notebook_id: Option<String>) -> Result<(), 
     Ok(())
 }
 
-pub(crate) fn is_markdown_file_path(path: &Path) -> bool {
-    path.extension()
-        .and_then(|ext| ext.to_str())
-        .map(|ext| matches!(ext.to_ascii_lowercase().as_str(), "md" | "markdown"))
-        .unwrap_or(false)
-        && path.is_file()
-}
-
-pub fn markdown_paths_from_args(args: impl IntoIterator<Item = String>) -> Vec<String> {
-    args.into_iter()
-        .filter_map(|arg| {
-            let path = Path::new(&arg);
-            if is_markdown_file_path(path) {
-                Some(path.to_string_lossy().to_string())
-            } else {
-                None
-            }
-        })
-        .collect()
-}
-
 pub(crate) fn is_registered_notebook_path(path: &Path, state: &State<AppState>) -> bool {
     is_registered_notebook_path_with_state(path, state.inner())
 }

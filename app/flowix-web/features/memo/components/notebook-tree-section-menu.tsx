@@ -32,6 +32,7 @@ import {
 import type { FolderTreeSort } from './use-folder-tree';
 import type { TableViewType } from '@features/multidimensional-table/public/create-api';
 import { MEMO_CREATE_VIEW_OPTIONS } from './memo-create-view-options';
+import { WorkDocumentsIcon } from './work-documents-icon';
 
 export function getPopupOriginRect(target: HTMLElement): DOMRect {
   const rect = (target.closest('[role="menu"]') ?? target).getBoundingClientRect();
@@ -89,6 +90,7 @@ interface NotebookTreeSectionMenuProps {
   onCreateNote?: () => void;
   onCreateTable?: (viewType?: TableViewType) => void;
   onCreateMediaLibrary?: () => void;
+  onCreateWorkDocuments?: () => void;
   onImportFiles?: () => void;
   onImportFolder?: () => void;
   sort?: FolderTreeSort;
@@ -106,6 +108,7 @@ export function NotebookTreeSectionMenu({
   onCreateNote,
   onCreateTable,
   onCreateMediaLibrary,
+  onCreateWorkDocuments,
   onImportFiles,
   onImportFolder,
   sort,
@@ -121,7 +124,7 @@ export function NotebookTreeSectionMenu({
   const sortSubmenuPosition = useViewportSubmenuPosition(sortSubmenuOpen);
   const itemClassName = 'group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)] disabled:cursor-not-allowed disabled:opacity-40';
   const hasActionsAfterMovement = Boolean(
-    onCreateNote || onCreateFolder || onCreateTable || onCreateMediaLibrary || onImportFiles || onImportFolder || (sort && onSort),
+    onCreateNote || onCreateFolder || onCreateTable || onCreateMediaLibrary || onCreateWorkDocuments || onImportFiles || onImportFolder || (sort && onSort),
   );
 
   return (
@@ -164,7 +167,7 @@ export function NotebookTreeSectionMenu({
             {t('memo.fileTree.newFolder')}
           </DropdownMenuItem>
         )}
-        {(onCreateTable || onCreateMediaLibrary) && (
+        {(onCreateTable || onCreateMediaLibrary || onCreateWorkDocuments) && (
           <div
             className="relative"
             onMouseEnter={() => setCreateSubmenuOpen(true)}
@@ -179,7 +182,7 @@ export function NotebookTreeSectionMenu({
             >
               <span className="flex items-center gap-2">
                 <Plus className="h-3.5 w-3.5" aria-hidden="true" />
-                {t('memo.create.more')}
+                {t('memo.create.newView')}
               </span>
               <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
@@ -198,6 +201,15 @@ export function NotebookTreeSectionMenu({
                     <span>{t('memo.create.mediaLibrary')}</span>
                     <span className="ml-auto text-xs text-[var(--muted-foreground)] opacity-50 group-hover:text-[var(--primary-foreground)] group-focus-visible:text-[var(--primary-foreground)]">
                       {t('memo.create.mediaImageShort')}/{t('memo.create.mediaVideoShort')}
+                    </span>
+                  </DropdownMenuItem>
+                )}
+                {onCreateWorkDocuments && (
+                  <DropdownMenuItem onClick={onCreateWorkDocuments} className={itemClassName}>
+                    <WorkDocumentsIcon className="h-3.5 w-3.5" />
+                    <span>{t('memo.create.workDocuments')}</span>
+                    <span className="ml-auto text-xs text-[var(--muted-foreground)] opacity-50 group-hover:text-[var(--primary-foreground)] group-focus-visible:text-[var(--primary-foreground)]">
+                      {t('memo.create.workDocumentsTypes')}
                     </span>
                   </DropdownMenuItem>
                 )}

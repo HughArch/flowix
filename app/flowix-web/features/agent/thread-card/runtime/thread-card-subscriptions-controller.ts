@@ -1,3 +1,4 @@
+import { createLogger } from "@/lib/logger";
 import type { AgentTypeKey } from "@/types/agent";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
 import { useAgentRuntimeStore } from "@features/agent/store/agent-runtime-store";
@@ -8,6 +9,8 @@ import {
   isLocalExternalThreadId,
   resolveExternalSessionId,
 } from "@features/agent/services/external-agent-runtime-service";
+
+const logger = createLogger("agent-thread-subscriptions");
 
 export interface AgentThreadCardSubscriptionsControllerOptions {
   getRuntimeThreadId: () => string | null;
@@ -153,7 +156,9 @@ export class AgentThreadCardSubscriptionsController {
             );
           }
         },
-      );
+      ).catch((error) => logger.warn("Failed to resolve provider session", {
+        threadId: localThreadId, error: String(error),
+      }));
     }
   }
 

@@ -94,6 +94,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   onCreateFolder,
   onCreateView,
   onCreateMediaLibrary,
+  onCreateWorkDocuments,
   onImportFiles,
   onImportFolder,
   onRename,
@@ -132,6 +133,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   onCreateFolder: (parentPath: string) => void;
   onCreateView: (parentPath: string, viewType?: TableViewType) => void;
   onCreateMediaLibrary: (parentPath: string) => void;
+  onCreateWorkDocuments?: (parentPath: string) => void;
   onImportFiles?: (parentPath: string) => void;
   onImportFolder?: (parentPath: string) => void;
   onRename: (item: DocTreeItem, nextName: string) => Promise<boolean | void> | boolean | void;
@@ -593,6 +595,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
           onCreateFolder={() => onCreateFolder(actionParentPath)}
           onCreateTable={(viewType) => onCreateView(actionParentPath, viewType)}
           onCreateMediaLibrary={() => onCreateMediaLibrary(actionParentPath)}
+          onCreateWorkDocuments={onCreateWorkDocuments ? () => onCreateWorkDocuments(actionParentPath) : undefined}
           onImportFiles={onImportFiles ? () => onImportFiles(actionParentPath) : undefined}
           onImportFolder={onImportFolder ? () => onImportFolder(actionParentPath) : undefined}
         />

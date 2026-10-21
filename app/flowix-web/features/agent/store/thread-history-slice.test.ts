@@ -1,4 +1,5 @@
-import { beforeEach, describe, expect, it, vi } from "vitest";
+import { afterEach, beforeEach, describe, expect, it, vi } from "vitest";
+import { HISTORY_READ_TIMEOUT_MS } from "@features/agent/services/history-read-timeout";
 import type { ChatMessage } from "@/types";
 import { attachHistoryCursor, HistoryChangedError, type ThreadHistoryPage } from "./agent-history-adapters";
 import type { ProjectionSlice } from "./projection-slice";
@@ -292,5 +293,143 @@ describe("full history refresh", () => {
     pending.resolve([old]);
     await loading;
     expect(get().threadProjections.thread.messages).toEqual([live]);
+  });
+});
+
+
+describe("concurrent history reads and loaded windows", () => {
+  beforeEach(() => { adapter.getInitialHistory.mockReset(); adapter.getPage.mockReset(); });
+
+  function pagedStore() {
+    const get = store([row("visible")]);
+    const cursorPage = attachHistoryCursor("claudecode", "thread", {
+      messages: [], oldestSequence: 10, snapshotSequence: 30, hasMore: true,
+    });
+    get().updateThreadHistory("thread", (projection) => ({ ...projection, pagination: {
+      ...projection.pagination, initialStatus: "ready", oldestSequence: 10,
+      snapshotSequence: 30, hasMoreHistory: true, nextCursor: cursorPage.nextCursor,
+    } }));
+    return get;
+  }
+
+  it("finishes pagination when a concurrent completion refresh fails", async () => {
+    const get = pagedStore();
+    const pending = deferred<ThreadHistoryPage>();
+    adapter.getPage.mockReturnValueOnce(pending.promise);
+    adapter.getInitialHistory.mockRejectedValueOnce(new Error("offline"));
+    const more = get().loadMoreMessages("claudecode", "thread");
+    await get().reconcileCompletedRun("claudecode", "thread", "run");
+    expect(get().threadProjections.thread.pagination.loadingMore).toBe(true);
+    pending.resolve({ messages: [row("older")], oldestSequence: null, snapshotSequence: 30, hasMore: false });
+    await more;
+    expect(get().threadProjections.thread.messages.map((message) => message.id)).toEqual(["older", "visible"]);
+    expect(get().threadProjections.thread.pagination.loadingMore).toBe(false);
+    expect(get().threadProjections.thread.pagination.initialStatus).toBe("ready");
+  });
+
+  it("releases an initial loading owner even after a newer snapshot request fails", async () => {
+    const get = store([]);
+    const pending = deferred<ThreadHistoryPage>();
+    adapter.getInitialHistory.mockReturnValueOnce(pending.promise)
+      .mockRejectedValueOnce(new Error("offline"));
+    const initial = get().loadMessages("claudecode", "thread");
+    await get().reconcileCompletedRun("claudecode", "thread", "run");
+    pending.resolve({ messages: [row("discarded")], oldestSequence: null, hasMore: false });
+    expect(await initial).toBe("stale");
+    expect(get().threadProjections.thread.pagination.loadingInitial).toBe(false);
+    expect(get().threadProjections.thread.pagination.initialStatus).toBe("idle");
+    adapter.getInitialHistory.mockResolvedValueOnce({ messages: [row("retry")], oldestSequence: null, hasMore: false });
+    expect(await get().loadMessages("claudecode", "thread")).toBe("ready");
+    expect(get().threadProjections.thread.messages[0].id).toBe("retry");
+  });
+
+  it.each(["open", "completion"])("retains an older boundary during a %s tail refresh", async (reason) => {
+    const get = pagedStore();
+    adapter.getInitialHistory.mockResolvedValueOnce({
+      messages: [row("visible"), { ...row("new-tail"), timestamp: "2026-01-01T00:01:00Z" }], oldestSequence: 20, snapshotSequence: 40, hasMore: true,
+    });
+    if (reason === "open") await get().loadMessages("claudecode", "thread");
+    else await get().reconcileCompletedRun("claudecode", "thread", "run");
+    const pagination = get().threadProjections.thread.pagination;
+    expect(pagination.oldestSequence).toBe(10);
+    expect(pagination.snapshotSequence).toBe(40);
+    expect(JSON.parse(decodeURIComponent(pagination.nextCursor!))).toMatchObject({ beforeSequence: 10, snapshotSequence: 40 });
+    adapter.getPage.mockResolvedValueOnce({ messages: [row("older")], oldestSequence: null, snapshotSequence: 40, hasMore: false });
+    await get().loadMoreMessages("claudecode", "thread");
+    expect(adapter.getPage).toHaveBeenCalledWith("thread", 10, 10, 40, undefined, undefined);
+    expect(get().threadProjections.thread.messages.map((message) => message.id)).toEqual(["older", "visible", "new-tail"]);
+  });
+
+  it("keeps an exhausted loaded window exhausted after a latest-page refresh", async () => {
+    const get = store([row("oldest"), row("visible")]);
+    get().updateThreadHistory("thread", (projection) => ({ ...projection, pagination: {
+      ...projection.pagination, initialStatus: "ready", oldestSequence: null, hasMoreHistory: false,
+    } }));
+    adapter.getInitialHistory.mockResolvedValueOnce({ messages: [row("visible")], oldestSequence: 20, snapshotSequence: 40, hasMore: true });
+    await get().loadMessages("claudecode", "thread");
+    expect(get().threadProjections.thread.pagination.hasMoreHistory).toBe(false);
+    expect(get().threadProjections.thread.pagination.nextCursor).toBeUndefined();
+  });
+
+  it("discards an older-page response after its cursor was rebased by a refresh", async () => {
+    const get = pagedStore();
+    const pending = deferred<ThreadHistoryPage>();
+    adapter.getPage.mockReturnValueOnce(pending.promise);
+    const more = get().loadMoreMessages("claudecode", "thread");
+    adapter.getInitialHistory.mockResolvedValueOnce({ messages: [row("visible")], oldestSequence: 20, snapshotSequence: 40, hasMore: true });
+    await get().loadMessages("claudecode", "thread");
+    pending.resolve({ messages: [row("stale-page")], oldestSequence: null, snapshotSequence: 30, hasMore: false });
+    await more;
+    expect(get().threadProjections.thread.messages.map((message) => message.id)).toEqual(["visible"]);
+    expect(get().threadProjections.thread.pagination.loadingMore).toBe(false);
+    expect(get().threadProjections.thread.pagination.snapshotSequence).toBe(40);
+  });
+});
+
+
+describe("history read deadlines", () => {
+  beforeEach(() => {
+    vi.useFakeTimers();
+    adapter.getInitialHistory.mockReset();
+    adapter.getPage.mockReset();
+  });
+  afterEach(() => vi.useRealTimers());
+
+  it("retries initial history after timeout and ignores the first response arriving later", async () => {
+    const get = store([]);
+    const pending = deferred<ThreadHistoryPage>();
+    adapter.getInitialHistory.mockReturnValueOnce(pending.promise);
+    const first = get().loadMessages("claudecode", "thread");
+    await vi.advanceTimersByTimeAsync(HISTORY_READ_TIMEOUT_MS);
+    expect(await first).toBe("error");
+    expect(get().threadProjections.thread.pagination).toMatchObject({ loadingInitial: false, initialStatus: "error" });
+    adapter.getInitialHistory.mockResolvedValueOnce(page([row("retry")], "retry"));
+    expect(await get().loadMessages("claudecode", "thread")).toBe("ready");
+    pending.resolve(page([row("late-first-response")], "late"));
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get().threadProjections.thread.messages.map((message) => message.id)).toEqual(["retry"]);
+  });
+
+  it("unlocks pagination after timeout while retaining its cursor for retry", async () => {
+    const get = store([row("visible")]);
+    const cursor = attachHistoryCursor("claudecode", "thread", {
+      messages: [], oldestSequence: 10, snapshotSequence: 30, hasMore: true,
+    }).nextCursor;
+    get().updateThreadHistory("thread", (projection) => ({ ...projection, pagination: {
+      ...projection.pagination, initialStatus: "ready", oldestSequence: 10,
+      snapshotSequence: 30, hasMoreHistory: true, nextCursor: cursor,
+    } }));
+    const pending = deferred<ThreadHistoryPage>();
+    adapter.getPage.mockReturnValueOnce(pending.promise);
+    const first = get().loadMoreMessages("claudecode", "thread");
+    await vi.advanceTimersByTimeAsync(HISTORY_READ_TIMEOUT_MS);
+    await first;
+    expect(get().threadProjections.thread.pagination).toMatchObject({ loadingMore: false, nextCursor: cursor });
+    adapter.getPage.mockResolvedValueOnce({ messages: [row("older")], oldestSequence: null, snapshotSequence: 30, hasMore: false });
+    await get().loadMoreMessages("claudecode", "thread");
+    pending.resolve({ messages: [row("late-page")], oldestSequence: null, snapshotSequence: 30, hasMore: false });
+    await vi.advanceTimersByTimeAsync(0);
+    expect(get().threadProjections.thread.messages.map((message) => message.id)).toEqual(["older", "visible"]);
+    expect(get().threadProjections.thread.pagination.loadingMore).toBe(false);
   });
 });

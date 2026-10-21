@@ -1,10 +1,15 @@
 import type { AppLanguage } from "@/lib/i18n";
+import type { MessageActionState } from "./message-action-state";
+import type { AgentRenderItem } from "./tool-grouping";
 import type { ThreadState } from "@features/agent/store/thread-runtime-state";
 
 export type AgentMessage = ThreadState["messages"][number];
 
 export interface AgentThreadCardMessageRenderContext {
   language: AppLanguage;
+  /** Prepared once by the render controller for all DOM update paths. */
+  renderItems?: AgentRenderItem[];
+  messageActions?: ReadonlyMap<AgentMessage, MessageActionState>;
   /** True while the current turn is still producing items. */
   isLoading: boolean;
   getReasoningCollapsed: (message: AgentMessage) => boolean;

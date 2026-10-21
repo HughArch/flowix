@@ -90,8 +90,12 @@ function readFailureMessage(error: unknown, language: ReturnType<typeof getCurre
   if (normalized.includes('recovery draft read timed out')) {
     return translate(language, 'document.load.recoveryTimeout');
   }
-  if (normalized.includes('outside its authorized scope') || normalized.includes('permission denied')) {
-    return translate(language, 'document.load.accessDenied');
+  if (normalized.includes('outside its authorized scope')) {
+    return translate(language, 'document.load.scopeDenied');
+  }
+  if (normalized.includes('document_read_permission_denied') || normalized.includes('permission denied')
+    || normalized.includes('access is denied')) {
+    return translate(language, 'document.load.permissionDenied');
   }
   if (isMissingDocumentError(error)) return translate(language, 'document.load.fileNotFound');
   if (normalized.includes('not a supported text file') || normalized.includes('is a directory')
@@ -377,6 +381,9 @@ export function useDocumentContent({
       } catch (err) {
         if (currentLoadId !== counter.current) return;
         if (restartAfterPathMove()) return;
+        console.warn('[document-load] read failed', {
+          displayId: identity.displayId, transitionId, hasScope: Boolean(externalScopePath), error: String(err),
+        });
         session.loaded = false;
         const language = getCurrentAppLanguage();
         setState((prev) => ({

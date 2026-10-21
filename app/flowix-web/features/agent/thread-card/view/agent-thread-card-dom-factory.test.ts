@@ -14,6 +14,7 @@ describe('agent thread card message scrollbar', () => {
       onCardMouseDown: () => {},
       onTitleDoubleClick: () => {},
       onDeleteClick: () => {},
+      onOpenInBrowserColumnClick: () => {},
       onFullscreenClick: () => {},
       onCollapseClick: () => {},
       onBodyClick: () => {},

@@ -1,7 +1,7 @@
 'use client';
 
 import { memo, useEffect, useState, type FormEvent, type ReactNode } from 'react';
-import { ChevronRight, ListTodo, Loader2 } from 'lucide-react';
+import { ListTodo, Loader2 } from 'lucide-react';
 import { PushPin } from '@phosphor-icons/react';
 import { NOTE_COLOR_HEX, useNoteStore } from '@features/memo/store/note-store';
 import {
@@ -77,13 +77,6 @@ function thumbnailSrc(thumbnail: string | null | undefined): string | null {
   if (!thumbnail) return null;
   const storageKey = decodeStorageKey(thumbnail);
   return storageKey ? assetUrl(storageKey) : thumbnail;
-}
-
-function memoFolderDisplayPath(memo: Pick<NoteListItem, 'filename' | 'relativePath'>): string[] | null {
-  const relativePath = (memo.relativePath?.trim() || memo.filename).replace(/\\/g, '/');
-  const pathSegments = relativePath.split('/').filter((segment) => segment && segment !== '.');
-  if (pathSegments.length < 2) return null;
-  return pathSegments.slice(0, -1);
 }
 
 function AgentTodoIcons({
@@ -287,8 +280,6 @@ function DetailedMemoCardBody({
   onThumbnailFailed,
   description,
 }: MemoCardBodyProps) {
-  const folderDisplayPath = memoFolderDisplayPath(memo);
-
   return (
     <>
       <div className="space-y-2">
@@ -319,15 +310,6 @@ function DetailedMemoCardBody({
           </div>
         ) : null}
         {description && <p className="line-clamp-2 text-sm">
-          {folderDisplayPath && <>
-            {folderDisplayPath.map((segment, index) => (
-              <span key={`${index}-${segment}`} className="text-[var(--muted-foreground)]">
-                {index > 0 && <ChevronRight aria-hidden="true" className="mx-0.5 inline-block h-3 w-3 align-[-2px] opacity-70" />}
-                {segment}
-              </span>
-            ))}
-            {' '}
-          </>}
           <span className="text-[var(--foreground)] opacity-50">{description}</span>
         </p>}
       </div>
@@ -400,7 +382,7 @@ export function MemoCardImpl({
   const propertyTitle = typeof memo.properties.name === 'string' ? memo.properties.name.trim() : '';
   const title = propertyTitle || displayTitleFromFilename(memo.filename || memo.relativePath).trim() || t('memo.untitled');
   const propertyDescription = typeof memo.properties.description === 'string' ? memo.properties.description.trim() : '';
-  const description = propertyDescription || memo.preview.trim();
+  const description = propertyDescription || memo.preview.trim() || t('memo.list.emptyDescription');
   const bodyProps: MemoCardBodyProps = {
     memo,
     tagMap,

@@ -1026,7 +1026,10 @@ export class FrontmatterPropertyNodeView implements NodeView {
     const ownerWindow = ownerDocument.defaultView;
     if (!ownerWindow) return;
     const anchorRect = anchor.getBoundingClientRect();
-    const popover = createElement('div', 'frontmatter-property__edit-popover');
+    const popover = createElement(
+      'div',
+      'frontmatter-property__edit-popover frontmatter-property__edit-popover--editor',
+    );
     const isFlowSequence = isFrontmatterPropertyFlowSequence(
       String(this.node.attrs.yamlContent ?? ''),
       property.key,

@@ -104,10 +104,12 @@ export function MainWindowEffects() {
   useEffect(() => {
     // The main window resolves notebook identity before document restoration.
     // Cards, folders, and conversations then own their view data independently.
-    void initializeMainWindowStartup()
-      .catch((error) => {
-        logger.warn('restore workspace failed', { error });
-      });
+    const startup = initializeMainWindowStartup();
+    mountOpenTargetListener(startup);
+    void startup.catch((error) => {
+      logger.warn('restore workspace failed', { error });
+    });
+    return () => unmountOpenTargetListener();
   }, []);
 
   useEffect(() => {
@@ -172,13 +174,6 @@ export function MainWindowEffects() {
       disposed = true;
       unsubscribe?.();
       unsubscribeDerived?.();
-    };
-  }, []);
-
-  useEffect(() => {
-    void mountOpenTargetListener();
-    return () => {
-      unmountOpenTargetListener();
     };
   }, []);
 

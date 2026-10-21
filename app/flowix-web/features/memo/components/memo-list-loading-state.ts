@@ -1,3 +1,4 @@
+import type { TableAutoCollectCondition } from '@features/multidimensional-table/model';
 import type { ColorFilterValue } from '@features/memo/store';
 import { getNoteQueryKey } from '@features/memo/services/note-query-key';
 
@@ -9,8 +10,9 @@ export function getMemoListQueryKey(
   colorFilter: ColorFilterValue,
   pluginId?: string | null,
   customFilterId?: string | null,
+  dataCondition?: TableAutoCollectCondition | null,
 ): string {
-  return getNoteQueryKey(notebookId, filter, sort, tagId, colorFilter, pluginId, customFilterId);
+  return getNoteQueryKey(notebookId, filter, sort, tagId, colorFilter, pluginId, customFilterId, dataCondition);
 }
 
 export function shouldShowMemoListLoading({

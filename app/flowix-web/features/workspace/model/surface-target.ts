@@ -49,6 +49,8 @@ export type WorkspaceContentTarget =
   | FolderCollectionSurfaceTarget
   | {
       kind: 'external';
+      /** One-time tree reveal policy for this navigation; not document data. */
+      treeReveal?: 'created-note';
       fileBrowser?: FileBrowserContext;
       path: string;
       scopePath: string | null;

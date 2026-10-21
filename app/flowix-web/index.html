@@ -17,14 +17,26 @@
         z-index: 2147483647;
         display: grid;
         place-items: center;
-        background: var(--background, #f5f5f4);
+        background: transparent;
         pointer-events: none;
       }
-      html[data-theme="dark"] #app-loading {
-        background: var(--background, #171717);
+      /* Critical first-paint copy of .flowix-loading-ring and .flowix-spin in styles/index.css. */
+      .flowix-loading-ring {
+        box-sizing: border-box;
+        width: 1.25rem;
+        height: 1.25rem;
+        border: 2px solid color-mix(in oklch, var(--muted-foreground, #737373) 26%, transparent);
+        border-top-color: var(--brand, #c65d3b);
+        border-radius: 9999px;
       }
-      html[data-theme="mist"] #app-loading {
-        background: transparent;
+      .flowix-spin {
+        animation: flowix-spin var(--flowix-spin-duration, 1s) linear infinite;
+      }
+      @keyframes flowix-spin {
+        to { transform: rotate(360deg); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        .flowix-spin { animation: none; }
       }
       html[data-window-material][data-theme="mist"],
       html[data-window-material][data-theme="mist"] body,
@@ -43,7 +55,9 @@
 
   <body>
     <div id="root"></div>
-    <div id="app-loading" aria-hidden="true"></div>
+    <div id="app-loading" aria-hidden="true">
+      <span class="flowix-loading-ring flowix-spin"></span>
+    </div>
     <!-- Vite resolves this bootstrap module to the desktop entry at build
          time, keeping the bundle rooted at a single application entry. -->
     <script type="module" src="/entrypoints/main.ts"></script>

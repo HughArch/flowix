@@ -187,6 +187,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
   private hydratedCodexQueueThreadId: string | null = null;
   private collapseButton: HTMLButtonElement;
   private deleteButton: HTMLButtonElement;
+  private openInBrowserColumnButton: HTMLButtonElement;
   private fullscreenButton: HTMLButtonElement;
   private fullscreenLayout: FullscreenLayoutController;
   private composerDraft: ComposerDraftController;
@@ -374,6 +375,10 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
         const tr = this.view.state.tr.delete(pos, pos + this.node.nodeSize);
         this.view.dispatch(tr);
       },
+      onOpenInBrowserColumnClick: (event) => {
+        event.stopPropagation();
+        void this.openInBrowserColumn();
+      },
       onFullscreenClick: (event) => {
         event.stopPropagation();
         this.toggleFullscreen();
@@ -454,6 +459,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
     this.metaEl = domParts.metaEl;
     this.runStatusEl = domParts.runStatusEl;
     this.deleteButton = domParts.deleteButton;
+    this.openInBrowserColumnButton = domParts.openInBrowserColumnButton;
     this.fullscreenButton = domParts.fullscreenButton;
     this.actionsDivider = domParts.actionsDivider;
     this.collapseButton = domParts.collapseButton;
@@ -634,8 +640,6 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       getMessageCount: () => this.currentMessages().length,
       shouldLoadThreadMessages: () => this.shouldLoadThreadMessages(),
       renderThreadState: () => this.renderThreadState(),
-      renderResolvedSessionMessages: (messages) =>
-        this.renderResolvedSessionMessages(messages),
       applyResolvedSession: (threadId, sessionId, typeKey) => {
         this.applyResolvedExternalSessionId(threadId, sessionId, typeKey);
       },
@@ -784,6 +788,24 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       await openWorkspaceSurface({ target: { kind: 'agent-conversation', instanceId: fork.instanceId } });
     } catch (error) {
       logger.error(`Failed to fork ${this.typeKey} conversation`, { error });
+      toast.error(error instanceof Error ? error.message : String(error));
+    }
+  }
+
+  private async openInBrowserColumn(): Promise<void> {
+    if (this.isFullscreen || this.isDestroyed) return;
+    try {
+      // Legacy cards may not have been bound to an instance yet. Bind before
+      // opening so the Browser Column receives this card's conversation ID.
+      this.ensureInstanceBinding();
+      const instanceId = this.instanceId;
+      if (!instanceId) return;
+      await openWorkspaceSurface({
+        host: "browser-column",
+        target: { kind: "agent-conversation", instanceId },
+      });
+    } catch (error) {
+      logger.error("Failed to open conversation in browser column", { error });
       toast.error(error instanceof Error ? error.message : String(error));
     }
   }
@@ -1344,6 +1366,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
 
   private renderFullscreenState(): void {
     this.fullscreenButton.hidden = false;
+    this.openInBrowserColumnButton.hidden = this.isFullscreen;
     this.actionsDivider.hidden = false;
     // 全屏模式下不展示删除按钮 ── 卡片铺满视口, 删除是破坏性操作,
     // 留出右上方空间给"退出全屏" 与"折叠" 等视图操作, 避免误删。
@@ -1500,10 +1523,6 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
     projection: undefined,
     state: undefined,
   };
-
-  // 外部 session 历史 (由 thread-cache-controller 经 renderResolvedSessionMessages
-  // 直接渲染、未必进 projection) 的首条 user 消息快照 ── 供孤儿卡片标题恢复。
-  private resolvedFirstUserText: string | undefined;
 
   private currentThreadState(): ThreadState | undefined {
     const threadId = this.renderThreadId;
@@ -1757,29 +1776,6 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
     if (completedRunId) state.markThreadRead(threadId, completedRunId);
   }
 
-  private renderResolvedSessionMessages(
-    messages: ThreadState["messages"],
-  ): void {
-    if (this.isDestroyed || !this.dom.isConnected) return;
-    if (messages.length === 0) return;
-    // 缓存首条 user 消息, 供孤儿卡片标题恢复 (见 firstUserMessageText)。
-    const firstUser = getAgentThreadCardUserHistoryMessagesFromMessages(messages)[0];
-    this.resolvedFirstUserText = firstUser && firstUser.trim() ? firstUser : undefined;
-    const shouldRenderMessages = !this.collapsed || this.isFullscreen;
-    this.dom.classList.remove("agent-thread-card--thread-cache-loading");
-    this.messages.render({
-      messages: shouldRenderMessages ? messages : [],
-      isLoading: false,
-      shouldRenderMessages,
-    });
-    this.ackReadAfterVisibleRender(shouldRenderMessages, false);
-    // 同 renderThreadState: 外部 session (如 claude jsonl) 消息异步到位后,
-    // 给孤儿卡片一次标题恢复机会。
-    if (!this.chrome.hasExplicitTitle()) {
-      this.chrome.syncTitleText();
-    }
-  }
-
   // 提取当前 thread 的 user 消息列表 (按时间顺序, 旧 → 新) ──
   // 仅做"前端有"的范围, 不主动去后台拉历史 (hasMoreHistory / loadMoreHistory),
   // 用前端可见数据即可，拉历史会拖慢键盘响应。跳过空 content 防止 typing 期
@@ -1797,13 +1793,6 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
   private firstUserMessageText(): string | undefined {
     const first = this.getUserHistoryMessages()[0];
     if (first && first.trim()) return first;
-    // 外部 session 的历史消息由 thread-cache-controller 经
-    // renderResolvedSessionMessages 直接渲染, 不一定进 projection ──
-    // 孤儿卡片 (无 DB 行) 的消息只走这条路径, 故此处回退到缓存的
-    // resolved 快照里的首条 user 消息。
-    if (this.resolvedFirstUserText && this.resolvedFirstUserText.trim()) {
-      return this.resolvedFirstUserText;
-    }
     return undefined;
   }
 

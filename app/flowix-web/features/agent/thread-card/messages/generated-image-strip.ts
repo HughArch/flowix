@@ -17,6 +17,7 @@ export function createGeneratedImageStrip(options: {
 }): HTMLElement | null {
   if (options.images.length === 0) return null;
 
+  let disposed = false;
   const strip = document.createElement("div");
   strip.className = "agent-thread-card__generated-image-strip";
   strip.dataset.generatedImageStripId = options.id;
@@ -50,11 +51,22 @@ export function createGeneratedImageStrip(options: {
       "aria-label",
       options.language === "zh-CN" ? `预览生成图片 ${index + 1}` : `Preview generated image ${index + 1}`,
     );
+    image.width = 120;
+    image.height = 120;
     image.loading = "lazy";
     image.decoding = "async";
     image.referrerPolicy = "no-referrer";
     image.draggable = false;
-    image.addEventListener("error", () => frame.remove(), { once: true });
+    const showFailure = () => {
+      if (disposed) return;
+      previewObserver?.unobserve(image);
+      frame.dataset.imageState = "error";
+      frame.setAttribute("role", "img");
+      const label = options.language === "zh-CN" ? "图片加载失败" : "Image unavailable";
+      frame.setAttribute("aria-label", label);
+      frame.textContent = label;
+    };
+    image.addEventListener("error", showFailure, { once: true });
     frame.append(image);
     strip.append(frame);
 
@@ -70,12 +82,13 @@ export function createGeneratedImageStrip(options: {
 
       let previewRequested = false;
       const requestThumbnail = () => {
-        if (previewRequested) return;
+        if (disposed || previewRequested) return;
         previewRequested = true;
         void loadPreview(thumbnailMaxDimension).then((preview) => {
+          if (disposed) return;
           if (preview && frame.contains(image)) image.src = preview;
-          else frame.remove();
-        }).catch(() => frame.remove());
+          else showFailure();
+        }).catch(showFailure);
       };
       thumbnailLoaders.set(image, requestThumbnail);
       if (previewObserver) previewObserver.observe(image);
@@ -87,6 +100,7 @@ export function createGeneratedImageStrip(options: {
 
   const disposeImagePreview = attachAgentMessageImagePreview(strip, options.language);
   registerMessageDisposer(strip, () => {
+    disposed = true;
     disposeImagePreview?.();
     previewObserver?.disconnect();
   });

@@ -375,6 +375,14 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
     document, loadError, saving, saveFailed, setSaving, reportSaveFailure, notes, setNotes, resolvedNotebookId,
     notesLoadError, load, acceptContent, save: saveSession, flush: flushSession, loadSequenceRef, loadGeneration, isCurrentSession, pendingNotePropertiesRef,
   } = useTableSession({ filePath: currentFilePath, fileIdentity, notebookPath, notebookId, expectedCollectionId });
+  const collectionFilterFields = useMemo(() => [
+    ...(document?.dataset.schema.fields ?? []),
+    ...[...tablePresets.system, ...tablePresets.custom].map((preset) => ({
+      id: preset.key,
+      property_key: preset.key,
+      type: preset.kind,
+    })),
+  ], [document, tablePresets]);
   const latestDocumentRef = useRef(document);
   latestDocumentRef.current = document;
   useEffect(() => {
@@ -708,7 +716,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
       const notePath = note.relativePath.replace(/\\/g, '/');
       if (linkedPaths.has(notePath) || excludedPaths.has(notePath)
         || !noteInCollectionSource(notePath, document.dataset.source, currentFilePath, notebookPath)
-        || !noteMatchesCollectionFilter(note, document.dataset.schema.fields, noteField.id, datasetFilter)) return [];
+        || !noteMatchesCollectionFilter(note, collectionFilterFields, noteField.id, datasetFilter)) return [];
       let id = conditionRecordIdsRef.current.get(notePath);
       if (!id) {
         id = `rec_${createUuidV7()}`;
@@ -720,15 +728,15 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
         note_path: notePath,
       }];
     });
-  }, [currentFilePath, document, noteField, notebookPath, notes]);
+  }, [collectionFilterFields, currentFilePath, document, noteField, notebookPath, notes]);
   const conditionRecordIds = useMemo(() => new Set(conditionRecords.map((record) => record.id)), [conditionRecords]);
   const scopedExplicitRecords = useMemo(() => document
     ? document.dataset.records.include.filter((record) => noteInCollectionSource(record.note_path, document.dataset.source, currentFilePath, notebookPath))
     : [], [currentFilePath, document, notebookPath]);
   const datasetRecords = useMemo(() => [...scopedExplicitRecords, ...conditionRecords], [conditionRecords, scopedExplicitRecords]);
   const visibleRecords = useMemo(() => document
-    ? applyTableView(datasetRecords, activeView, document.dataset.schema.fields, document.dataset.schema.primary_field_id, noteForRecord)
-    : datasetRecords, [activeView, datasetRecords, document, noteForRecord]);
+    ? applyTableView(datasetRecords, activeView, collectionFilterFields, document.dataset.schema.primary_field_id, noteForRecord)
+    : datasetRecords, [activeView, collectionFilterFields, datasetRecords, document, noteForRecord]);
   useEffect(() => {
     if (activeView?.layout !== 'table') return;
     if (!pendingTablePageRecordId) return;
@@ -1415,12 +1423,12 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
       draggedNotes: resolved,
       beforeRecordId,
       view: activeView,
-      fields: document.dataset.schema.fields,
+      fields: collectionFilterFields,
       primaryFieldId: document.dataset.schema.primary_field_id,
       noteForRecord,
       isInSource: (path) => noteInCollectionSource(path, document.dataset.source, currentFilePath, notebookPath),
     });
-  }, [activeView, conditionRecords, currentFilePath, document, noteForRecord, notes, notebookPath, resolvedNotebookId]);
+  }, [activeView, collectionFilterFields, conditionRecords, currentFilePath, document, noteForRecord, notes, notebookPath, resolvedNotebookId]);
 
   const previewExternalGalleryDrop = useCallback((
     draggedNotes: NotebookNoteDragResource[], beforeRecordId: string | null,
@@ -2013,7 +2021,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
     let nextDocument = document;
     const note = record ? noteForRecord(record) : undefined;
     const ruleMatch = primaryField && record && note
-      ? datasetFilter !== null && noteMatchesCollectionFilter(note, document.dataset.schema.fields, primaryField.id, datasetFilter)
+      ? datasetFilter !== null && noteMatchesCollectionFilter(note, collectionFilterFields, primaryField.id, datasetFilter)
       : false;
     if (primaryField && record && note && ruleMatch) {
       const notePath = note.relativePath.replace(/\\/g, '/');
@@ -2031,7 +2039,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
       dataset: { ...nextDocument.dataset, records: { ...nextDocument.dataset.records, include: document.dataset.records.include.filter((item) => item.id !== recordId) } },
     };
     void save(next);
-  }, [currentFilePath, document, notebookPath, noteForRecord, save, saving, visibleRecords]);
+  }, [collectionFilterFields, currentFilePath, document, notebookPath, noteForRecord, save, saving, visibleRecords]);
 
   const updateRecordField = useCallback((recordId: string, fieldId: string, value: unknown) => {
     if (!document) return;
@@ -2644,11 +2652,12 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
   const storedAutoCollectConfig = tableAutoCollectConfig(document);
   const datasetMenuProps = {
     defaultFieldId: document.dataset.schema.primary_field_id,
-    fields: document.dataset.schema.fields.map((item) => ({ id: item.id, label: fieldLabel(item, propertyFields, t) })),
+    fields: document.dataset.schema.fields.map((item) => ({ id: item.id, label: fieldLabel(item, propertyFields, t), propertyKey: item.property_key, type: item.type, options: item.options })),
     config: fixedFolderPath !== undefined
       ? { condition: { ...(storedAutoCollectConfig?.condition ?? {}), match: storedAutoCollectConfig?.condition.match ?? 'all', path: fixedFolderPath } }
       : storedAutoCollectConfig,
     notebookPath,
+    notebookId: resolvedNotebookId,
     fixedFolderPath,
     saving: saving || !editable,
     t,
@@ -3390,7 +3399,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
         <div ref={loadMoreRecordsRef} className="h-8 shrink-0" aria-hidden="true" />
       )}
       </OverlayScrollbar>
-      {activeView?.layout === 'table' && <div className={`flex w-full min-w-0 shrink-0 flex-wrap items-center justify-between gap-2 py-1.5 pr-0 ${embeddedInEditor ? '' : 'pl-4'}`}>
+      {activeView?.layout === 'table' && <div className={`flex w-full min-w-0 shrink-0 flex-wrap items-center justify-between gap-2 py-1.5 ${embeddedInEditor ? '' : 'px-4'}`}>
         {showAssociateNoteButton && (
           <button
             type="button"

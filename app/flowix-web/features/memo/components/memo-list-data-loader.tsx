@@ -1,4 +1,5 @@
 import { useEffect, useRef } from 'react';
+import type { TableAutoCollectCondition } from '@features/multidimensional-table/model';
 import {
   type ColorFilterValue,
   type ExtendedFilterType,
@@ -20,6 +21,7 @@ export interface MemoListDataLoaderProps {
   colorFilter: ColorFilterValue;
   activePluginId: string | null;
   activeCustomFilterId?: string | null;
+  dataCondition?: TableAutoCollectCondition | null;
   memoListRefreshTrigger: number;
   loadNotes: NoteLibraryStore['loadNotes'];
   setLoadedMemoListQueryKey: (queryKey: string | null) => void;
@@ -46,6 +48,7 @@ export function MemoListDataLoader({
   colorFilter,
   activePluginId,
   activeCustomFilterId,
+  dataCondition,
   memoListRefreshTrigger,
   loadNotes,
   setLoadedMemoListQueryKey,
@@ -92,6 +95,7 @@ export function MemoListDataLoader({
       colorFilter,
       activePluginId,
       activeCustomFilterId,
+      dataCondition,
     );
     async function loadMemoListOnly() {
       onLoadStart?.(queryKey);
@@ -174,6 +178,7 @@ export function MemoListDataLoader({
     activeFilter,
     activePluginId,
     activeCustomFilterId,
+    dataCondition,
     activeSort,
     activeTagId,
     colorFilter,

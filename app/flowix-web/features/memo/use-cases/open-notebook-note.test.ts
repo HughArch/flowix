@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { Notebook } from '@features/memo/store/note-store';
 
 const mocks = vi.hoisted(() => ({
@@ -14,6 +14,22 @@ import { openNotebookNote } from './open-notebook-note';
 const notebook = { id: 'book-1', path: '/notes' } as Notebook;
 
 describe('openNotebookNote', () => {
+  beforeEach(() => {
+    mocks.openWorkspaceSurface.mockResolvedValue({
+      status: 'opened', location: { host: 'main-third', state: 'active' },
+    });
+  });
+
+  it('submits creation positioning with the same target as the new note', async () => {
+    await openNotebookNote('/notes/new.md', notebook, { treeReveal: 'created-note' });
+    expect(mocks.openWorkspaceSurface).toHaveBeenLastCalledWith(expect.objectContaining({
+      target: {
+        kind: 'external', path: '/notes/new.md', scopePath: '/notes',
+        transitionId: null, treeReveal: 'created-note',
+      },
+    }));
+  });
+
   it('opens ordinary Markdown by path without requiring a memo ID', async () => {
     mocks.openWorkspaceSurface.mockClear();
     await openNotebookNote('/notes/a.md', notebook);

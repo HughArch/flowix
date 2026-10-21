@@ -59,6 +59,13 @@ describe('public surface opening host contract', () => {
     expect(mocks.openWork).not.toHaveBeenCalled();
   });
 
+  it('forwards a created note reveal policy with its document navigation', async () => {
+    await openWorkspaceSurface({ target: { ...target, treeReveal: 'created-note' } });
+    expect(mocks.openWork).toHaveBeenCalledWith(target.path, expect.objectContaining({
+      treeReveal: 'created-note',
+    }));
+  });
+
   it('publishes Work changes before opening a second view of the same content', async () => {
     mocks.workIdentity = { kind: 'external', path: target.path };
     await openWorkspaceSurface({ host: 'browser-column', target });

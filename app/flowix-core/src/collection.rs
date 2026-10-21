@@ -707,7 +707,7 @@ fn validate_rule_filter_depth(filter: &Value, collection_type: CollectionType, d
             if rule["field"].as_str().is_none_or(str::is_empty)
                 || !matches!(
                     rule["op"].as_str(),
-                    Some("eq" | "equals" | "contains" | "in")
+                    Some("eq" | "equals" | "contains" | "in" | "gt" | "lt")
                 )
                 || rule.get("value").is_none()
             {
@@ -738,7 +738,7 @@ fn validate_rule_filter_depth(filter: &Value, collection_type: CollectionType, d
                             && rule["value"].as_array().is_some_and(|values| {
                                 values.len() == 1 && values[0] == "note"
                             })),
-                    _ => matches!(rule["op"].as_str(), Some("eq" | "equals" | "contains" | "in")),
+                    _ => matches!(rule["op"].as_str(), Some("eq" | "equals" | "contains" | "in" | "gt" | "lt")),
                 },
                 CollectionType::MediaLibrary => match field {
                     "file_name" | "path" => rule["op"] == "contains" && rule["value"].is_string(),
@@ -873,7 +873,7 @@ fn records(value: &Value, table: bool) -> Result<(), String> {
                         || property["value"]
                             .as_str()
                             .is_none_or(|v| v.trim().is_empty())
-                        || !matches!(property["operator"].as_str(), Some("equals" | "contains"))
+                        || !matches!(property["operator"].as_str(), Some("equals" | "contains" | "gt" | "lt"))
                     {
                         return Err("INVALID_PROPERTY_CONDITION".into());
                     }

@@ -25,15 +25,25 @@ vi.mock('@shared/ui/popover', async () => {
   };
 });
 
-vi.mock('@shared/ui/select', () => ({
-  Select: ({ value, onValueChange, children }: { value: string; onValueChange: (value: string) => void; children: React.ReactNode }) => (
-    <select value={value} onChange={(event) => onValueChange(event.target.value)}>{children}</select>
-  ),
-  SelectTrigger: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SelectContent: ({ children }: { children: React.ReactNode }) => <>{children}</>,
-  SelectItem: ({ value, children }: { value: string; children: React.ReactNode }) => <option value={value}>{children}</option>,
-  SelectValue: () => null,
-}));
+vi.mock('@shared/ui/select', async () => {
+  const ReactModule = await import('react');
+  const Context = ReactModule.createContext<{ value: string; onValueChange: (value: string) => void; disabled?: boolean } | null>(null);
+  return {
+    Select: ({ value, onValueChange, disabled, children }: { value: string; onValueChange: (value: string) => void; disabled?: boolean; children: React.ReactNode }) => (
+      <Context.Provider value={{ value, onValueChange, disabled }}><div>{children}</div></Context.Provider>
+    ),
+    SelectTrigger: ({ children, ...props }: React.ButtonHTMLAttributes<HTMLButtonElement> & { children: React.ReactNode }) => {
+      const state = ReactModule.useContext(Context);
+      return <button type="button" {...props} disabled={props.disabled || state?.disabled}>{children}</button>;
+    },
+    SelectContent: ({ children }: { children: React.ReactNode }) => <div>{children}</div>,
+    SelectValue: ({ children, placeholder }: { children?: React.ReactNode; placeholder?: string }) => <span>{children ?? placeholder}</span>,
+    SelectItem: ({ value, children }: { value: string; children: React.ReactNode }) => {
+      const state = ReactModule.useContext(Context);
+      return <button type="button" disabled={state?.disabled} onClick={() => state?.onValueChange(value)}>{children}</button>;
+    },
+  };
+});
 
 import { TableDatasetMenu } from './table-dataset-menu';
 import { TableFieldHeader, TablePresetMenu } from './table-field-header';
@@ -384,7 +394,7 @@ describe('TableFieldHeader', () => {
 
     const trigger = [...container.querySelectorAll('button')].find((button) => button.getAttribute('aria-label') === '管理笔记条件匹配');
     await act(async () => trigger?.click());
-    expect(container.querySelector<HTMLInputElement>('input[aria-label="属性条件 1 字段"]')).not.toBeNull();
+    expect(container.querySelector<HTMLButtonElement>('button[aria-label="属性条件 1 字段"]')).not.toBeNull();
     const conditionValue = container.querySelector<HTMLInputElement>('input[aria-label="属性条件 1 匹配值"]');
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set;

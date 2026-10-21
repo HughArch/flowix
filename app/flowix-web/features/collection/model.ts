@@ -75,7 +75,7 @@ function validateRuleFilter(filter: unknown, depth = 0): filter is { all: Record
     if (!isRecord(raw)) return false;
     if ('all' in raw || 'any' in raw) return depth === 0 && validateRuleFilter(raw, 1);
     if (!hasOnlyKeys(raw, ['field', 'op', 'value']) || typeof raw.field !== 'string' || !raw.field.trim()) return false;
-    if (!['eq', 'equals', 'contains', 'in'].includes(String(raw.op))) return false;
+    if (!['eq', 'equals', 'contains', 'in', 'gt', 'lt'].includes(String(raw.op))) return false;
     if (raw.op === 'contains') return typeof raw.value === 'string';
     if (raw.op === 'in') return Array.isArray(raw.value) && raw.value.length > 0;
     return typeof raw.value === 'string' || typeof raw.value === 'number' || typeof raw.value === 'boolean';
@@ -89,7 +89,7 @@ function ruleFilterMatchesCollectionType(filter: unknown, type: CollectionType):
       if (field === 'file_name' || field === 'path') return rule.op === 'contains';
       if (field === 'kind') return (rule.op === 'eq' && rule.value === 'note')
         || (rule.op === 'in' && Array.isArray(rule.value) && rule.value.length === 1 && rule.value[0] === 'note');
-      return rule.op === 'eq' || rule.op === 'equals' || rule.op === 'contains' || rule.op === 'in';
+      return rule.op === 'eq' || rule.op === 'equals' || rule.op === 'contains' || rule.op === 'in' || rule.op === 'gt' || rule.op === 'lt';
     }
     if (field === 'file_name' || field === 'path') return rule.op === 'contains' && typeof rule.value === 'string';
     if (field === 'kind' && type === 'media_library') return (rule.op === 'eq' && (rule.value === 'image' || rule.value === 'video'))
@@ -273,7 +273,9 @@ function tableFilterFromLegacyRuntime(condition: unknown): { all: Record<string,
     : [];
   const properties = Array.isArray(condition.property_conditions) ? condition.property_conditions.filter(isRecord).map((property) => ({
     field: typeof property.field_id === 'string' ? property.field_id.trim() : property.field_id,
-    op: property.operator === 'contains' ? 'contains' : 'eq',
+    op: property.operator === 'contains' || property.operator === 'gt' || property.operator === 'lt'
+      ? property.operator
+      : 'eq',
     value: typeof property.value === 'string' ? property.value.trim() : property.value,
   })) : [];
   if (!properties.length && !criteria.length && !pathRules.length) return null;

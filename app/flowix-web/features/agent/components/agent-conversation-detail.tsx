@@ -1,6 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type UIEventHandler, type WheelEventHandler } from 'react';
+import { useShallow } from 'zustand/react/shallow';
 
 import type { SurfacePresentationUpdate } from '@features/workspace/model/surface-contract';
 import { DEFAULT_AGENT_TYPE_KEY } from '@/lib/agent-types';
@@ -172,20 +173,23 @@ function AgentConversationDetailContent({
   }, [messageFontMode, t]);
   const threadId = instance.threadId;
   const renderThreadId = threadId;
-  const projection = useAgentSessionStore((state) => (
-    renderThreadId ? state.threadProjections[renderThreadId] : undefined
-  ));
-  const messages = projection?.messages ?? EMPTY_MESSAGES;
-  const isLoading = isAgentThreadWorking(
-    projection ? { ...projection.runs, messages: projection.messages } : undefined,
-  );
-  const isStopping = projection?.runs.activeRunId
-    ? projection.runs.runs[projection.runs.activeRunId]?.phase === 'stopping'
+  const { messages, runs, initialHistoryStatus, initialHistoryError } = useAgentSessionStore(useShallow((state) => {
+    const projection = renderThreadId ? state.threadProjections[renderThreadId] : undefined;
+    return {
+      messages: projection?.messages ?? EMPTY_MESSAGES,
+      runs: projection?.runs,
+      initialHistoryStatus: projection?.pagination.initialStatus ?? 'idle',
+      initialHistoryError: projection?.pagination.initialError,
+    };
+  }));
+  const isLoading = isAgentThreadWorking(runs ? { ...runs, messages } : undefined);
+  const isStopping = runs?.activeRunId
+    ? runs.runs[runs.activeRunId]?.phase === 'stopping'
     : false;
-  const isDshCommandRunning = projection?.runs.dshCommand?.status === 'pending';
-  const isCodexCommandRunning = projection?.runs.codexCommand?.status === 'pending';
+  const isDshCommandRunning = runs?.dshCommand?.status === 'pending';
+  const isCodexCommandRunning = runs?.codexCommand?.status === 'pending';
   const isCodexCommandStoppable =
-    isCodexCommandRunning && isCodexGoalCommand(projection?.runs.codexCommand?.command);
+    isCodexCommandRunning && isCodexGoalCommand(runs?.codexCommand?.command);
   const isCommandRunning = isDshCommandRunning || isCodexCommandRunning;
   const latestCompletedRunId = useAgentSessionStore((state) => (
     threadId ? state.latestCompletedRunIds[threadId] ?? null : null
@@ -196,8 +200,6 @@ function AgentConversationDetailContent({
       ? state.pendingSteeringMessages[threadId] ?? EMPTY_PENDING_CODEX_MESSAGES
       : EMPTY_PENDING_CODEX_MESSAGES,
   );
-  const initialHistoryStatus = projection?.pagination.initialStatus ?? 'idle';
-  const initialHistoryError = projection?.pagination.initialError;
   const missingSession = isMissingHistorySession(initialHistoryError);
   const isInitialHistoryLoading = isInitialConversationHistoryLoading(
     threadId,
@@ -436,13 +438,13 @@ function AgentConversationDetailContent({
   submitRef.current = submit;
 
   useEffect(() => {
-    if (!threadId || !instance) return;
+    if (!threadId) return;
     const store = useAgentSessionStore.getState();
     const release = acquireThreadInterest(threadId);
     void store.loadMessages(instance.agentType, threadId);
     if (instance.agentType === "codex") void store.hydrateCodexFollowUps(threadId);
     return release;
-  }, [instance, threadId]);
+  }, [instance.agentType, threadId]);
 
   useEffect(() => {
     setShowScrollTopHint(false);
@@ -559,10 +561,6 @@ function AgentConversationDetailContent({
         getMessageCount: () => messagesRef.current.length,
         shouldLoadThreadMessages: () => false,
         renderThreadState: renderCurrentMessages,
-        renderResolvedSessionMessages: (resolvedMessages) => {
-          const id = renderThreadIdRef.current;
-          if (id) useAgentSessionStore.getState().applyHistoryPage(id, typeKeyRef.current, { messages: resolvedMessages, coverage: "partial" });
-        },
         applyResolvedSession: (localThreadId, sessionId, typeKey) => {
           useAgentSessionStore.getState().applySessionResolved({
             kind: 'session_resolved', agentType: typeKey, threadId: localThreadId,

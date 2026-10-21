@@ -19,7 +19,8 @@ pub use manager::{PendingLogout, SyncManager};
 pub use models::{
     AppleAuthChallenge, AppleAuthorization, CloudAiCredential, CloudAiCreditBalance, CloudAiModel,
     CloudAiProvider, CloudAuthStatus, CloudCheckout, CloudMembership, CloudNotebook, CloudOrder,
-    CloudOrderCheck, CloudPrice, CloudProduct, CloudState, CloudUser, LocalChangeKind,
+    CloudOrderCheck, CloudPrice, CloudProduct, CloudState, CloudSubscription, CloudUser,
+    LocalChangeKind,
     ProductDuration, ProductEntitlement, RefreshTokenStore,
 };
 pub use store::SyncStore;

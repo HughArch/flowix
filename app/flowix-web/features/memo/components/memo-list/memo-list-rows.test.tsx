@@ -20,7 +20,7 @@ function Row({ item, onKeepAliveChange }: { item: NoteListItem; onKeepAliveChang
   return <button data-path={item.relativePath} onClick={() => setEditing((value) => !value)}>{editing ? 'editing' : item.title}</button>;
 }
 
-function Harness({ items = notes, measurable = true }: { items?: NoteListItem[]; measurable?: boolean }) {
+function Harness({ items = notes, measurable = true, revealKey, onRevealed }: { items?: NoteListItem[]; measurable?: boolean; revealKey?: string; onRevealed?: () => void }) {
   const [scrollElement, setScrollElement] = useState<HTMLDivElement | null>(null);
   const setScroller = useCallback((element: HTMLDivElement | null) => {
     setScrollElement(element);
@@ -35,7 +35,7 @@ function Harness({ items = notes, measurable = true }: { items?: NoteListItem[];
       scrollHeight: { configurable: true, get: () => Number.parseFloat((element.firstElementChild as HTMLElement)?.style.height || '0') },
     });
   }, [measurable]);
-  return <div ref={setScroller}><MemoListRows items={items} scrollElement={scrollElement} queryKey="book:all"
+  return <div ref={setScroller}><MemoListRows items={items} scrollElement={scrollElement} queryKey="book:all" revealKey={revealKey} onRevealed={onRevealed}
     renderRow={(item, onKeepAliveChange) => <Row item={item} onKeepAliveChange={onKeepAliveChange} />} /></div>;
 }
 
@@ -74,6 +74,18 @@ describe('memo list mounted rows', () => {
     expect(container.querySelectorAll('[data-path]').length).toBe(16);
   });
 
+  it('keeps unmeasured hidden fallback rows in normal flow instead of stacking absolute rows', async () => {
+    vi.mocked(HTMLElement.prototype.getBoundingClientRect).mockImplementation(function (this: HTMLElement) {
+      return new DOMRect(0, 0, 0, 0);
+    });
+    await act(async () => root.render(<Harness measurable={false} />));
+    const fallback = container.querySelector<HTMLElement>('[data-index="1"]')!;
+    expect(fallback.className).not.toContain('absolute');
+    expect(fallback.style.transform).toBe('');
+
+
+  });
+
   it('mounts the scrolled range while keeping the DOM bounded', async () => {
     await act(async () => root.render(<Harness />));
     expect(container.querySelectorAll('[data-path]').length).toBeLessThan(40);
@@ -102,6 +114,22 @@ describe('memo list mounted rows', () => {
     expect(scroller.scrollTop).toBe(112 * 40);
     expect(container.querySelector('[data-path="41.md"]')?.textContent).toBe('editing');
   });
+  it('reveals a newly inserted card below pinned rows even when it starts unmounted', async () => {
+    const pinned = notes.slice(0, 60).map((note) => ({ ...note, favorited: true }));
+    const initial = [...pinned, ...notes.slice(60)];
+    await act(async () => root.render(<Harness items={initial} />));
+    const scroller = await scrollTo(112 * 100);
+    const created = { ...notes[0], relativePath: 'new.md', favorited: false };
+    const onRevealed = vi.fn();
+    await act(async () => root.render(<Harness
+      items={[...pinned, created, ...notes.slice(60)]}
+      revealKey="path:book:new.md" onRevealed={onRevealed}
+    />));
+    expect(scroller.scrollTop).toBe(112 * 60 + 8);
+    expect(container.querySelector('[data-path="new.md"]')).not.toBeNull();
+    expect(onRevealed).toHaveBeenCalled();
+  });
+
   it('keeps visible notes at the same offset when a row above is inserted or removed', async () => {
     await act(async () => root.render(<Harness />));
     const scroller = await scrollTo(112 * 100);

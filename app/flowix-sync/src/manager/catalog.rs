@@ -1,6 +1,22 @@
 use super::*;
 
 impl SyncManager {
+    pub async fn ai_model_availability(
+        &self,
+    ) -> Result<crate::models::CloudAiModelAvailability, SyncError> {
+        let generation = self.auth_generation();
+        let access_token = self.access_token(generation).await?;
+        let first = self.client.ai_model_availability(&access_token).await;
+        let availability = if first.as_ref().is_err_and(SyncError::is_unauthorized) {
+            let refreshed = self.force_refresh_access_token(generation).await?;
+            self.client.ai_model_availability(&refreshed).await?
+        } else {
+            first?
+        };
+        let _generation = self.require_auth_generation(generation)?;
+        Ok(availability)
+    }
+
     /// Monotonic identity for the current in-memory Cloud login session.
     /// Runtime adapters use this to refresh session-bound API credentials only
     /// after a sign-in transition, not before every request.
@@ -77,13 +93,30 @@ impl SyncManager {
         };
         // Failure or cancellation must not let waiters reuse an older cache.
         *refresh = None;
-        let token = self.access_token(generation).await?;
-        let first = self.client.entitlements(&token).await;
-        let entitlement = if first.as_ref().is_err_and(SyncError::is_unauthorized) {
-            let refreshed = self.force_refresh_access_token(generation).await?;
-            self.client.entitlements(&refreshed).await?
-        } else {
-            first?
+        let entitlement_result = async {
+            let token = self.access_token(generation).await?;
+            let first = self.client.entitlements(&token).await;
+            if first.as_ref().is_err_and(SyncError::is_unauthorized) {
+                let refreshed = self.force_refresh_access_token(generation).await?;
+                self.client.entitlements(&refreshed).await
+            } else {
+                first
+            }
+        }.await;
+        let entitlement = match entitlement_result {
+            Ok(entitlement) => entitlement,
+            Err(error) => {
+                // An unsuccessful verification invalidates access in every
+                // window. A later retry must not reuse the previous grant.
+                let _generation = self.require_auth_generation(generation)?;
+                let mut auth = self.auth.write().unwrap_or_else(|p| p.into_inner());
+                *self.membership.write().unwrap_or_else(|p| p.into_inner()) = None;
+                auth.revision = auth.revision.saturating_add(1);
+                drop(auth);
+                drop(_generation);
+                self.notify_state_change();
+                return Err(error);
+            }
         };
         let membership: CloudMembership = entitlement.into();
         let _generation = self.require_auth_generation(generation)?;
@@ -123,6 +156,34 @@ impl SyncManager {
         let result = if first.as_ref().is_err_and(SyncError::is_unauthorized) {
             let refreshed = self.force_refresh_access_token(generation).await?;
             self.client.check_billing_order(&refreshed, order_id).await
+        } else {
+            first
+        };
+        let _generation = self.require_auth_generation(generation)?;
+        result
+    }
+
+    pub async fn subscriptions(&self) -> Result<Vec<crate::models::CloudSubscription>, SyncError> {
+        let generation = self.auth_generation();
+        let token = self.access_token(generation).await?;
+        let first = self.client.subscriptions(&token).await;
+        let result = if first.as_ref().is_err_and(SyncError::is_unauthorized) {
+            let refreshed = self.force_refresh_access_token(generation).await?;
+            self.client.subscriptions(&refreshed).await
+        } else {
+            first
+        };
+        let _generation = self.require_auth_generation(generation)?;
+        result
+    }
+
+    pub async fn cancel_subscription(&self, subscription_id: &str) -> Result<(), SyncError> {
+        let generation = self.auth_generation();
+        let token = self.access_token(generation).await?;
+        let first = self.client.cancel_subscription(&token, subscription_id).await;
+        let result = if first.as_ref().is_err_and(SyncError::is_unauthorized) {
+            let refreshed = self.force_refresh_access_token(generation).await?;
+            self.client.cancel_subscription(&refreshed, subscription_id).await
         } else {
             first
         };

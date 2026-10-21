@@ -52,14 +52,25 @@ export function createTagDecorations(
       const fromPM = charToPM[fromChar]
       const toPM = charToPM[toChar - 1] + 1
       if (fromPM < 0 || toPM <= 0) continue
-      decorations.push(Decoration.inline(fromPM, toPM, { class: 'tag-node' }))
-      // Split the live range at `#` so its following gap can be styled without
-      // inserting a real space or making the text an atom.
+      // Explicit nodeName levels keep the text's font separate from the
+      // background box's font metrics. Equal-range decorations are ordered
+      // inner first, outer second; a single overlapping tag decoration would
+      // merge its class into the text spans instead of creating a wrapper.
       decorations.push(Decoration.inline(fromPM, fromPM + 1, {
+        nodeName: 'span',
         class: 'tag-node-prefix',
       }))
+      decorations.push(Decoration.inline(fromPM, fromPM + 1, {
+        nodeName: 'span',
+        class: 'tag-node tag-node-prefix-box',
+      }))
       decorations.push(Decoration.inline(fromPM + 1, toPM, {
+        nodeName: 'span',
         class: 'tag-node-content',
+      }))
+      decorations.push(Decoration.inline(fromPM + 1, toPM, {
+        nodeName: 'span',
+        class: 'tag-node tag-node-content-box',
       }))
     }
   })

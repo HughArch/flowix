@@ -2,7 +2,8 @@
 /* 代码块高亮由 shiki 内联样式负责（codeblock-shiki 扩展），无 .hljs 类消费，不再引入 highlight.js CSS 主题 */
 
 :root {
-  --document-tag-font-size: 92%;
+  --document-tag-font-scale: 0.92;
+  --document-tag-font-size: calc(100% * var(--document-tag-font-scale));
   --document-tag-line-height: 1.2;
   --document-tag-prefix-line-height: 1;
   --document-tag-padding-block: 2px;
@@ -20,9 +21,9 @@
   --flowix-default-mark-bg: color-mix(in oklch, var(--flowix-text-red) 20%, transparent);
 }
 
-/* Only split text decorations have both classes on the same span. Property
- * chips have a different font-size relationship and keep the original face. */
-html[data-os="windows"] .markdown-editor .tag-node.tag-node-prefix {
+/* Editable text tags keep the Windows icon face. Property chips use the
+ * original face because their surrounding font-size relationship differs. */
+html[data-os="windows"] .markdown-editor .tag-node-prefix-box > .tag-node-prefix {
   --document-tag-icon-font-family: 'Flowix Tag Icon Consolas';
 }
 
@@ -1108,32 +1109,48 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   font-weight: 400;
   color: var(--brand);
   caret-color: currentColor;
-  background: var(--document-tag-background);
-  padding: var(--document-tag-padding-block) 0 var(--document-tag-padding-block) var(--document-tag-padding-inline);
-  padding-inline-end: var(--document-tag-hash-gap, 0.09em);
-  border-radius: 8px 0 0 8px;
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
 }
 
 .markdown-editor .tag-node-content:where(:not(.agent-thread-card__message, .agent-thread-card__message *)),
-.frontmatter-property__edit-tag-chip .tag-node-content {
-  /* The prefix and content are adjacent editable fragments of one visual
-   * pill. Keep only the content's right outer padding so it does not double
-   * the gap after `#`. */
+.frontmatter-property__edit-popover--editor .tag-node-content {
   display: inline;
-  /* Keep the emoji face out of editable tag text so its metrics do not
-   * change the background geometry relative to the separate # icon. */
-  font-family: var(--code-text-font-family);
-  background: var(--document-tag-background);
-  padding: var(--document-tag-padding-block) var(--document-tag-padding-inline) var(--document-tag-padding-block) 0;
-  border-radius: 0 8px 8px 0;
-  -webkit-box-decoration-break: clone;
-  box-decoration-break: clone;
+  /* In-document tags and the editor's portaled property editor follow the
+   * selected document font. Standalone chips inherit the UI font instead. */
+  font-family: var(--editor-font-family, var(--font-sans));
+}
+
+.frontmatter-property__edit-tag-chip .tag-node-content {
+  display: inline;
 }
 
 .markdown-editor .tag-node:where(:not(.agent-thread-card__message, .agent-thread-card__message *)):hover {
   cursor: text;
+}
+
+/* Each editable fragment has a real inline background wrapper. Both wrappers
+ * use the editor font metrics, so their backgrounds align even though the
+ * inner # retains its icon font. Keep every layer in native inline layout. */
+.markdown-editor .tag-node-prefix-box:where(:not(.agent-thread-card__message, .agent-thread-card__message *)),
+.markdown-editor .tag-node-content-box:where(:not(.agent-thread-card__message, .agent-thread-card__message *)) {
+  font-family: var(--editor-font-family, var(--font-sans));
+  background: var(--muted);
+  padding-block: 0;
+}
+
+.markdown-editor .tag-node-prefix-box:where(:not(.agent-thread-card__message, .agent-thread-card__message *)) {
+  padding-inline-end: var(--document-tag-hash-gap, 0.09em);
+  border-radius: 8px 0 0 8px;
+}
+
+.markdown-editor .tag-node-content-box:where(:not(.agent-thread-card__message, .agent-thread-card__message *)) {
+  padding-inline-start: 0;
+  border-radius: 0 8px 8px 0;
+}
+
+.markdown-editor .tag-node-prefix-box > .tag-node-prefix:where(:not(.agent-thread-card__message, .agent-thread-card__message *)) {
+  /* The wrapper is 92% of the surrounding text. Restore the icon's original
+   * size while leaving its glyph, font family and line height unchanged. */
+  font-size: calc(100% / var(--document-tag-font-scale));
 }
 
 @keyframes editor-block-input-popup-in {

@@ -92,6 +92,7 @@ export function invalidateNotebookSkills(agentType: AgentTypeKey, notebookId: st
 
 async function fetchAgentModelCatalog(agentType: AgentTypeKey): Promise<AgentModelCatalog> {
   if (agentType === "pi") {
+    const piCloudAccountId = useAgentDataStore.getState().piCloudAccountId;
     const [providers, models] = await Promise.all([piModels.list(), agent.listSupportedModels("pi")]);
     const defaultProvider = providers.find((provider) => provider.defaultModelId);
     const providerById = new Map(providers.map((provider) => [provider.id, provider]));
@@ -105,9 +106,11 @@ async function fetchAgentModelCatalog(agentType: AgentTypeKey): Promise<AgentMod
       if (!id || seen.has(key)) return [];
       seen.add(key);
       const provider = providerById.get(providerId);
+      if (provider?.source === "flowix-cloud" && !piCloudAccountId) return [];
       const modelConfig = provider?.models.find((entry) => entry.id === id);
       return [{
         id,
+        ...(provider ? { source: provider.source === "flowix-cloud" ? "flowix-cloud" as const : "custom" as const } : {}),
         label: modelConfig?.name?.trim() || formatModelDisplayLabel(id),
         ...(modelConfig?.subtitle?.trim() ? { subtitle: modelConfig.subtitle.trim() } : {}),
         ...(modelConfig?.creditMultiplier != null ? { creditMultiplier: modelConfig.creditMultiplier } : {}),

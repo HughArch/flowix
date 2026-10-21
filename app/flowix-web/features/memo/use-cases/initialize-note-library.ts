@@ -57,6 +57,7 @@ async function performInitialization(startupNotebookId?: string | null): Promise
       current.colorFilter,
       current.activePluginId,
       current.activeCustomFilterId,
+      current.dataConditionsByNotebook?.[selectedNotebook.id],
     );
 
     const noteLoadApplied = await current.loadNotes({
@@ -87,6 +88,7 @@ async function performInitialization(startupNotebookId?: string | null): Promise
       afterLoad.colorFilter,
       afterLoad.activePluginId,
       afterLoad.activeCustomFilterId,
+      afterLoad.dataConditionsByNotebook?.[afterLoad.selectedNotebook?.id ?? ''],
     );
     if (
       afterLoad.selectedNotebook?.id !== selectedNotebook.id

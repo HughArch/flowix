@@ -1,7 +1,8 @@
+import { traceMessageViewport } from "./message-viewport-diagnostics";
+
 export interface ConversationMessageStateSnapshot {
   loadingMore: boolean;
   hasMoreHistory: boolean;
-  oldestSequence: number | null;
 }
 
 export interface MessageViewportControllerOptions {
@@ -39,11 +40,6 @@ export class MessageViewportController {
   private prevCollapsed = false;
   private shouldFollowBottom = true;
   private userDetachedFromBottom = false;
-  private pendingHistoryScrollRestore: {
-    threadId: string;
-    scrollHeight: number;
-    scrollTop: number;
-  } | null = null;
 
   constructor(options: MessageViewportControllerOptions) {
     this.body = options.body;
@@ -115,8 +111,6 @@ export class MessageViewportController {
   }
 
   applyAfterRender(options: MessageRenderScrollOptions): void {
-    if (this.restoreAfterHistoryPrepend()) return;
-
     if (this.isCollapsed()) {
       this.prevCollapsed = this.isCollapsed();
       return;
@@ -170,7 +164,10 @@ export class MessageViewportController {
   }
 
   private preserveScrollTop(scrollTop: number): void {
-    this.body.scrollTop = scrollTop;
+    // Rewriting the same offset can interrupt native momentum scrolling.
+    if (Math.abs(this.body.scrollTop - scrollTop) > this.scrollDeltaEpsilonPx) {
+      this.body.scrollTop = scrollTop;
+    }
     this.shouldFollowBottom = this.userDetachedFromBottom
       ? false
       : this.isNearBottom();
@@ -178,7 +175,10 @@ export class MessageViewportController {
 
   private requestMoreHistoryIfNeeded(): void {
     if (this.isCollapsed() && !this.isFullscreen()) return;
-    if (this.body.scrollTop > this.topHistoryLoadThresholdPx) return;
+    // Keep one viewport of history ahead of the reader instead of waiting
+    // until the last few pixels. The Store coalesces concurrent page reads.
+    const threshold = Math.max(this.topHistoryLoadThresholdPx, this.body.clientHeight);
+    if (this.body.scrollTop > threshold) return;
 
     const threadId = this.getRuntimeThreadId();
     if (!threadId) return;
@@ -187,44 +187,12 @@ export class MessageViewportController {
     if (
       !state ||
       state.loadingMore ||
-      !state.hasMoreHistory ||
-      state.oldestSequence === null
+      !state.hasMoreHistory
     ) {
       return;
     }
 
-    this.pendingHistoryScrollRestore = {
-      threadId,
-      scrollHeight: this.body.scrollHeight,
-      scrollTop: this.body.scrollTop,
-    };
+    traceMessageViewport(this.body);
     this.loadMoreMessages(threadId);
-  }
-
-  private restoreAfterHistoryPrepend(): boolean {
-    const snapshot = this.pendingHistoryScrollRestore;
-    if (!snapshot) {
-      return false;
-    }
-    if (snapshot.threadId !== this.getRuntimeThreadId()) {
-      this.pendingHistoryScrollRestore = null;
-      return false;
-    }
-
-    const nextScrollHeight = this.body.scrollHeight;
-    const delta = nextScrollHeight - snapshot.scrollHeight;
-    if (delta > this.scrollDeltaEpsilonPx) {
-      this.body.scrollTop = snapshot.scrollTop + delta;
-      this.shouldFollowBottom = false;
-      this.pendingHistoryScrollRestore = null;
-      return true;
-    }
-
-    this.body.scrollTop = snapshot.scrollTop;
-    this.shouldFollowBottom = false;
-    if (!this.getConversationMessageState()?.loadingMore) {
-      this.pendingHistoryScrollRestore = null;
-    }
-    return true;
   }
 }

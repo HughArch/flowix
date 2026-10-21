@@ -1150,7 +1150,7 @@ mod tests {
                     .expect("classify observed MCP event");
                     assert!(matches!(
                         outcome,
-                        crate::watcher::processor::DispatchOutcome::PathIndexed { relative_path }
+                        crate::watcher::processor::DispatchOutcome::PathIndexed { relative_path, .. }
                             if relative_path == created.relative_path
                     ));
                     return;

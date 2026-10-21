@@ -20,6 +20,7 @@ import { openWorkspaceSurface } from '@features/workspace/public/open-surface-ap
 import { useNoteStore } from '@features/memo/store/note-store';
 import { isAgentConversationRunning } from '@features/agent/store/conversation-run-index';
 import { useNewConversationAgentSelection } from '@features/agent/hooks/use-new-conversation-agent-selection';
+import { AgentConversationTypeMenuItems } from '@features/agent/components/agent-conversation-type-menu-items';
 import {
   AGENT_TYPES,
   getAgentType,
@@ -539,19 +540,11 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                 <DropdownMenuLabel className="flex items-center gap-1.5 px-[0.375rem] pb-[0.35rem] pt-[0.35rem] text-xs font-normal leading-[1.2] text-[var(--muted-foreground)]">
                   {t('agent.chat.newThread')}
                 </DropdownMenuLabel>
-                {newConversationSelection.options.map((type) => {
-                  return (
-                    <DropdownMenuItem
-                      key={type.id}
-                      disabled={!currentNotebookId}
-                      onClick={() => createConversation(type.id)}
-                      className="agent-conversation-new-agent-item group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
-                    >
-                      <AgentIcon typeKey={type.id} alt="" className="h-4 w-4 shrink-0 object-contain" />
-                      <span className="min-w-0 flex-1 truncate">{displayName(type)}</span>
-                    </DropdownMenuItem>
-                  );
-                })}
+                <AgentConversationTypeMenuItems
+                  options={newConversationSelection.options}
+                  disabled={!currentNotebookId}
+                  onSelect={createConversation}
+                />
               </DropdownMenuContent>
             </DropdownMenu>
           </div>
@@ -600,7 +593,7 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                       className="absolute inset-x-0 top-0 flex flex-col justify-end gap-0.5"
                       style={{ height: size, transform: `translateY(${start}px)` }}
                     >
-                      <h3 className="px-2 text-xs leading-6 font-medium text-[var(--muted-foreground)]">
+                      <h3 className="px-2 text-sm leading-6 font-medium text-[var(--muted-foreground)]">
                         {item.sectionKey === 'favorites'
                           ? t('agent.chat.conversation.favorites')
                           : t(CONVERSATION_GROUP_LABEL_KEY[item.sectionKey])}

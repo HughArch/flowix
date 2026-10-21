@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Check, ChevronDown } from 'lucide-react';
 import { NOTE_COLORS, NOTE_COLOR_HEX } from '@features/memo/store/note-store';
 import type { NoteColor } from '@/types/note-item';
@@ -27,18 +28,34 @@ export function ColorValueInput({
   value,
   disabled = false,
   variant = 'default',
+  singleSelection = false,
+  keepParentMenuOpen = false,
+  onOpenChange,
   onChange,
 }: {
   value: string;
   disabled?: boolean;
   variant?: 'default' | 'table';
+  singleSelection?: boolean;
+  keepParentMenuOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
   onChange: (next: string) => void;
 }) {
   const { t } = useI18n();
+  const [open, setOpen] = useState(false);
   const selected = new Set(parseColors(value));
+  const changeOpen = (nextOpen: boolean) => {
+    setOpen(nextOpen);
+    onOpenChange?.(nextOpen);
+  };
 
   const toggle = (color: NoteColor) => {
     if (disabled) return;
+    if (singleSelection) {
+      onChange(selected.has(color) ? '' : color);
+      changeOpen(false);
+      return;
+    }
     const next = new Set(selected);
     if (next.has(color)) next.delete(color);
     else next.add(color);
@@ -48,10 +65,11 @@ export function ColorValueInput({
   const clear = () => {
     if (disabled) return;
     onChange('');
+    if (singleSelection) changeOpen(false);
   };
 
   return (
-    <DropdownMenu anchorToCell={variant === 'table'} disabled={disabled}>
+    <DropdownMenu anchorToCell={variant === 'table'} disabled={disabled} open={open} onOpenChange={changeOpen}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -88,6 +106,7 @@ export function ColorValueInput({
       </DropdownMenuTrigger>
       <DropdownMenuContent
         align="start"
+        keepParentMenuOpen={keepParentMenuOpen}
         className={cn('min-w-[200px] rounded-xl border-[var(--border-popup)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' ? '!z-[170] p-1' : 'p-2')}
       >
         <div className="mb-2 flex items-center justify-between gap-2">

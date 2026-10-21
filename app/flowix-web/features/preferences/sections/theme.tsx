@@ -7,13 +7,16 @@ import { DEFAULT_THEME_ID, THEME_OPTIONS, sanitizeTheme, type ThemeId } from '@f
 import { cn } from '@/lib/utils';
 import { SectionHeader, FIELD_TITLE_CLASS, FIELD_DESC_CLASS } from '@features/preferences/sections/primitives';
 import { useI18n } from '@/lib/i18n';
+import { useMembershipAccess } from '@features/preferences/public/membership';
+import { setThemePreference } from '@features/preferences/public/runtime-api';
+import { windows } from '@platform/tauri/client';
 
 interface ThemeSectionProps {
   settings: { theme: ThemeId };
   updateSettings: (updates: Partial<{ theme: ThemeId }>) => Promise<void>;
 }
 
-const THEME_DISPLAY_ORDER: readonly ThemeId[] = ['system', 'mist', 'rock', 'light', 'dark', 'ember'];
+const THEME_DISPLAY_ORDER: readonly ThemeId[] = ['system', 'rock', 'light', 'dark', 'ember', 'mist'];
 
 /**
  * 主题预览卡片。点击即应用; 当前激活卡片有强边框 + 右上角对勾。
@@ -24,11 +27,13 @@ function ThemeCard({
   option,
   active,
   isDefault,
+  memberOnly,
   onSelect,
 }: {
   option: typeof THEME_OPTIONS[number];
   active: boolean;
   isDefault: boolean;
+  memberOnly?: boolean;
   onSelect: () => void;
 }) {
   const { t } = useI18n();
@@ -100,6 +105,11 @@ function ThemeCard({
               {t('preferences.theme.default')}
             </span>
           )}
+          {memberOnly && (
+            <span className="rounded-full border border-[var(--primary)]/25 bg-[color-mix(in_oklch,var(--primary)_10%,transparent)] px-1.5 py-0.5 text-[9px] font-medium leading-none text-[var(--primary)]">
+              {t('preferences.theme.member')}
+            </span>
+          )}
         </div>
         <div className={cn(FIELD_DESC_CLASS, 'line-clamp-1 text-xs pl-[0.5em] pb-1')}>
           {t(descriptionKey)}
@@ -111,8 +121,11 @@ function ThemeCard({
 
 export function ThemeSection({ settings, updateSettings }: ThemeSectionProps) {
   const { t } = useI18n();
-  const active = sanitizeTheme(settings.theme ?? DEFAULT_THEME_ID);
-  const options = [...THEME_OPTIONS].sort(
+  const { active: canUseMistTheme } = useMembershipAccess();
+  const savedTheme = sanitizeTheme(settings.theme ?? DEFAULT_THEME_ID);
+  const active = savedTheme === 'mist' && !canUseMistTheme ? DEFAULT_THEME_ID : savedTheme;
+  const options = [...THEME_OPTIONS]
+    .sort(
     (left, right) => THEME_DISPLAY_ORDER.indexOf(left.id) - THEME_DISPLAY_ORDER.indexOf(right.id),
   );
 
@@ -131,7 +144,18 @@ export function ThemeSection({ settings, updateSettings }: ThemeSectionProps) {
                 option={opt}
                 active={active === opt.id}
                 isDefault={opt.id === DEFAULT_THEME_ID}
-                onSelect={() => updateSettings({ theme: opt.id })}
+                memberOnly={opt.id === 'mist'}
+                onSelect={() => {
+                  if (opt.id !== 'mist') {
+                    void updateSettings({ theme: opt.id });
+                    return;
+                  }
+                  void setThemePreference(opt.id).then(async (applied) => {
+                    if (!applied) await windows.openPreferences('cloudSync');
+                  }).catch((error) => {
+                    console.warn('Failed to open Mist membership settings', error);
+                  });
+                }}
               />
             ))}
           </div>

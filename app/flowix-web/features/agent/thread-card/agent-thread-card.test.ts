@@ -498,6 +498,135 @@ describe("AgentThreadCard NodeView streaming", () => {
     expect(useAgentSessionStore.getState().getInstance(instanceId)).not.toBeNull();
   }, 10_000);
 
+  it("keeps the conversation shell, composer and existing message DOM mounted across upward pagination", async () => {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { AgentConversationDetail } = await import("@features/agent/components/agent-conversation-detail");
+    const { useAgentSessionStore } = await import("@features/agent/store/agent-session-store");
+    const { attachHistoryCursor } = await import("@features/agent/store/agent-history-adapters");
+    const { agent } = await import("@platform/tauri/client");
+    vi.stubGlobal("ResizeObserver", class { observe() {} unobserve() {} disconnect() {} });
+    const threadId = "claude-pagination-shell";
+    const store = useAgentSessionStore.getState();
+    const initialLoad = vi.spyOn(store, "loadMessages").mockResolvedValue("ready");
+    const instance = store.createInstance({
+      agentType: "claudecode", threadId, title: "Pagination shell", source: { kind: "dedicated" },
+    });
+    const message = (id: string, role: "user" | "assistant"): ChatMessage => ({
+      id, role, content: id, timestamp: "2026-01-01T00:00:00Z", isCompleted: true,
+    });
+    const current = [message("current-user", "user"), message("current-answer", "assistant")];
+    const page = attachHistoryCursor("claudecode", threadId, {
+      messages: current, oldestSequence: 10, snapshotSequence: 30, hasMore: true,
+    });
+    store.updateThreadHistory(threadId, (projection) => ({ ...projection, messages: current,
+      pagination: { ...projection.pagination, initialStatus: "ready", oldestSequence: 10,
+        snapshotSequence: 30, hasMoreHistory: true, nextCursor: page.nextCursor },
+    }));
+    let release!: (value: { messages: ChatMessage[]; oldestSequence: null; snapshotSequence: number; hasMore: false }) => void;
+    vi.mocked(agent.getClaudeThreadPage).mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    const reportPresentation = vi.fn();
+    try {
+      await act(async () => {
+        root.render(createElement(AgentConversationDetail, { instanceId: instance.instanceId, reportPresentation }));
+      });
+      const shell = host.querySelector("section")!;
+      const body = host.querySelector<HTMLElement>(".agent-thread-card__body")!;
+      const list = body.querySelector(".agent-thread-card__messages")!;
+      const existingRows = Array.from(list.children);
+      const composer = getComposerInput(host);
+      Object.defineProperties(body, { clientHeight: { configurable: true, value: 200 }, scrollHeight: { configurable: true, value: 1000 } });
+      reportPresentation.mockClear();
+      const assertMounted = () => {
+        expect(host.querySelector("section")).toBe(shell);
+        expect(host.querySelector(".agent-thread-card__body")).toBe(body);
+        expect(body.querySelector(".agent-thread-card__messages")).toBe(list);
+        expect(getComposerInput(host)).toBe(composer);
+        expect(body.querySelector(".agent-thread-card__skeleton")).toBeNull();
+        expect(reportPresentation.mock.calls.some(([update]) => update.state?.status === "loading")).toBe(false);
+      };
+      await act(async () => {
+        body.scrollTop = 20;
+        body.dispatchEvent(new Event("scroll", { bubbles: true }));
+      });
+      expect(useAgentSessionStore.getState().threadProjections[threadId].pagination.loadingMore).toBe(true);
+      assertMounted();
+      await act(async () => {
+        release({ messages: [message("older-user", "user"), message("older-answer", "assistant")],
+          oldestSequence: null, snapshotSequence: 30, hasMore: false });
+        await vi.waitFor(() => expect(useAgentSessionStore.getState().threadProjections[threadId].messages).toHaveLength(4));
+      });
+      assertMounted();
+      expect(Array.from(list.children).slice(2)).toEqual(existingRows);
+      expect(agent.getClaudeThreadPage).toHaveBeenCalledTimes(1);
+      expect(initialLoad).toHaveBeenCalledTimes(1);
+      await act(async () => {
+        useAgentSessionStore.getState().renameInstance(instance.instanceId, "Renamed conversation");
+      });
+      assertMounted();
+      expect(initialLoad).toHaveBeenCalledTimes(1);
+    } finally {
+      await act(async () => root.unmount());
+      initialLoad.mockRestore();
+      host.remove();
+    }
+  });
+
+  it("keeps the presentation subscriber idle when only pagination or loaded messages change", async () => {
+    const { act, createElement } = await import("react");
+    const { createRoot } = await import("react-dom/client");
+    const { useAgentConversationSurface } = await import("@features/agent/components/use-agent-conversation-surface");
+    const { useAgentSessionStore } = await import("@features/agent/store/agent-session-store");
+    const threadId = "presentation-pagination";
+    const instance = useAgentSessionStore.getState().createInstance({
+      agentType: "claudecode", threadId, title: "Presentation", source: { kind: "dedicated" },
+    });
+    const current: ChatMessage = { id: "current", role: "assistant", content: "current", timestamp: "2026-01-01T00:00:00Z" };
+    useAgentSessionStore.getState().updateThreadHistory(threadId, (projection) => ({
+      ...projection, messages: [current], pagination: { ...projection.pagination, initialStatus: "ready" },
+    }));
+    const report = vi.fn();
+    let renders = 0;
+    function Probe() {
+      renders += 1;
+      useAgentConversationSurface(instance.instanceId, report);
+      return null;
+    }
+    const host = document.createElement("div");
+    document.body.append(host);
+    const root = createRoot(host);
+    try {
+      await act(async () => root.render(createElement(Probe)));
+      const initialRenders = renders;
+      await act(async () => {
+        useAgentSessionStore.getState().updateThreadHistory(threadId, (projection) => ({
+          ...projection, pagination: { ...projection.pagination, loadingMore: true },
+        }));
+      });
+      expect(renders).toBe(initialRenders);
+      await act(async () => {
+        useAgentSessionStore.getState().updateThreadHistory(threadId, (projection) => ({
+          ...projection, messages: [{ ...current, id: "older" }, ...projection.messages],
+          pagination: { ...projection.pagination, loadingMore: false },
+        }));
+      });
+      expect(renders).toBe(initialRenders);
+      await act(async () => {
+        useAgentSessionStore.getState().updateThreadHistory(threadId, (projection) => ({
+          ...projection, messages: [], pagination: { ...projection.pagination, initialStatus: "loading" },
+        }));
+      });
+      expect(renders).toBeGreaterThan(initialRenders);
+      expect(report).toHaveBeenLastCalledWith(expect.objectContaining({ state: expect.objectContaining({ status: "loading" }) }));
+    } finally {
+      await act(async () => root.unmount());
+      host.remove();
+    }
+  });
+
   beforeEach(async () => {
     document.body.innerHTML = "";
     localStorage.clear();
@@ -1921,7 +2050,7 @@ describe("AgentThreadCard NodeView streaming", () => {
     expect(tool?.textContent).not.toContain("·");
   });
 
-  it("canonicalizes a Codex local Thread Card id to the external session id before loading history", async () => {
+  it("binds the Codex provider session while loading history under the stable product thread id", async () => {
     const { AgentThreadCard } =
       await import("@features/agent/thread-card");
     const { agent } = await import("@platform/tauri/client");
@@ -1984,17 +2113,19 @@ describe("AgentThreadCard NodeView streaming", () => {
     expect(editor.getJSON().content?.[0]?.attrs?.threadId).toBe(localThreadId);
     expect(card?.dataset.threadId).toBe(localThreadId);
     expect(agent.getCodexThreadPage).toHaveBeenCalledWith(
-      sessionId,
+      localThreadId,
       null,
       expect.any(Number),
     );
     expect(agent.getCodexThreadPage).not.toHaveBeenCalledWith(
-      localThreadId,
+      sessionId,
       null,
       expect.any(Number),
     );
     expect(agent.getCodexThreadPage).toHaveBeenCalledTimes(1);
     const { useAgentSessionStore } = await import("@features/agent/store/agent-session-store");
+    expect(useAgentSessionStore.getState().sessionMeta.externalSessionResolutions[localThreadId]).toBe(sessionId);
+    expect(useAgentSessionStore.getState().threadProjections[sessionId]).toBeUndefined();
     await vi.waitFor(() => {
       expect(useAgentSessionStore.getState().threadProjections[localThreadId]?.messages.map((message) => message.content))
         .toContain("restored codex history");

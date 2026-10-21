@@ -1,4 +1,6 @@
 import { useUserSettingsStore } from '@features/preferences/store/user-settings-store';
+import { cloud } from '@platform/tauri/client';
+import { isMembershipActive } from '@/lib/membership';
 import type { AgentTypeKey } from '@/types/agent';
 import type { UserSettings } from '@/lib/constants';
 
@@ -66,6 +68,17 @@ export function getThemePreference(): UserSettings['theme'] {
   return useUserSettingsStore.getState().settings.theme;
 }
 
-export function setThemePreference(theme: UserSettings['theme']): Promise<void> {
-  return useUserSettingsStore.getState().updateSettings({ theme });
+export async function setThemePreference(theme: UserSettings['theme']): Promise<boolean> {
+  if (theme === 'mist') {
+    try {
+      const state = await cloud.getState();
+      if (!state.authenticated) return false;
+      const membership = await cloud.refreshMembership();
+      if (!isMembershipActive(membership)) return false;
+    } catch {
+      return false;
+    }
+  }
+  await useUserSettingsStore.getState().updateSettings({ theme });
+  return true;
 }

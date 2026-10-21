@@ -2,7 +2,9 @@
 
 import { useEffect } from 'react';
 import { useAppTheme } from '@features/preferences/public/runtime-api';
-import { applyTheme, sanitizeTheme } from '@/lib/theme';
+import { DEFAULT_THEME_ID, applyTheme, sanitizeTheme } from '@/lib/theme';
+import { useMembershipAccess } from '@features/preferences/public/membership';
+import { windows } from '@platform/tauri/client';
 
 /**
  * 全局主题应用层。
@@ -18,9 +20,14 @@ import { applyTheme, sanitizeTheme } from '@/lib/theme';
  */
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const theme = useAppTheme();
+  const { active: canUseMistTheme } = useMembershipAccess();
 
   useEffect(() => {
-    const id = sanitizeTheme(theme);
+    const savedTheme = sanitizeTheme(theme);
+    const id = savedTheme === 'mist' && !canUseMistTheme ? DEFAULT_THEME_ID : savedTheme;
+    void windows.applyWindowTheme(id).catch((error) => {
+      console.warn('Failed to apply native window theme', error);
+    });
     const root = document.documentElement;
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const apply = () => {
@@ -33,7 +40,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       mq.addEventListener('change', listener);
       return () => mq.removeEventListener('change', listener);
     }
-  }, [theme]);
+  }, [theme, canUseMistTheme]);
 
   return <>{children}</>;
 }

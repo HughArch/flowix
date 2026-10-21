@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState, type MouseEvent } from 'react';
+import { useCallback, useEffect, useMemo, useState, type MouseEvent } from 'react';
 import { ChevronLeft, ChevronRight, X } from 'lucide-react';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
 import { translate, useI18n, type AppLanguage } from '@/lib/i18n';
@@ -61,11 +61,15 @@ export function DateValueInput({
   value,
   disabled,
   variant = 'default',
+  keepParentMenuOpen = false,
+  onOpenChange,
   onChange,
 }: {
   value: string;
   disabled?: boolean;
   variant?: 'default' | 'table';
+  keepParentMenuOpen?: boolean;
+  onOpenChange?: (open: boolean) => void;
   onChange: (value: string) => void;
 }) {
   const { t, language } = useI18n();
@@ -74,7 +78,11 @@ export function DateValueInput({
   // 因为 react 批处理有微小延迟, 这里也能拿到最新值。
   const effectiveLanguage = (settingsLanguage ?? language) as AppLanguage;
   const [open, setOpen] = useState(false);
-  useEffect(() => { if (disabled) setOpen(false); }, [disabled]);
+  const changeOpen = useCallback((nextOpen: boolean) => {
+    setOpen(nextOpen);
+    onOpenChange?.(nextOpen);
+  }, [onOpenChange]);
+  useEffect(() => { if (disabled) changeOpen(false); }, [changeOpen, disabled]);
   const selectedDate = parseDateValue(value);
   const [viewMonth, setViewMonth] = useState(() => selectedDate ?? new Date());
 
@@ -99,17 +107,17 @@ export function DateValueInput({
 
   const selectDate = (date: Date) => {
     onChange(formatDateValue(date));
-    setOpen(false);
+    changeOpen(false);
   };
 
   const clearDate = (event: MouseEvent) => {
     event.stopPropagation();
     onChange('');
-    setOpen(false);
+    changeOpen(false);
   };
 
   return (
-    <Popover open={disabled ? false : open} onOpenChange={disabled ? undefined : setOpen} cellPopup={variant === 'table'}>
+    <Popover open={disabled ? false : open} onOpenChange={disabled ? undefined : changeOpen} cellPopup={variant === 'table'}>
       <PopoverTrigger asChild>
         <button
           type="button"
@@ -143,6 +151,7 @@ export function DateValueInput({
       <PopoverContent
         align="start"
         sideOffset={6}
+        keepParentMenuOpen={keepParentMenuOpen}
         className={cn('frontmatter-property__date-picker-popover w-[272px] rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' ? '!z-[170] p-1' : 'p-2')}
       >
         <div className="rounded-lg bg-[var(--card)]">

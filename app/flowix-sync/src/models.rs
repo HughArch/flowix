@@ -113,11 +113,24 @@ pub struct CloudMembership {
     pub active: bool,
     pub starts_at: Option<i64>,
     pub expires_at: Option<i64>,
+    #[serde(default = "empty_feature_flags")]
+    pub features: serde_json::Value,
+    #[serde(default)]
+    pub storage_expires_at: Option<i64>,
     pub used_bytes: i64,
     pub quota_bytes: i64,
     pub available_bytes: i64,
     pub note_count: i64,
     pub read_only: bool,
+}
+
+impl CloudMembership {
+    /// Account membership unlocks every member feature during its validity period.
+    pub fn is_active_at(&self, now_ms: i64) -> bool {
+        self.active
+            && self.starts_at.is_none_or(|starts_at| starts_at <= now_ms)
+            && self.expires_at.is_some_and(|expires_at| expires_at > now_ms)
+    }
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
@@ -129,6 +142,18 @@ pub struct CloudAiCredential {
     pub models: Vec<CloudAiModel>,
     #[serde(default)]
     pub provider: Option<CloudAiProvider>,
+    #[serde(default = "default_cloud_models_enabled")]
+    pub cloud_models_enabled: bool,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudAiModelAvailability {
+    pub enabled: bool,
+}
+
+fn default_cloud_models_enabled() -> bool {
+    true
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -171,6 +196,9 @@ pub struct CloudProduct {
     pub name: String,
     pub description: String,
     pub price: CloudPrice,
+    // Older Cloud catalog responses omit this field; those products are subscriptions.
+    #[serde(default = "default_billing_type")]
+    pub billing_type: String,
     pub entitlement: ProductEntitlement,
 }
 
@@ -214,6 +242,24 @@ pub struct CloudOrder {
     pub status: String,
     pub created_at: i64,
     pub paid_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CloudSubscription {
+    pub id: String,
+    pub status: String,
+    #[serde(alias = "product_id")]
+    pub product_id: Option<String>,
+    #[serde(alias = "product_name")]
+    pub product_name: Option<String>,
+    #[serde(alias = "current_period_end")]
+    pub current_period_end: Option<i64>,
+    // Older account responses omit these flags.
+    #[serde(default, alias = "cancel_at_period_end")]
+    pub cancel_at_period_end: bool,
+    #[serde(default, alias = "is_annual_membership")]
+    pub is_annual_membership: bool,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -268,6 +314,10 @@ pub(crate) struct EntitlementMembership {
     pub active: bool,
     pub starts_at: Option<i64>,
     pub expires_at: Option<i64>,
+    #[serde(default = "empty_feature_flags")]
+    pub features: serde_json::Value,
+    #[serde(default)]
+    pub storage_expires_at: Option<i64>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -286,11 +336,81 @@ impl From<EntitlementData> for CloudMembership {
             active: value.membership.active,
             starts_at: value.membership.starts_at,
             expires_at: value.membership.expires_at,
+            features: value.membership.features,
+            storage_expires_at: value.membership.storage_expires_at,
             used_bytes: value.usage.used_bytes,
             quota_bytes: value.usage.quota_bytes,
             available_bytes: value.usage.available_bytes,
             note_count: value.usage.note_count,
             read_only: value.usage.read_only,
         }
+    }
+}
+
+fn empty_feature_flags() -> serde_json::Value {
+    serde_json::Value::Object(serde_json::Map::new())
+}
+
+fn default_billing_type() -> String {
+    "subscription".to_owned()
+}
+
+#[cfg(test)]
+mod subscription_tests {
+    use super::{CloudSubscription, DataEnvelope};
+
+    #[test]
+    fn older_subscription_response_without_flags_is_supported() {
+        let response: DataEnvelope<Vec<CloudSubscription>> = serde_json::from_value(
+            serde_json::json!({"data": [{
+                "id": "sub_legacy",
+                "status": "active",
+                "productId": "membership",
+                "productName": "Annual membership",
+                "currentPeriodEnd": 1800000000000_i64
+            }]}),
+        )
+        .unwrap();
+        let subscription = &response.data[0];
+        assert_eq!(subscription.id, "sub_legacy");
+        assert!(!subscription.cancel_at_period_end);
+        assert!(!subscription.is_annual_membership);
+    }
+
+    #[test]
+    fn subscription_flags_are_preserved_when_present() {
+        for flag in [false, true] {
+            let subscription: CloudSubscription = serde_json::from_value(serde_json::json!({
+                "id": "sub_current",
+                "status": "active",
+                "cancelAtPeriodEnd": flag,
+                "isAnnualMembership": flag
+            }))
+            .unwrap();
+            assert_eq!(subscription.cancel_at_period_end, flag);
+            assert_eq!(subscription.is_annual_membership, flag);
+            let serialized = serde_json::to_value(subscription).unwrap();
+            assert_eq!(serialized["cancelAtPeriodEnd"], flag);
+            assert_eq!(serialized["isAnnualMembership"], flag);
+        }
+    }
+
+    #[test]
+    fn snake_case_subscription_fields_are_preserved() {
+        let subscription: CloudSubscription = serde_json::from_value(serde_json::json!({
+            "id": "sub_legacy",
+            "status": "active",
+            "product_id": "membership",
+            "product_name": "Annual membership",
+            "current_period_end": 1800000000000_i64,
+            "cancel_at_period_end": true,
+            "is_annual_membership": true
+        }))
+        .unwrap();
+        assert_eq!(subscription.product_id.as_deref(), Some("membership"));
+        assert_eq!(subscription.product_name.as_deref(), Some("Annual membership"));
+        assert_eq!(subscription.current_period_end, Some(1800000000000));
+        assert!(subscription.cancel_at_period_end);
+        assert!(subscription.is_annual_membership);
     }
 }

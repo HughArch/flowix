@@ -139,4 +139,20 @@ describe('MemoListDataLoader', () => {
     expect(loadNotes).toHaveBeenCalledOnce();
     expect(setLoadedMemoListQueryKey).not.toHaveBeenCalled();
   });
+
+  it('loads a new query when data conditions change and when they are cleared', async () => {
+    const loadNotes = vi.fn().mockResolvedValue(true);
+    const setLoadedMemoListQueryKey = vi.fn();
+    const props = { loadNotes, setLoadedMemoListQueryKey };
+    await act(async () => { renderLoader(props); });
+    await act(async () => {
+      renderLoader({ ...props, dataCondition: { match: 'any', file_condition: { file_name_contains: 'release' } } });
+    });
+    expect(loadNotes).toHaveBeenCalledTimes(2);
+    expect(setLoadedMemoListQueryKey.mock.calls[1][0]).toContain('release');
+    await act(async () => { renderLoader({ ...props, dataCondition: null }); });
+    expect(loadNotes).toHaveBeenCalledTimes(3);
+    expect(setLoadedMemoListQueryKey).toHaveBeenLastCalledWith('notebook-1:all:createdAt:::');
+  });
+
 });

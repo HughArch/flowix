@@ -247,3 +247,13 @@ describe("agent thread card Markdown math", () => {
     });
   });
 });
+
+
+it("reserves fixed thumbnail dimensions before a Markdown image loads", () => {
+  const container = document.createElement("div");
+  container.innerHTML = renderAgentThreadCardMarkdownToHtml("![preview](https://example.com/image.png)");
+  const image = container.querySelector("img")!;
+  expect(image).not.toBeNull();
+  expect([image.getAttribute("width"), image.getAttribute("height")]).toEqual(["120", "120"]);
+  expect(image.getAttribute("loading")).toBe("lazy");
+});

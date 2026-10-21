@@ -10,6 +10,7 @@ type MembershipRefreshResult = 'refreshed' | 'failed' | 'stale' | 'skipped';
 
 export function useCloudAccountState() {
   const [state, setState] = useState<CloudState | null>(null);
+  const latestState = useRef<CloudState | null>(null);
   const [membershipLoading, setMembershipLoading] = useState(false);
   const [membershipError, setMembershipError] = useState<string | null>(null);
   const membershipRequest = useRef(0);
@@ -18,8 +19,12 @@ export function useCloudAccountState() {
   const [loadError, setLoadError] = useState<string | null>(null);
 
   const applyState = useCallback((next: CloudState) => {
-    setState((current) => !current || next.revision >= current.revision ? next : current);
+    const current = latestState.current;
+    if (current && next.revision < current.revision) return false;
+    latestState.current = next;
+    setState(next);
     setLoadError(null);
+    return !current || next.revision > current.revision;
   }, []);
 
   useEffect(() => {
@@ -28,7 +33,8 @@ export function useCloudAccountState() {
     const receive = (next: CloudState) => {
       if (!active) return;
       receivedState = true;
-      applyState(next);
+      const newer = applyState(next);
+      if (newer && next.membership) setMembershipError(null);
     };
     const refreshSnapshot = () => {
       if (!active) return;
@@ -53,11 +59,12 @@ export function useCloudAccountState() {
     lastMembershipRefresh.current = { userId, at: now };
     const request = ++membershipRequest.current;
     setMembershipLoading(true);
-    setMembershipError(null);
     const promise = (async (): Promise<MembershipRefreshResult> => {
       try {
         await cloud.refreshMembership();
-        return request === membershipRequest.current ? 'refreshed' : 'stale';
+        if (request !== membershipRequest.current) return 'stale';
+        setMembershipError(null);
+        return 'refreshed';
       } catch (error) {
         if (request !== membershipRequest.current) return 'stale';
         setMembershipError(errorMessage(error));
@@ -84,9 +91,11 @@ export function useCloudAccountState() {
     void refreshMembership(false);
     const refresh = () => { void refreshMembership(false); };
     window.addEventListener('focus', refresh);
+    const timer = window.setInterval(refresh, 60_000);
     return () => {
       ++membershipRequest.current;
       window.removeEventListener('focus', refresh);
+      window.clearInterval(timer);
     };
   }, [refreshMembership]);
 

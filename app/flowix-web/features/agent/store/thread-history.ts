@@ -10,6 +10,7 @@ import {
   readHistoryPageWithCursor,
   type ThreadHistoryPage,
 } from "@features/agent/store/agent-history-adapters";
+import { messageRenderKey } from "@features/agent/message/render-identity";
 import { completedRunUserMessageId } from "@features/agent/events/message-identity";
 
 /** Layer 4: 单页轮次数. External adapters return complete turns; the
@@ -1021,10 +1022,16 @@ export function prependHistoricalMessages(
   agentType?: AgentTypeKey,
 ): ChatMessage[] {
   if (older.length === 0) return existing;
-  const hydratedOlder = hydrateHistoricalMessages(older, agentType);
-  if (existing.length === 0) return hydratedOlder;
   const seenIds = new Set(existing.map(messageIdentityKey));
-  const fresh = hydratedOlder.filter((m) => !seenIds.has(messageIdentityKey(m)));
+  const seenRenderKeys = new Set(existing.map(messageRenderKey));
+  const fresh = hydrateHistoricalMessages(older, agentType).filter((message) => {
+    const id = messageIdentityKey(message);
+    const renderKey = messageRenderKey(message);
+    if (seenIds.has(id) || seenRenderKeys.has(renderKey)) return false;
+    seenIds.add(id);
+    seenRenderKeys.add(renderKey);
+    return true;
+  });
   if (fresh.length === 0) return existing;
-  return [...fresh, ...existing];
+  return existing.length ? [...fresh, ...existing] : fresh;
 }

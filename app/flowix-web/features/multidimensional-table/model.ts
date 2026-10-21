@@ -30,7 +30,7 @@ export interface TableAutoCollectPropertyCondition {
    * property is not configured as a table field.
    */
   field_id: string;
-  operator: 'equals' | 'contains';
+  operator: 'equals' | 'contains' | 'gt' | 'lt';
   value: string;
 }
 
@@ -120,8 +120,11 @@ export function tableAutoCollectConfig(document: MultidimensionalTableDocument):
 function tableConditionFromRules(rules: Record<string, unknown>[], match: 'all' | 'any', path: string | null): TableAutoCollectCondition {
   const property_conditions = rules.flatMap((rule) => {
     if (typeof rule.field !== 'string' || ['kind', 'file_name', 'path'].includes(rule.field) || typeof rule.value !== 'string'
-      || !['eq', 'equals', 'contains'].includes(String(rule.op))) return [];
-    return [{ field_id: rule.field, operator: rule.op === 'contains' ? 'contains' as const : 'equals' as const, value: rule.value }];
+      || !['eq', 'equals', 'contains', 'gt', 'lt'].includes(String(rule.op))) return [];
+    const operator: TableAutoCollectPropertyCondition['operator'] = rule.op === 'contains' ? 'contains'
+      : rule.op === 'gt' || rule.op === 'lt' ? rule.op
+        : 'equals';
+    return [{ field_id: rule.field, operator, value: rule.value }];
   });
   const file_condition: TableAutoCollectFileCondition = {};
   for (const rule of rules) {
@@ -138,20 +141,28 @@ function tableConditionFromRules(rules: Record<string, unknown>[], match: 'all' 
 
 export function withTableAutoCollect(document: MultidimensionalTableDocument, config: TableAutoCollectConfig | null): MultidimensionalTableDocument {
   if (!config) return { ...document, dataset: { ...document.dataset, filter: null } };
-  const properties = (config.condition.property_conditions ?? []).map((item) => ({ field: item.field_id.trim(), op: item.operator === 'contains' ? 'contains' : 'eq', value: item.value.trim() }));
-  const file = config.condition.file_condition;
+  return { ...document, dataset: { ...document.dataset, filter: tableAutoCollectFilter(config.condition) } };
+}
+
+export function tableAutoCollectFilter(condition: TableAutoCollectCondition) {
+  const properties = (condition.property_conditions ?? []).map((item) => ({
+    field: item.field_id.trim(),
+    op: item.operator === 'contains' ? 'contains' : item.operator === 'gt' || item.operator === 'lt' ? item.operator : 'eq',
+    value: item.value.trim(),
+  }));
+  const file = condition.file_condition;
   const files: Record<string, unknown>[] = [];
   if (file?.file_name_contains?.trim()) files.push({ field: 'file_name', op: 'contains', value: file.file_name_contains.trim() });
   if (file?.file_type === 'markdown') files.push({ field: 'kind', op: 'eq', value: 'note' });
   const legacyPath = file?.path_scope === 'all' ? '' : file?.path_contains?.trim() || null;
-  const rawPath = config.condition.path !== undefined ? config.condition.path : legacyPath;
+  const rawPath = condition.path !== undefined ? condition.path : legacyPath;
   const path = typeof rawPath === 'string' ? rawPath.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : null;
   const filter = {
     path,
-    match: config.condition.match ?? (config.condition.property_match === 'intersection' ? 'all' : 'any'),
+    match: condition.match ?? (condition.property_match === 'intersection' ? 'all' : 'any'),
     conditions: [...properties, ...files],
   };
-  return { ...document, dataset: { ...document.dataset, filter } };
+  return filter;
 }
 
 function stableValue(value: unknown): unknown {
@@ -177,7 +188,7 @@ export function canEditTableAutoCollectFilter(document: MultidimensionalTableDoc
     typeof rule.field === 'string' && typeof rule.value === 'string'
       && ((rule.field === 'kind' && rule.op === 'eq' && rule.value === 'note')
         || (rule.field === 'file_name' && rule.op === 'contains')
-        || (!['path', 'kind', 'file_name'].includes(rule.field) && ['eq', 'equals', 'contains'].includes(String(rule.op))))
+        || (!['path', 'kind', 'file_name'].includes(rule.field) && ['eq', 'equals', 'contains', 'gt', 'lt'].includes(String(rule.op))))
   ));
   if (!supported) return false;
   const roundTripped = withTableAutoCollect(document, tableAutoCollectConfig(document)).dataset.filter;
@@ -196,7 +207,7 @@ function isEditableLegacyTableFilter(filter: Record<string, unknown>): boolean {
   const isLeaf = (rule: Record<string, unknown>) => typeof rule.field === 'string' && typeof rule.value === 'string'
     && ((rule.field === 'kind' && rule.op === 'eq' && rule.value === 'note')
       || (rule.field === 'file_name' && rule.op === 'contains')
-      || (!['path', 'kind', 'file_name'].includes(rule.field) && ['eq', 'equals', 'contains'].includes(String(rule.op))));
+      || (!['path', 'kind', 'file_name'].includes(rule.field) && ['eq', 'equals', 'contains', 'gt', 'lt'].includes(String(rule.op))));
   if (allRules.length && anyRules.length) return false;
   const hasDuplicateFileRules = (rules: Record<string, unknown>[]) => ['file_name', 'kind'].some((field) => rules.filter((rule) => rule.field === field).length > 1);
   if (anyRules.length === 1 && Array.isArray(anyRules[0].all)) {

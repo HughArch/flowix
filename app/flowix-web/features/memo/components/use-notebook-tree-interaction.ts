@@ -41,6 +41,8 @@ interface UseNotebookTreeInteractionOptions {
   treeScrollerRef: RefObject<HTMLDivElement | null>;
   renderRowIndexByPath: ReadonlyMap<string, number>;
   treeContentOffset: number;
+  isActive?: boolean;
+  activeFileRevealRatio?: number;
   onNoteSelect: (path: string) => void;
 }
 
@@ -54,6 +56,8 @@ export function useNotebookTreeInteraction({
   treeScrollerRef,
   renderRowIndexByPath,
   treeContentOffset,
+  isActive = true,
+  activeFileRevealRatio,
   onNoteSelect,
 }: UseNotebookTreeInteractionOptions) {
   const [selectedFilePaths, setSelectedFilePaths] = useState<string[]>([]);
@@ -244,13 +248,13 @@ export function useNotebookTreeInteraction({
     });
   }, [activeFileShouldReveal, activeFilePath, focusedTreePath, visibleTreeItems]);
 
-  useEffect(() => {
+  useLayoutEffect(() => {
     const activePath = activeFilePath ? canonicalPath(activeFilePath) : null;
     pendingActiveFileScrollPathRef.current = activeFileShouldReveal ? activePath : null;
   }, [activeFileShouldReveal, activeFilePath]);
 
-  useEffect(() => {
-    if (!activeFilePath || !activeFileShouldReveal) return;
+  useLayoutEffect(() => {
+    if (!isActive || !activeFilePath || !activeFileShouldReveal) return;
     const activePath = canonicalPath(activeFilePath);
     if (pendingActiveFileScrollPathRef.current !== activePath) return;
     const index = renderRowIndexByPath.get(activePath);
@@ -258,12 +262,28 @@ export function useNotebookTreeInteraction({
     if (index === undefined || !scroller) return;
     const rowTop = treeContentOffset + index * TREE_ROW_SIZE;
     const rowBottom = rowTop + TREE_ROW_HEIGHT;
-    if (rowTop < scroller.scrollTop) scroller.scrollTop = rowTop;
+    if (activeFileRevealRatio !== undefined) {
+      if (scroller.clientHeight === 0) return;
+      const desiredScrollTop = rowTop + TREE_ROW_HEIGHT / 2 - scroller.clientHeight * activeFileRevealRatio;
+      const maxScrollTop = Math.max(0, scroller.scrollHeight - scroller.clientHeight);
+      scroller.scrollTo({
+        top: Math.max(0, Math.min(desiredScrollTop, maxScrollTop)),
+        behavior: 'smooth',
+      });
+    } else if (rowTop < scroller.scrollTop) scroller.scrollTop = rowTop;
     else if (rowBottom > scroller.scrollTop + scroller.clientHeight) {
       scroller.scrollTop = Math.max(0, rowBottom - scroller.clientHeight);
     }
     pendingActiveFileScrollPathRef.current = null;
-  }, [activeFileShouldReveal, activeFilePath, renderRowIndexByPath, treeContentOffset, treeScrollerRef]);
+  }, [
+    activeFileShouldReveal,
+    activeFilePath,
+    activeFileRevealRatio,
+    isActive,
+    renderRowIndexByPath,
+    treeContentOffset,
+    treeScrollerRef,
+  ]);
 
   const selectNote = useCallback((filePath: string, event?: MouseEvent<HTMLDivElement>) => {
     const currentPaths = selectedFilePathsRef.current;

@@ -460,7 +460,13 @@ defineAction({
     const current = getThemePreference();
     const prefersDark = window.matchMedia('(prefers-color-scheme: dark)').matches;
     const next = nextVisibleTheme(current, prefersDark);
-    void setThemePreference(next);
+    void setThemePreference(next).then((applied) => {
+      // A locked Mist theme should not stall the cycle. Skip to the next
+      // selectable theme after the membership check fails.
+      if (!applied && next === 'mist') {
+        void setThemePreference(nextVisibleTheme(next, prefersDark));
+      }
+    });
   },
 });
 

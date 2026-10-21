@@ -822,7 +822,9 @@ pub fn save_cloud_credential(
     let providers = list()?;
     let legacy_cloud_id = legacy_cloud_provider_id(api_base)?;
     let settings = read_json(&pi_config_dir()?.join("settings.json"))?;
-    let catalog = if credential.models.is_empty() {
+    let catalog = if !credential.cloud_models_enabled {
+        Vec::new()
+    } else if credential.models.is_empty() {
         vec![credential.model.clone()]
     } else {
         credential.models.clone()
@@ -843,14 +845,9 @@ pub fn save_cloud_credential(
     let saved_default = current_cloud
         .and_then(|provider| provider.default_model_id.clone())
         .filter(|id| model_ids.iter().any(|model_id| model_id == id));
-    let default_model_id = saved_default
-        .or_else(|| {
-            model_ids
-                .iter()
-                .find(|id| **id == credential.model.id)
-                .cloned()
-        })
-        .or_else(|| model_ids.first().cloned());
+    // A newly discovered member catalog is visible immediately, but should
+    // not silently become the active model before the user selects it.
+    let default_model_id = saved_default;
     let provider_id = current_cloud
         .map(|provider| provider.id.clone())
         .unwrap_or_else(|| {

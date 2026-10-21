@@ -1,3 +1,5 @@
+import { beginMessageRenderTrace } from "./message-viewport-diagnostics";
+import { createMessageActionStates } from "./message-action-state";
 import { messageRenderKey } from "@features/agent/message/render-identity";
 import type { ThreadState } from "@features/agent/store/thread-runtime-state";
 import type { AppLanguage, I18nKey } from "@/lib/i18n";
@@ -8,10 +10,9 @@ import {
   appendRenderedAgentMessagesToTail,
   reconcileRenderedAgentMessages,
   createRenderedAgentMessageList,
+  createAgentRenderItem,
   getRenderedAgentItems,
-  isLastMessageInTurnAndAssistant,
   patchLastRenderedAgentMessage,
-  shouldShowMessageActions,
   updateRenderedAgentToolGroups,
   type AgentThreadCardMessageRenderContext,
 } from "@features/agent/thread-card/messages/message-list-renderer";
@@ -20,10 +21,8 @@ import {
   type AgentRenderItem,
 } from "@features/agent/thread-card/messages/tool-grouping";
 import {
-  createAgentThreadCardMessageElement,
   disposeAgentThreadCardMessageTree,
 } from "@features/agent/thread-card/messages/message-item-renderer";
-import { createGeneratedImageStrip } from "@features/agent/thread-card/messages/generated-image-strip";
 import { recordMessageRenderPlan } from "@features/agent/thread-card/messages/message-render-plan";
 import { MIN_TRANSIENT_DISPLAY_DURATION_MS } from "@features/agent/thread-card/messages/transient-display";
 import {
@@ -81,6 +80,12 @@ export class ThreadMessageRenderController {
   private progressiveRenderRafId: number | null = null;
   private progressiveRenderMessages: ThreadState["messages"] | null = null;
   private progressiveRenderList: HTMLDivElement | null = null;
+  private preparedItems: {
+    messages: ThreadState["messages"];
+    isLoading: boolean;
+    items: AgentRenderItem[];
+    actions: ReturnType<typeof createMessageActionStates>;
+  } | null = null;
   private previousIsLoading = false;
   private loadingIndicatorShownAt: number | null = null;
   private loadingIndicatorHideTimer: number | null = null;
@@ -138,6 +143,7 @@ export class ThreadMessageRenderController {
   dispose(): void {
     this.cancelPendingRender();
     this.cancelProgressiveRender();
+    this.preparedItems = null;
     this.disposeRenderedMessages();
     // The standalone conversation detail can recreate this controller while
     // React reuses the same body element (for example during StrictMode
@@ -151,6 +157,15 @@ export class ThreadMessageRenderController {
   }
 
   private renderNow(input: ThreadMessageRenderInput): void {
+    const finishTrace = beginMessageRenderTrace(this.body, input.messages.length);
+    try {
+      this.renderMessagesNow(input);
+    } finally {
+      finishTrace?.();
+    }
+  }
+
+  private renderMessagesNow(input: ThreadMessageRenderInput): void {
     const scrollState = this.messageViewport.captureRenderScrollState();
     const loadingJustEnded = this.previousIsLoading && !input.isLoading;
     this.previousIsLoading = input.isLoading;
@@ -190,7 +205,7 @@ export class ThreadMessageRenderController {
 
     this.pruneReasoningCollapsedOverrides(input.messages);
     this.pruneDisplayExpandedOverrides(input.messages);
-    this.pruneToolGroupExpandedOverrides(input.messages);
+    this.pruneToolGroupExpandedOverrides(input.messages, input.isLoading);
 
     if (this.canReuseRenderedMessages(input.messages, input.isLoading)) {
       if (loadingJustEnded) {
@@ -256,6 +271,9 @@ export class ThreadMessageRenderController {
     }, this.createMessageRenderContext(input.messages, input.isLoading),
       scrollState.shouldFollowStreaming ? undefined : this.body);
     if (reconciled && this.renderedMessagesList) {
+      if (this.renderedMessagesList.parentNode !== this.body) {
+        this.body.insertBefore(this.renderedMessagesList, this.loadingIndicator);
+      }
       recordMessageRenderPlan("reconcile-rows", input.messages.length);
       this.rememberRenderedMessages(this.renderedMessagesList, reconciled);
       this.applyBodyScrollAfterRender({
@@ -265,24 +283,17 @@ export class ThreadMessageRenderController {
       return;
     }
 
-    recordMessageRenderPlan("replace-all", input.messages.length);
+    recordMessageRenderPlan("mount-list", input.messages.length);
     const { list } = createRenderedAgentMessageList(
       input.messages,
       this.createMessageRenderContext(input.messages, input.isLoading),
     );
 
-    /*
-     * loadingIndicator 由 factory 一次性 append 到 body 末尾, 此后保持连接。
-     * 这里仅 removeChild 旧 list 并 insertBefore 新 list —— 不把 indicator
-     * 作为 replaceChildren / append 的参数, 避免 WebKit 重连节点导致
-     * @keyframes 计时回到 t=0 (关键帧 0%/100% 是底色, 高频 streaming 下亮峰
-     * 永远到不了)。
-     */
-    this.disposeRenderedMessages();
+    // Initial mount only. Structural updates retain the list and loading indicator.
     this.body.insertBefore(list, this.loadingIndicator);
     this.rememberRenderedMessages(
       list,
-      getRenderedAgentItems(input.messages, input.isLoading),
+      this.getRenderItems(input.messages, input.isLoading),
     );
     this.applyBodyScrollAfterRender({
       isLoading: input.isLoading,
@@ -299,12 +310,6 @@ export class ThreadMessageRenderController {
     // keep that list mounted; removing it to show the skeleton causes a
     // one-frame flash after longer conversations.
     if (this.renderedMessagesList) return false;
-    // The progressive path renders one top-level node per item. A tool group
-    // owns several nested rows and must be built atomically by the full list
-    // renderer to keep the cache's top-level indexes aligned.
-    if (getRenderedAgentItems(input.messages, input.isLoading).some((item) => item.kind === "tool-group")) {
-      return false;
-    }
     return input.messages.length >= PROGRESSIVE_RENDER_MESSAGE_THRESHOLD;
   }
 
@@ -324,10 +329,7 @@ export class ThreadMessageRenderController {
     this.body.insertBefore(skeleton, this.loadingIndicator);
     this.messageViewport.resetForEmptyMessages();
 
-    const renderedItems = getRenderedAgentItems(
-      input.messages,
-      input.isLoading,
-    );
+    const renderedItems = this.getRenderItems(input.messages, input.isLoading);
     const list = document.createElement("div");
     list.className = "agent-thread-card__messages";
     this.progressiveRenderList = list;
@@ -341,40 +343,8 @@ export class ThreadMessageRenderController {
       const end = Math.min(index + PROGRESSIVE_RENDER_CHUNK_SIZE, renderedItems.length);
       for (; index < end; index += 1) {
         const renderItem = renderedItems[index];
-        // A long historical list is normally static; groups are rendered by
-        // the regular path so their nested DOM is created as one unit.
-        if (renderItem.kind === "tool-group") continue;
-        if (renderItem.kind === "generated-images") {
-          const strip = createGeneratedImageStrip({
-            id: renderItem.id,
-            images: renderItem.images,
-            language: context.language,
-            getImageSpacePath: context.getImageSpacePath,
-          });
-          if (strip) list.append(strip);
-          continue;
-        }
-        const message = renderItem.message;
-        const rendered = createAgentThreadCardMessageElement({
-          message,
-          language: context.language,
-          getReasoningCollapsed: context.getReasoningCollapsed,
-          setReasoningCollapsed: context.setReasoningCollapsed,
-          getDisplayExpanded: context.getDisplayExpanded,
-          setDisplayExpanded: context.setDisplayExpanded,
-          isStreaming: context.isStreaming(message),
-          showActions: shouldShowMessageActions(
-            message,
-            input.messages,
-            input.isLoading,
-          ),
-          canFork: isLastMessageInTurnAndAssistant(
-            input.messages,
-            input.messages.indexOf(message),
-          ),
-          onForkMessage: this.onForkMessage,
-        });
-        if (!rendered) continue;
+        const rendered = createAgentRenderItem(renderItem, input.messages, context);
+        if (!rendered?.element) continue;
         list.append(rendered.element);
       }
 
@@ -548,11 +518,11 @@ export class ThreadMessageRenderController {
   }
 
   private pruneToolGroupExpandedOverrides(
-    messages: ThreadState["messages"],
+    messages: ThreadState["messages"], isLoading: boolean,
   ): void {
     if (this.toolGroupExpandedOverrides.size === 0) return;
     const ids = new Set(
-      getRenderedAgentItems(messages)
+      this.getRenderItems(messages, isLoading)
         .filter((item) => item.kind === "tool-group")
         .map((item) => item.id),
     );
@@ -603,6 +573,15 @@ export class ThreadMessageRenderController {
     return this.displayExpandedOverrides.get(messageRenderKey(message)) ?? false;
   }
 
+  private getRenderItems(messages: ThreadState["messages"], isLoading: boolean): AgentRenderItem[] {
+    if (this.preparedItems?.messages !== messages || this.preparedItems.isLoading !== isLoading) {
+      this.preparedItems = { messages, isLoading,
+        items: getRenderedAgentItems(messages, isLoading), actions: createMessageActionStates(messages, isLoading),
+      };
+    }
+    return this.preparedItems.items;
+  }
+
   private createMessageRenderContext(
     messages: ThreadState["messages"],
     isLoading: boolean,
@@ -611,8 +590,11 @@ export class ThreadMessageRenderController {
     // 其余(历史 / 已完成 / run 结束)走全量 re-parse 修正块切分。引用比较
     // message === lastMessage 依赖 store 侧保持非末条消息引用稳定。
     const lastMessage = messages[messages.length - 1];
+    const renderItems = this.getRenderItems(messages, isLoading);
     return {
       language: this.getLanguage(),
+      renderItems,
+      messageActions: this.preparedItems?.actions,
       isLoading,
       getReasoningCollapsed: (message) => this.getReasoningCollapsed(message),
       setReasoningCollapsed: (messageId, collapsed) => {
@@ -642,7 +624,7 @@ export class ThreadMessageRenderController {
   ): boolean {
     const list = this.renderedMessagesList;
     if (!list || !this.body.contains(list)) return false;
-    const renderedItems = getRenderedAgentItems(messages, isLoading);
+    const renderedItems = this.getRenderItems(messages, isLoading);
     if (
       renderedItems.length !== this.renderedMessageRefs.length ||
       list.children.length !== renderedItems.length

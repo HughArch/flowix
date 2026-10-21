@@ -59,6 +59,22 @@ export function attachHistoryCursor(
   return { ...page, coverage: page.coverage ?? { kind: "partial" }, nextCursor: encodeURIComponent(JSON.stringify(payload)) };
 }
 
+/** Keep the loaded boundary while moving its traversal onto a fresh snapshot. */
+export function rebaseHistoryCursor(
+  runtime: AgentTypeKey, threadId: string, cursor: string, page: ThreadHistoryPage,
+): string | undefined {
+  const boundary = JSON.parse(decodeURIComponent(cursor)) as HistoryCursorPayload;
+  if (boundary.version !== 1 || boundary.runtime !== runtime || boundary.threadId !== threadId) {
+    throw new Error("History cursor belongs to another runtime or thread");
+  }
+  return attachHistoryCursor(runtime, threadId, {
+    ...page,
+    hasMore: true,
+    oldestSequence: boundary.beforeSequence,
+    piBeforeEntryId: boundary.piBeforeEntryId,
+  }).nextCursor;
+}
+
 export async function readHistoryPageWithCursor(
   runtime: AgentTypeKey,
   threadId: string,

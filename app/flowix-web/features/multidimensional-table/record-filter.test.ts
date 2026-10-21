@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { NoteEntry } from '@platform/tauri/client';
 import { noteMatchesCollectionFilter } from './record-filter';
+import { NOTE_CREATED_AT_FIELD_ID } from './builtin-fields';
 import type { TableField } from './model';
 
 const primaryField: TableField = {
@@ -28,5 +29,22 @@ describe('noteMatchesCollectionFilter', () => {
     const statusNote = { ...note, properties: { status: 'done' } } as NoteEntry;
 
     expect(noteMatchesCollectionFilter(statusNote, [primaryField, statusField], primaryField.id, filter)).toBe(true);
+  });
+
+  it('compares Number properties numerically', () => {
+    const countField: TableField = { id: `fld_${'c'.repeat(32)}`, type: 'Number', property_key: 'count' };
+    const countNote = { ...note, properties: { count: 1 } } as NoteEntry;
+    const filter = { path: null, match: 'all' as const, conditions: [{ field: 'count', op: 'eq', value: '1.0' }] };
+
+    expect(noteMatchesCollectionFilter(countNote, [primaryField, countField], primaryField.id, filter)).toBe(true);
+    expect(noteMatchesCollectionFilter(countNote, [primaryField], primaryField.id, filter)).toBe(true);
+  });
+
+  it('matches the calendar day for built-in creation dates', () => {
+    const createdAt = new Date(2026, 4, 3, 18, 20).getTime();
+    const datedNote = { ...note, createdAt } as NoteEntry;
+    const filter = { path: null, match: 'all' as const, conditions: [{ field: NOTE_CREATED_AT_FIELD_ID, op: 'eq', value: '2026-05-03' }] };
+
+    expect(noteMatchesCollectionFilter(datedNote, [primaryField], primaryField.id, filter)).toBe(true);
   });
 });

@@ -14,9 +14,24 @@ describe('cloudSyncErrorMessage', () => {
   const t = (key: string, params?: Record<string, string | number>) =>
     params ? `${key}:${JSON.stringify(params)}` : key;
 
+  it('explains why an existing membership cannot be purchased again', () => {
+    expect(cloudSyncErrorMessage('MEMBERSHIP_ALREADY_ACTIVE:already active', t)).toBe(
+      'preferences.cloud.member.alreadyActive',
+    );
+  });
+
   it('maps an inactive membership to an actionable message', () => {
     expect(cloudSyncErrorMessage('MEMBERSHIP_REQUIRED:null', t)).toBe(
       'preferences.cloud.membershipRequired',
+    );
+  });
+
+  it('directs missing storage capacity to a storage plan rather than membership purchase', () => {
+    expect(cloudSyncErrorMessage('STORAGE_PLAN_REQUIRED:An active storage plan is required', t)).toBe(
+      'preferences.cloud.storagePlanRequired',
+    );
+    expect(cloudSyncErrorMessage({ code: 'STORAGE_PLAN_REQUIRED', message: 'No storage' }, t)).toBe(
+      'preferences.cloud.storagePlanRequired',
     );
   });
 

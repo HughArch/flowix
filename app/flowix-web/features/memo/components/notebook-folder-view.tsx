@@ -11,7 +11,6 @@ import { resourceKindFromPath } from '@features/editor/public/code-file';
 import {
   NotebookFileTree,
   type NotebookFolderCreateRequest,
-  type NotebookNoteCreateRequest,
   type NotebookMoveResult,
   type NotebookMoveSource,
 } from '@features/memo/components/notebook-file-tree';
@@ -41,7 +40,6 @@ const logger = createLogger('notebook-folder-view');
 export function NotebookFolderView({
   notebook,
   createFolderRequest,
-  createNoteRequest,
   onCreateFolder,
   onCreateNote,
   defaultCreateFolder,
@@ -50,9 +48,8 @@ export function NotebookFolderView({
 }: {
   notebook: Notebook;
   createFolderRequest?: NotebookFolderCreateRequest | null;
-  createNoteRequest?: NotebookNoteCreateRequest | null;
   onCreateFolder?: () => void;
-  onCreateNote?: (parentPath: string, title: string) => Promise<void> | void;
+  onCreateNote: (parentPath?: string, title?: string) => Promise<void> | void;
   defaultCreateFolder?: string | null;
   onSetDefaultCreateFolder?: (folderPath: string) => void;
   isActive?: boolean;
@@ -61,9 +58,10 @@ export function NotebookFolderView({
   const tree = useFolderTree(notebook.path, {
     enabled: isActive,
   });
-  const activeFilePath = useWorkColumnStore((state) => (
-    workColumnTargetFilePath(state.navigation.target)
-  ));
+  const target = useWorkColumnStore((state) => state.navigation.target);
+  const activeFilePath = workColumnTargetFilePath(target);
+  const activeFileRevealRatio = target.kind === 'external' && target.treeReveal === 'created-note'
+    ? 0.4 : undefined;
   const refreshDirectoriesRef = useRef(tree.refreshDirectories);
   refreshDirectoriesRef.current = tree.refreshDirectories;
 
@@ -268,12 +266,12 @@ export function NotebookFolderView({
       notebookName={notebook.name}
       notebookPath={notebook.path}
       activeFilePath={activeFilePath}
+      activeFileRevealRatio={activeFileRevealRatio}
       tree={tree}
       isActive={isActive}
       defaultCreateFolder={defaultCreateFolder}
       onSetDefaultCreateFolder={onSetDefaultCreateFolder}
       createFolderRequest={createFolderRequest}
-      createNoteRequest={createNoteRequest}
       onCreateFolder={onCreateFolder}
       onNoteSelect={(filePath) => { void openFile(filePath); }}
       onFolderSelect={(folderPath) => {
@@ -285,7 +283,7 @@ export function NotebookFolderView({
         });
       }}
       onNoteOpenInNewTab={(filePath) => { void openFileInNewTab(filePath); }}
-      onCreateNote={(parentPath, title) => onCreateNote?.(parentPath, title)}
+      onCreateNote={onCreateNote}
       onMoveNote={moveItem}
       onDeleteFolder={deleteFolder}
       onDeleteFile={deleteFile}

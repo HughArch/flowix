@@ -14,48 +14,20 @@
   flex-direction: column;
 }
 
-.pi-model-picker__tabs {
-  display: flex;
-  flex: 0 0 auto;
-  gap: 0;
-  padding: 4px 4px 0;
-}
-
-.pi-model-picker__tab {
-  min-width: 0;
-  flex: 0 0 auto;
-  padding: 6px 10px;
-  border: 0;
-  border-radius: 7px;
-  background: transparent;
-  color: var(--muted-foreground);
-  font: inherit;
-  font-size: 13px;
-  line-height: 1.25;
-  cursor: pointer;
-  transition: color 120ms ease;
-}
-
-.pi-model-picker__tab:hover,
-.pi-model-picker__tab:focus-visible {
-  color: var(--foreground);
-  outline: none;
-}
-
-.pi-model-picker__tab--active {
-  color: var(--foreground);
-  font-weight: 600;
-}
-
-.pi-model-picker__panel,
-.pi-model-picker__models {
+.pi-model-picker__panel {
   min-height: 0;
   flex: 1 1 auto;
   overflow-y: auto;
+  padding: 2px 0 0;
 }
 
-.pi-model-picker__panel {
-  padding: 2px 0 0;
+.pi-model-picker__category {
+  min-width: 0;
+}
+
+.pi-model-picker__category + .pi-model-picker__category {
+  margin-top: 8px;
+  padding-top: 6px;
 }
 
 .pi-model-picker__models {
@@ -117,6 +89,12 @@
   font-size: 13px;
   line-height: 1.45;
   text-align: center;
+}
+
+.pi-model-picker__empty--category {
+  padding-block: 10px;
+  font-size: 12px;
+  text-align: left;
 }
 
 .pi-model-picker__reasoning {

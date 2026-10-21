@@ -210,6 +210,15 @@ pub(crate) fn exact_existing_external_path(
         .map_err(|error| format!("failed to resolve {}: {error}", requested.display()))
 }
 
+fn document_read_error(path: &Path, error: std::io::Error) -> String {
+    let code = if error.kind() == std::io::ErrorKind::PermissionDenied {
+        "DOCUMENT_READ_PERMISSION_DENIED: "
+    } else {
+        ""
+    };
+    format!("{code}failed to read {}: {error}", path.display())
+}
+
 #[tauri::command]
 pub async fn read_external_document(
     window: tauri::WebviewWindow,
@@ -224,7 +233,7 @@ pub async fn read_external_document(
             exact_existing_external_path(&file_path, scopePath.as_deref(), window.label(), &state)?;
         if let Some(max_bytes) = maxBytes {
             let file = fs::File::open(&path)
-                .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+                .map_err(|error| document_read_error(&path, error))?;
             let size = file.metadata()
                 .map_err(|error| format!("failed to inspect {}: {error}", path.display()))?
                 .len();
@@ -233,7 +242,7 @@ pub async fn read_external_document(
             }
             let mut bytes = Vec::with_capacity(size as usize);
             file.take(max_bytes.saturating_add(1)).read_to_end(&mut bytes)
-                .map_err(|error| format!("failed to read {}: {error}", path.display()))?;
+                .map_err(|error| document_read_error(&path, error))?;
             if bytes.len() as u64 > max_bytes {
                 return Err(format!("DOCUMENT_TOO_LARGE: file exceeds {max_bytes} bytes"));
             }
@@ -241,7 +250,7 @@ pub async fn read_external_document(
                 .map_err(|_| format!("external document is not valid UTF-8: {}", path.display()))
         } else {
             fs::read_to_string(&path)
-                .map_err(|error| format!("failed to read {}: {error}", path.display()))
+                .map_err(|error| document_read_error(&path, error))
         }
     })
     .await?
@@ -384,6 +393,15 @@ pub async fn write_external_document(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn read_permission_errors_have_a_platform_independent_code() {
+        let error = super::document_read_error(
+            std::path::Path::new("note.md"),
+            std::io::Error::from(std::io::ErrorKind::PermissionDenied),
+        );
+        assert!(error.starts_with("DOCUMENT_READ_PERMISSION_DENIED: "));
+    }
 
     #[test]
     fn exact_external_path_never_falls_back_by_filename() {

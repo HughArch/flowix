@@ -719,6 +719,8 @@ fn pi_user_message_text(message: &Value) -> String {
     }
 }
 
+type CloudRefreshResults = HashMap<u64, (tokio::time::Instant, Result<bool, String>)>;
+
 pub struct PiRpcManager {
     thread_manager: Arc<ThreadManager>,
     sessions: Mutex<HashMap<String, Arc<PiSession>>>,
@@ -728,11 +730,11 @@ pub struct PiRpcManager {
     shutting_down: AtomicBool,
     history_snapshots: Mutex<VecDeque<(String, Arc<PiSessionSnapshot>)>>,
     cloud_credential_generation: Mutex<Option<u64>>,
-    startup_cloud_refresh_results: Mutex<HashMap<u64, Result<bool, String>>>,
+    startup_cloud_refresh_results: Mutex<CloudRefreshResults>,
 }
 
 async fn run_startup_cloud_refresh_once<F, Fut>(
-    results: &Mutex<HashMap<u64, Result<bool, String>>>,
+    results: &Mutex<CloudRefreshResults>,
     generation: u64,
     refresh: F,
 ) -> Result<bool, String>
@@ -744,17 +746,21 @@ where
     // result, including a failure, instead of treating an in-flight attempt
     // as a successful refresh.
     let mut results = results.lock().await;
-    if let Some(result) = results.get(&generation) {
-        return result.clone();
+    if let Some((finished_at, result)) = results.get(&generation) {
+        // Coalesce concurrent failures without poisoning this login session.
+        if result.is_ok() || finished_at.elapsed() < Duration::from_secs(2) {
+            return result.clone();
+        }
     }
 
     let result = refresh().await;
-    results.insert(generation, result.clone());
+    results.retain(|key, _| *key >= generation);
+    results.insert(generation, (tokio::time::Instant::now(), result.clone()));
     result
 }
 
 async fn run_startup_cloud_credential_refresh_once<F, Fut>(
-    results: &Mutex<HashMap<u64, Result<bool, String>>>,
+    results: &Mutex<CloudRefreshResults>,
     credential_generation: &Mutex<Option<u64>>,
     generation: u64,
     refresh: F,
@@ -872,20 +878,14 @@ impl PiRpcManager {
         Ok(())
     }
 
-    /// Refresh the saved Flowix Cloud model metadata once after workspace startup.
+    /// Ensure the Flowix Cloud Pi catalog is available once for the current
+    /// signed-in account, including the first login before a provider exists.
     /// The generation guard deduplicates calls from multiple content WebViews.
     pub async fn refresh_cloud_model_provider_at_startup(
         &self,
         app: &tauri::AppHandle,
         api_base: &str,
     ) -> Result<bool, String> {
-        let has_cloud_provider = super::config::list()?
-            .iter()
-            .any(|provider| provider.source.as_deref() == Some("flowix-cloud"));
-        if !has_cloud_provider {
-            return Ok(false);
-        }
-
         let app_state = app.state::<crate::app::state::AppState>();
         let cloud_sync = app_state.cloud_sync.clone();
         if !cloud_sync
@@ -3491,12 +3491,12 @@ mod tests {
     use super::{
         attach_pi_session_message_ids, pi_active_branch_entries, pi_rpc_message_id,
         receive_rpc_response, run_startup_cloud_credential_refresh_once,
-        run_startup_cloud_refresh_once,
+        run_startup_cloud_refresh_once, CloudRefreshResults,
     };
     use serde_json::json;
 
     #[tokio::test]
-    async fn startup_cloud_refresh_shares_the_actual_failure_per_generation() {
+    async fn startup_cloud_refresh_coalesces_failures_and_allows_retry() {
         use std::collections::HashMap;
         use std::sync::atomic::{AtomicUsize, Ordering};
         use std::sync::Arc;
@@ -3504,7 +3504,7 @@ mod tests {
 
         let results = Arc::new(Mutex::new(HashMap::new()));
         let refresh_count = Arc::new(AtomicUsize::new(0));
-        let run = |results: Arc<Mutex<HashMap<u64, Result<bool, String>>>>,
+        let run = |results: Arc<Mutex<CloudRefreshResults>>,
                    refresh_count: Arc<AtomicUsize>| async move {
             run_startup_cloud_refresh_once(&results, 7, || async move {
                 refresh_count.fetch_add(1, Ordering::SeqCst);
@@ -3525,6 +3525,10 @@ mod tests {
         let cached = run_startup_cloud_refresh_once(&results, 7, || async { Ok(true) }).await;
         assert_eq!(cached, Err("credential refresh failed".to_string()));
         assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
+
+        results.lock().await.get_mut(&7).unwrap().0 -= std::time::Duration::from_secs(3);
+        let retried = run_startup_cloud_refresh_once(&results, 7, || async { Ok(true) }).await;
+        assert_eq!(retried, Ok(true));
 
         let next_generation =
             run_startup_cloud_refresh_once(&results, 8, || async { Ok(true) }).await;
