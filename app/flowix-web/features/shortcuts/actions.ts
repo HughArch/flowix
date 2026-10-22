@@ -218,6 +218,22 @@ defineAction({
   run: () => invokeHandler('editor.setHeading4'),
 });
 
+/**
+ * 折叠/展开光标所在标题（或其最近的祖先标题）下的内容。
+ *
+ * 用 `Mod+Alt+F` 而非 `Mod+Alt+H`: macOS 的 Cmd+Option+H 是系统级
+ * "Hide Others", 会被系统先吃掉。
+ */
+defineAction({
+  id: 'editor.toggleHeadingFold',
+  titleKey: 'preferences.shortcuts.action.editor.toggleHeadingFold.title',
+  descriptionKey: 'preferences.shortcuts.action.editor.toggleHeadingFold.description',
+  group: 'editor',
+  scope: 'editor',
+  defaultBinding: { mac: 'Mod+Alt+F', windows: 'Mod+Alt+F', linux: 'Mod+Alt+F' },
+  run: () => invokeHandler('editor.toggleHeadingFold'),
+});
+
 /** 块元素 → 正文 (paragraph)。 命名沿用 Tiptap `setParagraph` 命令。 */
 defineAction({
   id: 'editor.setParagraph',

@@ -12,6 +12,12 @@ import { HeadingOutlineNavigation } from '@features/editor/components/heading-ou
 import { DragContextMenu } from '@features/editor/components/drag-context-menu';
 import { attachLinkHoverTooltip } from '@features/editor/components/link-hover-tooltip';
 import { navigateToHeadingAnchor } from '@features/editor/components/heading-anchor-navigation';
+import {
+  clearHeadingFolds,
+  findHeadingForPos,
+  headingFoldPluginKey,
+  toggleHeadingFold,
+} from '@features/editor/extensions/heading-fold';
 import type { EditorLinkContext } from '@features/editor/editor-link-resolution';
 import { pasteClipboardSnapshot } from '@features/editor/extensions/paste-rules';
 import type { ClipboardSnapshot } from '@features/editor/extensions/paste-rules/clipboard';
@@ -272,6 +278,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   // 运行时通过下面的同步 effect dispatch meta 触发重新装饰。
   const resolvedPlaceholderRef = useRef(resolvedPlaceholder);
   resolvedPlaceholderRef.current = resolvedPlaceholder;
+  // 与 placeholder 同理：折叠按钮的 aria-label 需要跟随语言切换，但不能让
+  // 文案成为 Editor 重建依赖。
+  const headingFoldLabelsRef = useRef({
+    fold: t('editor.headingFold.fold'),
+    unfold: t('editor.headingFold.unfold'),
+  });
+  headingFoldLabelsRef.current = {
+    fold: t('editor.headingFold.fold'),
+    unfold: t('editor.headingFold.unfold'),
+  };
   const elementRef = useRef<HTMLDivElement>(null);
   const editorMountRef = useRef<HTMLDivElement>(null);
   const editorRef = useRef<Editor | null>(null);
@@ -461,6 +477,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         .run();
       normalizeTaskItemPlaceholders(editor);
       resetEditorHistory(editor);
+      // Whole-document replacement: folding state from the previous document
+      // must not attach itself to unrelated headings in the new one.
+      clearHeadingFolds(editor.view);
     } finally {
       isApplyingExternalContentRef.current = false;
     }
@@ -624,7 +643,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     revealHeadingAnchor: (anchor: string): boolean | null => {
       const editor = editorRef.current;
       if (!editor) return null;
-      return navigateToHeadingAnchor(editor.view.dom, `#${anchor}`);
+      return navigateToHeadingAnchor(editor.view.dom, `#${anchor}`, editor.view);
     },
     focusStart: focusBodyStart,
     moveTitleToBody,
@@ -698,6 +717,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         transitionId,
         workspaceHost,
         getPlaceholder: () => resolvedPlaceholderRef.current,
+        getHeadingFoldLabels: () => headingFoldLabelsRef.current,
       }, CodeBlockShiki),
       content: parsedContent ?? initialContent,
       contentType: parsedContent ? 'json' : 'markdown',
@@ -871,6 +891,18 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     );
   }, [resolvedPlaceholder]);
 
+  // Fold buttons encode their label in the decoration key. Rebuild the
+  // decorations on language change so the aria-label follows the UI language.
+  const headingFoldLabel = headingFoldLabelsRef.current.fold;
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || editor.isDestroyed) return;
+    if (!headingFoldPluginKey.getState(editor.state)) return;
+    editor.view.dispatch(
+      editor.state.tr.setMeta(headingFoldPluginKey, { type: 'refresh' }),
+    );
+  }, [headingFoldLabel]);
+
   useLayoutEffect(() => {
     const editor = editorRef.current;
     if (editor && pendingSerializeDirtyRef.current) {
@@ -970,6 +1002,13 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       }, { isActive: editorIsFocused }),
       pushHandler('editor.toggleTaskList', () => {
         if (editorRef.current) applyListType(editorRef.current, 'taskList');
+      }, { isActive: editorIsFocused }),
+      pushHandler('editor.toggleHeadingFold', () => {
+        const editor = editorRef.current;
+        if (!editor || editor.isDestroyed) return false;
+        const headingPos = findHeadingForPos(editor.state.doc, editor.state.selection.from);
+        if (headingPos == null) return false;
+        return toggleHeadingFold(editor.view, headingPos);
       }, { isActive: editorIsFocused }),
     ];
     return () => {

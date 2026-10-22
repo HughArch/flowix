@@ -36,6 +36,25 @@ describe('extractHeadings', () => {
 
     expect(extractHeadings(root).map(({ text }) => text)).toEqual(['Included'])
   })
+
+  it('ignores headings hidden by a folded section', () => {
+    const root = document.createElement('div')
+    root.innerHTML = `
+      <h2>Visible</h2>
+      <h3 class="is-heading-folded-content">Hidden section</h3>
+      <p class="is-heading-folded-content">body</p>
+      <h2>Also visible</h2>
+    `
+
+    expect(extractHeadings(root).map(({ text }) => text)).toEqual(['Visible', 'Also visible'])
+  })
+
+  it('reports the fold state from the heading decoration', () => {
+    const root = document.createElement('div')
+    root.innerHTML = '<h2 data-heading-folded="true">Folded</h2><h2>Open</h2>'
+
+    expect(extractHeadings(root).map(({ folded }) => folded)).toEqual([true, false])
+  })
 })
 
 describe('filterHeadingsForOutline', () => {
@@ -43,6 +62,7 @@ describe('filterHeadingsForOutline', () => {
     element: document.createElement(`h${level}`),
     level,
     text: `${level}-${index}`,
+    folded: false,
   })
 
   it('keeps all headings when there are at most 30', () => {

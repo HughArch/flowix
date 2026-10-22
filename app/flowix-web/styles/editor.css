@@ -176,10 +176,92 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   overflow-y: auto;
 }
 
+.heading-outline-navigation__popover-row {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  border-radius: 0.5rem;
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.heading-outline-navigation__popover-row:hover,
+.heading-outline-navigation__popover-row.is-active {
+  background: var(--hover-bg, var(--muted));
+}
+
+/* Level indentation lives on the row so the fold toggle can sit immediately
+ * to the left of the label instead of at the popover's edge. */
+.heading-outline-navigation__popover-row[data-level='1'] {
+  padding-left: 0.5em;
+}
+
+.heading-outline-navigation__popover-row[data-level='2'] {
+  padding-left: 0.5em;
+}
+
+.heading-outline-navigation__popover-row[data-level='3'] {
+  padding-left: 2em;
+}
+
+.heading-outline-navigation__popover-row[data-level='4'] {
+  padding-left: 3em;
+}
+
+.heading-outline-navigation__popover-fold,
+.heading-outline-navigation__popover-fold-spacer {
+  flex: none;
+  width: 1.25rem;
+  height: 1.25rem;
+  margin-right: 0.125rem;
+}
+
+.heading-outline-navigation__popover-fold {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  opacity: 0;
+  pointer-events: auto;
+  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.heading-outline-navigation__popover-row:hover .heading-outline-navigation__popover-fold,
+.heading-outline-navigation__popover-row.is-active .heading-outline-navigation__popover-fold,
+.heading-outline-navigation__popover-fold:focus-visible,
+.heading-outline-navigation__popover-fold[data-folded='true'] {
+  opacity: 1;
+}
+
+.heading-outline-navigation__popover-fold::before {
+  content: '';
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  transform-origin: 50% 50%;
+  transition: transform 120ms ease;
+}
+
+.heading-outline-navigation__popover-fold[data-folded='false']::before {
+  transform: rotate(90deg);
+}
+
+.heading-outline-navigation__popover-fold:hover,
+.heading-outline-navigation__popover-fold:focus-visible {
+  background: var(--hover-bg, var(--muted));
+  color: var(--foreground);
+}
+
 .heading-outline-navigation__popover-item {
   display: block;
-  flex: none;
-  width: 100%;
+  flex: 1 1 auto;
+  min-width: 0;
   padding: 0.5rem 0.5rem 0.5rem 0;
   border: 0;
   border-radius: 0.5rem;
@@ -191,22 +273,12 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   line-height: 1.35;
   text-align: left;
   overflow-wrap: anywhere;
-  transition: background-color 120ms ease, color 120ms ease;
+  transition: color 120ms ease;
 }
 
 .heading-outline-navigation__popover-item[data-level='1'] {
-  padding-left: 0.5em;
   font-size: var(--editor-font-size, 16px);
   font-weight: 600;
-}
-
-.heading-outline-navigation__popover-item[data-level='2'] {
-  padding-left: 0.5em;
-}
-
-.heading-outline-navigation__popover-item[data-level='3'] {
-  padding-left: 2em;
-  text-indent: -1em;
 }
 
 .heading-outline-navigation__popover-item[data-level='3']::before {
@@ -215,16 +287,6 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   color: var(--brand);
   content: '•';
   text-align: center;
-}
-
-.heading-outline-navigation__popover-item[data-level='4'] {
-  padding-left: 3em;
-}
-
-.heading-outline-navigation__popover-item:hover,
-.heading-outline-navigation__popover-item.is-active {
-  background: var(--hover-bg, var(--muted));
-  color: var(--foreground);
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -499,6 +561,123 @@ html[data-platform="mac"] .markdown-editor .editor-content {
 .markdown-editor .tiptap:not(.agent-composer__input-content) h5:where(:not(.agent-thread-card__message, .agent-thread-card__message *, .table-reference-node, .table-reference-node *)),
 .markdown-editor .tiptap:not(.agent-composer__input-content) h6:where(:not(.agent-thread-card__message, .agent-thread-card__message *, .table-reference-node, .table-reference-node *)) {
   padding-top: 0.3rem;
+}
+
+/* ---------------------------------------------------------------------------
+ * Heading fold
+ *
+ * The fold toggle is a ProseMirror widget rendered as the first child of the
+ * heading element itself, so it can be absolutely positioned against the
+ * heading without reserving layout space. The button intentionally contains no
+ * text node: `textContent` is what the outline and heading anchors slug from.
+ * ------------------------------------------------------------------------- */
+.markdown-editor .ProseMirror > h1,
+.markdown-editor .ProseMirror > h2,
+.markdown-editor .ProseMirror > h3,
+.markdown-editor .ProseMirror > h4 {
+  position: relative;
+}
+
+/* The toggle sits in the gutter, visually detached from the heading box. This
+ * invisible bridge keeps `:hover` on the heading while the pointer crosses the
+ * gap, otherwise the button fades out before the pointer can reach it. */
+.markdown-editor .ProseMirror > h1::before,
+.markdown-editor .ProseMirror > h2::before,
+.markdown-editor .ProseMirror > h3::before,
+.markdown-editor .ProseMirror > h4::before {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: -2.5rem;
+  width: 2.5rem;
+  z-index: 0;
+}
+
+/* Screen-only: printing reads the live DOM and must keep every block. */
+@media screen {
+  .markdown-editor .ProseMirror > .is-heading-folded-content {
+    display: none;
+  }
+}
+
+/* The button sits in the editor gutter's first 18px slot; the block-drag
+ * handle starts at ProseMirror's left edge + 18px, so the two never overlap. */
+.heading-fold-toggle {
+  position: absolute;
+  left: -2.5rem;
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  opacity: 0;
+  /* Keep hit-testing even while invisible: the pointer crosses the gutter
+   * before the button is shown, and `pointer-events: none` would deadlock
+   * the hover state. */
+  pointer-events: auto;
+  z-index: 1;
+  transform: translateY(-50%);
+  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.markdown-editor .ProseMirror > h1 > .heading-fold-toggle { top: calc(1rem + 0.65em); }
+.markdown-editor .ProseMirror > h2 > .heading-fold-toggle { top: calc(0.6rem + 0.65em); }
+.markdown-editor .ProseMirror > h3 > .heading-fold-toggle { top: calc(0.4rem + 0.65em); }
+.markdown-editor .ProseMirror > h4 > .heading-fold-toggle { top: calc(0.3rem + 0.65em); }
+
+.heading-fold-toggle::before {
+  content: '';
+  width: 0;
+  height: 0;
+  border-top: 4.5px solid transparent;
+  border-bottom: 4.5px solid transparent;
+  border-left: 6px solid currentColor;
+  transform-origin: 50% 50%;
+  transition: transform 120ms ease;
+}
+
+/* Unfolded headings point down; folded headings point right. */
+.heading-fold-toggle[data-folded='false']::before {
+  transform: rotate(90deg);
+}
+
+.markdown-editor .ProseMirror > h1:hover > .heading-fold-toggle,
+.markdown-editor .ProseMirror > h2:hover > .heading-fold-toggle,
+.markdown-editor .ProseMirror > h3:hover > .heading-fold-toggle,
+.markdown-editor .ProseMirror > h4:hover > .heading-fold-toggle,
+.markdown-editor .ProseMirror > h1:focus-within > .heading-fold-toggle,
+.markdown-editor .ProseMirror > h2:focus-within > .heading-fold-toggle,
+.markdown-editor .ProseMirror > h3:focus-within > .heading-fold-toggle,
+.markdown-editor .ProseMirror > h4:focus-within > .heading-fold-toggle,
+.heading-fold-toggle:focus-visible,
+.heading-fold-toggle[data-folded='true'] {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.heading-fold-toggle:hover,
+.heading-fold-toggle:focus-visible {
+  background: var(--hover-bg, var(--muted));
+  color: var(--foreground);
+}
+
+.heading-fold-toggle:focus-visible {
+  outline: 2px solid color-mix(in oklch, var(--ring) 60%, transparent);
+  outline-offset: 1px;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .heading-fold-toggle,
+  .heading-fold-toggle::before {
+    transition: none;
+  }
 }
 
 /* 行高相关公式统一走 var(--editor-font-size) × var(--editor-line-height):

@@ -8,6 +8,7 @@ import { Input } from '@shared/ui/input';
 import { Tooltip } from '@shared/ui/tooltip';
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
+import { HEADING_FOLDED_CONTENT_CLASS, unfoldAtPos } from '@features/editor/extensions/heading-fold';
 
 interface SearchReplacePanelProps {
   editor: Editor | null;
@@ -125,10 +126,26 @@ export function SearchReplacePanel({ editor, visible, onClose }: SearchReplacePa
         // rAF 触发时 editor 可能已经被父组件卸载 (切语言/切文档) —
         // 此时 view.dom 已失效, 跳过整个滚动逻辑。
         if (!editor || editor.isDestroyed) return;
-        const currentEl = editor.view?.dom.querySelector('.search-result-current');
-        if (currentEl) {
-          currentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
+        const currentEl = editor.view?.dom.querySelector<HTMLElement>('.search-result-current');
+        if (!currentEl) return;
+
+        // 折叠区块内的匹配没有布局盒, scrollIntoView 会静默失效。先展开
+        // 祖先折叠, 再在下一帧重新查询（展开会重建这部分 DOM）。
+        if (currentEl.closest(`.${HEADING_FOLDED_CONTENT_CLASS}`)) {
+          try {
+            unfoldAtPos(editor.view, editor.view.posAtDOM(currentEl, 0));
+          } catch {
+            return;
+          }
+          requestAnimationFrame(() => {
+            if (!editor || editor.isDestroyed) return;
+            editor.view?.dom.querySelector<HTMLElement>('.search-result-current')
+              ?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+          });
+          return;
         }
+
+        currentEl.scrollIntoView({ behavior: 'smooth', block: 'center' });
       });
     };
 

@@ -377,7 +377,7 @@ class NoteReferenceView implements ProseMirrorNodeView {
         const slug = new GithubSlugger().slug(attrs.heading!);
         let attempts = 0;
         const navigate = () => {
-          if (this.destroyed || navigateToHeadingAnchor(this.view.dom, `#${slug}`)) return;
+          if (this.destroyed || navigateToHeadingAnchor(this.view.dom, `#${slug}`, this.view)) return;
           attempts += 1;
           if (attempts < 10) window.setTimeout(navigate, 50);
         };

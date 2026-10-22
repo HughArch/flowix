@@ -343,7 +343,7 @@ export function attachLinkHoverTooltip(
     if (event.type === 'click' && href.startsWith('#')) {
       event.preventDefault();
       hide();
-      navigateToHeadingAnchor(editor.view.dom, href);
+      navigateToHeadingAnchor(editor.view.dom, href, editor.view);
       return;
     }
 

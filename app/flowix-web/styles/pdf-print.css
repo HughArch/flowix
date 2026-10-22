@@ -579,6 +579,17 @@
     text-decoration: line-through;
   }
 
+  /* Folded content is hidden with `display: none` on screen. Printing reads the
+   * live DOM, so every folded block must be restored to its native display
+   * value or it would silently vanish from the PDF. */
+  html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror > .is-heading-folded-content {
+    display: revert !important;
+  }
+
+  html.flowix-pdf-printing .flowix-pdf-print-scope .heading-fold-toggle {
+    display: none !important;
+  }
+
   /* CodeMirror source mode still needs its virtual surface expanded. */
   html.flowix-pdf-printing .flowix-pdf-print-scope .code-editor .cm-gutters {
     display: none !important;
