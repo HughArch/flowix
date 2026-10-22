@@ -4,6 +4,7 @@ import { Fragment, type Node as PMNode } from 'prosemirror-model'
 import { Plugin, PluginKey, Selection, type Transaction } from 'prosemirror-state'
 import { Decoration, DecorationSet, type EditorView } from 'prosemirror-view'
 import { getCurrentBlockInfo, type CurrentBlockInfo } from '@features/editor/components/drag-context-menu/block-info'
+import { resolveBlockContainer } from './block-selection'
 import {
   canMergeListRuns,
   createListOfType,
@@ -39,6 +40,12 @@ export interface BlockDropTarget {
 }
 
 interface BlockDragState extends DraggedBlockRange {
+  /**
+   * Every block moved by this gesture, in document order. The primary range
+   * (the one whose handle started the drag) is duplicated at the top level
+   * for the single-block code paths and for drop-target resolution.
+   */
+  ranges: DraggedBlockRange[]
   /** Kept for the existing drop-line API and backwards-compatible tests. */
   dropPos: number | null
   dropTarget: BlockDropTarget | null
@@ -73,15 +80,17 @@ export const BlockDragExtension = Extension.create({
             const node = tr.doc.nodeAt(from.pos)
             if (!node || node.type !== tr.before.nodeAt(value.from)?.type
               || to.pos !== from.pos + node.nodeSize) return null
-            const $source = tr.doc.resolve(from.pos)
-            const parent = $source.parent
-            if (parent.type.name !== value.parentTypeName) return null
+            const ranges = mapDraggedRanges(tr, value.ranges, value.from, from.pos, to.pos)
+            if (ranges.length === 0) return null
+            const container = resolveBlockContainer(tr.doc, from.pos)
+            if (!container || container.parentTypeName !== value.parentTypeName) return null
             return {
               ...value,
               from: from.pos,
               to: to.pos,
-              parentStart: $source.start($source.depth),
+              parentStart: container.parentStart,
               sourceDepth: value.isListItem ? getListItemDepth(tr.doc, from.pos) : 0,
+              ranges,
               dropPos: value.dropPos == null ? null : tr.mapping.map(value.dropPos, -1),
               dropTarget: value.dropTarget ? mapDropTarget(value.dropTarget, tr.mapping) : null,
             }
@@ -93,11 +102,13 @@ export const BlockDragExtension = Extension.create({
             if (!drag) return null
 
             const decorations = []
-            const draggedNode = state.doc.nodeAt(drag.from)
-            if (draggedNode && drag.to === drag.from + draggedNode.nodeSize) {
-              decorations.push(Decoration.node(drag.from, drag.to, {
-                class: 'flowix-block-drag-source',
-              }))
+            for (const range of drag.ranges) {
+              const draggedNode = state.doc.nodeAt(range.from)
+              if (draggedNode && range.to === range.from + draggedNode.nodeSize) {
+                decorations.push(Decoration.node(range.from, range.to, {
+                  class: 'flowix-block-drag-source',
+                }))
+              }
             }
 
             const dropPos = drag.dropTarget?.insertPos ?? drag.dropPos
@@ -120,35 +131,105 @@ export const BlockDragExtension = Extension.create({
   },
 })
 
-export function startBlockDrag(editor: Editor, info?: CurrentBlockInfo | null): boolean {
+export function startBlockDrag(
+  editor: Editor,
+  info?: CurrentBlockInfo | null,
+  additionalBlocks: BlockDragTarget[] = [],
+): boolean {
   if (editor.isDestroyed || !editor.isEditable) return false
   const block = info ?? getCurrentBlockInfo(editor)
   if (!block) return false
-  return startBlockDragForView(editor.view, block)
+  return startBlockDragForView(editor.view, block, additionalBlocks)
 }
 
-export function startBlockDragForView(view: EditorView, block: BlockDragTarget): boolean {
+export function startBlockDragForView(
+  view: EditorView,
+  block: BlockDragTarget,
+  additionalBlocks: BlockDragTarget[] = [],
+): boolean {
   if (view.isDestroyed) return false
 
-  const node = view.state.doc.nodeAt(block.pos)
-  if (!node) return false
-  const $pos = view.state.doc.resolve(block.pos)
-  const parent = $pos.parent
-  const isListItem = LIST_ITEM_TYPES.has(node.type.name) && LIST_TYPES.has(parent.type.name)
+  const primary = draggedRangeAt(view, block)
+  if (!primary) return false
+
+  // A set may span containers (a list item plus a heading). The drag layer
+  // treats such mixed sets as a root-level move and wraps list items in lists
+  // on insert, so every selected block travels.
+  const ranges = [primary]
+  for (const extra of additionalBlocks) {
+    if (extra.pos === primary.from) continue
+    const range = draggedRangeAt(view, extra)
+    if (!range) continue
+    ranges.push(range)
+  }
+  ranges.sort((left, right) => left.from - right.from)
+
   const range: BlockDragState = {
-    from: block.pos,
-    to: block.pos + block.nodeSize,
-    parentStart: $pos.start($pos.depth),
-    parentTypeName: parent.type.name,
-    isListItem,
-    sourceDepth: isListItem ? getListItemDepth(view.state.doc, block.pos) : 0,
-    sourceListTypeName: isListItem ? parent.type.name : null,
+    ...primary,
+    ranges,
     dropPos: null,
     dropTarget: null,
   }
 
   view.dispatch(view.state.tr.setMeta(blockDragPluginKey, range))
   return true
+}
+
+function draggedRangeAt(view: EditorView, block: BlockDragTarget): DraggedBlockRange | null {
+  const node = view.state.doc.nodeAt(block.pos)
+  if (!node) return null
+  const container = resolveBlockContainer(view.state.doc, block.pos)
+  if (!container) return null
+  const parent = container.parent
+  const isListItem = LIST_ITEM_TYPES.has(node.type.name) && LIST_TYPES.has(parent.type.name)
+  return {
+    from: block.pos,
+    to: block.pos + node.nodeSize,
+    parentStart: container.parentStart,
+    parentTypeName: container.parentTypeName,
+    isListItem,
+    sourceDepth: isListItem ? getListItemDepth(view.state.doc, block.pos) : 0,
+    sourceListTypeName: isListItem ? parent.type.name : null,
+  }
+}
+
+function mapDraggedRanges(
+  tr: Transaction,
+  ranges: readonly DraggedBlockRange[],
+  primaryFrom: number,
+  mappedPrimaryFrom: number,
+  mappedPrimaryTo: number,
+): DraggedBlockRange[] {
+  const mapped: DraggedBlockRange[] = []
+  for (const range of ranges) {
+    const isPrimary = range.from === primaryFrom
+    const from = isPrimary ? { pos: mappedPrimaryFrom, deletedAcross: false } : tr.mapping.mapResult(range.from, 1)
+    const to = isPrimary ? { pos: mappedPrimaryTo, deletedAcross: false } : tr.mapping.mapResult(range.to, -1)
+    if (from.deletedAcross || to.deletedAcross || from.pos >= to.pos) continue
+
+    // Re-resolve the container: a preceding edit can shift the list that owns
+    // this block, and `buildDraggedNodes` looks the source list up by
+    // `parentStart`.
+    const container = resolveBlockContainer(tr.doc, from.pos)
+    const node = tr.doc.nodeAt(from.pos)
+    const isListItem = Boolean(
+      node
+      && container
+      && LIST_ITEM_TYPES.has(node.type.name)
+      && LIST_TYPES.has(container.parentTypeName),
+    )
+    mapped.push({
+      ...range,
+      from: from.pos,
+      to: to.pos,
+      parentStart: container?.parentStart ?? range.parentStart,
+      parentTypeName: container?.parentTypeName ?? range.parentTypeName,
+      isListItem,
+      sourceDepth: isListItem ? getListItemDepth(tr.doc, from.pos) : 0,
+      sourceListTypeName: isListItem ? container!.parentTypeName : null,
+    })
+  }
+  return mapped
 }
 
 export function endBlockDrag(editor: Editor): void {
@@ -201,7 +282,7 @@ export function dropBlockDragAtForView(view: EditorView, clientX: number, client
 
 function getValidDropTarget(
   view: EditorView,
-  drag: DraggedBlockRange,
+  drag: BlockDragState,
   clientX: number,
   clientY: number,
 ): BlockDropTarget | null {
@@ -210,19 +291,133 @@ function getValidDropTarget(
     && (clientX < editorRect.left - 48 || clientX > editorRect.right + 48
       || clientY < editorRect.top - 48 || clientY > editorRect.bottom + 48)) return null
 
-  if (drag.isListItem) {
-    const target = findListDropTarget(view, drag, clientX, clientY)
-    return target && isValidDropPos(view, drag, target) ? target : null
+  const context = dragContext(drag)
+  if (isUniformListDrag(drag)) {
+    const target = findListDropTarget(view, context, clientX, clientY)
+    return target && isValidDropPos(view, context, target) ? target : null
   }
 
-  const splitTarget = findSplitListTarget(view, drag, clientX, clientY)
-  if (splitTarget && isValidDropPos(view, drag, splitTarget)) return splitTarget
+  // Mixed sets (list items + ordinary blocks) only promise root-level
+  // insertion: a non-list block cannot become a list item.
+  if (!needsRootDragContext(drag)) {
+    const splitTarget = findSplitListTarget(view, context, clientX, clientY)
+    if (splitTarget && isValidDropPos(view, context, splitTarget)) return splitTarget
+  }
 
-  const dropPos = findInsertPos(view, drag, clientX, clientY)
+  const dropPos = findInsertPos(view, context, clientX, clientY)
   const target = dropPos == null ? null : makeGenericDropTarget(dropPos)
-  return target && isValidDropPos(view, drag, target)
+  return target && isValidDropPos(view, context, target)
     ? target
     : null
+}
+
+/**
+ * A drag whose blocks all live in the same list keeps the list-aware targets
+ * (reorder inside the list, create/split/nest lists). Anything else either
+ * uses its own parent (ordinary blocks) or is promoted to root level (mixed
+ * list + non-list sets).
+ */
+function isUniformListDrag(drag: Pick<BlockDragState, 'ranges'>): boolean {
+  const [first] = drag.ranges
+  if (!first || !first.isListItem) return false
+  return drag.ranges.every((range) => range.isListItem && range.parentStart === first.parentStart)
+}
+
+function needsRootDragContext(drag: Pick<BlockDragState, 'ranges'>): boolean {
+  const [first] = drag.ranges
+  if (!first) return false
+  const spansContainers = drag.ranges.some((range) => (
+    range.parentStart !== first.parentStart || range.parentTypeName !== first.parentTypeName
+  ))
+  const hasListItem = drag.ranges.some((range) => range.isListItem)
+  const hasOther = drag.ranges.some((range) => !range.isListItem)
+  return spansContainers || (hasListItem && hasOther)
+}
+
+function dragContext(drag: BlockDragState): BlockDragState {
+  if (!needsRootDragContext(drag)) return drag
+  return {
+    ...drag,
+    parentStart: 0,
+    parentTypeName: 'doc',
+    isListItem: false,
+    sourceDepth: 0,
+    sourceListTypeName: null,
+  }
+}
+
+/**
+ * Nodes to insert, in document order. Consecutive list items are wrapped in a
+ * list of their source type so the fragment is valid at a root-level target;
+ * ordinary blocks pass through unchanged.
+ */
+function buildDraggedNodes(
+  state: EditorView['state'],
+  drag: Pick<BlockDragState, 'ranges'>,
+): PMNode[] {
+  const nodes: PMNode[] = []
+  let pendingItems: PMNode[] = []
+  let pendingList: PMNode | null = null
+  let pendingStartIndex = 0
+  const flush = () => {
+    if (pendingItems.length === 0 || !pendingList) return
+    nodes.push(wrapDraggedItems(state, pendingList, pendingItems, pendingStartIndex))
+    pendingItems = []
+    pendingList = null
+  }
+
+  for (const range of drag.ranges) {
+    const node = state.doc.nodeAt(range.from)
+    if (!node) continue
+    if (range.isListItem) {
+      const list = state.doc.nodeAt(range.parentStart - 1)
+      if (list && isListTypeName(list.type.name)) {
+        if (pendingList && pendingList.type.name !== list.type.name) flush()
+        if (pendingItems.length === 0) {
+          pendingList = list
+          pendingStartIndex = resolveBlockContainer(state.doc, range.from)?.index ?? 0
+        }
+        pendingItems.push(node)
+        continue
+      }
+    }
+    flush()
+    nodes.push(node)
+  }
+  flush()
+  return nodes
+}
+
+/** Whether an insertion at `insertPos` lands outside every list container. */
+function shouldWrapInsertionInList(state: EditorView['state'], insertPos: number): boolean {
+  try {
+    const doc = state.doc
+    const $pos = doc.resolve(Math.min(Math.max(insertPos, 0), doc.content.size))
+    if ($pos.depth === 0) return true
+    return !LIST_TYPES.has($pos.parent.type.name)
+  } catch {
+    return true
+  }
+}
+
+/** Remove emptied source lists after the dragged runs are deleted. */
+function cleanupSourceLists(
+  tr: Transaction,
+  state: EditorView['state'],
+  drag: Pick<BlockDragState, 'ranges'>,
+): void {
+  const removedByList = new Map<number, number>()
+  for (const range of drag.ranges) {
+    if (!range.isListItem) continue
+    const listPos = range.parentStart - 1
+    removedByList.set(listPos, (removedByList.get(listPos) ?? 0) + 1)
+  }
+  for (const [listPos, removedCount] of removedByList) {
+    const list = state.doc.nodeAt(listPos)
+    if (!list || !LIST_TYPES.has(list.type.name)) continue
+    cleanupSourceList(tr, tr.mapping.map(listPos, -1), list.childCount === removedCount)
+  }
+  removeEmptyLists(tr)
 }
 
 function makeGenericDropTarget(insertPos: number): BlockDropTarget {
@@ -253,24 +448,23 @@ function moveDraggedBlock(view: EditorView, clientX: number, clientY: number): b
   const { state } = view
   if (target.splitList) return moveBlockBetweenListItems(view, drag, target.splitList)
   if (target.nestList) return moveListItemIntoNestedList(view, drag, target.nestList)
-  const slice = state.doc.slice(drag.from, drag.to)
-  const sourceListPos = drag.isListItem ? drag.parentStart - 1 : null
-  const sourceList = sourceListPos == null ? null : state.doc.nodeAt(sourceListPos)
-  const sourceIndex = drag.isListItem ? state.doc.resolve(drag.from).index() : 0
+  // A list item entering an existing list must stay a bare item; at a root
+  // level target it has to be wrapped in a list to be schema-valid.
+  const insertionNodes = shouldWrapInsertionInList(state, target.insertPos)
+    ? buildDraggedNodes(state, drag)
+    : draggedNodes(state, drag)
+  if (insertionNodes.length === 0) {
+    view.dispatch(state.tr.setMeta(blockDragPluginKey, null))
+    return false
+  }
   try {
-    const tr = state.tr.delete(drag.from, drag.to)
+    const tr = deleteDraggedRanges(state, drag)
     const mappedInsertPos = tr.mapping.map(target.insertPos, -1)
-    const content = target.createList
-      ? sourceList && isListTypeName(sourceList.type.name)
-        ? wrapDraggedItem(state, sourceList, state.doc.nodeAt(drag.from)!, sourceIndex)
-        : null
-      : slice.content
-    if (!content) throw new Error('Cannot create list drop target')
-    tr.insert(mappedInsertPos, content)
-    if (sourceListPos != null) {
-      cleanupSourceList(tr, tr.mapping.map(sourceListPos, -1), sourceList?.childCount === 1)
-    }
+    tr.insert(mappedInsertPos, Fragment.fromArray(insertionNodes))
+    cleanupSourceLists(tr, state, drag)
     if (target.createList) {
+      // Cleanup may have removed a source list above the insertion point;
+      // remap instead of reusing the stale mapped position.
       mergeAdjacentRootLists(tr, tr.mapping.map(target.insertPos, -1))
     }
     removeEmptyLists(tr)
@@ -283,18 +477,36 @@ function moveDraggedBlock(view: EditorView, clientX: number, clientY: number): b
   }
 }
 
-function nestItemInParent(
+/** Nodes moved by the gesture, in document order. */
+function draggedNodes(state: EditorView['state'], drag: Pick<BlockDragState, 'ranges'>): PMNode[] {
+  const nodes: PMNode[] = []
+  for (const range of drag.ranges) {
+    const node = state.doc.nodeAt(range.from)
+    if (node) nodes.push(node)
+  }
+  return nodes
+}
+
+/** Delete every dragged run, bottom-up so earlier positions stay valid. */
+function deleteDraggedRanges(state: EditorView['state'], drag: Pick<BlockDragState, 'ranges'>): Transaction {
+  const tr = state.tr
+  const ranges = [...drag.ranges].sort((left, right) => right.from - left.from)
+  for (const range of ranges) tr.delete(range.from, range.to)
+  return tr
+}
+
+function nestItemsInParent(
   state: EditorView['state'],
   parentItem: PMNode,
   sourceList: PMNode,
-  sourceItem: PMNode,
+  sourceItems: readonly PMNode[],
   sourceIndex: number,
 ): PMNode {
   const children = itemsOf(parentItem)
   const lastChild = children[children.length - 1]
   const nestedList = lastChild?.type === sourceList.type
-    ? lastChild.type.createChecked(lastChild.attrs, lastChild.content.append(Fragment.from(sourceItem)))
-    : createListOfType(state.schema, sourceList.type.name as ListTypeName, [sourceItem],
+    ? lastChild.type.createChecked(lastChild.attrs, lastChild.content.append(Fragment.fromArray(sourceItems)))
+    : createListOfType(state.schema, sourceList.type.name as ListTypeName, [...sourceItems],
       sourceList.type.name === 'orderedList'
         ? { ...sourceList.attrs, start: (Number(sourceList.attrs.start) || 1) + sourceIndex }
         : sourceList.attrs)
@@ -306,28 +518,32 @@ function nestItemInParent(
 
 function moveListItemIntoNestedList(
   view: EditorView,
-  drag: DraggedBlockRange,
+  drag: BlockDragState,
   target: NonNullable<BlockDropTarget['nestList']>,
 ): boolean {
   const { state } = view
-  const sourceItem = state.doc.nodeAt(drag.from)
+  const sourceItems = draggedNodes(state, drag)
   const $source = state.doc.resolve(drag.from)
   const sourceList = $source.parent
-  if (!sourceItem || !isListTypeName(sourceList.type.name)) return false
+  if (sourceItems.length === 0 || !isListTypeName(sourceList.type.name)) return false
   const sourceIndex = $source.index()
   const sourceListPos = drag.parentStart - 1
   try {
-    const tr = state.tr.delete(drag.from, drag.to)
+    const tr = deleteDraggedRanges(state, drag)
     const itemPos = tr.mapping.map(target.itemPos, -1)
     const parentItem = tr.doc.nodeAt(itemPos)
     if (!parentItem || !LIST_ITEM_TYPES.has(parentItem.type.name)) throw new Error('Drop item disappeared')
-    const updated = nestItemInParent(state, parentItem, sourceList, sourceItem, sourceIndex)
+    const updated = nestItemsInParent(state, parentItem, sourceList, sourceItems, sourceIndex)
     const $item = tr.doc.resolve(itemPos)
     if (!$item.parent.canReplace($item.index(), $item.index() + 1, Fragment.from(updated))) {
       throw new Error('Drop item cannot contain the nested list')
     }
     tr.replaceWith(itemPos, itemPos + parentItem.nodeSize, updated)
-    cleanupSourceList(tr, tr.mapping.map(sourceListPos, -1), sourceList.childCount === 1)
+    cleanupSourceList(
+      tr,
+      tr.mapping.map(sourceListPos, -1),
+      sourceList.childCount === drag.ranges.length,
+    )
     removeEmptyLists(tr)
     tr.setMeta(blockDragPluginKey, null)
     view.dispatch(tr.scrollIntoView())
@@ -340,17 +556,17 @@ function moveListItemIntoNestedList(
 
 function moveBlockBetweenListItems(
   view: EditorView,
-  drag: DraggedBlockRange,
+  drag: BlockDragState,
   target: NonNullable<BlockDropTarget['splitList']>,
 ): boolean {
   const { state } = view
-  const block = state.doc.nodeAt(drag.from)
-  if (!block || drag.to !== drag.from + block.nodeSize) return false
+  const blocks = draggedNodes(state, drag)
+  if (blocks.length === 0) return false
   const sourceList = drag.isListItem ? state.doc.resolve(drag.from).parent : null
   const sourceIndex = drag.isListItem ? state.doc.resolve(drag.from).index() : 0
   const sourceListPos = drag.isListItem ? drag.parentStart - 1 : null
   try {
-    const tr = state.tr.delete(drag.from, drag.to)
+    const tr = deleteDraggedRanges(state, drag)
     const listPos = tr.mapping.map(target.listPos, -1)
     const list = tr.doc.nodeAt(listPos)
     if (!list || !LIST_TYPES.has(list.type.name)) throw new Error('Drop list disappeared')
@@ -361,16 +577,22 @@ function moveBlockBetweenListItems(
     const before = listWithItems(list, items.slice(0, target.boundaryIndex))!
     const after = listWithItems(list, items.slice(target.boundaryIndex), target.boundaryIndex)!
     const middle = sourceList
-      ? wrapDraggedItem(state, sourceList, block, sourceIndex)
-      : block
-    const replacement = [before, middle, after]
+      ? wrapDraggedItems(state, sourceList, blocks, sourceIndex)
+      : null
+    const replacement = middle ? [before, middle, after] : [before, ...blocks, after]
     const $list = tr.doc.resolve(listPos)
     if (!$list.parent.canReplace($list.index(), $list.index() + 1, Fragment.fromArray(replacement))) {
       throw new Error('Destination cannot contain the block')
     }
     tr.replaceWith(listPos, listPos + list.nodeSize, replacement)
     tr.setSelection(Selection.near(tr.doc.resolve(listPos + before.nodeSize + 1)))
-    if (sourceListPos != null) cleanupSourceList(tr, tr.mapping.map(sourceListPos, -1), sourceList?.childCount === 1)
+    if (sourceListPos != null) {
+      cleanupSourceList(
+        tr,
+        tr.mapping.map(sourceListPos, -1),
+        sourceList?.childCount === drag.ranges.length,
+      )
+    }
     removeEmptyLists(tr)
     tr.setMeta(blockDragPluginKey, null)
     view.dispatch(tr.scrollIntoView())
@@ -381,28 +603,28 @@ function moveBlockBetweenListItems(
   }
 }
 
-function wrapDraggedItem(
+function wrapDraggedItems(
   state: EditorView['state'],
   sourceList: PMNode,
-  item: PMNode,
+  items: readonly PMNode[],
   index: number,
 ): PMNode {
   if (!isListTypeName(sourceList.type.name)) throw new Error('Source item has no list')
   const attrs = sourceList.type.name === 'orderedList'
     ? { ...sourceList.attrs, start: (Number(sourceList.attrs.start) || 1) + index }
     : sourceList.attrs
-  return createListOfType(state.schema, sourceList.type.name, [item], attrs)
+  return createListOfType(state.schema, sourceList.type.name, [...items], attrs)
 }
 
 function findSplitListTarget(
   view: EditorView,
-  drag: DraggedBlockRange,
+  drag: BlockDragState,
   clientX: number,
   clientY: number,
 ): BlockDropTarget | null {
   const container = getContainingListContainer(view, clientY)
   if (!container || container.node.childCount < 2) return null
-  if (container.pos >= drag.from && container.pos < drag.to) return null
+  if (isDraggedBlockPos(drag, container.pos)) return null
   const dom = view.nodeDOM(container.pos)
   if (!(dom instanceof HTMLElement)) return null
   const rect = dom.getBoundingClientRect()
@@ -447,7 +669,7 @@ function findSplitListTarget(
   }
 }
 
-function findInsertPos(view: EditorView, drag: DraggedBlockRange, clientX: number, clientY: number): number | null {
+function findInsertPos(view: EditorView, drag: BlockDragState, clientX: number, clientY: number): number | null {
   const blockPos = findInsertPosBySiblingRects(view, drag, clientY)
   if (blockPos != null) return blockPos
 
@@ -476,7 +698,7 @@ function findInsertPos(view: EditorView, drag: DraggedBlockRange, clientX: numbe
   return clientY > rect.top + rect.height / 2 ? childPos + child.nodeSize : childPos
 }
 
-function findInsertPosBySiblingRects(view: EditorView, drag: DraggedBlockRange, clientY: number): number | null {
+function findInsertPosBySiblingRects(view: EditorView, drag: BlockDragState, clientY: number): number | null {
   const { doc } = view.state
   try {
     const $parentStart = doc.resolve(drag.parentStart)
@@ -515,7 +737,7 @@ interface TopLevelBlockRecord {
   bottom: number
 }
 
-function findListDropTarget(view: EditorView, drag: DraggedBlockRange, clientX: number, clientY: number): BlockDropTarget | null {
+function findListDropTarget(view: EditorView, drag: BlockDragState, clientX: number, clientY: number): BlockDropTarget | null {
   const topLevelBlocks = getTopLevelBlockRecords(view)
   const listContainer = getContainingListContainer(view, clientY)
 
@@ -530,8 +752,8 @@ function findListDropTarget(view: EditorView, drag: DraggedBlockRange, clientX: 
   const records: ListItemRecord[] = []
   view.state.doc.descendants((node, pos) => {
     if (!LIST_ITEM_TYPES.has(node.type.name)) return true
-    // The dragged item and every descendant item are one indivisible block.
-    if (pos >= drag.from && pos < drag.to) return true
+    // The dragged items and every descendant item are one indivisible block.
+    if (isDraggedBlockPos(drag, pos)) return true
     if (!isWithinList(view.state.doc, pos, listContainer.pos)) return true
 
     const dom = view.nodeDOM(pos)
@@ -573,11 +795,13 @@ function findListDropTarget(view: EditorView, drag: DraggedBlockRange, clientX: 
 
 function resolveNestedListDropTarget(
   view: EditorView,
-  drag: DraggedBlockRange,
+  drag: BlockDragState,
   anchor: ListItemRecord,
   clientX: number,
 ): BlockDropTarget | null {
-  if (anchor.pos <= drag.from && drag.to <= anchor.pos + anchor.node.nodeSize) return null
+  if (drag.ranges.some((range) => (
+    anchor.pos <= range.from && range.to <= anchor.pos + anchor.node.nodeSize
+  ))) return null
   const contentDom = view.nodeDOM(anchor.pos + 1)
   if (!(contentDom instanceof HTMLElement)) return null
   const rect = contentDom.getBoundingClientRect()
@@ -864,57 +1088,63 @@ function mapDropTarget(target: BlockDropTarget, mapping: { map: (pos: number, as
   }
 }
 
-function isValidDropPos(view: EditorView, drag: DraggedBlockRange, target: BlockDropTarget): boolean {
+function isValidDropPos(view: EditorView, drag: BlockDragState, target: BlockDropTarget): boolean {
   const { insertPos } = target
-  if (insertPos >= drag.from && insertPos <= drag.to) return false
+  if (drag.ranges.some((range) => insertPos >= range.from && insertPos <= range.to)) return false
   const { doc } = view.state
   if (insertPos < 0 || insertPos > doc.content.size) return false
+  const sourceNodes = draggedNodes(view.state, drag)
+  if (sourceNodes.length === 0) return false
 
   try {
     const $insert = doc.resolve(insertPos)
+    const insertionContent = LIST_TYPES.has($insert.parent.type.name)
+      ? Fragment.fromArray(sourceNodes)
+      : Fragment.fromArray(buildDraggedNodes(view.state, drag))
     if (target.nestList) {
       const parentItem = doc.nodeAt(target.nestList.itemPos)
-      const sourceItem = doc.nodeAt(drag.from)
       const $source = doc.resolve(drag.from)
       const sourceList = $source.parent
       if (!parentItem || !LIST_ITEM_TYPES.has(parentItem.type.name)
-        || !sourceItem || !isListTypeName(sourceList.type.name)) return false
-      const updated = nestItemInParent(view.state, parentItem, sourceList, sourceItem, $source.index())
+        || !sourceNodes.every((node) => LIST_ITEM_TYPES.has(node.type.name))
+        || !isListTypeName(sourceList.type.name)) return false
+      const updated = nestItemsInParent(view.state, parentItem, sourceList, sourceNodes, $source.index())
       const $item = doc.resolve(target.nestList.itemPos)
       return $item.parent.canReplace($item.index(), $item.index() + 1, Fragment.from(updated))
     }
     if (target.splitList) {
       const list = doc.nodeAt(target.splitList.listPos)
-      const block = doc.nodeAt(drag.from)
-      if (!list || !LIST_TYPES.has(list.type.name) || !block) return false
+      if (!list || !LIST_TYPES.has(list.type.name)) return false
       const index = target.splitList.boundaryIndex
       if (index <= 0 || index >= list.childCount) return false
       const items = itemsOf(list)
       const before = listWithItems(list, items.slice(0, index))!
       const after = listWithItems(list, items.slice(index), index)!
       const middle = drag.isListItem
-        ? wrapDraggedItem(view.state, doc.resolve(drag.from).parent, block, doc.resolve(drag.from).index())
-        : block
+        ? wrapDraggedItems(view.state, doc.resolve(drag.from).parent, sourceNodes, doc.resolve(drag.from).index())
+        : null
+      const replacement = middle ? [before, middle, after] : [before, ...sourceNodes, after]
       const $list = doc.resolve(target.splitList.listPos)
-      return $list.parent.canReplace($list.index(), $list.index() + 1, Fragment.fromArray([before, middle, after]))
+      return $list.parent.canReplace($list.index(), $list.index() + 1, Fragment.fromArray(replacement))
     }
     if (drag.isListItem && target.createList) {
-      if ($insert.depth !== 0 || !LIST_TYPES.has(target.listTypeName)) return false
-      const listType = view.state.schema.nodes[target.listTypeName]
-      if (!listType) return false
-      const list = listType.create(null, doc.slice(drag.from, drag.to).content)
-      return $insert.parent.canReplace($insert.index(), $insert.index(), Fragment.from(list))
+      if ($insert.depth !== 0) return false
+      return $insert.parent.canReplace($insert.index(), $insert.index(), insertionContent)
     }
     if (drag.isListItem && !LIST_TYPES.has($insert.parent.type.name)) return false
     if (!drag.isListItem) {
       const sameParent = $insert.parent.type.name === drag.parentTypeName && $insert.start($insert.depth) === drag.parentStart
       if (!sameParent) return false
     }
-    const slice = doc.slice(drag.from, drag.to)
-    return $insert.parent.canReplace($insert.index(), $insert.index(), slice.content)
+    return $insert.parent.canReplace($insert.index(), $insert.index(), insertionContent)
   } catch {
     return false
   }
+}
+
+/** True when `pos` is inside any block that the gesture is moving. */
+function isDraggedBlockPos(drag: Pick<BlockDragState, 'ranges'>, pos: number): boolean {
+  return drag.ranges.some((range) => pos >= range.from && pos < range.to)
 }
 
 function mergeAdjacentRootLists(tr: Transaction, insertedPos: number): void {

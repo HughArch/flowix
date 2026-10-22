@@ -121,6 +121,98 @@ export function getFocusedAgentThreadCardInfo(editor: Editor): CurrentBlockInfo 
   return result
 }
 
+/**
+ * Resolve the block under a pointer position. Used by the drag handle to
+ * follow the mouse, so block selection does not require focusing (and thereby
+ * replacing) the editor selection first.
+ *
+ * Two paths on purpose: `posAtCoords` understands document semantics
+ * (list items, tables) but can miss blocks whose DOM is not laid out the way
+ * ProseMirror expects. Falling back to the DOM element under the pointer keeps
+ * ordinary paragraphs hoverable.
+ */
+export function getBlockInfoAtCoords(
+  editor: Editor,
+  clientX: number,
+  clientY: number,
+): CurrentBlockInfo | null {
+  const view = editor.view
+  if (!view || view.isDestroyed) return null
+  return blockInfoFromCoords(view, clientX, clientY)
+    ?? blockInfoFromDom(view, clientX, clientY)
+}
+
+function blockInfoFromCoords(
+  view: Editor['view'],
+  clientX: number,
+  clientY: number,
+): CurrentBlockInfo | null {
+  let coords: { pos: number; inside: number } | null = null
+  try {
+    coords = view.posAtCoords({ left: clientX, top: clientY })
+  } catch {
+    return null
+  }
+  if (!coords) return null
+
+  // `inside` prefers an enclosing node (images, tables, cards); otherwise
+  // resolve the text position itself.
+  const anchor = coords.inside >= 0 ? coords.inside + 1 : coords.pos
+  return blockInfoAtPosition(view, anchor)
+}
+
+function blockInfoFromDom(
+  view: Editor['view'],
+  clientX: number,
+  clientY: number,
+): CurrentBlockInfo | null {
+  const element = document.elementFromPoint(clientX, clientY)
+  if (!(element instanceof HTMLElement) || !view.dom.contains(element)) return null
+
+  // Keep the same drag unit as `getTargetBlockDepth`: tables win over list
+  // items, list items win over their paragraphs.
+  const block = element.closest<HTMLElement>('table')
+    ?? element.closest<HTMLElement>('li')
+    ?? element.closest<HTMLElement>('p, h1, h2, h3, h4, h5, h6, blockquote, pre, .code-block-wrapper, .ProseMirror-node')
+  if (!block || !view.dom.contains(block)) return null
+
+  try {
+    return blockInfoAtPosition(view, view.posAtDOM(block, 0))
+  } catch {
+    return null
+  }
+}
+
+function blockInfoAtPosition(view: Editor['view'], anchor: number): CurrentBlockInfo | null {
+  try {
+    const doc = view.state.doc
+    const clamped = Math.min(Math.max(anchor, 0), doc.content.size)
+    let $pos = doc.resolve(clamped)
+    if ($pos.depth < 1) {
+      // At a node boundary the resolver can land in the container; step into
+      // the node that starts here.
+      if (clamped >= doc.content.size) return null
+      $pos = doc.resolve(clamped + 1)
+      if ($pos.depth < 1) return null
+    }
+    const depth = getTargetBlockDepth($pos)
+    const node = $pos.node(depth)
+    const pos = $pos.before(depth)
+    const dom = view.nodeDOM(pos)
+    if (!(dom instanceof HTMLElement)) return null
+    return {
+      node,
+      typeName: node.type.name,
+      attrs: node.attrs,
+      pos,
+      nodeSize: node.nodeSize,
+      dom,
+    }
+  } catch {
+    return null
+  }
+}
+
 function isCurrentBlockInfo(editor: Editor, info: CurrentBlockInfo): boolean {
   if (editor.isDestroyed || editor.view.isDestroyed) return false
 

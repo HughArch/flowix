@@ -1644,6 +1644,30 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   max-width: 100%;
 }
 
+/* 多块拖拽: 所有选中块堆进同一张 ghost 卡片, 顶角徽标显示数量。 */
+.flowix-block-drag-preview-stack {
+  position: relative;
+}
+
+.flowix-block-drag-preview-stack > * + * {
+  border-top: 1px dashed var(--border);
+}
+
+.flowix-block-drag-preview-count {
+  position: absolute;
+  top: -9px;
+  right: 8px;
+  z-index: 1;
+  padding: 0 6px;
+  border-radius: 999px;
+  background: var(--brand);
+  color: var(--primary-foreground);
+  font-size: 11px;
+  line-height: 18px;
+  white-space: nowrap;
+  pointer-events: none;
+}
+
 /* 节点级选中 (image / videoAttachment / fileAttachment 等
  * atom 节点被 NodeSelection 选中时): 用品牌色 outline 替代 Tiptap 默认
  * 的浅蓝 #8cf, 与 .is-block-selected 左侧描边、::selection 文字底色共

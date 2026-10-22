@@ -3,6 +3,7 @@ import { createPortal } from 'react-dom'
 import type { Editor } from '@tiptap/core'
 import {
   activateAgentThreadCard,
+  getBlockInfoAtCoords,
   getBlockInfoForInteraction,
   type CurrentBlockInfo,
 } from '@features/editor/components/drag-context-menu/block-info'
@@ -18,6 +19,7 @@ import {
 } from '@features/editor/components/drag-context-menu/use-block-drag-gesture'
 import { renderDragIcon } from '@features/editor/components/drag-context-menu/icons'
 import type { BlockMenuItem } from '@features/editor/components/drag-context-menu/items'
+import { clearBlockSelection } from '@features/editor/extensions/block-selection'
 import { HANDLE_SIZE } from '@features/editor/components/drag-context-menu/style'
 import { useDragHandlePosition } from '@features/editor/components/drag-context-menu/use-drag-handle-position'
 import { BlockActionMenu } from '@features/editor/components/drag-context-menu/block-action-menu'
@@ -51,23 +53,27 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
   const [menuInputMode, setMenuInputMode] = useState<'mouse' | 'keyboard'>('mouse')
   const [menuTarget, setMenuTarget] = useState<CurrentBlockInfo | null>(null)
   const containerRef = useRef<HTMLDivElement>(null)
+  const hoveredBlockRef = useRef<CurrentBlockInfo | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
   const ignoreBlur = useRef(false)
   const menuOpenRef = useRef(false)
   const menuTargetRef = useRef<CurrentBlockInfo | null>(null)
   const menuAnchorRectRef = useRef<DOMRect | null>(null)
   const openMenuRef = useRef<(anchorRect?: DOMRect) => void>(() => {})
-  const state = useDragHandlePosition(editor, fontSize, lineHeight, ignoreBlur, menuOpenRef, menuTargetRef)
+  const state = useDragHandlePosition(editor, fontSize, lineHeight, ignoreBlur, menuOpenRef, menuTargetRef, hoveredBlockRef)
   const handleTap = useCallback((anchorRect: DOMRect) => openMenuRef.current(anchorRect), [])
 
   const handleBlockDragStart = useCallback(() => {
+    // The drag plugin captured the block ranges already; drop the static
+    // selection decorations so only the drag-source styling remains.
+    clearBlockSelection(editor)
     menuOpenRef.current = false
     menuTargetRef.current = null
     menuAnchorRectRef.current = null
     setShowMenu(false)
     setIsHovered(false)
     setMenuTarget(null)
-  }, [])
+  }, [editor])
   const {
     isDragging,
     interactionBlockInfoRef,
@@ -87,6 +93,74 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
   useEffect(() => {
     menuOpenRef.current = showMenu
   }, [showMenu])
+
+  // Follow the block under the pointer. Selection-driven positioning alone
+  // would force a click into the body before every Mod-click on another row,
+  // and that click clears the block selection. Hover keeps the handle
+  // reachable without touching the editor selection.
+  const isDraggingRef = useRef(false)
+  useEffect(() => {
+    isDraggingRef.current = isDragging
+  }, [isDragging])
+
+  useEffect(() => {
+    if (!editor?.view || editor.view.isDestroyed) return
+    const viewDom = editor.view.dom as HTMLElement
+    const surface = (viewDom.closest('.editor-content') as HTMLElement | null) ?? viewDom
+    hoveredBlockRef.current = null
+    let frame: number | null = null
+    let lastPoint: { x: number; y: number } | null = null
+
+    const flush = () => {
+      frame = null
+      if (!lastPoint || menuOpenRef.current || isDraggingRef.current) return
+      if (editor.isDestroyed || editor.view.isDestroyed) return
+      // Moving onto the handle itself must not re-target (or hide) it.
+      const hit = document.elementFromPoint(lastPoint.x, lastPoint.y)
+      if (hit instanceof Node && containerRef.current?.contains(hit)) return
+
+      const info = getBlockInfoAtCoords(editor, lastPoint.x, lastPoint.y)
+      if (!info) {
+        // Do not leave the handle parked on a stale block when the pointer
+        // no longer resolves to one; fall back to the selection position.
+        if (!hoveredBlockRef.current) return
+        hoveredBlockRef.current = null
+        state.refresh()
+        return
+      }
+      const previous = hoveredBlockRef.current
+      if (previous && previous.pos === info.pos && previous.typeName === info.typeName) return
+      hoveredBlockRef.current = info
+      state.refresh()
+    }
+
+    const handlePointerMove = (event: PointerEvent) => {
+      if (event.pointerType === 'touch') return
+      lastPoint = { x: event.clientX, y: event.clientY }
+      if (frame != null) return
+      frame = window.requestAnimationFrame(flush)
+    }
+
+    const handlePointerLeave = () => {
+      lastPoint = null
+      if (menuOpenRef.current || isDraggingRef.current) return
+      if (!hoveredBlockRef.current) return
+      hoveredBlockRef.current = null
+      state.refresh()
+    }
+
+    // Pressing into the body does NOT clear the block selection: users often
+    // click a line to focus it before extending the selection, and that click
+    // must not discard blocks they already picked. The set is cleared by a
+    // plain handle click (menu), Escape, or the start of a drag instead.
+    surface.addEventListener('pointermove', handlePointerMove)
+    surface.addEventListener('pointerleave', handlePointerLeave)
+    return () => {
+      if (frame != null) window.cancelAnimationFrame(frame)
+      surface.removeEventListener('pointermove', handlePointerMove)
+      surface.removeEventListener('pointerleave', handlePointerLeave)
+    }
+  }, [editor, state.refresh])
 
   useEffect(() => {
     const handleBlur = () => {
