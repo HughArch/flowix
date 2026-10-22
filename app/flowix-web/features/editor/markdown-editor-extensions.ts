@@ -25,6 +25,7 @@ import { SearchAndReplace } from '@features/editor/extensions/search-replace';
 import Frontmatter from '@features/editor/extensions/frontmatter';
 import { MenuPinExtension } from '@features/editor/extensions/menu-pin';
 import { BlockDragExtension } from '@features/editor/extensions/block-drag';
+import { HeadingFoldExtension, type HeadingFoldLabels } from '@features/editor/extensions/heading-fold';
 import { ListTypeShortcuts } from '@features/editor/extensions/list-transforms';
 import { SlashMenu } from '@features/editor/extensions/slash-menu';
 import { AgentThreadCard } from '@features/agent/thread-card';
@@ -287,6 +288,7 @@ export interface MarkdownEditorExtensionContext {
   transitionId?: number | null;
   workspaceHost: WorkspaceHostId;
   getPlaceholder: () => string;
+  getHeadingFoldLabels: () => HeadingFoldLabels;
 }
 
 /** Full interactive editor registry; parser specs are shared through pure Markdown modules. */
@@ -299,6 +301,7 @@ export function createMarkdownEditorExtensions({
   transitionId,
   workspaceHost,
   getPlaceholder,
+  getHeadingFoldLabels,
 }: MarkdownEditorExtensionContext, codeBlockExtension = CodeBlockShikiBase) {
   return [
     StarterKit.configure({
@@ -363,6 +366,7 @@ export function createMarkdownEditorExtensions({
     SearchAndReplace,
     MenuPinExtension,
     BlockDragExtension,
+    HeadingFoldExtension.configure({ getLabels: getHeadingFoldLabels }),
     ListTypeShortcuts,
   ];
 }

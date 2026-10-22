@@ -1,11 +1,19 @@
 import type { Editor } from '@tiptap/core'
+import type { Transaction } from '@tiptap/pm/state'
 import { createPortal } from 'react-dom'
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 import { useI18n } from '@/lib/i18n'
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar'
+import {
+  HEADING_FOLDED_CONTENT_CLASS,
+  computeHeadingRange,
+  headingFoldPluginKey,
+  toggleHeadingFold,
+} from '@features/editor/extensions/heading-fold'
 
 const HEADING_SELECTOR = 'h1, h2, h3, h4'
 const NON_DOCUMENT_HEADING_SELECTOR = '.agent-thread-card, .frontmatter-property-node'
+const FOLDED_CONTENT_SELECTOR = `.${HEADING_FOLDED_CONTENT_CLASS}`
 const MAX_OUTLINE_ITEMS = 30
 const REVEAL_DELAY_MS = 450
 const HEADING_REFRESH_DEBOUNCE_MS = 200
@@ -17,15 +25,22 @@ export interface HeadingItem {
   element: HTMLElement
   level: 1 | 2 | 3 | 4
   text: string
+  /** Mirrors the document fold decoration so the outline can render both the
+   *  toggle direction and the collapsed subtree. */
+  folded: boolean
 }
 
 export function extractHeadings(editorRoot: HTMLElement): HeadingItem[] {
   return Array.from(editorRoot.querySelectorAll<HTMLElement>(HEADING_SELECTOR))
     .filter((heading) => !heading.closest(NON_DOCUMENT_HEADING_SELECTOR))
+    // Folded blocks stay in the DOM but have no layout box; listing them would
+    // make every scroll calculation land on zero coordinates.
+    .filter((heading) => !heading.closest(FOLDED_CONTENT_SELECTOR))
     .map((element) => ({
       element,
       level: Number(element.tagName.slice(1)) as HeadingItem['level'],
       text: element.textContent?.trim() ?? '',
+      folded: element.dataset.headingFolded === 'true',
     }))
 }
 
@@ -79,7 +94,8 @@ function sameHeadings(left: HeadingItem[], right: HeadingItem[]): boolean {
   for (let index = 0; index < left.length; index += 1) {
     const previous = left[index]
     const next = right[index]
-    if (previous.element !== next.element || previous.level !== next.level || previous.text !== next.text) {
+    if (previous.element !== next.element || previous.level !== next.level || previous.text !== next.text
+      || previous.folded !== next.folded) {
       return false
     }
   }
@@ -189,11 +205,30 @@ export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
         refreshHeadings()
       }, HEADING_REFRESH_DEBOUNCE_MS)
     }
-    editor.on('update', scheduleRefresh)
+    // Fold/unfold is a meta-only transaction, so `update` never fires for it.
+    // Doc changes still need to refresh the outline; selection-only
+    // transactions do not.
+    const handleTransaction = ({ transaction }: { transaction: Transaction }) => {
+      if (transaction.getMeta(headingFoldPluginKey)) {
+        // A fold toggle is a discrete user action: update the outline in the
+        // same tick so its arrow does not lag one debounce window behind the
+        // click. ProseMirror has already applied the new decorations to the
+        // DOM by the time `transaction` is emitted.
+        if (timer !== undefined) {
+          window.clearTimeout(timer)
+          timer = undefined
+        }
+        refreshHeadings()
+        return
+      }
+      if (!transaction.docChanged) return
+      scheduleRefresh()
+    }
+    editor.on('transaction', handleTransaction)
 
     return () => {
       if (timer !== undefined) window.clearTimeout(timer)
-      editor.off('update', scheduleRefresh)
+      editor.off('transaction', handleTransaction)
     }
   }, [editor, refreshHeadings])
 
@@ -323,6 +358,24 @@ export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
     }
   }, [editor, allHeadings])
 
+  // The outline shares the document's fold state. Resolve each row's heading
+  // position from its DOM node so the row toggle dispatches the exact same
+  // transaction as the gutter button.
+  const resolveHeadingPos = (element: HTMLElement): number | null => {
+    if (editor.isDestroyed) return null
+    try {
+      return editor.view.posAtDOM(element, 0) - 1
+    } catch {
+      return null
+    }
+  }
+
+  const headingHasContent = (pos: number): boolean => {
+    if (editor.isDestroyed) return false
+    const range = computeHeadingRange(editor.state.doc, pos)
+    return range !== null && range.end > range.start
+  }
+
   const scrollToHeading = (heading: HeadingItem) => {
     const scrollContainer = getScrollContainer(editor)
     if (!scrollContainer) return
@@ -398,18 +451,49 @@ export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
               className="heading-outline-navigation__popover-list-frame"
               scrollerClassName="heading-outline-navigation__popover-list"
             >
-              {allHeadings.map((heading, index) => (
-                <button
-                  key={`${heading.level}-${index}`}
-                  type="button"
-                  className={`heading-outline-navigation__popover-item${heading.element === activeElement ? ' is-active' : ''}`}
-                  data-level={heading.level}
-                  aria-current={heading.element === activeElement ? 'location' : undefined}
-                  onClick={() => scrollToHeading(heading)}
-                >
-                  {heading.text || `H${heading.level}`}
-                </button>
-              ))}
+              {allHeadings.map((heading, index) => {
+                const isActive = heading.element === activeElement
+                const pos = resolveHeadingPos(heading.element)
+                const hasContent = pos !== null && headingHasContent(pos)
+                const folded = heading.folded
+                return (
+                  <div
+                    key={`${heading.level}-${index}`}
+                    className={`heading-outline-navigation__popover-row${isActive ? ' is-active' : ''}`}
+                    data-level={heading.level}
+                  >
+                    {hasContent && pos !== null ? (
+                      <button
+                        type="button"
+                        className="heading-outline-navigation__popover-fold"
+                        data-folded={folded ? 'true' : 'false'}
+                        aria-label={folded
+                          ? t('editor.headingFold.unfold')
+                          : t('editor.headingFold.fold')}
+                        aria-expanded={!folded}
+                        onClick={(event) => {
+                          event.stopPropagation()
+                          toggleHeadingFold(editor.view, pos)
+                        }}
+                      />
+                    ) : (
+                      <span
+                        className="heading-outline-navigation__popover-fold-spacer"
+                        aria-hidden="true"
+                      />
+                    )}
+                    <button
+                      type="button"
+                      className="heading-outline-navigation__popover-item"
+                      data-level={heading.level}
+                      aria-current={isActive ? 'location' : undefined}
+                      onClick={() => scrollToHeading(heading)}
+                    >
+                      {heading.text || `H${heading.level}`}
+                    </button>
+                  </div>
+                )
+              })}
             </OverlayScrollbar>
           </div>,
           document.body,

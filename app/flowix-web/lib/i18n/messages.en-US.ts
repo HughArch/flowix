@@ -696,6 +696,9 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "preferences.shortcuts.action.editor.setParagraph.title": "Paragraph",
     "preferences.shortcuts.action.editor.setParagraph.description":
       "Convert the current block to paragraph text",
+    "preferences.shortcuts.action.editor.toggleHeadingFold.title": "Fold/unfold heading",
+    "preferences.shortcuts.action.editor.toggleHeadingFold.description":
+      "Fold or unfold the content under the current heading",
     "preferences.shortcuts.action.editor.toggleBulletList.title":
       "Bulleted list",
     "preferences.shortcuts.action.editor.toggleBulletList.description":
@@ -1927,6 +1930,8 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "editor.headingOutline.ariaLabel": "Document heading navigation",
     "editor.headingOutline.fullOutlineAriaLabel": "Full document outline",
     "editor.headingOutline.title": "Contents",
+    "editor.headingFold.fold": "Fold content under this heading",
+    "editor.headingFold.unfold": "Unfold content under this heading",
     "editor.slash.label.quote": "Quote",
     "editor.slash.label.codeBlock": "Code block",
     "editor.slash.label.table": "Table",

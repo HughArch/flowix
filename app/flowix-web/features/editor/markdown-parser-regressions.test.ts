@@ -36,6 +36,7 @@ function createEditor(content: string | JSONContent): Editor {
       getAttachmentNotebookId: () => undefined,
       workspaceHost: 'main-third',
       getPlaceholder: () => '',
+      getHeadingFoldLabels: () => ({ fold: '', unfold: '' }),
     }),
     content,
     contentType: typeof content === 'string' ? 'markdown' : 'json',

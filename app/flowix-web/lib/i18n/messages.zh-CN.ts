@@ -680,6 +680,9 @@ const zhCN = {
     "preferences.shortcuts.action.editor.setParagraph.title": "正文",
     "preferences.shortcuts.action.editor.setParagraph.description":
       "将当前块元素转换为正文",
+    "preferences.shortcuts.action.editor.toggleHeadingFold.title": "折叠/展开标题",
+    "preferences.shortcuts.action.editor.toggleHeadingFold.description":
+      "折叠或展开光标所在标题下的内容",
     "preferences.shortcuts.action.editor.toggleBulletList.title": "无序列表",
     "preferences.shortcuts.action.editor.toggleBulletList.description":
       "将当前块元素切换为无序列表",
@@ -1900,6 +1903,8 @@ const zhCN = {
     "editor.headingOutline.ariaLabel": "文档标题导航",
     "editor.headingOutline.fullOutlineAriaLabel": "完整文档目录",
     "editor.headingOutline.title": "目录",
+    "editor.headingFold.fold": "折叠此标题下的内容",
+    "editor.headingFold.unfold": "展开此标题下的内容",
     "editor.slash.label.quote": "引文",
     "editor.slash.label.codeBlock": "代码块",
     "editor.slash.label.table": "表格",

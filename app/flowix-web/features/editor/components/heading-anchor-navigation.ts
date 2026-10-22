@@ -1,5 +1,7 @@
 import GithubSlugger from 'github-slugger';
+import type { EditorView } from 'prosemirror-view';
 import { decodeEditorHref } from '@features/editor/editor-link-resolution';
+import { HEADING_FOLDED_CONTENT_CLASS, unfoldAtDomElement } from '@features/editor/extensions/heading-fold';
 
 const HEADING_SELECTOR = 'h1, h2, h3, h4, h5, h6';
 const NON_DOCUMENT_HEADING_SELECTOR = '.agent-thread-card, .frontmatter-property-node';
@@ -39,9 +41,19 @@ export function findHeadingByAnchor(
 export function navigateToHeadingAnchor(
   editorRoot: HTMLElement,
   href: string,
+  view?: EditorView,
 ): boolean {
   const target = findHeadingByAnchor(editorRoot, href);
   if (!target) return false;
+
+  // A heading inside a folded section has no layout box. Detect it from the
+  // decoration class rather than `getClientRects()` so the check also works
+  // without a laid-out DOM (tests, jsdom), then expand its ancestors before
+  // measuring. Otherwise the scroll math silently lands on the wrong position
+  // while still reporting success.
+  if (target.closest(`.${HEADING_FOLDED_CONTENT_CLASS}`)) {
+    if (!view || !unfoldAtDomElement(view, target)) return false;
+  }
 
   const scrollContainer = editorRoot.closest<HTMLElement>('.editor-content');
   if (!scrollContainer) {
