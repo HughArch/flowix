@@ -48,7 +48,7 @@
   pointer-events: auto;
   transform-origin: top center;
   animation: editor-link-tooltip-in 0.14s ease-out both;
-  z-index: 2147483647;
+  z-index: 90;
   /* 阴影改用 oklch(0 0 0 / .18) 而非 rgba(0,0,0,.18): 在 color-scheme 切换时
    * 不会因 sRGB 空间外推丢失色相信息, 跟弹窗的 --floating-bg 保持中性灰调一致. */
   box-shadow: 0 8px 20px oklch(0 0 0 / 0.18);

@@ -12,6 +12,7 @@ import type {
   WorkColumnSurfaceCapability, WorkColumnSurfaceChrome,
 } from './types';
 import { workspaceSurfaceAppearance } from '@features/workspace/public/surface-api';
+import type { WorkspaceSurfaceKind } from '@features/workspace/public/surface-api';
 import type { SurfaceAppearance } from '@features/workspace/public/surface-api';
 import {
   getWorkspaceSurfaceRendererDefinition,
@@ -22,11 +23,11 @@ import { WorkspaceSurfaceStateView } from './workspace-surface-state-view';
 
 import { workspaceSurfaceRendererDataFromWorkSurface } from './work-column-surface-adapter';
 import { registerStartupSurfaceHostView, registerWorkspaceSurfacePresentationOwner, reportEmptyWorkspaceSurfaceForIdentity, reportWorkspaceSurfacePresentation } from './workspace-surface-runtime';
-import type { SurfacePresentationUpdate } from '@features/workspace/model/surface-contract';
-import type { SurfaceLifecycle } from '@features/workspace/model/surface-contract';
+import type { SurfaceLifecycle, SurfacePresentationUpdate } from '@features/workspace/model/surface-contract';
 import { registerWorkspaceSurfaceLifecycle } from '@features/workspace/public/surface-lifecycle-api';
 
 export interface WorkColumnSurfaceDefinition {
+  contentKind: WorkspaceSurfaceKind;
   appearance: Readonly<SurfaceAppearance>;
   chrome: WorkColumnSurfaceChrome;
   capabilities: readonly WorkColumnSurfaceCapability[];
@@ -44,6 +45,7 @@ export function getWorkColumnSurfaceDefinition(
   const data = workspaceSurfaceRendererDataFromWorkSurface(surface);
   const definition = getWorkspaceSurfaceRendererDefinition(data);
   return {
+    contentKind: data.kind,
     appearance: definition.appearance,
     chrome: definition.appearance.headerStyle,
     capabilities: definition.capabilities,

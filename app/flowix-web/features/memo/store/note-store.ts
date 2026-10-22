@@ -1,5 +1,4 @@
-import { tableAutoCollectFilter, type TableAutoCollectCondition, type TableField } from '@features/multidimensional-table/model';
-import { noteMatchesCollectionFilter } from '@features/multidimensional-table/record-filter';
+import { normalizeNoteFilterCondition, noteFilterTitleQuery, createNoteFilterMatcher, type NoteFilterCondition, type NoteFilterField } from '@features/collection/public/note-filter-api';
 import { getAllPresets } from '@features/document/properties/presets';
 import { usePropertyPresetStore } from '@features/properties/property-preset-store';
 import { applyNoteListChanges, type NoteListChange } from './note-list-projection';
@@ -54,7 +53,7 @@ interface MemoListPageQuery {
   color?: ColorFilterValue;
   pluginId: string | null;
   customFilterId: string | null;
-  dataCondition?: TableAutoCollectCondition | null;
+  dataCondition?: NoteFilterCondition | null;
 }
 
 const MEMO_LIST_PAGE_SIZE = 50;
@@ -191,8 +190,8 @@ export interface NoteLibraryStore {
   activePluginId: string | null;
   activeCustomFilterId: string | null;
   activeSort: SortType;
-  dataConditionsByNotebook: Record<string, TableAutoCollectCondition>;
-  setDataCondition: (notebookId: string, condition: TableAutoCollectCondition) => void;
+  dataConditionsByNotebook: Record<string, NoteFilterCondition>;
+  setDataCondition: (notebookId: string, condition: NoteFilterCondition) => void;
   // 'color' 二级弹窗用的具体颜色值。'any'/'none'/具体颜色 (NOTE_COLORS)。
   // 当 activeFilter !== 'color' 时此值仍然保留, 切回颜色筛选时恢复。
   colorFilter: ColorFilterValue;
@@ -314,9 +313,9 @@ function mapMemoPage(
 }
 
 let memoFilterPropertyRegistry: ReturnType<typeof usePropertyPresetStore.getState>['registry'] | null = null;
-let memoFilterPropertyFields: TableField[] = [];
+let memoFilterPropertyFields: NoteFilterField[] = [];
 
-function getMemoFilterPropertyFields(): TableField[] {
+function getMemoFilterPropertyFields(): NoteFilterField[] {
   const registry = usePropertyPresetStore.getState().registry;
   if (registry !== memoFilterPropertyRegistry) {
     memoFilterPropertyRegistry = registry;
@@ -328,8 +327,8 @@ function getMemoFilterPropertyFields(): TableField[] {
   return memoFilterPropertyFields;
 }
 
-function matchesMemoDataCondition(memo: NoteListItem, condition?: TableAutoCollectCondition | null): boolean {
-  return !condition || noteMatchesCollectionFilter(memo, getMemoFilterPropertyFields(), '', tableAutoCollectFilter(condition));
+function matchesMemoDataCondition(memo: NoteListItem, condition?: NoteFilterCondition | null): boolean {
+  return createNoteFilterMatcher(condition, getMemoFilterPropertyFields())(memo);
 }
 
 async function loadMatchingMemoPage(
@@ -341,6 +340,8 @@ async function loadMatchingMemoPage(
   const notes: NoteListItem[] = [];
   let nextCursor = cursor;
   let hasMore = false;
+  const matchesDataCondition = createNoteFilterMatcher(query.dataCondition, getMemoFilterPropertyFields());
+  const titleFilter = noteFilterTitleQuery(query.dataCondition);
   do {
     const response = await noteRepository.listByPath({
       notebookId: query.notebookId,
@@ -350,10 +351,11 @@ async function loadMatchingMemoPage(
       color: query.color,
       ...(nextCursor ? { cursor: nextCursor } : {}),
       limit: MEMO_LIST_PAGE_SIZE - notes.length,
+      titleFilter,
     });
     if (!isCurrent()) return { notes: [], nextCursor: null, hasMore: false };
     notes.push(...mapMemoPage(response.notes, query.notebookId, customFilter)
-      .filter(note => matchesMemoDataCondition(note, query.dataCondition)));
+      .filter(matchesDataCondition));
     const previousCursor = nextCursor;
     nextCursor = response.nextCursor ?? undefined;
     hasMore = (response.hasMore ?? Boolean(nextCursor)) && Boolean(nextCursor);
@@ -447,18 +449,10 @@ export const useNoteStore = create<NoteLibraryStore>()(
       activeSort: 'createdAt',
       dataConditionsByNotebook: {},
       setDataCondition: (notebookId, condition) => {
-        const properties = (condition.property_conditions ?? []).map(item => ({
-          ...item, field_id: item.field_id.trim(), value: item.value.trim(),
-        })).filter(item => item.field_id && item.value);
-        const file = condition.file_condition;
-        const normalized: TableAutoCollectCondition = {
-          match: condition.match ?? 'all',
-          ...(properties.length ? { property_conditions: properties } : {}),
-          file_condition: {
-            file_name_contains: file?.file_name_contains?.trim() ?? '',
-            file_type: file?.file_type ?? '',
-          },
-        };
+        // Location is stored separately by the navigation entry point.
+        const normalized: NoteFilterCondition = normalizeNoteFilterCondition({ ...condition, path: null });
+        delete normalized.path;
+        const properties = normalized.property_conditions ?? [];
         set(state => {
           const conditions = { ...state.dataConditionsByNotebook };
           if (properties.length || normalized.file_condition?.file_name_contains || normalized.file_condition?.file_type) {

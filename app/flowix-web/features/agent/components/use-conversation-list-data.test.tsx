@@ -58,8 +58,8 @@ function deferredPage() {
 let root: Root;
 let latest: ReturnType<typeof useConversationListData> | null;
 
-function Harness({ notebookId }: { notebookId: string }) {
-  latest = useConversationListData({ notebookId, agentType: null, lifecycleVersion: 0 });
+function Harness({ notebookId, isActive = true, lifecycleVersion = 0 }: { notebookId: string; isActive?: boolean; lifecycleVersion?: number }) {
+  latest = useConversationListData({ notebookId, isActive, agentType: null, lifecycleVersion });
   return null;
 }
 
@@ -68,8 +68,8 @@ function data() {
   return latest;
 }
 
-async function render(notebookId = 'nb-1') {
-  await act(async () => root.render(createElement(Harness, { notebookId })));
+async function render(notebookId = 'nb-1', isActive = true, lifecycleVersion = 0) {
+  await act(async () => root.render(createElement(Harness, { notebookId, isActive, lifecycleVersion })));
 }
 
 describe('conversation list data', () => {
@@ -111,7 +111,7 @@ describe('conversation list data', () => {
     expect(Object.keys(data().conversationPage.itemsByIdentity).sort()).toEqual(['thread:a', 'thread:b']);
     expect(data().hasMore).toBe(false);
     expect(data().isLoadingMore).toBe(false);
-    expect(data().agentTypeCounts).toEqual({ codex: 3 });
+    expect(mocks.typeCounts).not.toHaveBeenCalled();
   });
 
   it('ignores an old page after switching notebooks without clearing the new loading state', async () => {
@@ -165,4 +165,45 @@ describe('conversation list data', () => {
     expect(data().isLoadingMore).toBe(false);
     expect(data().conversationPage.orderedIdentities).toHaveLength(2);
   });
+  it('preserves loaded pages across closing and reopening without another request', async () => {
+    mocks.listPage.mockResolvedValueOnce(page(['a'], true)).mockResolvedValueOnce(page(['b']));
+    await render();
+    await act(async () => { await data().loadMore(); });
+    const snapshot = data().conversationPage;
+    await render('nb-1', false);
+    await act(async () => { await data().loadMore(); });
+    await render();
+    expect(mocks.listPage).toHaveBeenCalledTimes(2);
+    expect(data().conversationPage).toBe(snapshot);
+  });
+
+  it('defers hidden invalidations until reopening and ignores an interrupted next page', async () => {
+    const stalePage = deferredPage();
+    mocks.listPage.mockResolvedValueOnce(page(['a'], true))
+      .mockReturnValueOnce(stalePage.promise).mockResolvedValueOnce(page(['fresh']));
+    await render();
+    let pending: Promise<void> | undefined;
+    await act(async () => { pending = data().loadMore(); });
+    await render('nb-1', false, 1);
+    await act(async () => { stalePage.resolve(page(['stale'])); await pending; });
+    expect(mocks.listPage).toHaveBeenCalledTimes(2);
+    expect(data().conversationPage.orderedIdentities).toEqual(['thread:a']);
+    await render('nb-1', true, 1);
+    expect(mocks.listPage).toHaveBeenCalledTimes(3);
+    expect(data().conversationPage.orderedIdentities).toEqual(['thread:fresh']);
+  });
+
+  it('reloads the original notebook if another notebook replaced its cached pages', async () => {
+    const interrupted = deferredPage();
+    mocks.listPage.mockResolvedValueOnce(page(['a']))
+      .mockReturnValueOnce(interrupted.promise).mockResolvedValueOnce(page(['a-fresh']));
+    await render();
+    await render('nb-2');
+    await render('nb-1', false);
+    await act(async () => interrupted.resolve(page(['b'], false, 'nb-2')));
+    await render();
+    expect(mocks.listPage).toHaveBeenCalledTimes(3);
+    expect(data().conversationPage.orderedIdentities).toEqual(['thread:a-fresh']);
+  });
+
 });

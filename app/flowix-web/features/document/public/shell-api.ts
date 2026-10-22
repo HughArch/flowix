@@ -1,3 +1,4 @@
+export { resolveDocumentTitlebarTarget } from '../components/document-titlebar-model';
 export { DocumentTitlebarWin } from '@features/document/components/document-titlebar-win';
 export { DocumentTitlebarMac } from '@features/document/components/document-titlebar-mac';
 export { useDocumentCommands } from '@features/document/components/use-document-commands';
@@ -9,7 +10,7 @@ export {
 export {
   AgentThreadCardFullscreenExitButton,
   useFullscreenAgentThreadCardInfo,
-} from '@features/document/components/document-titlebar-shared';
+} from '@features/document/components/agent-thread-card-titlebar';
 export {
   captureLatestDocumentContent,
   getDocumentEditorMode,

@@ -600,8 +600,6 @@ export function DocumentContainer({
       allowReadOnlyBoundaryNavigation
       onMoveToBody={handleMoveTitleToBody}
       onPasteToBody={handlePasteTitleContentToBody}
-      editorMode={editorMode}
-      onToggleEditorMode={handleToggleEditorMode}
     />
   ) : null;
 

@@ -108,6 +108,16 @@ html[data-platform="mac"] .overlay-scrollbar-frame--custom-mac {
 	overflow: hidden;
 }
 
+/* Align a nested popup scrollbar with the popup's right inner edge while
+ * preserving the same breathing room for its scrollable items. */
+.overlay-scrollbar-frame--edge-aligned {
+	margin-right: -0.375rem;
+}
+
+.overlay-scrollbar-frame--edge-aligned > .overlay-scrollbar {
+	padding-right: 0.375rem;
+}
+
 html[data-platform="non-mac"] .overlay-scrollbar::-webkit-scrollbar,
 html[data-platform="mac"] .overlay-scrollbar-frame--custom-mac .overlay-scrollbar::-webkit-scrollbar {
 	width: 0;

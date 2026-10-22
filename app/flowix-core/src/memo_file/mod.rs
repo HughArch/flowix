@@ -42,7 +42,7 @@ mod note_index;
 mod versions;
 
 pub use note_index::{
-    NoteEntry, NoteIndexReconcileReport, NoteSearchHit, NoteTreeMetadata,
+    NoteEntry, NoteIndexReconcileReport, NoteSearchHit, NoteTreeMetadata, NoteTitleFilter, NoteTitleCondition,
     NoteWriteOutcome,
 };
 pub(crate) use note_index::NoteWriteResult;

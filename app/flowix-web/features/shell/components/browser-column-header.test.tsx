@@ -187,7 +187,6 @@ it('shows the requested tab as active while content activation is pending', asyn
     expect(buttons[1].parentElement?.classList.contains('browser-column-tab-active')).toBe(true);
     expect(buttons[0].parentElement?.classList.contains('browser-column-tab-active')).toBe(false);
     expect(buttons[0].parentElement?.classList.contains('bg-transparent')).toBe(true);
-    expect(buttons[0].parentElement?.classList.contains('shadow-none')).toBe(true);
 
     await act(async () => finish(false));
     expect(buttons[0].getAttribute('aria-selected')).toBe('true');
@@ -297,4 +296,42 @@ it('does not show the editor mode entry for web tabs', async () => {
     expect(Array.from(document.querySelectorAll('[role="menuitem"]'))
       .some((item) => item.textContent?.includes('document.action.sourceMode'))).toBe(false);
   });
+});
+
+it('keeps the active title while icon-only tabs omit close controls and retain accessible titles', async () => {
+  await withHeader(vi.fn(), async (buttons) => {
+    expect(buttons[0].textContent).toBe('one');
+    expect(buttons[0].parentElement?.querySelector('[data-tab-close]')).not.toBeNull();
+    expect(buttons[1].textContent).toBe('');
+    expect(buttons[1].getAttribute('aria-label')).toBe('two');
+    expect(buttons[1].hasAttribute('title')).toBe(false);
+    expect(buttons[1].parentElement?.querySelector('[data-tab-close]')).toBeNull();
+    expect(buttons[1].parentElement?.style.height).toBe('32px');
+    expect(buttons[1].parentElement?.style.minWidth).toBe('32px');
+    await act(async () => buttons[1].click());
+    expect(buttons[1].textContent).toBe('two');
+    expect(buttons[0].textContent).toBe('');
+  });
+});
+
+it('excludes hidden close buttons from sequential keyboard focus', async () => {
+  const width = vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(600);
+  try {
+    await withHeader(vi.fn(), async (buttons) => {
+      expect(buttons[0].parentElement?.querySelector<HTMLButtonElement>('[data-tab-close]')?.tabIndex).toBe(0);
+      expect(buttons[1].textContent).toBe('two');
+      expect(buttons[1].parentElement?.querySelector<HTMLButtonElement>('[data-tab-close]')?.tabIndex).toBe(-1);
+    });
+  } finally { width.mockRestore(); }
+});
+
+it('renders a fallback icon for an unloaded Agent conversation in compact mode', async () => {
+  await withHeader(vi.fn(), async (buttons) => {
+    expect(buttons[1].textContent).toBe('');
+    expect(buttons[1].querySelector('svg')).not.toBeNull();
+    expect(buttons[1].getAttribute('aria-label')).toBe('Agent');
+  }, { tabs: [
+    { id: 'one', title: 'Web', icon: null, target: { kind: 'web', url: 'https://one.example' } },
+    { id: 'agent', title: 'Agent', icon: null, target: { kind: 'agent_conversation', instanceId: 'missing-instance' } },
+  ] });
 });

@@ -33,6 +33,7 @@ vi.mock('./workspace-content-activation', () => ({
 vi.mock('@platform/tauri/client', () => ({ collections: {}, notebooks: {} }));
 
 import { openWorkspaceSurface } from './surface-opening';
+import { NavigationCancelledError } from '@/lib/navigation-cancelled-error';
 
 describe('public surface opening host contract', () => {
   const target = { kind: 'external' as const, path: '/notes/a.md', scopePath: '/notes' };
@@ -49,6 +50,22 @@ describe('public surface opening host contract', () => {
       status: 'opened', host: 'main-third', location: { host: 'main-third', state: 'active' },
     });
     expect(mocks.openWork).toHaveBeenCalledWith(target.path, expect.objectContaining({ destination: 'main-third' }));
+    expect(mocks.openBrowser).not.toHaveBeenCalled();
+  });
+
+  it('normalizes a refused Work document leave as cancellation', async () => {
+    mocks.openWork.mockRejectedValueOnce(new NavigationCancelledError('saving could not be retained'));
+    await expect(openWorkspaceSurface({ target })).resolves.toEqual({
+      status: 'cancelled', host: 'main-third', reason: 'navigation-cancelled',
+    });
+  });
+
+  it('normalizes a refused Work leave before opening Browser as cancellation', async () => {
+    mocks.workIdentity = { kind: 'external', path: target.path };
+    mocks.prepareDocumentLeave.mockRejectedValueOnce(new NavigationCancelledError('saving could not be retained'));
+    await expect(openWorkspaceSurface({ host: 'browser-column', target })).resolves.toEqual({
+      status: 'cancelled', host: 'browser-column', reason: 'navigation-cancelled',
+    });
     expect(mocks.openBrowser).not.toHaveBeenCalled();
   });
 

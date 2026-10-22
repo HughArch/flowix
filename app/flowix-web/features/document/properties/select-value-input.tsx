@@ -13,6 +13,7 @@ import {
 import { useI18n } from '@/lib/i18n';
 import { stableTextHue } from '@/lib/color';
 import { cn } from '@/lib/utils';
+import { usePropertyValueTypography } from './value-typography';
 
 interface SelectValueInputProps {
   value: string;
@@ -36,6 +37,7 @@ export function SelectValueInput({
   onChange,
 }: SelectValueInputProps) {
   const { t } = useI18n();
+  const typography = usePropertyValueTypography();
   const normalizedOptions = options.map((option) => typeof option === 'string'
     ? { value: option, label: option }
     : option);
@@ -63,7 +65,7 @@ export function SelectValueInput({
               ? <span
                 className="multidimensional-table__option-chip min-w-0 max-w-full truncate"
                 title={selectedLabel}
-                style={{ '--multidimensional-table-option-hue': stableTextHue(selectedLabel) } as React.CSSProperties}
+                style={{ ...typography, '--multidimensional-table-option-hue': stableTextHue(selectedLabel) } as React.CSSProperties}
               >{selectedLabel}</span>
               : null
             : selectedOption?.label}
@@ -71,6 +73,7 @@ export function SelectValueInput({
       </SelectTrigger>
       <SelectContent
         align="start"
+        style={typography}
         keepParentMenuOpen={keepParentMenuOpen}
         className={cn('min-w-[160px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' && '!z-[170]')}
       >

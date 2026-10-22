@@ -12,6 +12,7 @@ import { stableTextHue } from '@/lib/color';
 import { cn } from '@/lib/utils';
 import { useComposingValue } from '@shared/hooks/use-composing-value';
 import { DropdownMenu, DropdownMenuContent, DropdownMenuTrigger } from '@shared/ui/dropdown-menu';
+import { usePropertyValueTypography } from './value-typography';
 
 interface MultiSelectValueInputProps {
   value: string;
@@ -36,6 +37,7 @@ export function MultiSelectValueInput({
   onChange,
 }: MultiSelectValueInputProps) {
   const { t, language } = useI18n();
+  const typography = usePropertyValueTypography();
   const normalizedOptions = options.map((option) => typeof option === 'string'
     ? { value: option, label: option }
     : option);
@@ -73,6 +75,7 @@ export function MultiSelectValueInput({
           <button
             type="button"
             disabled={disabled}
+            style={typography}
             className={cn(
               'flex min-h-8 w-full items-center justify-between gap-2 rounded-lg px-2 text-left text-sm',
               variant === 'table'
@@ -103,6 +106,7 @@ export function MultiSelectValueInput({
         </DropdownMenuTrigger>
         <DropdownMenuContent
           align="start"
+          style={typography}
           className={cn('min-w-[200px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', variant === 'table' && '!z-[170]')}
         >
           {normalizedOptions.length === 0 ? (
@@ -140,6 +144,7 @@ export function MultiSelectValueInput({
 
   return (
     <div
+      style={typography}
       className={cn(
         'flex min-h-8 w-full flex-wrap items-center gap-1 rounded-lg px-2 py-1 text-sm',
         'border border-input bg-background focus-within:border-[var(--primary)]',

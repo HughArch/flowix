@@ -809,7 +809,10 @@ function compareTreeItems(sort: FolderTreeSort, a: DocTreeItem, b: DocTreeItem):
     || a.fullPath.localeCompare(b.fullPath);
 }
 
-export function flattenVisibleTree(state: FolderTreeState, sort: FolderTreeSort = 'createdAt'): VisibleTreeNode[] {
+export function flattenVisibleTree(
+  state: Pick<FolderTreeState, 'rootChildren' | 'nodes' | 'expanded'>,
+  sort: FolderTreeSort = 'createdAt',
+): VisibleTreeNode[] {
   const out: VisibleTreeNode[] = [];
   const walk = (items: DocTreeItem[], depth: number) => {
     for (const item of [...items].sort((a, b) => compareTreeItems(sort, a, b))) {

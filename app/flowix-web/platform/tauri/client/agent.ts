@@ -406,6 +406,8 @@ export const agent = {
     invoke<number>('agent_conversation_count_by_notebook', { notebookId }),
   listConversationTypeCountsByNotebook: (notebookId: string) =>
     invoke<AgentConversationTypeCount[]>('agent_conversation_type_counts_by_notebook', { notebookId }),
+  getConversationInstancesByIds: (notebookId: string, instanceIds: string[]) =>
+    invoke<AgentConversationInstance[]>('agent_conversation_get_by_ids', { notebookId, instanceIds }),
   getConversationInstance: (instanceId: string) =>
     invoke<AgentConversationInstance | null>('agent_conversation_get', {
       instanceId,

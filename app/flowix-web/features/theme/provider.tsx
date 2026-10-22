@@ -25,21 +25,34 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
   useEffect(() => {
     const savedTheme = sanitizeTheme(theme);
     const id = savedTheme === 'mist' && !canUseMistTheme ? DEFAULT_THEME_ID : savedTheme;
-    void windows.applyWindowTheme(id).catch((error) => {
+    const root = document.documentElement;
+    let active = true;
+    // The IPC resolves after native UI work, so CSS reflects the actual backdrop.
+    void windows.applyWindowTheme(id).then((material) => {
+      if (!active) return;
+      if (material === 'none') delete root.dataset.windowMaterial;
+      else root.dataset.windowMaterial = material;
+      try {
+        if (material === 'none') localStorage.removeItem('flowix-window-material');
+        else localStorage.setItem('flowix-window-material', material);
+      } catch {
+        // Storage is optional; the live native result remains authoritative.
+      }
+    }).catch((error) => {
       console.warn('Failed to apply native window theme', error);
     });
-    const root = document.documentElement;
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const apply = () => {
       const resolved = applyTheme(root, id, { prefersDark: mq.matches });
       window.dispatchEvent(new CustomEvent('app-theme-changed', { detail: { theme: resolved } }));
     };
     apply();
-    if (id === 'system') {
-      const listener = () => apply();
-      mq.addEventListener('change', listener);
-      return () => mq.removeEventListener('change', listener);
-    }
+    const listener = () => apply();
+    if (id === 'system') mq.addEventListener('change', listener);
+    return () => {
+      active = false;
+      mq.removeEventListener('change', listener);
+    };
   }, [theme, canUseMistTheme]);
 
   return <>{children}</>;

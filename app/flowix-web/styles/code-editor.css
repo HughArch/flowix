@@ -97,6 +97,7 @@
 
 .code-editor .source-document-title-row .memo-title-shell {
 	width: 100%;
+	--memo-title-line-height: 1.32;
 }
 
 .code-editor .source-document-title-row .memo-document-header {
@@ -107,9 +108,8 @@
 }
 
 .code-editor .source-document-title-row .memo-title-properties-toggle {
-	/* The button extends into CodeMirror's line-number gutter; keep it above
-	 * the gutter layer after the title header loses its horizontal inset. */
-	z-index: 2;
+  /* Keep the button above CodeMirror's line-number gutter. */
+  z-index: 2;
 }
 
 .code-editor .source-document-title-row .memo-title-editor {
@@ -118,9 +118,9 @@
 	user-select: text;
 	-webkit-user-select: text;
 	font-family: inherit;
-	font-size: calc(1.9rem * (var(--editor-font-size, 16px) / 16px));
+	font-size: var(--memo-title-font-size);
 	font-weight: 600;
-	line-height: 1.32;
+	line-height: var(--memo-title-line-height);
 	white-space: pre-wrap;
 	word-break: break-word;
 	overflow-wrap: anywhere;

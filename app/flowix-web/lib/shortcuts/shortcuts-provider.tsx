@@ -48,11 +48,14 @@ export interface ShortcutsProviderProps {
   /** 用户覆盖层, 来自 UserSettings.shortcuts。 */
   overrides: ShortcutOverrides;
   children: React.ReactNode;
+  enabled?: boolean;
 }
 
-export function ShortcutsProvider({ overrides, children }: ShortcutsProviderProps) {
+export function ShortcutsProvider({ overrides, children, enabled = true }: ShortcutsProviderProps) {
   // scope 栈: ref 不触发 re-render — push/pop 是热路径, 不能抖动整树
   const scopeStackRef = useRef<Scope[]>(['window']);
+  const enabledRef = useRef(enabled);
+  useEffect(() => { enabledRef.current = enabled; }, [enabled]);
   // overrides 镜像: ref 给 keydown handler 用, 永远读到最新值 (避免闭包过期)
   const overridesRef = useRef<ShortcutOverrides>(overrides);
   useEffect(() => {
@@ -73,6 +76,7 @@ export function ShortcutsProvider({ overrides, children }: ShortcutsProviderProp
 
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
+      if (!enabledRef.current) return;
       if ((window as unknown as { __flowixShortcutRecorderOpen?: boolean }).__flowixShortcutRecorderOpen) {
         return;
       }

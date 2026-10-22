@@ -44,6 +44,10 @@ describe('shared Markdown plugin preview session', () => {
       appearance: expect.objectContaining({ headerStyle: 'document' }),
     }));
     await act(async () => host.querySelector('button')!.click());
+    expect(reportPresentation).toHaveBeenLastCalledWith(expect.objectContaining({
+      contentKind: 'file-markdown',
+      capabilities: expect.arrayContaining(['edit']),
+    }));
     mocks.read.mockResolvedValue(content('after'));
     await act(async () => host.querySelector('button')!.click());
     expect(mocks.flush).toHaveBeenCalledOnce();
@@ -51,7 +55,7 @@ describe('shared Markdown plugin preview session', () => {
     expect(host.querySelector('[data-preview]')!.textContent).toBe('after');
     expect(reportPresentation).toHaveBeenLastCalledWith(expect.objectContaining({
       capabilities: ['fullscreen'],
-      state: { status: 'ready' },
+      contentKind: 'plugin-artifact',
     }));
   });
   it('stays in the editor if that view cannot flush', async () => {

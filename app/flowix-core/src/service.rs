@@ -10,12 +10,24 @@ use thiserror::Error;
 
 use crate::memo_file::{
     notebook_path_from_relative, MemoFile, NoteEntry, NoteSearchHit, NoteWriteResult,
-    NotebookConfig,
+    NotebookConfig, NoteTitleFilter,
 };
 
 const DEFAULT_LIST_PAGE_SIZE: usize = 50;
 const MAX_LIST_PAGE_SIZE: usize = 100;
 const MAX_LIST_CURSOR_BYTES: usize = 4096;
+
+/// Query values travel together so adding a predicate cannot shift positional arguments.
+#[derive(Debug, Clone)]
+pub struct NotePageQuery<'a> {
+    pub filter: &'a str,
+    pub sort: &'a str,
+    pub tag_id: Option<&'a str>,
+    pub color: Option<&'a str>,
+    pub cursor: Option<&'a str>,
+    pub limit: Option<usize>,
+    pub title_filter: Option<&'a NoteTitleFilter>,
+}
 
 /// Opaque cursor for the path-keyed notebook list. Relative path is the stable
 /// tie breaker for every ordering.
@@ -26,6 +38,8 @@ struct NoteListCursor {
     sort: String,
     tag_id: Option<String>,
     color: Option<String>,
+    #[serde(default)]
+    title_filter: Option<NoteTitleFilter>,
     favorited: bool,
     sort_value: i64,
     sort_text: Option<String>,
@@ -140,7 +154,11 @@ impl NoteService<'_> {
         cursor: Option<&str>,
         requested_limit: Option<usize>,
     ) -> Result<NotePage, FlowixError> {
-        self.query_note_page(notebook_key, filter, sort, tag_id, color, cursor, requested_limit, true)
+        self.query_note_page(notebook_key, NotePageQuery {
+            filter, sort, tag_id, color, cursor,
+            limit: requested_limit,
+            title_filter: None,
+        }, true)
     }
 
     /// Desktop reads must never turn an unavailable index into synchronous
@@ -155,20 +173,34 @@ impl NoteService<'_> {
         cursor: Option<&str>,
         requested_limit: Option<usize>,
     ) -> Result<NotePage, FlowixError> {
-        self.query_note_page(notebook_key, filter, sort, tag_id, color, cursor, requested_limit, false)
+        self.list_indexed_page_query(notebook_key, NotePageQuery {
+            filter, sort, tag_id, color, cursor,
+            limit: requested_limit,
+            title_filter: None,
+        })
+    }
+
+    pub fn list_indexed_page_query(
+        &mut self,
+        notebook_key: &str,
+        query: NotePageQuery<'_>,
+    ) -> Result<NotePage, FlowixError> {
+        self.query_note_page(notebook_key, query, false)
     }
 
     fn query_note_page(
         &mut self,
         notebook_key: &str,
-        filter: &str,
-        sort: &str,
-        tag_id: Option<&str>,
-        color: Option<&str>,
-        cursor: Option<&str>,
-        requested_limit: Option<usize>,
+        query: NotePageQuery<'_>,
         prepare_index: bool,
     ) -> Result<NotePage, FlowixError> {
+        let NotePageQuery {
+            filter, sort, tag_id, color, cursor,
+            limit: requested_limit, title_filter,
+        } = query;
+        if title_filter.is_some_and(|filter| !filter.is_valid()) {
+            return Err(FlowixError::InvalidInput("invalid note title filter".into()));
+        }
         let notebook = self.resolve_notebook(notebook_key)?;
         let limit = requested_limit
             .unwrap_or(DEFAULT_LIST_PAGE_SIZE)
@@ -208,13 +240,14 @@ impl NoteService<'_> {
                     || page_cursor.sort != sort
                     || page_cursor.tag_id.as_deref() != tag_id
                     || page_cursor.color != normalized_color
+                    || page_cursor.title_filter.as_ref() != title_filter
                 {
                     return Err(FlowixError::InvalidInput(
                         "path note cursor does not match the current query".into(),
                     ));
                 }
             }
-            let page = self.memo_file.read_note_page(
+            let page = self.memo_file.read_note_page_with_title_filter(
                 &notebook.id,
                 filter,
                 tag_id,
@@ -233,12 +266,13 @@ impl NoteService<'_> {
                     )
                 }),
                 limit + 1,
+                title_filter,
             );
             let mut notes = match page {
                 Ok(notes) => notes,
                 Err(error) if prepare_index && error.kind() == std::io::ErrorKind::WouldBlock => {
                     self.memo_file.reconcile_note_index(&notebook.id)?;
-                    self.memo_file.read_note_page(
+                    self.memo_file.read_note_page_with_title_filter(
                         &notebook.id,
                         filter,
                         tag_id,
@@ -257,6 +291,7 @@ impl NoteService<'_> {
                             )
                         }),
                         limit + 1,
+                        title_filter,
                     )?
                 }
                 Err(error) => return Err(FlowixError::Io(error)),
@@ -271,6 +306,7 @@ impl NoteService<'_> {
                         sort: sort.into(),
                         tag_id: tag_id.map(str::to_string),
                         color: normalized_color.clone(),
+                        title_filter: title_filter.cloned(),
                         favorited: note.favorited,
                         sort_value: note_sort_value(note, sort),
                         sort_text: note_sort_text(note, sort),
@@ -598,6 +634,35 @@ mod tests {
         assert!(store.read_indexed_note_entry_by_path("work", "unindexed.md").unwrap().is_none());
         store.reconcile_note_index("work").unwrap();
         assert_eq!(service.list_indexed_page("work", "all", "createdAt", None, None, None, Some(50)).unwrap().notes.len(), 1);
+    }
+
+    #[test]
+    fn title_filter_applies_before_pagination_and_is_bound_to_the_cursor() {
+        let (_temp, store) = service_fixture();
+        let mut service = NoteService::new(&store);
+        for title in ["Other", "发布%_一", "发布%_二"] {
+            service.create_note_by_path("work", None, title, "body").unwrap();
+        }
+        store.reconcile_note_index("work").unwrap();
+        let filter = NoteTitleFilter {
+            match_mode: "all".into(),
+            conditions: vec![crate::memo_file::NoteTitleCondition { op: "contains".into(), value: "%_".into() }],
+        };
+        let query = NotePageQuery {
+            filter: "all", sort: "filenameAsc", tag_id: None, color: None,
+            cursor: None, limit: Some(1), title_filter: Some(&filter),
+        };
+        let first = service.list_indexed_page_query("work", query.clone()).unwrap();
+        assert_eq!(first.notes.len(), 1);
+        assert!(first.notes[0].title.contains("%_"));
+        assert!(first.has_more);
+        let second = service.list_indexed_page_query("work", NotePageQuery {
+            cursor: first.next_cursor.as_deref(), ..query
+        }).unwrap();
+        assert_eq!(second.notes.len(), 1);
+        assert_ne!(first.notes[0].relative_path, second.notes[0].relative_path);
+        assert!(!second.has_more);
+        assert!(service.list_indexed_page("work", "all", "filenameAsc", None, None, first.next_cursor.as_deref(), Some(1)).is_err());
     }
 
     #[test]

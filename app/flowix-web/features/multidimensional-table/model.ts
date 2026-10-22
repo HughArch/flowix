@@ -1,51 +1,33 @@
 import type { PropertyFieldConfig } from '@/lib/constants';
 import { createCollectionMetadata, createCollectionId, createUuidV7, parseCollectionDocumentV2, serializeCollectionDocumentV2, validateCollectionMetadata, reviseCollection, hasOnlyKeys, isRecord, type CollectionMetadata, type CollectionSource } from '@features/collection/model';
 export { createUuidV7 } from '@features/collection/model';
-import { isTablePropertyKind, type TablePropertyKind } from '@/lib/property-types';
+import { isTablePropertyKind } from '@/lib/property-types';
 import { TAG_COLUMN_MIN_WIDTH, TAG_COLUMN_MAX_WIDTH } from './tag-column-width';
 
 import { NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID, NOTE_CALENDAR_DATE_FIELD_ID, NOTE_TAGS_FIELD_ID, NOTE_ICON_FIELD_ID, NOTE_STATUS_FIELD_ID, BUILTIN_TABLE_FIELDS, builtinPresetTableField, isBuiltinTableFieldId } from './builtin-fields';
 export { NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID } from './builtin-fields';
-
-export type TableFieldType = Exclude<TablePropertyKind, 'Note'> | 'primary';
 
 export interface TableFieldOption {
   id: string;
   label: string;
 }
 
-export interface TableAutoCollectCondition {
-  match?: 'all' | 'any';
-  /** `null` means no path rule; an empty string explicitly selects all folders. */
-  path?: string | null;
-  property_conditions?: TableAutoCollectPropertyCondition[];
-  /** Kept for reading older runtime drafts. */
-  property_match?: 'union' | 'intersection';
-  file_condition?: TableAutoCollectFileCondition;
-}
-
-export interface TableAutoCollectPropertyCondition {
-  /**
-   * A table field ID, or a raw note frontmatter property key when the
-   * property is not configured as a table field.
-   */
-  field_id: string;
-  operator: 'equals' | 'contains' | 'gt' | 'lt';
-  value: string;
-}
-
-export type TableAutoCollectFileType = '' | 'markdown';
-
-export interface TableAutoCollectFileCondition {
-  file_name_contains?: string;
-  file_type?: TableAutoCollectFileType;
-  path_contains?: string;
-  path_scope?: 'all';
-}
-
-export interface TableAutoCollectConfig {
-  condition: TableAutoCollectCondition;
-}
+export type {
+  NoteFilterFieldType as TableFieldType,
+  NoteFilterCondition as TableAutoCollectCondition,
+  NoteFilterPropertyCondition as TableAutoCollectPropertyCondition,
+  NoteFilterFileCondition as TableAutoCollectFileCondition,
+  NoteFilterFileType as TableAutoCollectFileType,
+  NoteFilterConfig as TableAutoCollectConfig,
+} from '@features/collection/public/note-filter-api';
+import type {
+  NoteFilterFieldType as TableFieldType,
+  NoteFilterCondition as TableAutoCollectCondition,
+  NoteFilterPropertyCondition as TableAutoCollectPropertyCondition,
+  NoteFilterFileCondition as TableAutoCollectFileCondition,
+  NoteFilterConfig as TableAutoCollectConfig,
+} from '@features/collection/public/note-filter-api';
+import { compileNoteFilter } from '@features/collection/public/note-filter-api';
 
 export interface TableField {
   id: string;
@@ -144,26 +126,7 @@ export function withTableAutoCollect(document: MultidimensionalTableDocument, co
   return { ...document, dataset: { ...document.dataset, filter: tableAutoCollectFilter(config.condition) } };
 }
 
-export function tableAutoCollectFilter(condition: TableAutoCollectCondition) {
-  const properties = (condition.property_conditions ?? []).map((item) => ({
-    field: item.field_id.trim(),
-    op: item.operator === 'contains' ? 'contains' : item.operator === 'gt' || item.operator === 'lt' ? item.operator : 'eq',
-    value: item.value.trim(),
-  }));
-  const file = condition.file_condition;
-  const files: Record<string, unknown>[] = [];
-  if (file?.file_name_contains?.trim()) files.push({ field: 'file_name', op: 'contains', value: file.file_name_contains.trim() });
-  if (file?.file_type === 'markdown') files.push({ field: 'kind', op: 'eq', value: 'note' });
-  const legacyPath = file?.path_scope === 'all' ? '' : file?.path_contains?.trim() || null;
-  const rawPath = condition.path !== undefined ? condition.path : legacyPath;
-  const path = typeof rawPath === 'string' ? rawPath.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : null;
-  const filter = {
-    path,
-    match: condition.match ?? (condition.property_match === 'intersection' ? 'all' : 'any'),
-    conditions: [...properties, ...files],
-  };
-  return filter;
-}
+export const tableAutoCollectFilter = compileNoteFilter;
 
 function stableValue(value: unknown): unknown {
   if (Array.isArray(value)) return value.map(stableValue);

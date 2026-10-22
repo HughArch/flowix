@@ -36,6 +36,7 @@ import {
 import { selectAndOpenAgentConversation } from './agent-conversation-navigation';
 import { browserColumnTargetIdentity, workColumnTargetIdentity, findWorkspaceContentForNavigation } from './workspace-content-activation';
 import { flushBrowserViewBeforeOpeningWork } from './prepare-browser-document-for-work';
+import { NavigationCancelledError } from '@/lib/navigation-cancelled-error';
 
 function fileKind(path: string): WorkspaceSurfaceKind {
   return workspaceFileSurfaceKind(resolveWorkspaceFileSurfaceKind(path));
@@ -201,6 +202,19 @@ export function openWorkspaceSurface(request: OpenWorkspaceSurfaceRequest): Prom
 export async function openWorkspaceSurface(
   request: OpenWorkspaceSurfaceRequest,
 ): Promise<BrowserWorkspaceOpenResult | WorkWorkspaceOpenResult> {
+  try {
+    return await performWorkspaceSurfaceOpen(request);
+  } catch (error) {
+    if (error instanceof NavigationCancelledError) {
+      return { status: 'cancelled', host: request.host ?? 'main-third', reason: 'navigation-cancelled' };
+    }
+    throw error;
+  }
+}
+
+async function performWorkspaceSurfaceOpen(
+  request: OpenWorkspaceSurfaceRequest,
+): Promise<BrowserWorkspaceOpenResult | WorkWorkspaceOpenResult> {
   if (request.host === 'browser-column') {
     const target = request.target;
     if (target.kind === 'collection-reference') {
@@ -246,7 +260,11 @@ export async function openWorkspaceSurface(
       await openFolderCollectionChooserTarget(target);
       return finishWorkOpen();
     case 'external': {
+      if (!await flushBrowserViewBeforeOpeningWork({ kind: 'external', path: target.path })) {
+        return { status: 'cancelled', host: 'main-third', reason: 'navigation-cancelled' };
+      }
       await openExternalTarget(target.path, {
+        browserDocumentPrepared: true,
         scopePath: target.scopePath,
         fileBrowser: target.fileBrowser,
         history: options?.history,

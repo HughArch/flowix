@@ -276,6 +276,51 @@ impl ThreadManager {
         Ok(count as usize)
     }
 
+    pub async fn get_agent_conversation_instances_by_ids(
+        self: &Arc<Self>,
+        notebook_id: String,
+        instance_ids: Vec<String>,
+    ) -> Result<Vec<AgentConversationInstance>, ThreadError> {
+        self.run_blocking(move |tm| {
+            let conn = tm.lock_conn();
+            let mut instances = Vec::new();
+            // Stay below SQLite's parameter limit, even for large favorites lists.
+            for ids in instance_ids.chunks(500) {
+                let placeholders = vec!["?"; ids.len()].join(",");
+                let sql = format!("SELECT
+                i.id, i.agent, ti.title, ti.id, i.config_json,
+                legacy.frozen_cwd, i.source, i.document_path,
+                i.created_at, i.updated_at, i.notebook_id,
+                COALESCE(
+                    CASE i.agent
+                        WHEN 'codex' THEN (SELECT external_id FROM threads_codex WHERE thread_id = ti.id)
+                        WHEN 'dsh' THEN (SELECT external_id FROM threads_dsh WHERE thread_id = ti.id)
+                        WHEN 'opencode' THEN (SELECT external_id FROM threads_opencode WHERE thread_id = ti.id)
+                        WHEN 'hermes' THEN (SELECT external_id FROM threads_hermes WHERE thread_id = ti.id)
+                        WHEN 'claudecode' THEN (SELECT external_id FROM threads_claude WHERE thread_id = ti.id)
+                        WHEN 'pi' THEN (SELECT external_id FROM threads_pi WHERE thread_id = ti.id)
+                    END,
+                    (SELECT external_session_id FROM thread_external_sessions
+                     WHERE thread_id = ti.id AND runtime = i.agent)
+                ), i.relative_path
+             FROM agent_instances i
+             LEFT JOIN threads_index ti ON ti.instance_id = i.id
+             LEFT JOIN agent_conversation_instances legacy ON legacy.instance_id = i.id
+             WHERE i.notebook_id = ?1 AND i.id IN ({placeholders})");
+                let mut stmt = conn.prepare(&sql)?;
+                let parameters = std::iter::once(notebook_id.as_str())
+                    .chain(ids.iter().map(String::as_str));
+                let rows = stmt.query_map(
+                    rusqlite::params_from_iter(parameters),
+                    Self::row_to_agent_conversation_instance,
+                )?;
+                instances.extend(rows.collect::<Result<Vec<_>, _>>()?);
+            }
+            Ok(instances)
+        })
+        .await
+    }
+
     pub async fn get_agent_conversation_instance(
         self: &Arc<Self>,
         instance_id: &str,

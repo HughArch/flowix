@@ -376,7 +376,6 @@ pub fn run() {
                 } else {
                     saved_theme
                 };
-                crate::window_material::apply_main_window_material(&window, theme);
                 crate::window_chrome::apply_window_chrome_theme(&window, theme);
 
                 // Theme::System 时跟�?OS 明暗实时切换窗口背景�? 仅当窗口�??显式
@@ -702,6 +701,7 @@ pub fn run() {
             commands::font::get_cached_font_bytes,
             // web page metadata
             commands::web::parse_web_page,
+            commands::web::resolve_bilibili_video,
             // dialog
             commands::dialog::select_directory,
             commands::dialog::select_import_directory,
@@ -755,6 +755,7 @@ pub fn run() {
             commands::thread::agent_conversation_count_by_notebook,
             commands::thread::agent_conversation_type_counts_by_notebook,
             commands::thread::agent_conversation_get,
+            commands::thread::agent_conversation_get_by_ids,
             commands::thread::agent_conversation_find_by_thread,
             commands::thread::agent_conversation_upsert,
             commands::thread::agent_conversation_delete,
@@ -876,7 +877,7 @@ fn spawn_workbench_startup(
                         elapsed_ms = started.elapsed().as_millis(),
                         "[startup] workspace ready"
                     );
-                    open_targets::dispatch(&app, std::env::args().skip(1).collect(), "cold-start");
+                    open_targets::dispatch(&app, open_targets::command_line_targets(std::env::args()), "cold-start");
                     if !startup.wait_until_interactive(Duration::from_secs(120)) {
                         tracing::warn!(
                             "[startup] first workspace paint was not reported within 120 seconds; releasing independent services as a degraded liveness fallback"
@@ -1235,7 +1236,7 @@ fn start_post_startup_services(
 }
 
 fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
-    // 二�?�?��: 区分 markdown 文件�?���?flowix:// 深链�?    // 两个通道�?��同时触发 (用户�?`xdg-open foo.md flowix://memo/abc123` �?��)�?
+    // Normalize argv before routing native files and protocol callbacks.
     let app = app.clone();
     // Launch Services starts a short-lived second process for a protocol URL.
     // Bring the already-running window forward before waiting for app startup
@@ -1247,7 +1248,7 @@ fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
             tracing::warn!("second-instance target deferred because startup failed: {error}");
             return;
         }
-        let targets = args.into_iter()
+        let targets = open_targets::command_line_targets(args).into_iter()
             .filter(|arg| !dispatch_google_callback(&app, arg)).collect();
         open_targets::dispatch(&app, targets, "second-instance");
     });

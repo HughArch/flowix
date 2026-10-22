@@ -437,6 +437,21 @@
   padding-right: 0.25rem;
 }
 
+.memo-navigation-tag-tree-submenu {
+  --memo-submenu-max-height: 360px;
+}
+
+.memo-navigation-tag-tree-frame {
+  max-height: inherit;
+}
+
+.memo-tag-tree-sticky-header {
+  position: sticky;
+  top: 0;
+  z-index: 2;
+  background: var(--card);
+}
+
 .mention-note-item {
   display: grid;
   grid-template-columns: minmax(0, 1fr) auto;
@@ -495,6 +510,12 @@
 .memo-navigation-submenu-trigger:focus-visible > span:last-child,
 .memo-navigation-submenu-trigger:hover > span:last-child > *,
 .memo-navigation-submenu-trigger:focus-visible > span:last-child > * {
+  color: var(--primary-foreground);
+}
+
+.memo-navigation-submenu-trigger[aria-expanded='true'] > span,
+.memo-navigation-submenu-trigger[aria-expanded='true'] > span *,
+.memo-navigation-submenu-trigger[aria-expanded='true'] svg {
   color: var(--primary-foreground);
 }
 

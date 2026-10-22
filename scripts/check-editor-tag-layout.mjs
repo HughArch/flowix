@@ -56,7 +56,7 @@ try {
     const result = JSON.parse(match[1]);
     assert(result.ok, result.error);
     assert.equal(result.cases.length, 12);
-    console.log('Editor tag layout passed: 12 layout/edit cases; property and table note-tag colors verified.');
+    console.log('Editor tag layout passed: 12 layout/edit cases; property/table font scaling and shared tag colors verified.');
   }
 } finally {
   if (!fixtureOnly) await rm(folder, { recursive: true, force: true });

@@ -1,5 +1,5 @@
 import { create } from 'zustand';
-import { preferences as tauriPreferences, windows } from '@platform/tauri/client';
+import { preferences as tauriPreferences } from '@platform/tauri/client';
 import {
   DEFAULT_USER_SETTINGS,
   type AgentsConfig,
@@ -380,12 +380,6 @@ export const useUserSettingsStore = create<UserSettingsState>((set, get) => ({
     if (next === prev) return Promise.resolve();
     set({ settings: next });
     scheduleFlush(updates as PreferencePatch);
-    // 主题变更: 立即通知后端更新原生窗口 chrome (set_theme + 背景色), 不等 200ms 防抖落盘。
-    if (next.theme !== prev.theme) {
-      // Mist is applied by ThemeProvider only after Cloud confirms its feature
-      // membership. Other themes can update native chrome immediately.
-      if (next.theme !== 'mist') void windows.applyWindowTheme(next.theme);
-    }
     // 返回 Promise<void> 以保持与旧 useUserSettings 的 Promise 签名兼容
     // (section 内部有些代码 await 这个返回值)。
     return Promise.resolve();

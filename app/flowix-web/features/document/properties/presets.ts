@@ -74,6 +74,18 @@ export interface PropertyPreset {
   icon?: Icon;
 }
 
+/** Keep Name and Description presets after the other built-in choices in pickers. */
+const TRAILING_PICKER_PRESET_KEYS = new Set(['name', 'description']);
+
+export function moveNameAndDescriptionPresetsToEnd<T>(presets: readonly T[], getKey: (preset: T) => string): T[] {
+  const leading: T[] = [];
+  const trailing: T[] = [];
+  for (const preset of presets) {
+    (TRAILING_PICKER_PRESET_KEYS.has(getKey(preset)) ? trailing : leading).push(preset);
+  }
+  return [...leading, ...trailing];
+}
+
 interface BuiltinPropertyPreset {
   source: 'builtin';
   category: Exclude<PropertyCategory, 'custom'>;

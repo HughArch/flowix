@@ -89,8 +89,8 @@ describe('browser column store', () => {
 
     store.openTab(tab('note:a:replacement', 'a'), 'replace-active');
 
-    expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['memo:a']);
-    expect(useBrowserColumnStore.getState().activeTabId).toBe('memo:a');
+    expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['note:a']);
+    expect(useBrowserColumnStore.getState().activeTabId).toBe('note:a');
   });
 
   it('returns focus to the main space when the last tab closes', () => {
@@ -243,9 +243,9 @@ describe('browser column store', () => {
     store.openTab(tab('note:a', 'a'));
     store.openTab(tab('note:b', 'b'));
 
-    expect(store.removeTabsByFilePath('/notes/a.md')).toEqual(['memo:a']);
-    expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['memo:b']);
-    expect(useBrowserColumnStore.getState().activeTabId).toBe('memo:b');
+    expect(store.removeTabsByFilePath('/notes/a.md')).toEqual(['note:a']);
+    expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['note:b']);
+    expect(useBrowserColumnStore.getState().activeTabId).toBe('note:b');
   });
 
   it('does not restore obsolete fourth-column storage', async () => {
@@ -299,5 +299,20 @@ it('migrates v2 file and directory duplicates while retaining the active directo
   expect(state.tabs[0].target).toMatchObject({
     kind: 'file-browser', activeFilePath: '/workspace/a.md', folderPath: '/workspace',
     scopePath: '/workspace', restoreNotebookContext: true, fileTreeVisible: false, fileTreeWidth: 300,
+  });
+});
+
+it('retains a native file ownership binding when restoring its tab', async () => {
+  const nativeTab = tab('native', 'sub/a');
+  nativeTab.target.notebookId = 'alias';
+  nativeTab.target.scopePath = '/alias-notebook';
+  localStorage.setItem('flowix-browser-column-storage', JSON.stringify({ version: 2, state: {
+    visible: true, activeTabId: 'native', tabs: [{ ...nativeTab, target: {
+      ...nativeTab.target, notebookContextPath: nativeTab.target.activeFilePath,
+    } }],
+  } }));
+  await useBrowserColumnStore.persist.rehydrate();
+  expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({
+    notebookId: 'alias', scopePath: '/alias-notebook', notebookContextPath: nativeTab.target.activeFilePath,
   });
 });

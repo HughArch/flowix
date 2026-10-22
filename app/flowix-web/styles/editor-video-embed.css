@@ -1,0 +1,171 @@
+.editor-video-paste-bubble {
+  position: fixed;
+  /* Keep the paste action above the link-address hover tooltip. */
+  z-index: 91;
+  box-sizing: border-box;
+  height: 34px;
+  padding: 3px;
+  border: 1px solid var(--border-popup);
+  border-radius: 10px;
+  background: color-mix(in oklch, var(--popover) 94%, transparent);
+  color: #000;
+  box-shadow: 0 4px 24px -3px rgb(0 0 0 / 24%);
+  backdrop-filter: blur(18px);
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.editor-video-paste-bubble button {
+  display: flex;
+  align-items: center;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: inherit;
+  font: inherit;
+  cursor: pointer;
+}
+
+.editor-video-paste-bubble button:is(:hover, :focus-visible) {
+  background: var(--accent);
+}
+
+.editor-video-embed {
+  position: relative;
+}
+
+.editor-video-embed__empty {
+  box-sizing: border-box;
+  width: 100%;
+  aspect-ratio: 16 / 9;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  gap: 12px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--muted);
+  color: var(--muted-foreground);
+  font-size: 13px;
+}
+
+.editor-video-embed__empty p {
+  margin: 0 !important;
+}
+
+.editor-video-embed__icon {
+  font-size: 32px;
+  line-height: 1;
+  opacity: .65;
+}
+
+.editor-video-embed__empty button {
+  padding: 5px 14px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  cursor: pointer;
+}
+
+.editor-video-embed__empty button:is(:hover, :focus-visible) {
+  background: var(--accent);
+}
+
+.editor-video-embed__actions {
+  position: absolute;
+  top: -8px;
+  left: 50%;
+  transform: translate(-50%, -100%);
+  z-index: 30;
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+  box-sizing: border-box;
+  height: 34px;
+  padding: 3px;
+  border: 1px solid var(--border-popup);
+  border-radius: 10px;
+  background: color-mix(in oklch, var(--popover) 94%, transparent);
+  box-shadow: 0 4px 24px -3px rgb(0 0 0 / 24%);
+  backdrop-filter: blur(18px);
+  font-size: 12px;
+  line-height: 1.4;
+  white-space: nowrap;
+  opacity: 0;
+  pointer-events: none;
+}
+
+.markdown-editor .tiptap .editor-video-embed a.editor-video-embed__source,
+.editor-video-embed .editor-video-embed__source,
+.editor-video-embed__reload {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  height: 26px;
+  padding: 0 10px;
+  border: 0;
+  border-radius: 7px;
+  background: transparent;
+  color: #000;
+  font: inherit;
+  text-decoration: none;
+  cursor: pointer;
+}
+
+.editor-video-embed__actions :is(a, button):hover {
+  background: var(--accent);
+}
+
+/* Bridge the gap so the pointer can travel from the player to the actions. */
+.editor-video-embed__actions::after {
+  content: '';
+  position: absolute;
+  top: 100%;
+  left: 0;
+  width: 100%;
+  height: 10px;
+}
+
+.editor-video-embed:is(:hover, :focus-within) .editor-video-embed__actions {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.editor-video-embed__source:focus-visible,
+.editor-video-embed__reload:focus-visible,
+.editor-video-paste-bubble button:focus-visible,
+.editor-video-embed__empty button:focus-visible {
+  outline: 2px solid var(--ring);
+  outline-offset: 2px;
+}
+
+.editor-video-embed__player-surface {
+  position: relative;
+  overflow: hidden;
+  border-radius: 10px;
+  background: var(--muted);
+}
+
+.editor-video-embed__player {
+  opacity: 1;
+  transition: opacity 180ms ease;
+}
+
+.editor-video-embed__player.is-loading {
+  opacity: 0;
+  pointer-events: none;
+}
+
+.editor-video-embed__loading-cover {
+  position: absolute;
+  inset: 0;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .editor-video-embed__player { transition: none; }
+}

@@ -13,6 +13,7 @@ export function useGlobalSearchMemoViewModel() {
     activeFilter: state.activeFilter,
     setActiveFilter: state.setActiveFilter,
     createNote: state.createNote,
+    upsertCreatedNote: state.upsertCreatedNote,
     loadNotes: state.loadNotes,
   })));
   const setSelectedTagId = useTagStore((state) => state.setSelectedTagId);

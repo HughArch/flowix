@@ -1,17 +1,12 @@
 'use client';
 
+import { ConversationActionItems } from './conversation-action-items';
+import { removeAgentConversation } from '@features/agent/use-cases/remove-conversation';
+
 import { useEffect, useState } from 'react';
 import { MoreHorizontal } from 'lucide-react';
-import {
-  ArchiveIcon,
-  PencilSimpleIcon,
-  SquareSplitHorizontalIcon,
-  StarIcon,
-  TrashSimpleIcon,
-} from '@phosphor-icons/react';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
-import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
 import { AgentMessageFontSwitcher, useAgentMessageFontSwitch } from '@features/agent/components/agent-message-font-switcher';
 import {
@@ -23,11 +18,10 @@ import { openBrowserColumnAgentConversation } from '@features/workspace/use-case
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@shared/ui/dropdown-menu';
 
-const itemClass = 'group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]';
+
 
 /** Shared Agent conversation actions used by both dedicated and fullscreen embedded conversations. */
 export function AgentConversationMoreMenu({
@@ -80,14 +74,7 @@ export function AgentConversationMoreMenuItems({
   const removeConversation = async (action: 'archive' | 'delete') => {
     if (action === 'delete' && !window.confirm(t('agent.chat.conversation.deleteConfirm'))) return;
     try {
-      const session = useAgentSessionStore.getState();
-      if (instance.threadId) {
-        await (action === 'archive'
-          ? session.archiveThread(instance.threadId)
-          : session.deleteThread(instance.threadId));
-      } else {
-        session.removeInstance(instance.instanceId);
-      }
+      await removeAgentConversation(instance, action);
       toast.success(t(action === 'archive' ? 'status.agent.archiveSuccess' : 'status.agent.deleteSuccess'));
     } catch (error) {
       toast.error(error instanceof Error
@@ -105,32 +92,15 @@ export function AgentConversationMoreMenuItems({
         percent={fontSwitch.percent}
         onSelect={fontSwitch.selectFontMode}
       />
-      <DropdownMenuItem
-        onClick={() => void openBrowserColumnAgentConversation(instance.instanceId).catch((error) =>
+      <ConversationActionItems
+        favorite={isFavorite}
+        onOpen={() => void openBrowserColumnAgentConversation(instance.instanceId).catch((error) =>
           toast.error(error instanceof Error ? error.message : String(error)))}
-        className={itemClass}
-      >
-        <SquareSplitHorizontalIcon className="h-4 w-4" /> {t('workColumn.context.openInBrowserColumn')}
-      </DropdownMenuItem>
-      <DropdownMenuItem
-        onClick={() => setIsFavorite(toggleFavoriteConversation(instance.instanceId).has(instance.instanceId))}
-        className={itemClass}
-      >
-        <StarIcon className="h-4 w-4" weight={isFavorite ? 'fill' : 'regular'} />
-        {isFavorite ? t('agent.chat.conversation.unfavorite') : t('agent.chat.conversation.favorite')}
-      </DropdownMenuItem>
-      <DropdownMenuItem onClick={onRename} className={itemClass}>
-        <PencilSimpleIcon className="h-4 w-4" /> {t('agent.chat.conversation.rename')}
-      </DropdownMenuItem>
-      <DropdownMenuItem onClick={() => void removeConversation('archive')} className={itemClass}>
-        <ArchiveIcon className="h-4 w-4" /> {t('document.agent.archiveConversation')}
-      </DropdownMenuItem>
-      <DropdownMenuItem
-        onClick={() => void removeConversation('delete')}
-        className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-transparent hover:text-[var(--destructive)]"
-      >
-        <TrashSimpleIcon className="h-4 w-4" /> {t('document.agent.deleteConversation')}
-      </DropdownMenuItem>
+        onFavorite={() => setIsFavorite(toggleFavoriteConversation(instance.instanceId).has(instance.instanceId))}
+        onRename={onRename}
+        onArchive={() => void removeConversation('archive')}
+        onDelete={() => void removeConversation('delete')}
+      />
     </>
   );
 }

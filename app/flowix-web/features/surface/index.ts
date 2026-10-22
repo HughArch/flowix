@@ -6,7 +6,7 @@ export {
   type WorkColumnSurfaceDefinition,
 } from './registry';
 export { resolveWorkColumnContent } from './resolver';
-export { resolveWorkColumnPresentation } from './presentation';
+export { resolveWorkColumnPresentation, resolveWorkColumnRuntimePresentation } from './presentation';
 export type {
   CodeSurface,
   DocumentSurfaceContext,

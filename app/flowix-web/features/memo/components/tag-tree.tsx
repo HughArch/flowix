@@ -59,6 +59,8 @@ interface TagTreeProps {
   hideSelectionStyle?: boolean;
   /** Hide the section title and its top spacing in compact consumers. */
   hideSectionHeader?: boolean;
+  /** Menu trees use taller rows, neutral selection, and a sticky section label. */
+  variant?: 'sidebar' | 'menu';
 }
 
 // 笔记本列表区域高度 ── 持久化键 + 读 / 写助手。
@@ -103,7 +105,9 @@ export function TagTree({
   onSelectTag,
   hideSelectionStyle = false,
   hideSectionHeader = false,
+  variant = 'sidebar',
 }: TagTreeProps) {
+  const isMenu = variant === 'menu';
   const { t } = useI18n();
   const activeFilter = useNoteStore((s) => s.activeFilter);
   const setActiveFilter = useNoteStore((s) => s.setActiveFilter);
@@ -601,10 +605,16 @@ export function TagTree({
     <>
       {/* 标签组 ── 外侧容器, pt-1 提供组上方留白 (与资料组对称, 两侧均用 padding 而非 margin);
           标签行间距由 .tag-collapse-track 自身控制，确保折叠轨道不残留 space-y margin。 */}
-      <div className={cn('tag-tree-list', !hideSectionHeader && 'pt-1')}>
+      <div className={cn(
+        'tag-tree-list',
+        !hideSectionHeader && !isMenu && 'pt-1',
+      )}>
         {/* 标签分类标题 ── 过滤器 (全部/对话/待办) 在上, 真正的标签树在此标题之下。 */}
         {!hideSectionHeader && (
-          <div className="agent-composer__access-section-label flex items-center justify-between">
+          <div className={cn(
+            'agent-composer__access-section-label flex items-center justify-between',
+            isMenu && 'memo-tag-tree-sticky-header',
+          )}>
             <span>{t('memo.navigation.tags')}</span>
             {batchMode ? (
               <button
@@ -623,6 +633,7 @@ export function TagTree({
           <>
           {visibleTagOptions.map((tag) => {
             const isSelected = activeFilter === 'tagged' && selectedTagId === tag.id;
+            const showSelection = isSelected && !hideSelectionStyle;
             const isHidden = hiddenTagIdSet.has(tag.id);
             const isPinned = (pinnedByParent[tag.parentId ?? ''] ?? []).includes(tag.fullPath);
             const isDragging = draggingTagId === tag.id;
@@ -683,11 +694,12 @@ export function TagTree({
                   }
                 }}
                 className={cn(
-                  'group relative flex h-7 w-full cursor-pointer select-none items-center gap-0 rounded-lg pr-2 text-left text-sm transition-[color]',
-                  hideSelectionStyle
-                    ? 'text-[var(--foreground)] hover:bg-[var(--muted)]'
-                    : isSelected
-                    ? 'bg-[var(--primary)] text-[var(--primary-foreground)]'
+                  'group relative flex w-full cursor-pointer select-none items-center gap-0 rounded-lg pr-2 text-left text-sm transition-[color]',
+                  isMenu ? 'h-8' : 'h-7',
+                  showSelection
+                    ? isMenu
+                      ? 'bg-[var(--hover-bg)] text-[var(--foreground)]'
+                      : 'bg-[var(--primary)] text-[var(--primary-foreground)]'
                     : 'text-[var(--foreground)] hover:bg-[var(--muted)]',
                   isDragging && 'opacity-50',
                   isDropInside && 'tag-drop-target-inside',
@@ -699,7 +711,7 @@ export function TagTree({
               >
                 <span
                   data-tag-icon=""
-                  className="relative inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center -ml-1 mr-1"
+                  className="relative -ml-1 mr-1 inline-flex h-[22px] w-[22px] shrink-0 items-center justify-center"
                   // `#` 图标当作独立控件: 单击展开/折叠, 不触发行
                   // 选中也不进入拖拽。键盘 Enter/Space 同样可用。
                   // hover/focus 时 [data-tag-icon]:hover 规则加深展开三角
@@ -717,7 +729,7 @@ export function TagTree({
                       : undefined
                   }
                   style={{
-                    color: isSelected && !hideSelectionStyle
+                    color: showSelection && !isMenu
                       ? 'var(--primary-foreground)'
                       : undefined,
                   }}

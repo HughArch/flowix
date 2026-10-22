@@ -326,6 +326,22 @@ pub async fn agent_conversation_type_counts_by_notebook(
 }
 
 #[tauri::command]
+pub async fn agent_conversation_get_by_ids(
+    notebook_id: String,
+    instance_ids: Vec<String>,
+    state: State<'_, AppState>,
+) -> Result<Vec<AgentConversationInstance>, String> {
+    let notebook_id = notebook_id.trim();
+    if notebook_id.is_empty() {
+        return Err("NOTEBOOK_ID_REQUIRED".to_string());
+    }
+    state.thread_manager
+        .get_agent_conversation_instances_by_ids(notebook_id.to_string(), instance_ids)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[tauri::command]
 pub async fn agent_conversation_get(
     instance_id: String,
     state: State<'_, AppState>,

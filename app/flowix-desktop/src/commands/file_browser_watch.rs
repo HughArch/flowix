@@ -215,10 +215,6 @@ fn schedule_directory_changes(
     }
 }
 
-fn is_agents_file(path: &Path) -> bool {
-    path.file_name().and_then(|name| name.to_str()) == Some("AGENTS.md")
-}
-
 fn should_ignore_path(path: &Path, lease: &WatchLease) -> bool {
     if lease.root_path.join(".flowix").is_dir() {
         return path.strip_prefix(&lease.root_path).is_ok_and(|relative| {
@@ -227,7 +223,6 @@ fn should_ignore_path(path: &Path, lease: &WatchLease) -> bool {
         });
     }
     is_internal_flowix_path(path, &lease.root_path)
-        || is_agents_file(path)
         || has_hidden_component(path, &lease.root_path)
 }
 
@@ -490,14 +485,6 @@ mod tests {
     }
 
     #[test]
-    fn recognizes_agents_file() {
-        let temp = tempdir().expect("create temp directory");
-        let agents = temp.path().join("AGENTS.md");
-        assert!(is_agents_file(&agents));
-        assert!(!is_agents_file(&temp.path().join("notes.md")));
-    }
-
-    #[test]
     fn hidden_directory_membership_is_relative_to_the_watch_root() {
         let temp = tempdir().expect("create temp directory");
         let root = temp.path().join("notebook");
@@ -510,7 +497,7 @@ mod tests {
     }
 
     #[test]
-    fn hidden_paths_and_agents_are_ignored_for_unmanaged_roots() {
+    fn hidden_paths_are_ignored_and_agents_are_watched_for_unmanaged_roots() {
         let temp = tempdir().expect("create temp directory");
         let root = temp.path().join("notebook");
         let hidden = root.join(".agent").join("skills").join("skill.md");
@@ -532,7 +519,7 @@ mod tests {
         assert!(should_ignore_path(&internal, &notebook_lease));
         assert!(should_ignore_path(&internal, &browser_lease));
         let agents = temp.path().join("notebook").join("AGENTS.md");
-        assert!(should_ignore_path(&agents, &notebook_lease));
-        assert!(should_ignore_path(&agents, &browser_lease));
+        assert!(!should_ignore_path(&agents, &notebook_lease));
+        assert!(!should_ignore_path(&agents, &browser_lease));
     }
 }

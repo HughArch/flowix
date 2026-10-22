@@ -4,6 +4,7 @@ import type { EditorView } from '@tiptap/pm/view';
 export type PasteRuleResult = 'handled' | 'continue' | 'default';
 
 export type PasteKind =
+  | 'video-link'
   | 'files'
   | 'physical-path'
   | 'markdown-mime'

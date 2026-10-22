@@ -9,9 +9,9 @@ use crate::lock_utils::read_lock;
 use flowix_core::memo_file::{
     normalize_markdown_encoding_boundaries,
     notebook_path_from_relative, notebook_relative_path, Memo, MemoFile,
-    NoteEntry,
+    NoteEntry, NoteTitleFilter,
 };
-use flowix_core::service::NoteSaveOutcome;
+use flowix_core::service::{NoteSaveOutcome, NotePageQuery};
 use flowix_core::{FlowixError, NoteService};
 
 use crate::app::state::AppState;
@@ -146,6 +146,7 @@ pub async fn get_path_notes(
     color: Option<String>,
     cursor: Option<String>,
     limit: Option<usize>,
+    title_filter: Option<NoteTitleFilter>,
     app: AppHandle,
 ) -> Result<GetPathNotesResponse, String> {
     tauri::async_runtime::spawn_blocking(move || {
@@ -153,15 +154,15 @@ pub async fn get_path_notes(
         let memo_file = read_lock(&state.memo_file, "memo_file");
         let mut service = NoteService::new(&memo_file);
         let page = service
-            .list_indexed_page(
-                &notebook_id,
-                filter.as_deref().unwrap_or("all"),
-                sort.as_deref().unwrap_or("createdAt"),
-                tag_id.as_deref(),
-                color.as_deref(),
-                cursor.as_deref(),
+            .list_indexed_page_query(&notebook_id, NotePageQuery {
+                filter: filter.as_deref().unwrap_or("all"),
+                sort: sort.as_deref().unwrap_or("createdAt"),
+                tag_id: tag_id.as_deref(),
+                color: color.as_deref(),
+                cursor: cursor.as_deref(),
                 limit,
-            )
+                title_filter: title_filter.as_ref(),
+            })
             .map_err(|error: FlowixError| crate::app::notebook_background::query_error(state.inner(), &notebook_id, error))?;
         Ok(GetPathNotesResponse {
             notes: page.notes,

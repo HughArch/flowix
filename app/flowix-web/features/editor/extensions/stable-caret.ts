@@ -220,21 +220,22 @@ class StableCaretView {
     this.caret.hidden = true;
     const host = scope === 'composer'
       ? view.dom.closest<HTMLElement>('.agent-composer__input-row')
-      : null;
+      : view.dom.closest<HTMLElement>('.markdown-editor');
     this.layer = host ? document.createElement('span') : null;
     if (this.layer && host) {
-      this.layer.className = 'agent-composer__caret-layer';
+      this.layer.className = scope === 'composer'
+        ? 'agent-composer__caret-layer'
+        : 'document-editor-caret-layer';
       this.layer.contentEditable = 'false';
       this.layer.setAttribute('aria-hidden', 'true');
       this.layer.appendChild(this.caret);
       host.appendChild(this.layer);
     } else {
-      // Document editors retain their existing viewport caret. A composer
-      // mounted without its production input row also uses this fallback.
+      // Standalone editors without a production host retain viewport positioning.
       document.body.appendChild(this.caret);
       this.caret.style.position = 'fixed';
     }
-    if (scope === 'composer') {
+    if (this.layer) {
       this.resizeObserver = new ResizeObserver(this.schedule);
       this.observeLayout();
       this.mutationObserver = new MutationObserver((records) => {
@@ -361,7 +362,7 @@ class StableCaretView {
       }
       const rect = boundaryRect ?? terminalAtom.rect ?? this.view.coordsAtPos(selection.head);
       const clipsOwnContent = /^(auto|scroll|hidden|clip)$/.test(getComputedStyle(this.view.dom).overflowY);
-      const scrollViewport = this.layer || clipsOwnContent
+      const scrollViewport = (this.layer && this.scope === 'composer') || clipsOwnContent
         ? this.view.dom
         : this.view.dom.closest('.editor-content');
       const viewportRect = scrollViewport instanceof HTMLElement
@@ -396,7 +397,7 @@ class StableCaretView {
         lineHeight /= scaleY;
         // Clip the overlay to the editor viewport, including partial lines.
         // Its sibling placement keeps it outside ProseMirror's editable DOM.
-        const inputRect = this.view.dom.getBoundingClientRect();
+        const inputRect = viewportRect;
         // A caret extends rightward from the insertion point. At a full line's
         // right edge, keep its entire width inside the clipped viewport rather
         // than suppressing the native caret and clipping away its replacement.

@@ -58,6 +58,11 @@ export interface MarkdownLocation {
   indexable: boolean;
 }
 
+export interface NoteTitleFilter {
+  match: 'all' | 'any';
+  conditions: Array<{ op: 'eq' | 'contains'; value: string }>;
+}
+
 export interface NoteListPage {
   notes: NoteEntry[];
   nextCursor: string | null;
@@ -118,6 +123,7 @@ export const notes = {
     color?: NoteColorFilter;
     cursor?: string;
     limit?: number;
+    titleFilter?: NoteTitleFilter;
   }) => invoke<NoteListPage>('get_path_notes', {
     notebookId: params.notebookId,
     filter: params.filter || 'all',
@@ -125,6 +131,7 @@ export const notes = {
     tagId: params.tagId,
     color: params.color,
     cursor: params.cursor,
+    titleFilter: params.titleFilter,
     limit: params.limit,
   }),
   search: (notebookId: string, query: string, limit?: number) =>

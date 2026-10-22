@@ -3,6 +3,7 @@
 import { useCallback, useLayoutEffect, useMemo, type ReactNode } from 'react';
 import { type CollectionDisplayDescriptor } from '@/lib/collection-display-registry';
 import { requireFileDisplayIdentity, type FileDisplayIdentity } from '@/lib/file-display-registry';
+import { resolveFileBrowserContext } from '@features/workspace/use-cases/file-browser-context';
 import { selectBrowserColumnFile } from '@features/workspace/public/browser-column-api';
 import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { setCollectionActiveView } from '@features/workspace/use-cases/collection-view-state';
@@ -119,7 +120,7 @@ export function resolveBrowserColumnSurface(
         resourceKind: tab.target.resourceKind,
       };
     case 'file-browser': {
-      const target = tab.target;
+      const target = { ...tab.target, ...resolveFileBrowserContext(tab.target.activeFilePath, tab.target) };
       const surface: SurfaceBase & FileBrowserViewSurface & Pick<BrowserFileBrowserSurface, 'documentProps'> = {
         ...base,
         ...target,

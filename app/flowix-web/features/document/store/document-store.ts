@@ -1,4 +1,5 @@
 import { create } from 'zustand';
+import { NavigationCancelledError } from '@/lib/navigation-cancelled-error';
 import { prepareDocumentLeave } from '@features/document/store/document-session-service';
 import { canonicalPath } from '@/lib/path';
 import {
@@ -191,7 +192,7 @@ export const useDocumentStore = create<DocumentStore>()(
               sessionPath(prev),
               sessionScopePath(prev),
             );
-            if (!prepared) throw new Error('Document switch cancelled because saving could not be retained');
+            if (!prepared) throw new NavigationCancelledError('Document switch cancelled because saving could not be retained');
           }
           if (get().documentTransitionId !== transitionId) return;
           set(() => {
@@ -230,7 +231,7 @@ export const useDocumentStore = create<DocumentStore>()(
         const prev = get().activeExternalSession;
         if (prev) {
           const prepared = await prepareDocumentLeave(sessionIdentity(prev), sessionPath(prev), sessionScopePath(prev));
-          if (!prepared) throw new Error('Session switch cancelled because saving could not be retained');
+          if (!prepared) throw new NavigationCancelledError('Session switch cancelled because saving could not be retained');
         }
         set({
           ...documentState(null, null),
@@ -247,7 +248,7 @@ export const useDocumentStore = create<DocumentStore>()(
         const prev = get().activeExternalSession;
         if (prev) {
           const prepared = await prepareDocumentLeave(sessionIdentity(prev), sessionPath(prev), sessionScopePath(prev));
-          if (!prepared) throw new Error('Document close cancelled because saving could not be retained');
+          if (!prepared) throw new NavigationCancelledError('Document close cancelled because saving could not be retained');
         }
         set(documentState(null, null));
       });

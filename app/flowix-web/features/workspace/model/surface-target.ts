@@ -5,6 +5,8 @@ import type { CollectionDisplayDescriptor } from '@/lib/collection-display-regis
 export interface FileBrowserContext {
   /** Only legacy tabs lack a notebook binding; bind them once when restored. */
   restoreNotebookContext?: boolean;
+  /** File path whose notebookId/scopePath were resolved together by the native filesystem resolver. */
+  notebookContextPath?: string;
   folderPath: string | null;
   notebookId: string | null;
   scopePath: string | null;

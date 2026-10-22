@@ -1,7 +1,10 @@
 'use client';
 
+import { removeAgentConversation } from '@features/agent/use-cases/remove-conversation';
+import { ConversationActionItems } from './conversation-action-items';
+
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type MouseEvent, type ReactNode } from 'react';
-import { ArchiveIcon, PencilSimpleIcon, SquareSplitHorizontalIcon, StarIcon, TrashSimpleIcon } from '@phosphor-icons/react';
+import { StarIcon } from '@phosphor-icons/react';
 import { ArrowRight, ChevronRight, MoreHorizontal, Plus } from 'lucide-react';
 import { AgentIcon } from '@features/agent/components/agent-icon';
 import { AgentConversationTypeMenuItems } from '@features/agent/components/agent-conversation-type-menu-items';
@@ -10,9 +13,11 @@ import {
   createAndOpenAgentConversation,
   requestNewConversationAgentSelection,
 } from '@features/agent/use-cases/new-conversation';
-import { DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuLabel, DropdownMenuSeparator, DropdownMenuTrigger } from '@shared/ui/dropdown-menu';
+import { DropdownMenu, DropdownMenuContent, DropdownMenuLabel, DropdownMenuTrigger } from '@shared/ui/dropdown-menu';
 import {
+  RECENT_CONVERSATIONS_LIMIT,
   isSyntheticOpenCodeHistoryInstance,
+  loadFavoriteAgentConversations,
   loadRecentAgentConversations,
 } from '@features/agent/components/agent-tasks-recent';
 import { agentClient } from '@features/agent/store/agent-client';
@@ -51,6 +56,8 @@ export function AgentTasksSection({
   const sectionRef = useRef<HTMLElement | null>(null);
   const [collapsed, setCollapsed] = useState(false);
   const [storedConversations, setStoredConversations] = useState<AgentConversationInstance[]>([]);
+  const [hasMoreConversations, setHasMoreConversations] = useState(false);
+  const [storedFavorites, setStoredFavorites] = useState<AgentConversationInstance[]>([]);
   const [createMenuOpen, setCreateMenuOpen] = useState(false);
   const [favoriteIds, setFavoriteIds] = useState<ReadonlySet<string>>(() => readFavoriteConversationIds());
   const [openMenuId, setOpenMenuId] = useState<string | null>(null);
@@ -79,32 +86,56 @@ export function AgentTasksSection({
         notebookId,
         agentClient.listConversationInstancesPage,
         () => active,
+        (hasMore) => { if (active) setHasMoreConversations(hasMore); },
       );
       if (active) setStoredConversations(recent);
     };
     setStoredConversations([]);
+    setHasMoreConversations(false);
     void load();
     return () => { active = false; };
   }, [lifecycleVersion, notebookId]);
 
+  useEffect(() => {
+    let active = true;
+    const load = async () => {
+      const favorites = await loadFavoriteAgentConversations(
+        notebookId,
+        favoriteIds,
+        agentClient.getConversationInstancesByIds,
+      );
+      if (active) setStoredFavorites(favorites);
+    };
+    void load().catch((error) => {
+      if (active) logger.warn('Failed to refresh favorite conversations', { error });
+    });
+    return () => { active = false; };
+  }, [favoriteIds, lifecycleVersion, notebookId]);
+
   const tasks = useMemo(() => {
     const merged = new Map<string, AgentConversationInstance>();
-    for (const instance of storedConversations) {
-      if (instance.source.notebookId === notebookId) merged.set(instance.instanceId, instance);
-    }
-    for (const instance of Object.values(liveInstances)) {
+    for (const instance of [
+      ...storedFavorites.filter((item) => favoriteIds.has(item.instanceId)),
+      ...storedConversations,
+      ...Object.values(liveInstances),
+    ]) {
       if (instance.source.notebookId !== notebookId) continue;
       const existing = merged.get(instance.instanceId);
       if (!existing || instance.updatedAt >= existing.updatedAt) merged.set(instance.instanceId, instance);
     }
     const conversations = [...merged.values()]
       .filter((instance) => !isSyntheticOpenCodeHistoryInstance(instance))
-      .sort((left, right) => {
-        const favoriteOrder = Number(favoriteIds.has(right.instanceId)) - Number(favoriteIds.has(left.instanceId));
-        return favoriteOrder || right.updatedAt - left.updatedAt;
-      });
-    return conversations;
-  }, [favoriteIds, liveInstances, notebookId, storedConversations]);
+      .sort((left, right) => right.updatedAt - left.updatedAt);
+    const favorites = conversations.filter((instance) => favoriteIds.has(instance.instanceId));
+    const recent = conversations
+      .filter((instance) => !favoriteIds.has(instance.instanceId))
+      .slice(0, RECENT_CONVERSATIONS_LIMIT);
+    const combined = [...favorites, ...recent];
+    return {
+      items: combined.slice(0, RECENT_CONVERSATIONS_LIMIT),
+      hasMore: hasMoreConversations || combined.length > RECENT_CONVERSATIONS_LIMIT,
+    };
+  }, [favoriteIds, hasMoreConversations, liveInstances, notebookId, storedConversations, storedFavorites]);
 
   useLayoutEffect(() => {
     const section = sectionRef.current;
@@ -115,7 +146,7 @@ export function AgentTasksSection({
     const observer = new ResizeObserver(reportHeight);
     observer.observe(section);
     return () => observer.disconnect();
-  }, [onHeightChange, tasks.length]);
+  }, [onHeightChange, tasks.items.length]);
 
   const openConversation = useCallback(async (instance: AgentConversationInstance) => {
     useAgentSessionStore.getState().setConversationRegistry((registry) => ({
@@ -188,12 +219,7 @@ export function AgentTasksSection({
   const removeConversation = useCallback(async (instance: AgentConversationInstance, action: 'archive' | 'delete') => {
     if (action === 'delete' && !window.confirm(t('agent.chat.conversation.deleteConfirm'))) return;
     try {
-      const session = useAgentSessionStore.getState();
-      if (instance.threadId) {
-        await (action === 'archive' ? session.archiveThread(instance.threadId) : session.deleteThread(instance.threadId));
-      } else {
-        session.removeInstance(instance.instanceId);
-      }
+      await removeAgentConversation(instance, action);
       setOpenMenuId(null);
       toast.success(t(action === 'archive' ? 'status.agent.archiveSuccess' : 'status.agent.deleteSuccess'));
     } catch {
@@ -213,6 +239,19 @@ export function AgentTasksSection({
     createAndOpenAgentConversation(typeKey, notebookId);
   }, [notebookId]);
 
+  const showNewConversationMenu = useCallback((event: MouseEvent<HTMLElement>) => {
+    event.preventDefault();
+    event.stopPropagation();
+    setOpenMenuId(null);
+    const selection = requestNewConversationAgentSelection();
+    if (selection.kind === 'create') {
+      createConversation(selection.agentType);
+      setCreateMenuOpen(false);
+      return;
+    }
+    setCreateMenuOpen(selection.kind === 'choose');
+  }, [createConversation]);
+
   useEffect(() => {
     if (createMenuOpen && newConversationSelection.kind !== 'choose') {
       setCreateMenuOpen(false);
@@ -224,6 +263,7 @@ export function AgentTasksSection({
   return (
     <section
       ref={sectionRef}
+      onContextMenu={showNewConversationMenu}
       className="pb-3"
       aria-label={t('memo.fileTree.agentsSectionTitle')}
       data-notebook-agent-section="true"
@@ -244,16 +284,16 @@ export function AgentTasksSection({
           <ChevronRight className={`h-3.5 w-3.5 opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-within:opacity-100 ${collapsed ? 'opacity-100' : 'rotate-90'}`} />
         </button>
         <div className="ml-auto flex items-center">
+          {sectionActions}
           <button
             type="button"
             onClick={onShowAllConversations}
             aria-label={t('memo.fileTree.openAllConversations')}
             title={t('memo.fileTree.openAllConversations')}
-            className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] opacity-0 transition-[color,opacity] hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] group-hover:opacity-100"
+            className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
           >
             <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
           </button>
-          {sectionActions}
           <DropdownMenu
             open={createMenuOpen}
             onOpenChange={(open) => {
@@ -293,9 +333,9 @@ export function AgentTasksSection({
           </DropdownMenu>
         </div>
       </div>
-      {!collapsed && (tasks.length > 0 ? (
-        <div className="flex flex-col gap-0.5">
-          {tasks.slice(0, 5).map((instance) => {
+      {!collapsed && (tasks.items.length > 0 ? (
+        <div className="group/conversation-list relative flex flex-col gap-0.5">
+          {tasks.items.map((instance) => {
             const running = isAgentConversationRunning(instance, conversationRunIndex);
             const unread = !!instance.threadId
               && latestCompletedRunIds[instance.threadId] !== readThroughRunIds[instance.threadId]
@@ -335,6 +375,28 @@ export function AgentTasksSection({
                   {instance.title?.trim() || t('common.untitled')}
                 </span>
                 </button>
+                <DropdownMenu
+                  open={openMenuId === instance.instanceId}
+                  onOpenChange={(open) => setOpenMenuId(open ? instance.instanceId : null)}
+                  className={cn('flex w-0 shrink-0 overflow-hidden opacity-0 transition-[width,opacity] duration-[37.5ms] group-hover:w-6 group-hover:opacity-100', openMenuId === instance.instanceId && 'w-6 opacity-100')}
+                >
+                  <DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
+                    <button type="button" aria-label={t('agent.chat.conversation.more')} className="rounded bg-[var(--muted)] p-1 text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
+                      <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
+                    </button>
+                  </DropdownMenuTrigger>
+                  <DropdownMenuContent align="end" className="w-[160px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+                    <ConversationActionItems
+                      favorite={favoriteIds.has(instance.instanceId)}
+                      onOpen={() => openConversationInBrowserColumn(instance)}
+                      onFavorite={() => toggleFavorite(instance.instanceId)}
+                      onRename={() => renameConversation(instance)}
+                      onArchive={() => void removeConversation(instance, 'archive')}
+                      onDelete={() => void removeConversation(instance, 'delete')}
+                      archiveSeparator
+                    />
+                  </DropdownMenuContent>
+                </DropdownMenu>
                 <button
                   type="button"
                   aria-label={favoriteIds.has(instance.instanceId) ? t('agent.chat.conversation.unfavorite') : t('agent.chat.conversation.favorite')}
@@ -353,28 +415,20 @@ export function AgentTasksSection({
                 >
                   <StarIcon className="h-4 w-4" weight={favoriteIds.has(instance.instanceId) ? 'fill' : 'regular'} aria-hidden="true" />
                 </button>
-                <DropdownMenu
-                  open={openMenuId === instance.instanceId}
-                  onOpenChange={(open) => setOpenMenuId(open ? instance.instanceId : null)}
-                  className={cn('flex w-0 shrink-0 overflow-hidden opacity-0 transition-[width,opacity] duration-[37.5ms] group-hover:w-6 group-hover:opacity-100', openMenuId === instance.instanceId && 'w-6 opacity-100')}
-                >
-                  <DropdownMenuTrigger asChild onClick={(event) => event.stopPropagation()}>
-                    <button type="button" aria-label={t('agent.chat.conversation.more')} className="rounded bg-[var(--muted)] p-1 text-[var(--muted-foreground)] hover:text-[var(--foreground)]">
-                      <MoreHorizontal className="h-4 w-4" aria-hidden="true" />
-                    </button>
-                  </DropdownMenuTrigger>
-                  <DropdownMenuContent align="end" className="w-[160px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-                    <DropdownMenuItem onClick={() => openConversationInBrowserColumn(instance)} className="group h-7 items-center justify-start rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><SquareSplitHorizontalIcon className="mr-2 h-4 w-4" />{t('workColumn.context.openInBrowserColumn')}</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => toggleFavorite(instance.instanceId)} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><StarIcon className="h-4 w-4" weight={favoriteIds.has(instance.instanceId) ? 'fill' : 'regular'} />{favoriteIds.has(instance.instanceId) ? t('agent.chat.conversation.unfavorite') : t('agent.chat.conversation.favorite')}</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => renameConversation(instance)} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><PencilSimpleIcon className="h-4 w-4" />{t('agent.chat.conversation.rename')}</DropdownMenuItem>
-                    <DropdownMenuSeparator />
-                    <DropdownMenuItem onClick={() => void removeConversation(instance, 'archive')} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"><ArchiveIcon className="h-4 w-4" />{t('document.agent.archiveConversation')}</DropdownMenuItem>
-                    <DropdownMenuItem onClick={() => void removeConversation(instance, 'delete')} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-transparent hover:text-[var(--destructive)]"><TrashSimpleIcon className="h-4 w-4" />{t('document.agent.deleteConversation')}</DropdownMenuItem>
-                  </DropdownMenuContent>
-                </DropdownMenu>
               </div>
             );
           })}
+          {tasks.hasMore && (
+            <button
+              type="button"
+              onClick={onShowAllConversations}
+              aria-label={t('memo.fileTree.viewAllConversations')}
+              className="absolute bottom-1 z-10 mr-1 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--document-bg)] text-[var(--muted-foreground)] opacity-0 shadow-[0_1px_4px_rgb(0_0_0_/_4.5%)] transition-[color,opacity] group-hover/conversation-list:opacity-100 group-focus-within/conversation-list:opacity-100 hover:text-[var(--foreground)]"
+              style={{ right: edgeGutter }}
+            >
+              <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          )}
         </div>
       ) : (
         <div

@@ -272,7 +272,7 @@ describe('separate StableCaret instances in nested editors', () => {
   });
 });
 
-describe('composer local caret layer', () => {
+describe.each(['composer', 'document'] as const)('%s local caret layer', (scope) => {
   let editor: Editor;
   let layer: HTMLElement;
   let caret: HTMLElement;
@@ -307,21 +307,23 @@ describe('composer local caret layer', () => {
       disconnect = disconnect;
     });
     const host = document.createElement('div');
-    host.className = 'agent-composer__input-row';
+    host.className = scope === 'composer' ? 'agent-composer__input-row' : 'markdown-editor';
     host.contentEditable = 'false';
     const input = document.createElement('div');
     host.append(input);
     document.body.append(host);
     editor = new Editor({
       element: { mount: input },
-      extensions: [StarterKit, ComposerStableCaret],
+      extensions: [StarterKit, scope === 'composer' ? ComposerStableCaret : StableCaret],
       content: '<p>hello</p>',
       editorProps: { attributes: {
-        class: 'agent-composer__input-content', style: 'font-size: 16px', tabindex: '0',
+        class: scope === 'composer' ? 'agent-composer__input-content' : 'editor-content', style: 'font-size: 16px', tabindex: '0',
       } },
     });
-    layer = host.querySelector<HTMLElement>('.agent-composer__caret-layer')!;
-    caret = layer.querySelector<HTMLElement>('.agent-composer__stable-caret')!;
+    layer = host.querySelector<HTMLElement>(scope === 'composer'
+      ? '.agent-composer__caret-layer' : '.document-editor-caret-layer')!;
+    caret = layer.querySelector<HTMLElement>(scope === 'composer'
+      ? '.agent-composer__stable-caret' : '.stable-editor-caret--document')!;
     setRect(layer, { left: 40, right: 600, top: 30, bottom: 130, width: 560, height: 100 });
     setRect(input, { left: 60, right: 560, top: 40, bottom: 120, width: 500, height: 80 });
     const coords = vi.spyOn(editor.view, 'coordsAtPos')
@@ -429,7 +431,7 @@ describe('composer local caret layer', () => {
 
   it.each([2, 4])('keeps the full %ipx caret visible when text fills the input width', (width) => {
     const { input, coords } = mount();
-    input.style.setProperty('--agent-composer-caret-width', `${width}px`);
+    input.style.setProperty(scope === 'composer' ? '--agent-composer-caret-width' : '--editor-caret-width', `${width}px`);
     // The layer has no spare space beyond the input, as in production.
     setRect(layer, { left: 60, right: 560, top: 40, bottom: 120, width: 500, height: 80 });
     coords.mockReturnValue({ left: 560, right: 560, top: 50, bottom: 76 });
@@ -439,7 +441,7 @@ describe('composer local caret layer', () => {
     expect(caret.style.width).toBe(`${width}px`);
     expect(Number.parseFloat(caret.style.left)).toBe(500 - width);
     expect(layer.style.clipPath).toBe('inset(0px 0px 0px 0px)');
-    expect(input.classList.contains('has-composer-stable-caret')).toBe(true);
+    expect(input.classList.contains(scope === 'composer' ? 'has-composer-stable-caret' : 'has-document-stable-caret')).toBe(true);
   });
 
   it('keeps the right-edge caret inside a scaled viewport without showing offscreen positions', () => {
@@ -480,7 +482,7 @@ describe('composer local caret layer', () => {
     const composing = vi.spyOn(editor.view, 'composing', 'get').mockReturnValue(true);
     input.dispatchEvent(new Event('compositionstart'));
     expect(caret.hidden).toBe(true);
-    expect(input.classList.contains('has-composer-stable-caret')).toBe(false);
+    expect(input.classList.contains(scope === 'composer' ? 'has-composer-stable-caret' : 'has-document-stable-caret')).toBe(false);
     composing.mockReturnValue(false);
     input.dispatchEvent(new Event('compositionend'));
     flush();

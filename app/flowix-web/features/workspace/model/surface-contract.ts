@@ -76,13 +76,15 @@ export interface SurfacePresentation {
   title: string;
   icon?: string;
   appearance: SurfaceAppearance;
+  /** Content currently shown, which can differ from the source file in preview modes. */
+  contentKind: WorkspaceSurfaceKind;
   capabilities: readonly WorkspaceSurfaceCapability[];
   actions: readonly SurfaceAction[];
   state: SurfaceState;
 }
 /** Runtime values a renderer may publish after async resolution or mode changes. */
 export type SurfacePresentationUpdate = Partial<Pick<SurfacePresentation,
-  'title' | 'icon' | 'appearance' | 'capabilities' | 'actions' | 'state'>>;
+  'title' | 'icon' | 'appearance' | 'contentKind' | 'capabilities' | 'actions' | 'state'>>;
 export interface ResolvedSurface<K extends WorkspaceSurfaceKind, D> {
   kind: K;
   identity: WorkspaceSurfaceIdentity;

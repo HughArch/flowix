@@ -25,17 +25,6 @@
   }
 }
 
-.multidimensional-table__condition-tabs {
-  display: inline-flex;
-  align-items: center;
-  gap: 2px;
-  height: 28px;
-  padding: 2px;
-  background: transparent;
-  border: 1px solid var(--border);
-  border-radius: 0.375rem;
-}
-
 .multidimensional-table__view-tabs-scroller::before,
 .multidimensional-table__view-tabs-scroller::after {
   content: '';
@@ -67,32 +56,6 @@
 .multidimensional-table__view-tabs-scroll-area {
   overflow-y: hidden;
   overscroll-behavior-y: none;
-}
-
-.multidimensional-table__condition-tab {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  height: 22px;
-  padding: 0 8px;
-  background: transparent;
-  border: 0;
-  border-radius: 0.25rem;
-  color: var(--muted-foreground);
-  font-size: 0.875rem;
-  line-height: 1;
-  cursor: pointer;
-  transition: background-color 120ms ease, color 120ms ease;
-}
-
-.multidimensional-table__condition-tab:hover {
-  background: color-mix(in oklch, var(--muted) 60%, transparent);
-  color: var(--foreground);
-}
-
-.multidimensional-table__condition-tab[aria-pressed='true'] {
-  background: color-mix(in oklch, var(--muted) 80%, transparent);
-  color: var(--foreground);
 }
 
 .multidimensional-table thead,
@@ -522,8 +485,8 @@ button.multidimensional-table__primary-title--placeholder {
   background: oklch(var(--multidimensional-table-option-lightness) var(--multidimensional-table-option-chroma) var(--multidimensional-table-option-hue) / 0.1);
   padding: 0.125rem 0.375rem;
   color: color-mix(in srgb, var(--multidimensional-table-option-text-color) 90%, transparent);
-  font-size: 0.875rem;
-  line-height: 1.1rem;
+  font-size: var(--property-value-font-size, 0.875rem);
+  line-height: var(--document-tag-line-height, 1.2);
 }
 
 :is([data-theme='dark'], [data-theme='mist']) .multidimensional-table__option-chip {
@@ -545,11 +508,12 @@ button.multidimensional-table__primary-title--placeholder {
 .frontmatter-property__edit-input.multidimensional-table__tag-input {
   min-width: 3.8rem;
   flex-basis: 3.8rem;
+  font-size: var(--property-value-font-size, var(--editor-font-size, 16px));
 }
 
 .frontmatter-property__edit-input.multidimensional-table__tag-input::placeholder {
   color: var(--muted-foreground) !important;
-  font-size: 0.875rem !important;
+  font-size: inherit !important;
   opacity: 0.8 !important;
 }
 
@@ -896,4 +860,31 @@ html[data-platform] .table-reference-node__content .overlay-scrollbar-frame .ove
 .multidimensional-table__column-header .multidimensional-table__header-trigger:hover,
 .multidimensional-table__column-header .multidimensional-table__header-trigger[data-state='open'] {
   background-color: transparent;
+}
+
+/* The source header occupies the proposed destination while its copy follows the pointer. */
+.multidimensional-table th[data-column-field-id] .multidimensional-table__header-trigger {
+  touch-action: none;
+  user-select: none;
+}
+.multidimensional-table th[data-column-drag-preview] {
+  opacity: 0.5;
+  background: var(--muted);
+  outline: 2px solid var(--border);
+  outline-offset: -2px;
+}
+.multidimensional-table__column-drag-floating {
+  position: fixed;
+  top: 0;
+  left: 0;
+  z-index: 1000;
+  pointer-events: none;
+  user-select: none;
+  cursor: grabbing;
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--document-bg);
+  color: var(--foreground);
+  box-shadow: 0 8px 24px rgb(0 0 0 / 0.18);
 }

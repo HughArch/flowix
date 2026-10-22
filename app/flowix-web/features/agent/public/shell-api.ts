@@ -1,3 +1,4 @@
+export { useNewConversationAgentSelection } from '@features/agent/hooks/use-new-conversation-agent-selection';
 export { AgentConversationTitlebar } from '@features/agent/components/agent-conversation-titlebar';
 export { AgentConversationList } from '@features/agent/components/agent-conversation-list';
 export { AgentConversationStatusBar } from '@features/agent/components/agent-conversation-status-bar';

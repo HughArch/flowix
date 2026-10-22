@@ -26,19 +26,34 @@ pub fn active_material() -> &'static str {
     }
 }
 
-pub fn apply_main_window_material(window: &tauri::WebviewWindow, _theme: Theme) {
+pub fn apply_main_window_material(window: &tauri::WebviewWindow, theme: Theme) {
     if window.label() != "main" {
+        return;
+    }
+
+    // Called on the UI thread by window_chrome. Only Mist owns a backdrop.
+    if theme != Theme::Mist {
+        if is_active() {
+            #[cfg(target_os = "macos")]
+            let cleared = window_vibrancy::clear_vibrancy(window).map(|_| ());
+            #[cfg(target_os = "windows")]
+            let cleared = window_vibrancy::clear_mica(window);
+            #[cfg(not(any(target_os = "macos", target_os = "windows")))]
+            let cleared: Result<(), String> = Ok(());
+            match cleared {
+                Ok(()) => ACTIVE_MATERIAL.store(MATERIAL_NONE, Ordering::Release),
+                Err(error) => tracing::warn!(%error, "Native window backdrop could not be cleared"),
+            }
+        }
+        return;
+    }
+    if is_active() {
         return;
     }
 
     #[cfg(target_os = "windows")]
     {
-        let dark = match _theme {
-            Theme::Dark | Theme::Mist => Some(true),
-            Theme::Light | Theme::Rock | Theme::Ember => Some(false),
-            Theme::System => None,
-        };
-        match window_vibrancy::apply_mica(window, dark) {
+        match window_vibrancy::apply_mica(window, Some(true)) {
             Ok(()) => ACTIVE_MATERIAL.store(MATERIAL_MICA, Ordering::Release),
             Err(error) => {
                 // Windows 10 and unsupported Windows builds intentionally keep
@@ -51,18 +66,16 @@ pub fn apply_main_window_material(window: &tauri::WebviewWindow, _theme: Theme) 
 
     #[cfg(target_os = "macos")]
     {
-        if !is_active() {
-            match window_vibrancy::apply_vibrancy(
-                window,
-                window_vibrancy::NSVisualEffectMaterial::Popover,
-                Some(window_vibrancy::NSVisualEffectState::Active),
-                None,
-            ) {
-                Ok(()) => ACTIVE_MATERIAL.store(MATERIAL_VIBRANCY, Ordering::Release),
-                Err(error) => {
-                    ACTIVE_MATERIAL.store(MATERIAL_NONE, Ordering::Release);
-                    tracing::warn!(%error, "macOS Vibrancy could not be applied");
-                }
+        match window_vibrancy::apply_vibrancy(
+            window,
+            window_vibrancy::NSVisualEffectMaterial::Popover,
+            Some(window_vibrancy::NSVisualEffectState::Active),
+            None,
+        ) {
+            Ok(()) => ACTIVE_MATERIAL.store(MATERIAL_VIBRANCY, Ordering::Release),
+            Err(error) => {
+                ACTIVE_MATERIAL.store(MATERIAL_NONE, Ordering::Release);
+                tracing::warn!(%error, "macOS Vibrancy could not be applied");
             }
         }
     }

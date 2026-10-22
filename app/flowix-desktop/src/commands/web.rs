@@ -149,3 +149,115 @@ fn resolve_url(base: &str, value: &str) -> Option<String> {
     let base_url = reqwest::Url::parse(base).ok()?;
     base_url.join(value.trim()).ok().map(|url| url.to_string())
 }
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BilibiliVideoIds {
+    pub aid: u64,
+    pub cid: u64,
+}
+
+fn parse_bilibili_ids(value: &serde_json::Value, page: u32) -> Result<BilibiliVideoIds, String> {
+    if value["code"].as_i64() != Some(0) {
+        return Err(format!(
+            "Bilibili: {}",
+            value["message"].as_str().unwrap_or("request failed")
+        ));
+    }
+    let data = &value["data"];
+    let aid = data["aid"]
+        .as_u64()
+        .filter(|id| *id > 0)
+        .ok_or("missing aid")?;
+    let cid = data["pages"]
+        .as_array()
+        .and_then(|pages| {
+            pages
+                .iter()
+                .find(|item| item["page"].as_u64() == Some(u64::from(page)))
+        })
+        .and_then(|item| item["cid"].as_u64())
+        .filter(|id| *id > 0)
+        .ok_or("video page not found")?;
+    Ok(BilibiliVideoIds { aid, cid })
+}
+
+#[tauri::command]
+pub async fn resolve_bilibili_video(
+    video_id: String,
+    page: u32,
+) -> Result<BilibiliVideoIds, String> {
+    let valid = Regex::new(r"^(BV[0-9A-Za-z]{10}|av[1-9][0-9]*)$").map_err(|e| e.to_string())?;
+    if !valid.is_match(&video_id) || page == 0 {
+        return Err("invalid Bilibili video or page".into());
+    }
+    let (key, id) = if let Some(aid) = video_id.strip_prefix("av") {
+        ("aid", aid)
+    } else {
+        ("bvid", video_id.as_str())
+    };
+    // Bilibili can reject a system proxy exit with HTTP 412 while the same
+    // public video is available directly. Retry only this fixed endpoint.
+    let response = request_bilibili_view(key, id, false).await?;
+    let response = if response.status() == reqwest::StatusCode::PRECONDITION_FAILED {
+        request_bilibili_view(key, id, true).await?
+    } else {
+        response
+    };
+    let value: serde_json::Value = response
+        .error_for_status()
+        .map_err(|e| e.to_string())?
+        .json()
+        .await
+        .map_err(|e| e.to_string())?;
+    parse_bilibili_ids(&value, page)
+}
+
+async fn request_bilibili_view(
+    key: &str,
+    id: &str,
+    direct: bool,
+) -> Result<reqwest::Response, String> {
+    let mut builder = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/130.0.0.0 Safari/537.36")
+        .timeout(std::time::Duration::from_secs(15));
+    if direct {
+        builder = builder.no_proxy();
+    }
+    builder
+        .build()
+        .map_err(|e| e.to_string())?
+        .get("https://api.bilibili.com/x/web-interface/view")
+        .header(reqwest::header::REFERER, "https://www.bilibili.com/")
+        .header(reqwest::header::ACCEPT, "application/json, text/plain, */*")
+        .query(&[(key, id)])
+        .send()
+        .await
+        .map_err(|e| e.to_string())
+}
+
+#[cfg(test)]
+mod bilibili_tests {
+    use super::*;
+    #[tokio::test]
+    #[ignore = "requires Bilibili network access"]
+    async fn resolves_live_video() {
+        let ids = resolve_bilibili_video("BV1TGnP6VE2f".into(), 1)
+            .await
+            .expect("live Bilibili resolution failed");
+        assert_eq!(ids.aid, 117472724261620);
+        assert_eq!(ids.cid, 42907075029);
+    }
+
+    #[test]
+    fn selects_requested_page_and_rejects_invalid_responses() {
+        let value = serde_json::json!({"code":0,"data":{"aid":117472724261620_u64,"pages":[{"page":1,"cid":42},{"page":2,"cid":43}]}});
+        let ids = parse_bilibili_ids(&value, 2).unwrap();
+        assert_eq!(ids.aid, 117472724261620);
+        assert_eq!(ids.cid, 43);
+        assert!(parse_bilibili_ids(&value, 3).is_err());
+        assert!(
+            parse_bilibili_ids(&serde_json::json!({"code":-400,"message":"error"}), 1).is_err()
+        );
+    }
+}

@@ -1343,7 +1343,7 @@ fn reconcile_registers_root_and_nested_markdown_files() {
 }
 
 #[test]
-fn reconcile_excludes_agents_files_unless_included_by_file_policy() {
+fn reconcile_indexes_agents_files_like_other_markdown_files() {
     let (mf, base) = fresh_memo_file();
     for directory in [
         ".hidden",
@@ -1362,17 +1362,16 @@ fn reconcile_excludes_agents_files_unless_included_by_file_policy() {
     fs::write(base.join("docs/public/Visible.md"), "# Visible\n").unwrap();
 
     let report = mf.reconcile_with_disk_bidirectional().unwrap();
-    // Root AGENTS.md is a deliberate exception: it is indexed (while hidden
-    // from the tree) so agent instructions remain searchable. Nested
-    // AGENTS.md files and the ignored directories stay excluded.
-    assert_eq!(report.added, 2);
+    // AGENTS.md files follow ordinary Markdown indexing at every depth.
+    // Ignored directories and hidden files stay excluded.
+    assert_eq!(report.added, 3);
     let indexed_paths = mf
         .read_all_memos()
         .into_iter()
         .map(|memo| memo.relative_path)
         .collect::<std::collections::HashSet<_>>();
     assert!(indexed_paths.contains("AGENTS.md"));
-    assert!(!indexed_paths.contains("docs/AGENTS.md"));
+    assert!(indexed_paths.contains("docs/AGENTS.md"));
     assert!(indexed_paths.contains("docs/public/Visible.md"));
 }
 

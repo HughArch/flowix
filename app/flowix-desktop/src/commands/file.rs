@@ -282,12 +282,6 @@ fn read_dir_single_level_with_policy(
                 continue;
             }
 
-            // Non-notebook file browser roots use the same default visibility
-            // for AGENTS.md; notebook roots are filtered by FileManagementPolicy.
-            if policy.is_none() && name == "AGENTS.md" {
-                continue;
-            }
-
             // External file-browser roots do not have a FileManagementPolicy;
             // hide legacy media-property sidecars here as notebook roots do
             // through that policy.
@@ -2396,6 +2390,34 @@ pub fn move_folder(
     Ok(super::path_change::PathMutationResult { path: target.to_string_lossy().into_owned(), notebook_change })
 }
 
+/// Resolve physical paths before detecting self-imports or filename conflicts.
+/// Access checks remain the command boundary's responsibility.
+fn resolve_import_file_paths(source: &Path, target_directory: &Path) -> Result<(PathBuf, PathBuf), FileOperationFailure> {
+    let source = dunce::canonicalize(source).map_err(file_mutation_error)?;
+    let target_directory = dunce::canonicalize(target_directory).map_err(target_directory_error)?;
+    if !fs::metadata(&source).map_err(file_mutation_error)?.is_file() {
+        return Err(FileOperationFailure::code("SOURCE_NOT_REGULAR_FILE"));
+    }
+    if is_cloud_file_not_downloaded(&source) {
+        return Err(FileOperationFailure::code("CLOUD_FILE_NOT_DOWNLOADED"));
+    }
+    if !fs::metadata(&target_directory).map_err(target_directory_error)?.is_dir() {
+        return Err(FileOperationFailure::code("TARGET_NOT_DIRECTORY"));
+    }
+    let file_name = source.file_name().ok_or_else(|| FileOperationFailure::code("INVALID_FILE_PATH"))?;
+    let target = target_directory.join(file_name);
+    // Canonicalize existing destinations too (including file symlinks).
+    if dunce::canonicalize(&target).is_ok_and(|path| path == source) {
+        return Ok((source.clone(), source));
+    }
+    if fs::symlink_metadata(&target).is_ok() {
+        return Err(file_mutation_error(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists, "target already exists",
+        )).into());
+    }
+    Ok((source, target))
+}
+
 /// Copy a supported external resource into the caller's notebook scope.
 /// External drag-and-drop is intentionally an import, so the source remains
 /// unchanged and only the new notebook path is returned to the tree.
@@ -2431,43 +2453,14 @@ pub async fn import_file(
     if !source_allowed {
         return Err(FileOperationFailure::code("FILE_PERMISSION_DENIED"));
     }
-    if !fs::symlink_metadata(source)
-        .map_err(file_mutation_error)?
-        .is_file()
-    {
-        return Err(FileOperationFailure::code("SOURCE_NOT_REGULAR_FILE"));
-    }
-    if is_cloud_file_not_downloaded(source) {
-        return Err(FileOperationFailure::code("CLOUD_FILE_NOT_DOWNLOADED"));
-    }
-    if !fs::symlink_metadata(target_directory)
-        .map_err(target_directory_error)?
-        .is_dir()
-    {
-        return Err(FileOperationFailure::code("TARGET_NOT_DIRECTORY"));
-    }
-    let file_name = source
-        .file_name()
-        .ok_or_else(|| FileOperationFailure::code("INVALID_FILE_PATH"))?;
-    let target = target_directory.join(file_name);
+    let (source, target) = resolve_import_file_paths(source, target_directory)?;
     if !can_access_scoped_file(&target, Some(&space_path), &state) {
         return Err(FileOperationFailure::code("FILE_PERMISSION_DENIED"));
     }
     if source == target {
         return Ok(target.to_string_lossy().into_owned());
     }
-    if fs::symlink_metadata(&target).is_ok() {
-        return Err(
-            file_mutation_error(std::io::Error::new(
-                std::io::ErrorKind::AlreadyExists,
-                "target already exists",
-            ))
-            .into(),
-        );
-    }
 
-    let source = source.to_path_buf();
-    let target = target.to_path_buf();
     let memo_file = state.memo_file.clone();
     tokio::task::spawn_blocking(move || {
         let store = read_lock(&memo_file, "memo_file");
@@ -2688,6 +2681,39 @@ pub fn create_document(
 mod tests {
     use super::*;
 
+    #[cfg(unix)]
+    #[test]
+    fn import_paths_reuse_the_same_file_through_a_symlinked_notebook_root() {
+        let directory = tempfile::tempdir().unwrap();
+        let root = directory.path().join("notebook");
+        fs::create_dir(&root).unwrap();
+        let source = root.join("document.pdf");
+        fs::write(&source, [0_u8, 255, 1]).unwrap();
+        let alias = directory.path().join("alias");
+        std::os::unix::fs::symlink(&root, &alias).unwrap();
+        let (resolved_source, target) = resolve_import_file_paths(&source, &alias).unwrap();
+        assert_eq!(resolved_source, target);
+        assert_eq!(fs::read(&target).unwrap(), vec![0_u8, 255, 1]);
+
+        let outside = directory.path().join("outside.pdf");
+        fs::write(&outside, b"outside").unwrap();
+        let (_, target) = resolve_import_file_paths(&outside, &alias).unwrap();
+        assert_eq!(target.parent().unwrap(), dunce::canonicalize(&root).unwrap());
+    }
+
+    #[test]
+    fn import_paths_reject_distinct_files_with_the_same_name_without_overwriting() {
+        let directory = tempfile::tempdir().unwrap();
+        let source_root = directory.path().join("source");
+        let target_root = directory.path().join("target");
+        fs::create_dir(&source_root).unwrap();
+        fs::create_dir(&target_root).unwrap();
+        fs::write(source_root.join("a.pdf"), b"source").unwrap();
+        fs::write(target_root.join("a.pdf"), b"target").unwrap();
+        assert!(resolve_import_file_paths(&source_root.join("a.pdf"), &target_root).is_err());
+        assert_eq!(fs::read(target_root.join("a.pdf")).unwrap(), b"target");
+    }
+
     #[test]
     fn directory_listing_preserves_regular_files_and_folders() {
         let directory = tempfile::tempdir().unwrap();
@@ -2698,11 +2724,11 @@ mod tests {
         fs::create_dir(directory.path().join(".flowix")).unwrap();
         fs::write(directory.path().join(".hidden.md"), "hidden").unwrap();
         let items = read_dir_single_level(directory.path(), None);
-        assert_eq!(items.len(), 2);
+        assert_eq!(items.len(), 3);
         assert!(items.iter().all(|item| item.name != "photo.png.yaml"));
-        assert!(items.iter().all(|item| item.name != "AGENTS.md"));
-        assert_eq!(items[0].name, "folder");
-        assert_eq!(items[1].name, "note.md");
+        assert!(items.iter().any(|item| item.name == "AGENTS.md"));
+        assert!(items.iter().any(|item| item.name == "folder"));
+        assert!(items.iter().any(|item| item.name == "note.md"));
 
         let hidden_items = read_dir_single_level(directory.path(), None);
         assert!(hidden_items.iter().all(|item| item.name != ".flowix"));

@@ -6,6 +6,21 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover" />
     <title>Flowix</title>
     <style>
+      /* Critical first-paint frame colors, before the main theme CSS loads.
+       * Keep aligned with styles/theme/{rock,light,dark,ember}.css.
+       * Zero specificity lets the full theme palette take over in any load order. */
+      :where(:root) {
+        --frame-bg: #F4F3F1;
+      }
+      :where([data-theme="light"]) {
+        --frame-bg: oklch(0.988 0.006 255);
+      }
+      :where([data-theme="dark"]) {
+        --frame-bg: oklch(0.173 0.009 265);
+      }
+      :where([data-theme="ember"]) {
+        --frame-bg: oklch(0.985 0.005 50);
+      }
       html, body, #root {
         height: 100%;
         margin: 0;
@@ -17,8 +32,11 @@
         z-index: 2147483647;
         display: grid;
         place-items: center;
-        background: transparent;
         pointer-events: none;
+      }
+      #app-loading,
+      [data-startup-screen="initialization"] {
+        background: var(--frame-bg);
       }
       /* Critical first-paint copy of .flowix-loading-ring and .flowix-spin in styles/index.css. */
       .flowix-loading-ring {

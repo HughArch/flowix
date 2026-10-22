@@ -285,6 +285,8 @@ function parseBrowserColumnTarget(value: unknown): BrowserColumnTarget | null {
             ...(value.collectionDisplay && typeof value.collectionDisplay === 'object' && 'collectionId' in value.collectionDisplay && 'displayId' in value.collectionDisplay && 'notebookId' in value.collectionDisplay && typeof value.collectionDisplay.collectionId === 'string' && typeof value.collectionDisplay.displayId === 'string' && typeof value.collectionDisplay.notebookId === 'string' ? { collectionDisplay: { collectionId: value.collectionDisplay.collectionId, displayId: value.collectionDisplay.displayId, notebookId: value.collectionDisplay.notebookId, viewId: 'viewId' in value.collectionDisplay && typeof value.collectionDisplay.viewId === 'string' ? value.collectionDisplay.viewId : null } } : {}),
             folderPath: nonEmptyString(value.folderPath) ? value.folderPath : null,
             notebookId: nonEmptyString(value.notebookId) ? value.notebookId : null,
+            ...(nonEmptyString(value.notebookContextPath) && value.notebookContextPath === value.activeFilePath
+              ? { notebookContextPath: value.notebookContextPath } : {}),
             ...(value.restoreNotebookContext === true || !('notebookId' in value) ? { restoreNotebookContext: true } : {}),
             scopePath: nonEmptyString(value.scopePath) ? value.scopePath : nonEmptyString(value.folderPath) ? value.folderPath : null,
             activeFilePath: typeof value.activeFilePath === 'string' ? value.activeFilePath : null,

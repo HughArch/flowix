@@ -84,6 +84,8 @@ export interface WebPageMetadata {
 }
 
 export const web = {
+  resolveBilibiliVideo: (videoId: string, page: number) =>
+    invoke<{ aid: number; cid: number }>('resolve_bilibili_video', { videoId, page }),
   parsePage: (url: string) => invoke<WebPageMetadata>('parse_web_page', { url }),
 };
 

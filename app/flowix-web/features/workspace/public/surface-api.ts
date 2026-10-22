@@ -4,6 +4,7 @@ export {
   workspaceFileSurfaceKind,
   workspaceFileSurfaceSupportsHost,
   workspaceSurfaceCapabilities,
+  workspaceSurfaceContentPresentation,
   workspaceSurfaceAppearance,
   workspaceSurfaceRegistry,
   workspaceSurfaceSupportsHost,
