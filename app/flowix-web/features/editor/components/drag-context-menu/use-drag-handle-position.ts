@@ -43,6 +43,7 @@ export function useDragHandlePosition(
   ignoreBlurRef?: RefObject<boolean>,
   keepVisibleRef?: RefObject<boolean>,
   interactionInfoRef?: RefObject<CurrentBlockInfo | null>,
+  hoverInfoRef?: RefObject<CurrentBlockInfo | null>,
 ): DragHandlePositionResult {
   const [state, setState] = useState<DragHandlePositionState>(HIDDEN_STATE)
   const frameRef = useRef<number | null>(null)
@@ -65,7 +66,11 @@ export function useDragHandlePosition(
 
     const updateDragHandle = () => {
       if (!mounted) return
-      const preferredInfo = keepVisibleRef?.current ? interactionInfoRef?.current : null
+      const interactionInfo = keepVisibleRef?.current ? interactionInfoRef?.current : null
+      // Hovering a block shows its handle even when the editor is unfocused.
+      // This is what makes Mod/Shift-click block selection possible without
+      // first clicking into the body (which would reset the selection).
+      const preferredInfo = interactionInfo ?? hoverInfoRef?.current ?? null
       const pos = computeHandlePosition(
         editor,
         fontSize,
@@ -177,7 +182,7 @@ export function useDragHandlePosition(
       window.removeEventListener('resize', scheduleUpdate)
       resizeObserver.disconnect()
     }
-  }, [editor, fontSize, lineHeight, ignoreBlurRef, keepVisibleRef, interactionInfoRef])
+  }, [editor, fontSize, lineHeight, ignoreBlurRef, keepVisibleRef, interactionInfoRef, hoverInfoRef])
 
   return { ...state, refresh }
 }

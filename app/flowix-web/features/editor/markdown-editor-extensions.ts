@@ -25,6 +25,7 @@ import { SearchAndReplace } from '@features/editor/extensions/search-replace';
 import Frontmatter from '@features/editor/extensions/frontmatter';
 import { MenuPinExtension } from '@features/editor/extensions/menu-pin';
 import { BlockDragExtension } from '@features/editor/extensions/block-drag';
+import { BlockSelectionExtension } from '@features/editor/extensions/block-selection';
 import { HeadingFoldExtension, type HeadingFoldLabels } from '@features/editor/extensions/heading-fold';
 import { ListTypeShortcuts } from '@features/editor/extensions/list-transforms';
 import { SlashMenu } from '@features/editor/extensions/slash-menu';
@@ -365,6 +366,7 @@ export function createMarkdownEditorExtensions({
     TabAgentRun,
     SearchAndReplace,
     MenuPinExtension,
+    BlockSelectionExtension,
     BlockDragExtension,
     HeadingFoldExtension.configure({ getLabels: getHeadingFoldLabels }),
     ListTypeShortcuts,

@@ -9,25 +9,42 @@ const DRAG_PREVIEW_VIEWPORT_PADDING_PX = 8
 const DRAG_PREVIEW_MAX_WIDTH_PX = 480
 const DRAG_PREVIEW_MAX_HEIGHT_PX = 320
 
+/**
+ * Build the floating ghost that follows the pointer.
+ *
+ * A single block keeps the original "lift the line" look. Several blocks are
+ * stacked inside one card and labelled with their count, so a multi-block
+ * drag reads as one payload instead of a wall of text.
+ */
 export function createBlockDragPreview(
-  source: HTMLElement | null,
+  source: HTMLElement | readonly HTMLElement[] | null,
   clientX: number,
   clientY: number,
 ): BlockDragPreview | null {
-  if (!source) return null
+  const sources = (Array.isArray(source) ? source : source ? [source] : [])
+    .filter((element): element is HTMLElement => element instanceof HTMLElement)
+  if (sources.length === 0) return null
 
-  const sourceRect = source.getBoundingClientRect()
+  const sourceRect = sources[0].getBoundingClientRect()
   const preview = document.createElement('div')
   preview.className = 'flowix-block-drag-preview'
+  preview.dataset.blockCount = String(sources.length)
   preview.style.width = `${Math.min(Math.max(sourceRect.width, 1), DRAG_PREVIEW_MAX_WIDTH_PX)}px`
   preview.style.maxHeight = `${DRAG_PREVIEW_MAX_HEIGHT_PX}px`
 
-  const clone = source.cloneNode(true) as HTMLElement
-  clone.classList.remove('flowix-block-drag-source', 'is-block-selected', 'ProseMirror-selectednode')
-  clone.removeAttribute('id')
-  clone.removeAttribute('contenteditable')
-  clone.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'))
-  clone.querySelectorAll('[contenteditable]').forEach((element) => element.removeAttribute('contenteditable'))
+  const cloneHost = document.createElement('div')
+  cloneHost.className = sources.length > 1
+    ? 'flowix-block-drag-preview-stack'
+    : 'flowix-block-drag-preview-single'
+  for (const element of sources) {
+    cloneHost.appendChild(clonePreviewBlock(element))
+  }
+  if (sources.length > 1) {
+    const badge = document.createElement('span')
+    badge.className = 'flowix-block-drag-preview-count'
+    badge.textContent = `${sources.length} 个块`
+    preview.appendChild(badge)
+  }
 
   // Keep the editor's scoped typography and node-view styles available to the
   // clone without moving the preview into the editor's overflow container.
@@ -42,7 +59,7 @@ export function createBlockDragPreview(
   previewContent.style.padding = '0'
   previewContent.style.height = 'auto'
   previewContent.style.overflow = 'visible'
-  previewContent.appendChild(clone)
+  previewContent.appendChild(cloneHost)
   previewEditor.appendChild(previewContent)
   preview.appendChild(previewEditor)
   document.body.appendChild(preview)
@@ -55,6 +72,16 @@ export function createBlockDragPreview(
   }
   updateBlockDragPreview(result, clientX, clientY)
   return result
+}
+
+function clonePreviewBlock(source: HTMLElement): HTMLElement {
+  const clone = source.cloneNode(true) as HTMLElement
+  clone.classList.remove('flowix-block-drag-source', 'is-block-selected', 'ProseMirror-selectednode')
+  clone.removeAttribute('id')
+  clone.removeAttribute('contenteditable')
+  clone.querySelectorAll('[id]').forEach((element) => element.removeAttribute('id'))
+  clone.querySelectorAll('[contenteditable]').forEach((element) => element.removeAttribute('contenteditable'))
+  return clone
 }
 
 export function updateBlockDragPreview(

@@ -356,8 +356,158 @@ describe('block drag transactions', () => {
     }
   })
 
-  it('keeps list-item drops inside a list nested in a blockquote', () => {
+  it('moves several non-adjacent blocks as one run', () => {
     const element = document.createElement('div')
+    document.body.append(element)
+    const editor = new Editor({
+      element,
+      extensions: [StarterKit, BlockDragExtension],
+      content: {
+        type: 'doc',
+        content: [
+          { type: 'paragraph', content: [{ type: 'text', text: 'A' }] },
+          { type: 'paragraph', content: [{ type: 'text', text: 'B' }] },
+          { type: 'paragraph', content: [{ type: 'text', text: 'C' }] },
+          { type: 'paragraph', content: [{ type: 'text', text: 'D' }] },
+        ],
+      },
+    })
+    try {
+      const { view } = editor
+      const blocks: Array<{ pos: number; nodeSize: number }> = []
+      view.state.doc.forEach((node, pos) => blocks.push({ pos, nodeSize: node.nodeSize }))
+      // Keep the drag preview layout deterministic.
+      blocks.forEach((block, index) => {
+        const dom = view.nodeDOM(block.pos)
+        if (!(dom instanceof HTMLElement)) return
+        Object.defineProperty(dom, 'getBoundingClientRect', {
+          configurable: true,
+          value: () => ({ top: index * 30, bottom: index * 30 + 20 }),
+        })
+      })
+
+      expect(startBlockDragForView(view, blocks[0], [blocks[2]])).toBe(true)
+      // Release below every block → drop at the end of the document.
+      expect(dropBlockDragAtForView(view, 0, 200)).toBe(true)
+
+      expect(view.state.doc.textContent).toBe('BDAC')
+      expect(view.state.doc.childCount).toBe(4)
+    } finally {
+      editor.destroy()
+      element.remove()
+    }
+  })
+
+  it('moves several list items out of their list together', () => {
+    const element = document.createElement('div')
+    document.body.append(element)
+    const editor = new Editor({
+      element,
+      extensions: [StarterKit, BlockDragExtension],
+      content: {
+        type: 'doc',
+        content: [
+          {
+            type: 'bulletList',
+            content: ['A', 'B', 'C'].map((text) => ({
+              type: 'listItem',
+              content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
+            })),
+          },
+          { type: 'paragraph', content: [{ type: 'text', text: 'X' }] },
+        ],
+      },
+    })
+    try {
+      const { view } = editor
+      const items: Array<{ pos: number; nodeSize: number; text: string }> = []
+      view.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'listItem') {
+          items.push({ pos, nodeSize: node.nodeSize, text: node.textContent })
+        }
+        return true
+      })
+      view.state.doc.forEach((_node, pos, index) => {
+        const dom = view.nodeDOM(pos)
+        if (!(dom instanceof HTMLElement)) return
+        Object.defineProperty(dom, 'getBoundingClientRect', {
+          configurable: true,
+          value: () => ({ top: index * 30, bottom: index * 30 + 20 }),
+        })
+      })
+
+      const [a, , c] = items
+      expect(startBlockDragForView(view, a, [c])).toBe(true)
+      expect(dropBlockDragAtForView(view, 0, 200)).toBe(true)
+
+      // StarterKit's trailingNode keeps an empty paragraph after a top-level
+      // list, so assert the meaningful prefix rather than the raw child count.
+      expect(view.state.doc.child(0).textContent).toBe('B')
+      expect(view.state.doc.child(1).textContent).toBe('X')
+      expect(view.state.doc.child(2).textContent).toBe('AC')
+      expect(view.state.doc.child(2).type.name).toBe('bulletList')
+      expect(view.state.doc.textContent).toBe('BXAC')
+    } finally {
+      editor.destroy()
+      element.remove()
+    }
+  })
+
+  it('moves a list item and a heading from different containers together', () => {
+    const element = document.createElement('div')
+    document.body.append(element)
+    const editor = new Editor({
+      element,
+      extensions: [StarterKit, BlockDragExtension],
+      content: {
+        type: 'doc',
+        content: [
+          { type: 'heading', attrs: { level: 3 }, content: [{ type: 'text', text: 'H' }] },
+          {
+            type: 'bulletList',
+            content: ['A', 'B'].map((text) => ({
+              type: 'listItem',
+              content: [{ type: 'paragraph', content: [{ type: 'text', text }] }],
+            })),
+          },
+          { type: 'paragraph', content: [{ type: 'text', text: 'X' }] },
+        ],
+      },
+    })
+    try {
+      const { view } = editor
+      const heading = { pos: 0, nodeSize: view.state.doc.child(0).nodeSize }
+      const listItems: Array<{ pos: number; nodeSize: number; text: string }> = []
+      view.state.doc.descendants((node, pos) => {
+        if (node.type.name === 'listItem') {
+          listItems.push({ pos, nodeSize: node.nodeSize, text: node.textContent })
+        }
+        return true
+      })
+      view.state.doc.forEach((_node, pos, index) => {
+        const dom = view.nodeDOM(pos)
+        if (!(dom instanceof HTMLElement)) return
+        Object.defineProperty(dom, 'getBoundingClientRect', {
+          configurable: true,
+          value: () => ({ top: index * 30, bottom: index * 30 + 20 }),
+        })
+      })
+
+      expect(startBlockDragForView(view, heading, [listItems[0]])).toBe(true)
+      // Drop below every top-level block: the mixed set lands at the end.
+      expect(dropBlockDragAtForView(view, 0, 300)).toBe(true)
+
+      expect(view.state.doc.textContent).toBe('BXHA')
+      expect(view.state.doc.child(2).textContent).toBe('H')
+      expect(view.state.doc.child(3).type.name).toBe('bulletList')
+      expect(view.state.doc.child(3).textContent).toBe('A')
+    } finally {
+      editor.destroy()
+      element.remove()
+    }
+  })
+
+  it('keeps list-item drops inside a list nested in a blockquote', () => {    const element = document.createElement('div')
     document.body.append(element)
     const editor = new Editor({
       element,

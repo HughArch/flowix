@@ -1,6 +1,7 @@
 import { useCallback, useLayoutEffect, useRef, useState, type MutableRefObject, type PointerEvent } from 'react'
 import type { Editor } from '@tiptap/core'
 import {
+  getBlockInfoAtCoords,
   getBlockInfoForInteraction,
   type CurrentBlockInfo,
 } from '@features/editor/components/drag-context-menu/block-info'
@@ -17,6 +18,14 @@ import {
   startBlockDrag,
   updateBlockDragPosition,
 } from '@features/editor/extensions/block-drag'
+import {
+  clearBlockSelection,
+  extendBlockSelection,
+  resolveBlockDragTargets,
+  toggleBlockSelection,
+} from '@features/editor/extensions/block-selection'
+
+type BlockSelectionModifier = 'toggle' | 'extend' | null
 
 interface PointerBlockDragState {
   pointerId: number
@@ -26,6 +35,8 @@ interface PointerBlockDragState {
   currentY: number
   anchorRect: DOMRect
   started: boolean
+  /** Modifier held on pointerdown; a non-drag release edits the block selection. */
+  selectionModifier: BlockSelectionModifier
 }
 
 interface UseBlockDragGestureOptions {
@@ -37,6 +48,26 @@ interface UseBlockDragGestureOptions {
 }
 
 const BLOCK_DRAG_START_THRESHOLD_PX = 4
+
+/**
+ * Resolve the block the handle press belongs to.
+ *
+ * The handle is positioned from `blockInfo`, so the block it visually sits on
+ * IS the target. Resolving from pointer coordinates first would misfire on
+ * short adjacent rows (the handle's y can fall inside the previous row's
+ * rect). Coordinates are only a last-resort fallback when no usable hover
+ * target exists.
+ */
+function resolvePressedBlock(
+  editor: Editor,
+  event: PointerEvent<HTMLDivElement>,
+  blockInfo: CurrentBlockInfo | null,
+): CurrentBlockInfo | null {
+  const preferred = getBlockInfoForInteraction(editor, blockInfo)
+  if (preferred) return preferred
+  const pointed = getBlockInfoAtCoords(editor, event.clientX, event.clientY)
+  return pointed ? getBlockInfoForInteraction(editor, pointed) : null
+}
 
 /**
  * Owns the pointer gesture around the editor's block-drag plugin.
@@ -134,7 +165,15 @@ export function useBlockDragGesture({
     }
 
     if (!didDrag && !canceled) {
-      onTap?.(drag.anchorRect)
+      const info = blockInfoRef.current
+      if (drag.selectionModifier === 'toggle' && info) {
+        toggleBlockSelection(editor, info)
+      } else if (drag.selectionModifier === 'extend' && info) {
+        extendBlockSelection(editor, info)
+      } else {
+        clearBlockSelection(editor)
+        onTap?.(drag.anchorRect)
+      }
     }
   }, [cancelScheduledMove, editor, ignoreBlurRef, markDragClickSuppressed, onTap, releasePointerCapture, removeDragPreview])
 
@@ -146,7 +185,7 @@ export function useBlockDragGesture({
     event.preventDefault()
     cancelScheduledMove()
     didStartDragRef.current = false
-    const interactionBlockInfo = getBlockInfoForInteraction(editor, blockInfo)
+    const interactionBlockInfo = resolvePressedBlock(editor, event, blockInfo)
     blockInfoRef.current = interactionBlockInfo
     ignoreBlurRef.current = true
     pointerDragRef.current = {
@@ -159,6 +198,9 @@ export function useBlockDragGesture({
       // the outer editor and temporarily hide the handle.
       anchorRect: event.currentTarget.getBoundingClientRect(),
       started: false,
+      selectionModifier: event.ctrlKey || event.metaKey
+        ? 'toggle'
+        : event.shiftKey ? 'extend' : null,
     }
     event.currentTarget.setPointerCapture(event.pointerId)
   }, [blockInfo, cancelScheduledMove, editor, ignoreBlurRef])
@@ -179,7 +221,8 @@ export function useBlockDragGesture({
       const dy = event.clientY - drag.startY
       if (Math.hypot(dx, dy) < BLOCK_DRAG_START_THRESHOLD_PX) return
 
-      const started = startBlockDrag(editor, blockInfoRef.current)
+      const sourceBlocks = resolveBlockDragTargets(editor, blockInfoRef.current)
+      const started = startBlockDrag(editor, blockInfoRef.current, sourceBlocks)
       if (!started) {
         pointerDragRef.current = null
         blockInfoRef.current = null
@@ -189,8 +232,11 @@ export function useBlockDragGesture({
       }
 
       drag.started = true
+      const previewElements = sourceBlocks
+        .map((block) => editor.view.nodeDOM(block.pos))
+        .filter((element): element is HTMLElement => element instanceof HTMLElement)
       dragPreviewRef.current = createBlockDragPreview(
-        blockInfoRef.current?.dom ?? null,
+        previewElements.length > 0 ? previewElements : blockInfoRef.current?.dom ?? null,
         event.clientX,
         event.clientY,
       )
