@@ -20,7 +20,14 @@ const configArgs = [...args]
 if (cloudEnvIndex >= 0) {
   configArgs.splice(cloudEnvIndex, args[cloudEnvIndex] === '--cloud-env' ? 2 : 1)
 }
-const config = configArgs.find(arg => arg !== '--with-pi') ?? 'app/flowix-desktop/tauri.conf.dev.json'
+const requestedConfig = configArgs.find(arg => arg !== '--with-pi') ?? 'app/flowix-desktop/tauri.conf.dev.json'
+// Tauri replaces (rather than deep-merges) the `app.windows` array, so the
+// generic dev config would drop the frameless window settings that the
+// platform overlay normally supplies. Windows draws its own chrome in React,
+// so route it through the dedicated Windows dev config.
+const config = process.platform === 'win32' && requestedConfig === 'app/flowix-desktop/tauri.conf.dev.json'
+  ? 'app/flowix-desktop/tauri.windows.dev.conf.json'
+  : requestedConfig
 const childEnv = { ...process.env }
 // Pi is shipped by Flowix; do not let a shell override change the runtime.
 delete childEnv.PI_CLI_PATH
