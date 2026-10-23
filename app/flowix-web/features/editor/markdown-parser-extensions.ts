@@ -23,6 +23,7 @@ import { AgentThreadCardMarkdownExtension } from '@features/agent/thread-card/ag
 // the worker bundle.
 import { ColumnsNode, ColumnNode } from '@features/editor/extensions/columns/columns';
 import { CalloutNode } from '@features/editor/extensions/callout/callout';
+import { ToggleNode } from '@features/editor/extensions/toggle/toggle';
 import { guardListMarkdownTokenizer } from './markdown-list-tokenizer';
 
 /**
@@ -95,5 +96,7 @@ export function createMarkdownParserExtensions() {
     // Callouts use the same fenced-div tokenizer family; without this node the
     // background parser would flatten the structure into paragraphs.
     CalloutNode,
+    // Toggles use the same fenced-div tokenizer family as columns/callouts.
+    ToggleNode,
   ];
 }

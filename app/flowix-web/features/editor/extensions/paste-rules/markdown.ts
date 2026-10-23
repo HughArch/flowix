@@ -19,6 +19,8 @@ const MARKDOWN_BLOCK_PATTERNS: RegExp[] = [
   /(^|\r?\n)\s{0,3}(?:[-*_]\s*){3,}(?:\r?\n|$)/,
   /(^|\r?\n)(?: {4}|\t)\S/,
   /(^|\r?\n)\|.*\|/,
+  // Flowix fenced containers (`::: callout`, `::: toggle`, `::: columns`).
+  /(^|\r?\n)\s{0,3}:::\s+[A-Za-z][\w-]*/,
 ];
 
 const MARKDOWN_INLINE_PATTERNS: RegExp[] = [

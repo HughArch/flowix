@@ -93,6 +93,16 @@ describe('worker parses content that previously forced the browser parser', () =
     expect(callout?.attrs).toMatchObject({ icon: '⚠️', color: 'yellow' });
   });
 
+  it('keeps a toggle as a node', () => {
+    const document = parseInWorker(
+      '::: toggle collapsed\n\n标题\n\n正文\n\n:::',
+    );
+    const toggle = document.content?.find(node => node.type === 'toggle');
+    expect(toggle).toBeDefined();
+    expect(toggle?.attrs).toMatchObject({ open: false });
+    expect(toggle?.content?.map(node => node.type)).toEqual(['paragraph', 'paragraph']);
+  });
+
   it.each([
     ['block html', 'Before\n\n<div>keep me</div>\n\nAfter'],
     ['inline html', 'a <span class="x">keep</span> b'],

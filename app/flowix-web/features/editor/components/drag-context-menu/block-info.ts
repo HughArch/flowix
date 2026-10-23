@@ -1,6 +1,6 @@
 import type { Editor } from '@tiptap/core'
 import type { Node as PMNode } from 'prosemirror-model'
-import { NodeSelection } from 'prosemirror-state'
+import { NodeSelection, TextSelection } from 'prosemirror-state'
 
 /**
  * Pure ProseMirror-native helper for resolving the "block" the cursor
@@ -61,6 +61,21 @@ export function getCurrentBlockInfo(editor: Editor): CurrentBlockInfo | null {
   // drag target aligned for lists, tables, and quotes.
   // Plain text blocks (paragraph, heading, codeBlock, etc.) fall back to the
   // immediate parent.
+  const toggleTarget = toggleContainerAtSelection(selection)
+  if (toggleTarget) {
+    const dom = view.nodeDOM(toggleTarget.pos)
+    if (dom instanceof HTMLElement) {
+      return {
+        node: toggleTarget.node,
+        typeName: toggleTarget.node.type.name,
+        attrs: toggleTarget.node.attrs,
+        pos: toggleTarget.pos,
+        nodeSize: toggleTarget.node.nodeSize,
+        dom,
+      }
+    }
+  }
+
   const { $from } = selection
   if ($from.depth < 1) return null
   const depth = getTargetBlockDepth($from)
@@ -122,6 +137,8 @@ export function getFocusedAgentThreadCardInfo(editor: Editor): CurrentBlockInfo 
 }
 
 const CALLOUT_CONTENT_SELECTOR = ':scope > .flowix-callout-content'
+const TOGGLE_CONTENT_SELECTOR = ':scope > .flowix-toggle-content'
+const TOGGLE_CHEVRON_SELECTOR = ':scope > .flowix-toggle-chevron'
 const INNER_BLOCK_SELECTOR =
   'p, h1, h2, h3, h4, h5, h6, ul, ol, li, table, .tableWrapper, blockquote, pre, .code-block-wrapper, .ProseMirror-node'
 
@@ -146,6 +163,11 @@ export function getBlockInfoAtCoords(
   // Callouts expose two drag units: the container (icon rail / padding) and
   // each inner block (text rows). Resolve that distinction from the DOM before
   // `posAtCoords`, which would otherwise always pick one of the inner blocks.
+  // Toggles run first for the same reason; their resolver defers when a deeper
+  // container (e.g. a callout inside the body) owns the pointer.
+  const toggleInfo = toggleBlockInfoAtCoords(view, clientX, clientY)
+  if (toggleInfo !== undefined) return toggleInfo
+
   const calloutInfo = calloutBlockInfoAtCoords(view, clientX, clientY)
   if (calloutInfo !== undefined) return calloutInfo
 
@@ -203,6 +225,100 @@ function nearestChildAtY(container: HTMLElement, clientY: number): HTMLElement |
   let bestDistance = Number.POSITIVE_INFINITY
   for (const child of Array.from(container.children)) {
     if (!(child instanceof HTMLElement)) continue
+    const rect = child.getBoundingClientRect()
+    const distance = clientY < rect.top
+      ? rect.top - clientY
+      : clientY > rect.bottom
+        ? clientY - rect.bottom
+        : 0
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = child
+    }
+  }
+  return best
+}
+
+/**
+ * A toggle's first child is its title line. Moving that line must move the
+ * whole container, so the handle resolves to the toggle node instead of the
+ * title paragraph. Cursors in the body keep the ordinary inner-block target.
+ */
+function toggleContainerAtSelection(
+  selection: Editor['view']['state']['selection'],
+): { pos: number; node: PMNode } | null {
+  if (!(selection instanceof TextSelection)) return null
+  const { $from } = selection
+  for (let depth = $from.depth; depth >= 1; depth -= 1) {
+    const node = $from.node(depth)
+    if (node.type.name !== 'toggle') continue
+    if ($from.depth !== depth + 1 || $from.index(depth) !== 0) return null
+    return { pos: $from.before(depth), node }
+  }
+  return null
+}
+
+/**
+ * `undefined` means "no toggle under the pointer, use the generic resolver".
+ * A returned value (including null) is authoritative for toggle hits.
+ */
+function toggleBlockInfoAtCoords(
+  view: Editor['view'],
+  clientX: number,
+  clientY: number,
+): CurrentBlockInfo | null | undefined {
+  const element = document.elementFromPoint(clientX, clientY)
+  if (!(element instanceof Element) || !view.dom.contains(element)) return undefined
+
+  // Only the innermost container owns the pointer. A callout/column placed
+  // inside the body keeps its own resolver, which in turn keeps nested
+  // containers individually draggable.
+  const innermost = element.closest('.flowix-toggle, .flowix-callout, .flowix-column')
+  if (!innermost || !innermost.classList.contains('flowix-toggle')) return undefined
+  const toggle = innermost as HTMLElement
+
+  const content = toggle.querySelector<HTMLElement>(TOGGLE_CONTENT_SELECTOR)
+  if (!content) return blockInfoFromNodeElement(view, toggle) ?? undefined
+
+  const chevron = toggle.querySelector<HTMLElement>(TOGGLE_CHEVRON_SELECTOR)
+  if (chevron && chevron.contains(element)) {
+    return blockInfoFromNodeElement(view, toggle) ?? undefined
+  }
+
+  // The title row is container chrome, like the callout's icon rail.
+  const title = content.firstElementChild
+  if (title && (title === element || title.contains(element))) {
+    return blockInfoFromNodeElement(view, toggle) ?? undefined
+  }
+
+  const inner = element.closest<HTMLElement>(INNER_BLOCK_SELECTOR)
+  if (inner && content.contains(inner) && inner !== title) {
+    const info = blockInfoFromNodeElement(view, inner)
+    if (info && !isLayoutContainer(info.typeName)) return info
+  }
+
+  // The pointer can be over the body's left indent (outside the block DOM)
+  // while still on a body row. Resolve that row by Y, skipping collapsed rows
+  // that have no layout.
+  const nearest = nearestVisibleChildAtY(content, clientY, title)
+  if (nearest) {
+    const info = blockInfoFromNodeElement(view, nearest)
+    if (info && !isLayoutContainer(info.typeName)) return info
+  }
+
+  return blockInfoFromNodeElement(view, toggle) ?? undefined
+}
+
+function nearestVisibleChildAtY(
+  container: HTMLElement,
+  clientY: number,
+  skip: Element | null,
+): HTMLElement | null {
+  let best: HTMLElement | null = null
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const child of Array.from(container.children)) {
+    if (!(child instanceof HTMLElement) || child === skip) continue
+    if (child.getClientRects().length === 0) continue
     const rect = child.getBoundingClientRect()
     const distance = clientY < rect.top
       ? rect.top - clientY

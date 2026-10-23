@@ -607,4 +607,25 @@
     white-space: pre-wrap !important;
     overflow-wrap: anywhere;
   }
+
+  /* Collapsed toggle bodies are hidden with a decoration class on screen.
+   * Printing reads the live DOM, so restore the body and drop the collapse
+   * affordance and indentation. */
+  html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror .is-toggle-collapsed-content {
+    display: revert !important;
+  }
+
+  html.flowix-pdf-printing .flowix-pdf-print-scope .flowix-toggle-chevron {
+    display: none !important;
+  }
+
+  html.flowix-pdf-printing .flowix-pdf-print-scope .flowix-toggle-content {
+    padding-left: 0 !important;
+  }
+
+  html.flowix-pdf-printing .flowix-pdf-print-scope .flowix-toggle-content > *:nth-child(n + 2) {
+    margin-left: 0 !important;
+    padding-left: 0 !important;
+    border-left: 0 !important;
+  }
 }

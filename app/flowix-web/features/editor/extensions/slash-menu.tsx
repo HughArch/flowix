@@ -654,6 +654,7 @@ function handleSelect(item: SlashMenuItem): void {
     'paragraph': () => editor.chain().focus().setParagraph().run(),
     'blockquote': () => editor.chain().focus().toggleBlockquote().run(),
     'callout': () => editor.chain().focus().setCallout().run(),
+    'toggle': () => editor.chain().focus().setToggle().run(),
     'code-block': () => editor.chain().focus().toggleCodeBlock().run(),
     'bullet-list': () => { applyListType(editor, 'bulletList'); },
     'ordered-list': () => { applyListType(editor, 'orderedList'); },

@@ -2761,3 +2761,171 @@ html.flowix-block-dragging * {
 .flowix-callout-picker__swatch[data-active] {
   box-shadow: 0 0 0 2px var(--popover), 0 0 0 4px var(--flowix-swatch-color);
 }
+
+/* ── Toggle / 折叠块 (Flowus-style) ───────────────────────────────────────
+   The NodeView supplies `.flowix-toggle` (chevron + content). The first
+   content child is the title line; the remaining children form the body and
+   carry `is-toggle-collapsed-content` while the block is collapsed (a
+   ProseMirror decoration, see toggle-editor.ts). */
+.flowix-toggle {
+  position: relative;
+  margin: 0 0 calc(var(--editor-font-size, 16px) * var(--editor-line-height, 1.8) * 0.25);
+}
+
+/* Whole-container background, painted with the same palette variables as a
+   paragraph/heading line background. `isolation` keeps the negative-z pseudo
+   element behind the container without leaking past it. */
+.markdown-editor .tiptap:not(.agent-composer__input-content) .flowix-toggle[data-flowix-block-bg] {
+  isolation: isolate;
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) .flowix-toggle[data-flowix-block-bg]::before {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  top: 0;
+  /* Match the paragraph line-background band exactly: the block keeps its
+     rhythm padding, and the band trims the same 0.15 line as
+     `--flowix-block-bg-bottom`, so an empty toggle and a plain line are the
+     same height. */
+  bottom: calc(var(--editor-font-size, 16px) * var(--editor-line-height, 1.8) * 0.15);
+  left: -0.375rem;
+  right: -0.375rem;
+  border-radius: 6px;
+  background-color: color-mix(in oklch, var(--flowix-block-bg-color) 16%, transparent);
+  pointer-events: none;
+}
+
+/* The chevron occupies the gutter between the drag handle and the text. It is
+   always laid out so the title line never shifts when the pointer enters or
+   when a toggle gets its first body block. */
+.flowix-toggle-chevron {
+  position: absolute;
+  left: 0;
+  top: calc((var(--editor-font-size, 16px) * var(--editor-line-height, 1.8) - 18px) / 2);
+  z-index: 1;
+  display: inline-flex;
+  width: 18px;
+  height: 18px;
+  align-items: center;
+  justify-content: center;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  opacity: 0.55;
+  transition: opacity 120ms ease, background-color 120ms ease, color 120ms ease;
+}
+
+.flowix-toggle-chevron::before {
+  content: '';
+  width: 0;
+  height: 0;
+  border-top: 4.5px solid transparent;
+  border-bottom: 4.5px solid transparent;
+  border-left: 6px solid currentColor;
+  transform-origin: 50% 50%;
+  transition: transform 120ms ease;
+}
+
+/* Expanded points down; collapsed points right. */
+.flowix-toggle[data-open='true'] > .flowix-toggle-chevron::before {
+  transform: rotate(90deg);
+}
+
+.flowix-toggle:hover > .flowix-toggle-chevron,
+.flowix-toggle:focus-within > .flowix-toggle-chevron,
+.flowix-toggle-chevron:focus-visible {
+  opacity: 1;
+}
+
+.flowix-toggle-chevron:hover,
+.flowix-toggle-chevron:focus-visible {
+  background: var(--hover-bg, var(--muted));
+  color: var(--foreground);
+}
+
+/* A toggle without body blocks turns the chevron into a "create body"
+   affordance, so it stays visible in every state. */
+
+.flowix-toggle-content {
+  min-width: 0;
+  padding-left: 1.5rem;
+  overflow-wrap: anywhere;
+}
+
+.flowix-toggle-content > :first-child {
+  margin-top: 0;
+}
+
+/* Body rows: indent one more step and draw the vertical guide line. The
+   editor's paragraph rhythm keeps consecutive rows flush, so the per-block
+   borders read as one continuous rule. */
+.flowix-toggle-content > *:nth-child(n + 2) {
+  margin-left: 0.2rem;
+  padding-left: 0.85rem;
+  border-left: 1px solid var(--border);
+}
+
+/* NodeView content sits below `.tiptap > *`, so mirror the editor's paragraph
+   rhythm here (same rule as `.flowix-callout-content`). */
+.flowix-toggle-content > p {
+  margin: 0;
+  padding-bottom: calc(var(--editor-font-size, 16px) * var(--editor-line-height, 1.8) * 0.25);
+  white-space: pre-wrap;
+}
+
+.flowix-toggle-content > p:empty,
+.flowix-toggle-content > p:has(> br.ProseMirror-trailingBreak:only-child) {
+  min-height: calc(var(--editor-font-size, 16px) * var(--editor-line-height, 1.8));
+}
+
+.flowix-toggle-content > p:empty::before {
+  content: "\00a0";
+}
+
+/* Empty title label (Flowus' "折叠列表"). The global Placeholder extension only
+   decorates top-level textblocks, so the NodeView owns this one. */
+.flowix-toggle-content[data-title-placeholder] > :first-child:empty::before,
+.flowix-toggle-content[data-title-placeholder] > :first-child:has(> br.ProseMirror-trailingBreak:only-child)::before {
+  content: attr(data-title-placeholder);
+  color: var(--muted-foreground);
+  opacity: 0.65;
+  pointer-events: none;
+  user-select: none;
+}
+
+.flowix-toggle-content > :is(h1, h2, h3, h4) {
+  margin: 0.35rem 0 0.2rem;
+}
+
+.flowix-toggle-content > :is(h1, h2, h3, h4):first-child {
+  margin-top: 0;
+}
+
+.flowix-toggle-content > :is(ul, ol) {
+  margin: 0.15rem 0;
+  padding-left: 1.4rem;
+}
+
+/* Screen-only: printing and PDF export read the live DOM and must keep every
+   body block visible. */
+@media screen {
+  .markdown-editor .ProseMirror .is-toggle-collapsed-content {
+    display: none;
+  }
+}
+
+/* Read-only documents keep the marker visible but not interactive. */
+.markdown-editor .ProseMirror[contenteditable='false'] .flowix-toggle-chevron {
+  display: none;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .flowix-toggle-chevron,
+  .flowix-toggle-chevron::before {
+    transition: none;
+  }
+}

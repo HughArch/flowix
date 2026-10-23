@@ -2,7 +2,7 @@
 
 use crate::{
     background_store, callout_store, collection_store, columns_store, errors::CliError, fmt,
-    output, path_store, plugin, store,
+    output, path_store, plugin, store, toggle_store,
 };
 use serde_json::Value;
 
@@ -106,6 +106,31 @@ pub(crate) enum FlowixOperation {
         color: Option<String>,
     },
     CalloutRemove {
+        address: String,
+        block: usize,
+        keep_content: bool,
+    },
+    ToggleList {
+        address: String,
+    },
+    ToggleAdd {
+        address: String,
+        at: Option<usize>,
+        title: String,
+        content: String,
+        open: bool,
+        bg: Option<String>,
+    },
+    ToggleSet {
+        address: String,
+        block: usize,
+        title: Option<String>,
+        content: Option<String>,
+        open: Option<bool>,
+        bg: Option<String>,
+        clear_bg: bool,
+    },
+    ToggleRemove {
         address: String,
         block: usize,
         keep_content: bool,
@@ -244,5 +269,36 @@ pub(crate) fn execute(operation: FlowixOperation) -> Result<Value, CliError> {
             block,
             keep_content,
         } => callout_store::remove(&address, block, keep_content),
+        FlowixOperation::ToggleList { address } => toggle_store::list(&address),
+        FlowixOperation::ToggleAdd {
+            address,
+            at,
+            title,
+            content,
+            open,
+            bg,
+        } => toggle_store::add(&address, at, &title, &content, open, bg.as_deref()),
+        FlowixOperation::ToggleSet {
+            address,
+            block,
+            title,
+            content,
+            open,
+            bg,
+            clear_bg,
+        } => toggle_store::set(
+            &address,
+            block,
+            title.as_deref(),
+            content.as_deref(),
+            open,
+            bg.as_deref(),
+            clear_bg,
+        ),
+        FlowixOperation::ToggleRemove {
+            address,
+            block,
+            keep_content,
+        } => toggle_store::remove(&address, block, keep_content),
     }
 }

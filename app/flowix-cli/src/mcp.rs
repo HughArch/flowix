@@ -6,7 +6,7 @@
 
 use crate::{
     background_store, callout_store, cli, columns_store, errors::CliError, fmt, operation, output,
-    path_store, plugin, store,
+    path_store, plugin, store, toggle_store,
 };
 use serde_json::{json, Map, Value};
 use std::io::{BufRead, Write};
@@ -20,7 +20,7 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
     LATEST_PROTOCOL_VERSION,
 ];
 
-pub const TOOL_DESCRIPTION: &str = "Search and manage Flowix Markdown notes, inspect or edit Notion-style content columns, line background colors and Flowus-style callouts, read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
+pub const TOOL_DESCRIPTION: &str = "Search and manage Flowix Markdown notes, inspect or edit Notion-style content columns, line background colors, Flowus-style callouts and collapsible toggle blocks, read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
 
 /// Run the MCP line-delimited JSON-RPC loop until stdin reaches EOF.
 pub fn run_mcp<R: BufRead, W: Write>(reader: R, mut writer: W) -> Result<(), CliError> {
@@ -182,6 +182,10 @@ fn validate_argument_keys(arguments: &Map<String, Value>) -> Result<(), CliError
         "line",
         "color",
         "icon",
+        "title",
+        "open",
+        "bg",
+        "clearBg",
         "keepContent",
         "command",
         "stdin",
@@ -305,6 +309,31 @@ fn parse_structured_operation(
             block: integer(arguments, "block", 1, 1, usize::MAX)?,
             keep_content: boolean(arguments, "keepContent", true)?,
         }),
+        "toggle.list" => Ok(FlowixOperation::ToggleList {
+            address: address()?,
+        }),
+        "toggle.add" => Ok(FlowixOperation::ToggleAdd {
+            address: address()?,
+            at: optional_integer(arguments, "at")?,
+            title: optional_string(arguments, "title")?.unwrap_or_default(),
+            content: optional_string(arguments, "content")?.unwrap_or_default(),
+            open: optional_boolean(arguments, "open")?.unwrap_or(true),
+            bg: optional_string(arguments, "bg")?,
+        }),
+        "toggle.set" => Ok(FlowixOperation::ToggleSet {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            title: optional_string(arguments, "title")?,
+            content: optional_string(arguments, "content")?,
+            open: optional_boolean(arguments, "open")?,
+            bg: optional_string(arguments, "bg")?,
+            clear_bg: boolean(arguments, "clearBg", false)?,
+        }),
+        "toggle.remove" => Ok(FlowixOperation::ToggleRemove {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            keep_content: boolean(arguments, "keepContent", true)?,
+        }),
         _ => Err(CliError::Usage(format!("unknown memo action: `{action}`"))),
     }
 }
@@ -387,6 +416,17 @@ fn boolean(arguments: &Map<String, Value>, key: &str, default: bool) -> Result<b
         })
         .transpose()
         .map(|value| value.unwrap_or(default))
+}
+
+fn optional_boolean(arguments: &Map<String, Value>, key: &str) -> Result<Option<bool>, CliError> {
+    arguments
+        .get(key)
+        .map(|value| {
+            value
+                .as_bool()
+                .ok_or_else(|| CliError::Usage(format!("memo.{key} must be a boolean")))
+        })
+        .transpose()
 }
 
 fn execute_command(command: &str, stdin: Option<&str>) -> Result<Value, CliError> {
@@ -593,6 +633,67 @@ fn execute_command(command: &str, stdin: Option<&str>) -> Result<Value, CliError
                     block,
                     delete_content,
                 } => callout_store::remove(&id, block, !delete_content),
+            }
+        }
+        cli::Cli::Toggle { command, .. } => {
+            reject_stdin(stdin)?;
+            match command {
+                cli::ToggleCommand::List { id } => toggle_store::list(&id),
+                cli::ToggleCommand::Add {
+                    id,
+                    at,
+                    title,
+                    content,
+                    file,
+                    stdin: read_stdin,
+                    open,
+                    bg,
+                } => {
+                    if file.is_some() || read_stdin {
+                        return Err(CliError::Usage(
+                            "toggle add through memo accepts --content only".into(),
+                        ));
+                    }
+                    toggle_store::add(
+                        &id,
+                        at,
+                        title.as_deref().unwrap_or_default(),
+                        content.as_deref().unwrap_or_default(),
+                        open,
+                        bg.as_deref(),
+                    )
+                }
+                cli::ToggleCommand::Set {
+                    id,
+                    block,
+                    title,
+                    content,
+                    file,
+                    stdin: read_stdin,
+                    open,
+                    bg,
+                    clear_bg,
+                } => {
+                    if file.is_some() || read_stdin {
+                        return Err(CliError::Usage(
+                            "toggle set through memo accepts --content only".into(),
+                        ));
+                    }
+                    toggle_store::set(
+                        &id,
+                        block,
+                        title.as_deref(),
+                        content.as_deref(),
+                        open,
+                        bg.as_deref(),
+                        clear_bg,
+                    )
+                }
+                cli::ToggleCommand::Remove {
+                    id,
+                    block,
+                    delete_content,
+                } => toggle_store::remove(&id, block, !delete_content),
             }
         }
         cli::Cli::Version | cli::Cli::Completion { .. } | cli::Cli::Mcp => Err(CliError::Usage(

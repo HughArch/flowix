@@ -3,14 +3,14 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["notebooks", "list", "tags", "show", "search", "create", "edit", "write", "delete", "collection.read", "artifact.list", "artifact.describe", "artifact.create", "columns.list", "columns.add", "columns.remove", "columns.width", "background.list", "background.set", "background.clear", "callout.list", "callout.add", "callout.set", "callout.remove"],
+      "enum": ["notebooks", "list", "tags", "show", "search", "create", "edit", "write", "delete", "collection.read", "artifact.list", "artifact.describe", "artifact.create", "columns.list", "columns.add", "columns.remove", "columns.width", "background.list", "background.set", "background.clear", "callout.list", "callout.add", "callout.set", "callout.remove", "toggle.list", "toggle.add", "toggle.set", "toggle.remove"],
       "description": "Structured operation. Prefer this over the legacy command field."
     },
     "notebook": { "type": "string", "description": "Notebook name or id; defaults to the current notebook where supported." },
     "id": { "type": "string", "description": "Memo id or filename." },
     "query": { "type": "string" },
     "tag": { "type": "string", "description": "Optional tag path filter. Matches the path itself and all sub-tags; a leading # is accepted (for example 项目/Flowix)." },
-    "content": { "type": "string", "description": "Complete Markdown, replacement body, artifact source, or callout body for callout.add." },
+    "content": { "type": "string", "description": "Complete Markdown, replacement body, artifact source, callout body for callout.add, or toggle body for toggle.add/set." },
     "old": { "type": "string", "description": "Exact text that must occur once for edit." },
     "limit": { "type": "integer", "minimum": 1, "maximum": 200, "default": 50 },
     "offset": { "type": "integer", "minimum": 0, "default": 0 },
@@ -21,14 +21,18 @@
     "collectionId": { "type": "string", "description": "Stable collection identity. Provide this or path for collection.read." },
     "path": { "type": "string", "description": "Notebook-relative collection file path. Provide this or collectionId for collection.read." },
     "count": { "type": "integer", "minimum": 2, "maximum": 5, "default": 2, "description": "Number of empty columns to insert for columns.add." },
-    "at": { "type": "integer", "minimum": 1, "description": "1-based line to insert before; defaults to the end of the note (columns.add and callout.add)." },
-    "block": { "type": "integer", "minimum": 1, "description": "1-based block index for columns.remove, columns.width, callout.set and callout.remove." },
+    "at": { "type": "integer", "minimum": 1, "description": "1-based line to insert before; defaults to the end of the note (columns.add, callout.add and toggle.add)." },
+    "block": { "type": "integer", "minimum": 1, "description": "1-based block index for columns.remove, columns.width, callout.set/remove and toggle.set/remove." },
     "column": { "type": "integer", "minimum": 1, "description": "1-based column index for columns.remove." },
     "widths": { "type": "array", "items": { "type": "integer", "minimum": 25, "maximum": 1000 }, "description": "Relative column width weights, one per column." },
     "line": { "type": "integer", "minimum": 1, "description": "1-based Markdown line whose text block receives or clears the background (background.set and background.clear)." },
-    "color": { "type": "string", "enum": ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "gray"], "description": "Background color for background.set and callout.add/set." },
+    "color": { "type": "string", "enum": ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "gray"], "description": "Background color for background.set, callout.add/set and toggle.add/set." },
     "icon": { "type": "string", "description": "Callout icon (an emoji character). callout.add defaults to 💡." },
-    "keepContent": { "type": "boolean", "default": true, "description": "For callout.remove: keep the callout body as plain blocks (default) instead of deleting it with the container." },
+    "title": { "type": "string", "description": "Title line for toggle.add/set. Empty titles are allowed; the body stays in the collapsible section." },
+    "open": { "type": "boolean", "description": "Toggle fold state for toggle.add (default true) or toggle.set (omit to keep the current state)." },
+    "bg": { "type": "string", "enum": ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "gray"], "description": "Whole-container background for toggle.add/set." },
+    "clearBg": { "type": "boolean", "default": false, "description": "For toggle.set: remove the container background instead of setting one." },
+    "keepContent": { "type": "boolean", "default": true, "description": "For callout.remove and toggle.remove: keep the container content as plain blocks (default) instead of deleting it with the container." },
     "command": { "type": "string", "deprecated": true, "description": "Legacy restricted CLI command without the flowix prefix." },
     "stdin": { "type": "string", "deprecated": true, "description": "Legacy content paired with command." }
   },
@@ -50,6 +54,12 @@
     "then": { "required": ["block"] }
   }, {
     "if": { "properties": { "action": { "const": "callout.remove" } }, "required": ["action"] },
+    "then": { "required": ["block"] }
+  }, {
+    "if": { "properties": { "action": { "const": "toggle.set" } }, "required": ["action"] },
+    "then": { "required": ["block"] }
+  }, {
+    "if": { "properties": { "action": { "const": "toggle.remove" } }, "required": ["action"] },
     "then": { "required": ["block"] }
   }],
   "additionalProperties": false
