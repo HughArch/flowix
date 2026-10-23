@@ -5,7 +5,6 @@ import { closeBrowserColumnTab } from '../public/browser-column-api';
 import {
   discardActiveBrowserColumnDocument,
   flushActiveBrowserColumnDocument,
-  registerBrowserColumnDocumentFlush,
   resetBrowserColumnCoordinator,
 } from './browser-column-coordinator';
 
@@ -32,24 +31,19 @@ describe('Browser Column surface lifecycle', () => {
   });
   it('uses the common view lifecycle for flush and discard', async () => {
     const lifecycleFlush = vi.fn().mockResolvedValue(false);
-    const fallbackFlush = vi.fn().mockResolvedValue(true);
     const lifecycleDiscard = vi.fn();
     const lifecycleDispose = vi.fn();
-    const fallbackDiscard = vi.fn();
     useBrowserColumnStore.setState({ activeTabId: 'tab:one' });
     registerWorkspaceSurfaceLifecycle('tab:one', {
       status: 'ready', flush: lifecycleFlush, discard: lifecycleDiscard,
       dispose: lifecycleDispose,
     });
-    registerBrowserColumnDocumentFlush('tab:one', fallbackFlush, fallbackDiscard);
 
     await expect(flushActiveBrowserColumnDocument({ silent: true })).resolves.toBe(false);
     expect(lifecycleFlush).toHaveBeenCalledWith({ silent: true });
-    expect(fallbackFlush).not.toHaveBeenCalled();
 
     discardActiveBrowserColumnDocument();
     expect(lifecycleDiscard).toHaveBeenCalledOnce();
-    expect(fallbackDiscard).not.toHaveBeenCalled();
 
     registerWorkspaceSurfaceLifecycle('tab:one', null);
     expect(lifecycleDispose).toHaveBeenCalledOnce();

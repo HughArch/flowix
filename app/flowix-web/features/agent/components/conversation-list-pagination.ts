@@ -1,10 +1,5 @@
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
 
-export type ConversationListCursor = {
-  updatedAt: number;
-  instanceId: string;
-};
-
 export type ConversationPageState = {
   itemsByIdentity: Readonly<Record<string, AgentConversationInstance>>;
   orderedIdentities: readonly string[];
@@ -129,21 +124,10 @@ export function updateConversationTitle(
   if (!identity) return current;
   const existing = current.itemsByIdentity[identity];
   if (!existing) return current;
-  return mergeLiveConversation(current, { ...existing, title, updatedAt });
-}
-
-export function removeConversation(
-  current: ConversationPageState,
-  instanceId: string,
-): ConversationPageState {
-  const identity = current.orderedIdentities.find(
-    (value) => current.itemsByIdentity[value]?.instanceId === instanceId,
-  );
-  if (!identity) return current;
-  const itemsByIdentity = { ...current.itemsByIdentity };
-  delete itemsByIdentity[identity];
+  // Explicit edits (including rollback) must bypass snapshot conflict resolution.
+  const itemsByIdentity = { ...current.itemsByIdentity, [identity]: { ...existing, title, updatedAt } };
   return {
     itemsByIdentity,
-    orderedIdentities: current.orderedIdentities.filter((value) => value !== identity),
+    orderedIdentities: insertIdentityInOrder(current.orderedIdentities, itemsByIdentity, identity),
   };
 }

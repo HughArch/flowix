@@ -1,8 +1,8 @@
 'use client';
 
 import { lazy, Suspense, useEffect, useRef, useState } from "react";
-import { CenteredLoadingSpinner } from "@shared/ui/centered-loading-spinner";
-import { useWorkspaceStartupStore, applyNativeStartupStatus } from "@/lib/store/workspace-startup-store";
+import { StartupEntryScreen, StartupGate } from "./startup-screen";
+import { useWorkspaceStartupStore, applyNativeStartupStatus, isWorkspaceInteractive } from "@/lib/store/workspace-startup-store";
 import { ErrorBoundary } from "@shared/error-boundary";
 import { Toaster, toast } from "sonner";
 import { useAppPreferencesViewModel } from "@features/preferences/public/app-api";
@@ -10,7 +10,7 @@ import { useAppAgentRuntimeViewModel } from "@features/agent/public/app-api";
 import { useApplyFontSettings } from "@features/preferences/public/app-api";
 import { ThemeProvider } from "@features/theme";
 import { NativeEditMenuBridge, ShortcutsProvider } from "@features/shortcuts";
-import { I18nProvider, useI18n, type I18nKey } from "@/lib/i18n";
+import { I18nProvider } from "@/lib/i18n";
 import { TooltipProvider } from "@shared/ui/tooltip";
 import "@features/shortcuts/actions";
 import { boot, listenToUserConfigChanges, windows } from "@platform/tauri/client";
@@ -62,71 +62,18 @@ function isTauriRuntime(): boolean {
     && ('__TAURI_INTERNALS__' in window || '__TAURI__' in window);
 }
 
-const startupProgressLabels: Record<string, I18nKey> = {
-  prepareDatabasePaths: 'startup.progress.prepareDatabasePaths',
-  prepareThreadDatabase: 'startup.progress.prepareThreadDatabase',
-  prepareSyncDatabase: 'startup.progress.prepareSyncDatabase',
-  prepareNotebookRegistry: 'startup.progress.prepareNotebookRegistry',
-  runMigrations: 'startup.progress.runMigrations',
-  config_dsh_layout_v2: 'startup.progress.migrateAgentLayout',
-  config_local_migrations_v1: 'startup.progress.migrateLocalConfiguration',
-  config_watcher_exclusions_v1: 'startup.progress.migrateWatcherSettings',
-  templates_v1: 'startup.progress.prepareTemplates',
-  prepareRuntimeStorage: 'startup.progress.prepareRuntimeStorage',
-  activateRuntime: 'startup.progress.activateRuntime',
-  completeInitialization: 'startup.progress.completeInitialization',
-};
-
-function startupProgressLabel(task: string): I18nKey {
-  if (task.startsWith('deferred:')) return 'startup.progress.deferredNotebookJobs';
-  if (task.includes(':notebook:')) return 'startup.progress.migrateNotebookStorage';
-  return startupProgressLabels[task] ?? 'startup.progress.runMigrations';
+function AgentWorkspaceLifecycle({ deferUntilStage3 = false }: { deferUntilStage3?: boolean }) {
+  useAgentWorkspaceWindowLifecycle({ deferUntilStage3 });
+  return null;
 }
 
-function StartupLoadingOverlay() {
-  const nativePhase = useWorkspaceStartupStore((state) => state.nativePhase);
-  const nativeStage = useWorkspaceStartupStore((state) => state.nativeStage);
-  const nativeStep = useWorkspaceStartupStore((state) => state.nativeStep);
-  const nativeProgress = useWorkspaceStartupStore((state) => state.nativeProgress);
-  const workspaceStatus = useWorkspaceStartupStore((state) => state.status);
-  const workbenchMounted = useWorkspaceStartupStore((state) => state.workbenchMounted);
-  const { t } = useI18n();
-  const visible = nativePhase === 'pending' || nativePhase === 'running'
-    || (nativePhase === 'ready' && (
-      workspaceStatus === 'idle'
-      || workspaceStatus === 'running'
-      || (workspaceStatus === 'ready' && !workbenchMounted)
-    ));
-  if (!visible) return null;
+function MainWindowShortcuts({ children, overrides }: React.ComponentProps<typeof ShortcutsProvider>) {
+  const interactive = useWorkspaceStartupStore(isWorkspaceInteractive);
   return (
-    <div data-window-material-overlay className="fixed inset-0 z-[2147483646] flex items-center justify-center bg-transparent">
-      {nativePhase === 'running' && nativeStage === 'initialization' && nativeProgress ? (
-        <div className="flex w-72 flex-col items-center gap-3 text-sm text-[var(--muted-foreground)]">
-          <CenteredLoadingSpinner label={t('memo.navigation.preparingVersion')} />
-          <div className="h-1.5 w-full overflow-hidden rounded-full bg-[var(--muted)]" role="progressbar"
-            aria-label={t('memo.navigation.preparingVersion')}
-            aria-valuemin={0} aria-valuemax={100} aria-valuenow={nativeProgress.percent}>
-            <div className="h-full rounded-full bg-[var(--brand)] transition-[width] duration-300 ease-out"
-              style={{ width: `${nativeProgress.percent}%` }} />
-          </div>
-          <span className="text-xs">
-            {t(startupProgressLabel(nativeProgress.task))}
-            {(!['prepareDatabasePaths', 'prepareThreadDatabase', 'prepareSyncDatabase', 'prepareNotebookRegistry',
-              'prepareRuntimeStorage', 'activateRuntime', 'completeInitialization'].includes(nativeProgress.task))
-              ? ` (${nativeProgress.completed}/${nativeProgress.total})`
-              : ''}
-          </span>
-        </div>
-      ) : (
-        <CenteredLoadingSpinner
-          label={nativePhase === 'running'
-            && nativeStage === 'initialization'
-            && nativeStep === 'versionInitialization'
-            ? t('memo.navigation.preparingVersion')
-            : undefined}
-        />
-      )}
-    </div>
+    <ShortcutsProvider overrides={overrides} enabled={interactive}>
+      {interactive && <NativeEditMenuBridge />}
+      {children}
+    </ShortcutsProvider>
   );
 }
 
@@ -207,7 +154,6 @@ function useUnexpectedControlInputGuard() {
 function App() {
   useUnexpectedControlInputGuard();
   const [hash, setHash] = useState(() => window.location.hash);
-  useAgentWorkspaceWindowLifecycle({ deferUntilStage3: !hash.startsWith('#preferences') });
   const {
     language,
     format,
@@ -218,36 +164,6 @@ function App() {
   const { refreshAgentRuntime } = useAppAgentRuntimeViewModel();
   useApplyFontSettings(format);
 
-  useEffect(() => {
-    const root = document.documentElement;
-    if (!isTauriRuntime() || hash.startsWith('#preferences')) {
-      delete root.dataset.windowMaterial;
-      return;
-    }
-
-    let active = true;
-    void windows.getWindowMaterial().then((material) => {
-      if (!active) return;
-      if (material === 'none') {
-        delete root.dataset.windowMaterial;
-      } else {
-        root.dataset.windowMaterial = material;
-      }
-      try {
-        if (material === 'none') localStorage.removeItem('flowix-window-material');
-        else localStorage.setItem('flowix-window-material', material);
-      } catch {
-        // The live IPC result still applies when storage is unavailable.
-      }
-    }).catch((error) => {
-      logger.error('get native window material failed', { error });
-    });
-
-    return () => {
-      active = false;
-      delete root.dataset.windowMaterial;
-    };
-  }, [hash]);
 
   useEffect(() => {
     const setNativeReady = () => useWorkspaceStartupStore.setState((state) => (
@@ -349,6 +265,7 @@ function App() {
     return (
       <ErrorBoundary language={language}>
         <I18nProvider language={language}>
+          <AgentWorkspaceLifecycle />
           <AppToaster language={language} />
           <ThemeProvider>
             <TooltipProvider>
@@ -369,25 +286,25 @@ function App() {
   return (
     <ErrorBoundary language={language}>
       <I18nProvider language={language}>
-        <AppToaster language={language} />
         <ThemeProvider>
-          <StartupLoadingOverlay />
-          <Suspense fallback={null}>
-            <AgentWindowEffects />
-          </Suspense>
-          <Suspense fallback={null}>
-            <MainWindowEffects />
-          </Suspense>
-          <TooltipProvider>
-            <ShortcutsProvider overrides={shortcutOverrides}>
-              <NativeEditMenuBridge />
-              {/* The root startup overlay stays mounted while this code loads. */}
-              <Suspense fallback={null}>
-                <MainWindow />
-                <MainWindowReadySignal />
-              </Suspense>
-            </ShortcutsProvider>
-          </TooltipProvider>
+          <StartupGate>
+            <AgentWorkspaceLifecycle deferUntilStage3 />
+            <AppToaster language={language} />
+            <Suspense fallback={null}>
+              <AgentWindowEffects />
+            </Suspense>
+            <Suspense fallback={null}>
+              <MainWindowEffects />
+            </Suspense>
+            <TooltipProvider>
+              <MainWindowShortcuts overrides={shortcutOverrides}>
+                <Suspense fallback={<StartupEntryScreen />}>
+                  <MainWindow />
+                  <MainWindowReadySignal />
+                </Suspense>
+              </MainWindowShortcuts>
+            </TooltipProvider>
+          </StartupGate>
         </ThemeProvider>
       </I18nProvider>
     </ErrorBoundary>

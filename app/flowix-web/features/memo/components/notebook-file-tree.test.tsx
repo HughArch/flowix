@@ -7,6 +7,7 @@ import { toast } from '@/lib/toast';
 import { noteRepository } from '@features/memo/services/note-repository';
 import { EXTERNAL_FILE_DROP_EVENT } from '@features/document/components/use-external-file-drop';
 import type { FolderTreeController } from './use-folder-tree';
+import * as folderTreeModule from './use-folder-tree';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import {
   NotebookFileTree,
@@ -247,6 +248,45 @@ describe('NotebookFileTree pointer dragging', () => {
   function clickEvent(modifiers: { shiftKey?: boolean; ctrlKey?: boolean; metaKey?: boolean } = {}) {
     return new MouseEvent('click', { bubbles: true, button: 0, ...modifiers });
   }
+
+  it('reuses flattened data for status changes and invalidates only affected tree inputs', async () => {
+    const loadedSpy = vi.spyOn(folderTreeModule, 'flattenLoadedTree');
+    const visibleSpy = vi.spyOn(folderTreeModule, 'flattenVisibleTree');
+    const { root, tree } = await mount(successfulMove);
+    const roots = tree.rootChildren;
+    const loadedCalls = () => loadedSpy.mock.calls.filter(([state]) => state.rootChildren === roots).length;
+    const visibleCalls = () => visibleSpy.mock.calls.filter(([state]) => state.rootChildren === roots).length;
+    const render = async (next: FolderTreeController) => {
+      await act(async () => root.render(
+        <NotebookFileTree notebookPath="/notes" notebookName="Notes" tree={next}
+          onNoteSelect={vi.fn()} onCreateNote={vi.fn()} onMoveNote={successfulMove} />,
+      ));
+    };
+    try {
+      const initialLoaded = loadedCalls();
+      const initialVisible = visibleCalls();
+      await render({ ...tree, loading: true, error: 'read failed',
+        loadingDirectories: new Set(['/notes/projects']), directoryErrors: new Set(['/notes/projects']),
+        refresh: vi.fn(async () => {}) });
+      expect(loadedCalls()).toBe(initialLoaded);
+      expect(visibleCalls()).toBe(initialVisible);
+
+      const expanded = new Set(['/notes/projects']);
+      await render({ ...tree, expanded });
+      expect(loadedCalls()).toBe(initialLoaded);
+      expect(visibleCalls()).toBe(initialVisible + 1);
+
+      const child = item('/notes/projects/child.md', 'document');
+      const nodes = new Map(tree.nodes);
+      nodes.set('/notes/projects', { ...roots[0], children: [child] });
+      await render({ ...tree, expanded, nodes });
+      expect(loadedCalls()).toBe(initialLoaded + 1);
+      expect(visibleCalls()).toBe(initialVisible + 2);
+      expect(host.querySelector('[data-notebook-tree-path="/notes/projects/child.md"]')).not.toBeNull();
+    } finally {
+      await act(async () => root.unmount());
+    }
+  });
 
   it('uses the notebook default destination when creating from the files section header', async () => {
     const { root, tree } = await mount(successfulMove);

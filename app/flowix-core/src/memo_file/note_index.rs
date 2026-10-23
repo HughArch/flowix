@@ -23,6 +23,30 @@ use super::{
 // Keep list and single-entry reads on the same projection decoder.
 const NOTE_ENTRY_COLUMNS: &str = "relative_path, title, preview, thumbnail, created_at, updated_at, favorited, icon, colors_json, properties_json, size_bytes, tags, todos, agents";
 
+/// Supported predicates applied before pagination; values are always SQL parameters.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NoteTitleFilter {
+    #[serde(rename = "match")]
+    pub match_mode: String,
+    pub conditions: Vec<NoteTitleCondition>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct NoteTitleCondition {
+    pub op: String,
+    pub value: String,
+}
+
+impl NoteTitleFilter {
+    pub fn is_valid(&self) -> bool {
+        matches!(self.match_mode.as_str(), "all" | "any")
+            && !self.conditions.is_empty()
+            && self.conditions.len() <= 8
+            && self.conditions.iter().all(|rule| matches!(rule.op.as_str(), "eq" | "contains"))
+            && serde_json::to_string(self).is_ok_and(|value| value.len() <= 2048)
+    }
+}
+
 fn note_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteEntry> {
     fn json<T: serde::de::DeserializeOwned>(row: &rusqlite::Row<'_>, column: usize) -> rusqlite::Result<T> {
         let value: String = row.get(column)?;
@@ -1107,6 +1131,27 @@ impl MemoFile {
         cursor: Option<(bool, i64, Option<&str>, Option<&str>, &str)>,
         limit: usize,
     ) -> io::Result<Vec<NoteEntry>> {
+        self.read_note_page_with_title_filter(notebook_id, filter, tag_id, color, sort,
+            now, week_start, month_start, cursor, limit, None)
+    }
+
+    pub fn read_note_page_with_title_filter(
+        &self,
+        notebook_id: &str,
+        filter: &str,
+        tag_id: Option<&str>,
+        color: Option<&str>,
+        sort: &str,
+        now: i64,
+        week_start: i64,
+        month_start: i64,
+        cursor: Option<(bool, i64, Option<&str>, Option<&str>, &str)>,
+        limit: usize,
+        title_filter: Option<&NoteTitleFilter>,
+    ) -> io::Result<Vec<NoteEntry>> {
+        if title_filter.is_some_and(|filter| !filter.is_valid()) {
+            return Err(io::Error::new(io::ErrorKind::InvalidInput, "invalid note title filter"));
+        }
         let conn = self.open_note_index_connection(notebook_id)?;
         if !Self::note_index_is_ready_on_connection(&conn)? {
             return Err(io::Error::new(
@@ -1159,6 +1204,14 @@ impl MemoFile {
                 args.push(value.to_owned().into());
             }
             None => {}
+        }
+        if let Some(title_filter) = title_filter {
+            let join = if title_filter.match_mode == "all" { " AND " } else { " OR " };
+            let predicates: Vec<&str> = title_filter.conditions.iter().map(|rule| {
+                args.push(rule.value.clone().into());
+                if rule.op == "eq" { "n.title = ? COLLATE BINARY" } else { "instr(n.title, ?) > 0" }
+            }).collect();
+            sql.push_str(&format!(" AND ({})", predicates.join(join)));
         }
         let filename_sort = matches!(sort, "filenameAsc" | "filenameDesc");
         if let Some((favorited, value, lower, filename, path)) = cursor {

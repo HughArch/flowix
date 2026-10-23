@@ -1,3 +1,4 @@
+import { normalizeNoteFilterCondition } from '@features/collection/public/note-filter-api';
 import { resolveDatasetFilterForLocation } from '@features/collection/dataset-filter-location';
 import { NotePropertyImageValue, propertyImagePaths as imagePaths, selectPropertyImage } from '@features/document/properties/image-value-input';
 import { DateValueInput } from '@features/document/components/note-properties/date-value-input';
@@ -5,6 +6,7 @@ import { ColorValueInput } from '@features/document/properties/color-value-input
 import { IconValueInput } from '@features/document/properties/icon-value-input';
 import { MultiSelectValueInput } from '@features/document/properties/multi-select-value-input';
 import { SelectValueInput } from '@features/document/properties/select-value-input';
+import { PropertyValueTypographyContext, propertyValueTypography } from '@features/document/properties/value-typography';
 import { countPresetTableReferences, deletePresetEverywhere, ensureTableFieldPreset, migrateNotePropertyKey, updatePresetFromTable } from '@features/properties/property-preset-service';
 import { usePropertyPresetStore } from '@features/properties/property-preset-store';
 import { DeletePresetDialog } from '@features/properties/delete-preset-dialog';
@@ -92,6 +94,7 @@ import { useTableNoteDropTarget, type TableNoteDropTargetRejection } from './use
 import { TableSortButton, cycleTableSort, tableSortDirection } from './table-sort-button';
 import { TableDatasetMenu } from './table-dataset-menu';
 import { sortFields } from './field-order';
+import { useTableColumnDrag } from './use-table-column-drag';
 import { useAutoContentColumnWidths, type AutoColumnContent } from './use-auto-content-column-widths';
 import { TableFieldList } from './table-field-list';
 import { TableBooleanInput, TableNumberInput, TableRecordRow } from './table-record-row';
@@ -359,6 +362,9 @@ export function TableDocumentView(props: TableDocumentViewProps) {
 
 function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation, filePath, fileIdentity, notebookPath, notebookId, expectedCollectionId, initialViewId, onActiveViewChange, editable = true, canCreateFields = true, canCreateRecords = true, showAssociateNoteAction = canCreateRecords, canDeleteViews = true, embeddedInEditor = false, onRemoveReference, trailingActions, onFilePathChange }: TableDocumentViewProps) {
   const tablePageSize = embeddedInEditor ? EMBEDDED_TABLE_PAGE_SIZE : SCROLL_PAGE_SIZE;
+  const valueTypography = useMemo(() => propertyValueTypography(
+    embeddedInEditor ? 'var(--editor-font-size, 16px)' : 'var(--font-size, 16px)',
+  ), [embeddedInEditor]);
   const galleryPageSize = embeddedInEditor ? EMBEDDED_GALLERY_PAGE_SIZE : SCROLL_PAGE_SIZE;
   const [currentFilePath, setCurrentFilePath] = useState(filePath);
   useEffect(() => setCurrentFilePath(filePath), [filePath]);
@@ -594,7 +600,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
     }
   }, [currentFilePath, document, editable, embeddedInEditor, expectedCollectionId, hasRemoveReference, load, loadError, notebookPath, removeReferenceForPresentation, reportPresentation]);
   const [newFieldOpen, setNewFieldOpen] = useState(false);
-  const [newFieldAnchor, setNewFieldAnchor] = useState<{ rect: DOMRect; align: 'start' | 'end' } | null>(null);
+  const [newFieldAnchor, setNewFieldAnchor] = useState<{ rect: DOMRect; align: 'start' | 'end'; source: 'dataset' | 'table' } | null>(null);
   const [newFieldPropertyKey, setNewFieldPropertyKey] = useState('');
   const [newFieldType, setNewFieldType] = useState<TableFieldType>('Text');
   const [newFieldTypeMenuOpen, setNewFieldTypeMenuOpen] = useState(false);
@@ -748,6 +754,20 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
     setPendingTablePageRecordId(null);
   }, [activeView?.layout, embeddedInEditor, pendingTablePageRecordId, tablePageSize, visibleRecords]);
   const tableElementRef = useRef<HTMLTableElement | null>(null);
+  const columnDrag = useTableColumnDrag({
+    tableRef: tableElementRef,
+    scrollerRef: recordsScrollerRef,
+    ids: document?.dataset.schema.field_order ?? [],
+    primaryId: document?.dataset.schema.primary_field_id,
+    disabled: !editable || saving || activeView?.layout !== 'table',
+    onStart: () => setHeaderMenuFieldId(null),
+    onReorder: async (ids) => {
+      const current = latestDocumentRef.current;
+      if (!current || !editable || saving) return;
+      await save({ ...current, collection: reviseCollection(current.collection),
+        dataset: { ...current.dataset, schema: { ...current.dataset.schema, field_order: ids } } });
+    },
+  });
   const columnSizingRecords = useMemo(() => {
     const pageCount = Math.max(1, Math.ceil(visibleRecords.length / tablePageSize));
     const page = Math.min(tablePage, pageCount - 1);
@@ -914,32 +934,13 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
       return false;
     }
     const previous = tableAutoCollectConfig(document);
-    const resolveFieldId = (fieldName: string) => {
-      const normalizedName = fieldName.trim();
-      return document.dataset.schema.fields.find((item) => item.id === normalizedName
-        || item.property_key === normalizedName
-        || (item.type === 'primary' && ['笔记名称', '名称'].includes(normalizedName))
-        || (item.type !== 'primary' && fieldLabel(item, propertyFields, t) === normalizedName))?.id ?? normalizedName;
-    };
-    const propertyConditions = (condition.property_conditions ?? []).map((item) => ({
-      ...item,
-      field_id: resolveFieldId(item.field_id),
-      value: item.value.trim(),
-    })).filter((item) => item.field_id && item.value);
-    const fileCondition = Object.fromEntries(Object.entries({
-      file_name_contains: condition.file_condition?.file_name_contains?.trim() ?? '',
-      file_type: condition.file_condition?.file_type?.trim().replace(/^\./, '') ?? '',
-    }).filter(([, value]) => value)) as TableAutoCollectCondition['file_condition'];
-    const hasPropertyCriteria = propertyConditions.length > 0;
-    const hasFileCriteria = Object.keys(fileCondition ?? {}).length > 0;
-    const rawPath = condition.path === undefined ? previous?.condition.path ?? null : condition.path;
-    const path = typeof rawPath === 'string' ? rawPath.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') : null;
-    const nextCondition: TableAutoCollectCondition = {
-      match: condition.match ?? (condition.property_match === 'intersection' ? 'all' : condition.property_match === 'union' ? 'any' : previous?.condition.match ?? 'all'),
-      path,
-      ...(hasPropertyCriteria ? { property_conditions: propertyConditions } : {}),
-      ...(hasFileCriteria ? { file_condition: fileCondition } : {}),
-    };
+    const nextCondition = normalizeNoteFilterCondition({
+      ...condition,
+      path: condition.path === undefined ? previous?.condition.path ?? null : condition.path,
+    });
+    const hasPropertyCriteria = Boolean(nextCondition.property_conditions?.length);
+    const hasFileCriteria = Boolean(nextCondition.file_condition?.file_name_contains || nextCondition.file_condition?.file_type);
+    const path = nextCondition.path;
     const hasActiveCriteria = hasFileCriteria || hasPropertyCriteria || path !== null;
     if (previous && hasActiveCriteria && JSON.stringify(previous.condition) === JSON.stringify(nextCondition)) return true;
     if (!previous && !hasActiveCriteria && document.dataset.filter == null) return true;
@@ -962,11 +963,10 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
     const previous = tableAutoCollectConfig(document);
     const nextPath = path === null ? '' : path.trim().replace(/\\/g, '/').replace(/^\/+|\/+$/g, '') || null;
     if ((previous?.condition.path ?? null) === nextPath) return true;
-    const condition: TableAutoCollectCondition = {
+    const condition = normalizeNoteFilterCondition({
       ...(previous?.condition ?? {}),
-      match: previous?.condition.match ?? 'all',
       path: nextPath,
-    };
+    });
     const hasConditions = Boolean(condition.property_conditions?.length
       || condition.file_condition?.file_name_contains?.trim()
       || condition.file_condition?.file_type);
@@ -2672,7 +2672,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
     setNewFieldPropertyKey('');
     setNewFieldOptions([]);
     // The dataset submenu grows upward; the table header editor grows downward.
-    setNewFieldAnchor({ rect: button.getBoundingClientRect(), align: source === 'dataset' ? 'end' : 'start' });
+    setNewFieldAnchor({ rect: button.getBoundingClientRect(), align: source === 'dataset' ? 'end' : 'start', source });
     setNewFieldOpen(true);
   };
   const closeDatasetSubmenus = () => {
@@ -2800,7 +2800,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
         {canCreateFields && <>
           <div role="separator" aria-hidden="true" className="mx-2 h-px bg-[var(--border)]" />
           <TablePresetMenu
-            triggerLabel="选择属性"
+            triggerLabel="从预设选择"
             triggerIcon={<MousePointerClick className="h-4 w-4" aria-hidden="true" />}
             triggerPadding="px-1.5"
             customGroupLabel={t('preferences.documentProperties.group.mine')}
@@ -2843,9 +2843,10 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
   for (const column of tableFieldWidths) {
     if (autoColumnWidths[column.fieldId] !== undefined) column.width = autoColumnWidths[column.fieldId];
   }
-  const orderedTableWidths = sortFields(tableFieldWidths, (field) => field.fieldId, fieldOrder);
+  const orderedTableWidths = sortFields(tableFieldWidths, (field) => field.fieldId, columnDrag.order);
   const tableMinWidth = tableFieldWidths.reduce((total, { width }) => total + width, TABLE_ACTION_COLUMN_MIN_WIDTH);
-  return <div className="multidimensional-table__surface flex h-full min-h-0 flex-col bg-transparent" aria-readonly={!editable}>
+  return <PropertyValueTypographyContext.Provider value={valueTypography}>
+    <div className="multidimensional-table__surface flex h-full min-h-0 flex-col bg-transparent" style={valueTypography} aria-readonly={!editable}>
     <DeletePresetDialog
       preset={pendingDeleteTarget?.preset ?? null}
       tableCount={pendingDeleteTableCount}
@@ -3109,14 +3110,14 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
         closeCalendarAddPopover();
       }}>
       {activeView?.layout === 'table' && <div ref={tableDropAreaRef} className={`relative min-w-0 w-full ${embeddedInEditor ? 'flex-1' : 'shrink-0'} pr-4 ${embeddedInEditor ? '' : 'pl-4'}`}>
-        <table ref={tableElementRef} className="multidimensional-table table-fixed border-collapse text-sm" style={{ width: '100%', minWidth: tableMinWidth }}>
+        <table ref={tableElementRef} onPointerDown={columnDrag.onPointerDown} onClickCapture={columnDrag.onClickCapture} className="multidimensional-table table-fixed border-collapse text-sm" style={{ width: '100%', minWidth: tableMinWidth }}>
           <colgroup>
             {orderedTableWidths.map(({ fieldId, width }) => <col key={fieldId} style={{ width }} />)}
             {/* The unsized action column absorbs remaining space; tableMinWidth reserves the action column’s minimum width. */}
             <col />
           </colgroup>
           <thead className="sticky top-0 z-[1] bg-[var(--document-bg)] text-left text-sm text-[var(--muted-foreground)]">
-            <tr>{sortFields([...tableViewFields.map((field) => <th key={field.id} aria-sort={tableSortDirection(activeView.sort, field.id) === 'asc' ? 'ascending' : tableSortDirection(activeView.sort, field.id) === 'desc' ? 'descending' : 'none'} className="group/table-column border-r border-[var(--border)] bg-[var(--document-bg)] p-0 text-left font-normal">
+            <tr>{sortFields([...tableViewFields.map((field) => <th key={field.id} data-column-field-id={field.id} data-column-drag-preview={columnDrag.draggedId === field.id || undefined} aria-sort={tableSortDirection(activeView.sort, field.id) === 'asc' ? 'ascending' : tableSortDirection(activeView.sort, field.id) === 'desc' ? 'descending' : 'none'} className="group/table-column border-r border-[var(--border)] bg-[var(--document-bg)] p-0 text-left font-normal">
               <div data-state={headerMenuFieldId === field.id ? 'open' : 'closed'} className="multidimensional-table__column-header flex min-w-0 items-center transition-colors hover:bg-[var(--muted)] data-[state=open]:bg-[var(--muted)]">
                 <div className="min-w-0 flex-1">
                   <TableFieldHeader
@@ -3152,7 +3153,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
                 type: field.type,
                 property_key: field.propertyKey ?? field.id,
               };
-              return <th key={field.id} aria-sort={tableSortDirection(activeView.sort, field.id) === 'asc' ? 'ascending' : tableSortDirection(activeView.sort, field.id) === 'desc' ? 'descending' : 'none'} className="group/table-column border-r border-[var(--border)] bg-[var(--document-bg)] p-0 text-left font-normal">
+              return <th key={field.id} data-column-field-id={field.id} data-column-drag-preview={columnDrag.draggedId === field.id || undefined} aria-sort={tableSortDirection(activeView.sort, field.id) === 'asc' ? 'ascending' : tableSortDirection(activeView.sort, field.id) === 'desc' ? 'descending' : 'none'} className="group/table-column border-r border-[var(--border)] bg-[var(--document-bg)] p-0 text-left font-normal">
               <div data-state={headerMenuFieldId === field.id ? 'open' : 'closed'} className="multidimensional-table__column-header flex min-w-0 items-center transition-colors hover:bg-[var(--muted)] data-[state=open]:bg-[var(--muted)]">
                 <div className="min-w-0 flex-1">
                   <TableFieldHeader
@@ -3181,7 +3182,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
                 <TableSortButton label={builtinTableFieldLabel(field, t)} direction={tableSortDirection(activeView.sort, field.id)} disabled={!editable || saving} onClick={() => void toggleColumnSort(field.id)} />
               </div>
             </th>;
-            })], (cell) => String(cell.key), fieldOrder)}
+            })], (cell) => String(cell.key), columnDrag.order)}
             <th className="multidimensional-table__column-action-header border-r border-[var(--border)] bg-[var(--document-bg)] px-2 text-left" aria-label="表格操作">
               {canCreateFields && <button
                 type="button"
@@ -3209,7 +3210,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
               notePropertyEditorValue={notePropertyEditorValue}
               fields={tableViewFields}
               builtinFields={visibleBuiltinFields}
-              fieldOrder={fieldOrder}
+              fieldOrder={columnDrag.order}
               allowSwitchNote={document.collection.placement !== 'folder'}
               titleField={titleField}
               note={note}
@@ -3467,6 +3468,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
           onOptionsChange={setNewFieldOptions}
           customPresets={tablePresets.custom}
           systemPresets={tablePresets.system}
+          showPresetMenu={false}
           presetMenuOpen={newFieldPresetMenuOpen}
           onPresetMenuOpenChange={(open) => {
             setNewFieldPresetMenuOpen(open);
@@ -3488,12 +3490,43 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
             setNewFieldOpen(false);
             void windows.openPreferences('noteSettings');
           }}
-          afterFooter={<button
-            type="button"
-            disabled={!editable || saving || !newFieldPropertyKey.trim()}
-            onClick={() => { void addField(); }}
-            className="mt-1 flex h-8 w-full items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--muted)] px-2 text-sm text-[var(--foreground)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-50"
-          >保存</button>}
+          afterFooter={<div className="mt-1 flex flex-col gap-1">
+            <button
+              type="button"
+              disabled={!editable || saving || !newFieldPropertyKey.trim()}
+              onClick={() => { void addField(); }}
+              className="flex h-8 w-full items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--muted)] px-2 text-sm text-[var(--foreground)] hover:bg-[var(--hover-bg)] disabled:cursor-not-allowed disabled:opacity-50"
+            >保存</button>
+            {newFieldAnchor?.source === 'table' && <>
+              <div role="separator" aria-hidden="true" className="mx-2 h-px bg-[var(--border)]" />
+              <TablePresetMenu
+                triggerLabel="从预设选择"
+                customGroupLabel={t('preferences.documentProperties.group.mine')}
+                customPresets={tablePresets.custom}
+                systemPresets={tablePresets.system}
+                disabled={!editable || saving}
+                open={newFieldPresetMenuOpen}
+                onOpenChange={setNewFieldPresetMenuOpen}
+                t={t}
+                onSelect={(preset) => {
+                  setNewFieldPresetMenuOpen(false);
+                  skipNewFieldSaveOnCloseRef.current = true;
+                  setNewFieldPropertyKey('');
+                  setNewFieldOptions([]);
+                  setNewFieldOpen(false);
+                  void addField(preset);
+                }}
+                onRemove={removePreset}
+                isAdded={presetAlreadyAdded}
+                onManage={() => {
+                  setNewFieldPresetMenuOpen(false);
+                  skipNewFieldSaveOnCloseRef.current = true;
+                  setNewFieldOpen(false);
+                  void windows.openPreferences('noteSettings');
+                }}
+              />
+            </>}
+          </div>}
           disabled={!editable || saving}
           t={t}
           typeLabel={(type) => fieldTypeLabel(type, t)}
@@ -3611,5 +3644,6 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
         }
       }}
     />
-  </div>;
+    </div>
+  </PropertyValueTypographyContext.Provider>;
 }

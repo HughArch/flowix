@@ -1,3 +1,5 @@
+import { parseVideoUrl } from '../video-embed/providers';
+import { pasteVideoLink } from '../video-embed/paste';
 import type { Editor, JSONContent } from '@tiptap/core';
 import { closeHistory } from '@tiptap/pm/history';
 import { mergeFrontmatterYaml } from '@features/document/properties/frontmatter-model';
@@ -155,6 +157,14 @@ export function createManagedPasteRules(options: {
         }, editor);
         return 'handled';
       },
+    },
+    {
+      id: 'video-link',
+      kind: 'video-link',
+      priority: 850,
+      match: ({ text, files, editor }) => files.length === 0 && !!editor.schema.nodes.videoEmbed
+        && !editor.isActive('codeBlock') && !editor.isActive('code') && !!parseVideoUrl(text),
+      run: ({ text, editor }) => pasteVideoLink(editor, text) ? 'handled' : 'continue',
     },
     {
       id: 'markdown-mime',

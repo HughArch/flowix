@@ -2,6 +2,7 @@ import { lazy, Suspense, useEffect } from 'react';
 import { useMainWindowBusinessController } from './use-main-window-business-controller';
 import { useMainWindowSystemController } from './use-main-window-system-controller';
 import { ensureFileDisplayTrackingStarted } from '@features/workspace/public/app-api';
+import { StartupEntryScreen } from '../startup-screen';
 import { notifyWorkbenchMounted } from '@/lib/workbench-mount';
 
 // Initialize before the first persisted surface is rendered.
@@ -15,7 +16,7 @@ export function MainWindow() {
   const business = useMainWindowBusinessController();
   const system = useMainWindowSystemController();
   return (
-    <Suspense fallback={null}>
+    <Suspense fallback={<StartupEntryScreen />}>
       <MainLayout business={business} system={system} />
       <WorkbenchMountedSignal />
     </Suspense>

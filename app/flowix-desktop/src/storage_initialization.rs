@@ -84,12 +84,16 @@ const RETIRED_INITIALIZATION_JOB_IDS: [&str; 6] = [
     "builtin_plugins_v1",
 ];
 
-/// Move global databases before any store opens a connection.
+/// Copy missing global database targets before any store opens a connection.
 pub fn prepare_database_paths(config_dir: &Path) -> io::Result<PathBuf> {
-    let database_dir = flowix_core::memo_file::prepare_database_directory(
-        config_dir,
-        &["local.db", "sync.db", "thread.db", "default.db"],
-    )?;
+    let database_dir =
+        flowix_core::memo_file::prepare_database_directory(config_dir, &["local.db"])?;
+    for name in ["sync.db", "thread.db", "default.db"] {
+        if let Err(error) = flowix_core::memo_file::prepare_database_directory(config_dir, &[name])
+        {
+            tracing::warn!(database = name, %error, "legacy database migration deferred; source retained");
+        }
+    }
     // Credentials in the secret store must remain private after VACUUM INTO
     // publishes the migrated snapshot.
     #[cfg(unix)]
@@ -101,17 +105,6 @@ pub fn prepare_database_paths(config_dir: &Path) -> io::Result<PathBuf> {
         )?;
     }
     Ok(database_dir)
-}
-
-/// Retire the unused global index only after current storage initialization succeeds.
-/// Preserve both layouts and SQLite companions for manual recovery; never open or
-/// import the retired database. Cleanup failures never block initialization.
-pub fn retire_global_index_databases(config_dir: &Path) {
-    for path in [config_dir.join("index.db"), config_dir.join("db/index.db")] {
-        if let Err(error) = flowix_core::memo_file::backup_database(&path) {
-            tracing::warn!(path = %path.display(), %error, "skipping retired index cleanup");
-        }
-    }
 }
 
 /// Run unfinished one-time initialization jobs and retry notebooks that were
@@ -131,8 +124,11 @@ pub fn initialize_legacy_storage(
         app_data_dir,
         |_, _, _| {},
     )
+    .map(|_| ())
 }
 
+/// Returns false when optional work remains pending. The shell can start, but
+/// must keep the version incomplete so the next launch retries unfinished jobs.
 pub fn initialize_legacy_storage_with_progress(
     device_registry: &DeviceRegistry,
     memo_file: &MemoFile,
@@ -140,7 +136,7 @@ pub fn initialize_legacy_storage_with_progress(
     user_config_dir: &Path,
     _app_data_dir: &Path,
     mut report: impl FnMut(usize, usize, &str),
-) -> Result<(), String> {
+) -> Result<bool, String> {
     let notebooks = memo_file
         .read_notebook_configs()
         .map_err(|error| error.to_string())?;
@@ -150,6 +146,7 @@ pub fn initialize_legacy_storage_with_progress(
         + RETIRED_INITIALIZATION_JOB_IDS.len()
         + notebooks.len() * NotebookInitializationJob::ALL.len();
     let mut completed = 0usize;
+    let mut all_completed = true;
     for job in GlobalInitializationJob::ALL {
         let result = run_job_with_progress(
             memo_file,
@@ -163,13 +160,13 @@ pub fn initialize_legacy_storage_with_progress(
             if !job.is_optional() {
                 return Err(error);
             }
+            all_completed = false;
             tracing::warn!(job_id = job.key(), %error, "optional initialization job deferred");
         }
     }
     let reset_version = device_registry.notebook_storage_reset_version();
     // Missing completion records are not permission to delete surviving data.
-    // Retire the old global cleanup jobs; fresh installs and rebuilt registries
-    // now create only the dependencies they need.
+    // Retire old cleanup job markers without deleting their legacy inputs.
     for key in RETIRED_INITIALIZATION_JOB_IDS {
         report(completed, total, key);
         memo_file
@@ -179,21 +176,21 @@ pub fn initialize_legacy_storage_with_progress(
         report(completed, total, key);
     }
 
-    reset_pending_notebooks_with_progress(
+    all_completed &= reset_pending_notebooks_with_progress(
         memo_file,
         &notebooks,
         &mut report,
         &mut completed,
         total,
     )?;
-    if reset_version < NOTEBOOK_STORAGE_RESET_VERSION {
+    if all_completed && reset_version < NOTEBOOK_STORAGE_RESET_VERSION {
         device_registry.complete_notebook_storage_reset_version(NOTEBOOK_STORAGE_RESET_VERSION)?;
     }
     tracing::info!(
-        completed_reset_version = reset_version.max(NOTEBOOK_STORAGE_RESET_VERSION),
-        "legacy notebook storage reset completed"
+        all_completed,
+        "legacy notebook storage initialization attempted"
     );
-    Ok(())
+    Ok(all_completed)
 }
 
 fn run_job_with_progress(
@@ -256,6 +253,7 @@ fn reset_pending_notebooks(memo_file: &MemoFile) -> Result<(), String> {
         &mut completed,
         total,
     )
+    .map(|_| ())
 }
 
 fn reset_pending_notebooks_with_progress(
@@ -264,7 +262,8 @@ fn reset_pending_notebooks_with_progress(
     report: &mut impl FnMut(usize, usize, &str),
     completed: &mut usize,
     total: usize,
-) -> Result<(), String> {
+) -> Result<bool, String> {
+    let mut all_completed = true;
     for notebook in notebooks {
         for (job_index, job) in NotebookInitializationJob::ALL.into_iter().enumerate() {
             let key = job.key(&notebook.id);
@@ -282,12 +281,22 @@ fn reset_pending_notebooks_with_progress(
                             "notebook schema refresh deferred until the notebook is available");
                         break;
                     }
-                    memo_file
-                        .retire_legacy_memo_index(&notebook.id)
+                    if let Err(error) = memo_file
+                        .initialize_note_index_schema(&notebook.id)
                         .and_then(|_| memo_file.initialize_resource_catalog_schema(&notebook.id))
-                        .map_err(|error| {
-                            format!("refresh notebook {} database schema failed: {error}", notebook.id)
-                        })?;
+                    {
+                        all_completed = false;
+                        tracing::warn!(notebook_id = %notebook.id, %error, "notebook schema refresh deferred");
+                        for deferred_job in NotebookInitializationJob::ALL.iter().skip(job_index) {
+                            *completed += 1;
+                            report(
+                                *completed,
+                                total,
+                                &format!("deferred:{}", deferred_job.key(&notebook.id)),
+                            );
+                        }
+                        break;
+                    }
                 }
                 report(*completed, total, &key);
                 *completed += 1;
@@ -307,7 +316,7 @@ fn reset_pending_notebooks_with_progress(
                 }
                 break;
             }
-            run_job_with_progress(
+            let result = run_job_with_progress(
                 memo_file,
                 &key,
                 || match job {
@@ -321,8 +330,10 @@ fn reset_pending_notebooks_with_progress(
                         // Retrying schema preparation must preserve a database
                         // already rebuilt by a successful reset job.
                         memo_file
-                            .retire_legacy_memo_index(&notebook.id)
-                            .and_then(|_| memo_file.initialize_resource_catalog_schema(&notebook.id))
+                            .initialize_note_index_schema(&notebook.id)
+                            .and_then(|_| {
+                                memo_file.initialize_resource_catalog_schema(&notebook.id)
+                            })
                             .map_err(|error| {
                                 format!(
                                     "initialize notebook {} database schema failed: {error}",
@@ -368,13 +379,32 @@ fn reset_pending_notebooks_with_progress(
                 report,
                 completed,
                 total,
-            )?;
+            );
+            if let Err(error) = result {
+                // The registry remains critical: a broken journal is not a
+                // safe basis for deciding whether a migration may replay.
+                memo_file
+                    .local_migration_completed(&key)
+                    .map_err(|error| error.to_string())?;
+                all_completed = false;
+                tracing::warn!(job_id = %key, notebook_id = %notebook.id, %error,
+                    "notebook migration deferred; continuing with other notebooks");
+                for deferred_job in NotebookInitializationJob::ALL.iter().skip(job_index + 1) {
+                    *completed += 1;
+                    report(
+                        *completed,
+                        total,
+                        &format!("deferred:{}", deferred_job.key(&notebook.id)),
+                    );
+                }
+                break;
+            }
             if matches!(job, NotebookInitializationJob::ResetLegacyStorage) {
                 clear_notebook_reset_signal_best_effort(notebook);
             }
         }
     }
-    Ok(())
+    Ok(all_completed)
 }
 
 fn clear_notebook_reset_signal_best_effort(notebook: &NotebookConfig) {
@@ -475,7 +505,7 @@ fn reset_notebook(memo_file: &MemoFile, notebook: &NotebookConfig) -> Result<(),
     }
     fs::create_dir_all(&flowix_dir)
         .map_err(|error| format!("create notebook Flowix directory failed: {error}"))?;
-    // Write before moving any legacy source or deleting any derived data.
+    // Persist interruption state before preparing any migration targets.
     flowix_core::memo_file::atomic_write_bytes(&flowix_dir.join(NOTEBOOK_RESET_PENDING_FILE), b"1")
         .map_err(|error| format!("persist notebook reset interruption signal failed: {error}"))?;
 
@@ -491,37 +521,25 @@ fn reset_notebook(memo_file: &MemoFile, notebook: &NotebookConfig) -> Result<(),
         ));
     }
 
-    // Rebuild the path index from Markdown, then discard the old Memo-ID
-    // projection. Derived note metadata is recreated from the source files.
+    // Prepare the target projection without deleting legacy Memo-ID tables.
     memo_file
-        .retire_legacy_memo_index(&notebook.id)
+        .initialize_note_index_schema(&notebook.id)
         .map_err(|error| format!("migrate notebook note index failed: {error}"))?;
     memo_file
         .initialize_resource_catalog_schema(&notebook.id)
         .map_err(|error| format!("initialize notebook resource catalog schema failed: {error}"))?;
     memo_file.invalidate_caches();
-    for name in [
-        "view-preferences.json",
-        "system.json",
-        "file-management-refresh-pending",
-    ] {
-        flowix_core::memo_file::backup_storage_file(&flowix_dir.join(name))
-            .map_err(|error| format!("preserve notebook {name} failed: {error}"))?;
+    // Existing target preferences are authoritative, even with missing reset markers.
+    if !path_entry_exists(&flowix_dir.join("view-preferences.json"))
+        .map_err(|error| format!("inspect notebook preferences failed: {error}"))?
+    {
+        crate::commands::file::write_default_notebook_view_preferences(root)?;
     }
-    crate::commands::file::write_default_notebook_view_preferences(root)?;
     memo_file
         .reconcile_note_index_blocking(&notebook.id)
         .map_err(|error| format!("rebuild notebook note index failed: {error}"))?;
-    memo_file
-        .reconcile_resources(&notebook.id)
-        .map_err(|error| format!("rebuild notebook resource catalog failed: {error}"))?;
 
-    // Discard the obsolete configuration after preservation and rebuilding.
-    // The pending signal survives until run_job has recorded overall success.
-    for name in ["agent.json", "notebook-template-initializing.json"] {
-        remove_path(&flowix_dir.join(name))
-            .map_err(|error| format!("remove notebook {name} failed: {error}"))?;
-    }
+    // Keep legacy configuration and source artifacts available for recovery.
     Ok(())
 }
 
@@ -640,6 +658,94 @@ mod tests {
     }
 
     #[test]
+    fn initialization_preserves_legacy_tables_sources_and_target_preferences() {
+        let (_temp, memo, notebook) = fixture();
+        let root = Path::new(&notebook.path);
+        let flowix = root.join(".flowix");
+        fs::create_dir_all(&flowix).unwrap();
+        fs::write(flowix.join("agent.json"), b"legacy agent").unwrap();
+        fs::write(flowix.join("system.json"), b"legacy settings").unwrap();
+        fs::write(flowix.join("notebook-template-initializing.json"), b"{}").unwrap();
+        let preferences = b"{\"default_create_folder\":\"custom\"}";
+        fs::write(flowix.join("view-preferences.json"), preferences).unwrap();
+        Connection::open(flowix.join("notebook.db")).unwrap().execute_batch(
+            "CREATE TABLE memos (id TEXT); INSERT INTO memos VALUES ('keep');
+             CREATE TABLE memo_content_revisions (value TEXT); INSERT INTO memo_content_revisions VALUES ('history');"
+        ).unwrap();
+        for _ in 0..2 {
+            reset_pending_notebooks(&memo).unwrap();
+            assert_eq!(
+                fs::read(flowix.join("view-preferences.json")).unwrap(),
+                preferences
+            );
+            assert_eq!(
+                fs::read(flowix.join("agent.json")).unwrap(),
+                b"legacy agent"
+            );
+            assert_eq!(
+                fs::read(flowix.join("system.json")).unwrap(),
+                b"legacy settings"
+            );
+            assert!(flowix.join("notebook-template-initializing.json").exists());
+            let conn = Connection::open(flowix.join("notebook.db")).unwrap();
+            assert_eq!(
+                conn.query_row("SELECT id FROM memos", [], |row| row.get::<_, String>(0))
+                    .unwrap(),
+                "keep"
+            );
+            assert_eq!(
+                conn.query_row("SELECT value FROM memo_content_revisions", [], |row| row
+                    .get::<_, String>(
+                    0
+                ))
+                .unwrap(),
+                "history"
+            );
+            assert_eq!(memo.read_notebook_configs().unwrap()[0].id, notebook.id);
+        }
+    }
+
+    #[test]
+    fn startup_copies_legacy_media_before_scanning_and_does_not_resurrect_deleted_artifacts() {
+        let (_temp, memo, notebook) = fixture();
+        let root = Path::new(&notebook.path);
+        let flowix = root.join(".flowix");
+        fs::create_dir_all(&flowix).unwrap();
+        fs::write(flowix.join("agent.json"), b"legacy").unwrap();
+        fs::write(root.join("photo.png"), b"image").unwrap();
+        let source = root.join(".plugin-output/mindmap/map.md");
+        fs::create_dir_all(source.parent().unwrap()).unwrap();
+        fs::write(&source, b"legacy artifact").unwrap();
+        let conn = Connection::open(flowix.join("notebook.db")).unwrap();
+        conn.execute_batch("CREATE TABLE media_resources (id TEXT, notebook_id TEXT, relative_path TEXT, kind TEXT,
+            size_bytes INTEGER, modified_ms INTEGER, fingerprint TEXT, properties TEXT, properties_revision INTEGER,
+            missing_since INTEGER, deleted_at INTEGER, created_at INTEGER, updated_at INTEGER);
+            INSERT INTO media_resources VALUES ('old-id','test','photo.png','image',5,1,NULL,
+                '{\"caption\":\"legacy metadata\"}',3,NULL,NULL,1,1);").unwrap();
+        reset_pending_notebooks(&memo).unwrap();
+        let resource = memo
+            .read_media_resource("test", "photo.png")
+            .unwrap()
+            .unwrap();
+        assert_eq!(resource.properties["caption"], "legacy metadata");
+        let target = flowix.join("plugin/mindmap/map.md");
+        assert!(target.exists());
+        fs::remove_file(&target).unwrap();
+        fs::remove_file(root.join("photo.png")).unwrap();
+        conn.execute("DELETE FROM resource_catalog", []).unwrap();
+        reset_pending_notebooks(&memo).unwrap();
+        memo.migrate_notebook_internal_data("test").unwrap();
+        memo.reconcile_resources("test").unwrap();
+        assert!(!target.exists());
+        assert!(memo
+            .read_media_resource("test", "photo.png")
+            .unwrap()
+            .is_none());
+        assert!(source.exists());
+        assert_eq!(memo.read_notebook_configs().unwrap()[0].id, notebook.id);
+    }
+
+    #[test]
     fn current_view_preferences_do_not_require_reset() {
         let (_temp, memo, notebook) = fixture();
         crate::commands::file::write_default_notebook_view_preferences(Path::new(&notebook.path))
@@ -745,57 +851,5 @@ mod tests {
         assert!(!memo.local_migration_completed("test_retry").unwrap());
         run_job(&memo, "test_retry", || Ok(())).unwrap();
         run_job(&memo, "test_retry", || panic!("completed job ran again")).unwrap();
-    }
-}
-
-#[cfg(test)]
-mod retired_index_tests {
-    use super::*;
-
-    #[test]
-    fn cleanup_failure_does_not_prevent_retiring_the_other_layout() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        fs::create_dir(root.join("db")).unwrap();
-        fs::write(root.join("index.db"), b"blocked legacy database").unwrap();
-        // A file where the backup directory belongs fails on every platform,
-        // including when tests run with elevated filesystem permissions.
-        fs::write(root.join("rebuild-backups"), b"blocked").unwrap();
-        fs::write(root.join("db/index.db"), b"other legacy database").unwrap();
-
-        retire_global_index_databases(root);
-
-        assert_eq!(fs::read(root.join("index.db")).unwrap(), b"blocked legacy database");
-        assert!(!root.join("db/index.db").exists());
-        assert!(root.join("db/rebuild-backups").is_dir());
-    }
-
-    #[test]
-    fn retirement_preserves_both_layouts_and_sidecars_without_touching_current_stores() {
-        let temp = tempfile::tempdir().unwrap();
-        let root = temp.path();
-        fs::create_dir(root.join("db")).unwrap();
-        for directory in [root.to_path_buf(), root.join("db")] {
-            for suffix in ["", "-wal", "-shm", "-journal"] {
-                fs::write(directory.join(format!("index.db{suffix}")), suffix.as_bytes()).unwrap();
-            }
-        }
-        fs::write(root.join("db/local.db"), b"current registry").unwrap();
-        fs::write(root.join("db/default.db"), b"credentials").unwrap();
-        for _ in 0..2 {
-            retire_global_index_databases(root);
-        }
-        for directory in [root.to_path_buf(), root.join("db")] {
-            let backups: Vec<_> = fs::read_dir(directory.join("rebuild-backups"))
-                .unwrap().map(|entry| entry.unwrap().path()).collect();
-            assert_eq!(backups.len(), 1);
-            for suffix in ["", "-wal", "-shm", "-journal"] {
-                let name = format!("index.db{suffix}");
-                assert!(!directory.join(&name).exists());
-                assert_eq!(fs::read(backups[0].join(name)).unwrap(), suffix.as_bytes());
-            }
-        }
-        assert_eq!(fs::read(root.join("db/local.db")).unwrap(), b"current registry");
-        assert_eq!(fs::read(root.join("db/default.db")).unwrap(), b"credentials");
     }
 }

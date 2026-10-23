@@ -4,6 +4,7 @@ import { Fragment, useCallback, useEffect, useMemo, useRef, useState, type Compo
 import { ChevronRight, FoldVertical, MoreHorizontal } from 'lucide-react';
 import { FolderOpenIcon, FolderSimpleIcon, TrashSimpleIcon } from '@phosphor-icons/react';
 import { toast } from '@/lib/toast';
+import { FileTreeLoadingSkeleton } from '@shared/ui/file-tree-loading-skeleton';
 import { cn, displayTitleFromFilename, isTableDocumentFilename, tableDocumentExtension } from '@/lib/utils';
 import { files, type DocTreeItem } from '@platform/tauri/client';
 import { localDocumentOperations } from '@features/document/public/file-operations-api';
@@ -11,7 +12,6 @@ import { renameWorkspaceFile } from '@features/workspace/public/shell-api';
 import { openPath } from '@platform/tauri/opener';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import {
-  ListSurfaceLoadingState,
   ListSurfaceSpinner,
   ListSurfaceViewport,
 } from '@shared/ui/list-surface';
@@ -139,7 +139,11 @@ export function FolderFileTree({
     };
   }, [openMenuId]);
 
-  const visibleNodes = useMemo(() => flattenVisibleTree(tree), [tree]);
+  const { rootChildren, nodes, expanded } = tree;
+  const visibleNodes = useMemo(
+    () => flattenVisibleTree({ rootChildren, nodes, expanded }),
+    [rootChildren, nodes, expanded],
+  );
 
   const openDocument = useCallback((item: DocTreeItem) => {
     onFileSelect?.(item.fullPath, folderPath);
@@ -564,12 +568,10 @@ export function FolderFileTree({
           onScroll={(event) => setShowScrollTopHint(event.currentTarget.scrollTop > 0)}
         >
           {tree.loading && visibleNodes.length > 0 && (
-            <div className="flex items-center justify-center px-2 py-1" role="status" aria-live="polite">
-              <ListSurfaceSpinner className="h-3.5 w-3.5" ariaLabel={t('memo.fileTree.loading')} />
-            </div>
+            <FileTreeLoadingSkeleton variant="folder" ariaLabel={t('memo.fileTree.loading')} compact />
           )}
           {tree.loading && visibleNodes.length === 0 && contentSized && (
-            <ListSurfaceLoadingState ariaLabel={t('memo.fileTree.loading')} className="h-24" />
+            <FileTreeLoadingSkeleton variant="folder" ariaLabel={t('memo.fileTree.loading')} compact />
           )}
           {tree.error && (
             <div className="flex items-center justify-center gap-2 px-4 py-4 text-center text-xs text-[var(--muted-foreground)]" role="alert">
@@ -631,7 +633,8 @@ export function FolderFileTree({
           </div>
         </OverlayScrollbar>
         {tree.loading && visibleNodes.length === 0 && !contentSized && (
-          <ListSurfaceLoadingState
+          <FileTreeLoadingSkeleton
+            variant="folder"
             ariaLabel={t('memo.fileTree.loading')}
             className="absolute inset-0 z-[2] bg-[var(--list-bg)]"
           />

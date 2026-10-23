@@ -60,6 +60,8 @@ export function attachLinkHoverTooltip(
   const getEventLink = (event: Event): HTMLAnchorElement | null => {
     const link = getEventElement(event)?.closest('a') as HTMLAnchorElement | null;
     if (!link || link.closest(IGNORE_LINK_TOOLTIP_SELECTOR)) return null;
+    // Video embeds provide their own hover action; clicks still use the system opener.
+    if (event.type !== 'click' && link.closest('[data-video-embed]')) return null;
     return link;
   };
 

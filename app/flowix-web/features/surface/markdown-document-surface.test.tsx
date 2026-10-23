@@ -23,6 +23,7 @@ let root: Root;
 let host: HTMLDivElement;
 const observer = vi.fn();
 const reportPresentation = vi.fn();
+const registerLifecycle = vi.fn();
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.read.mockResolvedValue(content('before'));
@@ -30,12 +31,15 @@ beforeEach(async () => {
   host = document.createElement('div');
   root = createRoot(host);
   await act(async () => root.render(<MarkdownDocumentSurface fileIdentity={{ path: '/book/plugin.md', displayId: 'plugin' }}
-    navigationViewId="browser-view" reportPresentation={reportPresentation}
+    navigationViewId="browser-view" reportPresentation={reportPresentation} registerLifecycle={registerLifecycle}
     documentProps={{ isExternalDocument: true, documentSessionMode: 'isolated', onFlushReady: observer }} />));
 });
 afterEach(async () => { await act(async () => root.unmount()); });
 
 describe('shared Markdown plugin preview session', () => {
+  it('publishes the early document save port through the shared lifecycle bridge', () => {
+    expect(registerLifecycle).toHaveBeenCalledWith({ status: 'ready', flush: mocks.flush, discard: mocks.discard }, expect.any(Object));
+  });
   it('flushes the registered view and refreshes non-mindmap plugin previews', async () => {
     expect(observer).toHaveBeenCalledWith(mocks.flush, mocks.discard);
     expect(host.querySelector('[data-preview]')!.textContent).toBe('before');
@@ -44,6 +48,10 @@ describe('shared Markdown plugin preview session', () => {
       appearance: expect.objectContaining({ headerStyle: 'document' }),
     }));
     await act(async () => host.querySelector('button')!.click());
+    expect(reportPresentation).toHaveBeenLastCalledWith(expect.objectContaining({
+      contentKind: 'file-markdown',
+      capabilities: expect.arrayContaining(['edit']),
+    }));
     mocks.read.mockResolvedValue(content('after'));
     await act(async () => host.querySelector('button')!.click());
     expect(mocks.flush).toHaveBeenCalledOnce();
@@ -51,7 +59,7 @@ describe('shared Markdown plugin preview session', () => {
     expect(host.querySelector('[data-preview]')!.textContent).toBe('after');
     expect(reportPresentation).toHaveBeenLastCalledWith(expect.objectContaining({
       capabilities: ['fullscreen'],
-      state: { status: 'ready' },
+      contentKind: 'plugin-artifact',
     }));
   });
   it('stays in the editor if that view cannot flush', async () => {

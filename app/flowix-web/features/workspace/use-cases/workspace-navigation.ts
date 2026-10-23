@@ -1,4 +1,5 @@
 import { flushBrowserViewBeforeOpeningWork } from './prepare-browser-document-for-work';
+import { NavigationCancelledError } from '@/lib/navigation-cancelled-error';
 import { ensureCollectionDisplay, bindCollectionDisplayPath, findCollectionDisplayPath } from '@/lib/collection-display-registry';
 import { collections, externalDocuments, files, notebooks } from '@platform/tauri/client';
 import { collectionDisplayName, parseCollectionDocumentV2 } from '@features/collection/model';
@@ -50,6 +51,8 @@ import {
 } from '@features/workspace/store/workspace-restore-store';
 
 export interface OpenExternalTargetOptions {
+  /** The surface-opening boundary has already flushed the matching Browser view. */
+  browserDocumentPrepared?: boolean;
   /** Delayed startup resolution must not replace newer user navigation. */
   restoreRequestId?: number;
   fileBrowser?: import('../store/file-browser-target').FileBrowserContext;
@@ -648,6 +651,9 @@ async function runNavigation(
         // The original navigation error is the actionable failure. The
         // best-effort compensation is intentionally not allowed to hide it.
       }
+      if (error instanceof NavigationCancelledError && workspace.isCurrentNavigation(requestId)) {
+        commitNavigation(requestId, workspace.navigation.target);
+      }
     }
     throw error;
   }
@@ -902,12 +908,12 @@ export async function openExternalTarget(
   const previousPathNote = getWorkspaceMemoState().selectedNote;
   let switchedNotebook = false;
   const previousDocument = captureDocumentSnapshot();
-  const retryOptions = stripRestoreRequestId(options);
+  const retryOptions = { ...stripRestoreRequestId(options), browserDocumentPrepared: false };
   await runNavigation(
     pendingExternalTarget(path, options),
     async (requestId) => {
-      if (path && !await flushBrowserViewBeforeOpeningWork({ kind: 'external', path })) {
-        throw new Error('Document switch cancelled because the Browser document could not be saved');
+      if (path && !options?.browserDocumentPrepared && !await flushBrowserViewBeforeOpeningWork({ kind: 'external', path })) {
+        throw new NavigationCancelledError('Document switch cancelled because the Browser document could not be saved');
       }
       if (!isCurrentNavigation(requestId)) return;
       const markdownLocation = path && /\.(md|markdown)$/i.test(path)
@@ -1073,7 +1079,7 @@ export async function prepareActiveWorkColumnDocumentLeave(): Promise<void> {
     active.fileIdentity.path,
     active.scopePath,
   );
-  if (!prepared) throw new Error('Document draft could not be retained');
+  if (!prepared) throw new NavigationCancelledError('Document draft could not be retained');
 }
 
 export async function openAgentTarget(

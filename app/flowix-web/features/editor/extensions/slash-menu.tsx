@@ -175,6 +175,11 @@ function isCurrentMenuView(view: EditorView, openId = menuOpenId): boolean {
   );
 }
 
+/** Let host-level navigation defer to this view's active command menu. */
+export function isSlashMenuOpen(view: EditorView): boolean {
+  return isCurrentMenuView(view);
+}
+
 function handlePointerDownOutside(event: MouseEvent) {
   const target = event.target;
   if (target instanceof Node && menuContainer?.contains(target)) return;
@@ -724,6 +729,9 @@ function refreshAvailableAgentItems(view: EditorView) {
 
 export const SlashMenu = Extension.create({
   name: 'slashMenu',
+  // An open menu owns navigation/confirmation ahead of paragraph, list, and
+  // Tab handlers. Gap input normalization (1200) still runs before it.
+  priority: 1150,
 
   addProseMirrorPlugins() {
     const editor = this.editor;
@@ -767,6 +775,7 @@ export const SlashMenu = Extension.create({
           },
 
           handleKeyDown(view, event) {
+            if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey) return false;
             if (!isCurrentMenuView(view) || !menuState || !menuInstance) return false;
 
             if (event.key === 'ArrowUp') {

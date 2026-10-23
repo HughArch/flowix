@@ -4,6 +4,7 @@ import StarterKit from '@tiptap/starter-kit';
 import { Markdown } from '@tiptap/markdown';
 
 import Frontmatter from './frontmatter';
+import { useSettingsStore } from '@/lib/store/settings-store';
 import {
   FrontmatterPropertyError,
   extractFrontmatter,
@@ -365,8 +366,11 @@ describe('frontmatter property helpers', () => {
 
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
+    // `flowix_key` is a historical identity field, no longer hidden metadata, so
+    // it renders as an ordinary property with its raw key as the label.
     expect([...host.querySelectorAll('.frontmatter-property__key')]
-      .map((element) => element.textContent)).toEqual(['颜色', '标签', '图标', '名称', '描述', '置顶']);
+      .map((element) => element.textContent))
+      .toEqual(['flowix_key', '颜色', '标签', '图标', '名称', '描述', '置顶']);
     expect(host.querySelector('[data-property-key="flowix_colors"]')).not.toBeNull();
     expect(host.querySelector('[data-property-key="tags"]')).not.toBeNull();
     expect(host.querySelector('[data-property-key="flowix_icon"]')).not.toBeNull();
@@ -489,7 +493,7 @@ describe('frontmatter property helpers', () => {
     expect(parseVisibleFrontmatter(next).userData.tags).toEqual(['legacy', 'current']);
   });
 
-  it('preserves system metadata and comments when dialog properties are saved', () => {
+  it('replaces only the visible property set and keeps body content intact', () => {
     const content = [
       '---',
       'flowix_key: ra61em97',
@@ -503,7 +507,9 @@ describe('frontmatter property helpers', () => {
       { key: 'status', value: 'done' },
     ]);
 
-    expect(next).toContain('flowix_key: ra61em97');
+    // Only editor metadata is protected; every other key, including the
+    // historical identity field, belongs to the visible property set.
+    expect(next).not.toContain('flowix_key:');
     expect(next).toContain('# workflow state');
     expect(next).toContain('status: done');
     expect(next).not.toContain('keywords:');
@@ -545,6 +551,7 @@ describe('frontmatter property helpers', () => {
     expect(host.querySelector('.frontmatter-property__heading-icon')).toBeNull();
     expect([...host.querySelectorAll('.frontmatter-property__key')]
       .map((element) => element.textContent)).toEqual([
+        'flowix_key',
         '标签',
         'type',
         '状态',
@@ -557,7 +564,7 @@ describe('frontmatter property helpers', () => {
       .every((element) => element.classList.contains('tag-node'))).toBe(true);
     expect(host.querySelector('.frontmatter-property__tag-add')).toBeNull();
     expect(host.querySelector('.frontmatter-property__add-property')).toBeNull();
-    expect(host.querySelectorAll('.frontmatter-property__display')).toHaveLength(5);
+    expect(host.querySelectorAll('.frontmatter-property__display')).toHaveLength(6);
     expect(host.querySelector('.frontmatter-property__editor')).toBeNull();
 
     const markdown = editor.getMarkdown();
@@ -651,8 +658,10 @@ describe('frontmatter property helpers', () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     const row = host.querySelector<HTMLElement>('[data-property-key="languages"]');
-    expect(row?.querySelectorAll('.frontmatter-property__value-chip')).toHaveLength(3);
-    expect([...row?.querySelectorAll('.frontmatter-property__value-chip') ?? []]
+    // A declared collection renders as select-style option chips; note tags keep
+    // the `__value-chip` / `tag-node` markup instead.
+    expect(row?.querySelectorAll('.frontmatter-property__option-chip')).toHaveLength(3);
+    expect([...row?.querySelectorAll('.frontmatter-property__option-chip') ?? []]
       .map((item) => item.textContent)).toEqual(['JavaScript', 'TypeScript', 'Rust']);
 
     row?.querySelector<HTMLElement>('.frontmatter-property__display-value')?.click();
@@ -738,35 +747,37 @@ describe('frontmatter property helpers', () => {
 
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
-    const statusIcon = host.querySelector<HTMLElement>(
-      '[data-property-key="status"] .frontmatter-property__type-icon',
-    );
-    statusIcon?.click();
-    const menu = document.body.querySelector<HTMLElement>('.frontmatter-property__item-menu');
-    expect(menu).not.toBeNull();
-    expect([...menu?.querySelectorAll<HTMLButtonElement>('.frontmatter-property__item-menu-button') ?? []]
-      .map((button) => button.textContent)).toEqual(['上移', '下移', '移除字段']);
-    expect(menu?.querySelector('.frontmatter-property__preset-item')).toBeNull();
-    expect(menu?.querySelector<HTMLButtonElement>('.frontmatter-property__item-menu-button')?.disabled)
-      .toBe(false);
+    const openMenu = () => {
+      host.querySelector<HTMLElement>(
+        '[data-property-key="status"] .frontmatter-property__type-icon',
+      )?.click();
+      const menu = document.body.querySelector<HTMLElement>('.frontmatter-property__item-menu');
+      expect(menu).not.toBeNull();
+      return menu!;
+    };
+    const menuButton = (menu: HTMLElement, label: string) => {
+      const button = [...menu.querySelectorAll<HTMLButtonElement>('.frontmatter-property__item-menu-button')]
+        .find((item) => item.textContent === label);
+      expect(button).not.toBeUndefined();
+      return button!;
+    };
 
-    menu?.querySelectorAll<HTMLButtonElement>('.frontmatter-property__item-menu-button')[2]?.click();
+    const menu = openMenu();
+    expect([...menu.querySelectorAll<HTMLButtonElement>('.frontmatter-property__item-menu-button')]
+      .map((button) => button.textContent)).toEqual(['上移', '下移', '移除字段']);
+    expect(menu.querySelector('.frontmatter-property__preset-item')).toBeNull();
+
+    menuButton(menu, '下移').click();
     expect([...host.querySelectorAll('.frontmatter-property__key')]
-      .map((element) => element.textContent)).toEqual(['priority', '状态']);
+      .map((element) => element.textContent)).toEqual(['flowix_key', 'priority', '状态']);
     const movedMarkdown = editor.getMarkdown();
     expect(movedMarkdown.indexOf('priority: high'))
       .toBeLessThan(movedMarkdown.indexOf('status: todo'));
 
-    host.querySelector<HTMLElement>(
-      '[data-property-key="status"] .frontmatter-property__type-icon',
-    )?.click();
-    const movedMenu = document.body.querySelector<HTMLElement>('.frontmatter-property__item-menu');
-    expect(movedMenu?.querySelectorAll<HTMLButtonElement>('.frontmatter-property__item-menu-button')[2]?.disabled)
-      .toBe(true);
-    movedMenu?.querySelector<HTMLButtonElement>('.frontmatter-property__item-menu-button:last-child')?.click();
+    menuButton(openMenu(), '移除字段').click();
 
     expect([...host.querySelectorAll('.frontmatter-property__key')]
-      .map((element) => element.textContent)).toEqual(['priority']);
+      .map((element) => element.textContent)).toEqual(['flowix_key', 'priority']);
     expect(editor.getMarkdown()).toContain('priority: high');
     expect(editor.getMarkdown()).not.toContain('status: todo');
     expect(editor.getMarkdown()).toContain('Body');
@@ -795,7 +806,7 @@ describe('frontmatter property helpers', () => {
     expect(target).not.toBeNull();
 
     expect([...host.querySelectorAll('.frontmatter-property__key')]
-      .map((element) => element.textContent)).toEqual(['状态', 'priority', 'category']);
+      .map((element) => element.textContent)).toEqual(['flowix_key', '状态', 'priority', 'category']);
 
     editor.destroy();
     host.remove();
@@ -848,7 +859,7 @@ describe('frontmatter property helpers', () => {
     expect(document.documentElement.classList.contains('frontmatter-property--dragging')).toBe(false);
 
     expect([...host.querySelectorAll('.frontmatter-property__key')]
-      .map((element) => element.textContent)).toEqual(['priority', 'category', '状态']);
+      .map((element) => element.textContent)).toEqual(['flowix_key', 'priority', 'category', '状态']);
 
     await new Promise((resolve) => window.setTimeout(resolve, 0));
     host.querySelector<HTMLElement>(
@@ -1035,10 +1046,10 @@ describe('frontmatter property helpers', () => {
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
     expect([...host.querySelectorAll('.frontmatter-property__key')]
-      .map((element) => element.textContent)).toEqual(['标签', '状态']);
+      .map((element) => element.textContent)).toEqual(['flowix_key', '标签', '状态']);
     expect(host.querySelector('.frontmatter-property__add-property')).toBeNull();
     expect(host.querySelector('.frontmatter-property__tag-add')).toBeNull();
-    expect(host.querySelector('.frontmatter-property__display-value')?.textContent)
+    expect(host.querySelector('[data-property-key="tags"] .frontmatter-property__display-value')?.textContent)
       .toContain('alpha');
 
     const valueCell = host.querySelector<HTMLElement>(
@@ -1112,7 +1123,7 @@ describe('frontmatter property helpers', () => {
     host.remove();
   });
 
-  it('does not expose removed list or multi-select types for unconfigured fields', async () => {
+  it('infers a collection kind and offers the full property kind list', async () => {
     const host = document.createElement('div');
     document.body.append(host);
     const editor = new Editor({
@@ -1127,12 +1138,12 @@ describe('frontmatter property helpers', () => {
       '[data-property-key="labels"] .frontmatter-property__display-value',
     )?.click();
     const popover = document.body.querySelector<HTMLElement>('.frontmatter-property__edit-popover');
+    expect(popover?.querySelector('.frontmatter-property__edit-type-label')?.textContent).toBe('多选');
     const typeTrigger = popover?.querySelector<HTMLButtonElement>('.frontmatter-property__edit-type-trigger');
     typeTrigger?.click();
-    expect(popover?.querySelector('[data-value="Icon"]')).toBeNull();
-    expect(popover?.querySelector('[data-value="Select"]')).toBeNull();
-    expect(popover?.querySelector('[data-value="MultiSelect"]')).toBeNull();
-    expect(popover?.querySelector('[data-value="Tag"]')).not.toBeNull();
+    expect([...(popover?.querySelectorAll('.frontmatter-property__edit-type-option') ?? [])]
+      .map((option) => option.getAttribute('data-value')))
+      .toEqual(['Text', 'Boolean', 'Number', 'Date', 'URL', 'Select', 'MultiSelect', 'Tag', 'Color', 'Icon', 'Image']);
 
     editor.destroy();
     host.remove();
@@ -1153,13 +1164,13 @@ describe('frontmatter property helpers', () => {
     expect(host.querySelector('.frontmatter-property__tag-add')).toBeNull();
     expect(host.querySelector('.frontmatter-property__tag-input')).toBeNull();
     expect([...host.querySelectorAll('.frontmatter-property__key')]
-      .map((element) => element.textContent)).toEqual(['状态']);
+      .map((element) => element.textContent)).toEqual(['flowix_key', '状态']);
 
     window.dispatchEvent(new CustomEvent('flowix:add-property', {
       detail: { propertyTargetId: 'file:display-frontmatter' },
     }));
     expect([...host.querySelectorAll('.frontmatter-property__key')]
-      .map((element) => element.textContent)).toEqual(['状态', 'key1']);
+      .map((element) => element.textContent)).toEqual(['flowix_key', '状态', 'key1']);
     expect(host.querySelector('[data-property-key="key1"] .frontmatter-property__value-text')?.textContent)
       .toBe('未设置');
     expect(parseVisibleFrontmatter(
@@ -1170,33 +1181,108 @@ describe('frontmatter property helpers', () => {
       detail: { propertyTargetId: 'file:display-frontmatter' },
     }));
     expect([...host.querySelectorAll('.frontmatter-property__key')]
-      .map((element) => element.textContent)).toEqual(['状态', 'key1', 'key2']);
+      .map((element) => element.textContent)).toEqual(['flowix_key', '状态', 'key1', 'key2']);
 
     editor.destroy();
     host.remove();
   });
 
-  it('hides the empty property list until a property is added', async () => {
+  it('offers the draft row and the action bar when frontmatter has no visible property', async () => {
     const host = document.createElement('div');
     document.body.append(host);
     const editor = new Editor({
       element: host,
       extensions: [StarterKit, Markdown, Frontmatter.configure({ propertyTargetId: 'file:display-frontmatter' })],
-      content: '---\nflowix_key: 8c7dxu0l\n---\nBody',
+      content: '---\n\n---\nBody',
       contentType: 'markdown',
     });
 
     await new Promise((resolve) => window.setTimeout(resolve, 0));
 
-    expect(host.querySelector('.frontmatter-property__list')).toBeNull();
-    expect(host.querySelector('.frontmatter-property__add-property')).toBeNull();
+    // This note already owns a frontmatter node, so it takes the node-view
+    // path; the widget path is covered by frontmatter-interactions.test.ts.
+    const nodeView = host.querySelector<HTMLElement>('.frontmatter-property-node')!;
+    expect(nodeView.hasAttribute('data-empty-properties')).toBe(false);
+    const row = host.querySelector<HTMLElement>('.frontmatter-property__empty-row')!;
+    expect(row).not.toBeNull();
+    expect(host.querySelectorAll('.frontmatter-property__actions')).toHaveLength(1);
+    expect(editor.getMarkdown()).not.toContain('key1');
 
-    window.dispatchEvent(new CustomEvent('flowix:add-property', {
-      detail: { propertyTargetId: 'file:display-frontmatter' },
-    }));
+    row.querySelector<HTMLElement>('.frontmatter-property__empty-value')!.click();
+    const valueInput = document.body.querySelector<HTMLTextAreaElement>('.frontmatter-property__edit-input')!;
+    valueInput.value = 'done';
+    valueInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+    row.querySelector<HTMLElement>('.frontmatter-property__empty-key')!.click();
+    const keyInput = document.body.querySelector<HTMLInputElement>('.frontmatter-property__edit-input')!;
+    keyInput.value = 'status';
+    keyInput.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
 
-    expect(host.querySelector('.frontmatter-property__list')).not.toBeNull();
-    expect(host.querySelector('[data-property-key="key1"]')).not.toBeNull();
+    expect(host.querySelector('.frontmatter-property__empty-row')).toBeNull();
+    expect(host.querySelector('[data-property-key="status"]')).not.toBeNull();
+    expect(editor.getMarkdown()).toContain('status: done');
+
+    editor.destroy();
+    host.remove();
+  });
+
+  it('keeps the node-view draft row mounted across visibility toggles', async () => {
+    const previousVisible = useSettingsStore.getState().propertiesVisible;
+    useSettingsStore.setState({ propertiesVisible: true });
+    const host = document.createElement('div');
+    document.body.append(host);
+    const editor = new Editor({
+      element: host,
+      extensions: [StarterKit, Markdown, Frontmatter.configure({ propertyTargetId: 'file:draft-visibility' })],
+      content: '---\n\n---\nBody',
+      contentType: 'markdown',
+    });
+
+    try {
+      await new Promise((resolve) => window.setTimeout(resolve, 0));
+      const row = host.querySelector<HTMLElement>('.frontmatter-property__empty-row')!;
+      const value = row.querySelector<HTMLElement>('.frontmatter-property__empty-value')!;
+      value.click();
+      const input = document.body.querySelector<HTMLTextAreaElement>('.frontmatter-property__edit-input')!;
+      input.value = 'local draft';
+      input.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', ctrlKey: true, bubbles: true }));
+
+      useSettingsStore.setState({ propertiesVisible: false });
+      expect(host.querySelector('.frontmatter-property__empty-row')).toBe(row);
+      useSettingsStore.setState({ propertiesVisible: true });
+
+      expect(host.querySelector('.frontmatter-property__empty-row')).toBe(row);
+      expect(value.textContent).toBe('local draft');
+      expect(editor.getMarkdown()).not.toContain('local draft');
+    } finally {
+      editor.destroy();
+      host.remove();
+      useSettingsStore.setState({ propertiesVisible: previousVisible });
+    }
+  });
+
+  it('falls back to the draft row after the last property is deleted', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const editor = new Editor({
+      element: host,
+      extensions: [StarterKit, Markdown, Frontmatter.configure({ propertyTargetId: 'file:last-property' })],
+      content: '---\nstatus: done\n---\nBody',
+      contentType: 'markdown',
+    });
+
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    host.querySelector<HTMLElement>('[data-property-key="status"] .frontmatter-property__type-icon')!.click();
+    const items = document.body.querySelectorAll<HTMLButtonElement>(
+      '.frontmatter-property__item-menu [role="menuitem"]',
+    );
+    items[2].click();
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    expect(host.querySelector('[data-property-key="status"]')).toBeNull();
+    expect(host.querySelectorAll('.frontmatter-property__display')).toHaveLength(1);
+    expect(host.querySelector('.frontmatter-property__empty-row')).not.toBeNull();
+    expect(host.querySelectorAll('.frontmatter-property__actions')).toHaveLength(1);
 
     editor.destroy();
     host.remove();

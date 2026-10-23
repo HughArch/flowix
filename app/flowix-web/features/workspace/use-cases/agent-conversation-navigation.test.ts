@@ -1,4 +1,5 @@
 import { beforeEach, describe, expect, it, vi } from 'vitest';
+import type { WorkColumnTarget } from '../store/work-column-target';
 
 const mocks = vi.hoisted(() => ({
   openAgentConversation: vi.fn().mockResolvedValue(undefined),
@@ -9,6 +10,7 @@ const mocks = vi.hoisted(() => ({
   activeAgentConversationId: 'conversation-a',
   activeFilter: 'all',
   navigationRevision: 1,
+  navigationTarget: { kind: 'empty' } as WorkColumnTarget,
   hydrateInstance: vi.fn(),
   selectAgentConversation: vi.fn(),
   setDesiredTarget: vi.fn(),
@@ -63,7 +65,7 @@ vi.mock('@features/workspace/store/workspace-restore-store', () => ({
 vi.mock('@features/workspace/store/work-column-store', () => ({
   useWorkColumnStore: {
     getState: () => ({
-      navigation: { phase: 'committed', showWorkColumnLoading: false, requestId: mocks.navigationRevision, target: { kind: 'plugin-workbench', plugin: { manifest: { id: 'plugin-a' } } }, pendingTarget: null, previousTarget: null, failure: null, retryToken: null },
+      navigation: { phase: 'committed', showWorkColumnLoading: false, requestId: mocks.navigationRevision, target: mocks.navigationTarget, pendingTarget: null, previousTarget: null, failure: null, retryToken: null },
       beginNavigation: mocks.beginNavigation,
       commitNavigation: mocks.commitNavigation,
       failNavigation: mocks.failNavigation,
@@ -81,6 +83,11 @@ describe('agent conversation navigation', () => {
     vi.clearAllMocks();
     mocks.activeFilter = 'all';
     mocks.navigationRevision = 1;
+    mocks.navigationTarget = { kind: 'plugin-workbench', plugin: { manifest: { id: 'plugin-a' } } } as WorkColumnTarget;
+    mocks.commitNavigation.mockImplementation((_requestId, target: WorkColumnTarget) => {
+      mocks.navigationTarget = target;
+      return true;
+    });
     mocks.activeAgentConversationId = 'conversation-a';
     mocks.clearDocument.mockImplementation(async () => { mocks.activeAgentConversationId = ''; });
     mocks.hydrateInstance.mockResolvedValue({ instanceId: 'conversation-a' });

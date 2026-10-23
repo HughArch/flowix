@@ -5,6 +5,7 @@ import {
   type FilterType,
   type NoteColorFilter,
   type NoteListPage,
+  type NoteTitleFilter,
   type NotebookSortEntry,
   type SortType,
 } from '@platform/tauri/client';
@@ -35,6 +36,7 @@ export const noteRepository = {
     color?: NoteColorFilter;
     cursor?: string;
     limit?: number;
+    titleFilter?: NoteTitleFilter;
   }): Promise<NoteListPage> => notes.getPage(params),
   listAllByPath: (notebookId: string) => notes.list(notebookId),
   /** Omit parentRelativePath to use the notebook default; pass '' for its root. */

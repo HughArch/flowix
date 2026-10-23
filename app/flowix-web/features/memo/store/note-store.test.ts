@@ -7,7 +7,7 @@ const mocks = vi.hoisted(() => ({
   setSelectedTagId: vi.fn(),
 }));
 
-vi.mock('@features/memo/services', () => ({
+vi.mock('@features/memo/services/note-repository', () => ({
   noteRepository: {
     list: mocks.list,
     listByPath: mocks.listByPath,

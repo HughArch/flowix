@@ -136,11 +136,11 @@ pub(crate) fn open_preferences_window_inner(
 /// Apply the effective theme to this window. Other windows independently follow
 /// shared preferences and account membership, without overwriting each other.
 #[tauri::command]
-pub fn apply_window_theme(
+pub async fn apply_window_theme(
     theme: Theme,
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
-) -> Result<(), String> {
+) -> Result<&'static str, String> {
     let theme = if theme == Theme::Mist {
         let cloud = state.cloud_sync.state().map_err(|error| error.to_string())?;
         let now_ms = std::time::SystemTime::now()
@@ -154,8 +154,18 @@ pub fn apply_window_theme(
     } else {
         theme
     };
-    crate::window_chrome::apply_window_chrome_theme(&window, theme);
-    Ok(())
+    let (sender, receiver) = tokio::sync::oneshot::channel();
+    let target = window.clone();
+    window.run_on_main_thread(move || {
+        crate::window_chrome::apply_window_chrome_theme_on_main_thread(&target, theme);
+        let material = if target.label() == "main" {
+            crate::window_material::active_material()
+        } else {
+            "none"
+        };
+        let _ = sender.send(material);
+    }).map_err(|error| error.to_string())?;
+    receiver.await.map_err(|error| error.to_string())
 }
 
 /// Keep the native application menu in sync with the frontend language.

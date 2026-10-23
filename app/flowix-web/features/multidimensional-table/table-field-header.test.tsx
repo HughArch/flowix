@@ -444,7 +444,7 @@ describe('TableFieldHeader', () => {
 });
 
 describe('dataset panel close', () => {
-  it('does not save unchanged conditions after viewing fields or reverting edits', async () => {
+  it('discards unapplied conditions when the dataset panel closes', async () => {
     const onSaveAutoCollect = vi.fn(async () => true);
     container = document.createElement('div');
     root = createRoot(container);
@@ -480,6 +480,65 @@ describe('dataset panel close', () => {
       changedInput?.dispatchEvent(new Event('input', { bubbles: true }));
     });
     await act(async () => trigger?.click());
-    expect(onSaveAutoCollect).toHaveBeenCalledOnce();
+    expect(onSaveAutoCollect).not.toHaveBeenCalled();
   });
+});
+
+
+it('shows and applies the readonly title filter without a table schema', async () => {
+  const onSave = vi.fn(async () => true);
+  const host = document.createElement('div');
+  const view = createRoot(host);
+  try {
+    await act(async () => view.render(<TableDatasetMenu embedded open saving={false}
+      t={(key) => key} onSave={onSave} />));
+    const titleOption = [...host.querySelectorAll('button')]
+      .find((button) => button.textContent === 'multidimensionalTable.autoCollect.title');
+    expect(titleOption).toBeTruthy();
+    await act(async () => titleOption?.click());
+    const value = host.querySelector<HTMLInputElement>('input[aria-label="属性条件 1 匹配值"]');
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(value, '发布');
+      value?.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    const apply = [...host.querySelectorAll('button')].find((button) => button.textContent === '应用');
+    await act(async () => apply?.click());
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ property_conditions: [
+      { field_id: '__note_filename__', operator: 'contains', value: '发布' },
+    ] }));
+  } finally {
+    act(() => view.unmount());
+  }
+});
+
+
+it('discards a dismissed filter draft while keeping its parent menu open', async () => {
+  const onSave = vi.fn(async () => true);
+  const host = document.createElement('div');
+  const view = createRoot(host);
+  const config = { condition: { path: '写入目录', property_conditions: [
+    { field_id: '__note_filename__', operator: 'contains' as const, value: '已保存' },
+  ] } };
+  const render = (filterOpen: boolean) => view.render(<TableDatasetMenu embedded open filterOpen={filterOpen}
+    config={config} saving={false} t={(key) => key} onSave={onSave} />);
+  const input = () => host.querySelector<HTMLInputElement>('input[aria-label="属性条件 1 匹配值"]');
+  try {
+    await act(async () => render(true));
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(input(), '未应用修改');
+      input()?.dispatchEvent(new Event('input', { bubbles: true }));
+    });
+    expect(input()?.value).toBe('未应用修改');
+    await act(async () => render(false));
+    expect(onSave).not.toHaveBeenCalled();
+    await act(async () => render(true));
+    expect(input()?.value).toBe('已保存');
+    const apply = [...host.querySelectorAll('button')].find((button) => button.textContent === '应用');
+    await act(async () => apply?.click());
+    expect(onSave).toHaveBeenCalledWith(expect.objectContaining({ path: '写入目录',
+      property_conditions: [{ field_id: '__note_filename__', operator: 'contains', value: '已保存' }],
+    }));
+  } finally {
+    act(() => view.unmount());
+  }
 });

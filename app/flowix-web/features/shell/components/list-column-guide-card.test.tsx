@@ -31,7 +31,7 @@ describe('ListColumnGuideCard', () => {
       .IS_REACT_ACT_ENVIRONMENT = false;
   });
 
-  it('wraps from the current page and offers Get Started after all three pages', async () => {
+  it('wraps from the current page and offers Get Started after both pages', async () => {
     function Harness() {
       const [activeView, setActiveView] = useState(initialView);
       return <ListColumnGuideCard activeView={activeView} onViewChange={setActiveView} />;
@@ -49,10 +49,6 @@ describe('ListColumnGuideCard', () => {
         button!.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0, detail: 1 }));
       });
     };
-
-    await activate('memo.guide.next');
-    expect(host.textContent).toContain('memo.guide.conversations.title');
-    expect(host.textContent).toContain('memo.guide.next');
 
     await activate('memo.guide.next');
     expect(host.textContent).toContain('memo.guide.fileTree.title');

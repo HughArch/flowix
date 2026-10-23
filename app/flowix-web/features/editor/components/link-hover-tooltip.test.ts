@@ -63,6 +63,17 @@ describe('link hover tooltip navigation', () => {
     detach();
   });
 
+  it('opens a video source without adding the ordinary link hover tooltip', () => {
+    const href = 'https://www.bilibili.com/video/BV1TGnP6VE2f';
+    const { anchor, detach } = createEditorFixture(href);
+    anchor.parentElement!.setAttribute('data-video-embed', '');
+    anchor.dispatchEvent(new MouseEvent('mouseover', { bubbles: true }));
+    expect(anchor.hasAttribute('data-link-tooltip')).toBe(false);
+    anchor.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
+    expect(openerMocks.openUrl).toHaveBeenCalledWith(href);
+    detach();
+  });
+
   it('keeps using the system opener for a regular external link', () => {
     const { anchor, detach } = createEditorFixture('https://example.com');
 

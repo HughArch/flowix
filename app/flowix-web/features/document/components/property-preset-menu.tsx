@@ -2,7 +2,7 @@
 
 import { useRef, useState, useEffect, type ReactNode } from 'react';
 import { ChevronRight } from 'lucide-react';
-import type { PropertyPreset } from '@features/document/properties/presets';
+import { moveNameAndDescriptionPresetsToEnd, type PropertyPreset } from '@features/document/properties/presets';
 import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
 import { POPUP_SEPARATOR_CLASS } from '@shared/ui/popup-separator';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
@@ -68,7 +68,10 @@ export function PropertyPresetMenu({
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const matchesQuery = (preset: PropertyPreset) =>
     !normalizedQuery || preset.label.toLocaleLowerCase().includes(normalizedQuery);
-  const visibleSystemPresets = systemPresets.filter(matchesQuery);
+  const visibleSystemPresets = moveNameAndDescriptionPresetsToEnd(
+    systemPresets.filter(matchesQuery),
+    (preset) => preset.key,
+  );
   const visibleCustomPresets = customPresets.filter(matchesQuery);
 
   const renderGroup = (title: string, presets: PropertyPreset[]) => presets.length > 0 && <section className="space-y-0.5">
@@ -121,14 +124,15 @@ export function PropertyPresetMenu({
         className="agent-composer__note-search multidimensional-table__preset-search shrink-0"
       />
       <div role="separator" aria-hidden="true" className={`${POPUP_SEPARATOR_CLASS} shrink-0`} />
-      <OverlayScrollbar className="min-h-0 max-h-[calc(60vh-60px)] flex-1" scrollerClassName="min-h-0 max-h-[calc(60vh-60px)] overflow-y-auto overflow-x-hidden">
+      <OverlayScrollbar className="overlay-scrollbar-frame--edge-aligned min-h-0 max-h-[calc(60vh-60px)] flex-1" scrollerClassName="min-h-0 max-h-[calc(60vh-60px)] overflow-y-auto overflow-x-hidden">
         <div className="space-y-2">
           {renderGroup(t('preferences.documentProperties.group.presets'), visibleSystemPresets)}
           {renderGroup(customGroupLabel ?? t('preferences.documentProperties.group.mine'), visibleCustomPresets)}
           {normalizedQuery && visibleSystemPresets.length === 0 && visibleCustomPresets.length === 0 && (
             <div className="agent-composer__note-empty">{t('document.properties.picker.empty')}</div>
           )}
-          <button type="button" disabled={disabled} onClick={onManage} className="flex h-8 w-full items-center rounded-lg px-2 text-left text-sm text-[var(--foreground)] hover:bg-[var(--hover-bg)] disabled:opacity-50">
+          <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
+          <button type="button" disabled={disabled} onClick={onManage} className="!mt-1 flex h-8 w-full items-center rounded-lg px-2 text-left text-sm text-[var(--foreground)] hover:bg-[var(--hover-bg)] disabled:opacity-50">
             预设属性管理
           </button>
         </div>

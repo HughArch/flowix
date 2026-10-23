@@ -10,7 +10,7 @@ import type { WorkspaceSurfaceRendererData, WorkspaceSurfaceRenderContext } from
 import { WorkspaceSurfaceStateView } from './workspace-surface-state-view';
 import { resetCurrentCollectionView } from '@features/workspace/use-cases/workspace-navigation';
 import { toast } from '@/lib/toast';
-import { workspaceSurfaceCapabilities } from '@features/workspace/public/surface-api';
+import { workspaceSurfaceContentPresentation } from '@features/workspace/public/surface-api';
 
 export function FileBrowserRenderer({ surface: data, context }: {
   surface: Extract<WorkspaceSurfaceRendererData, { kind: 'file-browser' }>;
@@ -60,8 +60,7 @@ export function FileBrowserRenderer({ surface: data, context }: {
   useLayoutEffect(() => {
     if (!surface.activeFilePath) {
       context.reportPresentation?.({
-        appearance: workspaceSurfaceAppearance('file-browser'),
-        capabilities: workspaceSurfaceCapabilities('file-browser'),
+        ...workspaceSurfaceContentPresentation('file-browser'),
         state: { status: 'ready' },
       });
       return;
@@ -74,8 +73,7 @@ export function FileBrowserRenderer({ surface: data, context }: {
             ? { status: 'loading' as const, loadingMode: 'blocking' as const, retainContent: true }
           : { status: 'loading' as const, loadingMode: 'blocking' as const, retainContent: true };
     context.reportPresentation?.({
-      appearance: workspaceSurfaceAppearance(dynamicKind),
-      capabilities: workspaceSurfaceCapabilities(dynamicKind),
+      ...workspaceSurfaceContentPresentation(dynamicKind),
       state,
     });
   }, [collectionLocationLoading, context.reportPresentation, dynamicKind, contentDetectionLoading, surface.activeFilePath, surface.collectionUnavailableReason, unavailableState]);

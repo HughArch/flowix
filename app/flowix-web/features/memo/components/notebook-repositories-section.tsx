@@ -1,5 +1,5 @@
 import { useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode } from 'react';
-import { ChevronRight, Plus } from 'lucide-react';
+import { ArrowRight, ChevronRight, GitBranch, Plus } from 'lucide-react';
 import { CopyIcon, FolderOpenIcon, MinusCircleIcon, PencilSimpleIcon, SquareSplitHorizontalIcon, TrashSimpleIcon } from '@phosphor-icons/react';
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import type { WorkspaceAgentRepository } from '@features/agent/public/workspace-api';
@@ -277,9 +277,9 @@ function AgentRepositoryItem({
   return (
     <>
       <div className={cn(
-        'mx-[6px] overflow-hidden rounded-xl transition-colors',
-        expanded && 'mb-1 border border-[var(--border)] bg-[var(--card)] p-0.5 py-1',
-      )} ref={repositoryRef}>
+        'overflow-hidden rounded-xl border transition-colors',
+        expanded && 'mb-1',
+      )} ref={repositoryRef} style={{ borderColor: expanded ? 'var(--border)' : 'transparent' }}>
       <ContextMenu>
         <ContextMenuTrigger asChild>
           <button
@@ -298,7 +298,7 @@ function AgentRepositoryItem({
                   expanded && 'rotate-90',
                 )} aria-hidden="true" />
               </span>
-              <span className="ml-1.5 min-w-0 flex-1 truncate opacity-[0.82]">
+              <span className="ml-1.5 min-w-0 flex-1 truncate font-semibold opacity-[0.82]">
                 {repository.name}
               </span>
           </button>
@@ -366,6 +366,9 @@ export function AgentRepositoriesSection({
   canAddRepository,
   onOpenFile,
   onOpenInNewTab,
+  viewMode = 'tree',
+  onOpenRepositoryList,
+  hideSectionHeader = false,
 }: {
   repositories: WorkspaceAgentRepository[];
   order: number;
@@ -377,6 +380,9 @@ export function AgentRepositoriesSection({
   canAddRepository: boolean;
   onOpenFile: (path: string, scopePath: string) => void;
   onOpenInNewTab?: (path: string) => void;
+  viewMode?: 'tree' | 'links';
+  onOpenRepositoryList?: () => void;
+  hideSectionHeader?: boolean;
 }) {
   const { t } = useI18n();
   const sectionRef = useRef<HTMLElement | null>(null);
@@ -400,39 +406,69 @@ export function AgentRepositoriesSection({
       data-notebook-repositories-section="true"
       style={{ order }}
     >
-      <div
-        className="notebook-file-tree__section-header group mb-0.5 flex h-7 items-center rounded-lg px-1.5 transition-colors hover:bg-[var(--muted)]"
-        style={{ marginLeft: TREE_EDGE_GUTTER, width: `calc(100% - ${TREE_EDGE_GUTTER * 2}px)` }}
-      >
-        <button
-          type="button"
-          className="flex h-full items-center gap-0.5 text-[0.82rem] font-medium text-[var(--muted-foreground)] opacity-90 hover:text-[var(--foreground)] focus-visible:outline-none"
-          aria-label={t(collapsed ? 'memo.fileTree.expandRepositories' : 'memo.fileTree.collapseRepositories')}
-          title={t(collapsed ? 'memo.fileTree.expandRepositories' : 'memo.fileTree.collapseRepositories')}
-          onClick={() => setCollapsed((value) => !value)}
+      {!hideSectionHeader && (
+        <div
+          className="notebook-file-tree__section-header group mb-0.5 flex h-7 items-center rounded-lg px-1.5 transition-colors hover:bg-[var(--muted)]"
+          style={{ marginLeft: TREE_EDGE_GUTTER, width: `calc(100% - ${TREE_EDGE_GUTTER * 2}px)` }}
         >
-          <span>{t('memo.fileTree.repositoriesTitle')}</span>
-          <ChevronRight className={cn(
-            'h-3.5 w-3.5 opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-within:opacity-100',
-            collapsed && 'opacity-100',
-            !collapsed && 'rotate-90',
-          )} aria-hidden="true" />
-        </button>
-        <div className="ml-auto flex items-center">
-          {sectionActions}
           <button
             type="button"
-            className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
-            aria-label={t('agent.workspace.addRepository')}
-            title={t('agent.workspace.addRepository')}
-            disabled={!canAddRepository}
-            onClick={onAddRepository}
+            className="flex h-full items-center gap-0.5 text-[0.82rem] font-medium text-[var(--muted-foreground)] opacity-90 hover:text-[var(--foreground)] focus-visible:outline-none"
+            aria-label={t(collapsed ? 'memo.fileTree.expandRepositories' : 'memo.fileTree.collapseRepositories')}
+            title={t(collapsed ? 'memo.fileTree.expandRepositories' : 'memo.fileTree.collapseRepositories')}
+            onClick={() => setCollapsed((value) => !value)}
           >
-            <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+            <span>{t('memo.fileTree.repositoriesTitle')}</span>
+            <ChevronRight className={cn(
+              'h-3.5 w-3.5 opacity-0 transition-[opacity,transform] group-hover:opacity-100 group-focus-within:opacity-100',
+              collapsed && 'opacity-100',
+              !collapsed && 'rotate-90',
+            )} aria-hidden="true" />
           </button>
+          <div className="ml-auto flex items-center">
+            {sectionActions}
+            {viewMode === 'links' && (
+              <button
+                type="button"
+                onClick={onOpenRepositoryList}
+                aria-label={t('memo.fileTree.openAllRepositories')}
+                title={t('memo.fileTree.openAllRepositories')}
+                className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
+              >
+                <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
+              </button>
+            )}
+            <button
+              type="button"
+              className="flex h-6 w-6 items-center justify-center rounded-md text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
+              aria-label={t('agent.workspace.addRepository')}
+              title={t('agent.workspace.addRepository')}
+              disabled={!canAddRepository}
+              onClick={onAddRepository}
+            >
+              <Plus className="h-3.5 w-3.5" aria-hidden="true" />
+            </button>
+          </div>
         </div>
-      </div>
-      {!collapsed && (
+      )}
+      {!collapsed && viewMode === 'links' && (
+        <div className="space-y-0.5">
+          {repositories.length ? repositories.map((repository) => (
+            <button key={repository.path} type="button" onClick={onOpenRepositoryList}
+              className="flex h-8 w-full items-center gap-2 rounded-lg px-2 text-left text-sm text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-inset focus-visible:ring-[var(--brand)]"
+              style={{ marginLeft: TREE_EDGE_GUTTER, width: `calc(100% - ${TREE_EDGE_GUTTER * 2}px)` }}>
+              <GitBranch className="h-3.5 w-3.5 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
+              <span className="min-w-0 flex-1 truncate opacity-[0.82]">{repository.name}</span>
+            </button>
+          )) : (
+            <div className="flex h-7 items-center justify-center px-1.5 text-xs text-[var(--muted-foreground)] opacity-50"
+              style={{ marginLeft: TREE_EDGE_GUTTER, width: `calc(100% - ${TREE_EDGE_GUTTER * 2}px)` }}>
+              {t('memo.fileTree.repositoriesEmpty')}
+            </div>
+          )}
+        </div>
+      )}
+      {!collapsed && viewMode === 'tree' && (
         <>
           {repositories.length > 0 ? repositories.map((repository) => (
             <AgentRepositoryItem

@@ -33,10 +33,11 @@ import {
   useGlobalSearchMemoViewModel,
   type Notebook,
 } from '@features/memo/public/global-search-api';
-import { useNoteStore } from '@features/memo/store';
 import { joinNotebookMemoPath } from '@/lib/path';
 import { selectNotebook } from '@features/workspace/public/search-navigation-api';
 import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
+import { selectDocumentsToOpen } from '@features/workspace/public/document-open-api';
+import { toast } from '@/lib/toast';
 import {
   AgentIcon,
   getConversationRunSummary,
@@ -503,6 +504,7 @@ function StaticGroups({ onClose }: StaticGroupsProps) {
     activeFilter,
     setActiveFilter,
     createNote,
+    upsertCreatedNote,
     setSelectedTagId,
   } = useGlobalSearchMemoViewModel();
 
@@ -579,7 +581,7 @@ function StaticGroups({ onClose }: StaticGroupsProps) {
     if (!selectedNotebook) return;
     try {
       const created = await notes.createFromTemplate(template.id, selectedNotebook.id);
-      useNoteStore.getState().upsertCreatedNote(created);
+      upsertCreatedNote(created);
       void openNotebookNote(created.path, selectedNotebook);
     } catch (err) {
       logger.error('create from template failed', { error: err });
@@ -686,6 +688,13 @@ function StaticGroups({ onClose }: StaticGroupsProps) {
        改键 / 换平台会自动跟随 (无 binding 时 ShortcutKbd 内部返回 null,
       CommandShortcut 退化为空 span — CommandItem 布局不变)。 */}
       <CommandGroup heading={t('shell.commandPalette.actionsGroup')}>
+        <CommandItem value="action-open-documents" onSelect={() => {
+          onClose();
+          void selectDocumentsToOpen().catch((error) => toast.error(String(error)));
+        }}>
+          <FileText />
+          <span>{t('memo.externalOpen.directTitle')}</span>
+        </CommandItem>
         <CommandItem value="action-new-memo" onSelect={handleNewMemo} disabled={!selectedNotebook}>
           <PencilSimpleLineIcon />
           <span>{t('shell.commandPalette.action.newMemo')}</span>

@@ -218,7 +218,7 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   color: var(--frontmatter-list-foreground);
   border-bottom: 0.0625rem solid var(--border);
   padding: 0.68rem 0;
-  grid-template-columns: var(--frontmatter-icon-size) fit-content(9rem) minmax(0, 1fr);
+  grid-template-columns: var(--frontmatter-icon-size) minmax(3.2rem, 9rem) minmax(0, 1fr);
   align-items: start;
   justify-items: stretch;
   column-gap: var(--frontmatter-row-gap);
@@ -243,6 +243,21 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   font: inherit;
   text-align: left;
   transition: transform 180ms cubic-bezier(0.2, 0.8, 0.2, 1), box-shadow 140ms ease, color 140ms ease;
+}
+
+/* Inherits the list's subgrid columns so the draft row lines up with the rows
+   that replace it once a property is committed. */
+.markdown-editor .frontmatter-property__empty-row {
+  min-height: 30px;
+  color: var(--frontmatter-list-muted-foreground);
+}
+
+.markdown-editor .frontmatter-property__empty-row .frontmatter-property__type-icon--disabled,
+.markdown-editor .frontmatter-property__empty-row .frontmatter-property__type-icon--disabled:hover,
+.markdown-editor .frontmatter-property__empty-row .frontmatter-property__type-icon--disabled:focus-visible {
+  color: var(--frontmatter-list-muted-foreground);
+  cursor: default;
+  pointer-events: none;
 }
 
 .markdown-editor .frontmatter-property__display--dragging {
@@ -327,7 +342,7 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   background: var(--card);
   box-shadow: 0 8px 28px -6px rgb(0 0 0 / 24%);
   font-family: var(--font-sans);
-  font-size: var(--editor-font-size, 16px);
+  font-size: var(--property-value-base-font-size, var(--editor-font-size, 16px));
   line-height: var(--editor-line-height, 1.8);
   padding: 0.5rem 0.6rem;
 }
@@ -409,6 +424,111 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   padding: 0;
 }
 
+.frontmatter-property__edit-key-control {
+  display: flex;
+  min-width: 0;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.frontmatter-property__edit-key-control > .frontmatter-property__edit-input {
+  width: 0;
+  min-width: 0;
+  flex: 1 1 auto;
+}
+
+.frontmatter-property__edit-key-preset-host {
+  flex: 0 0 auto;
+}
+
+.frontmatter-property__edit-key-preset-picker {
+  position: relative;
+  flex: 0 0 auto;
+}
+
+.frontmatter-property__edit-key-preset-trigger {
+  display: inline-flex;
+  width: max-content;
+  max-width: 120px;
+  min-width: 0;
+  min-height: 1.75rem;
+  align-items: center;
+  gap: 0.35rem;
+  border: 0;
+  border-radius: 0.5rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.8rem;
+  line-height: 1.2;
+  padding: 0 0.5rem;
+  cursor: pointer;
+}
+
+.frontmatter-property__edit-key-preset-trigger-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.frontmatter-property__edit-key-preset-trigger::after {
+  width: 0;
+  height: 0;
+  border-top: 4px solid currentColor;
+  border-right: 3px solid transparent;
+  border-left: 3px solid transparent;
+  content: '';
+}
+
+.frontmatter-property__edit-key-preset-trigger:hover,
+.frontmatter-property__edit-key-preset-trigger[aria-expanded='true'] {
+  background: var(--hover-bg);
+  color: var(--foreground);
+}
+
+.frontmatter-property__edit-key-preset-menu {
+  position: absolute;
+  z-index: 1;
+  top: calc(100% + 0.25rem);
+  left: 0;
+  display: flex;
+  width: 12rem;
+  min-width: min(12rem, var(--frontmatter-property-key-preset-max-width, 12rem));
+  max-width: min(var(--frontmatter-property-key-preset-max-width, 12rem), calc(100vw - 1rem));
+  max-height: 60vh;
+  flex-direction: column;
+  overflow: hidden;
+  box-sizing: border-box;
+  border: 1px solid var(--border-popup);
+  border-radius: 0.75rem;
+  background: var(--card);
+  box-shadow: 0 4px 24px -3px rgb(0 0 0 / 24%);
+  padding: 0.375rem;
+}
+
+.frontmatter-property__edit-key-preset-option {
+  display: flex;
+  min-height: 2rem;
+  align-items: center;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.875rem;
+  text-align: left;
+  padding: 0 0.5rem;
+  cursor: pointer;
+}
+
+.frontmatter-property__edit-key-preset-option:hover,
+.frontmatter-property__edit-key-preset-option:focus-visible,
+.frontmatter-property__edit-key-preset-option[aria-selected='true'] {
+  background: var(--hover-bg);
+  outline: none;
+}
+
 .frontmatter-property__edit-option-menu {
   position: relative;
   width: 100%;
@@ -446,6 +566,11 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
 .frontmatter-property__edit-option-value--multiple {
   flex-wrap: wrap;
   padding-block: 0.25rem;
+}
+
+.frontmatter-property__option-chip.multidimensional-table__option-chip {
+  font-size: var(--document-tag-font-size);
+  line-height: var(--document-tag-line-height);
 }
 
 .frontmatter-property__edit-option-chevron {
@@ -705,20 +830,13 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   background: var(--document-tag-background);
   color: var(--document-tag-foreground, var(--primary-foreground));
   font-weight: 400;
-  font-size: var(--document-tag-font-size);
+  font-size: var(--property-value-font-size, var(--document-tag-font-size));
   line-height: var(--document-tag-line-height);
   padding-inline: 0;
   cursor: text;
   caret-color: currentColor;
   -webkit-box-decoration-break: clone;
   box-decoration-break: clone;
-}
-
-.frontmatter-property__edit-tag-chip:not(.frontmatter-property__edit-tag-chip--plain),
-.frontmatter-property__edit-tag-chip:not(.frontmatter-property__edit-tag-chip--plain) > .tag-node-prefix,
-.frontmatter-property__edit-tag-chip:not(.frontmatter-property__edit-tag-chip--plain) > .tag-node-content,
-.markdown-editor .frontmatter-property__edit-tag-suggestion > .tag-node-content {
-  background: var(--muted);
 }
 
 .frontmatter-property__edit-tag-chip:hover {
@@ -740,9 +858,9 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
 
 .frontmatter-property__edit-tag-chip .tag-node-prefix,
 .markdown-editor .frontmatter-property__value-chip.tag-node .tag-node-prefix {
-  /* Property chips wrap the prefix in a 92% outer chip, so restore the
+  /* Property chips wrap the prefix in a scaled outer chip, so restore the
    * editor's surrounding text size for the # glyph itself. */
-  font-size: var(--editor-font-size, 16px);
+  font-size: var(--property-value-base-font-size, var(--editor-font-size, 16px));
 }
 
 .frontmatter-property__edit-tags-input {
@@ -781,7 +899,7 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   padding: 0.25rem 0.375rem;
   text-align: left;
   font: inherit;
-  font-size: 0.875rem;
+  font-size: var(--property-value-font-size, var(--document-tag-font-size));
 }
 
 .frontmatter-property__edit-tag-suggestion:hover,
@@ -1103,8 +1221,11 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
 
 .markdown-editor .frontmatter-property__display:hover,
 .markdown-editor .frontmatter-property__display:has(:focus-visible) {
-  box-shadow: inset 0 0 0 1px var(--border);
   color: var(--foreground);
+}
+
+.markdown-editor .frontmatter-property__display:has(:focus-visible) {
+  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 .markdown-editor .frontmatter-property__display-key,
@@ -1270,16 +1391,6 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   background: color-mix(in oklch, var(--muted) 82%, var(--document-tag-bg));
 }
 
-.markdown-editor .frontmatter-property__value-chip.tag-node.frontmatter-property__value-chip--typed {
-  background: var(--muted);
-}
-
-.markdown-editor .frontmatter-property__value-chip.tag-node,
-.markdown-editor .frontmatter-property__value-chip.tag-node > .tag-node-prefix,
-.markdown-editor .frontmatter-property__value-chip.tag-node > .tag-node-content {
-  background: var(--muted);
-}
-
 .markdown-editor .frontmatter-property__value-chip--tag {
   display: inline;
   background: var(--document-tag-background);
@@ -1314,10 +1425,6 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   box-shadow: none;
   padding: var(--frontmatter-row-padding);
   transition: box-shadow 140ms ease;
-}
-
-.markdown-editor .frontmatter-property__editor:hover {
-  box-shadow: inset 0 0 0 1px var(--border);
 }
 
 .markdown-editor .frontmatter-property__input {

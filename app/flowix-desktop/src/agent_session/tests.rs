@@ -245,6 +245,27 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn conversation_batch_lookup_scopes_notebook_and_handles_large_id_lists() {
+        let manager = ThreadManager::for_tests();
+        seed_conversation(&manager, "favorite", "codex", Some("nb-a"), 1).await;
+        seed_conversation(&manager, "other", "codex", Some("nb-b"), 2).await;
+        seed_conversation(&manager, "not-requested", "codex", Some("nb-a"), 3).await;
+        let mut ids = (0..500).map(|i| format!("missing-{i}")).collect::<Vec<_>>();
+        ids.extend(["favorite".to_string(), "other".to_string()]);
+        let result = manager
+            .get_agent_conversation_instances_by_ids("nb-a".to_string(), ids)
+            .await
+            .unwrap();
+        assert_eq!(result.len(), 1);
+        assert_eq!(result[0].instance_id, "favorite");
+        assert!(manager
+            .get_agent_conversation_instances_by_ids("nb-a".to_string(), Vec::new())
+            .await
+            .unwrap()
+            .is_empty());
+    }
+
+    #[tokio::test]
     async fn conversation_page_filters_and_walks_stable_cursor() {
         let manager = ThreadManager::for_tests();
         seed_conversation(&manager, "i-4", "codex", Some("nb-a"), 400).await;

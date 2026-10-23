@@ -1,39 +1,7 @@
 import { useBrowserColumnStore } from '@features/workspace/store/browser-column-store';
 import { getWorkspaceSurfaceLifecycle } from '@features/workspace/public/surface-lifecycle-api';
 
-export type BrowserColumnDocumentFlush = (
-  options?: { silent?: boolean },
-) => Promise<boolean>;
-
-interface ActiveFlushRegistration {
-  tabId: string;
-  flush: BrowserColumnDocumentFlush;
-  discard: (() => void) | null;
-}
-
-let activeFlushRegistration: ActiveFlushRegistration | null = null;
 let navigationChain: Promise<unknown> = Promise.resolve();
-
-/**
- * Register the editor currently mounted for a BrowserColumn tab.
- *
- * The registration is deliberately module-scoped rather than component-local:
- * a memo can be opened by an Agent, a file tree, a deep link, or a restored
- * tab, and all of those paths must use the same save-before-unmount barrier.
- */
-export function registerBrowserColumnDocumentFlush(
-  tabId: string,
-  flush: BrowserColumnDocumentFlush | null,
-  discard: (() => void) | null = null,
-): void {
-  if (flush) {
-    activeFlushRegistration = { tabId, flush, discard };
-    return;
-  }
-  if (activeFlushRegistration?.tabId === tabId) {
-    activeFlushRegistration = null;
-  }
-}
 
 export async function flushActiveBrowserColumnDocument(
   options?: { silent?: boolean },
@@ -48,15 +16,7 @@ export async function flushActiveBrowserColumnDocument(
       return false;
     }
   }
-  const registration = activeFlushRegistration;
-  if (!activeTabId || !registration || registration.tabId !== activeTabId) return true;
-
-  try {
-    return await registration.flush(options);
-  } catch (error) {
-    console.error('[BrowserColumn] Failed to flush active tab before navigation', error);
-    return false;
-  }
+  return true;
 }
 
 /** False means this editor cannot discard and must still cross its flush barrier. */
@@ -68,11 +28,6 @@ export function discardActiveBrowserColumnDocument(): boolean {
     return true;
   }
   if (lifecycle?.flush) return false;
-  const registration = activeFlushRegistration;
-  if (activeTabId && registration?.tabId === activeTabId) {
-    if (!registration.discard) return false;
-    registration.discard();
-  }
   return true;
 }
 
@@ -106,6 +61,5 @@ export function activateBrowserColumnTab(tabId: string): Promise<boolean | null>
 }
 
 export function resetBrowserColumnCoordinator(): void {
-  activeFlushRegistration = null;
   navigationChain = Promise.resolve();
 }

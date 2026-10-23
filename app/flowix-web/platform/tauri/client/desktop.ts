@@ -1,8 +1,9 @@
 import { acceptPathMutationResult, publishNotebookPathMove, type PathMutationResult } from '../notebook-change-events';
 import { invokeDocumentMutation } from './document-mutation';
 import { convertFileSrc, invoke } from '@platform/tauri/core';
-import type { ThemeId } from '@/lib/theme';
+import { applyWindowTheme } from './window-theme';
 import type { NoteColor } from '@/types/note-item';
+import type { MarkdownLocation } from './notes';
 
 export interface DocTreeMemoMeta {
   icon: string | null;
@@ -271,6 +272,8 @@ export const files = {
     invoke<PathMutationResult>('move_folder', { folderPath, targetDirectoryPath, spacePath }).then(acceptPathMutationResult),
   importFile: (filePath: string, targetDirectoryPath: string, spacePath: string) =>
     invoke<string>('import_file', { filePath, targetDirectoryPath, spacePath }),
+  /** The legacy-named native resolver canonicalizes and classifies every file type. */
+  resolveLocation: (filePath: string) => invoke<MarkdownLocation>('resolve_markdown_location', { filePath }),
   importFolder: (sourceDirectoryPath: string, targetDirectoryPath: string, spacePath: string) =>
     invoke<string>('import_folder', { sourceDirectoryPath, targetDirectoryPath, spacePath }),
   renameFolder: (folderPath: string, name: string, spacePath: string) =>
@@ -382,7 +385,7 @@ export const windows = {
   showMain: () => invoke<void>('show_main_window'),
   getWindowMaterial: () => invoke<'none' | 'mica' | 'vibrancy'>('get_window_material'),
   openPreferences: (tab?: string) => invoke<void>('open_preferences_window', { tab }),
-  applyWindowTheme: (theme: ThemeId) => invoke<void>('apply_window_theme', { theme }),
+  applyWindowTheme,
   applyMenuLanguage: (language: 'zh-CN' | 'en-US') =>
     invoke<void>('apply_menu_language', { language }),
   watchExternalDocument: (filePath: string, scopePath?: string | null) =>

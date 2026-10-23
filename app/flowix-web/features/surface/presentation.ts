@@ -5,7 +5,15 @@ import type {
   ResolveWorkColumnContentInput,
   WorkColumnSurfaceCapability,
   WorkColumnSurfaceChrome,
+  DocumentSurfaceIdentity,
 } from './types';
+import type { SurfacePresentationUpdate, WorkspaceSurfaceKind } from '@features/workspace/public/surface-api';
+
+const DOCUMENT_ACTION_CAPABILITIES = [
+  'memo-colors',
+  'properties',
+  'version-history',
+] as const satisfies readonly WorkColumnSurfaceCapability[];
 
 export interface WorkColumnDocumentHeaderPresentation {
   externalFilePath: string | null;
@@ -24,8 +32,33 @@ export type WorkColumnHeaderPresentation =
 export interface WorkColumnPresentation {
   header: WorkColumnHeaderPresentation;
   chrome: WorkColumnSurfaceChrome;
+  /** The initially resolved content kind; runtime renderers may replace it after mode detection. */
+  contentKind: WorkspaceSurfaceKind | null;
   capabilities: readonly WorkColumnSurfaceCapability[];
   content: WorkColumnContentPresentation;
+}
+
+/** Resolve runtime overrides and document actions at the host boundary. */
+export function resolveWorkColumnRuntimePresentation(
+  initial: WorkColumnPresentation,
+  runtime: Readonly<SurfacePresentationUpdate>,
+  identity: DocumentSurfaceIdentity | null | undefined,
+): WorkColumnPresentation {
+  const contentKind = runtime.contentKind ?? initial.contentKind;
+  const rendererCapabilities = runtime.capabilities ?? initial.capabilities;
+  const isIndexedMarkdownNote = initial.content.status === 'surface'
+    && initial.content.surface.kind === 'md'
+    && contentKind === 'file-markdown'
+    && identity?.indexable === true;
+
+  return {
+    ...initial,
+    contentKind,
+    chrome: runtime.appearance?.headerStyle ?? initial.chrome,
+    capabilities: isIndexedMarkdownNote
+      ? [...rendererCapabilities, ...DOCUMENT_ACTION_CAPABILITIES]
+      : rendererCapabilities,
+  };
 }
 
 function documentHeaderPresentation(
@@ -74,10 +107,8 @@ export function resolveWorkColumnPresentation(
   return {
     header,
     chrome: definition?.chrome ?? 'document',
-    capabilities: content.status === 'surface' && content.surface.kind === 'md'
-      && input.document?.identity.kind === 'external' && input.document.identity.indexable
-      ? [...(definition?.capabilities ?? []), 'memo-colors', 'properties', 'version-history']
-      : definition?.capabilities ?? [],
+    contentKind: definition?.contentKind ?? null,
+    capabilities: definition?.capabilities ?? [],
     content,
   };
 }

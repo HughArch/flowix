@@ -1,8 +1,7 @@
 //! Migration of notebook-local Flowix data into one `.flowix` directory.
 //!
-//! The migration is deliberately file-by-file. A failed rename or a content
-//! conflict leaves the source untouched, so opening a notebook never risks
-//! user data loss. Re-running the migration converges the remaining files.
+//! Copy missing targets file-by-file, keeping legacy sources for recovery.
+//! Unfinished migrations check targets on retry; completed migrations never resurrect deletions.
 
 use std::fs;
 use std::io;
@@ -52,12 +51,9 @@ impl MemoFile {
             || has_legacy_content(&base.join(".flowix/artifacts"))?)
     }
 
-    /// Move legacy notebook-local data to `.flowix/`.
-    ///
-    /// This method is safe to call on every notebook open/switch. The marker
-    /// is written only after all known source directories are empty and no
-    /// conflict/error remains; unknown `.flowix/artifacts` entries therefore
-    /// remain visible for a later retry and are never silently deleted.
+    /// Copy missing legacy notebook-local data to `.flowix/`.
+    /// Completion requires valid targets, not removal of retained sources.
+    /// Unfinished retries check targets; completed migrations leave later deletions intact.
     pub fn migrate_notebook_internal_data(
         &self,
         notebook_id: &str,
@@ -90,12 +86,13 @@ impl MemoFile {
             return Ok(report);
         }
 
-        if self
+        // Once migration completed, a missing target may be an intentional
+        // deletion. Retained sources are recovery inputs, not a live mirror.
+        if self.local_migration_completed(&super::NotebookInitializationJob::ResetLegacyStorage.key(notebook_id))?
+            || self
             .notebook_data_migration_version(notebook_id, NOTEBOOK_INTERNAL_MIGRATION_KEY)?
             .unwrap_or_default()
             >= NOTEBOOK_INTERNAL_MIGRATION_VERSION
-            && is_missing_or_empty(&base.join(".plugin-output"))
-            && is_missing_or_empty(&flowix.join("artifacts"))
         {
             report.completed = true;
             return Ok(report);
@@ -114,12 +111,8 @@ impl MemoFile {
             &mut report,
         );
 
-        remove_empty_dir(&base.join(".plugin-output"));
-        remove_empty_dir(&flowix.join("artifacts"));
-
-        let sources_empty = is_missing_or_empty(&base.join(".plugin-output"))
-            && is_missing_or_empty(&flowix.join("artifacts"));
-        report.completed = report.warnings.is_empty() && sources_empty;
+        // Completion means targets are ready; legacy sources remain for recovery.
+        report.completed = report.warnings.is_empty();
         if report.completed {
             self.mark_notebook_data_migration(
                 notebook_id,
@@ -255,7 +248,6 @@ fn migrate_tree(
             )),
         }
     }
-    remove_empty_dir(source);
 }
 
 fn migrate_file(source: &Path, destination: &Path, report: &mut NotebookInternalMigrationReport) {
@@ -268,19 +260,11 @@ fn migrate_file(source: &Path, destination: &Path, report: &mut NotebookInternal
             return;
         }
         match (fs::read(source), fs::read(destination)) {
-            (Ok(left), Ok(right)) if left == right => {
-                if let Err(error) = fs::remove_file(source) {
-                    report.warning(format!(
-                        "remove duplicate legacy file {}: {error}",
-                        source.display()
-                    ));
-                }
+            (Ok(left), Ok(right)) if left == right => {}
+            (Ok(_), Ok(_)) => {
+                tracing::warn!(source = %source.display(), target = %destination.display(),
+                "different-content legacy artifact retained; existing target is authoritative")
             }
-            (Ok(_), Ok(_)) => report.warning(format!(
-                "different-content migration conflict retained: {} and {}",
-                source.display(),
-                destination.display()
-            )),
             (Err(error), _) => {
                 report.warning(format!("read legacy file {}: {error}", source.display()))
             }
@@ -306,30 +290,35 @@ fn migrate_file(source: &Path, destination: &Path, report: &mut NotebookInternal
         ));
         return;
     }
-    match fs::rename(source, destination) {
-        Ok(()) => report.moved_files += 1,
+    // Stage and publish without overwriting a concurrently created destination.
+    let copied = (|| -> io::Result<bool> {
+        let mut input = fs::File::open(source)?;
+        let mut temporary = tempfile::NamedTempFile::new_in(parent)?;
+        io::copy(&mut input, temporary.as_file_mut())?;
+        temporary.as_file().sync_all()?;
+        match temporary.persist_noclobber(destination) {
+            Ok(_) => Ok(true),
+            Err(error) if error.error.kind() == io::ErrorKind::AlreadyExists => {
+                if fs::read(source)? == fs::read(destination)? {
+                    Ok(false)
+                } else {
+                    Err(io::Error::other(
+                        "different-content migration conflict retained",
+                    ))
+                }
+            }
+            Err(error) => Err(error.error),
+        }
+    })();
+    match copied {
+        Ok(true) => report.moved_files += 1,
+        Ok(false) => {}
         Err(error) => report.warning(format!(
-            "move legacy file {} -> {}: {error}",
+            "copy legacy file {} -> {}: {error}",
             source.display(),
             destination.display()
         )),
     }
-}
-
-fn remove_empty_dir(path: &Path) {
-    let Ok(mut entries) = fs::read_dir(path) else {
-        return;
-    };
-    if entries.next().is_none() {
-        let _ = fs::remove_dir(path);
-    }
-}
-
-fn is_missing_or_empty(path: &Path) -> bool {
-    let Ok(mut entries) = fs::read_dir(path) else {
-        return true;
-    };
-    entries.next().is_none()
 }
 
 fn is_symlink(path: &Path) -> bool {
@@ -405,7 +394,7 @@ mod tests {
             fs::read(notebook.join(".flowix/plugin/mindmap/map.md")).unwrap(),
             b"plugin bytes"
         );
-        assert!(!notebook.join(".plugin-output").exists());
+        assert_eq!(fs::read(&old_plugin).unwrap(), b"plugin bytes");
         assert_eq!(
             mf.notebook_data_migration_version("nb_test", NOTEBOOK_INTERNAL_MIGRATION_KEY)
                 .unwrap(),
@@ -415,6 +404,22 @@ mod tests {
         let second = mf.migrate_notebook_internal_data("nb_test").unwrap();
         assert_eq!(second.moved_files, 0);
         assert!(second.warnings.is_empty());
+        assert!(second.completed);
+        let target = notebook.join(".flowix/plugin/mindmap/map.md");
+        fs::remove_file(&target).unwrap();
+        let repaired = mf.migrate_notebook_internal_data("nb_test").unwrap();
+        assert!(repaired.completed);
+        assert_eq!(repaired.moved_files, 0);
+        assert!(
+            !target.exists(),
+            "a completed migration must not resurrect deleted targets"
+        );
+        assert_eq!(fs::read(old_plugin).unwrap(), b"plugin bytes");
+        mf.mark_local_migration_completed(&super::super::NotebookInitializationJob::ResetLegacyStorage.key("nb_test")).unwrap();
+        let conn = rusqlite::Connection::open(notebook.join(".flowix/notebook.db")).unwrap();
+        conn.execute("DROP TABLE notebook_data_migrations", []).unwrap();
+        assert!(mf.migrate_notebook_internal_data("nb_test").unwrap().completed);
+        assert!(!notebook.join(".flowix/plugin/mindmap/map.md").exists());
     }
 
     #[test]
@@ -429,12 +434,10 @@ mod tests {
         fs::write(&new, "new").unwrap();
 
         let report = mf.migrate_notebook_internal_data("nb_test").unwrap();
-        assert!(!report.completed);
+        assert!(report.completed);
+        assert_eq!(report.moved_files, 0);
         assert_eq!(fs::read_to_string(&old).unwrap(), "old");
-        assert!(report
-            .warnings
-            .iter()
-            .any(|warning| warning.contains("different-content")));
+        assert_eq!(fs::read_to_string(&new).unwrap(), "new");
     }
 
     #[test]
@@ -454,6 +457,4 @@ mod tests {
             .join(".flowix/plugin/mindmap/manifest.json")
             .is_file());
     }
-
-
 }

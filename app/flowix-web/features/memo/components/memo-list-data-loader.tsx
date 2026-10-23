@@ -1,5 +1,5 @@
 import { useEffect, useRef } from 'react';
-import type { TableAutoCollectCondition } from '@features/multidimensional-table/model';
+import type { NoteFilterCondition } from '@features/collection/public/note-filter-api';
 import {
   type ColorFilterValue,
   type ExtendedFilterType,
@@ -21,7 +21,7 @@ export interface MemoListDataLoaderProps {
   colorFilter: ColorFilterValue;
   activePluginId: string | null;
   activeCustomFilterId?: string | null;
-  dataCondition?: TableAutoCollectCondition | null;
+  dataCondition?: NoteFilterCondition | null;
   memoListRefreshTrigger: number;
   loadNotes: NoteLibraryStore['loadNotes'];
   setLoadedMemoListQueryKey: (queryKey: string | null) => void;

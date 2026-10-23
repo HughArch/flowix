@@ -6,7 +6,7 @@ import { useBrowserColumnStore } from '@features/workspace/store/browser-column-
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import { useWorkspaceFocusStore } from '@features/workspace/store/workspace-focus-store';
 
-const resolveSurface = vi.hoisted(() => vi.fn((_tab: unknown, _readOnly: boolean, ..._options: unknown[]) => null));
+const resolveSurface = vi.hoisted(() => vi.fn((_tab: unknown, _options: { readOnly?: boolean }) => null));
 const renderHeader = vi.hoisted(() => vi.fn((_props: Record<string, unknown>) => null));
 vi.mock('@features/surface/browser-column-registry', () => ({
   resolveBrowserColumnSurface: resolveSurface,
@@ -29,7 +29,7 @@ it('does not force the right document read-only when the same memo is open on th
     await act(async () => root.render(<BrowserColumn width={500} layoutKey="test" onResize={() => {}} toolbarCollapsed={false} onToolbarCollapsedChange={() => {}} />));
     for (const host of ['main-third', 'browser-column'] as const) {
       await act(async () => useWorkspaceFocusStore.getState().focusHost(host));
-      expect(resolveSurface.mock.lastCall?.[1]).toBe(false);
+      expect(resolveSurface.mock.lastCall?.[1].readOnly).toBe(false);
     }
   } finally {
     await act(async () => root.unmount());

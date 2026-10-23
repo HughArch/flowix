@@ -11,6 +11,8 @@ export const FRONTMATTER_RE = /^\uFEFF?(?:[ \t]*\r?\n)*---\r?\n([\s\S]*?)\r?\n--
 // Only editor metadata is hidden. Historical memo identity fields are ordinary
 // YAML properties and are no longer interpreted by note indexing.
 export const SYSTEM_FRONTMATTER_KEYS = new Set([PROPERTY_TYPES_KEY]);
+/** Identity fields that stay editable but are never imported through a paste. */
+const PASTE_EXCLUDED_KEYS = new Set(['flowix_key']);
 
 const FLOWIX_COLOR_SET = new Set<string>(NOTE_COLORS);
 
@@ -278,7 +280,7 @@ function normalizeFlowixColors(value: unknown): string[] {
   return NOTE_COLORS.filter((color) => selected.has(color));
 }
 
-function parsePropertyInput(
+export function parsePropertyInput(
   value: string,
   kind: FrontmatterInputKind | undefined,
   previousValue: unknown,
@@ -536,11 +538,16 @@ export function mergeFrontmatterYaml(currentYaml: string, pastedYaml: string): s
   }
 
   const map = currentDocument.contents as unknown as YAMLMap;
-  Object.entries(pasted.userData).forEach(([key, value]) => {
-    map.set(key, value);
+  // A paste may carry another note's identity field. It is an ordinary property
+  // for the editor, but importing it would rewrite this note's identity.
+  const importedKeys = Object.keys(pasted.userData).filter((key) => (
+    !PASTE_EXCLUDED_KEYS.has(canonicalizePropertyKey(key))
+  ));
+  importedKeys.forEach((key) => {
+    map.set(key, pasted.userData[key]);
   });
   const pastedTypes = readPropertyTypes(pasted.data[PROPERTY_TYPES_KEY]);
-  patchPropertyTypes(map, Object.fromEntries(Object.keys(pasted.userData).map((key) => [key, pastedTypes[key] ?? null])));
+  patchPropertyTypes(map, Object.fromEntries(importedKeys.map((key) => [key, pastedTypes[key] ?? null])));
   backfillPropertyTypes(map, asRecord(currentDocument.toJS()));
   return currentDocument.toString({ lineWidth: 0 }).trimEnd();
 }

@@ -2,11 +2,9 @@ import { act } from 'react';
 import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import { EditorFontSwitcher, useEditorFontSwitch } from './editor-font-switcher';
-import type { FontDownloadProgress } from '@platform/tauri/client/general';
 
 const fontMocks = vi.hoisted(() => ({
   ensure: vi.fn<(fontId: string) => Promise<boolean>>(),
-  progress: null as ((progress: FontDownloadProgress) => void) | null,
   fontId: 'inter',
   sequence: 0,
   begin: vi.fn<() => Promise<number>>(),
@@ -19,13 +17,8 @@ vi.mock('@features/preferences/public/font-api', () => ({
   beginTypographyFontSelection: fontMocks.begin,
   commitTypographyFontSelection: fontMocks.commit,
 }));
-vi.mock('@platform/tauri/event-bus', () => ({
-  subscribe: (_event: string, handler: (progress: FontDownloadProgress) => void) => {
-    fontMocks.progress = handler;
-    return () => { fontMocks.progress = null; };
-  },
-}));
 vi.mock('@/lib/i18n', () => ({
+  DEFAULT_APP_LANGUAGE: 'zh-CN',
   useI18n: () => ({ t: (key: string) => key }),
 }));
 vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn() } }));
@@ -33,7 +26,7 @@ vi.mock('@/lib/toast', () => ({ toast: { error: vi.fn() } }));
 it.each([
   ['serif', 1, 'noto-serif-sc'],
   ['wenkai', 2, 'lxgw-wenkai'],
-] as const)('shows download progress and applies %s only after registration completes', async (_mode, index, fontId) => {
+] as const)('keeps the font label while loading and applies %s only after registration completes', async (mode, index, fontId) => {
   const environment = globalThis as typeof globalThis & { IS_REACT_ACT_ENVIRONMENT?: boolean };
   environment.IS_REACT_ACT_ENVIRONMENT = true;
   const element = document.createElement('div');
@@ -50,7 +43,7 @@ it.each([
 
   function Harness() {
     const fontSwitch = useEditorFontSwitch();
-    return <EditorFontSwitcher fontMode={fontSwitch.fontMode} downloadingMode={fontSwitch.downloadingMode} percent={fontSwitch.percent} onSelect={fontSwitch.selectFontMode} />;
+    return <EditorFontSwitcher fontMode={fontSwitch.fontMode} downloadingMode={fontSwitch.downloadingMode} onSelect={fontSwitch.selectFontMode} />;
   }
 
   try {
@@ -61,17 +54,15 @@ it.each([
     const target = buttons[index];
     await act(async () => target.click());
     expect(fontMocks.ensure).toHaveBeenCalledWith(fontId);
-    expect(target.textContent).toContain('…');
+    expect(target.textContent).toBe(`document.font.${mode}`);
+    expect(target.querySelector('.flowix-spin')).not.toBeNull();
     expect(target.getAttribute('aria-pressed')).toBe('false');
     expect(buttons[0].getAttribute('aria-pressed')).toBe('true');
     expect(fontMocks.commit).not.toHaveBeenCalled();
 
-    await act(async () => fontMocks.progress?.({ fontId, downloadedBytes: 42, totalBytes: 100, percent: 42 }));
-    expect(target.textContent).toContain('42%');
-    expect(fontMocks.commit).not.toHaveBeenCalled();
-
     await act(async () => finishDownload?.(true));
-    expect(target.textContent).not.toContain('%');
+    expect(target.textContent).toBe(`document.font.${mode}`);
+    expect(target.querySelector('.flowix-spin')).toBeNull();
     expect(target.getAttribute('aria-pressed')).toBe('true');
     expect(fontMocks.fontId).toBe(fontId);
     expect(fontMocks.commit).toHaveBeenCalledOnce();

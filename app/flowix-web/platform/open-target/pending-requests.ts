@@ -2,12 +2,12 @@ import { invoke } from '@tauri-apps/api/core';
 import { subscribe, type UnlistenFn } from '@platform/tauri/event-bus';
 import { createLogger } from '@/lib/logger';
 
-export type OpenTargetConsumer = 'path' | 'external-markdown';
+export type OpenTargetConsumer = 'path' | 'external-documents';
 export type PendingOpenTarget = {
   id: string;
   target:
     | { kind: 'path'; path: string }
-    | { kind: 'external-markdown'; filePaths: string[] }
+    | { kind: 'external-documents'; filePaths: string[] }
     | { kind: 'error'; message: string };
 };
 

@@ -4,7 +4,7 @@ import { lazy, useCallback, useEffect } from 'react';
 
 import { useExternalFileContentDetection } from '@features/editor/use-external-file-content-detection';
 import { externalFileViewKind } from '@features/editor/public/code-file';
-import { workspaceSurfaceAppearance, workspaceSurfaceCapabilities } from '@features/workspace/public/surface-api';
+import { workspaceSurfaceAppearance, workspaceSurfaceContentPresentation } from '@features/workspace/public/surface-api';
 
 import { LazyAgentConversationDetail } from '@features/agent/components/lazy-agent-conversation-detail';
 import { LazyPluginDocumentView, LazyPluginWorkbench } from '@features/plugin/public/surface-api';
@@ -218,8 +218,7 @@ export function UnavailableRenderer({ surface, context }: RendererProps<'file-un
         status: 'loading', loadingMode: 'blocking', retainContent: false,
       } });
     } else if (resolvedFileKind === 'code' && hasDocumentProps) {
-      context.reportPresentation?.({ appearance: workspaceSurfaceAppearance('file-code'),
-        capabilities: workspaceSurfaceCapabilities('file-code'), actions: NO_SURFACE_ACTIONS });
+      context.reportPresentation?.({ ...workspaceSurfaceContentPresentation('file-code'), actions: NO_SURFACE_ACTIONS });
     }
   }, [baseFileKind, context.reportPresentation, hasDocumentProps, contentDetectionLoading, resolvedFileKind]);
   if (baseFileKind === 'docx') {

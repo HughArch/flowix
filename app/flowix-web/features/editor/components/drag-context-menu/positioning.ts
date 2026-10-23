@@ -4,7 +4,7 @@ import {
   getFocusedAgentThreadCardInfo,
   type CurrentBlockInfo,
 } from '@features/editor/components/drag-context-menu/block-info'
-import { getYOffset } from '@features/editor/components/drag-context-menu/style'
+import { getYOffset, HANDLE_SIZE } from '@features/editor/components/drag-context-menu/style'
 
 /**
  * Geometry: where should the drag handle sit on screen for the editor's
@@ -34,13 +34,6 @@ const BLOCK_SELECTOR =
   'p, h1, h2, h3, h4, h5, h6, ul, ol, table, .tableWrapper, blockquote, pre, .code-block-wrapper, .ProseMirror-node'
 
 const HANDLE_X_OFFSET = 18
-
-/** Small visual nudge for the larger heading glyphs. */
-const HEADING_HANDLE_NUDGE: Record<number, number> = {
-  1: 4,
-  2: 3,
-  3: 2,
-}
 
 /** Resolve the current handle position. Returns `{ visible: false }` when
  *  the editor has no usable focus / no resolvable block (callers typically
@@ -116,16 +109,15 @@ export function nodeContentY(
 }
 
 /**
- * Resolve the first rendered text-line top for headings and paragraphs in the
- * same content coordinate system as the absolutely-positioned handle.
+ * Resolve the first rendered text-line center for headings and paragraphs in
+ * the same content coordinate system as the absolutely-positioned handle.
  *
  * `EditorView.coordsAtPos` includes the browser's actual block padding, font
- * metrics and line-height. Keeping this measurement in the DOM/PM layout layer
- * avoids duplicating CSS spacing in TypeScript. Headings retain their small
- * visual nudge; paragraphs align directly to the measured text line. Empty
- * blocks still have a valid position (`info.pos + 1`), while malformed or
- * stale selections are handled by returning null and using the normal
- * block-top fallback.
+ * metrics and line-height. Centering the handle in that caret rectangle keeps
+ * it aligned with the first line across text styles without duplicating CSS
+ * spacing in TypeScript. Empty blocks still have a valid position
+ * (`info.pos + 1`), while malformed or stale selections are handled by
+ * returning null and using the normal block-top fallback.
  */
 export function textBlockContentY(
   view: Editor['view'],
@@ -137,9 +129,9 @@ export function textBlockContentY(
 
   try {
     const textCoords = view.coordsAtPos(info.pos + 1)
-    const level = info.typeName === 'heading' ? info.attrs.level : null
-    const nudge = typeof level === 'number' ? HEADING_HANDLE_NUDGE[level] ?? 0 : 0
-    return textCoords.top - scrollContainerTop + scrollTop + nudge
+    const lineHeight = textCoords.bottom - textCoords.top
+    const centerOffset = Math.max(0, (lineHeight - HANDLE_SIZE) / 2)
+    return textCoords.top - scrollContainerTop + scrollTop + centerOffset
   } catch {
     // The view can be destroyed between selectionUpdate and the RAF callback.
     return null

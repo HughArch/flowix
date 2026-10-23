@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { WorkColumnNavigationState, WorkColumnTarget } from '@features/workspace/store/work-column-target';
-import { resolveWorkColumnPresentation } from './presentation';
+import { workspaceSurfaceContentPresentation } from '@features/workspace/public/surface-api';
+import { resolveWorkColumnRuntimePresentation, resolveWorkColumnPresentation } from './presentation';
 
 function navigation(target: WorkColumnTarget): WorkColumnNavigationState {
   return {
@@ -16,7 +17,7 @@ function navigation(target: WorkColumnTarget): WorkColumnNavigationState {
 }
 
 describe('work column presentation', () => {
-  it('gives indexed notebook Markdown note actions while external Markdown stays a file', () => {
+  it('preserves notebook actions through Markdown runtime updates and removes them in previews', () => {
     const path = '/notebook/note.md';
     const fileIdentity = { path, displayId: 'display:path-note' };
     const present = (indexable: boolean) => resolveWorkColumnPresentation({
@@ -32,9 +33,24 @@ describe('work column presentation', () => {
       },
       emptyMessage: 'Select a note',
     });
-    expect(present(true).capabilities).toContain('memo-colors');
-    expect(present(true).capabilities).toContain('version-history');
-    expect(present(false).capabilities).not.toContain('memo-colors');
+    const initial = present(true);
+    const identity = { kind: 'external' as const, fileIdentity, scopePath: '/notebook', indexable: true, transitionId: null };
+    const resolve = (runtime = {}) => resolveWorkColumnRuntimePresentation(initial, runtime, identity);
+    expect(initial.capabilities).not.toContain('memo-colors');
+    expect(resolve().capabilities).toContain('memo-colors');
+    expect(resolve(workspaceSurfaceContentPresentation('file-markdown')).capabilities)
+      .toEqual(resolve().capabilities);
+    for (const kind of ['mindmap', 'plugin-artifact'] as const) {
+      const preview = resolve(workspaceSurfaceContentPresentation(kind));
+      expect(preview.capabilities).not.toContain('memo-colors');
+      expect(preview.capabilities).not.toContain('version-history');
+      expect(preview.capabilities).not.toContain('edit');
+    }
+    expect(resolveWorkColumnRuntimePresentation(initial,
+      workspaceSurfaceContentPresentation('file-markdown'), { ...identity, indexable: false },
+    ).capabilities).not.toContain('memo-colors');
+    expect(resolveWorkColumnRuntimePresentation(initial, {}, null).capabilities).not.toContain('memo-colors');
+
   });
 
   it('derives document header data and capabilities from the resolved surface', () => {
@@ -70,6 +86,7 @@ describe('work column presentation', () => {
       },
     });
     expect(presentation.content).toMatchObject({ status: 'surface', surface: { kind: 'md' } });
+    expect(presentation.contentKind).toBe('file-markdown');
     expect(presentation.capabilities).toContain('edit');
   });
 

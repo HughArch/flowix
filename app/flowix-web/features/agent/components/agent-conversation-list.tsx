@@ -1,14 +1,13 @@
 'use client';
 
+import { removeAgentConversation } from '@features/agent/use-cases/remove-conversation';
+import { ConversationActionItems } from './conversation-action-items';
+
 import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type UIEvent } from 'react';
 import {
-  ArchiveIcon,
-  PencilSimpleIcon,
-  SquareSplitHorizontalIcon,
   StarIcon,
-  TrashSimpleIcon,
 } from '@phosphor-icons/react';
-import { MessageCirclePlus, MoreHorizontal } from 'lucide-react';
+import { ChevronLeft, Plus, MoreHorizontal } from 'lucide-react';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
 import {
@@ -21,12 +20,8 @@ import { useNoteStore } from '@features/memo/store/note-store';
 import { isAgentConversationRunning } from '@features/agent/store/conversation-run-index';
 import { useNewConversationAgentSelection } from '@features/agent/hooks/use-new-conversation-agent-selection';
 import { AgentConversationTypeMenuItems } from '@features/agent/components/agent-conversation-type-menu-items';
-import {
-  AGENT_TYPES,
-  getAgentType,
-  isAgentTypeSelectable,
-} from '@/lib/agent-types';
-import type { AgentType, AgentTypeKey } from '@/types/agent';
+import { getAgentType } from '@/lib/agent-types';
+import type { AgentTypeKey } from '@/types/agent';
 import { formatTimeAgo } from '@/lib/format-time-ago';
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
@@ -46,7 +41,6 @@ import {
 import {
   DropdownMenu,
   DropdownMenuContent,
-  DropdownMenuItem,
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@shared/ui/dropdown-menu';
@@ -54,39 +48,10 @@ import { AgentIcon } from '@features/agent/components/agent-icon';
 import { Input } from '@shared/ui/input';
 import { Button } from '@shared/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@shared/ui/dialog';
-import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger } from '@shared/ui/context-menu';
-import { useFixedVirtualList, type FixedVirtualListItem } from './use-fixed-virtual-list';
+import { ContextMenu, ContextMenuContent, ContextMenuTrigger } from '@shared/ui/context-menu';
+import { useFixedVirtualList } from './use-fixed-virtual-list';
 import { useConversationListData } from './use-conversation-list-data';
-import {
-  mergeLiveConversation,
-  sortFavoriteConversations,
-} from './conversation-list-pagination';
-
-/**
- * The "Conversations" navigation view. It deliberately lists conversation
- * instances rather than notes: one note may contain more than one agent thread.
- * A row opens the dedicated right-panel conversation surface directly; the
- * source note is retained only as conversation metadata/context, not navigated.
- */
-type ConversationGroupKey = 'today' | 'yesterday' | 'last7Days' | 'earlier';
-type ConversationSectionKey = ConversationGroupKey | 'favorites';
-
-type ConversationListItem = FixedVirtualListItem & (
-  | {
-      kind: 'heading';
-      sectionKey: ConversationSectionKey;
-    }
-  | {
-      kind: 'conversation';
-      instance: AgentConversationInstance;
-    }
-  | {
-      kind: 'loading';
-    }
-  | {
-      kind: 'more-error';
-    }
-);
+import { buildConversationListItems, selectVisibleConversations } from './conversation-list-model';
 
 // 日期分组标题文案 key ── 用 as const 让每个 value 都是字面量 I18nKey, 直接喂 t()
 // 无需 cast。分组顺序固定: 今天 → 昨天 → 最近 7 天 → 更早。
@@ -102,19 +67,16 @@ const CONVERSATION_LOAD_MORE_THRESHOLD_PX = 80;
 interface AgentConversationListProps {
   /** Keep durable list state while closing transient UI when hidden. */
   isActive?: boolean;
+  onBack: () => void;
 }
 
-/** OpenCode history listing previously materialized provider-only sessions as
- * `legacy-ses_...` instances. They have no Flowix-owned conversation and must
- * not be shown alongside real conversation cards. */
-function isSyntheticOpenCodeHistoryInstance(instance: AgentConversationInstance): boolean {
-  return instance.agentType === 'opencode'
-    && !!instance.threadId
-    && instance.instanceId === `legacy-${instance.threadId}`
-    && instance.threadId.startsWith('ses_');
-}
-
-export function AgentConversationList({ isActive = true }: AgentConversationListProps) {
+/**
+ * The "Conversations" navigation view. It deliberately lists conversation
+ * instances rather than notes: one note may contain more than one agent thread.
+ * A row opens the dedicated right-panel conversation surface directly; the
+ * source note is retained only as conversation metadata/context, not navigated.
+ */
+export function AgentConversationList({ isActive = true, onBack }: AgentConversationListProps) {
   const { t } = useI18n();
   const instances = useAgentSessionStore((state) => state.conversationRegistry.instances);
   const threadTombstones = useAgentSessionStore((state) => state.threadTombstones);
@@ -130,7 +92,6 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
   const conversationDetailOpen = useWorkspaceRestoreStore(
     (state) => state.agentConversation.detailOpen,
   );
-  const [filterType, setFilterType] = useState<AgentTypeKey | null>(null);
   const {
     conversationPage,
     isLoading,
@@ -138,13 +99,13 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     isLoadingMore,
     loadMoreError,
     hasMore,
-    agentTypeCounts,
     loadMore: loadMoreConversations,
     retryFirstPage,
     updateTitle,
   } = useConversationListData({
+    isActive,
     notebookId: currentNotebookId,
-    agentType: filterType,
+    agentType: null,
     lifecycleVersion,
   });
   const [showScrollTopHint, setShowScrollTopHint] = useState(false);
@@ -166,7 +127,7 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
 
   useLayoutEffect(() => {
     if (isActive) return;
-    // Keep list data, filters, and scroll position alive, but never leave a
+    // Keep list data and scroll position alive, but never leave a
     // portal-backed menu or dialog visible after this surface is hidden.
     setOpenMenuId(null);
     setNewConversationMenuOpen(false);
@@ -227,12 +188,7 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     const message = action === 'delete' ? t('agent.chat.conversation.deleteConfirm') : undefined;
     if (message && !window.confirm(message)) return;
     try {
-      const session = useAgentSessionStore.getState();
-      if (instance.threadId) {
-        await (action === 'archive' ? session.archiveThread(instance.threadId) : session.deleteThread(instance.threadId));
-      } else {
-        session.removeInstance(instance.instanceId);
-      }
+      await removeAgentConversation(instance, action);
       setOpenMenuId(null);
       toast.success(t(action === 'archive' ? 'status.agent.archiveSuccess' : 'status.agent.deleteSuccess'));
     } catch {
@@ -240,24 +196,9 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     }
   }, [t]);
 
-  const conversations = useMemo(() => {
-    // The backend snapshot is the durable source of truth. An editor card is
-    // intentionally not mounted in every document/webview, so using the
-    // in-memory registry as an allow-list makes valid conversations disappear
-    // whenever a card is temporarily unmounted or hydration is still pending.
-    let merged = conversationPage;
-    for (const instance of Object.values(instances)) {
-      if (filterType && instance.agentType !== filterType) continue;
-      const notebookId = instance.source?.notebookId;
-      if (currentNotebookId && notebookId !== currentNotebookId) continue;
-      merged = mergeLiveConversation(merged, instance);
-    }
-    return merged.orderedIdentities
-      .map((identity) => merged.itemsByIdentity[identity])
-      .filter((instance): instance is AgentConversationInstance => !!instance)
-      .filter((instance) => !isSyntheticOpenCodeHistoryInstance(instance))
-      .filter((instance) => !instance.threadId || !threadTombstones[instance.threadId]);
-  }, [conversationPage, currentNotebookId, filterType, instances, threadTombstones]);
+  const conversations = useMemo(() => selectVisibleConversations(
+    conversationPage, instances, currentNotebookId, threadTombstones,
+  ), [conversationPage, currentNotebookId, instances, threadTombstones]);
 
   useEffect(() => {
     if (!conversationDetailOpen || !selectedInstanceId) return;
@@ -265,118 +206,9 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
     if (selected?.threadId) markThreadRead(selected.threadId);
   }, [conversationDetailOpen, conversations, markThreadRead, selectedInstanceId]);
 
-  // 按当前笔记本严格圈定对话列表 —— 只有归属当前笔记本的会话可见。
-  // 未归属笔记本的历史数据不应出现在任何笔记本列表中；未选中笔记本时退化为全量。
-  const scopedConversations = useMemo(() => {
-    if (!currentNotebookId) return conversations;
-    return conversations.filter((instance) => {
-      const notebookId = instance.source?.notebookId;
-      return notebookId === currentNotebookId;
-    });
-  }, [conversations, currentNotebookId]);
-
-  // 筛选条只展示"已激活"的 agent 类型 ── 即当前对话列表里真实存在 (count > 0)
-  // 且可选用 (非 coming-soon) 的 agent。按 AGENT_TYPES 定义顺序排列，保证图标
-  // 顺序稳定。少于 2 种时不渲染筛选条：单一类型没有可筛选的空间，一个按下后
-  // 毫无视觉变化的按钮只会让用户困惑。
-  const activeAgentTypes = useMemo(() => {
-    const counts = new Map<AgentTypeKey, number>();
-    if (Object.keys(agentTypeCounts).length > 0) {
-      for (const type of AGENT_TYPES) {
-        const count = agentTypeCounts[type.id];
-        if (count && isAgentTypeSelectable(type.id)) counts.set(type.id, count);
-      }
-    } else {
-      for (const instance of scopedConversations) {
-        if (!isAgentTypeSelectable(instance.agentType)) continue;
-        counts.set(instance.agentType, (counts.get(instance.agentType) ?? 0) + 1);
-      }
-    }
-    return AGENT_TYPES
-      .filter((type) => counts.has(type.id))
-      .map((type) => ({ type, count: counts.get(type.id) ?? 0 }));
-  }, [agentTypeCounts, scopedConversations]);
-
-  // 对话可能在筛选期间变成空集 (例如全部删除) ── 若当前筛选的类型已不再激活，
-  // 自动回退到"全部"，避免列表卡在空状态。
-  const effectiveFilter: AgentTypeKey | null =
-    filterType && activeAgentTypes.some((entry) => entry.type.id === filterType)
-      ? filterType
-      : null;
-
-  const visibleConversations = effectiveFilter
-    ? scopedConversations.filter((instance) => instance.agentType === effectiveFilter)
-    : scopedConversations;
-
-  const favoriteConversations = useMemo(
-    () => sortFavoriteConversations(
-      visibleConversations.filter((instance) => favoriteIds.has(instance.instanceId)),
-    ),
-    [visibleConversations, favoriteIds],
-  );
-  const nonFavoriteConversations = useMemo(
-    () => visibleConversations.filter((instance) => !favoriteIds.has(instance.instanceId)),
-    [visibleConversations, favoriteIds],
-  );
-
-  // 按日期分桶 (基于 updatedAt)。visibleConversations 已按 updatedAt DESC 排好,
-  // 逐条归入桶即保持桶内顺序; 只渲染非空桶, 桶间用 mt-3 分隔。
-  const conversationGroups = useMemo(() => {
-    const now = new Date();
-    const startOfToday = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime();
-    const dayMs = 24 * 60 * 60 * 1000;
-    const startOfYesterday = startOfToday - dayMs;
-    const startOf7Days = startOfToday - 7 * dayMs;
-    const buckets: Record<ConversationGroupKey, AgentConversationInstance[]> = {
-      today: [],
-      yesterday: [],
-      last7Days: [],
-      earlier: [],
-    };
-    for (const instance of nonFavoriteConversations) {
-      const ts = instance.updatedAt;
-      if (ts >= startOfToday) buckets.today.push(instance);
-      else if (ts >= startOfYesterday) buckets.yesterday.push(instance);
-      else if (ts >= startOf7Days) buckets.last7Days.push(instance);
-      else buckets.earlier.push(instance);
-    }
-    return (['today', 'yesterday', 'last7Days', 'earlier'] as ConversationGroupKey[])
-      .map((key) => ({ key, items: buckets[key] }))
-      .filter((group) => group.items.length > 0);
-  }, [nonFavoriteConversations]);
-
-  const conversationSections = favoriteConversations.length > 0
-    ? [{ key: 'favorites' as const, items: favoriteConversations }, ...conversationGroups]
-    : conversationGroups;
-
-  const conversationListItems = useMemo<ConversationListItem[]>(() => {
-    const items: ConversationListItem[] = [];
-    conversationSections.forEach((group, groupIndex) => {
-      items.push({
-        kind: 'heading',
-        key: `heading:${group.key}`,
-        sectionKey: group.key,
-        // The heading uses a 24px line height. Keep the 12px section margin
-        // and 4px outer flex gap in the virtual item.
-        size: 24 + (groupIndex > 0 ? 16 : 0),
-      });
-      group.items.forEach((instance, itemIndex) => {
-        items.push({
-          kind: 'conversation',
-          key: `conversation:${instance.instanceId}`,
-          instance,
-          // h-9 row plus the existing gap-0.5 between rows.
-          size: 36 + (itemIndex < group.items.length - 1 ? 2 : 0),
-        });
-      });
-    });
-    if (isLoadingMore) {
-      items.push({ kind: 'loading', key: 'loading-more', size: 36 });
-    } else if (loadMoreError) {
-      items.push({ kind: 'more-error', key: 'loading-more-error', size: 52 });
-    }
-    return items;
-  }, [conversationSections, isLoadingMore, loadMoreError]);
+  const conversationListItems = useMemo(() => buildConversationListItems(
+    conversations, favoriteIds, { isLoadingMore, loadMoreError },
+  ), [conversations, favoriteIds, isLoadingMore, loadMoreError]);
 
   const scrollerRef = useRef<HTMLDivElement | null>(null);
   const {
@@ -395,9 +227,6 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
       void loadMoreConversations();
     }
   };
-
-  const displayName = (type: AgentType): string =>
-    type.nameKey ? t(type.nameKey as Parameters<typeof t>[0]) : type.name;
 
   const newConversationSelection = useNewConversationAgentSelection();
 
@@ -473,46 +302,19 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
 
   return (
     <section className="relative flex h-full min-h-0 flex-1 flex-col bg-[var(--list-bg)]" aria-label={t('memo.navigation.conversations')}>
-      {/* 标题行 ── 与 MemoList / FolderFileTree 共用同一套中间列头部结构:
-          左侧标题占据剩余空间, 右侧保留本列表自己的筛选控件。 */}
-      <div className="flex items-center justify-between gap-2 pb-2 pl-[100px] pr-3">
+      {/* Content-page header below the persistent sidebar navigation tabs. */}
+      <div className="flex items-center justify-between gap-2 px-3 pb-2">
           <div className="flex min-w-0 flex-1 items-center gap-2">
-            <span className="min-w-0 truncate text-[15px] font-medium text-[var(--foreground)]">
-              {t('memo.navigation.conversations')}
-            </span>
-            {activeAgentTypes.length >= 2 && (
-              <div
-                className="flex shrink-0 items-center gap-1"
-                role="group"
-                aria-label={t('document.agent.filterByAgent')}
-              >
-                {activeAgentTypes.map(({ type, count }) => {
-                  const active = effectiveFilter === type.id;
-                  const label = t('document.agent.filterByAgentCount', {
-                    name: displayName(type),
-                    count,
-                  });
-                  return (
-                    <button
-                      key={type.id}
-                      type="button"
-                      aria-pressed={active}
-                      title={label}
-                      aria-label={label}
-                      onClick={() => setFilterType((prev) => (prev === type.id ? null : type.id))}
-                      className={cn(
-                        'flex h-4 w-4 shrink-0 items-center justify-center rounded-full border transition-colors',
-                        active
-                          ? 'border-transparent bg-[var(--muted)]'
-                          : 'border-[var(--border)] opacity-20 hover:opacity-100',
-                      )}
-                    >
-                      <AgentIcon typeKey={type.id} alt="" className="h-full w-full object-contain" />
-                    </button>
-                  );
-                })}
-              </div>
-            )}
+            <button
+              type="button"
+              data-conversation-list-back
+              aria-label={t('memo.navigation.backToFileTree')}
+              title={t('memo.navigation.backToFileTree')}
+              onClick={onBack}
+              className="group flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-transparent p-0 text-sm text-[var(--foreground)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]"
+            >
+              <ChevronLeft className="h-4 w-4 transition-[filter] duration-150 group-hover:brightness-125" aria-hidden="true" />
+            </button>
           </div>
           <div className="flex items-center gap-1 shrink-0">
             <DropdownMenu
@@ -528,10 +330,10 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                   disabled={!currentNotebookId || newConversationSelection.kind === 'none'}
                   aria-label={t('agent.chat.newThread')}
                   title={currentNotebookId ? t('agent.chat.newThread') : t('memo.list.selectNotebook')}
-                  className="group flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--foreground)] transition-colors hover:bg-[var(--muted)] disabled:cursor-not-allowed disabled:opacity-40"
+                  className="group flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--foreground)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40"
                 >
-                  <MessageCirclePlus
-                    className="h-4 w-4 transition-[filter] duration-150 group-hover:brightness-105"
+                  <Plus
+                    className="h-3.5 w-3.5 transition-[filter] duration-150 group-hover:brightness-125"
                     aria-hidden="true"
                   />
                 </button>
@@ -556,14 +358,14 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
           scrollerClassName="h-full overflow-y-auto px-1 py-2"
           onScroll={handleListScroll}
         >
-          {isLoading && scopedConversations.length === 0 ? (
+          {isLoading && conversations.length === 0 ? (
             <ListSurfaceLoadingState ariaLabel={t('status.agent.loadingConversations')} />
-          ) : loadError && scopedConversations.length === 0 ? (
+          ) : loadError && conversations.length === 0 ? (
             <div className="flex h-full min-h-0 w-full flex-col items-center justify-center gap-3 px-4 text-center text-sm text-[var(--muted-foreground)]" role="alert">
               <span>{t('status.agent.loadConversationsFailed')}</span>
               <Button size="sm" className="rounded-lg" onClick={retryFirstPage}>{t('error.retry')}</Button>
             </div>
-          ) : scopedConversations.length === 0 ? (
+          ) : conversations.length === 0 ? (
             <div className="flex h-full w-full items-center justify-center px-4 text-center text-sm text-[var(--muted-foreground)]">
               {t('status.agent.noConversations')}
             </div>
@@ -698,22 +500,13 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                               </button>
                             </DropdownMenuTrigger>
                             <DropdownMenuContent align="end" className="w-[160px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-                              <DropdownMenuItem onClick={() => openConversationInBrowserColumn(instance)} className="group h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
-                                <SquareSplitHorizontalIcon className="mr-2 h-4 w-4" /> {t('workColumn.context.openInBrowserColumn')}
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => toggleFavorite(instance.instanceId)} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
-                                <StarIcon className="h-4 w-4" weight={favoriteIds.has(instance.instanceId) ? 'fill' : 'regular'} />
-                                {favoriteIds.has(instance.instanceId) ? t('agent.chat.conversation.unfavorite') : t('agent.chat.conversation.favorite')}
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => renameConversation(instance)} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
-                                <PencilSimpleIcon className="h-4 w-4" /> {t('agent.chat.conversation.rename')}
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => void removeConversation(instance, 'archive')} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
-                                <ArchiveIcon className="h-4 w-4" /> {t('document.agent.archiveConversation')}
-                              </DropdownMenuItem>
-                              <DropdownMenuItem onClick={() => void removeConversation(instance, 'delete')} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-transparent hover:text-[var(--destructive)]">
-                                <TrashSimpleIcon className="h-4 w-4" /> {t('document.agent.deleteConversation')}
-                              </DropdownMenuItem>
+                              <ConversationActionItems favorite={favoriteIds.has(instance.instanceId)}
+                                onOpen={() => openConversationInBrowserColumn(instance)}
+                                onFavorite={() => toggleFavorite(instance.instanceId)}
+                                onRename={() => renameConversation(instance)}
+                                onArchive={() => void removeConversation(instance, 'archive')}
+                                onDelete={() => void removeConversation(instance, 'delete')}
+                              />
                             </DropdownMenuContent>
                           </DropdownMenu>
                         <>
@@ -740,22 +533,13 @@ export function AgentConversationList({ isActive = true }: AgentConversationList
                       </div>
                     </ContextMenuTrigger>
                     <ContextMenuContent className="w-[160px] space-y-0.5 rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-                      <ContextMenuItem onClick={() => openConversationInBrowserColumn(instance)} className="group h-7 items-center justify-start rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
-                        <SquareSplitHorizontalIcon className="mr-2 h-4 w-4" /> {t('workColumn.context.openInBrowserColumn')}
-                      </ContextMenuItem>
-                      <ContextMenuItem onClick={() => toggleFavorite(instance.instanceId)} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
-                        <StarIcon className="h-4 w-4" weight={favoriteIds.has(instance.instanceId) ? 'fill' : 'regular'} />
-                        {favoriteIds.has(instance.instanceId) ? t('agent.chat.conversation.unfavorite') : t('agent.chat.conversation.favorite')}
-                      </ContextMenuItem>
-                      <ContextMenuItem onClick={() => renameConversation(instance)} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
-                        <PencilSimpleIcon className="h-4 w-4" /> {t('agent.chat.conversation.rename')}
-                      </ContextMenuItem>
-                      <ContextMenuItem onClick={() => void removeConversation(instance, 'archive')} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]">
-                        <ArchiveIcon className="h-4 w-4" /> {t('document.agent.archiveConversation')}
-                      </ContextMenuItem>
-                      <ContextMenuItem onClick={() => void removeConversation(instance, 'delete')} className="group h-7 items-center gap-2 rounded-lg px-2 py-0 hover:bg-transparent hover:text-[var(--destructive)]">
-                        <TrashSimpleIcon className="h-4 w-4" /> {t('document.agent.deleteConversation')}
-                      </ContextMenuItem>
+                      <ConversationActionItems context favorite={favoriteIds.has(instance.instanceId)}
+                                onOpen={() => openConversationInBrowserColumn(instance)}
+                                onFavorite={() => toggleFavorite(instance.instanceId)}
+                                onRename={() => renameConversation(instance)}
+                                onArchive={() => void removeConversation(instance, 'archive')}
+                                onDelete={() => void removeConversation(instance, 'delete')}
+                      />
                     </ContextMenuContent>
                   </ContextMenu>
                 );

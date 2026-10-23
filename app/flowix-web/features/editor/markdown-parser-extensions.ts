@@ -1,3 +1,4 @@
+import { VideoEmbedMarkdownExtension } from './extensions/video-embed/markdown';
 import { BulletList, ListItem, OrderedList } from '@tiptap/extension-list';
 import { TaskList } from '@tiptap/extension-task-list';
 import { TableRow } from '@tiptap/extension-table-row';
@@ -66,6 +67,7 @@ export function createMarkdownParserExtensions() {
     CodeBlockShikiBase,
     MathBlockMarkdownExtension,
     WebCardMarkdownExtension,
+    VideoEmbedMarkdownExtension,
     FlowixTable,
     // FlowixTable declares `content: 'tableRow+'`, so the row/cell nodes must
     // exist here too. Without them the manager cannot build a schema for the

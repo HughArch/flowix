@@ -2,6 +2,7 @@ import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { createTableDocument, parseTableDocument, serializeTableDocument } from '@features/multidimensional-table/model';
 import { createMediaLibrary, serializeMediaLibrary } from '@features/media-library/model';
 import { ensureCollectionDisplay, reconcileCollectionDisplays } from '@/lib/collection-display-registry';
+import { collectionDisplayName } from '@features/collection/model';
 import { workColumnTargetFilePath } from '../store/work-column-target';
 import { resolveWorkColumnContent } from '@features/surface/resolver';
 import { useWorkColumnStore } from '../store/work-column-store';
@@ -113,7 +114,9 @@ it('opens a malformed calendar without withdrawing selection, then repairs it ev
   const write = mocks.write.mock.calls[0][0];
   expect(write).toMatchObject({ filePath: path, scopePath: '/book', expectedContent: damaged });
   const repaired = parseTableDocument(write.content);
-  expect(repaired.collection).toMatchObject({ id: document.collection.id, name: '新建多维日历', placement: 'standalone' });
+  expect(repaired.collection).toMatchObject({ id: document.collection.id, placement: 'standalone' });
+  expect(collectionDisplayName(path, repaired.collection.placement)).toBe('新建多维日历');
+  expect(repaired.collection).not.toHaveProperty('name');
   expect(repaired.views.items).toEqual(document.views.items);
   expect(useWorkColumnStore.getState().navigation.target).toMatchObject({ kind: 'table', filePath: path });
   expect(useWorkColumnStore.getState().navigation.target).not.toHaveProperty('unavailableReason');

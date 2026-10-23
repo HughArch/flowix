@@ -1,7 +1,6 @@
 'use client';
 
 import { useCallback, useState } from 'react';
-import { ChevronLeft, ChevronRight } from 'lucide-react';
 import {
   FileTextIcon,
   LinkBreakIcon,
@@ -9,18 +8,17 @@ import {
 
 import { useI18n } from '@/lib/i18n';
 import { isWindowsPlatform } from '@features/shortcuts';
-import { SidebarToggleIcon } from '@shared/icons/sidebar-toggle-icon';
-import { Tooltip } from '@shared/ui/tooltip';
 import {
   DOCUMENT_TITLEBAR_ICON_BUTTON_MAC,
   DOCUMENT_TITLEBAR_ICON_BUTTON_WIN,
-} from '@features/document/components/document-titlebar-shared';
+} from '@features/document/components/document-titlebar-model';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
 import { openNoteByNotebookPath, openNoteByPhysicalPath } from '@features/memo/public/note-navigation-api';
 import { openWorkspaceSurface } from '@features/workspace/public/open-surface-api';
 import { getAgentConversationPresentation } from '@features/agent/conversation-presentation';
 import { toast } from '@/lib/toast';
-import { WorkColumnTitlebarShell } from '@features/shell/components/work-column-titlebar-shell';
+import { WorkColumnTitlebar } from '@features/shell/components/work-column-titlebar';
+import { WorkColumnTitlebarNavigation } from '@features/shell/components/work-column-titlebar-navigation';
 import { AgentConversationMoreMenu } from '@features/agent/components/agent-conversation-more-menu';
 import { AgentConversationIdentity } from '@features/agent/components/agent-conversation-identity';
 
@@ -116,64 +114,23 @@ export function AgentConversationTitlebar({
   onNavigateBack: () => void;
   onNavigateForward: () => void;
 }) {
-  const { t } = useI18n();
   const isWindows = isWindowsPlatform();
 
-  const navigationButtonClass =
-    'flex h-8 w-8 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-35';
-
   return (
-    <WorkColumnTitlebarShell
+    <WorkColumnTitlebar
       isWindows={isWindows}
       reserveWindowsControls={reserveWindowsControls}
       showTrafficLightSpacer={isMiddleColumnCollapsed && !isSidebarVisible}
       className="agent-conversation-titlebar"
     >
-      <div className="flex shrink-0 items-center gap-1">
-        {isMiddleColumnCollapsed && (
-          <>
-            <button
-              type="button"
-              onClick={onExpandSidebar}
-              aria-label={t('document.titlebar.showSidebar')}
-              title={t('document.titlebar.showSidebarTooltip')}
-              className={`flex h-5 w-5 shrink-0 items-center justify-center text-[var(--muted-foreground)] transition-colors hover:text-[var(--foreground)] [-webkit-app-region:no-drag] ${
-                isWindows ? 'rounded-lg' : 'rounded-xl'
-              }`}
-            >
-              <SidebarToggleIcon
-                className={isWindows ? 'h-4 w-4' : 'h-5 w-5'}
-                variant="collapsed"
-              />
-            </button>
-          </>
-        )}
-        <Tooltip content={t('document.titlebar.backTooltip')} shortcut="history.back">
-          <button
-            type="button"
-            onClick={onNavigateBack}
-            disabled={!canNavigateBack}
-            aria-label={t('document.titlebar.back')}
-            className={`${navigationButtonClass} [-webkit-app-region:no-drag]`}
-          >
-            <ChevronLeft className="h-4 w-4" />
-          </button>
-        </Tooltip>
-        <Tooltip content={t('document.titlebar.forwardTooltip')} shortcut="history.forward">
-          <button
-            type="button"
-            onClick={onNavigateForward}
-            disabled={!canNavigateForward}
-            aria-label={t('document.titlebar.forward')}
-            className={`${navigationButtonClass} [-webkit-app-region:no-drag]`}
-          >
-            <ChevronRight className="h-4 w-4" />
-          </button>
-        </Tooltip>
-      </div>
+      <WorkColumnTitlebarNavigation
+        isWindows={isWindows}
+        sidebar={{ hidden: isMiddleColumnCollapsed, onToggle: onExpandSidebar }}
+        navigation={{ canNavigateBack, canNavigateForward, onNavigateBack, onNavigateForward }}
+      />
       <div data-tauri-drag-region className="min-w-0 flex-1 self-stretch">
         <AgentConversationHeader instanceId={instanceId} />
       </div>
-    </WorkColumnTitlebarShell>
+    </WorkColumnTitlebar>
   );
 }
