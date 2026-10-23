@@ -23,6 +23,7 @@ pub mod callout;
 pub mod columns;
 mod database_layout;
 pub mod line_background;
+pub mod toggle;
 mod storage_repair;
 mod derivation;
 mod file_management;

@@ -7,6 +7,7 @@ pub(crate) mod background_store;
 pub(crate) mod callout_store;
 pub(crate) mod collection_store;
 pub(crate) mod columns_store;
+pub(crate) mod toggle_store;
 pub mod errors;
 pub mod fmt;
 pub mod mcp;

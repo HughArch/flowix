@@ -103,6 +103,11 @@ pub enum Cli {
         command: CalloutCommand,
         json: bool,
     },
+    /// Inspect or edit Flowus-style toggle blocks in a note.
+    Toggle {
+        command: ToggleCommand,
+        json: bool,
+    },
     /// Model Context Protocol over stdio。向外部 Agent 暴露唯一工具
     /// `memo`，工具参数采用受限的 Flowix CLI 语法。
     Mcp,
@@ -165,6 +170,39 @@ pub enum CalloutCommand {
         block: usize,
         icon: Option<String>,
         color: Option<String>,
+    },
+    Remove {
+        id: String,
+        block: usize,
+        delete_content: bool,
+    },
+}
+
+#[derive(Debug)]
+pub enum ToggleCommand {
+    List {
+        id: String,
+    },
+    Add {
+        id: String,
+        at: Option<usize>,
+        title: Option<String>,
+        content: Option<String>,
+        file: Option<String>,
+        stdin: bool,
+        open: bool,
+        bg: Option<String>,
+    },
+    Set {
+        id: String,
+        block: usize,
+        title: Option<String>,
+        content: Option<String>,
+        file: Option<String>,
+        stdin: bool,
+        open: Option<bool>,
+        bg: Option<String>,
+        clear_bg: bool,
     },
     Remove {
         id: String,
@@ -399,6 +437,59 @@ pub(crate) fn parse(args: &[String]) -> Result<Option<Cli>, CliError> {
             };
             Ok(Some(Cli::Callout { command, json }))
         }
+        Some(("toggle", sub)) => {
+            let command = match sub.subcommand() {
+                Some(("list", command)) => ToggleCommand::List {
+                    id: required_string(command, "id")?,
+                },
+                Some(("add", command)) => ToggleCommand::Add {
+                    id: required_string(command, "id")?,
+                    at: command.get_one::<usize>("at").copied(),
+                    title: command.get_one::<String>("title").cloned(),
+                    content: command.get_one::<String>("content").cloned(),
+                    file: command.get_one::<String>("file").cloned(),
+                    stdin: command.get_flag("stdin"),
+                    open: !command.get_flag("collapsed"),
+                    bg: command.get_one::<String>("bg").cloned(),
+                },
+                Some(("set", command)) => {
+                    let open = if command.get_flag("collapsed") {
+                        Some(false)
+                    } else if command.get_flag("open") {
+                        Some(true)
+                    } else {
+                        None
+                    };
+                    ToggleCommand::Set {
+                        id: required_string(command, "id")?,
+                        block: *command.get_one::<usize>("block").unwrap_or(&1),
+                        title: command.get_one::<String>("title").cloned(),
+                        content: command.get_one::<String>("content").cloned(),
+                        file: command.get_one::<String>("file").cloned(),
+                        stdin: command.get_flag("stdin"),
+                        open,
+                        bg: command.get_one::<String>("bg").cloned(),
+                        clear_bg: command.get_flag("clear-bg"),
+                    }
+                }
+                Some(("remove", command)) => ToggleCommand::Remove {
+                    id: required_string(command, "id")?,
+                    block: *command.get_one::<usize>("block").unwrap_or(&1),
+                    delete_content: command.get_flag("delete-content"),
+                },
+                Some((other, _)) => {
+                    return Err(CliError::Usage(format!(
+                        "unknown toggle command: `{other}`"
+                    )))
+                }
+                None => {
+                    return Err(CliError::Usage(format!(
+                        "usage: {DISPLAY_BIN} toggle <list|add|set|remove>"
+                    )))
+                }
+            };
+            Ok(Some(Cli::Toggle { command, json }))
+        }
         Some(("mcp", _)) => Ok(Some(Cli::Mcp)),
         Some((other, _)) => Err(CliError::Usage(format!(
             "unknown command: `{other}`\n(run `{DISPLAY_BIN} --help` for usage)"
@@ -414,7 +505,7 @@ pub(crate) fn cli_command() -> Command {
     Command::new(DISPLAY_BIN)
         .version(env!("CARGO_PKG_VERSION"))
         .about("Manage local Flowix notebooks, Markdown notes, and artifacts")
-        .after_help("For Markdown content, --file is recommended (especially on Windows PowerShell 5.1). Files must be UTF-8. Note addresses use <notebook-id>::<relative-path> or an absolute path. Examples:\n  flowix create <notebook> --file body.md --json\n  flowix show work::Notes/Example.md --json\n  flowix write work::Notes/Example.md --file body.md --json\n  flowix list\n  flowix search TODO --tag project/flowix --limit 20\n  flowix background set work::Notes/Example.md --line 3 --color yellow --json\n  flowix callout add work::Notes/Example.md --icon \"⚠️\" --color yellow --content \"Check this\" --json\n  flowix collection read --notebook <notebook-id> --id <collection-id> --json\n  flowix collection read --notebook <notebook-id> --path 'Assets/Images.index.yaml' --json\n  flowix mcp")
+        .after_help("For Markdown content, --file is recommended (especially on Windows PowerShell 5.1). Files must be UTF-8. Note addresses use <notebook-id>::<relative-path> or an absolute path. Examples:\n  flowix create <notebook> --file body.md --json\n  flowix show work::Notes/Example.md --json\n  flowix write work::Notes/Example.md --file body.md --json\n  flowix list\n  flowix search TODO --tag project/flowix --limit 20\n  flowix background set work::Notes/Example.md --line 3 --color yellow --json\n  flowix callout add work::Notes/Example.md --icon \"⚠️\" --color yellow --content \"Check this\" --json\n  flowix toggle add work::Notes/Example.md --title \"Details\" --collapsed --bg yellow --content \"Hidden body\" --json\n  flowix collection read --notebook <notebook-id> --id <collection-id> --json\n  flowix collection read --notebook <notebook-id> --path 'Assets/Images.index.yaml' --json\n  flowix mcp")
         .arg(
             Arg::new("json")
                 .long("json")
@@ -732,6 +823,148 @@ pub(crate) fn cli_command() -> Command {
                 .subcommand(
                     Command::new("remove")
                         .about("Remove a callout; keeps its content unless --delete-content is set")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("block")
+                                .long("block")
+                                .required(true)
+                                .value_parser(clap::value_parser!(usize))
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("delete-content")
+                                .long("delete-content")
+                                .action(ArgAction::SetTrue),
+                        ),
+                ),
+        )
+        .subcommand(
+            Command::new("toggle")
+                .about("Inspect or edit Flowus-style toggle blocks in a note")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("list")
+                        .about("List toggle blocks in a note")
+                        .arg(required_arg("id")),
+                )
+                .subcommand(
+                    Command::new("add")
+                        .about("Insert a toggle (title and body may be empty; open by default)")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("at")
+                                .long("at")
+                                .value_parser(clap::value_parser!(usize))
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("title")
+                                .long("title")
+                                .value_name("MARKDOWN")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("content")
+                                .long("content")
+                                .value_name("TEXT")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("file")
+                                .long("file")
+                                .short('f')
+                                .value_name("UTF-8-MARKDOWN")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("stdin")
+                                .long("stdin")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .group(
+                            clap::ArgGroup::new("toggle-input")
+                                .args(["content", "file", "stdin"])
+                                .multiple(false),
+                        )
+                        .arg(
+                            Arg::new("collapsed")
+                                .long("collapsed")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("bg")
+                                .long("bg")
+                                .value_name("COLOR")
+                                .num_args(1),
+                        ),
+                )
+                .subcommand(
+                    Command::new("set")
+                        .about("Update a toggle's title, body, fold state or background")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("block")
+                                .long("block")
+                                .required(true)
+                                .value_parser(clap::value_parser!(usize))
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("title")
+                                .long("title")
+                                .value_name("MARKDOWN")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("content")
+                                .long("content")
+                                .value_name("TEXT")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("file")
+                                .long("file")
+                                .short('f')
+                                .value_name("UTF-8-MARKDOWN")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("stdin")
+                                .long("stdin")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .group(
+                            clap::ArgGroup::new("toggle-set-input")
+                                .args(["content", "file", "stdin"])
+                                .multiple(false),
+                        )
+                        .arg(
+                            Arg::new("collapsed")
+                                .long("collapsed")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("open")
+                                .long("open")
+                                .action(ArgAction::SetTrue)
+                                .conflicts_with("collapsed"),
+                        )
+                        .arg(
+                            Arg::new("bg")
+                                .long("bg")
+                                .value_name("COLOR")
+                                .num_args(1)
+                                .conflicts_with("clear-bg"),
+                        )
+                        .arg(
+                            Arg::new("clear-bg")
+                                .long("clear-bg")
+                                .action(ArgAction::SetTrue),
+                        ),
+                )
+                .subcommand(
+                    Command::new("remove")
+                        .about("Remove a toggle; keeps its title and body unless --delete-content is set")
                         .arg(required_arg("id"))
                         .arg(
                             Arg::new("block")

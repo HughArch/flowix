@@ -1,6 +1,6 @@
 # 折叠块（Toggle）
 
-> 状态：已实现（编辑器 + Markdown 往返 + Slash 菜单）。CLI / MCP 尚未支持。
+> 状态：已实现（编辑器 + Markdown 往返 + Slash 菜单 + CLI / MCP）。
 
 ## 目标与边界
 
@@ -19,7 +19,6 @@
 
 不在范围：
 
-- CLI / MCP 操作（`list / add / set / remove`）。
 - Word / HTML 导出识别 `:::`（与着重块、分栏现状一致）。
 - 把外部块直接拖进折叠块正文（与着重块现状一致）。
 - 临时展开（不写文档属性）模式；自动展开会持久化为展开状态。
@@ -130,6 +129,40 @@ toggle: {
 | 搜索替换命中收起正文 | 匹配不可见；调用 `revealToggleAtPos` / `revealToggleAtDomElement` 可先展开（目前尚未接入搜索流程） |
 | 只读模式 | 箭头隐藏，文档保持原状 |
 
+## CLI / MCP
+
+### CLI
+
+```bash
+flowix toggle list <id> --json
+flowix toggle add <id> [--at <line>] [--title <markdown>] \
+  [--content <text> | --file <utf8.md> | --stdin] \
+  [--collapsed] [--bg <color>] --json
+flowix toggle set <id> --block <n> [--title <markdown>] \
+  [--content <text> | --file <utf8.md> | --stdin] \
+  [--open | --collapsed] [--bg <color> | --clear-bg] --json
+flowix toggle remove <id> --block <n> [--delete-content] --json
+```
+
+- `add` 默认展开（`--collapsed` 收起），不传内容时创建空折叠块。
+- `set` 至少提供 `--title` / `--content` / `--file` / `--stdin` / `--open` / `--collapsed` / `--bg` / `--clear-bg` 之一。
+- `remove` 默认保留标题与正文（解包）；`--delete-content` 才连同内容删除。
+- 背景色：`red / orange / yellow / green / cyan / blue / purple / pink / gray`。
+- 列表输出每个块的 `start_line`、`end_line`、`open`、`bg`、`title`、`body`、`content`。
+
+### MCP
+
+`memo` 工具的 structured actions：
+
+| action | 参数 |
+|---|---|
+| `toggle.list` | `address` |
+| `toggle.add` | `address`, `title?`, `content?`（正文）, `open?`（默认 true）, `bg?`, `at?` |
+| `toggle.set` | `address`, `block`, `title?`, `content?`, `open?`, `bg?`, `clearBg?` |
+| `toggle.remove` | `address`, `block`, `keepContent?`（默认 true） |
+
+`keepContent: false` 与 CLI 的 `--delete-content` 等价；`clearBg: true` 与 `--clear-bg` 等价。
+
 ## 测试
 
 ```bash
@@ -137,6 +170,11 @@ npx vitest run app/flowix-web/features/editor/extensions/toggle \
   app/flowix-web/features/editor/components/drag-context-menu/toggle-target.test.ts \
   app/flowix-web/features/editor/markdown-parser-regressions.test.ts \
   app/flowix-web/features/editor/extensions/paste-rules/paste-rules.test.ts
+
+cd app
+cargo test -p flowix-core toggle::tests
+cargo test -p flowix-cli --test toggle_e2e
+cargo test -p flowix-cli --test mcp_e2e structured_toggle
 ```
 
 - `toggle-markdown.test.ts`：展开 / 收起、未知标记、空块、多段 + 列表、嵌套结构、代码围栏、未闭合围栏。

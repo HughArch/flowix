@@ -4,7 +4,7 @@
 
 use crate::{
     background_store, callout_store, cli, columns_store, errors::CliError, mcp, operation,
-    path_store, plugin, store,
+    path_store, plugin, store, toggle_store,
 };
 
 /// 跑 CLI 主入口。
@@ -132,19 +132,7 @@ pub fn run_cli(args: &[String]) -> Result<(), CliError> {
                 file,
                 stdin,
             } => {
-                let content = match (content, file.as_deref(), stdin) {
-                    (Some(text), None, false) => text,
-                    (None, Some(_), false) | (None, None, true) => {
-                        path_store::read_input(file.as_deref(), stdin, "callout add")?
-                    }
-                    (None, None, false) => String::new(),
-                    _ => {
-                        return Err(CliError::Usage(
-                            "callout add: provide at most one of --content, --file or --stdin"
-                                .into(),
-                        ))
-                    }
-                };
+                let content = read_optional_input(content, file.as_deref(), stdin, "callout add")?;
                 path_store::print(
                     callout_store::add(&id, at, icon.as_deref(), color.as_deref(), &content)?,
                     json,
@@ -165,9 +153,106 @@ pub fn run_cli(args: &[String]) -> Result<(), CliError> {
                 delete_content,
             } => path_store::print(callout_store::remove(&id, block, !delete_content)?, json),
         },
+        cli::Cli::Toggle { command, json } => match command {
+            cli::ToggleCommand::List { id } => path_store::print(toggle_store::list(&id)?, json),
+            cli::ToggleCommand::Add {
+                id,
+                at,
+                title,
+                content,
+                file,
+                stdin,
+                open,
+                bg,
+            } => {
+                let content = read_optional_input(content, file.as_deref(), stdin, "toggle add")?;
+                path_store::print(
+                    toggle_store::add(
+                        &id,
+                        at,
+                        title.as_deref().unwrap_or_default(),
+                        &content,
+                        open,
+                        bg.as_deref(),
+                    )?,
+                    json,
+                )
+            }
+            cli::ToggleCommand::Set {
+                id,
+                block,
+                title,
+                content,
+                file,
+                stdin,
+                open,
+                bg,
+                clear_bg,
+            } => {
+                let content = read_update_input(content, file.as_deref(), stdin, "toggle set")?;
+                path_store::print(
+                    toggle_store::set(
+                        &id,
+                        block,
+                        title.as_deref(),
+                        content.as_deref(),
+                        open,
+                        bg.as_deref(),
+                        clear_bg,
+                    )?,
+                    json,
+                )
+            }
+            cli::ToggleCommand::Remove {
+                id,
+                block,
+                delete_content,
+            } => path_store::print(toggle_store::remove(&id, block, !delete_content)?, json),
+        },
         cli::Cli::Mcp => {
             use std::io::{stdin, stdout};
             mcp::run_mcp(stdin().lock(), stdout().lock())
         }
+    }
+}
+
+/// Resolve `--content` / `--file` / `--stdin` for an insert command. The
+/// three inputs are mutually exclusive; omitting all of them inserts empty
+/// content.
+fn read_optional_input(
+    content: Option<String>,
+    file: Option<&str>,
+    stdin: bool,
+    command: &str,
+) -> Result<String, CliError> {
+    match (content, file, stdin) {
+        (Some(text), None, false) => Ok(text),
+        (None, Some(_), false) | (None, None, true) => {
+            path_store::read_input(file, stdin, command)
+        }
+        (None, None, false) => Ok(String::new()),
+        _ => Err(CliError::Usage(format!(
+            "{command}: provide at most one of --content, --file or --stdin"
+        ))),
+    }
+}
+
+/// Resolve update input. Unlike [`read_optional_input`], omitting every source
+/// means "leave the body unchanged" rather than "set it to empty".
+fn read_update_input(
+    content: Option<String>,
+    file: Option<&str>,
+    stdin: bool,
+    command: &str,
+) -> Result<Option<String>, CliError> {
+    match (content, file, stdin) {
+        (Some(text), None, false) => Ok(Some(text)),
+        (None, Some(_), false) | (None, None, true) => {
+            Ok(Some(path_store::read_input(file, stdin, command)?))
+        }
+        (None, None, false) => Ok(None),
+        _ => Err(CliError::Usage(format!(
+            "{command}: provide at most one of --content, --file or --stdin"
+        ))),
     }
 }
