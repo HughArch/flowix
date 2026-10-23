@@ -19,6 +19,8 @@ vi.mock('./memo-title-session', () => ({
   useMemoTitleSession: () => titleSession,
 }));
 
+import { useSettingsStore } from '@/lib/store/settings-store';
+
 import { MemoTitleEditor, type MemoTitleBodyNavigation, type MemoTitleEditorHandle } from './memo-title-editor';
 
 function setTextareaValue(element: HTMLTextAreaElement, value: string): void {
@@ -350,187 +352,70 @@ describe('MemoTitleEditor title paste splitting', () => {
   });
 });
 
-describe('MemoTitleEditor property submenu', () => {
+describe('MemoTitleEditor property controls', () => {
   let container: HTMLDivElement;
   let root: Root;
+  let initialPropertiesVisible: boolean;
 
-  beforeEach(() => {
-    vi.clearAllMocks();
-    container = document.createElement('div');
-    document.body.appendChild(container);
-    root = createRoot(container);
+  const renderTitle = (editable = true) => {
     act(() => {
       root.render(createElement(MemoTitleEditor, {
         displayId: 'display:title-test',
         filename: 'Original.md',
         renameTitle,
-        editable: true,
+        editable,
         onMoveToBody: vi.fn(),
       }));
     });
+  };
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    initialPropertiesVisible = useSettingsStore.getState().propertiesVisible;
+    useSettingsStore.setState({ propertiesVisible: false });
+    container = document.createElement('div');
+    document.body.appendChild(container);
+    root = createRoot(container);
+    renderTitle();
   });
 
   afterEach(() => {
     act(() => root.unmount());
     container.remove();
+    useSettingsStore.setState({ propertiesVisible: initialPropertiesVisible });
   });
 
-  /** The menu is portaled to document.body, so query from there. */
-  const menuItems = () =>
-    Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
-
-  const openPropertiesMenu = () => {
-    act(() => {
-      container.querySelector<HTMLButtonElement>('.memo-title-properties-toggle')?.click();
-    });
-  };
-
-  // Labels are resolved through i18n, so match the rendered zh-CN copy.
-  const findAddPropertyRow = () =>
-    menuItems().find((item) => item.textContent === '添加属性');
-
-  /**
-   * Reveal the preset panel the way the UI does: hovering the row. A click is
-   * deliberately not used here because it performs the row's own action
-   * (add a blank property) and closes the menu.
-   */
-  const hoverAddPropertyRow = () => {
-    const row = findAddPropertyRow()!;
-    act(() => {
-      const event = new MouseEvent('mousemove', { bubbles: true });
-      // The menu ignores zero-movement events, which is what jsdom reports.
-      Object.defineProperty(event, 'movementX', { value: 3 });
-      Object.defineProperty(event, 'movementY', { value: 3 });
-      row.dispatchEvent(event);
-    });
-    return row;
-  };
-
-  const submenuPanel = () => document.body.querySelectorAll<HTMLElement>('[role="menu"]')[1];
-
-  /** Capture `flowix:add-property` payloads for the duration of `run`. */
-  const withAddPropertyRequests = (
-    run: (requests: Array<{ propertyTargetId?: string; presetKey?: string }>) => void,
+  const openPopup = (
+    eventName: 'flowix:open-property-picker' | 'flowix:open-add-property',
+    propertyTargetId = 'file:display:title-test',
   ) => {
-    const requests: Array<{ propertyTargetId?: string; presetKey?: string }> = [];
-    const listener = (event: Event) => {
-      requests.push((event as CustomEvent<{ propertyTargetId?: string; presetKey?: string }>).detail);
-    };
-    window.addEventListener('flowix:add-property', listener);
+    act(() => {
+      window.dispatchEvent(new CustomEvent(eventName, {
+        detail: { propertyTargetId, anchorRect: rect(104, 128, 172, 28) },
+      }));
+    });
+  };
+
+  const picker = () => document.body.querySelector<HTMLElement>('.property-preset-menu-content');
+  const preset = (label: string) =>
+    Array.from(picker()!.querySelectorAll<HTMLButtonElement>('button[aria-pressed]'))
+      .find((button) => button.querySelector('span')?.textContent === label)!;
+
+  const withRequests = (eventName: string, run: (requests: unknown[]) => void) => {
+    const requests: unknown[] = [];
+    const listener = (event: Event) => requests.push((event as CustomEvent).detail);
+    window.addEventListener(eventName, listener);
     try {
       run(requests);
     } finally {
-      window.removeEventListener('flowix:add-property', listener);
+      window.removeEventListener(eventName, listener);
     }
   };
 
-  it('reveals label-only preset children under a 预设 group heading', () => {
-    withAddPropertyRequests(() => {
-      openPropertiesMenu();
-
-      const addPropertyRow = findAddPropertyRow();
-      expect(addPropertyRow).not.toBeUndefined();
-      expect(addPropertyRow?.getAttribute('aria-haspopup')).toBe('menu');
-      expect(addPropertyRow?.getAttribute('aria-expanded')).toBe('false');
-
-      // The panel is not mounted at all until the row is hovered.
-      expect(document.body.querySelectorAll('[role="menu"]')).toHaveLength(1);
-
-      hoverAddPropertyRow();
-
-      expect(findAddPropertyRow()?.getAttribute('aria-expanded')).toBe('true');
-      // Scope to the submenu panel: the parent menu's own leaves are still mounted.
-      const submenu = submenuPanel();
-      expect(submenu).not.toBeUndefined();
-      // The 预设 heading labels the group without being an actionable item.
-      expect(submenu.textContent).toContain('预设');
-      const submenuItems = Array.from(submenu.querySelectorAll('[role="menuitem"]'));
-      expect(submenuItems.map((item) => item.textContent))
-        .toEqual(['名称', '描述', '标签', '颜色', '图标', '状态', '日期']);
-      // Rows are label-only: no leading icon slot is rendered inside the submenu.
-      expect(submenuItems.every((item) => item.querySelector('svg') === null)).toBe(true);
-    });
-  });
-
-  it('anchors the submenu flush to the hovered item top-right corner', () => {
-    withAddPropertyRequests(() => {
-      openPropertiesMenu();
-      // jsdom lays out nothing, so give the hovered row real geometry before
-      // the submenu measures it. The row is inset by the menu's padding: the
-      // menu spans x=100..280 while the row spans x=104..276.
-      findAddPropertyRow()!.getBoundingClientRect = () => rect(104, 128, 172, 28);
-
-      hoverAddPropertyRow();
-
-      const submenu = submenuPanel();
-      expect(submenu).not.toBeUndefined();
-
-      // Flush against the row's own right edge (276), not the menu's (280).
-      expect(Number.parseFloat(submenu.style.left)).toBeCloseTo(276, 0);
-      // Top aligns to the hovered row, compensating the panel's own padding so
-      // the first submenu row sits level with it (128 - padding).
-      const padding = Number.parseFloat(getComputedStyle(submenu).paddingTop) || 0;
-      expect(Number.parseFloat(submenu.style.top)).toBeCloseTo(128 - padding, 0);
-    });
-  });
-
-  it('adds a blank property when the 添加属性 row itself is activated', () => {
-    withAddPropertyRequests((requests) => {
-      openPropertiesMenu();
-      act(() => { findAddPropertyRow()?.click(); });
-
-      // Clicking the row must still perform its own action, not only expand.
-      expect(requests).toEqual([{ propertyTargetId: 'file:display:title-test' }]);
-      // The blank-property path is the menu's default action, so the menu closes.
-      expect(document.body.querySelector('[role="menu"]')).toBeNull();
-    });
-  });
-
-  it('adds a blank property when Enter activates the 添加属性 row', () => {
-    withAddPropertyRequests((requests) => {
-      openPropertiesMenu();
-      const menu = document.body.querySelector<HTMLElement>('[role="menu"]')!;
-
-      // ArrowDown moves the selection onto 添加属性 (the second row); the menu
-      // owns that key handling, so drive it before Enter.
-      act(() => {
-        menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'ArrowDown', bubbles: true }));
-      });
-      act(() => {
-        menu.dispatchEvent(new KeyboardEvent('keydown', { key: 'Enter', bubbles: true }));
-      });
-
-      expect(requests).toEqual([{ propertyTargetId: 'file:display:title-test' }]);
-    });
-  });
-
-  it('dispatches a preset-scoped add-property request when a preset is picked', () => {
-    withAddPropertyRequests((requests) => {
-      openPropertiesMenu();
-      hoverAddPropertyRow();
-
-      act(() => {
-        menuItems().find((item) => item.textContent === '标签')?.click();
-      });
-
-      // Only the preset request, never a bare blank-property add.
-      expect(requests).toEqual([{
-        propertyTargetId: 'file:display:title-test',
-        presetKey: 'tags',
-      }]);
-      // Selecting a leaf closes the menu rather than leaving it open.
-      expect(document.body.querySelector('[role="menu"]')).toBeNull();
-    });
-  });
-
-  /**
-   * Stand in for the frontmatter node view: answer the occupied-keys query with
-   * the supplied keys, the way the editor does synchronously on dispatch.
-   */
   const withOccupiedKeys = (keys: string[], run: () => void) => {
     const responder = (event: Event) => {
-      const detail = (event as CustomEvent<{ keys?: string[] }>).detail;
-      detail?.keys?.push(...keys);
+      const detail = (event as CustomEvent<{ propertyTargetId: string; keys: string[] }>).detail;
+      if (detail.propertyTargetId === 'file:display:title-test') detail.keys.push(...keys);
     };
     window.addEventListener('flowix:query-occupied-property-keys', responder);
     try {
@@ -540,51 +425,74 @@ describe('MemoTitleEditor property submenu', () => {
     }
   };
 
-  it('disables presets that are already present in the frontmatter', () => {
-    withAddPropertyRequests(() => {
-      withOccupiedKeys(['tags', 'flowix_colors'], () => {
-        openPropertiesMenu();
-        hoverAddPropertyRow();
-      });
+  it('toggles property visibility without opening the preset picker', () => {
+    const button = container.querySelector<HTMLButtonElement>('.memo-title-properties-toggle')!;
+    expect(button.getAttribute('aria-pressed')).toBe('false');
+    act(() => button.click());
+    expect(useSettingsStore.getState().propertiesVisible).toBe(true);
+    expect(button.getAttribute('aria-pressed')).toBe('true');
+    expect(button.dataset.state).toBe('visible');
+    expect(picker()).toBeNull();
+    act(() => button.click());
+    expect(useSettingsStore.getState().propertiesVisible).toBe(false);
+    expect(button.getAttribute('aria-pressed')).toBe('false');
+  });
 
-      const submenuItems = Array.from(submenuPanel().querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
-      const byLabel = new Map(submenuItems.map((item) => [item.textContent, item]));
+  it('opens the preset picker for the requested document', () => {
+    openPopup('flowix:open-property-picker');
+    expect(picker()).not.toBeNull();
+    expect(preset('标签').getAttribute('aria-pressed')).toBe('false');
+    expect(preset('标签').disabled).toBe(false);
+  });
 
-      // Taken presets are inert and explain why.
-      expect(byLabel.get('标签')?.disabled).toBe(true);
-      expect(byLabel.get('标签')?.title).toBe('该属性已存在');
-      expect(byLabel.get('颜色')?.disabled).toBe(true);
-      // Untaken presets stay actionable.
-      expect(byLabel.get('名称')?.disabled).toBe(false);
-      expect(byLabel.get('描述')?.disabled).toBe(false);
-      expect(byLabel.get('图标')?.disabled).toBe(false);
+  it('ignores popup requests for other documents', () => {
+    openPopup('flowix:open-property-picker', 'file:another-note');
+    openPopup('flowix:open-add-property', 'file:another-note');
+    expect(picker()).toBeNull();
+    expect(document.body.querySelector('.memo-title-add-property')).toBeNull();
+  });
+
+  it('does not open property editing popups for a read-only document', () => {
+    renderTitle(false);
+    openPopup('flowix:open-property-picker');
+    openPopup('flowix:open-add-property');
+    expect(picker()).toBeNull();
+    expect(document.body.querySelector('.memo-title-add-property')).toBeNull();
+  });
+
+  it('adds the selected preset to the requested document and closes the picker', () => {
+    withRequests('flowix:add-property', (requests) => {
+      openPopup('flowix:open-property-picker');
+      act(() => preset('标签').click());
+      expect(requests).toEqual([{ propertyTargetId: 'file:display:title-test', presetKey: 'tags' }]);
+      // The popover stays mounted until its exit animation completes.
+      expect(picker()?.dataset.motionState).toBe('closing');
     });
   });
 
-  it('does not dispatch a request when a disabled preset is clicked', () => {
-    withAddPropertyRequests((requests) => {
-      withOccupiedKeys(['tags'], () => {
-        openPropertiesMenu();
-        hoverAddPropertyRow();
-      });
+  it('marks existing presets as selected while keeping them actionable', () => {
+    withOccupiedKeys(['tags', 'flowix_colors'], () => openPopup('flowix:open-property-picker'));
+    expect(preset('标签').getAttribute('aria-pressed')).toBe('true');
+    expect(preset('颜色').getAttribute('aria-pressed')).toBe('true');
+    expect(preset('标签').disabled).toBe(false);
+    expect(preset('描述').getAttribute('aria-pressed')).toBe('false');
+  });
 
-      act(() => {
-        menuItems().find((item) => item.textContent === '标签')?.click();
+  it('removes an existing preset instead of adding a duplicate', () => {
+    withRequests('flowix:add-property', (adds) => {
+      withRequests('flowix:remove-property', (removals) => {
+        withOccupiedKeys(['tags'], () => openPopup('flowix:open-property-picker'));
+        act(() => preset('标签').click());
+        expect(adds).toEqual([]);
+        expect(removals).toEqual([{ propertyTargetId: 'file:display:title-test', propertyKey: 'tags' }]);
+        expect(picker()?.dataset.motionState).toBe('closing');
       });
-
-      // A disabled leaf must not queue a duplicate add.
-      expect(requests).toEqual([]);
     });
   });
 
-  it('keeps every preset enabled when the frontmatter has no properties yet', () => {
-    withAddPropertyRequests(() => {
-      // No responder installed: nothing is occupied.
-      openPropertiesMenu();
-      hoverAddPropertyRow();
-
-      const submenuItems = Array.from(submenuPanel().querySelectorAll<HTMLButtonElement>('[role="menuitem"]'));
-      expect(submenuItems.every((item) => !item.disabled)).toBe(true);
-    });
+  it('opens the add-property form through its dedicated entry point', () => {
+    openPopup('flowix:open-add-property');
+    expect(document.body.querySelector('.memo-title-add-property')).not.toBeNull();
+    expect(picker()).toBeNull();
   });
 });
