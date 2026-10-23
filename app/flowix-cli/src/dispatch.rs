@@ -2,7 +2,7 @@
 //!
 //! `cli` 模块只负责把 argv 解析成结构化命令；这里负责把命令转给执行层。
 
-use crate::{cli, errors::CliError, mcp, operation, path_store, plugin, store};
+use crate::{cli, columns_store, errors::CliError, mcp, operation, path_store, plugin, store};
 
 /// 跑 CLI 主入口。
 pub fn run_cli(args: &[String]) -> Result<(), CliError> {
@@ -95,6 +95,18 @@ pub fn run_cli(args: &[String]) -> Result<(), CliError> {
             json,
         ),
         cli::Cli::Completion { shell } => store::cmd_completion(&shell),
+        cli::Cli::Columns { command, json } => match command {
+            cli::ColumnsCommand::List { id } => path_store::print(columns_store::list(&id)?, json),
+            cli::ColumnsCommand::Add { id, count, at } => {
+                path_store::print(columns_store::add(&id, count, at)?, json)
+            }
+            cli::ColumnsCommand::Remove { id, block, column } => {
+                path_store::print(columns_store::remove(&id, block, column)?, json)
+            }
+            cli::ColumnsCommand::Width { id, block, widths } => {
+                path_store::print(columns_store::set_widths(&id, block, &widths)?, json)
+            }
+        },
         cli::Cli::Mcp => {
             use std::io::{stdin, stdout};
             mcp::run_mcp(stdin().lock(), stdout().lock())

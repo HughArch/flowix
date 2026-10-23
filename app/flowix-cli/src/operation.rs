@@ -1,6 +1,6 @@
 //! Transport-neutral Flowix operations shared by CLI and MCP adapters.
 
-use crate::{collection_store, errors::CliError, fmt, output, path_store, plugin, store};
+use crate::{collection_store, columns_store, errors::CliError, fmt, output, path_store, plugin, store};
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -55,6 +55,24 @@ pub(crate) enum FlowixOperation {
         source_note: Option<String>,
         producer: String,
         content: String,
+    },
+    ColumnsList {
+        address: String,
+    },
+    ColumnsAdd {
+        address: String,
+        count: usize,
+        at: Option<usize>,
+    },
+    ColumnsRemove {
+        address: String,
+        block: usize,
+        column: usize,
+    },
+    ColumnsWidth {
+        address: String,
+        block: usize,
+        widths: Vec<u32>,
     },
 }
 
@@ -146,5 +164,21 @@ pub(crate) fn execute(operation: FlowixOperation) -> Result<Value, CliError> {
                 &content,
             )?)
         }
+        FlowixOperation::ColumnsList { address } => columns_store::list(&address),
+        FlowixOperation::ColumnsAdd {
+            address,
+            count,
+            at,
+        } => columns_store::add(&address, count, at),
+        FlowixOperation::ColumnsRemove {
+            address,
+            block,
+            column,
+        } => columns_store::remove(&address, block, column),
+        FlowixOperation::ColumnsWidth {
+            address,
+            block,
+            widths,
+        } => columns_store::set_widths(&address, block, &widths),
     }
 }

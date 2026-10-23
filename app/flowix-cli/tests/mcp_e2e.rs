@@ -232,6 +232,85 @@ fn structured_actions_create_edit_list_and_show_without_cli_strings() {
 }
 
 #[test]
+fn structured_columns_actions_add_resize_and_remove() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    let notebook_dir = tmp.path().join("notebooks").join("work");
+    seed_notebook(&config_dir, &notebook_dir);
+    std::fs::write(notebook_dir.join("columns.md"), "# Title\n\nbody\n").unwrap();
+
+    let (mut child, mut stdin, mut stdout) = spawn_mcp(&config_dir);
+    let _ = request(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "flowix-test", "version": "1"}
+        }),
+    );
+
+    let added = call_structured(
+        &mut stdin,
+        &mut stdout,
+        2,
+        json!({"action":"columns.add", "address":"columns.md", "count":2}),
+    );
+    assert_eq!(added["result"]["isError"], false, "{added}");
+    assert_eq!(
+        added["result"]["structuredContent"]["blocks"][0]["columns"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    let listed = call_structured(
+        &mut stdin,
+        &mut stdout,
+        3,
+        json!({"action":"columns.list", "address":"columns.md"}),
+    );
+    assert_eq!(listed["result"]["isError"], false, "{listed}");
+    assert_eq!(
+        listed["result"]["structuredContent"]["blocks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let resized = call_structured(
+        &mut stdin,
+        &mut stdout,
+        4,
+        json!({"action":"columns.width", "address":"columns.md", "block":1, "widths":[50,150]}),
+    );
+    assert_eq!(resized["result"]["isError"], false, "{resized}");
+    assert_eq!(
+        resized["result"]["structuredContent"]["blocks"][0]["columns"][0]["width"],
+        50
+    );
+
+    let removed = call_structured(
+        &mut stdin,
+        &mut stdout,
+        5,
+        json!({"action":"columns.remove", "address":"columns.md", "block":1, "column":1}),
+    );
+    assert_eq!(removed["result"]["isError"], false, "{removed}");
+    assert!(removed["result"]["structuredContent"]["blocks"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
 fn search_tag_filter_is_shared_by_structured_and_legacy_mcp() {
     let tmp = tempfile::tempdir().unwrap();
     let config_dir = tmp.path().join("config");

@@ -88,9 +88,36 @@ pub enum Cli {
     Completion {
         shell: String,
     },
+    /// Inspect or edit Notion-style content columns in a note.
+    Columns {
+        command: ColumnsCommand,
+        json: bool,
+    },
     /// Model Context Protocol over stdio。向外部 Agent 暴露唯一工具
     /// `memo`，工具参数采用受限的 Flowix CLI 语法。
     Mcp,
+}
+
+#[derive(Debug)]
+pub enum ColumnsCommand {
+    List {
+        id: String,
+    },
+    Add {
+        id: String,
+        count: usize,
+        at: Option<usize>,
+    },
+    Remove {
+        id: String,
+        block: usize,
+        column: usize,
+    },
+    Width {
+        id: String,
+        block: usize,
+        widths: Vec<u32>,
+    },
 }
 
 /// 解析 argv。`Ok(None)` 表示"打印了 help 正常退出"。
@@ -218,6 +245,42 @@ pub(crate) fn parse(args: &[String]) -> Result<Option<Cli>, CliError> {
         Some(("completion", sub)) => Ok(Some(Cli::Completion {
             shell: required_string(sub, "shell")?,
         })),
+        Some(("columns", sub)) => {
+            let command = match sub.subcommand() {
+                Some(("list", command)) => ColumnsCommand::List {
+                    id: required_string(command, "id")?,
+                },
+                Some(("add", command)) => ColumnsCommand::Add {
+                    id: required_string(command, "id")?,
+                    count: *command.get_one::<usize>("count").unwrap_or(&2),
+                    at: command.get_one::<usize>("at").copied(),
+                },
+                Some(("remove", command)) => ColumnsCommand::Remove {
+                    id: required_string(command, "id")?,
+                    block: *command.get_one::<usize>("block").unwrap_or(&1),
+                    column: *command.get_one::<usize>("column").unwrap_or(&1),
+                },
+                Some(("width", command)) => ColumnsCommand::Width {
+                    id: required_string(command, "id")?,
+                    block: *command.get_one::<usize>("block").unwrap_or(&1),
+                    widths: command
+                        .get_many::<u32>("widths")
+                        .map(|values| values.copied().collect())
+                        .unwrap_or_default(),
+                },
+                Some((other, _)) => {
+                    return Err(CliError::Usage(format!(
+                        "unknown columns command: `{other}`"
+                    )))
+                }
+                None => {
+                    return Err(CliError::Usage(format!(
+                        "usage: {DISPLAY_BIN} columns <list|add|remove|width>"
+                    )))
+                }
+            };
+            Ok(Some(Cli::Columns { command, json }))
+        }
         Some(("mcp", _)) => Ok(Some(Cli::Mcp)),
         Some((other, _)) => Err(CliError::Usage(format!(
             "unknown command: `{other}`\n(run `{DISPLAY_BIN} --help` for usage)"
@@ -367,6 +430,74 @@ pub(crate) fn cli_command() -> Command {
                                 .long("producer")
                                 .allow_hyphen_values(true)
                                 .num_args(1),
+                        ),
+                ),
+        )
+        .subcommand(
+            Command::new("columns")
+                .about("Inspect or edit Notion-style content columns in a note")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("list")
+                        .about("List columns blocks in a note")
+                        .arg(required_arg("id")),
+                )
+                .subcommand(
+                    Command::new("add")
+                        .about("Insert an empty columns block")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("count")
+                                .long("columns")
+                                .short('c')
+                                .value_parser(clap::value_parser!(usize))
+                                .default_value("2")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("at")
+                                .long("at")
+                                .value_parser(clap::value_parser!(usize))
+                                .num_args(1),
+                        ),
+                )
+                .subcommand(
+                    Command::new("remove")
+                        .about("Remove one column and hoist its content")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("block")
+                                .long("block")
+                                .required(true)
+                                .value_parser(clap::value_parser!(usize))
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("column")
+                                .long("column")
+                                .required(true)
+                                .value_parser(clap::value_parser!(usize))
+                                .num_args(1),
+                        ),
+                )
+                .subcommand(
+                    Command::new("width")
+                        .about("Set column widths (comma-separated relative weights)")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("block")
+                                .long("block")
+                                .required(true)
+                                .value_parser(clap::value_parser!(usize))
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("widths")
+                                .long("widths")
+                                .required(true)
+                                .value_delimiter(',')
+                                .num_args(1..)
+                                .value_parser(clap::value_parser!(u32)),
                         ),
                 ),
         )

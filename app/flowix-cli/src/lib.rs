@@ -4,6 +4,7 @@
 
 pub mod cli;
 pub(crate) mod collection_store;
+pub(crate) mod columns_store;
 pub mod errors;
 pub mod fmt;
 pub mod mcp;

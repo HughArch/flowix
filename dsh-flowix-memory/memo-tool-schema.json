@@ -3,7 +3,7 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["notebooks", "list", "tags", "show", "search", "create", "edit", "write", "delete", "collection.read", "artifact.list", "artifact.describe", "artifact.create"],
+      "enum": ["notebooks", "list", "tags", "show", "search", "create", "edit", "write", "delete", "collection.read", "artifact.list", "artifact.describe", "artifact.create", "columns.list", "columns.add", "columns.remove", "columns.width"],
       "description": "Structured operation. Prefer this over the legacy command field."
     },
     "notebook": { "type": "string", "description": "Notebook name or id; defaults to the current notebook where supported." },
@@ -20,6 +20,11 @@
     "producer": { "type": "string", "default": "agent-mcp" },
     "collectionId": { "type": "string", "description": "Stable collection identity. Provide this or path for collection.read." },
     "path": { "type": "string", "description": "Notebook-relative collection file path. Provide this or collectionId for collection.read." },
+    "count": { "type": "integer", "minimum": 2, "maximum": 5, "default": 2, "description": "Number of empty columns to insert for columns.add." },
+    "at": { "type": "integer", "minimum": 1, "description": "1-based line to insert the columns block before; defaults to the end of the note." },
+    "block": { "type": "integer", "minimum": 1, "description": "1-based columns block index for columns.remove and columns.width." },
+    "column": { "type": "integer", "minimum": 1, "description": "1-based column index for columns.remove." },
+    "widths": { "type": "array", "items": { "type": "integer", "minimum": 25, "maximum": 1000 }, "description": "Relative column width weights, one per column." },
     "command": { "type": "string", "deprecated": true, "description": "Legacy restricted CLI command without the flowix prefix." },
     "stdin": { "type": "string", "deprecated": true, "description": "Legacy content paired with command." }
   },

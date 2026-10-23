@@ -241,6 +241,21 @@ type BlockDropTarget =
 | 撤销/重做 | ProseMirror transaction 原生支持 |
 | 滚动 | 列内不新增滚动容器；文档主体仍是唯一纵向滚动区 |
 
+### CLI / MCP
+
+CLI 通过 `flowix columns` 暴露同一套解析器：
+
+```bash
+flowix columns list <note> --json
+flowix columns add <note> --columns 3 [--at <line>] --json
+flowix columns remove <note> --block 1 --column 2 --json
+flowix columns width <note> --block 1 --widths 50,150 --json
+```
+
+块/列索引均为 1-based；`--at` 是插入分栏前的行号，缺省追加到文末；删除一列后若只剩 1 列，自动解散分栏并提升内容。
+
+MCP 的 `memo` 工具新增结构化 action：`columns.list`、`columns.add`、`columns.remove`、`columns.width`，对应参数为 `address`、`count`/`at`、`block`/`column`、`block`/`widths`。旧的 `command` 形式也可直接使用 `columns ...`。
+
 ## 7. 边界与风险
 
 | 场景 | 行为 |

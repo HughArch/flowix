@@ -19,6 +19,7 @@ use std::path::PathBuf;
 use std::{fs::OpenOptions, io};
 
 mod content;
+pub mod columns;
 mod database_layout;
 mod storage_repair;
 mod derivation;

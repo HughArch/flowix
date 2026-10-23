@@ -4,7 +4,7 @@
 //! restricted Flowix CLI command plus optional stdin content. Commands are parsed into
 //! argv and dispatched directly to the typed store layer; no system shell is spawned.
 
-use crate::{cli, errors::CliError, fmt, operation, output, path_store, plugin, store};
+use crate::{cli, columns_store, errors::CliError, fmt, operation, output, path_store, plugin, store};
 use serde_json::{json, Map, Value};
 use std::io::{BufRead, Write};
 
@@ -17,7 +17,7 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
     LATEST_PROTOCOL_VERSION,
 ];
 
-pub const TOOL_DESCRIPTION: &str = "Search and manage Flowix Markdown notes, read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
+pub const TOOL_DESCRIPTION: &str = "Search and manage Flowix Markdown notes, inspect or edit Notion-style content columns, read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
 
 /// Run the MCP line-delimited JSON-RPC loop until stdin reaches EOF.
 pub fn run_mcp<R: BufRead, W: Write>(reader: R, mut writer: W) -> Result<(), CliError> {
@@ -171,6 +171,11 @@ fn validate_argument_keys(arguments: &Map<String, Value>) -> Result<(), CliError
         "collectionId",
         "path",
         "tag",
+        "count",
+        "at",
+        "block",
+        "column",
+        "widths",
         "command",
         "stdin",
     ];
@@ -242,6 +247,24 @@ fn parse_structured_operation(
             producer: optional_string(arguments, "producer")?.unwrap_or_else(|| "agent-mcp".into()),
             content: content()?,
         }),
+        "columns.list" => Ok(FlowixOperation::ColumnsList {
+            address: address()?,
+        }),
+        "columns.add" => Ok(FlowixOperation::ColumnsAdd {
+            address: address()?,
+            count: integer(arguments, "count", 2, 2, 5)?,
+            at: optional_integer(arguments, "at")?,
+        }),
+        "columns.remove" => Ok(FlowixOperation::ColumnsRemove {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            column: integer(arguments, "column", 1, 1, usize::MAX)?,
+        }),
+        "columns.width" => Ok(FlowixOperation::ColumnsWidth {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            widths: integer_array(arguments, "widths")?,
+        }),
         _ => Err(CliError::Usage(format!("unknown memo action: `{action}`"))),
     }
 }
@@ -284,6 +307,34 @@ fn integer(
         )));
     }
     Ok(value)
+}
+
+fn optional_integer(arguments: &Map<String, Value>, key: &str) -> Result<Option<usize>, CliError> {
+    arguments
+        .get(key)
+        .map(|value| {
+            value
+                .as_u64()
+                .map(|number| number as usize)
+                .ok_or_else(|| CliError::Usage(format!("memo.{key} must be an integer")))
+        })
+        .transpose()
+}
+
+fn integer_array(arguments: &Map<String, Value>, key: &str) -> Result<Vec<u32>, CliError> {
+    let values = arguments
+        .get(key)
+        .and_then(Value::as_array)
+        .ok_or_else(|| CliError::Usage(format!("memo.{key} must be an array of integers")))?;
+    values
+        .iter()
+        .map(|value| {
+            value
+                .as_u64()
+                .and_then(|number| u32::try_from(number).ok())
+                .ok_or_else(|| CliError::Usage(format!("memo.{key} must contain integers")))
+        })
+        .collect()
 }
 
 fn boolean(arguments: &Map<String, Value>, key: &str, default: bool) -> Result<bool, CliError> {
@@ -435,6 +486,23 @@ fn execute_command(command: &str, stdin: Option<&str>) -> Result<Value, CliError
                 &producer,
                 content,
             )?)
+        }
+        cli::Cli::Columns { command, .. } => {
+            reject_stdin(stdin)?;
+            match command {
+                cli::ColumnsCommand::List { id } => columns_store::list(&id),
+                cli::ColumnsCommand::Add { id, count, at } => {
+                    columns_store::add(&id, count, at)
+                }
+                cli::ColumnsCommand::Remove {
+                    id,
+                    block,
+                    column,
+                } => columns_store::remove(&id, block, column),
+                cli::ColumnsCommand::Width { id, block, widths } => {
+                    columns_store::set_widths(&id, block, &widths)
+                }
+            }
         }
         cli::Cli::Version | cli::Cli::Completion { .. } | cli::Cli::Mcp => Err(CliError::Usage(
             "command is not available through memo".into(),
