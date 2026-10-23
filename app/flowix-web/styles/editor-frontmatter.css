@@ -969,6 +969,35 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   object-fit: contain;
 }
 
+.frontmatter-property__edit-icon-glyph {
+  display: inline-flex;
+  width: 100%;
+  height: 100%;
+  align-items: center;
+  justify-content: center;
+  font-size: 1.05rem;
+  line-height: 1;
+}
+
+/* Opens the shared emoji picker; spans the icon grid's full width. */
+.frontmatter-property__edit-icon-more {
+  grid-column: 1 / -1;
+  min-height: 1.75rem;
+  border: 0;
+  border-radius: 0.4rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.75rem;
+  cursor: pointer;
+}
+
+.frontmatter-property__edit-icon-more:hover,
+.frontmatter-property__edit-icon-more:focus-visible {
+  background: var(--hover-bg);
+  color: var(--foreground);
+}
+
 .frontmatter-property__edit-icon-placeholder {
   border: 0;
   border-radius: 0.3rem;
@@ -1311,6 +1340,14 @@ html.frontmatter-property--dragging .markdown-editor .frontmatter-property__disp
   height: 1rem;
   flex: none;
   object-fit: contain;
+}
+
+.markdown-editor .frontmatter-property__value-icon--glyph {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 0.95rem;
+  line-height: 1;
 }
 
 .markdown-editor .frontmatter-property__value-chips {

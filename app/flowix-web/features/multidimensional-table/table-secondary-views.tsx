@@ -7,7 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@shared/ui/popover';
 import { Button } from '@shared/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@shared/ui/dialog';
 import documentCardPlaceholder from '@/assets/placeholder-document-card.jpg';
-import { getPropertyIconOption } from '@features/document/properties/property-icons';
+import { getPropertyIconGlyph, getPropertyIconOption } from '@features/document/properties/property-icons';
 import { NotebookTreeFileIcon } from '@features/memo/components/notebook-tree-file-icon';
 import type { TableField, TableRecord } from './model';
 import type { TableNoteDropPreview, TableNoteDropRejection } from './table-note-drop';
@@ -206,6 +206,7 @@ export function TableGalleryView({ records, titleField, fields, renderValue, ima
         const missing = recordStatus?.(record) === 'missing';
         const iconValue = noteIcon?.(record);
         const icon = iconValue ? getPropertyIconOption(iconValue) : null;
+        const iconGlyph = iconValue && !icon ? getPropertyIconGlyph(iconValue) : null;
         const isPreview = dropPreview?.draggedPaths.includes(record.note_path.replace(/\\/g, '/')) ?? false;
         return <button key={record.id} data-gallery-record={isPreview ? undefined : record.id} data-gallery-preview={isPreview ? 'true' : undefined} aria-hidden={isPreview || undefined} tabIndex={isPreview ? -1 : undefined} type="button" onClick={(event) => { if (!isPreview) onOpenRecord(record, event.currentTarget.getBoundingClientRect()); }} className={`group flex h-[210px] min-w-0 flex-col overflow-hidden rounded-xl border border-[var(--border)] bg-[var(--card)] text-left transition-[background-color,border-color] hover:border-[color-mix(in_oklch,var(--border)_94%,var(--foreground)_6%)] hover:bg-[color-mix(in_oklch,var(--card)_98%,var(--foreground)_2%)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] ${isPreview ? 'pointer-events-none opacity-50' : ''}`}>
           <span className="flex h-[148px] w-full shrink-0 items-center justify-center overflow-hidden border-b border-[var(--border)] bg-[color-mix(in_srgb,var(--card)_97%,var(--foreground)_3%)]">
@@ -231,6 +232,8 @@ export function TableGalleryView({ records, titleField, fields, renderValue, ima
               <span className="flex min-w-0 items-center gap-1">
                 {icon
                   ? <img src={icon.src} alt="" aria-hidden="true" draggable={false} className="h-4 w-4 shrink-0 object-contain" />
+                  : iconGlyph
+                  ? <span aria-hidden="true" className="flex h-4 w-4 shrink-0 items-center justify-center text-[13px] leading-none">{iconGlyph}</span>
                   : <NotebookTreeFileIcon className='h-4 w-4 shrink-0 text-[color-mix(in_oklch,var(--foreground)_70%,black_30%)] [[data-theme="dark"]_&]:text-[var(--foreground)] [[data-theme="mist"]_&]:text-[var(--foreground)]' />}
                 <span className={`block min-w-0 truncate text-sm font-medium leading-5 ${missing ? 'text-[var(--muted-foreground)]' : 'text-[var(--foreground)]'}`}>{renderValue(record, titleField)}</span>
               </span>
@@ -671,8 +674,10 @@ function TableRecordTitle({ record, titleField, renderValue, noteIconForRecord, 
 }) {
   const iconValue = noteIconForRecord?.(record);
   const icon = iconValue ? getPropertyIconOption(iconValue) : null;
+  const iconGlyph = iconValue && !icon ? getPropertyIconGlyph(iconValue) : null;
   return <span className={`flex min-w-0 items-center gap-1 ${className}`}>
     {icon && <img src={icon.src} alt="" aria-hidden="true" draggable={false} className="h-4 w-4 shrink-0 object-contain" />}
+    {iconGlyph && <span aria-hidden="true" className="flex h-4 w-4 shrink-0 items-center justify-center text-[13px] leading-none">{iconGlyph}</span>}
     <span className={titleClassName}>{label ?? renderValue(record, titleField)}</span>
   </span>;
 }

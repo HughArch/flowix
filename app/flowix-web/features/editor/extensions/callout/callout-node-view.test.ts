@@ -41,7 +41,7 @@ function iconButton(editor: Editor): HTMLButtonElement {
 }
 
 function pickerPanel(): HTMLElement | null {
-  return document.body.querySelector('.flowix-callout-picker');
+  return document.body.querySelector('.flowix-emoji-picker');
 }
 
 afterEach(() => {
@@ -74,7 +74,7 @@ describe('callout node view', () => {
     const panel = pickerPanel();
     expect(panel).toBeTruthy();
 
-    const choices = panel!.querySelectorAll<HTMLButtonElement>('.flowix-callout-picker__icon');
+    const choices = panel!.querySelectorAll<HTMLButtonElement>('.flowix-emoji-picker__icon');
     expect(choices.length).toBeGreaterThan(0);
     const nextIcon = choices[3].textContent!;
     choices[3].click();
@@ -88,7 +88,7 @@ describe('callout node view', () => {
     const editor = createEditor(calloutDocument());
     iconButton(editor).click();
 
-    const presets = document.querySelectorAll<HTMLButtonElement>('.flowix-callout-picker__preset');
+    const presets = document.querySelectorAll<HTMLButtonElement>('.flowix-emoji-picker__preset');
     expect(presets).toHaveLength(4);
 
     document.querySelector<HTMLButtonElement>('[data-preset="success"]')!.click();
@@ -102,7 +102,7 @@ describe('callout node view', () => {
     iconButton(editor).click();
 
     const swatches = document.body.querySelectorAll<HTMLButtonElement>(
-      '.flowix-callout-picker__swatch',
+      '.flowix-emoji-picker__swatch',
     );
     expect(swatches.length).toBe(9);
     swatches[0].click();
@@ -119,30 +119,30 @@ describe('callout node view', () => {
     const panel = pickerPanel()!;
 
     await vi.waitFor(() => {
-      expect(panel.querySelectorAll('.flowix-callout-picker__tab')).toHaveLength(10);
+      expect(panel.querySelectorAll('.flowix-emoji-picker__tab')).toHaveLength(10);
     }, { timeout: 5000 });
 
-    const tabs = panel.querySelectorAll<HTMLButtonElement>('.flowix-callout-picker__tab');
+    const tabs = panel.querySelectorAll<HTMLButtonElement>('.flowix-emoji-picker__tab');
     // Common + the nine Unicode groups; no component/skin-tone group.
     expect(Array.from(tabs).map((tab) => tab.textContent)).not.toContain('Component');
 
     // Switching to "Smileys & emotion" renders that group's full set.
     tabs[1].click();
     expect(
-      panel.querySelectorAll('.flowix-callout-picker__icon').length,
+      panel.querySelectorAll('.flowix-emoji-picker__icon').length,
     ).toBeGreaterThan(40);
 
     // "People" contains ZWJ sequences; they must be marked wide so the grid
     // scales them down instead of letting them overlap neighbours.
     tabs[2].click();
     expect(
-      panel.querySelectorAll('.flowix-callout-picker__icon[data-wide]').length,
+      panel.querySelectorAll('.flowix-emoji-picker__icon[data-wide]').length,
     ).toBeGreaterThan(0);
 
     // Flags render as bundled SVGs, not platform font glyphs.
     tabs[9].click();
     expect(
-      panel.querySelectorAll('.flowix-callout-picker__icon img').length,
+      panel.querySelectorAll('.flowix-emoji-picker__icon img').length,
     ).toBeGreaterThan(0);
   });
 
@@ -151,7 +151,7 @@ describe('callout node view', () => {
     iconButton(editor).click();
     const panel = pickerPanel()!;
 
-    const input = panel.querySelector<HTMLInputElement>('.flowix-callout-picker__search')!;
+    const input = panel.querySelector<HTMLInputElement>('.flowix-emoji-picker__search')!;
     await vi.waitFor(() => {
       expect(input.disabled).toBe(false);
     }, { timeout: 5000 });
@@ -160,7 +160,7 @@ describe('callout node view', () => {
     input.dispatchEvent(new Event('input', { bubbles: true }));
 
     const results = Array.from(
-      panel.querySelectorAll<HTMLButtonElement>('.flowix-callout-picker__icon'),
+      panel.querySelectorAll<HTMLButtonElement>('.flowix-emoji-picker__icon'),
     );
     expect(results.length).toBeGreaterThan(0);
     expect(results.some((button) => /apple|苹果/i.test(button.title))).toBe(true);

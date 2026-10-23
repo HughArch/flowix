@@ -3,7 +3,7 @@ import type { PropertyKind, PropertyDisplayKind } from '@/lib/property-types';
 import { NOTE_COLORS, NOTE_COLOR_HEX } from '@features/memo/store/note-store';
 import type { NoteColor } from '@/types/note-item';
 import { formatFrontmatterPropertyValue } from '@features/document/properties/frontmatter-model';
-import { getPropertyIconOption } from '@features/document/properties/property-icons';
+import { getPropertyIconGlyph, getPropertyIconOption } from '@features/document/properties/property-icons';
 import { resolvePropertyType } from '@features/document/properties/property-type';
 import { canonicalizePropertyKey } from '@features/properties/property-key';
 import { createOptionChip } from './frontmatter-property-editor';
@@ -183,7 +183,8 @@ export function renderFrontmatterPropertyValue(
   }
 
   if (kind === 'icon') {
-    const iconOption = getPropertyIconOption(String(property.value ?? ''));
+    const rawValue = String(property.value ?? '');
+    const iconOption = getPropertyIconOption(rawValue);
     if (iconOption) {
       const image = document.createElement('img');
       image.className = 'frontmatter-property__value-icon';
@@ -191,6 +192,17 @@ export function renderFrontmatterPropertyValue(
       image.alt = iconOption.label;
       image.title = iconOption.label;
       valueContainer.append(image);
+      return valueContainer;
+    }
+    const glyph = getPropertyIconGlyph(rawValue);
+    if (glyph) {
+      const span = createElement(
+        'span',
+        'frontmatter-property__value-icon frontmatter-property__value-icon--glyph',
+        glyph,
+      );
+      span.title = glyph;
+      valueContainer.append(span);
       return valueContainer;
     }
   }

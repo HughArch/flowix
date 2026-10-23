@@ -35,7 +35,7 @@ import { ContextMenu, ContextMenuContent, ContextMenuItem, ContextMenuTrigger, u
 import { POPUP_SEPARATOR_CLASS } from '@shared/ui/popup-separator';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
 import folderIcon from '@/assets/folder-outline.svg?raw';
-import { getPropertyIconOption } from '@features/document/properties/property-icons';
+import { getPropertyIconGlyph, getPropertyIconOption } from '@features/document/properties/property-icons';
 import { resourceKindFromPath } from '@features/editor/code-file';
 import { ContentIcon } from '@features/content/public/content-api';
 import { files, notes, product, type DocTreeItem } from '@platform/tauri/client';
@@ -226,6 +226,9 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   const displayedColors = displayedMetadata?.colors ?? [];
   const noteIcon = isNote && displayedIcon
     ? getPropertyIconOption(displayedIcon)
+    : null;
+  const noteGlyph = isNote && displayedIcon && !noteIcon
+    ? getPropertyIconGlyph(displayedIcon)
     : null;
   const [contextMenuOpen, setContextMenuOpen] = useState(false);
   const [renaming, setRenaming] = useState(false);
@@ -519,6 +522,13 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
                   className="h-[18px] w-[18px] object-contain"
                   draggable={false}
                 />
+              ) : noteGlyph ? (
+                <span
+                  aria-hidden="true"
+                  className="flex h-[18px] w-[18px] items-center justify-center text-[15px] leading-none"
+                >
+                  {noteGlyph}
+                </span>
               ) : isNote ? (
                 <ContentIcon content={{ kind: 'note' }} className="notebook-file-tree__default-file-icon h-[18px] w-[18px]" />
               ) : (

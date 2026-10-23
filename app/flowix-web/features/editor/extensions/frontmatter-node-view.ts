@@ -129,6 +129,10 @@ export class FrontmatterPropertyNodeView implements NodeView {
       && target instanceof globalThis.Node
       && !this.activePropertyEdit.popover.contains(target)
       && !targetElement?.closest('.frontmatter-property__date-picker-popover')
+      // The icon property's emoji picker lives on document.body, outside the
+      // property popover. Without this exemption the pointerdown would commit
+      // (and close) the editor before the click reaches the emoji button.
+      && !targetElement?.closest('.flowix-emoji-picker')
     ) {
       this.savePropertyEdit();
     }

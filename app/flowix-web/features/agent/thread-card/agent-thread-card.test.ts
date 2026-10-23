@@ -174,6 +174,7 @@ vi.mock("@features/memo/components/notebook-icon", () => ({
 }));
 
 vi.mock("@features/document/properties/property-icons", () => ({
+  getPropertyIconGlyph: () => null,
   getPropertyIconOption: () => null,
 }));
 

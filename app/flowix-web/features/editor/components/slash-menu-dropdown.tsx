@@ -13,6 +13,7 @@ import {
   MinusIcon,
   PaperclipIcon,
   QuotesIcon,
+  SmileyIcon,
   TableIcon,
   TextHFourIcon,
   TextHOneIcon,
@@ -42,6 +43,7 @@ export type SlashMenuItemId =
   | 'paragraph'
   | 'blockquote'
   | 'callout'
+  | 'emoji'
   | 'toggle'
   | 'code-block'
   | 'table'
@@ -246,6 +248,13 @@ export const SLASH_MENU_ITEMS: SlashMenuItem[] = [
     labelKey: 'editor.slash.label.callout',
     keywords: ['callout', 'zzk', 'callout block', 'zhuozhong', '着重', '强调', '提示', '高亮'],
     icon: LightbulbIcon,
+    sectionKey: 'editor.slash.section.addBlock',
+  },
+  {
+    id: 'emoji',
+    labelKey: 'editor.slash.label.emoji',
+    keywords: ['emoji', 'emoticon', 'smile', 'face', 'biaoqing', '表情'],
+    icon: SmileyIcon,
     sectionKey: 'editor.slash.section.addBlock',
   },
   {

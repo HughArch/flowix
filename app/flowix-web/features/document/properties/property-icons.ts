@@ -48,3 +48,40 @@ export function getPropertyIconOption(value: string): PropertyIconOption | null 
   if (!normalized) return null;
   return PROPERTY_ICON_OPTIONS.find((option) => option.value === normalized) ?? null;
 }
+
+/**
+ * Return the single glyph when `properties.icon` stores a literal character
+ * (emoji or one character) instead of a bundled SVG icon id.
+ *
+ * Icon ids are ASCII slugs, so anything outside `[\w.-]` that segments into
+ * one grapheme is treated as a glyph. This keeps legacy SVG ids and the newer
+ * emoji values in the same property without a separate storage field.
+ */
+export function getPropertyIconGlyph(value: string): string | null {
+  const normalized = value.trim();
+  if (!normalized) return null;
+  if (/^[\w.-]+$/.test(normalized)) return null;
+  if (/\s/u.test(normalized)) return null;
+
+  const Segmenter = (Intl as unknown as {
+    Segmenter?: new (
+      locales?: string,
+      options?: { granularity: 'grapheme' },
+    ) => { segment: (input: string) => Iterable<{ segment: string }> };
+  }).Segmenter;
+  if (Segmenter) {
+    const segments = Array.from(
+      new Segmenter(undefined, { granularity: 'grapheme' }).segment(normalized),
+    );
+    return segments.length === 1 ? segments[0].segment : null;
+  }
+
+  // Fallback for engines without Intl.Segmenter: one code point, or a flag
+  // built from a pair of regional indicators.
+  const codepoints = Array.from(normalized);
+  if (codepoints.length === 1) return normalized;
+  if (codepoints.length === 2 && /\p{Regional_Indicator}/u.test(normalized)) {
+    return normalized;
+  }
+  return null;
+}

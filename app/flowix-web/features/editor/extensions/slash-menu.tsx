@@ -29,6 +29,7 @@ import { applyListType } from './list-transforms';
 import { openTableReferencePicker } from '@features/multidimensional-table/table-reference-picker';
 import { openMediaLibraryReferencePicker } from '@features/media-library/media-library-reference-picker';
 import type { TableViewType } from '@features/multidimensional-table/model';
+import { createEmojiPickerPanel } from './callout/emoji-picker';
 
 export const slashMenuPluginKey = new PluginKey('slashMenu');
 
@@ -164,6 +165,96 @@ function closeMenu(ownerView?: EditorView) {
   } else {
     container?.remove();
   }
+}
+
+let slashEmojiPickerCleanup: (() => void) | null = null;
+
+function closeSlashEmojiPicker() {
+  const cleanup = slashEmojiPickerCleanup;
+  slashEmojiPickerCleanup = null;
+  cleanup?.();
+}
+
+/**
+ * Open the shared emoji panel beside the slash trigger. `insertPos` is the
+ * caret left after deleting `/query`, so the picked emoji lands exactly where
+ * the command was typed.
+ */
+function openSlashEmojiPicker(editor: Editor, insertPos: number) {
+  closeSlashEmojiPicker();
+
+  const panel = createEmojiPickerPanel({
+    language: getCurrentAppLanguage(),
+    requestClose: closeSlashEmojiPicker,
+    onPick: (unicode) => {
+      if (editor.isDestroyed) return;
+      const pos = Math.min(insertPos, editor.state.doc.content.size);
+      editor.chain().focus().insertContentAt(pos, unicode).run();
+    },
+  });
+
+  const element = panel.element;
+  document.body.appendChild(element);
+  panel.refreshLayout();
+
+  const position = () => {
+    if (editor.isDestroyed) return;
+    const coords = editor.view.coordsAtPos(
+      Math.min(insertPos, editor.state.doc.content.size),
+    );
+    const margin = 8;
+    const gap = 6;
+    const width = element.offsetWidth;
+    const height = element.offsetHeight;
+    const left = Math.min(
+      Math.max(margin, coords.left),
+      Math.max(margin, window.innerWidth - width - margin),
+    );
+    const below = coords.bottom + gap;
+    // Flip above the caret when the panel would overflow the viewport.
+    const top = below + height > window.innerHeight - margin
+      ? Math.max(margin, coords.top - height - gap)
+      : below;
+    element.style.left = `${left}px`;
+    element.style.top = `${top}px`;
+  };
+  position();
+
+  const handlePointerDown = (event: PointerEvent) => {
+    if (event.target instanceof Node && element.contains(event.target)) return;
+    closeSlashEmojiPicker();
+  };
+  const handleKeyDown = (event: KeyboardEvent) => {
+    if (event.key !== 'Escape') return;
+    event.preventDefault();
+    closeSlashEmojiPicker();
+    if (!editor.isDestroyed) editor.commands.focus();
+  };
+  const handleScroll = (event: Event) => {
+    // The emoji grid and tabs scroll inside the panel; only dismiss on
+    // scrolls that happen in the editor behind it.
+    if (event.target instanceof Node && element.contains(event.target)) return;
+    closeSlashEmojiPicker();
+  };
+  const handleResize = () => closeSlashEmojiPicker();
+
+  document.addEventListener('pointerdown', handlePointerDown, true);
+  document.addEventListener('keydown', handleKeyDown, true);
+  window.addEventListener('resize', handleResize);
+  window.addEventListener('scroll', handleScroll, true);
+
+  slashEmojiPickerCleanup = () => {
+    document.removeEventListener('pointerdown', handlePointerDown, true);
+    document.removeEventListener('keydown', handleKeyDown, true);
+    window.removeEventListener('resize', handleResize);
+    window.removeEventListener('scroll', handleScroll, true);
+    panel.destroy();
+  };
+
+  panel.focusSearch();
+  void panel.ready.then(() => {
+    if (element.isConnected) position();
+  });
 }
 
 function isCurrentMenuView(view: EditorView, openId = menuOpenId): boolean {
@@ -603,6 +694,16 @@ function handleSelect(item: SlashMenuItem): void {
     return;
   }
 
+  if (item.id === 'emoji') {
+    // Inline insert: drop `/query`, then let the shared picker place the
+    // chosen emoji at the caret.
+    deleteTriggerText(editor);
+    const insertPos = editor.state.selection.from;
+    closeMenu();
+    openSlashEmojiPicker(editor, insertPos);
+    return;
+  }
+
   if (item.id === 'math-block') {
     prepareSlashBlockTarget(editor);
     closeMenu();
@@ -757,6 +858,7 @@ export const SlashMenu = Extension.create({
             },
             destroy() {
               if (!view.isDestroyed) view.dom.removeEventListener('blur', handleBlur);
+              closeSlashEmojiPicker();
               closeMenu(view);
             },
           };

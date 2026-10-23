@@ -1339,4 +1339,56 @@ describe('frontmatter property helpers', () => {
     editor.destroy();
     host.remove();
   });
+
+  it('persists an emoji picked for the icon property', async () => {
+    const host = document.createElement('div');
+    document.body.append(host);
+    const editor = new Editor({
+      element: host,
+      extensions: [StarterKit, Markdown, Frontmatter],
+      content: '---\nflowix_key: ra61em97\nflowix_icon: smile\n---\nBody',
+      contentType: 'markdown',
+    });
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+
+    host.querySelector<HTMLElement>(
+      '[data-property-key="flowix_icon"] .frontmatter-property__display-value',
+    )?.click();
+    const popover = document.body.querySelector<HTMLElement>('.frontmatter-property__edit-popover');
+    expect(popover).not.toBeNull();
+
+    const emojiToggle = popover!.querySelector<HTMLButtonElement>(
+      '.frontmatter-property__edit-icon-more',
+    );
+    expect(emojiToggle).not.toBeNull();
+    emojiToggle!.click();
+
+    const panel = document.body.querySelector<HTMLElement>('.flowix-emoji-picker');
+    expect(panel).not.toBeNull();
+    const first = panel!.querySelector<HTMLButtonElement>('.flowix-emoji-picker__icon');
+    expect(first).not.toBeNull();
+    const emoji = first!.textContent!;
+    // Real pointer input fires pointerdown before click; the editor's document
+    // handler must not commit/close the property editor before the emoji click.
+    first!.dispatchEvent(new Event('pointerdown', { bubbles: true }));
+    first!.click();
+
+    expect(panel!.isConnected).toBe(false);
+    expect(
+      popover!.querySelector('.frontmatter-property__edit-icon-glyph')?.textContent,
+    ).toBe(emoji);
+
+    // Picking an emoji commits the property immediately (the popover closes
+    // without waiting for a focus change).
+    await new Promise((resolve) => window.setTimeout(resolve, 0));
+    expect(document.body.querySelector('.frontmatter-property__edit-popover')).toBeNull();
+    expect(editor.getMarkdown()).toContain(emoji);
+    expect(
+      host.querySelector(
+        '[data-property-key="flowix_icon"] .frontmatter-property__value-icon--glyph',
+      )?.textContent,
+    ).toBe(emoji);
+    editor.destroy();
+    host.remove();
+  });
 });

@@ -2600,8 +2600,9 @@ html.flowix-block-dragging * {
   padding-left: 1.4rem;
 }
 
-/* Icon + colour picker, mounted on document.body (outside the editor DOM). */
-.flowix-callout-picker {
+/* Shared emoji picker (callout icon menu + slash command), mounted on
+   document.body (outside the editor DOM). */
+.flowix-emoji-picker {
   position: fixed;
   z-index: 1000;
   width: 320px;
@@ -2613,15 +2614,30 @@ html.flowix-block-dragging * {
   box-shadow: 0 12px 28px rgb(0 0 0 / 18%);
 }
 
+/* Inline variant hosted inside an existing popover (property icon picker). */
+.flowix-emoji-picker--inline {
+  position: static;
+  width: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  box-shadow: none;
+}
+
+.flowix-emoji-picker--inline .flowix-emoji-picker__scroll {
+  max-height: 180px;
+}
+
 /* Built-in scenarios: one click applies icon + background together. */
-.flowix-callout-picker__presets {
+.flowix-emoji-picker__presets {
   display: grid;
   grid-template-columns: repeat(2, minmax(0, 1fr));
   gap: 4px;
   margin-bottom: 8px;
 }
 
-.flowix-callout-picker__preset {
+.flowix-emoji-picker__preset {
   display: inline-flex;
   align-items: center;
   gap: 6px;
@@ -2638,16 +2654,16 @@ html.flowix-block-dragging * {
   cursor: pointer;
 }
 
-.flowix-callout-picker__preset:hover {
+.flowix-emoji-picker__preset:hover {
   background: color-mix(in oklch, var(--flowix-preset-color) 20%, transparent);
 }
 
-.flowix-callout-picker__preset-icon {
+.flowix-emoji-picker__preset-icon {
   font-size: 15px;
   line-height: 1;
 }
 
-.flowix-callout-picker__search {
+.flowix-emoji-picker__search {
   width: 100%;
   height: 28px;
   margin: 0 0 8px;
@@ -2659,22 +2675,22 @@ html.flowix-block-dragging * {
   font: inherit;
   font-size: 0.78rem;
   outline: none;
-}.flowix-callout-picker__search:focus {
+}.flowix-emoji-picker__search:focus {
   border-color: var(--brand);
 }
 
-.flowix-callout-picker__search:disabled {
+.flowix-emoji-picker__search:disabled {
   opacity: 0.6;
 }
 
-.flowix-callout-picker__tabs {
+.flowix-emoji-picker__tabs {
   display: flex;
   flex-wrap: wrap;
   gap: 2px;
   margin-bottom: 6px;
 }
 
-.flowix-callout-picker__tab {
+.flowix-emoji-picker__tab {
   padding: 2px 6px;
   border: 0;
   border-radius: 5px;
@@ -2686,17 +2702,17 @@ html.flowix-block-dragging * {
   cursor: pointer;
 }
 
-.flowix-callout-picker__tab:hover {
+.flowix-emoji-picker__tab:hover {
   background: var(--hover-bg);
 }
 
-.flowix-callout-picker__tab[data-active] {
+.flowix-emoji-picker__tab[data-active] {
   background: var(--hover-bg);
   color: var(--foreground);
   font-weight: 600;
 }
 
-.flowix-callout-picker__scroll {
+.flowix-emoji-picker__scroll {
   max-height: 190px;
   overflow-y: auto;
   overflow-x: hidden;
@@ -2706,12 +2722,12 @@ html.flowix-block-dragging * {
   scrollbar-gutter: stable;
 }
 
-.flowix-callout-picker__grid {
+.flowix-emoji-picker__grid {
   position: relative;
 }
 
 /* Virtualised window: only the rows around the viewport exist in the DOM. */
-.flowix-callout-picker__window {
+.flowix-emoji-picker__window {
   position: absolute;
   top: 0;
   left: 0;
@@ -2720,14 +2736,14 @@ html.flowix-block-dragging * {
   justify-items: center;
 }
 
-.flowix-callout-picker__empty {
+.flowix-emoji-picker__empty {
   padding: 18px 0;
   color: var(--muted-foreground);
   font-size: 0.75rem;
   text-align: center;
 }
 
-.flowix-callout-picker__icon {
+.flowix-emoji-picker__icon {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -2744,11 +2760,11 @@ html.flowix-block-dragging * {
   cursor: pointer;
 }
 
-.flowix-callout-picker__icon[hidden] {
+.flowix-emoji-picker__icon[hidden] {
   display: none;
 }
 
-.flowix-callout-picker__icon img {
+.flowix-emoji-picker__icon img {
   width: 22px;
   height: 22px;
   object-fit: contain;
@@ -2758,27 +2774,27 @@ html.flowix-block-dragging * {
 
 /* Multi-codepoint ZWJ sequences render wider than one glyph; scale them down
    so adjacent emoji never overlap inside the compact grid. */
-.flowix-callout-picker__icon[data-wide] {
+.flowix-emoji-picker__icon[data-wide] {
   font-size: 13px;
 }
 
-.flowix-callout-picker__icon:hover {
+.flowix-emoji-picker__icon:hover {
   background: var(--hover-bg);
 }
 
-.flowix-callout-picker__label {
+.flowix-emoji-picker__label {
   margin: 8px 0 6px;
   color: var(--muted-foreground);
   font-size: 0.72rem;
   font-weight: 600;
 }
 
-.flowix-callout-picker__swatches {
+.flowix-emoji-picker__swatches {
   display: flex;
   gap: 6px;
 }
 
-.flowix-callout-picker__swatch {
+.flowix-emoji-picker__swatch {
   width: 20px;
   height: 20px;
   padding: 0;
@@ -2788,7 +2804,7 @@ html.flowix-block-dragging * {
   cursor: pointer;
 }
 
-.flowix-callout-picker__swatch[data-active] {
+.flowix-emoji-picker__swatch[data-active] {
   box-shadow: 0 0 0 2px var(--popover), 0 0 0 4px var(--flowix-swatch-color);
 }
 

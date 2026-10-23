@@ -6,7 +6,8 @@ import { stableTextHue } from '@/lib/color';
 import { NOTE_COLORS, NOTE_COLOR_HEX } from '@features/memo/store/note-store';
 import type { NoteColor } from '@/types/note-item';
 import { isFrontmatterPropertyFlowSequence, normalizeTagInput, toFrontmatterPropertyInput } from '@features/document/properties/frontmatter-model';
-import { PROPERTY_ICON_OPTIONS, getPropertyIconOption } from '@features/document/properties/property-icons';
+import { PROPERTY_ICON_OPTIONS, getPropertyIconGlyph, getPropertyIconOption } from '@features/document/properties/property-icons';
+import { createEmojiPickerPanel, type EmojiPickerPanel } from '@features/editor/extensions/callout/emoji-picker';
 import { getAllPresets, PROPERTY_KINDS, resolvePropertyPreset, type PropertyKind } from '@features/document/properties/presets';
 import { PROPERTY_DATE_RE, resolvePropertyType } from '@features/document/properties/property-type';
 import { DateValueInput } from '@features/document/components/note-properties/date-value-input';
@@ -460,6 +461,15 @@ export class FrontmatterPropertyEditor {
         trigger.setAttribute('aria-label', property.key);
         menu.hidden = true;
 
+        let emojiPanel: EmojiPickerPanel | null = null;
+        let removeEmojiDismiss: (() => void) | null = null;
+
+        const closeEmojiPanel = () => {
+          removeEmojiDismiss?.();
+          removeEmojiDismiss = null;
+          emojiPanel?.destroy();
+          emojiPanel = null;
+        };
         const closeMenu = () => {
           menu.hidden = true;
           trigger.setAttribute('aria-expanded', 'false');
@@ -468,7 +478,8 @@ export class FrontmatterPropertyEditor {
           trigger.replaceChildren();
           const iconBox = createElement('span', 'frontmatter-property__edit-icon-box');
           const selected = getPropertyIconOption(iconValue);
-          if (!selected) iconBox.classList.add('frontmatter-property__edit-icon-box--empty');
+          const glyph = selected ? null : getPropertyIconGlyph(iconValue);
+          if (!selected && !glyph) iconBox.classList.add('frontmatter-property__edit-icon-box--empty');
           if (selected) {
             const image = createElement('img', 'frontmatter-property__edit-icon-image');
             image.src = selected.src;
@@ -477,6 +488,10 @@ export class FrontmatterPropertyEditor {
             image.title = selected.label;
             trigger.title = selected.label;
             iconBox.append(image);
+          } else if (glyph) {
+            const glyphEl = createElement('span', 'frontmatter-property__edit-icon-glyph', glyph);
+            trigger.title = glyph;
+            iconBox.append(glyphEl);
           } else {
             trigger.title = '';
             iconBox.append(createElement('span', 'frontmatter-property__edit-icon-placeholder'));
@@ -523,6 +538,90 @@ export class FrontmatterPropertyEditor {
           menu.append(item);
         });
 
+        // Emoji values share the callout / slash picker instead of the bundled
+        // SVG set; both kinds live in the same `flowix_icon` property.
+        const emojiToggle = createElement(
+          'button',
+          'frontmatter-property__edit-icon-more',
+          this.t('document.properties.icon.tabEmoji'),
+        );
+        emojiToggle.type = 'button';
+        emojiToggle.addEventListener('click', () => {
+          closeMenu();
+          closeEmojiPanel();
+
+          const panel = createEmojiPickerPanel({
+            language: getCurrentAppLanguage(),
+            requestClose: () => {
+              closeEmojiPanel();
+              if (trigger.isConnected) trigger.focus();
+            },
+            onPick: (unicode) => {
+              iconValue = unicode;
+              renderTrigger();
+              // Picking an emoji is an explicit value change; commit it right
+              // away instead of waiting for the property popover to lose focus.
+              this.savePropertyEdit();
+            },
+          });
+          const element = panel.element;
+          ownerDocument.body.append(element);
+          panel.refreshLayout();
+
+          const position = () => {
+            if (!element.isConnected) return;
+            const rect = trigger.getBoundingClientRect();
+            const margin = 8;
+            const width = element.offsetWidth;
+            const height = element.offsetHeight;
+            const left = Math.min(
+              Math.max(margin, rect.right - width),
+              Math.max(margin, ownerWindow.innerWidth - width - margin),
+            );
+            const top = rect.bottom + 6 + height > ownerWindow.innerHeight - margin
+              ? Math.max(margin, rect.top - height - 6)
+              : rect.bottom + 6;
+            element.style.left = `${left}px`;
+            element.style.top = `${top}px`;
+          };
+          position();
+
+          const handleEmojiPointerDown = (event: PointerEvent) => {
+            const target = event.target;
+            if (!(target instanceof Node)) return;
+            if (element.contains(target) || trigger.contains(target)) return;
+            closeEmojiPanel();
+            // Opening the picker moved focus out of the property popover, so
+            // its focusout save no longer fires. Hand focus back to the
+            // trigger first; the browser then moves it to the click target and
+            // the regular save path runs again.
+            if (trigger.isConnected) trigger.focus();
+          };
+          const handleEmojiKeyDown = (event: KeyboardEvent) => {
+            if (event.key !== 'Escape') return;
+            event.preventDefault();
+            closeEmojiPanel();
+            trigger.focus();
+          };
+          const handleEmojiDismiss = () => closeEmojiPanel();
+
+          ownerDocument.addEventListener('pointerdown', handleEmojiPointerDown, true);
+          ownerDocument.addEventListener('keydown', handleEmojiKeyDown, true);
+          ownerWindow.addEventListener('resize', handleEmojiDismiss);
+          ownerWindow.addEventListener('scroll', handleEmojiDismiss, true);
+          removeEmojiDismiss = () => {
+            ownerDocument.removeEventListener('pointerdown', handleEmojiPointerDown, true);
+            ownerDocument.removeEventListener('keydown', handleEmojiKeyDown, true);
+            ownerWindow.removeEventListener('resize', handleEmojiDismiss);
+            ownerWindow.removeEventListener('scroll', handleEmojiDismiss, true);
+          };
+          emojiPanel = panel;
+
+          panel.focusSearch();
+          void panel.ready.then(position);
+        });
+        menu.append(emojiToggle);
+
         trigger.addEventListener('click', () => {
           const open = menu.hidden;
           menu.hidden = !open;
@@ -542,6 +641,7 @@ export class FrontmatterPropertyEditor {
           focusTarget: trigger,
           getValue: () => iconValue,
           storageKind: 'Icon',
+          destroy: () => closeEmojiPanel(),
         };
       }
 
@@ -963,15 +1063,20 @@ export class FrontmatterPropertyEditor {
     popover.addEventListener('focusout', (event) => {
       const nextTarget = event.relatedTarget;
       const nextTargetElement = nextTarget instanceof Element ? nextTarget : null;
+      const inEmojiPicker = (node: Node | null): boolean =>
+        node instanceof Element && Boolean(node.closest('.flowix-emoji-picker'));
       if (
         !(nextTarget instanceof globalThis.Node)
         || popover.contains(nextTarget)
         || nextTargetElement?.closest('.frontmatter-property__date-picker-popover')
+        || inEmojiPicker(nextTarget)
       ) return;
       queueMicrotask(() => {
+        const focused = ownerDocument.activeElement;
         if (
           this.activePropertyEdit?.popover === popover
-          && !popover.contains(ownerDocument.activeElement)
+          && !popover.contains(focused)
+          && !inEmojiPicker(focused)
         ) {
           this.savePropertyEdit();
         }

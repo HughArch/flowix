@@ -1,1 +1,4 @@
-export { getPropertyIconOption } from '@features/document/properties/property-icons';
+export {
+  getPropertyIconGlyph,
+  getPropertyIconOption,
+} from '@features/document/properties/property-icons';
