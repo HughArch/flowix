@@ -8,7 +8,6 @@ import {
   closeOtherBrowserColumnTabs,
   hideBrowserColumn,
   openBrowserColumnTabInWorkColumn,
-  registerBrowserColumnFlush,
   reorderBrowserColumnTab,
   selectBrowserColumnTab,
   useBrowserColumnFocusViewModel,
@@ -33,7 +32,6 @@ import {
   BrowserColumnSurfaceHost,
   getBrowserColumnSurfaceDefinition,
   useWorkspaceSurfacePresentation,
-  type BrowserColumnFlushRegistration,
   resolveBrowserColumnSurface,
   WorkspaceSurfaceStateView,
 } from '@features/surface/public/shell-api';
@@ -112,13 +110,9 @@ export function BrowserColumn({
       toast.error(error instanceof Error ? error.message : t('tabWindow.createConversation.failed'));
     }
   }, [selectedNotebook, t]);
-  const registerActiveFlush = useCallback<BrowserColumnFlushRegistration>((flush, discard) => {
-    if (activeTabId === null) return;
-    registerBrowserColumnFlush(activeTabId, flush, discard);
-  }, [activeTabId]);
   const handleSelectTab = useCallback(async (tabId: string) => {
     await waitForTabHeaderPaint();
-    return selectBrowserColumnTab(tabId);
+    return await selectBrowserColumnTab(tabId) === true;
   }, []);
   const closeWithDiscardFallback = useCallback(async (
     close: (discardChanges: boolean) => Promise<boolean | null>,
@@ -178,15 +172,13 @@ export function BrowserColumn({
     }
   }, [contextMenuTabId, tabs]);
   const activeSurface = activeTab
-    ? resolveBrowserColumnSurface(
-        activeTab,
+    ? resolveBrowserColumnSurface(activeTab, {
         // Cross-column editing ownership is controlled by DocumentContainer.
-        activePathHasDuplicateTab,
-        registerActiveFlush,
-        activeWebRuntime,
+        readOnly: activePathHasDuplicateTab,
+        webRuntime: activeWebRuntime,
         toolbarCollapsed,
         onToolbarCollapsedChange,
-      )
+      })
     : null;
   const activeSurfaceRuntime = useWorkspaceSurfacePresentation(activeSurface?.tabId ?? '');
   const activeSurfaceChrome = activeSurfaceRuntime.appearance?.headerStyle

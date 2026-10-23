@@ -16,12 +16,10 @@ const FONT_MODE_ICONS: Record<TypographyFontMode, string> = {
 export function TypographyFontSwitcher({
   fontMode,
   downloadingMode,
-  percent,
   onSelect,
 }: {
   fontMode: TypographyFontMode;
   downloadingMode: Exclude<TypographyFontMode, 'standard'> | null;
-  percent: number | null;
   onSelect: (mode: TypographyFontMode) => void;
 }) {
   const { t } = useI18n();
@@ -41,13 +39,13 @@ export function TypographyFontSwitcher({
               onClick={() => onSelect(mode)}
               className={`group flex h-[58px] w-[58px] shrink-0 flex-col items-center justify-center gap-1 rounded-lg text-[11px] leading-tight transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] ${active ? 'text-[var(--foreground)]' : 'text-[var(--muted-foreground)]'}`}
             >
-              {isLoading
-                ? <Loader2 aria-hidden="true" className="h-4 w-4 flowix-spin text-[var(--brand)]" />
-                : <img aria-hidden="true" src={FONT_MODE_ICONS[mode]} alt="" className="h-6 w-6 shrink-0 dark:invert" />}
-              <span className="max-w-full truncate tabular-nums">
+              <span className="flex h-6 w-6 shrink-0 items-center justify-center">
                 {isLoading
-                  ? percent == null ? '…' : `${percent}%`
-                  : t(mode === 'standard' ? 'document.font.standard' : mode === 'serif' ? 'document.font.serif' : 'document.font.wenkai')}
+                  ? <Loader2 aria-hidden="true" className="h-4 w-4 flowix-spin text-[var(--brand)]" />
+                  : <img aria-hidden="true" src={FONT_MODE_ICONS[mode]} alt="" className="h-6 w-6 shrink-0 dark:invert" />}
+              </span>
+              <span className="max-w-full truncate">
+                {t(mode === 'standard' ? 'document.font.standard' : mode === 'serif' ? 'document.font.serif' : 'document.font.wenkai')}
               </span>
             </button>
           );

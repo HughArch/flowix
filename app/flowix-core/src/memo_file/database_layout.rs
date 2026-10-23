@@ -60,7 +60,10 @@ pub fn prepare_database_directory(
         super::backup_storage_file(&lock_path).map_err(|error| {
             with_io_context(
                 error,
-                format!("preserve invalid database layout lock {}", lock_path.display()),
+                format!(
+                    "preserve invalid database layout lock {}",
+                    lock_path.display()
+                ),
             )
         })?;
     }
@@ -135,13 +138,23 @@ fn move_database_with_sidecars(root: &Path, database_dir: &Path, name: &str) -> 
             ));
         }
     }
-    // Orphan WAL files cannot belong to a new main database.
-    super::backup_database(&destination).map_err(|error| {
-        with_io_context(
-            error,
-            format!("preserve orphan database files for {}", destination.display()),
-        )
-    })?;
+    if name == "local.db" {
+        if root.join("notebook-registry-initialized").try_exists()? {
+            return Err(io::Error::new(io::ErrorKind::NotFound,
+                "initialized notebook registry is missing; automatic import of potentially stale legacy data is disabled"));
+        }
+        for suffix in ["-wal", "-shm", "-journal"] {
+            if fs::symlink_metadata(database_dir.join(format!("{name}{suffix}"))).is_ok() {
+                return Err(io::Error::new(
+                    io::ErrorKind::InvalidData,
+                    "notebook registry is missing but SQLite companions remain; recovery required",
+                ));
+            }
+        }
+    } else {
+        // Other runtime stores may preserve orphan companions before rebuilding.
+        super::backup_database(&destination)?;
+    }
     match fs::metadata(&source) {
         Ok(metadata) if metadata.is_file() => {}
         Ok(_) => return Ok(()),
@@ -159,7 +172,8 @@ fn move_database_with_sidecars(root: &Path, database_dir: &Path, name: &str) -> 
     let temporary = database_dir.join(format!(".{name}.{}.tmp", uuid::Uuid::new_v4()));
     let snapshot = (|| -> io::Result<()> {
         let conn = rusqlite::Connection::open_with_flags(
-            &source, rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            &source,
+            rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
         )
         .map_err(|error| {
             with_io_context(
@@ -179,6 +193,21 @@ fn move_database_with_sidecars(root: &Path, database_dir: &Path, name: &str) -> 
                 )
             })?;
         drop(conn);
+        if name == "local.db" {
+            let snapshot = rusqlite::Connection::open_with_flags(
+                &temporary,
+                rusqlite::OpenFlags::SQLITE_OPEN_READ_ONLY,
+            )
+            .map_err(io::Error::other)?;
+            let check: String = snapshot
+                .query_row("PRAGMA quick_check", [], |row| row.get(0))
+                .map_err(io::Error::other)?;
+            if check != "ok" {
+                return Err(io::Error::new(io::ErrorKind::InvalidData, check));
+            }
+            snapshot.prepare("SELECT id, name, icon, path, is_default, created_at, updated_at FROM notebooks")
+                .map_err(io::Error::other)?;
+        }
         OpenOptions::new()
             .write(true)
             .open(&temporary)
@@ -195,7 +224,9 @@ fn move_database_with_sidecars(root: &Path, database_dir: &Path, name: &str) -> 
                     format!("flush database snapshot {}", temporary.display()),
                 )
             })?;
-        fs::rename(&temporary, &destination).map_err(|error| {
+        // A hard link publishes this standalone snapshot atomically and refuses
+        // to replace a target created outside the cooperative layout lock.
+        fs::hard_link(&temporary, &destination).map_err(|error| {
             with_io_context(
                 error,
                 format!(
@@ -204,19 +235,12 @@ fn move_database_with_sidecars(root: &Path, database_dir: &Path, name: &str) -> 
                     destination.display()
                 ),
             )
-        })
+        })?;
+        let _ = fs::remove_file(&temporary);
+        Ok(())
     })();
     if let Err(error) = snapshot {
         let _ = fs::remove_file(&temporary);
-        if super::is_rebuildable_storage_error(&error) {
-            super::backup_database(&source).map_err(|error| {
-                with_io_context(
-                    error,
-                    format!("preserve unreadable legacy database {}", source.display()),
-                )
-            })?;
-            return Ok(()); // The normal initializer creates an empty canonical DB.
-        }
         return Err(error);
     }
     Ok(())

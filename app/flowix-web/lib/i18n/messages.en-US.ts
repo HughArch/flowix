@@ -1550,6 +1550,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "memo.fileTree.collapseFiles": "Collapse files",
     "memo.fileTree.expandFiles": "Expand files",
     "memo.fileTree.repositoriesTitle": "Repositories",
+    "memo.fileTree.openAllRepositories": "Open all repositories",
     "memo.fileTree.repositoriesEmpty": "No repositories added",
     "memo.fileTree.collapseRepositories": "Collapse repositories",
     "memo.fileTree.expandRepositories": "Expand repositories",

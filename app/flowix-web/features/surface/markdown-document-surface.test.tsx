@@ -23,6 +23,7 @@ let root: Root;
 let host: HTMLDivElement;
 const observer = vi.fn();
 const reportPresentation = vi.fn();
+const registerLifecycle = vi.fn();
 beforeEach(async () => {
   vi.clearAllMocks();
   mocks.read.mockResolvedValue(content('before'));
@@ -30,12 +31,15 @@ beforeEach(async () => {
   host = document.createElement('div');
   root = createRoot(host);
   await act(async () => root.render(<MarkdownDocumentSurface fileIdentity={{ path: '/book/plugin.md', displayId: 'plugin' }}
-    navigationViewId="browser-view" reportPresentation={reportPresentation}
+    navigationViewId="browser-view" reportPresentation={reportPresentation} registerLifecycle={registerLifecycle}
     documentProps={{ isExternalDocument: true, documentSessionMode: 'isolated', onFlushReady: observer }} />));
 });
 afterEach(async () => { await act(async () => root.unmount()); });
 
 describe('shared Markdown plugin preview session', () => {
+  it('publishes the early document save port through the shared lifecycle bridge', () => {
+    expect(registerLifecycle).toHaveBeenCalledWith({ status: 'ready', flush: mocks.flush, discard: mocks.discard }, expect.any(Object));
+  });
   it('flushes the registered view and refreshes non-mindmap plugin previews', async () => {
     expect(observer).toHaveBeenCalledWith(mocks.flush, mocks.discard);
     expect(host.querySelector('[data-preview]')!.textContent).toBe('before');

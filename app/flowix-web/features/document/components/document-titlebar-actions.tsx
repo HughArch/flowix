@@ -102,7 +102,6 @@ export function DocumentTitlebarActions({
           <EditorFontSwitcher
             fontMode={fontSwitch.fontMode}
             downloadingMode={fontSwitch.downloadingMode}
-            percent={fontSwitch.percent}
             onSelect={fontSwitch.selectFontMode}
           />
           <FontSizeSwitcher sizeMode={selectedFontSizeMode} onSelect={setEditorFontSizeMode} />

@@ -14,6 +14,7 @@ import { AgentTasksSection } from '@features/agent/public/shell-api';
 import {
   useCallback,
   useEffect,
+  useLayoutEffect,
   useMemo,
   useRef,
   useState,
@@ -21,7 +22,7 @@ import {
   type MouseEvent as ReactMouseEvent,
 } from 'react';
 import {
-  ChevronRight,
+  ChevronRight, ChevronLeft, Plus,
 } from 'lucide-react';
 import { SquaresFourIcon } from '@phosphor-icons/react';
 
@@ -305,6 +306,44 @@ export function NotebookFileTree({
     [agentWorkspaceNotebook, notebookId],
   );
   const [showScrollTopHint, setShowScrollTopHint] = useState(false);
+  const [repositoriesPageOpen, setRepositoriesPageOpen] = useState(false);
+  const repositoriesPageRef = useRef<HTMLDivElement | null>(null);
+  const repositoriesPageWasOpen = useRef(false);
+  const interruptedRepositoriesTransform = useRef<string | null>(null);
+  useLayoutEffect(() => {
+    const page = repositoriesPageRef.current;
+    if (!page) return;
+    const wasOpen = repositoriesPageWasOpen.current;
+    repositoriesPageWasOpen.current = repositoriesPageOpen;
+    if (!repositoriesPageOpen && !wasOpen) {
+      page.style.visibility = 'hidden';
+      return;
+    }
+    if (window.matchMedia?.('(prefers-reduced-motion: reduce)').matches || typeof page.animate !== 'function') {
+      page.style.transform = repositoriesPageOpen ? 'translateX(0)' : 'translateX(100%)';
+      page.style.visibility = repositoriesPageOpen ? 'visible' : 'hidden';
+      interruptedRepositoriesTransform.current = null;
+      return;
+    }
+    const from = interruptedRepositoriesTransform.current
+      ?? (wasOpen ? 'translateX(0)' : 'translateX(100%)');
+    interruptedRepositoriesTransform.current = null;
+    page.style.visibility = 'visible';
+    const animation = page.animate(
+      [{ transform: from }, { transform: repositoriesPageOpen ? 'translateX(0)' : 'translateX(100%)' }],
+      { duration: 240, easing: 'cubic-bezier(0.4, 0, 0.2, 1)' },
+    );
+    animation.onfinish = () => {
+      page.style.visibility = repositoriesPageOpen ? 'visible' : 'hidden';
+    };
+    return () => {
+      if (animation.playState === 'running') {
+        interruptedRepositoriesTransform.current = window.getComputedStyle(page).transform;
+      }
+      animation.onfinish = null;
+      animation.cancel();
+    };
+  }, [repositoriesPageOpen]);
   const {
     pinnedItems,
     hasPrevious: pinnedHasPrevious,
@@ -439,13 +478,6 @@ export function NotebookFileTree({
   }, []);
   const handleRepositorySectionHeightChange = useCallback((height: number) => {
     setRepositorySectionHeight((current) => current === height ? current : height);
-  }, []);
-  const handleRepositoryExpand = useCallback((repositoryElement: HTMLElement) => {
-    const scroller = treeScrollerRef.current;
-    if (!scroller) return;
-    const scrollerTop = scroller.getBoundingClientRect().top;
-    const repositoryTop = repositoryElement.getBoundingClientRect().top;
-    scroller.scrollTop += repositoryTop - scrollerTop - 36;
   }, []);
   const renderRowIndexByPath = useMemo(() => new Map(
     renderRows.flatMap((row, index) => row.kind === 'node'
@@ -1239,10 +1271,12 @@ export function NotebookFileTree({
               )}
               onAddRepository={() => { void handleAddRepository(); }}
               onRemoveRepository={(repository) => { void handleRemoveRepository(repository); }}
-              onExpandRepository={handleRepositoryExpand}
+              onExpandRepository={() => {}}
               canAddRepository={Boolean(notebookId)}
               onOpenFile={handleOpenRepositoryFile}
               onOpenInNewTab={onNoteOpenInNewTab ? handleOpenPathInNewTab : undefined}
+              viewMode="links"
+              onOpenRepositoryList={() => setRepositoriesPageOpen(true)}
             />
           )}
               </div>
@@ -1301,6 +1335,45 @@ export function NotebookFileTree({
       </ListSurfaceViewport>
       {creationDialog}
       <NotebookTreeCustomizePanel ref={customizePanelRef} sectionOrder={sectionOrder} hiddenSections={hiddenSections} onChange={updateSections} />
+      <div
+        ref={repositoriesPageRef}
+        className="sidebar-content-page sidebar-content-page--detail absolute inset-0 z-30 flex min-h-0 flex-col bg-[var(--list-bg)]"
+        data-page-active={repositoriesPageOpen}
+        inert={!repositoriesPageOpen}
+        aria-hidden={!repositoriesPageOpen}
+        aria-label={t('memo.fileTree.repositoriesTitle')}
+      >
+          <div className="flex items-center justify-between gap-2 px-3 pb-2">
+            <div className="flex min-w-0 flex-1 items-center gap-2">
+              <button type="button" onClick={() => setRepositoriesPageOpen(false)} aria-label={t('memo.navigation.backToFileTree')}
+                title={t('memo.navigation.backToFileTree')}
+                className="group flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-transparent p-0 text-sm text-[var(--foreground)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)]">
+                <ChevronLeft className="h-4 w-4 transition-[filter] duration-150 group-hover:brightness-125" aria-hidden="true" />
+              </button>
+              <span className="text-sm font-medium">{t('memo.fileTree.repositoriesTitle')}</span>
+              <span className="text-xs text-[var(--muted-foreground)]">{agentRepositories.length}</span>
+            </div>
+            <button type="button" onClick={() => { void handleAddRepository(); }} disabled={!notebookId}
+              aria-label={t('agent.workspace.addRepository')} title={t('agent.workspace.addRepository')}
+              className="group flex h-[30px] w-[30px] shrink-0 items-center justify-center rounded-xl border border-[var(--border)] bg-[var(--card)] p-0 text-[var(--foreground)] transition-colors focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--ring)] disabled:cursor-not-allowed disabled:opacity-40">
+              <Plus className="h-3.5 w-3.5 transition-[filter] duration-150 group-hover:brightness-125" aria-hidden="true" />
+            </button>
+          </div>
+          <div className="min-h-0 flex-1 overflow-y-auto p-2">
+            <AgentRepositoriesSection
+              repositories={agentRepositories}
+              order={1}
+              onHeightChange={() => {}}
+              onAddRepository={() => { void handleAddRepository(); }}
+              onRemoveRepository={(repository) => { void handleRemoveRepository(repository); }}
+              onExpandRepository={() => {}}
+              canAddRepository={Boolean(notebookId)}
+              onOpenFile={handleOpenRepositoryFile}
+              onOpenInNewTab={onNoteOpenInNewTab ? handleOpenPathInNewTab : undefined}
+              hideSectionHeader
+            />
+          </div>
+      </div>
     </div>
   );
 }

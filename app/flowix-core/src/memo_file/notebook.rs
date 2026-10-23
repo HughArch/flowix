@@ -279,13 +279,14 @@ impl MemoFile {
     /// Prepare only the current store. A completed installation must not inspect
     /// or copy legacy databases when a runtime dependency needs rebuilding.
     pub fn initialize_current_registry_storage(&self) -> std::io::Result<()> {
-        super::with_database_rebuild(&self.registry_db_path(), || {
-            let connection = self.registry.open_for_initialization()?;
-            self.workspace_connection()?;
-            self.read_notebook_configs()?;
-            self.read_selected_notebook_id()?;
-            Ok(connection)
-        })?;
+        // The registry is authoritative user data, never a disposable cache.
+        // Initialization failures must leave it in place rather than publish an empty registry.
+        let _connection = self.registry.open_for_initialization()?;
+        self.read_notebook_configs()?;
+        self.read_selected_notebook_id()?;
+        if let Err(error) = self.workspace_connection() {
+            tracing::warn!(%error, "notebook workspace initialization deferred; registry preserved");
+        }
         Ok(())
     }
 

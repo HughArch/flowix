@@ -157,7 +157,6 @@
     background: transparent !important;
     overflow-wrap: anywhere;
     word-break: break-word;
-    --editor-scale: calc(var(--editor-font-size, 16px) / 16px);
   }
 
   html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror > :first-child {
@@ -182,24 +181,24 @@
   }
 
   html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror h1 {
-    font-size: calc(1.9rem * var(--editor-scale));
+    font-size: calc(var(--editor-font-size, 16px) * 1.9);
     padding-top: 1rem;
-    padding-bottom: calc(0.3rem * var(--editor-scale));
+    padding-bottom: calc(var(--editor-font-size, 16px) * 0.3);
   }
 
   html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror h2 {
-    font-size: calc(1.5rem * var(--editor-scale));
+    font-size: calc(var(--editor-font-size, 16px) * 1.5);
     padding-top: 0.6rem;
     border-bottom: 0;
   }
 
   html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror h3 {
-    font-size: calc(1.2rem * var(--editor-scale));
+    font-size: calc(var(--editor-font-size, 16px) * 1.2);
     padding-top: 0.4rem;
   }
 
   html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror h4 {
-    font-size: calc(1.05rem * var(--editor-scale));
+    font-size: calc(var(--editor-font-size, 16px) * 1.05);
   }
 
   html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror h4,

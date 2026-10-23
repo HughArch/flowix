@@ -85,21 +85,16 @@ export interface BrowserColumnSurfaceDefinition {
   render: () => ReactNode;
 }
 
-export type BrowserColumnDocumentFlush = (
-  (options?: { silent?: boolean }) => Promise<boolean>
-) | null;
-export type BrowserColumnFlushRegistration = (
-  flush: BrowserColumnDocumentFlush,
-  discard?: (() => void) | null,
-) => void;
+interface BrowserColumnSurfaceOptions {
+  readOnly?: boolean;
+  webRuntime?: BrowserColumnWebRuntime | null;
+  toolbarCollapsed?: boolean;
+  onToolbarCollapsedChange?: (collapsed: boolean) => void;
+}
 
 export function resolveBrowserColumnSurface(
   tab: BrowserColumnTab,
-  readOnly: boolean,
-  onFlushReady?: BrowserColumnFlushRegistration,
-  webRuntime?: BrowserColumnWebRuntime | null,
-  toolbarCollapsed = false,
-  onToolbarCollapsedChange?: (collapsed: boolean) => void,
+  { readOnly = false, webRuntime = null, toolbarCollapsed = false, onToolbarCollapsedChange }: BrowserColumnSurfaceOptions = {},
 ): BrowserColumnSurface {
   const base = {
     instanceKey: `tab:${tab.id}`,
@@ -129,7 +124,7 @@ export function resolveBrowserColumnSurface(
           externalScopePath: target.scopePath,
           documentSessionMode: 'isolated',
           workspaceHost: 'browser-column',
-          readOnly, onFlushReady, toolbarCollapsed, onToolbarCollapsedChange,
+          readOnly, toolbarCollapsed, onToolbarCollapsedChange,
         },
         onSelectFile: (path) => { void selectBrowserColumnFile(tab.id, path); },
         onOpenFileInNewTab: (path) => { void openWorkspaceSurface({

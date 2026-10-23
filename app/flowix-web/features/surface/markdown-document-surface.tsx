@@ -46,11 +46,11 @@ export function MarkdownDocumentSurface({
   const flushRef = useRef<Parameters<NonNullable<DocumentProps['onFlushReady']>>[0]>(null);
   const currentPath = useRef(fileIdentity.path);
   currentPath.current = fileIdentity.path;
+  const lifecycleDocumentProps = useWorkspaceSurfaceLifecycleBridge(documentProps, registerLifecycle);
   const onFlushReady = useCallback<NonNullable<DocumentProps['onFlushReady']>>((flush, discard) => {
     flushRef.current = flush;
-    documentProps.onFlushReady?.(flush, discard);
-  }, [documentProps.onFlushReady]);
-  const lifecycleDocumentProps = useWorkspaceSurfaceLifecycleBridge(documentProps, registerLifecycle);
+    lifecycleDocumentProps.onFlushReady?.(flush, discard);
+  }, [lifecycleDocumentProps.onFlushReady]);
 
   useEffect(() => {
     let cancelled = false;

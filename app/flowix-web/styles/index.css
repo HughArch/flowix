@@ -46,6 +46,7 @@
 @import './theme/mist.css';
 @import './theme/ember.css';
 @import './window-material.css';
+@import "shadcn/tailwind.css";
 
 @font-face {
 	font-family: 'FlowixSeti';
@@ -54,8 +55,6 @@
 	font-style: normal;
 	font-weight: normal;
 }
-
-@import "shadcn/tailwind.css";
 
 /* Keep drag gestures from selecting page text while a shared drop session is active. */
 html.flowix-drag-drop-active,

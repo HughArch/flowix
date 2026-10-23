@@ -1111,6 +1111,20 @@ fn prepare_startup_storage(
     user_config_dir: &Path,
     startup: &crate::app::startup::StartupCoordinator,
 ) -> Result<(), String> {
+    if device_registry.last_successful_app_version().is_some()
+        && !user_config_dir
+            .join("db/local.db")
+            .try_exists()
+            .map_err(|error| error.to_string())?
+        && !user_config_dir
+            .join("local.db")
+            .try_exists()
+            .map_err(|error| error.to_string())?
+    {
+        return Err(
+            "notebook registry is missing from an existing installation; recovery required".into(),
+        );
+    }
     let version_init_pending = version_initialization_pending(device_registry);
     if version_init_pending {
         startup.mark_running(
@@ -1150,8 +1164,7 @@ fn prepare_startup_storage(
     }
     {
         let memo = crate::lock_utils::read_lock(memo_file, "memo_file");
-        let result = if version_init_pending { memo.initialize_registry_storage() }
-            else { memo.initialize_current_registry_storage() };
+        let result = memo.initialize_registry_storage();
         result.map_err(|error| format!("initialize notebook registry failed: {error}"))?;
     }
     if version_init_pending {
@@ -1182,28 +1195,41 @@ fn prepare_startup_storage(
     record_startup_stage(startup, "version-initialization-start");
     device_registry.begin_version_initialization()?;
 
-    crate::storage_initialization::initialize_legacy_storage_with_progress(
-        device_registry,
-        &crate::lock_utils::read_lock(memo_file, "memo_file"),
-        user_config,
-        user_config_dir,
-        &get_app_data_path(),
-        |completed, total, task| {
-            let percent = 30 + (55 * completed / total.max(1)) as u8;
-            startup.set_progress(percent, completed, total, task);
-        },
-    )?;
+    let migrations_complete =
+        crate::storage_initialization::initialize_legacy_storage_with_progress(
+            device_registry,
+            &crate::lock_utils::read_lock(memo_file, "memo_file"),
+            user_config,
+            user_config_dir,
+            &get_app_data_path(),
+            |completed, total, task| {
+                let percent = 30 + (55 * completed / total.max(1)) as u8;
+                startup.set_progress(percent, completed, total, task);
+            },
+        )?;
 
     startup.set_progress(88, 0, 2, "prepareRuntimeStorage");
     user_config.ensure_runtime_storage()?;
     startup.set_progress(95, 1, 2, "activateRuntime");
     user_config.prepare_initialized_runtime();
 
-    crate::storage_initialization::retire_global_index_databases(user_config_dir);
-    device_registry.complete_version_initialization()?;
+    if migrations_complete {
+        device_registry.complete_version_initialization()?;
+    } else {
+        tracing::warn!(
+            "optional storage migrations remain pending; startup continues and retries next launch"
+        );
+    }
     startup.set_progress(100, 2, 2, "completeInitialization");
 
-    record_startup_stage(startup, "version-initialization-complete");
+    record_startup_stage(
+        startup,
+        if migrations_complete {
+            "version-initialization-complete"
+        } else {
+            "version-initialization-deferred"
+        },
+    );
     Ok(())
 }
 
@@ -1594,6 +1620,7 @@ mod missing_dependency_tests {
         let memo = Arc::new(RwLock::new(flowix_core::memo_file::MemoFile::new(
             config.clone(),
         )));
+        memo.read().unwrap().initialize_registry_storage().unwrap();
         let startup = StartupCoordinator::new();
         for _ in 0..2 {
             prepare_storage(&config, user.clone(), &device, &memo, &startup).unwrap();
@@ -1620,15 +1647,20 @@ mod missing_dependency_tests {
         let memo = Arc::new(RwLock::new(flowix_core::memo_file::MemoFile::new(
             config.clone(),
         )));
+        memo.read().unwrap().initialize_registry_storage().unwrap();
         std::fs::write(config.join("index.db"), b"retired root database").unwrap();
         std::fs::create_dir_all(config.join("db")).unwrap();
         std::fs::write(config.join("db/index.db"), b"retired canonical database").unwrap();
         let startup = StartupCoordinator::new();
         prepare_storage(&config, user.clone(), &current, &memo, &startup).unwrap();
-        assert!(!config.join("index.db").exists());
-        assert!(!config.join("db/index.db").exists());
-        assert!(config.join("rebuild-backups").is_dir());
-        assert!(config.join("db/rebuild-backups").is_dir());
+        assert_eq!(
+            std::fs::read(config.join("index.db")).unwrap(),
+            b"retired root database"
+        );
+        assert_eq!(
+            std::fs::read(config.join("db/index.db")).unwrap(),
+            b"retired canonical database"
+        );
         assert_eq!(startup.status().stage, StartupStage::Initialization);
         assert_eq!(startup.status().progress.unwrap().percent, 100);
         let reloaded = crate::device_registration::DeviceRegistry::load(&config, "current");
@@ -1640,7 +1672,66 @@ mod missing_dependency_tests {
     }
 
     #[test]
-    fn storage_rebuild_starts_with_three_invalid_databases() {
+    fn optional_notebook_migration_failure_allows_startup_and_retries_next_launch() {
+        let temp = tempfile::tempdir().unwrap();
+        let home = temp.path().to_path_buf();
+        let config = get_user_config_dir(&home);
+        let user = Arc::new(user_config::UserConfigStore::new(home.clone()));
+        let device = crate::device_registration::DeviceRegistry::load(&config, "test");
+        let memo = Arc::new(RwLock::new(flowix_core::memo_file::MemoFile::new(
+            config.clone(),
+        )));
+        memo.read().unwrap().initialize_registry_storage().unwrap();
+        let root = home.join("notes");
+        let unknown = root.join(".flowix/artifacts/unknown");
+        std::fs::create_dir_all(&unknown).unwrap();
+        std::fs::write(unknown.join("retained.bin"), b"unknown artifact").unwrap();
+        let notebook = flowix_core::memo_file::NotebookConfig {
+            id: "keep".into(),
+            name: "Original".into(),
+            path: root.to_string_lossy().into_owned(),
+            icon: Some("icon".into()),
+            is_default: true,
+            sort: 30,
+            created_at: 123,
+            updated_at: 456,
+        };
+        memo.read()
+            .unwrap()
+            .write_notebook_configs(&[notebook.clone()])
+            .unwrap();
+        for _ in 0..2 {
+            let startup = StartupCoordinator::new();
+            prepare_storage(&config, user.clone(), &device, &memo, &startup).unwrap();
+            assert!(!device.is_version_initialization_complete());
+            let key =
+                flowix_core::memo_file::NotebookInitializationJob::ResetLegacyStorage.key("keep");
+            assert!(!memo
+                .read()
+                .unwrap()
+                .local_migration_completed(&key)
+                .unwrap());
+            let rows = memo.read().unwrap().read_notebook_configs().unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].id, "keep");
+            assert_eq!(rows[0].name, "Original");
+            assert_eq!(rows[0].path, notebook.path);
+            assert_eq!(rows[0].sort, 30);
+            assert!(unknown.join("retained.bin").exists());
+        }
+        // Resolve the source conflict; the deferred job can finish on the next launch.
+        std::fs::remove_dir_all(&unknown).unwrap();
+        let startup = StartupCoordinator::new();
+        prepare_storage(&config, user, &device, &memo, &startup).unwrap();
+        assert!(device.is_version_initialization_complete());
+        assert_eq!(
+            memo.read().unwrap().read_notebook_configs().unwrap()[0].id,
+            "keep"
+        );
+    }
+
+    #[test]
+    fn corrupt_registry_blocks_startup_without_replacing_notebooks() {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().to_path_buf();
         let config = get_user_config_dir(&home);
@@ -1664,35 +1755,22 @@ mod missing_dependency_tests {
             config.clone(),
         )));
         let startup = StartupCoordinator::new();
-        prepare_startup_storage(&device, &memo, &threads, &sync, &user, &config, &startup)
-            .unwrap();
-        assert_eq!(startup.status().stage, StartupStage::WorkspacePreparation);
-        assert!(startup.status().progress.is_none());
-        assert!(memo
-            .read()
-            .unwrap()
-            .read_notebook_configs()
-            .unwrap()
-            .is_empty());
-        assert!(!user
-            .get_property_presets()
-            .unwrap()
-            .system_fields
-            .is_empty());
-        assert_eq!(
-            std::fs::read_dir(config.join("db/rebuild-backups"))
-                .unwrap()
-                .count(),
-            2
+        assert!(
+            prepare_startup_storage(&device, &memo, &threads, &sync, &user, &config, &startup)
+                .is_err()
         );
-        // Cloud storage is independently prepared after the shell, not in stage 2.
-        assert_eq!(std::fs::read(config.join("db/sync.db")).unwrap(), b"invalid database");
-        sync.initialize_storage().unwrap();
-        assert_eq!(std::fs::read_dir(config.join("db/rebuild-backups")).unwrap().count(), 3);
+        assert_eq!(
+            std::fs::read(config.join("db/local.db")).unwrap(),
+            b"invalid database"
+        );
+        assert_eq!(
+            std::fs::read(config.join("db/sync.db")).unwrap(),
+            b"invalid database"
+        );
     }
 
     #[test]
-    fn missing_runtime_dependencies_start_with_completed_boot_marker() {
+    fn missing_registry_requires_recovery_with_completed_boot_marker() {
         let temp = tempfile::tempdir().unwrap();
         let home = temp.path().to_path_buf();
         let config_dir = get_user_config_dir(&home);
@@ -1715,7 +1793,7 @@ mod missing_dependency_tests {
         )
         .unwrap();
         let startup = crate::app::startup::StartupCoordinator::new();
-        prepare_startup_storage(
+        assert!(prepare_startup_storage(
             &device,
             &memo,
             &threads,
@@ -1724,20 +1802,8 @@ mod missing_dependency_tests {
             &config_dir,
             &startup,
         )
-        .unwrap();
+        .is_err());
         assert!(device.is_version_initialization_complete());
-        assert_eq!(startup.status().stage, StartupStage::WorkspacePreparation);
-        assert!(startup.status().progress.is_none());
-        assert!(memo
-            .read()
-            .unwrap()
-            .read_notebook_configs()
-            .unwrap()
-            .is_empty());
-        assert!(!user_config
-            .get_property_presets()
-            .unwrap()
-            .system_fields
-            .is_empty());
+        assert!(!config_dir.join("db/local.db").exists());
     }
 }

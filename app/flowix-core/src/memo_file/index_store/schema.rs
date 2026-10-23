@@ -478,8 +478,8 @@ impl MemoFile {
                 return read_version(&conn);
             }
         }
-        let conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
-        read_version(&conn)
+        // Reading a marker must never initialize or retire legacy Memo tables.
+        Ok(None)
     }
 
     pub fn mark_notebook_data_migration(
@@ -488,8 +488,13 @@ impl MemoFile {
         migration_key: &str,
         version: u32,
     ) -> std::io::Result<()> {
-        let conn = self.open_memo_index_db_for_notebook_id(notebook_id)?;
-        self.ensure_memo_tables(&conn)?;
+        // Recording an artifact migration does not require the legacy Memo schema:
+        // ensure_memo_tables may discard ID-backed tables and revision history.
+        let conn = self.open_notebook_db(notebook_id)?;
+        conn.execute_batch("CREATE TABLE IF NOT EXISTS notebook_data_migrations (
+            notebook_id TEXT NOT NULL, migration_key TEXT NOT NULL,
+            version INTEGER NOT NULL, completed_at INTEGER NOT NULL,
+            PRIMARY KEY(notebook_id, migration_key));").map_err(sqlite_to_io)?;
         conn.execute(
             "INSERT INTO notebook_data_migrations
                 (notebook_id, migration_key, version, completed_at)

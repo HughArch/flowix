@@ -2,42 +2,23 @@ import { resolveWorkspaceFileSurfaceKind, workspaceSurfaceSupportsHost } from '.
 import { createWorkspaceWebRuntime, navigateWorkspaceWebRuntime, moveWorkspaceWebHistory, reloadWorkspaceWebRuntime } from '../model/web-navigation';
 import type { FileBrowserContext, FileBrowserTarget } from './file-browser-target';
 import { create } from 'zustand';
-import { createJSONStorage, persist } from 'zustand/middleware';
-import { STORAGE_KEYS } from '@/lib/constants';
+import { persist } from 'zustand/middleware';
 import { canonicalPath, canonicalDirectoryPath, isPathInDirectory, parentDirectoryPath } from '@/lib/path';
 import { displayTitleFromFilename } from '@/lib/utils';
-import {
-  canonicalUrl,
-  contentIdentityKey,
-  type ContentIdentity,
-} from './workspace-content-identity';
+import { canonicalUrl } from '../model/surface-identity';
 import { useWorkspaceFocusStore } from './workspace-focus-store';
+import { browserColumnPersistence, restoreBrowserColumnSession } from './browser-column-persistence';
+import { BROWSER_COLUMN_DEFAULT_SPLIT_RATIO, clampFileTreeWidth, clampSplitRatio } from '../model/browser-column-layout';
+import { browserColumnTargetKey, type BrowserColumnTarget } from '../model/browser-column-target';
+import type { BrowserColumnTab, BrowserColumnSessionState } from '../model/browser-column-tab';
+import type { WorkspaceWebRuntime as BrowserColumnWebRuntime } from '../model/surface-contract';
+import type { BrowserSurfaceOpenDisposition } from '../model/surface-opening';
 
-export type BrowserColumnTarget =
-  | {
-      kind: 'folder-collection';
-      folderPath: string;
-      notebookId: string;
-      notebookPath: string;
-      folderName: string;
-      viewMode?: 'work-documents';
-    }
-  | {
-      kind: 'media';
-      filePath: string;
-      notebookId: string;
-      notebookPath: string;
-      resourceKind: 'image' | 'video';
-    }
-  | FileBrowserTarget
-  | {
-      kind: 'web';
-      url: string;
-    }
-  | {
-      kind: 'agent_conversation';
-      instanceId: string;
-    };
+export { BROWSER_COLUMN_MIN_WIDTH, BROWSER_COLUMN_DEFAULT_SPLIT_RATIO, BROWSER_COLUMN_FILE_TREE_DEFAULT_WIDTH,
+  BROWSER_COLUMN_FILE_TREE_MIN_WIDTH, BROWSER_COLUMN_FILE_TREE_MAX_WIDTH } from '../model/browser-column-layout';
+
+export type { BrowserColumnTarget } from '../model/browser-column-target';
+export { browserColumnTargetIdentity, browserColumnTargetKey } from '../model/browser-column-target';
 
 /** Opening in Work uses the same public support declaration as normal navigation. */
 export function canOpenBrowserColumnTargetInWorkColumn(target: BrowserColumnTarget): boolean {
@@ -56,27 +37,14 @@ export function canOpenBrowserColumnTargetInWorkColumn(target: BrowserColumnTarg
 /** Compatibility name for callers from before dual-host views were supported. */
 export const canMoveBrowserColumnTargetToWorkColumn = canOpenBrowserColumnTargetInWorkColumn;
 
-export interface BrowserColumnTab {
-  id: string;
-  title: string;
-  icon: string | null;
-  target: BrowserColumnTarget;
-}
+export type { BrowserColumnTab } from '../model/browser-column-tab';
 
 /** Runtime-only state for a web tab. It is intentionally not persisted with tabs. */
 export type { WorkspaceWebRuntime as BrowserColumnWebRuntime } from '../model/surface-contract';
-import type { WorkspaceWebRuntime as BrowserColumnWebRuntime } from '../model/surface-contract';
 
-export type BrowserColumnWebNavigationPhase = 'navigating' | 'started' | 'finished';
-
-import type { BrowserSurfaceOpenDisposition } from '../model/surface-opening';
 export type BrowserColumnOpenDisposition = BrowserSurfaceOpenDisposition;
 
-interface BrowserColumnState {
-  visible: boolean;
-  splitRatio: number;
-  tabs: BrowserColumnTab[];
-  activeTabId: string | null;
+interface BrowserColumnState extends BrowserColumnSessionState {
   webRuntimes: Record<string, BrowserColumnWebRuntime>;
   setVisible: (visible: boolean) => void;
   setSplitRatio: (ratio: number) => void;
@@ -98,11 +66,6 @@ interface BrowserColumnState {
   reorderTab: (tabId: string, beforeTabId: string | null) => void;
   updateTabMetadata: (tabId: string, metadata: Partial<Pick<BrowserColumnTab, 'title' | 'icon'>>) => void;
   setWebRuntime: (tabId: string, runtime: BrowserColumnWebRuntime) => void;
-  syncWebTabNavigation: (
-    tabId: string,
-    url: string,
-    phase: BrowserColumnWebNavigationPhase,
-  ) => boolean;
   navigateWebTab: (tabId: string, url: string) => boolean;
   goBackWebTab: (tabId: string) => boolean;
   goForwardWebTab: (tabId: string) => boolean;
@@ -110,52 +73,10 @@ interface BrowserColumnState {
   reset: () => void;
 }
 
-/** The main and browser document panes share the same minimum width. */
-export const BROWSER_COLUMN_MIN_WIDTH = 360;
-export const BROWSER_COLUMN_DEFAULT_SPLIT_RATIO = 0.5;
-export const BROWSER_COLUMN_FILE_TREE_DEFAULT_WIDTH = 220;
-export const BROWSER_COLUMN_FILE_TREE_MIN_WIDTH = 200;
-export const BROWSER_COLUMN_FILE_TREE_MAX_WIDTH = 420;
-
-export function browserColumnTargetIdentity(target: BrowserColumnTarget): ContentIdentity {
-  switch (target.kind) {
-    case 'folder-collection': return { kind: 'folder-collection', notebookId: target.notebookId, folderPath: target.folderPath, viewMode: target.viewMode };
-    case 'media': return { kind: 'media', path: target.filePath };
-    case 'file-browser': return target.collectionDisplay ? { kind: 'collection', ...target.collectionDisplay } : target.activeFilePath
-      ? { kind: 'external', path: target.activeFilePath }
-      : { kind: 'file-browser', folderPath: target.folderPath ?? '' };
-    case 'web': return { kind: 'web', url: target.url };
-    case 'agent_conversation': return {
-      kind: 'agent-conversation',
-      instanceId: target.instanceId,
-    };
-  }
-}
-
-export function browserColumnTargetKey(target: BrowserColumnTarget): string | null {
-  return contentIdentityKey(browserColumnTargetIdentity(target));
-}
-
 function adjacentTabId(tabs: BrowserColumnTab[], closingTabId: string): string | null {
   const index = tabs.findIndex((tab) => tab.id === closingTabId);
   if (index < 0) return null;
   return tabs[index - 1]?.id ?? tabs[index + 1]?.id ?? null;
-}
-
-const BROWSER_COLUMN_MIN_RATIO = 0.05;
-const BROWSER_COLUMN_MAX_RATIO = 0.95;
-const LEGACY_SPLIT_RATIO_STORAGE_KEY = 'flowix.workspace.fourth-column.split-ratio';
-
-function clampSplitRatio(splitRatio: number): number {
-  return Number.isFinite(splitRatio)
-    ? Math.min(BROWSER_COLUMN_MAX_RATIO, Math.max(BROWSER_COLUMN_MIN_RATIO, splitRatio))
-    : BROWSER_COLUMN_DEFAULT_SPLIT_RATIO;
-}
-
-function clampFileTreeWidth(width: number): number {
-  return Number.isFinite(width)
-    ? Math.min(BROWSER_COLUMN_FILE_TREE_MAX_WIDTH, Math.max(BROWSER_COLUMN_FILE_TREE_MIN_WIDTH, width))
-    : BROWSER_COLUMN_FILE_TREE_DEFAULT_WIDTH;
 }
 
 function isWebTab(tab: BrowserColumnTab | undefined): tab is BrowserColumnTab & {
@@ -177,6 +98,7 @@ function updateWebTabTarget(
   tabId: string,
   url: string,
 ): BrowserColumnTab[] {
+  if (!tabs.some((tab) => tab.id === tabId && isWebTab(tab) && tab.target.url !== url)) return tabs;
   return tabs.map((tab) => tab.id === tabId && isWebTab(tab)
     ? { ...tab, target: { ...tab.target, url } }
     : tab);
@@ -190,9 +112,15 @@ function updateFileBrowserTabTarget(
   collectionType?: FileBrowserTarget['collectionType'],
   collectionUnavailableReason?: string,
 ): BrowserColumnTab[] {
-  return tabs.map((tab) => tab.id === tabId && tab.target.kind === 'file-browser'
-    ? { ...tab, title: filePath ? displayTitleFromFilename(filePath.split(/[\\/]/).pop() ?? filePath) : tab.title, target: { ...tab.target, activeFilePath: filePath, collectionDisplay, collectionType, collectionUnavailableReason } }
-    : tab);
+  return tabs.map((tab) => {
+    if (tab.id !== tabId || tab.target.kind !== 'file-browser') return tab;
+    const folderName = tab.target.folderPath?.replace(/[\\/]+$/, '').split(/[\\/]/).pop();
+    const title = filePath
+      ? displayTitleFromFilename(filePath.split(/[\\/]/).pop() ?? filePath)
+      : folderName || tab.title;
+    return { ...tab, title, target: { ...tab.target, activeFilePath: filePath,
+      collectionDisplay, collectionType, collectionUnavailableReason } };
+  });
 }
 
 function updateFileBrowserTabFolder(
@@ -228,211 +156,13 @@ function updateFileBrowserTabTree(
     : tab);
 }
 
-function isRecord(value: unknown): value is Record<string, unknown> {
-  return typeof value === 'object' && value !== null;
-}
-
-function nonEmptyString(value: unknown): value is string {
-  return typeof value === 'string' && value.trim().length > 0;
-}
-
-function parseBrowserColumnTarget(value: unknown): BrowserColumnTarget | null {
-  if (!isRecord(value) || typeof value.kind !== 'string') return null;
-
-  switch (value.kind) {
-    case 'folder-collection':
-      return nonEmptyString(value.folderPath) && nonEmptyString(value.notebookId)
-        && nonEmptyString(value.notebookPath) && typeof value.folderName === 'string'
-        ? { kind: 'folder-collection', folderPath: value.folderPath, notebookId: value.notebookId,
-            notebookPath: value.notebookPath, folderName: value.folderName,
-            ...(value.viewMode === 'work-documents' ? { viewMode: value.viewMode } : {}) }
-        : null;
-    case 'media':
-      return nonEmptyString(value.filePath)
-        && typeof value.notebookId === 'string'
-        && nonEmptyString(value.notebookPath)
-        && (value.resourceKind === 'image' || value.resourceKind === 'video')
-        ? {
-            kind: 'media',
-            filePath: value.filePath,
-            notebookId: value.notebookId,
-            notebookPath: value.notebookPath,
-            resourceKind: value.resourceKind,
-          }
-        : null;
-    case 'file':
-    case 'external_markdown':
-    case 'external_text': {
-      if (!nonEmptyString(value.filePath)) return null;
-      return {
-        kind: 'file-browser',
-        activeFilePath: value.filePath,
-        folderPath: null,
-        notebookId: null,
-        restoreNotebookContext: true,
-        fileTreeVisible: true,
-        fileTreeWidth: BROWSER_COLUMN_FILE_TREE_DEFAULT_WIDTH,
-        scopePath: typeof value.scopePath === 'string' && value.scopePath.trim()
-          ? value.scopePath
-          : null,
-      };
-    }
-    case 'file-browser':
-      return nonEmptyString(value.folderPath) || nonEmptyString(value.activeFilePath)
-        ? {
-            kind: 'file-browser',
-            ...(value.collectionType === 'table' || value.collectionType === 'media_library' || value.collectionType === 'work_documents' ? { collectionType: value.collectionType } : {}),
-            ...(value.collectionDisplay && typeof value.collectionDisplay === 'object' && 'collectionId' in value.collectionDisplay && 'displayId' in value.collectionDisplay && 'notebookId' in value.collectionDisplay && typeof value.collectionDisplay.collectionId === 'string' && typeof value.collectionDisplay.displayId === 'string' && typeof value.collectionDisplay.notebookId === 'string' ? { collectionDisplay: { collectionId: value.collectionDisplay.collectionId, displayId: value.collectionDisplay.displayId, notebookId: value.collectionDisplay.notebookId, viewId: 'viewId' in value.collectionDisplay && typeof value.collectionDisplay.viewId === 'string' ? value.collectionDisplay.viewId : null } } : {}),
-            folderPath: nonEmptyString(value.folderPath) ? value.folderPath : null,
-            notebookId: nonEmptyString(value.notebookId) ? value.notebookId : null,
-            ...(nonEmptyString(value.notebookContextPath) && value.notebookContextPath === value.activeFilePath
-              ? { notebookContextPath: value.notebookContextPath } : {}),
-            ...(value.restoreNotebookContext === true || !('notebookId' in value) ? { restoreNotebookContext: true } : {}),
-            scopePath: nonEmptyString(value.scopePath) ? value.scopePath : nonEmptyString(value.folderPath) ? value.folderPath : null,
-            activeFilePath: typeof value.activeFilePath === 'string' ? value.activeFilePath : null,
-            fileTreeVisible: typeof value.fileTreeVisible === 'boolean'
-              ? value.fileTreeVisible
-              : true,
-            fileTreeWidth: clampFileTreeWidth(
-              typeof value.fileTreeWidth === 'number'
-                ? value.fileTreeWidth
-                : BROWSER_COLUMN_FILE_TREE_DEFAULT_WIDTH,
-            ),
-          }
-        : null;
-    case 'web':
-    case 'external_webpage': {
-      const url = typeof value.url === 'string' ? canonicalUrl(value.url) : null;
-      return url ? { kind: 'web', url } : null;
-    }
-    case 'agent_conversation':
-      return nonEmptyString(value.instanceId)
-        ? { kind: 'agent_conversation', instanceId: value.instanceId }
-        : null;
-    default:
-      return null;
-  }
-}
-
-function parseBrowserColumnTab(value: unknown): BrowserColumnTab | null {
-  if (!isRecord(value) || !nonEmptyString(value.id) || typeof value.title !== 'string') {
-    return null;
-  }
-  if (value.icon !== null && typeof value.icon !== 'string') return null;
-  const target = parseBrowserColumnTarget(value.target);
-  if (!target) return null;
-  return {
-    id: value.id,
-    title: value.title,
-    icon: value.icon,
-    target,
-  };
-}
-
-function normalizePersistedTabs(value: unknown, activeTabId: unknown): BrowserColumnTab[] {
-  if (!Array.isArray(value)) return [];
-
-  const tabs: BrowserColumnTab[] = [];
-  const seenKeys = new Set<string>();
-  const seenIds = new Set<string>();
-  for (const candidate of value) {
-    const tab = parseBrowserColumnTab(candidate);
-    if (!tab || seenIds.has(tab.id)) continue;
-    const filePath = tab.target.kind === 'file-browser' ? tab.target.activeFilePath : null;
-    // Keep agent configuration out of automatic session restoration.
-    if (filePath?.split(/[\\/]/).pop() === 'AGENTS.md') continue;
-    const targetKey = browserColumnTargetKey(tab.target);
-    if (!targetKey) continue;
-    if (seenKeys.has(targetKey)) {
-      // Keep the active duplicate's context and tree preferences at the old slot.
-      if (tab.id === activeTabId) {
-        const index = tabs.findIndex((candidate) => browserColumnTargetKey(candidate.target) === targetKey);
-        tabs[index] = tab;
-      }
-      continue;
-    }
-    seenIds.add(tab.id);
-    seenKeys.add(targetKey);
-    tabs.push(tab);
-  }
-  return tabs;
-}
-
-function readLegacySplitRatio(): number | null {
-  try {
-    if (typeof localStorage === 'undefined') return null;
-    const ratio = Number(localStorage.getItem(LEGACY_SPLIT_RATIO_STORAGE_KEY));
-    return Number.isFinite(ratio) ? clampSplitRatio(ratio) : null;
-  } catch {
-    return null;
-  }
-}
-
-const browserColumnStorage = createJSONStorage(() => ({
-  getItem: (name: string) => {
-    if (typeof localStorage === 'undefined') return null;
-    const current = localStorage.getItem(name);
-    return current;
-  },
-  setItem: (name: string, value: string) => {
-    if (typeof localStorage !== 'undefined') localStorage.setItem(name, value);
-  },
-  removeItem: (name: string) => {
-    if (typeof localStorage !== 'undefined') localStorage.removeItem(name);
-  },
-}));
-
-type PersistedBrowserColumnState = Pick<
-  BrowserColumnState,
-  'visible' | 'splitRatio' | 'tabs' | 'activeTabId'
->;
-
-function mergePersistedBrowserColumnState(
-  persisted: unknown,
-  current: BrowserColumnState,
-): BrowserColumnState {
-  if (!isRecord(persisted)) {
-    const legacySplitRatio = readLegacySplitRatio();
-    return legacySplitRatio === null
-      ? current
-      : { ...current, splitRatio: legacySplitRatio };
-  }
-
-  const tabs = normalizePersistedTabs(persisted.tabs, persisted.activeTabId);
-  const requestedActiveTabId = typeof persisted.activeTabId === 'string'
-    ? persisted.activeTabId
-    : null;
-  const activeTabId = tabs.some((tab) => tab.id === requestedActiveTabId)
-    ? requestedActiveTabId
-    : tabs[0]?.id ?? null;
-
-  return {
-    ...current,
-    visible: tabs.length > 0 && persisted.visible !== false,
-    splitRatio: clampSplitRatio(
-      typeof persisted.splitRatio === 'number'
-        ? persisted.splitRatio
-        : readLegacySplitRatio() ?? BROWSER_COLUMN_DEFAULT_SPLIT_RATIO,
-    ),
-    tabs,
-    activeTabId,
-    // WebView instances and their history are process-local. Rehydrating a
-    // durable tab list must always start them from the target URL.
-    webRuntimes: {},
-  };
-}
-
-function migratePersistedBrowserColumnState(
-  persisted: unknown,
-  _version: number,
-): PersistedBrowserColumnState {
-  // Older tree visibility values are ignored by code surfaces now; preserve
-  // the rest of the user's open tabs and directory browser preferences.
-  return persisted as PersistedBrowserColumnState;
+function releaseBrowserFocusWhenEmpty(tabCount: number): void {
+  const focus = useWorkspaceFocusStore.getState();
+  if (tabCount === 0 && focus.focusedHostId === 'browser-column') focus.focusHost('main-third');
 }
 
 export const useBrowserColumnStore = create<BrowserColumnState>()(
-  persist(
+  persist<BrowserColumnState, [], [], BrowserColumnSessionState>(
   (set, get) => ({
       visible: false,
       splitRatio: BROWSER_COLUMN_DEFAULT_SPLIT_RATIO,
@@ -531,11 +261,11 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
         const tabs = state.tabs.filter((tab) => tab.id !== tabId);
         const webRuntimes = { ...state.webRuntimes };
         delete webRuntimes[tabId];
-        useWorkspaceFocusStore.getState().focusHost(tabs.length > 0 ? 'browser-column' : 'main-third');
+        releaseBrowserFocusWhenEmpty(tabs.length);
         set({
           tabs,
           activeTabId: nextActiveTabId,
-          visible: tabs.length > 0,
+          visible: state.visible && tabs.length > 0,
           webRuntimes,
         });
         return nextActiveTabId;
@@ -547,11 +277,10 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
         const webRuntimes = state.webRuntimes[tabId]
           ? { [tabId]: state.webRuntimes[tabId] }
           : {};
-        useWorkspaceFocusStore.getState().focusHost('browser-column');
         set({
           tabs,
           activeTabId: tabId,
-          visible: true,
+          visible: state.visible,
           webRuntimes,
         });
         return tabId;
@@ -570,17 +299,16 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
             .filter((tab) => state.webRuntimes[tab.id])
             .map((tab) => [tab.id, state.webRuntimes[tab.id]]),
         );
-        useWorkspaceFocusStore.getState().focusHost('browser-column');
         set({
           tabs,
           activeTabId,
-          visible: true,
+          visible: state.visible,
           webRuntimes,
         });
         return activeTabId;
       },
       closeAllTabs: () => {
-        useWorkspaceFocusStore.getState().focusHost('main-third');
+        releaseBrowserFocusWhenEmpty(0);
         set({
           tabs: [],
           activeTabId: null,
@@ -681,11 +409,7 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
             .filter((tab) => state.webRuntimes[tab.id])
             .map((tab) => [tab.id, state.webRuntimes[tab.id]]),
         );
-        if (activeWasRemoved) {
-          useWorkspaceFocusStore.getState().focusHost(
-            tabs.length > 0 ? 'browser-column' : 'main-third',
-          );
-        }
+        if (activeWasRemoved) releaseBrowserFocusWhenEmpty(tabs.length);
         set({ tabs, activeTabId, visible: tabs.length > 0 && state.visible, webRuntimes });
       },
       removeTabsByFilePath: (path) => {
@@ -711,13 +435,11 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
             .filter((tab) => state.webRuntimes[tab.id])
             .map((tab) => [tab.id, state.webRuntimes[tab.id]]),
         );
-        useWorkspaceFocusStore.getState().focusHost(
-          tabs.length > 0 ? 'browser-column' : 'main-third',
-        );
+        releaseBrowserFocusWhenEmpty(tabs.length);
         set({
           tabs,
           activeTabId,
-          visible: tabs.length > 0,
+          visible: state.visible && tabs.length > 0,
           webRuntimes,
         });
         return removedIds;
@@ -734,7 +456,8 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
         return { tabs };
       }),
       updateTabMetadata: (tabId, metadata) => set((state) => {
-        if (!state.tabs.some((tab) => tab.id === tabId)) return state;
+        const tab = state.tabs.find((tab) => tab.id === tabId);
+        if (!tab || Object.entries(metadata).every(([key, value]) => tab[key as keyof typeof metadata] === value)) return state;
         return {
           tabs: state.tabs.map((tab) => tab.id === tabId ? { ...tab, ...metadata } : tab),
         };
@@ -746,45 +469,6 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
           webRuntimes: { ...state.webRuntimes, [tabId]: runtime },
         };
       }),
-      syncWebTabNavigation: (tabId, url, phase) => {
-        const normalized = canonicalUrl(url);
-        if (!normalized) return false;
-        const state = get();
-        const tab = state.tabs.find((candidate) => candidate.id === tabId);
-        const current = withWebRuntime(state.webRuntimes, tab);
-        if (!current || !isWebTab(tab)) return false;
-
-        let history = current.history;
-        let historyIndex = current.historyIndex;
-        if (history[historyIndex] !== normalized) {
-          const adjacentIndex = history.findIndex(
-            (candidate, index) => Math.abs(index - historyIndex) === 1 && candidate === normalized,
-          );
-          if (adjacentIndex >= 0) {
-            historyIndex = adjacentIndex;
-          } else {
-            history = history.slice(0, historyIndex + 1);
-            history.push(normalized);
-            historyIndex = history.length - 1;
-          }
-        }
-
-        set({
-          tabs: updateWebTabTarget(state.tabs, tabId, normalized),
-          webRuntimes: {
-            ...state.webRuntimes,
-            [tabId]: {
-              ...current,
-              currentUrl: normalized,
-              history,
-              historyIndex,
-              isLoading: phase !== 'finished',
-              error: null,
-            },
-          },
-        });
-        return true;
-      },
       navigateWebTab: (tabId, url) => {
         const normalized = canonicalUrl(url);
         if (!normalized) return false;
@@ -843,17 +527,9 @@ export const useBrowserColumnStore = create<BrowserColumnState>()(
       },
     }),
     {
-      name: STORAGE_KEYS.BROWSER_COLUMN,
-      version: 5,
-      migrate: migratePersistedBrowserColumnState,
-      storage: browserColumnStorage,
-      partialize: (state): PersistedBrowserColumnState => ({
-        visible: state.visible,
-        splitRatio: state.splitRatio,
-        tabs: state.tabs,
-        activeTabId: state.activeTabId,
-      }),
-      merge: (persisted, current) => mergePersistedBrowserColumnState(persisted, current),
+      ...browserColumnPersistence,
+      // Web history and live WebView state are process-local.
+      merge: (persisted, current) => ({ ...restoreBrowserColumnSession(persisted, current), webRuntimes: {} }),
     },
   ),
 );

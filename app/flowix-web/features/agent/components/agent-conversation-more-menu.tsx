@@ -89,7 +89,6 @@ export function AgentConversationMoreMenuItems({
         fontMode={fontSwitch.fontMode}
         sizeMode={fontSwitch.sizeMode}
         downloadingMode={fontSwitch.downloadingMode}
-        percent={fontSwitch.percent}
         onSelect={fontSwitch.selectFontMode}
       />
       <ConversationActionItems

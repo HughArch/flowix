@@ -29,7 +29,6 @@ export type {
 export {
   BrowserColumnSurfaceHost,
   getBrowserColumnSurfaceDefinition,
-  type BrowserColumnFlushRegistration,
   type BrowserColumnSurface,
   type BrowserColumnSurfaceChrome,
 } from '@features/surface/browser-column-registry';

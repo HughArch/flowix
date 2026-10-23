@@ -1527,6 +1527,7 @@ const zhCN = {
     "memo.fileTree.collapseFiles": "折叠文件",
     "memo.fileTree.expandFiles": "展开文件",
     "memo.fileTree.repositoriesTitle": "仓库",
+    "memo.fileTree.openAllRepositories": "打开全部仓库",
     "memo.fileTree.repositoriesEmpty": "暂无仓库",
     "memo.fileTree.collapseRepositories": "折叠仓库",
     "memo.fileTree.expandRepositories": "展开仓库",

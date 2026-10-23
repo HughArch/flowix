@@ -57,6 +57,4 @@ export type {
   BrowserColumnSurfaceCapability,
   BrowserColumnSurfaceDefinition,
   BrowserColumnSurfaceKind,
-  BrowserColumnDocumentFlush,
-  BrowserColumnFlushRegistration,
 } from './browser-column-registry';

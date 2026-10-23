@@ -6,7 +6,7 @@ import { NoteListSession } from './note-list-session';
 import { useNotebookBackgroundStore } from '@features/memo/store/notebook-background-store';
 import { create } from 'zustand';
 import { persist } from 'zustand/middleware';
-import { noteRepository, notebookRepository, type FilterType, type SortType } from '@features/memo/services';
+import { noteRepository, notebookRepository, type FilterType, type SortType } from '@features/memo/services/note-repository';
 import { getNoteQueryKey } from '@features/memo/services/note-query-key';
 import { STORAGE_KEYS } from '@/lib/constants';
 import { createLogger } from '@/lib/logger';

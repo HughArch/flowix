@@ -423,7 +423,7 @@ export function AgentTasksSection({
               type="button"
               onClick={onShowAllConversations}
               aria-label={t('memo.fileTree.viewAllConversations')}
-              className="absolute bottom-1 z-10 mr-1 inline-flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--document-bg)] text-[var(--muted-foreground)] opacity-0 shadow-[0_1px_4px_rgb(0_0_0_/_4.5%)] transition-[color,opacity] group-hover/conversation-list:opacity-100 group-focus-within/conversation-list:opacity-100 hover:text-[var(--foreground)]"
+              className="absolute bottom-1 z-10 mr-1 inline-flex h-6 w-6 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--document-bg)] text-[var(--muted-foreground)] opacity-0 shadow-[0_1px_4px_rgb(0_0_0_/_4.5%)] transition-[color,opacity] group-hover/conversation-list:opacity-100 group-focus-within/conversation-list:opacity-100 hover:text-[var(--foreground)]"
               style={{ right: edgeGutter }}
             >
               <ArrowRight className="h-3.5 w-3.5" aria-hidden="true" />
