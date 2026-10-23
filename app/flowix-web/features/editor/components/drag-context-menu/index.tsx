@@ -23,7 +23,13 @@ import { clearBlockSelection } from '@features/editor/extensions/block-selection
 import { HANDLE_SIZE } from '@features/editor/components/drag-context-menu/style'
 import { useDragHandlePosition } from '@features/editor/components/drag-context-menu/use-drag-handle-position'
 import { BlockActionMenu } from '@features/editor/components/drag-context-menu/block-action-menu'
-import { getTableHeaderState, useBlockMenuActions, type ColumnMenuState } from '@features/editor/components/drag-context-menu/block-menu-actions'
+import { getTableHeaderState, useBlockMenuActions, type BlockBackgroundMenuState, type ColumnMenuState } from '@features/editor/components/drag-context-menu/block-menu-actions'
+import {
+  getFlowixBlockBackground,
+  hasFlowixBlockBackgroundTargets,
+  setFlowixBlockBackground,
+} from '@features/editor/extensions/flowix-block-background'
+import type { FlowixTextColor } from '@features/editor/extensions/flowix-text-mark'
 import {
   addColumnBesideBlock,
   canSplitBlockToColumns,
@@ -60,6 +66,8 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
   const [selectedIndex, setSelectedIndex] = useState(0)
   const [menuInputMode, setMenuInputMode] = useState<'mouse' | 'keyboard'>('mouse')
   const [menuTarget, setMenuTarget] = useState<CurrentBlockInfo | null>(null)
+  const [menuBlockBackground, setMenuBlockBackground] = useState<FlowixTextColor | null>(null)
+  const [menuBlockBackgroundAvailable, setMenuBlockBackgroundAvailable] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
   const hoveredBlockRef = useRef<CurrentBlockInfo | null>(null)
   const menuRef = useRef<HTMLDivElement>(null)
@@ -410,6 +418,17 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
       }),
     }
   }, [closeMenu, editor, menuTarget])
+  const blockBackgroundMenu = useMemo<BlockBackgroundMenuState | undefined>(() => {
+    if (!menuTarget || !menuBlockBackgroundAvailable) return undefined
+    return {
+      current: menuBlockBackground,
+      onChange: (color) => {
+        setFlowixBlockBackground(editor, color, { targetPos: menuTarget.pos })
+        closeMenu()
+      },
+    }
+  }, [closeMenu, editor, menuBlockBackground, menuBlockBackgroundAvailable, menuTarget])
+
   const menuActions = useBlockMenuActions(
     onMenuItem,
     onDelete,
@@ -418,6 +437,7 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     menuTarget?.typeName === 'table' ? getTableHeaderState(menuTarget.node) : undefined,
     onTableHeaderToggle,
     columnMenu,
+    blockBackgroundMenu,
   )
 
   const openMenu = useCallback((anchorRect?: DOMRect, placeAtPointer = false) => {
@@ -434,6 +454,11 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     interactionBlockInfoRef.current = null
     activateAgentThreadCard(editor, info)
     pinBlock(editor, info)
+    // Snapshot the shared line-background state for the menu rows. The command
+    // still re-resolves its targets when a swatch is picked, so a block
+    // selection built through the handle fans out to every chosen row.
+    setMenuBlockBackground(getFlowixBlockBackground(editor, { targetPos: info.pos }))
+    setMenuBlockBackgroundAvailable(hasFlowixBlockBackgroundTargets(editor, { targetPos: info.pos }))
     setMenuPosition(null)
     setIsHovered(false)
     setSelectedIndex(0)

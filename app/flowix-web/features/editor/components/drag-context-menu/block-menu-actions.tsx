@@ -1,5 +1,5 @@
-import { useMemo, type ReactNode } from 'react'
-import { ArrowLeftIcon, ArrowRightIcon, ColumnsIcon, RowsIcon, TrashSimpleIcon } from '@phosphor-icons/react'
+import { useMemo, type CSSProperties, type ReactNode } from 'react'
+import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, ColumnsIcon, HighlighterIcon, RowsIcon, TrashSimpleIcon } from '@phosphor-icons/react'
 import {
   headingMenuItems,
   listMenuItems,
@@ -9,9 +9,11 @@ import {
 } from '@features/editor/components/drag-context-menu/items'
 import type { ImageAlignment } from '@features/editor/components/drag-context-menu/items'
 import type { CurrentBlockInfo } from '@features/editor/components/drag-context-menu/block-info'
+import type { I18nKey } from '@/lib/i18n'
 import { useI18n } from '@/lib/i18n'
+import { FLOWIX_TEXT_COLORS, type FlowixTextColor } from '@features/editor/extensions/flowix-text-mark'
 
-export type BlockMenuActionGroup = 'heading' | 'list' | 'block' | 'layout' | 'image' | 'table' | 'mode' | 'danger'
+export type BlockMenuActionGroup = 'heading' | 'list' | 'block' | 'layout' | 'background' | 'image' | 'table' | 'mode' | 'danger'
 
 export interface BlockMenuAction {
   id: string
@@ -58,6 +60,55 @@ export interface ColumnMenuState {
   onDeleteColumn: () => void
 }
 
+/**
+ * Line background state for the drag-handle menu.
+ *
+ * `current` is the colour shared by every targeted block, or `null` when the
+ * targets disagree (or none is set). The command itself fans out across the
+ * whole block selection, so the menu only has to describe the shared state.
+ */
+export interface BlockBackgroundMenuState {
+  current: FlowixTextColor | null
+  onChange: (color: FlowixTextColor | null) => void
+}
+
+const flowixColorLabelKeys: Record<FlowixTextColor, I18nKey> = {
+  red: 'editor.highlight.red',
+  orange: 'editor.highlight.orange',
+  yellow: 'editor.highlight.yellow',
+  green: 'editor.highlight.green',
+  cyan: 'editor.highlight.cyan',
+  blue: 'editor.highlight.blue',
+  purple: 'editor.highlight.purple',
+  pink: 'editor.highlight.pink',
+  gray: 'editor.highlight.gray',
+}
+
+function ColorSwatch({ color }: { color: FlowixTextColor | null }) {
+  return (
+    <span
+      aria-hidden="true"
+      className={`block-menu-color-swatch${color ? '' : ' block-menu-color-swatch--default'}`}
+      style={color ? { '--block-menu-swatch': `var(--flowix-text-${color})` } as CSSProperties : undefined}
+    />
+  )
+}
+
+/** Flowus-style column-count preview: N vertical bars in the row's leading icon. */
+function ColumnCountIcon({ count }: { count: 2 | 3 | 4 | 5 }) {
+  return (
+    <span
+      aria-hidden="true"
+      className="block-menu-column-preview"
+      style={{ gridTemplateColumns: `repeat(${count}, 1fr)` }}
+    >
+      {Array.from({ length: count }, (_, index) => (
+        <span key={index} />
+      ))}
+    </span>
+  )
+}
+
 /** Keep the menu state aligned with FlowixTable's Markdown header semantics. */
 export function getTableHeaderState(node: CurrentBlockInfo['node'] | undefined): TableHeaderState {
   if (!node || node.type.name !== 'table' || node.childCount === 0) {
@@ -87,6 +138,7 @@ export function useBlockMenuActions(
   tableHeaderState?: TableHeaderState,
   onTableHeaderToggle?: (header: 'row' | 'column') => void,
   columnMenu?: ColumnMenuState,
+  blockBackground?: BlockBackgroundMenuState,
 ): BlockMenuAction[] {
   const { t } = useI18n()
   return useMemo(() => {
@@ -137,37 +189,46 @@ export function useBlockMenuActions(
       ]
     }
 
-    const columnActions: BlockMenuAction[] = columnMenu
+    // One disclosure row keeps the menu compact: the column-count choices and
+    // the insert/delete commands live in the submenu instead of six top-level
+    // rows. Hovering or ArrowRight opens it; clicking runs the row's default
+    // action (split into two, or add a column on the right).
+    const columnSubActions: BlockMenuAction[] = columnMenu
       ? [
-          {
-            id: 'insert-column-left',
-            group: 'layout',
-            icon: <ArrowLeftIcon size={16} weight="bold" />,
-            label: t('editor.block.insertColumnLeft'),
-            disabled: !columnMenu.canInsertColumn,
-            onSelect: () => columnMenu.onInsertColumn('left'),
-          },
-          {
-            id: 'insert-column-right',
-            group: 'layout',
-            icon: <ArrowRightIcon size={16} weight="bold" />,
-            label: t('editor.block.insertColumnRight'),
-            disabled: !columnMenu.canInsertColumn,
-            onSelect: () => columnMenu.onInsertColumn('right'),
-          },
-          ...([2, 3, 4, 5] as const).map((count): BlockMenuAction => ({
-            id: `columns-${count}`,
-            group: 'layout',
-            icon: <ColumnsIcon size={16} weight="bold" />,
-            label: t(
-              count === 2 ? 'editor.block.columns2'
-                : count === 3 ? 'editor.block.columns3'
-                  : count === 4 ? 'editor.block.columns4'
-                    : 'editor.block.columns5',
-            ),
-            disabled: !columnMenu.canSplit,
-            onSelect: () => columnMenu.onSplitInto(count),
-          })),
+          ...(columnMenu.canSplit
+            ? ([2, 3, 4, 5] as const).map((count): BlockMenuAction => ({
+                id: `columns-${count}`,
+                group: 'layout',
+                icon: <ColumnCountIcon count={count} />,
+                label: t(
+                  count === 2 ? 'editor.block.columns2'
+                    : count === 3 ? 'editor.block.columns3'
+                      : count === 4 ? 'editor.block.columns4'
+                        : 'editor.block.columns5',
+                ),
+                onSelect: () => columnMenu.onSplitInto(count),
+              }))
+            : []),
+          ...(columnMenu.inColumn
+            ? [
+                {
+                  id: 'insert-column-left',
+                  group: 'layout' as const,
+                  icon: <ArrowLeftIcon size={16} weight="bold" />,
+                  label: t('editor.block.insertColumnLeft'),
+                  disabled: !columnMenu.canInsertColumn,
+                  onSelect: () => columnMenu.onInsertColumn('left'),
+                },
+                {
+                  id: 'insert-column-right',
+                  group: 'layout' as const,
+                  icon: <ArrowRightIcon size={16} weight="bold" />,
+                  label: t('editor.block.insertColumnRight'),
+                  disabled: !columnMenu.canInsertColumn,
+                  onSelect: () => columnMenu.onInsertColumn('right'),
+                },
+              ]
+            : []),
           ...(columnMenu.canDeleteColumn
             ? [{
                 id: 'delete-column',
@@ -177,6 +238,59 @@ export function useBlockMenuActions(
                 onSelect: columnMenu.onDeleteColumn,
               }]
             : []),
+        ]
+      : []
+
+    const columnActions: BlockMenuAction[] = columnMenu && columnSubActions.length > 0
+      ? [{
+          id: 'columns',
+          group: 'layout',
+          icon: <ColumnsIcon size={16} weight="bold" />,
+          label: t('editor.block.columns'),
+          childrenGroupLabel: t('editor.block.columns'),
+          onSelect: () => {
+            if (columnMenu.canSplit) {
+              columnMenu.onSplitInto(2)
+              return
+            }
+            if (columnMenu.canInsertColumn) columnMenu.onInsertColumn('right')
+          },
+          children: columnSubActions,
+        }]
+      : []
+
+    const backgroundActions: BlockMenuAction[] = blockBackground
+      ? [
+          {
+            id: 'block-background',
+            group: 'background',
+            icon: <HighlighterIcon size={16} weight="bold" />,
+            label: t('editor.block.background'),
+            childrenGroupLabel: t('editor.block.background'),
+            // Disclosure row: the panel is opened through hover / ArrowRight,
+            // and picking a swatch applies the colour across every selected row.
+            onSelect: () => {},
+            children: [
+              {
+                id: 'block-background-default',
+                group: 'background',
+                icon: <ColorSwatch color={null} />,
+                label: t('editor.block.backgroundDefault'),
+                checked: blockBackground.current === null,
+                trailingIcon: <CheckIcon size={12} weight="bold" />,
+                onSelect: () => blockBackground.onChange(null),
+              },
+              ...FLOWIX_TEXT_COLORS.map((color): BlockMenuAction => ({
+                id: `block-background-${color}`,
+                group: 'background',
+                icon: <ColorSwatch color={color} />,
+                label: t(flowixColorLabelKeys[color]),
+                checked: blockBackground.current === color,
+                trailingIcon: <CheckIcon size={12} weight="bold" />,
+                onSelect: () => blockBackground.onChange(color),
+              })),
+            ],
+          },
         ]
       : []
 
@@ -211,6 +325,7 @@ export function useBlockMenuActions(
         onSelect: () => onMenuItem(item),
       })),
       ...columnActions,
+      ...backgroundActions,
       {
         id: 'delete',
         group: 'danger',
@@ -230,6 +345,7 @@ export function useBlockMenuActions(
     onImageAlign,
     onTableHeaderToggle,
     columnMenu,
+    blockBackground,
     tableHeaderState,
     t,
   ])

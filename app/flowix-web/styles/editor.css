@@ -908,6 +908,116 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   --flowix-mark-fg: var(--flowix-text-gray);
 }
 
+/* 行背景色 (块级)。
+ *
+ * 行内 `mark[data-flowix-bg]` 只铺在字形上；行背景属于 paragraph / heading
+ * 节点，伪元素向左右越过文字栏，像 Flowus 一样给每行一个独立的圆角色块。
+ * `isolation` + `z-index: -1` 把伪元素压到文字之下，同时不让它穿透到
+ * 上一行/父级背景。 */
+.markdown-editor .tiptap:not(.agent-composer__input-content) :is(p, h1, h2, h3, h4)[data-flowix-block-bg]:where(:not(.agent-thread-card__message, .agent-thread-card__message *)) {
+  position: relative;
+  isolation: isolate;
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) :is(p, h1, h2, h3, h4)[data-flowix-block-bg]:where(:not(.agent-thread-card__message, .agent-thread-card__message *))::after {
+  content: '';
+  position: absolute;
+  z-index: -1;
+  /* 背景贴合段落盒：top/bottom 让色块中心接近文字行盒中心，
+   * 同时保留约 4px 的行间细缝（不再叠加，也不会连成一条色带）。 */
+  top: var(--flowix-block-bg-top, 0);
+  bottom: var(--flowix-block-bg-bottom, calc(var(--editor-font-size, 16px) * var(--editor-line-height, 1.8) * 0.15));
+  left: -0.75rem;
+  right: -0.75rem;
+  border-radius: 6px;
+  background-color: color-mix(in oklch, var(--flowix-block-bg-color) 16%, transparent);
+  pointer-events: none;
+}
+
+/* 标题的上下内边距各自不同：让色块贴合内容盒，文字才会垂直居中。 */
+.markdown-editor .tiptap:not(.agent-composer__input-content) h1[data-flowix-block-bg] {
+  --flowix-block-bg-top: 1rem;
+  --flowix-block-bg-bottom: calc(0.3rem * var(--editor-scale));
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) h2[data-flowix-block-bg] {
+  --flowix-block-bg-top: 0.6rem;
+  --flowix-block-bg-bottom: 0.5rem;
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) h3[data-flowix-block-bg] {
+  --flowix-block-bg-top: 0.4rem;
+  --flowix-block-bg-bottom: 0.5rem;
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) h4[data-flowix-block-bg] {
+  --flowix-block-bg-top: 0.3rem;
+  --flowix-block-bg-bottom: 0.5rem;
+}
+
+/* 列表行：项目符号 / 序号位于列表缩进区内，向文字栏左侧延伸背景，
+ * 让 marker 与正文一起被行背景覆盖。降低特异性，使表格单元格的覆盖
+ * 规则（下方）始终优先。 */
+.markdown-editor .tiptap:not(.agent-composer__input-content) :where(li) > :is(p, h1, h2, h3, h4)[data-flowix-block-bg]:where(:not(.agent-thread-card__message, .agent-thread-card__message *))::after {
+  left: -2.5rem;
+}
+
+/* 任务列表把复选框放在序号位置上（li > label + li > div），同样纳入背景。 */
+.markdown-editor .tiptap:not(.agent-composer__input-content) :where(ul[data-type="taskList"] > li > div) > :is(p, h1, h2, h3, h4)[data-flowix-block-bg]:where(:not(.agent-thread-card__message, .agent-thread-card__message *))::after {
+  left: -2.5rem;
+}
+
+/* 分栏的列前空间还要容纳拖拽句柄和列分隔线：背景只向左缩 6px 给文字
+ * 留出内边距，同时保持在 handle 右侧，避免色块压住 handle / resize 线。 */
+.markdown-editor .tiptap:not(.agent-composer__input-content) .flowix-column [data-flowix-block-bg]::after {
+  left: -6px;
+  right: -6px;
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) [data-flowix-block-bg="red"] {
+  --flowix-block-bg-color: var(--flowix-text-red);
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) [data-flowix-block-bg="orange"] {
+  --flowix-block-bg-color: var(--flowix-text-orange);
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) [data-flowix-block-bg="yellow"] {
+  --flowix-block-bg-color: var(--flowix-text-yellow);
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) [data-flowix-block-bg="green"] {
+  --flowix-block-bg-color: var(--flowix-text-green);
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) [data-flowix-block-bg="cyan"] {
+  --flowix-block-bg-color: var(--flowix-text-cyan);
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) [data-flowix-block-bg="blue"] {
+  --flowix-block-bg-color: var(--flowix-text-blue);
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) [data-flowix-block-bg="purple"] {
+  --flowix-block-bg-color: var(--flowix-text-purple);
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) [data-flowix-block-bg="pink"] {
+  --flowix-block-bg-color: var(--flowix-text-pink);
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) [data-flowix-block-bg="gray"] {
+  --flowix-block-bg-color: var(--flowix-text-gray);
+}
+
+/* 表格单元格里没有"整行"概念，保持背景与单元格内容同宽。 */
+.markdown-editor .tiptap:not(.agent-composer__input-content) :is(td, th) :is(p, h1, h2, h3, h4)[data-flowix-block-bg]::after {
+  left: 0;
+  right: 0;
+  top: 0;
+  bottom: 0;
+}
+
 .markdown-editor .tiptap:not(.agent-composer__input-content) table:not(.multidimensional-table):where(:not(.agent-thread-card__message, .agent-thread-card__message *)) {
   border-collapse: separate;
   border-spacing: 0;
@@ -1602,6 +1712,15 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   background-color: color-mix(in oklch, var(--brand) 10%, transparent);
 }
 
+/* 行背景已经提供了整块视觉，选中态不再叠加 brand 底色。
+ * li 的底色只覆盖正文区（marker 在 li 盒子之外），叠加后会让带序号的行
+ * 出现"序号区比正文区浅"的色差；禁用底色后两段颜色一致，选中反馈仍由
+ * 拖拽句柄（brand 底色）和菜单本身承担。 */
+.markdown-editor .ProseMirror:not(.agent-composer__input-content) :is(.is-block-selected[data-flowix-block-bg], .is-block-selected:has([data-flowix-block-bg])),
+.markdown-editor .ProseMirror:not(.agent-composer__input-content) :is(.is-block-selected[data-flowix-block-bg], .is-block-selected:has([data-flowix-block-bg])):hover {
+  background-color: transparent;
+}
+
 .markdown-editor .ProseMirror:not(.agent-composer__input-content) .flowix-block-drop-indicator {
   display: block;
   height: 1px;
@@ -1882,6 +2001,55 @@ html[data-platform="mac"] .markdown-editor .editor-content {
 
 .editor-highlight-palette__swatch--foreground {
   color: var(--flowix-swatch-color);
+}
+
+/* 行背景色块：整行铺色，因此用更宽的色带而不是圆点，和文字背景色块区分。 */
+.editor-highlight-palette__swatch--line-background {
+  background: linear-gradient(
+    to bottom,
+    transparent 22%,
+    color-mix(in oklch, var(--flowix-swatch-color) 22%, transparent) 22%,
+    color-mix(in oklch, var(--flowix-swatch-color) 22%, transparent) 78%,
+    transparent 78%
+  );
+  color: var(--flowix-swatch-color);
+  border-radius: 4px;
+}
+
+/* 拖拽句柄块菜单里的背景色子项色点。 */
+.block-menu-color-swatch {
+  flex: none;
+  width: 15px;
+  height: 15px;
+  border-radius: 4px;
+  border: 1px solid color-mix(in oklch, var(--block-menu-swatch, var(--foreground)) 40%, transparent);
+  background: color-mix(in oklch, var(--block-menu-swatch, transparent) 22%, transparent);
+}
+
+/* 分栏子菜单的列数预览：N 条竖条，用形状而不是数字表示列数。 */
+.block-menu-column-preview {
+  display: inline-grid;
+  flex: none;
+  width: 16px;
+  height: 14px;
+  gap: 2px;
+}
+
+.block-menu-column-preview > span {
+  border-radius: 2px;
+  background: color-mix(in oklch, currentColor 55%, transparent);
+}
+
+.block-menu-color-swatch--default {
+  background:
+    linear-gradient(
+      135deg,
+      transparent 44%,
+      color-mix(in oklch, var(--muted-foreground) 45%, transparent) 44%,
+      color-mix(in oklch, var(--muted-foreground) 45%, transparent) 56%,
+      transparent 56%
+    );
+  border-color: color-mix(in oklch, var(--foreground) 14%, transparent);
 }
 
 .flowix-popover-content.editor-highlight-palette--bubble {

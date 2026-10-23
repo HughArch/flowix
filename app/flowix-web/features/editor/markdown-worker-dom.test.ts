@@ -33,8 +33,8 @@ describe('HTML parsing without a browser DOM', () => {
     expect(table?.content?.map(row => row.content?.length)).toEqual([3, 3, 3]);
     expect(table?.content?.[0].content?.[0].type).toBe('tableHeader');
     expect(table?.content?.[1].content?.[0].content).toEqual([
-      { type: 'paragraph' },
-      { type: 'paragraph', content: [{ type: 'text', text: '哈哈好' }] },
+      { type: 'paragraph', attrs: { flowixBg: undefined } },
+      { type: 'paragraph', attrs: { flowixBg: undefined }, content: [{ type: 'text', text: '哈哈好' }] },
     ]);
     expect(doc.content?.[2].content?.[0].text).toBe('After');
 

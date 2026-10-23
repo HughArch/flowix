@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { textBlockContentY, nodeContentX, nodeContentY } from './positioning'
+import { blockHasLineBackground, textBlockContentY, nodeContentX, nodeContentY } from './positioning'
 
 describe('drag handle scroll-content coordinates', () => {
   it('keeps a non-ProseMirror header in the block Y coordinate', () => {
@@ -18,6 +18,29 @@ describe('drag handle scroll-content coordinates', () => {
   it('uses the same scroll-content coordinate system on X', () => {
     expect(nodeContentX(240, 100, 0)).toBe(158)
     expect(nodeContentX(220, 100, 20)).toBe(158)
+  })
+})
+
+describe('line-background handle gutter', () => {
+  it('detects a band on the block itself and on list-item children', () => {
+    const paragraph = document.createElement('p')
+    paragraph.setAttribute('data-flowix-block-bg', 'red')
+    expect(blockHasLineBackground('paragraph', paragraph)).toBe(true)
+
+    const item = document.createElement('li')
+    item.appendChild(paragraph.cloneNode())
+    expect(blockHasLineBackground('listItem', item)).toBe(true)
+
+    expect(blockHasLineBackground('paragraph', document.createElement('p'))).toBe(false)
+  })
+
+  it('ignores nested bands for media and table blocks', () => {
+    const paragraph = document.createElement('p')
+    paragraph.setAttribute('data-flowix-block-bg', 'red')
+
+    expect(blockHasLineBackground('table', paragraph)).toBe(false)
+    expect(blockHasLineBackground('image', paragraph)).toBe(false)
+    expect(blockHasLineBackground('paragraph', null)).toBe(false)
   })
 })
 

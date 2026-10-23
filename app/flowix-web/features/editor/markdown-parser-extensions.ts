@@ -1,4 +1,4 @@
-import { BulletList, ListItem, OrderedList } from '@tiptap/extension-list';
+import { BulletList, OrderedList } from '@tiptap/extension-list';
 import { TaskList } from '@tiptap/extension-task-list';
 import { TableRow } from '@tiptap/extension-table-row';
 import { TableHeader } from '@tiptap/extension-table-header';
@@ -16,7 +16,7 @@ import { MediaLibraryReferenceMarkdownExtension } from '@features/media-library/
 import { MarkdownEscape, LegacyAdjacentStrongMarkdown } from './markdown-parser-core-extensions';
 import { MathBlockMarkdownExtension } from '@features/editor/extensions/math-block-markdown';
 import { WebCardMarkdownExtension } from '@features/editor/extensions/web-card-markdown';
-import { MarkdownParagraph, MarkdownTaskItem } from './markdown-parser-common-extensions';
+import { MarkdownParagraph, MarkdownHeading, MarkdownListItem, MarkdownTaskItem } from './markdown-parser-common-extensions';
 import { AgentThreadCardMarkdownExtension } from '@features/agent/thread-card/agent-thread-card-markdown-spec';
 // Import the node definitions directly (not the feature barrel): the barrel
 // also re-exports editor NodeViews, whose i18n/store imports must stay out of
@@ -45,7 +45,7 @@ const GuardedTaskList = guardListMarkdownTokenizer(
 export function createMarkdownParserExtensions() {
   return [
     StarterKit.configure({
-      heading: { levels: [1, 2, 3, 4] },
+      heading: false,
       dropcursor: false,
       gapcursor: false,
       link: false,
@@ -57,8 +57,9 @@ export function createMarkdownParserExtensions() {
       bulletList: false,
       orderedList: false,
     }),
+    MarkdownHeading.configure({ levels: [1, 2, 3, 4] }),
     MarkdownParagraph,
-    ListItem,
+    MarkdownListItem,
     BulletList,
     GuardedOrderedList,
     GuardedTaskList,

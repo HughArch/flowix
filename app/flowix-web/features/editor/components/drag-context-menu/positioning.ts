@@ -35,6 +35,29 @@ const BLOCK_SELECTOR =
 
 const HANDLE_X_OFFSET = 18
 
+/**
+ * A line-background band starts 12px left of its block, so the default handle
+ * position (18–36px from the ProseMirror edge) lands half inside the fill.
+ * Shift the handle into the gutter when the block carries a background so the
+ * whole square stays outside the coloured band.
+ */
+export const LINE_BACKGROUND_HANDLE_SHIFT = 14
+
+/** Whether this block paints a line-background band the handle must clear. */
+export function blockHasLineBackground(
+  typeName: string,
+  dom: Pick<HTMLElement, 'matches' | 'querySelector'> | null | undefined,
+): boolean {
+  // Table cells and media never own a line band; a nested coloured paragraph
+  // inside them must not drag the handle out of their own gutter.
+  if (!dom || typeName === 'table' || typeName === 'image' || typeName === 'videoAttachment') {
+    return false
+  }
+  if (dom.matches('[data-flowix-block-bg]')) return true
+  // List items and blockquotes carry the colour on their inner paragraph.
+  return Boolean(dom.querySelector('[data-flowix-block-bg]'))
+}
+
 /** Small visual nudge for the larger heading glyphs. */
 const HEADING_HANDLE_NUDGE: Record<number, number> = {
   1: 4,
@@ -99,8 +122,15 @@ export function computeHandlePosition(
   const x = columnRect
     ? (isFirstColumn
         ? nodeContentX(proseMirrorRect.left, contentRect.left, editorContent.scrollLeft)
-        : columnRect.left - contentRect.left + editorContent.scrollLeft - 6)
+        : columnRect.left - contentRect.left + editorContent.scrollLeft - 8)
     : nodeContentX(proseMirrorRect.left, contentRect.left, editorContent.scrollLeft)
+  // Columns reserve an 18px gutter for the handle and place the resize line
+  // 12px outside the column edge. Later columns keep that fixed gutter; the
+  // first column has the editor's wider padding, so a background band still
+  // needs the same step-aside as the gutter-less layout.
+  const xOffset = blockHasLineBackground(info.typeName, info.dom) && (!columnRect || isFirstColumn)
+    ? LINE_BACKGROUND_HANDLE_SHIFT
+    : 0
   const y = textBlockContentY(view, info, contentRect.top, editorContent.scrollTop) ??
     nodeContentY(
       nodeRect.top,
@@ -109,7 +139,7 @@ export function computeHandlePosition(
       getYOffset(info, fontSize, lineHeight),
     )
 
-  return { visible: true, x, y, blockInfo: info }
+  return { visible: true, x: x - xOffset, y, blockInfo: info }
 }
 
 export function nodeContentX(

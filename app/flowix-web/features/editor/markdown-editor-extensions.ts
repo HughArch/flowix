@@ -3,7 +3,6 @@ import type { JSONContent } from '@tiptap/core';
 import { NodeSelection } from '@tiptap/pm/state';
 import StarterKit from '@tiptap/starter-kit';
 import { TaskList } from '@tiptap/extension-task-list';
-import { ListItem } from '@tiptap/extension-list';
 import { Markdown } from '@tiptap/markdown';
 import Placeholder from '@tiptap/extension-placeholder';
 import { AttachmentLink } from '@features/editor/extensions/attachment-link';
@@ -36,7 +35,8 @@ import { tableNeedsHtml } from '@features/editor/extensions/table/flowix-table';
 import { createTablePlugin } from '@features/editor/extensions/table/table-plugin';
 import { StableCaret } from '@features/editor/extensions/stable-caret';
 import { ColumnsEditorNode, ColumnEditorNode } from '@features/editor/extensions/columns/columns-editor';
-import { MarkdownParagraph, MarkdownTaskItem } from './markdown-parser-common-extensions';
+import { MarkdownParagraph, MarkdownHeading, MarkdownListItem, MarkdownTaskItem } from './markdown-parser-common-extensions';
+import { appendFlowixBlockBackgroundComment, flowixBlockBackgroundCommentForNode } from './extensions/flowix-block-background';
 import { isEmptyMarkdownPlaceholderOnly } from './markdown-normalization';
 import type { WorkspaceHostId } from '@features/workspace/public/host-api';
 
@@ -103,11 +103,11 @@ function isEmptyParagraphForMarkdown(content: unknown[], ctx: MarkdownRenderCont
 const PreservedParagraph = MarkdownParagraph.extend({
   renderMarkdown(node, h, ctx: MarkdownRenderContext) {
     const content = Array.isArray(node.content) ? node.content : [];
-    if (isEmptyParagraphForMarkdown(content, ctx)) {
-      return renderEmptyParagraphMarkdown(ctx);
-    }
+    const base = isEmptyParagraphForMarkdown(content, ctx)
+      ? renderEmptyParagraphMarkdown(ctx)
+      : h.renderChildren(content);
 
-    return h.renderChildren(content);
+    return appendFlowixBlockBackgroundComment(base, flowixBlockBackgroundCommentForNode(node));
   },
 });
 
@@ -221,17 +221,18 @@ function isEmptyParagraphNode(node: unknown): boolean {
   return maybeNode.content.every(isEmptyParagraphPlaceholderTextNode);
 }
 
-const PreservedListItem = ListItem.extend({
+const PreservedListItem = MarkdownListItem.extend({
   renderMarkdown(node, h, ctx) {
     const content = Array.isArray(node.content) ? node.content : [];
 
     if (content.length === 1 && isEmptyParagraphNode(content[0])) {
-      if (ctx?.parentType === 'orderedList') {
-        const start = ctx.meta?.parentAttrs?.start || 1;
-        return `${start + ctx.index}. ${EMPTY_PARAGRAPH_MARKDOWN}`;
-      }
-
-      return '-';
+      const bg = flowixBlockBackgroundCommentForNode(content[0]);
+      const base = ctx?.parentType === 'orderedList'
+        ? `${(ctx.meta?.parentAttrs?.start || 1) + ctx.index}. ${EMPTY_PARAGRAPH_MARKDOWN}`
+        // A bare `-` followed by the comment would stop parsing as a list item;
+        // the empty-line marker keeps the bullet intact.
+        : bg ? `- ${EMPTY_PARAGRAPH_MARKDOWN}` : '-';
+      return appendFlowixBlockBackgroundComment(base, bg);
     }
 
     return renderNestedMarkdownContent(
@@ -264,6 +265,7 @@ const PreservedTaskItem = MarkdownTaskItem.extend({
 
     const nestedContent = content.slice(1);
     let output = nestedContent.length === 0 ? `${prefix}${EMPTY_PARAGRAPH_MARKDOWN}` : prefix;
+    output = appendFlowixBlockBackgroundComment(output, flowixBlockBackgroundCommentForNode(content[0]));
 
     nestedContent.forEach((child, index) => {
       const childContent = h.renderChild?.(child, index + 1) ?? h.renderChildren([child]);
@@ -307,7 +309,7 @@ export function createMarkdownEditorExtensions({
 }: MarkdownEditorExtensionContext, codeBlockExtension = CodeBlockShikiBase) {
   return [
     StarterKit.configure({
-      heading: { levels: [1, 2, 3, 4] },
+      heading: false,
       dropcursor: false,
       gapcursor: false,
       link: false,
@@ -315,6 +317,7 @@ export function createMarkdownEditorExtensions({
       paragraph: false,
       listItem: false,
     }),
+    MarkdownHeading.configure({ levels: [1, 2, 3, 4] }),
     PreservedParagraph,
     PreservedListItem,
     MarkdownEscape,

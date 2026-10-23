@@ -10,6 +10,11 @@ import {
   type FlowixTextMarkAttributes,
   setFlowixTextStyle,
 } from '@features/editor/extensions/flowix-text-mark';
+import {
+  getFlowixBlockBackground,
+  hasFlowixBlockBackgroundTargets,
+  setFlowixBlockBackground,
+} from '@features/editor/extensions/flowix-block-background';
 
 interface FlowixHighlightPaletteProps {
   editor: Editor;
@@ -34,9 +39,19 @@ export function FlowixHighlightPalette({
   const attrs = editor.getAttributes('highlight') as FlowixTextMarkAttributes;
   const currentBg = isFlowixTextColor(attrs.flowixBg) ? attrs.flowixBg : null;
   const currentFg = isFlowixTextColor(attrs.flowixFg) ? attrs.flowixFg : null;
+  const blockBackgroundAvailable = hasFlowixBlockBackgroundTargets(editor, { preferBlockSelection: false });
+  const currentBlockBg = blockBackgroundAvailable
+    ? getFlowixBlockBackground(editor, { preferBlockSelection: false })
+    : null;
 
   const apply = (patch: { bg?: FlowixTextColor | null; fg?: FlowixTextColor | null }) => {
     setFlowixTextStyle(editor, patch);
+  };
+
+  const applyBlockBackground = (color: FlowixTextColor | null) => {
+    // The bubble-menu palette always describes the current text selection,
+    // even if the drag handle still holds an older multi-block selection.
+    setFlowixBlockBackground(editor, color, { preferBlockSelection: false });
   };
 
   return (
@@ -72,6 +87,39 @@ export function FlowixHighlightPalette({
           ))}
         </div>
       </div>
+      {blockBackgroundAvailable && (
+        <div className="editor-highlight-palette__section">
+          <div className="editor-highlight-palette__heading">
+            <div className="editor-highlight-palette__label">{t('editor.highlight.lineBackground')}</div>
+          </div>
+          <div className="editor-highlight-palette__swatches">
+            <button
+              className="editor-highlight-palette__swatch editor-highlight-palette__swatch--default"
+              data-active={currentBlockBg === null}
+              type="button"
+              onMouseDown={(event) => event.preventDefault()}
+              onClick={() => applyBlockBackground(null)}
+              aria-pressed={currentBlockBg === null}
+              aria-label={t('editor.highlight.defaultLineBackground')}
+              title={t('editor.highlight.defaultLineBackground')}
+            />
+            {FLOWIX_TEXT_COLORS.map((color) => (
+              <button
+                key={`line-background-${color}`}
+                className="editor-highlight-palette__swatch editor-highlight-palette__swatch--line-background"
+                data-active={currentBlockBg === color}
+                type="button"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => applyBlockBackground(currentBlockBg === color ? null : color)}
+                style={{ '--flowix-swatch-color': `var(--flowix-text-${color})` } as CSSProperties}
+                aria-pressed={currentBlockBg === color}
+                aria-label={t(flowixColorLabelKeys[color])}
+                title={t(flowixColorLabelKeys[color])}
+              />
+            ))}
+          </div>
+        </div>
+      )}
       <div className="editor-highlight-palette__section">
         <div className="editor-highlight-palette__heading">
           <div className="editor-highlight-palette__label">{t('editor.highlight.foreground')}</div>
