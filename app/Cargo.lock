@@ -1338,15 +1338,18 @@ dependencies = [
 name = "flowix-fns"
 version = "1.5.11"
 dependencies = [
+ "filetime",
  "futures-util",
  "rustls",
  "serde",
  "serde_json",
+ "tempfile",
  "thiserror 1.0.69",
  "tokio",
  "tokio-tungstenite",
  "tracing",
  "url",
+ "uuid",
 ]
 
 [[package]]

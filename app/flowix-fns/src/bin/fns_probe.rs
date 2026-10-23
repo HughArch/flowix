@@ -14,7 +14,10 @@ use std::path::PathBuf;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use flowix_fns::protocol::OfflineSyncStrategy;
-use flowix_fns::{delete_note, pull_notes, push_note, ClientInfo, FnsClient, PushNote};
+use flowix_fns::{
+    delete_note, pull_notes, push_note, sync_notebook, ClientInfo, FnsClient, FsNoteStore,
+    PushNote, SyncState,
+};
 use serde::Deserialize;
 
 #[derive(Debug, Deserialize)]
@@ -94,6 +97,50 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
     println!("handshake ok");
 
     let args = positionals();
+    if args.first().map(String::as_str) == Some("sync") {
+        let root = args.get(1).ok_or("sync requires <notebook-root>")?;
+        let root_path = std::path::Path::new(root);
+        let store = FsNoteStore::new(root_path)?;
+
+        let default_vault = root_path
+            .file_name()
+            .map(|name| name.to_string_lossy().into_owned())
+            .unwrap_or_else(|| credentials.vault.clone());
+        let mut state = match SyncState::load(root_path)? {
+            Some(state) => state,
+            None => {
+                let vault = args.get(2).cloned().unwrap_or(default_vault);
+                SyncState::new(vault, uuid::Uuid::new_v4().to_string())
+            }
+        };
+        println!(
+            "syncing notebook {} with vault {} (lastTime={})",
+            root_path.display(),
+            state.vault,
+            state.last_time
+        );
+
+        let report = sync_notebook(
+            &mut client,
+            &store,
+            &mut state,
+            OfflineSyncStrategy::NewTimeMerge,
+        )
+        .await?;
+        state.save(root_path)?;
+        println!(
+            "sync done: pulled={} pushed={} deletedLocal={} renamed={} conflicts={:?} cursor={}",
+            report.pulled,
+            report.pushed,
+            report.deleted_local,
+            report.renamed,
+            report.conflicts,
+            report.last_time
+        );
+        client.close().await?;
+        return Ok(());
+    }
+
     if args.first().map(String::as_str) == Some("push") {
         let note_path = args.get(1).ok_or("push requires <path>")?;
         let content = args.get(2).ok_or("push requires <text>")?;
@@ -125,6 +172,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         &mut client,
         &credentials.vault,
         credentials.last_time.unwrap_or(0),
+        Vec::new(),
         Vec::new(),
         OfflineSyncStrategy::NewTimeMerge,
     )

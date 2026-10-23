@@ -9,15 +9,23 @@
 //! - incremental pull: `NoteSync` -> `NoteSyncEnd` -> `PageAck(-1)` -> pages
 
 pub mod client;
+pub mod engine;
+pub mod fs_store;
 pub mod hash;
+pub mod local;
 pub mod protocol;
+pub mod state;
 pub mod sync;
 
 pub use client::{sync_endpoint, FnsClient, FnsError, Result, CLIENT_TYPE};
+pub use engine::{sync_notebook, SyncReport};
+pub use fs_store::FsNoteStore;
 pub use hash::{content_hash, encode_hash32, encode_hash32_bytes, path_hash};
+pub use local::{LocalNote, LocalNoteStore, MemoryNoteStore};
 pub use protocol::{
     action, ClientInfo, Envelope, NoteSyncCheckRequest, NoteSyncDelete, NoteSyncEnd,
     NoteSyncModify, NoteSyncMtime, NoteSyncNeedPush, NoteSyncRename, OfflineSyncStrategy,
     SyncPageMessage,
 };
+pub use state::SyncState;
 pub use sync::{delete_note, new_context, pull_notes, push_note, PullResult, PushNote};

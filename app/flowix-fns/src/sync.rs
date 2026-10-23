@@ -7,9 +7,9 @@ use crate::client::{ensure_success, FnsClient, FnsError, Result};
 use crate::hash::{content_hash, path_hash};
 use crate::protocol::{
     action, Envelope, NoteDeleteRequest, NoteModifyAck, NoteModifyOrCreateRequest,
-    NoteSyncCheckRequest, NoteSyncDelete, NoteSyncEnd, NoteSyncModify, NoteSyncMtime,
-    NoteSyncNeedPush, NoteSyncRename, NoteSyncRequest, OfflineSyncStrategy, SyncPageAckRequest,
-    SyncPageMessage, CODE_SYNC_CONFLICT,
+    NoteSyncCheckRequest, NoteSyncDelNote, NoteSyncDelete, NoteSyncEnd, NoteSyncModify,
+    NoteSyncMtime, NoteSyncNeedPush, NoteSyncRename, NoteSyncRequest, OfflineSyncStrategy,
+    SyncPageAckRequest, SyncPageMessage, CODE_SYNC_CONFLICT,
 };
 
 static CONTEXT_SEQ: AtomicU64 = AtomicU64::new(0);
@@ -57,6 +57,7 @@ pub async fn pull_notes(
     vault: &str,
     last_time: i64,
     local_notes: Vec<NoteSyncCheckRequest>,
+    del_notes: Vec<NoteSyncDelNote>,
     strategy: OfflineSyncStrategy,
 ) -> Result<PullResult> {
     let context = new_context();
@@ -67,14 +68,23 @@ pub async fn pull_notes(
         batch_index: 0,
         total_batches: 1,
         notes: local_notes,
-        del_notes: Vec::new(),
+        del_notes,
         missing_notes: Vec::new(),
     };
 
     client.send_json(action::NOTE_SYNC, &request).await?;
+    if std::env::var_os("FNS_DEBUG").is_some() {
+        eprintln!(
+            "[fns] NoteSync request: {}",
+            serde_json::to_string(&request).unwrap_or_default()
+        );
+    }
     let (_, envelope) = client.recv_frame(action::NOTE_SYNC_END).await?;
     ensure_success(&envelope)?;
     let end: NoteSyncEnd = envelope.parse_data()?;
+    if std::env::var_os("FNS_DEBUG").is_some() {
+        eprintln!("[fns] NoteSyncEnd: {end:?}");
+    }
 
     let mut result = PullResult {
         last_time: end.last_time,

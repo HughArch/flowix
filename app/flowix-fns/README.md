@@ -70,10 +70,34 @@ hash = (hash << 5) - hash + char   // 按 UTF-16 code unit，i32 自然溢出
 
 ```bash
 cd app
-cargo run -p flowix-fns --bin fns-probe                              # 拉取
-cargo run -p flowix-fns --bin fns-probe -- push note.md "content"    # 上传后回拉
-cargo run -p flowix-fns --bin fns-probe -- delete note.md            # 删除
+cargo run -p flowix-fns --bin fns-probe                                   # 拉取
+cargo run -p flowix-fns --bin fns-probe -- sync <notebook-root> [vault]  # 双向同步
+cargo run -p flowix-fns --bin fns-probe -- push note.md "content"        # 上传后回拉
+cargo run -p flowix-fns --bin fns-probe -- delete note.md                # 删除
 ```
+
+## 双向同步模型
+
+一个 notebook 绑定一个 vault。绑定关系与游标保存在
+`<notebook>/.flowix/sync-state.json`：
+
+```json
+{
+  "version": 1,
+  "vault": "工作",
+  "lastTime": 1792782688774,
+  "deviceId": "…",
+  "lastSyncAt": 1792782688774,
+  "notes": { "hello.md": { "contentHash": "-1948130249", "mtimeMs": 1792782456914 } }
+}
+```
+
+`notes` 是上次同步结束时的本地快照，用来做两件事：
+
+1. **识别本地删除**——上次存在、这次消失的路径通过 `delNotes` 上报。漏掉这一步，服务端会把文件当成"客户端缺失"重新下发。
+2. **只上报变更**——增量同步时只发送 hash 与快照不同的笔记。服务端会把"客户端上报了但本次增量窗口里没看到"的笔记判定为需要上传，因此每次都发全量清单会导致空转同步反复推送。
+
+服务端下发 `NoteSyncMtime`（内容相同、时间不同）时，客户端只调整本地文件 mtime，不回传内容。
 
 ## 当前范围
 
@@ -81,13 +105,15 @@ cargo run -p flowix-fns --bin fns-probe -- delete note.md            # 删除
 
 - 握手（Authorization / ClientInfo）
 - 增量拉取 + 分页确认
-- NoteModify / NoteDelete
+- 双向同步：创建 / 修改 / 删除 / 重命名
+- 本地删除快照与 `delNotes` 上报
 - path/content 哈希
+- `FsNoteStore` 与 `MemoryNoteStore`
 
 未实现（后续）：
 
 - 附件分片上传 / 下载
 - 文件夹同步
-- 冲突手动解决流程
-- 本地持久化（lastTime、路径索引）
-- 接入 Flowix 的 notebook 存储层与 IPC
+- 冲突手动解决流程（当前 `newTimeMerge`，`530` 会记录到报告里）
+- 接入 Flowix 的 `MemoFile`（需实现 `LocalNoteStore`，复用写入锁与自写抑制）
+- 实时触发（watcher 驱动）与 IPC

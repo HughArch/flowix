@@ -193,6 +193,14 @@ pub struct NoteSyncDelete {
 pub struct NoteSyncRename {
     pub path: String,
     pub path_hash: String,
+    #[serde(default)]
+    pub content_hash: String,
+    #[serde(default)]
+    pub ctime: i64,
+    #[serde(default)]
+    pub mtime: i64,
+    #[serde(default)]
+    pub size: i64,
     #[serde(default, rename = "oldPath")]
     pub old_path: String,
     #[serde(default, rename = "oldPathHash")]
