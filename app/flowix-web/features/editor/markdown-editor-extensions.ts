@@ -36,6 +36,7 @@ import { createTablePlugin } from '@features/editor/extensions/table/table-plugi
 import { StableCaret } from '@features/editor/extensions/stable-caret';
 import { ColumnsEditorNode, ColumnEditorNode } from '@features/editor/extensions/columns/columns-editor';
 import { CalloutEditorNode } from '@features/editor/extensions/callout/callout-editor';
+import { ToggleEditorNode } from '@features/editor/extensions/toggle/toggle-editor';
 import { MarkdownParagraph, MarkdownHeading, MarkdownListItem, MarkdownTaskItem } from './markdown-parser-common-extensions';
 import { appendFlowixBlockBackgroundComment, flowixBlockBackgroundCommentForNode } from './extensions/flowix-block-background';
 import { isEmptyMarkdownPlaceholderOnly } from './markdown-normalization';
@@ -337,6 +338,7 @@ export function createMarkdownEditorExtensions({
     ColumnsEditorNode,
     ColumnEditorNode,
     CalloutEditorNode,
+    ToggleEditorNode,
     TaskList,
     PreservedTaskItem.configure({ nested: true }),
     Markdown.configure({ markedOptions: { gfm: true, breaks: true } }),

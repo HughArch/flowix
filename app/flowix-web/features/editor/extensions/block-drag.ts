@@ -770,7 +770,10 @@ function fillEmptyContainers(tr: Transaction, schema: EditorView['state']['schem
   if (!paragraph) return
   const empty: number[] = []
   tr.doc.descendants((node, pos) => {
-    if ((node.type.name === 'column' || node.type.name === 'callout') && node.childCount === 0) {
+    if (
+      (node.type.name === 'column' || node.type.name === 'callout' || node.type.name === 'toggle')
+      && node.childCount === 0
+    ) {
       empty.push(pos)
     }
     return true

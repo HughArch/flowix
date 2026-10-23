@@ -102,6 +102,8 @@ describe('paste rule helpers', () => {
     expect(looksLikeMarkdown('    indented code')).toBe(true);
     expect(looksLikeMarkdown('__strong__')).toBe(true);
     expect(looksLikeMarkdown('* * *')).toBe(true);
+    expect(looksLikeMarkdown('::: toggle collapsed\n\n标题\n\n:::')).toBe(true);
+    expect(looksLikeMarkdown('::: callout\n\n内容\n\n:::')).toBe(true);
   });
 
   it('detects and converts TSV tables without forcing a header row', () => {

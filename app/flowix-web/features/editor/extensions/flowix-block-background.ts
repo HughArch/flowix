@@ -27,14 +27,14 @@ export const FLOWIX_BLOCK_BACKGROUND_ATTR = 'flowixBg';
 
 const BLOCK_BG_COMMENT_RE = /^<!--\s*flowix:block-bg\s+(\{[\s\S]*\})\s*-->$/;
 
-const BLOCK_BACKGROUND_NODE_TYPES = new Set(['paragraph', 'heading']);
+const BLOCK_BACKGROUND_NODE_TYPES = new Set(['paragraph', 'heading', 'toggle']);
 
 /**
  * Containers a block background may reach into when the user targets the
  * container itself (a list item or a blockquote). Tables and code blocks are
  * deliberately absent: painting their first cell/line is not a "line".
  */
-const BLOCK_BACKGROUND_CONTAINER_TYPES = new Set(['listItem', 'taskItem', 'blockquote', 'columns', 'column']);
+const BLOCK_BACKGROUND_CONTAINER_TYPES = new Set(['listItem', 'taskItem', 'blockquote', 'columns', 'column', 'toggle']);
 
 export function normalizeFlowixBlockBackground(value: unknown): FlowixTextColor | null {
   return isFlowixTextColor(value) ? value : null;

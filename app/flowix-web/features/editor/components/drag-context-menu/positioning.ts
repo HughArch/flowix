@@ -196,6 +196,9 @@ function getVisibleBlockElement(info: CurrentBlockInfo): HTMLElement | null {
   // The callout NodeView itself is the visible block; `closest` would walk up
   // past it because `.flowix-callout` is not in BLOCK_SELECTOR.
   if (info.typeName === 'callout') return info.dom
+  // Same for a toggle: its NodeView is the visible container and the handle
+  // must follow the whole block, not an ancestor.
+  if (info.typeName === 'toggle') return info.dom
 
   if (info.typeName === 'table') {
     if (info.dom.matches('table, .tableWrapper')) return info.dom

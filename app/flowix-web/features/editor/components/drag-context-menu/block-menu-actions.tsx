@@ -338,10 +338,18 @@ export function useBlockMenuActions(
     if (blockTypeName === 'agentThreadCard') {
       return actions.filter((action) => action.id === 'delete')
     }
+    if (blockTypeName === 'toggle') {
+      // A toggle paints its background across the whole container, so keep
+      // the background palette alongside deletion and the column operations.
+      return actions.filter(
+        (action) => action.group === 'danger' || action.group === 'layout' || action.group === 'background',
+      )
+    }
     if (blockTypeName === 'callout') {
       // The handle targets the whole container, so text-block conversions do
-      // not apply. Keep deletion and the column operations (splitting a callout
-      // into columns stays valid).
+      // not apply. Keep deletion and the column operations (splitting a
+      // callout into columns stays valid). Callouts carry their own colour, so
+      // the line-background palette is not offered.
       return actions.filter((action) => action.group === 'danger' || action.group === 'layout')
     }
     return actions

@@ -1,5 +1,6 @@
 import { Fragment, useLayoutEffect, useRef, type MouseEvent } from 'react';
 import {
+  CaretDownIcon,
   CheckSquareIcon,
   CodeIcon,
   FilePlusIcon,
@@ -41,6 +42,7 @@ export type SlashMenuItemId =
   | 'paragraph'
   | 'blockquote'
   | 'callout'
+  | 'toggle'
   | 'code-block'
   | 'table'
   | 'table-reference'
@@ -244,6 +246,13 @@ export const SLASH_MENU_ITEMS: SlashMenuItem[] = [
     labelKey: 'editor.slash.label.callout',
     keywords: ['callout', 'zzk', 'callout block', 'zhuozhong', '着重', '强调', '提示', '高亮'],
     icon: LightbulbIcon,
+    sectionKey: 'editor.slash.section.addBlock',
+  },
+  {
+    id: 'toggle',
+    labelKey: 'editor.slash.label.toggle',
+    keywords: ['toggle', 'fold', 'collapse', 'zhedie', '折叠', '折叠块', '收起'],
+    icon: CaretDownIcon,
     sectionKey: 'editor.slash.section.addBlock',
   },
   {
