@@ -1,5 +1,5 @@
 import type { Editor } from '@tiptap/core'
-import { NodeSelection } from 'prosemirror-state'
+import { NodeSelection, TextSelection } from 'prosemirror-state'
 import { menuPinPluginKey } from '@features/editor/extensions/menu-pin'
 import { getCurrentBlockInfo, type CurrentBlockInfo } from '@features/editor/components/drag-context-menu/block-info'
 import type { BlockMenuItem, ImageAlignment } from '@features/editor/components/drag-context-menu/items'
@@ -55,6 +55,48 @@ export function applyMenuItem(
       editor.chain().focus().toggleCodeBlock().run()
     }
   }
+}
+
+/**
+ * Insert an empty paragraph before or after the target block and focus it.
+ *
+ * A list item cannot host a sibling paragraph inside its list, so walk
+ * outwards until a parent accepts a paragraph; the new line then lands just
+ * outside the list, which matches the block-level meaning of the handle menu.
+ */
+export function insertParagraphAtEdge(
+  editor: Editor,
+  target: CurrentBlockInfo,
+  side: 'before' | 'after',
+): boolean {
+  if (editor.isDestroyed) return false
+
+  const { state } = editor
+  const paragraph = state.schema.nodes.paragraph
+  if (!paragraph) return false
+
+  const doc = state.doc
+  let node = doc.nodeAt(target.pos)
+  let pos = target.pos
+  if (!node) return false
+
+  for (let guard = 0; guard < 20; guard += 1) {
+    const insertPos = side === 'before' ? pos : pos + node.nodeSize
+    const $insert = doc.resolve(insertPos)
+    const index = $insert.index(insertPos)
+    if ($insert.parent.canReplaceWith(index, index, paragraph)) {
+      const tr = state.tr.insert(insertPos, paragraph.create())
+      tr.setSelection(TextSelection.near(tr.doc.resolve(insertPos + 1), 1))
+      editor.view.dispatch(tr.scrollIntoView())
+      return true
+    }
+
+    const $node = doc.resolve(pos)
+    if ($node.depth === 0) return false
+    pos = $node.before($node.depth)
+    node = $node.node($node.depth)
+  }
+  return false
 }
 
 /**

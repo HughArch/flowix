@@ -1,4 +1,5 @@
 import { createCodeBlockShikiView } from '@features/editor/extensions/codeblock-shiki/codeblock-shiki-view';
+import { createCodeBlockFoldPlugin } from '@features/editor/extensions/codeblock-shiki/codeblock-fold';
 import { proseMirrorPluginShiki } from '@features/editor/extensions/codeblock-shiki/shiki/shiki-plugin';
 import { TextSelection } from '@tiptap/pm/state';
 import {
@@ -55,6 +56,7 @@ export const CodeBlockShiki = CodeBlockShikiBase.extend<ShikiCodeBlockOptions>({
         preloadThemes: [...PRELOADED_SHIKI_THEMES],
         traceId: this.options.traceId,
       }),
+      createCodeBlockFoldPlugin(),
     ];
   },
 });

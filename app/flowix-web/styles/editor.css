@@ -34,7 +34,9 @@ html[data-os="windows"] .markdown-editor .tag-node-prefix-box > .tag-node-prefix
 
 .markdown-editor {
   isolation: isolate;
-  --table-header-fill: color-mix(in srgb, var(--muted) 32%, var(--background));
+  /* 表头用淡蓝色底与数据行（含灰色斑马线）拉开区分度。 */
+  --table-header-fill: #d6e0f5;
+  --table-row-alt-fill: color-mix(in srgb, var(--muted) 20%, var(--background));
   display: block;
   height: 100%;
   width: 100%;
@@ -42,6 +44,11 @@ html[data-os="windows"] .markdown-editor .tag-node-prefix-box > .tag-node-prefix
   position: relative;
   box-sizing: border-box;
   -webkit-overflow-scrolling: touch;
+}
+
+/* Dark surfaces blend the same blue into the background so it does not glare. */
+:is([data-theme="dark"], [data-theme="mist"]) .markdown-editor {
+  --table-header-fill: color-mix(in oklch, #d6e0f5 30%, var(--background));
 }
 
 /* The shared overlay scrollbar wrapper keeps the former editor scroller's
@@ -1065,6 +1072,20 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   background: var(--table-header-fill);
   font-weight: 600;
   text-align: left;
+}
+
+/* 数据行斑马线：只给 td 上色，th 保留表头底色。
+ * 灰底落在数据行的偶数行（第 2、4、6…），让第一条数据行与表头拉开色差。
+ * 首行全为 th 表示存在真正的表头行，数据行从第 2 个 tr 开始，
+ * 偶数数据行对应奇数 tr；首行含 td（无表头 / 仅列头）时数据行从第 1 个 tr
+ * 开始，偶数数据行对应偶数 tr。
+ * 必须用 nth-of-type：Tiptap 会在 table 内渲染 colgroup，nth-child 的奇偶会被打乱。 */
+.markdown-editor .tiptap:not(.agent-composer__input-content) table:not(.multidimensional-table):where(:not(.agent-thread-card__message, .agent-thread-card__message *)):has(> tbody > tr:first-of-type > th):not(:has(> tbody > tr:first-of-type > td)) > tbody > tr:nth-of-type(odd) > td:where(:not(.agent-thread-card__message, .agent-thread-card__message *)) {
+  background-color: var(--table-row-alt-fill);
+}
+
+.markdown-editor .tiptap:not(.agent-composer__input-content) table:not(.multidimensional-table):where(:not(.agent-thread-card__message, .agent-thread-card__message *)):has(> tbody > tr:first-of-type > td) > tbody > tr:nth-of-type(even) > td:where(:not(.agent-thread-card__message, .agent-thread-card__message *)) {
+  background-color: var(--table-row-alt-fill);
 }
 
 .markdown-editor .tiptap:not(.agent-composer__input-content) table:not(.multidimensional-table) tr td:where(:not(.agent-thread-card__message, .agent-thread-card__message *)):first-child,

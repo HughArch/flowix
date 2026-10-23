@@ -10,6 +10,7 @@ import {
 import {
   applyMenuItem,
   deleteBlock,
+  insertParagraphAtEdge,
   setImageAlignment,
   pinBlock,
   unpinBlock,
@@ -20,6 +21,12 @@ import {
 import { renderDragIcon } from '@features/editor/components/drag-context-menu/icons'
 import type { BlockMenuItem } from '@features/editor/components/drag-context-menu/items'
 import { clearBlockSelection } from '@features/editor/extensions/block-selection'
+import { fitTableToWidth } from '@features/editor/extensions/table/table-fit-width'
+import {
+  getTableTextAlign,
+  setTableTextAlign,
+  type TableTextAlign,
+} from '@features/editor/extensions/table/table-text-align'
 import { HANDLE_SIZE } from '@features/editor/components/drag-context-menu/style'
 import { useDragHandlePosition } from '@features/editor/components/drag-context-menu/use-drag-handle-position'
 import { BlockActionMenu } from '@features/editor/components/drag-context-menu/block-action-menu'
@@ -385,6 +392,24 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     }
     closeMenu()
   }, [closeMenu, editor])
+  const onTableFitWidth = useCallback(() => {
+    if (!menuTarget) return
+    fitTableToWidth(editor, menuTarget.pos)
+    editor.view.focus()
+    closeMenu()
+  }, [closeMenu, editor, menuTarget])
+  const onTableTextAlign = useCallback((align: TableTextAlign) => {
+    if (!menuTarget) return
+    setTableTextAlign(editor, menuTarget.pos, align)
+    editor.view.focus()
+    closeMenu()
+  }, [closeMenu, editor, menuTarget])
+  const onInsertParagraph = useCallback((side: 'before' | 'after') => {
+    if (!menuTarget) return
+    insertParagraphAtEdge(editor, menuTarget, side)
+    editor.view.focus()
+    closeMenu()
+  }, [closeMenu, editor, menuTarget])
   const columnMenu = useMemo<ColumnMenuState | undefined>(() => {
     if (!menuTarget) return undefined
     const doc = editor.state.doc
@@ -439,7 +464,11 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     menuTarget?.typeName,
     onImageAlign,
     menuTarget?.typeName === 'table' ? getTableHeaderState(menuTarget.node) : undefined,
+    menuTarget?.typeName === 'table' ? getTableTextAlign(menuTarget.node) : undefined,
     onTableHeaderToggle,
+    onTableTextAlign,
+    onTableFitWidth,
+    onInsertParagraph,
     columnMenu,
     blockBackgroundMenu,
   )

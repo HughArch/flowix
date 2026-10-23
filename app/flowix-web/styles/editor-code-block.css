@@ -132,6 +132,97 @@
   color: var(--foreground);
 }
 
+.code-block-collapse-btn {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  background: transparent;
+  border: 0;
+  border-radius: 0.38rem;
+  cursor: pointer;
+  color: var(--muted-foreground);
+}
+
+.code-block-collapse-btn:hover {
+  color: var(--foreground);
+}
+
+.code-block-collapse-icon {
+  width: 14px;
+  height: 14px;
+  transition: transform 150ms ease;
+}
+
+/* 展开态显示向上 chevron（点击收起），折叠态恢复向下（点击展开）。 */
+.code-block-wrapper:not([data-collapsed='true']) .code-block-collapse-btn .code-block-collapse-icon {
+  transform: rotate(180deg);
+}
+
+/* 整块折叠是编辑器视图态：屏幕隐藏内容，打印保持展开。 */
+@media screen {
+  .markdown-editor .tiptap:not(.agent-composer__input-content) .code-block-wrapper[data-collapsed='true'] > .code-block-editor,
+  .markdown-editor .tiptap:not(.agent-composer__input-content) .code-block-wrapper[data-collapsed='true'] > .code-block-mermaid-preview {
+    display: none;
+  }
+}
+
+/* JSON 按层级折叠：行首 widget 按钮 + 隐藏区间内联装饰。
+ * 隐藏只作用于屏幕，打印 / PDF 自动展开全部层级。 */
+@media screen {
+  .markdown-editor .tiptap:not(.agent-composer__input-content) .code-block-content .json-fold-hidden {
+    display: none;
+  }
+}
+
+.json-fold-toggle {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1em;
+  height: 1em;
+  margin-left: -1em;
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  opacity: 0.35;
+  user-select: none;
+  vertical-align: middle;
+}
+
+.json-fold-toggle:hover,
+.json-fold-toggle:focus-visible,
+.json-fold-toggle[data-folded='true'] {
+  opacity: 1;
+  color: var(--foreground);
+}
+
+.json-fold-toggle::before {
+  content: '';
+  width: 0;
+  height: 0;
+  border-top: 4px solid transparent;
+  border-bottom: 4px solid transparent;
+  border-left: 5px solid currentColor;
+  transform: rotate(90deg);
+  transition: transform 120ms ease;
+}
+
+.json-fold-toggle[data-folded='true']::before {
+  transform: rotate(0deg);
+}
+
+/* Read-only documents keep the fold state but hide the controls, matching the
+ * toggle block chevron. */
+.markdown-editor .ProseMirror[contenteditable='false'] .code-block-collapse-btn,
+.markdown-editor .ProseMirror[contenteditable='false'] .json-fold-toggle {
+  display: none;
+}
+
 .code-block-mode-tabs {
   display: inline-flex;
   align-items: center;

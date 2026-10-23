@@ -4,6 +4,7 @@ import svgPanZoom from 'svg-pan-zoom'
 import { translate, type I18nKey } from '@/lib/i18n'
 import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api'
 import { CodeBlockClipboardController } from './clipboard-controller'
+import { toggleCodeBlockCollapsed } from './codeblock-fold'
 import { registerCodeBlockThemeHandler } from './theme-coordinator'
 import { detectCodeLanguage } from './language-detection'
 import { setLanguageButtonContent } from './language-button'
@@ -56,6 +57,10 @@ const FULLSCREEN_ENTER_ICON = '<svg class="code-block-fullscreen-icon" viewBox="
 
 const FULLSCREEN_EXIT_ICON = '<svg class="code-block-fullscreen-icon" viewBox="0 0 256 256" aria-hidden="true" focusable="false"><path fill="currentColor" d="M96,40V80A16,16,0,0,1,80,96H40a8,8,0,0,1,0-16H80V40a8,8,0,0,1,16,0Zm120,40H176V40a8,8,0,0,0-16,0V80a16,16,0,0,0,16,16h40a8,8,0,0,0,0-16ZM80,176v40a8,8,0,0,0,16,0V176a16,16,0,0,0-16-16H40a8,8,0,0,0,0,16Zm136-16H176a16,16,0,0,0-16,16v40a8,8,0,0,0,16,0V176h40a8,8,0,0,0,0-16Z"></path></svg>'
 
+// 折叠 / 展开按钮图标 ── Phosphor ChevronDown (256×256, fill=currentColor)。
+// 展开态由 CSS 旋转 180°, 与 header 其它 14×14 图标同源。
+const COLLAPSE_CHEVRON_ICON = '<svg class="code-block-collapse-icon" viewBox="0 0 256 256" aria-hidden="true" focusable="false"><path fill="currentColor" d="M213.66,101.66l-80,80a8,8,0,0,1-11.32,0l-80-80A8,8,0,0,1,53.66,90.34L128,164.69l74.34-74.35a8,8,0,0,1,11.32,11.32Z"></path></svg>'
+
 // 全屏 overlay 内的 pan/zoom 工具条图标 ── Phosphor Minus / Plus / CornersOut
 // (256×256 viewBox, fill=currentColor), 与现有 fullscreen 图标同源; 14×14
 // 渲染尺寸与其它全屏按钮一致。
@@ -92,6 +97,7 @@ class CodeBlockShikiView implements NodeView {
   private header: HTMLElement | null = null
   private languageBtn: HTMLButtonElement | null = null
   private copyBtn: HTMLButtonElement | null = null
+  private collapseBtn: HTMLButtonElement | null = null
   private clipboardController: CodeBlockClipboardController | null = null
   private modeTabs: HTMLElement | null = null
   private previewTabBtn: HTMLButtonElement | null = null
@@ -230,6 +236,23 @@ class CodeBlockShikiView implements NodeView {
     // 隔开, 失去"复制"作为"对代码块本身操作"的视觉归类。
     this.actions.appendChild(this.copyBtn)
 
+    // 整块折叠 ── 收起后只保留 header。折叠态由节点 attr 持久化到
+    // fence info (` ```json collapsed `), 见 codeblock-shiki-base。
+    this.collapseBtn = document.createElement('button')
+    this.collapseBtn.classList.add('code-block-collapse-btn')
+    this.collapseBtn.type = 'button'
+    this.collapseBtn.tabIndex = -1
+    this.collapseBtn.addEventListener('mousedown', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+    })
+    this.collapseBtn.addEventListener('click', (event) => {
+      event.preventDefault()
+      event.stopPropagation()
+      this.toggleCollapsed()
+    })
+    this.actions.appendChild(this.collapseBtn)
+
     this.header.appendChild(this.languageBtn)
     this.header.appendChild(this.actions)
 
@@ -247,6 +270,26 @@ class CodeBlockShikiView implements NodeView {
     this.updateLanguageAttribute()
     this.syncShikiTheme()
     this.syncMermaidView()
+    this.syncCollapsedState()
+  }
+
+  private toggleCollapsed() {
+    const pos = this.getPos()
+    if (pos === null) return
+    if (this.isFullscreen) this.setFullscreen(false)
+    toggleCodeBlockCollapsed(this.view, pos)
+  }
+
+  private syncCollapsedState() {
+    const collapsed = this.node.attrs.collapsed === true
+    this.dom.dataset.collapsed = collapsed ? 'true' : 'false'
+    if (!this.collapseBtn) return
+
+    const label = t(collapsed ? 'editor.codeblock.expand' : 'editor.codeblock.collapse')
+    this.collapseBtn.title = label
+    this.collapseBtn.setAttribute('aria-label', label)
+    this.collapseBtn.setAttribute('aria-expanded', String(!collapsed))
+    this.collapseBtn.innerHTML = COLLAPSE_CHEVRON_ICON
   }
 
   private ensureMermaidControls(): void {
@@ -1162,6 +1205,7 @@ private unmountFullscreenOverlay(): void {
 
     this.updateLanguageAttribute()
     this.syncMermaidView()
+    this.syncCollapsedState()
     return true
   }
 

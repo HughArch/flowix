@@ -1,5 +1,5 @@
 import { useMemo, type CSSProperties, type ReactNode } from 'react'
-import { ArrowLeftIcon, ArrowRightIcon, CheckIcon, ColumnsIcon, HighlighterIcon, RowsIcon, TrashSimpleIcon } from '@phosphor-icons/react'
+import { ArrowLeftIcon, ArrowRightIcon, ArrowsOutLineHorizontalIcon, CheckIcon, ColumnsIcon, HighlighterIcon, RowsIcon, RowsPlusBottomIcon, RowsPlusTopIcon, TextAlignCenterIcon, TextAlignLeftIcon, TextAlignRightIcon, TrashSimpleIcon } from '@phosphor-icons/react'
 import {
   headingMenuItems,
   listMenuItems,
@@ -9,11 +9,12 @@ import {
 } from '@features/editor/components/drag-context-menu/items'
 import type { ImageAlignment } from '@features/editor/components/drag-context-menu/items'
 import type { CurrentBlockInfo } from '@features/editor/components/drag-context-menu/block-info'
+import type { TableTextAlign } from '@features/editor/extensions/table/table-text-align'
 import type { I18nKey } from '@/lib/i18n'
 import { useI18n } from '@/lib/i18n'
 import { FLOWIX_TEXT_COLORS, type FlowixTextColor } from '@features/editor/extensions/flowix-text-mark'
 
-export type BlockMenuActionGroup = 'heading' | 'list' | 'block' | 'layout' | 'background' | 'image' | 'table' | 'mode' | 'danger'
+export type BlockMenuActionGroup = 'heading' | 'list' | 'block' | 'layout' | 'background' | 'image' | 'table' | 'insert' | 'mode' | 'danger'
 
 export interface BlockMenuAction {
   id: string
@@ -136,7 +137,11 @@ export function useBlockMenuActions(
   blockTypeName?: string,
   onImageAlign?: (alignment: ImageAlignment) => void,
   tableHeaderState?: TableHeaderState,
+  tableTextAlign?: TableTextAlign | null,
   onTableHeaderToggle?: (header: 'row' | 'column') => void,
+  onTableTextAlign?: (align: TableTextAlign) => void,
+  onTableFitWidth?: () => void,
+  onInsertParagraph?: (side: 'before' | 'after') => void,
   columnMenu?: ColumnMenuState,
   blockBackground?: BlockBackgroundMenuState,
 ): BlockMenuAction[] {
@@ -178,6 +183,49 @@ export function useBlockMenuActions(
           label: t('editor.table.headerColumn'),
           checked: tableHeaderState?.columnHeader ?? false,
           onSelect: () => onTableHeaderToggle?.('column'),
+        },
+        {
+          id: 'table-fit-width',
+          group: 'table',
+          icon: <ArrowsOutLineHorizontalIcon size={16} weight="bold" />,
+          label: t('editor.table.fitWidth'),
+          onSelect: () => onTableFitWidth?.(),
+        },
+        {
+          id: 'table-text-align',
+          group: 'table',
+          icon: <TextAlignLeftIcon size={16} weight="bold" />,
+          label: t('editor.table.align'),
+          // Pure disclosure: the click handler opens the submenu, so the row
+          // itself has no default action.
+          onSelect: () => {},
+          childrenGroupLabel: t('editor.table.align'),
+          children: [
+            {
+              id: 'table-align-left',
+              group: 'table',
+              icon: <TextAlignLeftIcon size={16} weight="bold" />,
+              label: t('editor.table.alignLeft'),
+              checked: tableTextAlign === 'left',
+              onSelect: () => onTableTextAlign?.('left'),
+            },
+            {
+              id: 'table-align-center',
+              group: 'table',
+              icon: <TextAlignCenterIcon size={16} weight="bold" />,
+              label: t('editor.table.alignCenter'),
+              checked: tableTextAlign === 'center',
+              onSelect: () => onTableTextAlign?.('center'),
+            },
+            {
+              id: 'table-align-right',
+              group: 'table',
+              icon: <TextAlignRightIcon size={16} weight="bold" />,
+              label: t('editor.table.alignRight'),
+              checked: tableTextAlign === 'right',
+              onSelect: () => onTableTextAlign?.('right'),
+            },
+          ],
         },
         {
           id: 'delete',
@@ -327,6 +375,20 @@ export function useBlockMenuActions(
       ...columnActions,
       ...backgroundActions,
       {
+        id: 'insert-above',
+        group: 'insert',
+        icon: <RowsPlusTopIcon size={16} weight="bold" />,
+        label: t('editor.block.insertAbove'),
+        onSelect: () => onInsertParagraph?.('before'),
+      },
+      {
+        id: 'insert-below',
+        group: 'insert',
+        icon: <RowsPlusBottomIcon size={16} weight="bold" />,
+        label: t('editor.block.insertBelow'),
+        onSelect: () => onInsertParagraph?.('after'),
+      },
+      {
         id: 'delete',
         group: 'danger',
         icon: <TrashSimpleIcon size={16} weight="bold" />,
@@ -359,9 +421,13 @@ export function useBlockMenuActions(
     onDelete,
     onImageAlign,
     onTableHeaderToggle,
+    onTableTextAlign,
+    onTableFitWidth,
+    onInsertParagraph,
     columnMenu,
     blockBackground,
     tableHeaderState,
+    tableTextAlign,
     t,
   ])
 }

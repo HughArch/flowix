@@ -67,6 +67,7 @@
   html.flowix-pdf-printing .flowix-pdf-print-scope .editor-toolbar,
   html.flowix-pdf-printing .flowix-pdf-print-scope .editor-search-replace-panel,
   html.flowix-pdf-printing .flowix-pdf-print-scope .code-block-header,
+  html.flowix-pdf-printing .flowix-pdf-print-scope .json-fold-toggle,
   html.flowix-pdf-printing .flowix-pdf-print-scope .frontmatter-property-node,
   html.flowix-pdf-printing .flowix-pdf-print-scope .agent-thread-card,
   html.flowix-pdf-printing .flowix-pdf-print-scope .heading-outline-navigation-anchor,
@@ -323,6 +324,12 @@
     word-break: inherit;
   }
 
+  /* The PDF snapshot renders under the screen media query, so the editor's
+   * JSON fold decorations would still hide lines. Restore them explicitly. */
+  html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror .code-block-content .json-fold-hidden {
+    display: inline !important;
+  }
+
   /* Quote: copied from editor.css; its vertical padding is already zero. */
   html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror blockquote {
     border-left: 0.1875rem solid var(--border);
@@ -429,8 +436,14 @@
   }
 
   html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror table th {
-    background: var(--muted);
+    background: var(--table-header-fill, var(--muted));
     font-weight: 600;
+  }
+
+  /* 数据行斑马线：与 editor.css 保持同一口径（偶数数据行，只给 td 上色）。 */
+  html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror table:has(> tbody > tr:first-of-type > th):not(:has(> tbody > tr:first-of-type > td)) > tbody > tr:nth-of-type(odd) > td,
+  html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror table:has(> tbody > tr:first-of-type > td) > tbody > tr:nth-of-type(even) > td {
+    background-color: var(--table-row-alt-fill, color-mix(in srgb, var(--muted) 20%, var(--background)));
   }
 
   html.flowix-pdf-printing .flowix-pdf-print-scope .markdown-editor .ProseMirror table tr td:first-child,

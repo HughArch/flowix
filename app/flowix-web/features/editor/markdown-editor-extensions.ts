@@ -27,6 +27,7 @@ import { MenuPinExtension } from '@features/editor/extensions/menu-pin';
 import { BlockDragExtension } from '@features/editor/extensions/block-drag';
 import { BlockSelectionExtension } from '@features/editor/extensions/block-selection';
 import { HeadingFoldExtension, type HeadingFoldLabels } from '@features/editor/extensions/heading-fold';
+import { JsonFoldExtension, type JsonFoldLabels } from '@features/editor/extensions/codeblock-shiki/json-fold';
 import { ListTypeShortcuts } from '@features/editor/extensions/list-transforms';
 import { SlashMenu } from '@features/editor/extensions/slash-menu';
 import { AgentThreadCard } from '@features/agent/thread-card';
@@ -297,6 +298,7 @@ export interface MarkdownEditorExtensionContext {
   workspaceHost: WorkspaceHostId;
   getPlaceholder: () => string;
   getHeadingFoldLabels: () => HeadingFoldLabels;
+  getJsonFoldLabels?: () => JsonFoldLabels;
 }
 
 /** Full interactive editor registry; parser specs are shared through pure Markdown modules. */
@@ -310,6 +312,7 @@ export function createMarkdownEditorExtensions({
   workspaceHost,
   getPlaceholder,
   getHeadingFoldLabels,
+  getJsonFoldLabels = () => ({ fold: 'Collapse', unfold: 'Expand' }),
 }: MarkdownEditorExtensionContext, codeBlockExtension = CodeBlockShikiBase) {
   // Event order follows extension priority, not this array's visual order:
   // gap input normalization (1200) > slash menu (1150) > managed paste (1100)
@@ -391,6 +394,7 @@ export function createMarkdownEditorExtensions({
     BlockSelectionExtension,
     BlockDragExtension,
     HeadingFoldExtension.configure({ getLabels: getHeadingFoldLabels }),
+    JsonFoldExtension.configure({ getLabels: getJsonFoldLabels }),
     ListTypeShortcuts,
   ];
 }

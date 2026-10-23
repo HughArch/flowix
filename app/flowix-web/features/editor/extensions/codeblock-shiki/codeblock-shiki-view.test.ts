@@ -15,12 +15,13 @@ const TestAtomBlock = Node.create({
   },
 })
 
-function createPlainTextView(language = 'plaintext') {
+function createPlainTextView(language = 'plaintext', collapsed = false) {
   return createCodeBlockShikiView({
     node: {
       attrs: {
         language,
         theme: 'github-light',
+        collapsed,
       },
       textContent: 'alpha\nbeta\ngamma',
     },
@@ -72,6 +73,28 @@ describe('CodeBlockShikiView DOM contract', () => {
     expect(nodeView.dom.firstElementChild).toBe(nodeView.dom.querySelector(':scope > pre.code-block-editor'))
 
     nodeView.destroy()
+  })
+
+  it('exposes the collapse toggle in the header', () => {
+    const nodeView = createPlainTextView()
+    const button = nodeView.dom.querySelector<HTMLButtonElement>('.code-block-collapse-btn')
+
+    expect(button).not.toBeNull()
+    expect(button?.tabIndex).toBe(-1)
+    expect(button?.closest('.code-block-header')).not.toBeNull()
+    expect(button?.querySelector('svg')).not.toBeNull()
+    expect(nodeView.dom.dataset.collapsed).toBe('false')
+    expect(button?.getAttribute('aria-expanded')).toBe('true')
+
+    nodeView.destroy()
+
+    const collapsedView = createPlainTextView('plaintext', true)
+    expect(collapsedView.dom.dataset.collapsed).toBe('true')
+    expect(
+      collapsedView.dom.querySelector('.code-block-collapse-btn')?.getAttribute('aria-expanded'),
+    ).toBe('false')
+
+    collapsedView.destroy()
   })
 
   it('renders the language dropdown through the document body', () => {

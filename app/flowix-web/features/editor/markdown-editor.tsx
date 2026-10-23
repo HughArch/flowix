@@ -18,6 +18,7 @@ import {
   headingFoldPluginKey,
   toggleHeadingFold,
 } from '@features/editor/extensions/heading-fold';
+import { jsonFoldPluginKey } from '@features/editor/extensions/codeblock-shiki/json-fold';
 import type { EditorLinkContext } from '@features/editor/editor-link-resolution';
 import { pasteClipboardSnapshot } from '@features/editor/extensions/paste-rules';
 import type { ClipboardSnapshot } from '@features/editor/extensions/paste-rules/clipboard';
@@ -287,6 +288,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   headingFoldLabelsRef.current = {
     fold: t('editor.headingFold.fold'),
     unfold: t('editor.headingFold.unfold'),
+  };
+  const jsonFoldLabelsRef = useRef({
+    fold: t('editor.codeblock.jsonFold'),
+    unfold: t('editor.codeblock.jsonUnfold'),
+  });
+  jsonFoldLabelsRef.current = {
+    fold: t('editor.codeblock.jsonFold'),
+    unfold: t('editor.codeblock.jsonUnfold'),
   };
   const elementRef = useRef<HTMLDivElement>(null);
   const editorMountRef = useRef<HTMLDivElement>(null);
@@ -724,6 +733,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
         workspaceHost,
         getPlaceholder: () => resolvedPlaceholderRef.current,
         getHeadingFoldLabels: () => headingFoldLabelsRef.current,
+        getJsonFoldLabels: () => jsonFoldLabelsRef.current,
       }, CodeBlockShiki),
       content: parsedContent ?? initialContent,
       contentType: parsedContent ? 'json' : 'markdown',
@@ -908,6 +918,16 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       editor.state.tr.setMeta(headingFoldPluginKey, { type: 'refresh' }),
     );
   }, [headingFoldLabel]);
+
+  const jsonFoldLabel = jsonFoldLabelsRef.current.fold;
+  useEffect(() => {
+    const editor = editorRef.current;
+    if (!editor || editor.isDestroyed) return;
+    if (!jsonFoldPluginKey.getState(editor.state)) return;
+    editor.view.dispatch(
+      editor.state.tr.setMeta(jsonFoldPluginKey, { type: 'refresh' }),
+    );
+  }, [jsonFoldLabel]);
 
   useLayoutEffect(() => {
     const editor = editorRef.current;
