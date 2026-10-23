@@ -3,8 +3,8 @@
 //! `cli` 模块只负责把 argv 解析成结构化命令；这里负责把命令转给执行层。
 
 use crate::{
-    background_store, cli, columns_store, errors::CliError, mcp, operation, path_store, plugin,
-    store,
+    background_store, callout_store, cli, columns_store, errors::CliError, mcp, operation,
+    path_store, plugin, store,
 };
 
 /// 跑 CLI 主入口。
@@ -120,6 +120,50 @@ pub fn run_cli(args: &[String]) -> Result<(), CliError> {
             cli::BackgroundCommand::Clear { id, line } => {
                 path_store::print(background_store::clear(&id, line)?, json)
             }
+        },
+        cli::Cli::Callout { command, json } => match command {
+            cli::CalloutCommand::List { id } => path_store::print(callout_store::list(&id)?, json),
+            cli::CalloutCommand::Add {
+                id,
+                at,
+                icon,
+                color,
+                content,
+                file,
+                stdin,
+            } => {
+                let content = match (content, file.as_deref(), stdin) {
+                    (Some(text), None, false) => text,
+                    (None, Some(_), false) | (None, None, true) => {
+                        path_store::read_input(file.as_deref(), stdin, "callout add")?
+                    }
+                    (None, None, false) => String::new(),
+                    _ => {
+                        return Err(CliError::Usage(
+                            "callout add: provide at most one of --content, --file or --stdin"
+                                .into(),
+                        ))
+                    }
+                };
+                path_store::print(
+                    callout_store::add(&id, at, icon.as_deref(), color.as_deref(), &content)?,
+                    json,
+                )
+            }
+            cli::CalloutCommand::Set {
+                id,
+                block,
+                icon,
+                color,
+            } => path_store::print(
+                callout_store::set(&id, block, icon.as_deref(), color.as_deref())?,
+                json,
+            ),
+            cli::CalloutCommand::Remove {
+                id,
+                block,
+                delete_content,
+            } => path_store::print(callout_store::remove(&id, block, !delete_content)?, json),
         },
         cli::Cli::Mcp => {
             use std::io::{stdin, stdout};

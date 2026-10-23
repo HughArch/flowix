@@ -1,6 +1,6 @@
 # 着重块（Callout）
 
-> 状态：已实现（编辑器 + Markdown 往返）。CLI / MCP 操作暂未提供。
+> 状态：已实现（编辑器 + Markdown 往返 + CLI / MCP）。
 
 ## 目标与边界
 
@@ -14,10 +14,10 @@
 - 容器内支持多段落、列表、引用、分栏、嵌套着重块。
 - Markdown fenced div 持久化，纯文本可读且可往返。
 - 光标在首块行首按 Backspace 解包容器。
+- CLI / MCP 可列出、插入、修改和移除着重块。
 
 不在范围：
 
-- CLI / MCP 的着重块读写（Rust `flowix-core` 暂不解析该块）。
 - 上传图片 / 图标 URL 作为图标（当前仅支持 Unicode emoji）。
 - 肤色变体与区域指示符字母（不作为独立图标提供）。
 - 外部块拖入 / 拖出着重块（容器内重排仍然可用）。
@@ -145,6 +145,38 @@ callout: {
 - 拖拽菜单的「删除」作用于内部块；容器最后一个子块被删除时，ProseMirror 会补一个空段落，容器保持合法。
 - `block-drag` 的 `fillEmptyContainers()` 兜底 `column` 与 `callout` 的零子节点状态。
 
+## CLI / MCP
+
+### CLI
+
+```bash
+flowix callout list <id> --json
+flowix callout add <id> [--at <line>] [--icon <emoji>] [--color <color>] \
+  [--content <text> | --file <utf8.md> | --stdin] --json
+flowix callout set <id> --block <n> [--icon <emoji>] [--color <color>] --json
+flowix callout remove <id> --block <n> [--delete-content] --json
+```
+
+- `add` 默认 `💡 + orange`；内容来源三选一（`--content` / `--file` / `--stdin`），可省略。
+- `set` 至少提供 `--icon` 或 `--color`。
+- `remove` 默认保留内容（解包）；`--delete-content` 才连同内容删除。
+- 颜色：`red / orange / yellow / green / cyan / blue / purple / pink / gray`。
+
+### MCP
+
+`memo` 工具的 structured actions：
+
+| action | 参数 |
+|---|---|
+| `callout.list` | `address` |
+| `callout.add` | `address`, `content?`, `icon?`, `color?`, `at?` |
+| `callout.set` | `address`, `block`, `icon?`, `color?` |
+| `callout.remove` | `address`, `block`, `keepContent?`（默认 true） |
+
+`keepContent: false` 与 CLI 的 `--delete-content` 等价。
+
+> CLI/MCP 的 `list` / `set` / `remove` 以**顶层**着重块为单位；嵌套在另一个着重块内部的着重块会作为父块内容保留，暂不单独索引。
+
 ## 与现有系统的交互
 
 | 系统 | 行为 |
@@ -171,9 +203,15 @@ callout: {
 - `extensions/callout/callout-commands.test.ts`：包裹/解包、列内包裹、光标映射、合法删除、撤销、`!!` 条件。
 - `extensions/columns/columns-markdown.test.ts`：列内着重块回归。
 - `markdown-parser-regressions.test.ts`：worker 解析含着重块的文档。
+- Rust：`memo_file::callout` 单元测试、`callout_e2e.rs`、`mcp_e2e.rs` 的 structured callout 用例。
 
 ```bash
 npx vitest run app/flowix-web/features/editor/extensions/callout \
   app/flowix-web/features/editor/extensions/columns/columns-markdown.test.ts \
   app/flowix-web/features/editor/markdown-parser-regressions.test.ts
+
+cd app
+cargo test -p flowix-core callout::tests
+cargo test -p flowix-cli --test callout_e2e
+cargo test -p flowix-cli --test mcp_e2e structured_callout
 ```

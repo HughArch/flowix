@@ -5,8 +5,8 @@
 //! argv and dispatched directly to the typed store layer; no system shell is spawned.
 
 use crate::{
-    background_store, cli, columns_store, errors::CliError, fmt, operation, output, path_store,
-    plugin, store,
+    background_store, callout_store, cli, columns_store, errors::CliError, fmt, operation, output,
+    path_store, plugin, store,
 };
 use serde_json::{json, Map, Value};
 use std::io::{BufRead, Write};
@@ -20,7 +20,7 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
     LATEST_PROTOCOL_VERSION,
 ];
 
-pub const TOOL_DESCRIPTION: &str = "Search and manage Flowix Markdown notes, inspect or edit Notion-style content columns and line background colors, read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
+pub const TOOL_DESCRIPTION: &str = "Search and manage Flowix Markdown notes, inspect or edit Notion-style content columns, line background colors and Flowus-style callouts, read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
 
 /// Run the MCP line-delimited JSON-RPC loop until stdin reaches EOF.
 pub fn run_mcp<R: BufRead, W: Write>(reader: R, mut writer: W) -> Result<(), CliError> {
@@ -181,6 +181,8 @@ fn validate_argument_keys(arguments: &Map<String, Value>) -> Result<(), CliError
         "widths",
         "line",
         "color",
+        "icon",
+        "keepContent",
         "command",
         "stdin",
     ];
@@ -281,6 +283,27 @@ fn parse_structured_operation(
         "background.clear" => Ok(FlowixOperation::BackgroundClear {
             address: address()?,
             line: integer(arguments, "line", 1, 1, usize::MAX)?,
+        }),
+        "callout.list" => Ok(FlowixOperation::CalloutList {
+            address: address()?,
+        }),
+        "callout.add" => Ok(FlowixOperation::CalloutAdd {
+            address: address()?,
+            at: optional_integer(arguments, "at")?,
+            icon: optional_string(arguments, "icon")?,
+            color: optional_string(arguments, "color")?,
+            content: optional_string(arguments, "content")?.unwrap_or_default(),
+        }),
+        "callout.set" => Ok(FlowixOperation::CalloutSet {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            icon: optional_string(arguments, "icon")?,
+            color: optional_string(arguments, "color")?,
+        }),
+        "callout.remove" => Ok(FlowixOperation::CalloutRemove {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            keep_content: boolean(arguments, "keepContent", true)?,
         }),
         _ => Err(CliError::Usage(format!("unknown memo action: `{action}`"))),
     }
@@ -531,6 +554,45 @@ fn execute_command(command: &str, stdin: Option<&str>) -> Result<Value, CliError
                 cli::BackgroundCommand::Clear { id, line } => {
                     background_store::clear(&id, line)
                 }
+            }
+        }
+        cli::Cli::Callout { command, .. } => {
+            reject_stdin(stdin)?;
+            match command {
+                cli::CalloutCommand::List { id } => callout_store::list(&id),
+                cli::CalloutCommand::Add {
+                    id,
+                    at,
+                    icon,
+                    color,
+                    content,
+                    file,
+                    stdin: read_stdin,
+                } => {
+                    if file.is_some() || read_stdin {
+                        return Err(CliError::Usage(
+                            "callout add through memo accepts --content only".into(),
+                        ));
+                    }
+                    callout_store::add(
+                        &id,
+                        at,
+                        icon.as_deref(),
+                        color.as_deref(),
+                        content.as_deref().unwrap_or_default(),
+                    )
+                }
+                cli::CalloutCommand::Set {
+                    id,
+                    block,
+                    icon,
+                    color,
+                } => callout_store::set(&id, block, icon.as_deref(), color.as_deref()),
+                cli::CalloutCommand::Remove {
+                    id,
+                    block,
+                    delete_content,
+                } => callout_store::remove(&id, block, !delete_content),
             }
         }
         cli::Cli::Version | cli::Cli::Completion { .. } | cli::Cli::Mcp => Err(CliError::Usage(

@@ -1,8 +1,8 @@
 //! Transport-neutral Flowix operations shared by CLI and MCP adapters.
 
 use crate::{
-    background_store, collection_store, columns_store, errors::CliError, fmt, output, path_store,
-    plugin, store,
+    background_store, callout_store, collection_store, columns_store, errors::CliError, fmt,
+    output, path_store, plugin, store,
 };
 use serde_json::Value;
 
@@ -88,6 +88,27 @@ pub(crate) enum FlowixOperation {
     BackgroundClear {
         address: String,
         line: usize,
+    },
+    CalloutList {
+        address: String,
+    },
+    CalloutAdd {
+        address: String,
+        at: Option<usize>,
+        icon: Option<String>,
+        color: Option<String>,
+        content: String,
+    },
+    CalloutSet {
+        address: String,
+        block: usize,
+        icon: Option<String>,
+        color: Option<String>,
+    },
+    CalloutRemove {
+        address: String,
+        block: usize,
+        keep_content: bool,
     },
 }
 
@@ -204,5 +225,24 @@ pub(crate) fn execute(operation: FlowixOperation) -> Result<Value, CliError> {
         FlowixOperation::BackgroundClear { address, line } => {
             background_store::clear(&address, line)
         }
+        FlowixOperation::CalloutList { address } => callout_store::list(&address),
+        FlowixOperation::CalloutAdd {
+            address,
+            at,
+            icon,
+            color,
+            content,
+        } => callout_store::add(&address, at, icon.as_deref(), color.as_deref(), &content),
+        FlowixOperation::CalloutSet {
+            address,
+            block,
+            icon,
+            color,
+        } => callout_store::set(&address, block, icon.as_deref(), color.as_deref()),
+        FlowixOperation::CalloutRemove {
+            address,
+            block,
+            keep_content,
+        } => callout_store::remove(&address, block, keep_content),
     }
 }
