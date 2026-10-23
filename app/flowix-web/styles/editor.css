@@ -969,11 +969,20 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   left: -1.875rem;
 }
 
-/* 分栏的列前空间还要容纳拖拽句柄和列分隔线：背景只向左缩 6px 给文字
- * 留出内边距，同时保持在 handle 右侧，避免色块压住 handle / resize 线。 */
+/* 分栏的列前空间还要容纳拖拽句柄和列分隔线：普通段落只向左缩 6px 给
+ * 文字留出内边距，同时保持在 handle 右侧，避免色块压住 handle / resize 线。 */
 .markdown-editor .tiptap:not(.agent-composer__input-content) .flowix-column [data-flowix-block-bg]::after {
   left: -6px;
   right: -6px;
+}
+
+/* 列内列表行要把项目符号 / 序号 / 复选框也纳入色块。
+ * 列内列表的内容起点比普通段落右移一个列表缩进（24px），因此左侧扩展
+ * 同样加大，让色块左边缘与列内普通段落对齐（列左 + 12px），
+ * handle 仍留在色块左侧。 */
+.markdown-editor .tiptap:not(.agent-composer__input-content) .flowix-column li > :is(p, h1, h2, h3, h4)[data-flowix-block-bg]::after,
+.markdown-editor .tiptap:not(.agent-composer__input-content) .flowix-column :where(ul[data-type="taskList"] > li > div) > :is(p, h1, h2, h3, h4)[data-flowix-block-bg]::after {
+  left: -30px;
 }
 
 .markdown-editor .tiptap:not(.agent-composer__input-content) [data-flowix-block-bg="red"] {
