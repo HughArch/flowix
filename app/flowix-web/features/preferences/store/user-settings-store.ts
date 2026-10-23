@@ -9,6 +9,7 @@ import {
   type MemoListView,
   type ProductUpdatesConfig,
   type UserSettings,
+  normalizePageWidthScale,
 } from '@/lib/constants';
 import { sanitizeTheme, type ThemeId } from '@features/theme';
 import type { ShortcutOverrides } from '@features/shortcuts';
@@ -103,7 +104,13 @@ function mergeSettings(base: UserSettings, updates: UserSettingsUpdate): UserSet
       responseLength: normalizeResponseLength(personalize.responseLength),
       preferredLanguage: normalizePreferredLanguage(personalize.preferredLanguage),
     },
-    format: { ...base.format, ...(updates.format ?? {}) },
+    format: {
+      ...base.format,
+      ...(updates.format ?? {}),
+      pageWidthScale: normalizePageWidthScale(
+        updates.format?.pageWidthScale ?? base.format.pageWidthScale,
+      ),
+    },
     theme,
     language: sanitizeAppLanguage(updates.language ?? base.language),
     // region 不接受 patch, 只在 loadInitial 时由系统检测写入, 后续走 base。
@@ -173,6 +180,7 @@ function sanitizeSettings(settings: UserSettings): UserSettings {
       fontSize: settings.format.fontSize || DEFAULT_USER_SETTINGS.format.fontSize,
       lineHeight: settings.format.lineHeight || DEFAULT_USER_SETTINGS.format.lineHeight,
       documentWidth: settings.format.documentWidth || DEFAULT_USER_SETTINGS.format.documentWidth,
+      pageWidthScale: normalizePageWidthScale(settings.format.pageWidthScale),
     },
     theme: settings.theme,
     language: sanitizeAppLanguage(settings.language),

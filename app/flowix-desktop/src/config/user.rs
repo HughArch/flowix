@@ -71,6 +71,10 @@ pub struct FormatConfig {
     /// 时由 `#[serde(default)]` 兜底�?0, 前�? sanitizeSettings 会用默�?值�?盖�?
     #[serde(default)]
     pub document_width: f64,
+    /// 页面宽度比例 (%), 作用在 documentWidth 之上; 100 表示保持现状。
+    /// `Option` 让没有该字段的旧 preference.json 不写出 0, 前端据此回落到 100。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub page_width_scale: Option<f64>,
 }
 
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -1653,6 +1657,31 @@ mod tests {
             home,
             SecretStore::with_backend(Box::new(TestSecretBackend::new())),
         )
+    }
+
+    /// The page-width ratio is written by the web layer; the native store has
+    /// to keep it across a patch round-trip, otherwise the preference broadcast
+    /// that follows every write would reset the slider to 100%.
+    #[test]
+    fn preference_patch_round_trips_page_width_scale() {
+        let home = tempfile::tempdir().unwrap();
+        let store = test_user_config_store(home.path().to_path_buf());
+
+        // 旧文件没有该字段时, 反序列化为 None, 序列化也不应该凭空写出一个值
+        let before: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(preference_file_path(&store.config_dir)).unwrap())
+                .unwrap();
+        assert!(before["format"].get("pageWidthScale").is_none());
+
+        store
+            .patch_preference(serde_json::json!({"format": {"pageWidthScale": 60}}))
+            .unwrap();
+
+        assert_eq!(store.get_preference().format.page_width_scale, Some(60.0));
+        let after: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(preference_file_path(&store.config_dir)).unwrap())
+                .unwrap();
+        assert_eq!(after["format"]["pageWidthScale"], 60.0);
     }
 
     #[test]

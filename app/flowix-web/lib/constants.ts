@@ -68,6 +68,11 @@ export interface FormatConfig {
   lineHeight: number;
   /** 文档编辑区宽度 (px)；大于 1000 表示全宽 */
   documentWidth: number;
+  /**
+   * 页面宽度比例 (%)，作用在 documentWidth 之上。
+   * 100 表示保持 documentWidth 的现状；更小的值按比例收窄，两侧留白。
+   */
+  pageWidthScale: number;
 }
 
 export type { PropertyFieldType, PropertyPresetOption, PropertyFieldConfig, PropertiesConfig } from './property-types';
@@ -210,6 +215,21 @@ export const DOCUMENT_WIDTH_MAX = DOCUMENT_WIDTH_FULL_THRESHOLD + 50;
 export const DOCUMENT_WIDTH_STEP = 50;
 export const DOCUMENT_WIDTH_DEFAULT = DOCUMENT_WIDTH_MAX;
 
+/**
+ * 页面宽度比例 (%)，相对当前 documentWidth 生效。
+ * 100 保持现状，50 为最窄档；档位取 5 的倍数, 让拖动时不会出现零碎百分比。
+ */
+export const PAGE_WIDTH_SCALE_MIN = 50;
+export const PAGE_WIDTH_SCALE_MAX = 100;
+export const PAGE_WIDTH_SCALE_STEP = 5;
+export const PAGE_WIDTH_SCALE_DEFAULT = PAGE_WIDTH_SCALE_MAX;
+
+export function normalizePageWidthScale(value: unknown): number {
+  if (typeof value !== 'number' || !Number.isFinite(value)) return PAGE_WIDTH_SCALE_DEFAULT;
+  const clamped = Math.min(PAGE_WIDTH_SCALE_MAX, Math.max(PAGE_WIDTH_SCALE_MIN, value));
+  return Math.round(clamped / PAGE_WIDTH_SCALE_STEP) * PAGE_WIDTH_SCALE_STEP;
+}
+
 export const DEFAULT_USER_SETTINGS: UserSettings = {
   personalize: {
     customInstruction: '',
@@ -225,6 +245,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
     fontSize: 16,
     lineHeight: 1.8,
     documentWidth: DOCUMENT_WIDTH_DEFAULT,
+    pageWidthScale: PAGE_WIDTH_SCALE_DEFAULT,
   },
   // 默认值收敛到 lib/theme/DEFAULT_THEME_ID — 改默认值改一处即可。
   theme: DEFAULT_THEME_ID,

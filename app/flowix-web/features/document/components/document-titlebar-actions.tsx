@@ -8,6 +8,7 @@ import { FontSizeSwitcher } from '@shared/ui/font-size-switcher';
 import { FolderCollectionSwitchConfirmDialog } from '@features/collection/public/folder-api';
 import { useI18n, type I18nParams } from '@/lib/i18n';
 import { EditorFontSwitcher } from './editor-font-switcher';
+import { DocumentPageWidthSlider } from './document-page-width-slider';
 import { NoteColorPicker } from './document-titlebar-controls';
 import { VersionHistorySubmenu, formatVersionTime } from './document-version-history-menu';
 import { useDocumentTitlebarActions } from './use-document-titlebar-actions';
@@ -105,6 +106,7 @@ export function DocumentTitlebarActions({
             onSelect={fontSwitch.selectFontMode}
           />
           <FontSizeSwitcher sizeMode={selectedFontSizeMode} onSelect={setEditorFontSizeMode} />
+          <DocumentPageWidthSlider />
         </> : null}
         <DropdownMenuItem onClick={() => void handleCopyPath()} className={itemClass}>
           <LinkSimpleIcon className="h-4 w-4" /> {t('memo.fileTree.copyPath')}

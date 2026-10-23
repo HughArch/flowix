@@ -349,7 +349,7 @@ html[data-platform="mac"] .markdown-editor .editor-content {
 
 .memo-document-header {
   width: 100%;
-  max-width: var(--editor-document-width, 680px);
+  max-width: var(--editor-document-max-width, var(--editor-document-width, 680px));
   margin: 0 auto;
   box-sizing: border-box;
   padding: 0 2.5rem;
@@ -462,7 +462,7 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   display: block;
   width: 100%;
   min-height: 100%;
-  max-width: var(--editor-document-width, 680px);
+  max-width: var(--editor-document-max-width, var(--editor-document-width, 680px));
   margin: 0 auto;
   box-sizing: border-box;
   padding: 0 2.5rem 10rem 2.5rem;

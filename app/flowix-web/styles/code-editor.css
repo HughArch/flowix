@@ -84,7 +84,7 @@
 
 .code-editor .source-document-date-row {
 	width: 100%;
-	max-width: var(--editor-document-width, 680px);
+	max-width: var(--editor-document-max-width, var(--editor-document-width, 680px));
 	box-sizing: border-box;
 	margin: 0 auto;
 	padding: 0;
@@ -103,7 +103,7 @@
 .code-editor .source-document-title-row .memo-document-header {
 	/* Keep a centered content column while the outer CodeMirror header stays
 	 * full-width for its active surface. */
-	max-width: var(--editor-document-width, 680px);
+	max-width: var(--editor-document-max-width, var(--editor-document-width, 680px));
 	padding: 0;
 }
 

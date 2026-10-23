@@ -1706,6 +1706,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "document.titlebar.forwardTooltip": "Forward",
     "document.titlebar.searchTooltip": "Find in document",
     "document.titlebar.moreTooltip": "More",
+    "document.titlebar.pageWidth": "Page width",
     "document.font.label": "Font",
     "document.font.standard": "Standard",
     "document.font.serif": "Serif",

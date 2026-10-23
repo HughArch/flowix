@@ -1683,6 +1683,7 @@ const zhCN = {
     "document.titlebar.forwardTooltip": "前进",
     "document.titlebar.searchTooltip": "文档搜索",
     "document.titlebar.moreTooltip": "更多",
+    "document.titlebar.pageWidth": "页面宽度",
     "document.font.label": "字体",
     "document.font.standard": "标准",
     "document.font.serif": "衬线",
