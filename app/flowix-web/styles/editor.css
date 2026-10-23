@@ -2937,6 +2937,8 @@ html.flowix-block-dragging * {
   .flowix-toggle-chevron::before {
     transition: none;
   }
+}
+
 /* Block boundaries are selection positions, not persisted empty paragraphs. */
 .markdown-editor .editor-block-gap {
   display: block;
