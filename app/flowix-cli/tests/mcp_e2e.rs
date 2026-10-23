@@ -311,6 +311,86 @@ fn structured_columns_actions_add_resize_and_remove() {
 }
 
 #[test]
+fn structured_callout_actions_add_update_and_remove() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    let notebook_dir = tmp.path().join("notebooks").join("work");
+    seed_notebook(&config_dir, &notebook_dir);
+    std::fs::write(notebook_dir.join("callout.md"), "# Title\n\nbody\n").unwrap();
+
+    let (mut child, mut stdin, mut stdout) = spawn_mcp(&config_dir);
+    let _ = request(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "flowix-test", "version": "1"}
+        }),
+    );
+
+    let added = call_structured(
+        &mut stdin,
+        &mut stdout,
+        2,
+        json!({
+            "action": "callout.add",
+            "address": "callout.md",
+            "content": "Heads up",
+            "icon": "✅",
+            "color": "green"
+        }),
+    );
+    assert_eq!(added["result"]["isError"], false, "{added}");
+    assert_eq!(added["result"]["structuredContent"]["blocks"][0]["icon"], "✅");
+    assert_eq!(added["result"]["structuredContent"]["blocks"][0]["color"], "green");
+    assert_eq!(
+        added["result"]["structuredContent"]["blocks"][0]["content"],
+        "Heads up"
+    );
+
+    let updated = call_structured(
+        &mut stdin,
+        &mut stdout,
+        3,
+        json!({
+            "action": "callout.set",
+            "address": "callout.md",
+            "block": 1,
+            "icon": "⚠️",
+            "color": "yellow"
+        }),
+    );
+    assert_eq!(updated["result"]["isError"], false, "{updated}");
+    assert_eq!(updated["result"]["structuredContent"]["blocks"][0]["icon"], "⚠️");
+    assert_eq!(updated["result"]["structuredContent"]["blocks"][0]["color"], "yellow");
+
+    let removed = call_structured(
+        &mut stdin,
+        &mut stdout,
+        4,
+        json!({
+            "action": "callout.remove",
+            "address": "callout.md",
+            "block": 1,
+            "keepContent": false
+        }),
+    );
+    assert_eq!(removed["result"]["isError"], false, "{removed}");
+    assert!(removed["result"]["structuredContent"]["blocks"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let body = std::fs::read_to_string(notebook_dir.join("callout.md")).unwrap();
+    assert!(!body.contains("Heads up"));
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
 fn search_tag_filter_is_shared_by_structured_and_legacy_mcp() {
     let tmp = tempfile::tempdir().unwrap();
     let config_dir = tmp.path().join("config");
