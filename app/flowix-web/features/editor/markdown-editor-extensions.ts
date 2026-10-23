@@ -35,6 +35,7 @@ import { TabCharacter } from '@features/editor/extensions/tab-character';
 import { tableNeedsHtml } from '@features/editor/extensions/table/flowix-table';
 import { createTablePlugin } from '@features/editor/extensions/table/table-plugin';
 import { StableCaret } from '@features/editor/extensions/stable-caret';
+import { ColumnsEditorNode, ColumnEditorNode } from '@features/editor/extensions/columns/columns-editor';
 import { MarkdownParagraph, MarkdownTaskItem } from './markdown-parser-common-extensions';
 import { isEmptyMarkdownPlaceholderOnly } from './markdown-normalization';
 import type { WorkspaceHostId } from '@features/workspace/public/host-api';
@@ -329,6 +330,8 @@ export function createMarkdownEditorExtensions({
     MediaLibraryReference,
     FlowixHighlight.configure({ multicolor: true }),
     createTablePlugin(),
+    ColumnsEditorNode,
+    ColumnEditorNode,
     TaskList,
     PreservedTaskItem.configure({ nested: true }),
     Markdown.configure({ markedOptions: { gfm: true, breaks: true } }),

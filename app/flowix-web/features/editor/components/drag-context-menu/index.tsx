@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
 import { createPortal } from 'react-dom'
 import type { Editor } from '@tiptap/core'
 import {
@@ -23,7 +23,15 @@ import { clearBlockSelection } from '@features/editor/extensions/block-selection
 import { HANDLE_SIZE } from '@features/editor/components/drag-context-menu/style'
 import { useDragHandlePosition } from '@features/editor/components/drag-context-menu/use-drag-handle-position'
 import { BlockActionMenu } from '@features/editor/components/drag-context-menu/block-action-menu'
-import { getTableHeaderState, useBlockMenuActions } from '@features/editor/components/drag-context-menu/block-menu-actions'
+import { getTableHeaderState, useBlockMenuActions, type ColumnMenuState } from '@features/editor/components/drag-context-menu/block-menu-actions'
+import {
+  addColumnBesideBlock,
+  canSplitBlockToColumns,
+  deleteColumn,
+  findColumnContainer,
+  splitBlocksIntoColumns,
+} from '@features/editor/extensions/columns/columns-commands'
+import { MAX_COLUMNS } from '@features/editor/extensions/columns/columns-markdown'
 import { useEditorTypography } from '@features/preferences/public/runtime-api'
 
 interface DragContextMenuProps {
@@ -59,7 +67,8 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
   const menuOpenRef = useRef(false)
   const menuTargetRef = useRef<CurrentBlockInfo | null>(null)
   const menuAnchorRectRef = useRef<DOMRect | null>(null)
-  const openMenuRef = useRef<(anchorRect?: DOMRect) => void>(() => {})
+  const menuAnchorFromPointerRef = useRef(false)
+  const openMenuRef = useRef<(anchorRect?: DOMRect, placeAtPointer?: boolean) => void>(() => {})
   const state = useDragHandlePosition(editor, fontSize, lineHeight, ignoreBlur, menuOpenRef, menuTargetRef, hoveredBlockRef)
   const handleTap = useCallback((anchorRect: DOMRect) => openMenuRef.current(anchorRect), [])
 
@@ -115,6 +124,29 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
       frame = null
       if (!lastPoint || menuOpenRef.current || isDraggingRef.current) return
       if (editor.isDestroyed || editor.view.isDestroyed) return
+      const previous = hoveredBlockRef.current
+      // Stay anchored while the pointer is on the handle or in the narrow
+      // strip between the block and the handle. Re-resolving here can pick a
+      // different block (or null) and hide the handle mid-approach.
+      const handleRect = containerRef.current?.getBoundingClientRect()
+      const nearHandle = !!handleRect
+        && lastPoint.x >= handleRect.left - 16
+        && lastPoint.x <= handleRect.right + 16
+        && lastPoint.y >= handleRect.top - 16
+        && lastPoint.y <= handleRect.bottom + 16
+      if (nearHandle && previous) return
+
+      // In a column the handle lives in the block's left gutter, where
+      // `posAtCoords` cannot resolve a block. Keep the current target while
+      // the pointer stays on that gutter row.
+      if (previous) {
+        const blockRect = previous.dom.getBoundingClientRect()
+        const inLeftGutter = lastPoint.x < blockRect.left
+          && lastPoint.y >= blockRect.top - 12
+          && lastPoint.y <= blockRect.bottom + 12
+        if (inLeftGutter) return
+      }
+
       // Moving onto the handle itself must not re-target (or hide) it.
       const hit = document.elementFromPoint(lastPoint.x, lastPoint.y)
       if (hit instanceof Node && containerRef.current?.contains(hit)) return
@@ -123,12 +155,11 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
       if (!info) {
         // Do not leave the handle parked on a stale block when the pointer
         // no longer resolves to one; fall back to the selection position.
-        if (!hoveredBlockRef.current) return
+        if (!previous) return
         hoveredBlockRef.current = null
         state.refresh()
         return
       }
-      const previous = hoveredBlockRef.current
       if (previous && previous.pos === info.pos && previous.typeName === info.typeName) return
       hoveredBlockRef.current = info
       state.refresh()
@@ -141,12 +172,35 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
       frame = window.requestAnimationFrame(flush)
     }
 
-    const handlePointerLeave = () => {
+    const handlePointerLeave = (event: PointerEvent) => {
+      // Moving from the editor surface onto the handle must not clear the
+      // hover; the handle is often rendered outside the scroll surface.
+      if (event.relatedTarget instanceof Node && containerRef.current?.contains(event.relatedTarget)) return
       lastPoint = null
       if (menuOpenRef.current || isDraggingRef.current) return
       if (!hoveredBlockRef.current) return
       hoveredBlockRef.current = null
       state.refresh()
+    }
+
+    /**
+     * Right-click on a block opens the same action menu as the drag handle.
+     * The browser menu is suppressed only when a block can actually be
+     * resolved, so right-clicking outside the document keeps native behavior.
+     */
+    const handleContextMenu = (event: MouseEvent) => {
+      if (!editor.isEditable || editor.isDestroyed || editor.view.isDestroyed) return
+      if (containerRef.current?.contains(event.target as Node)) return
+      const info = getBlockInfoAtCoords(editor, event.clientX, event.clientY)
+      if (!info) return
+      event.preventDefault()
+      event.stopPropagation()
+      // A right-click can blur the editor before React commits the menu;
+      // keep the blur handler from immediately closing it.
+      ignoreBlur.current = true
+      window.setTimeout(() => { ignoreBlur.current = false }, 0)
+      interactionBlockInfoRef.current = info
+      openMenuRef.current(new DOMRect(event.clientX, event.clientY, 1, 1), true)
     }
 
     // Pressing into the body does NOT clear the block selection: users often
@@ -155,10 +209,12 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     // plain handle click (menu), Escape, or the start of a drag instead.
     surface.addEventListener('pointermove', handlePointerMove)
     surface.addEventListener('pointerleave', handlePointerLeave)
+    surface.addEventListener('contextmenu', handleContextMenu)
     return () => {
       if (frame != null) window.cancelAnimationFrame(frame)
       surface.removeEventListener('pointermove', handlePointerMove)
       surface.removeEventListener('pointerleave', handlePointerLeave)
+      surface.removeEventListener('contextmenu', handleContextMenu)
     }
   }, [editor, state.refresh])
 
@@ -186,11 +242,15 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
   const updateMenuPosition = useCallback(() => {
     if (!containerRef.current || !menuRef.current) return
     const liveHandleRect = containerRef.current.getBoundingClientRect()
+    // Right-click anchors the menu at the pointer; the drag handle may be
+    // parked on a different block.
+    const pointerAnchor = menuAnchorFromPointerRef.current ? menuAnchorRectRef.current : null
     // Prefer live geometry after opening so normal reflows remain anchored;
     // fall back to the pointerdown snapshot only when the handle is hidden.
-    const handleRect = liveHandleRect.width > 0 && liveHandleRect.height > 0
-      ? liveHandleRect
-      : menuAnchorRectRef.current ?? liveHandleRect
+    const handleRect = pointerAnchor
+      ?? (liveHandleRect.width > 0 && liveHandleRect.height > 0
+        ? liveHandleRect
+        : menuAnchorRectRef.current ?? liveHandleRect)
     const menuRect = menuRef.current.getBoundingClientRect()
     const rightSpace = window.innerWidth - handleRect.right - MENU_GAP - MENU_VIEWPORT_PADDING
     const leftSpace = handleRect.left - MENU_GAP - MENU_VIEWPORT_PADDING
@@ -210,6 +270,7 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     menuOpenRef.current = false
     menuTargetRef.current = null
     menuAnchorRectRef.current = null
+    menuAnchorFromPointerRef.current = false
     unpinBlock(editor)
     setMenuPosition(null)
     setIsHovered(false)
@@ -316,6 +377,39 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     }
     closeMenu()
   }, [closeMenu, editor])
+  const columnMenu = useMemo<ColumnMenuState | undefined>(() => {
+    if (!menuTarget) return undefined
+    const doc = editor.state.doc
+    const info = findColumnContainer(doc, menuTarget.pos)
+    const topNode = doc.nodeAt(menuTarget.pos)
+    const isColumns = topNode?.type.name === 'columns'
+    const canSplit = canSplitBlockToColumns(editor, menuTarget.pos)
+    if (!info && !canSplit && !isColumns) return undefined
+
+    const run = (operation: () => void) => {
+      operation()
+      closeMenu()
+    }
+
+    const columnCount = info?.columnsNode.childCount ?? (isColumns ? topNode!.childCount : 2)
+
+    return {
+      inColumn: !!info,
+      canSplit,
+      canInsertColumn: columnCount < MAX_COLUMNS,
+      canDeleteColumn: !!info,
+      onInsertColumn: (side) => run(() => {
+        addColumnBesideBlock(editor, menuTarget.pos, side)
+      }),
+      onSplitInto: (count) => run(() => {
+        splitBlocksIntoColumns(editor, menuTarget.pos, count, undefined, { onlyTarget: true })
+      }),
+      onDeleteColumn: () => run(() => {
+        const current = findColumnContainer(doc, menuTarget.pos)
+        if (current) deleteColumn(editor, current.columnsPos, current.columnIndex)
+      }),
+    }
+  }, [closeMenu, editor, menuTarget])
   const menuActions = useBlockMenuActions(
     onMenuItem,
     onDelete,
@@ -323,9 +417,10 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     onImageAlign,
     menuTarget?.typeName === 'table' ? getTableHeaderState(menuTarget.node) : undefined,
     onTableHeaderToggle,
+    columnMenu,
   )
 
-  const openMenu = useCallback((anchorRect?: DOMRect) => {
+  const openMenu = useCallback((anchorRect?: DOMRect, placeAtPointer = false) => {
     const info = interactionBlockInfoRef.current ?? getBlockInfoForInteraction(editor, state.blockInfo)
     if (!info) return
 
@@ -334,6 +429,7 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     menuOpenRef.current = true
     menuTargetRef.current = info
     menuAnchorRectRef.current = anchorRect ?? containerRef.current?.getBoundingClientRect() ?? null
+    menuAnchorFromPointerRef.current = placeAtPointer
     setMenuTarget(info)
     interactionBlockInfoRef.current = null
     activateAgentThreadCard(editor, info)

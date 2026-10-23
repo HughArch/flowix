@@ -5,10 +5,13 @@ import { Plugin, PluginKey, Selection, type Transaction } from 'prosemirror-stat
 import { Decoration, DecorationSet, type EditorView } from 'prosemirror-view'
 import { getCurrentBlockInfo, type CurrentBlockInfo } from '@features/editor/components/drag-context-menu/block-info'
 import { resolveBlockContainer } from './block-selection'
+import { findColumnContainer } from './columns/columns-commands'
+import { COLUMN_WIDTH_UNIT, MAX_COLUMNS } from './columns/columns-markdown'
 import {
   canMergeListRuns,
   createListOfType,
   isListTypeName,
+  itemTypeForList,
   itemsOf,
   listWithItems,
   LIST_ITEM_TYPES,
@@ -37,7 +40,29 @@ export interface BlockDropTarget {
   side: 'before' | 'after'
   splitList?: { listPos: number; boundaryIndex: number }
   nestList?: { itemPos: number }
+  /**
+   * Horizontal drop gesture. When present, `moveDraggedBlock` uses the column
+   * branch instead of the vertical insertion path.
+   */
+  columnTarget?: ColumnDropTarget
 }
+
+export type ColumnDropTarget =
+  | {
+      kind: 'new-column'
+      side: 'left' | 'right'
+      /** Block or `columns` container the new column is created next to. */
+      anchorPos: number
+      anchorNodeSize: number
+      /** Present when the anchor is a column inside an existing container. */
+      columnsPos?: number
+      columnIndex?: number
+    }
+  | {
+      kind: 'into-column'
+      columnPos: number
+      insertPos: number
+    }
 
 interface BlockDragState extends DraggedBlockRange {
   /**
@@ -111,14 +136,27 @@ export const BlockDragExtension = Extension.create({
               }
             }
 
-            const dropPos = drag.dropTarget?.insertPos ?? drag.dropPos
-            if (dropPos != null) {
-              decorations.push(Decoration.widget(dropPos, () => {
-                const marker = document.createElement('div')
-                marker.className = 'flowix-block-drop-indicator'
-                marker.contentEditable = 'false'
-                return marker
-              }, { side: -1 }))
+            const columnTarget = drag.dropTarget?.columnTarget
+            if (columnTarget?.kind === 'new-column') {
+              decorations.push(Decoration.node(
+                columnTarget.anchorPos,
+                columnTarget.anchorPos + columnTarget.anchorNodeSize,
+                {
+                  class: columnTarget.side === 'left'
+                    ? 'flowix-column-drop-left'
+                    : 'flowix-column-drop-right',
+                },
+              ))
+            } else {
+              const dropPos = drag.dropTarget?.insertPos ?? drag.dropPos
+              if (dropPos != null) {
+                decorations.push(Decoration.widget(dropPos, () => {
+                  const marker = document.createElement('div')
+                  marker.className = 'flowix-block-drop-indicator'
+                  marker.contentEditable = 'false'
+                  return marker
+                }, { side: -1 }))
+              }
             }
 
             return decorations.length > 0
@@ -292,6 +330,8 @@ function getValidDropTarget(
       || clientY < editorRect.top - 48 || clientY > editorRect.bottom + 48)) return null
 
   const context = dragContext(drag)
+  const columnTarget = findColumnDropTarget(view, drag, clientX, clientY)
+  if (columnTarget) return columnTarget
   if (isUniformListDrag(drag)) {
     const target = findListDropTarget(view, context, clientX, clientY)
     return target && isValidDropPos(view, context, target) ? target : null
@@ -433,6 +473,234 @@ function makeGenericDropTarget(insertPos: number): BlockDropTarget {
   }
 }
 
+function makeColumnTarget(
+  columnTarget: ColumnDropTarget,
+  insertPos: number,
+): BlockDropTarget {
+  return { ...makeGenericDropTarget(insertPos), columnTarget }
+}
+
+function findColumnInsertPos(
+  view: EditorView,
+  columnPos: number,
+  clientY: number,
+): number | null {
+  const column = view.state.doc.nodeAt(columnPos)
+  if (!column || column.type.name !== 'column') return null
+
+  let offset = 0
+  for (let index = 0; index < column.childCount; index += 1) {
+    const child = column.child(index)
+    const childPos = columnPos + 1 + offset
+    const dom = view.nodeDOM(childPos)
+    if (dom instanceof HTMLElement) {
+      const rect = dom.getBoundingClientRect()
+      if (clientY < rect.top + rect.height / 2) return childPos
+    }
+    offset += child.nodeSize
+  }
+  return columnPos + 1 + column.content.size
+}
+
+function findRootInsertPos(view: EditorView, clientY: number): number | null {
+  const { doc } = view.state
+  let offset = 0
+  for (let index = 0; index < doc.childCount; index += 1) {
+    const child = doc.child(index)
+    const childPos = offset
+    const dom = view.nodeDOM(childPos)
+    if (dom instanceof HTMLElement) {
+      const rect = dom.getBoundingClientRect()
+      if (clientY < rect.top + rect.height / 2) return childPos
+    }
+    offset += child.nodeSize
+  }
+  return doc.content.size
+}
+
+interface DomColumnContext {
+  columnPos: number
+  columnsPos: number
+  columnIndex: number
+  columnsNode: PMNode
+  columnNode: PMNode
+  columnDom: HTMLElement
+}
+
+/**
+ * Resolve the column under the pointer from the DOM instead of
+ * `posAtCoords`. The coordinate lookup can land on a gap or the document root
+ * when the pointer is near a column edge, which made it impossible to drop
+ * into a column from outside.
+ */
+function resolveColumnFromDom(
+  view: EditorView,
+  clientX: number,
+  clientY: number,
+): DomColumnContext | null {
+  if (typeof document === 'undefined' || typeof document.elementFromPoint !== 'function') {
+    return null
+  }
+  let element: Element | null = null
+  try {
+    element = document.elementFromPoint(clientX, clientY)
+  } catch {
+    return null
+  }
+  if (!(element instanceof HTMLElement)) return null
+  const columnDom = element.closest<HTMLElement>('.flowix-column')
+  if (!columnDom || !view.dom.contains(columnDom)) return null
+
+  try {
+    const pos = view.posAtDOM(columnDom, 0)
+    const doc = view.state.doc
+    const direct = doc.nodeAt(pos)
+    if (direct?.type.name === 'column') {
+      const $pos = doc.resolve(pos)
+      return {
+        columnPos: pos,
+        columnsPos: $pos.before(),
+        columnIndex: $pos.index(),
+        columnsNode: $pos.parent,
+        columnNode: direct,
+        columnDom,
+      }
+    }
+
+    const $pos = doc.resolve(pos)
+    for (let depth = $pos.depth; depth >= 1; depth -= 1) {
+      if ($pos.node(depth).type.name !== 'column') continue
+      const parentDepth = depth - 1
+      if (parentDepth < 1 || $pos.node(parentDepth).type.name !== 'columns') return null
+      return {
+        columnPos: $pos.before(depth),
+        columnsPos: $pos.before(parentDepth),
+        columnIndex: $pos.index(parentDepth),
+        columnsNode: $pos.node(parentDepth),
+        columnNode: $pos.node(depth),
+        columnDom,
+      }
+    }
+  } catch {
+    return null
+  }
+  return null
+}
+
+/**
+ * Horizontal drop resolution for ordinary blocks:
+ *
+ * - the left/right edge of a block creates a new column next to it;
+ * - the middle of a block in another column inserts vertically into that
+ *   column;
+ * - a block dragged out of a column onto the document root becomes a normal
+ *   vertical drop.
+ *
+ * Returning null keeps the existing vertical / list logic in charge.
+ */
+function findColumnDropTarget(
+  view: EditorView,
+  drag: BlockDragState,
+  clientX: number,
+  clientY: number,
+): BlockDropTarget | null {
+  // Lists keep their list-aware drop semantics.
+  if (drag.isListItem) return null
+
+  const domColumn = resolveColumnFromDom(view, clientX, clientY)
+
+  let coords: { pos: number; inside: number } | null = null
+  if (!domColumn) {
+    try {
+      coords = view.posAtCoords({ left: clientX, top: clientY })
+    } catch {
+      // jsdom and other DOM shims do not implement elementFromPoint.
+      return null
+    }
+    if (!coords) return null
+  }
+
+  const { doc } = view.state
+  const container = domColumn ?? (coords ? findColumnContainer(doc, coords.pos) : null)
+
+  let anchorPos: number
+  if (container) {
+    anchorPos = container.columnPos
+  } else {
+    const $pos = doc.resolve(coords!.pos)
+    if ($pos.depth >= 1) {
+      anchorPos = $pos.before(1)
+    } else {
+      // The pointer sits at the document root (a block boundary). Resolve the
+      // top-level child under it from the content index.
+      const index = $pos.index()
+      if (index >= $pos.parent.childCount) return null
+      anchorPos = 0
+      for (let i = 0; i < index; i += 1) anchorPos += $pos.parent.child(i).nodeSize
+    }
+  }
+
+  const anchorNode = container
+    ? (domColumn?.columnNode ?? container.columnsNode.child(container.columnIndex))
+    : doc.nodeAt(anchorPos)
+  const anchorDom = container
+    ? (domColumn?.columnDom ?? view.nodeDOM(container.columnPos))
+    : view.nodeDOM(anchorPos)
+  if (!anchorNode || !(anchorDom instanceof HTMLElement)) return null
+
+  const sameColumn = container
+    ? drag.parentStart === container.columnPos + 1
+    : drag.parentTypeName === 'doc' && drag.parentStart === 0
+
+  const rect = anchorDom.getBoundingClientRect()
+  if (rect.height > 0 && clientY >= rect.top && clientY <= rect.bottom) {
+    const edge = Math.min(96, rect.width * 0.3)
+    const side = clientX <= rect.left + edge ? 'left' as const
+      : clientX >= rect.right - edge ? 'right' as const
+        : null
+
+    if (side) {
+      if (container) {
+        if (container.columnsNode.childCount >= MAX_COLUMNS) return null
+        if (drag.ranges.some((range) => container.columnPos >= range.from && container.columnPos < range.to)) return null
+        return makeColumnTarget({
+          kind: 'new-column',
+          side,
+          anchorPos: container.columnPos,
+          anchorNodeSize: anchorNode.nodeSize,
+          columnsPos: container.columnsPos,
+          columnIndex: container.columnIndex,
+        }, container.columnPos)
+      }
+      if (drag.ranges.some((range) => anchorPos >= range.from && anchorPos < range.to)) return null
+      if (anchorNode.type.name === 'columns' && anchorNode.childCount >= MAX_COLUMNS) return null
+      return makeColumnTarget({
+        kind: 'new-column',
+        side,
+        anchorPos,
+        anchorNodeSize: anchorNode.nodeSize,
+      }, anchorPos)
+    }
+  }
+
+  if (container && !sameColumn) {
+    const insertPos = findColumnInsertPos(view, container.columnPos, clientY)
+    if (insertPos == null) return null
+    const target = makeGenericDropTarget(insertPos)
+    target.columnTarget = { kind: 'into-column', columnPos: container.columnPos, insertPos }
+    return isValidDropPos(view, drag, target) ? target : null
+  }
+
+  if (!container && drag.parentTypeName === 'column') {
+    const insertPos = findRootInsertPos(view, clientY)
+    if (insertPos == null) return null
+    const target = makeGenericDropTarget(insertPos)
+    return isValidDropPos(view, drag, target) ? target : null
+  }
+
+  return null
+}
+
 function moveDraggedBlock(view: EditorView, clientX: number, clientY: number): boolean {
   const drag = blockDragPluginKey.getState(view.state)
   if (!drag) return false
@@ -446,6 +714,9 @@ function moveDraggedBlock(view: EditorView, clientX: number, clientY: number): b
   }
 
   const { state } = view
+  if (target.columnTarget?.kind === 'new-column') {
+    return moveDraggedBlockToNewColumn(view, drag, target.columnTarget)
+  }
   if (target.splitList) return moveBlockBetweenListItems(view, drag, target.splitList)
   if (target.nestList) return moveListItemIntoNestedList(view, drag, target.nestList)
   // A list item entering an existing list must stay a bare item; at a root
@@ -468,6 +739,97 @@ function moveDraggedBlock(view: EditorView, clientX: number, clientY: number): b
       mergeAdjacentRootLists(tr, tr.mapping.map(target.insertPos, -1))
     }
     removeEmptyLists(tr)
+    fillEmptyColumns(tr, state.schema)
+    tr.setMeta(blockDragPluginKey, null)
+    view.dispatch(tr.scrollIntoView())
+    return true
+  } catch {
+    view.dispatch(state.tr.setMeta(blockDragPluginKey, null))
+    return false
+  }
+}
+
+function rebalanceColumnsInTransaction(tr: Transaction, columnsPos: number): void {
+  const node = tr.doc.nodeAt(columnsPos)
+  if (!node || node.type.name !== 'columns') return
+  let offset = columnsPos + 1
+  for (let index = 0; index < node.childCount; index += 1) {
+    const column = node.child(index)
+    tr.setNodeMarkup(offset, undefined, { ...column.attrs, width: COLUMN_WIDTH_UNIT })
+    offset += column.nodeSize
+  }
+}
+
+/**
+ * Deleting the only block of a column leaves a schema-invalid empty container.
+ * Keep the column (the UI shows an empty-column placeholder) by restoring one
+ * empty paragraph.
+ */
+function fillEmptyColumns(tr: Transaction, schema: EditorView['state']['schema']): void {
+  const paragraph = schema.nodes.paragraph
+  if (!paragraph) return
+  const empty: number[] = []
+  tr.doc.descendants((node, pos) => {
+    if (node.type.name === 'column' && node.childCount === 0) empty.push(pos)
+    return true
+  })
+  for (let index = empty.length - 1; index >= 0; index -= 1) {
+    tr.insert(empty[index] + 1, paragraph.create())
+  }
+}
+
+function moveDraggedBlockToNewColumn(
+  view: EditorView,
+  drag: BlockDragState,
+  columnTarget: Extract<ColumnDropTarget, { kind: 'new-column' }>,
+): boolean {
+  const { state } = view
+  const dragged = buildDraggedNodes(state, drag)
+  if (dragged.length === 0) return false
+
+  const columnType = state.schema.nodes.column
+  const columnsType = state.schema.nodes.columns
+  if (!columnType || !columnsType) return false
+
+  try {
+    const tr = deleteDraggedRanges(state, drag)
+    const anchorPos = tr.mapping.map(columnTarget.anchorPos, -1)
+    const anchorNode = tr.doc.nodeAt(anchorPos)
+    if (!anchorNode) return false
+
+    const newColumn = columnType.create({ width: COLUMN_WIDTH_UNIT }, dragged)
+
+    if (anchorNode.type.name === 'columns') {
+      if (anchorNode.childCount >= MAX_COLUMNS) return false
+      const index = columnTarget.side === 'left' ? 0 : anchorNode.childCount
+      let insertPos = anchorPos + 1
+      for (let i = 0; i < index; i += 1) insertPos += anchorNode.child(i).nodeSize
+      tr.insert(insertPos, newColumn)
+      rebalanceColumnsInTransaction(tr, anchorPos)
+    } else if (columnTarget.columnsPos != null && columnTarget.columnIndex != null) {
+      const columnsPos = tr.mapping.map(columnTarget.columnsPos, -1)
+      const columnsNode = tr.doc.nodeAt(columnsPos)
+      if (!columnsNode || columnsNode.type.name !== 'columns') return false
+      if (columnsNode.childCount >= MAX_COLUMNS) return false
+      const index = columnTarget.columnIndex + (columnTarget.side === 'right' ? 1 : 0)
+      let insertPos = columnsPos + 1
+      for (let i = 0; i < index; i += 1) insertPos += columnsNode.child(i).nodeSize
+      tr.insert(insertPos, newColumn)
+      rebalanceColumnsInTransaction(tr, columnsPos)
+    } else {
+      const currentColumn = columnType.create({ width: COLUMN_WIDTH_UNIT }, [anchorNode])
+      const columnsNode = columnsType.create(
+        null,
+        columnTarget.side === 'left'
+          ? [newColumn, currentColumn]
+          : [currentColumn, newColumn],
+      )
+      tr.replaceWith(anchorPos, anchorPos + anchorNode.nodeSize, columnsNode)
+    }
+
+    cleanupSourceLists(tr, state, drag)
+    removeEmptyLists(tr)
+    fillEmptyColumns(tr, state.schema)
     tr.setMeta(blockDragPluginKey, null)
     view.dispatch(tr.scrollIntoView())
     return true
@@ -569,13 +931,34 @@ function moveBlockBetweenListItems(
     const tr = deleteDraggedRanges(state, drag)
     const listPos = tr.mapping.map(target.listPos, -1)
     const list = tr.doc.nodeAt(listPos)
-    if (!list || !LIST_TYPES.has(list.type.name)) throw new Error('Drop list disappeared')
+    if (!list || !isListTypeName(list.type.name)) throw new Error('Drop list disappeared')
     const items = itemsOf(list)
     if (target.boundaryIndex <= 0 || target.boundaryIndex >= items.length) {
       throw new Error('Drop boundary is outside the list')
     }
     const before = listWithItems(list, items.slice(0, target.boundaryIndex))!
     const after = listWithItems(list, items.slice(target.boundaryIndex), target.boundaryIndex)!
+
+    // An ordinary block dropped between list items becomes a new item of that
+    // list. Splitting the list around it would break ordered-list numbering
+    // and leave a bare paragraph between two lists.
+    if (!sourceList) {
+      const itemType = state.schema.nodes[itemTypeForList(list.type.name)]
+      if (itemType && blocks.every((node) => node.type.name === 'paragraph')) {
+        const merged = listWithItems(list, [
+          ...items.slice(0, target.boundaryIndex),
+          ...blocks.map((node) => itemType.create(null, node)),
+          ...items.slice(target.boundaryIndex),
+        ])!
+        tr.replaceWith(listPos, listPos + list.nodeSize, merged)
+        tr.setSelection(Selection.near(tr.doc.resolve(listPos + 1)))
+        removeEmptyLists(tr)
+        tr.setMeta(blockDragPluginKey, null)
+        view.dispatch(tr.scrollIntoView())
+        return true
+      }
+    }
+
     const middle = sourceList
       ? wrapDraggedItems(state, sourceList, blocks, sourceIndex)
       : null
@@ -1074,6 +1457,21 @@ function getListItemDepth(doc: PMNode, itemPos: number): number {
 }
 
 function mapDropTarget(target: BlockDropTarget, mapping: { map: (pos: number, assoc?: number) => number }): BlockDropTarget {
+  const columnTarget = target.columnTarget
+    ? target.columnTarget.kind === 'new-column'
+      ? {
+          ...target.columnTarget,
+          anchorPos: mapping.map(target.columnTarget.anchorPos, -1),
+          columnsPos: target.columnTarget.columnsPos == null
+            ? undefined
+            : mapping.map(target.columnTarget.columnsPos, -1),
+        }
+      : {
+          ...target.columnTarget,
+          columnPos: mapping.map(target.columnTarget.columnPos, -1),
+          insertPos: mapping.map(target.columnTarget.insertPos, -1),
+        }
+    : undefined
   return {
     ...target,
     insertPos: mapping.map(target.insertPos, -1),
@@ -1085,6 +1483,7 @@ function mapDropTarget(target: BlockDropTarget, mapping: { map: (pos: number, as
     nestList: target.nestList
       ? { itemPos: mapping.map(target.nestList.itemPos, -1) }
       : undefined,
+    columnTarget,
   }
 }
 
@@ -1133,8 +1532,13 @@ function isValidDropPos(view: EditorView, drag: BlockDragState, target: BlockDro
     }
     if (drag.isListItem && !LIST_TYPES.has($insert.parent.type.name)) return false
     if (!drag.isListItem) {
-      const sameParent = $insert.parent.type.name === drag.parentTypeName && $insert.start($insert.depth) === drag.parentStart
-      if (!sameParent) return false
+      const sameParent = $insert.parent.type.name === drag.parentTypeName
+        && $insert.start($insert.depth) === drag.parentStart
+      // Columns are independent containers: a block may move from a column to
+      // the document root and vice versa.
+      const crossesColumn = $insert.parent.type.name === 'column'
+        || drag.parentTypeName === 'column'
+      if (!sameParent && !crossesColumn) return false
     }
     return $insert.parent.canReplace($insert.index(), $insert.index(), insertionContent)
   } catch {

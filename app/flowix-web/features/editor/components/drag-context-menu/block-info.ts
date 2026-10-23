@@ -174,10 +174,51 @@ function blockInfoFromDom(
   const block = element.closest<HTMLElement>('table')
     ?? element.closest<HTMLElement>('li')
     ?? element.closest<HTMLElement>('p, h1, h2, h3, h4, h5, h6, blockquote, pre, .code-block-wrapper, .ProseMirror-node')
-  if (!block || !view.dom.contains(block)) return null
+  if (!block || !view.dom.contains(block)) {
+    // The pointer can sit in a column's left gutter (where its drag handle
+    // lives) without being inside any block. Resolve the nearest block in that
+    // column so the handle survives the trip from the block to itself.
+    const column = element.closest<HTMLElement>('.flowix-column')
+    if (column && view.dom.contains(column)) {
+      return blockInfoFromColumn(view, column, clientY)
+    }
+    return null
+  }
 
   try {
     return blockInfoAtPosition(view, view.posAtDOM(block, 0))
+  } catch {
+    return null
+  }
+}
+
+function blockInfoFromColumn(
+  view: Editor['view'],
+  column: HTMLElement,
+  clientY: number,
+): CurrentBlockInfo | null {
+  const content = column.querySelector<HTMLElement>(':scope > .flowix-column-content')
+  if (!content) return null
+
+  let best: HTMLElement | null = null
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const child of Array.from(content.children)) {
+    if (!(child instanceof HTMLElement)) continue
+    const rect = child.getBoundingClientRect()
+    const distance = clientY < rect.top
+      ? rect.top - clientY
+      : clientY > rect.bottom
+        ? clientY - rect.bottom
+        : 0
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = child
+    }
+  }
+  if (!best) return null
+
+  try {
+    return blockInfoAtPosition(view, view.posAtDOM(best, 0))
   } catch {
     return null
   }

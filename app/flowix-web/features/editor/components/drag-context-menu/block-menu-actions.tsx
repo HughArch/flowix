@@ -1,5 +1,5 @@
 import { useMemo, type ReactNode } from 'react'
-import { ColumnsIcon, RowsIcon, TrashSimpleIcon } from '@phosphor-icons/react'
+import { ArrowLeftIcon, ArrowRightIcon, ColumnsIcon, RowsIcon, TrashSimpleIcon } from '@phosphor-icons/react'
 import {
   headingMenuItems,
   listMenuItems,
@@ -11,7 +11,7 @@ import type { ImageAlignment } from '@features/editor/components/drag-context-me
 import type { CurrentBlockInfo } from '@features/editor/components/drag-context-menu/block-info'
 import { useI18n } from '@/lib/i18n'
 
-export type BlockMenuActionGroup = 'heading' | 'list' | 'block' | 'image' | 'table' | 'mode' | 'danger'
+export type BlockMenuActionGroup = 'heading' | 'list' | 'block' | 'layout' | 'image' | 'table' | 'mode' | 'danger'
 
 export interface BlockMenuAction {
   id: string
@@ -44,6 +44,20 @@ export interface TableHeaderState {
   columnHeader: boolean
 }
 
+/** Column commands exposed by the drag-handle menu. */
+export interface ColumnMenuState {
+  /** The target block already lives inside a column. */
+  inColumn: boolean
+  /** A top-level block can become a columns container. */
+  canSplit: boolean
+  /** The current column group still has room for another column. */
+  canInsertColumn: boolean
+  canDeleteColumn: boolean
+  onInsertColumn: (side: 'left' | 'right') => void
+  onSplitInto: (count: 2 | 3 | 4 | 5) => void
+  onDeleteColumn: () => void
+}
+
 /** Keep the menu state aligned with FlowixTable's Markdown header semantics. */
 export function getTableHeaderState(node: CurrentBlockInfo['node'] | undefined): TableHeaderState {
   if (!node || node.type.name !== 'table' || node.childCount === 0) {
@@ -72,6 +86,7 @@ export function useBlockMenuActions(
   onImageAlign?: (alignment: ImageAlignment) => void,
   tableHeaderState?: TableHeaderState,
   onTableHeaderToggle?: (header: 'row' | 'column') => void,
+  columnMenu?: ColumnMenuState,
 ): BlockMenuAction[] {
   const { t } = useI18n()
   return useMemo(() => {
@@ -122,6 +137,49 @@ export function useBlockMenuActions(
       ]
     }
 
+    const columnActions: BlockMenuAction[] = columnMenu
+      ? [
+          {
+            id: 'insert-column-left',
+            group: 'layout',
+            icon: <ArrowLeftIcon size={16} weight="bold" />,
+            label: t('editor.block.insertColumnLeft'),
+            disabled: !columnMenu.canInsertColumn,
+            onSelect: () => columnMenu.onInsertColumn('left'),
+          },
+          {
+            id: 'insert-column-right',
+            group: 'layout',
+            icon: <ArrowRightIcon size={16} weight="bold" />,
+            label: t('editor.block.insertColumnRight'),
+            disabled: !columnMenu.canInsertColumn,
+            onSelect: () => columnMenu.onInsertColumn('right'),
+          },
+          ...([2, 3, 4, 5] as const).map((count): BlockMenuAction => ({
+            id: `columns-${count}`,
+            group: 'layout',
+            icon: <ColumnsIcon size={16} weight="bold" />,
+            label: t(
+              count === 2 ? 'editor.block.columns2'
+                : count === 3 ? 'editor.block.columns3'
+                  : count === 4 ? 'editor.block.columns4'
+                    : 'editor.block.columns5',
+            ),
+            disabled: !columnMenu.canSplit,
+            onSelect: () => columnMenu.onSplitInto(count),
+          })),
+          ...(columnMenu.canDeleteColumn
+            ? [{
+                id: 'delete-column',
+                group: 'danger' as const,
+                icon: <TrashSimpleIcon size={16} weight="bold" />,
+                label: t('editor.block.removeColumn'),
+                onSelect: columnMenu.onDeleteColumn,
+              }]
+            : []),
+        ]
+      : []
+
     const actions: BlockMenuAction[] = [
       ...headingMenuItems.map((item): BlockMenuAction => ({
         id: item.kind === 'heading' ? `h${item.level}` : 'paragraph',
@@ -152,6 +210,7 @@ export function useBlockMenuActions(
         label: t(item.displayKey),
         onSelect: () => onMenuItem(item),
       })),
+      ...columnActions,
       {
         id: 'delete',
         group: 'danger',
@@ -164,5 +223,14 @@ export function useBlockMenuActions(
     return blockTypeName === 'agentThreadCard'
       ? actions.filter((action) => action.id === 'delete')
       : actions
-  }, [blockTypeName, onMenuItem, onDelete, onImageAlign, onTableHeaderToggle, tableHeaderState, t])
+  }, [
+    blockTypeName,
+    onMenuItem,
+    onDelete,
+    onImageAlign,
+    onTableHeaderToggle,
+    columnMenu,
+    tableHeaderState,
+    t,
+  ])
 }

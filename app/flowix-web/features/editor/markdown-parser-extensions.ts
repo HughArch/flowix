@@ -18,6 +18,10 @@ import { MathBlockMarkdownExtension } from '@features/editor/extensions/math-blo
 import { WebCardMarkdownExtension } from '@features/editor/extensions/web-card-markdown';
 import { MarkdownParagraph, MarkdownTaskItem } from './markdown-parser-common-extensions';
 import { AgentThreadCardMarkdownExtension } from '@features/agent/thread-card/agent-thread-card-markdown-spec';
+// Import the node definitions directly (not the feature barrel): the barrel
+// also re-exports editor NodeViews, whose i18n/store imports must stay out of
+// the worker bundle.
+import { ColumnsNode, ColumnNode } from '@features/editor/extensions/columns/columns';
 import { guardListMarkdownTokenizer } from './markdown-list-tokenizer';
 
 /**
@@ -82,5 +86,9 @@ export function createMarkdownParserExtensions() {
     // the browser parser could keep the card. Registering the markdown-only
     // spec lets background parsing keep it as a node instead.
     AgentThreadCardMarkdownExtension,
+    // Columns carry a custom fenced-div tokenizer. The worker registry must
+    // know both container nodes or parsing would drop the structure.
+    ColumnsNode,
+    ColumnNode,
   ];
 }

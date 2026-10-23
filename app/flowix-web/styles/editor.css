@@ -2091,3 +2091,173 @@ html.flowix-block-dragging * {
   cursor: default;
   opacity: 0.55;
 }
+
+/* ── Content columns (Notion-style) ───────────────────────────────────────
+   The container NodeView supplies `.flowix-columns-shell` (positioning) and
+   `.flowix-columns` (the flex row). Each column NodeView supplies
+   `.flowix-column` + `.flowix-column-content` and its own controls. */
+.flowix-columns-shell {
+  position: relative;
+  min-width: 0;
+}
+
+.flowix-columns {
+  display: flex;
+  align-items: flex-start;
+  gap: 24px;
+  width: 100%;
+  min-width: 0;
+}
+
+.flowix-column {
+  position: relative;
+  /* Stretch to the row height so the resize line spans the whole columns
+     block, even when this column has fewer lines than its neighbour. The
+     content stays at the top; the extra height is transparent. */
+  align-self: stretch;
+  min-width: 0;
+  flex-basis: 0;
+}
+
+/* Room for the block drag handle in columns after the first. The first
+   column keeps the editor's own gutter so its text aligns with ordinary
+   paragraphs. */
+.flowix-column-content {
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.flowix-columns > .flowix-column:not(:first-child) .flowix-column-content {
+  padding-left: 18px;
+}
+
+.flowix-column-content > :first-child {
+  margin-top: 0;
+}
+
+/* Column content is nested below `.tiptap > *`, so the editor's direct-child
+   paragraph rhythm does not reach it. Mirror the same metrics so a paragraph
+   inside a column has the same height and spacing as one outside. */
+.flowix-column-content > p {
+  margin: 0;
+  padding-bottom: calc(var(--editor-font-size, 16px) * var(--editor-line-height, 1.8) * 0.25);
+  white-space: pre-wrap;
+}
+
+.flowix-column-content > p:empty,
+.flowix-column-content > p:has(> br.ProseMirror-trailingBreak:only-child) {
+  min-height: calc(var(--editor-font-size, 16px) * var(--editor-line-height, 1.8));
+}
+
+.flowix-column-content > p:empty::before {
+  content: "\00a0";
+}
+
+.flowix-column[data-empty] .flowix-column-content::before {
+  content: attr(data-placeholder);
+  /* Absolute so the placeholder shares the empty paragraph's first line.
+     An in-flow ::before becomes an anonymous block before <p>, which pushes
+     the caret to the next line and inflates the column by one row.
+     Start after the handle padding so the drag handle never covers it. */
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  color: var(--muted-foreground);
+  opacity: 0.65;
+  pointer-events: none;
+  user-select: none;
+}
+
+.flowix-columns > .flowix-column:not(:first-child)[data-empty] .flowix-column-content::before {
+  left: 18px;
+}
+
+.flowix-column[data-empty]:focus-within .flowix-column-content::before {
+  display: none;
+}
+
+.flowix-column-resize-handle {
+  position: absolute;
+  top: 0;
+  right: -16px;
+  bottom: 0;
+  width: 8px;
+  z-index: 2;
+  cursor: col-resize;
+  touch-action: none;
+}
+
+.flowix-column-resize-handle::after {
+  content: '';
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  left: 50%;
+  width: 2px;
+  border-radius: 2px;
+  background: transparent;
+  transform: translateX(-50%);
+  transition: background 120ms;
+}
+
+.flowix-column:hover > .flowix-column-resize-handle::after,
+.flowix-column-resize-handle:hover::after {
+  background: var(--brand);
+}
+
+.flowix-column-remove,
+.flowix-columns-add {
+  z-index: 3;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  border: 0;
+  border-radius: 6px;
+  background: var(--card);
+  color: var(--muted-foreground);
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 120ms, color 120ms, background 120ms;
+}
+
+.flowix-column-remove {
+  position: absolute;
+  top: 2px;
+  right: 2px;
+  width: 20px;
+  height: 20px;
+  font-size: 14px;
+  line-height: 1;
+}
+
+.flowix-columns-add {
+  position: absolute;
+  top: 0;
+  right: -30px;
+  width: 22px;
+  height: 22px;
+  border: 1px solid var(--border);
+  font-size: 15px;
+  line-height: 1;
+}
+
+.flowix-column:hover > .flowix-column-remove,
+.flowix-columns-shell:hover > .flowix-columns-add {
+  opacity: 1;
+}
+
+.flowix-column-remove:hover,
+.flowix-columns-add:hover {
+  background: var(--hover-bg);
+  color: var(--foreground);
+}
+
+/* Drop hint for creating a column on either side of a block. */
+.flowix-column-drop-left {
+  box-shadow: inset 4px 0 0 var(--brand);
+}
+
+.flowix-column-drop-right {
+  box-shadow: inset -4px 0 0 var(--brand);
+}

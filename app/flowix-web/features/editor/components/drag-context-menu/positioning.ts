@@ -86,7 +86,21 @@ export function computeHandlePosition(
   // axes must be expressed in that scroll container's content coordinates.
   // In particular, subtracting ProseMirror's top loses the height of any
   // non-ProseMirror header (the memo title) and shifts every handle upward.
-  const x = nodeContentX(proseMirrorRect.left, contentRect.left, editorContent.scrollLeft)
+  //
+  // Blocks inside a column have no shared left gutter: anchoring them to the
+  // ProseMirror edge would place the handle over the first column instead of
+  // the block's own column. The first column keeps the editor's own gutter
+  // (and no extra content padding); later columns reserve their own left
+  // padding so the handle can sit near the column edge without covering text
+  // or list markers.
+  const columnElement = info.dom.closest('.flowix-column')
+  const columnRect = columnElement?.getBoundingClientRect() ?? null
+  const isFirstColumn = !!columnElement && !columnElement.previousElementSibling?.classList.contains('flowix-column')
+  const x = columnRect
+    ? (isFirstColumn
+        ? nodeContentX(proseMirrorRect.left, contentRect.left, editorContent.scrollLeft)
+        : columnRect.left - contentRect.left + editorContent.scrollLeft - 6)
+    : nodeContentX(proseMirrorRect.left, contentRect.left, editorContent.scrollLeft)
   const y = textBlockContentY(view, info, contentRect.top, editorContent.scrollTop) ??
     nodeContentY(
       nodeRect.top,
