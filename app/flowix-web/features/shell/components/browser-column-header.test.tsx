@@ -3,6 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { expect, it, vi } from 'vitest';
 import { ensureFileDisplayIdentity } from '@/lib/file-display-registry';
 import { BrowserColumnHeader } from './browser-column-header';
+import * as agentShell from '@features/agent/public/shell-api';
 import type { BrowserColumnTab } from '@features/workspace/public/browser-column-api';
 
 const useDocumentEditorModeMock = vi.hoisted(() => vi.fn((): 'rich' | 'source' => 'rich'));
@@ -30,7 +31,7 @@ it('moves actual focus across successive arrow presses and Home/End, and shows t
   }));
   function Harness() {
     const [activeTabId, setActiveTabId] = useState('one');
-    return <BrowserColumnHeader tabs={tabs} activeTabId={activeTabId} activeSurfaceChrome="document" onSelectTab={setActiveTabId}
+    return <BrowserColumnHeader tabs={tabs} activeTabId={activeTabId} activeSurfaceChrome="document" onSelectTab={(tabId) => { setActiveTabId(tabId); return true; }}
       onCloseTab={vi.fn()} onCloseOtherTabs={vi.fn()} onCloseTabsToRight={vi.fn()}
       onCloseAllTabs={vi.fn()} onToggleMemoEditorMode={vi.fn()} onOpenTabInWorkColumn={vi.fn()} onReorderTab={vi.fn()}
       isTabMenuOpen={false} onTabMenuOpenChange={vi.fn()} onContextMenuOpenChange={vi.fn()}
@@ -57,7 +58,7 @@ it('moves actual focus across successive arrow presses and Home/End, and shows t
 
 it('hides the browser column from the button before the tab strip', async () => {
   const onCloseColumn = vi.fn();
-  await withHeader(vi.fn(), async () => {
+  await withHeader(vi.fn(() => true), async () => {
     const header = document.querySelector<HTMLElement>('[data-browser-column-header]');
     const closeColumnButton = header?.querySelector<HTMLButtonElement>('button[aria-label="tabWindow.closeColumn"]');
     expect(closeColumnButton).not.toBeNull();
@@ -75,6 +76,9 @@ async function withHeader(
   check: (buttons: HTMLButtonElement[], outside: HTMLInputElement) => Promise<void>,
   options: {
     tabs?: BrowserColumnTab[];
+    canCreate?: boolean;
+    onCreateNote?: () => void;
+    onReorderTab?: (tabId: string, beforeTabId: string | null) => void;
     onToggleMemoEditorMode?: import('./browser-column-header').BrowserColumnHeaderProps['onToggleMemoEditorMode'];
     onCloseColumn?: import('./browser-column-header').BrowserColumnHeaderProps['onCloseColumn'];
     onOpenTabInWorkColumn?: import('./browser-column-header').BrowserColumnHeaderProps['onOpenTabInWorkColumn'];
@@ -94,9 +98,9 @@ async function withHeader(
   try {
     await act(async () => root.render(<BrowserColumnHeader tabs={tabs} activeTabId="one" activeSurfaceChrome="document" onSelectTab={onSelectTab}
       onCloseTab={vi.fn()} onCloseOtherTabs={vi.fn()} onCloseTabsToRight={vi.fn()}
-      onCloseAllTabs={vi.fn()} onToggleMemoEditorMode={options.onToggleMemoEditorMode ?? vi.fn()} onOpenTabInWorkColumn={options.onOpenTabInWorkColumn ?? vi.fn()} onReorderTab={vi.fn()}
+      onCloseAllTabs={vi.fn()} onToggleMemoEditorMode={options.onToggleMemoEditorMode ?? vi.fn()} onOpenTabInWorkColumn={options.onOpenTabInWorkColumn ?? vi.fn()} onReorderTab={options.onReorderTab ?? vi.fn()}
       isTabMenuOpen={false} onTabMenuOpenChange={vi.fn()} onCloseColumn={options.onCloseColumn} onContextMenuOpenChange={vi.fn()}
-      canCreate={false} onCreateNote={vi.fn()} onCreateAgentConversation={vi.fn()}
+      canCreate={options.canCreate ?? false} onCreateNote={options.onCreateNote ?? vi.fn()} onCreateAgentConversation={vi.fn()}
       isFocused={false} />));
     await check(Array.from(element.querySelectorAll<HTMLButtonElement>('[role="tab"]')), outside);
   } finally {
@@ -107,7 +111,7 @@ async function withHeader(
   }
 }
 
-it.each([false, null, 'throw'] as const)('restores selected-tab focus when activation fails with %s', async (result) => {
+it.each([false, 'throw'] as const)('restores selected-tab focus when activation fails with %s', async (result) => {
   await withHeader(async () => {
     if (result === 'throw') throw new Error('save failed');
     return result;
@@ -187,7 +191,6 @@ it('shows the requested tab as active while content activation is pending', asyn
     expect(buttons[1].parentElement?.classList.contains('browser-column-tab-active')).toBe(true);
     expect(buttons[0].parentElement?.classList.contains('browser-column-tab-active')).toBe(false);
     expect(buttons[0].parentElement?.classList.contains('bg-transparent')).toBe(true);
-    expect(buttons[0].parentElement?.classList.contains('shadow-none')).toBe(true);
 
     await act(async () => finish(false));
     expect(buttons[0].getAttribute('aria-selected')).toBe('true');
@@ -225,7 +228,7 @@ it('ignores a stale failure after a newer keyboard selection', async () => {
 
 it('allows opening a webpage in Work from its context menu', async () => {
   const onOpen = vi.fn();
-  await withHeader(vi.fn(), async (buttons) => {
+  await withHeader(vi.fn(() => true), async (buttons) => {
     await act(async () => { buttons[0].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 })); });
     const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
       .find((element) => element.textContent === 'tabWindow.context.openInWorkColumn')!;
@@ -237,7 +240,7 @@ it('allows opening a webpage in Work from its context menu', async () => {
 });
 
 it('keeps an unselected folder tab unavailable for Work', async () => {
-  await withHeader(vi.fn(), async (buttons) => {
+  await withHeader(vi.fn(() => true), async (buttons) => {
     await act(async () => { buttons[0].dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 })); });
     const explanation = document.getElementById('move-unavailable-one');
     expect(explanation?.textContent).toBe('tabWindow.context.moveFolderUnavailable');
@@ -263,7 +266,7 @@ it('shows the editor mode entry for Markdown file tabs and toggles its label', a
       activeFilePath: '/notes/memo.md',
     },
   };
-  await withHeader(vi.fn(), async () => {
+  await withHeader(vi.fn(() => true), async () => {
     await act(async () => {
       document.querySelector<HTMLElement>('[role="tab"]')?.dispatchEvent(
         new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 }),
@@ -288,7 +291,7 @@ it('shows the editor mode entry for Markdown file tabs and toggles its label', a
 });
 
 it('does not show the editor mode entry for web tabs', async () => {
-  await withHeader(vi.fn(), async () => {
+  await withHeader(vi.fn(() => true), async () => {
     await act(async () => {
       document.querySelector<HTMLElement>('[role="tab"]')?.dispatchEvent(
         new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 }),
@@ -297,4 +300,81 @@ it('does not show the editor mode entry for web tabs', async () => {
     expect(Array.from(document.querySelectorAll('[role="menuitem"]'))
       .some((item) => item.textContent?.includes('document.action.sourceMode'))).toBe(false);
   });
+});
+
+it('keeps the active title while icon-only tabs omit close controls and retain accessible titles', async () => {
+  await withHeader(vi.fn(() => true), async (buttons) => {
+    expect(buttons[0].textContent).toBe('one');
+    expect(buttons[0].parentElement?.querySelector('[data-tab-close]')).not.toBeNull();
+    expect(buttons[1].textContent).toBe('');
+    expect(buttons[1].getAttribute('aria-label')).toBe('two');
+    expect(buttons[1].hasAttribute('title')).toBe(false);
+    expect(buttons[1].parentElement?.querySelector('[data-tab-close]')).toBeNull();
+    expect(buttons[1].parentElement?.style.height).toBe('32px');
+    expect(buttons[1].parentElement?.style.minWidth).toBe('32px');
+    await act(async () => buttons[1].click());
+    expect(buttons[1].textContent).toBe('two');
+    expect(buttons[0].textContent).toBe('');
+  });
+});
+
+it('excludes hidden close buttons from sequential keyboard focus', async () => {
+  const width = vi.spyOn(Element.prototype, 'clientWidth', 'get').mockReturnValue(600);
+  try {
+    await withHeader(vi.fn(() => true), async (buttons) => {
+      expect(buttons[0].parentElement?.querySelector<HTMLButtonElement>('[data-tab-close]')?.tabIndex).toBe(0);
+      expect(buttons[1].textContent).toBe('two');
+      expect(buttons[1].parentElement?.querySelector<HTMLButtonElement>('[data-tab-close]')?.tabIndex).toBe(-1);
+    });
+  } finally { width.mockRestore(); }
+});
+
+it('renders a fallback icon for an unloaded Agent conversation in compact mode', async () => {
+  await withHeader(vi.fn(() => true), async (buttons) => {
+    expect(buttons[1].textContent).toBe('');
+    expect(buttons[1].querySelector('svg')).not.toBeNull();
+    expect(buttons[1].getAttribute('aria-label')).toBe('Agent');
+  }, { tabs: [
+    { id: 'one', title: 'Web', icon: null, target: { kind: 'web', url: 'https://one.example' } },
+    { id: 'agent', title: 'Agent', icon: null, target: { kind: 'agent_conversation', instanceId: 'missing-instance' } },
+  ] });
+});
+
+
+function tabDragEvent(type: string, clientX = 0) {
+  const event = new MouseEvent(type, { bubbles: true, cancelable: true, clientX });
+  Object.defineProperty(event, 'dataTransfer', { value: { setData: vi.fn(), effectAllowed: 'none', dropEffect: 'none' } });
+  return event;
+}
+
+it('moves a tab after the last tab and supports the trailing drop area', async () => {
+  const reorder = vi.fn();
+  await withHeader(vi.fn(() => true), async (buttons) => {
+    const first = buttons[0].parentElement!;
+    const last = buttons[2].parentElement!;
+    const rect = vi.spyOn(last, 'getBoundingClientRect').mockReturnValue({ left: 0, width: 100 } as DOMRect);
+    await act(async () => { first.dispatchEvent(tabDragEvent('dragstart')); });
+    await act(async () => { last.dispatchEvent(tabDragEvent('drop', 80)); });
+    expect(reorder).toHaveBeenLastCalledWith('one', null);
+    await act(async () => { first.dispatchEvent(tabDragEvent('dragstart')); });
+    await act(async () => { document.querySelector('[data-browser-tab-drop-end]')!.dispatchEvent(tabDragEvent('drop')); });
+    expect(reorder).toHaveBeenCalledTimes(2);
+    expect(reorder).toHaveBeenLastCalledWith('one', null);
+    rect.mockRestore();
+  }, { onReorderTab: reorder });
+});
+
+it('allows creating notes when all conversation Agents are unavailable', async () => {
+  const selection = vi.spyOn(agentShell, 'useNewConversationAgentSelection').mockReturnValue({ kind: 'none', options: [] });
+  const createNote = vi.fn();
+  try {
+    await withHeader(vi.fn(() => true), async () => {
+      await act(async () => { document.querySelector('[data-browser-tab-drop-end]')!.dispatchEvent(new MouseEvent('contextmenu', { bubbles: true, clientX: 20, clientY: 20 })); });
+      const item = [...document.querySelectorAll<HTMLButtonElement>('[role="menuitem"]')]
+        .find((item) => item.textContent === 'tabWindow.context.newNote')!;
+      expect(item.disabled).toBe(false);
+      await act(async () => item.click());
+      expect(createNote).toHaveBeenCalledOnce();
+    }, { canCreate: true, onCreateNote: createNote });
+  } finally { selection.mockRestore(); }
 });

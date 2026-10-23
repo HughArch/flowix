@@ -55,6 +55,7 @@ export function createAgentClientMock(
       items: [], hasMore: false, nextCursor: null,
     }),
     listConversationTypeCountsByNotebook: vi.fn<AgentClient["listConversationTypeCountsByNotebook"]>().mockResolvedValue([]),
+    getConversationInstancesByIds: vi.fn<AgentClient["getConversationInstancesByIds"]>().mockResolvedValue([]),
     getConversationInstance: vi.fn<AgentClient["getConversationInstance"]>().mockResolvedValue(null),
     findConversationByThread: vi.fn<AgentClient["findConversationByThread"]>().mockResolvedValue(null),
     upsertConversationInstance: vi.fn<AgentClient["upsertConversationInstance"]>().mockImplementation(

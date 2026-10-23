@@ -383,7 +383,7 @@ export class FeaturedNotesController {
     const card = document.createElement("button");
     card.type = "button";
     card.className = "agent-thread-card__featured-note";
-    card.setAttribute("aria-label", [note.name, note.title, note.description].filter(Boolean).join(" — "));
+    card.setAttribute("aria-label", [note.title, note.name, note.description].filter(Boolean).join(" — "));
 
     const icon = document.createElement("span");
     icon.className = "agent-thread-card__featured-note-icon";
@@ -394,7 +394,9 @@ export class FeaturedNotesController {
     content.className = "agent-thread-card__featured-note-content";
     const title = document.createElement("span");
     title.className = "agent-thread-card__featured-note-title";
-    title.textContent = note.name ? `${note.name} › ${note.title}` : note.title;
+    title.textContent = note.title
+      ? (note.name ? `${note.title} › ${note.name}` : note.title)
+      : note.name;
     const description = document.createElement("span");
     description.className = "agent-thread-card__featured-note-description";
     description.textContent = note.description;

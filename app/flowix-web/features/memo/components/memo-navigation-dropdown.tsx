@@ -9,9 +9,9 @@ import { useI18n, type I18nKey } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { useTagStore } from '@features/memo/store/tag-store';
-import { TagMentionName } from '@features/editor/extensions/tag-mention/tag-mention-label';
-import { TableDatasetMenu } from '@features/multidimensional-table/table-dataset-menu';
-import type { TableAutoCollectConfig } from '@features/multidimensional-table/model';
+import { TagTree } from '@features/memo/components/tag-tree';
+import { NoteFilterMenu } from '@features/collection/public/note-filter-menu';
+import type { NoteFilterConfig } from '@features/collection/public/note-filter-api';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,13 +28,10 @@ const MEMO_NAVIGATION_MENU_ITEM_CLASS =
 
 export type MemoNavigationTarget = 'all' | 'todos' | 'tags';
 
-const EMPTY_AUTO_COLLECT_FIELDS: Array<{ id: string; label: string }> = [];
-
 interface NavigationSubmenuProps {
   label: ReactNode;
   icon?: ReactNode;
   itemIcon?: ReactNode;
-  itemKind?: 'tag' | 'reference';
   labelAdornment?: ReactNode;
   /**
    * 尾部 ChevronRight 旁的当前值提示（例如已选的筛选 / 排序）。
@@ -65,7 +62,6 @@ export function MemoNavigationSubmenu({
   label,
   icon,
   itemIcon,
-  itemKind,
   labelAdornment,
   valueAdornment,
   open,
@@ -85,7 +81,6 @@ export function MemoNavigationSubmenu({
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const submenuRef = useRef<HTMLDivElement | null>(null);
   const [submenuPosition, setSubmenuPosition] = useState<CSSProperties>({ left: '100%', top: 0 });
-  const selectedTagId = useTagStore((state) => state.selectedTagId);
 
   const cancelClose = () => {
     if (closeTimerRef.current === null) return;
@@ -111,7 +106,7 @@ export function MemoNavigationSubmenu({
       if (!trigger || !submenu) return;
       const rect = trigger.getBoundingClientRect();
       const width = submenu.offsetWidth || 220;
-      const height = Math.min(submenu.scrollHeight, window.innerHeight - 16);
+      const height = Math.min(submenu.offsetHeight || submenu.scrollHeight, window.innerHeight - 16);
       const opensLeft = window.innerWidth - rect.right < width + 8;
       const top = Math.max(8, Math.min(rect.top, window.innerHeight - height - 8));
       setSubmenuPosition({
@@ -148,10 +143,12 @@ export function MemoNavigationSubmenu({
       <button
         type="button"
         ref={triggerRef}
+        aria-haspopup="menu"
+        aria-expanded={open}
         className={cn(
           'memo-navigation-submenu-trigger flex h-7 w-full cursor-pointer items-center justify-between rounded-lg py-0 pl-[6px] pr-2 text-sm text-[var(--foreground)] outline-none transition-colors',
           open
-            ? 'bg-[var(--muted)] hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]'
+            ? 'bg-[var(--brand)] text-[var(--primary-foreground)] hover:bg-[var(--brand)]'
             : 'hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]',
         )}
         onClick={() => {
@@ -174,7 +171,7 @@ export function MemoNavigationSubmenu({
         </span>
       </button>
       {open && (
-        <div ref={submenuRef} style={{ ...submenuPosition, maxWidth: 'calc(100vw - 16px)' }} className={cn('absolute z-[151] flex max-h-[min(560px,calc(100vh-16px))] w-[220px] flex-col overflow-hidden rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', submenuClassName)}>
+        <div ref={submenuRef} style={{ ...submenuPosition, maxWidth: 'calc(100vw - 16px)' }} className={cn('absolute z-[151] flex max-h-[min(var(--memo-submenu-max-height,560px),calc(100vh-16px))] w-[220px] flex-col overflow-hidden rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]', submenuClassName)}>
           {!hideHeader && (
             <div
               className="mention-note-header"
@@ -199,13 +196,7 @@ export function MemoNavigationSubmenu({
                     key={item.id}
                     type="button"
                     title={item.secondary ? `${item.label} · ${item.secondary}` : item.label}
-                    className={cn(
-                      'memo-navigation-submenu-item mention-note-item !h-7 !min-h-7 !rounded-lg !py-0 !pl-[6px] !pr-2 focus-visible:outline-none',
-                      itemKind === 'tag'
-                        ? 'memo-navigation-submenu-item--neutral-hover hover:bg-[var(--hover-bg)] focus-visible:bg-[var(--hover-bg)]'
-                        : 'hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)]',
-                      itemKind === 'tag' && item.id === selectedTagId && 'is-selected',
-                    )}
+                    className="memo-navigation-submenu-item mention-note-item !h-7 !min-h-7 !rounded-lg !py-0 !pl-[6px] !pr-2 hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)] focus-visible:outline-none"
                     onMouseDown={(event) => event.preventDefault()}
                     onClick={() => {
                       onSelect?.(item.id);
@@ -213,24 +204,14 @@ export function MemoNavigationSubmenu({
                       onOpenChange(false);
                     }}
                   >
-                    {itemKind === 'tag' ? (
-                      <span className="mention-note-title mention-tag-title">
-                        <TagSvgIcon className="mention-tag-icon" />
-                        <TagMentionName name={item.label} />
-                      </span>
-                    ) : (
-                      <span className="flex min-w-0 items-center gap-2">
-                        {itemIcon}
-                        <span className="mention-note-title">{item.label}</span>
-                      </span>
-                    )}
-                    {itemKind === 'reference' && item.secondary && (
+                    <span className="flex min-w-0 items-center gap-2">
+                      {itemIcon}
+                      <span className="mention-note-title">{item.label}</span>
+                    </span>
+                    {item.secondary && (
                       <span className="mention-note-notebook mention-note-notebook-name">
                         {item.secondary}
                       </span>
-                    )}
-                    {itemKind === 'tag' && item.id === selectedTagId && (
-                      <Check className="h-3.5 w-3.5 shrink-0 text-[var(--brand)]" aria-hidden="true" />
                     )}
                   </button>
                 ))
@@ -295,7 +276,7 @@ export function MemoNavigationDropdown({
   const [openSubmenu, setOpenSubmenu] = useState<'tags' | null>(null);
   const dataCondition = useNoteStore(state => state.dataConditionsByNotebook?.[selectedNotebookId ?? ''] ?? null);
   const setDataCondition = useNoteStore(state => state.setDataCondition);
-  const datasetConfig = useMemo<TableAutoCollectConfig>(() => ({
+  const datasetConfig = useMemo<NoteFilterConfig>(() => ({
     condition: {
       ...(dataCondition ?? {}),
       path: defaultCreateFolder ?? '',
@@ -336,12 +317,6 @@ export function MemoNavigationDropdown({
     onNavigate?.(target);
   };
 
-  const handleTagSelect = (tagId: string) => {
-    setSelectedTagId(tagId);
-    setActiveFilter('tagged');
-  };
-
-  const tagSubmenuItems = tags.map((tag) => ({ id: tag.id, label: tag.name }));
   const selectedTagName = selectedTagId
     ? (tags.find((tag) => tag.id === selectedTagId)?.name ?? selectedTagId)
     : null;
@@ -380,10 +355,8 @@ export function MemoNavigationDropdown({
       </div>
       <DropdownMenuContent align="start" side="bottom" className={MEMO_NAVIGATION_MENU_CLASS}>
         {leadingContent}
-        <TableDatasetMenu
+        <NoteFilterMenu
           key={selectedNotebookId ?? 'no-notebook'}
-          defaultFieldId=""
-          fields={EMPTY_AUTO_COLLECT_FIELDS}
           config={datasetConfig}
           notebookId={selectedNotebookId}
           notebookPath={notebookPath}
@@ -402,44 +375,55 @@ export function MemoNavigationDropdown({
             return true;
           }}
           onSavePath={onSavePath}
-        />
-        <DropdownMenuItem
-          onClick={() => handleNavigate('todos')}
-          className={cn(
-            MEMO_NAVIGATION_MENU_ITEM_CLASS,
-            isActive('todos') && 'hover:bg-[var(--brand)]',
-          )}
         >
-          <span className="flex min-w-0 items-center gap-2">
-            <ListTodo className="h-4 w-4 shrink-0" aria-hidden="true" />
-            <span>{t('memo.list.filterTasks')}</span>
-          </span>
-          {isActive('todos') && <Check className="h-3.5 w-3.5 shrink-0 text-[var(--brand)] group-hover:text-[var(--primary-foreground)]" aria-hidden="true" />}
-        </DropdownMenuItem>
-        <MemoNavigationSubmenu
-          label={t('memo.navigation.tags')}
-          icon={<TagSvgIcon className="h-[18px] w-[18px] shrink-0" />}
-          itemIcon={<TagSvgIcon className="h-[18px] w-[18px] shrink-0 text-[var(--muted-foreground)]" />}
-          itemKind="tag"
-          valueAdornment={activeFilter === 'tagged' && selectedTagName ? (
-            <span className="inline-flex max-w-[100px] items-center truncate text-xs text-[var(--muted-foreground)]">
-              <TagIcon prefix />
-              <span className="truncate">{selectedTagName}</span>
+          <DropdownMenuItem
+            onClick={() => handleNavigate('todos')}
+            className={cn(
+              MEMO_NAVIGATION_MENU_ITEM_CLASS,
+              isActive('todos') && 'hover:bg-[var(--brand)]',
+            )}
+          >
+            <span className="flex min-w-0 items-center gap-2">
+              <ListTodo className="h-4 w-4 shrink-0" aria-hidden="true" />
+              <span>{t('memo.list.filterTasks')}</span>
             </span>
-          ) : undefined}
-          open={openSubmenu === 'tags'}
-          items={tagSubmenuItems}
-          emptyText={t('memo.navigation.emptyTags')}
-          loadingText={t('memo.navigation.loading')}
-          onOpenChange={(open) => setOpenSubmenu((current) => {
-            if (open) return 'tags';
-            return current === 'tags' ? null : current;
-          })}
-          onCloseMenu={closeMenu}
-          onSelect={handleTagSelect}
-          onClick={() => handleNavigate('tags')}
-        />
-        {children && <div>{children}</div>}
+            {isActive('todos') && <Check className="h-3.5 w-3.5 shrink-0 text-[var(--brand)] group-hover:text-[var(--primary-foreground)]" aria-hidden="true" />}
+          </DropdownMenuItem>
+          <MemoNavigationSubmenu
+            label={t('memo.navigation.tags')}
+            icon={<TagSvgIcon className="h-[18px] w-[18px] shrink-0" />}
+            submenuClassName="memo-navigation-tag-tree-submenu"
+            hideHeader
+            submenuContent={(
+              <OverlayScrollbar
+                className="mention-note-items-frame memo-navigation-tag-tree-frame"
+                scrollerClassName="mention-note-items"
+              >
+                <TagTree
+                  selectedNotebook={selectedNotebook}
+                  onSelectTag={closeMenu}
+                  variant="menu"
+                />
+              </OverlayScrollbar>
+            )}
+            valueAdornment={activeFilter === 'tagged' && selectedTagName ? (
+              <span className="inline-flex max-w-[100px] items-center truncate text-xs text-[var(--muted-foreground)]">
+                <TagIcon prefix />
+                <span className="truncate">{selectedTagName}</span>
+              </span>
+            ) : undefined}
+            open={openSubmenu === 'tags'}
+            emptyText={t('memo.navigation.emptyTags')}
+            loadingText={t('memo.navigation.loading')}
+            onOpenChange={(open) => setOpenSubmenu((current) => {
+              if (open) return 'tags';
+              return current === 'tags' ? null : current;
+            })}
+            onCloseMenu={closeMenu}
+            onClick={() => handleNavigate('tags')}
+          />
+          {children && <div>{children}</div>}
+        </NoteFilterMenu>
       </DropdownMenuContent>
     </DropdownMenu>
   );

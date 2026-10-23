@@ -4,8 +4,8 @@ import type { CurrentBlockInfo } from '@features/editor/components/drag-context-
  * Y offset from block top edge, in px. Computed dynamically from the user's
  * font size / line height settings so the handle stays aligned when those
  * change. At the default `fontSize=16, lineHeight=1.8`, body text blocks use
- * a 27px line box and a 4.5px centered offset; heading offsets remain 5/3/3/2px
- * and scale linearly with user settings otherwise.
+ * a 28.8px line box and a 5.4px centered offset; heading offsets scale
+ * linearly with the configured font size.
  *
  * Reading guide:
  *   - Text-bearing blocks (paragraph / blockquote / list / table / hr /
@@ -14,17 +14,17 @@ import type { CurrentBlockInfo } from '@features/editor/components/drag-context-
  *   - codeBlock inherits the body `font-size` (see editor.css), so the
  *     formula uses the same line-height as the body text.
  *   - Headings h1–h4 have a hard-coded `line-height: 1.3` plus per-level
- *     rem-based font-size. We use a "near top" ratio (~10–14% of the
+ *     font-size multiplier. We use a "near top" ratio (~10–14% of the
  *     heading's line-box) so the handle reads as anchored to the heading,
  *     not to its first line's center (which would float too far down on
  *     large h1s).
- *   - Heading h5/h6 inherit body fontSize with no rem override and
+ *   - Heading h5/h6 inherit body fontSize with no font-size override and
  *     visually feel like body text, so they use the centered formula.
  *   - Atom blocks (image / video / file / datetime)
  *     don't follow line-height — fixed 5px from the top of the node.
  *
  * Edit visually — these are derived from CSS variables. If the CSS
- * constants (1em codeblock, 1.3 heading line-height, h1–h4 rem sizes)
+ * constants (1em codeblock, 1.3 heading line-height, h1–h4 font-size multipliers)
  * change in `css/editor.css`, update the mirrors below.
  * ───────────────────────────────────────────────────────────────────── */
 
@@ -38,25 +38,20 @@ const CODE_BLOCK_FONT_SIZE_EM = 1
 const HEADING_LINE_HEIGHT = 1.3
 
 /**
- * 标题字号 — 走 `calc(Nrem * var(--editor-scale))`, 而
- * `--editor-scale = var(--editor-font-size, 16px) / 16px`, 两者相消后
+ * 标题字号 — 走 `calc(var(--editor-font-size, 16px) * N)`,
  * 渲染字号 = `fontSize × N` px。h5/h6 没有显式声明, 走 fallback `1`
  * (即继承 body 字号), 在 getYOffset 里会落到 body 居中分支。
  */
-const HEADING_FONT_SIZE_REM: Record<number, number> = {
+const HEADING_FONT_SIZE_SCALE: Record<number, number> = {
   1: 1.9,
-  2: 1.4,
-  3: 1.15,
+  2: 1.5,
+  3: 1.2,
   4: 1.05,
 }
 
 /**
- * 标题的 "near top" 视觉比例: 复现默认 15px 字号下的 5/3/3/2 偏移
- * (即原 hand-tune 值), 随用户调整 fontSize 等比缩放。
- *   5 / (15 * 1.9  * 1.3) ≈ 0.135
- *   3 / (15 * 1.4  * 1.3) ≈ 0.110
- *   3 / (15 * 1.15 * 1.3) ≈ 0.134
- *   2 / (15 * 1.05 * 1.3) ≈ 0.098
+ * 标题的 "near top" 视觉比例沿用原有视觉锚点, 随实际标题行高等比缩放。
+ * 字号倍率必须与 editor.css 的 h1–h4 保持一致。
  */
 const HEADING_NEAR_TOP_RATIO: Record<number, number> = {
   1: 0.135,
@@ -95,11 +90,11 @@ export function getYOffset(
 
   if (info.typeName === 'heading') {
     const level = info.attrs.level
-    // h1–h4 走 near-top; h5/h6 没有显式 rem, 落到下面的 body 居中分支。
-    if (typeof level === 'number' && level in HEADING_FONT_SIZE_REM) {
-      const rem = HEADING_FONT_SIZE_REM[level]
+    // h1–h4 走 near-top; h5/h6 没有显式字号倍率, 落到下面的 body 居中分支。
+    if (typeof level === 'number' && level in HEADING_FONT_SIZE_SCALE) {
+      const scale = HEADING_FONT_SIZE_SCALE[level]
       const ratio = HEADING_NEAR_TOP_RATIO[level]
-      return Math.max(0, safeFontSize * rem * HEADING_LINE_HEIGHT * ratio)
+      return Math.max(0, safeFontSize * scale * HEADING_LINE_HEIGHT * ratio)
     }
   }
 

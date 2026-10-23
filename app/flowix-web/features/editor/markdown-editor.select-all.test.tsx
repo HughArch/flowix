@@ -177,13 +177,14 @@ describe('MarkdownEditor select all', () => {
     vi.useRealTimers();
   });
 
-  it('focuses the first body paragraph when the blank editor surface is clicked', async () => {
+  it.each(['', '---\nflowix_key: abc12345\n---', '---\nflowix_key: abc12345\n---\n&nbsp;'])(
+    'focuses the blank body on a surface click for %j', async (content) => {
     let editor: Editor | null = null;
     await act(async () => {
       root.render(
         <ShortcutsProvider overrides={{}}>
           <MarkdownEditor
-            content={'---\nflowix_key: abc12345\n---\n&nbsp;'}
+            content={content}
             header={<textarea data-testid="memo-title" defaultValue="File title" />}
             onBeforeCreate={(instance) => { editor = instance; }}
           />
@@ -205,6 +206,11 @@ describe('MarkdownEditor select all', () => {
     expect(editor!.view.hasFocus()).toBe(true);
     expect(editor!.state.selection.empty).toBe(true);
     expect(editor!.state.selection.$from.parent.type.name).toBe('paragraph');
+    act(() => { editor!.commands.insertContent('正文输入'); });
+    expect(editor!.getMarkdown()).toContain('正文输入');
+    if (content.includes('flowix_key')) {
+      expect(editor!.state.doc.firstChild?.type.name).toBe('frontmatter');
+    }
   });
 
   it('does not show the paragraph placeholder at a selected block boundary', async () => {

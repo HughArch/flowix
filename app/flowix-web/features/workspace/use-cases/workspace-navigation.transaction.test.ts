@@ -72,6 +72,7 @@ vi.mock('@platform/tauri/client', () => ({
 }));
 
 import { useWorkColumnStore } from '../store/work-column-store';
+import { NavigationCancelledError } from '@/lib/navigation-cancelled-error';
 import { useBrowserColumnStore } from '../store/browser-column-store';
 import {
   openExternalTarget,
@@ -121,6 +122,18 @@ describe('workspace navigation transaction', () => {
     mocks.memoState.setActivePluginId.mockClear();
     mocks.memoState.loadNotebooks.mockResolvedValue(undefined);
     mocks.memoState.loadMemos.mockResolvedValue(undefined);
+  });
+
+  it('retains the previous Work target without a failure or retry action when leaving is refused', async () => {
+    const previous = { kind: 'web' as const, url: 'https://example.com' };
+    const work = useWorkColumnStore.getState();
+    const requestId = work.beginNavigation(previous, null);
+    work.commitNavigation(requestId, previous);
+    mocks.openExternalDocument.mockRejectedValueOnce(new NavigationCancelledError('saving could not be retained'));
+    await expect(openExternalTarget('/notes/new.md')).rejects.toBeInstanceOf(NavigationCancelledError);
+    expect(useWorkColumnStore.getState().navigation).toMatchObject({
+      phase: 'committed', target: previous, pendingTarget: null, failure: null, retryToken: null,
+    });
   });
 
   it('restores the path selection when opening a document fails', async () => {

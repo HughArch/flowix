@@ -6,6 +6,7 @@ import {
   getCustomPresets,
   CUSTOM_PROPERTY_KINDS,
   isBuiltinPresetKey,
+  moveNameAndDescriptionPresetsToEnd,
   PROPERTY_KINDS,
   resolvePropertyPreset,
 } from './presets';
@@ -73,6 +74,21 @@ describe('property preset runtime model', () => {
     expect(resolvePropertyPreset('name', [
       { key: 'name', type: 'Number' },
     ], label)).toMatchObject({ source: 'builtin', key: 'name' });
+  });
+
+  it('moves Name and Description to the end while preserving other preset order', () => {
+    const options = [
+      { value: 'name' },
+      { value: 'tags' },
+      { value: 'description' },
+      { value: 'flowix_colors' },
+      { value: 'status' },
+    ];
+
+    expect(moveNameAndDescriptionPresetsToEnd(options, (option) => option.value).map((option) => option.value))
+      .toEqual(['tags', 'flowix_colors', 'status', 'name', 'description']);
+    expect(options.map((option) => option.value))
+      .toEqual(['name', 'tags', 'description', 'flowix_colors', 'status']);
   });
 
   it('uses the shared resolver for preset-bound note properties', () => {

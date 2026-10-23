@@ -14,6 +14,7 @@ const logger = createLogger('main-layout');
 import { lazy, Suspense, useState, useEffect, useRef, useCallback } from 'react';
 import {
   DocumentTitlebarWin,
+  resolveDocumentTitlebarTarget,
   DocumentTitlebarMac,
   navigateDocumentHistory,
   useDocumentCommands,
@@ -22,6 +23,7 @@ import {
   captureLatestDocumentContent,
   setDocumentEditorMode,
   useDocumentEditorMode,
+  type DocumentEditorMode,
   type DocumentHistoryEntry,
 } from '@features/document/public/shell-api';
 import {
@@ -33,7 +35,7 @@ import {
 } from '@features/memo/public/shell-api';
 import { AgentConversationTitlebar } from '@features/agent/public/shell-api';
 import { useSettingsStore } from '@/lib/store/settings-store';
-import { useWorkspaceStartupStore } from '@/lib/store/workspace-startup-store';
+import { useWorkspaceStartupStore, isWorkspaceInteractive } from '@/lib/store/workspace-startup-store';
 import { useShallow } from 'zustand/react/shallow';
 import {
   product,
@@ -56,6 +58,7 @@ import { Button } from '@shared/ui/button';
 import type { AppUpdaterState } from '@features/shell/hooks/use-app-updater';
 import {
   WorkColumnContentHost,
+  resolveWorkColumnRuntimePresentation,
   resolveWorkColumnPresentation,
   useWorkspaceSurfacePresentation,
   type DocumentSurfaceContext,
@@ -275,6 +278,7 @@ export function MainLayout({
     focusedHostId,
     notebookSwitching,
   } = useShellWorkspaceViewModel();
+  const interactive = useWorkspaceStartupStore(isWorkspaceInteractive);
   const nativeStartup = useWorkspaceStartupStore(useShallow((state) => ({
     phase: state.nativePhase,
     stage: state.nativeStage,
@@ -344,7 +348,6 @@ export function MainLayout({
   const {
     shouldRenderAgentConversationList,
     showMemoListSurface,
-    showAgentConversationSurface,
     memoListPreviewVisible,
     memoListPreviewPhase,
     handleMemoListPreviewTriggerEnter,
@@ -355,6 +358,10 @@ export function MainLayout({
     handleMemoListPreviewCompanionLeave,
     agentConversationListNode,
   } = useMainMiddleColumnController({
+    onConversationListBack: () => {
+      void setMemoListViewPreference('folders');
+      setMiddleColumnView('notes');
+    },
     isAgentConversationView,
     isMemoListHidden,
     noteNavigationPhase,
@@ -526,11 +533,12 @@ export function MainLayout({
     }));
   }, [mediaTarget]);
 
-  const handleViewSourceMode = useCallback(() => {
-    if (!mainMemoEditorIdentity || mainEditorMode === 'source') return;
+  const handleSetMainEditorMode = useCallback((mode: DocumentEditorMode) => {
+    if (!mainMemoEditorIdentity || mainEditorMode === mode) return;
     captureLatestDocumentContent(mainMemoEditorIdentity, 'main-third');
-    setDocumentEditorMode('main-third', mainMemoEditorIdentity, 'source');
+    setDocumentEditorMode('main-third', mainMemoEditorIdentity, mode);
   }, [mainEditorMode, mainMemoEditorIdentity]);
+  const handleViewSourceMode = useCallback(() => handleSetMainEditorMode('source'), [handleSetMainEditorMode]);
 
   useEffect(() => {
     const handleViewSource = () => handleViewSourceMode();
@@ -591,8 +599,13 @@ export function MainLayout({
     && workRuntimePresentation.state.loadingMode === 'blocking';
   const workSurfaceFailed = workRuntimePresentation.state?.status === 'error'
     || workRuntimePresentation.state?.status === 'unavailable';
-  const workCapabilities = workRuntimePresentation.capabilities ?? workColumnPresentation.capabilities;
-  const workHeaderStyle = workRuntimePresentation.appearance?.headerStyle ?? workColumnPresentation.chrome;
+  const effectiveWorkPresentation = resolveWorkColumnRuntimePresentation(
+    workColumnPresentation,
+    workRuntimePresentation,
+    workColumnDocument?.identity,
+  );
+  const workCapabilities = effectiveWorkPresentation.capabilities;
+  const workHeaderStyle = effectiveWorkPresentation.chrome;
   const isAgentConversationDetail = workColumnPresentation.header.kind === 'agent';
   const handleToggleDefaultFolder = useCallback(async (target: {
     filePath: string;
@@ -625,12 +638,20 @@ export function MainLayout({
     showEditorFontSwitcher: workColumnPresentation.content.status === 'surface'
       && workCapabilities.includes('edit')
       && workColumnPresentation.content.surface.kind === 'md',
+    showEditorModeToggle: workColumnPresentation.content.status === 'surface'
+      && workColumnPresentation.content.surface.kind === 'md',
+    editorMode: mainEditorMode,
+    onSetEditorMode: handleSetMainEditorMode,
     document: {
-      // An artifact is allowed to sit above an existing editable session.
-      // Do not expose that underlying memo's actions in the artifact chrome;
-      // the workColumn target, not the DocumentStore session, owns the view.
-      externalFilePath: workColumnPresentation.header.kind === 'document'
-        ? workColumnPresentation.header.document.externalFilePath
+      target: workColumnPresentation.header.kind === 'document'
+        && workColumnPresentation.header.document.externalFilePath
+        && workColumnPresentation.content.status === 'surface'
+        && 'fileIdentity' in workColumnPresentation.content.surface
+        ? resolveDocumentTitlebarTarget(
+            workColumnPresentation.content.surface.fileIdentity,
+            activeExternalSession,
+            selectedNotebook?.path ?? null,
+          )
         : null,
     },
     sidebar: {
@@ -706,12 +727,15 @@ export function MainLayout({
   return (
     <div
       className="flowix-main-layout relative flex h-screen w-screen overflow-hidden"
+      data-tauri-drag-region={!interactive || undefined}
       data-agent-conversation-view={isAgentConversationView || undefined}
       data-agent-conversation-detail={isAgentConversationDetail || undefined}
       style={{ backgroundColor: 'var(--frame-bg)' }}
     >
       <WindowsTitlebarControls />
-      <ExternalFileDropOverlay />
+      {/* Keep window controls and startup retry UI outside the business barrier. */}
+      <div className="contents" inert={!interactive} aria-busy={!interactive}>
+      {interactive && <ExternalFileDropOverlay />}
       <div className="flex flex-1 overflow-hidden">
         <div className="flex flex-col flex-1 overflow-hidden">
           <div className={`relative flex flex-1 h-full overflow-hidden ${isWindowsPlatform() ? 'rounded-b-[12px]' : 'rounded-b-[18px]'} border-b border-[var(--divider)]`}>
@@ -736,7 +760,6 @@ export function MainLayout({
             selectedNotebook={selectedNotebook}
             noteNavigationPhase={noteNavigationPhase}
             onCollapseMemoList={collapseMemoList}
-            onToggleNoteNavigation={handleToggleNoteNavigation}
             onOpenPreferences={(tab) => void windows.openPreferences(tab)}
             onPreviewEnter={handleMemoListPreviewEnter}
             onPreviewLeave={handleMemoListPreviewLeave}
@@ -761,35 +784,15 @@ export function MainLayout({
               }}
               navigationDrawerOpen={noteNavigationPhase !== 'closed'}
               onToggleNavigationDrawer={handleToggleNoteNavigation}
+              conversationList={shouldRenderAgentConversationList ? agentConversationListNode : undefined}
             >
-                <div
-                  className={`absolute inset-0 ${
-                    showMemoListSurface
-                      ? 'visible'
-                      : 'hidden'
-                  }`}
-                  aria-hidden={!showMemoListSurface}
-                >
-                  <MemoList
-                    navigationDrawerEnabled
-                    navigationDrawerOpen={noteNavigationPhase !== 'closed'}
-                    onToggleNavigationDrawer={handleToggleNoteNavigation}
-                    isActive={!isAgentConversationView}
-                    dataLoadingEnabled={!isAgentConversationView}
-                  />
-                </div>
-                {shouldRenderAgentConversationList && (
-                  <div
-                    className={`absolute inset-0 ${
-                      showAgentConversationSurface
-                        ? 'visible z-10'
-                        : 'hidden'
-                    }`}
-                    aria-hidden={!showAgentConversationSurface}
-                  >
-                    {agentConversationListNode}
-                  </div>
-                )}
+              <MemoList
+                navigationDrawerEnabled
+                navigationDrawerOpen={noteNavigationPhase !== 'closed'}
+                onToggleNavigationDrawer={handleToggleNoteNavigation}
+                isActive={!isAgentConversationView}
+                dataLoadingEnabled={!isAgentConversationView}
+              />
             </ListColumnContent>
           </ListColumn>
           {/* List <-> Memo detail divider */}
@@ -798,9 +801,14 @@ export function MainLayout({
               <ColumnResizeHandle label="调整列表列宽度" width={memoColWidth} onResize={resizeMemoList} onDraggingChange={setIsDraggingListDivider} />
             </div>
           )}
+          {/* Keep the drop overlay outside the scrolling columns so it covers the viewport. */}
+          <div
+            data-workspace-drop-overlay-host
+            className="relative isolate flex min-h-0 min-w-0 flex-1 overflow-hidden"
+          >
           <div
             data-document-columns-layout="split"
-            className="flex min-h-0 min-w-0 flex-1 flex-row overflow-x-auto overflow-y-hidden"
+            className="relative isolate flex min-h-0 min-w-0 flex-1 flex-row overflow-x-auto overflow-y-hidden"
           >
           {/* Memo detail */}
             <div
@@ -927,6 +935,7 @@ export function MainLayout({
           )}
           </div>
           </div>
+          </div>
           {/* Status bar */}
           <MainStatusBarHost
             onSelectNotebook={handleSelectNotebook}
@@ -954,6 +963,8 @@ export function MainLayout({
         onRefresh={triggerRefresh}
         suppressEmptyNotebookPrompt={onboardingLoading || onboardingOpen}
       />
+
+      </div>
 
       {(startupStatus.phase === 'failed'
         || workspaceStartup.status === 'failed'

@@ -7,6 +7,7 @@ vi.mock('@/lib/document-open-perf', () => ({
 }));
 
 import { useDocumentStore } from './document-store';
+import { NavigationCancelledError } from '@/lib/navigation-cancelled-error';
 
 describe('document navigation supersession', () => {
   beforeEach(() => {
@@ -52,7 +53,7 @@ describe('document navigation supersession', () => {
     await useDocumentStore.getState().openExternalDocument('/A.md');
     useDocumentStore.getState().finishDocumentTransition(useDocumentStore.getState().documentTransitionId);
     prepareDocumentLeave.mockResolvedValueOnce(false);
-    await expect(useDocumentStore.getState().openExternalDocument('/B.md')).rejects.toThrow('saving could not be retained');
+    await expect(useDocumentStore.getState().openExternalDocument('/B.md')).rejects.toBeInstanceOf(NavigationCancelledError);
     expect(useDocumentStore.getState()).toMatchObject({
       currentDocumentPath: '/A.md', isDocumentTransitioning: false,
     });

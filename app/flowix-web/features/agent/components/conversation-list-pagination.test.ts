@@ -54,6 +54,15 @@ describe('conversation list pagination state', () => {
     expect(renamed.itemsByIdentity['thread:old']?.title).toBe('Renamed');
   });
 
+  it('restores the title and ordering when an optimistic rename fails', () => {
+    const original = mergeConversationPage(EMPTY_CONVERSATION_PAGE_STATE, [
+      conversation('old', 100), conversation('new', 200),
+    ]);
+    const optimistic = updateConversationTitle(original, 'old', 'Renamed', 400);
+    expect(optimistic.orderedIdentities[0]).toBe('thread:old');
+    expect(updateConversationTitle(optimistic, 'old', 'old', 100)).toEqual(original);
+  });
+
   it('sorts favorite conversations by creation time, then instance id', () => {
     const sorted = sortFavoriteConversations([
       { ...conversation('newer-update', 300), createdAt: 50 },

@@ -68,6 +68,50 @@ describe('useFolderTree', () => {
     });
   }
 
+  it.each(['initial', 'refresh', 'reload'] as const)('preserves saved metadata over a delayed %s root read', async (mode) => {
+    const oldNote = { ...file('/root/a.md', 'a.md'), memoMeta: { icon: null, colors: [], favorited: false } } satisfies DocTreeItem;
+    let release!: (items: DocTreeItem[]) => void;
+    const delayed = () => new Promise<DocTreeItem[]>((resolve) => { release = resolve; });
+    if (mode === 'initial') getTreeMock.mockImplementationOnce(delayed);
+    else getTreeMock.mockResolvedValueOnce([oldNote]);
+    mount('/root');
+    if (mode !== 'initial') {
+      await vi.waitFor(() => expect(lastState?.loading).toBe(false));
+      getTreeMock.mockImplementationOnce(delayed);
+      act(() => { void (mode === 'reload' ? lastState?.reload() : lastState?.refresh()); });
+    }
+    const latest = { icon: 'flashlight', colors: ['blue' as const], favorited: true };
+    act(() => {
+      lastState?.updateNoteMetadata('/root/a.md', { ...latest, icon: 'dog-face' });
+      lastState?.updateNoteMetadata('/root/a.md', latest);
+    });
+    await act(async () => release([oldNote]));
+    expect(lastState?.rootChildren[0].memoMeta).toEqual(latest);
+    expect(lastState?.nodes.get('/root/a.md')?.memoMeta).toEqual(latest);
+
+    // Protection is scoped to earlier reads, not a permanent metadata override.
+    getTreeMock.mockResolvedValueOnce([oldNote]);
+    await act(async () => { await lastState?.refresh(); });
+    expect(lastState?.rootChildren[0].memoMeta?.icon).toBeNull();
+  });
+
+  it('preserves saved metadata over a delayed child read and supports clearing it', async () => {
+    getTreeMock.mockResolvedValue([dir('/root/sub', 'sub')]);
+    mount('/root');
+    await vi.waitFor(() => expect(lastState?.loading).toBe(false));
+    let release!: (items: DocTreeItem[]) => void;
+    getDirChildrenMock.mockImplementationOnce(() => new Promise((resolve) => { release = resolve; }));
+    act(() => lastState?.toggle('/root/sub'));
+    const latest = { icon: 'flashlight', colors: [], favorited: false };
+    act(() => lastState?.updateNoteMetadata('/root/sub/a.md', latest));
+    await act(async () => release([file('/root/sub/a.md', 'a.md')]));
+    expect(lastState?.nodes.get('/root/sub/a.md')?.memoMeta).toEqual(latest);
+    expect(lastState?.nodes.get('/root/sub')?.children?.[0].memoMeta).toEqual(latest);
+    act(() => lastState?.updateNoteMetadata('/root/sub/a.md', { ...latest, icon: null }));
+    expect(lastState?.nodes.get('/root/sub/a.md')?.memoMeta?.icon).toBeNull();
+    expect(lastState?.nodes.get('/root/sub')?.children?.[0].memoMeta?.icon).toBeNull();
+  });
+
   it('加载根目录单层列表, folder 占位空 children', async () => {
     getTreeMock.mockResolvedValue([dir('/root/sub', 'sub'), file('/root/a.md', 'a.md')]);
     mount('/root');

@@ -379,8 +379,9 @@ export function MemoCardImpl({
   const hasAgents = (memo.agents?.length ?? 0) > 0;
   const hasTodos = (memo.todos?.length ?? 0) > 0;
   const timeLabel = formatTimeAgo(memo.updatedAt || memo.createdAt, t);
+  const fileTitle = displayTitleFromFilename(memo.filename || memo.relativePath).trim();
   const propertyTitle = typeof memo.properties.name === 'string' ? memo.properties.name.trim() : '';
-  const title = propertyTitle || displayTitleFromFilename(memo.filename || memo.relativePath).trim() || t('memo.untitled');
+  const title = fileTitle || propertyTitle || t('memo.untitled');
   const propertyDescription = typeof memo.properties.description === 'string' ? memo.properties.description.trim() : '';
   const description = propertyDescription || memo.preview.trim() || t('memo.list.emptyDescription');
   const bodyProps: MemoCardBodyProps = {

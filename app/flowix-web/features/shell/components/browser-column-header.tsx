@@ -1,26 +1,29 @@
-import { useEffect, useRef, useState, type DragEvent, type KeyboardEvent, type MouseEvent } from 'react';
-import { flushSync } from 'react-dom';
-import { Check, ChevronDown, ChevronRight, Code2, FilePlus2, Globe, MessageCirclePlus, X } from 'lucide-react';
-import { ContentIcon, classifyFileContent } from '@features/content/public/content-api';
+import { useEffect, useMemo, useRef, useState, type KeyboardEvent, type MouseEvent } from 'react';
+import { Check, ChevronDown, ChevronRight, FilePlus2, MessageCirclePlus } from 'lucide-react';
+import { classifyFileContent } from '@features/content/public/content-api';
 import {
-  canOpenBrowserColumnTargetInWorkColumn,
   type BrowserColumnTab,
 } from '@features/workspace/public/browser-column-api';
 import {
   AgentThreadCardFullscreenExitButton,
-  useDocumentEditorMode,
   useFullscreenAgentThreadCardInfo,
 } from '@features/document/public/shell-api';
 import {
   AgentIcon,
   requestNewConversationAgentSelection,
   useBrowserColumnAgentHeaderModel,
+  useNewConversationAgentSelection,
 } from '@features/agent/public/shell-api';
-import { useNewConversationAgentSelection } from '@features/agent/hooks/use-new-conversation-agent-selection';
 import type { BrowserColumnSurfaceChrome } from '@features/surface/public/shell-api';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { cn } from '@/lib/utils';
+import { BrowserTabContextMenu } from './browser-tab-context-menu';
+import { BrowserTabItem } from './browser-tab-item';
+import { BrowserTabIcon } from './browser-tab-icon';
+import { useBrowserTabSelection, type BrowserTabSelectionHandler } from '../hooks/use-browser-tab-selection';
+import { useBrowserTabDrag } from '../hooks/use-browser-tab-drag';
+import { BROWSER_TAB_SIZE, useBrowserTabLayout } from '../hooks/use-browser-tab-layout';
 import { WORK_COLUMN_TITLEBAR_GRADIENT } from './work-column-titlebar-shell';
 import {
   ContextMenu,
@@ -28,7 +31,6 @@ import {
   ContextMenuItem,
   ContextMenuTrigger,
 } from '@shared/ui/context-menu';
-import { POPUP_SEPARATOR_CLASS } from '@shared/ui/popup-separator';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -36,97 +38,19 @@ import {
   DropdownMenuLabel,
   DropdownMenuTrigger,
 } from '@shared/ui/dropdown-menu';
-import { documentIdentityFromFile } from '@features/document/public/shell-api';
-import { requireFileDisplayIdentity } from '@/lib/file-display-registry';
 import type { AgentTypeKey } from '@/types/agent';
+import { useNotebookNoteIcons } from '@features/memo/public/shell-api';
 
 function isWindowsPlatform(): boolean {
   return typeof navigator !== 'undefined'
     && (/Windows/i.test(navigator.userAgent) || /Win/i.test(navigator.platform));
 }
 
-const MAX_INLINE_TAB_ICON_LENGTH = 64 * 1024;
-
-function tabIconImageSource(icon: string | null): string | null {
-  if (!icon) return null;
-  if (/^https?:\/\//i.test(icon)) return icon;
-  if (icon.length <= MAX_INLINE_TAB_ICON_LENGTH
-    && /^data:image\/(?:svg\+xml|png|jpe?g|gif|webp|avif)(?:;[^,]*)?,/i.test(icon)) return icon;
-  return null;
-}
-
-function tabIcon(tab: BrowserColumnTab, agentTypeKey?: AgentTypeKey) {
-  if (tab.target.kind === 'agent_conversation') {
-    return agentTypeKey ? <AgentIcon typeKey={agentTypeKey} alt="" className="h-3.5 w-3.5" /> : null;
-  }
-  if (tab.target.kind === 'web') {
-    const imageSource = tabIconImageSource(tab.icon);
-    return imageSource ? (
-      <span className="relative flex h-4 w-4 items-center justify-center">
-        <Globe className="h-3.5 w-3.5" />
-        <img
-          src={imageSource}
-          alt=""
-          className="absolute h-3.5 w-3.5 rounded-sm"
-          onError={(event) => { event.currentTarget.style.display = 'none'; }}
-        />
-      </span>
-    ) : <Globe className="h-3.5 w-3.5" />;
-  }
-  if (tab.target.kind === 'media') {
-    return <ContentIcon content={{ kind: 'file', path: tab.target.filePath }} className="h-3.5 w-3.5 opacity-100" />;
-  }
-  if (tab.target.kind === 'folder-collection') {
-    return <ContentIcon content={{ kind: 'folder' }} className="h-3.5 w-3.5 opacity-100" />;
-  }
-  if (tab.target.kind === 'file-browser') {
-    if (tab.target.collectionType === 'table') {
-      return <ContentIcon content={{ kind: 'multidimensional-table' }} className="h-3.5 w-3.5 opacity-100" />;
-    }
-    if (tab.target.collectionType === 'media_library') {
-      return <ContentIcon content={{ kind: 'media-library' }} className="h-3.5 w-3.5 opacity-100" />;
-    }
-    const path = tab.target.activeFilePath;
-    if (!path) return <ContentIcon content={{ kind: 'folder' }} className="h-3.5 w-3.5 opacity-100" />;
-    if (classifyFileContent(path) === 'note') return <ContentIcon content={{ kind: 'note' }} className="h-3.5 w-3.5 opacity-100" />;
-    return <ContentIcon content={{ kind: 'file', path }} className="h-3.5 w-3.5 opacity-100" />;
-  }
-  return <ContentIcon content={{ kind: 'web' }} className="h-3.5 w-3.5 opacity-100" />;
-}
-
-function MemoEditorModeContextMenuItem({
-  filePath,
-  onToggle,
-}: {
-  filePath: string;
-  onToggle: () => void | Promise<void>;
-}) {
-  const { t } = useI18n();
-  const editorMode = useDocumentEditorMode(
-    'browser-column',
-    documentIdentityFromFile(requireFileDisplayIdentity(filePath)),
-  );
-
-  return (
-    <ContextMenuItem
-      onClick={() => { void onToggle(); }}
-      className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
-    >
-      <Code2 className="mr-2 h-4 w-4" />
-      <span className="leading-5">
-        {editorMode === 'source'
-          ? t('document.action.richTextMode')
-          : t('document.action.sourceMode')}
-      </span>
-    </ContextMenuItem>
-  );
-}
-
 export interface BrowserColumnHeaderProps {
   tabs: BrowserColumnTab[];
   activeTabId: string | null;
   activeSurfaceChrome: BrowserColumnSurfaceChrome;
-  onSelectTab: (tabId: string) => void | boolean | null | Promise<void | boolean | null>;
+  onSelectTab: BrowserTabSelectionHandler;
   onCloseTab: (tabId: string) => void | Promise<void>;
   onCloseOtherTabs: (tabId: string) => void | Promise<void>;
   onCloseTabsToRight: (tabId: string) => void | Promise<void>;
@@ -168,45 +92,18 @@ export function BrowserColumnHeader({
   const { t } = useI18n();
   const [agentTypeMenuAnchor, setAgentTypeMenuAnchor] = useState<{ left: number; top: number } | null>(null);
   const { conversationInstances } = useBrowserColumnAgentHeaderModel();
+  const noteIconRequests = useMemo(() => tabs.flatMap((tab) => tab.target.kind === 'file-browser'
+    && tab.target.activeFilePath && classifyFileContent(tab.target.activeFilePath) === 'note'
+    ? [{ key: tab.id, notebookId: tab.target.notebookId, filePath: tab.target.activeFilePath }] : []), [tabs]);
+  const noteIcons = useNotebookNoteIcons(noteIconRequests);
   const newConversationSelection = useNewConversationAgentSelection();
   const tabButtons = useRef(new Map<string, HTMLButtonElement>());
-  const selectionRequest = useRef(0);
-  const activeTabIdRef = useRef(activeTabId);
-  const [pendingActiveTabId, setPendingActiveTabId] = useState<string | null>(null);
-  activeTabIdRef.current = activeTabId;
-  const displayedActiveTabId = pendingActiveTabId ?? activeTabId;
-
-  useEffect(() => {
-    if (pendingActiveTabId === activeTabId || (pendingActiveTabId && !tabs.some((tab) => tab.id === pendingActiveTabId))) {
-      setPendingActiveTabId(null);
-    }
-  }, [activeTabId, pendingActiveTabId, tabs]);
-
-  const selectTab = async (tabId: string) => {
-    const request = ++selectionRequest.current;
-    // The active-tab chrome must reach the DOM before navigation can mount and
-    // parse a large document on the main thread.
-    flushSync(() => setPendingActiveTabId(tabId));
-    let succeeded = false;
-    try {
-      const result = await onSelectTab(tabId);
-      succeeded = result !== false && result !== null;
-    } catch {
-      // Keep the current document and recover focus just as for a rejected save.
-    }
-    if (succeeded || request !== selectionRequest.current || tabButtons.current.size === 0) return;
-    setPendingActiveTabId(null);
-    const activeButton = activeTabIdRef.current
-      ? tabButtons.current.get(activeTabIdRef.current)
-      : undefined;
-    // Never steal focus if the user has moved into an editor or another control.
-    if (document.activeElement === tabButtons.current.get(tabId)) {
-      activeButton?.focus();
-      activeButton?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-    }
-    toast.error(t('tabWindow.switchFailed'));
-  };
-  const [draggedTabId, setDraggedTabId] = useState<string | null>(null);
+  const { displayedActiveTabId, selectTab } = useBrowserTabSelection({
+    tabs, activeTabId, buttons: tabButtons, onSelectTab,
+    onFailure: () => toast.error(t('tabWindow.switchFailed')),
+  });
+  const { tabListRef, compactTabs } = useBrowserTabLayout(tabs, displayedActiveTabId, tabButtons);
+  const { draggedTabId, tabDragHandlers, endDropHandlers } = useBrowserTabDrag(onReorderTab);
   const isWindows = isWindowsPlatform();
   // A fullscreen Thread Card keeps its DOM position inside this column, so the
   // host-scoped info hook only fires for cards mounted in the browser column —
@@ -223,12 +120,6 @@ export function BrowserColumnHeader({
   const tabAgentTypeKey = (tab: BrowserColumnTab) => tab.target.kind === 'agent_conversation'
     ? conversationInstances[tab.target.instanceId]?.agentType
     : undefined;
-
-  useEffect(() => {
-    if (displayedActiveTabId) {
-      tabButtons.current.get(displayedActiveTabId)?.scrollIntoView?.({ block: 'nearest', inline: 'nearest' });
-    }
-  }, [displayedActiveTabId]);
 
   const openAgentTypeMenu = (event: MouseEvent<HTMLButtonElement>) => {
     const selection = requestNewConversationAgentSelection();
@@ -276,8 +167,7 @@ export function BrowserColumnHeader({
         isMediaSurface && 'media-surface-titlebar',
       )}
       // Keep the tab strip visually continuous with the work-column titlebar.
-      // The tabs themselves stay transparent so this fade remains visible
-      // behind active and inactive tabs alike.
+      // The gradient remains visible around the individual tab cards.
       style={isAgentSurface || isMediaSurface ? undefined : { backgroundImage: WORK_COLUMN_TITLEBAR_GRADIENT }}
     >
       <button
@@ -290,184 +180,71 @@ export function BrowserColumnHeader({
         <ChevronRight className="h-4 w-4" />
       </button>
       <div
+        ref={tabListRef}
         role="tablist"
         aria-label={t('tabWindow.openContent')}
         data-tauri-drag-region
-        className="flex h-10 min-h-10 min-w-0 flex-1 items-center gap-0 overflow-x-auto overflow-y-hidden p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
+        className="flex h-10 min-h-10 min-w-0 flex-1 items-center gap-0.5 overflow-x-auto overflow-y-hidden p-1 [scrollbar-width:none] [&::-webkit-scrollbar]:hidden"
       >
         {tabs.map((tab, index) => {
           const selected = tab.id === displayedActiveTabId;
-          const workOpenUnavailableReason = tab.target.kind === 'file-browser' && !tab.target.activeFilePath
-              ? t('tabWindow.context.moveFolderUnavailable')
-              : null;
+          const iconOnlyTab = compactTabs && !selected;
           // 仅激活 tab 会挂载内容，全屏卡片必然在其中 ── 全屏期间激活
           // tab 换成 Agent 图标 + 对话标题，退出后回退 tab 自身标题。
           const tabFullscreen = tab.id === activeTabId && fullscreenInfo
             ? { title: fullscreenInfo.title || tab.title, typeKey: fullscreenInfo.typeKey }
             : null;
+          const displayedTabTitle = tabFullscreen?.title ?? tabLabel(tab);
           return (
             <ContextMenu
               key={tab.id}
               onOpenChange={(open) => onContextMenuOpenChange(tab.id, open)}
             >
               <ContextMenuTrigger asChild>
-                <div
+                <BrowserTabItem
                   draggable
-                  onDragStart={(event: DragEvent<HTMLDivElement>) => {
-                    if ((event.target as HTMLElement).closest('[data-tab-close]')) {
-                      event.preventDefault();
-                      return;
-                    }
-                    setDraggedTabId(tab.id);
-                    event.dataTransfer.effectAllowed = 'move';
-                    event.dataTransfer.setData('text/plain', tab.id);
+                  {...tabDragHandlers(tab.id, tabs[index + 1]?.id ?? null)}
+                  selected={selected}
+                  iconOnly={iconOnlyTab}
+                  focused={isFocused}
+                  dragging={draggedTabId === tab.id}
+                  title={displayedTabTitle}
+                  icon={tabFullscreen ? <AgentIcon typeKey={tabFullscreen.typeKey} alt="" className="h-3.5 w-3.5" /> : <BrowserTabIcon tab={tab} agentTypeKey={tabAgentTypeKey(tab)} noteIcon={noteIcons[tab.id]} />}
+                  closeLabel={t('tabWindow.closeTab', { title: displayedTabTitle })}
+                  buttonRef={(node) => {
+                    if (node) tabButtons.current.set(tab.id, node);
+                    else tabButtons.current.delete(tab.id);
                   }}
-                  onDragEnd={() => setDraggedTabId(null)}
-                  onDragOver={(event) => {
-                    if (!draggedTabId || draggedTabId === tab.id) return;
-                    event.preventDefault();
-                    event.dataTransfer.dropEffect = 'move';
-                  }}
-                  onDrop={(event) => {
-                    event.preventDefault();
-                    const sourceTabId = draggedTabId ?? event.dataTransfer.getData('text/plain');
-                    if (sourceTabId && sourceTabId !== tab.id) onReorderTab(sourceTabId, tab.id);
-                    setDraggedTabId(null);
-                  }}
-                  className={cn(
-                    'group relative flex h-8 min-w-[96px] max-w-[150px] shrink basis-[150px] select-none items-center border text-xs transition-[color,opacity] [-webkit-app-region:no-drag]',
-                    selected && isFocused
-                      ? 'browser-column-tab-active rounded-t-xl border-[var(--border)] border-b-transparent text-[var(--foreground)] shadow-[0_-1px_4px_-3px_rgb(0_0_0_/_0.08)]'
-                      : selected
-                        ? 'browser-column-tab-active rounded-t-xl border-[var(--border)] border-b-transparent text-[var(--foreground)] shadow-[0_-1px_4px_-3px_rgb(0_0_0_/_0.08)]'
-                        : 'rounded-lg border-transparent bg-transparent text-[var(--muted-foreground)] shadow-none hover:text-[var(--foreground)]',
-                    draggedTabId === tab.id && 'opacity-45',
-                  )}
-                >
-              {selected && isFocused && (
-                <span
-                  key={`${tab.id}-${activeTabId}-${isFocused ? 'focused' : 'unfocused'}`}
-                  aria-hidden="true"
-                  className="browser-column-active-tab-indicator pointer-events-none absolute left-[5%] right-[5%] top-0 h-px"
+                  onSelect={() => { void selectTab(tab.id); }}
+                  onTabKeyDown={(event) => handleKeyDown(event, index)}
+                  onClose={() => { void onCloseTab(tab.id); }}
                 />
-              )}
-              <button
-                type="button"
-                role="tab"
-                ref={(node) => {
-                  if (node) tabButtons.current.set(tab.id, node);
-                  else tabButtons.current.delete(tab.id);
-                }}
-                aria-selected={selected}
-                tabIndex={selected ? 0 : -1}
-                title={tabFullscreen?.title ?? tabLabel(tab)}
-                draggable={false}
-                onClick={() => { void selectTab(tab.id); }}
-                onKeyDown={(event) => handleKeyDown(event, index)}
-                className="min-w-0 flex-1 cursor-default select-none truncate py-2 pl-3 text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] [-webkit-app-region:no-drag]"
-              >
-                {tabFullscreen ? (
-                  <span className="flex min-w-0 items-center">
-                    <AgentIcon
-                      typeKey={tabFullscreen.typeKey}
-                      alt=""
-                      className="h-3.5 w-3.5 shrink-0"
-                    />
-                    <span className="ml-0.5 min-w-0 truncate">{tabFullscreen.title}</span>
-                  </span>
-                ) : (
-                  <span className="flex min-w-0 items-center">
-                    <span aria-hidden="true" className="flex h-4 w-4 shrink-0 items-center justify-center">
-                      {tabIcon(tab, tabAgentTypeKey(tab))}
-                    </span>
-                    <span className="ml-0.5 min-w-0 truncate">{tabLabel(tab)}</span>
-                  </span>
-                )}
-              </button>
-              <button
-                type="button"
-                draggable={false}
-                data-tab-close
-                onClick={() => onCloseTab(tab.id)}
-                className={cn(
-                  'flex h-5 shrink-0 cursor-default items-center justify-center hover:opacity-100 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] [-webkit-app-region:no-drag]',
-                  selected
-                    ? 'mr-[0.25rem] w-5 opacity-60'
-                    : 'pointer-events-none mr-0 w-0 overflow-hidden opacity-0 transition-[width,margin,opacity] duration-150 group-hover:pointer-events-auto group-hover:mr-[0.25rem] group-hover:w-5 group-hover:opacity-60',
-                )}
-                aria-label={t('tabWindow.closeTab', { title: tab.title })}
-                title={t('tabWindow.closeTab', { title: tab.title })}
-              >
-                <X className="h-3.5 w-3.5" />
-              </button>
-                </div>
               </ContextMenuTrigger>
-              <ContextMenuContent className="w-[180px] space-y-0.5 rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
-                <ContextMenuItem
-                  onClick={() => onCloseTab(tab.id)}
-                  className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
-                >
-                  <span className="leading-5">{t('tabWindow.context.close')}</span>
-                </ContextMenuItem>
-                <ContextMenuItem
-                  disabled={tabs.length <= 1}
-                  onClick={() => onCloseOtherTabs(tab.id)}
-                  className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
-                >
-                  <span className="leading-5">{t('tabWindow.context.closeOther')}</span>
-                </ContextMenuItem>
-                <ContextMenuItem
-                  disabled={index === tabs.length - 1}
-                  onClick={() => onCloseTabsToRight(tab.id)}
-                  className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
-                >
-                  <span className="leading-5">{t('tabWindow.context.closeRight')}</span>
-                </ContextMenuItem>
-                <ContextMenuItem
-                  onClick={onCloseAllTabs}
-                  className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
-                >
-                  <span className="leading-5">{t('tabWindow.context.closeAll')}</span>
-                </ContextMenuItem>
-                {tab.target.kind === 'file-browser' && tab.target.activeFilePath && /\.md$/i.test(tab.target.activeFilePath) && (
-                  <MemoEditorModeContextMenuItem
-                    filePath={tab.target.activeFilePath}
-                    onToggle={() => onToggleMemoEditorMode(tab.id)}
-                  />
-                )}
-                <div
-                  role="separator"
-                  aria-hidden="true"
-                  className={POPUP_SEPARATOR_CLASS}
-                />
-                <ContextMenuItem
-                  aria-describedby={workOpenUnavailableReason ? `move-unavailable-${tab.id}` : undefined}
-                  disabled={!canOpenBrowserColumnTargetInWorkColumn(tab.target)}
-                  onClick={() => onOpenTabInWorkColumn(tab.id)}
-                  className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
-                >
-                  <span className="leading-5">{t('tabWindow.context.openInWorkColumn')}</span>
-                </ContextMenuItem>
-                {workOpenUnavailableReason && (
-                  <p id={`move-unavailable-${tab.id}`} className="px-2 py-1 text-xs leading-5 text-[var(--muted-foreground)]">
-                    {workOpenUnavailableReason}
-                  </p>
-                )}
-              </ContextMenuContent>
+              <BrowserTabContextMenu tab={tab} index={index} tabCount={tabs.length}
+                onCloseTab={onCloseTab}
+                onCloseOtherTabs={onCloseOtherTabs}
+                onCloseTabsToRight={onCloseTabsToRight}
+                onCloseAllTabs={onCloseAllTabs}
+                onToggleMemoEditorMode={onToggleMemoEditorMode}
+                onOpenTabInWorkColumn={onOpenTabInWorkColumn}
+              />
             </ContextMenu>
           );
         })}
         <ContextMenu>
           <ContextMenuTrigger asChild>
             <div
+              {...endDropHandlers}
+              data-browser-tab-drop-end
               data-tauri-drag-region
               aria-hidden="true"
-              className="h-8 min-w-2 flex-1 self-stretch [-webkit-app-region:no-drag]"
+              style={{ height: BROWSER_TAB_SIZE.height, minWidth: BROWSER_TAB_SIZE.trailing }}
+              className="flex-1 self-stretch [-webkit-app-region:no-drag]"
             />
           </ContextMenuTrigger>
           <ContextMenuContent className="w-[180px] space-y-0.5 rounded-xl p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
             <ContextMenuItem
-              disabled={!canCreate || newConversationSelection.kind === 'none'}
+              disabled={!canCreate}
               onClick={onCreateNote}
               className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
             >
@@ -475,7 +252,7 @@ export function BrowserColumnHeader({
               <span className="leading-5">{t('tabWindow.context.newNote')}</span>
             </ContextMenuItem>
             <ContextMenuItem
-              disabled={!canCreate}
+              disabled={!canCreate || newConversationSelection.kind === 'none'}
               onClick={openAgentTypeMenu}
               className="h-7 items-center justify-start gap-0 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
             >
@@ -571,7 +348,7 @@ export function BrowserColumnHeader({
                       className="group h-7 gap-1 rounded-lg px-2 py-0 hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)]"
                     >
                       <span className="flex h-5 w-5 shrink-0 items-center justify-center text-[var(--muted-foreground)] group-hover:text-[var(--primary-foreground)]">
-                        {tabIcon(tab, tabAgentTypeKey(tab))}
+                        {<BrowserTabIcon tab={tab} agentTypeKey={tabAgentTypeKey(tab)} noteIcon={noteIcons[tab.id]} />}
                       </span>
                       <span className="min-w-0 flex-1 truncate text-left">{tabLabel(tab)}</span>
                       {selected && <Check className="h-3.5 w-3.5 shrink-0 text-[var(--brand)] group-hover:text-[var(--primary-foreground)]" />}

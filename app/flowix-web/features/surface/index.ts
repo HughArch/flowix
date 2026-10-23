@@ -6,7 +6,7 @@ export {
   type WorkColumnSurfaceDefinition,
 } from './registry';
 export { resolveWorkColumnContent } from './resolver';
-export { resolveWorkColumnPresentation } from './presentation';
+export { resolveWorkColumnPresentation, resolveWorkColumnRuntimePresentation } from './presentation';
 export type {
   CodeSurface,
   DocumentSurfaceContext,
@@ -57,6 +57,4 @@ export type {
   BrowserColumnSurfaceCapability,
   BrowserColumnSurfaceDefinition,
   BrowserColumnSurfaceKind,
-  BrowserColumnDocumentFlush,
-  BrowserColumnFlushRegistration,
 } from './browser-column-registry';

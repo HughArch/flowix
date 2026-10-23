@@ -1,4 +1,4 @@
-import { notebookRepository } from '@features/memo/services';
+import { notebookRepository } from '@features/memo/services/note-repository';
 import { getNoteQueryKey } from '@features/memo/services/note-query-key';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { useTagStore } from '@features/memo/store/tag-store';

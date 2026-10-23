@@ -2,13 +2,13 @@
 /* 代码块高亮由 shiki 内联样式负责（codeblock-shiki 扩展），无 .hljs 类消费，不再引入 highlight.js CSS 主题 */
 
 :root {
-  --document-tag-font-scale: 0.92;
+  --document-tag-font-scale: 0.875;
   --document-tag-font-size: calc(100% * var(--document-tag-font-scale));
   --document-tag-line-height: 1.2;
   --document-tag-prefix-line-height: 1;
   --document-tag-padding-block: 2px;
   --document-tag-padding-inline: 6px;
-  --document-tag-background: color-mix(in oklch, var(--document-tag-bg) 75%, transparent);
+  --document-tag-background: var(--muted);
   --flowix-text-red: var(--memo-color-red);
   --flowix-text-orange: var(--memo-color-orange);
   --flowix-text-yellow: var(--memo-color-yellow);
@@ -33,6 +33,7 @@ html[data-os="windows"] .markdown-editor .tag-node-prefix-box > .tag-node-prefix
 }
 
 .markdown-editor {
+  isolation: isolate;
   --table-header-fill: color-mix(in srgb, var(--muted) 32%, var(--background));
   display: block;
   height: 100%;
@@ -364,11 +365,15 @@ html[data-platform="mac"] .markdown-editor .editor-content {
 .memo-title-shell {
   position: relative;
   width: 100%;
+  /* Multiply a length by a number: typed length division needs Chromium 140+. */
+  --memo-title-font-size: calc(var(--editor-font-size, 16px) * 1.9);
+  --memo-title-line-height: 1.15;
 }
 
 .memo-title-properties-toggle {
   position: absolute;
-  top: 4px;
+  /* Center the 18px button on the title's first line box. */
+  top: calc((var(--memo-title-font-size) * var(--memo-title-line-height) - 18px) / 2);
   left: -1.4rem;
   display: inline-flex;
   width: 18px;
@@ -387,18 +392,16 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
 }
 
+/* Expanded properties affect color only; reveal the control on header hover
+ * or when keyboard navigation focuses the button itself. */
 .memo-document-header:hover .memo-title-properties-toggle,
-.source-document-title-row:hover .memo-title-properties-toggle,
-.memo-title-shell:focus-within .memo-title-properties-toggle,
-.memo-title-properties-toggle:focus-visible,
-.memo-title-properties-toggle[aria-expanded='true'] {
+.memo-title-properties-toggle:focus-visible {
   opacity: 1;
   pointer-events: auto;
 }
 
 .memo-title-properties-toggle:hover,
-.memo-title-properties-toggle:focus-visible,
-.memo-title-properties-toggle[aria-expanded='true'] {
+.memo-title-properties-toggle:focus-visible {
   background: var(--muted);
   color: var(--foreground);
   outline: none;
@@ -432,10 +435,10 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   caret-color: var(--brand);
   cursor: text;
   font-family: var(--editor-font-family, var(--font-sans));
-  font-size: calc(1.9rem * (var(--editor-font-size, 16px) / 16px));
+  font-size: var(--memo-title-font-size);
   font-weight: 600;
   /* Match StableCaret's glyph-relative height in the body editor. */
-  line-height: 1.15;
+  line-height: var(--memo-title-line-height);
 }
 
 .memo-title-editor::placeholder {
@@ -465,9 +468,6 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   caret-color: var(--brand);
   cursor: text;
   tab-size: 5;
-
-  /* 让标题 rem 值跟随用户设定的基准字号 */
-  --editor-scale: calc(var(--editor-font-size, 16px) / 16px);
 }
 
 /* Browser-column memo surfaces can be read-only while remaining selectable.
@@ -492,9 +492,18 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   caret-color: transparent !important;
 }
 
+.document-editor-caret-layer {
+  position: absolute;
+  inset: 0;
+  overflow: hidden;
+  pointer-events: none;
+  user-select: none;
+  z-index: 1;
+}
+
 .stable-editor-caret--document {
-  position: fixed;
-  z-index: 1000;
+  position: absolute;
+  z-index: 1;
   width: var(--editor-caret-width, 2px);
   border-radius: 999px;
   background: var(--brand);
@@ -511,15 +520,15 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   53%, 100% { opacity: 0; }
 }
 
-.markdown-editor .ProseMirror:not(.agent-composer__input-content) > :nth-child(1 of :not(.agent-thread-card, .frontmatter-property-node)):is(h1, h2, h3, h4, h5, h6, p) {
+.markdown-editor .ProseMirror:not(.agent-composer__input-content) > :nth-child(1 of :not(.agent-thread-card, .frontmatter-property-node, .editor-block-gap, .ProseMirror-gapcursor)):is(h1, h2, h3, h4, h5, h6, p) {
   padding-top: 0.8rem !important;
 }
 
-.markdown-editor .ProseMirror:not(.agent-composer__input-content) > :nth-child(1 of :not(.agent-thread-card, .frontmatter-property-node)):not(h1, h2, h3, h4, h5, h6, p) {
+.markdown-editor .ProseMirror:not(.agent-composer__input-content) > :nth-child(1 of :not(.agent-thread-card, .frontmatter-property-node, .editor-block-gap, .ProseMirror-gapcursor)):not(h1, h2, h3, h4, h5, h6, p) {
   margin-top: 0.8rem !important;
 }
 
-.markdown-editor .ProseMirror:not(.agent-composer__input-content) > .agent-thread-card:first-child:not(.agent-thread-card--fullscreen) {
+.markdown-editor .ProseMirror:not(.agent-composer__input-content) > .agent-thread-card:nth-child(1 of :not(.editor-block-gap, .ProseMirror-gapcursor)):not(.agent-thread-card--fullscreen) {
   margin-top: 0.8rem !important;
 }
 
@@ -538,23 +547,24 @@ html[data-platform="mac"] .markdown-editor .editor-content {
 }
 
 .markdown-editor .tiptap:not(.agent-composer__input-content) h1:where(:not(.agent-thread-card__message, .agent-thread-card__message *, .table-reference-node, .table-reference-node *)) {
-  font-size: calc(1.9rem * var(--editor-scale));
+  /* Keep heading scaling compatible with older Windows WebView2 runtimes. */
+  font-size: calc(var(--editor-font-size, 16px) * 1.9);
   padding-top: 1rem;
-  padding-bottom: calc(0.3rem * var(--editor-scale));
+  padding-bottom: calc(var(--editor-font-size, 16px) * 0.3);
 }
 
 .markdown-editor .tiptap:not(.agent-composer__input-content) h2:where(:not(.agent-thread-card__message, .agent-thread-card__message *, .table-reference-node, .table-reference-node *)) {
-  font-size: calc(1.5rem * var(--editor-scale));
+  font-size: calc(var(--editor-font-size, 16px) * 1.5);
   padding-top: 0.6rem;
 }
 
 .markdown-editor .tiptap:not(.agent-composer__input-content) h3:where(:not(.agent-thread-card__message, .agent-thread-card__message *, .table-reference-node, .table-reference-node *)) {
-  font-size: calc(1.2rem * var(--editor-scale));
+  font-size: calc(var(--editor-font-size, 16px) * 1.2);
   padding-top: 0.4rem;
 }
 
 .markdown-editor .tiptap:not(.agent-composer__input-content) h4:where(:not(.agent-thread-card__message, .agent-thread-card__message *, .table-reference-node, .table-reference-node *)) {
-  font-size: calc(1.05rem * var(--editor-scale));
+  font-size: calc(var(--editor-font-size, 16px) * 1.05);
 }
 
 .markdown-editor .tiptap:not(.agent-composer__input-content) h4:where(:not(.agent-thread-card__message, .agent-thread-card__message *, .table-reference-node, .table-reference-node *)),
@@ -1433,7 +1443,7 @@ html[data-platform="mac"] .markdown-editor .editor-content {
 .markdown-editor .tag-node-prefix-box:where(:not(.agent-thread-card__message, .agent-thread-card__message *)),
 .markdown-editor .tag-node-content-box:where(:not(.agent-thread-card__message, .agent-thread-card__message *)) {
   font-family: var(--editor-font-family, var(--font-sans));
-  background: var(--muted);
+  background: var(--document-tag-background);
   padding-block: 0;
 }
 
@@ -1448,8 +1458,7 @@ html[data-platform="mac"] .markdown-editor .editor-content {
 }
 
 .markdown-editor .tag-node-prefix-box > .tag-node-prefix:where(:not(.agent-thread-card__message, .agent-thread-card__message *)) {
-  /* The wrapper is 92% of the surrounding text. Restore the icon's original
-   * size while leaving its glyph, font family and line height unchanged. */
+  /* Restore the icon's original size inside the scaled tag wrapper. */
   font-size: calc(100% / var(--document-tag-font-scale));
 }
 
@@ -2928,4 +2937,56 @@ html.flowix-block-dragging * {
   .flowix-toggle-chevron::before {
     transition: none;
   }
+/* Block boundaries are selection positions, not persisted empty paragraphs. */
+.markdown-editor .editor-block-gap {
+  display: block;
+  position: relative;
+  height: 0;
+  margin: 0;
+  padding: 0;
+}
+
+/* Horizontal I-beam: insertion cue without a hover line or resize arrows.
+ * The white outline keeps it visible on light and dark card surfaces. */
+.markdown-editor .editor-block-gap__hit {
+  position: absolute;
+  z-index: 2;
+  inset: -6px 0 auto;
+  height: 12px;
+  cursor: url("data:image/svg+xml,%3Csvg%20xmlns%3D%22http%3A%2F%2Fwww.w3.org%2F2000%2Fsvg%22%20width%3D%2224%22%20height%3D%2224%22%20viewBox%3D%220%200%2024%2024%22%3E%3Cpath%20d%3D%22M4%208v8m0-4h16m0-4v8%22%20fill%3D%22none%22%20stroke%3D%22white%22%20stroke-width%3D%223%22%20stroke-linecap%3D%22round%22%2F%3E%3Cpath%20d%3D%22M4%208v8m0-4h16m0-4v8%22%20fill%3D%22none%22%20stroke%3D%22black%22%20stroke-width%3D%221.5%22%20stroke-linecap%3D%22round%22%2F%3E%3C%2Fsvg%3E") 12 12, text;
+}
+
+.markdown-editor .ProseMirror-gapcursor {
+  display: none;
+  position: relative;
+  height: 0;
+  pointer-events: none;
+}
+
+.markdown-editor .ProseMirror-focused .ProseMirror-gapcursor {
+  display: block;
+}
+
+.markdown-editor .ProseMirror-gapcursor::after {
+  content: '';
+  position: absolute;
+  /* Visual offset only: focusing a gap must not move document blocks. */
+  top: -5px;
+  left: 0;
+  right: 0;
+  border-top: 2px solid var(--brand);
+  animation: editor-block-gap-blink 1.1s steps(2, start) infinite;
+}
+
+@keyframes editor-block-gap-blink {
+  to { visibility: hidden; }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .markdown-editor .ProseMirror-gapcursor::after { animation: none; }
+}
+
+/* A card's nested composer owns focus independently of the outer editor. */
+.markdown-editor .ProseMirror:has(input:focus, textarea:focus, [contenteditable="true"]:focus) > .ProseMirror-gapcursor {
+  display: none;
 }

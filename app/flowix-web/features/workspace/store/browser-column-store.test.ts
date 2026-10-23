@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it } from 'vitest';
+import { beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   BROWSER_COLUMN_DEFAULT_SPLIT_RATIO,
   BROWSER_COLUMN_MIN_WIDTH,
@@ -89,8 +89,8 @@ describe('browser column store', () => {
 
     store.openTab(tab('note:a:replacement', 'a'), 'replace-active');
 
-    expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['memo:a']);
-    expect(useBrowserColumnStore.getState().activeTabId).toBe('memo:a');
+    expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['note:a']);
+    expect(useBrowserColumnStore.getState().activeTabId).toBe('note:a');
   });
 
   it('returns focus to the main space when the last tab closes', () => {
@@ -243,9 +243,9 @@ describe('browser column store', () => {
     store.openTab(tab('note:a', 'a'));
     store.openTab(tab('note:b', 'b'));
 
-    expect(store.removeTabsByFilePath('/notes/a.md')).toEqual(['memo:a']);
-    expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['memo:b']);
-    expect(useBrowserColumnStore.getState().activeTabId).toBe('memo:b');
+    expect(store.removeTabsByFilePath('/notes/a.md')).toEqual(['note:a']);
+    expect(useBrowserColumnStore.getState().tabs.map((item) => item.id)).toEqual(['note:b']);
+    expect(useBrowserColumnStore.getState().activeTabId).toBe('note:b');
   });
 
   it('does not restore obsolete fourth-column storage', async () => {
@@ -300,4 +300,70 @@ it('migrates v2 file and directory duplicates while retaining the active directo
     kind: 'file-browser', activeFilePath: '/workspace/a.md', folderPath: '/workspace',
     scopePath: '/workspace', restoreNotebookContext: true, fileTreeVisible: false, fileTreeWidth: 300,
   });
+});
+
+it('retains a native file ownership binding when restoring its tab', async () => {
+  const nativeTab = tab('native', 'sub/a');
+  nativeTab.target.notebookId = 'alias';
+  nativeTab.target.scopePath = '/alias-notebook';
+  localStorage.setItem('flowix-browser-column-storage', JSON.stringify({ version: 2, state: {
+    visible: true, activeTabId: 'native', tabs: [{ ...nativeTab, target: {
+      ...nativeTab.target, notebookContextPath: nativeTab.target.activeFilePath,
+    } }],
+  } }));
+  await useBrowserColumnStore.persist.rehydrate();
+  expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({
+    notebookId: 'alias', scopePath: '/alias-notebook', notebookContextPath: nativeTab.target.activeFilePath,
+  });
+});
+
+it('preserves Work focus and a hidden Browser when removing a background tab', () => {
+  const store = useBrowserColumnStore.getState();
+  store.reset(); store.openTab(tab('a')); store.openTab(tab('b')); store.setVisible(false);
+  useWorkspaceFocusStore.getState().focusHost('main-third');
+  store.closeTab('a');
+  expect(useWorkspaceFocusStore.getState().focusedHostId).toBe('main-third');
+  expect(useBrowserColumnStore.getState()).toMatchObject({ visible: false, activeTabId: 'b' });
+});
+
+it('uses the folder name when its selected file is cleared', () => {
+  const store = useBrowserColumnStore.getState();
+  store.reset(); store.openTab(tab('a'));
+  store.selectFileBrowserFile('a', null);
+  expect(useBrowserColumnStore.getState().tabs[0]).toMatchObject({ title: 'notes', target: { activeFilePath: null } });
+});
+
+it('skips durable storage for runtime-only updates and persists actual navigation', async () => {
+  const store = useBrowserColumnStore.getState();
+  store.reset();
+  store.openTab({ id: 'web', title: 'Web', icon: null, target: { kind: 'web', url: 'https://example.com/' } });
+  const write = vi.spyOn(Storage.prototype, 'setItem');
+  try {
+    store.setWebRuntime('web', { ...useBrowserColumnStore.getState().webRuntimes.web, isLoading: false });
+    store.reloadWebTab('web');
+    store.updateTabMetadata('web', { title: 'Web', icon: null });
+    expect(write).not.toHaveBeenCalled();
+    store.navigateWebTab('web', 'https://example.com/next');
+    expect(write).toHaveBeenCalledOnce();
+    await useBrowserColumnStore.persist.rehydrate();
+    expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({ url: 'https://example.com/next' });
+  } finally { write.mockRestore(); }
+});
+
+it('restores tab order and selection while dropping process-local web history', async () => {
+  const store = useBrowserColumnStore.getState();
+  store.reset();
+  for (const id of ['a', 'b', 'c']) store.openTab({ id, title: id, icon: null, target: { kind: 'web', url: `https://${id}.example/` } });
+  store.navigateWebTab('b', 'https://b.example/next');
+  store.reorderTab('a', null);
+  store.commitTab('b');
+  const persisted = localStorage.getItem('flowix-browser-column-storage')!;
+  store.reset();
+  localStorage.setItem('flowix-browser-column-storage', persisted);
+  await useBrowserColumnStore.persist.rehydrate();
+  const restored = useBrowserColumnStore.getState();
+  expect(restored.tabs.map((tab) => tab.id)).toEqual(['b', 'c', 'a']);
+  expect(restored.activeTabId).toBe('b');
+  expect(restored.tabs[0].target).toMatchObject({ url: 'https://b.example/next' });
+  expect(restored.webRuntimes).toEqual({});
 });

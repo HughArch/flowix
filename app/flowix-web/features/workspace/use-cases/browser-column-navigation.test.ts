@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
 import {
   openBrowserColumnAgentConversation,
   openBrowserColumnDroppedFile,
@@ -14,10 +14,20 @@ import { useBrowserColumnStore } from '@features/workspace/store/browser-column-
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import { useWorkspaceFocusStore } from '@features/workspace/store/workspace-focus-store';
 import {
-  registerBrowserColumnDocumentFlush,
   resetBrowserColumnCoordinator,
 } from './browser-column-coordinator';
 import { notes } from '@platform/tauri/client';
+
+import { registerWorkspaceSurfaceLifecycle } from '../store/surface-lifecycle-store';
+const registeredViews = new Set<string>();
+function registerDocumentLifecycle(tabId: string, flush: () => Promise<boolean>) {
+  registeredViews.add(tabId);
+  registerWorkspaceSurfaceLifecycle(tabId, { status: 'ready', flush });
+}
+afterEach(() => {
+  for (const tabId of registeredViews) registerWorkspaceSurfaceLifecycle(tabId, null);
+  registeredViews.clear();
+});
 
 function resetWorkspace() {
   useWorkColumnStore.setState({
@@ -166,7 +176,7 @@ describe('browser column navigation', () => {
 
   it('keeps the tab when its document cannot be flushed before moving', async () => {
     await openBrowserColumnMarkdown('/notes/plan.md');
-    registerBrowserColumnDocumentFlush(
+    registerDocumentLifecycle(
       'file:/notes/plan.md',
       vi.fn().mockResolvedValue(false),
     );
@@ -270,7 +280,7 @@ describe('browser column navigation', () => {
   it('flushes the active editor before a programmatic tab replacement', async () => {
     await openBrowserColumnMarkdown('/notes/old.md');
     const flush = vi.fn().mockResolvedValue(true);
-    registerBrowserColumnDocumentFlush('file:/notes/old.md', flush);
+    registerDocumentLifecycle('file:/notes/old.md', flush);
 
     await openBrowserColumnTarget(
       { kind: 'agent_conversation', instanceId: 'agent-2' },
@@ -285,7 +295,7 @@ describe('browser column navigation', () => {
 
   it('keeps the current tab when its editor refuses to flush', async () => {
     await openBrowserColumnMarkdown('/notes/old.md');
-    registerBrowserColumnDocumentFlush(
+    registerDocumentLifecycle(
       'file:/notes/old.md',
       vi.fn().mockResolvedValue(false),
     );
@@ -388,7 +398,7 @@ it('keeps the old file when a tree selection cannot be saved and reuses already 
   await openBrowserColumnMarkdown('/workspace/a.md');
   const first = useBrowserColumnStore.getState().activeTabId!;
   const flush = vi.fn().mockResolvedValue(false);
-  registerBrowserColumnDocumentFlush(first, flush);
+  registerDocumentLifecycle(first, flush);
   expect(await selectBrowserColumnFile(first, '/workspace/b.md')).toBeNull();
   expect(useBrowserColumnStore.getState().tabs[0].target).toMatchObject({ activeFilePath: '/workspace/a.md' });
   flush.mockResolvedValue(true);

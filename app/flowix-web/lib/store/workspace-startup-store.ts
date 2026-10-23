@@ -27,6 +27,17 @@ export const useWorkspaceStartupStore = create<{
   error: null,
 }));
 
+/** Mounting the shell and admitting business interaction are separate barriers. */
+export function isWorkspaceInteractive(state: {
+  nativePhase: NativeStartupPhase;
+  status: WorkspaceStartupStatus;
+  workbenchMounted: boolean;
+}): boolean {
+  return state.nativePhase === 'ready'
+    && (state.status === 'ready' || state.status === 'degraded')
+    && state.workbenchMounted;
+}
+
 /** Native responses and the foreground readiness promise can settle out of order. */
 export function applyNativeStartupStatus(status: StartupStatus): void {
   const stage = status.stage ?? (status.step === 'versionInitialization' || status.step === 'initialization'

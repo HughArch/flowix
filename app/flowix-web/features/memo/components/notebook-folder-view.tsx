@@ -32,6 +32,7 @@ import {
   type FileBrowserDirectoriesChangedEvent,
 } from '@platform/tauri/client';
 import { subscribe } from '@platform/tauri/event-bus';
+import { subscribeNotebookChanges } from '@platform/tauri/notebook-change-events';
 import { type Notebook } from '@features/memo/store';
 
 const FILE_BROWSER_DIRECTORIES_CHANGED_EVENT = 'file-browser-directories-changed';
@@ -64,6 +65,15 @@ export function NotebookFolderView({
     ? 0.4 : undefined;
   const refreshDirectoriesRef = useRef(tree.refreshDirectories);
   refreshDirectoriesRef.current = tree.refreshDirectories;
+
+  useEffect(() => subscribeNotebookChanges((change) => {
+    if (change.notebookId !== notebook.id || change.kind !== 'resource-updated') return;
+    tree.updateNoteMetadata(`${notebook.path}/${change.relativePath}`, {
+      icon: change.entry.icon,
+      colors: change.entry.colors,
+      favorited: change.entry.favorited,
+    });
+  }), [notebook.id, notebook.path, tree.updateNoteMetadata]);
 
   useEffect(() => subscribe<{ notebookId: string; operationId?: string }>('file-management-changed', ({ notebookId, operationId }) => {
     if (isActive && notebookId === notebook.id && !operationId) void tree.refresh();

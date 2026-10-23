@@ -444,6 +444,7 @@ describe('paste rule helpers', () => {
     expect(createManagedPasteRules().map(rule => rule.id)).toEqual([
       'files',
       'physical-memo-path',
+      'video-link',
       'markdown-mime',
       'asset-markdown-link',
       'loose-code-block',

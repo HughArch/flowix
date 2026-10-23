@@ -19,7 +19,6 @@ interface ListColumnProps {
   selectedNotebook: Notebook | null;
   noteNavigationPhase: NoteNavigationDrawerPhase;
   onCollapseMemoList: () => void;
-  onToggleNoteNavigation: () => void;
   onOpenPreferences: (tab?: string) => void;
   onPreviewEnter: () => void;
   onPreviewLeave: () => void;

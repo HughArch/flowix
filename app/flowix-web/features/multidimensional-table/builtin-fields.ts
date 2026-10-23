@@ -1,13 +1,11 @@
+import { NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID, NOTE_PATH_FIELD_ID, NOTE_SIZE_FIELD_ID, NOTE_FILTER_READONLY_FIELDS } from '@features/collection/public/note-filter-api';
+export { NOTE_CREATED_AT_FIELD_ID, NOTE_UPDATED_AT_FIELD_ID, NOTE_PATH_FIELD_ID, NOTE_SIZE_FIELD_ID, NOTE_FILENAME_FIELD_ID } from '@features/collection/public/note-filter-api';
 import type { NoteEntry } from '@platform/tauri/client';
 import { BUILTIN_PRESETS } from '@features/document/properties/presets';
 import type { TableField, TableFieldType } from './model';
 import type { I18nKey } from '@/lib/i18n';
 import { getPropertyTypeDefinition, type PropertyIconKind } from '@/lib/property-types';
 
-export const NOTE_CREATED_AT_FIELD_ID = '__note_created_at__';
-export const NOTE_UPDATED_AT_FIELD_ID = '__note_updated_at__';
-export const NOTE_PATH_FIELD_ID = '__note_relative_path__';
-export const NOTE_SIZE_FIELD_ID = '__note_size__';
 export const NOTE_ICON_FIELD_ID = '__note_icon__';
 export const NOTE_TAGS_FIELD_ID = '__note_tags__';
 export const NOTE_COLORS_FIELD_ID = '__note_colors__';
@@ -15,6 +13,7 @@ const LEGACY_NOTE_TODOS_FIELD_ID = '__note_todos__';
 export const NOTE_PINNED_FIELD_ID = '__note_pinned__';
 export const NOTE_DESCRIPTION_FIELD_ID = '__note_description__';
 export const NOTE_NAME_FIELD_ID = '__note_name__';
+
 export const NOTE_STATUS_FIELD_ID = '__note_status__';
 export const NOTE_CALENDAR_DATE_FIELD_ID = '__note_calendar_date__';
 
@@ -56,10 +55,11 @@ export const BUILTIN_TABLE_FIELDS: readonly BuiltinTableField[] = [
       defaultInFolder: false,
     }];
   }),
-  { id: NOTE_CREATED_AT_FIELD_ID, label: '创建时间', type: 'Date', iconKind: 'date', defaultInFolder: true },
-  { id: NOTE_UPDATED_AT_FIELD_ID, label: '更新时间', type: 'Date', iconKind: 'date', defaultInFolder: true },
-  { id: NOTE_PATH_FIELD_ID, label: '相对路径', type: 'Text', iconKind: 'text', defaultInFolder: true },
-  { id: NOTE_SIZE_FIELD_ID, label: '文档大小', type: 'Number', iconKind: 'number', defaultInFolder: false },
+  ...NOTE_FILTER_READONLY_FIELDS.map((field) => ({
+    ...field,
+    iconKind: getPropertyTypeDefinition(field.type).iconKind,
+    defaultInFolder: field.id !== NOTE_SIZE_FIELD_ID,
+  })),
 ];
 
 export function isBuiltinTableFieldId(id: string): boolean {

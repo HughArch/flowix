@@ -862,7 +862,9 @@ pub fn delete_notebook(
         let _change_guard = memo_file.operation_locks()
             .notebook_change(&[&id], "remove_notebook_from_registry")
             .map_err(|error| format!("NOTEBOOK_BUSY: {error}"))?;
-        let mut configs = memo_file.read_notebook_configs().unwrap_or_default();
+        let mut configs = memo_file
+            .read_notebook_configs()
+            .map_err(|error| error.to_string())?;
 
         let index = match configs.iter().position(|c| c.id == id) {
             Some(idx) => idx,
@@ -1026,7 +1028,9 @@ pub fn clear_notebooks(state: State<AppState>, app: AppHandle) -> Result<bool, S
     }
 
     let memo_file = read_lock(&state.memo_file, "memo_file");
-    let configs = memo_file.read_notebook_configs().unwrap_or_default();
+    let configs = memo_file
+        .read_notebook_configs()
+        .map_err(|error| error.to_string())?;
     let ids: Vec<&str> = configs.iter().map(|config| config.id.as_str()).collect();
     let _change_guard = if ids.is_empty() {
         None

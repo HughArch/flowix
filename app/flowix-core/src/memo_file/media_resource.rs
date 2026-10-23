@@ -482,7 +482,7 @@ impl MemoFile {
         }
         // Older notebook databases may still have the former media table.
         // Keep its shape readable until the resource catalog initialization
-        // job copies it transactionally and removes it.
+        // job copies missing targets transactionally, retaining the old table.
         let legacy_media_table_exists: bool = tx
             .query_row(
                 "SELECT EXISTS(SELECT 1 FROM sqlite_master WHERE type='table' AND name='media_resources')",
@@ -1282,13 +1282,20 @@ impl MemoFile {
         self.move_indexed_resource_path(notebook_id, old_relative_path, new_relative_path)
     }
 
-    /// Copy the previous media index into the shared catalog and remove the
-    /// legacy table in the same SQLite transaction. The job can safely retry
-    /// after a crash because either all rows and the drop commit, or none do.
+    /// Copy missing media records once, retaining the source table for recovery.
+    /// The completion receipt commits with the copied records so retries cannot
+    /// resurrect records deliberately deleted after a successful migration.
     pub fn migrate_legacy_media_resources_to_catalog(
         &self,
         notebook_id: &str,
     ) -> std::io::Result<usize> {
+        // Respect receipts written by earlier desktop versions as well as the
+        // notebook-local receipt below. Retained sources are not a live mirror.
+        if self.local_migration_completed(
+            &super::NotebookInitializationJob::MigrateResourceCatalog.key(notebook_id),
+        )? {
+            return Ok(0);
+        }
         let mut conn = self.open_notebook_db(notebook_id)?;
         let has_legacy_table: bool = conn
             .query_row(
@@ -1303,6 +1310,23 @@ impl MemoFile {
         let tx = conn
             .transaction_with_behavior(TransactionBehavior::Immediate)
             .map_err(sqlite_to_io)?;
+        tx.execute_batch(
+            "CREATE TABLE IF NOT EXISTS notebook_data_migrations (
+            notebook_id TEXT NOT NULL, migration_key TEXT NOT NULL, version INTEGER NOT NULL,
+            completed_at INTEGER NOT NULL, PRIMARY KEY(notebook_id, migration_key));",
+        )
+        .map_err(sqlite_to_io)?;
+        let completed: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM notebook_data_migrations WHERE notebook_id=?1
+                AND migration_key='legacy_media_catalog_copy_v1' AND version>=1)",
+                params![notebook_id],
+                |row| row.get(0),
+            )
+            .map_err(sqlite_to_io)?;
+        if completed {
+            return Ok(0);
+        }
         let rows = {
             let mut statement = tx
                 .prepare(
@@ -1336,6 +1360,13 @@ impl MemoFile {
         for (row_notebook_id, path, old_kind, size, modified, fingerprint, properties,
              properties_revision, missing_since, deleted_at, created_at, updated_at) in rows {
             let relative_path = normalize_resource_relative_path(&path)?;
+            let target_exists: bool = tx.query_row(
+                "SELECT EXISTS(SELECT 1 FROM resource_catalog WHERE notebook_id=?1 AND relative_path=?2)",
+                params![row_notebook_id, relative_path], |row| row.get(0),
+            ).map_err(sqlite_to_io)?;
+            if target_exists {
+                continue;
+            }
             let kind = match parse_kind(&old_kind) {
                 Some(MediaResourceKind::Image) => ResourceKind::Image,
                 Some(MediaResourceKind::Video) => ResourceKind::Video,
@@ -1351,17 +1382,7 @@ impl MemoFile {
                      fingerprint, properties, properties_revision, missing_since, deleted_at,
                      created_at, updated_at)
                  VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14)
-                 ON CONFLICT(notebook_id, relative_path) DO UPDATE SET
-                    id=excluded.id, kind=excluded.kind, format=excluded.format,
-                    is_directory=0,
-                    size_bytes=excluded.size_bytes, modified_ms=excluded.modified_ms,
-                    fingerprint=COALESCE(excluded.fingerprint, resource_catalog.fingerprint),
-                    properties=CASE WHEN excluded.properties <> '{}' OR resource_catalog.properties = '{}'
-                                    THEN excluded.properties ELSE resource_catalog.properties END,
-                    properties_revision=MAX(resource_catalog.properties_revision, excluded.properties_revision),
-                    missing_since=excluded.missing_since, deleted_at=excluded.deleted_at,
-                    created_at=MIN(resource_catalog.created_at, excluded.created_at),
-                    updated_at=MAX(resource_catalog.updated_at, excluded.updated_at)",
+                 ON CONFLICT(notebook_id, relative_path) DO NOTHING",
                 params![
                     id,
                     row_notebook_id,
@@ -1382,8 +1403,13 @@ impl MemoFile {
             .map_err(sqlite_to_io)?;
             migrated += 1;
         }
-        tx.execute("DROP TABLE media_resources", [])
-            .map_err(sqlite_to_io)?;
+        // Records and receipt must commit atomically. Keep the old table for recovery.
+        tx.execute(
+            "INSERT INTO notebook_data_migrations (notebook_id,migration_key,version,completed_at)
+            VALUES (?1,'legacy_media_catalog_copy_v1',1,?2)",
+            params![notebook_id, chrono::Utc::now().timestamp_millis()],
+        )
+        .map_err(sqlite_to_io)?;
         tx.commit().map_err(sqlite_to_io)?;
         Ok(migrated)
     }
@@ -1525,6 +1551,9 @@ impl MemoFile {
         let root = self
             .memo_base_for_notebook_id_result(notebook_id)
             .map_err(std::io::Error::other)?;
+        // Import legacy properties before a scan can manufacture placeholder
+        // target rows. Failure leaves legacy data pending and stops this scan.
+        self.migrate_legacy_media_resources_to_catalog(notebook_id)?;
         // Snapshot the catalog once. Unchanged files need neither another
         // SQLite connection nor a media fingerprint read on every launch.
         let existing: HashMap<String, (String, String, bool, u64, u64, bool)> = {
@@ -1713,6 +1742,152 @@ mod tests {
             media_resource_id("nb_two", "photos/summer.png").unwrap()
         );
         assert!(media_resource_id("nb_one", "../summer.png").is_err());
+    }
+
+    #[test]
+    fn legacy_media_migration_preserves_existing_targets_and_retains_sources() {
+        let (memo, _temp, root) = fixture();
+        fs::write(root.join("kept.png"), b"image").unwrap();
+        let resource = memo
+            .ensure_media_resource(
+                "nb_media_test",
+                "kept.png",
+                MediaResourceKind::Image,
+                &root.join("kept.png"),
+            )
+            .unwrap();
+        let conn = memo.open_notebook_db("nb_media_test").unwrap();
+        conn.execute_batch(
+            "CREATE TABLE media_resources AS SELECT id, notebook_id, relative_path, kind,
+            size_bytes, modified_ms, fingerprint, properties, properties_revision, missing_since,
+            deleted_at, created_at, updated_at FROM resource_catalog;
+            UPDATE media_resources SET properties='{\"caption\":\"legacy\"}';",
+        )
+        .unwrap();
+        memo.update_media_resource_properties(
+            "nb_media_test",
+            &resource.id,
+            &serde_json::json!({"caption":"current"}),
+        )
+        .unwrap();
+        assert_eq!(
+            memo.migrate_legacy_media_resources_to_catalog("nb_media_test")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            memo.read_media_resource("nb_media_test", "kept.png")
+                .unwrap()
+                .unwrap()
+                .properties["caption"],
+            "current"
+        );
+        conn.execute("DELETE FROM resource_catalog", []).unwrap();
+        assert_eq!(
+            memo.migrate_legacy_media_resources_to_catalog("nb_media_test")
+                .unwrap(),
+            0
+        );
+        assert!(memo
+            .read_media_resource("nb_media_test", "kept.png")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            memo.migrate_legacy_media_resources_to_catalog("nb_media_test")
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM media_resources", [], |row| row
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn resource_scan_imports_legacy_properties_before_creating_targets() {
+        let (memo, _temp, root) = fixture();
+        fs::write(root.join("photo.png"), b"image").unwrap();
+        let conn = memo.open_notebook_db("nb_media_test").unwrap();
+        conn.execute_batch("CREATE TABLE media_resources (id TEXT, notebook_id TEXT, relative_path TEXT, kind TEXT,
+            size_bytes INTEGER, modified_ms INTEGER, fingerprint TEXT, properties TEXT, properties_revision INTEGER,
+            missing_since INTEGER, deleted_at INTEGER, created_at INTEGER, updated_at INTEGER);
+            INSERT INTO media_resources VALUES ('old-id','nb_media_test','photo.png','image',5,1,NULL,
+                '{\"caption\":\"legacy metadata\"}',3,NULL,NULL,1,1);").unwrap();
+        memo.reconcile_resources("nb_media_test").unwrap();
+        let after = memo
+            .read_media_resource("nb_media_test", "photo.png")
+            .unwrap()
+            .unwrap();
+        assert_eq!(after.properties["caption"], "legacy metadata");
+        assert_eq!(after.properties_revision, 3);
+        conn.execute("DELETE FROM resource_catalog", []).unwrap();
+        assert_eq!(
+            memo.migrate_legacy_media_resources_to_catalog("nb_media_test")
+                .unwrap(),
+            0
+        );
+        assert!(memo
+            .read_media_resource("nb_media_test", "photo.png")
+            .unwrap()
+            .is_none());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM media_resources", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn failed_legacy_copy_rolls_back_records_and_receipt_for_retry() {
+        let (memo, _temp, _root) = fixture();
+        let conn = memo.open_notebook_db("nb_media_test").unwrap();
+        conn.execute_batch("CREATE TABLE media_resources (id TEXT, notebook_id TEXT, relative_path TEXT, kind TEXT,
+            size_bytes INTEGER, modified_ms INTEGER, fingerprint TEXT, properties TEXT, properties_revision INTEGER,
+            missing_since INTEGER, deleted_at INTEGER, created_at INTEGER, updated_at INTEGER);
+            INSERT INTO media_resources VALUES ('one','nb_media_test','a.png','image',5,1,NULL,'{}',0,NULL,NULL,1,1);
+            INSERT INTO media_resources VALUES ('two','nb_media_test','z.unknown','invalid',5,1,NULL,'{}',0,NULL,NULL,1,1);").unwrap();
+        assert!(memo
+            .migrate_legacy_media_resources_to_catalog("nb_media_test")
+            .is_err());
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM resource_catalog", [], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            0
+        );
+        conn.execute("UPDATE media_resources SET kind='image' WHERE id='two'", [])
+            .unwrap();
+        assert_eq!(
+            memo.migrate_legacy_media_resources_to_catalog("nb_media_test")
+                .unwrap(),
+            2
+        );
+        conn.execute("DELETE FROM resource_catalog", []).unwrap();
+        assert_eq!(
+            memo.migrate_legacy_media_resources_to_catalog("nb_media_test")
+                .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn previous_desktop_completion_receipt_does_not_replay_retained_media() {
+        let (memo, _temp, _root) = fixture();
+        let conn = memo.open_notebook_db("nb_media_test").unwrap();
+        conn.execute_batch("CREATE TABLE media_resources (unrecognized_legacy_shape TEXT);")
+            .unwrap();
+        memo.mark_local_migration_completed(
+            &super::super::NotebookInitializationJob::MigrateResourceCatalog.key("nb_media_test"),
+        )
+        .unwrap();
+        assert_eq!(
+            memo.migrate_legacy_media_resources_to_catalog("nb_media_test")
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

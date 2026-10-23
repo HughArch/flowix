@@ -156,6 +156,22 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
   // 请求代际: 每次 folderPath 变化 / 手动刷新自增, 迟到响应按代丢弃。
   const generationRef = useRef(0);
   const mountedRef = useRef(true);
+  // Retain updates only for reads already in flight. Later reads remain authoritative.
+  const metadataReadsRef = useRef(new Set<Map<string, NonNullable<DocTreeItem['memoMeta']>>>());
+  const readWithLatestMetadata = useCallback(async <T extends DocTreeItem[] | null>(read: () => Promise<T>): Promise<T> => {
+    const updates = new Map<string, NonNullable<DocTreeItem['memoMeta']>>();
+    metadataReadsRef.current.add(updates);
+    try {
+      const items = await read();
+      if (!items || updates.size === 0) return items;
+      return items.map((item) => {
+        const memoMeta = updates.get(canonicalPath(item.fullPath));
+        return memoMeta && item.type === 'document' ? { ...item, memoMeta } : item;
+      }) as T;
+    } finally {
+      metadataReadsRef.current.delete(updates);
+    }
+  }, []);
   const directoryRefreshesRef = useRef(new Map<string, Promise<void>>());
   const directoryRefreshSequenceRef = useRef(new Map<string, number>());
   const lastRefreshAtRef = useRef(new Map<string, number>());
@@ -373,7 +389,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
     setLoadingDirectories(new Set());
     setDirectoryErrors(new Set());
     try {
-      const items = await files.getTree(folderPath);
+      const items = await readWithLatestMetadata(() => files.getTree(folderPath));
       if (!mountedRef.current || generation !== generationRef.current) return;
       if (items === null) {
         setRootChildren([]);
@@ -400,7 +416,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
         setLoadedRootPath(canonicalDirectoryPath(folderPath));
       }
     }
-  }, [folderPath]);
+  }, [folderPath, readWithLatestMetadata]);
 
   const autoLoadKey = rootKey;
   const lastAutoLoadKeyRef = useRef<string | null>(null);
@@ -429,7 +445,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
     });
 
     const generation = generationRef.current;
-    const request = files.getDirChildren(dirPath)
+    const request = readWithLatestMetadata(() => files.getDirChildren(dirPath))
       .then((children) => {
         if (
           !mountedRef.current
@@ -497,7 +513,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
       },
     );
     return request;
-  }, []);
+  }, [readWithLatestMetadata]);
 
   const retryDirectory = useCallback((dirPath: string) => {
     return refreshDirectory(dirPath, true);
@@ -568,7 +584,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
     const requestSequence = rootRefreshSequenceRef.current + 1;
     rootRefreshSequenceRef.current = requestSequence;
     const generation = generationRef.current;
-    const request = files.getTree(folderPath)
+    const request = readWithLatestMetadata(() => files.getTree(folderPath))
       .then((items) => {
         if (
           !mountedRef.current
@@ -615,7 +631,7 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
       },
     );
     return request;
-  }, [folderPath, rootKey]);
+  }, [folderPath, rootKey, readWithLatestMetadata]);
 
   /** 局部刷新某个目录的子级 (新建/删除/重命名后调用)。 */
   const refresh = useCallback(async (dirPath?: string) => {
@@ -728,6 +744,31 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
     }
   }, [rebasePath, refresh, refreshDirectoriesNow]);
 
+  /** Apply indexed note metadata without rereading a directory or requiring a list card. */
+  const updateNoteMetadata = useCallback((path: string, memoMeta: NonNullable<DocTreeItem['memoMeta']>) => {
+    const key = canonicalPath(path);
+    if (!isPathAtOrBelow(key, rootKey)) return;
+    for (const updates of metadataReadsRef.current) updates.set(key, memoMeta);
+    const patch = (item: DocTreeItem): DocTreeItem => {
+      if (canonicalPath(item.fullPath) === key && item.type === 'document') return { ...item, memoMeta };
+      if (!item.children?.some((child) => canonicalPath(child.fullPath) === key)) return item;
+      return { ...item, children: item.children.map(patch) };
+    };
+    setRootChildren((items) => {
+      const next = items.map(patch);
+      return next.some((item, index) => item !== items[index]) ? next : items;
+    });
+    setNodes((previous) => {
+      if (!previous.has(key)) return previous;
+      const next = new Map(previous);
+      for (const [nodeKey, item] of previous) {
+        const updated = patch(item);
+        if (updated !== item) next.set(nodeKey, updated);
+      }
+      return next;
+    });
+  }, [rootKey]);
+
   const state: FolderTreeState = useMemo(
     () => ({ rootChildren, nodes, expanded, loading, error, loadingDirectories, directoryErrors }),
     [rootChildren, nodes, expanded, loading, error, loadingDirectories, directoryErrors],
@@ -746,7 +787,8 @@ export function useFolderTree(folderPath: string, options?: FolderTreeOptions) {
     rebasePath,
     renameFolder,
     ignoreCollectionPathEvents,
-  }), [ignoreCollectionPathEvents, loadedRootPath, state, toggle, expandTo, collapseAll, refresh, refreshDirectories, loadRoot, retryDirectory, rebasePath, renameFolder]);
+    updateNoteMetadata,
+  }), [updateNoteMetadata,ignoreCollectionPathEvents, loadedRootPath, state, toggle, expandTo, collapseAll, refresh, refreshDirectories, loadRoot, retryDirectory, rebasePath, renameFolder]);
 }
 
 export type FolderTreeController = ReturnType<typeof useFolderTree>;
@@ -809,7 +851,10 @@ function compareTreeItems(sort: FolderTreeSort, a: DocTreeItem, b: DocTreeItem):
     || a.fullPath.localeCompare(b.fullPath);
 }
 
-export function flattenVisibleTree(state: FolderTreeState, sort: FolderTreeSort = 'createdAt'): VisibleTreeNode[] {
+export function flattenVisibleTree(
+  state: Pick<FolderTreeState, 'rootChildren' | 'nodes' | 'expanded'>,
+  sort: FolderTreeSort = 'createdAt',
+): VisibleTreeNode[] {
   const out: VisibleTreeNode[] = [];
   const walk = (items: DocTreeItem[], depth: number) => {
     for (const item of [...items].sort((a, b) => compareTreeItems(sort, a, b))) {

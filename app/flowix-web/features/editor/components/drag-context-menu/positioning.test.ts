@@ -51,7 +51,7 @@ describe('text-block text-line coordinates', () => {
     attrs: { level: 1 },
   } as unknown as Parameters<typeof textBlockContentY>[1]
 
-  it('anchors headings to the first text line, including heading padding', () => {
+  it('centers the handle on a heading first-line caret box', () => {
     const view = {
       coordsAtPos: (pos: number) => {
         expect(pos).toBe(8)
@@ -59,11 +59,11 @@ describe('text-block text-line coordinates', () => {
       },
     } as unknown as Parameters<typeof textBlockContentY>[0]
 
-    expect(textBlockContentY(view, headingInfo, 100, 0)).toBe(140)
-    expect(textBlockContentY(view, headingInfo, 136, 36)).toBe(140)
+    expect(textBlockContentY(view, headingInfo, 100, 0)).toBe(145.5)
+    expect(textBlockContentY(view, headingInfo, 136, 36)).toBe(145.5)
   })
 
-  it('anchors paragraphs to the measured text line, including top padding', () => {
+  it('centers the handle on a paragraph first-line caret box', () => {
     const view = {
       coordsAtPos: (pos: number) => {
         expect(pos).toBe(8)
@@ -71,7 +71,7 @@ describe('text-block text-line coordinates', () => {
       },
     } as unknown as Parameters<typeof textBlockContentY>[0]
 
-    expect(textBlockContentY(view, { ...headingInfo, typeName: 'paragraph' }, 100, 0)).toBe(50)
+    expect(textBlockContentY(view, { ...headingInfo, typeName: 'paragraph' }, 100, 0)).toBe(54.5)
   })
 
   it('returns null for non-text blocks', () => {
@@ -79,14 +79,14 @@ describe('text-block text-line coordinates', () => {
     expect(textBlockContentY(view, { ...headingInfo, typeName: 'image' }, 100, 0)).toBeNull()
   })
 
-  it('only nudges H1-H3', () => {
+  it('centers the handle on the first line for every heading level', () => {
     const view = {
       coordsAtPos: () => ({ top: 236, bottom: 273, left: 0, right: 0 }),
     } as unknown as Parameters<typeof textBlockContentY>[0]
 
-    expect(textBlockContentY(view, { ...headingInfo, attrs: { level: 2 } }, 100, 0)).toBe(139)
-    expect(textBlockContentY(view, { ...headingInfo, attrs: { level: 3 } }, 100, 0)).toBe(138)
-    expect(textBlockContentY(view, { ...headingInfo, attrs: { level: 4 } }, 100, 0)).toBe(136)
+    expect(textBlockContentY(view, { ...headingInfo, attrs: { level: 2 } }, 100, 0)).toBe(145.5)
+    expect(textBlockContentY(view, { ...headingInfo, attrs: { level: 3 } }, 100, 0)).toBe(145.5)
+    expect(textBlockContentY(view, { ...headingInfo, attrs: { level: 4 } }, 100, 0)).toBe(145.5)
   })
 
   it('falls back when the PM view cannot resolve the position', () => {

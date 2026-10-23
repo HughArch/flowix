@@ -46,7 +46,7 @@ const testState = vi.hoisted(() => ({
   }),
 }));
 
-vi.mock('@features/memo/services', () => ({
+vi.mock('@features/memo/services/note-repository', () => ({
   notebookRepository: {
     list: testState.listNotebooks,
   },

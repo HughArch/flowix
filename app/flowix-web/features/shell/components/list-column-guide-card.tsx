@@ -19,14 +19,14 @@ const PAGES = [
     description: 'memo.guide.fileTree.description',
   },
   {
-    view: 'cards',
-    title: 'memo.guide.notes.title',
-    description: 'memo.guide.notes.description',
-  },
-  {
     view: 'conversations',
     title: 'memo.guide.conversations.title',
     description: 'memo.guide.conversations.description',
+  },
+  {
+    view: 'cards',
+    title: 'memo.guide.notes.title',
+    description: 'memo.guide.notes.description',
   },
 ] satisfies ReadonlyArray<{
   view: MemoListViewTab;
@@ -105,7 +105,7 @@ export function ListColumnGuideCard({
     selectPage((pageIndex + 1) % PAGES.length);
   };
 
-  if (dismissed) return null;
+  if (dismissed || !page) return null;
 
   return (
     <div className="pointer-events-none absolute inset-x-0 bottom-3 z-40 flex justify-center px-3">

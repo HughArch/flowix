@@ -116,11 +116,17 @@ pub fn with_database_rebuild<T>(
 ) -> io::Result<T> {
     // Serialize initialization and repair across processes. Ordinary database
     // access must not call this helper or rename storage held by other readers.
-    if let Some(parent) = path.parent() { ensure_storage_directory(parent)?; }
+    if let Some(parent) = path.parent() {
+        ensure_storage_directory(parent)?;
+    }
     let mut lock_path = path.as_os_str().to_os_string();
     lock_path.push(".rebuild.lock");
-    let lock = fs::OpenOptions::new().create(true).truncate(false)
-        .read(true).write(true).open(PathBuf::from(lock_path))?;
+    let lock = fs::OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .open(PathBuf::from(lock_path))?;
     fs2::FileExt::lock_exclusive(&lock)?;
     match fs::symlink_metadata(path) {
         Ok(metadata) if !metadata.file_type().is_file() => {
@@ -154,7 +160,9 @@ pub fn read_or_create_json<T>(path: &Path, default: impl FnOnce() -> T) -> io::R
 where
     T: serde::de::DeserializeOwned + serde::Serialize,
 {
-    if let Some(parent) = path.parent() { ensure_storage_directory(parent)?; }
+    if let Some(parent) = path.parent() {
+        ensure_storage_directory(parent)?;
+    }
     match fs::read(path) {
         Ok(bytes) => match serde_json::from_slice(&bytes) {
             Ok(value) => return Ok(value),
@@ -220,41 +228,296 @@ mod storage_rebuild_tests {
     }
 
     #[test]
-    fn invalid_registry_rebuilds_and_legacy_input_cannot_block_startup() {
+    fn invalid_registry_is_never_replaced_with_an_empty_database() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join("db")).unwrap();
-        fs::write(temp.path().join("db/local.db"), b"broken registry").unwrap();
-        fs::write(temp.path().join("db/index.db"), b"broken legacy").unwrap();
+        let path = temp.path().join("db/local.db");
+        fs::write(&path, b"broken registry").unwrap();
+        fs::write(temp.path().join("local.db"), b"legacy input").unwrap();
+        let memo = MemoFile::new(temp.path().to_path_buf());
+        for _ in 0..2 {
+            assert!(memo.initialize_registry_storage().is_err());
+            assert_eq!(fs::read(&path).unwrap(), b"broken registry");
+            assert_eq!(
+                fs::read(temp.path().join("local.db")).unwrap(),
+                b"legacy input"
+            );
+            assert!(!temp.path().join("db/rebuild-backups").exists());
+        }
+    }
+
+    #[test]
+    fn malformed_registry_schema_rolls_back_without_losing_rows() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("db")).unwrap();
+        let path = temp.path().join("db/local.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notebooks(id TEXT); INSERT INTO notebooks VALUES ('keep');",
+        )
+        .unwrap();
+        drop(conn);
+        let memo = MemoFile::new(temp.path().to_path_buf());
+        assert!(memo.initialize_registry_storage().is_err());
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        assert_eq!(
+            conn.query_row("SELECT id FROM notebooks", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "keep"
+        );
+        let columns: i64 = conn
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('notebooks')",
+                [],
+                |r| r.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 1, "partially added columns must roll back");
+        assert!(!path.parent().unwrap().join("rebuild-backups").exists());
+    }
+
+    #[test]
+    fn missing_previously_initialized_registry_is_not_recreated() {
+        let temp = tempfile::tempdir().unwrap();
         let memo = MemoFile::new(temp.path().to_path_buf());
         memo.initialize_registry_storage().unwrap();
-        assert!(memo.read_notebook_configs().unwrap().is_empty());
-        assert!(memo.read_notebook_workspace().unwrap().notebooks.is_empty());
-        let backups = fs::read_dir(temp.path().join("db/rebuild-backups"))
-            .unwrap()
-            .count();
-        assert_eq!(backups, 1);
+        fs::remove_dir_all(temp.path().join("db")).unwrap();
+        assert!(memo.initialize_current_registry_storage().is_err());
+        assert!(!memo.registry_db_path().exists());
+    }
+
+    #[test]
+    fn legacy_registry_snapshot_preserves_wal_and_target_wins_on_retry() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("local.db");
+        let conn = rusqlite::Connection::open(&legacy).unwrap();
+        conn.execute_batch("PRAGMA journal_mode=WAL; PRAGMA wal_autocheckpoint=0;
+            CREATE TABLE notebooks (id TEXT PRIMARY KEY, name TEXT NOT NULL, icon TEXT, path TEXT UNIQUE NOT NULL,
+            is_default INTEGER NOT NULL, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
+            INSERT INTO notebooks VALUES ('keep', 'Original', 'icon', '/offline/notes', 1, 123, 456);").unwrap();
+        let memo = MemoFile::new(temp.path().to_path_buf());
         memo.initialize_registry_storage().unwrap();
+        assert!(legacy.exists());
+        assert!(temp.path().join("local.db-wal").exists());
+        let rows = memo.read_notebook_configs().unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, "keep");
+        assert_eq!(rows[0].path, "/offline/notes");
+        assert_eq!(rows[0].icon.as_deref(), Some("icon"));
+        assert_eq!(rows[0].created_at, 123);
+        conn.execute("UPDATE notebooks SET name='stale source'", [])
+            .unwrap();
+        memo.initialize_registry_storage().unwrap();
+        assert_eq!(memo.read_notebook_configs().unwrap()[0].name, "Original");
+        fs::remove_file(memo.registry_db_path()).unwrap();
+        assert!(
+            memo.initialize_registry_storage().is_err(),
+            "do not restore a stale legacy registry over a lost initialized target"
+        );
+        assert!(!memo.registry_db_path().exists());
+        assert!(legacy.exists());
+    }
+
+    #[test]
+    fn migration_rejects_changes_to_existing_notebook_fields() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("db")).unwrap();
+        let path = temp.path().join("db/local.db");
+        let conn = rusqlite::Connection::open(&path).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notebooks (id TEXT PRIMARY KEY, name TEXT, icon TEXT, path TEXT,
+            is_default INTEGER, created_at INTEGER, updated_at INTEGER);
+            INSERT INTO notebooks VALUES ('keep','Original',NULL,'/offline',1,123,456);
+            CREATE TRIGGER unexpected_migration_effect AFTER UPDATE ON notebooks BEGIN
+                UPDATE notebooks SET name='unexpected change' WHERE id=NEW.id;
+            END;",
+        )
+        .unwrap();
+        drop(conn);
+        let memo = MemoFile::new(temp.path().to_path_buf());
+        let error = memo.initialize_current_registry_storage().unwrap_err();
+        assert!(error.to_string().contains("changed existing registry data"));
+        let conn = rusqlite::Connection::open(path).unwrap();
         assert_eq!(
-            fs::read_dir(temp.path().join("db/rebuild-backups"))
-                .unwrap()
-                .count(),
+            conn.query_row("SELECT name FROM notebooks", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "Original"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('notebooks') WHERE name='sort'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert!(temp.path().join("db/registry-backups").is_dir());
+    }
+
+    #[test]
+    fn broken_optional_setup_table_does_not_replace_notebook_registry() {
+        let temp = tempfile::tempdir().unwrap();
+        let memo = MemoFile::new(temp.path().to_path_buf());
+        memo.initialize_registry_storage().unwrap();
+        let conn = rusqlite::Connection::open(memo.registry_db_path()).unwrap();
+        conn.execute_batch(
+            "INSERT INTO notebooks (id,name,path,is_default,sort,pinned,created_at,updated_at)
+            VALUES ('keep','Name','/offline',1,30,1,123,456);
+            DROP TABLE notebook_setup_jobs;
+            CREATE TABLE notebook_setup_jobs (notebook_id TEXT);",
+        )
+        .unwrap();
+        drop(conn);
+        for _ in 0..2 {
+            memo.initialize_current_registry_storage().unwrap();
+            let rows = memo.read_notebook_configs().unwrap();
+            assert_eq!(rows.len(), 1);
+            assert_eq!(rows[0].id, "keep");
+            assert_eq!(rows[0].path, "/offline");
+            assert_eq!(rows[0].sort, 30);
+            assert!(memo.read_notebook_pin_states().unwrap().contains("keep"));
+        }
+    }
+
+    #[test]
+    fn repeated_optional_upgrade_failure_reuses_a_validated_registry_backup() {
+        let temp = tempfile::tempdir().unwrap();
+        let memo = MemoFile::new(temp.path().to_path_buf());
+        memo.initialize_registry_storage().unwrap();
+        let conn = rusqlite::Connection::open(memo.registry_db_path()).unwrap();
+        conn.execute_batch(
+            "INSERT INTO notebooks (id,name,path,is_default,sort,pinned,created_at,updated_at)
+            VALUES ('keep','Original','/offline',1,30,1,123,456);
+            DROP TABLE notebook_setup_jobs; CREATE TABLE notebook_setup_jobs(notebook_id TEXT);",
+        )
+        .unwrap();
+        for _ in 0..3 {
+            memo.initialize_current_registry_storage().unwrap();
+        }
+        let backups = temp.path().join("db/registry-backups");
+        assert_eq!(fs::read_dir(&backups).unwrap().count(), 1);
+        // A changed identity state requires a separate preserved snapshot.
+        conn.execute("UPDATE notebooks SET name='Changed'", [])
+            .unwrap();
+        memo.initialize_current_registry_storage().unwrap();
+        assert_eq!(fs::read_dir(&backups).unwrap().count(), 2);
+        assert_eq!(memo.read_notebook_configs().unwrap()[0].name, "Changed");
+    }
+
+    #[test]
+    fn unavailable_optional_backup_does_not_block_registry_access() {
+        let temp = tempfile::tempdir().unwrap();
+        let memo = MemoFile::new(temp.path().to_path_buf());
+        memo.initialize_registry_storage().unwrap();
+        let conn = rusqlite::Connection::open(memo.registry_db_path()).unwrap();
+        conn.execute_batch(
+            "INSERT INTO notebooks (id,name,path,is_default,sort,pinned,created_at,updated_at)
+            VALUES ('keep','Original','/offline',1,30,1,123,456);
+            DROP TABLE notebook_setup_jobs; CREATE TABLE notebook_setup_jobs(notebook_id TEXT);",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("db/registry-backups"),
+            b"blocked backup directory",
+        )
+        .unwrap();
+        memo.initialize_current_registry_storage().unwrap();
+        assert_eq!(memo.read_notebook_configs().unwrap()[0].id, "keep");
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('notebook_setup_jobs')",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
             1
         );
     }
 
     #[test]
-    fn malformed_registry_schema_is_recreated() {
+    fn unavailable_backup_blocks_core_schema_changes_without_modifying_notebooks() {
+        let temp = tempfile::tempdir().unwrap();
+        fs::create_dir(temp.path().join("db")).unwrap();
+        let memo = MemoFile::new(temp.path().to_path_buf());
+        let conn = rusqlite::Connection::open(memo.registry_db_path()).unwrap();
+        conn.execute_batch(
+            "CREATE TABLE notebooks (id TEXT PRIMARY KEY,name TEXT,icon TEXT,path TEXT,
+            is_default INTEGER,created_at INTEGER,updated_at INTEGER);
+            INSERT INTO notebooks VALUES ('keep','Original',NULL,'/offline',1,123,456);",
+        )
+        .unwrap();
+        fs::write(
+            temp.path().join("db/registry-backups"),
+            b"blocked backup directory",
+        )
+        .unwrap();
+        assert!(memo.initialize_current_registry_storage().is_err());
+        assert_eq!(
+            conn.query_row("SELECT name FROM notebooks", [], |r| r.get::<_, String>(0))
+                .unwrap(),
+            "Original"
+        );
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('notebooks') WHERE name='sort'",
+                [],
+                |r| r.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+    }
+
+    #[test]
+    fn unrelated_existing_database_is_not_initialized_as_an_empty_registry() {
         let temp = tempfile::tempdir().unwrap();
         fs::create_dir(temp.path().join("db")).unwrap();
         let path = temp.path().join("db/local.db");
         let conn = rusqlite::Connection::open(&path).unwrap();
-        conn.execute_batch("CREATE TABLE notebooks(id TEXT);")
-            .unwrap();
+        conn.execute_batch(
+            "CREATE TABLE retained (value TEXT); INSERT INTO retained VALUES ('keep');",
+        )
+        .unwrap();
         drop(conn);
         let memo = MemoFile::new(temp.path().to_path_buf());
-        memo.initialize_registry_storage().unwrap();
-        assert!(memo.read_notebook_configs().unwrap().is_empty());
-        assert!(path.parent().unwrap().join("rebuild-backups").exists());
+        assert!(memo.initialize_current_registry_storage().is_err());
+        let conn = rusqlite::Connection::open(path).unwrap();
+        assert_eq!(
+            conn.query_row(
+                "SELECT COUNT(*) FROM sqlite_master WHERE name='notebooks'",
+                [],
+                |row| row.get::<_, i64>(0)
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(
+            conn.query_row("SELECT value FROM retained", [], |row| row
+                .get::<_, String>(0))
+                .unwrap(),
+            "keep"
+        );
+    }
+
+    #[test]
+    fn corrupt_legacy_registry_and_orphan_wal_require_recovery() {
+        let temp = tempfile::tempdir().unwrap();
+        let legacy = temp.path().join("local.db");
+        fs::write(&legacy, b"broken source").unwrap();
+        let memo = MemoFile::new(temp.path().to_path_buf());
+        assert!(memo.initialize_registry_storage().is_err());
+        assert_eq!(fs::read(&legacy).unwrap(), b"broken source");
+        assert!(!memo.registry_db_path().exists());
+        fs::remove_file(&legacy).unwrap();
+        fs::write(temp.path().join("db/local.db-wal"), b"preserve wal").unwrap();
+        assert!(memo.initialize_registry_storage().is_err());
+        assert_eq!(
+            fs::read(temp.path().join("db/local.db-wal")).unwrap(),
+            b"preserve wal"
+        );
+        assert!(!memo.registry_db_path().exists());
     }
 
     #[test]

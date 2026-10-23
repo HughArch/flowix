@@ -6,7 +6,7 @@ import { DocumentContainer } from '@features/document/components/document-contai
 import { PluginArtifactRenderer } from '@features/plugin/plugin-artifact-renderer';
 import { normalizePluginArtifactRenderer, type PluginArtifactRendererId } from '@features/plugin/plugin-note';
 import { extractFrontmatter } from '@features/document/properties/frontmatter-model';
-import { workspaceSurfaceAppearance, workspaceSurfaceCapabilities } from '@features/workspace/public/surface-api';
+import { workspaceSurfaceContentPresentation } from '@features/workspace/public/surface-api';
 import type { FileDisplayIdentity } from '@/lib/file-display-registry';
 import type { SurfacePresentationUpdate } from '@features/workspace/model/surface-contract';
 import type { SurfaceLifecycle } from '@features/workspace/model/surface-contract';
@@ -46,11 +46,11 @@ export function MarkdownDocumentSurface({
   const flushRef = useRef<Parameters<NonNullable<DocumentProps['onFlushReady']>>[0]>(null);
   const currentPath = useRef(fileIdentity.path);
   currentPath.current = fileIdentity.path;
+  const lifecycleDocumentProps = useWorkspaceSurfaceLifecycleBridge(documentProps, registerLifecycle);
   const onFlushReady = useCallback<NonNullable<DocumentProps['onFlushReady']>>((flush, discard) => {
     flushRef.current = flush;
-    documentProps.onFlushReady?.(flush, discard);
-  }, [documentProps.onFlushReady]);
-  const lifecycleDocumentProps = useWorkspaceSurfaceLifecycleBridge(documentProps, registerLifecycle);
+    lifecycleDocumentProps.onFlushReady?.(flush, discard);
+  }, [lifecycleDocumentProps.onFlushReady]);
 
   useEffect(() => {
     let cancelled = false;
@@ -71,10 +71,7 @@ export function MarkdownDocumentSurface({
 
   useEffect(() => {
     const previewKind = preview && pluginRenderer === 'markmap' ? 'mindmap' : preview ? 'plugin-artifact' : 'file-markdown';
-    reportPresentation?.({
-      appearance: workspaceSurfaceAppearance(previewKind),
-      capabilities: workspaceSurfaceCapabilities(previewKind),
-    });
+    reportPresentation?.(workspaceSurfaceContentPresentation(previewKind));
   }, [pluginRenderer, preview, reportPresentation]);
 
   return <div className="relative flex h-full min-h-0 flex-col">

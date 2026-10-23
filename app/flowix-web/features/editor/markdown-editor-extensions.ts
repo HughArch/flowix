@@ -1,3 +1,4 @@
+import { VideoEmbed } from './extensions/video-embed/node';
 import { Editor, Extension, renderNestedMarkdownContent } from '@tiptap/core';
 import type { JSONContent } from '@tiptap/core';
 import { NodeSelection } from '@tiptap/pm/state';
@@ -33,6 +34,7 @@ import { TabAgentRun } from '@features/editor/extensions/tab-agent-run';
 import { TabCharacter } from '@features/editor/extensions/tab-character';
 import { tableNeedsHtml } from '@features/editor/extensions/table/flowix-table';
 import { createTablePlugin } from '@features/editor/extensions/table/table-plugin';
+import { BlockGapCursor } from './extensions/block-gap-cursor';
 import { StableCaret } from '@features/editor/extensions/stable-caret';
 import { ColumnsEditorNode, ColumnEditorNode } from '@features/editor/extensions/columns/columns-editor';
 import { CalloutEditorNode } from '@features/editor/extensions/callout/callout-editor';
@@ -309,11 +311,19 @@ export function createMarkdownEditorExtensions({
   getPlaceholder,
   getHeadingFoldLabels,
 }: MarkdownEditorExtensionContext, codeBlockExtension = CodeBlockShikiBase) {
+  // Event order follows extension priority, not this array's visual order:
+  // gap input normalization (1200) > slash menu (1150) > managed paste (1100)
+  // > editing handlers such as TabCharacter (1000) > gap navigation (50).
+  // Keep paste on its existing pipeline; the host's editorProps handlers run
+  // before plugins and must also defer to an active slash menu.
   return [
     StarterKit.configure({
       heading: false,
       dropcursor: false,
       gapcursor: false,
+      // BlockGapCursor provides input after closed blocks. A forced trailing
+      // node would recreate the empty line the user just removed.
+      trailingNode: false,
       link: false,
       codeBlock: false,
       paragraph: false,
@@ -331,6 +341,7 @@ export function createMarkdownEditorExtensions({
     codeBlockExtension.configure({ traceId: transitionId }),
     MathBlock,
     WebCard,
+    VideoEmbed,
     TableReference,
     MediaLibraryReference,
     FlowixHighlight.configure({ multicolor: true }),
@@ -369,6 +380,7 @@ export function createMarkdownEditorExtensions({
     NoteMention,
     WikiNoteMention,
     TagMention,
+    BlockGapCursor,
     StableCaret,
     AgentThreadCard.configure({ workspaceHost }),
     SlashMenu,

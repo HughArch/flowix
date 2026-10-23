@@ -112,7 +112,7 @@ describe('AgentThreadCard fullscreen host scoping', () => {
     expect(probeState?.mainThirdInfo).toBeNull();
     expect(probeState?.browserColumnInfo).toEqual({
       title: '浏览器列对话',
-      typeKey: 'claude',
+      typeKey: 'claudecode',
       instanceId: 'inst-4',
       threadId: 'thread-4',
     });

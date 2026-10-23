@@ -1,7 +1,14 @@
+import { refreshEmptyPropertyRow } from './frontmatter-empty-row';
+
 /** Keep controls and pointer targets intact when workspace ownership changes. */
 export function syncFrontmatterEditability(root: HTMLElement, editable: boolean) {
+  root.querySelectorAll<HTMLElement>('.frontmatter-property__empty-row').forEach(refreshEmptyPropertyRow);
   root.querySelectorAll<HTMLElement>(
-    '.frontmatter-property__type-icon, .frontmatter-property__display-key, .frontmatter-property__display-value:not([data-property-type="Image"])',
+    // The draft row keeps a static type icon: it has no saved position or
+    // delete target, so it must not advertise itself as a menu button.
+    '.frontmatter-property__display:not(.frontmatter-property__empty-row) .frontmatter-property__type-icon,'
+    + ' .frontmatter-property__display-key,'
+    + ' .frontmatter-property__display-value:not([data-property-type="Image"])',
   ).forEach((control) => {
     control.toggleAttribute('tabindex', editable);
     if (editable) control.tabIndex = 0;
@@ -11,7 +18,7 @@ export function syncFrontmatterEditability(root: HTMLElement, editable: boolean)
     if (editable) {
       control.setAttribute('aria-haspopup', 'menu');
       control.setAttribute('aria-expanded', control.getAttribute('aria-expanded') ?? 'false');
-      control.setAttribute('aria-label', control.closest<HTMLElement>('[data-property-key]')?.dataset.propertyKey ?? '');
+      control.setAttribute('aria-label', control.closest<HTMLElement>('[data-property-key]')?.dataset.propertyKey ?? control.title);
       control.setAttribute('aria-grabbed', control.getAttribute('aria-grabbed') ?? 'false');
     } else {
       for (const attribute of ['aria-haspopup', 'aria-expanded', 'aria-label', 'aria-grabbed']) {

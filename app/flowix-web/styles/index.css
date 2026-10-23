@@ -25,6 +25,7 @@
 @import './editor-link-tooltip.css';
 @import './editor-bubble-menus.css';
 @import './editor-attachment-link.css';
+@import './editor-video-embed.css';
 @import './code-editor.css';
 @import './pdf-print.css';
 
@@ -45,6 +46,7 @@
 @import './theme/mist.css';
 @import './theme/ember.css';
 @import './window-material.css';
+@import "shadcn/tailwind.css";
 
 @font-face {
 	font-family: 'FlowixSeti';
@@ -53,8 +55,6 @@
 	font-style: normal;
 	font-weight: normal;
 }
-
-@import "shadcn/tailwind.css";
 
 /* Keep drag gestures from selecting page text while a shared drop session is active. */
 html.flowix-drag-drop-active,
@@ -113,50 +113,14 @@ html.flowix-drag-drop-active * {
 	animation: browser-column-active-tab-indicator-in 0.8s cubic-bezier(0.16, 1, 0.3, 1) both;
 }
 
-/* Chrome-style active tab: the tab surface continues around the lower
- * corners, while the transparent pseudo-elements reveal the titlebar behind
- * it. Keep this outside the Tailwind utility layer so the shape is shared by
- * every Browser Column surface. */
+/* Keep the active Browser tab as a standalone card with the same radius on
+ * every corner. Keep this outside the Tailwind utility layer so the shape is
+ * shared by every Browser Column surface. */
 .browser-column-tab-active {
-	/* Use the elevated surface token so the entire active tab reads as one
-	 * continuous white panel in light themes, including both corner flares. */
-	--browser-column-tab-surface: var(--document-bg);
-	--browser-column-tab-radius: 0.75rem;
-	--browser-column-tab-flare-size: 0.75rem;
 	position: relative;
 	z-index: 1;
-	background-color: var(--browser-column-tab-surface);
+	background-color: var(--muted);
 	background-image: none;
-	border-top-left-radius: var(--browser-column-tab-radius);
-	border-top-right-radius: var(--browser-column-tab-radius);
-}
-
-.agent-surface-titlebar .browser-column-tab-active,
-.media-surface-titlebar .browser-column-tab-active {
-	--browser-column-tab-surface: var(--agent-bg, var(--document-bg));
-}
-
-.browser-column-tab-active::before,
-.browser-column-tab-active::after {
-	content: '';
-	position: absolute;
-	bottom: 0;
-	width: var(--browser-column-tab-flare-size);
-	height: var(--browser-column-tab-flare-size);
-	background: transparent;
-	pointer-events: none;
-}
-
-.browser-column-tab-active::before {
-	left: calc(-1 * var(--browser-column-tab-flare-size));
-	border-bottom-right-radius: var(--browser-column-tab-flare-size);
-	box-shadow: 0.25rem 0.25rem 0 0.25rem var(--browser-column-tab-surface);
-}
-
-.browser-column-tab-active::after {
-	right: calc(-1 * var(--browser-column-tab-flare-size));
-	border-bottom-left-radius: var(--browser-column-tab-flare-size);
-	box-shadow: -0.25rem 0.25rem 0 0.25rem var(--browser-column-tab-surface);
 }
 
 /* 全局搜索命令面板是带分组/搜索结果的特殊菜单。保留多行结果的内容高度，
@@ -208,6 +172,17 @@ html.flowix-drag-drop-active * {
 .flowix-preferences-select-content > button:hover :is(span, svg),
 .flowix-preferences-select-content > button:focus-visible :is(span, svg) {
 	color: var(--primary-foreground);
+}
+
+.flowix-notebook-import-select-content > button:hover,
+.flowix-notebook-import-select-content > button:focus-visible {
+	background: var(--hover-bg);
+	color: var(--foreground);
+}
+
+.flowix-notebook-import-select-content > button:hover :is(span, svg),
+.flowix-notebook-import-select-content > button:focus-visible :is(span, svg) {
+	color: var(--foreground);
 }
 
 .preferences-range-slider {
@@ -859,7 +834,7 @@ html.flowix-drag-drop-active * {
 		border-bottom-color: color-mix(in oklch, var(--foreground) 55%, var(--muted-foreground));
 	}
 	.tag-tree-list .group[aria-pressed="true"] .tag-expand-indicator {
-		border-bottom-color: color-mix(in oklch, var(--primary-foreground) 72%, transparent);
+		border-bottom-color: color-mix(in oklch, currentColor 72%, transparent);
 	}
 
 	/* 侧栏标签树: 折叠/展开子列表的高度 + 透明度过渡。
@@ -1142,4 +1117,39 @@ html.flowix-drag-drop-active * {
     animation: none;
     border-color: color-mix(in oklch, var(--brand) 50%, transparent);
   }
+}
+
+.sidebar-list-content {
+  --sidebar-navigation-height: 38px;
+}
+
+.sidebar-list-drawer-viewport {
+  top: var(--sidebar-navigation-height);
+}
+
+/* Detail drawer covers the stationary file tree below the navigation tabs. */
+.sidebar-content-page--root {
+  visibility: visible;
+}
+
+.sidebar-content-page--root[data-page-active="false"] {
+  /* Hide page-specific toolbar controls while leaving the tree under the drawer. */
+  clip-path: inset(var(--sidebar-navigation-height) 0 0);
+  pointer-events: none;
+}
+
+.sidebar-content-page--detail {
+  background: var(--list-bg);
+}
+
+.sidebar-content-page--detail[data-page-active="true"] {
+  visibility: visible;
+  transform: translateX(0);
+  pointer-events: auto;
+}
+
+.sidebar-content-page--detail[data-page-active="false"] {
+  visibility: hidden;
+  transform: translateX(100%);
+  pointer-events: none;
 }

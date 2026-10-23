@@ -31,6 +31,7 @@ import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import type { WorkspaceHostId } from '@features/workspace/public/host-api';
 import { CodeBlockShiki } from '@features/editor/extensions/codeblock-shiki/codeblock-shiki';
 import { createMarkdownEditorExtensions, serializeEditorMarkdown } from './markdown-editor-extensions';
+import { isSlashMenuOpen } from './extensions/slash-menu';
 import { isEmptyMarkdownPlaceholderOnly } from './markdown-normalization';
 
 interface MarkdownEditorProps {
@@ -183,8 +184,7 @@ function getEditableBodyStart(editor: Editor): EditableBodyStart {
 
 function isBlankEditorDocument(editor: Editor): boolean {
   const { block, blockIndex } = getEditableBodyStart(editor);
-  return Boolean(
-    block &&
+  return !block || Boolean(
     blockIndex === editor.state.doc.childCount - 1 &&
     block.type.name === 'paragraph' &&
     block.textContent.trim() === '',
@@ -500,6 +500,11 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   const focusBodyStart = useCallback(() => {
     const editor = editorRef.current;
     if (!editor || editor.isDestroyed) return;
+    // A metadata-only note has no text position until its body is created.
+    const { block, position } = getEditableBodyStart(editor);
+    if (!block && editor.isEditable) {
+      editor.view.dispatch(editor.state.tr.insert(position, createEmptyParagraph(editor)));
+    }
     // The frontmatter protection plugin corrects `focus('start')` to the
     // first editable position when a tags/property row is present.
     editor.commands.focus('start');
@@ -680,7 +685,8 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
             return false;
           },
         },
-        handleKeyDown: (_view, event) => {
+        handleKeyDown: (view, event) => {
+          if (isSlashMenuOpen(view)) return false;
           if (event.isComposing || event.altKey || event.ctrlKey || event.metaKey) {
             return false;
           }

@@ -8,9 +8,6 @@ import {
 import { useWorkspaceFocusStore } from '@features/workspace/store/workspace-focus-store';
 import {
   activateBrowserColumnTab,
-  discardActiveBrowserColumnDocument,
-  enqueueBrowserColumnNavigation,
-  registerBrowserColumnDocumentFlush,
 } from '@features/workspace/use-cases/browser-column-coordinator';
 import {
   createFileBrowserTarget,
@@ -64,7 +61,6 @@ export function useBrowserColumnFocusViewModel() {
 }
 
 export const selectBrowserColumnTab = activateBrowserColumnTab;
-export const registerBrowserColumnFlush = registerBrowserColumnDocumentFlush;
 
 export function hideBrowserColumn(): void {
   useBrowserColumnStore.getState().setVisible(false);
@@ -74,64 +70,9 @@ export function reorderBrowserColumnTab(tabId: string, beforeTabId: string | nul
   useBrowserColumnStore.getState().reorderTab(tabId, beforeTabId);
 }
 
-function browserColumnTabExists(tabId: string): boolean {
-  return useBrowserColumnStore.getState().tabs.some((tab) => tab.id === tabId);
-}
-
-export function closeBrowserColumnTab(
-  tabId: string,
-  options?: { discardChanges?: boolean },
-): Promise<boolean | null> {
-  const closesActiveTab = useBrowserColumnStore.getState().activeTabId === tabId;
-  const discarded = Boolean(options?.discardChanges && closesActiveTab && discardActiveBrowserColumnDocument());
-  return enqueueBrowserColumnNavigation(() => {
-    if (browserColumnTabExists(tabId)) useBrowserColumnStore.getState().closeTab(tabId);
-    return true;
-  }, {
-    flush: closesActiveTab && !discarded,
-    silentFlush: true,
-  });
-}
-
-export function closeOtherBrowserColumnTabs(
-  tabId: string,
-  options?: { discardChanges?: boolean },
-): Promise<boolean | null> {
-  const closesActiveTab = useBrowserColumnStore.getState().activeTabId !== tabId;
-  const discarded = Boolean(options?.discardChanges && closesActiveTab && discardActiveBrowserColumnDocument());
-  return enqueueBrowserColumnNavigation(() => {
-    if (browserColumnTabExists(tabId)) useBrowserColumnStore.getState().closeOtherTabs(tabId);
-    return true;
-  }, {
-    flush: closesActiveTab && !discarded,
-    silentFlush: true,
-  });
-}
-
-export function closeBrowserColumnTabsToRight(
-  tabId: string,
-  options?: { discardChanges?: boolean },
-): Promise<boolean | null> {
-  const state = useBrowserColumnStore.getState();
-  const targetIndex = state.tabs.findIndex((tab) => tab.id === tabId);
-  const activeIndex = state.tabs.findIndex((tab) => tab.id === state.activeTabId);
-  const closesActiveTab = targetIndex >= 0 && activeIndex > targetIndex;
-  const discarded = Boolean(options?.discardChanges && closesActiveTab && discardActiveBrowserColumnDocument());
-  return enqueueBrowserColumnNavigation(() => {
-    if (browserColumnTabExists(tabId)) useBrowserColumnStore.getState().closeTabsToRight(tabId);
-    return true;
-  }, {
-    flush: closesActiveTab && !discarded,
-    silentFlush: true,
-  });
-}
-
-export function closeAllBrowserColumnTabs(
-  options?: { discardChanges?: boolean },
-): Promise<boolean | null> {
-  const discarded = Boolean(options?.discardChanges && discardActiveBrowserColumnDocument());
-  return enqueueBrowserColumnNavigation(() => {
-    useBrowserColumnStore.getState().closeAllTabs();
-    return true;
-  }, { flush: !discarded, silentFlush: true });
-}
+export {
+  closeBrowserColumnTab,
+  closeOtherBrowserColumnTabs,
+  closeBrowserColumnTabsToRight,
+  closeAllBrowserColumnTabs,
+} from '../use-cases/browser-column-closing';

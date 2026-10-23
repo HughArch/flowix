@@ -1,9 +1,11 @@
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { Tag } from '../../app/flowix-web/features/editor/extensions/tag';
+import { propertyValueTypography } from '../../app/flowix-web/features/document/properties/value-typography';
 import '../../app/flowix-web/styles/fonts.css';
 import '../../app/flowix-web/styles/editor.css';
 import '../../app/flowix-web/styles/editor-frontmatter.css';
+import '../../app/flowix-web/styles/multidimensional-table.css';
 
 // Run in a real browser: jsdom cannot measure font-dependent backgrounds.
 const report = document.querySelector('#tag-layout-result');
@@ -60,8 +62,91 @@ function verifyPropertyTagBackgrounds() {
   }
 }
 
+function verifyPropertyFontScaling() {
+  const wrapper = document.createElement('div');
+  wrapper.className = 'markdown-editor';
+  const option = '<span class="frontmatter-property__option-chip multidimensional-table__option-chip" data-font-probe>Option</span>';
+  wrapper.innerHTML = `
+    <div class="frontmatter-property">
+      <div class="frontmatter-property__display-value">${option}</div>
+      <div class="frontmatter-property__value-chips">${option}</div>
+      <span class="frontmatter-property__value-chip frontmatter-property__value-chip--tag" data-font-probe>Tag</span>
+      <span class="frontmatter-property__value-chip tag-node" data-font-probe><span class="tag-node-content">Note tag</span></span>
+    </div>
+    <div class="frontmatter-property__edit-popover">
+      <button class="frontmatter-property__edit-input frontmatter-property__edit-option-trigger">
+        <span class="frontmatter-property__edit-option-value">${option}</span>
+      </button>
+      <button class="frontmatter-property__edit-input frontmatter-property__edit-option-trigger">
+        <span class="frontmatter-property__edit-option-value frontmatter-property__edit-option-value--multiple">${option}</span>
+      </button>
+      <div class="frontmatter-property__edit-option-list">
+        <button class="frontmatter-property__edit-option-item">${option}</button>
+      </div>
+      <button class="frontmatter-property__edit-tag-suggestion" data-font-probe>Suggestion</button>
+    </div>`;
+  document.body.append(wrapper);
+  try {
+    for (const size of [14, 16, 22]) {
+      wrapper.style.setProperty('--editor-font-size', `${size}px`);
+      for (const element of wrapper.querySelectorAll('[data-font-probe]')) {
+        const actual = parseFloat(getComputedStyle(element).fontSize);
+        check(Math.abs(actual - size * 0.875) < 0.01,
+          `Property font did not follow ${size}px editor font: ${element.className}, got ${actual}px`);
+      }
+    }
+  } finally {
+    wrapper.remove();
+  }
+}
+
+function verifyTableFontScaling() {
+  const root = document.documentElement;
+  const originalDefault = root.style.getPropertyValue('--font-size');
+  const originalEditor = root.style.getPropertyValue('--editor-font-size');
+  const fixtures = [];
+  try {
+    for (const embedded of [false, true]) {
+      const typography = propertyValueTypography(embedded ? 'var(--editor-font-size, 16px)' : 'var(--font-size, 16px)');
+      const table = document.createElement('div');
+      table.className = 'multidimensional-table__surface';
+      table.style.fontSize = '14px'; // Table text-sm must not shrink tags a second time.
+      table.innerHTML = `
+        <span class="frontmatter-property__edit-tag-chip frontmatter-property__edit-tag-chip--plain" data-font-probe><span class="tag-node-content">Tag</span></span>
+        <span class="frontmatter-property__edit-tag-chip" data-font-probe><span class="tag-node-prefix">#</span><span class="tag-node-content">Note tag</span></span>
+        <span class="multidimensional-table__option-chip" data-font-probe>Option</span>`;
+      const popup = document.createElement('div');
+      popup.className = 'frontmatter-property__edit-popover';
+      popup.innerHTML = table.innerHTML + '<button class="frontmatter-property__edit-tag-suggestion" data-font-probe>Suggestion</button>';
+      for (const element of [table, popup]) {
+        for (const [key, value] of Object.entries(typography)) element.style.setProperty(key, value);
+        document.body.append(element);
+        fixtures.push({ element, embedded });
+      }
+    }
+    for (const [defaultSize, editorSize] of [[16, 22], [16, 14], [20, 24]]) {
+      root.style.setProperty('--font-size', `${defaultSize}px`);
+      root.style.setProperty('--editor-font-size', `${editorSize}px`);
+      for (const { element, embedded } of fixtures) {
+        const expected = (embedded ? editorSize : defaultSize) * 0.875;
+        for (const chip of element.querySelectorAll('[data-font-probe]')) {
+          const actual = parseFloat(getComputedStyle(chip).fontSize);
+          check(Math.abs(actual - expected) < 0.01,
+            `Table font mismatch (${embedded ? 'embedded' : 'standalone'}): expected ${expected}px, got ${actual}px`);
+        }
+      }
+    }
+  } finally {
+    for (const { element } of fixtures) element.remove();
+    root.style.setProperty('--font-size', originalDefault);
+    root.style.setProperty('--editor-font-size', originalEditor);
+  }
+}
+
 async function verify() {
   verifyPropertyTagBackgrounds();
+  verifyPropertyFontScaling();
+  verifyTableFontScaling();
   for (const font of ['Inter', 'serif', 'monospace']) {
     for (const size of [16, 22]) {
       const wrapper = document.createElement('div');

@@ -22,3 +22,10 @@ export async function commitTypographyFontSelection(selectionId: number, fontId:
   useUserSettingsStore.getState().applyTypographyFont(font.id, font.value);
   return true;
 }
+
+/** Typography commands used by document chrome. */
+export function useEditorFontSize() {
+  const fontSize = useUserSettingsStore((state) => state.settings.format.fontSize);
+  const updateSettings = useUserSettingsStore((state) => state.updateSettings);
+  return { fontSize, setFontSize: (size: number) => updateSettings({ format: { fontSize: size } }) };
+}

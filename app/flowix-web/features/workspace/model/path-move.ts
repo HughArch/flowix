@@ -1,6 +1,6 @@
 import { canonicalPath } from '@/lib/path';
 import type { WorkspaceContentTarget } from './surface-target';
-import type { BrowserColumnTarget } from '../store/browser-column-store';
+import type { BrowserColumnTarget } from './browser-column-target';
 import type { LegacyFolderListTarget } from './legacy-folder-list';
 
 export function movedFilePath(path: string, previous: string, next: string, directory: boolean): string {

@@ -200,6 +200,8 @@ interface SelectContentProps {
 	keepParentMenuOpen?: boolean;
 	/** Keep the menu inside the viewport and scroll its items when necessary. */
 	fitViewport?: boolean;
+	/** Prefer scrolling below the trigger; flip above only when below cannot fit a short menu. */
+	preferBelow?: boolean;
 	/** Optional maximum popup height in pixels or viewport height when fitViewport is enabled. */
 	maxHeight?: number | `${number}vh`;
 }
@@ -211,6 +213,7 @@ function SelectContent({
 	align = "end",
 	keepParentMenuOpen = false,
 	fitViewport = false,
+	preferBelow = false,
 	maxHeight,
 }: SelectContentProps) {
 	const { open, setOpen, triggerRef, anchorRect, anchorToCell } = useSelectContext();
@@ -272,7 +275,8 @@ function SelectContent({
 					maxHeightPixels,
 					contentRef.current?.scrollHeight ?? Number.POSITIVE_INFINITY,
 				);
-				const openAbove = availableBelow < preferredHeight && availableAbove > availableBelow;
+				const requiredBelow = preferBelow ? Math.min(preferredHeight, 128) : preferredHeight;
+				const openAbove = availableBelow < requiredBelow && availableAbove > availableBelow;
 				const available = openAbove ? availableAbove : availableBelow;
 				if (openAbove) {
 					delete nextPosition.top;
@@ -306,7 +310,7 @@ function SelectContent({
 			window.removeEventListener("resize", updatePosition);
 			window.removeEventListener("scroll", updatePosition, true);
 		};
-	}, [align, anchorRect, anchorToCell, fitViewport, maxHeight, open, triggerRef]);
+	}, [align, anchorRect, anchorToCell, fitViewport, maxHeight, open, preferBelow, triggerRef]);
 
 	React.useEffect(() => {
 		if (!open || !anchorToCell) return;

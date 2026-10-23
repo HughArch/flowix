@@ -1,4 +1,7 @@
+import { isSyntheticOpenCodeHistoryInstance } from './conversation-list-model';
+export { isSyntheticOpenCodeHistoryInstance } from './conversation-list-model';
 import type {
+  AgentConversationInstance as BackendConversationInstance,
   AgentConversationCursor,
   AgentConversationListPage,
   AgentConversationListQuery,
@@ -6,19 +9,27 @@ import type {
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
 import { normalizeBackendInstance } from '@features/agent/store/conversation-slice';
 
-const RECENT_LIMIT = 5;
-const PAGE_SIZE = RECENT_LIMIT;
+export const RECENT_CONVERSATIONS_LIMIT = 10;
+const PAGE_SIZE = RECENT_CONVERSATIONS_LIMIT;
 
 type ListPage = (
   query: AgentConversationListQuery,
   limit: number,
 ) => Promise<AgentConversationListPage>;
+type GetConversations = (notebookId: string, instanceIds: string[]) => Promise<BackendConversationInstance[]>;
 
-export function isSyntheticOpenCodeHistoryInstance(instance: AgentConversationInstance): boolean {
-  return instance.agentType === 'opencode'
-    && !!instance.threadId
-    && instance.instanceId === `legacy-${instance.threadId}`
-    && instance.threadId.startsWith('ses_');
+/** Load saved favorites directly by instance id so older favorites are not
+ * lost behind the recent-conversation page window. */
+export async function loadFavoriteAgentConversations(
+  notebookId: string,
+  favoriteIds: ReadonlySet<string>,
+  getConversations: GetConversations,
+): Promise<AgentConversationInstance[]> {
+  if (favoriteIds.size === 0) return [];
+  const instances = await getConversations(notebookId, [...favoriteIds]);
+  return instances.map(normalizeBackendInstance).filter((instance) => (
+    instance.source.notebookId === notebookId && !isSyntheticOpenCodeHistoryInstance(instance)
+  ));
 }
 
 /** Pages are ordered newest first by the backend; only fetch rows this section can show. */
@@ -26,6 +37,7 @@ export async function loadRecentAgentConversations(
   notebookId: string,
   listPage: ListPage,
   isActive: () => boolean = () => true,
+  onHasMoreChange?: (hasMore: boolean) => void,
 ): Promise<AgentConversationInstance[]> {
   const recent: AgentConversationInstance[] = [];
   let cursor: AgentConversationCursor | null = null;
@@ -44,12 +56,16 @@ export async function loadRecentAgentConversations(
       if (instance.source.notebookId !== notebookId || isSyntheticOpenCodeHistoryInstance(instance)) continue;
 
       recent.push(instance);
-      if (recent.length >= RECENT_LIMIT) return recent;
+      if (recent.length > RECENT_CONVERSATIONS_LIMIT) {
+        onHasMoreChange?.(true);
+        return recent.slice(0, RECENT_CONVERSATIONS_LIMIT);
+      }
     }
 
     if (!page.hasMore || !page.nextCursor || page.items.length === 0) break;
     cursor = page.nextCursor;
   }
 
-  return recent;
+  onHasMoreChange?.(false);
+  return recent.slice(0, RECENT_CONVERSATIONS_LIMIT);
 }

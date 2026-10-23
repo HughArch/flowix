@@ -38,7 +38,6 @@ function AgentConversationListLoadingFallback() {
 export interface MainMiddleColumnController {
   shouldRenderAgentConversationList: boolean;
   showMemoListSurface: boolean;
-  showAgentConversationSurface: boolean;
   memoListPreviewVisible: boolean;
   memoListPreviewPhase: 'closed' | 'opening' | 'open' | 'closing';
   handleMemoListPreviewTriggerEnter(): void;
@@ -52,10 +51,12 @@ export interface MainMiddleColumnController {
 
 export function useMainMiddleColumnController({
   isAgentConversationView,
+  onConversationListBack,
   isMemoListHidden,
   noteNavigationPhase,
 }: {
   isAgentConversationView: boolean;
+  onConversationListBack: () => void;
   isMemoListHidden: boolean;
   noteNavigationPhase: NoteNavigationDrawerPhase;
 }): MainMiddleColumnController {
@@ -90,7 +91,6 @@ export function useMainMiddleColumnController({
     // The selected surface follows the store immediately; a lazy chunk uses
     // its own Suspense fallback instead of keeping the previous notes visible.
     showMemoListSurface: !isAgentConversationView,
-    showAgentConversationSurface: isAgentConversationView,
     memoListPreviewVisible,
     memoListPreviewPhase: preview.phase,
     handleMemoListPreviewTriggerEnter: preview.handleTriggerEnter,
@@ -101,7 +101,7 @@ export function useMainMiddleColumnController({
     handleMemoListPreviewCompanionLeave: preview.handleCompanionSurfaceLeave,
     agentConversationListNode: (
       <Suspense fallback={<AgentConversationListLoadingFallback />}>
-        <AgentConversationList isActive={agentConversationListActive} />
+        <AgentConversationList isActive={agentConversationListActive} onBack={onConversationListBack} />
       </Suspense>
     ),
   };

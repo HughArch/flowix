@@ -56,12 +56,10 @@ impl FileManagementPolicy {
                 return true;
             }
             let is_last = index + 1 == components.len();
-            let notebook_agents_file = name.as_ref() == "AGENTS.md";
             let legacy_media_sidecar = is_last
                 && Path::new(name.as_ref()).extension().is_some_and(|extension| extension.eq_ignore_ascii_case("yaml"))
                 && Path::new(name.as_ref()).file_stem().is_some_and(|stem| super::media_kind_for_path(Path::new(stem)).is_some());
-            let ignored_name = notebook_agents_file
-                || name.starts_with('.')
+            let ignored_name = name.starts_with('.')
                 || matches!(name.as_ref(), "attachments" | "attachments-cache" | "node_modules" | "bower_components" | "__pycache__")
                 || legacy_media_sidecar
                 || (is_last && (matches!(name.as_ref(), "Thumbs.db" | "ehthumbs.db" | "desktop.ini")
@@ -105,12 +103,8 @@ impl FileManagementPolicy {
     /// Return whether a relative path belongs to a folder subtree excluded
     /// from the note index. This does not hide the path from the file tree.
     pub fn is_index_excluded_at(&self, root: &Path, relative: &Path) -> bool {
-        let is_root_agents = relative.components().count() == 1
-            && relative.file_name().is_some_and(|name| name.to_string_lossy() == "AGENTS.md");
         let default_policy = FileManagementPolicy::default();
-        if !is_root_agents
-            && default_policy.is_ignored_at(root, relative)
-        {
+        if default_policy.is_ignored_at(root, relative) {
             return true;
         }
         if self.excluded_index_paths.iter().any(|excluded| excluded.is_empty()) {
@@ -123,17 +117,9 @@ impl FileManagementPolicy {
         })
     }
 
-    /// Resolve index participation independently from tree visibility. The
-    /// notebook root AGENTS.md is special: it can be indexed even while its
-    /// tree display remains hidden by default.
+    /// Resolve index participation independently from tree visibility.
     pub fn is_index_ignored_at(&self, root: &Path, relative: &Path) -> bool {
-        let is_root_agents = relative.components().count() == 1
-            && relative.file_name().is_some_and(|name| name.to_string_lossy() == "AGENTS.md");
-        if is_root_agents {
-            self.is_index_excluded_at(root, relative)
-        } else {
-            self.is_ignored_at(root, relative) || self.is_index_excluded_at(root, relative)
-        }
+        self.is_ignored_at(root, relative) || self.is_index_excluded_at(root, relative)
     }
 }
 

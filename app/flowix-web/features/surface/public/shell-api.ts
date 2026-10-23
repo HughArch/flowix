@@ -5,7 +5,10 @@ export {
   surfaceSupports,
 } from '@features/surface/registry';
 export { resolveWorkColumnContent } from '@features/surface/resolver';
-export { resolveWorkColumnPresentation } from '@features/surface/presentation';
+export {
+  resolveWorkColumnRuntimePresentation,
+  resolveWorkColumnPresentation,
+} from '@features/surface/presentation';
 export type {
   WorkColumnDocumentHeaderPresentation,
   WorkColumnHeaderPresentation,
@@ -26,7 +29,6 @@ export type {
 export {
   BrowserColumnSurfaceHost,
   getBrowserColumnSurfaceDefinition,
-  type BrowserColumnFlushRegistration,
   type BrowserColumnSurface,
   type BrowserColumnSurfaceChrome,
 } from '@features/surface/browser-column-registry';

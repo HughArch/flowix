@@ -107,3 +107,12 @@ export function resolveWorkspaceFileSurfaceKind(
 export function workspaceSurfaceAppearance(kind: WorkspaceSurfaceKind): Readonly<SurfaceAppearance> {
   return workspaceSurfaceRegistry[kind].appearance;
 }
+
+/** Publish a content-mode change as one consistent presentation update. */
+export function workspaceSurfaceContentPresentation(kind: WorkspaceSurfaceKind) {
+  return {
+    contentKind: kind,
+    appearance: workspaceSurfaceAppearance(kind),
+    capabilities: workspaceSurfaceCapabilities(kind),
+  };
+}

@@ -49,7 +49,7 @@ const TREE_MENU_ITEM_CLASS =
 
 const TREE_EDGE_GUTTER = 6;
 const INDENT_PER_LEVEL = 20;
-const FOLDER_SINGLE_CLICK_DELAY_MS = 220;
+const FOLDER_SINGLE_CLICK_DELAY_MS = 300;
 
 function DefaultFolderCheck() {
   return (
@@ -159,7 +159,13 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
     if (folderClickTimer.current !== null) clearTimeout(folderClickTimer.current);
   }, []);
   const selectFolderOnSingleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
-    if (event.detail !== 1) return;
+    if (event.detail !== 1) {
+      if (folderClickTimer.current !== null) {
+        clearTimeout(folderClickTimer.current);
+        folderClickTimer.current = null;
+      }
+      return;
+    }
     if (folderClickTimer.current !== null) clearTimeout(folderClickTimer.current);
     folderClickTimer.current = setTimeout(() => {
       folderClickTimer.current = null;
@@ -214,12 +220,10 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
     return noteIndexFor(state.notes).get(noteLookupKey(notebook.id, relativePath)) ?? null;
   });
   const displayedMemo = storeNote ?? pathNote;
-  const displayedIcon = displayedMemo
-    ? displayedMemo.icon
-    : item.memoMeta?.icon ?? null;
-  const displayedColors = displayedMemo
-    ? displayedMemo.colors
-    : item.memoMeta?.colors ?? [];
+  // A context-menu lookup is a snapshot; indexed tree updates take precedence.
+  const displayedMetadata = storeNote ?? item.memoMeta ?? pathNote;
+  const displayedIcon = displayedMetadata?.icon ?? null;
+  const displayedColors = displayedMetadata?.colors ?? [];
   const noteIcon = isNote && displayedIcon
     ? getPropertyIconOption(displayedIcon)
     : null;
@@ -477,11 +481,22 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
         <>
           {isFolder ? (
             <button type="button" aria-label={expanded ? '收起文件夹' : '展开文件夹'} aria-expanded={expanded}
-              onClick={(event) => { event.stopPropagation(); onToggle(item.fullPath); }}
-              onPointerDown={(event) => event.stopPropagation()}
+              onClick={(event) => {
+                event.stopPropagation();
+                if (event.detail > 1) return;
+                onToggle(item.fullPath);
+              }}
+              onDoubleClick={(event) => event.stopPropagation()}
+              onPointerDown={(event) => {
+                event.stopPropagation();
+                if (folderClickTimer.current !== null) {
+                  clearTimeout(folderClickTimer.current);
+                  folderClickTimer.current = null;
+                }
+              }}
               onKeyDown={(event) => event.stopPropagation()}
               className={cn(
-              'relative h-[18px] w-[18px] shrink-0',
+              'relative h-[18px] w-[18px] shrink-0 rounded-md transition-colors group-hover:bg-[color-mix(in_oklch,var(--muted)_90%,var(--foreground)_10%)] group-focus-visible:bg-[color-mix(in_oklch,var(--muted)_90%,var(--foreground)_10%)] hover:bg-[color-mix(in_oklch,var(--muted)_90%,var(--foreground)_10%)] focus-visible:bg-[color-mix(in_oklch,var(--muted)_90%,var(--foreground)_10%)]',
               'text-[color-mix(in_oklch,var(--foreground)_70%,black_30%)] [[data-theme="dark"]_&]:text-[var(--foreground)] [[data-theme="mist"]_&]:text-[var(--foreground)]',
             )}>
               <span

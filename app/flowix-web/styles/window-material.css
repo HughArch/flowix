@@ -13,7 +13,6 @@ html[data-window-material][data-theme="mist"],
 html[data-window-material][data-theme="mist"] :where(
 	body,
 	#root,
-	#app-loading,
 	.flowix-main-layout,
 	[data-window-material-overlay],
 	[data-note-navigation-surface],
