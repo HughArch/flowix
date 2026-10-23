@@ -21,6 +21,7 @@ use std::{fs::OpenOptions, io};
 mod content;
 pub mod columns;
 mod database_layout;
+pub mod line_background;
 mod storage_repair;
 mod derivation;
 mod file_management;

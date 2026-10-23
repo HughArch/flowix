@@ -4,7 +4,10 @@
 //! restricted Flowix CLI command plus optional stdin content. Commands are parsed into
 //! argv and dispatched directly to the typed store layer; no system shell is spawned.
 
-use crate::{cli, columns_store, errors::CliError, fmt, operation, output, path_store, plugin, store};
+use crate::{
+    background_store, cli, columns_store, errors::CliError, fmt, operation, output, path_store,
+    plugin, store,
+};
 use serde_json::{json, Map, Value};
 use std::io::{BufRead, Write};
 
@@ -17,7 +20,7 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
     LATEST_PROTOCOL_VERSION,
 ];
 
-pub const TOOL_DESCRIPTION: &str = "Search and manage Flowix Markdown notes, inspect or edit Notion-style content columns, read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
+pub const TOOL_DESCRIPTION: &str = "Search and manage Flowix Markdown notes, inspect or edit Notion-style content columns and line background colors, read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
 
 /// Run the MCP line-delimited JSON-RPC loop until stdin reaches EOF.
 pub fn run_mcp<R: BufRead, W: Write>(reader: R, mut writer: W) -> Result<(), CliError> {
@@ -176,6 +179,8 @@ fn validate_argument_keys(arguments: &Map<String, Value>) -> Result<(), CliError
         "block",
         "column",
         "widths",
+        "line",
+        "color",
         "command",
         "stdin",
     ];
@@ -264,6 +269,18 @@ fn parse_structured_operation(
             address: address()?,
             block: integer(arguments, "block", 1, 1, usize::MAX)?,
             widths: integer_array(arguments, "widths")?,
+        }),
+        "background.list" => Ok(FlowixOperation::BackgroundList {
+            address: address()?,
+        }),
+        "background.set" => Ok(FlowixOperation::BackgroundSet {
+            address: address()?,
+            line: integer(arguments, "line", 1, 1, usize::MAX)?,
+            color: required_string(arguments, "color")?,
+        }),
+        "background.clear" => Ok(FlowixOperation::BackgroundClear {
+            address: address()?,
+            line: integer(arguments, "line", 1, 1, usize::MAX)?,
         }),
         _ => Err(CliError::Usage(format!("unknown memo action: `{action}`"))),
     }
@@ -501,6 +518,18 @@ fn execute_command(command: &str, stdin: Option<&str>) -> Result<Value, CliError
                 } => columns_store::remove(&id, block, column),
                 cli::ColumnsCommand::Width { id, block, widths } => {
                     columns_store::set_widths(&id, block, &widths)
+                }
+            }
+        }
+        cli::Cli::Background { command, .. } => {
+            reject_stdin(stdin)?;
+            match command {
+                cli::BackgroundCommand::List { id } => background_store::list(&id),
+                cli::BackgroundCommand::Set { id, line, color } => {
+                    background_store::set(&id, line, &color)
+                }
+                cli::BackgroundCommand::Clear { id, line } => {
+                    background_store::clear(&id, line)
                 }
             }
         }

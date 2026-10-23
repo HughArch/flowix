@@ -424,6 +424,10 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
       current: menuBlockBackground,
       onChange: (color) => {
         setFlowixBlockBackground(editor, color, { targetPos: menuTarget.pos })
+        // The operation is complete, so drop the handle-built block selection.
+        // Otherwise clearing the colour would reveal the selection tint again
+        // and read as a coloured row instead of "no background".
+        clearBlockSelection(editor)
         closeMenu()
       },
     }

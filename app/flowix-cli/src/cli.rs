@@ -93,6 +93,11 @@ pub enum Cli {
         command: ColumnsCommand,
         json: bool,
     },
+    /// Inspect or edit line background colors in a note.
+    Background {
+        command: BackgroundCommand,
+        json: bool,
+    },
     /// Model Context Protocol over stdio。向外部 Agent 暴露唯一工具
     /// `memo`，工具参数采用受限的 Flowix CLI 语法。
     Mcp,
@@ -117,6 +122,22 @@ pub enum ColumnsCommand {
         id: String,
         block: usize,
         widths: Vec<u32>,
+    },
+}
+
+#[derive(Debug)]
+pub enum BackgroundCommand {
+    List {
+        id: String,
+    },
+    Set {
+        id: String,
+        line: usize,
+        color: String,
+    },
+    Clear {
+        id: String,
+        line: usize,
     },
 }
 
@@ -281,6 +302,33 @@ pub(crate) fn parse(args: &[String]) -> Result<Option<Cli>, CliError> {
             };
             Ok(Some(Cli::Columns { command, json }))
         }
+        Some(("background", sub)) => {
+            let command = match sub.subcommand() {
+                Some(("list", command)) => BackgroundCommand::List {
+                    id: required_string(command, "id")?,
+                },
+                Some(("set", command)) => BackgroundCommand::Set {
+                    id: required_string(command, "id")?,
+                    line: *command.get_one::<usize>("line").unwrap_or(&1),
+                    color: required_string(command, "color")?,
+                },
+                Some(("clear", command)) => BackgroundCommand::Clear {
+                    id: required_string(command, "id")?,
+                    line: *command.get_one::<usize>("line").unwrap_or(&1),
+                },
+                Some((other, _)) => {
+                    return Err(CliError::Usage(format!(
+                        "unknown background command: `{other}`"
+                    )))
+                }
+                None => {
+                    return Err(CliError::Usage(format!(
+                        "usage: {DISPLAY_BIN} background <list|set|clear>"
+                    )))
+                }
+            };
+            Ok(Some(Cli::Background { command, json }))
+        }
         Some(("mcp", _)) => Ok(Some(Cli::Mcp)),
         Some((other, _)) => Err(CliError::Usage(format!(
             "unknown command: `{other}`\n(run `{DISPLAY_BIN} --help` for usage)"
@@ -296,7 +344,7 @@ pub(crate) fn cli_command() -> Command {
     Command::new(DISPLAY_BIN)
         .version(env!("CARGO_PKG_VERSION"))
         .about("Manage local Flowix notebooks, Markdown notes, and artifacts")
-        .after_help("For Markdown content, --file is recommended (especially on Windows PowerShell 5.1). Files must be UTF-8. Note addresses use <notebook-id>::<relative-path> or an absolute path. Examples:\n  flowix create <notebook> --file body.md --json\n  flowix show work::Notes/Example.md --json\n  flowix write work::Notes/Example.md --file body.md --json\n  flowix list\n  flowix search TODO --tag project/flowix --limit 20\n  flowix collection read --notebook <notebook-id> --id <collection-id> --json\n  flowix collection read --notebook <notebook-id> --path 'Assets/Images.index.yaml' --json\n  flowix mcp")
+        .after_help("For Markdown content, --file is recommended (especially on Windows PowerShell 5.1). Files must be UTF-8. Note addresses use <notebook-id>::<relative-path> or an absolute path. Examples:\n  flowix create <notebook> --file body.md --json\n  flowix show work::Notes/Example.md --json\n  flowix write work::Notes/Example.md --file body.md --json\n  flowix list\n  flowix search TODO --tag project/flowix --limit 20\n  flowix background set work::Notes/Example.md --line 3 --color yellow --json\n  flowix collection read --notebook <notebook-id> --id <collection-id> --json\n  flowix collection read --notebook <notebook-id> --path 'Assets/Images.index.yaml' --json\n  flowix mcp")
         .arg(
             Arg::new("json")
                 .long("json")
@@ -498,6 +546,47 @@ pub(crate) fn cli_command() -> Command {
                                 .value_delimiter(',')
                                 .num_args(1..)
                                 .value_parser(clap::value_parser!(u32)),
+                        ),
+                ),
+        )
+        .subcommand(
+            Command::new("background")
+                .about("Inspect or edit line background colors in a note")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("list")
+                        .about("List colored lines in a note")
+                        .arg(required_arg("id")),
+                )
+                .subcommand(
+                    Command::new("set")
+                        .about("Set the background color of the text block containing --line")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("line")
+                                .long("line")
+                                .required(true)
+                                .value_parser(clap::value_parser!(usize))
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("color")
+                                .long("color")
+                                .required(true)
+                                .value_name("COLOR")
+                                .num_args(1),
+                        ),
+                )
+                .subcommand(
+                    Command::new("clear")
+                        .about("Clear the background color of the text block containing --line")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("line")
+                                .long("line")
+                                .required(true)
+                                .value_parser(clap::value_parser!(usize))
+                                .num_args(1),
                         ),
                 ),
         )

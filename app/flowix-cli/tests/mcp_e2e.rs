@@ -449,3 +449,94 @@ fn concurrent_mcp_processes_do_not_overwrite_each_other() {
     assert!(bodies.iter().any(|body| body.contains("first process")));
     assert!(bodies.iter().any(|body| body.contains("second process")));
 }
+
+#[test]
+fn structured_background_actions_set_list_and_clear() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    let notebook_dir = tmp.path().join("notebooks").join("work");
+    seed_notebook(&config_dir, &notebook_dir);
+    std::fs::write(
+        notebook_dir.join("background.md"),
+        "# Title\n\nbody\n\n- item\n",
+    )
+    .unwrap();
+
+    let (mut child, mut stdin, mut stdout) = spawn_mcp(&config_dir);
+    let _ = request(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "flowix-test", "version": "1"}
+        }),
+    );
+
+    let set = call_structured(
+        &mut stdin,
+        &mut stdout,
+        2,
+        json!({"action":"background.set", "address":"background.md", "line":3, "color":"yellow"}),
+    );
+    assert_eq!(set["result"]["isError"], false, "{set}");
+    assert_eq!(
+        set["result"]["structuredContent"]["blocks"][0]["color"],
+        "yellow"
+    );
+    assert_eq!(
+        set["result"]["structuredContent"]["blocks"][0]["start_line"],
+        3
+    );
+
+    let legacy = call_tool(
+        &mut stdin,
+        &mut stdout,
+        3,
+        "background set background.md --line 5 --color blue",
+        None,
+    );
+    assert_eq!(legacy["result"]["isError"], false, "{legacy}");
+
+    let listed = call_structured(
+        &mut stdin,
+        &mut stdout,
+        4,
+        json!({"action":"background.list", "address":"background.md"}),
+    );
+    assert_eq!(listed["result"]["isError"], false, "{listed}");
+    let blocks = listed["result"]["structuredContent"]["blocks"]
+        .as_array()
+        .unwrap();
+    assert_eq!(blocks.len(), 2);
+    assert!(blocks.iter().any(|block| block["color"] == "yellow"));
+    assert!(blocks.iter().any(|block| block["color"] == "blue"));
+
+    let cleared = call_structured(
+        &mut stdin,
+        &mut stdout,
+        5,
+        json!({"action":"background.clear", "address":"background.md", "line":3}),
+    );
+    assert_eq!(cleared["result"]["isError"], false, "{cleared}");
+    assert_eq!(
+        cleared["result"]["structuredContent"]["blocks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let rejected = call_structured(
+        &mut stdin,
+        &mut stdout,
+        6,
+        json!({"action":"background.set", "address":"background.md", "line":3, "color":"chartreuse"}),
+    );
+    assert_eq!(rejected["result"]["isError"], true, "{rejected}");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}

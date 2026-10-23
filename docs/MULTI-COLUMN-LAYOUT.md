@@ -256,6 +256,24 @@ flowix columns width <note> --block 1 --widths 50,150 --json
 
 MCP 的 `memo` 工具新增结构化 action：`columns.list`、`columns.add`、`columns.remove`、`columns.width`，对应参数为 `address`、`count`/`at`、`block`/`column`、`block`/`widths`。旧的 `command` 形式也可直接使用 `columns ...`。
 
+### CLI / MCP：行背景色
+
+行背景写在块末尾的 HTML 注释里（编辑器负责渲染）：
+
+```markdown
+这一行有淡黄色背景<!-- flowix:block-bg {"bg":"yellow"} -->
+```
+
+```bash
+flowix background list <note> --json
+flowix background set <note> --line 3 --color yellow --json
+flowix background clear <note> --line 3 --json
+```
+
+`--line` 是 1-based 的 Markdown 行号，落在哪个文本块上就作用于整块（多行段落、标题、列表项、列内段落）；空行、围栏、表格行与 `:::` 结构行不可上色。可用颜色：`red orange yellow green cyan blue purple pink gray`。
+
+MCP 对应 action：`background.list`（`address`）、`background.set`（`address`/`line`/`color`）、`background.clear`（`address`/`line`）。
+
 ## 7. 边界与风险
 
 | 场景 | 行为 |

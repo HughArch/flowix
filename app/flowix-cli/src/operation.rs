@@ -1,6 +1,9 @@
 //! Transport-neutral Flowix operations shared by CLI and MCP adapters.
 
-use crate::{collection_store, columns_store, errors::CliError, fmt, output, path_store, plugin, store};
+use crate::{
+    background_store, collection_store, columns_store, errors::CliError, fmt, output, path_store,
+    plugin, store,
+};
 use serde_json::Value;
 
 #[derive(Debug, Clone)]
@@ -73,6 +76,18 @@ pub(crate) enum FlowixOperation {
         address: String,
         block: usize,
         widths: Vec<u32>,
+    },
+    BackgroundList {
+        address: String,
+    },
+    BackgroundSet {
+        address: String,
+        line: usize,
+        color: String,
+    },
+    BackgroundClear {
+        address: String,
+        line: usize,
     },
 }
 
@@ -180,5 +195,14 @@ pub(crate) fn execute(operation: FlowixOperation) -> Result<Value, CliError> {
             block,
             widths,
         } => columns_store::set_widths(&address, block, &widths),
+        FlowixOperation::BackgroundList { address } => background_store::list(&address),
+        FlowixOperation::BackgroundSet {
+            address,
+            line,
+            color,
+        } => background_store::set(&address, line, &color),
+        FlowixOperation::BackgroundClear { address, line } => {
+            background_store::clear(&address, line)
+        }
     }
 }

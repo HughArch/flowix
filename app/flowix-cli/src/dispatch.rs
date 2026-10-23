@@ -2,7 +2,10 @@
 //!
 //! `cli` 模块只负责把 argv 解析成结构化命令；这里负责把命令转给执行层。
 
-use crate::{cli, columns_store, errors::CliError, mcp, operation, path_store, plugin, store};
+use crate::{
+    background_store, cli, columns_store, errors::CliError, mcp, operation, path_store, plugin,
+    store,
+};
 
 /// 跑 CLI 主入口。
 pub fn run_cli(args: &[String]) -> Result<(), CliError> {
@@ -105,6 +108,17 @@ pub fn run_cli(args: &[String]) -> Result<(), CliError> {
             }
             cli::ColumnsCommand::Width { id, block, widths } => {
                 path_store::print(columns_store::set_widths(&id, block, &widths)?, json)
+            }
+        },
+        cli::Cli::Background { command, json } => match command {
+            cli::BackgroundCommand::List { id } => {
+                path_store::print(background_store::list(&id)?, json)
+            }
+            cli::BackgroundCommand::Set { id, line, color } => {
+                path_store::print(background_store::set(&id, line, &color)?, json)
+            }
+            cli::BackgroundCommand::Clear { id, line } => {
+                path_store::print(background_store::clear(&id, line)?, json)
             }
         },
         cli::Cli::Mcp => {
