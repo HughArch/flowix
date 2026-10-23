@@ -330,20 +330,9 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   transition: opacity 0.12s ease, background-color 0.12s ease, color 0.12s ease;
 }
 
-/* Bridge the gap to the title so moving onto the button preserves hover.
- * The pseudo-element inherits pointer-events, so hidden buttons stay inert. */
-.memo-title-properties-toggle::before {
-  content: '';
-  position: absolute;
-  top: 0;
-  bottom: 0;
-  left: 0;
-  right: calc(18px - 1.4rem);
-}
-
-/* Expanded properties affect color only; reveal the control on title hover
+/* Expanded properties affect color only; reveal the control on header hover
  * or when keyboard navigation focuses the button itself. */
-.memo-title-shell:hover .memo-title-properties-toggle,
+.memo-document-header:hover .memo-title-properties-toggle,
 .memo-title-properties-toggle:focus-visible {
   opacity: 1;
   pointer-events: auto;
