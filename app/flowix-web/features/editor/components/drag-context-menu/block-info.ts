@@ -121,6 +121,10 @@ export function getFocusedAgentThreadCardInfo(editor: Editor): CurrentBlockInfo 
   return result
 }
 
+const CALLOUT_CONTENT_SELECTOR = ':scope > .flowix-callout-content'
+const INNER_BLOCK_SELECTOR =
+  'p, h1, h2, h3, h4, h5, h6, ul, ol, li, table, .tableWrapper, blockquote, pre, .code-block-wrapper, .ProseMirror-node'
+
 /**
  * Resolve the block under a pointer position. Used by the drag handle to
  * follow the mouse, so block selection does not require focusing (and thereby
@@ -138,8 +142,148 @@ export function getBlockInfoAtCoords(
 ): CurrentBlockInfo | null {
   const view = editor.view
   if (!view || view.isDestroyed) return null
-  return blockInfoFromCoords(view, clientX, clientY)
-    ?? blockInfoFromDom(view, clientX, clientY)
+
+  // Callouts expose two drag units: the container (icon rail / padding) and
+  // each inner block (text rows). Resolve that distinction from the DOM before
+  // `posAtCoords`, which would otherwise always pick one of the inner blocks.
+  const calloutInfo = calloutBlockInfoAtCoords(view, clientX, clientY)
+  if (calloutInfo !== undefined) return calloutInfo
+
+  // Columns need the same treatment: in a column's left gutter `posAtCoords`
+  // resolves to the `columns` / `column` container, which has no visible block
+  // and therefore no handle. Resolving the row from the DOM keeps the handle
+  // stable no matter which side the pointer enters from.
+  const columnInfo = columnBlockInfoAtCoords(view, clientX, clientY)
+  if (columnInfo !== undefined) return columnInfo
+
+  const coordsInfo = blockInfoFromCoords(view, clientX, clientY)
+  if (coordsInfo && !isLayoutContainer(coordsInfo.typeName)) return coordsInfo
+  return blockInfoFromDom(view, clientX, clientY)
+}
+
+/** Containers that group blocks but never own a drag handle themselves. */
+function isLayoutContainer(typeName: string): boolean {
+  return typeName === 'columns' || typeName === 'column'
+}
+
+function columnBlockInfoAtCoords(
+  view: Editor['view'],
+  clientX: number,
+  clientY: number,
+): CurrentBlockInfo | null | undefined {
+  const element = document.elementFromPoint(clientX, clientY)
+  if (!(element instanceof Element) || !view.dom.contains(element)) return undefined
+
+  const column = element.closest<HTMLElement>('.flowix-column')
+  if (!column || !view.dom.contains(column)) return undefined
+
+  const inner = element.closest<HTMLElement>(INNER_BLOCK_SELECTOR)
+  if (inner && column.contains(inner)) {
+    const info = blockInfoFromNodeElement(view, inner)
+    if (info && !isLayoutContainer(info.typeName)) return info
+  }
+
+  // Pointer on the column's gutter/padding: pick the row under Y.
+  return blockInfoFromColumn(view, column, clientY) ?? undefined
+}
+
+function blockInfoFromNodeElement(
+  view: Editor['view'],
+  element: HTMLElement,
+): CurrentBlockInfo | null {
+  try {
+    return blockInfoAtPosition(view, view.posAtDOM(element, 0))
+  } catch {
+    return null
+  }
+}
+
+function nearestChildAtY(container: HTMLElement, clientY: number): HTMLElement | null {
+  let best: HTMLElement | null = null
+  let bestDistance = Number.POSITIVE_INFINITY
+  for (const child of Array.from(container.children)) {
+    if (!(child instanceof HTMLElement)) continue
+    const rect = child.getBoundingClientRect()
+    const distance = clientY < rect.top
+      ? rect.top - clientY
+      : clientY > rect.bottom
+        ? clientY - rect.bottom
+        : 0
+    if (distance < bestDistance) {
+      bestDistance = distance
+      best = child
+    }
+  }
+  return best
+}
+
+/**
+ * `undefined` means "no callout under the pointer, use the generic resolver".
+ * A returned value (including null) is authoritative for callout hits.
+ */
+function calloutBlockInfoAtCoords(
+  view: Editor['view'],
+  clientX: number,
+  clientY: number,
+): CurrentBlockInfo | null | undefined {
+  const element = document.elementFromPoint(clientX, clientY)
+  if (!(element instanceof Element) || !view.dom.contains(element)) return undefined
+
+  const callout = element.closest<HTMLElement>('.flowix-callout')
+  if (!callout || !view.dom.contains(callout)) return undefined
+
+  const content = callout.querySelector<HTMLElement>(CALLOUT_CONTENT_SELECTOR)
+  if (!content) {
+    return blockInfoFromNodeElement(view, callout) ?? undefined
+  }
+
+  // The icon rail is the explicit container handle, independent of Y.
+  const icon = callout.querySelector<HTMLElement>(':scope > .flowix-callout-icon')
+  if (icon && icon.contains(element)) {
+    return blockInfoFromNodeElement(view, callout) ?? undefined
+  }
+
+  // Above/below the content band (the callout's vertical padding) selects the
+  // container. This is what lets a left-to-right approach pick up the row
+  // handle as soon as the pointer enters the content band, instead of being
+  // captured by the padding and shown at the container's top edge.
+  const contentRect = content.getBoundingClientRect()
+  if (clientY < contentRect.top || clientY > contentRect.bottom) {
+    return blockInfoFromNodeElement(view, callout) ?? undefined
+  }
+
+  // Inside the content band the hovered block owns the handle. This keeps
+  // rows, list items and nested columns individually draggable while the
+  // container stays reachable from the icon rail and the vertical padding.
+  const inner = element.closest<HTMLElement>(INNER_BLOCK_SELECTOR)
+  if (inner && content.contains(inner)) {
+    const info = blockInfoFromNodeElement(view, inner)
+    if (info) return info
+  }
+
+  // Column gutters / padding inside a callout keep the column resolution so
+  // the handle does not collapse onto the `columns` container itself.
+  const column = element.closest<HTMLElement>('.flowix-column')
+  if (column && content.contains(column)) {
+    const info = blockInfoFromColumn(view, column, clientY)
+    if (info) return info
+  }
+
+  // The pointer can be over the callout's horizontal padding (outside the
+  // content DOM) while still on a content row. Resolve that row by Y so the
+  // handle does not depend on entering from a particular side.
+  const nearest = nearestChildAtY(content, clientY)
+  if (nearest) {
+    const nestedColumn = nearest.querySelector<HTMLElement>('.flowix-column')
+    if (nestedColumn) {
+      const info = blockInfoFromColumn(view, nestedColumn, clientY)
+      if (info) return info
+    }
+    const info = blockInfoFromNodeElement(view, nearest)
+    if (info) return info
+  }
+
+  return blockInfoFromNodeElement(view, callout) ?? undefined
 }
 
 function blockInfoFromCoords(

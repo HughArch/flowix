@@ -193,6 +193,9 @@ export function textBlockContentY(
 function getVisibleBlockElement(info: CurrentBlockInfo): HTMLElement | null {
   if (info.typeName === 'image' || info.typeName === 'videoAttachment') return info.dom
   if (info.typeName === 'agentThreadCard') return info.dom
+  // The callout NodeView itself is the visible block; `closest` would walk up
+  // past it because `.flowix-callout` is not in BLOCK_SELECTOR.
+  if (info.typeName === 'callout') return info.dom
 
   if (info.typeName === 'table') {
     if (info.dom.matches('table, .tableWrapper')) return info.dom

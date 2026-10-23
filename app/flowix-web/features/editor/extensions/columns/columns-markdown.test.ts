@@ -243,6 +243,46 @@ describe('columns markdown', () => {
     expect(textOf(columns)).toContain('外层右');
   });
 
+  it('keeps a callout inside a column as callout content', () => {
+    const source = `::: columns
+
+:::: column width=100
+
+::: callout color="yellow"
+
+列内着重块
+
+:::
+
+::::
+
+:::: column width=100
+
+右侧
+
+::::
+
+:::`;
+    const editor = createEditor(source);
+    const columns = columnsOf(editor);
+
+    expect(columns).toBeDefined();
+    expect(columns!.content).toHaveLength(2);
+    const left = columns!.content![0].content ?? [];
+    expect(left.map((node) => node.type)).toEqual(['callout']);
+    expect(left[0].attrs).toMatchObject({ color: 'yellow' });
+    expect(textOf(columns)).toContain('列内着重块');
+
+    const saved = serializeEditorMarkdown(editor);
+    const expected = withoutTrailingEmptyParagraph(editor.getJSON());
+    editor.commands.setContent(saved, { contentType: 'markdown' });
+    const reparsed = withoutTrailingEmptyParagraph(editor.getJSON());
+
+    expect(reparsed).toEqual(expected);
+    expect(reparsed.content?.[0].content).toHaveLength(2);
+    expect(reparsed.content?.[0].content?.[0].content?.[0].type).toBe('callout');
+  });
+
   it('normalizes widths into the supported range', () => {
     expect(normalizeColumnWidth(undefined)).toBe(100);
     expect(normalizeColumnWidth('abc')).toBe(100);

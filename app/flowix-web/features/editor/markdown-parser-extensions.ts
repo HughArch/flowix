@@ -22,6 +22,7 @@ import { AgentThreadCardMarkdownExtension } from '@features/agent/thread-card/ag
 // also re-exports editor NodeViews, whose i18n/store imports must stay out of
 // the worker bundle.
 import { ColumnsNode, ColumnNode } from '@features/editor/extensions/columns/columns';
+import { CalloutNode } from '@features/editor/extensions/callout/callout';
 import { guardListMarkdownTokenizer } from './markdown-list-tokenizer';
 
 /**
@@ -91,5 +92,8 @@ export function createMarkdownParserExtensions() {
     // know both container nodes or parsing would drop the structure.
     ColumnsNode,
     ColumnNode,
+    // Callouts use the same fenced-div tokenizer family; without this node the
+    // background parser would flatten the structure into paragraphs.
+    CalloutNode,
   ];
 }

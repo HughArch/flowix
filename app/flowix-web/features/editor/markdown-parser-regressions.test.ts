@@ -84,6 +84,15 @@ describe('worker parses content that previously forced the browser parser', () =
     expect(JSON.stringify(card)).toContain('thread-legacy');
   });
 
+  it('keeps a callout as a node', () => {
+    const document = parseInWorker(
+      '::: callout icon="⚠️" color="yellow"\n\n注意\n\n:::',
+    );
+    const callout = document.content?.find(node => node.type === 'callout');
+    expect(callout).toBeDefined();
+    expect(callout?.attrs).toMatchObject({ icon: '⚠️', color: 'yellow' });
+  });
+
   it.each([
     ['block html', 'Before\n\n<div>keep me</div>\n\nAfter'],
     ['inline html', 'a <span class="x">keep</span> b'],

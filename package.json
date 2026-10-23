@@ -40,7 +40,9 @@
     "pi:bundle:prepare": "node scripts/prepare-pi-bundle.mjs",
     "release:updater": "bash scripts/release.sh",
     "verify:flowix-package": "node scripts/verify-flowix-package.mjs",
-    "icons:phosphor:bold": "node scripts/extract-phosphor-bold-paths.mjs"
+    "icons:phosphor:bold": "node scripts/extract-phosphor-bold-paths.mjs",
+    "emoji:catalog": "node scripts/generate-emoji-catalog.mjs",
+    "emoji:flags": "node scripts/generate-flag-assets.mjs"
   },
   "dependencies": {
     "@base-ui/react": "^1.3.0",
@@ -106,6 +108,7 @@
   "devDependencies": {
     "@earendil-works/pi-ai": "1.1.0",
     "@tauri-apps/cli": "^2",
+    "@twemoji/svg": "^15.0.0",
     "@types/papaparse": "^5.5.2",
     "@types/react": "^19.1.8",
     "@types/react-dom": "^19.1.6",
@@ -115,6 +118,7 @@
     "@vitejs/plugin-react": "^4.6.0",
     "@yao-pkg/pkg": "6.21.0",
     "autoprefixer": "^10.4.20",
+    "emojibase-data": "^18.0.0",
     "esbuild": "0.25.12",
     "jsdom": "^29.1.1",
     "postcss": "^8.4.49",

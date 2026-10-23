@@ -335,9 +335,16 @@ export function useBlockMenuActions(
       },
     ]
 
-    return blockTypeName === 'agentThreadCard'
-      ? actions.filter((action) => action.id === 'delete')
-      : actions
+    if (blockTypeName === 'agentThreadCard') {
+      return actions.filter((action) => action.id === 'delete')
+    }
+    if (blockTypeName === 'callout') {
+      // The handle targets the whole container, so text-block conversions do
+      // not apply. Keep deletion and the column operations (splitting a callout
+      // into columns stays valid).
+      return actions.filter((action) => action.group === 'danger' || action.group === 'layout')
+    }
+    return actions
   }, [
     blockTypeName,
     onMenuItem,

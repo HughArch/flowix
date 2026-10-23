@@ -739,7 +739,7 @@ function moveDraggedBlock(view: EditorView, clientX: number, clientY: number): b
       mergeAdjacentRootLists(tr, tr.mapping.map(target.insertPos, -1))
     }
     removeEmptyLists(tr)
-    fillEmptyColumns(tr, state.schema)
+    fillEmptyContainers(tr, state.schema)
     tr.setMeta(blockDragPluginKey, null)
     view.dispatch(tr.scrollIntoView())
     return true
@@ -761,16 +761,18 @@ function rebalanceColumnsInTransaction(tr: Transaction, columnsPos: number): voi
 }
 
 /**
- * Deleting the only block of a column leaves a schema-invalid empty container.
- * Keep the column (the UI shows an empty-column placeholder) by restoring one
- * empty paragraph.
+ * Deleting the only block of a column (or callout) leaves a schema-invalid
+ * empty container. Keep the container (the column UI shows an empty-column
+ * placeholder) by restoring one empty paragraph.
  */
-function fillEmptyColumns(tr: Transaction, schema: EditorView['state']['schema']): void {
+function fillEmptyContainers(tr: Transaction, schema: EditorView['state']['schema']): void {
   const paragraph = schema.nodes.paragraph
   if (!paragraph) return
   const empty: number[] = []
   tr.doc.descendants((node, pos) => {
-    if (node.type.name === 'column' && node.childCount === 0) empty.push(pos)
+    if ((node.type.name === 'column' || node.type.name === 'callout') && node.childCount === 0) {
+      empty.push(pos)
+    }
     return true
   })
   for (let index = empty.length - 1; index >= 0; index -= 1) {
@@ -829,7 +831,7 @@ function moveDraggedBlockToNewColumn(
 
     cleanupSourceLists(tr, state, drag)
     removeEmptyLists(tr)
-    fillEmptyColumns(tr, state.schema)
+    fillEmptyContainers(tr, state.schema)
     tr.setMeta(blockDragPluginKey, null)
     view.dispatch(tr.scrollIntoView())
     return true

@@ -7,6 +7,7 @@ import {
   LinkSimpleIcon,
   ListBulletsIcon,
   ListNumbersIcon,
+  LightbulbIcon,
   FunctionIcon,
   MinusIcon,
   PaperclipIcon,
@@ -39,6 +40,7 @@ export type SlashMenuItemId =
   | 'heading-4'
   | 'paragraph'
   | 'blockquote'
+  | 'callout'
   | 'code-block'
   | 'table'
   | 'table-reference'
@@ -235,6 +237,13 @@ export const SLASH_MENU_ITEMS: SlashMenuItem[] = [
     labelKey: 'editor.slash.label.quote',
     keywords: ['quote', 'blockquote', 'yinyong', '引用'],
     icon: QuotesIcon,
+    sectionKey: 'editor.slash.section.addBlock',
+  },
+  {
+    id: 'callout',
+    labelKey: 'editor.slash.label.callout',
+    keywords: ['callout', 'zzk', 'callout block', 'zhuozhong', '着重', '强调', '提示', '高亮'],
+    icon: LightbulbIcon,
     sectionKey: 'editor.slash.section.addBlock',
   },
   {

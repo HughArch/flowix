@@ -2446,3 +2446,318 @@ html.flowix-block-dragging * {
 .flowix-column-drop-right {
   box-shadow: inset -4px 0 0 var(--brand);
 }
+
+/* ── Callout / 着重块 (Flowus-style) ──────────────────────────────────────
+   The NodeView supplies `.flowix-callout` (icon rail + content). Colours map
+   onto the existing `--flowix-text-*` palette so the callout background stays
+   in sync with highlights and line backgrounds in every theme. */
+.flowix-callout {
+  --flowix-callout-color: var(--flowix-text-gray);
+  position: relative;
+  display: flex;
+  align-items: flex-start;
+  gap: 0.5rem;
+  margin: 0 0 calc(var(--editor-font-size, 16px) * var(--editor-line-height, 1.8) * 0.25);
+  padding: 0.65rem 0.85rem;
+  border-radius: 8px;
+  background: color-mix(in oklch, var(--flowix-callout-color) 11%, transparent);
+}
+
+.flowix-callout[data-color="red"] {
+  --flowix-callout-color: var(--flowix-text-red);
+}
+
+.flowix-callout[data-color="orange"] {
+  --flowix-callout-color: var(--flowix-text-orange);
+}
+
+.flowix-callout[data-color="yellow"] {
+  --flowix-callout-color: var(--flowix-text-yellow);
+}
+
+.flowix-callout[data-color="green"] {
+  --flowix-callout-color: var(--flowix-text-green);
+}
+
+.flowix-callout[data-color="cyan"] {
+  --flowix-callout-color: var(--flowix-text-cyan);
+}
+
+.flowix-callout[data-color="blue"] {
+  --flowix-callout-color: var(--flowix-text-blue);
+}
+
+.flowix-callout[data-color="purple"] {
+  --flowix-callout-color: var(--flowix-text-purple);
+}
+
+.flowix-callout[data-color="pink"] {
+  --flowix-callout-color: var(--flowix-text-pink);
+}
+
+.flowix-callout[data-color="gray"] {
+  --flowix-callout-color: var(--flowix-text-gray);
+}
+
+.flowix-callout-icon {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.6rem;
+  height: 1.6rem;
+  margin-top: 0.1rem;
+  padding: 0;
+  border: 0;
+  border-radius: 6px;
+  background: transparent;
+  font-size: 1.15rem;
+  line-height: 1;
+  cursor: pointer;
+  transition: background 120ms;
+}
+
+.flowix-callout-icon:hover {
+  background: var(--hover-bg);
+}
+
+/* Flags come from bundled Twemoji SVGs: Windows has no flag glyphs. */
+.flowix-callout-icon img {
+  width: 1.15rem;
+  height: 1.15rem;
+  object-fit: contain;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+.flowix-callout-content {
+  flex: 1;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.flowix-callout-content > :first-child {
+  margin-top: 0;
+}
+
+/* NodeView content sits below `.tiptap > *`, so mirror the editor's paragraph
+   rhythm here (same rule as `.flowix-column-content`). */
+.flowix-callout-content > p {
+  margin: 0;
+  padding-bottom: calc(var(--editor-font-size, 16px) * var(--editor-line-height, 1.8) * 0.25);
+  white-space: pre-wrap;
+}
+
+.flowix-callout-content > p:empty,
+.flowix-callout-content > p:has(> br.ProseMirror-trailingBreak:only-child) {
+  min-height: calc(var(--editor-font-size, 16px) * var(--editor-line-height, 1.8));
+}
+
+.flowix-callout-content > p:empty::before {
+  content: "\00a0";
+}
+
+.flowix-callout-content > :is(h1, h2, h3, h4) {
+  margin: 0.35rem 0 0.2rem;
+}
+
+.flowix-callout-content > :is(h1, h2, h3, h4):first-child {
+  margin-top: 0;
+}
+
+.flowix-callout-content > :is(ul, ol) {
+  margin: 0.15rem 0;
+  padding-left: 1.4rem;
+}
+
+/* Icon + colour picker, mounted on document.body (outside the editor DOM). */
+.flowix-callout-picker {
+  position: fixed;
+  z-index: 1000;
+  width: 320px;
+  padding: 10px;
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  background: var(--popover);
+  color: var(--popover-foreground);
+  box-shadow: 0 12px 28px rgb(0 0 0 / 18%);
+}
+
+/* Built-in scenarios: one click applies icon + background together. */
+.flowix-callout-picker__presets {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 4px;
+  margin-bottom: 8px;
+}
+
+.flowix-callout-picker__preset {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  height: 28px;
+  padding: 0 8px;
+  border: 1px solid color-mix(in oklch, var(--flowix-preset-color) 30%, transparent);
+  border-radius: 6px;
+  background: color-mix(in oklch, var(--flowix-preset-color) 12%, transparent);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.75rem;
+  line-height: 1;
+  text-align: left;
+  cursor: pointer;
+}
+
+.flowix-callout-picker__preset:hover {
+  background: color-mix(in oklch, var(--flowix-preset-color) 20%, transparent);
+}
+
+.flowix-callout-picker__preset-icon {
+  font-size: 15px;
+  line-height: 1;
+}
+
+.flowix-callout-picker__search {
+  width: 100%;
+  height: 28px;
+  margin: 0 0 8px;
+  padding: 0 8px;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--background);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.78rem;
+  outline: none;
+}.flowix-callout-picker__search:focus {
+  border-color: var(--brand);
+}
+
+.flowix-callout-picker__search:disabled {
+  opacity: 0.6;
+}
+
+.flowix-callout-picker__tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin-bottom: 6px;
+}
+
+.flowix-callout-picker__tab {
+  padding: 2px 6px;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted-foreground);
+  font: inherit;
+  font-size: 0.68rem;
+  line-height: 1.5;
+  cursor: pointer;
+}
+
+.flowix-callout-picker__tab:hover {
+  background: var(--hover-bg);
+}
+
+.flowix-callout-picker__tab[data-active] {
+  background: var(--hover-bg);
+  color: var(--foreground);
+  font-weight: 600;
+}
+
+.flowix-callout-picker__scroll {
+  max-height: 190px;
+  overflow-y: auto;
+  overflow-x: hidden;
+  overscroll-behavior: contain;
+  /* Reserve the scrollbar gutter up front so the virtual grid's column count
+     does not change when the scrollbar appears. */
+  scrollbar-gutter: stable;
+}
+
+.flowix-callout-picker__grid {
+  position: relative;
+}
+
+/* Virtualised window: only the rows around the viewport exist in the DOM. */
+.flowix-callout-picker__window {
+  position: absolute;
+  top: 0;
+  left: 0;
+  display: grid;
+  gap: 2px;
+  justify-items: center;
+}
+
+.flowix-callout-picker__empty {
+  padding: 18px 0;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  text-align: center;
+}
+
+.flowix-callout-picker__icon {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  font-size: 17px;
+  line-height: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  cursor: pointer;
+}
+
+.flowix-callout-picker__icon[hidden] {
+  display: none;
+}
+
+.flowix-callout-picker__icon img {
+  width: 22px;
+  height: 22px;
+  object-fit: contain;
+  border-radius: 2px;
+  pointer-events: none;
+}
+
+/* Multi-codepoint ZWJ sequences render wider than one glyph; scale them down
+   so adjacent emoji never overlap inside the compact grid. */
+.flowix-callout-picker__icon[data-wide] {
+  font-size: 13px;
+}
+
+.flowix-callout-picker__icon:hover {
+  background: var(--hover-bg);
+}
+
+.flowix-callout-picker__label {
+  margin: 8px 0 6px;
+  color: var(--muted-foreground);
+  font-size: 0.72rem;
+  font-weight: 600;
+}
+
+.flowix-callout-picker__swatches {
+  display: flex;
+  gap: 6px;
+}
+
+.flowix-callout-picker__swatch {
+  width: 20px;
+  height: 20px;
+  padding: 0;
+  border: 1px solid color-mix(in oklch, var(--flowix-swatch-color) 45%, transparent);
+  border-radius: 50%;
+  background: color-mix(in oklch, var(--flowix-swatch-color) 55%, transparent);
+  cursor: pointer;
+}
+
+.flowix-callout-picker__swatch[data-active] {
+  box-shadow: 0 0 0 2px var(--popover), 0 0 0 4px var(--flowix-swatch-color);
+}

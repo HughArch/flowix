@@ -22,6 +22,19 @@ function createListSchema() {
   })
 }
 
+function createCalloutSchema() {
+  return new Schema({
+    nodes: {
+      doc: { content: 'block+' },
+      paragraph: { group: 'block', content: 'text*' },
+      text: { group: 'inline' },
+      callout: { group: 'block', content: 'block+' },
+      bulletList: { group: 'block', content: 'listItem+' },
+      listItem: { content: 'paragraph block*' },
+    },
+  })
+}
+
 function createEditorFixture() {
   const editorContent = document.createElement('div')
   editorContent.className = 'editor-content'
@@ -199,5 +212,62 @@ describe('getCurrentBlockInfo list items', () => {
     expect(info?.typeName).toBe('listItem')
     expect(info?.pos).toBe(nestedItemPos)
     expect(info?.dom).toBe(li)
+  })
+})
+
+describe('getCurrentBlockInfo callouts', () => {
+  it('resolves the inner paragraph for selection-driven handles', () => {
+    const schema = createCalloutSchema()
+    const doc = schema.nodes.doc.create(null, schema.nodes.callout.create(null, [
+      schema.nodes.paragraph.create(null, schema.text('inside')),
+    ]))
+    const state = EditorState.create({
+      schema,
+      doc,
+      selection: TextSelection.create(doc, 3),
+    })
+    const paragraphDom = document.createElement('p')
+    const editor = {
+      isDestroyed: false,
+      view: {
+        state,
+        nodeDOM: (pos: number) => pos === 1 ? paragraphDom : null,
+      },
+    } as unknown as Editor
+
+    const info = getCurrentBlockInfo(editor)
+
+    expect(info?.typeName).toBe('paragraph')
+    expect(info?.pos).toBe(1)
+    expect(info?.dom).toBe(paragraphDom)
+  })
+
+  it('resolves the list item inside a callout', () => {
+    const schema = createCalloutSchema()
+    const listItem = schema.nodes.listItem.create(null, [
+      schema.nodes.paragraph.create(null, schema.text('item')),
+    ])
+    const doc = schema.nodes.doc.create(null, schema.nodes.callout.create(null, [
+      schema.nodes.bulletList.create(null, listItem),
+    ]))
+    const state = EditorState.create({
+      schema,
+      doc,
+      selection: TextSelection.create(doc, 5),
+    })
+    const listItemDom = document.createElement('li')
+    const editor = {
+      isDestroyed: false,
+      view: {
+        state,
+        nodeDOM: (pos: number) => pos === 2 ? listItemDom : null,
+      },
+    } as unknown as Editor
+
+    const info = getCurrentBlockInfo(editor)
+
+    expect(info?.typeName).toBe('listItem')
+    expect(info?.pos).toBe(2)
+    expect(info?.dom).toBe(listItemDom)
   })
 })

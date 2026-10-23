@@ -6,6 +6,7 @@ import type {
   MarkdownToken,
   MarkdownTokenizer,
 } from '@tiptap/core';
+import { closesFence, fencedDivClose, fencedDivOpen } from '../fenced-div';
 
 export const COLUMN_WIDTH_UNIT = 100;
 export const MIN_COLUMN_WIDTH = 25;
@@ -13,9 +14,8 @@ export const MAX_COLUMNS = 5;
 export const MIN_COLUMNS = 2;
 
 const COLUMNS_OPEN_RE = /^:::[ \t]+columns[ \t]*$/;
-const COLUMNS_CLOSE_RE = /^:::[ \t]*$/;
-const COLUMN_OPEN_RE = /^::::[ \t]+column(?:[ \t]+width=(\S+))?[ \t]*$/;
-const COLUMN_CLOSE_RE = /^::::[ \t]*$/;
+const COLUMN_FENCE_LENGTH = 4;
+const COLUMNS_FENCE_LENGTH = 3;
 const FENCE_RE = /^(```+|~~~+)/;
 
 interface Line {
@@ -80,8 +80,10 @@ export function scanColumns(source: string): ScannedColumns | null {
   let columnStart: number | null = null;
   let columnWidth = COLUMN_WIDTH_UNIT;
   let fence: string | null = null;
-  let nestedColumns = 0;
-  let nestedColumnDepth = 0;
+  // Fence lengths of containers opened inside the current column. Any fenced
+  // div counts (`::: callout`, nested `::: columns`, `:::: column`, …), so a
+  // nested container's closing `:::` cannot be mistaken for the outer close.
+  const nestedFences: number[] = [];
   let position = first.next;
 
   while (position < source.length) {
@@ -101,47 +103,51 @@ export function scanColumns(source: string): ScannedColumns | null {
       continue;
     }
 
-    // A nested `::: columns` block is kept as column content. Its closing
-    // `:::` must not close the outer container.
-    if (COLUMNS_OPEN_RE.test(line.text)) {
-      nestedColumns += 1;
-      continue;
-    }
+    const closeLength = fencedDivClose(line.text);
+    if (closeLength !== null) {
+      if (nestedFences.length > 0) {
+        if (closesFence(closeLength, nestedFences[nestedFences.length - 1])) {
+          nestedFences.pop();
+        }
+        continue;
+      }
 
-    const columnOpen = COLUMN_OPEN_RE.exec(line.text);
-    if (columnOpen) {
       if (columnStart !== null) {
-        // Nested `:::: column` markers stay in the content and are degraded by
-        // the parser; they must not restart the outer column.
-        nestedColumnDepth += 1;
+        // Only a fence at least as long as the `:::: column` opener closes the
+        // column. A shorter `:::` is malformed content, not a close.
+        if (closesFence(closeLength, COLUMN_FENCE_LENGTH)) {
+          columns.push({
+            width: columnWidth,
+            source: source.slice(columnStart, line.start),
+          });
+          columnStart = null;
+        }
         continue;
       }
-      columnStart = line.next;
-      columnWidth = normalizeColumnWidth(columnOpen[1]);
-      continue;
-    }
 
-    if (COLUMN_CLOSE_RE.test(line.text)) {
-      if (nestedColumnDepth > 0) {
-        nestedColumnDepth -= 1;
-        continue;
-      }
-      if (columnStart === null) return null;
-      columns.push({
-        width: columnWidth,
-        source: source.slice(columnStart, line.start),
-      });
-      columnStart = null;
-      continue;
-    }
-
-    if (COLUMNS_CLOSE_RE.test(line.text)) {
-      if (nestedColumns > 0) {
-        nestedColumns -= 1;
-        continue;
-      }
-      if (columnStart !== null || columns.length < MIN_COLUMNS) return null;
+      if (!closesFence(closeLength, COLUMNS_FENCE_LENGTH)) continue;
+      if (columns.length < MIN_COLUMNS) return null;
       return { raw: source.slice(0, line.next), columns };
+    }
+
+    const opening = fencedDivOpen(line.text);
+    if (opening) {
+      if (opening.name === 'columns') {
+        nestedFences.push(opening.fenceLength);
+        continue;
+      }
+
+      if (opening.name === 'column' && opening.fenceLength === COLUMN_FENCE_LENGTH && columnStart === null) {
+        const widthMatch = /(?:^|\s)width=(\S+)/.exec(opening.rest);
+        columnStart = line.next;
+        columnWidth = normalizeColumnWidth(widthMatch?.[1]);
+        continue;
+      }
+
+      // Nested `:::: column`, callout, or any other fenced container: keep it
+      // as content and balance its fence.
+      nestedFences.push(opening.fenceLength);
+      continue;
     }
   }
 
