@@ -79,6 +79,9 @@ pub async fn fns_sync_notebook(
     notebook_id: String,
 ) -> Result<Option<FnsNotebookSyncOutcome>, String> {
     let service = app.state::<AppState>().fns_sync.clone();
+    if let Some(reason) = service.sync_blocker(&app, &notebook_id) {
+        return Err(reason);
+    }
     service.sync_notebook(&app, &notebook_id).await
 }
 

@@ -277,6 +277,30 @@ impl FnsSyncService {
         }
     }
 
+    /// Explain why a manual sync of this notebook would be a no-op, if so.
+    /// Automatic callers ignore this and simply skip.
+    pub fn sync_blocker(&self, app: &AppHandle, notebook_id: &str) -> Option<String> {
+        let config = self.read_config();
+        if !config.enabled {
+            return Some("sync is not enabled".to_owned());
+        }
+        if config.api.trim().is_empty() {
+            return Some("server url is not configured".to_owned());
+        }
+        if config.tokens.is_empty() {
+            return Some("no sync token has been added".to_owned());
+        }
+        let (_, root) = notebook_root(app, notebook_id).ok()?;
+        let state = match SyncState::load(&root).ok().flatten() {
+            Some(state) => state,
+            None => return Some("notebook is not bound to a token".to_owned()),
+        };
+        if config.token(&state.token_id).is_none() {
+            return Some("the bound token no longer exists".to_owned());
+        }
+        None
+    }
+
     /// Sync one notebook. Returns `Ok(None)` when sync is disabled or not
     /// configured, so callers can treat it as a no-op rather than an error.
     pub async fn sync_notebook(
@@ -465,7 +489,7 @@ impl FnsSyncService {
 
         let mut client = FnsClient::connect(&config.api, &token.token, &info)
             .await
-            .map_err(|error| error.to_string())?;
+            .map_err(describe_sync_error)?;
 
         let options = flowix_fns::SyncOptions {
             max_attachment_bytes: config.max_attachment_bytes.min(i64::MAX as u64) as i64,
@@ -479,7 +503,7 @@ impl FnsSyncService {
             &options,
         )
         .await
-        .map_err(|error| error.to_string())?;
+        .map_err(describe_sync_error)?;
 
         let _ = client.close().await;
 
@@ -639,6 +663,20 @@ impl FnsSyncService {
 
 pub fn now_ms() -> i64 {
     flowix_fns::engine::now_ms()
+}
+
+fn describe_sync_error(error: flowix_fns::FnsError) -> String {
+    match &error {
+        flowix_fns::FnsError::Server { code: 315, .. } => {
+            "令牌权限不匹配（315）：该令牌的客户端类型与服务端 scope 不一致。\
+             Obsidian 插件签发的令牌请在「同步令牌」里把客户端类型设为 obsidianPlugin。"
+                .to_owned()
+        }
+        flowix_fns::FnsError::Server { code: 314, .. } => {
+            "令牌权限不足（314）：当前令牌不允许该操作。".to_owned()
+        }
+        _ => error.to_string(),
+    }
 }
 
 fn notebook_root(app: &AppHandle, notebook_id: &str) -> Result<(String, PathBuf), String> {

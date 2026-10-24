@@ -178,16 +178,21 @@ export function SyncStatusPanel() {
   const syncNow = useCallback(async () => {
     if (!selectedNotebookId) return;
     setBusy(true);
+    // Reflect progress immediately; the backend flips `running` a moment later.
+    void refresh().catch(() => {});
     try {
       const outcome = await fns.syncNotebook(selectedNotebookId);
       await refresh();
       if (outcome) {
         toast.success(
-          `${t('sync.panel.done')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed}`,
+          `${t('sync.panel.done')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed} · 📎 ↓${outcome.filesPulled} ↑${outcome.filesPushed}`,
         );
+      } else {
+        toast.error(t('sync.panel.skipped'));
       }
     } catch (error) {
       toast.error(`${t('sync.panel.failed')}: ${errorMessage(error)}`);
+      await refresh().catch(() => {});
     } finally {
       setBusy(false);
     }
@@ -197,6 +202,7 @@ export function SyncStatusPanel() {
   const status = globalStatus && globalStatus.notebookId === selectedNotebookId
     ? globalStatus
     : null;
+  const syncing = busy || status?.running === true;
   const lastRecord = notebookState?.history[0];
   const lastSync = lastRecord
     ? formatTime(lastRecord.at, language)
@@ -288,7 +294,7 @@ export function SyncStatusPanel() {
             <div className="flex items-center justify-between">
               <span className="text-[var(--muted-foreground)]">{t('sync.panel.status')}</span>
               <span className="text-[var(--foreground)]">
-                {status?.running ? t('sync.panel.running') : t('sync.panel.idle')}
+                {syncing ? t('sync.panel.running') : t('sync.panel.idle')}
               </span>
             </div>
             <div className="flex items-center justify-between">
@@ -312,16 +318,16 @@ export function SyncStatusPanel() {
             <Button
               size="sm"
               className="flex-1 rounded-lg"
-              disabled={busy || status?.running}
+              disabled={syncing}
               onClick={() => void syncNow()}
             >
-              {t('sync.panel.syncCurrent')}
+              {syncing ? t('sync.panel.running') : t('sync.panel.syncCurrent')}
             </Button>
             <Button
               size="sm"
               variant="outline"
               className="rounded-lg"
-              disabled={busy || status?.running}
+              disabled={syncing}
               onClick={() => void unbind()}
             >
               {t('sync.panel.unbind')}

@@ -19,7 +19,9 @@ export function FnsSyncSection() {
   const [editingId, setEditingId] = useState<string | null>(null);
   const [tokenLabel, setTokenLabel] = useState('');
   const [tokenValue, setTokenValue] = useState('');
-  const [tokenClientType, setTokenClientType] = useState('flowix');
+  // No default: the value must match the token's `c:` scope dimension, and
+  // guessing wrong only surfaces as a 315 at sync time.
+  const [tokenClientType, setTokenClientType] = useState('');
 
   const load = useCallback(async () => {
     const [nextConfig, nextStatus] = await Promise.all([fns.getConfig(), fns.getStatus()]);
@@ -59,11 +61,11 @@ export function FnsSyncSection() {
     setEditingId(null);
     setTokenLabel('');
     setTokenValue('');
-    setTokenClientType('flowix');
+    setTokenClientType('');
   }, []);
 
   const saveToken = useCallback(async () => {
-    if (!tokenLabel.trim() || (!editingId && !tokenValue.trim())) return;
+    if (!tokenLabel.trim() || !tokenClientType || (!editingId && !tokenValue.trim())) return;
     setBusy(true);
     try {
       const next = await fns.upsertToken({
@@ -232,18 +234,21 @@ export function FnsSyncSection() {
             placeholder={t('preferences.fns.tokenPlaceholder')}
             onChange={(event) => setTokenValue(event.target.value)}
           />
-          <input
+          <select
             className={FIELD_INPUT_CLASS}
             value={tokenClientType}
-            placeholder={t('preferences.fns.clientType')}
             onChange={(event) => setTokenClientType(event.target.value)}
-          />
+          >
+            <option value="">{t('preferences.fns.clientTypePlaceholder')}</option>
+            <option value="obsidianPlugin">{t('preferences.fns.clientTypeObsidian')}</option>
+            <option value="flowix">{t('preferences.fns.clientTypeFlowix')}</option>
+          </select>
           <p className="text-xs text-[var(--muted-foreground)]">{t('preferences.fns.clientTypeHint')}</p>
           <div className="flex gap-2">
             <Button
               size="sm"
               className="rounded-lg"
-              disabled={busy || !tokenLabel.trim() || (!editingId && !tokenValue.trim())}
+              disabled={busy || !tokenLabel.trim() || !tokenClientType || (!editingId && !tokenValue.trim())}
               onClick={() => void saveToken()}
             >
               {t('preferences.fns.save')}
