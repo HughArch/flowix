@@ -188,6 +188,9 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     }
 
     const handlePointerLeave = (event: PointerEvent) => {
+      // 触屏在抬手时必然派发 pointerleave, 不能据此隐藏手柄, 否则长按
+      // 刚唤出的菜单会立刻消失; 触屏改由下一次点击或菜单关闭来清理。
+      if (event.pointerType === 'touch') return
       // Moving from the editor surface onto the handle must not clear the
       // hover; the handle is often rendered outside the scroll surface.
       if (event.relatedTarget instanceof Node && containerRef.current?.contains(event.relatedTarget)) return
@@ -196,6 +199,61 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
       if (!hoveredBlockRef.current) return
       hoveredBlockRef.current = null
       state.refresh()
+    }
+
+    // ── 触屏长按唤出块手柄 ─────────────────────────────────────────────
+    // 触屏没有 hover, 手柄此前只能由指针悬停驱动, 手机上永远不出现。
+    // 长按 (~480ms) 目标块即定位手柄; 位移超过阈值(滚动)或提前抬手则取消。
+    let pressTimer: number | null = null
+    let pressPoint: { x: number; y: number } | null = null
+    let longPressFired = false
+
+    const clearPressTimer = () => {
+      if (pressTimer != null) {
+        window.clearTimeout(pressTimer)
+        pressTimer = null
+      }
+      pressPoint = null
+    }
+
+    const clearTouchHandle = () => {
+      if (menuOpenRef.current || isDraggingRef.current) return
+      if (!hoveredBlockRef.current) return
+      hoveredBlockRef.current = null
+      state.refresh()
+    }
+
+    const handleTouchPointerDown = (event: PointerEvent) => {
+      if (event.pointerType !== 'touch') return
+      if (menuOpenRef.current || isDraggingRef.current) return
+      longPressFired = false
+      const info = getBlockInfoAtCoords(editor, event.clientX, event.clientY)
+      if (!info) return
+      pressPoint = { x: event.clientX, y: event.clientY }
+      pressTimer = window.setTimeout(() => {
+        pressTimer = null
+        pressPoint = null
+        longPressFired = true
+        if (editor.isDestroyed || editor.view.isDestroyed) return
+        hoveredBlockRef.current = info
+        state.refresh()
+      }, 480)
+    }
+
+    const handleTouchPointerMove = (event: PointerEvent) => {
+      if (event.pointerType !== 'touch' || !pressPoint) return
+      if (Math.hypot(event.clientX - pressPoint.x, event.clientY - pressPoint.y) > 8) {
+        clearPressTimer()
+      }
+    }
+
+    const handleTouchPointerUp = () => {
+      if (pressTimer == null && !longPressFired) return
+      const wasLongPress = longPressFired
+      clearPressTimer()
+      longPressFired = false
+      // 普通点按用于编辑内容: 收起上次长按留下的手柄。
+      if (!wasLongPress) clearTouchHandle()
     }
 
     /**
@@ -225,11 +283,20 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     surface.addEventListener('pointermove', handlePointerMove)
     surface.addEventListener('pointerleave', handlePointerLeave)
     surface.addEventListener('contextmenu', handleContextMenu)
+    surface.addEventListener('pointerdown', handleTouchPointerDown)
+    surface.addEventListener('pointermove', handleTouchPointerMove)
+    surface.addEventListener('pointerup', handleTouchPointerUp)
+    surface.addEventListener('pointercancel', handleTouchPointerUp)
     return () => {
       if (frame != null) window.cancelAnimationFrame(frame)
       surface.removeEventListener('pointermove', handlePointerMove)
       surface.removeEventListener('pointerleave', handlePointerLeave)
       surface.removeEventListener('contextmenu', handleContextMenu)
+      surface.removeEventListener('pointerdown', handleTouchPointerDown)
+      surface.removeEventListener('pointermove', handleTouchPointerMove)
+      surface.removeEventListener('pointerup', handleTouchPointerUp)
+      surface.removeEventListener('pointercancel', handleTouchPointerUp)
+      clearPressTimer()
     }
   }, [editor, state.refresh])
 
