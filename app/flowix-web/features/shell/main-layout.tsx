@@ -50,9 +50,14 @@ import { NotebookDeleteDialog } from '@features/shell/components/notebook-delete
 import { ExternalFileDropOverlay } from '@features/shell/components/drag-overlay/external-file-drop-overlay';
 import { useMainMiddleColumnController } from '@features/shell/hooks/use-main-middle-column-controller';
 import { useMainPanelController } from '@features/shell/hooks/use-main-panel-controller';
+import { useIsMobileViewport } from '@features/shell/hooks/use-is-mobile-viewport';
+import { useMobileBackButton } from '@features/shell/hooks/use-mobile-back-button';
+import { useMobileSwipeGestures } from '@features/shell/hooks/use-mobile-swipe-gestures';
+import { isMobileDevice } from '@shared/platform';
 import { ListColumn } from '@features/shell/components/list-column';
 import { ListColumnContent } from '@features/shell/components/list-column-content';
 import { useI18n } from '@/lib/i18n';
+import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { openPath } from '@platform/tauri/opener';
 import { Button } from '@shared/ui/button';
@@ -592,6 +597,48 @@ export function MainLayout({
       : null,
     emptyMessage: t('shell.emptyDocument'),
   });
+  // ── 手机单栏 ──────────────────────────────────────────────────────────
+  // 窄视口下不做三栏并排: 有文档时整屏显示文档, 否则整屏显示列表。
+  // 列表可临时覆盖回来 (标题栏侧栏按钮), 选中任意目标后自动收起覆盖。
+  const mobileSingleColumn = useIsMobileViewport();
+  const hasOpenWorkSurface = workColumnPresentation.content.status !== 'empty';
+  const [mobileListOverlay, setMobileListOverlay] = useState(false);
+  useEffect(() => {
+    setMobileListOverlay(false);
+  }, [mobileSingleColumn, navigationState.target]);
+  const showMobileList = mobileSingleColumn && (mobileListOverlay || !hasOpenWorkSurface);
+  const effectiveMemoListHidden = mobileSingleColumn ? !showMobileList : isMemoListHidden;
+  const effectiveDocumentHidden = mobileSingleColumn && showMobileList;
+  const effectiveBrowserColumnVisible = browserColumnVisible && !mobileSingleColumn;
+  const toggleMobileList = useCallback(() => {
+    setMobileListOverlay((visible) => !visible);
+  }, []);
+  const handleCollapseListColumn = mobileSingleColumn ? () => setMobileListOverlay(false) : collapseMemoList;
+  const handleToggleListColumn = mobileSingleColumn ? toggleMobileList : handleToggleMemoList;
+  // 手机单栏: 列表里打开笔记 (含已打开的那条) 后收起覆盖层回到文档。
+  useEffect(() => {
+    if (!mobileSingleColumn) return;
+    const handleOpenNote = () => setMobileListOverlay(false);
+    window.addEventListener('flowix:open-note-from-list', handleOpenNote);
+    return () => window.removeEventListener('flowix:open-note-from-list', handleOpenNote);
+  }, [mobileSingleColumn]);
+  // Android 返回键: 抽屉 → 文档返回列表 → 退出应用。
+  useMobileBackButton({
+    isMobile: isMobileDevice(),
+    isDrawerOpen: noteNavigationPhase !== 'closed',
+    isDocumentVisible: mobileSingleColumn && !showMobileList,
+    onCloseDrawer: closeNoteNavigation,
+    onShowList: () => setMobileListOverlay(true),
+  });
+  // 文档内容区手势: 下滑搜索 / 右滑列表 / 左滑目录。
+  const mobileGestureRef = useRef<HTMLDivElement>(null);
+  useMobileSwipeGestures({
+    enabled: mobileSingleColumn && !showMobileList,
+    targetRef: mobileGestureRef,
+    onSwipeDown: () => window.dispatchEvent(new Event('flowix:open-palette')),
+    onSwipeRight: () => setMobileListOverlay(true),
+    onSwipeLeft: () => window.dispatchEvent(new Event('flowix:open-outline')),
+  });
   const workSurfaceViewId = workColumnPresentation.content.status === 'surface'
     ? workColumnPresentation.content.surface.instanceKey
     : '';
@@ -634,7 +681,7 @@ export function MainLayout({
     }
   }, [t]);
   const documentTitlebarProps = {
-    reserveWindowsControls: !browserColumnVisible,
+    reserveWindowsControls: !effectiveBrowserColumnVisible,
     surfaceChrome: workHeaderStyle === 'media' ? 'media' as const : 'document' as const,
     showEditorFontSwitcher: workColumnPresentation.content.status === 'surface'
       && workCapabilities.includes('edit')
@@ -656,9 +703,9 @@ export function MainLayout({
         : null,
     },
     sidebar: {
-      hidden: isMemoListHidden,
+      hidden: effectiveMemoListHidden,
       noteNavigationVisible,
-      onToggle: handleToggleMemoList,
+      onToggle: handleToggleListColumn,
     },
     navigation: {
       canNavigateBack,
@@ -754,14 +801,15 @@ export function MainLayout({
           />
           {/* List column: one mounted subtree shared by the docked sidebar and hover preview. */}
           <ListColumn
-            hidden={isMemoListHidden}
+            hidden={effectiveMemoListHidden}
             previewVisible={memoListPreviewVisible}
             previewPhase={memoListPreviewPhase === 'open' ? 'open' : 'closing'}
             memoColWidth={memoColWidth}
+            mobileFullWidth={mobileSingleColumn}
             isDraggingListDivider={isDraggingListDivider}
             selectedNotebook={selectedNotebook}
             noteNavigationPhase={noteNavigationPhase}
-            onCollapseMemoList={collapseMemoList}
+            onCollapseMemoList={handleCollapseListColumn}
             onOpenPreferences={(tab) => void windows.openPreferences(tab)}
             onPreviewEnter={handleMemoListPreviewEnter}
             onPreviewLeave={handleMemoListPreviewLeave}
@@ -798,7 +846,7 @@ export function MainLayout({
             </ListColumnContent>
           </ListColumn>
           {/* List <-> Memo detail divider */}
-          {!isMemoListHidden && (
+          {!effectiveMemoListHidden && !mobileSingleColumn && (
             <div className="relative z-[60] h-full w-px shrink-0 bg-[var(--divider)]">
               <ColumnResizeHandle label="调整列表列宽度" width={memoColWidth} onResize={resizeMemoList} onDraggingChange={setIsDraggingListDivider} />
             </div>
@@ -806,7 +854,10 @@ export function MainLayout({
           {/* Keep the drop overlay outside the scrolling columns so it covers the viewport. */}
           <div
             data-workspace-drop-overlay-host
-            className="relative isolate flex min-h-0 min-w-0 flex-1 overflow-hidden"
+            className={cn(
+              'relative isolate flex min-h-0 min-w-0 flex-1 overflow-hidden',
+              effectiveDocumentHidden && 'hidden',
+            )}
           >
           <div
             data-document-columns-layout="split"
@@ -814,19 +865,20 @@ export function MainLayout({
           >
           {/* Memo detail */}
             <div
+              ref={mobileGestureRef}
               className="relative h-full min-w-0 flex flex-col bg-[var(--document-bg)]"
-              style={browserColumnVisible
+              style={effectiveBrowserColumnVisible
                 ? {
-                    minWidth: DOCUMENT_PANEL_MIN_WIDTH,
+                    minWidth: mobileSingleColumn ? 0 : DOCUMENT_PANEL_MIN_WIDTH,
                     flex: `0 0 ${browserColumnLayout.mainColumnWidth}px`,
                   }
-                : { minWidth: DOCUMENT_PANEL_MIN_WIDTH, flex: 1 }}
+                : { minWidth: mobileSingleColumn ? 0 : DOCUMENT_PANEL_MIN_WIDTH, flex: 1 }}
               data-workspace-host="main-third"
               data-workspace-focused={focusedHostId === 'main-third' ? '' : undefined}
               onPointerDown={(event) => focusWorkspaceHostFromEvent(event, 'main-third')}
               onFocusCapture={(event) => focusWorkspaceHostFromEvent(event, 'main-third')}
             >
-            {isMemoListHidden && (
+            {isMemoListHidden && !mobileSingleColumn && (
               <button
                 type="button"
                 data-memo-list-preview-edge-trigger
@@ -851,10 +903,10 @@ export function MainLayout({
             {workColumnPresentation.header.kind === 'agent' ? (
               <AgentConversationTitlebar
                 instanceId={workColumnPresentation.header.instanceId}
-                reserveWindowsControls={!browserColumnVisible}
-                isMiddleColumnCollapsed={isMemoListHidden}
+                reserveWindowsControls={!effectiveBrowserColumnVisible}
+                isMiddleColumnCollapsed={effectiveMemoListHidden}
                 isSidebarVisible={noteNavigationPhase !== 'closed'}
-                onExpandSidebar={handleToggleMemoList}
+                onExpandSidebar={handleToggleListColumn}
                 canNavigateBack={canNavigateBack}
                 canNavigateForward={canNavigateForward}
                 onNavigateBack={handleNavigateBack}
@@ -924,7 +976,7 @@ export function MainLayout({
               )}
             </div>
           </div>
-          {browserColumnVisible && (
+          {effectiveBrowserColumnVisible && (
             <Suspense fallback={null}>
               <BrowserColumn
                 width={browserColumnLayout.browserColumnWidth}

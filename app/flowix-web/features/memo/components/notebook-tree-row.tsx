@@ -403,7 +403,11 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
           title={item.fullPath}
           onClick={isFolder
             ? selectFolderOnSingleClick
-            : (event) => onOpen(item.fullPath, event)}
+            : (event) => {
+                // 手机单栏: shell 监听后收起列表覆盖层, 回到文档 (文件夹不触发)。
+                window.dispatchEvent(new Event('flowix:open-note-from-list'));
+                onOpen(item.fullPath, event);
+              }}
           onDoubleClick={isFolder
             ? toggleFolderOnDoubleClick
             : undefined}

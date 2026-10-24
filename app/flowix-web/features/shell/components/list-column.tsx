@@ -15,6 +15,8 @@ interface ListColumnProps {
   previewVisible: boolean;
   previewPhase: ListColumnPreviewPhase;
   memoColWidth: number;
+  /** 手机单栏: 列表占满整屏, 忽略拖拽保存的列宽。 */
+  mobileFullWidth?: boolean;
   isDraggingListDivider: boolean;
   selectedNotebook: Notebook | null;
   noteNavigationPhase: NoteNavigationDrawerPhase;
@@ -60,6 +62,7 @@ export function ListColumn({
   previewVisible,
   previewPhase,
   memoColWidth,
+  mobileFullWidth = false,
   isDraggingListDivider,
   selectedNotebook,
   noteNavigationPhase,
@@ -141,7 +144,7 @@ export function ListColumn({
           : 'transition-[width] duration-150 ease-out',
         previewVisible ? 'overflow-visible' : 'overflow-hidden',
       )}
-      style={{ width: hidden ? 0 : memoColWidth }}
+      style={{ width: hidden ? 0 : mobileFullWidth ? '100%' : memoColWidth }}
       aria-hidden={hidden && !previewVisible}
       onPointerDown={onPointerDown}
     >

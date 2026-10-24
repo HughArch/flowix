@@ -1152,3 +1152,17 @@ html.flowix-drag-drop-active * {
   transform: translateX(100%);
   pointer-events: none;
 }
+
+/* ── 触控设备 (无 hover) ────────────────────────────────────────────────
+ * 列表/文件树里的操作按钮常以 group-hover:opacity-* 显示。触屏没有
+ * hover 状态, 这些控件将永远不可见。这里把 hover 终态固化下来:
+ * opacity-100 常驻显示, opacity-0 保持隐藏 (图标切换取 hover 态)。 */
+@media (hover: none) {
+  .group-hover\:opacity-100 {
+    opacity: 1;
+  }
+
+  .group-hover\:opacity-0 {
+    opacity: 0;
+  }
+}
