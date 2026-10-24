@@ -8,6 +8,7 @@ pub mod agent_session;
 mod agent_types;
 pub mod agent_wire;
 mod app;
+#[cfg(desktop)]
 mod app_update;
 mod artifact;
 mod cli_link;

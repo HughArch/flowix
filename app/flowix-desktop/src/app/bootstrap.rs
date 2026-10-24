@@ -188,17 +188,25 @@ pub fn run() {
     // 实际绑定�?.setup() �?��里完成�?
     let memo_watcher = Arc::new(RwLock::new(MemoWatcher::new(memo_file_arc.clone())));
 
-    crate::app::native_menu::configure(tauri::Builder::default())
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            handle_second_instance(app, args);
-        }))
+    let builder = crate::app::native_menu::configure(tauri::Builder::default());
+    // 桌面专属插件 ── single-instance / updater 只有桌面实现, 依赖已在
+    // Cargo.toml 按 cfg(not(any(target_os = "android", target_os = "ios")))
+    // 收窄, 这里同步按 cfg(desktop) 门控装配。
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        handle_second_instance(app, args);
+    }));
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(crate::frame_scrollbar::init())
-        .manage(crate::app_update::AppUpdateState::default())
+        .plugin(crate::frame_scrollbar::init());
+    #[cfg(desktop)]
+    let builder = builder.manage(crate::app_update::AppUpdateState::default());
+    builder
         .manage(open_targets::PendingOpenTargets::default())
         .manage(memo_watcher.clone())
         .on_window_event(commands::window_shutdown::on_window_event)

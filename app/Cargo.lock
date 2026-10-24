@@ -1292,7 +1292,6 @@ dependencies = [
  "hostname",
  "image",
  "libc",
- "machine-uid",
  "minisign-verify",
  "nanoid",
  "notify",
@@ -2612,17 +2611,6 @@ name = "log"
 version = "0.4.33"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "0ceec5bc11778974d1bcb055b18002eba7f4b3518b6a0081b3af5f21666da9ad"
-
-[[package]]
-name = "machine-uid"
-version = "0.5.4"
-source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "7d7217d573cdb141d6da43113b098172e057d39915d79c4bdedbc3aacd46bd96"
-dependencies = [
- "libc",
- "windows-registry 0.6.1",
- "windows-sys 0.61.2",
-]
 
 [[package]]
 name = "markup5ever"
