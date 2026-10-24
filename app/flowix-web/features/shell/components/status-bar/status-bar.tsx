@@ -2,6 +2,7 @@
 
 import { useEffect, useRef, useState } from 'react';
 import { Info, ListTodo } from 'lucide-react';
+import { ArrowsClockwiseIcon } from '@phosphor-icons/react';
 import type { CSSProperties } from 'react';
 import mcpPluginIcon from '@/assets/mcp-plugin.svg';
 import { Tooltip } from '@shared/ui/tooltip';
@@ -28,6 +29,7 @@ import {
   type CloudSyncStatus,
 } from '@platform/tauri/client';
 import type { AppUpdaterState } from '@features/shell/hooks/use-app-updater';
+import { useSyncPanelStore } from '@features/sync-status';
 
 interface StatusBarProps {
   onSelectNotebook: (notebook: Notebook) => void;
@@ -265,6 +267,16 @@ export function StatusBar({
           </span>
         )}
         <PiRuntimeStatusIndicator />
+        <Tooltip content={t('sync.panel.open')} side="top">
+          <button
+            type="button"
+            onClick={() => useSyncPanelStore.getState().toggle()}
+            className="h-full flex items-center justify-center px-1.5 py-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+            aria-label={t('sync.panel.open')}
+          >
+            <ArrowsClockwiseIcon className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
         <Tooltip content={t('preferences.tabs.mcp')} side="top">
           <button
             type="button"

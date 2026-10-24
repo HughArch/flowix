@@ -30,6 +30,7 @@ fn emit_deleted_path(app: &AppHandle, notebook_id: &str, relative_path: &str) {
         relative_path.to_string(),
     )
     .emit(app);
+    crate::fns_sync::schedule_notebook_sync(app, notebook_id);
 }
 
 fn delete_note_path_internal(

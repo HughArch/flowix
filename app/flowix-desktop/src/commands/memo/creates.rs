@@ -97,6 +97,7 @@ pub async fn add_path_document(
             created.entry.relative_path.clone(),
             origin_window_label,
         );
+        let sync_notebook_id = created.notebook.id.clone();
         let result = CreatedPathDocumentResult {
             notebook_id: created.notebook.id,
             relative_path: created.entry.relative_path.clone(),
@@ -106,6 +107,7 @@ pub async fn add_path_document(
             notebook_change,
         };
         result.publish_created(&app);
+        crate::fns_sync::schedule_notebook_sync(&app, &sync_notebook_id);
         Ok::<_, MemoCreateError>(result)
     }).await.map_err(|message| MemoCreateError { code: "INTERNAL_ERROR", message })?
 }
@@ -1409,6 +1411,7 @@ fn rename_memo_title_blocking(
         renamed.notebook.id.clone(), old_relative, renamed.entry.relative_path.clone(), false,
     );
     notebook_change.emit(&app);
+    crate::fns_sync::schedule_notebook_sync(&app, &renamed.notebook.id);
     Ok(RenameMemoTitleResult {
         notebook_change,
         memo: None,

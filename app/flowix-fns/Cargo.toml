@@ -1,0 +1,31 @@
+[package]
+name = "flowix-fns"
+version.workspace = true
+description = "Client for Fast Note Sync Service (FNS) used by Flowix"
+authors = ["you"]
+edition.workspace = true
+
+[lib]
+name = "flowix_fns"
+path = "src/lib.rs"
+
+[[bin]]
+name = "fns-probe"
+path = "src/bin/fns_probe.rs"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+thiserror = { workspace = true }
+tracing = { workspace = true }
+tokio = { version = "1", features = ["rt-multi-thread", "macros", "net", "time", "sync"] }
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+futures-util = "0.3"
+filetime = "0.2"
+walkdir = { workspace = true }
+uuid = { workspace = true }
+url = "2"
+
+[dev-dependencies]
+tempfile = { workspace = true }

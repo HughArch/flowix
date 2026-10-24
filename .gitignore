@@ -73,3 +73,6 @@ appstoreconnect/
 
 # WorkBuddy agent workspace data
 .workbuddy/
+
+# Local sync credentials (FNS API token etc.) — never commit
+.local/

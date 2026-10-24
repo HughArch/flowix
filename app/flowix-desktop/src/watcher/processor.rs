@@ -102,6 +102,9 @@ fn emit_path_changed_with_content(
 ) {
     emit_path_changed_ui(app, ctx, relative_path, deleted);
     record_cloud_path_change_with_content(app, ctx, relative_path, deleted, content);
+    // External edits are not self-writes, so this is exactly the case the
+    // FNS engine needs to pick up.
+    crate::fns_sync::schedule_notebook_sync(app, &ctx.notebook_id);
 }
 
 fn emit_path_changed_ui(app: &AppHandle, ctx: &NotebookWatchContext, relative_path: &str, deleted: bool) {

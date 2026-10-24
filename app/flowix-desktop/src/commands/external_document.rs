@@ -378,6 +378,11 @@ pub async fn write_external_document(
                         };
                     }
                 };
+                // Editor saves are marked as self-writes, so the watcher will
+                // not see them; schedule the FNS sync from the write path.
+                for notebook_id in &notebook_ids {
+                    crate::fns_sync::schedule_notebook_sync(&app, notebook_id);
+                }
                 ExternalDocumentWriteOutcome::Saved {
                     path: path.to_string_lossy().to_string(),
                     content: saved_content,

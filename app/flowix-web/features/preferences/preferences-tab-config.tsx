@@ -77,6 +77,12 @@ export const PREFERENCE_TAB_GROUPS = [
         visibleInProductMenu: false,
         ...lazyPreferenceTab(() => import('@features/preferences/sections/cloud-sync').then((module) => ({ default: module.CloudSyncSection }))),
       },
+      {
+        id: 'fnsSync', labelKey: 'preferences.tabs.fnsSync',
+        icon: <CloudIcon className="w-4 h-4" />, contentWidth: 'normal',
+        visibleInProductMenu: false,
+        ...lazyPreferenceTab(() => import('@features/preferences/sections/fns-sync').then((module) => ({ default: module.FnsSyncSection }))),
+      },
     ],
   },
   {

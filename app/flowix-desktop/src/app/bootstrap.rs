@@ -336,6 +336,9 @@ pub fn run() {
                 export_access: Default::default(),
                 user_config: user_config_for_state.clone(),
                 cloud_sync: cloud_sync_for_state.clone(),
+                fns_sync: Arc::new(crate::fns_sync::FnsSyncService::new(
+                    user_config_for_state.config_dir().clone(),
+                )),
                 cloud_environment,
                 system_data,
                 agent_external_config,
@@ -358,6 +361,15 @@ pub fn run() {
             };
             app_state.upload_sessions.start_cleanup();
             app.manage(app_state);
+            {
+                // Pull remote changes once the UI is up. The delay is a user
+                // setting; only bound notebooks participate.
+                let fns_service = app.state::<AppState>().fns_sync.clone();
+                let fns_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    fns_service.sync_after_startup(fns_app).await;
+                });
+            }
             external_runtimes.listen_for_terminal_events(app.handle());
             #[cfg(windows)]
             {
@@ -531,6 +543,17 @@ pub fn run() {
             commands::boot::notify_startup_interactive,
             commands::boot::record_startup_stage,
             commands::boot::wait_for_startup_ready,
+            crate::fns_sync::fns_get_config,
+            crate::fns_sync::fns_patch_config,
+            crate::fns_sync::fns_get_status,
+            crate::fns_sync::fns_get_history,
+            crate::fns_sync::fns_upsert_token,
+            crate::fns_sync::fns_delete_token,
+            crate::fns_sync::fns_get_notebook_state,
+            crate::fns_sync::fns_bind_notebook,
+            crate::fns_sync::fns_unbind_notebook,
+            crate::fns_sync::fns_sync_notebook,
+            crate::fns_sync::fns_sync_all,
             commands::cloud::cloud_get_state,
             commands::cloud::cloud_register,
             commands::cloud::cloud_login,
