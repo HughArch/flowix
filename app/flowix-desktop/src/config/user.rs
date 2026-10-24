@@ -36,9 +36,6 @@ const BOOT_DIR_NAME: &str = "boot";
 const PREFERENCE_FILE_NAME: &str = "preference.json";
 const DEFAULT_SECRET_DB_NAME: &str = "default.db";
 const SECRET_ACCOUNT_NAME: &str = "default";
-const CLOUD_SECRET_PROVIDER: &str = "flowix_cloud_refresh";
-const CLOUD_DEV_STAGING_SECRET_PROVIDER: &str = "flowix_cloud_dev_staging_refresh";
-const CLOUD_DEV_PRODUCTION_SECRET_PROVIDER: &str = "flowix_cloud_dev_production_refresh";
 
 /// ~/.flowix/boot/preference.json —用户偏好设置
 /// 瀛楁鍏ㄩ儴 #[serde(default)], 鏂囦欢鎹熷潖鎴栫己澶辨椂鍥為€€鍒伴粯璁ゅ€笺€?
@@ -199,10 +196,6 @@ pub struct PreferenceFile {
     /// Explicit path to the user's DSH CLI, when automatic discovery is insufficient.
     #[serde(default)]
     pub dsh_cli_path: Option<String>,
-    /// Saved Cloud target name for development builds. Unknown legacy values
-    /// fall back to the build default; release builds always use production.
-    #[serde(default)]
-    pub cloud_environment: String,
     /// Memo list card presentation ("detailed" | "compact").
     #[serde(default)]
     pub memo_card_variant: String,
@@ -244,7 +237,6 @@ impl Default for PreferenceFile {
             language: String::default(),
             region: String::default(),
             dsh_cli_path: None,
-            cloud_environment: String::default(),
             memo_card_variant: String::default(),
             memo_list_view: "folders".to_string(),
             auto_open_created_notes_in_browser: true,
@@ -1177,56 +1169,6 @@ impl UserConfigStore {
             .map_err(|err| UserConfigError::SecretStore(err.to_string()))
     }
 
-    pub fn save_cloud_refresh_token(&self, token: &str) -> Result<(), UserConfigError> {
-        self.save_provider_secret(CLOUD_SECRET_PROVIDER, token)
-    }
-
-    pub fn load_cloud_refresh_token(&self) -> Result<Option<String>, UserConfigError> {
-        let account = entry_name(CLOUD_SECRET_PROVIDER, SECRET_ACCOUNT_NAME);
-        self.secrets
-            .load(&account)
-            .map(|value| value.map(|secret| secret.into_inner()))
-            .map_err(|err| UserConfigError::SecretStore(err.to_string()))
-    }
-
-    pub fn delete_cloud_refresh_token(&self) -> Result<(), UserConfigError> {
-        self.delete_provider_secret(CLOUD_SECRET_PROVIDER)
-    }
-
-    fn cloud_dev_secret_provider(environment: flowix_sync::CloudEnvironment) -> &'static str {
-        match environment {
-            flowix_sync::CloudEnvironment::Staging => CLOUD_DEV_STAGING_SECRET_PROVIDER,
-            flowix_sync::CloudEnvironment::Prod => CLOUD_DEV_PRODUCTION_SECRET_PROVIDER,
-        }
-    }
-
-    pub fn save_cloud_dev_refresh_token(
-        &self,
-        environment: flowix_sync::CloudEnvironment,
-        token: &str,
-    ) -> Result<(), UserConfigError> {
-        self.save_provider_secret(Self::cloud_dev_secret_provider(environment), token)
-    }
-
-    pub fn load_cloud_dev_refresh_token(
-        &self,
-        environment: flowix_sync::CloudEnvironment,
-    ) -> Result<Option<String>, UserConfigError> {
-        let provider = Self::cloud_dev_secret_provider(environment);
-        let account = entry_name(provider, SECRET_ACCOUNT_NAME);
-        self.secrets
-            .load(&account)
-            .map(|value| value.map(|secret| secret.into_inner()))
-            .map_err(|err| UserConfigError::SecretStore(err.to_string()))
-    }
-
-    pub fn delete_cloud_dev_refresh_token(
-        &self,
-        environment: flowix_sync::CloudEnvironment,
-    ) -> Result<(), UserConfigError> {
-        self.delete_provider_secret(Self::cloud_dev_secret_provider(environment))
-    }
-
     fn read_ai_config_from_disk(dir: &PathBuf) -> Option<AiConfigFile> {
         let path = dir.join(AI_CONFIG_FILE_NAME);
         match fs::read(&path) {
@@ -1246,60 +1188,6 @@ impl UserConfigStore {
         let text = toml::to_string_pretty(&config).ok()?;
         flowix_core::memo_file::atomic_write_bytes(&path, text.as_bytes()).ok()?;
         Some(config)
-    }
-}
-
-impl flowix_sync::RefreshTokenStore for UserConfigStore {
-    fn load(&self) -> Result<Option<String>, String> {
-        self.load_cloud_refresh_token()
-            .map_err(|error| error.to_string())
-    }
-
-    fn save(&self, token: &str) -> Result<(), String> {
-        self.save_cloud_refresh_token(token)
-            .map_err(|error| error.to_string())
-    }
-
-    fn delete(&self) -> Result<(), String> {
-        self.delete_cloud_refresh_token()
-            .map_err(|error| error.to_string())
-    }
-}
-
-pub struct CloudDevRefreshTokenStore {
-    user_config: std::sync::Arc<UserConfigStore>,
-    environment: flowix_sync::CloudEnvironment,
-}
-
-impl CloudDevRefreshTokenStore {
-    pub fn new(
-        user_config: std::sync::Arc<UserConfigStore>,
-        environment: flowix_sync::CloudEnvironment,
-    ) -> Self {
-        Self {
-            user_config,
-            environment,
-        }
-    }
-}
-
-impl flowix_sync::RefreshTokenStore for CloudDevRefreshTokenStore {
-    fn load(&self) -> Result<Option<String>, String> {
-        self.user_config
-            .load_cloud_dev_refresh_token(self.environment)
-            .map_err(|error| error.to_string())
-    }
-
-    fn save(&self, token: &str) -> Result<(), String> {
-        self.user_config
-            .save_cloud_dev_refresh_token(self.environment, token)
-            .map_err(|error| error.to_string())
-    }
-
-    fn delete(&self) -> Result<(), String> {
-        self.user_config
-            .delete_cloud_dev_refresh_token(self.environment)
-            .map_err(|error| error.to_string())
     }
 }
 
@@ -1922,21 +1810,6 @@ mod tests {
         // 浣欓噺銆傛敼榛樿鍊兼椂杩欐潯鍗曟祴蹇呴』鍚屾鏀广€?
         let cfg = AiModelConfig::default();
         assert_eq!(cfg.max_total_tokens, 180_000);
-    }
-
-    #[test]
-    fn cloud_refresh_token_round_trips_without_entering_preferences() {
-        let home = tempfile::tempdir().unwrap();
-        let store = test_user_config_store(home.path().to_path_buf());
-
-        assert_eq!(store.load_cloud_refresh_token().unwrap(), None);
-        store.save_cloud_refresh_token("refresh-secret").unwrap();
-        assert_eq!(
-            store.load_cloud_refresh_token().unwrap().as_deref(),
-            Some("refresh-secret")
-        );
-        store.delete_cloud_refresh_token().unwrap();
-        assert_eq!(store.load_cloud_refresh_token().unwrap(), None);
     }
 
     #[test]

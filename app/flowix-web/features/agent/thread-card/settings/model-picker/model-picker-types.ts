@@ -4,13 +4,9 @@ import type {
 } from "@/types/agent";
 
 export type AgentModelOption = {
-  source?: "flowix-cloud" | "custom";
   id: AgentCodexModel;
   label: string;
   description?: string;
-  subtitle?: string;
-  creditMultiplier?: number;
-  iconUrl?: string;
   reasoningEfforts?: AgentCodexReasoningEffort[];
   /** DeepSeek Harness llm-pi-ai route; absent for legacy/Codex options. */
   providerId?: string;

@@ -10,22 +10,6 @@ use flowix_core::memo_file::types::{DeleteTagReport, MoveTagReport};
 
 use crate::app::state::AppState;
 
-fn mark_tagged_memos_cloud_dirty(state: &AppState, notebook_id: &str, relative_paths: &[String]) {
-    for relative_path in relative_paths {
-        let cloud_id = flowix_sync::v2_path_note_id(notebook_id, relative_path);
-        if let Err(error) = state.cloud_sync.record_v2_local_change(
-            notebook_id,
-            &cloud_id,
-            flowix_sync::LocalChangeKind::Put,
-            "unobserved",
-        ) {
-            tracing::warn!(
-                "failed to persist cloud dirty tag change for {notebook_id}/{relative_path}: {error}"
-            );
-        }
-    }
-}
-
 #[derive(Serialize)]
 pub struct GetAllTagsResponse {
     pub tags: Vec<TagWithId>,
@@ -95,9 +79,8 @@ pub fn move_memo_tag(
     };
 
     let sync_notebook_id = notebook_id.as_deref().unwrap_or("nb_default");
-    mark_tagged_memos_cloud_dirty(state.inner(), sync_notebook_id, &affected_relative_paths);
     if !affected_relative_paths.is_empty() {
-        crate::commands::cloud::schedule_notebook_sync(app.clone(), sync_notebook_id.to_string());
+        crate::fns_sync::schedule_notebook_sync(&app, sync_notebook_id);
     }
     memo_events::emit(
         &app,
@@ -138,9 +121,8 @@ pub fn delete_memo_tag(
     };
 
     let sync_notebook_id = notebook_id.as_deref().unwrap_or("nb_default");
-    mark_tagged_memos_cloud_dirty(state.inner(), sync_notebook_id, &affected_relative_paths);
     if !affected_relative_paths.is_empty() {
-        crate::commands::cloud::schedule_notebook_sync(app.clone(), sync_notebook_id.to_string());
+        crate::fns_sync::schedule_notebook_sync(&app, sync_notebook_id);
     }
     // 2) one-shot emit TagsDeleted to the frontend.
     memo_events::emit(

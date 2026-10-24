@@ -17,11 +17,9 @@ import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { useAgentDataStore } from '@features/agent/store/agent-data-store';
 import { PiMcpSettings } from '@features/preferences/sections/pi-mcp-settings';
-import { useCloudAccountState } from '@features/preferences/hooks/use-cloud-account-state';
 
 type Draft = Omit<PiProviderConfig, 'credentialConfigured'>;
 const CUSTOM_PROVIDER = '__pi_custom_provider__';
-const FLOWIX_CLOUD_SOURCE = 'flowix-cloud';
 const FALLBACK_APIS = ['openai-completions', 'openai-responses', 'anthropic-messages'];
 const API_LABELS: Record<string, string> = {
   'openai-completions': 'OpenAI Chat Completions',
@@ -79,8 +77,6 @@ function modelsFromDraft(value: string, existing: PiModelEntryConfig[]): PiModel
 
 export function PiSettingsSection() {
   const { t } = useI18n();
-  const { state: cloudState } = useCloudAccountState();
-  const cloudAuthenticated = Boolean(cloudState?.authenticated);
   const [providers, setProviders] = useState<PiProviderConfig[]>([]);
   const [draft, setDraft] = useState<Draft | null>(null);
   const [providerTemplateId, setProviderTemplateId] = useState(CUSTOM_PROVIDER);
@@ -142,7 +138,7 @@ export function PiSettingsSection() {
     finally { setLoading(false); }
   }, []);
 
-  useEffect(() => { void reload(); }, [reload, cloudAuthenticated]);
+  useEffect(() => { void reload(); }, [reload]);
 
   useEffect(() => {
     let cancelled = false;
@@ -162,7 +158,6 @@ export function PiSettingsSection() {
   const catalogProviders = useMemo(() => providerCatalog?.providers ?? [], [providerCatalog]);
   const compatibleProviders = catalogProviders;
   const selectedCatalogProvider = catalogProviders.find((provider) => provider.id === draft?.id);
-  const byokProviders = providers.filter((provider) => provider.source !== FLOWIX_CLOUD_SOURCE);
 
   const beginEdit = (provider?: PiProviderConfig) => {
     setEditingId(provider?.id ?? null);
@@ -419,12 +414,12 @@ export function PiSettingsSection() {
         <SectionHeader title={t('preferences.pi.byokTitle')} />
         {loading && <div className="flex justify-center py-8"><Loader2 className="size-5 flowix-spin" /></div>}
         {error && <p className="text-sm text-[var(--destructive)]">{error}</p>}
-        {!loading && !error && byokProviders.length === 0 && !draft && (
+        {!loading && !error && providers.length === 0 && !draft && (
           <div className="rounded-lg border border-dashed border-[var(--divider)] px-4 py-6 text-center text-sm text-[var(--muted-foreground)]">
             {t('preferences.pi.byokEmpty')}
           </div>
         )}
-        {byokProviders.map((provider) => (
+        {providers.map((provider) => (
           <article key={provider.id} className={`rounded-xl border border-[var(--divider)] ${draft && editingId === provider.id ? '' : 'bg-[var(--card)] p-2.5'}`}>
             {draft && editingId === provider.id ? renderProviderForm(true) : (
               <>

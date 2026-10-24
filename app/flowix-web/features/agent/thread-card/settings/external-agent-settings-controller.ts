@@ -30,7 +30,6 @@ import { useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-st
 import {
   loadAgentModelCatalog,
 } from "@features/agent/services/agent-catalog-service";
-import { loadPiCloudModelCatalog } from "@features/agent/services/pi-cloud-model-service";
 import { useAgentRuntimeStore } from "@features/agent/store/agent-runtime-store";
 import { useAgentSessionStore } from "@features/agent/store/agent-session-store";
 import { useNoteStore } from "@features/memo/store/note-store";
@@ -66,7 +65,6 @@ import {
 } from "@features/agent/thread-card/agent-thread-card-icons";
 import {
   createPiModelPicker,
-  isFlowixCloudModelOption,
 } from "@features/agent/thread-card/settings/model-picker/pi-model-picker";
 import type { AgentModelOption } from "@features/agent/thread-card/settings/model-picker/model-picker-types";
 
@@ -136,23 +134,6 @@ function createPermissionModeIcon(
     icon.classList.add("agent-thread-card__permission-mode-icon--warning");
   }
   return icon;
-}
-
-function modelProviderIcon(iconUrl?: string): HTMLImageElement | undefined {
-  if (!iconUrl) return undefined;
-  try {
-    if (new URL(iconUrl).protocol !== "https:") return undefined;
-  } catch {
-    return undefined;
-  }
-  const image = document.createElement("img");
-  image.className = "agent-thread-card__model-provider-icon";
-  image.src = iconUrl;
-  image.alt = "";
-  image.loading = "lazy";
-  image.referrerPolicy = "no-referrer";
-  image.onerror = () => image.remove();
-  return image;
 }
 
 export type AgentEmptyStatePresentation = "inline-card" | "expanded";
@@ -274,8 +255,7 @@ export class ExternalAgentSettingsController {
     );
     this.unlistenPiCatalog = useAgentDataStore.subscribe((state, previous) => {
       if (this.getTypeKey() !== "pi") return;
-      if (state.piCloudAccountId === previous.piCloudAccountId
-        && state.agents.pi.catalog.models === previous.agents.pi.catalog.models) return;
+      if (state.agents.pi.catalog.models === previous.agents.pi.catalog.models) return;
       this.applyModelCatalog("pi", state.agents.pi.catalog.models);
     });
   }
@@ -499,7 +479,7 @@ export class ExternalAgentSettingsController {
     const cached = useAgentDataStore.getState().agents.pi.catalog.models;
     if (cached.items.length) this.applyModelCatalog("pi", cached);
 
-    void loadPiCloudModelCatalog({ force })
+    void loadAgentModelCatalog("pi", { force })
       .then((catalog) => this.applyModelCatalog("pi", catalog))
       .catch(() => {
         if (this.isDestroyed() || this.getTypeKey() !== "pi") return;
@@ -1669,17 +1649,6 @@ export class ExternalAgentSettingsController {
   }
 
   private selectExternalAgentModel(option: AgentModelOption): void {
-    if (this.getTypeKey() === "pi" && isFlowixCloudModelOption(option)) {
-      const state = useAgentDataStore.getState();
-      const isAvailableInCurrentSession = state.piCloudAccountId !== null
-        && state.agents.pi.catalog.models.items.some((model) =>
-          isFlowixCloudModelOption(model)
-          && model.id === option.id
-          && (model.providerId ?? "") === (option.providerId ?? ""),
-        );
-      if (!isAvailableInCurrentSession) return;
-      // Credit access is checked atomically by Cloud when a request starts.
-    }
     this.setExternalAgentModel(option);
     this.setSettingsPopoverOpen(false);
   }
@@ -1795,15 +1764,7 @@ export class ExternalAgentSettingsController {
     if (this.shouldShowPiModelEmptyState()) return [];
 
     const selection = this.resolveCurrentSelection();
-    const loadedModelOptions = this.getLoadedModelOptions();
-    // Keep the Flowix Cloud provider at the top of Pi's composer picker when
-    // its catalog entry is present. Preserve the order within each provider.
-    const modelOptions = this.getTypeKey() === "pi"
-      ? [
-          ...loadedModelOptions.filter(isFlowixCloudModelOption),
-          ...loadedModelOptions.filter((option) => !isFlowixCloudModelOption(option)),
-        ]
-      : loadedModelOptions;
+    const modelOptions = this.getLoadedModelOptions();
     const piDefaultProvider = this.getTypeKey() === "pi"
       ? modelOptions.find((option) => option.providerId === this.piDefaultProviderId)
       : undefined;
@@ -1829,17 +1790,12 @@ export class ExternalAgentSettingsController {
         : []),
       ...modelOptions,
     ];
-    const missingPiCloudModel = this.getTypeKey() === "pi"
-      && selection.providerId?.trim().toLocaleLowerCase().startsWith("flowix-cloud") === true;
     // Synthesize a tail row only when the current model is genuinely absent
     // from the directory. A model present under a different provider route is
     // reconciled above and rendered as its real option, never duplicated here.
-    // Flowix Cloud models are only valid while present in the active Cloud
-    // directory, so a stale selection must not survive logout as a synthetic row.
     if (
       selection.id !== "inherit" &&
       !(this.getTypeKey() === "pi" && !selection.id) &&
-      !missingPiCloudModel &&
       !options.some((option) =>
         option.id === selection.id
         && (option.providerId ?? "") === (selection.providerId ?? ""),
@@ -2034,15 +1990,11 @@ export class ExternalAgentSettingsController {
     if (this.getTypeKey() === "pi") {
       const picker = createPiModelPicker({
         models: options,
-        showMemberSection: this.getLoadedModelOptions().some(isFlowixCloudModelOption),
         selectedModelId: current,
         selectedProviderId: currentProviderId,
-        memberLabel: this.t("preferences.pi.cloudTitle"),
-        mineLabel: this.t("preferences.pi.byokTitle"),
         emptyLabel: this.t(
           this.piModelsLoadFailed ? "agent.model.loadFailed" : "agent.model.noneFound",
         ),
-        personalEmptyLabel: this.t("agent.pi.modelSection.mineEmpty"),
         createModelItem: (option) => this.createModelSettingsItem(option, current, currentProviderId),
       });
       this.popover.append(picker);
@@ -2249,13 +2201,7 @@ export class ExternalAgentSettingsController {
     current: AgentCodexModel,
     currentProviderId: string | undefined,
   ): HTMLElement {
-    const isPiCloudModel = this.getTypeKey() === "pi" && isFlowixCloudModelOption(option);
-    const description = isPiCloudModel ? undefined : [
-      option.subtitle?.trim(),
-      option.creditMultiplier != null
-        ? translate(this.getLanguage(), "preferences.pi.creditMultiplier", { value: option.creditMultiplier.toFixed(2) })
-        : this.getTypeKey() === "pi" ? undefined : option.description,
-    ].filter(Boolean).join(" · ");
+    const description = this.getTypeKey() === "pi" ? undefined : option.description;
     return createCodexSettingsItem(
       option.label,
       option.id === current
@@ -2264,7 +2210,6 @@ export class ExternalAgentSettingsController {
         void this.selectExternalAgentModel(option);
       },
       description,
-      { icon: modelProviderIcon(option.iconUrl) },
     );
   }
 

@@ -15,7 +15,6 @@ use crate::app::watchdog::spawn_external_agent_watchdog;
 use crate::cli_link;
 use crate::commands;
 use crate::config::user as user_config;
-use crate::memo_events::{self, MemoChangeSource, MemoDerivedChanged, MemoEvent};
 use crate::runtime_log;
 use crate::system_data::SystemData;
 use crate::watcher::MemoWatcher;
@@ -23,7 +22,7 @@ use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, RwLock};
 use std::time::{Duration, Instant};
-use tauri::{Emitter, Listener, Manager};
+use tauri::{Listener, Manager};
 
 fn record_startup_stage(startup: &crate::app::startup::StartupCoordinator, stage: &str) {
     runtime_log::record_event(
@@ -257,72 +256,6 @@ pub fn run() {
             // can spawn processes, so run it after the first workspace paint.
             agent_external_config.load_into_registry();
 
-            let is_dev_build = option_env!("FLOWIX_DEV_MODE") == Some("1");
-            // A saved Preferences selection is the source of truth. The build
-            // target only supplies the initial/default environment.
-            let cloud_environment = if is_dev_build {
-                let saved_environment = user_config_for_state
-                    .get_preference()
-                    .cloud_environment;
-                flowix_sync::CloudEnvironment::parse(&saved_environment)
-                    .unwrap_or_else(flowix_sync::default_cloud_environment)
-            } else {
-                flowix_sync::CloudEnvironment::Prod
-            };
-            runtime_log::record_event(
-                "info",
-                "cloud.environment.selected",
-                format!(
-                    "environment={}, api_base={}",
-                    cloud_environment.name(),
-                    cloud_environment.api_base()
-                ),
-            );
-            let cloud_sync_db_path = if is_dev_build {
-                user_config_dir_for_device
-                    .join("db")
-                    .join(format!("sync-dev-{}.db", cloud_environment.name()))
-            } else {
-                user_config_dir_for_device.join("db").join("sync.db")
-            };
-            let cloud_refresh_token_store: Arc<dyn flowix_sync::RefreshTokenStore> =
-                if is_dev_build {
-                    Arc::new(crate::config::CloudDevRefreshTokenStore::new(
-                        user_config_for_state.clone(),
-                        cloud_environment,
-                    ))
-                } else {
-                    user_config_for_state.clone()
-                };
-
-            let cloud_state_app = app.handle().clone();
-            let cloud_state_notifier: Arc<dyn Fn(flowix_sync::CloudState) + Send + Sync> =
-                Arc::new(move |state| {
-                    if let Err(error) = cloud_state_app.emit("cloud-state-changed", state) {
-                        tracing::warn!("failed to emit cloud state notification: {error}");
-                    }
-                });
-            let cloud_sync_for_state = Arc::new(
-                flowix_sync::SyncManager::new_with_session_dependencies_deferred(
-                    cloud_environment.api_base(),
-                    &cloud_sync_db_path,
-                    cloud_refresh_token_store.clone(),
-                    cloud_state_notifier.clone(),
-                )
-                .unwrap_or_else(|error| {
-                    tracing::error!(
-                        "failed to initialize cloud sync database: {error}; using a temporary database"
-                    );
-                    flowix_sync::SyncManager::new_with_session_dependencies_deferred(
-                        cloud_environment.api_base(),
-                        std::env::temp_dir().join(format!("flowix-sync-{}.db", std::process::id())),
-                        cloud_refresh_token_store.clone(),
-                        cloud_state_notifier.clone(),
-                    )
-                    .expect("failed to initialize temporary cloud sync database")
-                }),
-            );
-
             crate::dsh::set_user_selected_cli(
                 user_config_for_state
                     .get_preference()
@@ -335,11 +268,9 @@ pub fn run() {
                 security_bookmarks: security_bookmarks_for_state.clone(),
                 export_access: Default::default(),
                 user_config: user_config_for_state.clone(),
-                cloud_sync: cloud_sync_for_state.clone(),
                 fns_sync: Arc::new(crate::fns_sync::FnsSyncService::new(
                     user_config_for_state.config_dir().clone(),
                 )),
-                cloud_environment,
                 system_data,
                 agent_external_config,
                 memo_file: memo_file_for_state.clone(),
@@ -460,7 +391,6 @@ pub fn run() {
             spawn_workbench_startup(
                 app.handle().clone(),
                 memo_file_for_state.clone(),
-                cloud_sync_for_state.clone(),
                 memo_watcher.clone(),
                 user_config_for_watcher.clone(),
                 startup_coordinator.clone(),
@@ -481,7 +411,6 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // 偏好 (JSON, �?user_config)
             commands::product::get_product_info,
-            commands::product::set_cloud_environment,
             commands::product::open_log_dir,
             commands::product::open_file_with_default_app,
             commands::product::reveal_in_file_manager,
@@ -554,41 +483,8 @@ pub fn run() {
             crate::fns_sync::fns_unbind_notebook,
             crate::fns_sync::fns_sync_notebook,
             crate::fns_sync::fns_sync_all,
-            commands::cloud::cloud_get_state,
-            commands::cloud::cloud_register,
-            commands::cloud::cloud_login,
-            commands::cloud::cloud_sign_in_with_apple,
-            commands::cloud::cloud_start_google_sign_in,
-            commands::cloud::cloud_link_apple,
-            commands::cloud::cloud_logout,
-            commands::cloud::cloud_get_notebook_state,
-            commands::cloud::cloud_list_notebook_states,
-            commands::cloud::cloud_list_pending_file_operation_counts,
-            commands::cloud::cloud_list_notebooks,
-            commands::cloud::cloud_link_notebook,
-            commands::cloud::cloud_set_notebook_enabled,
-            commands::cloud::cloud_refresh_membership,
-            commands::cloud::cloud_ai_credit_balance,
-            commands::cloud::cloud_pi_model_availability,
-            commands::cloud::cloud_connect_pi_model_provider,
-            commands::cloud::cloud_refresh_pi_model_provider_at_startup,
-            commands::cloud::cloud_refresh_pi_model_provider,
-            commands::cloud::cloud_list_products,
-            commands::cloud::cloud_list_billing_orders,
-            commands::cloud::cloud_check_billing_order,
-            commands::cloud::cloud_list_subscriptions,
-            commands::cloud::cloud_cancel_subscription,
-            commands::cloud::cloud_create_checkout,
-            commands::cloud::cloud_submit_feedback,
-            commands::cloud::cloud_sync_now,
-            commands::cloud::cloud_note_history,
-            commands::cloud::list_local_path_archives,
-            commands::cloud::restore_local_path_version,
-            commands::cloud::cloud_preview_note_revision,
-            commands::cloud::cloud_list_conflicts,
-            commands::cloud::cloud_resolve_markdown_conflict,
-            commands::cloud::cloud_resolve_attachment_conflict,
-            commands::cloud::cloud_restore_note_revision,
+            commands::history::list_local_path_archives,
+            commands::history::restore_local_path_version,
             // Device-local notebook workspaces (local.db).
             commands::agent_workspace::get_agent_workspace,
             commands::agent_workspace::attach_notebook_directory,
@@ -668,7 +564,7 @@ pub fn run() {
             commands::notebook::confirm_notebook_preset_overwrite,
             commands::notebook::ensure_default_notebook_path,
             commands::notebook::create_notebook,
-            commands::notebook::create_notebook_from_cloud,
+            commands::notebook::get_notebooks,
             commands::notebook::start_notebook_import,
             commands::notebook_setup::get_notebook_template_setup_status,
             commands::notebook_setup::start_notebook_template_setup,
@@ -856,7 +752,6 @@ pub fn run() {
 fn spawn_workbench_startup(
     app: tauri::AppHandle,
     memo_file: Arc<RwLock<flowix_core::memo_file::MemoFile>>,
-    cloud_sync: Arc<flowix_sync::SyncManager>,
     memo_watcher: Arc<RwLock<MemoWatcher>>,
     user_config_for_watcher: Arc<user_config::UserConfigStore>,
     startup: Arc<crate::app::startup::StartupCoordinator>,
@@ -874,7 +769,6 @@ fn spawn_workbench_startup(
                     &device_registry,
                     &memo_file,
                     &thread_manager,
-                    &cloud_sync,
                     &user_config_for_watcher,
                     &user_config_dir,
                     &startup,
@@ -920,30 +814,6 @@ fn spawn_workbench_startup(
                         user_config_dir,
                         thread_manager,
                     );
-                    // Cloud readiness/credentials are independent of local startup.
-                    let cloud_app = app.clone();
-                    let session_manager = cloud_sync.clone();
-                    tauri::async_runtime::spawn(async move {
-                        let mut delay = Duration::from_secs(2);
-                        loop {
-                            let manager = session_manager.clone();
-                            let initialized = tauri::async_runtime::spawn_blocking(move || {
-                                manager.initialize_storage()
-                            }).await;
-                            match initialized {
-                                Ok(Ok(())) => break,
-                                Ok(Err(error)) => tracing::warn!(%error, retry_in_ms = delay.as_millis(),
-                                    "background cloud storage unavailable; retry scheduled"),
-                                Err(error) => tracing::warn!(%error, retry_in_ms = delay.as_millis(),
-                                    "background cloud storage worker failed; retry scheduled"),
-                            }
-                            tokio::time::sleep(delay).await;
-                            delay = (delay * 2).min(Duration::from_secs(60));
-                        }
-                        if let Ok(state) = session_manager.state() { let _ = cloud_app.emit("cloud-state-changed", state); }
-                        commands::cloud::start_cloud_sync_polling(cloud_app);
-                        tauri::async_runtime::spawn(async move { session_manager.run_session_service().await; });
-                    });
                     if let Err(error) = user_config_for_watcher.clear_legacy_watcher_exclusions() {
                         tracing::warn!(%error, "background watcher defaults could not be persisted");
                     }
@@ -1129,7 +999,6 @@ fn prepare_startup_storage(
     device_registry: &crate::device_registration::DeviceRegistry,
     memo_file: &Arc<RwLock<flowix_core::memo_file::MemoFile>>,
     thread_manager: &ThreadManager,
-    cloud_sync: &flowix_sync::SyncManager,
     user_config: &crate::config::UserConfigStore,
     user_config_dir: &Path,
     startup: &crate::app::startup::StartupCoordinator,
@@ -1154,7 +1023,7 @@ fn prepare_startup_storage(
             crate::app::startup::StartupStage::Initialization,
             "versionInitialization",
         );
-        startup.set_progress(0, 0, 4, "prepareDatabasePaths");
+        startup.set_progress(0, 0, 3, "prepareDatabasePaths");
     } else {
         // Also reset retry state here: even a failed rebuild stays in stage 2.
         startup.mark_running(
@@ -1170,20 +1039,17 @@ fn prepare_startup_storage(
             .map_err(|error| format!("prepare current database directory failed: {error}"))?;
     }
     if version_init_pending {
-        startup.set_progress(8, 1, 4, "prepareThreadDatabase");
+        startup.set_progress(8, 1, 3, "prepareThreadDatabase");
     }
+    // Remove state owned by the retired Flowix Cloud subsystem. This runs after
+    // the database layout migration so it sees the final local paths, and it
+    // never touches local AI config, FNS bindings or notebook archives.
+    crate::maintenance::purge_legacy_cloud_data(user_config_dir);
     thread_manager
         .initialize_storage()
         .map_err(|error| format!("initialize thread database failed: {error}"))?;
     if version_init_pending {
-        startup.set_progress(16, 2, 4, "prepareSyncDatabase");
-    }
-    if version_init_pending {
-        cloud_sync.initialize_storage()
-            .map_err(|error| format!("initialize sync database failed: {error}"))?;
-    }
-    if version_init_pending {
-        startup.set_progress(24, 3, 4, "prepareNotebookRegistry");
+        startup.set_progress(16, 2, 3, "prepareNotebookRegistry");
     }
     {
         let memo = crate::lock_utils::read_lock(memo_file, "memo_file");
@@ -1297,59 +1163,9 @@ fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
             tracing::warn!("second-instance target deferred because startup failed: {error}");
             return;
         }
-        let targets = open_targets::command_line_targets(args).into_iter()
-            .filter(|arg| !dispatch_google_callback(&app, arg)).collect();
+        let targets = open_targets::command_line_targets(args);
         open_targets::dispatch(&app, targets, "second-instance");
     });
-}
-
-#[cfg(desktop)]
-fn dispatch_google_callback(app: &tauri::AppHandle, raw: &str) -> bool {
-    let Ok(url) = url::Url::parse(raw) else {
-        return false;
-    };
-    let expected_scheme = if option_env!("FLOWIX_DEV_MODE") == Some("1") {
-        "flowix-dev"
-    } else {
-        "flowix"
-    };
-    if url.scheme() != expected_scheme
-        || url.host_str() != Some("auth")
-        || url.path() != "/google/callback"
-    {
-        return false;
-    }
-    let mut code = None;
-    let mut oauth_state = None;
-    let mut auth_error = None;
-    for (key, value) in url.query_pairs() {
-        match key.as_ref() {
-            "code" => code = Some(value.into_owned()),
-            "state" => oauth_state = Some(value.into_owned()),
-            "error" => auth_error = Some(value.into_owned()),
-            _ => {}
-        }
-    }
-    let callback = match (auth_error, code, oauth_state) {
-        (Some(error), _, Some(state)) => {
-            Some(commands::cloud::GoogleCallback::Failure { error, state })
-        }
-        (None, Some(code), Some(state)) => {
-            Some(commands::cloud::GoogleCallback::Success { code, state })
-        }
-        _ => None,
-    };
-    if let Some(callback) = callback {
-        let app = app.clone();
-        tauri::async_runtime::spawn(async move {
-            if let Err(error) =
-                commands::cloud::complete_google_deep_link(app.clone(), callback).await
-            {
-                let _ = app.emit("cloud-google-auth-error", error);
-            }
-        });
-    }
-    true
 }
 
 #[cfg(desktop)]
@@ -1382,8 +1198,7 @@ fn register_deep_links(app: &mut tauri::App) {
                 tracing::warn!("deep-link target deferred because startup failed: {error}");
                 return;
             }
-            let targets = urls.into_iter()
-                .filter(|url| !dispatch_google_callback(&app, url)).collect();
+            let targets = urls;
             open_targets::dispatch(&app, targets, "deep-link");
         });
     });
@@ -1543,14 +1358,7 @@ mod missing_dependency_tests {
         startup: &StartupCoordinator,
     ) -> Result<(), String> {
         let threads = ThreadManager::new_uninitialized(config.join("db/thread.db")).unwrap();
-        let sync = flowix_sync::SyncManager::new_with_session_dependencies_deferred(
-            flowix_sync::CloudEnvironment::Prod.api_base(),
-            config.join("db/sync.db"),
-            user.clone(),
-            Arc::new(|_| {}),
-        )
-        .unwrap();
-        prepare_startup_storage(device, memo, &threads, &sync, &user, config, startup)
+        prepare_startup_storage(device, memo, &threads, &user, config, startup)
     }
 
     #[test]
@@ -1763,31 +1571,20 @@ mod missing_dependency_tests {
         device.set_version_initialization_completed(true).unwrap();
         device.complete_notebook_storage_reset_version(1).unwrap();
         std::fs::create_dir_all(config.join("db")).unwrap();
-        for name in ["local.db", "thread.db", "sync.db"] {
+        for name in ["local.db", "thread.db"] {
             std::fs::write(config.join("db").join(name), b"invalid database").unwrap();
         }
         let threads = ThreadManager::new_uninitialized(config.join("db/thread.db")).unwrap();
-        let sync = flowix_sync::SyncManager::new_with_session_dependencies_deferred(
-            flowix_sync::CloudEnvironment::Prod.api_base(),
-            config.join("db/sync.db"),
-            user.clone(),
-            Arc::new(|_| {}),
-        )
-        .unwrap();
         let memo = Arc::new(RwLock::new(flowix_core::memo_file::MemoFile::new(
             config.clone(),
         )));
         let startup = StartupCoordinator::new();
         assert!(
-            prepare_startup_storage(&device, &memo, &threads, &sync, &user, &config, &startup)
+            prepare_startup_storage(&device, &memo, &threads, &user, &config, &startup)
                 .is_err()
         );
         assert_eq!(
             std::fs::read(config.join("db/local.db")).unwrap(),
-            b"invalid database"
-        );
-        assert_eq!(
-            std::fs::read(config.join("db/sync.db")).unwrap(),
             b"invalid database"
         );
     }
@@ -1808,19 +1605,11 @@ mod missing_dependency_tests {
         user_config.ensure_runtime_storage().unwrap();
         std::fs::remove_dir_all(config_dir.join("db")).unwrap();
         let threads = ThreadManager::new_in_memory().unwrap();
-        let sync = flowix_sync::SyncManager::new_with_session_dependencies_deferred(
-            flowix_sync::CloudEnvironment::Prod.api_base(),
-            temp.path().join("sync.db"),
-            user_config.clone(),
-            Arc::new(|_| {}),
-        )
-        .unwrap();
         let startup = crate::app::startup::StartupCoordinator::new();
         assert!(prepare_startup_storage(
             &device,
             &memo,
             &threads,
-            &sync,
             &user_config,
             &config_dir,
             &startup,

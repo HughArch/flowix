@@ -1,7 +1,7 @@
 # Flowix 性能审查 · 独立复核（肉眼可见问题）
 
 审查日期：2026-10-19
-范围：`app/flowix-web`、`app/flowix-desktop`、`app/flowix-core`、`app/flowix-sync`
+范围：`app/flowix-web`、`app/flowix-desktop`、`app/flowix-core`
 方法：纯静态阅读 + 当前构建产物（`.build/web-dist`，2026-10-19 21:58）度量。**没有运行时 profiling**，所有结论都附代码位置，可逐条复核。
 
 本文与 `docs/PERFORMANCE-REVIEW.md` 的关系：那份文档是修复流水账（八批）。本文是一次独立复核，不重复已修项，只回答两件事——**哪些旧结论还成立**、**哪些问题还没被记录**。
@@ -193,12 +193,7 @@ emitStartup();
 
 `features/shell/components/status-bar/status-bar.tsx:174-196`：只要云同步在进行，就 `setInterval(refreshPendingOperationCount, 1000)`。
 
-对应后端是**同步命令**：
-
-- `app/flowix-desktop/src/commands/cloud.rs:318-326` —— `pub fn cloud_list_pending_file_operation_counts(...)`，无 `async`
-- `app/flowix-sync/src/store/v2.rs:314-315` —— 每次调用 `self.open()` 新建连接，再跑一条带 `UNION ALL` + `JOIN` 的聚合查询
-
-Tauri v2 里非 async 命令在主线程执行，所以云同步期间等于每秒在主线程上开一次 SQLite 连接 + 跑一次聚合。同步本身已经在压磁盘，这个轮询会叠加到同一个线程上——正好是"云同步时界面发涩"的典型形态。
+对应后端是**同步命令**（Flowix Cloud 同步已移除，此条仅作历史记录）。
 
 建议：改成后端在计数变化时 `emit`，前端订阅；短期至少把命令改 `async + spawn_blocking`，并把 1s 拉长到 3~5s。
 

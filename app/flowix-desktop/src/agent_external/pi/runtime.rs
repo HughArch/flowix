@@ -291,7 +291,6 @@ struct PiSessionConfig {
     tool_search: bool,
     provider: Option<String>,
     model: Option<String>,
-    cloud_auth_generation: Option<u64>,
     thinking: Option<String>,
     startup_resources: PiStartupResources,
 }
@@ -719,8 +718,6 @@ fn pi_user_message_text(message: &Value) -> String {
     }
 }
 
-type CloudRefreshResults = HashMap<u64, (tokio::time::Instant, Result<bool, String>)>;
-
 pub struct PiRpcManager {
     thread_manager: Arc<ThreadManager>,
     sessions: Mutex<HashMap<String, Arc<PiSession>>>,
@@ -729,55 +726,6 @@ pub struct PiRpcManager {
     active_runs: Mutex<HashMap<String, Arc<ActivePiRun>>>,
     shutting_down: AtomicBool,
     history_snapshots: Mutex<VecDeque<(String, Arc<PiSessionSnapshot>)>>,
-    cloud_credential_generation: Mutex<Option<u64>>,
-    startup_cloud_refresh_results: Mutex<CloudRefreshResults>,
-}
-
-async fn run_startup_cloud_refresh_once<F, Fut>(
-    results: &Mutex<CloudRefreshResults>,
-    generation: u64,
-    refresh: F,
-) -> Result<bool, String>
-where
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<bool, String>>,
-{
-    // Keep the lock while refreshing so concurrent WebViews await the same
-    // result, including a failure, instead of treating an in-flight attempt
-    // as a successful refresh.
-    let mut results = results.lock().await;
-    if let Some((finished_at, result)) = results.get(&generation) {
-        // Coalesce concurrent failures without poisoning this login session.
-        if result.is_ok() || finished_at.elapsed() < Duration::from_secs(2) {
-            return result.clone();
-        }
-    }
-
-    let result = refresh().await;
-    results.retain(|key, _| *key >= generation);
-    results.insert(generation, (tokio::time::Instant::now(), result.clone()));
-    result
-}
-
-async fn run_startup_cloud_credential_refresh_once<F, Fut>(
-    results: &Mutex<CloudRefreshResults>,
-    credential_generation: &Mutex<Option<u64>>,
-    generation: u64,
-    refresh: F,
-) -> Result<bool, String>
-where
-    F: FnOnce() -> Fut,
-    Fut: Future<Output = Result<(), String>>,
-{
-    run_startup_cloud_refresh_once(results, generation, || async {
-        // Startup refreshes the live model catalog even if this process has
-        // already created a credential for the current Cloud login.
-        let mut credential_generation = credential_generation.lock().await;
-        refresh().await?;
-        *credential_generation = Some(generation);
-        Ok(true)
-    })
-    .await
 }
 
 #[async_trait::async_trait]
@@ -825,179 +773,7 @@ impl PiRpcManager {
             active_runs: Mutex::new(HashMap::new()),
             shutting_down: AtomicBool::new(false),
             history_snapshots: Mutex::new(VecDeque::new()),
-            cloud_credential_generation: Mutex::new(None),
-            startup_cloud_refresh_results: Mutex::new(HashMap::new()),
         }
-    }
-
-    pub async fn connect_cloud_model_provider(
-        &self,
-        app: &tauri::AppHandle,
-        api_base: &str,
-    ) -> Result<(), String> {
-        let app_state = app.state::<crate::app::state::AppState>();
-        let cloud_sync = app_state.cloud_sync.clone();
-        let generation = cloud_sync.ai_credential_session_generation();
-        drop(app_state);
-
-        let mut cached_generation = self.cloud_credential_generation.lock().await;
-        self.create_and_save_cloud_credential(app, api_base, &cloud_sync, generation)
-            .await?;
-        *cached_generation = Some(generation);
-        Ok(())
-    }
-
-    /// Remove the local Flowix Cloud provider and its credential after logout.
-    pub async fn disconnect_cloud_model_provider(
-        &self,
-        app: &tauri::AppHandle,
-        api_base: &str,
-        logout_generation: u64,
-    ) -> Result<(), String> {
-        // Serialize with credential creation and refresh before reading the
-        // provider files, so a concurrent save cannot slip past this cleanup.
-        let mut cached_generation = self.cloud_credential_generation.lock().await;
-        let app_state = app.state::<crate::app::state::AppState>();
-        let cloud_sync = app_state.cloud_sync.clone();
-        drop(app_state);
-        if cloud_sync.ai_credential_session_generation() != logout_generation
-            || cloud_sync
-                .state()
-                .map_err(|error| error.to_string())?
-                .authenticated
-        {
-            return Ok(());
-        }
-        *cached_generation = None;
-        if super::config::delete_cloud_providers(api_base)? {
-            let _ = app.emit(
-                crate::commands::settings::USER_CONFIG_CHANGED_EVENT,
-                "pi_config",
-            );
-        }
-        Ok(())
-    }
-
-    /// Ensure the Flowix Cloud Pi catalog is available once for the current
-    /// signed-in account, including the first login before a provider exists.
-    /// The generation guard deduplicates calls from multiple content WebViews.
-    pub async fn refresh_cloud_model_provider_at_startup(
-        &self,
-        app: &tauri::AppHandle,
-        api_base: &str,
-    ) -> Result<bool, String> {
-        let app_state = app.state::<crate::app::state::AppState>();
-        let cloud_sync = app_state.cloud_sync.clone();
-        if !cloud_sync
-            .state()
-            .map_err(|error| error.to_string())?
-            .authenticated
-        {
-            return Ok(false);
-        }
-        let generation = cloud_sync.ai_credential_session_generation();
-        drop(app_state);
-
-        run_startup_cloud_credential_refresh_once(
-            &self.startup_cloud_refresh_results,
-            &self.cloud_credential_generation,
-            generation,
-            || async {
-                self.create_and_save_cloud_credential(app, api_base, &cloud_sync, generation)
-                    .await
-            },
-        )
-        .await
-    }
-
-    /// Refresh the saved Flowix Cloud model catalog on an explicit user request.
-    pub async fn refresh_cloud_model_provider(
-        &self,
-        app: &tauri::AppHandle,
-        api_base: &str,
-    ) -> Result<bool, String> {
-        let has_cloud_provider = super::config::list()?
-            .iter()
-            .any(|provider| provider.source.as_deref() == Some("flowix-cloud"));
-        if !has_cloud_provider {
-            return Ok(false);
-        }
-
-        let app_state = app.state::<crate::app::state::AppState>();
-        let cloud_sync = app_state.cloud_sync.clone();
-        if !cloud_sync
-            .state()
-            .map_err(|error| error.to_string())?
-            .authenticated
-        {
-            return Ok(false);
-        }
-        let generation = cloud_sync.ai_credential_session_generation();
-        drop(app_state);
-
-        let mut cached_generation = self.cloud_credential_generation.lock().await;
-        self.create_and_save_cloud_credential(app, api_base, &cloud_sync, generation)
-            .await?;
-        *cached_generation = Some(generation);
-        Ok(true)
-    }
-
-    async fn ensure_cloud_credential(
-        &self,
-        app: &tauri::AppHandle,
-        provider_id: Option<&str>,
-        api_base: &str,
-    ) -> Result<Option<u64>, String> {
-        if !super::config::is_flowix_cloud_provider(provider_id, api_base)? {
-            return Ok(None);
-        }
-        let app_state = app.state::<crate::app::state::AppState>();
-        let cloud_sync = app_state.cloud_sync.clone();
-        let generation = cloud_sync.ai_credential_session_generation();
-        drop(app_state);
-        let mut cached_generation = self.cloud_credential_generation.lock().await;
-        if *cached_generation == Some(generation) {
-            return Ok(Some(generation));
-        }
-
-        self.create_and_save_cloud_credential(app, api_base, &cloud_sync, generation)
-            .await?;
-        *cached_generation = Some(generation);
-        Ok(Some(generation))
-    }
-
-    async fn create_and_save_cloud_credential(
-        &self,
-        app: &tauri::AppHandle,
-        api_base: &str,
-        cloud_sync: &flowix_sync::SyncManager,
-        generation: u64,
-    ) -> Result<(), String> {
-        let credential = cloud_sync
-            .create_ai_credential()
-            .await
-            .map_err(|error| error.to_string())?;
-        if cloud_sync.ai_credential_session_generation() != generation {
-            return Err(
-                "Flowix Cloud account changed while preparing the Pi model; retry the request"
-                    .into(),
-            );
-        }
-        if let Err(error) = super::config::save_cloud_credential(app, api_base, credential) {
-            if cloud_sync.ai_credential_session_generation() == generation {
-                if let Err(revoke_error) = cloud_sync.revoke_ai_credential().await {
-                    tracing::warn!(
-                        "failed to revoke an unconfigured Flowix Cloud Pi credential: {revoke_error}"
-                    );
-                }
-            }
-            return Err(error);
-        }
-        let _ = app.emit(
-            crate::commands::settings::USER_CONFIG_CHANGED_EVENT,
-            "pi_config",
-        );
-        Ok(())
     }
 
     pub async fn queue_message(
@@ -1777,7 +1553,6 @@ impl PiRpcManager {
             tool_search: false,
             provider: None,
             model: None,
-            cloud_auth_generation: None,
             thinking: None,
             startup_resources: skill_resources::capture(
                 &cwd,
@@ -2076,14 +1851,6 @@ impl PiRpcManager {
         let pi_features = super::config::features()?;
         let runtime_model =
             runtime_model.filter(|value| !value.trim().is_empty() && value != "inherit");
-        let cloud_api_base = app
-            .state::<crate::app::state::AppState>()
-            .cloud_environment
-            .api_base()
-            .to_string();
-        let cloud_auth_generation = self
-            .ensure_cloud_credential(app, provider.as_deref(), &cloud_api_base)
-            .await?;
         let thinking = message
             .reasoning_effort_for_runtime(AGENT_TYPE)
             .filter(|value| {
@@ -2100,7 +1867,6 @@ impl PiRpcManager {
             tool_search: pi_features.tool_search,
             provider: provider.clone().filter(|value| !value.trim().is_empty()),
             model: runtime_model.clone(),
-            cloud_auth_generation,
             thinking,
             startup_resources: skill_resources::capture(
                 &cwd,
@@ -3490,89 +3256,9 @@ pub(crate) fn resolve_pi_binary(app: &tauri::AppHandle) -> Result<PathBuf, Strin
 mod tests {
     use super::{
         attach_pi_session_message_ids, pi_active_branch_entries, pi_rpc_message_id,
-        receive_rpc_response, run_startup_cloud_credential_refresh_once,
-        run_startup_cloud_refresh_once, CloudRefreshResults,
+        receive_rpc_response,
     };
     use serde_json::json;
-
-    #[tokio::test]
-    async fn startup_cloud_refresh_coalesces_failures_and_allows_retry() {
-        use std::collections::HashMap;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-        use tokio::sync::Mutex;
-
-        let results = Arc::new(Mutex::new(HashMap::new()));
-        let refresh_count = Arc::new(AtomicUsize::new(0));
-        let run = |results: Arc<Mutex<CloudRefreshResults>>,
-                   refresh_count: Arc<AtomicUsize>| async move {
-            run_startup_cloud_refresh_once(&results, 7, || async move {
-                refresh_count.fetch_add(1, Ordering::SeqCst);
-                tokio::task::yield_now().await;
-                Err("credential refresh failed".to_string())
-            })
-            .await
-        };
-
-        let (first, concurrent) = tokio::join!(
-            run(results.clone(), refresh_count.clone()),
-            run(results.clone(), refresh_count.clone()),
-        );
-        assert_eq!(first, Err("credential refresh failed".to_string()));
-        assert_eq!(concurrent, Err("credential refresh failed".to_string()));
-        assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
-
-        let cached = run_startup_cloud_refresh_once(&results, 7, || async { Ok(true) }).await;
-        assert_eq!(cached, Err("credential refresh failed".to_string()));
-        assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
-
-        results.lock().await.get_mut(&7).unwrap().0 -= std::time::Duration::from_secs(3);
-        let retried = run_startup_cloud_refresh_once(&results, 7, || async { Ok(true) }).await;
-        assert_eq!(retried, Ok(true));
-
-        let next_generation =
-            run_startup_cloud_refresh_once(&results, 8, || async { Ok(true) }).await;
-        assert_eq!(next_generation, Ok(true));
-    }
-
-    #[tokio::test]
-    async fn startup_cloud_refresh_fetches_latest_catalog_once_even_if_credential_is_cached() {
-        use std::collections::HashMap;
-        use std::sync::atomic::{AtomicUsize, Ordering};
-        use std::sync::Arc;
-        use tokio::sync::Mutex;
-
-        let results = Mutex::new(HashMap::new());
-        let credential_generation = Mutex::new(Some(7));
-        let refresh_count = Arc::new(AtomicUsize::new(0));
-        let count = refresh_count.clone();
-        let refreshed = run_startup_cloud_credential_refresh_once(
-            &results,
-            &credential_generation,
-            7,
-            || async move {
-                count.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
-        )
-        .await;
-        assert_eq!(refreshed, Ok(true));
-        assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
-
-        let count = refresh_count.clone();
-        let coalesced = run_startup_cloud_credential_refresh_once(
-            &results,
-            &credential_generation,
-            7,
-            || async move {
-                count.fetch_add(1, Ordering::SeqCst);
-                Ok(())
-            },
-        )
-        .await;
-        assert_eq!(coalesced, Ok(true));
-        assert_eq!(refresh_count.load(Ordering::SeqCst), 1);
-    }
 
     #[tokio::test]
     async fn stderr_is_visible_before_eof_and_keeps_only_a_bounded_tail() {

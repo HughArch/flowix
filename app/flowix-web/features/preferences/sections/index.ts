@@ -17,7 +17,6 @@ export { ShortcutsSection } from '@features/preferences/sections/shortcuts';
 export { CliSection } from '@features/preferences/sections/cli';
 export { McpSection } from '@features/preferences/sections/mcp';
 export { ConnectionsSection } from '@features/preferences/sections/connections';
-export { CloudSyncSection } from '@features/preferences/sections/cloud-sync';
 export { HistorySection } from '@features/preferences/sections/history';
 export { PluginsSection } from '@features/preferences/sections/plugins';
 

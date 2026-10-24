@@ -6,8 +6,11 @@
 
 mod backups;
 mod debug_dumps;
+mod legacy_cloud;
 mod logs;
 mod sqlite;
+
+pub(crate) use legacy_cloud::purge_legacy_cloud_data;
 
 use std::path::PathBuf;
 use std::sync::Arc;

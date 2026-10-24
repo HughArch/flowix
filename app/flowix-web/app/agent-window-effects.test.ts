@@ -1,34 +1,18 @@
 import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest';
-import type { CloudState } from '@platform/tauri/client';
 
 const mocks = vi.hoisted(() => ({
   waitForStartupReady: vi.fn(async (): Promise<void> => undefined),
   waitForWorkspaceRestoration: vi.fn(async (): Promise<void> => undefined),
   useAgentEvents: vi.fn(),
   refreshRuntime: vi.fn(async () => undefined),
-  refreshCloudPiModelProviderAtStartup: vi.fn(async () => true),
-  refreshCloudPiModelProvider: vi.fn(async () => false),
-  piModelAvailability: vi.fn(async () => true),
   refreshAgentModelCatalog: vi.fn(async () => ({ items: [] })),
   loadWorkspace: vi.fn(async (): Promise<void> => undefined),
   initializePiMode: vi.fn(async () => undefined),
   initializeLegacySessionSettings: vi.fn(async () => undefined),
   listenWorkspace: vi.fn(),
   unlistenWorkspace: vi.fn(),
-  getCloudState: vi.fn(async (): Promise<CloudState> => ({
-    revision: 0,
-    authenticated: false,
-    authStatus: 'signed_out' as const,
-  })),
-  listenCloudState: vi.fn<(handler: (state: CloudState) => void) => () => void>(),
-  cloudStateHandler: null as ((state: CloudState) => void) | null,
-  unlistenCloudState: vi.fn(),
-  setPiCloudAccount: vi.fn<(accountId: string | null, revision?: number) => void>(),
-  piCloudAccountId: null as string | null,
-  piCloudRevision: -1,
-  piCloudCatalogEpoch: 0,
   invalidateNotebookCache: vi.fn(),
   prewarmNotebookCache: vi.fn(async () => undefined),
   invalidateMentionNotes: vi.fn(),
@@ -63,12 +47,7 @@ vi.mock('@features/agent/store/agent-data-store', () => ({
     ),
     {
       getState: () => ({
-        piCloudAccountId: mocks.piCloudAccountId,
-        piCloudRevision: mocks.piCloudRevision,
-        piCloudCatalogEpoch: mocks.piCloudCatalogEpoch,
         agents: { pi: { catalog: { models: { items: [] } } } },
-        setPiCloudAccount: mocks.setPiCloudAccount,
-        setPiCloudModelLoadState: vi.fn(),
       }),
     },
   ),
@@ -90,14 +69,7 @@ vi.mock('@features/editor/extensions/tag-mention/tag-mention-data', () => ({
 }));
 vi.mock('@platform/tauri/client', () => ({
   boot: { waitForStartupReady: mocks.waitForStartupReady },
-  cloud: {
-    getState: mocks.getCloudState,
-    refreshPiModelProviderAtStartup: mocks.refreshCloudPiModelProviderAtStartup,
-    refreshPiModelProvider: mocks.refreshCloudPiModelProvider,
-    piModelAvailability: mocks.piModelAvailability,
-  },
   listenToAgentWorkspaceChanges: mocks.listenWorkspace,
-  listenToCloudStateChanges: mocks.listenCloudState,
 }));
 vi.mock('@/lib/memo-dispatcher', () => ({
   acquireMemoEventBridge: () => {
@@ -119,24 +91,6 @@ describe('AgentWindowEffects', () => {
   beforeEach(() => {
     vi.clearAllMocks();
     mocks.listenWorkspace.mockReturnValue(mocks.unlistenWorkspace);
-    mocks.piCloudAccountId = null;
-    mocks.piCloudRevision = -1;
-    mocks.piCloudCatalogEpoch = 0;
-    mocks.setPiCloudAccount.mockImplementation((accountId, revision) => {
-      if (revision !== undefined && revision < mocks.piCloudRevision) return;
-      if (mocks.piCloudAccountId !== accountId) mocks.piCloudCatalogEpoch += 1;
-      mocks.piCloudAccountId = accountId;
-      mocks.piCloudRevision = revision ?? mocks.piCloudRevision;
-    });
-    mocks.getCloudState.mockResolvedValue({
-      revision: 0,
-      authenticated: false,
-      authStatus: 'signed_out',
-    });
-    mocks.listenCloudState.mockImplementation((handler) => {
-      mocks.cloudStateHandler = handler;
-      return mocks.unlistenCloudState;
-    });
   });
 
   afterEach(() => {
@@ -238,7 +192,6 @@ describe('AgentWindowEffects', () => {
     expect(mocks.loadWorkspace).not.toHaveBeenCalled();
     expect(mocks.listenWorkspace).toHaveBeenCalledTimes(2);
     expect(mocks.prewarmNotebookCache).not.toHaveBeenCalled();
-    expect(mocks.refreshCloudPiModelProviderAtStartup).not.toHaveBeenCalled();
 
     await act(async () => admitStartupStage3());
     expect(mocks.loadWorkspace).toHaveBeenCalledOnce();
@@ -246,7 +199,6 @@ describe('AgentWindowEffects', () => {
     expect(mocks.initializeLegacySessionSettings).toHaveBeenCalledOnce();
     expect(mocks.refreshRuntime).toHaveBeenCalledWith({ force: true });
     expect(mocks.prewarmNotebookCache).toHaveBeenCalledOnce();
-    expect(mocks.refreshCloudPiModelProviderAtStartup).not.toHaveBeenCalled();
 
     await act(async () => root.render(createElement('div', null,
       createElement(MainWorkspaceSync, { key: 'during', revision: 'during' }),
@@ -256,9 +208,6 @@ describe('AgentWindowEffects', () => {
     await act(async () => mocks.listenWorkspace.mock.calls[2][0]());
     expect(mocks.loadWorkspace).toHaveBeenCalledOnce();
 
-    // Cloud refresh follows authenticated session state, independently of
-    // workspace restoration. This snapshot is signed out.
-    expect(mocks.refreshCloudPiModelProviderAtStartup).not.toHaveBeenCalled();
     expect(mocks.refreshAgentModelCatalog).not.toHaveBeenCalled();
 
     await act(async () => finishSnapshot());
@@ -279,52 +228,5 @@ describe('AgentWindowEffects', () => {
     await act(async () => root.unmount());
     expect(mocks.unlistenWorkspace).toHaveBeenCalledTimes(4);
     expect(mocks.releaseMemoEventBridge).toHaveBeenCalledOnce();
-  });
-
-  it('refreshes the Pi catalog on login and ignores an older signed-out snapshot', async () => {
-    let resolveInitialSnapshot!: (state: CloudState) => void;
-    mocks.getCloudState.mockImplementationOnce(() => new Promise((resolve) => {
-      resolveInitialSnapshot = resolve;
-    }));
-
-    const container = document.createElement('div');
-    document.body.appendChild(container);
-    const root = createRoot(container);
-    await act(async () => root.render(createElement(AgentWindowEffects)));
-
-    const signedIn = {
-      revision: 2,
-      authenticated: true,
-      authStatus: 'authenticated' as const,
-      account: {
-        user: { id: 'user-1', email: 'member@example.com', displayName: 'Member' },
-        protocolEpoch: 2 as const,
-      },
-    };
-    await act(async () => mocks.cloudStateHandler?.(signedIn));
-    expect(mocks.setPiCloudAccount).toHaveBeenCalledWith('user-1', 2);
-    await vi.waitFor(() => {
-      expect(mocks.refreshCloudPiModelProviderAtStartup).toHaveBeenCalledOnce();
-      expect(mocks.refreshAgentModelCatalog).toHaveBeenCalledWith('pi');
-    });
-
-    await act(async () => resolveInitialSnapshot({
-      revision: 1,
-      authenticated: false,
-      authStatus: 'signed_out',
-    }));
-    expect(mocks.setPiCloudAccount).toHaveBeenCalledTimes(1);
-    expect(mocks.piCloudAccountId).toBe('user-1');
-
-    await act(async () => mocks.cloudStateHandler?.({
-      revision: 3,
-      authenticated: false,
-      authStatus: 'signed_out',
-    }));
-    expect(mocks.setPiCloudAccount).toHaveBeenLastCalledWith(null, 3);
-    expect(mocks.piCloudAccountId).toBeNull();
-
-    await act(async () => root.unmount());
-    expect(mocks.unlistenCloudState).toHaveBeenCalledOnce();
   });
 });

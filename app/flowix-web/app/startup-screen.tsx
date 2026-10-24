@@ -8,7 +8,6 @@ import { Button } from '@shared/ui/button';
 const startupProgressLabels: Record<string, I18nKey> = {
   prepareDatabasePaths: 'startup.progress.prepareDatabasePaths',
   prepareThreadDatabase: 'startup.progress.prepareThreadDatabase',
-  prepareSyncDatabase: 'startup.progress.prepareSyncDatabase',
   prepareNotebookRegistry: 'startup.progress.prepareNotebookRegistry',
   runMigrations: 'startup.progress.runMigrations',
   config_dsh_layout_v2: 'startup.progress.migrateAgentLayout',

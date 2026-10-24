@@ -133,9 +133,6 @@ export const deepseekHarness = {
 export interface PiModelEntryConfig {
   id: string;
   name: string;
-  subtitle?: string;
-  creditMultiplier?: number;
-  providerIconUrl?: string;
   api?: string;
   reasoning: boolean;
   vision: boolean;
@@ -146,11 +143,8 @@ export interface PiModelEntryConfig {
 export interface PiProviderConfig {
   id: string;
   displayName: string;
-  iconUrl?: string;
   api: string;
   baseUrl: string;
-  /** Set for providers managed by Flowix Cloud. */
-  source?: string;
   /** Write-only. Empty preserves the credential already saved for this provider. */
   apiKey?: string;
   credentialConfigured: boolean;

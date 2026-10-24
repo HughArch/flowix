@@ -88,7 +88,7 @@ const RETIRED_INITIALIZATION_JOB_IDS: [&str; 6] = [
 pub fn prepare_database_paths(config_dir: &Path) -> io::Result<PathBuf> {
     let database_dir =
         flowix_core::memo_file::prepare_database_directory(config_dir, &["local.db"])?;
-    for name in ["sync.db", "thread.db", "default.db"] {
+    for name in ["thread.db", "default.db"] {
         if let Err(error) = flowix_core::memo_file::prepare_database_directory(config_dir, &[name])
         {
             tracing::warn!(database = name, %error, "legacy database migration deferred; source retained");

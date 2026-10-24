@@ -9,7 +9,6 @@ use flowix_core::memo_file::{
     MemoFile, Notebook, NotebookConfig, NotebookSetupJob, NotebookSetupJobStatus,
     NotebookSetupStage,
 };
-use flowix_sync::V2LocalNotebook;
 
 use super::agent_workspace::AGENT_WORKSPACE_CHANGED_EVENT;
 use super::helpers::{
@@ -62,23 +61,6 @@ fn normalize_notebook_path(path: &str) -> String {
         path.to_string()
     } else {
         format!("{}/", path)
-    }
-}
-
-fn record_notebook_metadata_change(state: &AppState, app: &AppHandle, config: &NotebookConfig) {
-    let notebook = V2LocalNotebook {
-        id: config.id.clone(),
-        name: config.name.clone(),
-        icon: config.icon.clone(),
-        sort_order: config.sort,
-    };
-    match state.cloud_sync.record_v2_notebook_change(&notebook) {
-        Ok(true) => crate::commands::cloud::schedule_notebook_sync(app.clone(), config.id.clone()),
-        Ok(false) => {}
-        Err(error) => tracing::warn!(
-            "failed to persist cloud notebook metadata change {}: {error}",
-            config.id
-        ),
     }
 }
 
@@ -215,24 +197,6 @@ pub async fn ensure_default_notebook_path(name: String) -> Result<String, String
     .map_err(|error| format!("default notebook path task failed: {error}"))?
 }
 
-fn create_notebook_registry_with_id(
-    name: &str,
-    path: &str,
-    icon: Option<String>,
-    requested_id: Option<&str>,
-    memo_file: &MemoFile,
-) -> Result<NotebookConfig, String> {
-    create_notebook_registry_with_id_and_template(
-        name,
-        path,
-        icon,
-        requested_id,
-        None,
-        false,
-        memo_file,
-    )
-}
-
 fn create_notebook_registry_with_id_and_template(
     name: &str,
     path: &str,
@@ -348,19 +312,6 @@ fn create_notebook_registry_with_id_and_template(
 
     tracing::info!("[create_notebook] registry written id={}", id);
     Ok(config)
-}
-
-fn cloud_restore_directory_is_empty(path: &Path) -> Result<bool, String> {
-    let entries = std::fs::read_dir(path).map_err(|error| format!("PATH_READ_FAILED: {error}"))?;
-    for entry in entries {
-        let entry = entry.map_err(|error| format!("PATH_READ_FAILED: {error}"))?;
-        let name = entry.file_name();
-        if matches!(name.to_str(), Some(".DS_Store" | ".localized")) {
-            continue;
-        }
-        return Ok(false);
-    }
-    Ok(true)
 }
 
 fn notify_notebook_workspace_changed(app: &AppHandle) {
@@ -752,54 +703,6 @@ pub fn get_notebook_import_status(
         .and_then(|imports| imports.get(&notebook_id).cloned())
 }
 
-/// Register an empty local mount for a Cloud notebook while preserving the
-/// Cloud notebook's immutable identity. Unlike ordinary notebook creation,
-/// this path intentionally skips onboarding seeding and background disk import
-/// so the first synchronization starts from a clean local snapshot.
-#[tauri::command]
-pub fn create_notebook_from_cloud(
-    id: String,
-    name: String,
-    path: String,
-    icon: Option<String>,
-    activate: Option<bool>,
-    state: State<AppState>,
-    app: AppHandle,
-) -> Result<Notebook, String> {
-    let trimmed_name = name.trim();
-    if trimmed_name.is_empty() {
-        return Err("INVALID_NAME".to_string());
-    }
-    let trimmed_path = path.trim();
-    if trimmed_path.is_empty() {
-        return Err("INVALID_PATH".to_string());
-    }
-    if !is_valid_notebook_id(&id) {
-        return Err("INVALID_NOTEBOOK_ID".to_string());
-    }
-
-    let directory = Path::new(trimmed_path);
-    if !directory.is_dir() {
-        return Err("PATH_MISSING".to_string());
-    }
-    if !cloud_restore_directory_is_empty(directory)? {
-        return Err("PATH_NOT_EMPTY".to_string());
-    }
-    let config = {
-        let memo_file = write_lock(&state.memo_file, "memo_file");
-        create_notebook_registry_with_id(trimmed_name, trimmed_path, icon, Some(&id), &memo_file)?
-    };
-    notify_notebook_workspace_changed(&app);
-    if activate.unwrap_or(true) {
-        activate_created_notebook(&config, state.inner(), &app)?;
-    } else {
-        record_created_notebook_access(state.inner(), &app, &config);
-    }
-    dispatcher::emit_to(&app, NOTEBOOKS_CHANGED_EVENT, ());
-
-    Ok(notebook_from_config(config))
-}
-
 #[tauri::command]
 pub fn update_notebook(
     id: String,
@@ -827,7 +730,6 @@ pub fn update_notebook(
     drop(memo_file);
 
     notify_notebook_workspace_changed(&app);
-    record_notebook_metadata_change(state.inner(), &app, &updated);
 
     Some(Notebook {
         id: updated.id,
@@ -940,12 +842,6 @@ pub fn delete_notebook(
         false
     };
 
-    if let Err(error) = state.cloud_sync.record_v2_notebook_delete(&id) {
-        tracing::warn!("failed to persist cloud notebook deletion {id}: {error}");
-    } else {
-        crate::commands::cloud::schedule_notebook_sync(app.clone(), id.clone());
-    }
-
     notify_notebook_workspace_changed(&app);
     if was_current && !selection_transition_completed {
         refresh_current_notebook_watcher(state.inner(), &app);
@@ -1004,11 +900,6 @@ pub fn reorder_notebooks(
         .map_err(|e| format!("INDEX_READ_FAILED: {e}"))?;
     drop(memo_file);
 
-    for config in &updated {
-        if sort_map.contains_key(config.id.as_str()) {
-            record_notebook_metadata_change(state.inner(), &app, config);
-        }
-    }
     let notebooks: Vec<Notebook> = updated.into_iter().map(notebook_from_config).collect();
 
     // 跨窗口同�? 让其它窗�?reload。NOTEBOOKS_CHANGED_EVENT �?dispatcher::emit_to
@@ -1044,22 +935,12 @@ pub fn clear_notebooks(state: State<AppState>, app: AppHandle) -> Result<bool, S
     if current_ids != ids.iter().map(|id| (*id).to_owned()).collect() {
         return Err("NOTEBOOK_REGISTRY_CHANGED".to_string());
     }
-    let before_ids: std::collections::HashSet<String> =
-        configs.iter().map(|c| c.id.clone()).collect();
 
     let ok = memo_file.write_notebook_configs(&[]).is_ok();
     drop(_change_guard);
     drop(memo_file);
     drop(setup_guard);
 
-    // 把�?清掉的非默�? notebook �?access 列表里也清掉, 然后 emit 一欰�?
-    for id in before_ids {
-        if let Err(error) = state.cloud_sync.record_v2_notebook_delete(&id) {
-            tracing::warn!("failed to persist cleared cloud notebook {id}: {error}");
-        } else {
-            crate::commands::cloud::schedule_notebook_sync(app.clone(), id.clone());
-        }
-    }
     notify_notebook_workspace_changed(&app);
     refresh_current_notebook_watcher(state.inner(), &app);
     Ok(ok)
@@ -1240,39 +1121,6 @@ mod tests {
 
         assert_eq!(uuid.get_version_num(), 7);
         assert!(is_valid_notebook_id(&id));
-    }
-
-    #[test]
-    fn cloud_notebook_registry_preserves_remote_id() {
-        let root = temp_root();
-        let notebook_dir = root.join("Cloud Notebook");
-        fs::create_dir_all(&notebook_dir).expect("create notebook dir");
-        let memo_file = memo_file_for_test(&root);
-
-        let config = create_notebook_registry_with_id(
-            "Cloud",
-            notebook_dir.to_str().expect("utf8 path"),
-            None,
-            Some("nb_legacy_123"),
-            &memo_file,
-        )
-        .expect("create cloud notebook registry");
-
-        assert_eq!(config.id, "nb_legacy_123");
-    }
-
-    #[test]
-    fn cloud_restore_requires_an_empty_directory() {
-        let root = temp_root();
-        let notebook_dir = root.join("Restore");
-        fs::create_dir_all(&notebook_dir).expect("create notebook dir");
-        assert!(cloud_restore_directory_is_empty(&notebook_dir).unwrap());
-
-        fs::write(notebook_dir.join(".DS_Store"), []).expect("write Finder metadata");
-        assert!(cloud_restore_directory_is_empty(&notebook_dir).unwrap());
-
-        fs::write(notebook_dir.join("Existing.md"), "# Existing").expect("write note");
-        assert!(!cloud_restore_directory_is_empty(&notebook_dir).unwrap());
     }
 
     #[test]

@@ -16,7 +16,6 @@ tauri-build = { version = "2", features = [] }
 [dependencies]
 flowix-core = { workspace = true }
 flowix-plugin-runtime = { workspace = true }
-flowix-sync = { workspace = true }
 flowix-fns = { workspace = true }
 tauri = { version = "2", features = ["protocol-asset", "macos-private-api", "unstable"] }
 window-vibrancy = "0.6"
@@ -74,21 +73,7 @@ webview2-com = "0.38"
 objc2 = "0.6.4"
 objc2-app-kit = "0.3.2"
 objc2-foundation = "0.3.2"
-block2 = "0.6.2"
 objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std", "objc2-app-kit", "WKWebView"] }
-objc2-authentication-services = { version = "0.3.2", default-features = false, features = [
-  "std",
-  "ASFoundation",
-  "ASAuthorization",
-  "ASAuthorizationAppleIDCredential",
-  "ASAuthorizationAppleIDProvider",
-  "ASAuthorizationAppleIDRequest",
-  "ASAuthorizationController",
-  "ASAuthorizationCredential",
-  "ASAuthorizationOpenIDRequest",
-  "ASAuthorizationProvider",
-  "ASAuthorizationRequest",
-] }
 
 [target.'cfg(unix)'.dependencies]
 # Used by `kill_child_tree` to signal the whole process group so external-CLI

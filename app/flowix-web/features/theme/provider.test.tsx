@@ -2,9 +2,8 @@ import { act, createElement } from 'react';
 import { createRoot } from 'react-dom/client';
 import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 
-const state = vi.hoisted(() => ({ theme: 'mist', member: true, apply: vi.fn() }));
+const state = vi.hoisted(() => ({ theme: 'mist', apply: vi.fn() }));
 vi.mock('@features/preferences/public/runtime-api', () => ({ useAppTheme: () => state.theme }));
-vi.mock('@features/preferences/public/membership', () => ({ useMembershipAccess: () => ({ active: state.member }) }));
 vi.mock('@platform/tauri/client', () => ({ windows: { applyWindowTheme: state.apply } }));
 import { ThemeProvider } from './provider';
 
@@ -12,7 +11,6 @@ let host: HTMLDivElement;
 let root: ReturnType<typeof createRoot>;
 beforeEach(() => {
   state.theme = 'mist';
-  state.member = true;
   state.apply.mockReset();
   localStorage.clear();
   delete document.documentElement.dataset.windowMaterial;
@@ -48,10 +46,9 @@ it('ignores an older IPC completion after the theme changes', async () => {
   expect(document.documentElement.dataset.windowMaterial).toBeUndefined();
 });
 
-it('applies a solid fallback when membership does not allow Mist', async () => {
-  state.member = false;
-  state.apply.mockResolvedValue('none');
+it('applies Mist directly without any membership check', async () => {
+  state.apply.mockResolvedValue('vibrancy');
   await render();
-  expect(state.apply).toHaveBeenCalledWith('rock');
-  expect(document.documentElement.dataset.windowMaterial).toBeUndefined();
+  expect(state.apply).toHaveBeenCalledWith('mist');
+  expect(document.documentElement.dataset.windowMaterial).toBe('vibrancy');
 });

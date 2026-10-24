@@ -24,8 +24,6 @@ export interface NotebookSelectorPopupProps {
   onDelete: (notebook: Notebook) => void;
   onCreateNotebook: () => void;
   onRefresh: (notebooks: Notebook[]) => void;
-  cloudSyncedNotebookIds?: ReadonlySet<string>;
-  cloudSyncAvailable?: boolean;
   /** Optional alternate anchor, e.g. the current notebook card in the sidebar. */
   trigger?: React.ReactElement;
   side?: 'top' | 'right' | 'bottom' | 'left';
@@ -94,8 +92,6 @@ export function NotebookSelectorPopup({
   onDelete,
   onCreateNotebook,
   onRefresh,
-  cloudSyncedNotebookIds,
-  cloudSyncAvailable = false,
   trigger,
   side = 'top',
   sideOffset = 6,
@@ -528,17 +524,6 @@ export function NotebookSelectorPopup({
                             className="h-4 w-4 text-[var(--primary)]"
                             aria-label={t('memo.list.notebookMenu.pin')}
                             weight="fill"
-                          />
-                        </span>
-                      )}
-                      {cloudSyncedNotebookIds?.has(notebook.id) && (
-                        <span className="flex h-4 w-3 shrink-0 items-center justify-center" aria-hidden="true">
-                          <span
-                            className={cn(
-                              'h-2 w-2 rounded-full',
-                              cloudSyncAvailable ? 'bg-[var(--success)]' : 'bg-[var(--muted-foreground)]',
-                            )}
-                            aria-hidden="true"
                           />
                         </span>
                       )}

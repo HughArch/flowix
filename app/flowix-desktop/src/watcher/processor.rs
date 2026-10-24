@@ -98,10 +98,9 @@ fn emit_path_changed_with_content(
     ctx: &NotebookWatchContext,
     relative_path: &str,
     deleted: bool,
-    content: Option<&str>,
+    _content: Option<&str>,
 ) {
     emit_path_changed_ui(app, ctx, relative_path, deleted);
-    record_cloud_path_change_with_content(app, ctx, relative_path, deleted, content);
     // External edits are not self-writes, so this is exactly the case the
     // FNS engine needs to pick up.
     crate::fns_sync::schedule_notebook_sync(app, &ctx.notebook_id);
@@ -113,64 +112,6 @@ fn emit_path_changed_ui(app: &AppHandle, ctx: &NotebookWatchContext, relative_pa
         "relativePath": relative_path,
         "deleted": deleted,
     }));
-}
-
-pub(crate) fn record_cloud_path_change(app: &AppHandle, ctx: &NotebookWatchContext, relative_path: &str, deleted: bool) {
-    record_cloud_path_change_with_content(app, ctx, relative_path, deleted, None);
-}
-
-fn record_cloud_path_change_with_content(
-    app: &AppHandle,
-    ctx: &NotebookWatchContext,
-    relative_path: &str,
-    deleted: bool,
-    content: Option<&str>,
-) {
-    if !relative_path.is_empty() {
-        if let Some(state) = app.try_state::<crate::app::state::AppState>() {
-            let cloud_id = flowix_sync::v2_path_note_id(&ctx.notebook_id, relative_path);
-            let fingerprint = if deleted {
-                "deleted".to_string()
-            } else if let Some(content) = content {
-                flowix_sync::v2_content_hash(content.as_bytes())
-            } else {
-                std::fs::read(ctx.root.join(relative_path))
-                    .map(|bytes| flowix_sync::v2_content_hash(&bytes))
-                    .unwrap_or_else(|_| "unobserved".to_string())
-            };
-            match state.cloud_sync.record_v2_local_change(
-                &ctx.notebook_id,
-                &cloud_id,
-                if deleted { flowix_sync::LocalChangeKind::Delete } else { flowix_sync::LocalChangeKind::Put },
-                &fingerprint,
-            ) {
-                Ok(changed) => crate::commands::cloud::schedule_notebook_sync_observation(
-                    app.clone(), ctx.notebook_id.clone(), changed,
-                ),
-                Err(error) => tracing::warn!("failed to record cloud path change: {error}"),
-            }
-        }
-    }
-}
-
-fn record_confirmed_cloud_move(
-    app: &AppHandle,
-    notebook_id: &str,
-    from_path: &str,
-    to_path: &str,
-) -> bool {
-    let Some(state) = app.try_state::<crate::app::state::AppState>() else { return false };
-    match state.cloud_sync.record_v2_local_move(notebook_id, from_path, to_path) {
-        Ok(true) => {
-            crate::commands::cloud::schedule_notebook_sync(app.clone(), notebook_id.to_string());
-            true
-        }
-        Ok(false) => false,
-        Err(error) => {
-            tracing::warn!("failed to record cloud move: {error}");
-            false
-        }
-    }
 }
 
 fn refresh_resource_path(memo_file: &MemoFile, ctx: &NotebookWatchContext, path: &Path) -> Result<(), String> {
@@ -335,32 +276,12 @@ impl PathNoteEventProcessor {
                     );
                 }
             }
-            let old_media_path = event.rename_from.as_ref().and_then(|old_path| {
-                let old_ctx = NotebookWatchContext {
-                    notebook_id: event.rename_from_notebook_id.clone().unwrap_or_else(|| ctx.notebook_id.clone()),
-                    root: event.rename_from_root.clone().unwrap_or_else(|| ctx.root.clone()),
-                };
-                notebook_relative_path(&old_ctx.root, old_path).ok()
-                    .filter(|path| path.starts_with("attachments/") && old_ctx.notebook_id == ctx.notebook_id)
-            });
-            let new_media_path = notebook_relative_path(&ctx.root, &event.path).ok()
-                .filter(|path| path.starts_with("attachments/"));
-            let moved = old_media_path.as_ref().zip(new_media_path.as_ref())
-                .is_some_and(|(old, new)| record_confirmed_cloud_move(app, &ctx.notebook_id, old, new));
-            if let Ok(relative) = notebook_relative_path(&ctx.root, &event.path) {
-                if relative.starts_with("attachments/") && !moved {
-                    record_cloud_path_change(app, ctx, &relative, !event.path.exists());
-                }
-            }
-            if let Some(old_path) = &event.rename_from {
-                let old_ctx = NotebookWatchContext {
-                    notebook_id: event.rename_from_notebook_id.clone().unwrap_or_else(|| ctx.notebook_id.clone()),
-                    root: event.rename_from_root.clone().unwrap_or_else(|| ctx.root.clone()),
-                };
-                if let Ok(relative) = notebook_relative_path(&old_ctx.root, old_path) {
-                    if relative.starts_with("attachments/") && !moved {
-                        record_cloud_path_change(app, &old_ctx, &relative, true);
-                    }
+            // Attachment changes are not self-writes, so FNS must observe them
+            // explicitly (the resource branch returns before the note path).
+            crate::fns_sync::schedule_notebook_sync(app, &ctx.notebook_id);
+            if let Some(old_notebook_id) = event.rename_from_notebook_id.as_ref() {
+                if old_notebook_id != &ctx.notebook_id {
+                    crate::fns_sync::schedule_notebook_sync(app, old_notebook_id);
                 }
             }
             return;
@@ -405,8 +326,6 @@ impl PathNoteEventProcessor {
             crate::commands::document_list::refresh_view_document_path(&memo_file, &event.path);
             let rebase = notebook_relative_path(&ctx.root, old_path).ok()
                 .zip(notebook_relative_path(&ctx.root, &event.path).ok());
-            let cloud_move = rebase.as_ref().is_some_and(|(old, new)|
-                record_confirmed_cloud_move(app, &ctx.notebook_id, old, new));
             if event.path.is_dir() && rebase.as_ref().is_some_and(|(old, new)|
                 crate::commands::collection::consume_local_folder_move(&ctx.notebook_id, old, new)) {
                 // The collection operation already updated all derived indexes and
@@ -448,14 +367,7 @@ impl PathNoteEventProcessor {
                     "directory": event.path.is_dir(),
                     "deleted": false,
                 }));
-                if !cloud_move {
-                    if indexable_relative_path(ctx, old_path).is_ok() {
-                        record_cloud_path_change(app, ctx, old_relative, true);
-                    }
-                    if indexable_relative_path(ctx, &event.path).is_ok() {
-                        record_cloud_path_change(app, ctx, new_relative, false);
-                    }
-                }
+                crate::fns_sync::schedule_notebook_sync(app, &ctx.notebook_id);
             } else {
                 emit_path_changed(app, ctx, "", false);
             }
@@ -492,7 +404,7 @@ match refresh_path_with_content(
                             crate::commands::path_change::NotebookPathCreated::from_external_tool(
                                 ctx.notebook_id.clone(), relative_path.clone(),
                             ).emit(app);
-                            record_cloud_path_change_with_content(app, ctx, &relative_path, false, stable_content);
+                            crate::fns_sync::schedule_notebook_sync(app, &ctx.notebook_id);
                         } else {
                             emit_path_changed_with_content(
                                 app, ctx, &relative_path, change == PathChangeKind::Deleted, stable_content,

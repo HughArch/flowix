@@ -198,8 +198,6 @@ export const notebooks = {
     invoke<void>('start_or_resume_ready_notebook_template_setups', { activeNotebookId }),
   getTemplateSetupSnapshot: () =>
     invoke<NotebookSetupSnapshot>('get_notebook_template_setup_snapshot'),
-  createFromCloud: (id: string, name: string, path: string, icon?: string | null, activate = true) =>
-    invoke<NotebookRecord>('create_notebook_from_cloud', { id, name, path, icon, activate }),
   startImport: (notebookId: string) =>
     invoke<void>('start_notebook_import', { notebookId }),
   getImportStatus: (notebookId: string) =>

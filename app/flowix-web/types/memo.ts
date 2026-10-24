@@ -16,8 +16,7 @@ export type MemoChangeSource =
   | 'notebook_template'
   | 'user_edit'
   | 'external_tool'
-  | 'user_delete'
-  | 'cloud_sync';
+  | 'user_delete';
 
 export type NoteContentCommit = {
   derivedOnly?: boolean;
