@@ -105,6 +105,8 @@ const zhCN = {
     "preferences.fns.clientTypeHint": "必须与服务端令牌的 c: 权限维度一致（Obsidian 插件令牌填 obsidianPlugin）",
     "preferences.fns.save": "保存",
     "preferences.fns.syncNow": "立即同步",
+    "preferences.fns.syncCurrent": "同步当前笔记本",
+    "preferences.fns.syncAll": "同步全部已绑定",
     "preferences.fns.status": "状态",
     "preferences.fns.notConfigured": "尚未配置",
     "preferences.fns.running": "同步中…",

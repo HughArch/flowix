@@ -110,6 +110,8 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "preferences.fns.clientTypeHint": "Must match the token's c: scope dimension (use obsidianPlugin for an Obsidian plugin token).",
     "preferences.fns.save": "Save",
     "preferences.fns.syncNow": "Sync now",
+    "preferences.fns.syncCurrent": "Sync current notebook",
+    "preferences.fns.syncAll": "Sync all bound",
     "preferences.fns.status": "Status",
     "preferences.fns.notConfigured": "Not configured",
     "preferences.fns.running": "Syncing…",

@@ -7,9 +7,11 @@ import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { errorMessage } from '@/lib/error-message';
 import { fns, type FnsConfigPatch, type FnsConfigView, type FnsSyncStatus } from '@platform/tauri/client';
+import { useNoteStore } from '@features/memo/store/note-store';
 
 export function FnsSyncSection() {
   const { t, language } = useI18n();
+  const selectedNotebookId = useNoteStore((state) => state.selectedNotebookId);
   const [config, setConfig] = useState<FnsConfigView | null>(null);
   const [status, setStatus] = useState<FnsSyncStatus | null>(null);
   const [api, setApi] = useState('');
@@ -44,6 +46,24 @@ export function FnsSyncSection() {
       setBusy(false);
     }
   }, [t]);
+
+  const syncCurrent = useCallback(async () => {
+    if (!selectedNotebookId) return;
+    setBusy(true);
+    try {
+      const outcome = await fns.syncNotebook(selectedNotebookId);
+      setStatus(await fns.getStatus());
+      if (outcome) {
+        toast.success(
+          `${t('preferences.fns.syncDone')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed}`,
+        );
+      }
+    } catch (error) {
+      toast.error(`${t('preferences.fns.syncFailed')}: ${errorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [selectedNotebookId, t]);
 
   const syncNow = useCallback(async () => {
     setBusy(true);
@@ -139,14 +159,23 @@ export function FnsSyncSection() {
             {!config?.configured ? ` · ${t('preferences.fns.notConfigured')}` : ''}
           </p>
         </div>
-        <Button
-          size="sm"
-          variant="outline"
-          disabled={busy || !config?.configured}
-          onClick={() => void syncNow()}
-        >
-          {t('preferences.fns.syncNow')}
-        </Button>
+        <div className="flex items-center gap-2">
+          <Button
+            size="sm"
+            disabled={busy || !config?.configured || !selectedNotebookId}
+            onClick={() => void syncCurrent()}
+          >
+            {t('preferences.fns.syncCurrent')}
+          </Button>
+          <Button
+            size="sm"
+            variant="outline"
+            disabled={busy || !config?.configured}
+            onClick={() => void syncNow()}
+          >
+            {t('preferences.fns.syncAll')}
+          </Button>
+        </div>
       </div>
     </div>
   );
