@@ -394,8 +394,6 @@ export const windows = {
     invoke<void>('unwatch_external_document', { leaseId }),
 };
 
-export type CloudEnvironment = 'staging' | 'prod';
-
 export interface ProductInfo {
   productName: string;
   version: string;
@@ -405,13 +403,10 @@ export interface ProductInfo {
   os: string;
   arch: string;
   isDevBuild: boolean;
-  cloudEnvironment: CloudEnvironment;
 }
 
 export const product = {
   getInfo: () => invoke<ProductInfo>('get_product_info'),
-  setCloudEnvironment: (environment: CloudEnvironment) =>
-    invoke<void>('set_cloud_environment', { environment }),
   openLogDir: () => invoke<void>('open_log_dir'),
   revealInFileManager: (filePath: string) => invoke<void>('reveal_in_file_manager', { filePath }),
 };

@@ -71,7 +71,7 @@ export function useNotebookPinnedNotes({
 
   useEffect(() => registerMemoEventHandler((event) => {
     if (event.notebookId !== notebookId || event.kind === 'tags_renamed' || event.kind === 'tags_deleted') return;
-    if (event.kind === 'deleted' || event.source === 'cloud_sync') {
+    if (event.kind === 'deleted') {
       setChangeRevision((revision) => revision + 1);
     }
   }), [notebookId]);

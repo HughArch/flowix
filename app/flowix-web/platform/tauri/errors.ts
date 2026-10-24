@@ -1,9 +1,5 @@
 import type { I18nKey, I18nParams } from '@/lib/i18n';
 
-const FLOWIX_MEMBERSHIP_ERROR =
-  /^\s*(?:Error:\s*)?cloud API error\s+403\s+MEMBERSHIP_REQUIRED\b/i;
-const FLOWIX_REQUEST_ID = /\(request id:\s*([a-z\d_-]+)\s*\)/i;
-
 /**
  * Tauri IPC 错误格式化。
  *
@@ -23,10 +19,6 @@ export function tauriErrorMessage(error: unknown): string {
 export function hasTauriErrorCode(error: unknown, code: string): boolean {
   if (error && typeof error === 'object' && 'code' in error) return error.code === code;
   return tauriErrorMessage(error).includes(code);
-}
-
-export function isInvalidRefreshTokenError(error: unknown): boolean {
-  return hasTauriErrorCode(error, 'INVALID_REFRESH_TOKEN');
 }
 
 type Translate = (key: I18nKey, params?: I18nParams) => string;
@@ -56,73 +48,6 @@ function notebookTemplateFinalizeFailure(error: unknown): string | null {
   const message = tauriErrorMessage(error);
   const markerIndex = message.indexOf(marker);
   return markerIndex < 0 ? null : message.slice(markerIndex + marker.length).trim();
-}
-
-function formatBytes(value: unknown): string {
-  const bytes = typeof value === 'number' && Number.isFinite(value) ? Math.max(0, value) : 0;
-  if (bytes < 1024) return `${bytes} B`;
-  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KB`;
-  return `${(bytes / (1024 * 1024)).toFixed(1)} MB`;
-}
-
-function cloudErrorDetails(message: string): Record<string, unknown> {
-  const separator = message.indexOf(':');
-  if (separator < 0) return {};
-  try {
-    const parsed = JSON.parse(message.slice(separator + 1));
-    return parsed && typeof parsed === 'object' ? parsed as Record<string, unknown> : {};
-  } catch {
-    return {};
-  }
-}
-
-export function cloudSyncErrorMessage(error: unknown, t: Translate): string {
-  const message = tauriErrorMessage(error);
-  if (hasTauriErrorCode(error, 'MEMBERSHIP_ALREADY_ACTIVE')) {
-    return t('preferences.cloud.member.alreadyActive');
-  }
-  if (hasTauriErrorCode(error, 'STORAGE_PLAN_REQUIRED')) {
-    return t('preferences.cloud.storagePlanRequired');
-  }
-  if (['CHECKOUT_IN_PROGRESS', 'CHECKOUT_CREATION_IN_PROGRESS', 'CHECKOUT_PAYMENT_PROCESSING'].some((code) => hasTauriErrorCode(error, code))) {
-    return t('preferences.cloud.order.pendingCheckout');
-  }
-  if (hasTauriErrorCode(error, 'BILLING_RATE_LIMITED')) {
-    return t('preferences.cloud.order.rateLimited');
-  }
-  if (hasTauriErrorCode(error, 'BILLING_RATE_LIMIT_NOT_CONFIGURED')) {
-    return t('preferences.cloud.order.checkUnavailable');
-  }
-  if (message.includes('MEMBERSHIP_REQUIRED')) {
-    return t('preferences.cloud.membershipRequired');
-  }
-  if (message.includes('STORAGE_QUOTA_EXCEEDED')) {
-    const details = cloudErrorDetails(message);
-    return t('preferences.cloud.quotaExceeded', {
-      used: formatBytes(details.usedBytes),
-      quota: formatBytes(details.quotaBytes),
-      requested: formatBytes(details.requestedDeltaBytes),
-    });
-  }
-  return message;
-}
-
-export function cloudModelAccessErrorMessage(error: unknown, t: Translate): string {
-  const message = tauriErrorMessage(error);
-  if (message.includes('INSUFFICIENT_CREDITS')) return t('agent.error.insufficientCredits');
-  if (message.includes('CLOUD_MODELS_DISABLED')) return t('agent.error.cloudModelsDisabled');
-  if (message.includes('MODEL_NOT_FOUND')) return t('agent.error.cloudModelUnavailable');
-  if (message.includes('MODEL_PRICING_NOT_CONFIGURED')) return t('agent.error.cloudPricingUnavailable');
-  if (!FLOWIX_MEMBERSHIP_ERROR.test(message)) return message;
-
-  const userMessage = t('agent.error.membershipRequired');
-  const requestId = message.match(FLOWIX_REQUEST_ID)?.[1];
-  if (!requestId) return userMessage;
-
-  return [
-    userMessage,
-    t('agent.error.diagnostic.reference', { value: requestId }),
-  ].join('\n\n');
 }
 
 export function notebookCreateErrorMessage(error: unknown, t: Translate): string {

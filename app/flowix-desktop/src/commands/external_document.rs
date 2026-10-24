@@ -327,25 +327,6 @@ pub async fn write_external_document(
                     Ok(MergedFileWriteOutcome::Saved { content, merged }) => {
                         refresh_notebook_note_index(&memo_file, &path);
                         crate::commands::document_list::refresh_view_document_path(&memo_file, &path);
-                        if is_markdown_document_path(&path) {
-                            if let Ok(notebooks) = memo_file.read_notebook_configs() {
-                                for notebook in notebooks {
-                                    let root = Path::new(&notebook.path);
-                                    if let Ok(relative) = path.strip_prefix(root) {
-                                        let relative_path = relative.to_string_lossy().replace('\\', "/");
-                                        crate::watcher::processor::record_cloud_path_change(
-                                            &app,
-                                            &crate::watcher::processor::NotebookWatchContext {
-                                                notebook_id: notebook.id,
-                                                root: root.to_path_buf(),
-                                            },
-                                            &relative_path,
-                                            false,
-                                        );
-                                    }
-                                }
-                            }
-                        }
                         if let Ok(notebooks) = memo_file.read_notebook_configs() {
                             for notebook in notebooks {
                                 let root = Path::new(&notebook.path);

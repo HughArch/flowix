@@ -1,24 +1,18 @@
 'use client';
 
 import { lazy, Suspense, useCallback, useEffect, useRef, useState } from 'react';
-import { ChevronDown, Loader2 } from 'lucide-react';
+import { ChevronDown } from 'lucide-react';
 import { useShortcutScope, pushHandler } from '@features/shortcuts';
 import { useI18n, type I18nParams } from '@/lib/i18n';
 import { useShallow } from 'zustand/react/shallow';
 import {
-  cloud,
-  listenToCloudStateChanges,
   mediaResources,
   notes,
   notebooks as notebooksClient,
-  windows as tauriWindows,
-  type CloudNotebook,
   type NotebookSetupReport,
 } from '@platform/tauri/client';
 import { useTauriRpc } from '@platform/tauri/use-tauri-rpc';
 import {
-  cloudSyncErrorMessage,
-  isInvalidRefreshTokenError,
   notebookCreateErrorMessage,
 } from '@platform/tauri/errors';
 import { useCreateNotebookFlow } from '@features/memo/hooks/use-create-notebook-flow';
@@ -32,9 +26,7 @@ import { upsertNotebookSetupJob, useNotebookSetupJob } from '@features/memo/stor
 import { getNotebookIconOption, NotebookIcon } from '@features/memo/components/notebook-icon';
 import { openNotebookNote } from '@features/memo/use-cases/open-notebook-note';
 import { clearWorkspaceDocument } from '@features/workspace/use-cases/workspace-navigation';
-import { selectNotebook } from '@features/workspace/public/main-window-api';
 import { toast } from '@/lib/toast';
-import { cn } from '@/lib/utils';
 import { joinNotebookMemoPath } from '@/lib/path';
 import { Kbd } from '@shared/ui/kbd';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
@@ -96,17 +88,6 @@ function DeleteDialogShortcuts({
   }, [onCancel, onConfirm]);
 
   return null;
-}
-
-function BlockingOperationStatus({ text, stacked }: { text: string; stacked: boolean }) {
-  return (
-    <div className="pointer-events-auto fixed inset-0 z-[140] flex items-center justify-center bg-[color-mix(in_oklch,var(--card)_82%,transparent)] backdrop-blur-[1px]">
-      <div className={cn('flex items-center gap-2 px-3 py-2 text-sm text-[var(--foreground)]', stacked && 'flex-col')} role="status" aria-live="polite">
-        <Loader2 className="h-4 w-4 flowix-spin text-[var(--primary)]" />
-        <span>{text}</span>
-      </div>
-    </div>
-  );
 }
 
 function ExternalDocumentOpenDialog() {
@@ -231,7 +212,6 @@ export function MemoListServicesHost({
   const { request } = useTauriRpc();
   const { t } = useI18n();
   const selectedNotebook = useNoteStore((state) => state.selectedNotebook);
-  const notebooks = useNoteStore((state) => state.notebooks);
   const activeFilter = useNoteStore((state) => state.activeFilter);
   const startupPhase = useNoteStore((state) => state.startupPhase);
   const selectedTagId = useTagStore((state) => state.selectedTagId);
@@ -261,19 +241,11 @@ export function MemoListServicesHost({
   const [newDefaultPath, setNewDefaultPath] = useState('');
   const [newIcon, setNewIcon] = useState<string | null>(null);
   const [newTemplateId, setNewTemplateId] = useState<string | null>(null);
-  const [createMode, setCreateMode] = useState<'create' | 'cloud'>('create');
-  const [remoteNotebooks, setRemoteNotebooks] = useState<CloudNotebook[]>([]);
-  const [remoteLoading, setRemoteLoading] = useState(false);
-  const [syncingRemoteId, setSyncingRemoteId] = useState<string | null>(null);
-  const [cloudImporting, setCloudImporting] = useState(false);
   const [editingNotebook, setEditingNotebook] = useState<Notebook | null>(null);
   const [editOpen, setEditOpen] = useState(false);
   const [editName, setEditName] = useState('');
   const [editIcon, setEditIcon] = useState<string | null>(null);
-  const [editCloudSync, setEditCloudSync] = useState(false);
-  const [originalEditCloudSync, setOriginalEditCloudSync] = useState(false);
   const [editSaving, setEditSaving] = useState(false);
-  const [cloudSyncAvailable, setCloudSyncAvailable] = useState(false);
   const notebookSetupJob = useNotebookSetupJob(selectedNotebook?.id);
   const [notebookSetupNotice, setNotebookSetupNotice] = useState<NotebookSetupReport | null>(null);
   const [dismissedNotebookSetupKey, setDismissedNotebookSetupKey] = useState<string | null>(null);
@@ -417,15 +389,11 @@ export function MemoListServicesHost({
 
   const resetCreateState = useCallback(() => {
     setCreateOpen(false);
-    setCreateMode('create');
     setNewName('');
     setNewPath('');
     setNewDefaultPath('');
     setNewIcon(null);
     setNewTemplateId(null);
-    setRemoteNotebooks([]);
-    setRemoteLoading(false);
-    setSyncingRemoteId(null);
   }, []);
 
   const openCreate = useCallback(() => {
@@ -434,16 +402,12 @@ export function MemoListServicesHost({
     setNewDefaultPath('');
     setNewIcon(null);
     setNewTemplateId(null);
-    setCreateMode('create');
-    setRemoteNotebooks([]);
-    setRemoteLoading(false);
-    setSyncingRemoteId(null);
     setCreateOpen(true);
   }, []);
 
   useEffect(() => {
     const name = newName.trim();
-    if (!createOpen || createMode !== 'create' || newPath.trim() || !name) {
+    if (!createOpen || newPath.trim() || !name) {
       setNewDefaultPath('');
       return;
     }
@@ -460,7 +424,7 @@ export function MemoListServicesHost({
     return () => {
       cancelled = true;
     };
-  }, [createMode, createOpen, newName, newPath]);
+  }, [createOpen, newName, newPath]);
 
   useEffect(() => {
     if (notebookCreateRequest > 0) openCreate();
@@ -472,29 +436,6 @@ export function MemoListServicesHost({
     suppressed: suppressEmptyNotebookPrompt,
     openCreate,
   });
-
-  useEffect(() => {
-    if (!editOpen || !editingNotebook) return;
-    let cancelled = false;
-    void Promise.all([cloud.getState(), cloud.getNotebookState(editingNotebook.id)])
-      .then(([cloudState, link]) => {
-        if (cancelled) return;
-        const enabled = Boolean(link?.enabled);
-        setCloudSyncAvailable(cloudState.authenticated);
-        setEditCloudSync(enabled);
-        setOriginalEditCloudSync(enabled);
-      })
-      .catch(() => {
-        if (!cancelled) setCloudSyncAvailable(false);
-      });
-    return () => {
-      cancelled = true;
-    };
-  }, [editOpen, editingNotebook]);
-
-  useEffect(() => listenToCloudStateChanges((state) => {
-    setCloudSyncAvailable(state.authenticated);
-  }), []);
 
   useEffect(() => {
     const handleOpenCreate = () => openCreate();
@@ -615,74 +556,6 @@ export function MemoListServicesHost({
     });
   }, [deleteMedia, t, triggerRefresh]);
 
-  const handleInvalidCloudSession = useCallback(async (error: unknown) => {
-    if (!isInvalidRefreshTokenError(error)) return false;
-    try {
-      await cloud.logout();
-    } catch {
-      // The preferences window remains the recovery surface.
-    }
-    resetCreateState();
-    toast.error(t('preferences.cloud.sessionExpired'));
-    void tauriWindows.openPreferences('cloudSync').catch(() => undefined);
-    return true;
-  }, [resetCreateState, t]);
-
-  const openRemoteNotebooks = useCallback(async () => {
-    try {
-      const state = await cloud.getState();
-      setCloudSyncAvailable(state.authenticated);
-      if (!state.authenticated) {
-        resetCreateState();
-        await tauriWindows.openPreferences('cloudSync');
-        return;
-      }
-      setCreateMode('cloud');
-      setRemoteLoading(true);
-      setRemoteNotebooks(await cloud.listNotebooks());
-    } catch (error) {
-      if (!await handleInvalidCloudSession(error)) toast.error(cloudSyncErrorMessage(error, t));
-    } finally {
-      setRemoteLoading(false);
-    }
-  }, [handleInvalidCloudSession, resetCreateState, t]);
-
-  const selectRemoteNotebook = useCallback(async (remote: CloudNotebook) => {
-    if (remote.synced || syncingRemoteId) return;
-    try {
-      setSyncingRemoteId(remote.id);
-      let local = notebooks.find((item) => item.id === remote.id);
-      if (!local) {
-        const path = await request<string | null>('select_directory');
-        if (!path) return;
-        local = await createNotebook({
-          cloudNotebookId: remote.id,
-          name: remote.name,
-          path,
-          icon: normalizeNotebookIconId(remote.icon),
-        }) ?? undefined;
-      }
-      if (!local) return;
-      if (useNoteStore.getState().selectedNotebook?.id !== local.id) {
-        await selectNotebook(local, { workColumnTarget: 'clear' });
-        if (useNoteStore.getState().selectedNotebook?.id !== local.id) {
-          throw new Error(t('memo.navigation.workspacePreparationFailed'));
-        }
-      }
-      setCloudImporting(true);
-      await cloud.linkNotebook(local.id, remote.id);
-      await cloud.syncNow(local.id);
-      resetCreateState();
-      onRefresh();
-      toast.success(t('notebook.cloudImport.complete'));
-    } catch (error) {
-      if (!await handleInvalidCloudSession(error)) toast.error(cloudSyncErrorMessage(error, t));
-    } finally {
-      setCloudImporting(false);
-      setSyncingRemoteId(null);
-    }
-  }, [createNotebook, handleInvalidCloudSession, notebooks, onRefresh, request, resetCreateState, syncingRemoteId, t]);
-
   const confirmCreate = useCallback(() => {
     if (!newName.trim()) return;
     void createNotebook({ name: newName, path: newPath || undefined, icon: newIcon, templateId: newTemplateId }).then((created) => {
@@ -696,8 +569,6 @@ export function MemoListServicesHost({
     setEditingNotebook(null);
     setEditName('');
     setEditIcon(null);
-    setEditCloudSync(false);
-    setOriginalEditCloudSync(false);
     setEditSaving(false);
   }, [editSaving]);
 
@@ -707,43 +578,27 @@ export function MemoListServicesHost({
     const icon = editIcon || null;
     const iconChanged = (icon ?? '') !== (normalizeNotebookIconId(editingNotebook.icon) ?? '');
     const metadataChanged = name !== editingNotebook.name || iconChanged;
-    const cloudChanged = editCloudSync !== originalEditCloudSync;
-    if (!name || (!metadataChanged && !cloudChanged)) {
+    if (!name || !metadataChanged) {
       closeEdit();
       return;
     }
     try {
       setEditSaving(true);
-      const updated = metadataChanged
-        ? await notebookRepository.update(editingNotebook.id, name, icon ?? '')
-        : editingNotebook;
+      const updated = await notebookRepository.update(editingNotebook.id, name, icon ?? '');
       if (!updated) throw new Error(t('memo.list.updateFailed'));
-      if (cloudChanged) await cloud.setNotebookEnabled(editingNotebook.id, editCloudSync);
       setNotebooks(useNoteStore.getState().notebooks.map((item) => item.id === updated.id ? updated : item));
       if (useNoteStore.getState().selectedNotebook?.id === updated.id) setSelectedNotebook(updated);
-      if (cloudChanged && editCloudSync) {
-        void cloud.syncNow(editingNotebook.id).catch((error) => {
-          toast.error(cloudSyncErrorMessage(error, t));
-        });
-      }
       toast.success(t('memo.list.updated'));
       closeEdit();
     } catch (error) {
-      toast.error(cloudSyncErrorMessage(error, t));
+      toast.error(error instanceof Error ? error.message : String(error));
       setEditSaving(false);
     }
-  }, [closeEdit, editCloudSync, editIcon, editName, editSaving, editingNotebook, originalEditCloudSync, setNotebooks, setSelectedNotebook, t]);
+  }, [closeEdit, editIcon, editName, editSaving, editingNotebook, setNotebooks, setSelectedNotebook, t]);
 
   return (
     <>
       <ExternalDocumentOpenDialog />
-
-      {cloudImporting && (
-        <BlockingOperationStatus
-          text={t('notebook.cloudImport.syncing')}
-          stacked
-        />
-      )}
 
       {deleteMemo && <DeleteDialogShortcuts onCancel={() => setDeleteMemo(null)} onConfirm={handleDeleteConfirm} />}
       {deleteMedia && <DeleteDialogShortcuts onCancel={() => setDeleteMedia(null)} onConfirm={handleMediaDeleteConfirm} />}
@@ -802,14 +657,6 @@ export function MemoListServicesHost({
             newNotebookTemplateId={newTemplateId}
             onNewNotebookTemplateIdChange={setNewTemplateId}
             isCreatingNotebook={creationState.status === 'creating'}
-            cloudSyncAvailable={cloudSyncAvailable}
-            createMode={createMode}
-            remoteNotebooks={remoteNotebooks}
-            remoteNotebooksLoading={remoteLoading}
-            remoteNotebookSyncingId={syncingRemoteId}
-            onOpenRemoteNotebooks={() => void openRemoteNotebooks()}
-            onBackToCreate={() => { setCreateMode('create'); setRemoteNotebooks([]); }}
-            onSelectRemoteNotebook={(item) => void selectRemoteNotebook(item)}
             onSelectDirectory={async () => {
               const path = await request<string | null>('select_directory');
               if (path) setNewPath(path);
@@ -823,15 +670,7 @@ export function MemoListServicesHost({
             onEditNotebookNameChange={setEditName}
             editNotebookIcon={editIcon}
             onEditNotebookIconChange={setEditIcon}
-            editNotebookCloudSync={editCloudSync}
-            onEditNotebookCloudSyncChange={setEditCloudSync}
-            onEditNotebookCloudSyncUnavailable={() => {
-              void tauriWindows.openPreferences('cloudSync').catch((error) => {
-                toast.error(`${t('notebook.cloudSync.failed')}: ${String(error)}`);
-              });
-            }}
             editSaving={editSaving}
-            editNotebookCloudSyncChanged={editCloudSync !== originalEditCloudSync}
             onConfirmEdit={() => void confirmEdit()}
             onCancelEdit={closeEdit}
           />

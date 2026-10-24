@@ -2,7 +2,7 @@ import { create } from "zustand";
 import { createJSONStorage, persist } from "zustand/middleware";
 import { createLogger } from "@/lib/logger";
 import { STORAGE_KEYS } from "@/lib/constants";
-import { piModels, type CloudMembership } from "@platform/tauri/client";
+import { piModels } from "@platform/tauri/client";
 import type {
   AgentCodexReasoningEffort,
   AgentCodexServiceTier,
@@ -17,7 +17,6 @@ import {
 } from "@features/agent/runtime/agent-runtime-spec";
 import { getFallbackAgentModelOptions } from "@features/agent/config/agent-model-options";
 import { normalizeAgentId } from "@/lib/agent-types";
-import { isFlowixCloudModel } from "@features/agent/config/agent-model-source";
 
 const logger = createLogger("agent-data-store");
 const PERSISTENCE_STATUS_EVENT = "flowix-agent-data-persistence-status";
@@ -59,13 +58,9 @@ function errorMessage(error: unknown): string {
 }
 
 export interface AgentCatalogModel {
-  source?: "flowix-cloud" | "custom";
   id: string;
   label: string;
   description?: string;
-  subtitle?: string;
-  creditMultiplier?: number;
-  iconUrl?: string;
   providerId?: string;
   providerName?: string;
   reasoningEfforts?: AgentCodexReasoningEffort[];
@@ -121,7 +116,6 @@ interface AgentDataRecord {
 
 interface AgentDataLoadState {
   piMode: { status: 'idle' | 'loading' | 'ready' | 'error'; error?: string };
-  piCloudModels: { status: 'idle' | 'loading' | 'ready' | 'error'; error?: string };
 }
 
 export interface AgentDataStoreState {
@@ -129,12 +123,6 @@ export interface AgentDataStoreState {
   legacyPreferencesMigrated: boolean;
   /** Per-field revisions make user choices mergeable across app windows. */
   userPreferenceRevisions: Partial<Record<AgentTypeKey, Record<string, string>>>;
-  /** Flowix Cloud Pi models belong to the current account session, not disk. */
-  piCloudAccountId: string | null;
-  /** Latest membership entitlement included in the native Cloud state snapshot. */
-  piCloudMembership: CloudMembership | null;
-  piCloudCatalogEpoch: number;
-  piCloudRevision: number;
   /** Transient UI status; deliberately excluded from localStorage. */
   persistenceError: string | null;
   agents: Record<AgentTypeKey, AgentDataRecord>;
@@ -143,12 +131,6 @@ export interface AgentDataStoreState {
   initializeLegacySessionSettings: () => Promise<void>;
   setModelCatalog: (agentType: AgentTypeKey, catalog: AgentModelCatalog) => void;
   invalidateModelCatalog: (agentType: AgentTypeKey) => void;
-  setPiCloudAccount: (
-    accountId: string | null,
-    revision?: number,
-    membership?: CloudMembership | null,
-  ) => void;
-  setPiCloudModelLoadState: (epoch: number, state: AgentDataLoadState["piCloudModels"]) => void;
   invalidateSkillCatalog: (agentType: AgentTypeKey, notebookId: string) => void;
   loadModelCatalog: (
     agentType: AgentTypeKey,
@@ -252,24 +234,6 @@ export function modelPreferenceKey(model: { id: string; providerId?: string }): 
 
 function nextPreferenceRevision(): string {
   return `${Date.now().toString().padStart(13, "0")}:${Math.random().toString(36).slice(2)}`;
-}
-
-function isFlowixCloudCatalogModel(model: AgentCatalogModel): boolean {
-  return isFlowixCloudModel(model);
-}
-
-function withoutFlowixCloudModels(catalog: AgentModelCatalog): AgentModelCatalog {
-  const items = catalog.items.filter((model) => !isFlowixCloudCatalogModel(model));
-  const defaultOption = catalog.items.find((model) => model.id === catalog.defaultModel
-    && (!catalog.defaultProviderId || model.providerId === catalog.defaultProviderId));
-  const removedDefault = defaultOption
-    ? isFlowixCloudCatalogModel(defaultOption)
-    : isFlowixCloudModel({ providerId: catalog.defaultProviderId });
-  return {
-    ...catalog,
-    items,
-    ...(removedDefault ? { defaultModel: "", defaultProviderId: undefined } : {}),
-  };
 }
 
 function compareRevisions(left?: string, right?: string): number {
@@ -513,11 +477,7 @@ function persistedAgentDataState(state: AgentDataStoreState): Record<string, unk
       const agent = state.agents[agentType];
       return [agentType, {
         catalog: {
-          // Cloud model availability is account/session scoped. Persisting it
-          // can expose a previous account's member catalog after logout.
-          models: agentType === "pi"
-            ? withoutFlowixCloudModels(agent.catalog.models)
-            : agent.catalog.models,
+          models: agent.catalog.models,
           skillsByNotebookId: agent.catalog.skillsByNotebookId,
         },
         user: agent.user,
@@ -527,37 +487,14 @@ function persistedAgentDataState(state: AgentDataStoreState): Record<string, unk
   };
 }
 
-function stripPersistedPiCloudModels(persisted: Record<string, any>): Record<string, any> {
-  const agents = canonicalAgentMap<AgentDataRecord>(persisted.agents);
-  const pi = agents.pi;
-  if (!pi?.catalog?.models) return persisted;
-  return {
-    ...persisted,
-    agents: {
-      ...agents,
-      pi: {
-        ...pi,
-        catalog: {
-          ...pi.catalog,
-          models: withoutFlowixCloudModels(pi.catalog.models),
-        },
-      },
-    },
-  };
-}
-
 export const useAgentDataStore = create<AgentDataStoreState>()(
   persist(
     (set, get) => ({
       legacyPreferencesMigrated: false,
       userPreferenceRevisions: {},
-      piCloudAccountId: null,
-      piCloudMembership: null,
-      piCloudCatalogEpoch: 0,
-      piCloudRevision: -1,
       persistenceError: lastPersistenceError,
       agents: createInitialAgents(),
-      loadState: { piMode: { status: "idle" }, piCloudModels: { status: "idle" } },
+      loadState: { piMode: { status: "idle" } },
 
       initializePiMode: () => {
         if (pendingPiModeInitialization) return pendingPiModeInitialization;
@@ -627,58 +564,15 @@ export const useAgentDataStore = create<AgentDataStoreState>()(
         return request;
       },
 
-      setModelCatalog: (agentType, catalog) => set((state) => {
-        const models = agentType === "pi" && !state.piCloudAccountId
-          ? withoutFlowixCloudModels(catalog)
-          : catalog;
-        return {
-          agents: {
-            ...state.agents,
-            [agentType]: {
-              ...state.agents[agentType],
-              catalog: { ...state.agents[agentType].catalog, models },
-            },
+      setModelCatalog: (agentType, catalog) => set((state) => ({
+        agents: {
+          ...state.agents,
+          [agentType]: {
+            ...state.agents[agentType],
+            catalog: { ...state.agents[agentType].catalog, models: catalog },
           },
-        };
-      }),
-
-      setPiCloudAccount: (accountId, revision, membership) => set((state) => {
-        if (revision !== undefined && revision < state.piCloudRevision) return state;
-        const piCloudRevision = revision ?? state.piCloudRevision;
-        const accountChanged = state.piCloudAccountId !== accountId;
-        const piCloudMembership = accountId === null
-          ? null
-          : membership === undefined
-            ? accountChanged ? null : state.piCloudMembership
-            : membership;
-        if (!accountChanged) return { piCloudRevision, piCloudMembership };
-        const nextModels = withoutFlowixCloudModels(state.agents.pi.catalog.models);
-        return {
-          piCloudAccountId: accountId,
-          piCloudMembership,
-          piCloudRevision,
-          piCloudCatalogEpoch: state.piCloudCatalogEpoch + 1,
-          loadState: { ...state.loadState, piCloudModels: { status: "idle" } },
-          agents: {
-            ...state.agents,
-            pi: {
-              ...state.agents.pi,
-              catalog: {
-                ...state.agents.pi.catalog,
-                models: {
-                  ...nextModels,
-                  updatedAt: 0,
-                },
-              },
-            },
-          },
-        };
-      }),
-
-      setPiCloudModelLoadState: (epoch, loadState) => set((state) =>
-        epoch === state.piCloudCatalogEpoch
-          ? { loadState: { ...state.loadState, piCloudModels: loadState } }
-          : state),
+        },
+      })),
 
       invalidateModelCatalog: (agentType) => set((state) => ({
         agents: {
@@ -715,7 +609,6 @@ export const useAgentDataStore = create<AgentDataStoreState>()(
 
       loadModelCatalog: (agentType, loader, options) => {
         const cached = get().agents[agentType].catalog.models;
-        const piCloudEpoch = agentType === "pi" ? get().piCloudCatalogEpoch : undefined;
         const maxAgeMs = options?.maxAgeMs ?? MODEL_CATALOG_MAX_AGE_MS;
         const isFresh = !!cached.updatedAt && Date.now() - cached.updatedAt < maxAgeMs;
         if (!options?.force && isFresh) return Promise.resolve(cached);
@@ -730,9 +623,6 @@ export const useAgentDataStore = create<AgentDataStoreState>()(
 
         const request = loader()
           .then((catalog) => {
-            if (agentType === "pi" && piCloudEpoch !== get().piCloudCatalogEpoch) {
-              return get().agents.pi.catalog.models;
-            }
             const stored = { ...catalog, updatedAt: catalog.updatedAt ?? Date.now() };
             get().setModelCatalog(agentType, stored);
             return stored;
@@ -865,38 +755,33 @@ export const useAgentDataStore = create<AgentDataStoreState>()(
     }),
     {
       name: STORAGE_KEYS.AGENT_DATA,
-      version: 2,
+      version: 3,
       storage: createJSONStorage(() => agentStorage),
       partialize: persistedAgentDataState,
-      migrate: (persisted) => mergePersistedAgentSlices(
-        {},
-        stripPersistedPiCloudModels(persisted as Record<string, any>),
-      ),
+      migrate: (persisted, version) => {
+        const merged = mergePersistedAgentSlices({}, persisted as Record<string, any>);
+        if (version < 3) {
+          // Removed Cloud models may still be cached in older snapshots.
+          const agents = canonicalAgentMap<AgentDataRecord>(merged.agents);
+          if (agents.pi?.catalog?.models) {
+            agents.pi.catalog.models = {
+              items: [],
+              defaultModel: undefined,
+              defaultProviderId: undefined,
+              updatedAt: 0,
+            };
+          }
+          return { ...merged, agents };
+        }
+        return merged;
+      },
       merge: (persisted, current) => {
         const stored = persisted as Partial<AgentDataStoreState>;
         const merged = mergePersistedAgentSlices(
           current as unknown as Record<string, any>,
-          stripPersistedPiCloudModels(stored as Record<string, any>),
+          stored as Record<string, any>,
         );
         const agents = merged.agents as Record<AgentTypeKey, AgentDataRecord>;
-        // Storage contains the local projection only. Rehydration must never
-        // replace the current session's Cloud overlay, even on equal timestamps.
-        if (current.piCloudAccountId) {
-          const live = current.agents.pi.catalog.models;
-          const local = withoutFlowixCloudModels(agents.pi.catalog.models);
-          const cloudItems = live.items.filter(isFlowixCloudCatalogModel);
-          const liveDefaultIsCloud = live.items.some((model) =>
-            model.id === live.defaultModel && model.providerId === live.defaultProviderId
-            && isFlowixCloudCatalogModel(model));
-          agents.pi.catalog.models = {
-            ...local,
-            items: [...cloudItems, ...local.items],
-            ...(liveDefaultIsCloud ? {
-              defaultModel: live.defaultModel,
-              defaultProviderId: live.defaultProviderId,
-            } : {}),
-          };
-        }
         for (const agentType of AGENT_TYPES) {
           agents[agentType] = {
             ...current.agents[agentType],
@@ -911,10 +796,6 @@ export const useAgentDataStore = create<AgentDataStoreState>()(
         return {
           ...current,
           agents,
-          piCloudAccountId: current.piCloudAccountId,
-          piCloudMembership: current.piCloudMembership,
-          piCloudCatalogEpoch: current.piCloudCatalogEpoch,
-          piCloudRevision: current.piCloudRevision,
           legacyPreferencesMigrated: !!merged.legacyPreferencesMigrated,
           userPreferenceRevisions: merged.userPreferenceRevisions,
         };

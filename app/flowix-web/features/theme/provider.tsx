@@ -2,8 +2,7 @@
 
 import { useEffect } from 'react';
 import { useAppTheme } from '@features/preferences/public/runtime-api';
-import { DEFAULT_THEME_ID, applyTheme, sanitizeTheme } from '@/lib/theme';
-import { useMembershipAccess } from '@features/preferences/public/membership';
+import { applyTheme, sanitizeTheme } from '@/lib/theme';
 import { windows } from '@platform/tauri/client';
 
 /**
@@ -20,11 +19,9 @@ import { windows } from '@platform/tauri/client';
  */
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const theme = useAppTheme();
-  const { active: canUseMistTheme } = useMembershipAccess();
 
   useEffect(() => {
-    const savedTheme = sanitizeTheme(theme);
-    const id = savedTheme === 'mist' && !canUseMistTheme ? DEFAULT_THEME_ID : savedTheme;
+    const id = sanitizeTheme(theme);
     const root = document.documentElement;
     let active = true;
     // The IPC resolves after native UI work, so CSS reflects the actual backdrop.
@@ -53,7 +50,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
       active = false;
       mq.removeEventListener('change', listener);
     };
-  }, [theme, canUseMistTheme]);
+  }, [theme]);
 
   return <>{children}</>;
 }

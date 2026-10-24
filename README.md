@@ -135,14 +135,7 @@ npm run tauri:build:prod
 
 单独运行 `npm run dev` 只启动 Vite 前端，不会启动 Tauri 桌面后端。
 
-桌面开发版 `npm run tauri:dev` 默认连接 `https://cloud.flowix.cc`。在「偏好设置 → 开发 → 环境配置」中选择 Staging 或 Prod，Flowix 会重启以应用切换。首次启动默认使用 Prod；已保存的界面选择优先于构建默认值；`--cloud-env=staging|prod` 设置默认值，仅在尚未保存界面选择时生效：
-
-```bash
-npm run tauri:dev -- --cloud-env=staging
-npm run tauri:dev -- --cloud-env=prod
-```
-
-`npm run tauri:dev:pi` 和 `npm run tauri:dev:win` 也接受该参数。正式包 `npm run tauri:build:prod` 始终连接 `https://cloud.flowix.cc`，不会显示环境下拉。单独运行 `npm run dev` 只启动 Vite 前端，不会启动桌面端 Cloud 同步。
+笔记同步走 Fast Note Sync（FNS）：在「偏好设置 → 笔记同步」中填写服务地址与令牌，并在同步面板为每个笔记本绑定 vault。AI 服务商与密钥全部保存在本地（Pi BYOK 或 DeepSeek Harness 配置），不依赖任何云端账号。
 
 开发环境要求 Node.js 20+、Rust 1.75+ 与 Tauri v2；桌面应用支持 macOS 14+ 与 Windows 10+。
 

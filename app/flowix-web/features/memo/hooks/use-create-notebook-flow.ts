@@ -20,7 +20,6 @@ interface CreateNotebookInput {
   name: string;
   path?: string;
   icon?: string | null;
-  cloudNotebookId?: string;
   templateId?: string | null;
 }
 
@@ -101,13 +100,13 @@ export function useCreateNotebookFlow({
   }, [handleImportStatus]);
 
   const createNotebook = useCallback(
-    async ({ name, path, icon, cloudNotebookId, templateId }: CreateNotebookInput): Promise<Notebook | null> => {
+    async ({ name, path, icon, templateId }: CreateNotebookInput): Promise<Notebook | null> => {
       const notebookName = name.trim();
       const notebookPath = path?.trim() || undefined;
-      if (!notebookName || (cloudNotebookId && !notebookPath)) return null;
+      if (!notebookName) return null;
       if (createInFlightRef.current) return null;
       createInFlightRef.current = true;
-      const registrationKey = JSON.stringify({ notebookName, notebookPath, icon, cloudNotebookId, templateId });
+      const registrationKey = JSON.stringify({ notebookName, notebookPath, icon, templateId });
 
       setCreationState({ status: 'creating' });
 
@@ -117,46 +116,30 @@ export function useCreateNotebookFlow({
           registration = registeredNotebookRef.current.registration;
         } else {
           registeredNotebookRef.current = null;
-          if (cloudNotebookId) {
-            registration = {
-              notebook: await notebookRepository.createFromCloud(
-                cloudNotebookId,
-                notebookName,
-                notebookPath ?? '',
-                icon,
-                false,
-              ),
-              created: true,
-              needsImport: false,
-              hasTemplateSetup: false,
-              setupJob: null,
-            };
-          } else {
-            try {
-              registration = await createNotebookRegistration({
-                name: notebookName,
-                path: notebookPath,
-                icon,
-                templateId,
-                reuseExisting: true,
-              });
-            } catch (error) {
-              if (!templateId || !String(error).includes('NOTEBOOK_PRESET_OVERWRITE_CONFIRM_REQUIRED')) {
-                throw error;
-              }
-              if (!await notebookRepository.confirmPresetOverwrite(t('notebook.template.overwriteConfirm'))) {
-                setCreationState({ status: 'idle' });
-                return null;
-              }
-              registration = await createNotebookRegistration({
-                name: notebookName,
-                path: notebookPath,
-                icon,
-                templateId,
-                overwriteExisting: true,
-                reuseExisting: true,
-              });
+          try {
+            registration = await createNotebookRegistration({
+              name: notebookName,
+              path: notebookPath,
+              icon,
+              templateId,
+              reuseExisting: true,
+            });
+          } catch (error) {
+            if (!templateId || !String(error).includes('NOTEBOOK_PRESET_OVERWRITE_CONFIRM_REQUIRED')) {
+              throw error;
             }
+            if (!await notebookRepository.confirmPresetOverwrite(t('notebook.template.overwriteConfirm'))) {
+              setCreationState({ status: 'idle' });
+              return null;
+            }
+            registration = await createNotebookRegistration({
+              name: notebookName,
+              path: notebookPath,
+              icon,
+              templateId,
+              overwriteExisting: true,
+              reuseExisting: true,
+            });
           }
           registeredNotebookRef.current = { key: registrationKey, registration };
         }
@@ -179,9 +162,7 @@ export function useCreateNotebookFlow({
         await selectNotebook(created, { workColumnTarget: 'clear' });
         registeredNotebookRef.current = null;
 
-        if (cloudNotebookId) {
-          setCreationState({ status: 'idle' });
-        } else if (registration.needsImport && !registration.hasTemplateSetup) {
+        if (registration.needsImport && !registration.hasTemplateSetup) {
           const generation = ++importMonitorGenerationRef.current;
           activeImportNotebookIdRef.current = created.id;
           setCreationState({ status: 'importing', notebookId: created.id });

@@ -6,7 +6,6 @@ import {
   RulerIcon,
   StarFourIcon,
   TextAUnderlineIcon,
-  UserIcon,
 } from '@phosphor-icons/react';
 import type { I18nKey } from '@/lib/i18n';
 import mcpPluginIcon from '@/assets/mcp-plugin-settings.svg';
@@ -70,12 +69,6 @@ export const PREFERENCE_TAB_GROUPS = [
         id: 'shortcuts', labelKey: 'preferences.tabs.shortcuts',
         icon: <KeyboardIcon className="w-4 h-4" />, contentWidth: 'normal',
         ...lazyPreferenceTab(() => import('@features/preferences/sections/shortcuts').then((module) => ({ default: module.ShortcutsSection }))),
-      },
-      {
-        id: 'cloudSync', labelKey: 'preferences.tabs.cloudSync',
-        icon: <UserIcon className="w-4 h-4" />, contentWidth: 'normal',
-        visibleInProductMenu: false,
-        ...lazyPreferenceTab(() => import('@features/preferences/sections/cloud-sync').then((module) => ({ default: module.CloudSyncSection }))),
       },
       {
         id: 'fnsSync', labelKey: 'preferences.tabs.fnsSync',

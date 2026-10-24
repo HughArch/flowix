@@ -9,10 +9,6 @@ const repoRoot = path.resolve(import.meta.dirname, '..')
 // Pi is part of every production desktop package. Keep --with-pi accepted for
 // backwards compatibility; it is no longer a product feature switch.
 delete process.env.FLOWIX_BUNDLE_PI
-// Production packages always target the production Cloud, regardless of the
-// caller's shell environment or any local development override.
-process.env.FLOWIX_CLOUD_ENVIRONMENT = 'prod'
-delete process.env.FLOWIX_CLOUD_API_BASE
 delete process.env.FLOWIX_DEV_MODE
 applyTauriSigningKey()
 const npmEntrypoint = process.env.npm_execpath

@@ -31,9 +31,6 @@ pub enum MemoChangeSource {
     /// Path-based Agent/CLI writes instead publish notebook path changes;
     /// they do not fabricate a legacy Memo row.
     ExternalTool,
-    /// Flowix Cloud pull applied this write locally. Automatic push scheduling
-    /// must ignore this source to avoid a sync loop.
-    CloudSync,
 }
 
 /// Derived memo fields that changed as a result of the write.
@@ -210,41 +207,15 @@ pub(crate) fn emit_with_recorded_commit_from_window(
     commit: Option<DocumentCommit>,
     origin_window_label: Option<&str>,
 ) -> Option<DocumentCommit> {
-    let sync_change = match &event {
-        MemoEvent::Created {
-            memo,
-            notebook_id,
-            source,
-            ..
-        } if !matches!(source, MemoChangeSource::CloudSync) => Some((
-            notebook_id.clone(),
-            memo.relative_path.clone(),
-            flowix_sync::LocalChangeKind::Put,
-        )),
-        MemoEvent::Updated {
-            memo,
-            notebook_id,
-            source,
-            ..
-        } if !matches!(source, MemoChangeSource::CloudSync) => Some((
-            notebook_id.clone(),
-            memo.relative_path.clone(),
-            flowix_sync::LocalChangeKind::Put,
-        )),
-        MemoEvent::Deleted {
-            relative_path,
-            notebook_id,
-            source,
-            ..
-        } if !matches!(source, MemoChangeSource::CloudSync) => Some((
-            notebook_id.clone(),
-            relative_path.clone(),
-            flowix_sync::LocalChangeKind::Delete,
-        )),
+    let sync_notebook_id = match &event {
+        MemoEvent::Created { notebook_id, .. }
+        | MemoEvent::Updated { notebook_id, .. }
+        | MemoEvent::Deleted { notebook_id, .. } => Some(notebook_id.clone()),
         _ => None,
     };
-    // 优先�?dispatcher (SharedDispatcher) 抽象, 拿不到退到直�?app.emit�?    // dispatcher �?lib.rs::run �?manage, 为未来�? channel (attachment /
-    // tag / notebook) 提供统一入口。本函数�?��务唯一调用�? �?    // 需要动 agent.rs / commands/* 一行代码�?
+    // 优先用 dispatcher (SharedDispatcher) 抽象, 拿不到退到直接 app.emit。
+    // dispatcher 在 lib.rs::run 中 manage, 为未来的 channel (attachment /
+    // tag / notebook) 提供统一入口。
     if let Some(dispatcher) = app.try_state::<crate::events::SharedDispatcher>() {
         emit_committed_via_dispatcher(&dispatcher, &event, commit.as_ref(), origin_window_label);
     } else {
@@ -258,52 +229,8 @@ pub(crate) fn emit_with_recorded_commit_from_window(
             },
         );
     }
-    if let Some((notebook_id, note_id, operation)) = sync_change {
-        if let Some(state) = app.try_state::<crate::app::state::AppState>() {
-            let relative_path = match &event {
-                MemoEvent::Created { memo, .. } | MemoEvent::Updated { memo, .. } => {
-                    Some(memo.relative_path.clone())
-                }
-                MemoEvent::Deleted { path, .. } => {
-                    let memo_file = read_lock(&state.memo_file, "memo_file");
-                    memo_file.get_notebook_config_by_id(&notebook_id).and_then(|notebook| {
-                        flowix_core::memo_file::notebook_relative_path(
-                            std::path::Path::new(&notebook.path), std::path::Path::new(path),
-                        ).ok()
-                    })
-                }
-                _ => None,
-            };
-            let Some(relative_path) = relative_path else {
-                tracing::warn!(notebook_id, note_path = %note_id, "cloud change has no valid notebook-relative path");
-                return commit;
-            };
-            let note_id = flowix_sync::v2_path_note_id(&notebook_id, &relative_path);
-            let fingerprint = commit
-                .as_ref()
-                .map(|commit| commit.content_hash.as_str())
-                .unwrap_or_else(|| match operation {
-                    flowix_sync::LocalChangeKind::Delete => "deleted",
-                    flowix_sync::LocalChangeKind::Put => "unobserved",
-                });
-            match state.cloud_sync.record_v2_local_change(
-                &notebook_id,
-                &note_id,
-                operation,
-                fingerprint,
-            ) {
-                Ok(generation_changed) => {
-                    crate::commands::cloud::schedule_notebook_sync_observation(
-                        app.clone(),
-                        notebook_id.clone(),
-                        generation_changed,
-                    );
-                }
-                Err(error) => tracing::warn!(
-                    "failed to persist cloud v2 dirty entity for {notebook_id}/{note_id}: {error}"
-                ),
-            }
-        }
+    if let Some(notebook_id) = sync_notebook_id {
+        crate::fns_sync::schedule_notebook_sync(app, &notebook_id);
     }
     commit
 }
@@ -551,7 +478,6 @@ mod tests {
             (MemoChangeSource::UserEdit, "user_edit"),
             (MemoChangeSource::UserDelete, "user_delete"),
             (MemoChangeSource::ExternalTool, "external_tool"),
-            (MemoChangeSource::CloudSync, "cloud_sync"),
         ] {
             let s: String = serde_json::to_value(&variant)
                 .unwrap()

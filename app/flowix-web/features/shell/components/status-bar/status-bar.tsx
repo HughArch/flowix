@@ -20,14 +20,7 @@ import { normalizeAgentRuntimeStatus } from '@features/agent/runtime/agent-runti
 import { useI18n } from '@/lib/i18n';
 import { useDocumentMetricsStore } from '@features/document/store/document-metrics-store';
 import { useNoteStore } from '@features/memo/store/note-store';
-import { CloudStatusIcon } from '@shared/icons/cloud-status-icon';
 import { TagSvgIcon } from '@shared/ui/tag-icon';
-import {
-  cloud,
-  listenToCloudStateChanges,
-  listenToCloudSyncStatusChanges,
-  type CloudSyncStatus,
-} from '@platform/tauri/client';
 import type { AppUpdaterState } from '@features/shell/hooks/use-app-updater';
 import { useSyncPanelStore } from '@features/sync-status';
 
@@ -99,102 +92,16 @@ export function StatusBar({
   const { t } = useI18n();
   const statusBarRightEdgeRef = useRef<HTMLDivElement>(null);
   const [notebookPopupOpen, setNotebookPopupOpen] = useState(false);
-  const [cloudSyncStatuses, setCloudSyncStatuses] = useState<Map<string, CloudSyncStatus>>(
-    () => new Map(),
-  );
-  const cloudStateRequestRef = useRef(0);
-  const [cloudSyncedNotebookIds, setCloudSyncedNotebookIds] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [cloudSyncAvailable, setCloudSyncAvailable] = useState(false);
-  const [cloudPendingOperationCount, setCloudPendingOperationCount] = useState(0);
   const notebooks = useNoteStore((state) => state.notebooks);
   const selectedNotebook = useNoteStore((state) => state.selectedNotebook);
   const setNotebooks = useNoteStore((state) => state.setNotebooks);
   const charCount = useDocumentMetricsStore((state) => state.charCount);
 
   useEffect(() => {
-    const refreshCloudSyncedNotebookIds = () => {
-      const requestId = ++cloudStateRequestRef.current;
-      void Promise.all([cloud.getState(), cloud.listNotebookStates()])
-        .then(([cloudState, links]) => {
-          if (requestId !== cloudStateRequestRef.current) return;
-          setCloudSyncAvailable(cloudState.authenticated);
-          setCloudSyncedNotebookIds(
-            new Set(links.filter((link) => link.enabled).map((link) => link.notebookId)),
-          );
-        })
-        .catch(() => {
-          if (requestId !== cloudStateRequestRef.current) return;
-          setCloudSyncAvailable(false);
-          setCloudSyncedNotebookIds(new Set());
-        });
-    };
-    refreshCloudSyncedNotebookIds();
-    return listenToCloudStateChanges((cloudState) => {
-      setCloudSyncAvailable(cloudState.authenticated);
-      refreshCloudSyncedNotebookIds();
-    });
-  }, []);
-
-  useEffect(() => {
     const handleToggle = () => setNotebookPopupOpen((open) => !open);
     window.addEventListener('flowix:toggle-notebook-switcher', handleToggle);
     return () => window.removeEventListener('flowix:toggle-notebook-switcher', handleToggle);
   }, []);
-
-  useEffect(() => {
-    return listenToCloudSyncStatusChanges((status) => {
-      setCloudSyncStatuses((previous) => {
-        const current = previous.get(status.notebookId);
-        if (current && status.startedAt < current.startedAt) return previous;
-        const next = new Map(previous);
-        next.set(status.notebookId, status);
-        return next;
-      });
-    });
-  }, []);
-
-  const cloudSyncInProgress = Array.from(cloudSyncStatuses.values()).some((status) =>
-    status.state === 'queued'
-    || status.state === 'checking'
-    || status.state === 'syncing'
-    || status.state === 'finalizing',
-  );
-
-  useEffect(() => {
-    if (!cloudSyncInProgress) {
-      setCloudPendingOperationCount(0);
-      return;
-    }
-
-    let cancelled = false;
-    let requestInFlight = false;
-    const refreshPendingOperationCount = () => {
-      if (requestInFlight) return;
-      requestInFlight = true;
-      void cloud.listPendingFileOperationCounts()
-        .then((counts) => {
-          if (cancelled) return;
-          setCloudPendingOperationCount(
-            Object.values(counts).reduce((total, count) => total + count, 0),
-          );
-        })
-        .catch(() => {
-          // Keep the last known count through a transient IPC/database error.
-        })
-        .finally(() => {
-          requestInFlight = false;
-        });
-    };
-
-    refreshPendingOperationCount();
-    const interval = window.setInterval(refreshPendingOperationCount, 1000);
-    return () => {
-      cancelled = true;
-      window.clearInterval(interval);
-    };
-  }, [cloudSyncInProgress]);
 
   return (
     <div className="flex h-[26px] shrink-0 select-none items-stretch text-xs text-[var(--muted-foreground)]">
@@ -210,8 +117,6 @@ export function StatusBar({
           onDelete={onDeleteNotebook}
           onCreateNotebook={onCreateNotebook}
           onRefresh={setNotebooks}
-          cloudSyncedNotebookIds={cloudSyncedNotebookIds}
-          cloudSyncAvailable={cloudSyncAvailable}
         />
       </div>
       {/* Right column: full-width content area. */}
@@ -237,29 +142,6 @@ export function StatusBar({
         <AgentConversationStatusBar />
         <div className="flex-1" />
         <ProductUpdatePill updater={updater} anchor={statusBarRightEdgeRef} />
-        {cloudSyncInProgress && (
-          <div
-            className="inline-flex h-[22px] items-center gap-1 px-1.5 text-xs leading-none text-[var(--muted-foreground)]"
-            role="status"
-            aria-live="polite"
-            aria-label={
-              cloudPendingOperationCount > 0
-                ? `${t('shell.statusBar.syncing')} ${cloudPendingOperationCount}`
-                : t('shell.statusBar.syncing')
-            }
-          >
-            <CloudStatusIcon
-              status="connecting"
-              size={14}
-              className="!opacity-100"
-            />
-            {cloudPendingOperationCount > 0 && (
-              <span className="font-mono tabular-nums">
-                {cloudPendingOperationCount}
-              </span>
-            )}
-          </div>
-        )}
         {charCount > 0 && (
           <span className="h-full inline-flex items-center gap-0.5 px-1.5 text-[var(--muted-foreground)] hover:bg-[var(--muted)]">
             {t('status.characters')}{' '}

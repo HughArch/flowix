@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useRef, useState } from 'react';
+import { useState } from 'react';
 import { ChevronsUpDown } from 'lucide-react';
 import { cn } from '@/lib/utils';
 import {
@@ -14,14 +14,6 @@ import { loadNativeMenuIcons } from '@platform/tauri/native-menu-icons';
 import { NotebookIcon } from '@features/memo/components/notebook-icon';
 import { useNoteStore, type Notebook } from '@features/memo/store/note-store';
 import { useI18n } from '@/lib/i18n';
-import {
-  cloud,
-  listenToCloudStateChanges,
-  listenToCloudSyncStatusChanges,
-  type CloudSyncStatus,
-} from '@platform/tauri/client';
-import { useExperimentalMode } from '@platform/tauri/use-experimental-mode';
-import { cloudSyncErrorMessage } from '@platform/tauri/errors';
 import { NotebookSelectorPopup } from '@features/shell/components/status-bar/notebook-selector-popup';
 
 interface NotebookListProps {
@@ -63,86 +55,9 @@ export function NotebookList({
   onCreateNotebook,
 }: NotebookListProps) {
   const { t } = useI18n();
-  const experimental = useExperimentalMode();
   const setNotebooks = useNoteStore((s) => s.setNotebooks);
   const notebooksInitialized = useNoteStore((s) => s.notebooksInitialized);
   const [notebookPopupOpen, setNotebookPopupOpen] = useState(false);
-  const cloudStateRequestRef = useRef(0);
-
-  const [cloudSyncedNotebookIds, setCloudSyncedNotebookIds] = useState<Set<string>>(
-    () => new Set(),
-  );
-  const [cloudSyncAvailable, setCloudSyncAvailable] = useState(false);
-  const [cloudSyncStatuses, setCloudSyncStatuses] = useState<Map<string, CloudSyncStatus>>(
-    () => new Map(),
-  );
-
-  const refreshCloudSyncedNotebookIds = useCallback(() => {
-    if (!experimental) {
-      setCloudSyncAvailable(false);
-      setCloudSyncedNotebookIds(new Set());
-      return;
-    }
-    const requestId = ++cloudStateRequestRef.current;
-    void Promise.all([cloud.getState(), cloud.listNotebookStates()])
-      .then(([cloudState, links]) => {
-        if (requestId !== cloudStateRequestRef.current) return;
-        setCloudSyncAvailable(cloudState.authenticated);
-        setCloudSyncedNotebookIds(
-          new Set(links.filter((link) => link.enabled).map((link) => link.notebookId)),
-        );
-      })
-      .catch(() => {
-        if (requestId !== cloudStateRequestRef.current) return;
-        setCloudSyncAvailable(false);
-        setCloudSyncedNotebookIds(new Set());
-      });
-  }, [experimental]);
-
-  useEffect(() => {
-    refreshCloudSyncedNotebookIds();
-  }, [notebooks, refreshCloudSyncedNotebookIds]);
-
-  useEffect(() => {
-    if (!experimental) return;
-    return listenToCloudStateChanges((cloudState) => {
-      setCloudSyncAvailable(cloudState.authenticated);
-      refreshCloudSyncedNotebookIds();
-    });
-  }, [experimental, refreshCloudSyncedNotebookIds]);
-
-  useEffect(() => {
-    if (!experimental) return;
-    return listenToCloudSyncStatusChanges((status) => {
-      setCloudSyncStatuses((previous) => {
-        const current = previous.get(status.notebookId);
-        if (current && status.startedAt < current.startedAt) {
-          return previous;
-        }
-        const next = new Map(previous);
-        next.set(status.notebookId, status);
-        return next;
-      });
-    });
-  }, [experimental]);
-
-  useEffect(() => {
-    if (!experimental || cloudSyncedNotebookIds.size === 0) return;
-    const syncAfterConnectivityReturns = () => {
-      void cloud.syncNow().catch(() => {
-        // The native sync status event owns user-visible error reporting.
-      });
-    };
-    const syncAfterForeground = () => {
-      if (document.visibilityState === 'visible') syncAfterConnectivityReturns();
-    };
-    window.addEventListener('online', syncAfterConnectivityReturns);
-    document.addEventListener('visibilitychange', syncAfterForeground);
-    return () => {
-      window.removeEventListener('online', syncAfterConnectivityReturns);
-      document.removeEventListener('visibilitychange', syncAfterForeground);
-    };
-  }, [cloudSyncedNotebookIds, experimental]);
 
   return (
     <div className="space-y-0.5 pb-1">
@@ -163,14 +78,7 @@ export function NotebookList({
             notebooks.map((notebook) => {
               if (notebook.id !== selectedNotebook?.id) return null;
               const isActive = selectedNotebook?.id === notebook.id;
-              const isCloudSynced = cloudSyncedNotebookIds.has(notebook.id);
               const isMissing = Boolean(notebook.missing);
-              const cloudSyncStatus = cloudSyncStatuses.get(notebook.id);
-              const cloudSyncInProgress =
-                cloudSyncStatus?.state === 'queued' ||
-                cloudSyncStatus?.state === 'checking' ||
-                cloudSyncStatus?.state === 'syncing' ||
-                cloudSyncStatus?.state === 'finalizing';
               return (
                 <ContextMenu key={notebook.id}>
                   <ContextMenuTrigger
@@ -197,8 +105,6 @@ export function NotebookList({
                   onDelete={onDeleteNotebook}
                   onCreateNotebook={onCreateNotebook}
                   onRefresh={setNotebooks}
-                  cloudSyncedNotebookIds={cloudSyncedNotebookIds}
-                  cloudSyncAvailable={cloudSyncAvailable}
                   side="bottom"
                   trigger={
                     <div
@@ -249,30 +155,6 @@ export function NotebookList({
                     </span>
                     {isActive && (
                       <div className="flex min-w-0 max-w-full items-center gap-0">
-                        {isCloudSynced && (
-                          <span
-                            className="flex h-4 w-3 shrink-0 items-center justify-center"
-                            title={
-                              cloudSyncStatus?.lastError
-                                ? cloudSyncErrorMessage(cloudSyncStatus.lastError, t)
-                                : cloudSyncInProgress
-                                  ? t('notebook.cloudSync.syncing')
-                                  : cloudSyncStatus?.state === 'success'
-                                    ? t('notebook.cloudSync.complete')
-                                    : t('notebook.cloudSync.title')
-                            }
-                          >
-                            <span
-                              className={cn(
-                                'h-2 w-2 rounded-full',
-                                cloudSyncAvailable
-                                  ? 'bg-[var(--success)]'
-                                  : 'bg-[var(--muted-foreground)]',
-                              )}
-                              aria-hidden="true"
-                            />
-                          </span>
-                        )}
                         <NotebookPathLine path={notebook.path} />
 
                       </div>

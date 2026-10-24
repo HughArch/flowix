@@ -1,4 +1,4 @@
-//! Process-local admission for passive notebook maintenance. Accurate CLI/cloud
+//! Process-local admission for passive notebook maintenance. Accurate CLI
 //! snapshots keep their explicit blocking APIs and share the core OS locks.
 use std::collections::{HashMap, HashSet, VecDeque};
 use std::path::PathBuf;

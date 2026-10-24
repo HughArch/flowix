@@ -42,12 +42,9 @@ pub struct AppState {
     pub security_bookmarks: Arc<SecurityBookmarkStore>,
     pub export_access: crate::app::export_access::ExportAccess,
     pub user_config: Arc<UserConfigStore>,
-    pub cloud_sync: Arc<flowix_sync::SyncManager>,
-    /// Fast Note Sync Service client. Independent from the Flowix Cloud sync
-    /// above: it has its own credentials, vault bindings and cursors.
+    /// Fast Note Sync Service client. It owns its own credentials, vault
+    /// bindings and cursors.
     pub fns_sync: Arc<crate::fns_sync::FnsSyncService>,
-    /// Effective Cloud target selected at startup. Release builds always use prod.
-    pub cloud_environment: flowix_sync::CloudEnvironment,
     /// Legacy system metadata reader used to migrate notebook tag state into
     /// each notebook's `.flowix/system.json`.
     pub system_data: SystemData,

@@ -1,23 +1,14 @@
 import type { AgentModelOption } from "./model-picker-types";
-import { isFlowixCloudModel } from "@features/agent/config/agent-model-source";
 
 type PiModelPickerProps = {
   models: readonly AgentModelOption[];
-  showMemberSection: boolean;
   selectedModelId: string;
   selectedProviderId?: string;
-  memberLabel: string;
-  mineLabel: string;
   emptyLabel: string;
-  personalEmptyLabel: string;
   createModelItem: (model: AgentModelOption) => HTMLElement;
 };
 
 type ProviderLabelPlacement = "group" | "item" | "none";
-
-export function isFlowixCloudModelOption(model: AgentModelOption): boolean {
-  return isFlowixCloudModel(model);
-}
 
 function groupModels(models: readonly AgentModelOption[]) {
   const groups = new Map<string, { label: string; models: AgentModelOption[] }>();
@@ -62,8 +53,6 @@ function createModelGroups(
     group.models.forEach((model) => {
       const item = props.createModelItem(model);
       item.classList.add("pi-model-picker__item");
-      const subtitle = isFlowixCloudModelOption(model) ? model.subtitle?.trim() : undefined;
-      if (subtitle) item.title = subtitle;
       const checkmark = item.querySelector(".agent-thread-card__copy-icon");
       if (providerLabelPlacement === "item") {
         const providerName = document.createElement("span");
@@ -71,16 +60,6 @@ function createModelGroups(
         providerName.textContent = group.label;
         providerName.title = group.label;
         item.insertBefore(providerName, checkmark);
-      }
-      if (isFlowixCloudModelOption(model) && model.creditMultiplier != null) {
-        const multiplier = document.createElement("span");
-        multiplier.className = "pi-model-picker__multiplier";
-        multiplier.textContent = `${model.creditMultiplier.toFixed(2)}x`;
-        multiplier.setAttribute(
-          "aria-label",
-          `credit multiplier ${model.creditMultiplier.toFixed(2)}`,
-        );
-        item.insertBefore(multiplier, checkmark);
       }
       if (!checkmark) {
         const checkmarkPlaceholder = document.createElement("span");
@@ -109,35 +88,6 @@ function createModelGroups(
   return list;
 }
 
-function createModelCategory(
-  label: string,
-  models: readonly AgentModelOption[],
-  props: PiModelPickerProps,
-  providerLabelPlacement: ProviderLabelPlacement,
-  emptyLabel?: string,
-): HTMLElement {
-  const category = document.createElement("section");
-  category.className = "pi-model-picker__category";
-
-  const heading = document.createElement("div");
-  heading.className = "agent-thread-card__codex-settings-title pi-model-picker__category-label";
-  heading.setAttribute("role", "heading");
-  heading.setAttribute("aria-level", "3");
-  heading.textContent = label;
-  category.append(heading);
-
-  if (models.length > 0) {
-    category.append(createModelGroups(models, props, providerLabelPlacement));
-  } else if (emptyLabel) {
-    const empty = document.createElement("div");
-    empty.className = "pi-model-picker__empty pi-model-picker__empty--category";
-    empty.textContent = emptyLabel;
-    category.append(empty);
-  }
-
-  return category;
-}
-
 export function createPiModelPicker(props: PiModelPickerProps): HTMLElement {
   const root = document.createElement("div");
   root.className = "pi-model-picker";
@@ -150,28 +100,9 @@ export function createPiModelPicker(props: PiModelPickerProps): HTMLElement {
     return root;
   }
 
-  const memberModels = props.models.filter(isFlowixCloudModelOption);
-  const mineModels = props.models.filter((model) => !isFlowixCloudModelOption(model));
-  if (!props.showMemberSection || memberModels.length === 0) {
-    const panel = document.createElement("div");
-    panel.className = "pi-model-picker__panel";
-    panel.append(createModelGroups(props.models, props, "item"));
-    root.append(panel);
-    return root;
-  }
-
   const panel = document.createElement("div");
   panel.className = "pi-model-picker__panel";
-  panel.append(
-    createModelCategory(props.memberLabel, memberModels, props, "none"),
-    createModelCategory(
-      props.mineLabel,
-      mineModels,
-      props,
-      "item",
-      props.personalEmptyLabel,
-    ),
-  );
+  panel.append(createModelGroups(props.models, props, "item"));
   root.append(panel);
   return root;
 }

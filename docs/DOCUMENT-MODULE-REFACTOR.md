@@ -113,7 +113,6 @@ changeId 解决同一确认事实的重复投递，不是版本号；本地队�
 | 界面笔记创建、保存、删除 | 路径型 `NoteService` 更新 Markdown 和 notebook 的 SQLite `notes` 投影；路径命令不要求兼容 Memo 行 | 创建回执和 `flowix:path-note-changed` 由同一适配边界消费；路径编辑会话使用保存队列及提交回执。仍走旧 Memo 模型的操作继续发 `memo-event` | 磁盘是笔记正文事实；路径索引可重建，Memo 兼容清理不应阻止已确认的路径删除通知 |
 | Agent 的 Flowix CLI/MCP | `flowix-cli/src/path_store.rs` 通过 core `NoteService` 创建、CAS 保存、删除；不经过前端服务，直接更新路径索引 | 桌面文件监听刷新查询；外部创建发 `resource-created/source=external_tool`，可按既有偏好自动打开；活跃文档由外部文档监听器通知 | CLI 与桌面端不共享命令回执；关闭应用期间的变更由下次索引 reconcile 收敛 |
 | Agent shell、外部编辑器和其他进程 | 直接写 notebook 文件时，桌面文件监听器按路径刷新可重建索引，并记录本地云同步变化 | 文件监听发移动、删除或查询失效；当前打开的路径另由 `ExternalDocumentWatchState` 的原生监听和 750ms 修订轮询通知，未保存缓冲走外部变更合并 | 外部内容事件发送失败会保留修订供轮询重试；主文件监听不可用或索引刷新失败时依赖 watcher 重绑／启动 reconcile |
-| Flowix Cloud V2 拉取、冲突解决和历史恢复 | 写盘后重建路径与兼容 Memo 投影；写入冲突副本时单独注册副本 | `MemoEvent` 标记 `cloud_sync`；置顶区现在消费此来源；磁盘监听由 self-write revision 抑制，避免把云端回写误判为外部编辑 | 内容 hash、pending dirty 和安全替换保护本地编辑；远端删除改为按路径工作，即使兼容 Memo 行缺失也清理路径投影并发路径删除事实；集合表格引用在 notebook 写锁释放后清理 |
 
 Agent 的 Flowix CLI/MCP 与 Agent shell 是两种写入路径：前者经过 `NoteService`，后者
 由文件系统监听发现。路径型笔记不创建兼容 Memo 行，因此外部写入不会伪造

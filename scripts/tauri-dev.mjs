@@ -9,18 +9,8 @@ const npmEntrypoint = process.env.npm_execpath
 const tauriEntrypoint = resolve(repoRoot, 'node_modules/@tauri-apps/cli/tauri.js')
 const args = process.argv.slice(2)
 const withPi = args.includes('--with-pi')
-const cloudEnvIndex = args.findIndex(arg => arg === '--cloud-env' || arg.startsWith('--cloud-env='))
-const hasCloudEnvFlag = cloudEnvIndex >= 0
-const cloudEnvValue = cloudEnvIndex < 0
-  ? undefined
-  : args[cloudEnvIndex] === '--cloud-env'
-    ? args[cloudEnvIndex + 1]
-    : args[cloudEnvIndex].slice('--cloud-env='.length)
-const configArgs = [...args]
-if (cloudEnvIndex >= 0) {
-  configArgs.splice(cloudEnvIndex, args[cloudEnvIndex] === '--cloud-env' ? 2 : 1)
-}
-const requestedConfig = configArgs.find(arg => arg !== '--with-pi') ?? 'app/flowix-desktop/tauri.conf.dev.json'
+const configArgs = args.filter(arg => arg !== '--with-pi')
+const requestedConfig = configArgs[0] ?? 'app/flowix-desktop/tauri.conf.dev.json'
 // Tauri replaces (rather than deep-merges) the `app.windows` array, so the
 // generic dev config would drop the frameless window settings that the
 // platform overlay normally supplies. Windows draws its own chrome in React,
@@ -35,22 +25,6 @@ childEnv.CARGO_TARGET_DIR ??= resolve(repoRoot, '.build/cargo-target')
 const devMode = config.includes('.dev.')
 if (devMode) childEnv.FLOWIX_DEV_MODE = '1'
 else delete childEnv.FLOWIX_DEV_MODE
-
-if (hasCloudEnvFlag && !['staging', 'prod'].includes(cloudEnvValue)) {
-  throw new Error(`Unsupported or missing --cloud-env value: ${cloudEnvValue ?? '<missing>'}. Use staging or prod.`)
-}
-if (hasCloudEnvFlag && !devMode) {
-  throw new Error('--cloud-env can only be used with a development Tauri config.')
-}
-if (process.env.FLOWIX_CLOUD_API_BASE) {
-  throw new Error('FLOWIX_CLOUD_API_BASE has been removed. Use --cloud-env=staging or --cloud-env=prod.')
-}
-if (devMode) {
-  childEnv.FLOWIX_CLOUD_ENVIRONMENT = cloudEnvValue ?? 'prod'
-} else {
-  childEnv.FLOWIX_CLOUD_ENVIRONMENT = 'prod'
-}
-console.log(`Cloud build default: ${childEnv.FLOWIX_CLOUD_ENVIRONMENT} (saved app preference takes precedence)`)
 
 // The dev config is an overlay on tauri.conf.json. Keep versions in the
 // overlay-free canonical files aligned so a stale app version fails early.

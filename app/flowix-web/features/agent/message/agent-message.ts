@@ -8,7 +8,6 @@ import {
   formatDeepSeekHarnessReconnectError,
   isDeepSeekHarnessReconnectError,
 } from "@features/agent/message/error-format";
-import { cloudModelAccessErrorMessage } from "@platform/tauri/errors";
 import { translate, type AppLanguage, type I18nKey } from "@/lib/i18n";
 import { getAgentToolInputSummary as getFallbackAgentToolInputSummary } from "@features/agent/tool-display";
 
@@ -115,10 +114,7 @@ export function getAgentMessageVisibleContent(
           message.errorDetails?.source === "dsh-history",
       ),
     );
-    return cloudModelAccessErrorMessage(
-      formattedError,
-      (key, params) => translate(language, key, params),
-    );
+    return formattedError;
   }
 
   return message.content || "";

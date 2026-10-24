@@ -1,60 +1,18 @@
 import { describe, expect, it } from 'vitest';
+import { hasTauriErrorCode, tauriErrorMessage } from './errors';
 
-import { cloudSyncErrorMessage, hasTauriErrorCode, isInvalidRefreshTokenError, tauriErrorMessage } from '@platform/tauri/errors';
-
-it('reads structured IPC errors without matching incidental codes in their message', () => {
-  const error = { code: 'IO_ERROR', message: 'NOT_FOUND appears in a filename' };
-  expect(tauriErrorMessage(error)).toBe(error.message);
-  expect(hasTauriErrorCode(error, 'IO_ERROR')).toBe(true);
-  expect(hasTauriErrorCode(error, 'NOT_FOUND')).toBe(false);
-  expect(tauriErrorMessage(new Error('failed'))).toBe('failed');
-});
-
-describe('cloudSyncErrorMessage', () => {
-  const t = (key: string, params?: Record<string, string | number>) =>
-    params ? `${key}:${JSON.stringify(params)}` : key;
-
-  it('explains why an existing membership cannot be purchased again', () => {
-    expect(cloudSyncErrorMessage('MEMBERSHIP_ALREADY_ACTIVE:already active', t)).toBe(
-      'preferences.cloud.member.alreadyActive',
-    );
-  });
-
-  it('maps an inactive membership to an actionable message', () => {
-    expect(cloudSyncErrorMessage('MEMBERSHIP_REQUIRED:null', t)).toBe(
-      'preferences.cloud.membershipRequired',
-    );
-  });
-
-  it('directs missing storage capacity to a storage plan rather than membership purchase', () => {
-    expect(cloudSyncErrorMessage('STORAGE_PLAN_REQUIRED:An active storage plan is required', t)).toBe(
-      'preferences.cloud.storagePlanRequired',
-    );
-    expect(cloudSyncErrorMessage({ code: 'STORAGE_PLAN_REQUIRED', message: 'No storage' }, t)).toBe(
-      'preferences.cloud.storagePlanRequired',
-    );
-  });
-
-  it('formats quota details for the upload prompt', () => {
-    const message = cloudSyncErrorMessage(
-      'STORAGE_QUOTA_EXCEEDED:{"usedBytes":52428800,"quotaBytes":52428800,"requestedDeltaBytes":1024}',
-      t,
-    );
-    expect(message).toContain('preferences.cloud.quotaExceeded');
-    expect(message).toContain('"used":"50.0 MB"');
-    expect(message).toContain('"quota":"50.0 MB"');
-    expect(message).toContain('"requested":"1.0 KB"');
+describe('tauriErrorMessage', () => {
+  it('reads Error and object messages', () => {
+    expect(tauriErrorMessage(new Error('boom'))).toBe('boom');
+    expect(tauriErrorMessage({ message: 'structured' })).toBe('structured');
+    expect(tauriErrorMessage(undefined)).toBe('');
   });
 });
 
-describe('isInvalidRefreshTokenError', () => {
-  it('recognizes an invalid refresh token response', () => {
-    expect(
-      isInvalidRefreshTokenError('cloud API error 401 INVALID_REFRESH_TOKEN: expired'),
-    ).toBe(true);
-  });
-
-  it('does not classify unrelated cloud errors as an expired session', () => {
-    expect(isInvalidRefreshTokenError('cloud API error 500 HTTP_ERROR: unavailable')).toBe(false);
+describe('hasTauriErrorCode', () => {
+  it('matches structured codes and message substrings', () => {
+    expect(hasTauriErrorCode({ code: 'PATH_NOT_EMPTY' }, 'PATH_NOT_EMPTY')).toBe(true);
+    expect(hasTauriErrorCode(new Error('failed: NOTEBOOK_NOT_FOUND'), 'NOTEBOOK_NOT_FOUND')).toBe(true);
+    expect(hasTauriErrorCode(new Error('other'), 'PATH_NOT_EMPTY')).toBe(false);
   });
 });

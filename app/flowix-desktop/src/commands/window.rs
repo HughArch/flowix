@@ -82,7 +82,7 @@ pub(crate) fn open_preferences_window_inner(
         Theme::System => None,
         Theme::Light => Some("light"),
         Theme::Dark => Some("dark"),
-        Theme::Mist => Some("rock"),
+        Theme::Mist => Some("mist"),
         Theme::Rock => Some("rock"),
         Theme::Ember => Some("ember"),
     };
@@ -123,37 +123,20 @@ pub(crate) fn open_preferences_window_inner(
 
     let window = builder.build().map_err(|e| e.to_string())?;
     crate::commands::window_shutdown::install_window(&window);
-    // 新窗口即刻�?齐主题背�?�� (与主窗口�?��一�?, 避免冷启动白�?�?
-    let mut theme = state.user_config.get_preference().theme;
-    if theme == Theme::Mist {
-        theme = Theme::Rock;
-    }
+    // 新窗口即刻对齐主题背景 (与主窗口一致), 避免冷启动白闪。
+    let theme = state.user_config.get_preference().theme;
     crate::window_chrome::apply_window_chrome_theme(&window, theme);
     window.show().map_err(|error| error.to_string())?;
     Ok(())
 }
 
 /// Apply the effective theme to this window. Other windows independently follow
-/// shared preferences and account membership, without overwriting each other.
+/// shared preferences without overwriting each other.
 #[tauri::command]
 pub async fn apply_window_theme(
     theme: Theme,
     window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
 ) -> Result<&'static str, String> {
-    let theme = if theme == Theme::Mist {
-        let cloud = state.cloud_sync.state().map_err(|error| error.to_string())?;
-        let now_ms = std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map_err(|error| error.to_string())?.as_millis() as i64;
-        let has_membership = cloud.authenticated
-            && cloud.membership.as_ref().is_some_and(|membership| {
-                membership.is_active_at(now_ms)
-            });
-        if has_membership { Theme::Mist } else { Theme::Rock }
-    } else {
-        theme
-    };
     let (sender, receiver) = tokio::sync::oneshot::channel();
     let target = window.clone();
     window.run_on_main_thread(move || {
