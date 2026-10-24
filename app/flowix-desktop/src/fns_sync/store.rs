@@ -22,6 +22,11 @@ use crate::commands::helpers::refresh_notebook_note_index;
 use crate::lock_utils::read_lock;
 use crate::watcher::runtime::mark_self_write_for;
 
+/// Markdown files above this size are skipped during the scan. Notes are small;
+/// a giant file usually means a mis-extension or a cloud placeholder that would
+/// stall the scan.
+const MAX_NOTE_BYTES: u64 = 32 * 1024 * 1024;
+
 pub struct MemoFileStore {
     app: AppHandle,
     memo_file: Arc<RwLock<MemoFile>>,
@@ -91,12 +96,15 @@ impl MemoFileStore {
 
 impl LocalNoteStore for MemoFileStore {
     fn list_notes(&self) -> Result<Vec<LocalNote>, LocalError> {
+        let started = std::time::Instant::now();
+        let mut visited = 0usize;
         let mut notes = Vec::new();
         for entry in WalkDir::new(&self.root)
             .follow_links(false)
             .into_iter()
             .filter_entry(|entry| !should_skip_entry(entry.path(), &self.root))
         {
+            visited += 1;
             let Ok(entry) = entry else { continue };
             if !entry.file_type().is_file() {
                 continue;
@@ -114,14 +122,24 @@ impl LocalNoteStore for MemoFileStore {
             {
                 continue;
             }
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(_) => continue,
+            };
+            // Notes are small; anything huge is almost certainly not a note and
+            // reading it would stall the scan (especially over a cloud drive).
+            if metadata.len() > MAX_NOTE_BYTES {
+                tracing::warn!(
+                    path = %path.display(),
+                    size = metadata.len(),
+                    "skipping oversized markdown file during sync scan"
+                );
+                continue;
+            }
             let Ok(content) = fs::read_to_string(path) else {
                 // Skip unreadable or non-UTF-8 files rather than failing the
                 // whole sync.
                 continue;
-            };
-            let metadata = match entry.metadata() {
-                Ok(metadata) => metadata,
-                Err(_) => continue,
             };
             let mtime_ms = metadata
                 .modified()
@@ -144,6 +162,13 @@ impl LocalNoteStore for MemoFileStore {
             });
         }
         notes.sort_by(|a, b| a.path.cmp(&b.path));
+        tracing::info!(
+            visited,
+            notes = notes.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            root = %self.root.display(),
+            "sync scan finished"
+        );
         Ok(notes)
     }
 
@@ -290,12 +315,15 @@ impl MemoFileStore {
 
 impl LocalFileStore for MemoFileStore {
     fn list_files(&self, max_bytes: i64) -> Result<Vec<LocalFile>, LocalError> {
+        let started = std::time::Instant::now();
+        let mut visited = 0usize;
         let mut files = Vec::new();
         for entry in WalkDir::new(&self.root)
             .follow_links(false)
             .into_iter()
             .filter_entry(|entry| !should_skip_attachment_entry(entry.path(), &self.root))
         {
+            visited += 1;
             let Ok(entry) = entry else { continue };
             if !entry.file_type().is_file() {
                 continue;
@@ -336,6 +364,13 @@ impl LocalFileStore for MemoFileStore {
             });
         }
         files.sort_by(|a, b| a.path.cmp(&b.path));
+        tracing::info!(
+            visited,
+            files = files.len(),
+            elapsed_ms = started.elapsed().as_millis() as u64,
+            max_bytes,
+            "attachment scan finished"
+        );
         Ok(files)
     }
 

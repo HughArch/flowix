@@ -151,13 +151,33 @@ impl FnsClient {
 
     /// Read until a text frame with the expected action arrives.
     ///
-    /// The server may interleave unrelated broadcasts (e.g. `ShareSyncRefresh`);
-    /// those are skipped so the caller can stay strictly request/response.
+    /// The server may interleave unrelated broadcasts; those are skipped. A
+    /// wall-clock deadline prevents keepalive traffic from extending the wait
+    /// forever.
     pub async fn recv_frame(&mut self, expected_action: &str) -> Result<(String, Envelope)> {
+        let deadline = std::time::Instant::now() + self.timeout * 4;
         loop {
+            if std::time::Instant::now() >= deadline {
+                return Err(FnsError::Timeout("frame"));
+            }
             let (action, envelope) = self.recv_any().await?;
             if action == expected_action {
                 return Ok((action, envelope));
+            }
+            // Request-scoped failures arrive as `<Request>Ack` (for example
+            // `NoteSyncAck` with 315). Fail immediately instead of skipping
+            // them and waiting for a response that will never come.
+            if !envelope.status && envelope.code > crate::protocol::CODE_SUCCESS {
+                let detail = envelope
+                    .details
+                    .as_ref()
+                    .or(envelope.message.as_ref())
+                    .map(ToString::to_string)
+                    .unwrap_or_default();
+                return Err(FnsError::Server {
+                    code: envelope.code,
+                    message: detail,
+                });
             }
             tracing::debug!(action, "skipping unrelated frame");
         }
@@ -174,9 +194,17 @@ impl FnsClient {
     }
 
     /// Read the next frame of any kind.
+    ///
+    /// Keepalive frames must not extend the wait: a server that stops replying
+    /// while still sending pings would otherwise hang the sync forever.
     pub async fn recv_incoming(&mut self) -> Result<Incoming> {
+        let deadline = std::time::Instant::now() + self.timeout;
         loop {
-            let message = tokio::time::timeout(self.timeout, self.stream.next())
+            let remaining = deadline.saturating_duration_since(std::time::Instant::now());
+            if remaining.is_zero() {
+                return Err(FnsError::Timeout("frame"));
+            }
+            let message = tokio::time::timeout(remaining, self.stream.next())
                 .await
                 .map_err(|_| FnsError::Timeout("frame"))?
                 .ok_or(FnsError::Closed)??;
@@ -187,11 +215,17 @@ impl FnsClient {
                         .split_once('|')
                         .ok_or_else(|| FnsError::Protocol(format!("missing action separator: {text}")))?;
                     // An empty body (e.g. some broadcasts) decodes to a default envelope.
-                    let envelope = if body.trim().is_empty() {
+                    let envelope: Envelope = if body.trim().is_empty() {
                         serde_json::from_str("{}")?
                     } else {
                         serde_json::from_str(body)?
                     };
+                    if std::env::var_os("FNS_DEBUG").is_some() {
+                        eprintln!(
+                            "[fns] <- {action} code={} status={} details={:?} message={:?}",
+                            envelope.code, envelope.status, envelope.details, envelope.message
+                        );
+                    }
                     return Ok(Incoming::Text {
                         action: action.to_owned(),
                         envelope,

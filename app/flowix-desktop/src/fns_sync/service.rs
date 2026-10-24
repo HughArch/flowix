@@ -726,6 +726,14 @@ pub fn now_ms() -> i64 {
 
 fn describe_sync_error(error: flowix_fns::FnsError) -> String {
     match &error {
+        flowix_fns::FnsError::Server { code: 315, message }
+            if message.contains("Vault access restricted") =>
+        {
+            format!(
+                "令牌的 vault 白名单不包含目标笔记库（{message}）。\
+                 请在服务端为该令牌授权对应的 vault，或改用 vault 白名单留空的令牌。"
+            )
+        }
         flowix_fns::FnsError::Server { code: 315, .. } => {
             "令牌权限不匹配（315）：该令牌的客户端类型与服务端 scope 不一致。\
              Obsidian 插件签发的令牌请在「同步令牌」里把客户端类型设为 obsidianPlugin。"
