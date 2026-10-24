@@ -96,11 +96,17 @@ pub fn rename_file_noclobber(source: &Path, target: &Path) -> io::Result<()> {
 }
 
 #[cfg(not(any(windows, target_os = "linux", target_os = "macos")))]
-pub fn rename_file_noclobber(_source: &Path, _target: &Path) -> io::Result<()> {
-    Err(io::Error::new(
-        io::ErrorKind::Unsupported,
-        "no-clobber rename is unsupported on this platform",
-    ))
+pub fn rename_file_noclobber(source: &Path, target: &Path) -> io::Result<()> {
+    // Android (target_os = "android"): renameat2/renamex_np 均不可用, link()
+    // 又被 SELinux 禁止 ── 退化为存在性检查 + 普通 rename。调用方持有文件
+    // 锁, TOCTOU 窗口可忽略; no-clobber 语义由 exists 检查保留。
+    if target.exists() {
+        return Err(io::Error::new(
+            io::ErrorKind::AlreadyExists,
+            format!("target already exists: {}", target.display()),
+        ));
+    }
+    fs::rename(source, target)
 }
 
 impl MemoFile {

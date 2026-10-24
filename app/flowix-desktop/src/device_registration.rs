@@ -466,7 +466,17 @@ async fn post_registration(
         .json(payload)
         .send()
         .await
-        .map_err(|e| format!("network: {e}"))?;
+        .map_err(|e| {
+            // 移动端排障: reqwest Display 不含根因, 拼出 source 链
+            // (TLS / DNS / 连接被拒 / 超时 区分)。
+            let mut chain = format!("network: {e}");
+            let mut source = std::error::Error::source(&e);
+            while let Some(err) = source {
+                chain.push_str(&format!(" | caused by: {err}"));
+                source = err.source();
+            }
+            chain
+        })?;
     let status = response.status();
     if !status.is_success() {
         let body = response.text().await.unwrap_or_default();

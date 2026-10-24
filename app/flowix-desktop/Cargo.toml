@@ -44,7 +44,6 @@ reqwest = { version = "0.12", default-features = false, features = [
     "json",
     "charset",
     "http2",
-    "rustls-tls-native-roots",
     "macos-system-configuration",
     "blocking",
     "stream",
@@ -93,6 +92,13 @@ libc = "0.2"
 [target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
 tauri-plugin-single-instance = "2"
 tauri-plugin-updater = { workspace = true }
+# 桌面: 复用系统根证书 (企业代理 / 自签证书可用)。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+# 移动端: rustls-native-certs 在 Android 上取不到系统 CA 存储 (字体下载
+# 与设备注册均报 "error sending request"), 改用内置 webpki 根证书。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
 
 [target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
 window-vibrancy = "0.6"
