@@ -65,19 +65,19 @@ pub async fn dsh_install_appserver_profile(
     app: tauri::AppHandle,
 ) -> Result<crate::dsh::DshStatus, String> {
     state
-        .deepseek_harness
+        .agents.deepseek_harness
         .ensure_hosts_replaceable()
         .await
         .map_err(|error| format!("stop DSH before installing App Server: {error}"))?;
-    state.deepseek_harness.invalidate_hosts().await?;
+    state.agents.deepseek_harness.invalidate_hosts().await?;
     let install_app = app.clone();
     tauri::async_runtime::spawn_blocking(move || {
         crate::dsh::install_appserver_profile(&install_app)
     })
     .await
     .map_err(|error| format!("DSH App Server installer task failed: {error}"))??;
-    if let Err(error) = state.deepseek_harness.dsh_model_configs().await {
-        let _ = state.deepseek_harness.invalidate_hosts().await;
+    if let Err(error) = state.agents.deepseek_harness.dsh_model_configs().await {
+        let _ = state.agents.deepseek_harness.invalidate_hosts().await;
         return Err(format!("DSH App Server 安装后连接检查失败：{error}"));
     }
     let status = crate::dsh::status();
@@ -91,12 +91,12 @@ pub async fn dsh_manage_profile_plugin(
     package: Option<String>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    state.deepseek_harness.invalidate_hosts().await?;
+    state.agents.deepseek_harness.invalidate_hosts().await?;
     // Materialize the Flowix-owned profile bundles before the official CLI
     // sees this profile. Otherwise upstream initializes an unknown profile
     // without the Flowix bridge and independent memory bundle.
-    state.deepseek_harness.plugin_catalog().await?;
-    state.deepseek_harness.invalidate_hosts().await?;
+    state.agents.deepseek_harness.plugin_catalog().await?;
+    state.agents.deepseek_harness.invalidate_hosts().await?;
     let dsh_home = state.user_config.dsh_dir();
     tauri::async_runtime::spawn_blocking(move || {
         crate::dsh::run_profile_plugin(&dsh_home, &action, package.as_deref())

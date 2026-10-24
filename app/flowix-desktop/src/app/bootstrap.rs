@@ -10,7 +10,7 @@ use crate::agent_session::ThreadManager;
 use crate::app::open_targets;
 use crate::app::panic::install_panic_log_hook;
 use crate::app::paths::{get_app_data_path, get_user_config_dir};
-use crate::app::state::AppState;
+use crate::app::state::{AppState, ExternalAgentState};
 use crate::app::watchdog::spawn_external_agent_watchdog;
 use crate::cli_link;
 use crate::commands;
@@ -272,15 +272,17 @@ pub fn run() {
                     user_config_for_state.config_dir().clone(),
                 )),
                 system_data,
-                agent_external_config,
                 memo_file: memo_file_for_state.clone(),
-                external_runtimes: external_runtimes.clone(),
-                codex_app_server: codex_app_server.clone(),
-                opencode: opencode_acp_manager.clone(),
-                pi: pi_rpc_manager.clone(),
-                deepseek_harness: deepseek_harness_manager.clone(),
-                agent_history: agent_history.clone(),
-                agent_lifecycle: agent_lifecycle.clone(),
+                agents: ExternalAgentState {
+                    agent_external_config,
+                    external_runtimes: external_runtimes.clone(),
+                    codex_app_server: codex_app_server.clone(),
+                    opencode: opencode_acp_manager.clone(),
+                    pi: pi_rpc_manager.clone(),
+                    deepseek_harness: deepseek_harness_manager.clone(),
+                    agent_history: agent_history.clone(),
+                    agent_lifecycle: agent_lifecycle.clone(),
+                },
                 thread_manager: thread_manager_for_state.clone(),
                 plugin_runs: crate::plugin::PluginRunCoordinator::default(),
                 notebook_imports: Default::default(),
@@ -806,6 +808,7 @@ fn spawn_workbench_startup(
                     tauri::async_runtime::spawn_blocking(move || {
                         app_for_cli_detection
                             .state::<AppState>()
+                            .agents
                             .agent_external_config
                             .run_startup_detect();
                     });
@@ -1286,7 +1289,7 @@ pub(crate) fn prepare_for_update(app: &tauri::AppHandle) -> UpdateRuntimeGuard {
     // stays on the same worker through cleanup and installer launch.
     let state = app.state::<AppState>();
     state.notebook_background.pause();
-    let guard = UpdateRuntimeGuard { pi: state.pi.clone(), background: state.notebook_background.clone() };
+    let guard = UpdateRuntimeGuard { pi: state.agents.pi.clone(), background: state.notebook_background.clone() };
     stop_external_agent_children(app, "update");
     checkpoint_thread_database(app, "update");
     guard
@@ -1320,7 +1323,7 @@ fn stop_external_agent_children(app: &tauri::AppHandle, phase: &str) {
         // 尚未完成的清理会被取消，日志需如实说明为尽力清理。
         let stopped = tokio::time::timeout(
             EXTERNAL_AGENT_SHUTDOWN_TIMEOUT,
-            state.external_runtimes.stop_all(),
+            state.agents.external_runtimes.stop_all(),
         )
         .await;
 

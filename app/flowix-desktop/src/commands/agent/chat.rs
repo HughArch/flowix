@@ -80,7 +80,7 @@ pub async fn chat_with_agent_stream(
     // (`Text` / `Reasoning` 变体) 推到前端, 按 `thread_id` 派发到
     // `threadStates[tid]`。
     let result = state
-        .external_runtimes
+        .agents.external_runtimes
         .dispatch_chat(&threadId, runtime, message, &app_handle)
         .await;
     tracing::info!(
@@ -197,20 +197,20 @@ pub async fn steer_agent_stream(
     match message.agent_type.as_deref() {
         Some("codex") => {
             state
-                .external_runtimes
+                .agents.external_runtimes
                 .steer_codex(&threadId, message, clientUserMessageId, &app_handle)
                 .await
         }
         Some("dsh") => {
             state
-                .external_runtimes
+                .agents.external_runtimes
                 .steer_deepseek_harness(&threadId, message, clientUserMessageId, &app_handle)
                 .await
         }
         Some("pi") => {
             let delivery = deliveryMode.as_deref().unwrap_or("steer");
             state
-                .external_runtimes
+                .agents.external_runtimes
                 .queue_pi_message(&threadId, message, clientUserMessageId, delivery)
                 .await
         }
@@ -229,7 +229,7 @@ pub async fn promote_pi_follow_up_to_steer(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state
-        .external_runtimes
+        .agents.external_runtimes
         .promote_pi_follow_up(&threadId, &clientUserMessageId)
         .await
 }
@@ -242,7 +242,7 @@ pub async fn delete_pi_queued_message(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state
-        .external_runtimes
+        .agents.external_runtimes
         .delete_pi_queued_message(&threadId, &clientUserMessageId)
         .await
 }
@@ -257,7 +257,7 @@ pub async fn queue_codex_follow_up(
     app_handle: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     state
-        .external_runtimes
+        .agents.external_runtimes
         .queue_codex_follow_up(&threadId, message, clientUserMessageId, &app_handle)
         .await
 }
@@ -269,7 +269,7 @@ pub async fn list_codex_follow_ups(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     state
-        .external_runtimes
+        .agents.external_runtimes
         .list_codex_follow_ups(&threadId)
         .await
 }
@@ -282,7 +282,7 @@ pub async fn restore_codex_follow_ups(
     app_handle: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     state
-        .external_runtimes
+        .agents.external_runtimes
         .restore_codex_follow_ups(&threadId, &app_handle)
         .await
 }
@@ -295,7 +295,7 @@ pub async fn delete_codex_follow_up(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     state
-        .external_runtimes
+        .agents.external_runtimes
         .delete_codex_follow_up(&threadId, &queuedSubmissionId)
         .await
 }
@@ -311,7 +311,7 @@ pub async fn deliver_codex_follow_up_now(
     app_handle: tauri::AppHandle,
 ) -> Result<(), String> {
     state
-        .external_runtimes
+        .agents.external_runtimes
         .deliver_codex_follow_up_now(
             &threadId,
             &queuedSubmissionId,
@@ -335,7 +335,7 @@ pub async fn execute_deepseek_harness_command(
     app_handle: tauri::AppHandle,
 ) -> Result<serde_json::Value, String> {
     state
-        .external_runtimes
+        .agents.external_runtimes
         .ensure_thread_writable(&threadId)
         .await?;
     if !matches!(
@@ -346,7 +346,7 @@ pub async fn execute_deepseek_harness_command(
     }
     validate_runtime_workspace(&message, "dsh", &state)?;
     state
-        .deepseek_harness
+        .agents.deepseek_harness
         .execute_command(&threadId, &command, &message, &app_handle)
         .await
 }
@@ -366,7 +366,7 @@ pub async fn deepseek_harness_skill_catalog(
         return Err("DSH skills require the deepseek-harness agent".to_string());
     }
     state
-        .deepseek_harness
+        .agents.deepseek_harness
         .skill_catalog(&threadId, &message)
         .await
 }
@@ -433,7 +433,7 @@ fn run_id_for_kill(provided: Option<&str>) -> Option<&str> {
 pub async fn agent_running_threads(
     state: State<'_, AppState>,
 ) -> Result<HashMap<String, RunInfo>, String> {
-    Ok(state.external_runtimes.running_threads().await)
+    Ok(state.agents.external_runtimes.running_threads().await)
 }
 
 /// List Codex background terminals for the currently displayed conversation.
@@ -444,7 +444,7 @@ pub async fn agent_background_terminals(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     state
-        .codex_app_server
+        .agents.codex_app_server
         .list_background_terminals(&threadId)
         .await
 }
@@ -455,7 +455,7 @@ pub async fn agent_background_jobs(
     threadId: String,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    state.deepseek_harness.background_jobs(&threadId).await
+    state.agents.deepseek_harness.background_jobs(&threadId).await
 }
 
 /// Respond to a Codex app-server server request (command/file approval).
@@ -468,7 +468,7 @@ pub async fn codex_approval_respond(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state
-        .codex_app_server
+        .agents.codex_app_server
         .respond_to_server_request(&requestId, result)
         .await
 }
@@ -477,7 +477,7 @@ pub async fn codex_approval_respond(
 pub async fn codex_approval_pending(
     state: State<'_, AppState>,
 ) -> Result<Vec<crate::agent_external::codex::CodexApprovalRequest>, String> {
-    Ok(state.codex_app_server.pending_approval_requests().await)
+    Ok(state.agents.codex_app_server.pending_approval_requests().await)
 }
 
 /// Update the Codex App Server settings for the next turn of an existing
@@ -492,7 +492,7 @@ pub async fn codex_thread_settings_update(
     state: State<'_, AppState>,
 ) -> Result<(), String> {
     state
-        .codex_app_server
+        .agents.codex_app_server
         .update_thread_settings(
             &threadId,
             model.as_deref(),
@@ -517,7 +517,7 @@ pub async fn codex_slash_command(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     state
-        .codex_app_server
+        .agents.codex_app_server
         .execute_slash_command(
             &threadId,
             &command,

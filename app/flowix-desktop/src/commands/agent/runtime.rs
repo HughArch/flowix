@@ -24,7 +24,7 @@ pub(super) fn runtime_from_message(message: &AgentUserMessage) -> Result<AgentRu
 
 pub(super) fn runtime_handle(state: &AppState, runtime: AgentRuntime) -> &dyn ExternalCliRuntime {
     state
-        .external_runtimes
+        .agents.external_runtimes
         .get(runtime)
         .expect("every external AgentRuntime must be registered")
 }
@@ -43,7 +43,7 @@ pub(crate) async fn start_plugin_chat(
         let workspace_paths = message.workspace_paths_for_runtime(runtime.id());
         sync_native_agent_instructions(std::path::Path::new(cwd), runtime.id(), &workspace_paths)?;
     }
-    state.external_runtimes
+    state.agents.external_runtimes
         .dispatch_chat(thread_id, runtime, message, app_handle)
         .await
         .map(|_| ())
@@ -55,7 +55,7 @@ pub(crate) async fn stop_any_runtime_chat(
     app_handle: &tauri::AppHandle,
 ) -> bool {
     state
-        .external_runtimes
+        .agents.external_runtimes
         .stop_chat_all(thread_id, app_handle)
         .await
 }

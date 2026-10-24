@@ -84,7 +84,7 @@ pub async fn pi_thread_get_messages(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    state.pi.get_session_messages(&app, &thread_id).await
+    state.agents.pi.get_session_messages(&app, &thread_id).await
 }
 
 #[tauri::command]
@@ -93,7 +93,7 @@ pub async fn pi_thread_get_snapshot(
     app: AppHandle,
     state: State<'_, AppState>,
 ) -> Result<crate::agent_external::pi::PiSessionSnapshot, String> {
-    state.pi.get_session_snapshot(&app, &thread_id).await
+    state.agents.pi.get_session_snapshot(&app, &thread_id).await
 }
 
 #[tauri::command]
@@ -106,7 +106,7 @@ pub async fn pi_thread_get_page(
     state: State<'_, AppState>,
 ) -> Result<crate::agent_external::pi::PiHistoryPage, String> {
     state
-        .pi
+        .agents.pi
         .get_session_page(
             &app,
             &thread_id,
@@ -167,7 +167,7 @@ pub async fn pi_thread_fork(
         .await
         .map_err(|error| error.to_string())?;
     match state
-        .pi
+        .agents.pi
         .fork_session(&app, &thread_id, &entry_id, &child.thread_id, &cwd)
         .await
     {
@@ -177,7 +177,7 @@ pub async fn pi_thread_fork(
             cwd: cwd.to_string_lossy().into_owned(),
         }),
         Err(error) => {
-            let _ = state.pi.delete_session(&child.thread_id).await;
+            let _ = state.agents.pi.delete_session(&child.thread_id).await;
             let _ = state
                 .thread_manager
                 .delete_thread_with_agent_conversations(&child.thread_id)
@@ -404,7 +404,7 @@ pub async fn agent_conversation_delete_for_thread(
 #[tauri::command]
 pub async fn codex_thread_list(state: State<'_, AppState>) -> Result<Vec<ThreadInfo>, String> {
     state
-        .agent_history
+        .agents.agent_history
         .list_threads(ExternalRuntimeKind::Codex)
         .await
 }
@@ -415,7 +415,7 @@ pub async fn codex_thread_get(
     state: State<'_, AppState>,
 ) -> Result<GetThreadResponse, String> {
     let messages = state
-        .agent_history
+        .agents.agent_history
         .read_all(ExternalRuntimeKind::Codex, &thread_id)
         .await?;
     Ok(GetThreadResponse { messages })
@@ -430,7 +430,7 @@ pub async fn codex_thread_get_page(
     state: State<'_, AppState>,
 ) -> Result<ThreadMessagesPage, String> {
     state
-        .agent_history
+        .agents.agent_history
         .read_page(
             ExternalRuntimeKind::Codex,
             &thread_id,
@@ -479,7 +479,7 @@ pub async fn codex_thread_fork(
         .await
         .map_err(|error| error.to_string())?;
     let codex_thread_id = state
-        .codex_app_server
+        .agents.codex_app_server
         .fork_thread(&thread_id, &last_turn_id, &product_thread.thread_id)
         .await?;
     Ok(CodexForkResponse {
@@ -491,7 +491,7 @@ pub async fn codex_thread_fork(
 #[tauri::command]
 pub async fn claude_thread_list(state: State<'_, AppState>) -> Result<Vec<ThreadInfo>, String> {
     state
-        .agent_history
+        .agents.agent_history
         .list_threads(ExternalRuntimeKind::Claude)
         .await
 }
@@ -502,7 +502,7 @@ pub async fn claude_thread_get(
     state: State<'_, AppState>,
 ) -> Result<GetThreadResponse, String> {
     let messages = state
-        .agent_history
+        .agents.agent_history
         .read_all(ExternalRuntimeKind::Claude, &thread_id)
         .await?;
     Ok(GetThreadResponse { messages })
@@ -517,7 +517,7 @@ pub async fn claude_thread_get_page(
     state: State<'_, AppState>,
 ) -> Result<ThreadMessagesPage, String> {
     state
-        .agent_history
+        .agents.agent_history
         .read_page(
             ExternalRuntimeKind::Claude,
             &thread_id,
@@ -547,7 +547,7 @@ pub async fn claude_thread_session_id(
 #[tauri::command]
 pub async fn hermes_thread_list(state: State<'_, AppState>) -> Result<Vec<ThreadInfo>, String> {
     state
-        .agent_history
+        .agents.agent_history
         .list_threads(ExternalRuntimeKind::Hermes)
         .await
 }
@@ -558,7 +558,7 @@ pub async fn hermes_thread_get(
     state: State<'_, AppState>,
 ) -> Result<GetThreadResponse, String> {
     let messages = state
-        .agent_history
+        .agents.agent_history
         .read_all(ExternalRuntimeKind::Hermes, &thread_id)
         .await?;
     Ok(GetThreadResponse { messages })
@@ -573,7 +573,7 @@ pub async fn hermes_thread_get_page(
     state: State<'_, AppState>,
 ) -> Result<ThreadMessagesPage, String> {
     state
-        .agent_history
+        .agents.agent_history
         .read_page(
             ExternalRuntimeKind::Hermes,
             &thread_id,
@@ -605,7 +605,7 @@ pub async fn deepseek_harness_thread_list(
     state: State<'_, AppState>,
 ) -> Result<Vec<ThreadInfo>, String> {
     state
-        .agent_history
+        .agents.agent_history
         .list_threads(ExternalRuntimeKind::DeepSeekHarness)
         .await
 }
@@ -616,7 +616,7 @@ pub async fn deepseek_harness_thread_get(
     state: State<'_, AppState>,
 ) -> Result<GetThreadResponse, String> {
     let messages = state
-        .agent_history
+        .agents.agent_history
         .read_all(ExternalRuntimeKind::DeepSeekHarness, &thread_id)
         .await?;
     Ok(GetThreadResponse { messages })
@@ -631,7 +631,7 @@ pub async fn deepseek_harness_thread_get_page(
     state: State<'_, AppState>,
 ) -> Result<ThreadMessagesPage, String> {
     state
-        .agent_history
+        .agents.agent_history
         .read_page(
             ExternalRuntimeKind::DeepSeekHarness,
             &thread_id,
@@ -675,7 +675,7 @@ pub async fn deepseek_harness_thread_fork(
         .await
         .map_err(|error| error.to_string())?;
     match state
-        .deepseek_harness
+        .agents.deepseek_harness
         .fork_thread(&thread_id, boundary_sequence, &child.thread_id)
         .await
     {
@@ -698,7 +698,7 @@ pub async fn deepseek_harness_session_usage(
     thread_id: String,
     state: State<'_, AppState>,
 ) -> Result<Option<crate::agent_external::deepseek_harness::DeepSeekHarnessSessionUsage>, String> {
-    state.deepseek_harness.session_usage(&thread_id).await
+    state.agents.deepseek_harness.session_usage(&thread_id).await
 }
 
 #[tauri::command]
@@ -719,7 +719,7 @@ pub async fn opencode_thread_session_id(
 #[tauri::command]
 pub async fn opencode_thread_list(state: State<'_, AppState>) -> Result<Vec<ThreadInfo>, String> {
     state
-        .agent_history
+        .agents.agent_history
         .list_threads(ExternalRuntimeKind::OpenCode)
         .await
 }
@@ -733,7 +733,7 @@ pub async fn opencode_thread_get_page(
     state: State<'_, AppState>,
 ) -> Result<ThreadMessagesPage, String> {
     state
-        .agent_history
+        .agents.agent_history
         .read_page(
             ExternalRuntimeKind::OpenCode,
             &thread_id,
@@ -750,16 +750,16 @@ pub async fn thread_delete(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<bool, String> {
-    let _protection = state.external_runtimes.protect_thread(&thread_id).await?;
+    let _protection = state.agents.external_runtimes.protect_thread(&thread_id).await?;
     let stopped = state
-        .external_runtimes
+        .agents.external_runtimes
         .stop_chat_all(&thread_id, &app_handle)
         .await;
     if stopped {
         tracing::info!("[Thread] stopped running agent before deleting thread {thread_id}");
     }
-    state.external_runtimes.cancel_pending_work_for_lifecycle(&thread_id).await?;
-    if state.external_runtimes.thread_has_active_run(&thread_id).await {
+    state.agents.external_runtimes.cancel_pending_work_for_lifecycle(&thread_id).await?;
+    if state.agents.external_runtimes.thread_has_active_run(&thread_id).await {
         return Err("StopUnconfirmed: thread still has an active run".to_string());
     }
 
@@ -834,9 +834,9 @@ async fn apply_thread_lifecycle(
     thread_id: &str,
     action: crate::agent_lifecycle::LifecycleAction,
 ) -> Result<bool, String> {
-    let _protection = state.external_runtimes.protect_thread(thread_id).await?;
+    let _protection = state.agents.external_runtimes.protect_thread(thread_id).await?;
     let stopped = state
-        .external_runtimes
+        .agents.external_runtimes
         .stop_chat_all(thread_id, app_handle)
         .await;
     if stopped {
@@ -845,13 +845,13 @@ async fn apply_thread_lifecycle(
             action
         );
     }
-    state.external_runtimes.cancel_pending_work_for_lifecycle(thread_id).await?;
-    if state.external_runtimes.thread_has_active_run(thread_id).await {
+    state.agents.external_runtimes.cancel_pending_work_for_lifecycle(thread_id).await?;
+    if state.agents.external_runtimes.thread_has_active_run(thread_id).await {
         return Err("StopUnconfirmed: thread still has an active run".to_string());
     }
 
     let provider = state
-        .agent_lifecycle
+        .agents.agent_lifecycle
         .apply(agent_type, thread_id, action)
         .await?;
 
