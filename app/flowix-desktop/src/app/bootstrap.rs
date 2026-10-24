@@ -549,6 +549,7 @@ pub fn run() {
             crate::fns_sync::fns_get_config,
             crate::fns_sync::fns_patch_config,
             crate::fns_sync::fns_get_status,
+            crate::fns_sync::fns_get_history,
             crate::fns_sync::fns_sync_notebook,
             crate::fns_sync::fns_sync_all,
             commands::cloud::cloud_get_state,

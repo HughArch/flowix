@@ -4,7 +4,7 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::app::state::AppState;
 use crate::fns_sync::config::{FnsConfigPatch, FnsConfigView};
-use crate::fns_sync::service::{FnsNotebookSyncOutcome, FnsSyncStatus};
+use crate::fns_sync::service::{FnsNotebookSyncOutcome, FnsSyncRecord, FnsSyncStatus};
 
 #[tauri::command]
 pub fn fns_get_config(state: State<AppState>) -> FnsConfigView {
@@ -22,6 +22,11 @@ pub fn fns_patch_config(
 #[tauri::command]
 pub fn fns_get_status(state: State<AppState>) -> FnsSyncStatus {
     state.fns_sync.status()
+}
+
+#[tauri::command]
+pub fn fns_get_history(state: State<AppState>) -> Vec<FnsSyncRecord> {
+    state.fns_sync.history()
 }
 
 #[tauri::command]

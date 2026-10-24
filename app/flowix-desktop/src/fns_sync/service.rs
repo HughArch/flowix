@@ -54,6 +54,25 @@ pub struct FnsNotebookSyncOutcome {
     pub last_time: i64,
 }
 
+/// One entry in the in-memory sync history shown by the status panel.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FnsSyncRecord {
+    pub at: i64,
+    pub notebook_id: String,
+    pub vault: String,
+    pub ok: bool,
+    pub pulled: usize,
+    pub pushed: usize,
+    pub files_pulled: usize,
+    pub files_pushed: usize,
+    pub deleted_local: usize,
+    pub duration_ms: i64,
+    pub error: Option<String>,
+}
+
+const HISTORY_LIMIT: usize = 50;
+
 pub struct FnsSyncService {
     config_dir: PathBuf,
     config: RwLock<FnsConfig>,
@@ -64,6 +83,8 @@ pub struct FnsSyncService {
     scheduled: Mutex<HashMap<String, u64>>,
     /// Per-notebook exponential backoff state for failed syncs.
     retry: Mutex<HashMap<String, RetryEntry>>,
+    /// Newest-first history for the status panel.
+    history: Mutex<Vec<FnsSyncRecord>>,
 }
 
 const AUTO_SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
@@ -78,6 +99,21 @@ impl FnsSyncService {
             running: AtomicBool::new(false),
             scheduled: Mutex::new(HashMap::new()),
             retry: Mutex::new(HashMap::new()),
+            history: Mutex::new(Vec::new()),
+        }
+    }
+
+    pub fn history(&self) -> Vec<FnsSyncRecord> {
+        self.history
+            .lock()
+            .map(|history| history.clone())
+            .unwrap_or_default()
+    }
+
+    fn record_history(&self, record: FnsSyncRecord) {
+        if let Ok(mut history) = self.history.lock() {
+            history.insert(0, record);
+            history.truncate(HISTORY_LIMIT);
         }
     }
 
@@ -213,6 +249,8 @@ impl FnsSyncService {
             status.last_error = None;
         });
 
+        let started = std::time::Instant::now();
+        let started_at = now_ms();
         let result = self
             .sync_notebook_inner(app, notebook_id, config, offline_strategy)
             .await;
@@ -221,6 +259,19 @@ impl FnsSyncService {
         match &result {
             Ok(Some(outcome)) => {
                 self.clear_retry(notebook_id);
+                self.record_history(FnsSyncRecord {
+                    at: started_at,
+                    notebook_id: outcome.notebook_id.clone(),
+                    vault: outcome.vault.clone(),
+                    ok: true,
+                    pulled: outcome.pulled,
+                    pushed: outcome.pushed,
+                    files_pulled: outcome.files_pulled,
+                    files_pushed: outcome.files_pushed,
+                    deleted_local: outcome.deleted_local,
+                    duration_ms: started.elapsed().as_millis() as i64,
+                    error: None,
+                });
                 self.set_status(|status| {
                     status.running = false;
                     status.last_sync_at = Some(now_ms());
@@ -240,6 +291,19 @@ impl FnsSyncService {
             }
             Err(error) => {
                 let delay = self.schedule_retry(app, notebook_id);
+                self.record_history(FnsSyncRecord {
+                    at: started_at,
+                    notebook_id: notebook_id.to_owned(),
+                    vault: String::new(),
+                    ok: false,
+                    pulled: 0,
+                    pushed: 0,
+                    files_pulled: 0,
+                    files_pushed: 0,
+                    deleted_local: 0,
+                    duration_ms: started.elapsed().as_millis() as i64,
+                    error: Some(error.clone()),
+                });
                 self.set_status(|status| {
                     status.running = false;
                     status.last_error = Some(error.clone());

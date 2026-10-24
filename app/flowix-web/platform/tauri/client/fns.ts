@@ -47,11 +47,26 @@ export interface FnsNotebookSyncOutcome {
   lastTime: number;
 }
 
+export interface FnsSyncRecord {
+  at: number;
+  notebookId: string;
+  vault: string;
+  ok: boolean;
+  pulled: number;
+  pushed: number;
+  filesPulled: number;
+  filesPushed: number;
+  deletedLocal: number;
+  durationMs: number;
+  error: string | null;
+}
+
 export const fns = {
   getConfig: () => invoke<FnsConfigView>('fns_get_config'),
   patchConfig: (patch: FnsConfigPatch) =>
     invoke<FnsConfigView>('fns_patch_config', { patch }),
   getStatus: () => invoke<FnsSyncStatus>('fns_get_status'),
+  getHistory: () => invoke<FnsSyncRecord[]>('fns_get_history'),
   syncNotebook: (notebookId: string) =>
     invoke<FnsNotebookSyncOutcome | null>('fns_sync_notebook', { notebookId }),
   syncAll: () => invoke<FnsNotebookSyncOutcome[]>('fns_sync_all'),

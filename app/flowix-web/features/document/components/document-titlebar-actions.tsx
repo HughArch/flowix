@@ -1,12 +1,13 @@
 import { useState } from 'react';
 import { Check, Code2, Ellipsis } from 'lucide-react';
-import { LinkSimpleIcon, CopyIcon, FolderOpenIcon, FileMdIcon, FileDocIcon, FilePdfIcon, ClockIcon, MapPinSimpleAreaIcon, TrashSimpleIcon, SwatchesIcon } from '@phosphor-icons/react';
+import { LinkSimpleIcon, CopyIcon, FolderOpenIcon, FileMdIcon, FileDocIcon, FilePdfIcon, ClockIcon, MapPinSimpleAreaIcon, TrashSimpleIcon, SwatchesIcon, ArrowsClockwiseIcon } from '@phosphor-icons/react';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@shared/ui/dropdown-menu';
 import { POPUP_SEPARATOR_CLASS } from '@shared/ui/popup-separator';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@shared/ui/dialog';
 import { FontSizeSwitcher } from '@shared/ui/font-size-switcher';
 import { FolderCollectionSwitchConfirmDialog } from '@features/collection/public/folder-api';
 import { useI18n, type I18nParams } from '@/lib/i18n';
+import { useSyncPanelStore } from '@features/sync-status';
 import { EditorFontSwitcher } from './editor-font-switcher';
 import { DocumentPageWidthSlider } from './document-page-width-slider';
 import { NoteColorPicker } from './document-titlebar-controls';
@@ -166,6 +167,13 @@ export function DocumentTitlebarActions({
             />
           </>
         )}
+        <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
+        <DropdownMenuItem
+          className={itemClass}
+          onClick={() => useSyncPanelStore.getState().setOpen(true)}
+        >
+          <ArrowsClockwiseIcon className="h-4 w-4" /> {t('sync.panel.open')}
+        </DropdownMenuItem>
         {!hideDeleteAction && <DropdownMenuItem
           onClick={() => setConfirmDelete(true)}
           className="group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-transparent hover:text-[var(--destructive)]"

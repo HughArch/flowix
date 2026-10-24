@@ -34,6 +34,7 @@ import {
   type Notebook,
 } from '@features/memo/public/shell-api';
 import { AgentConversationTitlebar } from '@features/agent/public/shell-api';
+import { SyncStatusPanel } from '@features/sync-status';
 import { useSettingsStore } from '@/lib/store/settings-store';
 import { useWorkspaceStartupStore, isWorkspaceInteractive } from '@/lib/store/workspace-startup-store';
 import { useShallow } from 'zustand/react/shallow';
@@ -733,6 +734,7 @@ export function MainLayout({
       style={{ backgroundColor: 'var(--frame-bg)' }}
     >
       <WindowsTitlebarControls />
+      <SyncStatusPanel />
       {/* Keep window controls and startup retry UI outside the business barrier. */}
       <div className="contents" inert={!interactive} aria-busy={!interactive}>
       {interactive && <ExternalFileDropOverlay />}
