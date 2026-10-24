@@ -123,17 +123,21 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
         let report = sync_notebook(
             &mut client,
             &store,
+            &store,
             &mut state,
             OfflineSyncStrategy::NewTimeMerge,
+            &flowix_fns::SyncOptions::default(),
         )
         .await?;
         state.save(root_path)?;
         println!(
-            "sync done: pulled={} pushed={} deletedLocal={} renamed={} conflicts={:?} cursor={}",
+            "sync done: pulled={} pushed={} deletedLocal={} renamed={} filesPulled={} filesPushed={} conflicts={:?} cursor={}",
             report.pulled,
             report.pushed,
             report.deleted_local,
             report.renamed,
+            report.files_pulled,
+            report.files_pushed,
             report.conflicts,
             report.last_time
         );

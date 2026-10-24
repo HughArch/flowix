@@ -17,6 +17,7 @@ export function FnsSyncSection() {
   const [api, setApi] = useState('');
   const [token, setToken] = useState('');
   const [clientType, setClientType] = useState('flowix');
+  const [maxAttachmentMb, setMaxAttachmentMb] = useState('20');
   const [busy, setBusy] = useState(false);
 
   const load = useCallback(async () => {
@@ -25,6 +26,7 @@ export function FnsSyncSection() {
     setStatus(nextStatus);
     setApi(nextConfig.api);
     setClientType(nextConfig.clientType);
+    setMaxAttachmentMb(String(Math.round(nextConfig.maxAttachmentBytes / (1024 * 1024))));
   }, []);
 
   useEffect(() => {
@@ -64,7 +66,7 @@ export function FnsSyncSection() {
       setStatus(await fns.getStatus());
       if (outcome) {
         toast.success(
-          `${t('preferences.fns.syncDone')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed}`,
+          `${t('preferences.fns.syncDone')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed} · ${t('preferences.fns.attachments')} ↓${outcome.filesPulled} ↑${outcome.filesPushed}`,
         );
       }
     } catch (error) {
@@ -80,8 +82,12 @@ export function FnsSyncSection() {
       const outcomes = await fns.syncAll();
       const pulled = outcomes.reduce((sum, item) => sum + item.pulled, 0);
       const pushed = outcomes.reduce((sum, item) => sum + item.pushed, 0);
+      const filesPulled = outcomes.reduce((sum, item) => sum + item.filesPulled, 0);
+      const filesPushed = outcomes.reduce((sum, item) => sum + item.filesPushed, 0);
       setStatus(await fns.getStatus());
-      toast.success(`${t('preferences.fns.syncDone')} · ↓${pulled} ↑${pushed}`);
+      toast.success(
+        `${t('preferences.fns.syncDone')} · ↓${pulled} ↑${pushed} · ${t('preferences.fns.attachments')} ↓${filesPulled} ↑${filesPushed}`,
+      );
     } catch (error) {
       toast.error(`${t('preferences.fns.syncFailed')}: ${errorMessage(error)}`);
     } finally {
@@ -159,6 +165,30 @@ export function FnsSyncSection() {
           onChange={(event) => setClientType(event.target.value)}
           onBlur={() => {
             if (clientType !== (config?.clientType ?? '')) void save({ clientType });
+          }}
+        />
+      </Field>
+
+      <Field
+        title={t('preferences.fns.maxAttachment')}
+        controlId="fns-max-attachment"
+        hint={t('preferences.fns.maxAttachmentHint')}
+      >
+        <input
+          id="fns-max-attachment"
+          type="number"
+          min={0}
+          step={1}
+          className={FIELD_INPUT_CLASS}
+          value={maxAttachmentMb}
+          onChange={(event) => setMaxAttachmentMb(event.target.value)}
+          onBlur={() => {
+            const megabytes = Number(maxAttachmentMb);
+            if (!Number.isFinite(megabytes) || megabytes < 0) return;
+            const bytes = Math.round(megabytes * 1024 * 1024);
+            if (bytes !== config?.maxAttachmentBytes) {
+              void save({ maxAttachmentBytes: bytes });
+            }
           }}
         />
       </Field>

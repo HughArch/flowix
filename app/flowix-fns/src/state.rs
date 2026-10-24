@@ -29,8 +29,12 @@ pub struct SyncState {
     /// FNS vault name bound to this notebook. Defaults to the notebook name on
     /// first bind and is intentionally *not* renamed when the notebook is.
     pub vault: String,
-    /// Server-side incremental cursor, in milliseconds.
+    /// Server-side incremental cursor for notes, in milliseconds.
     pub last_time: i64,
+    /// Separate cursor for attachments. Notes and files advance at different
+    /// times, so sharing one cursor would skip changes.
+    #[serde(default)]
+    pub file_last_time: i64,
     /// Stable id for this device, used to distinguish writers.
     pub device_id: String,
     /// Wall-clock time of the last successful sync, in milliseconds.
@@ -40,6 +44,9 @@ pub struct SyncState {
     /// requires us to report explicitly.
     #[serde(default)]
     pub notes: BTreeMap<String, NoteSnapshot>,
+    /// Same bookkeeping for attachments.
+    #[serde(default)]
+    pub files: BTreeMap<String, NoteSnapshot>,
 }
 
 impl SyncState {
@@ -48,9 +55,11 @@ impl SyncState {
             version: STATE_VERSION,
             vault: vault.into(),
             last_time: 0,
+            file_last_time: 0,
             device_id: device_id.into(),
             last_sync_at: 0,
             notes: BTreeMap::new(),
+            files: BTreeMap::new(),
         }
     }
 
@@ -75,6 +84,21 @@ impl SyncState {
                     NoteSnapshot {
                         content_hash: note.content_hash.clone(),
                         mtime_ms: note.mtime_ms,
+                    },
+                )
+            })
+            .collect();
+    }
+
+    pub fn record_file_snapshot(&mut self, current: &[crate::local::LocalFile]) {
+        self.files = current
+            .iter()
+            .map(|file| {
+                (
+                    file.path.clone(),
+                    NoteSnapshot {
+                        content_hash: file.content_hash.clone(),
+                        mtime_ms: file.mtime_ms,
                     },
                 )
             })

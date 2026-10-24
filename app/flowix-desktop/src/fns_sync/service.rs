@@ -48,6 +48,8 @@ pub struct FnsNotebookSyncOutcome {
     pub pushed: usize,
     pub deleted_local: usize,
     pub renamed: usize,
+    pub files_pulled: usize,
+    pub files_pushed: usize,
     pub conflicts: Vec<String>,
     pub last_time: i64,
 }
@@ -335,10 +337,19 @@ impl FnsSyncService {
             .await
             .map_err(|error| error.to_string())?;
 
-        let report: SyncReport =
-            run_engine_sync(&mut client, &store, &mut sync_state, offline_strategy)
-                .await
-                .map_err(|error| error.to_string())?;
+        let options = flowix_fns::SyncOptions {
+            max_attachment_bytes: config.max_attachment_bytes.min(i64::MAX as u64) as i64,
+        };
+        let report: SyncReport = run_engine_sync(
+            &mut client,
+            &store,
+            &store,
+            &mut sync_state,
+            offline_strategy,
+            &options,
+        )
+        .await
+        .map_err(|error| error.to_string())?;
 
         let _ = client.close().await;
 
@@ -353,6 +364,8 @@ impl FnsSyncService {
             pushed: report.pushed,
             deleted_local: report.deleted_local,
             renamed: report.renamed,
+            files_pulled: report.files_pulled,
+            files_pushed: report.files_pushed,
             conflicts: report.conflicts,
             last_time: report.last_time,
         }))

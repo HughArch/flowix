@@ -81,6 +81,13 @@ pub fn sync_endpoint(
     Ok(url)
 }
 
+/// One inbound frame.
+pub enum Incoming {
+    Text { action: String, envelope: Envelope },
+    /// Raw binary frame without the 2-byte type prefix.
+    Binary(Vec<u8>),
+}
+
 /// A connected FNS WebSocket session.
 pub struct FnsClient {
     stream: WebSocketStream<MaybeTlsStream<TcpStream>>,
@@ -159,6 +166,16 @@ impl FnsClient {
     /// Read the next text frame, ignoring ping/pong/keepalive frames.
     pub async fn recv_any(&mut self) -> Result<(String, Envelope)> {
         loop {
+            match self.recv_incoming().await? {
+                Incoming::Text { action, envelope } => return Ok((action, envelope)),
+                Incoming::Binary(_) => continue,
+            }
+        }
+    }
+
+    /// Read the next frame of any kind.
+    pub async fn recv_incoming(&mut self) -> Result<Incoming> {
+        loop {
             let message = tokio::time::timeout(self.timeout, self.stream.next())
                 .await
                 .map_err(|_| FnsError::Timeout("frame"))?
@@ -175,9 +192,19 @@ impl FnsClient {
                     } else {
                         serde_json::from_str(body)?
                     };
-                    return Ok((action.to_owned(), envelope));
+                    return Ok(Incoming::Text {
+                        action: action.to_owned(),
+                        envelope,
+                    });
                 }
-                Message::Binary(_) => continue,
+                Message::Binary(bytes) => {
+                    // Binary frames carry a 2-byte type prefix (`"00"` for vault
+                    // files) followed by the payload.
+                    if bytes.len() < 2 {
+                        return Err(FnsError::Protocol("binary frame too short".into()));
+                    }
+                    return Ok(Incoming::Binary(bytes[2..].to_vec()));
+                }
                 Message::Ping(_) | Message::Pong(_) => continue,
                 Message::Close(frame) => {
                     tracing::debug!(?frame, "server closed the connection");
@@ -186,6 +213,29 @@ impl FnsClient {
                 Message::Frame(_) => continue,
             }
         }
+    }
+
+    /// Send one file chunk: `"00"` + session id (36 bytes) + big-endian index
+    /// + payload.
+    pub async fn send_binary_chunk(
+        &mut self,
+        session_id: &str,
+        chunk_index: u32,
+        data: &[u8],
+    ) -> Result<()> {
+        if session_id.len() != 36 {
+            return Err(FnsError::Protocol(format!(
+                "session id must be 36 bytes, got {}",
+                session_id.len()
+            )));
+        }
+        let mut frame = Vec::with_capacity(2 + 40 + data.len());
+        frame.extend_from_slice(b"00");
+        frame.extend_from_slice(session_id.as_bytes());
+        frame.extend_from_slice(&chunk_index.to_be_bytes());
+        frame.extend_from_slice(data);
+        self.stream.send(Message::Binary(frame)).await?;
+        Ok(())
     }
 
     pub async fn close(mut self) -> Result<()> {

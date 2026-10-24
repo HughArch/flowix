@@ -8,6 +8,8 @@ export interface FnsConfigView {
   clientName: string;
   clientVersion: string;
   clientType: string;
+  /** Attachments larger than this are not synced (0 disables attachment sync). */
+  maxAttachmentBytes: number;
   configured: boolean;
 }
 
@@ -18,6 +20,7 @@ export interface FnsConfigPatch {
   token?: string;
   clientName?: string;
   clientType?: string;
+  maxAttachmentBytes?: number;
 }
 
 export interface FnsSyncStatus {
@@ -38,6 +41,8 @@ export interface FnsNotebookSyncOutcome {
   pushed: number;
   deletedLocal: number;
   renamed: number;
+  filesPulled: number;
+  filesPushed: number;
   conflicts: string[];
   lastTime: number;
 }

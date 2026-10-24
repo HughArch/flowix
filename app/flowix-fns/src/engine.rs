@@ -4,12 +4,17 @@
 //! [`LocalNoteStore`] and the notebook's [`SyncState`], and returns a report.
 //! Persisting the returned cursor and scheduling runs is the caller's job.
 
+use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::client::{FnsClient, FnsError, Result};
-use crate::hash::content_hash;
-use crate::local::{LocalNoteStore, Result as LocalResult};
-use crate::protocol::{NoteSyncCheckRequest, NoteSyncDelNote, OfflineSyncStrategy};
+use crate::file::{download_file, pull_files, upload_file};
+use crate::hash::{content_hash, path_hash};
+use crate::local::{LocalFileStore, LocalNoteStore, Result as LocalResult};
+use crate::protocol::{
+    FileSyncCheckRequest, FileSyncDelFile, NoteSyncCheckRequest, NoteSyncDelNote,
+    OfflineSyncStrategy,
+};
 use crate::state::SyncState;
 use crate::sync::{pull_notes, push_note, PushNote};
 
@@ -21,6 +26,11 @@ pub struct SyncReport {
     pub pushed: usize,
     pub deleted_local: usize,
     pub renamed: usize,
+    /// Attachments downloaded from the server.
+    pub files_pulled: usize,
+    /// Attachments uploaded to the server.
+    pub files_pushed: usize,
+    pub files_deleted_local: usize,
     /// Notes the server refused to merge automatically.
     pub conflicts: Vec<String>,
     /// New cursor; assign to `SyncState::last_time` after a successful run.
@@ -33,7 +43,26 @@ impl SyncReport {
             && self.pushed == 0
             && self.deleted_local == 0
             && self.renamed == 0
+            && self.files_pulled == 0
+            && self.files_pushed == 0
+            && self.files_deleted_local == 0
             && self.conflicts.is_empty()
+    }
+}
+
+/// Sync knobs that depend on user settings.
+#[derive(Debug, Clone, Copy)]
+pub struct SyncOptions {
+    /// Attachments larger than this are neither uploaded nor downloaded.
+    /// `0` disables attachment sync entirely.
+    pub max_attachment_bytes: i64,
+}
+
+impl Default for SyncOptions {
+    fn default() -> Self {
+        Self {
+            max_attachment_bytes: 20 * 1024 * 1024,
+        }
     }
 }
 
@@ -41,8 +70,10 @@ impl SyncReport {
 pub async fn sync_notebook(
     client: &mut FnsClient,
     store: &dyn LocalNoteStore,
+    file_store: &dyn LocalFileStore,
     state: &mut SyncState,
     strategy: OfflineSyncStrategy,
+    options: &SyncOptions,
 ) -> Result<SyncReport> {
     let local = store.list_notes().map_err(local_error)?;
     // Only report notes whose content changed since the previous successful
@@ -167,7 +198,119 @@ pub async fn sync_notebook(
     // distinguish local deletions from files that never existed.
     let after = store.list_notes().map_err(local_error)?;
     state.record_snapshot(&after);
+
+    if options.max_attachment_bytes > 0 {
+        let (pulled, pushed, deleted) =
+            sync_files(client, file_store, state, options.max_attachment_bytes).await?;
+        report.files_pulled = pulled;
+        report.files_pushed = pushed;
+        report.files_deleted_local = deleted;
+    }
+
     Ok(report)
+}
+
+/// Reconcile attachments. Returns `(downloaded, uploaded, deleted_locally)`.
+async fn sync_files(
+    client: &mut FnsClient,
+    store: &dyn LocalFileStore,
+    state: &mut SyncState,
+    max_bytes: i64,
+) -> Result<(usize, usize, usize)> {
+    let local = store.list_files(max_bytes).map_err(local_error)?;
+    let present: BTreeSet<&str> = local.iter().map(|file| file.path.as_str()).collect();
+
+    // A path in the snapshot that is no longer listable is either deleted or
+    // grew past the size limit. Only report real deletions; an oversized file
+    // stays on disk and must not be removed server-side.
+    let mut del_files = Vec::new();
+    for path in state.files.keys() {
+        if present.contains(path.as_str()) {
+            continue;
+        }
+        if store.read_file(path).map_err(local_error)?.is_none() {
+            del_files.push(FileSyncDelFile {
+                path: path.clone(),
+                path_hash: path_hash(path),
+            });
+        }
+    }
+
+    let check_requests = local
+        .iter()
+        .filter(|file| {
+            state
+                .files
+                .get(&file.path)
+                .is_none_or(|snapshot| snapshot.content_hash != file.content_hash)
+        })
+        .map(|file| FileSyncCheckRequest {
+            path: file.path.clone(),
+            path_hash: path_hash(&file.path),
+            content_hash: file.content_hash.clone(),
+            mtime: file.mtime_ms,
+            ctime: file.ctime_ms,
+            size: file.size,
+        })
+        .collect();
+
+    let pulled = pull_files(
+        client,
+        &state.vault,
+        state.file_last_time,
+        check_requests,
+        del_files,
+    )
+    .await?;
+
+    let mut downloaded = 0;
+    let mut uploaded = 0;
+    let mut deleted = 0;
+
+    for file in &pulled.deleted {
+        if store.read_file(&file.path).map_err(local_error)?.is_some() {
+            store.delete_file(&file.path).map_err(local_error)?;
+            deleted += 1;
+        }
+    }
+
+    for file in &pulled.mtime_only {
+        store.touch_file(&file.path, file.mtime).map_err(local_error)?;
+    }
+
+    for file in &pulled.updated {
+        if file.size > max_bytes {
+            tracing::debug!(
+                path = file.path,
+                size = file.size,
+                max_bytes,
+                "skipping oversized remote attachment"
+            );
+            continue;
+        }
+        let data = download_file(client, &state.vault, &file.path, &file.path_hash).await?;
+        store
+            .write_file(&file.path, &data, file.mtime)
+            .map_err(local_error)?;
+        downloaded += 1;
+    }
+
+    for upload in &pulled.uploads {
+        let Some(data) = store.read_file(&upload.path).map_err(local_error)? else {
+            continue;
+        };
+        if data.len() as i64 > max_bytes {
+            continue;
+        }
+        upload_file(client, upload, &data).await?;
+        uploaded += 1;
+    }
+
+    state.file_last_time = pulled.last_time;
+    let after = store.list_files(max_bytes).map_err(local_error)?;
+    state.record_file_snapshot(&after);
+
+    Ok((downloaded, uploaded, deleted))
 }
 
 fn local_error(error: crate::local::LocalError) -> FnsError {

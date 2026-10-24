@@ -93,7 +93,6 @@ cargo run -p flowix-fns --bin fns-probe -- delete note.md                # 删�
 ```
 
 `notes` 是上次同步结束时的本地快照，用来做两件事：
-
 1. **识别本地删除**——上次存在、这次消失的路径通过 `delNotes` 上报。漏掉这一步，服务端会把文件当成"客户端缺失"重新下发。
 2. **只上报变更**——增量同步时只发送 hash 与快照不同的笔记。服务端会把"客户端上报了但本次增量窗口里没看到"的笔记判定为需要上传，因此每次都发全量清单会导致空转同步反复推送。
 
@@ -104,16 +103,23 @@ cargo run -p flowix-fns --bin fns-probe -- delete note.md                # 删�
 已实现：
 
 - 握手（Authorization / ClientInfo）
-- 增量拉取 + 分页确认
+- 笔记增量拉取 + 分页确认
 - 双向同步：创建 / 修改 / 删除 / 重命名
 - 本地删除快照与 `delNotes` 上报
+- 附件同步：`FileSync` 分页、分片上传（`"00"` 二进制帧）、分片下载
+- 附件大小上限：超过上限的文件既不上传也不下载，`0` 表示关闭附件同步
 - path/content 哈希
-- `FsNoteStore` 与 `MemoryNoteStore`
+- `FsNoteStore` 与 `MemoryNoteStore`（同时实现笔记与附件两个 trait）
+
+附件同步要点：
+
+- 笔记和附件各用一个游标（`lastTime` / `fileLastTime`），共用会漏变更。
+- 上传流程：`FileSync` 上报本地文件 → 服务端在页消息里下发 `FileUpload`（带 `sessionId`/`chunkSize`）→ 客户端按分片发送 → 等 `FileUploadAck`。
+- 下载流程：收到 `FileSyncUpdate` → 发 `FileChunkDownload` → 服务端回 `FileSyncChunkDownload` 元数据后立即推送二进制分片 → 按 `totalChunks` 拼装。
+- 快照里存在、当前列表里没有的路径，只有确认磁盘上确实不存在才作为删除上报；因超过大小上限被过滤的文件保持原样。
 
 未实现（后续）：
 
-- 附件分片上传 / 下载
 - 文件夹同步
 - 冲突手动解决流程（当前 `newTimeMerge`，`530` 会记录到报告里）
-- 接入 Flowix 的 `MemoFile`（需实现 `LocalNoteStore`，复用写入锁与自写抑制）
 - 实时触发（watcher 驱动）与 IPC

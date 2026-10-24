@@ -20,6 +20,11 @@ pub mod action {
     pub const NOTE_DELETE: &str = "NoteDelete";
     pub const NOTE_RENAME: &str = "NoteRename";
     pub const NOTE_SYNC_PAGE_ACK: &str = "NoteSyncPageAck";
+    pub const FILE_SYNC: &str = "FileSync";
+    pub const FILE_UPLOAD_CHECK: &str = "FileUploadCheck";
+    pub const FILE_CHUNK_DOWNLOAD: &str = "FileChunkDownload";
+    pub const FILE_DELETE: &str = "FileDelete";
+    pub const FILE_SYNC_PAGE_ACK: &str = "FileSyncPageAck";
 
     // server -> client
     pub const NOTE_SYNC_MODIFY: &str = "NoteSyncModify";
@@ -31,6 +36,15 @@ pub mod action {
     pub const NOTE_SYNC_PAGE: &str = "NoteSyncPage";
     pub const NOTE_MODIFY_ACK: &str = "NoteModifyAck";
     pub const NOTE_DELETE_ACK: &str = "NoteDeleteAck";
+    pub const FILE_SYNC_END: &str = "FileSyncEnd";
+    pub const FILE_SYNC_UPDATE: &str = "FileSyncUpdate";
+    pub const FILE_SYNC_DELETE: &str = "FileSyncDelete";
+    pub const FILE_SYNC_MTIME: &str = "FileSyncMtime";
+    pub const FILE_SYNC_PAGE: &str = "FileSyncPage";
+    pub const FILE_UPLOAD: &str = "FileUpload";
+    pub const FILE_SYNC_CHUNK_DOWNLOAD: &str = "FileSyncChunkDownload";
+    pub const FILE_UPLOAD_ACK: &str = "FileUploadAck";
+    pub const FILE_DELETE_ACK: &str = "FileDeleteAck";
 }
 
 /// `ErrorSyncConflict`: the server needs the client to resolve a conflict
@@ -309,4 +323,157 @@ pub struct ConflictPayload {
     pub base_content: String,
     #[serde(default)]
     pub server_hash: String,
+}
+
+// ---------------------------------------------------------------------------
+// Attachment (file) sync
+// ---------------------------------------------------------------------------
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSyncCheckRequest {
+    pub path: String,
+    pub path_hash: String,
+    pub content_hash: String,
+    pub mtime: i64,
+    pub ctime: i64,
+    pub size: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSyncDelFile {
+    pub path: String,
+    pub path_hash: String,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSyncRequest {
+    pub context: String,
+    pub vault: String,
+    pub last_time: i64,
+    pub batch_index: i32,
+    pub total_batches: i32,
+    pub files: Vec<FileSyncCheckRequest>,
+    pub del_files: Vec<FileSyncDelFile>,
+    pub missing_files: Vec<FileSyncDelFile>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSyncEnd {
+    pub last_time: i64,
+    #[serde(default)]
+    pub need_upload_count: i64,
+    #[serde(default)]
+    pub need_modify_count: i64,
+    #[serde(default)]
+    pub need_sync_mtime_count: i64,
+    #[serde(default)]
+    pub need_delete_count: i64,
+}
+
+/// A remote file the client should download.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSyncModify {
+    pub path: String,
+    pub path_hash: String,
+    #[serde(default)]
+    pub content_hash: String,
+    #[serde(default)]
+    pub size: i64,
+    #[serde(default)]
+    pub ctime: i64,
+    #[serde(default)]
+    pub mtime: i64,
+    #[serde(default, rename = "lastTime")]
+    pub updated_timestamp: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSyncDelete {
+    pub path: String,
+    pub path_hash: String,
+    #[serde(default)]
+    pub ctime: i64,
+    #[serde(default)]
+    pub mtime: i64,
+    #[serde(default)]
+    pub size: i64,
+    #[serde(default, rename = "lastTime")]
+    pub updated_timestamp: i64,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSyncMtime {
+    pub path: String,
+    #[serde(default)]
+    pub ctime: i64,
+    #[serde(default)]
+    pub mtime: i64,
+    #[serde(default, rename = "lastTime")]
+    pub updated_timestamp: i64,
+}
+
+/// An upload session the server has already prepared for us.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSyncUpload {
+    pub path: String,
+    pub path_hash: String,
+    pub session_id: String,
+    pub chunk_size: i64,
+}
+
+/// Metadata of a download the server is about to stream.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileSyncDownload {
+    pub path: String,
+    #[serde(default)]
+    pub content_hash: String,
+    #[serde(default)]
+    pub ctime: i64,
+    #[serde(default)]
+    pub mtime: i64,
+    pub session_id: String,
+    pub chunk_size: i64,
+    pub total_chunks: i64,
+    pub size: i64,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileUploadCheckRequest {
+    pub vault: String,
+    pub path: String,
+    pub path_hash: String,
+    pub content_hash: String,
+    pub size: i64,
+    pub ctime: i64,
+    pub mtime: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileChunkDownloadRequest {
+    pub vault: String,
+    pub path: String,
+    pub path_hash: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub context: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FileUploadAck {
+    pub last_time: i64,
+    pub path: String,
+    pub path_hash: String,
 }

@@ -55,10 +55,34 @@ pub trait LocalNoteStore: Send + Sync {
     }
 }
 
+/// Metadata for one local attachment.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct LocalFile {
+    /// Notebook-relative path using `/` separators.
+    pub path: String,
+    pub content_hash: String,
+    pub size: i64,
+    pub mtime_ms: i64,
+    pub ctime_ms: i64,
+}
+
+/// Attachment operations the sync engine needs.
+pub trait LocalFileStore: Send + Sync {
+    /// All syncable attachments no larger than `max_bytes`.
+    fn list_files(&self, max_bytes: i64) -> Result<Vec<LocalFile>>;
+    fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>>;
+    fn write_file(&self, path: &str, data: &[u8], mtime_ms: i64) -> Result<()>;
+    fn delete_file(&self, path: &str) -> Result<()>;
+    fn touch_file(&self, _path: &str, _mtime_ms: i64) -> Result<()> {
+        Ok(())
+    }
+}
+
 /// In-memory store used by unit tests and as a reference implementation.
 #[derive(Debug, Default)]
 pub struct MemoryNoteStore {
     inner: std::sync::Mutex<std::collections::BTreeMap<String, (String, i64)>>,
+    files: std::sync::Mutex<std::collections::BTreeMap<String, (Vec<u8>, i64)>>,
 }
 
 impl MemoryNoteStore {
@@ -83,6 +107,21 @@ impl MemoryNoteStore {
 
     pub fn paths(&self) -> Vec<String> {
         self.inner.lock().unwrap().keys().cloned().collect()
+    }
+
+    pub fn insert_file(&self, path: &str, data: &[u8], mtime_ms: i64) {
+        self.files
+            .lock()
+            .unwrap()
+            .insert(path.to_owned(), (data.to_vec(), mtime_ms));
+    }
+
+    pub fn file(&self, path: &str) -> Option<Vec<u8>> {
+        self.files
+            .lock()
+            .unwrap()
+            .get(path)
+            .map(|(data, _)| data.clone())
     }
 }
 
@@ -124,6 +163,52 @@ impl LocalNoteStore for MemoryNoteStore {
 
     fn touch_note(&self, path: &str, mtime_ms: i64) -> Result<()> {
         if let Some((_, mtime)) = self.inner.lock().unwrap().get_mut(path) {
+            *mtime = mtime_ms;
+        }
+        Ok(())
+    }
+}
+
+impl LocalFileStore for MemoryNoteStore {
+    fn list_files(&self, max_bytes: i64) -> Result<Vec<LocalFile>> {
+        let guard = self.files.lock().unwrap();
+        Ok(guard
+            .iter()
+            .filter(|(_, (data, _))| (data.len() as i64) <= max_bytes)
+            .map(|(path, (data, mtime))| LocalFile {
+                path: path.clone(),
+                content_hash: crate::hash::encode_hash32_bytes(data),
+                size: data.len() as i64,
+                mtime_ms: *mtime,
+                ctime_ms: *mtime,
+            })
+            .collect())
+    }
+
+    fn read_file(&self, path: &str) -> Result<Option<Vec<u8>>> {
+        Ok(self
+            .files
+            .lock()
+            .unwrap()
+            .get(path)
+            .map(|(data, _)| data.clone()))
+    }
+
+    fn write_file(&self, path: &str, data: &[u8], mtime_ms: i64) -> Result<()> {
+        self.files
+            .lock()
+            .unwrap()
+            .insert(path.to_owned(), (data.to_vec(), mtime_ms));
+        Ok(())
+    }
+
+    fn delete_file(&self, path: &str) -> Result<()> {
+        self.files.lock().unwrap().remove(path);
+        Ok(())
+    }
+
+    fn touch_file(&self, path: &str, mtime_ms: i64) -> Result<()> {
+        if let Some((_, mtime)) = self.files.lock().unwrap().get_mut(path) {
             *mtime = mtime_ms;
         }
         Ok(())

@@ -23,7 +23,12 @@ pub struct FnsConfig {
     pub client_version: String,
     /// Must match the `c:` dimension bound to the token on the server.
     pub client_type: String,
+    /// Attachments larger than this are not synced. `0` disables attachment
+    /// sync entirely.
+    pub max_attachment_bytes: u64,
 }
+
+pub const DEFAULT_MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 
 impl Default for FnsConfig {
     fn default() -> Self {
@@ -34,6 +39,7 @@ impl Default for FnsConfig {
             client_name: "Flowix".to_owned(),
             client_version: env!("CARGO_PKG_VERSION").to_owned(),
             client_type: "flowix".to_owned(),
+            max_attachment_bytes: DEFAULT_MAX_ATTACHMENT_BYTES,
         }
     }
 }
@@ -97,6 +103,7 @@ pub struct FnsConfigView {
     pub client_name: String,
     pub client_version: String,
     pub client_type: String,
+    pub max_attachment_bytes: u64,
     pub configured: bool,
 }
 
@@ -109,6 +116,7 @@ impl From<&FnsConfig> for FnsConfigView {
             client_name: config.client_name.clone(),
             client_version: config.client_version.clone(),
             client_type: config.client_type.clone(),
+            max_attachment_bytes: config.max_attachment_bytes,
             configured: config.is_ready(),
         }
     }
@@ -123,6 +131,7 @@ pub struct FnsConfigPatch {
     pub token: Option<String>,
     pub client_name: Option<String>,
     pub client_type: Option<String>,
+    pub max_attachment_bytes: Option<u64>,
 }
 
 impl FnsConfig {
@@ -149,6 +158,9 @@ impl FnsConfig {
                 self.client_type = client_type.trim().to_owned();
             }
         }
+        if let Some(bytes) = patch.max_attachment_bytes {
+            self.max_attachment_bytes = bytes;
+        }
     }
 }
 
@@ -166,6 +178,7 @@ mod tests {
             token: Some("   ".into()),
             client_name: None,
             client_type: None,
+            max_attachment_bytes: None,
         });
         assert_eq!(config.token, "existing");
         assert_eq!(config.api, "https://example.com");

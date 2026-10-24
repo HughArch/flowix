@@ -113,10 +113,13 @@ pub async fn pull_notes(
         ensure_success(&page_envelope)?;
         let page: SyncPageMessage = page_envelope.parse_data()?;
 
-        for _ in 0..page.total_count {
+        let mut page_received = 0;
+        while page_received < page.total_count.max(0) as usize {
             let (item_action, item_envelope) = client.recv_any().await?;
-            received += 1;
-            dispatch_item(&item_action, &item_envelope, &mut result)?;
+            if dispatch_item(&item_action, &item_envelope, &mut result)? {
+                page_received += 1;
+                received += 1;
+            }
         }
 
         if page.is_last {
@@ -134,7 +137,7 @@ pub async fn pull_notes(
     Ok(result)
 }
 
-fn dispatch_item(action_name: &str, envelope: &Envelope, out: &mut PullResult) -> Result<()> {
+fn dispatch_item(action_name: &str, envelope: &Envelope, out: &mut PullResult) -> Result<bool> {
     match action_name {
         action::NOTE_SYNC_MODIFY => out.modified.push(envelope.parse_data()?),
         action::NOTE_SYNC_DELETE => out.deleted.push(envelope.parse_data()?),
@@ -142,12 +145,11 @@ fn dispatch_item(action_name: &str, envelope: &Envelope, out: &mut PullResult) -
         action::NOTE_SYNC_MTIME => out.mtime_only.push(envelope.parse_data()?),
         action::NOTE_SYNC_NEED_PUSH => out.need_push.push(envelope.parse_data()?),
         other => {
-            return Err(FnsError::Protocol(format!(
-                "unexpected sync item action: {other}"
-            )))
+            tracing::debug!(other, "skipping unrelated frame during note sync");
+            return Ok(false);
         }
     }
-    Ok(())
+    Ok(true)
 }
 
 async fn send_page_ack(
