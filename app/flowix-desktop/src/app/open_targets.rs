@@ -114,6 +114,7 @@ pub fn dispatch(app: &tauri::AppHandle, targets: Vec<String>, source: &str) {
     let pending = app.state::<PendingOpenTargets>();
     let changed = enqueue_targets(&pending, targets, &state.document_access, source);
     if changed {
+        #[cfg(desktop)]
         focus_main_window(app);
         // Failure to notify is recoverable: consumers reconcile on listener readiness.
         if let Err(error) = app.emit(CHANGED_EVENT, ()) {

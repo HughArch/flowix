@@ -81,6 +81,25 @@ export function pushHandler(
  *
  * Provider 根据这个返回值决定是否 preventDefault。
  */
+/**
+ * 调用栈顶 handler, 忽略 `isActive` 焦点检查。
+ *
+ * 供显式 UI 入口使用 (例如命令面板里的「撤销」): 用户点击时意图明确,
+ * 而此刻焦点通常在面板输入框, 焦点作用域会错误地拒绝执行。
+ * 快捷键路径仍走 [`invokeHandler`], 保持原有的焦点语义。
+ */
+export function invokeHandlerUnscoped(actionId: string): boolean {
+  const stack = stacks.get(actionId);
+  if (!stack || stack.length === 0) return false;
+  const top = stack[stack.length - 1];
+  try {
+    return top.handler() !== false;
+  } catch (err) {
+    console.error(`[shortcuts] handler for "${actionId}" threw:`, err);
+    return false;
+  }
+}
+
 export function invokeHandler(actionId: string): boolean {
   const stack = stacks.get(actionId);
   if (!stack || stack.length === 0) return false;

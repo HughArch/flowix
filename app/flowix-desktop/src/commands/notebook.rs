@@ -132,10 +132,19 @@ fn default_notebook_path_without_create(name: &str) -> Result<PathBuf, String> {
     if safe_name.is_empty() {
         return Err("INVALID_NAME".to_string());
     }
-    let documents = dirs::document_dir()
-        .or_else(|| dirs::home_dir().map(|home| home.join("Documents")))
-        .ok_or_else(|| "DOCUMENTS_DIR_UNAVAILABLE".to_string())?;
-    Ok(documents.join("flowix").join(safe_name))
+    // 移动端 (存储方案 A): 无 Documents 概念, notebook 根目录固定在
+    // app 私有 notebooks/ 之下, 不允许用户自选。
+    #[cfg(mobile)]
+    return Ok(crate::app::paths::mobile_home_dir()
+        .join("notebooks")
+        .join(safe_name));
+    #[cfg(desktop)]
+    {
+        let documents = dirs::document_dir()
+            .or_else(|| dirs::home_dir().map(|home| home.join("Documents")))
+            .ok_or_else(|| "DOCUMENTS_DIR_UNAVAILABLE".to_string())?;
+        Ok(documents.join("flowix").join(safe_name))
+    }
 }
 
 fn default_notebook_path(name: &str) -> Result<PathBuf, String> {

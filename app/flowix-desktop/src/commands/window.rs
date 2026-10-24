@@ -73,61 +73,72 @@ pub(crate) fn open_preferences_window_inner(
     state: &AppState,
     tab: Option<&str>,
 ) -> Result<(), String> {
-    use tauri::WebviewWindowBuilder;
-    if crate::commands::window_shutdown::is_exiting() {
-        return Err("Application is closing".into());
-    }
-
-    let boot_theme = match state.user_config.get_preference().theme {
-        Theme::System => None,
-        Theme::Light => Some("light"),
-        Theme::Dark => Some("dark"),
-        Theme::Mist => Some("mist"),
-        Theme::Rock => Some("rock"),
-        Theme::Ember => Some("ember"),
-    };
-    let base = match boot_theme {
-        Some(theme) => format!("index.html?bootTheme={theme}"),
-        None => "index.html".to_string(),
-    };
-    let hash = match tab {
-        Some(tab) => format!("preferences/{tab}"),
-        None => "preferences".to_string(),
-    };
-    let url = format!("{base}#{hash}");
-
-    if let Some(window) = app.get_webview_window("preferences") {
-        window
-            .eval(preferences_navigation_script(&hash)?)
-            .map_err(|error| error.to_string())?;
-        window.set_focus().map_err(|error| error.to_string())?;
+    #[cfg(mobile)]
+    {
+        // 移动端单窗口: 偏好设置由前端 `#preferences` 路由承载, 不创建独立窗口。
+        let _ = (app, state, tab);
         return Ok(());
     }
 
-    let builder = WebviewWindowBuilder::new(app, "preferences", tauri::WebviewUrl::App(url.into()))
-        .title("Preferences")
-        .visible(false)
-        .inner_size(800.0, 600.0)
-        .center()
-        .devtools(cfg!(debug_assertions));
+    #[cfg(desktop)]
+    {
+        use tauri::WebviewWindowBuilder;
+        if crate::commands::window_shutdown::is_exiting() {
+            return Err("Application is closing".into());
+        }
 
-    #[cfg(target_os = "macos")]
-    let builder = builder
-        .title_bar_style(tauri::TitleBarStyle::Overlay)
-        .decorations(true)
-        .hidden_title(true)
-        .traffic_light_position(tauri::Position::Logical(MACOS_TRAFFIC_LIGHT_POSITION));
+        let boot_theme = match state.user_config.get_preference().theme {
+            Theme::System => None,
+            Theme::Light => Some("light"),
+            Theme::Dark => Some("dark"),
+            Theme::Mist => Some("mist"),
+            Theme::Rock => Some("rock"),
+            Theme::Ember => Some("ember"),
+        };
+        let base = match boot_theme {
+            Some(theme) => format!("index.html?bootTheme={theme}"),
+            None => "index.html".to_string(),
+        };
+        let hash = match tab {
+            Some(tab) => format!("preferences/{tab}"),
+            None => "preferences".to_string(),
+        };
+        let url = format!("{base}#{hash}");
 
-    #[cfg(target_os = "windows")]
-    let builder = builder.decorations(false);
+        if let Some(window) = app.get_webview_window("preferences") {
+            window
+                .eval(preferences_navigation_script(&hash)?)
+                .map_err(|error| error.to_string())?;
+            window.set_focus().map_err(|error| error.to_string())?;
+            return Ok(());
+        }
 
-    let window = builder.build().map_err(|e| e.to_string())?;
-    crate::commands::window_shutdown::install_window(&window);
-    // 新窗口即刻对齐主题背景 (与主窗口一致), 避免冷启动白闪。
-    let theme = state.user_config.get_preference().theme;
-    crate::window_chrome::apply_window_chrome_theme(&window, theme);
-    window.show().map_err(|error| error.to_string())?;
-    Ok(())
+        let builder =
+            WebviewWindowBuilder::new(app, "preferences", tauri::WebviewUrl::App(url.into()))
+                .title("Preferences")
+                .visible(false)
+                .inner_size(800.0, 600.0)
+                .center()
+                .devtools(cfg!(debug_assertions));
+
+        #[cfg(target_os = "macos")]
+        let builder = builder
+            .title_bar_style(tauri::TitleBarStyle::Overlay)
+            .decorations(true)
+            .hidden_title(true)
+            .traffic_light_position(tauri::Position::Logical(MACOS_TRAFFIC_LIGHT_POSITION));
+
+        #[cfg(target_os = "windows")]
+        let builder = builder.decorations(false);
+
+        let window = builder.build().map_err(|e| e.to_string())?;
+        crate::commands::window_shutdown::install_window(&window);
+        // 新窗口即刻对齐主题背景 (与主窗口一致), 避免冷启动白闪。
+        let theme = state.user_config.get_preference().theme;
+        crate::window_chrome::apply_window_chrome_theme(&window, theme);
+        window.show().map_err(|error| error.to_string())?;
+        Ok(())
+    }
 }
 
 /// Apply the effective theme to this window. Other windows independently follow

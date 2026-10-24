@@ -12,9 +12,8 @@ import { createNotebookRegistration, notebookRepository } from '@features/memo/s
 import { useNoteStore } from '@features/memo/store/note-store';
 import { useI18n } from '@/lib/i18n';
 import { WindowsTitlebarControls } from '@shared/window-titlebar-controls';
+import { isMobileDevice } from '@shared/platform';
 import { isMac } from '@features/shortcuts';
-import { useNotebookTemplates } from './notebook-templates';
-import { NotebookTemplatePicker } from './notebook-template-picker';
 import { OnboardingTitlebarMac } from './onboarding-titlebar-mac';
 
 const DEFAULT_BOOK_FOLDER = 'My Notebook';
@@ -31,19 +30,12 @@ interface OnboardingScreenProps {
 
 export function OnboardingScreen({ onFinish }: OnboardingScreenProps) {
   const { t } = useI18n();
-  const [isTemplatePickerOpen, setIsTemplatePickerOpen] = useState(false);
-  const {
-    templates: notebookTemplates,
-    status: notebookTemplateStatus,
-    retry: retryNotebookTemplates,
-  } = useNotebookTemplates(isTemplatePickerOpen);
+  const isMobile = isMobileDevice();
   const [defaultPath, setDefaultPath] = useState<string | null>(null);
   const [notebookName, setNotebookName] = useState(DEFAULT_NOTEBOOK_NAME);
   const [notebookPath, setNotebookPath] = useState<string | null>(null);
   const [notebookIcon, setNotebookIcon] = useState<string | null>(null);
-  const [selectedTemplateId, setSelectedTemplateId] = useState<string | null>(null);
   const [createdNotebook, setCreatedNotebook] = useState<NotebookRecord | null>(null);
-  const [createdTemplateId, setCreatedTemplateId] = useState<string | null>(null);
   const [shouldStartImport, setShouldStartImport] = useState(false);
   const [isCreatingNotebook, setIsCreatingNotebook] = useState(false);
   const [isFinishing, setIsFinishing] = useState(false);
@@ -59,15 +51,12 @@ export function OnboardingScreen({ onFinish }: OnboardingScreenProps) {
       });
   }, [notebookName, notebookPath]);
 
-  const finishNotebook = async (
-    notebook: NotebookRecord,
-    startImport: boolean,
-    templateId: string | null = selectedTemplateId,
-  ) => {
+  const finishNotebook = async (notebook: NotebookRecord, startImport: boolean) => {
     setIsFinishing(true);
     setError(null);
     try {
-      await onFinish(notebook, { startImport, templateId });
+      // 场景模板入口已下线; templateId 恒为 null, 管线暂保留。
+      await onFinish(notebook, { startImport, templateId: null });
     } catch (value) {
       setError(value instanceof Error ? value.message : String(value));
       setIsFinishing(false);
@@ -76,7 +65,7 @@ export function OnboardingScreen({ onFinish }: OnboardingScreenProps) {
 
   const createNotebook = async () => {
     if (createdNotebook) {
-      await finishNotebook(createdNotebook, shouldStartImport, createdTemplateId);
+      await finishNotebook(createdNotebook, shouldStartImport);
       return;
     }
 
@@ -85,43 +74,12 @@ export function OnboardingScreen({ onFinish }: OnboardingScreenProps) {
     setIsCreatingNotebook(true);
     setError(null);
     try {
-      let templateId = selectedTemplateId;
-      let registration: Awaited<ReturnType<typeof createNotebookRegistration>>;
-      try {
-        registration = await createNotebookRegistration({
-          name,
-          path: notebookPath ?? undefined,
-          icon: notebookIcon,
-          templateId,
-          reuseExisting: true,
-        });
-      } catch (value) {
-        if (!templateId || !String(value).includes('NOTEBOOK_PRESET_OVERWRITE_CONFIRM_REQUIRED')) {
-          throw value;
-        }
-        const confirmed = await notebooks.confirmPresetOverwrite(t('notebook.template.overwriteConfirm'));
-        if (confirmed) {
-          registration = await createNotebookRegistration({
-            name,
-            path: notebookPath ?? undefined,
-            icon: notebookIcon,
-            templateId,
-            overwriteExisting: true,
-            reuseExisting: true,
-          });
-        } else {
-          // Keep the notebook creation flow available when the user declines
-          // template replacement; ordinary import will index existing files.
-          templateId = null;
-          setSelectedTemplateId(null);
-          registration = await createNotebookRegistration({
-            name,
-            path: notebookPath ?? undefined,
-            icon: notebookIcon,
-            reuseExisting: true,
-          });
-        }
-      }
+      const registration = await createNotebookRegistration({
+        name,
+        path: notebookPath ?? undefined,
+        icon: notebookIcon,
+        reuseExisting: true,
+      });
 
       const notebook = registration.notebook;
       setDefaultPath(notebook.path);
@@ -129,11 +87,10 @@ export function OnboardingScreen({ onFinish }: OnboardingScreenProps) {
       store.setNotebooks(store.notebooks.some((item) => item.id === notebook.id)
         ? store.notebooks.map((item) => item.id === notebook.id ? notebook : item)
         : [...store.notebooks, notebook]);
-      const startImport = registration.needsImport && !templateId && !registration.hasTemplateSetup;
+      const startImport = registration.needsImport;
       setCreatedNotebook(notebook);
-      setCreatedTemplateId(templateId);
       setShouldStartImport(startImport);
-      await finishNotebook(notebook, startImport, templateId);
+      await finishNotebook(notebook, startImport);
       void notebookRepository.list()
         .then((latest) => useNoteStore.getState().setNotebooks(latest))
         .catch((value) => console.warn('[Onboarding] Failed to refresh notebook list:', value));
@@ -174,12 +131,10 @@ export function OnboardingScreen({ onFinish }: OnboardingScreenProps) {
               path={notebookPath ?? defaultPath ?? ''}
               pathPlaceholder="默认文稿位置"
               directoryButtonLabel="选择目录"
-              onSelectDirectory={() => void selectNotebookDirectory()}
+              onSelectDirectory={isMobile ? undefined : () => void selectNotebookDirectory()}
+              hidePathSection={isMobile}
               icon={notebookIcon}
               onIconChange={setNotebookIcon}
-              templates={notebookTemplates}
-              selectedTemplateId={selectedTemplateId}
-              onSelectTemplate={() => setIsTemplatePickerOpen(true)}
               disabled={Boolean(createdNotebook) || isCreatingNotebook || isFinishing}
               onSubmit={() => void createNotebook()}
             />
@@ -192,23 +147,10 @@ export function OnboardingScreen({ onFinish }: OnboardingScreenProps) {
 
         <NotebookCreateFooter
           formId="flowix-onboarding-notebook-form"
-          disabled={!notebookName.trim() || (!createdNotebook && !notebookPath && !defaultPath)}
+          disabled={!notebookName.trim() || (!createdNotebook && !isMobile && !notebookPath && !defaultPath)}
           isBusy={isCreatingNotebook || isFinishing}
           submitLabel={createdNotebook ? t('error.retry') : '创建并开始使用'}
         />
-        {isTemplatePickerOpen && (
-          <NotebookTemplatePicker
-            templates={notebookTemplates}
-            status={notebookTemplateStatus}
-            retry={retryNotebookTemplates}
-            initialTemplateId={selectedTemplateId}
-            onCancel={() => setIsTemplatePickerOpen(false)}
-            onComplete={(templateId) => {
-              setSelectedTemplateId(templateId);
-              setIsTemplatePickerOpen(false);
-            }}
-          />
-        )}
       </main>
     </div>
   );

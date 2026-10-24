@@ -9,6 +9,8 @@ import {
   X,
 } from 'lucide-react';
 import {
+  ArrowClockwiseIcon,
+  ArrowCounterClockwiseIcon,
   CalendarCheck,
   FadersHorizontalIcon,
   ListChecks,
@@ -54,6 +56,7 @@ import {
   type NoteTemplate,
 } from '@platform/tauri/client';
 import { ShortcutKbd } from '@shared/ui/shortcut-kbd';
+import { invokeHandlerUnscoped } from '@/lib/shortcuts/handler-registry';
 import { useI18n } from '@/lib/i18n';
 import { createLogger } from '@/lib/logger';
 import { TagSvgIcon } from '@shared/ui/tag-icon';
@@ -318,6 +321,32 @@ export function GlobalSearchCommand({ open, onOpenChange }: GlobalSearchCommandP
           </div>
         )}
         <CommandList>
+          {/* 触屏没有快捷键: 撤销/重做必须常驻面板顶部, 否则还要滚动寻找。
+              用户点击即意图明确, 焦点在面板输入框, 因此走绕开焦点作用域的通道。 */}
+          {!showResults && (
+            <CommandGroup heading={t('shell.commandPalette.quickActionsGroup')}>
+              <CommandItem value="action-undo" onSelect={() => {
+                onOpenChange(false);
+                invokeHandlerUnscoped('editor.undo');
+              }}>
+                <ArrowCounterClockwiseIcon />
+                <span>{t('shell.commandPalette.action.undo')}</span>
+                <CommandShortcut>
+                  <ShortcutKbd actionId="editor.undo" className="text-[var(--muted-foreground)]" />
+                </CommandShortcut>
+              </CommandItem>
+              <CommandItem value="action-redo" onSelect={() => {
+                onOpenChange(false);
+                invokeHandlerUnscoped('editor.redo');
+              }}>
+                <ArrowClockwiseIcon />
+                <span>{t('shell.commandPalette.action.redo')}</span>
+                <CommandShortcut>
+                  <ShortcutKbd actionId="editor.redo" className="text-[var(--muted-foreground)]" />
+                </CommandShortcut>
+              </CommandItem>
+            </CommandGroup>
+          )}
           <RunningAgentConversationsGroup onClose={() => onOpenChange(false)} />
           {showResults ? (
             <SearchResultsGroup

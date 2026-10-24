@@ -160,7 +160,7 @@ pub async fn agent_runtime_status(
 ) -> Result<AgentRuntimeStatus, String> {
     let startup_detection_finished = tokio::time::timeout(
         STARTUP_CLI_DETECTION_WAIT,
-        state.agent_external_config.wait_for_startup_detect(),
+        state.agents.agent_external_config.wait_for_startup_detect(),
     )
     .await
     .is_ok();
@@ -172,7 +172,7 @@ pub async fn agent_runtime_status(
     }
     // The external CLI path comes from agent-external-config.json. Runtime
     // preflight can still add dependency details without hiding the entry.
-    let cfg = &state.agent_external_config;
+    let cfg = &state.agents.agent_external_config;
     let mut codex = external_availability(cfg.get_entry("codex"), "Codex CLI");
     if matches!(codex.installation, InstallationState::Installed) {
         if codex_version_is_too_low().await {
@@ -223,7 +223,7 @@ pub async fn agent_runtime_status(
             Some("Install the DSH App Server plugin from Flowix Preferences".to_string()),
         )
     } else {
-        match state.deepseek_harness.dsh_model_configs().await {
+        match state.agents.deepseek_harness.dsh_model_configs().await {
             Ok(configs)
                 if configs.iter().any(|config| {
                     crate::agent_external::deepseek_harness::resolve_runtime_config(
@@ -303,7 +303,7 @@ pub fn get_agent_external_config(
     state: State<'_, AppState>,
 ) -> HashMap<String, AgentExternalEntryView> {
     state
-        .agent_external_config
+        .agents.agent_external_config
         .snapshot()
         .into_iter()
         .map(|(k, e)| (k, AgentExternalEntryView::from_entry(e)))
@@ -331,7 +331,7 @@ pub fn set_agent_external_path(
         ));
     }
     let entry = state
-        .agent_external_config
+        .agents.agent_external_config
         .set_user_path(&agent_type, path_buf)
         .map_err(|e| e.to_string())?;
     Ok(AgentExternalEntryView::from_entry(entry))
@@ -344,11 +344,11 @@ pub fn redetect_agent_external(
     state: State<'_, AppState>,
 ) -> Result<AgentExternalEntryView, String> {
     state
-        .agent_external_config
+        .agents.agent_external_config
         .redetect(&agent_type)
         .map_err(|e| e.to_string())?;
     Ok(AgentExternalEntryView::from_entry(
-        state.agent_external_config.get_entry(&agent_type),
+        state.agents.agent_external_config.get_entry(&agent_type),
     ))
 }
 

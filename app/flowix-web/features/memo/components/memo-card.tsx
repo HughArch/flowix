@@ -204,7 +204,11 @@ function MemoCardShell({
 
   const card = (
     <div
-      onClick={() => onSelect(memo)}
+      onClick={() => {
+        // 手机单栏: shell 监听后收起列表覆盖层 (重复点击同一条笔记也要回到文档)。
+        window.dispatchEvent(new Event('flowix:open-note-from-list'));
+        onSelect(memo);
+      }}
       className={cn(
         'group memo-card relative min-w-0 w-full cursor-pointer rounded-lg px-2 transition-colors duration-150',
         'py-3',

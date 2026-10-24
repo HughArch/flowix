@@ -18,13 +18,10 @@ flowix-core = { workspace = true }
 flowix-plugin-runtime = { workspace = true }
 flowix-fns = { workspace = true }
 tauri = { version = "2", features = ["protocol-asset", "macos-private-api", "unstable"] }
-window-vibrancy = "0.6"
 tauri-plugin-opener = "2"
 tauri-plugin-dialog = "2"
-tauri-plugin-single-instance = "2"
 tauri-plugin-deep-link = "2"
 tauri-plugin-process = { workspace = true }
-tauri-plugin-updater = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
 serde_yaml = { workspace = true }
@@ -41,7 +38,16 @@ once_cell = { workspace = true }
 tracing = { workspace = true }
 tracing-subscriber = "0.3"
 thiserror = { workspace = true }
-reqwest = { version = "0.12", features = ["json", "blocking", "stream"] }
+# TLS 用 rustls ── native-tls 在 Android/Linux 落到 OpenSSL, 无法交叉编译;
+# rustls 全平台一致, native-roots 保住系统 CA 语义。
+reqwest = { version = "0.12", default-features = false, features = [
+    "json",
+    "charset",
+    "http2",
+    "macos-system-configuration",
+    "blocking",
+    "stream",
+] }
 async-trait = "0.1"
 base64 = "0.22"
 image = { version = "0.25", default-features = false, features = ["jpeg", "png", "webp", "gif", "bmp", "ico", "tiff"] }
@@ -53,7 +59,6 @@ dunce = { workspace = true }
 uuid = { workspace = true }
 url = "2"
 hostname = "0.4"
-machine-uid = "0.5"
 sha2 = { workspace = true }
 zip = { workspace = true }
 flate2 = { workspace = true }
@@ -80,3 +85,20 @@ objc2-web-kit = { version = "0.3.2", default-features = false, features = ["std"
 # grandchildren (Node CLIs spawn their own shells/tools) are reaped on stop.
 # tokio already pulls libc in on Unix, so this adds no new download.
 libc = "0.2"
+
+# ── 桌面专属依赖 ── 移动端(Android/iOS)不参与编译 ─────────────────────────
+# - single-instance / updater: 插件只有桌面实现; 移动端更新走应用内 APK 下载
+# - window-vibrancy: 仅 window_material.rs 的 windows/macOS cfg 分支使用
+[target.'cfg(not(any(target_os = "android", target_os = "ios")))'.dependencies]
+tauri-plugin-single-instance = "2"
+tauri-plugin-updater = { workspace = true }
+# 桌面: 复用系统根证书 (企业代理 / 自签证书可用)。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-native-roots"] }
+
+[target.'cfg(any(target_os = "android", target_os = "ios"))'.dependencies]
+# 移动端: rustls-native-certs 在 Android 上取不到系统 CA 存储 (字体下载
+# 与设备注册均报 "error sending request"), 改用内置 webpki 根证书。
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls-webpki-roots"] }
+
+[target.'cfg(any(target_os = "windows", target_os = "macos"))'.dependencies]
+window-vibrancy = "0.6"

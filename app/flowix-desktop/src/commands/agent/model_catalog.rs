@@ -9,7 +9,7 @@ pub async fn codex_default_model(
     state: State<'_, crate::app::state::AppState>,
 ) -> Result<String, String> {
     if let Some(model) = state
-        .codex_app_server
+        .agents.codex_app_server
         .supported_models()
         .await?
         .first()
@@ -30,11 +30,11 @@ pub async fn agent_supported_models(
     state: State<'_, crate::app::state::AppState>,
 ) -> Result<Vec<String>, String> {
     match agent_type.trim().to_ascii_lowercase().as_str() {
-        "codex" => state.codex_app_server.supported_models().await,
-        "opencode" => state.opencode.supported_models().await,
-        "pi" => state.pi.supported_models(&app).await,
+        "codex" => state.agents.codex_app_server.supported_models().await,
+        "opencode" => state.agents.opencode.supported_models().await,
+        "pi" => state.agents.pi.supported_models(&app).await,
         "dsh" => {
-            state.deepseek_harness.supported_models().await
+            state.agents.deepseek_harness.supported_models().await
         }
         _ => Ok(Vec::new()),
     }
@@ -46,7 +46,7 @@ pub async fn agent_supported_models(
 pub async fn codex_supported_model_catalog(
     state: State<'_, crate::app::state::AppState>,
 ) -> Result<Vec<serde_json::Value>, String> {
-    state.codex_app_server.supported_model_catalog().await
+    state.agents.codex_app_server.supported_model_catalog().await
 }
 
 /// Snapshot used by the Codex agent badge popover. The app-server owns the
@@ -57,7 +57,7 @@ pub async fn codex_runtime_info(
     state: State<'_, crate::app::state::AppState>,
 ) -> Result<serde_json::Value, String> {
     state
-        .codex_app_server
+        .agents.codex_app_server
         .runtime_info(thread_id.as_deref())
         .await
 }

@@ -4,6 +4,7 @@ import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import type { NodeView as ProseMirrorNodeView, EditorView } from '@tiptap/pm/view';
 import { Node, nodeInputRule, nodePasteRule, type InputRuleMatch, type JSONContent, type PasteRuleMatch } from '@tiptap/core';
 import { NodeSelection } from '@tiptap/pm/state';
+import { isMobileDevice } from '@shared/platform';
 
 import { noteLinkForIndexedPath } from '@features/editor/extensions/note-link/memo-resolver';
 import { openNoteByNotebookPath, openNoteByPhysicalPath } from '@features/memo/public/note-navigation-api';
@@ -235,6 +236,12 @@ class NoteReferenceView implements ProseMirrorNodeView {
       wrapperClassName: wrapper.className,
       content: card,
       onClick: () => {
+        // 触屏没有"双击打开"的心智模型, 单击直接跳转 (主文档区)。
+        // 桌面保持原交互: 单击选中节点, 双击打开。
+        if (isMobileDevice()) {
+          void this.handleDoubleClick();
+          return;
+        }
         this.selectOnClick();
         if (this.presentation === 'composer') this.previewController?.toggle();
       },
@@ -367,12 +374,14 @@ class NoteReferenceView implements ProseMirrorNodeView {
       // 本文档）时才在当前编辑器内滚动。
       const sameDocumentHeading = Boolean(attrs.heading)
         && !attrs.linkTarget && !attrs.notebookId && !attrs.relativePath && !attrs.originalPath;
+      // 桌面: 右侧多标签栏打开 (与多标签管理一致); 移动端没有并排栏位, 主区跳转。
+      const destination = isMobileDevice() ? undefined : 'browser-column' as const;
       if (attrs.notebookId && attrs.relativePath) {
-        await openNoteByNotebookPath(attrs.notebookId, attrs.relativePath, attrs.heading);
+        await openNoteByNotebookPath(attrs.notebookId, attrs.relativePath, attrs.heading, { destination });
       } else if (attrs.originalPath) {
-        await openNoteByPhysicalPath(attrs.originalPath, attrs.heading);
+        await openNoteByPhysicalPath(attrs.originalPath, attrs.heading, { destination });
       } else if (attrs.linkTarget) {
-        await openNoteByPhysicalPath(attrs.linkTarget);
+        await openNoteByPhysicalPath(attrs.linkTarget, null, { destination });
       } else if (sameDocumentHeading) {
         const slug = new GithubSlugger().slug(attrs.heading!);
         let attempts = 0;

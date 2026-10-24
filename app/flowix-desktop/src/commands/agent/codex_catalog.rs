@@ -17,7 +17,7 @@ pub async fn codex_project_capabilities(
         return Err("Codex project must be a registered notebook".to_string());
     }
     state
-        .codex_app_server
+        .agents.codex_app_server
         .project_capabilities(path, force_reload.unwrap_or(false))
         .await
 }
@@ -42,7 +42,7 @@ pub async fn codex_project_config_write(
 ) -> Result<Value, String> {
     let path = registered_root(&cwd, &state)?;
     state
-        .codex_app_server
+        .agents.codex_app_server
         .write_project_config(path, edits, expected_version)
         .await
 }
@@ -56,7 +56,7 @@ pub async fn codex_skill_enabled_set(
 ) -> Result<Value, String> {
     registered_root(&cwd, &state)?;
     state
-        .codex_app_server
+        .agents.codex_app_server
         .set_skill_enabled(&name, enabled)
         .await
 }
@@ -70,7 +70,7 @@ pub async fn codex_plugin_installed_set(
 ) -> Result<Value, String> {
     registered_root(&cwd, &state)?;
     state
-        .codex_app_server
+        .agents.codex_app_server
         .set_plugin_installed(&plugin_id, installed)
         .await
 }
@@ -81,7 +81,7 @@ pub async fn codex_mcp_reload(
     state: State<'_, crate::app::state::AppState>,
 ) -> Result<Value, String> {
     registered_root(&cwd, &state)?;
-    state.codex_app_server.reload_mcp_servers().await
+    state.agents.codex_app_server.reload_mcp_servers().await
 }
 
 #[tauri::command]
@@ -94,7 +94,7 @@ pub async fn codex_project_mcp_upsert(
 ) -> Result<Value, String> {
     let path = registered_root(&cwd, &state)?;
     state
-        .codex_app_server
+        .agents.codex_app_server
         .upsert_project_mcp(path, &name, definition, expected_version)
         .await
 }

@@ -13,6 +13,10 @@ import { PREFERENCE_TAB_GROUPS } from '@features/preferences/public/app-api';
 import { AgentIcon } from '@features/agent/components/agent-icon';
 import productLogo from '@/assets/productlogo.png';
 import { cn } from '@/lib/utils';
+import { isMobileDevice } from '@shared/platform';
+
+/** 移动端 v1 无 AI 服务: 产品菜单与设置页都隐藏这些分区。 */
+const MOBILE_HIDDEN_PREFERENCE_TABS: ReadonlySet<string> = new Set(['pi', 'dsh', 'aiAgent', 'mcp']);
 import { openUrl } from '@platform/tauri/opener';
 
 interface NotebookIconMenuProps {
@@ -47,10 +51,12 @@ export function NotebookIconMenu({
   const [open, setOpen] = useState(false);
   const openTimerRef = useRef<number | null>(null);
   const closeTimerRef = useRef<number | null>(null);
+  // 移动端 v1 无 AI 服务: 菜单里的 AI 分区入口同样隐藏。
   const visiblePreferenceGroups = PREFERENCE_TAB_GROUPS.map((group) => ({
     ...group,
-    tabs: group.tabs.filter((tab) => !('visibleInProductMenu' in tab) || tab.visibleInProductMenu !== false),
-  }));
+    tabs: group.tabs.filter((tab) => (!('visibleInProductMenu' in tab) || tab.visibleInProductMenu !== false)
+      && !(isMobileDevice() && MOBILE_HIDDEN_PREFERENCE_TABS.has(tab.id))),
+  })).filter((group) => group.tabs.length > 0);
 
 
   const cancelOpen = useCallback(() => {
@@ -68,18 +74,23 @@ export function NotebookIconMenu({
   }, []);
 
   // 悬停后延迟展示菜单; 离开图标或点击图标都会取消未触发的打开。
+  // 触屏没有 hover: tap 会合成 mouseenter/mouseleave, 离开定时器会让刚
+  // 点开的菜单立刻消失, 因此触屏只保留点击打开/点击外部关闭。
+  const hoverEnabled = !isMobileDevice();
   const scheduleOpen = useCallback(() => {
+    if (!hoverEnabled) return;
     cancelOpen();
     cancelClose();
     openTimerRef.current = window.setTimeout(() => setOpen(true), HOVER_OPEN_DELAY_MS);
-  }, [cancelOpen, cancelClose]);
+  }, [cancelOpen, cancelClose, hoverEnabled]);
 
   // 离开图标/菜单后延迟收起, 给指针留出跨越间隙的时间; 同时取消未触发的打开。
   const scheduleClose = useCallback(() => {
+    if (!hoverEnabled) return;
     cancelOpen();
     cancelClose();
     closeTimerRef.current = window.setTimeout(() => setOpen(false), HOVER_CLOSE_DELAY_MS);
-  }, [cancelOpen, cancelClose]);
+  }, [cancelOpen, cancelClose, hoverEnabled]);
 
   useEffect(() => {
     return () => {

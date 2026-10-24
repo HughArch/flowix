@@ -384,7 +384,14 @@ export interface FileBrowserDirectoriesChangedEvent {
 export const windows = {
   showMain: () => invoke<void>('show_main_window'),
   getWindowMaterial: () => invoke<'none' | 'mica' | 'vibrancy'>('get_window_material'),
-  openPreferences: (tab?: string) => invoke<void>('open_preferences_window', { tab }),
+  openPreferences: (tab?: string) => {
+    // 移动端单窗口: 偏好设置走窗口内 #preferences 路由 (独立窗口不可用)。
+    if (/Android|iPhone|iPad|ipod/i.test(navigator.userAgent)) {
+      window.location.hash = tab ? `preferences/${tab}` : 'preferences';
+      return Promise.resolve();
+    }
+    return invoke<void>('open_preferences_window', { tab });
+  },
   applyWindowTheme,
   applyMenuLanguage: (language: 'zh-CN' | 'en-US') =>
     invoke<void>('apply_menu_language', { language }),

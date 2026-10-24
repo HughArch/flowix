@@ -654,8 +654,6 @@ export function MemoListServicesHost({
             newNotebookDefaultPath={newDefaultPath}
             newNotebookIcon={newIcon}
             onNewNotebookIconChange={setNewIcon}
-            newNotebookTemplateId={newTemplateId}
-            onNewNotebookTemplateIdChange={setNewTemplateId}
             isCreatingNotebook={creationState.status === 'creating'}
             onSelectDirectory={async () => {
               const path = await request<string | null>('select_directory');

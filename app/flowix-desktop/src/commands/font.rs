@@ -277,7 +277,18 @@ async fn download_font_archive(
         .get(definition.archive_url)
         .send()
         .await
-        .map_err(|e| format!("failed to download font archive: {e}"))?
+        .map_err(|e| {
+            // reqwest 的 Display 只给通用文案; 移动端排障需要 source 链
+            // (TLS / DNS / 连接被拒 各有不同根因)。
+            let mut chain = format!("failed to download font archive: {e}");
+            let mut source = std::error::Error::source(&e);
+            while let Some(err) = source {
+                chain.push_str(&format!(" | caused by: {err}"));
+                source = err.source();
+            }
+            tracing::error!("{chain}");
+            chain
+        })?
         .error_for_status()
         .map_err(|e| format!("font archive request failed: {e}"))?;
     let total_bytes = response.content_length();
@@ -301,7 +312,20 @@ async fn download_font_archive(
         while let Some(chunk) = response
             .chunk()
             .await
-            .map_err(|e| format!("failed to read font archive: {e}"))?
+            .map_err(|e| {
+                // 记录失败时已下载的字节数: 0 表示握手/首包失败,
+                // 大于 0 表示传输中途断开 (弱网/代理截断)。
+                let mut chain = format!(
+                    "failed to read font archive after {downloaded_bytes} bytes: {e}"
+                );
+                let mut source = std::error::Error::source(&e);
+                while let Some(err) = source {
+                    chain.push_str(&format!(" | caused by: {err}"));
+                    source = err.source();
+                }
+                tracing::error!("{chain}");
+                chain
+            })?
         {
             downloaded_bytes = downloaded_bytes.saturating_add(chunk.len() as u64);
             if downloaded_bytes > MAX_FONT_ARCHIVE_BYTES {
@@ -515,10 +539,12 @@ fn font_result(definition: &FontDefinition, downloaded: bool) -> CachedFontResul
 }
 
 fn fonts_root() -> PathBuf {
-    dirs::home_dir()
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(USER_CONFIG_DIR_NAME)
-        .join("fonts")
+    // 移动端 `dirs::home_dir()` 为 None, 原兜底 "." 会落到相对路径导致下载失败。
+    #[cfg(mobile)]
+    let base = crate::app::paths::mobile_home_dir();
+    #[cfg(desktop)]
+    let base = dirs::home_dir().unwrap_or_else(|| PathBuf::from("."));
+    base.join(USER_CONFIG_DIR_NAME).join("fonts")
 }
 
 fn font_dir(font_id: &str) -> PathBuf {

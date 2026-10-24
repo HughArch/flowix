@@ -2,7 +2,7 @@
 
 import { Editor } from '@tiptap/core';
 import { ChevronDown, MoreHorizontal } from 'lucide-react';
-import { TextHOneIcon, TextHTwoIcon, TextHThreeIcon, TextHFourIcon, TextTIcon, ListBulletsIcon, ListNumbersIcon, CheckSquareIcon, TextBIcon, TextUnderlineIcon, TextItalicIcon, TextStrikethroughIcon, HighlighterIcon, CodeIcon, PaperclipIcon, LinkSimpleIcon, CaretDownIcon, CaretUpIcon } from '@phosphor-icons/react';
+import { ArrowCounterClockwiseIcon, TextHOneIcon, TextHTwoIcon, TextHThreeIcon, TextHFourIcon, TextTIcon, ListBulletsIcon, ListNumbersIcon, CheckSquareIcon, TextBIcon, TextUnderlineIcon, TextItalicIcon, TextStrikethroughIcon, HighlighterIcon, CodeIcon, PaperclipIcon, LinkSimpleIcon, CaretDownIcon, CaretUpIcon } from '@phosphor-icons/react';
 import { useEffect, useState, useRef } from 'react';
 import {
   DropdownMenu,
@@ -15,6 +15,7 @@ import { openLinkEditPopup } from '@features/editor/components/link-edit-popup';
 import { useI18n } from '@/lib/i18n';
 import { FlowixHighlightPalette } from '@features/editor/components/flowix-highlight-palette';
 import { applyListType } from '@features/editor/extensions/list-transforms';
+import { openSlashMenuAtSelection } from '@features/editor/extensions/slash-menu';
 
 interface EditorToolbarProps {
   editor: Editor | null;
@@ -201,6 +202,32 @@ export function EditorToolbar({ editor, collapsed, onCollapsedChange }: EditorTo
         </DropdownMenu>
 
         <div className="toolbar-divider" />
+
+        {/* 撤销 ── 触屏没有快捷键, 提供直接入口。 */}
+        <button
+          className="toolbar-button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => editor.commands.undo()}
+          type="button"
+          style={iconButtonStyle}
+          aria-label={t('editor.toolbar.undo')}
+          title={t('editor.toolbar.undo')}
+        >
+          <ArrowCounterClockwiseIcon size={17} weight="bold" />
+        </button>
+
+        {/* 在光标处唤出 slash 菜单 ── 移动端软键盘上找 "/" 很困难, 全平台提供按钮。 */}
+        <button
+          className="toolbar-button"
+          onMouseDown={(e) => e.preventDefault()}
+          onClick={() => openSlashMenuAtSelection(editor)}
+          type="button"
+          style={iconButtonStyle}
+          aria-label={t('editor.toolbar.slashMenu')}
+          title={t('editor.toolbar.slashMenu')}
+        >
+          <span className="text-[15px] font-semibold leading-none">/</span>
+        </button>
 
         <button
           className={`toolbar-button ${state.bold ? 'active' : ''}`}

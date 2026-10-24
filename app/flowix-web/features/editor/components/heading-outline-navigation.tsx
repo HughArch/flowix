@@ -195,6 +195,17 @@ export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
     setAllHeadings(nextHeadings)
   }, [editor])
 
+  // 移动端左滑手势唤出目录 ── 锚点可能尚未完成延迟显示, 这里同时置为可见。
+  useEffect(() => {
+    const openOutline = () => {
+      if (allHeadingsRef.current.length === 0) return
+      setVisible(true)
+      setExpanded(true)
+    }
+    window.addEventListener('flowix:open-outline', openOutline)
+    return () => window.removeEventListener('flowix:open-outline', openOutline)
+  }, [])
+
   useEffect(() => {
     refreshHeadings()
     let timer: number | undefined

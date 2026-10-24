@@ -2,8 +2,6 @@ import { ChevronRight, LoaderCircle } from 'lucide-react';
 import { Button } from '@shared/ui/button';
 import { Input } from '@shared/ui/input';
 import { NotebookIconPopover } from '@features/memo/components/notebook-icon-popover';
-import { NotebookTemplateCardPreview, NotebookTemplateEmptyCard } from '@features/onboarding/notebook-template-picker';
-import type { NotebookTemplate } from '@features/onboarding/notebook-templates';
 
 export const NOTEBOOK_CREATE_PAGE_GUTTER_CLASS = 'px-[clamp(38px,6vw,96px)] max-[679px]:px-12';
 
@@ -18,12 +16,11 @@ export interface NotebookCreateFormProps {
   path: string;
   pathPlaceholder: string;
   directoryButtonLabel: string;
-  onSelectDirectory: () => void;
+  onSelectDirectory?: () => void;
+  /** 移动端 (存储方案 A): notebook 根目录固定, 隐藏存储位置一栏。 */
+  hidePathSection?: boolean;
   icon: string | null;
   onIconChange: (icon: string | null) => void;
-  templates: NotebookTemplate[];
-  selectedTemplateId: string | null;
-  onSelectTemplate: () => void;
   disabled: boolean;
   onSubmit: () => void;
 }
@@ -86,16 +83,12 @@ export function NotebookCreateForm({
   pathPlaceholder,
   directoryButtonLabel,
   onSelectDirectory,
+  hidePathSection = false,
   icon,
   onIconChange,
-  templates,
-  selectedTemplateId,
-  onSelectTemplate,
   disabled,
   onSubmit,
 }: NotebookCreateFormProps) {
-  const selectedTemplate = templates.find((template) => template.id === selectedTemplateId);
-
   return (
     <div className="w-full">
       <h1 id={`${formId}-title`} className="mb-10 text-4xl font-light leading-tight tracking-[-0.04em] text-[var(--onboarding-ink)] max-[760px]:text-3xl">
@@ -103,13 +96,13 @@ export function NotebookCreateForm({
       </h1>
       <form
         id={formId}
-        className="mt-[22px] grid w-[min(100%,680px)] grid-cols-[minmax(0,1fr)_320px] items-start gap-x-[22px] gap-y-4 p-0 max-[760px]:grid-cols-1"
+        className="mt-[22px] grid w-[min(100%,680px)] grid-cols-1 items-start gap-y-4 p-0"
         onSubmit={(event) => {
           event.preventDefault();
           onSubmit();
         }}
       >
-        <div className="grid min-w-0 content-start gap-4 pr-[38px] max-[760px]:pr-0">
+        <div className="grid min-w-0 content-start gap-4">
           <div className="grid min-w-0 gap-1">
             <label className="text-sm font-semibold text-[var(--foreground)]" htmlFor={`${formId}-name`}>{nameLabel}</label>
             <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
@@ -130,48 +123,29 @@ export function NotebookCreateForm({
               />
             </div>
           </div>
-          <div className="grid min-w-0 gap-1">
-            <label className="text-sm font-semibold text-[var(--foreground)]" htmlFor={`${formId}-path`}>{pathLabel}</label>
-            <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
-              <Input
-                id={`${formId}-path`}
-                value={path}
-                placeholder={pathPlaceholder}
-                disabled
-                readOnly
-                className="h-10 min-w-0 bg-[var(--card)]"
-              />
-              <Button
-                type="button"
-                variant="outline"
-                className="h-10 shrink-0 bg-[var(--card)]"
-                onClick={onSelectDirectory}
-                disabled={disabled}
-              >
-                {directoryButtonLabel}
-              </Button>
+          {!hidePathSection && (
+            <div className="grid min-w-0 gap-1">
+              <label className="text-sm font-semibold text-[var(--foreground)]" htmlFor={`${formId}-path`}>{pathLabel}</label>
+              <div className="grid grid-cols-[minmax(0,1fr)_auto] gap-2">
+                <Input
+                  id={`${formId}-path`}
+                  value={path}
+                  placeholder={pathPlaceholder}
+                  disabled
+                  readOnly
+                  className="h-10 min-w-0 bg-[var(--card)]"
+                />
+                <Button
+                  type="button"
+                  variant="outline"
+                  className="h-10 shrink-0 bg-[var(--card)]"
+                  onClick={onSelectDirectory}
+                  disabled={disabled}
+                >
+                  {directoryButtonLabel}
+                </Button>
+              </div>
             </div>
-          </div>
-        </div>
-        <div className="grid min-w-0 content-start gap-1">
-          <button
-            type="button"
-            className="flex w-full items-center justify-start gap-0.5 p-0 text-left text-sm font-semibold text-[var(--foreground)] hover:text-[var(--brand)] disabled:cursor-not-allowed disabled:opacity-50"
-            aria-haspopup="dialog"
-            onClick={onSelectTemplate}
-            disabled={disabled}
-          >
-            <span>选择场景模板（可选）</span>
-            <ChevronRight size={16} aria-hidden="true" />
-          </button>
-          {selectedTemplate ? (
-            <NotebookTemplateCardPreview
-              template={selectedTemplate}
-              onSwitch={onSelectTemplate}
-              disabled={disabled}
-            />
-          ) : (
-            <NotebookTemplateEmptyCard onClick={onSelectTemplate} disabled={disabled} />
           )}
         </div>
       </form>

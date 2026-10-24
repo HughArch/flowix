@@ -10,7 +10,7 @@ use crate::agent_session::ThreadManager;
 use crate::app::open_targets;
 use crate::app::panic::install_panic_log_hook;
 use crate::app::paths::{get_app_data_path, get_user_config_dir};
-use crate::app::state::AppState;
+use crate::app::state::{AppState, ExternalAgentState};
 use crate::app::watchdog::spawn_external_agent_watchdog;
 use crate::cli_link;
 use crate::commands;
@@ -52,6 +52,10 @@ pub fn run() {
     let app_data_path = get_app_data_path();
     std::fs::create_dir_all(&app_data_path).ok();
 
+    // 移动端 `dirs::home_dir()` 为 None ── 存储方案 A: 主目录 = app 私有目录。
+    #[cfg(mobile)]
+    let home_dir = crate::app::paths::mobile_home_dir();
+    #[cfg(desktop)]
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     runtime_log::record_event(
         "info",
@@ -66,6 +70,7 @@ pub fn run() {
     // �?��时在 `~/.local/bin/flowix-cli` 建一�?symlink。�?情�?
     // `cli_link` 模块: 幂等 (每�?�?��都跑, 已存在就不动), 失败�?warn
     // This is idempotent and failures do not block GUI startup.
+    #[cfg(desktop)]
     cli_link::ensure_cli_symlink();
 
     let user_config_dir = get_user_config_dir(&home_dir);
@@ -188,17 +193,25 @@ pub fn run() {
     // 实际绑定�?.setup() �?��里完成�?
     let memo_watcher = Arc::new(RwLock::new(MemoWatcher::new(memo_file_arc.clone())));
 
-    crate::app::native_menu::configure(tauri::Builder::default())
-        .plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
-            handle_second_instance(app, args);
-        }))
+    let builder = crate::app::native_menu::configure(tauri::Builder::default());
+    // 桌面专属插件 ── single-instance / updater 只有桌面实现, 依赖已在
+    // Cargo.toml 按 cfg(not(any(target_os = "android", target_os = "ios")))
+    // 收窄, 这里同步按 cfg(desktop) 门控装配。
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_single_instance::init(|app, args, _cwd| {
+        handle_second_instance(app, args);
+    }));
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    let builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_process::init())
-        .plugin(tauri_plugin_updater::Builder::new().build())
-        .plugin(crate::frame_scrollbar::init())
-        .manage(crate::app_update::AppUpdateState::default())
+        .plugin(crate::frame_scrollbar::init());
+    #[cfg(desktop)]
+    let builder = builder.manage(crate::app_update::AppUpdateState::default());
+    builder
         .manage(open_targets::PendingOpenTargets::default())
         .manage(memo_watcher.clone())
         .on_window_event(commands::window_shutdown::on_window_event)
@@ -272,15 +285,17 @@ pub fn run() {
                     user_config_for_state.config_dir().clone(),
                 )),
                 system_data,
-                agent_external_config,
                 memo_file: memo_file_for_state.clone(),
-                external_runtimes: external_runtimes.clone(),
-                codex_app_server: codex_app_server.clone(),
-                opencode: opencode_acp_manager.clone(),
-                pi: pi_rpc_manager.clone(),
-                deepseek_harness: deepseek_harness_manager.clone(),
-                agent_history: agent_history.clone(),
-                agent_lifecycle: agent_lifecycle.clone(),
+                agents: ExternalAgentState {
+                    agent_external_config,
+                    external_runtimes: external_runtimes.clone(),
+                    codex_app_server: codex_app_server.clone(),
+                    opencode: opencode_acp_manager.clone(),
+                    pi: pi_rpc_manager.clone(),
+                    deepseek_harness: deepseek_harness_manager.clone(),
+                    agent_history: agent_history.clone(),
+                    agent_lifecycle: agent_lifecycle.clone(),
+                },
                 thread_manager: thread_manager_for_state.clone(),
                 plugin_runs: crate::plugin::PluginRunCoordinator::default(),
                 notebook_imports: Default::default(),
@@ -457,9 +472,13 @@ pub fn run() {
             commands::dsh::dsh_set_cli_path,
             commands::dsh::dsh_install_appserver_profile,
             commands::dsh::dsh_manage_profile_plugin,
+            #[cfg(desktop)]
             crate::app_update::install_app_update,
+            #[cfg(desktop)]
             crate::app_update::check_app_update,
+            #[cfg(desktop)]
             crate::app_update::consume_app_update_result,
+            #[cfg(desktop)]
             crate::app_update::cancel_app_update,
             commands::boot::get_boot_features,
             commands::boot::set_boot_intro_displayed,
@@ -806,6 +825,7 @@ fn spawn_workbench_startup(
                     tauri::async_runtime::spawn_blocking(move || {
                         app_for_cli_detection
                             .state::<AppState>()
+                            .agents
                             .agent_external_config
                             .run_startup_detect();
                     });
@@ -1054,6 +1074,24 @@ fn prepare_startup_storage(
     {
         let memo = crate::lock_utils::read_lock(memo_file, "memo_file");
         let result = memo.initialize_registry_storage();
+        if let Err(error) = result.as_ref() {
+            // 完整错误链落日志: sqlite_to_io 包装的原始 sqlite 报错在 source 里,
+            // 移动端排障 (EACCES/readonly) 依赖这一层细节。
+            let mut chain = format!("{error}");
+            let mut source = std::error::Error::source(error);
+            while let Some(err) = source {
+                chain.push_str(&format!(" | caused by: {err}"));
+                source = err.source();
+            }
+            tracing::error!("notebook registry init failed: {chain}");
+            // 移动端路径排障: 确认 wry 注入的包名与进程 HOME 实际值。
+            tracing::error!(
+                "WRY_ANDROID_PACKAGE={:?} HOME={:?} USER_CONFIG_DIR={:?}",
+                std::env::var("WRY_ANDROID_PACKAGE"),
+                std::env::var("HOME"),
+                user_config_dir
+            );
+        }
         result.map_err(|error| format!("initialize notebook registry failed: {error}"))?;
     }
     if version_init_pending {
@@ -1150,6 +1188,7 @@ fn start_post_startup_services(
     spawn_external_agent_watchdog(app, external_runtimes);
 }
 
+#[cfg(desktop)]
 fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
     // Normalize argv before routing native files and protocol callbacks.
     let app = app.clone();
@@ -1286,7 +1325,7 @@ pub(crate) fn prepare_for_update(app: &tauri::AppHandle) -> UpdateRuntimeGuard {
     // stays on the same worker through cleanup and installer launch.
     let state = app.state::<AppState>();
     state.notebook_background.pause();
-    let guard = UpdateRuntimeGuard { pi: state.pi.clone(), background: state.notebook_background.clone() };
+    let guard = UpdateRuntimeGuard { pi: state.agents.pi.clone(), background: state.notebook_background.clone() };
     stop_external_agent_children(app, "update");
     checkpoint_thread_database(app, "update");
     guard
@@ -1320,7 +1359,7 @@ fn stop_external_agent_children(app: &tauri::AppHandle, phase: &str) {
         // 尚未完成的清理会被取消，日志需如实说明为尽力清理。
         let stopped = tokio::time::timeout(
             EXTERNAL_AGENT_SHUTDOWN_TIMEOUT,
-            state.external_runtimes.stop_all(),
+            state.agents.external_runtimes.stop_all(),
         )
         .await;
 

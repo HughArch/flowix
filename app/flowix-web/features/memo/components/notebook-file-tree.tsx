@@ -1,5 +1,6 @@
 'use client';
 
+import { isMobileDevice } from '@shared/platform';
 import { useNotebookViewActions } from './use-notebook-view-actions';
 import { useNotebookTreeRename } from './use-notebook-tree-rename';
 
@@ -7,6 +8,10 @@ import { NotebookTreeCustomizePanel, type NotebookTreeCustomizePanelHandle } fro
 
 import type { TableViewType } from '@features/multidimensional-table/public/create-api';
 import { useNotebookTreeSections, type NotebookTreeSection } from './use-notebook-tree-sections';
+
+// 移动端 v1 无 AI 服务 (external agent 不可用): 隐藏 Sessions / Repositories
+// 区块。UA 不随会话变化, 模块级求值一次即可。
+const MOBILE_DEVICE = isMobileDevice();
 
 import { useWorkColumnStore } from '@features/workspace/store/work-column-store';
 import { AgentTasksSection } from '@features/agent/public/shell-api';
@@ -415,7 +420,7 @@ export function NotebookFileTree({
   }, [isActive, loadNotebookFilters, notebookId]);
 
   const visibleSectionOrder = useMemo(() => sectionOrder.filter((section) => (
-    !hiddenSections.includes(section) && (section === 'files'
+    !hiddenSections.includes(section) && !MOBILE_DEVICE && (section === 'files'
     || section === 'repositories'
     || (section === 'agents' && Boolean(notebookId) && agentSectionHeight > 0)
     || (section === 'pinned' && (pinnedItems.length > 0 || pinnedHasPrevious || pinnedHasMore))
@@ -987,7 +992,7 @@ export function NotebookFileTree({
           <ContextMenu>
             <ContextMenuTrigger asChild>
               <div className="flex min-h-full flex-col">
-          {notebookId && !hiddenSections.includes('agents') && (
+          {notebookId && !MOBILE_DEVICE && !hiddenSections.includes('agents') && (
             <AgentTasksSection
               notebookId={notebookId}
               edgeGutter={TREE_EDGE_GUTTER}
@@ -1254,7 +1259,7 @@ export function NotebookFileTree({
             </div>
           </div>}
           </section>}
-          {!hiddenSections.includes('repositories') && (
+          {!MOBILE_DEVICE && !hiddenSections.includes('repositories') && (
             <AgentRepositoriesSection
               repositories={agentRepositories}
               order={sectionOrder.indexOf('repositories') + 1}

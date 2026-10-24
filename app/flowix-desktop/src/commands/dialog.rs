@@ -20,21 +20,31 @@ pub(crate) mod upload_sessions;
 
 #[tauri::command]
 pub async fn select_directory(app: tauri::AppHandle) -> Option<String> {
-    use tauri_plugin_dialog::DialogExt;
-    tokio::task::spawn_blocking(move || {
-        app.dialog()
-            .file()
-            .set_title("选择笔记本文件夹")
-            .blocking_pick_folder()
-            .map(|p| {
-                let path = Path::new(&p.to_string()).to_path_buf();
-                record_bookmark_directory(&app, &path);
-                path.to_string_lossy().into_owned()
-            })
-    })
-    .await
-    .ok()
-    .flatten()
+    #[cfg(mobile)]
+    {
+        // 存储方案 A: 移动端 notebook 根目录固定为 app 私有目录, 无文件夹选择。
+        let _ = app;
+        return None;
+    }
+
+    #[cfg(desktop)]
+    {
+        use tauri_plugin_dialog::DialogExt;
+        tokio::task::spawn_blocking(move || {
+            app.dialog()
+                .file()
+                .set_title("选择笔记本文件夹")
+                .blocking_pick_folder()
+                .map(|p| {
+                    let path = Path::new(&p.to_string()).to_path_buf();
+                    record_bookmark_directory(&app, &path);
+                    path.to_string_lossy().into_owned()
+                })
+        })
+        .await
+        .ok()
+        .flatten()
+    }
 }
 
 #[tauri::command]
@@ -42,34 +52,44 @@ pub async fn select_import_directory(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,
 ) -> Option<String> {
-    let generation = app
-        .state::<AppState>()
-        .document_access
-        .generation(window.label());
-    use tauri_plugin_dialog::DialogExt;
-    let handle = app.clone();
-    let window_label = window.label().to_owned();
-    tokio::task::spawn_blocking(move || {
-        handle
-            .dialog()
-            .file()
-            .set_title("选择要导入的文件夹")
-            .blocking_pick_folder()
-            .and_then(|path| {
-                let path = Path::new(&path.to_string()).to_path_buf();
-                let granted = handle
-                    .state::<AppState>()
-                    .document_access
-                    .grant_directory_for_generation(&window_label, generation, &path);
-                if granted {
-                    record_bookmark_directory(&handle, &path);
-                }
-                granted.then(|| path.to_string_lossy().into_owned())
-            })
-    })
-    .await
-    .ok()
-    .flatten()
+    #[cfg(mobile)]
+    {
+        // 同 select_directory: 移动端不提供文件夹选择, 导入走系统文件选择器。
+        let _ = (app, window);
+        return None;
+    }
+
+    #[cfg(desktop)]
+    {
+        let generation = app
+            .state::<AppState>()
+            .document_access
+            .generation(window.label());
+        use tauri_plugin_dialog::DialogExt;
+        let handle = app.clone();
+        let window_label = window.label().to_owned();
+        tokio::task::spawn_blocking(move || {
+            handle
+                .dialog()
+                .file()
+                .set_title("选择要导入的文件夹")
+                .blocking_pick_folder()
+                .and_then(|path| {
+                    let path = Path::new(&path.to_string()).to_path_buf();
+                    let granted = handle
+                        .state::<AppState>()
+                        .document_access
+                        .grant_directory_for_generation(&window_label, generation, &path);
+                    if granted {
+                        record_bookmark_directory(&handle, &path);
+                    }
+                    granted.then(|| path.to_string_lossy().into_owned())
+                })
+        })
+        .await
+        .ok()
+        .flatten()
+    }
 }
 
 #[tauri::command]

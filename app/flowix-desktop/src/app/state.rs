@@ -29,6 +29,34 @@ pub struct NotebookImportStatus {
     pub message: Option<String>,
 }
 
+/// 外部 CLI Agent 运行时簇 ── 桌面专属能力的聚合边界。
+///
+/// 六个外部 CLI runtime（codex / claude / hermes / opencode / pi /
+/// deepseek-harness）加路径配置与产品级 history/lifecycle 服务的整体聚合。
+/// 移动端（Android/iOS）无法执行外部二进制（targetSdk 29+ 禁止从 app data
+/// 运行可执行文件, Tauri mobile 也不支持 sidecar）, 这组能力在移动端不装配;
+/// 聚合为单一子结构是为了让后续的平台门控落在字段级别, 而不是散布到
+/// 所有访问点。
+pub struct ExternalAgentState {
+    /// External CLI 路径配置 (`~/.flowix/agent-external-config.json`) ──
+    /// codex/claude/hermes/opencode 执行路径的唯一参照, 启动探测写入,
+    /// 运行时 `resolve_external_cli` 命中即用。
+    pub agent_external_config: AgentExternalConfig,
+    pub external_runtimes: Arc<ExternalRuntimeRegistry>,
+    /// Long-lived Codex App Server. Codex owns its thread history and model
+    /// catalog; Flowix stores only the mapping to its local conversation.
+    pub codex_app_server: Arc<crate::agent_external::codex::CodexAppServerManager>,
+    pub opencode: Arc<crate::agent_external::opencode::OpenCodeAcpManager>,
+    pub pi: Arc<crate::agent_external::pi::PiRpcManager>,
+    pub deepseek_harness: Arc<crate::agent_external::deepseek_harness::DeepSeekHarnessManager>,
+    /// Product-level history policy and fallback orchestration. Runtime
+    /// adapters remain responsible for their own protocol and transcript.
+    pub agent_history: Arc<crate::agent_history::AgentHistoryService>,
+    /// Product-level thread archive/delete dispatch across external runtimes.
+    /// Runtimes without a lifecycle adapter keep Flowix-local semantics.
+    pub agent_lifecycle: Arc<crate::agent_lifecycle::AgentLifecycleService>,
+}
+
 /// 应用状态 ── 通过 `tauri::State<AppState>` 注入给 Tauri 命令和运行时服务。
 ///
 /// `user_config` / `memo_file` / `thread_manager` 之间会共享
@@ -48,26 +76,9 @@ pub struct AppState {
     /// Legacy system metadata reader used to migrate notebook tag state into
     /// each notebook's `.flowix/system.json`.
     pub system_data: SystemData,
-    /// External CLI 路径配置 (`~/.flowix/agent-external-config.json`) ──
-    /// codex/claude/hermes/opencode 执行路径的唯一参照, 启动探测写入,
-    /// 运行时 `resolve_external_cli` 命中即用。
-    pub agent_external_config: AgentExternalConfig,
     pub memo_file: Arc<RwLock<MemoFile>>,
-    /// 当前 notebook 的全文搜索索引 (内存倒排). 切换 notebook 时 rebuild;
-    /// 写命令做 upsert/remove.
-    pub external_runtimes: Arc<ExternalRuntimeRegistry>,
-    /// Long-lived Codex App Server. Codex owns its thread history and model
-    /// catalog; Flowix stores only the mapping to its local conversation.
-    pub codex_app_server: Arc<crate::agent_external::codex::CodexAppServerManager>,
-    pub opencode: Arc<crate::agent_external::opencode::OpenCodeAcpManager>,
-    pub pi: Arc<crate::agent_external::pi::PiRpcManager>,
-    pub deepseek_harness: Arc<crate::agent_external::deepseek_harness::DeepSeekHarnessManager>,
-    /// Product-level history policy and fallback orchestration. Runtime
-    /// adapters remain responsible for their own protocol and transcript.
-    pub agent_history: Arc<crate::agent_history::AgentHistoryService>,
-    /// Product-level thread archive/delete dispatch across external runtimes.
-    /// Runtimes without a lifecycle adapter keep Flowix-local semantics.
-    pub agent_lifecycle: Arc<crate::agent_lifecycle::AgentLifecycleService>,
+    /// 外部 CLI Agent 运行时簇, 见 [`ExternalAgentState`]。
+    pub agents: ExternalAgentState,
     pub thread_manager: Arc<ThreadManager>,
     pub plugin_runs: PluginRunCoordinator,
     /// Last known state for background notebook imports. Keeping the state in

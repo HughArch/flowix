@@ -76,7 +76,7 @@ pub async fn get_deepseek_harness_configs(
 }
 
 async fn load_dsh_model_configs(state: &State<'_, AppState>) -> Result<Vec<AiConfigFile>, String> {
-    state.deepseek_harness.dsh_model_configs().await
+    state.agents.deepseek_harness.dsh_model_configs().await
 }
 
 /// Credential status is best-effort here; save and connection-test commands
@@ -86,7 +86,7 @@ async fn hydrate_dsh_credential_statuses_without_blocking(
     configs: &mut [AiConfigFile],
 ) {
     if let Err(error) = state
-        .deepseek_harness
+        .agents.deepseek_harness
         .hydrate_credential_statuses(configs)
         .await
     {
@@ -105,14 +105,14 @@ pub async fn set_deepseek_harness_config(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    state.deepseek_harness.invalidate_hosts().await?;
+    state.agents.deepseek_harness.invalidate_hosts().await?;
     state
-        .deepseek_harness
+        .agents.deepseek_harness
         .persist_credential(&config.model)
         .await?;
     config.model.api_keys.clear();
     state
-        .deepseek_harness
+        .agents.deepseek_harness
         .persist_dsh_model_config(&config, false)
         .await?;
     dispatcher::emit_to(&app, USER_CONFIG_CHANGED_EVENT, "dsh_config");
@@ -125,14 +125,14 @@ pub async fn add_deepseek_harness_model(
     state: State<'_, AppState>,
     app: AppHandle,
 ) -> Result<(), String> {
-    state.deepseek_harness.invalidate_hosts().await?;
+    state.agents.deepseek_harness.invalidate_hosts().await?;
     state
-        .deepseek_harness
+        .agents.deepseek_harness
         .persist_credential(&config.model)
         .await?;
     config.model.api_keys.clear();
     state
-        .deepseek_harness
+        .agents.deepseek_harness
         .persist_dsh_model_config(&config, true)
         .await?;
     dispatcher::emit_to(&app, USER_CONFIG_CHANGED_EVENT, "dsh_config");
@@ -146,21 +146,21 @@ pub async fn test_deepseek_harness_connection(
     config: AiModelConfig,
     state: State<'_, AppState>,
 ) -> Result<TestConnectionResult, String> {
-    Ok(state.deepseek_harness.test_connection(&config).await)
+    Ok(state.agents.deepseek_harness.test_connection(&config).await)
 }
 
 #[tauri::command]
 pub async fn deepseek_harness_model_catalog(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    state.deepseek_harness.model_catalog().await
+    state.agents.deepseek_harness.model_catalog().await
 }
 
 #[tauri::command]
 pub async fn deepseek_harness_plugin_catalog(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    state.deepseek_harness.plugin_catalog().await
+    state.agents.deepseek_harness.plugin_catalog().await
 }
 
 #[tauri::command]
@@ -170,7 +170,7 @@ pub async fn set_deepseek_harness_plugin_enabled(
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
     state
-        .deepseek_harness
+        .agents.deepseek_harness
         .set_plugin_enabled(&plugin_key, enabled)
         .await
 }
@@ -180,7 +180,7 @@ pub async fn discover_deepseek_harness_models(
     config: AiModelConfig,
     state: State<'_, AppState>,
 ) -> Result<serde_json::Value, String> {
-    state.deepseek_harness.discover_models(&config).await
+    state.agents.deepseek_harness.discover_models(&config).await
 }
 
 #[tauri::command]

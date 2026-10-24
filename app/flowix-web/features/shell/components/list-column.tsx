@@ -1,6 +1,6 @@
 'use client';
 
-import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react';
+import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 
 import type { Notebook } from '@features/memo/store/note-store';
 import { MemoListTitlebarMac } from '@features/memo/components/memo-list-titlebar-mac';
@@ -15,6 +15,10 @@ interface ListColumnProps {
   previewVisible: boolean;
   previewPhase: ListColumnPreviewPhase;
   memoColWidth: number;
+  /** 手机单栏: 列表占满整屏, 忽略拖拽保存的列宽。 */
+  mobileFullWidth?: boolean;
+  /** 手机单栏覆盖层模式: 外层挂手势监听用。 */
+  containerRef?: RefObject<HTMLDivElement | null>;
   isDraggingListDivider: boolean;
   selectedNotebook: Notebook | null;
   noteNavigationPhase: NoteNavigationDrawerPhase;
@@ -45,7 +49,9 @@ function ListColumnTitlebar({
     onOpenPreferences,
   };
 
-  return /Windows/i.test(navigator.userAgent) || /Win/i.test(navigator.platform)
+  // Android WebView 的 UA/platform 不含 Win, 会误选 Mac 变体 (预留苹果
+  // 状态区, 图标顶到中间); 移动端与 Windows 一样使用 Win 变体。
+  return /Windows|Android/i.test(navigator.userAgent) || /Win/i.test(navigator.platform)
     ? <MemoListTitlebarWin {...props} />
     : <MemoListTitlebarMac {...props} />;
 }
@@ -60,6 +66,8 @@ export function ListColumn({
   previewVisible,
   previewPhase,
   memoColWidth,
+  mobileFullWidth = false,
+  containerRef,
   isDraggingListDivider,
   selectedNotebook,
   noteNavigationPhase,
@@ -134,6 +142,7 @@ export function ListColumn({
 
   return (
     <div
+      ref={containerRef}
       className={cn(
         'relative flex h-full shrink-0 flex-col will-change-[width]',
         isDraggingListDivider
@@ -141,7 +150,7 @@ export function ListColumn({
           : 'transition-[width] duration-150 ease-out',
         previewVisible ? 'overflow-visible' : 'overflow-hidden',
       )}
-      style={{ width: hidden ? 0 : memoColWidth }}
+      style={{ width: hidden ? 0 : mobileFullWidth ? '100%' : memoColWidth }}
       aria-hidden={hidden && !previewVisible}
       onPointerDown={onPointerDown}
     >

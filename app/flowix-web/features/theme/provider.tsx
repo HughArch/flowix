@@ -17,6 +17,46 @@ import { windows } from '@platform/tauri/client';
  * 不在这里 dispatch 事件会让 markdown-editor 的 shiki 颜色停在旧主题。
  * 不订阅 mq 会让 'system' 模式不会响应系统切换。 都在 useEffect 里, 卸载时清理。
  */
+/**
+ * 把当前主题的 frame 底色同步给 Android 原生窗口。
+ *
+ * insets padding 露出的状态栏 / 手势条区域属于原生窗口背景, 不随网页 CSS
+ * 变化 —— 深色主题下会残留一条白色。Kotlin 侧通过 addJavascriptInterface
+ * 暴露 FlowixNative.setWindowBackground(hex); 非 Android 环境静默跳过。
+ */
+function syncNativeWindowBackground(): void {
+  const bridge = (window as { FlowixNative?: { setWindowBackground?: (hex: string) => void } }).FlowixNative;
+  if (!bridge?.setWindowBackground) {
+    console.warn('[theme] FlowixNative bridge unavailable');
+    return;
+  }
+  // 主题色可能是 oklch() 函数形式 (深色/自定义主题), 直接取数字当 RGB 会
+  // 得到垃圾值。交给 Canvas 规范化: fillStyle 读回时一定是 #rrggbb / rgb()。
+  const probe = document.createElement('span');
+  probe.style.backgroundColor = 'var(--frame-bg)';
+  probe.style.display = 'none';
+  document.body.appendChild(probe);
+  const declared = getComputedStyle(probe).backgroundColor;
+  probe.remove();
+  const canvas = document.createElement('canvas').getContext('2d');
+  if (!canvas) return;
+  canvas.fillStyle = declared;
+  const normalized = String(canvas.fillStyle);
+  let hex: string | null = null;
+  if (/^#[0-9a-f]{6}$/i.test(normalized)) {
+    hex = normalized;
+  } else {
+    const rgb = normalized.match(/rgba?\(\s*(\d+)[,\s]+(\d+)[,\s]+(\d+)/);
+    if (rgb) {
+      hex = `#${rgb.slice(1, 4)
+        .map((value) => Number(value).toString(16).padStart(2, '0'))
+        .join('')}`;
+    }
+  }
+  if (!hex) return;
+  bridge.setWindowBackground(hex);
+}
+
 export function ThemeProvider({ children }: { children: React.ReactNode }) {
   const theme = useAppTheme();
 
@@ -41,6 +81,7 @@ export function ThemeProvider({ children }: { children: React.ReactNode }) {
     const mq = window.matchMedia('(prefers-color-scheme: dark)');
     const apply = () => {
       const resolved = applyTheme(root, id, { prefersDark: mq.matches });
+      syncNativeWindowBackground();
       window.dispatchEvent(new CustomEvent('app-theme-changed', { detail: { theme: resolved } }));
     };
     apply();
