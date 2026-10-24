@@ -26,6 +26,17 @@ pub struct FnsSyncStatus {
     pub last_error: Option<String>,
     pub last_pulled: usize,
     pub last_pushed: usize,
+    /// Consecutive failed attempts; reset by a success or a new local edit.
+    pub consecutive_failures: u32,
+    /// Epoch milliseconds of the next scheduled retry, when one is pending.
+    pub next_retry_at: Option<i64>,
+}
+
+#[derive(Debug, Clone, Copy, Default)]
+struct RetryEntry {
+    attempts: u32,
+    /// Bumped whenever a newer attempt (or a fresh edit) supersedes this one.
+    token: u64,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -49,6 +60,8 @@ pub struct FnsSyncService {
     /// Per-notebook debounce generation. A scheduled run whose generation has
     /// been superseded does nothing.
     scheduled: Mutex<HashMap<String, u64>>,
+    /// Per-notebook exponential backoff state for failed syncs.
+    retry: Mutex<HashMap<String, RetryEntry>>,
 }
 
 const AUTO_SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
@@ -62,6 +75,7 @@ impl FnsSyncService {
             status: RwLock::new(FnsSyncStatus::default()),
             running: AtomicBool::new(false),
             scheduled: Mutex::new(HashMap::new()),
+            retry: Mutex::new(HashMap::new()),
         }
     }
 
@@ -78,6 +92,18 @@ impl FnsSyncService {
 
         if !self.notebook_is_bound(&app, &notebook_id) {
             return;
+        }
+
+        // A fresh edit supersedes any pending retry and resets the backoff.
+        {
+            let mut retry = self
+                .retry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            if let Some(entry) = retry.get_mut(&notebook_id) {
+                entry.attempts = 0;
+                entry.token = entry.token.wrapping_add(1);
+            }
         }
 
         let generation = {
@@ -161,7 +187,7 @@ impl FnsSyncService {
     /// Sync one notebook. Returns `Ok(None)` when sync is disabled or not
     /// configured, so callers can treat it as a no-op rather than an error.
     pub async fn sync_notebook(
-        &self,
+        self: &Arc<Self>,
         app: &AppHandle,
         notebook_id: &str,
     ) -> Result<Option<FnsNotebookSyncOutcome>, String> {
@@ -191,19 +217,76 @@ impl FnsSyncService {
 
         self.running.store(false, Ordering::SeqCst);
         match &result {
-            Ok(Some(outcome)) => self.set_status(|status| {
-                status.running = false;
-                status.last_sync_at = Some(now_ms());
-                status.last_pulled = outcome.pulled;
-                status.last_pushed = outcome.pushed;
-            }),
-            Ok(None) => self.set_status(|status| status.running = false),
-            Err(error) => self.set_status(|status| {
-                status.running = false;
-                status.last_error = Some(error.clone());
-            }),
+            Ok(Some(outcome)) => {
+                self.clear_retry(notebook_id);
+                self.set_status(|status| {
+                    status.running = false;
+                    status.last_sync_at = Some(now_ms());
+                    status.last_pulled = outcome.pulled;
+                    status.last_pushed = outcome.pushed;
+                    status.last_error = None;
+                    status.consecutive_failures = 0;
+                    status.next_retry_at = None;
+                });
+            }
+            Ok(None) => {
+                self.clear_retry(notebook_id);
+                self.set_status(|status| {
+                    status.running = false;
+                    status.next_retry_at = None;
+                });
+            }
+            Err(error) => {
+                let delay = self.schedule_retry(app, notebook_id);
+                self.set_status(|status| {
+                    status.running = false;
+                    status.last_error = Some(error.clone());
+                    status.consecutive_failures = status.consecutive_failures.saturating_add(1);
+                    status.next_retry_at = Some(now_ms() + delay.as_millis() as i64);
+                });
+            }
         }
         result
+    }
+
+    /// Schedule the next attempt with exponential backoff. Returns the delay so
+    /// the status can expose `nextRetryAt`.
+    fn schedule_retry(self: &Arc<Self>, app: &AppHandle, notebook_id: &str) -> Duration {
+        let (token, delay) = {
+            let mut retry = self
+                .retry
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let entry = retry.entry(notebook_id.to_owned()).or_default();
+            entry.token = entry.token.wrapping_add(1);
+            let attempts = entry.attempts;
+            entry.attempts = entry.attempts.saturating_add(1);
+            (entry.token, retry_delay(attempts))
+        };
+
+        let service = self.clone();
+        let app = app.clone();
+        let id = notebook_id.to_owned();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(delay).await;
+            {
+                let retry = service
+                    .retry
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if retry.get(&id).map(|entry| entry.token) != Some(token) {
+                    return;
+                }
+            }
+            let _ = service.sync_notebook(&app, &id).await;
+        });
+        delay
+    }
+
+    fn clear_retry(&self, notebook_id: &str) {
+        if let Ok(mut retry) = self.retry.lock() {
+            retry.remove(notebook_id);
+        }
     }
 
     async fn sync_notebook_inner(
@@ -278,7 +361,7 @@ impl FnsSyncService {
     /// Sync every notebook that already has a binding. Used on startup and by
     /// the "sync all" command.
     pub async fn sync_bound_notebooks(
-        &self,
+        self: &Arc<Self>,
         app: &AppHandle,
     ) -> Result<Vec<FnsNotebookSyncOutcome>, String> {
         let state = app.state::<AppState>();
@@ -315,6 +398,26 @@ impl FnsSyncService {
 
 pub fn now_ms() -> i64 {
     flowix_fns::engine::now_ms()
+}
+
+/// 2s, 4s, 8s … capped at 256s.
+fn retry_delay(attempts: u32) -> Duration {
+    let factor = 1u64.checked_shl(attempts.min(7)).unwrap_or(128);
+    Duration::from_secs(2u64.saturating_mul(factor).min(300))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::retry_delay;
+
+    #[test]
+    fn retry_delay_is_exponential_and_capped() {
+        assert_eq!(retry_delay(0).as_secs(), 2);
+        assert_eq!(retry_delay(1).as_secs(), 4);
+        assert_eq!(retry_delay(3).as_secs(), 16);
+        assert_eq!(retry_delay(7).as_secs(), 256);
+        assert_eq!(retry_delay(20).as_secs(), 256);
+    }
 }
 
 /// Debounced FNS sync for one notebook, callable from the watcher and memo

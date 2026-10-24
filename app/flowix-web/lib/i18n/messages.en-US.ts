@@ -117,6 +117,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "preferences.fns.running": "Syncing…",
     "preferences.fns.lastSync": "Last sync",
     "preferences.fns.never": "Never",
+    "preferences.fns.retryScheduled": "Retry scheduled for",
     "preferences.fns.saved": "Saved",
     "preferences.fns.syncDone": "Sync complete",
     "preferences.fns.syncFailed": "Sync failed",

@@ -112,6 +112,7 @@ const zhCN = {
     "preferences.fns.running": "同步中…",
     "preferences.fns.lastSync": "上次同步",
     "preferences.fns.never": "从未",
+    "preferences.fns.retryScheduled": "计划重试",
     "preferences.fns.saved": "已保存",
     "preferences.fns.syncDone": "同步完成",
     "preferences.fns.syncFailed": "同步失败",

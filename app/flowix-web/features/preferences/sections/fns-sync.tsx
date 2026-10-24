@@ -31,6 +31,15 @@ export function FnsSyncSection() {
     void load().catch((error) => toast.error(errorMessage(error)));
   }, [load]);
 
+  // Keep the status (including retry countdown) fresh while the page is open.
+  useEffect(() => {
+    if (!config?.configured) return;
+    const timer = setInterval(() => {
+      void fns.getStatus().then(setStatus).catch(() => {});
+    }, 5000);
+    return () => clearInterval(timer);
+  }, [config?.configured]);
+
   const save = useCallback(async (patch: FnsConfigPatch) => {
     setBusy(true);
     try {
@@ -86,6 +95,12 @@ export function FnsSyncSection() {
         timeStyle: 'short',
       }).format(new Date(status.lastSyncAt))
     : t('preferences.fns.never');
+
+  const retryAt = status?.nextRetryAt
+    ? new Intl.DateTimeFormat(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
+        timeStyle: 'medium',
+      }).format(new Date(status.nextRetryAt))
+    : null;
 
   return (
     <div className="space-y-5 pb-6">
@@ -155,6 +170,7 @@ export function FnsSyncSection() {
             {status?.running
               ? t('preferences.fns.running')
               : `${t('preferences.fns.lastSync')}: ${lastSync}`}
+            {retryAt ? ` · ${t('preferences.fns.retryScheduled')} ${retryAt}` : ''}
             {status?.lastError ? ` · ${status.lastError}` : ''}
             {!config?.configured ? ` · ${t('preferences.fns.notConfigured')}` : ''}
           </p>

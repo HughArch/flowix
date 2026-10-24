@@ -26,6 +26,9 @@ export interface FnsSyncStatus {
   lastError: string | null;
   lastPulled: number;
   lastPushed: number;
+  consecutiveFailures: number;
+  /** Epoch ms of the next scheduled retry, when one is pending. */
+  nextRetryAt: number | null;
 }
 
 export interface FnsNotebookSyncOutcome {

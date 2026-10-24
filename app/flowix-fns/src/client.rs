@@ -12,6 +12,8 @@ use crate::protocol::{action, ClientInfo, Envelope};
 
 /// Default per-frame timeout. Sync pages can be large, so this is generous.
 const DEFAULT_TIMEOUT: Duration = Duration::from_secs(30);
+/// DNS + TLS + WebSocket upgrade must finish within this window.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(15);
 
 /// Default client type used when a caller does not specify one.
 pub const CLIENT_TYPE: &str = "flowix";
@@ -97,7 +99,9 @@ impl FnsClient {
         let _ = rustls::crypto::ring::default_provider().install_default();
 
         let endpoint = sync_endpoint(api, &info.client_type, &info.name, &info.version)?;
-        let (stream, _response) = connect_async(endpoint.as_str()).await?;
+        let (stream, _response) = tokio::time::timeout(CONNECT_TIMEOUT, connect_async(endpoint.as_str()))
+            .await
+            .map_err(|_| FnsError::Timeout("connect"))??;
 
         let mut client = Self {
             stream,
