@@ -31,7 +31,7 @@ export interface FnsTokenInput {
   clientType?: string;
 }
 
-export type FnsSyncPhase = 'notesPull' | 'notesPush' | 'filesPull' | 'filesPush';
+export type FnsSyncPhase = 'scanning' | 'notesPull' | 'notesPush' | 'filesPull' | 'filesPush';
 
 export interface FnsSyncProgress {
   phase: FnsSyncPhase;

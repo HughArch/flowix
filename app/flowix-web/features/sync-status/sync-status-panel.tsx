@@ -18,6 +18,7 @@ import { useNoteStore } from '@features/memo/store/note-store';
 import { useSyncPanelStore } from './sync-panel-store';
 
 const PHASE_KEYS: Record<FnsSyncPhase, I18nKey> = {
+  scanning: 'sync.panel.phaseScanning',
   notesPull: 'sync.panel.phaseNotesPull',
   notesPush: 'sync.panel.phaseNotesPush',
   filesPull: 'sync.panel.phaseFilesPull',
@@ -324,21 +325,25 @@ export function SyncStatusPanel() {
                   <span className="text-[var(--muted-foreground)]">
                     {t(PHASE_KEYS[status.progress.phase])}
                   </span>
-                  <span className="text-[var(--foreground)]">
-                    {Math.min(status.progress.completed + 1, Math.max(status.progress.total, 1))}
-                    /{status.progress.total}
-                  </span>
+                  {status.progress.phase !== 'scanning' && (
+                    <span className="text-[var(--foreground)]">
+                      {Math.min(status.progress.completed + 1, Math.max(status.progress.total, 1))}
+                      /{status.progress.total}
+                    </span>
+                  )}
                 </div>
-                <div className="h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
-                  <div
-                    className="h-full rounded-full bg-[var(--brand,#6366f1)] transition-[width] duration-200"
-                    style={{
-                      width: `${status.progress.total > 0
-                        ? Math.min(100, Math.round((status.progress.completed / status.progress.total) * 100))
-                        : 0}%`,
-                    }}
-                  />
-                </div>
+                {status.progress.phase !== 'scanning' && (
+                  <div className="h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
+                    <div
+                      className="h-full rounded-full bg-[var(--brand,#6366f1)] transition-[width] duration-200"
+                      style={{
+                        width: `${status.progress.total > 0
+                          ? Math.min(100, Math.round((status.progress.completed / status.progress.total) * 100))
+                          : 0}%`,
+                      }}
+                    />
+                  </div>
+                )}
                 {status.progress.currentPath && (
                   <p className="truncate text-[var(--muted-foreground)]">
                     {status.progress.currentPath}

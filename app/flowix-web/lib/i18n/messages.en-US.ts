@@ -150,6 +150,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "sync.panel.close": "Close",
     "sync.panel.status": "Status",
     "sync.panel.running": "Syncing",
+    "sync.panel.phaseScanning": "Scanning local files",
     "sync.panel.phaseNotesPull": "Downloading notes",
     "sync.panel.phaseNotesPush": "Uploading notes",
     "sync.panel.phaseFilesPull": "Downloading attachments",

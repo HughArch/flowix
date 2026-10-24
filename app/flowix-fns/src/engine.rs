@@ -54,6 +54,7 @@ impl SyncReport {
 #[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub enum SyncPhase {
+    Scanning,
     NotesPull,
     NotesPush,
     FilesPull,
@@ -109,7 +110,14 @@ pub async fn sync_notebook(
     options: &SyncOptions,
     progress: &dyn SyncProgressSink,
 ) -> Result<SyncReport> {
+    progress.report(SyncProgress {
+        phase: SyncPhase::Scanning,
+        total: 0,
+        completed: 0,
+        current_path: None,
+    });
     let local = store.list_notes().map_err(local_error)?;
+    tracing::info!(count = local.len(), "FNS sync: scanned local notes");
     // Only report notes whose content changed since the previous successful
     // sync. The server treats any reported note it does not see in the current
     // incremental window as "missing on the server" and asks for an upload, so
@@ -284,6 +292,12 @@ async fn sync_files(
     max_bytes: i64,
     progress: &dyn SyncProgressSink,
 ) -> Result<(usize, usize, usize)> {
+    progress.report(SyncProgress {
+        phase: SyncPhase::Scanning,
+        total: 0,
+        completed: 0,
+        current_path: None,
+    });
     let local = store.list_files(max_bytes).map_err(local_error)?;
     let present: BTreeSet<&str> = local.iter().map(|file| file.path.as_str()).collect();
 

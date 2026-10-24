@@ -145,6 +145,7 @@ const zhCN = {
     "sync.panel.close": "关闭",
     "sync.panel.status": "状态",
     "sync.panel.running": "同步中",
+    "sync.panel.phaseScanning": "扫描本地文件",
     "sync.panel.phaseNotesPull": "下载笔记",
     "sync.panel.phaseNotesPush": "上传笔记",
     "sync.panel.phaseFilesPull": "下载附件",

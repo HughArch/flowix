@@ -117,6 +117,18 @@ pub struct FnsSyncService {
 }
 
 const AUTO_SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
+/// Upper bound for one notebook sync. Prevents a wedged network call from
+/// leaving the UI stuck on "syncing" forever.
+const SYNC_TIMEOUT: Duration = Duration::from_secs(120);
+
+/// Resets the running flag even if the sync future panics or is cancelled.
+struct RunningGuard<'a>(&'a AtomicBool);
+
+impl Drop for RunningGuard<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
 
 impl FnsSyncService {
     pub fn new(config_dir: PathBuf) -> Self {
@@ -342,16 +354,36 @@ impl FnsSyncService {
             status.last_error = None;
             status.notebook_id = Some(notebook_id.to_owned());
         });
+        let _running_guard = RunningGuard(&self.running);
 
+        tracing::info!(notebook_id, "FNS sync started");
         let started = std::time::Instant::now();
         let started_at = now_ms();
-        let result = self
-            .sync_notebook_inner(app, notebook_id, config, offline_strategy)
-            .await;
+        let result = match tokio::time::timeout(
+            SYNC_TIMEOUT,
+            self.sync_notebook_inner(app, notebook_id, config, offline_strategy),
+        )
+        .await
+        {
+            Ok(inner) => inner,
+            Err(_) => {
+                tracing::warn!(notebook_id, "FNS sync timed out");
+                Err("sync timed out".to_owned())
+            }
+        };
 
-        self.running.store(false, Ordering::SeqCst);
         match &result {
             Ok(Some(outcome)) => {
+                tracing::info!(
+                    notebook_id,
+                    vault = %outcome.vault,
+                    pulled = outcome.pulled,
+                    pushed = outcome.pushed,
+                    files_pulled = outcome.files_pulled,
+                    files_pushed = outcome.files_pushed,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "FNS sync finished"
+                );
                 self.clear_retry(notebook_id);
                 self.record_history(FnsSyncRecord {
                     at: started_at,
@@ -386,6 +418,12 @@ impl FnsSyncService {
                 });
             }
             Err(error) => {
+                tracing::warn!(
+                    notebook_id,
+                    error = %error,
+                    elapsed_ms = started.elapsed().as_millis() as u64,
+                    "FNS sync failed"
+                );
                 let delay = self.schedule_retry(app, notebook_id);
                 self.record_history(FnsSyncRecord {
                     at: started_at,
@@ -504,9 +542,11 @@ impl FnsSyncService {
             offline_sync_strategy: Some(offline_strategy.as_str().to_owned()),
         };
 
+        tracing::info!(notebook_id, vault = %sync_state.vault, "FNS sync: connecting");
         let mut client = FnsClient::connect(&config.api, &token.token, &info)
             .await
             .map_err(describe_sync_error)?;
+        tracing::info!(notebook_id, "FNS sync: connected");
 
         let options = flowix_fns::SyncOptions {
             max_attachment_bytes: config.max_attachment_bytes.min(i64::MAX as u64) as i64,
