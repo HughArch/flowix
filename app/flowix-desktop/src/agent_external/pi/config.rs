@@ -280,6 +280,9 @@ fn catalog_path(app: &AppHandle) -> Result<std::path::PathBuf, String> {
     let platform = "windows";
     #[cfg(target_os = "linux")]
     let platform = "linux";
+    // 移动端不打包 PI CLI 资源; 路径不存在时 read_json 按NotFound降级为空 catalog。
+    #[cfg(any(target_os = "android", target_os = "ios"))]
+    let platform = "mobile";
     let arch = match std::env::consts::ARCH {
         "aarch64" => "arm64",
         "x86_64" => "x64",

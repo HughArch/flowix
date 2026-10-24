@@ -467,9 +467,13 @@ pub fn run() {
             commands::dsh::dsh_set_cli_path,
             commands::dsh::dsh_install_appserver_profile,
             commands::dsh::dsh_manage_profile_plugin,
+            #[cfg(desktop)]
             crate::app_update::install_app_update,
+            #[cfg(desktop)]
             crate::app_update::check_app_update,
+            #[cfg(desktop)]
             crate::app_update::consume_app_update_result,
+            #[cfg(desktop)]
             crate::app_update::cancel_app_update,
             commands::boot::get_boot_features,
             commands::boot::set_boot_intro_displayed,
@@ -1161,6 +1165,7 @@ fn start_post_startup_services(
     spawn_external_agent_watchdog(app, external_runtimes);
 }
 
+#[cfg(desktop)]
 fn handle_second_instance(app: &tauri::AppHandle, args: Vec<String>) {
     // Normalize argv before routing native files and protocol callbacks.
     let app = app.clone();

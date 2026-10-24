@@ -41,6 +41,8 @@ mod native_close_region;
 
 pub use app::{get_app_data_path, get_user_config_dir, APP_DATA_DIR_NAME, USER_CONFIG_DIR_NAME};
 
+// 移动端入口 ── 该属性宏生成 Android/iOS 启动所需的 JNI 入口符号 (桌面为空)。
+#[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     app::run();
 }

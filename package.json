@@ -6,6 +6,7 @@
   "packageManager": "npm@10.8.2",
   "scripts": {
     "dev": "vite",
+    "tauri": "tauri",
     "build": "tsc && vite build && node scripts/check-web-bundle.mjs",
     "clean": "rm -rf .build dist app/target app/flowix-desktop/binaries",
     "test": "vitest run",
