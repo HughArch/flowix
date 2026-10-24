@@ -31,6 +31,15 @@ export interface FnsTokenInput {
   clientType?: string;
 }
 
+export type FnsSyncPhase = 'notesPull' | 'notesPush' | 'filesPull' | 'filesPush';
+
+export interface FnsSyncProgress {
+  phase: FnsSyncPhase;
+  total: number;
+  completed: number;
+  currentPath: string | null;
+}
+
 export interface FnsSyncStatus {
   running: boolean;
   lastSyncAt: number | null;
@@ -42,6 +51,8 @@ export interface FnsSyncStatus {
   nextRetryAt: number | null;
   /** Notebook the current/last status belongs to. */
   notebookId: string | null;
+  /** Live progress while a sync runs. */
+  progress: FnsSyncProgress | null;
 }
 
 export interface FnsSyncRecord {

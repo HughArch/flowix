@@ -237,6 +237,7 @@ pub async fn download_file(
 }
 
 /// Requests an upload session for a local file the server may not know about.
+#[allow(clippy::too_many_arguments)]
 pub async fn upload_check(
     client: &mut FnsClient,
     vault: &str,

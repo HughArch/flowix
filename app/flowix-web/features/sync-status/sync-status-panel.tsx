@@ -4,17 +4,25 @@ import { useCallback, useEffect, useState } from 'react';
 import { X } from 'lucide-react';
 import { ArrowsClockwiseIcon, CheckCircleIcon, WarningCircleIcon } from '@phosphor-icons/react';
 import { Button } from '@shared/ui/button';
-import { useI18n } from '@/lib/i18n';
+import { useI18n, type I18nKey } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { errorMessage } from '@/lib/error-message';
 import {
   fns,
   type FnsConfigView,
   type FnsNotebookState,
+  type FnsSyncPhase,
   type FnsSyncRecord,
 } from '@platform/tauri/client';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { useSyncPanelStore } from './sync-panel-store';
+
+const PHASE_KEYS: Record<FnsSyncPhase, I18nKey> = {
+  notesPull: 'sync.panel.phaseNotesPull',
+  notesPush: 'sync.panel.phaseNotesPush',
+  filesPull: 'sync.panel.phaseFilesPull',
+  filesPush: 'sync.panel.phaseFilesPush',
+};
 
 function formatTime(value: number, language: string): string {
   return new Intl.DateTimeFormat(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
@@ -75,14 +83,17 @@ export function SyncStatusPanel() {
     }
   }, [selectedNotebookId]);
 
+  const isRunning = notebookState?.status.running === true;
+
   useEffect(() => {
     if (!open) return;
     void refresh().catch(() => {});
+    // Poll faster while a sync is running so progress feels live.
     const timer = setInterval(() => {
       void refresh().catch(() => {});
-    }, 3000);
+    }, isRunning ? 800 : 3000);
     return () => clearInterval(timer);
-  }, [open, refresh]);
+  }, [open, refresh, isRunning]);
 
   useEffect(() => {
     if (!notebookState) return;
@@ -305,6 +316,34 @@ export function SyncStatusPanel() {
               <div className="flex items-center justify-between">
                 <span className="text-[var(--muted-foreground)]">{t('sync.panel.retryAt')}</span>
                 <span className="text-[var(--foreground)]">{retryAt}</span>
+              </div>
+            )}
+            {status?.progress && (
+              <div className="space-y-1 pt-1">
+                <div className="flex items-center justify-between">
+                  <span className="text-[var(--muted-foreground)]">
+                    {t(PHASE_KEYS[status.progress.phase])}
+                  </span>
+                  <span className="text-[var(--foreground)]">
+                    {Math.min(status.progress.completed + 1, Math.max(status.progress.total, 1))}
+                    /{status.progress.total}
+                  </span>
+                </div>
+                <div className="h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
+                  <div
+                    className="h-full rounded-full bg-[var(--brand,#6366f1)] transition-[width] duration-200"
+                    style={{
+                      width: `${status.progress.total > 0
+                        ? Math.min(100, Math.round((status.progress.completed / status.progress.total) * 100))
+                        : 0}%`,
+                    }}
+                  />
+                </div>
+                {status.progress.currentPath && (
+                  <p className="truncate text-[var(--muted-foreground)]">
+                    {status.progress.currentPath}
+                  </p>
+                )}
               </div>
             )}
             {status?.lastError && (

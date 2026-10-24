@@ -10,7 +10,8 @@ use serde::Serialize;
 use tauri::{AppHandle, Manager};
 
 use flowix_fns::{
-    sync_notebook as run_engine_sync, ClientInfo, FnsClient, SyncReport, SyncState,
+    sync_notebook as run_engine_sync, ClientInfo, FnsClient, SyncProgress, SyncProgressSink,
+    SyncReport, SyncState,
 };
 
 use crate::app::state::AppState;
@@ -32,6 +33,8 @@ pub struct FnsSyncStatus {
     pub next_retry_at: Option<i64>,
     /// Notebook the current/last status belongs to.
     pub notebook_id: Option<String>,
+    /// Live progress while a sync runs.
+    pub progress: Option<SyncProgress>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -75,6 +78,17 @@ pub struct FnsSyncRecord {
 
 const HISTORY_LIMIT: usize = 50;
 
+/// Forwards engine progress into the shared status snapshot.
+struct StatusSink(Arc<RwLock<FnsSyncStatus>>);
+
+impl SyncProgressSink for StatusSink {
+    fn report(&self, progress: SyncProgress) {
+        if let Ok(mut status) = self.0.write() {
+            status.progress = Some(progress);
+        }
+    }
+}
+
 /// Binding and recent activity for one notebook.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -91,7 +105,7 @@ pub struct FnsNotebookState {
 pub struct FnsSyncService {
     config_dir: PathBuf,
     config: RwLock<FnsConfig>,
-    status: RwLock<FnsSyncStatus>,
+    status: Arc<RwLock<FnsSyncStatus>>,
     running: AtomicBool,
     /// Per-notebook debounce generation. A scheduled run whose generation has
     /// been superseded does nothing.
@@ -110,7 +124,7 @@ impl FnsSyncService {
         Self {
             config_dir,
             config: RwLock::new(config),
-            status: RwLock::new(FnsSyncStatus::default()),
+            status: Arc::new(RwLock::new(FnsSyncStatus::default())),
             running: AtomicBool::new(false),
             scheduled: Mutex::new(HashMap::new()),
             retry: Mutex::new(HashMap::new()),
@@ -354,6 +368,7 @@ impl FnsSyncService {
                 });
                 self.set_status(|status| {
                     status.running = false;
+                    status.progress = None;
                     status.last_sync_at = Some(now_ms());
                     status.last_pulled = outcome.pulled;
                     status.last_pushed = outcome.pushed;
@@ -366,6 +381,7 @@ impl FnsSyncService {
                 self.clear_retry(notebook_id);
                 self.set_status(|status| {
                     status.running = false;
+                    status.progress = None;
                     status.next_retry_at = None;
                 });
             }
@@ -386,6 +402,7 @@ impl FnsSyncService {
                 });
                 self.set_status(|status| {
                     status.running = false;
+                    status.progress = None;
                     status.last_error = Some(error.clone());
                     status.consecutive_failures = status.consecutive_failures.saturating_add(1);
                     status.next_retry_at = Some(now_ms() + delay.as_millis() as i64);
@@ -494,6 +511,7 @@ impl FnsSyncService {
         let options = flowix_fns::SyncOptions {
             max_attachment_bytes: config.max_attachment_bytes.min(i64::MAX as u64) as i64,
         };
+        let sink = StatusSink(self.status.clone());
         let report: SyncReport = run_engine_sync(
             &mut client,
             &store,
@@ -501,6 +519,7 @@ impl FnsSyncService {
             &mut sync_state,
             offline_strategy,
             &options,
+            &sink,
         )
         .await
         .map_err(describe_sync_error)?;

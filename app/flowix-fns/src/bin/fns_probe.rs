@@ -16,9 +16,24 @@ use std::time::{SystemTime, UNIX_EPOCH};
 use flowix_fns::protocol::OfflineSyncStrategy;
 use flowix_fns::{
     delete_note, pull_notes, push_note, sync_notebook, ClientInfo, FnsClient, FsNoteStore,
-    PushNote, SyncState,
+    PushNote, SyncProgress, SyncProgressSink, SyncState,
 };
 use serde::Deserialize;
+
+/// Prints progress to stderr when `FNS_DEBUG` is set.
+struct PrintProgress;
+
+impl SyncProgressSink for PrintProgress {
+    fn report(&self, progress: SyncProgress) {
+        eprintln!(
+            "  [{:?}] {}/{} {}",
+            progress.phase,
+            (progress.completed + 1).min(progress.total.max(1)),
+            progress.total,
+            progress.current_path.unwrap_or_default()
+        );
+    }
+}
 
 #[derive(Debug, Deserialize)]
 struct Credentials {
@@ -55,6 +70,9 @@ fn positionals() -> Vec<String> {
     while let Some(arg) = args.next() {
         if arg == "--credentials" {
             let _ = args.next();
+            continue;
+        }
+        if arg == "--" {
             continue;
         }
         out.push(arg);
@@ -120,6 +138,11 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             state.last_time
         );
 
+        let sink: Box<dyn SyncProgressSink> = if std::env::var_os("FNS_DEBUG").is_some() {
+            Box::new(PrintProgress)
+        } else {
+            Box::new(flowix_fns::NoProgress)
+        };
         let report = sync_notebook(
             &mut client,
             &store,
@@ -127,6 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut state,
             OfflineSyncStrategy::NewTimeMerge,
             &flowix_fns::SyncOptions::default(),
+            sink.as_ref(),
         )
         .await?;
         state.save(root_path)?;

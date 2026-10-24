@@ -50,6 +50,38 @@ impl SyncReport {
     }
 }
 
+/// Which part of the sync is running.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub enum SyncPhase {
+    NotesPull,
+    NotesPush,
+    FilesPull,
+    FilesPush,
+}
+
+/// A progress snapshot emitted while a sync runs.
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct SyncProgress {
+    pub phase: SyncPhase,
+    pub total: usize,
+    pub completed: usize,
+    pub current_path: Option<String>,
+}
+
+/// Receives progress updates. Implementations must be cheap and non-blocking.
+pub trait SyncProgressSink: Send + Sync {
+    fn report(&self, progress: SyncProgress);
+}
+
+/// Sink used when callers do not care about progress.
+pub struct NoProgress;
+
+impl SyncProgressSink for NoProgress {
+    fn report(&self, _progress: SyncProgress) {}
+}
+
 /// Sync knobs that depend on user settings.
 #[derive(Debug, Clone, Copy)]
 pub struct SyncOptions {
@@ -67,6 +99,7 @@ impl Default for SyncOptions {
 }
 
 /// Run one full reconciliation pass.
+#[allow(clippy::too_many_arguments)]
 pub async fn sync_notebook(
     client: &mut FnsClient,
     store: &dyn LocalNoteStore,
@@ -74,6 +107,7 @@ pub async fn sync_notebook(
     state: &mut SyncState,
     strategy: OfflineSyncStrategy,
     options: &SyncOptions,
+    progress: &dyn SyncProgressSink,
 ) -> Result<SyncReport> {
     let local = store.list_notes().map_err(local_error)?;
     // Only report notes whose content changed since the previous successful
@@ -127,15 +161,25 @@ pub async fn sync_notebook(
 
     // Remote creations/updates win by path. Skip when the content already
     // matches so we do not rewrite files the server merely re-announced.
+    let pull_total = pulled.modified.len() + pulled.renamed.len();
+    let mut pull_done = 0;
     for note in &pulled.modified {
+        progress.report(SyncProgress {
+            phase: SyncPhase::NotesPull,
+            total: pull_total,
+            completed: pull_done,
+            current_path: Some(note.path.clone()),
+        });
         let current = store.read_note(&note.path).map_err(local_error)?;
         if current.as_deref() == Some(note.content.as_str()) {
+            pull_done += 1;
             continue;
         }
         store
             .write_note(&note.path, &note.content, note.mtime)
             .map_err(local_error)?;
         report.pulled += 1;
+        pull_done += 1;
     }
 
     for note in &pulled.deleted {
@@ -146,6 +190,13 @@ pub async fn sync_notebook(
     }
 
     for rename in &pulled.renamed {
+        progress.report(SyncProgress {
+            phase: SyncPhase::NotesPull,
+            total: pull_total,
+            completed: pull_done,
+            current_path: Some(rename.path.clone()),
+        });
+        pull_done += 1;
         if rename.old_path.is_empty() || rename.path.is_empty() {
             continue;
         }
@@ -167,7 +218,16 @@ pub async fn sync_notebook(
 
     // The server asked for these because both sides changed. Upload the local
     // copy; with `newTimeMerge` the server reconciles by mtime.
+    let push_total = pulled.need_push.len();
+    let mut push_done = 0;
     for note in &pulled.need_push {
+        progress.report(SyncProgress {
+            phase: SyncPhase::NotesPush,
+            total: push_total,
+            completed: push_done,
+            current_path: Some(note.path.clone()),
+        });
+        push_done += 1;
         let Some(content) = store.read_note(&note.path).map_err(local_error)? else {
             continue;
         };
@@ -200,8 +260,14 @@ pub async fn sync_notebook(
     state.record_snapshot(&after);
 
     if options.max_attachment_bytes > 0 {
-        let (pulled, pushed, deleted) =
-            sync_files(client, file_store, state, options.max_attachment_bytes).await?;
+        let (pulled, pushed, deleted) = sync_files(
+            client,
+            file_store,
+            state,
+            options.max_attachment_bytes,
+            progress,
+        )
+        .await?;
         report.files_pulled = pulled;
         report.files_pushed = pushed;
         report.files_deleted_local = deleted;
@@ -216,6 +282,7 @@ async fn sync_files(
     store: &dyn LocalFileStore,
     state: &mut SyncState,
     max_bytes: i64,
+    progress: &dyn SyncProgressSink,
 ) -> Result<(usize, usize, usize)> {
     let local = store.list_files(max_bytes).map_err(local_error)?;
     let present: BTreeSet<&str> = local.iter().map(|file| file.path.as_str()).collect();
@@ -278,7 +345,16 @@ async fn sync_files(
         store.touch_file(&file.path, file.mtime).map_err(local_error)?;
     }
 
+    let pull_total = pulled.updated.len();
+    let mut pull_done = 0;
     for file in &pulled.updated {
+        progress.report(SyncProgress {
+            phase: SyncPhase::FilesPull,
+            total: pull_total,
+            completed: pull_done,
+            current_path: Some(file.path.clone()),
+        });
+        pull_done += 1;
         if file.size > max_bytes {
             tracing::debug!(
                 path = file.path,
@@ -295,7 +371,16 @@ async fn sync_files(
         downloaded += 1;
     }
 
+    let push_total = pulled.uploads.len();
+    let mut push_done = 0;
     for upload in &pulled.uploads {
+        progress.report(SyncProgress {
+            phase: SyncPhase::FilesPush,
+            total: push_total,
+            completed: push_done,
+            current_path: Some(upload.path.clone()),
+        });
+        push_done += 1;
         let Some(data) = store.read_file(&upload.path).map_err(local_error)? else {
             continue;
         };
