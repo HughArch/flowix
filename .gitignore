@@ -14,7 +14,9 @@ app/flowix-desktop/binaries/
 app/flowix-desktop/nsis/flowix-installer-helper.exe
 
 # Tauri-generated native scaffolds
-app/flowix-desktop/gen/
+# gen/android 需要入库: 含国内 maven 镜像、BuildTask npm 解析补丁及后续
+# MainActivity/applicationId 定制; 构建产物由 gen/android/.gitignore 排除。
+app/flowix-desktop/gen/schemas/
 
 # Logs
 *.log
