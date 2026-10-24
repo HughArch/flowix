@@ -1,6 +1,5 @@
 'use client';
 
-import { useEffect, useState } from 'react';
 import { Input } from '@shared/ui/input';
 import {
   Dialog,
@@ -24,8 +23,6 @@ import { Loader2 } from 'lucide-react';
 import { WindowsTitlebarControls } from '@shared/window-titlebar-controls';
 import { isMac } from '@features/shortcuts';
 import { OnboardingTitlebarMac } from '@features/onboarding/onboarding-titlebar-mac';
-import { useNotebookTemplates } from '@features/onboarding/notebook-templates';
-import { NotebookTemplatePicker } from '@features/onboarding/notebook-template-picker';
 
 interface NotebookDialogsProps {
   createOpen: boolean;
@@ -36,8 +33,6 @@ interface NotebookDialogsProps {
   newNotebookDefaultPath: string;
   newNotebookIcon: string | null;
   onNewNotebookIconChange: (icon: string | null) => void;
-  newNotebookTemplateId: string | null;
-  onNewNotebookTemplateIdChange: (templateId: string | null) => void;
   isCreatingNotebook: boolean;
   onSelectDirectory: () => Promise<void>;
   onConfirmCreate: () => void;
@@ -67,8 +62,6 @@ export function NotebookDialogs({
   newNotebookDefaultPath,
   newNotebookIcon,
   onNewNotebookIconChange,
-  newNotebookTemplateId,
-  onNewNotebookTemplateIdChange,
   isCreatingNotebook,
   onSelectDirectory,
   onConfirmCreate,
@@ -85,16 +78,6 @@ export function NotebookDialogs({
   onCancelEdit,
 }: NotebookDialogsProps) {
   const { t } = useI18n();
-  const {
-    templates: notebookTemplates,
-    status: notebookTemplateStatus,
-    retry: retryNotebookTemplates,
-  } = useNotebookTemplates(createOpen);
-  const [isTemplatePickerOpen, setIsTemplatePickerOpen] = useState(false);
-
-  useEffect(() => {
-    if (createOpen) setIsTemplatePickerOpen(false);
-  }, [createOpen]);
 
   return (
     <>
@@ -130,9 +113,6 @@ export function NotebookDialogs({
                     onSelectDirectory={() => void onSelectDirectory()}
                     icon={newNotebookIcon}
                     onIconChange={onNewNotebookIconChange}
-                    templates={notebookTemplates}
-                    selectedTemplateId={newNotebookTemplateId}
-                    onSelectTemplate={() => setIsTemplatePickerOpen(true)}
                     disabled={isCreatingNotebook}
                     onSubmit={onConfirmCreate}
                   />
@@ -145,19 +125,6 @@ export function NotebookDialogs({
               cancelLabel={t('notebook.create.cancel')}
               onCancel={onCancelCreate}
             />
-            {isTemplatePickerOpen && (
-              <NotebookTemplatePicker
-                templates={notebookTemplates}
-                status={notebookTemplateStatus}
-                retry={retryNotebookTemplates}
-                initialTemplateId={newNotebookTemplateId}
-                onCancel={() => setIsTemplatePickerOpen(false)}
-                onComplete={(templateId) => {
-                  onNewNotebookTemplateIdChange(templateId);
-                  setIsTemplatePickerOpen(false);
-                }}
-              />
-            )}
           </main>
         </DialogContent>
       </Dialog>

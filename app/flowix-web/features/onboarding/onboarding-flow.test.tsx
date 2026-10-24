@@ -140,14 +140,6 @@ async function emitImport(status: NotebookImportStatus['status'], message?: stri
   });
 }
 
-async function selectTemplate() {
-  await click('选择场景模板');
-  const option = host.querySelector<HTMLButtonElement>('[aria-label="场景模板"] button');
-  expect(option).not.toBeNull();
-  await act(async () => option!.click());
-  await click('完成');
-}
-
 beforeEach(() => {
   vi.resetAllMocks();
   mocks.listeners.clear();
@@ -245,26 +237,6 @@ describe('first-run notebook setup', () => {
     expect(mocks.create).toHaveBeenCalledTimes(1);
     expect(host.querySelector('#flowix-onboarding-notebook-form')).toBeNull();
     expect(host.querySelector('[data-product-intro]')).not.toBeNull();
-  });
-
-  it('passes scene templates to deferred setup without starting the ordinary importer', async () => {
-    await mount();
-    await selectTemplate();
-    await click('创建并开始使用');
-    expect(mocks.create).toHaveBeenCalledWith('My Notebook', undefined, null, false, 'project', false);
-    expect(mocks.startImport).not.toHaveBeenCalled();
-    expect(host.querySelector('[data-ordinary-create]')).toBeNull();
-  });
-
-  it('keeps setup open when the user declines overwriting existing template files', async () => {
-    mocks.create.mockRejectedValueOnce(new Error('NOTEBOOK_PRESET_OVERWRITE_CONFIRM_REQUIRED'));
-    mocks.confirmPresetOverwrite.mockResolvedValue(false);
-    await mount();
-    await selectTemplate();
-    await click('创建并开始使用');
-    expect(mocks.create).toHaveBeenCalledTimes(1);
-    expect(host.querySelector('#flowix-onboarding-notebook-form')).not.toBeNull();
-    expect(button('创建并开始使用').disabled).toBe(false);
   });
 
   it('reuses a notebook registered during an interrupted previous attempt', async () => {
