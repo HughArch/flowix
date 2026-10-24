@@ -44,6 +44,7 @@ import { useMemoInsertAnimation } from '@features/memo/hooks/use-memo-insert-ani
 import { toast } from '@/lib/toast';
 import { cn, displayTitleFromFilename } from '@/lib/utils';
 import { Button } from '@shared/ui/button';
+import { isMobileDevice } from '@shared/platform';
 import { Tooltip } from '@shared/ui/tooltip';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import { FileTreeLoadingSkeleton } from '@shared/ui/file-tree-loading-skeleton';
@@ -1043,7 +1044,8 @@ export function MemoList({
           )}
         />
       )}
-      {memoListView === 'folders' && newConversationSelection.options.length > 0 && (
+      {/* 移动端 v1 无 AI 服务: 新建菜单不展示"对话"入口。 */}
+      {!isMobileDevice() && memoListView === 'folders' && newConversationSelection.options.length > 0 && (
         <>
           <DropdownMenuLabel className="px-[0.375rem] pb-[0.35rem] pt-[0.35rem] text-xs font-normal leading-[1.2] text-[var(--muted-foreground)]">
             {t('memo.create.conversations')}

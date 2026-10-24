@@ -18,6 +18,7 @@ import {
 import {
   useBlockDragGesture,
 } from '@features/editor/components/drag-context-menu/use-block-drag-gesture'
+import { isMobileDevice } from '@shared/platform'
 import { renderDragIcon } from '@features/editor/components/drag-context-menu/icons'
 import type { BlockMenuItem } from '@features/editor/components/drag-context-menu/items'
 import { clearBlockSelection } from '@features/editor/extensions/block-selection'
@@ -83,6 +84,8 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
   const menuTargetRef = useRef<CurrentBlockInfo | null>(null)
   const menuAnchorRectRef = useRef<DOMRect | null>(null)
   const menuAnchorFromPointerRef = useRef(false)
+  /** 菜单打开时间戳: 用于忽略键盘收起引起的瞬时 resize/scroll。 */
+  const menuOpenedAtRef = useRef(0)
   const openMenuRef = useRef<(anchorRect?: DOMRect, placeAtPointer?: boolean) => void>(() => {})
   const state = useDragHandlePosition(editor, fontSize, lineHeight, ignoreBlur, menuOpenRef, menuTargetRef, hoveredBlockRef)
   const handleTap = useCallback((anchorRect: DOMRect) => openMenuRef.current(anchorRect), [])
@@ -201,59 +204,28 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
       state.refresh()
     }
 
-    // ── 触屏长按唤出块手柄 ─────────────────────────────────────────────
-    // 触屏没有 hover, 手柄此前只能由指针悬停驱动, 手机上永远不出现。
-    // 长按 (~480ms) 目标块即定位手柄; 位移超过阈值(滚动)或提前抬手则取消。
-    let pressTimer: number | null = null
-    let pressPoint: { x: number; y: number } | null = null
-    let longPressFired = false
-
-    const clearPressTimer = () => {
-      if (pressTimer != null) {
-        window.clearTimeout(pressTimer)
-        pressTimer = null
-      }
-      pressPoint = null
-    }
-
-    const clearTouchHandle = () => {
-      if (menuOpenRef.current || isDraggingRef.current) return
-      if (!hoveredBlockRef.current) return
-      hoveredBlockRef.current = null
-      state.refresh()
-    }
-
-    const handleTouchPointerDown = (event: PointerEvent) => {
-      if (event.pointerType !== 'touch') return
-      if (menuOpenRef.current || isDraggingRef.current) return
-      longPressFired = false
+    // ── 触屏双击唤出块菜单 ─────────────────────────────────────────────
+    // 长按交回系统 (文本选择); 触屏没有 hover, 双击命中块即打开操作菜单。
+    // 桌面保留双击选词习惯, 不接管。
+    const handleDoubleClick = (event: MouseEvent) => {
+      if (!isMobileDevice()) return
+      if (!editor.isEditable || editor.isDestroyed || editor.view.isDestroyed) return
+      if (containerRef.current?.contains(event.target as Node)) return
       const info = getBlockInfoAtCoords(editor, event.clientX, event.clientY)
       if (!info) return
-      pressPoint = { x: event.clientX, y: event.clientY }
-      pressTimer = window.setTimeout(() => {
-        pressTimer = null
-        pressPoint = null
-        longPressFired = true
-        if (editor.isDestroyed || editor.view.isDestroyed) return
-        hoveredBlockRef.current = info
-        state.refresh()
-      }, 480)
-    }
-
-    const handleTouchPointerMove = (event: PointerEvent) => {
-      if (event.pointerType !== 'touch' || !pressPoint) return
-      if (Math.hypot(event.clientX - pressPoint.x, event.clientY - pressPoint.y) > 8) {
-        clearPressTimer()
-      }
-    }
-
-    const handleTouchPointerUp = () => {
-      if (pressTimer == null && !longPressFired) return
-      const wasLongPress = longPressFired
-      clearPressTimer()
-      longPressFired = false
-      // 普通点按用于编辑内容: 收起上次长按留下的手柄。
-      if (!wasLongPress) clearTouchHandle()
+      event.preventDefault()
+      event.stopPropagation()
+      ignoreBlur.current = true
+      window.setTimeout(() => {
+        ignoreBlur.current = false
+      }, 0)
+      hoveredBlockRef.current = info
+      interactionBlockInfoRef.current = info
+      state.refresh()
+      openMenuRef.current(new DOMRect(event.clientX, event.clientY, 1, 1), true)
+      // 双击的第一下已让编辑器聚焦并唤起输入法: 打开菜单后立即失焦,
+      // 键盘收起; 菜单因 menuOpenRef 守卫保留。
+      editor.commands.blur()
     }
 
     /**
@@ -262,6 +234,9 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
      * resolved, so right-clicking outside the document keeps native behavior.
      */
     const handleContextMenu = (event: MouseEvent) => {
+      // 移动端长按 = 系统文本选择: Android WebView 会派发 contextmenu,
+      // 这里不再借它打开块菜单 (改由双击触发)。
+      if (isMobileDevice()) return
       if (!editor.isEditable || editor.isDestroyed || editor.view.isDestroyed) return
       if (containerRef.current?.contains(event.target as Node)) return
       const info = getBlockInfoAtCoords(editor, event.clientX, event.clientY)
@@ -280,28 +255,36 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     // click a line to focus it before extending the selection, and that click
     // must not discard blocks they already picked. The set is cleared by a
     // plain handle click (menu), Escape, or the start of a drag instead.
+    // 任务复选框: tiptap 的 change 处理会 focus 编辑器 → 移动端弹起软键盘。
+    // 拦截 pointerdown 会连带吞掉 click/change 导致勾选失效 (已踩坑),
+    // 因此改为在 change 之后立即移除编辑器焦点: 勾选生效, 键盘收回。
+    const handleTaskCheckboxChange = () => {
+      window.setTimeout(() => {
+        if (!editor.isDestroyed && editor.isFocused) editor.commands.blur()
+      }, 0)
+    }
+
     surface.addEventListener('pointermove', handlePointerMove)
     surface.addEventListener('pointerleave', handlePointerLeave)
     surface.addEventListener('contextmenu', handleContextMenu)
-    surface.addEventListener('pointerdown', handleTouchPointerDown)
-    surface.addEventListener('pointermove', handleTouchPointerMove)
-    surface.addEventListener('pointerup', handleTouchPointerUp)
-    surface.addEventListener('pointercancel', handleTouchPointerUp)
+    surface.addEventListener('change', handleTaskCheckboxChange)
+    surface.addEventListener('dblclick', handleDoubleClick)
     return () => {
       if (frame != null) window.cancelAnimationFrame(frame)
       surface.removeEventListener('pointermove', handlePointerMove)
       surface.removeEventListener('pointerleave', handlePointerLeave)
       surface.removeEventListener('contextmenu', handleContextMenu)
-      surface.removeEventListener('pointerdown', handleTouchPointerDown)
-      surface.removeEventListener('pointermove', handleTouchPointerMove)
-      surface.removeEventListener('pointerup', handleTouchPointerUp)
-      surface.removeEventListener('pointercancel', handleTouchPointerUp)
-      clearPressTimer()
+      surface.removeEventListener('change', handleTaskCheckboxChange)
+      surface.removeEventListener('dblclick', handleDoubleClick)
     }
   }, [editor, state.refresh])
 
   useEffect(() => {
     const handleBlur = () => {
+      // 菜单已打开时不因编辑器失焦而关闭: 移动端点抓手会先让输入法/编辑器
+      // 失焦, 菜单刚弹出就被 blur 关掉。菜单由「点击外部」或选择菜单项关闭,
+      // 两条路径在桌面端都有; 这里只负责"无菜单时的清理"。
+      if (menuOpenRef.current) return
       if (!ignoreBlur.current) {
         menuOpenRef.current = false
         menuTargetRef.current = null
@@ -379,19 +362,27 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     const closeOnScroll = (event: Event) => {
       const target = event.target
       if (target instanceof Node && menuRef.current?.contains(target)) return
+      // 打开后的极短时间内忽略 scroll: 收起软键盘引起的布局回流会派发
+      // scroll 事件, 否则菜单同样会立即消失。
+      if (Date.now() - menuOpenedAtRef.current < 350) return
       closeMenu()
     }
 
+    // 视口变化 (移动端收起软键盘 → content padding 改变) 会触发 resize。
+    // 这里只重新定位菜单, 不能关闭: 打开菜单时会主动 blur 编辑器收起键盘,
+    // 若 resize 关菜单, 用户会看到菜单"一闪而过"。
+    const handleWindowResize = () => updateMenuPosition()
+
     scrollTarget.addEventListener('scroll', closeOnScroll, { passive: true })
-    window.addEventListener('resize', closeMenu)
+    window.addEventListener('resize', handleWindowResize)
     window.addEventListener('scroll', closeOnScroll, true)
 
     return () => {
       scrollTarget.removeEventListener('scroll', closeOnScroll)
-      window.removeEventListener('resize', closeMenu)
+      window.removeEventListener('resize', handleWindowResize)
       window.removeEventListener('scroll', closeOnScroll, true)
     }
-  }, [showMenu, editor, closeMenu])
+  }, [showMenu, editor, closeMenu, updateMenuPosition])
 
   // Click outside both the handle and the portalled menu dismisses the menu
   // and drops the pin.
@@ -547,6 +538,7 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     // Set this synchronously. The AgentThreadCard composer can blur the outer
     // editor before React's post-commit effect runs.
     menuOpenRef.current = true
+    menuOpenedAtRef.current = Date.now()
     menuTargetRef.current = info
     menuAnchorRectRef.current = anchorRect ?? containerRef.current?.getBoundingClientRect() ?? null
     menuAnchorFromPointerRef.current = placeAtPointer
@@ -625,6 +617,8 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
 
     const frameId = window.requestAnimationFrame(() => {
       ignoreBlur.current = true
+      // 触屏上点抓手/长按时软键盘常还开着: 菜单聚焦会自动让输入框失焦,
+      // 键盘随之收起, 而菜单因 menuOpenRef 守卫保留。
       menuRef.current?.focus({ preventScroll: true })
       window.setTimeout(() => {
         ignoreBlur.current = false

@@ -1,7 +1,12 @@
-import { useEffect, useRef, type RefObject } from 'react';
+import { useEffect, useRef, useState, type RefObject } from 'react';
 
 export interface MobileSwipeGestureOptions {
   enabled: boolean;
+  /**
+   * 输入面板 (软键盘) 弹起时为 true ── 手势整体禁用, 编辑行为 (文本选择、
+   * 放大镜) 完全交回原生。键盘收起后手势恢复。
+   */
+  disabled?: boolean;
   /** 手势监听区域: 文档内容列。 */
   targetRef: RefObject<HTMLElement | null>;
   onSwipeDown(): void;
@@ -17,6 +22,8 @@ const VERTICAL_THRESHOLD = 80;
 const AXIS_RATIO = 1.6;
 /** 超过该时长视为慢速拖拽 (滚动/选择), 不触发挥手。 */
 const MAX_GESTURE_MS = 700;
+/** 水平位移达到该值即接管手势 (preventDefault), 赶在文本选择/放大镜启动之前。 */
+const INTERCEPT_THRESHOLD = 14;
 
 function findScrollableAncestor(start: Element | null): HTMLElement | null {
   let node = start instanceof HTMLElement ? start : null;
@@ -28,18 +35,41 @@ function findScrollableAncestor(start: Element | null): HTMLElement | null {
 }
 
 /**
+ * 软键盘可见性检测。
+ *
+ * IME inset 已在原生层做了 content padding, 因此键盘弹出表现为
+ * window.innerHeight 收缩; 以观测到的最大高度为基准, 收缩超过阈值即视为
+ * 键盘可见 (旋转等整屏 resize 会抬高基准, 不会误判)。
+ */
+export function useImeVisible(): boolean {
+  const [visible, setVisible] = useState(false);
+  useEffect(() => {
+    let baseline = window.innerHeight;
+    const update = () => {
+      const height = window.innerHeight;
+      if (height > baseline) baseline = height;
+      setVisible(baseline - height > 150);
+    };
+    update();
+    window.addEventListener('resize', update);
+    return () => window.removeEventListener('resize', update);
+  }, []);
+  return visible;
+}
+
+/**
  * 文档内容区的触屏手势:
  * - 下滑 (内容已在顶部): 搜索面板
  * - 右滑: 左侧列表面板
  * - 左滑: 目录 (outline)
  *
- * 使用 Touch Events 而不是 Pointer Events: 触摸滚动开始时 WebView 会向
- * 页面派发 pointercancel, 水平拖动会被当成滚动手势中断, pointermove
- * 拿不到完整位移。touchmove 不受该取消影响。
- * 监听为 passive, 不阻止原生滚动/选择。
+ * touchmove 必须注册为非 passive: 横向滑动手势需要 preventDefault,
+ * 否则 contenteditable 会把它当成文本选择拖拽, 弹出系统放大镜。
+ * 纵向不拦截, 正文滚动与文本选择交给原生。
  */
 export function useMobileSwipeGestures({
   enabled,
+  disabled = false,
   targetRef,
   onSwipeDown,
   onSwipeRight,
@@ -49,11 +79,12 @@ export function useMobileSwipeGestures({
   callbacksRef.current = { onSwipeDown, onSwipeRight, onSwipeLeft };
 
   useEffect(() => {
-    if (!enabled) return;
+    if (!enabled || disabled) return;
     const target = targetRef.current;
     if (!target) return;
 
     let tracking = false;
+    let intercepting = false;
     let startX = 0;
     let startY = 0;
     let startedAt = 0;
@@ -62,6 +93,7 @@ export function useMobileSwipeGestures({
 
     const reset = () => {
       tracking = false;
+      intercepting = false;
       consumed = false;
     };
 
@@ -69,6 +101,7 @@ export function useMobileSwipeGestures({
       if (event.touches.length !== 1 || tracking) return;
       const touch = event.touches[0];
       tracking = true;
+      intercepting = false;
       consumed = false;
       startX = touch.clientX;
       startY = touch.clientY;
@@ -78,16 +111,20 @@ export function useMobileSwipeGestures({
     };
 
     const handleTouchMove = (event: TouchEvent) => {
-      if (!tracking || consumed || event.touches.length !== 1) return;
-      if (Date.now() - startedAt > MAX_GESTURE_MS) {
-        reset();
-        return;
-      }
+      if (!tracking || event.touches.length !== 1) return;
       const touch = event.touches[0];
       const dx = touch.clientX - startX;
       const dy = touch.clientY - startY;
       const absX = Math.abs(dx);
       const absY = Math.abs(dy);
+
+      // 横向意图成型即接管: 阻止 WebView 启动文本选择/放大镜。
+      if (!intercepting && !consumed && absX > INTERCEPT_THRESHOLD && absX > absY) {
+        intercepting = true;
+      }
+      if (intercepting) event.preventDefault();
+
+      if (consumed || Date.now() - startedAt > MAX_GESTURE_MS) return;
 
       if (absX >= HORIZONTAL_THRESHOLD && absX > absY * AXIS_RATIO) {
         consumed = true;
@@ -103,15 +140,17 @@ export function useMobileSwipeGestures({
       }
     };
 
+    const handleTouchEnd = () => reset();
+
     target.addEventListener('touchstart', handleTouchStart, { passive: true });
-    target.addEventListener('touchmove', handleTouchMove, { passive: true });
-    target.addEventListener('touchend', reset, { passive: true });
-    target.addEventListener('touchcancel', reset, { passive: true });
+    target.addEventListener('touchmove', handleTouchMove, { passive: false });
+    target.addEventListener('touchend', handleTouchEnd, { passive: true });
+    target.addEventListener('touchcancel', handleTouchEnd, { passive: true });
     return () => {
       target.removeEventListener('touchstart', handleTouchStart);
       target.removeEventListener('touchmove', handleTouchMove);
-      target.removeEventListener('touchend', reset);
-      target.removeEventListener('touchcancel', reset);
+      target.removeEventListener('touchend', handleTouchEnd);
+      target.removeEventListener('touchcancel', handleTouchEnd);
     };
-  }, [enabled, targetRef]);
+  }, [enabled, disabled, targetRef]);
 }

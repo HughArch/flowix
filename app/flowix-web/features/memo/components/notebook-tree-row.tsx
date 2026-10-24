@@ -22,6 +22,7 @@ import {
 import { ChevronRight, Loader2, MoreHorizontal } from 'lucide-react';
 
 import { toast } from '@/lib/toast';
+import { isMobileDevice } from '@shared/platform';
 import { cn, displayTitleFromFilename, isCollectionIndexFilename, isMediaLibraryFilename, isTableDocumentFilename } from '@/lib/utils';
 import { canonicalDirectoryPath, canonicalPath, joinNotebookMemoPath } from '@/lib/path';
 import { useI18n } from '@/lib/i18n';
@@ -656,7 +657,8 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
             {t('memo.fileTree.copyPath')}
           </ContextMenuItem>
         )}
-        {(isFolder || !isNote || !displayedMemo) && (
+        {/* 移动端没有系统文件管理器入口, 不展示。 */}
+        {!isMobileDevice() && (isFolder || !isNote || !displayedMemo) && (
           <ContextMenuItem onClick={revealInFileManager} className={TREE_MENU_ITEM_CLASS}>
           <FolderOpenIcon className="mr-2 h-4 w-4" aria-hidden="true" />
             {t('memo.fileTree.reveal')}

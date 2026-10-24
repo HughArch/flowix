@@ -14,6 +14,7 @@ import { useContext } from 'react';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import { product } from '@platform/tauri/client';
+import { isMobileDevice } from '@shared/platform';
 import { memoDocumentOperations } from '@features/document/public/file-operations-api';
 import { useI18n, translate, type AppLanguage, type I18nKey } from '@/lib/i18n';
 import {
@@ -304,9 +305,12 @@ export function MemoCardActions<T extends NoteListItem>({
         </>
       )}
       {copyMenuBeforeReveal}
-      <Item onClick={handleRevealInFileManager} className={ITEM_BASE}>
-        <FolderOpenIcon className="w-4 h-4 mr-2" /> {t('memo.fileTree.reveal')}
-      </Item>
+      {/* 移动端没有系统文件管理器入口, 不展示。 */}
+      {!isMobileDevice() && (
+        <Item onClick={handleRevealInFileManager} className={ITEM_BASE}>
+          <FolderOpenIcon className="w-4 h-4 mr-2" /> {t('memo.fileTree.reveal')}
+        </Item>
+      )}
       <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
       {onColorsChange && (
         <MemoCardColorRow

@@ -6,6 +6,7 @@ import { ArrowsClockwiseIcon } from '@phosphor-icons/react';
 import type { CSSProperties } from 'react';
 import mcpPluginIcon from '@/assets/mcp-plugin.svg';
 import { Tooltip } from '@shared/ui/tooltip';
+import { isMobileDevice } from '@shared/platform';
 import type { Notebook } from '@features/memo/store/note-store';
 import { NotebookSelectorPopup } from '@features/shell/components/status-bar/notebook-selector-popup';
 import { ProductUpdatePill } from '@features/shell/components/status-bar/product-update-pill';
@@ -139,7 +140,8 @@ export function StatusBar({
         >
           <ListTodo className="w-3.5 h-3.5 shrink-0" />
         </button>
-        <AgentConversationStatusBar />
+        {/* 移动端 v1 无 AI 服务: 不渲染会话入口。 */}
+        {!isMobileDevice() && <AgentConversationStatusBar />}
         <div className="flex-1" />
         <ProductUpdatePill updater={updater} anchor={statusBarRightEdgeRef} />
         {charCount > 0 && (
@@ -148,7 +150,8 @@ export function StatusBar({
             <span className="font-mono tabular-nums">{charCount}</span>
           </span>
         )}
-        <PiRuntimeStatusIndicator />
+        {/* 移动端 v1 无 AI 服务: 不渲染 PI 运行时入口。 */}
+        {!isMobileDevice() && <PiRuntimeStatusIndicator />}
         <Tooltip content={t('sync.panel.open')} side="top">
           <button
             type="button"

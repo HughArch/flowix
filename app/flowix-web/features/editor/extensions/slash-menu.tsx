@@ -2,6 +2,7 @@ import { Extension, type Editor } from '@tiptap/core';
 import { Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import type { EditorView } from '@tiptap/pm/view';
 import { createRoot, type Root } from 'react-dom/client';
+import { isMobileDevice } from '@shared/platform';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { openNoteMention, invalidateMentionNotes } from '@features/editor/extensions/note-mention';
 import {
@@ -107,6 +108,10 @@ function getAvailableSlashAgentTypes(): Set<AgentTypeKey> {
 }
 
 function getAvailableSlashMenuItems(): SlashMenuItem[] {
+  // 移动端 v1 无 AI 服务: 不展示任何 Agent 会话入口。
+  if (isMobileDevice()) {
+    return SLASH_MENU_ITEMS.filter((item) => !isAgentThreadSlashMenuItemId(item.id));
+  }
   const availableAgentTypes = getAvailableSlashAgentTypes();
 
   return SLASH_MENU_ITEMS.filter((item) => {
@@ -314,6 +319,31 @@ function getSlashTriggerDeleteFrom(view: EditorView, pos: number): number | null
 
   const previousChar = view.state.doc.textBetween(pos - 1, pos, '\n', '\n');
   return /\s/.test(previousChar) ? pos - 1 : null;
+}
+
+/**
+ * 工具栏按钮等显式入口: 在光标处插入 "/" 并打开 slash 菜单。
+ *
+ * 编程式插入不会走 ProseMirror 的 handleTextInput (那只对真实键入触发),
+ * 因此这里手动调用 openMenu。前一个字符非空白时补一个空格以命中触发
+ * 规则; 选中菜单项时会连同补的空格一起删除。
+ */
+export function openSlashMenuAtSelection(editor: Editor): void {
+  if (editor.isDestroyed || !editor.isEditable) return;
+  const view = editor.view;
+  if (view.isDestroyed) return;
+  const { from, $from } = view.state.selection;
+  if (!$from.parent.isTextblock) return;
+
+  const previousChar = from === $from.start()
+    ? ''
+    : view.state.doc.textBetween(from - 1, from, '\n', '\n');
+  const needsSpace = previousChar !== '' && !/\s/.test(previousChar);
+  const slashPos = from + (needsSpace ? 1 : 0);
+  const deleteFrom = from;
+  const tr = view.state.tr.insertText(needsSpace ? ' /' : '/', from, from);
+  view.dispatch(tr.scrollIntoView());
+  openMenu(view, editor, slashPos, deleteFrom);
 }
 
 function isBlockStartTrigger(editor: Editor): boolean {

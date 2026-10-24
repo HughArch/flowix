@@ -52,7 +52,7 @@ import { useMainMiddleColumnController } from '@features/shell/hooks/use-main-mi
 import { useMainPanelController } from '@features/shell/hooks/use-main-panel-controller';
 import { useIsMobileViewport } from '@features/shell/hooks/use-is-mobile-viewport';
 import { useMobileBackButton } from '@features/shell/hooks/use-mobile-back-button';
-import { useMobileSwipeGestures } from '@features/shell/hooks/use-mobile-swipe-gestures';
+import { useMobileSwipeGestures, useImeVisible } from '@features/shell/hooks/use-mobile-swipe-gestures';
 import { isMobileDevice } from '@shared/platform';
 import { ListColumn } from '@features/shell/components/list-column';
 import { ListColumnContent } from '@features/shell/components/list-column-content';
@@ -615,6 +615,31 @@ export function MainLayout({
   }, []);
   const handleCollapseListColumn = mobileSingleColumn ? () => setMobileListOverlay(false) : collapseMemoList;
   const handleToggleListColumn = mobileSingleColumn ? toggleMobileList : handleToggleMemoList;
+  // ── 侧栏动画掉帧修复 ────────────────────────────────────────────────
+  // 侧栏宽度动画的每一帧都会强制右侧编辑器全量重排 (大 DOM 全宽折行),
+  // 平板/手机上表现为明显丢帧。收起/展开的动画期间把文档列宽度冻结在
+  // 当前值 (编辑器不重排, 释放的空间短暂留白), 结束后一次性回流填充。
+  const listPaneRef = useRef<HTMLDivElement>(null);
+  const paneUnfreezeTimerRef = useRef<number | null>(null);
+  const [frozenListPaneWidth, setFrozenListPaneWidth] = useState<number | null>(null);
+  const freezeListPaneDuringAnimation = useCallback(() => {
+    if (mobileSingleColumn) return;
+    const width = listPaneRef.current?.getBoundingClientRect().width;
+    if (!width || width <= 0) return;
+    setFrozenListPaneWidth(width);
+    if (paneUnfreezeTimerRef.current != null) {
+      window.clearTimeout(paneUnfreezeTimerRef.current);
+    }
+    paneUnfreezeTimerRef.current = window.setTimeout(() => setFrozenListPaneWidth(null), 220);
+  }, [mobileSingleColumn]);
+  const handleCollapseListColumnDesktop = useCallback(() => {
+    freezeListPaneDuringAnimation();
+    collapseMemoList();
+  }, [collapseMemoList, freezeListPaneDuringAnimation]);
+  const handleToggleListColumnDesktop = useCallback(() => {
+    freezeListPaneDuringAnimation();
+    handleToggleMemoList();
+  }, [freezeListPaneDuringAnimation, handleToggleMemoList]);
   // 手机单栏: 列表里打开笔记 (含已打开的那条) 后收起覆盖层回到文档。
   useEffect(() => {
     if (!mobileSingleColumn) return;
@@ -631,13 +656,46 @@ export function MainLayout({
     onShowList: () => setMobileListOverlay(true),
   });
   // 文档内容区手势: 下滑搜索 / 右滑列表 / 左滑目录。
+  // 键盘 (输入面板) 弹起时整体禁用 ── 编辑态下文本选择/放大镜交回原生。
+  const imeVisible = useImeVisible();
   const mobileGestureRef = useRef<HTMLDivElement>(null);
+  const mobileListGestureRef = useRef<HTMLDivElement>(null);
   useMobileSwipeGestures({
-    enabled: mobileSingleColumn && !showMobileList,
+    // 所有触屏设备 (含平板): 宽屏右滑呼出停靠侧栏, 窄屏右滑开覆盖层。
+    enabled: isMobileDevice() && !showMobileList,
+    disabled: imeVisible,
     targetRef: mobileGestureRef,
     onSwipeDown: () => window.dispatchEvent(new Event('flowix:open-palette')),
-    onSwipeRight: () => setMobileListOverlay(true),
+    onSwipeRight: () => {
+      if (mobileSingleColumn) {
+        setMobileListOverlay(true);
+        return;
+      }
+      freezeListPaneDuringAnimation();
+      void setMemoListVisible(true);
+    },
     onSwipeLeft: () => window.dispatchEvent(new Event('flowix:open-outline')),
+  });
+  // 列表列手势 (反向收缩): 左滑收起覆盖层 (手机) 或停靠侧栏 (平板)。
+  useMobileSwipeGestures({
+    enabled: isMobileDevice(),
+    disabled: imeVisible,
+    targetRef: mobileListGestureRef,
+    onSwipeDown: () => {},
+    onSwipeRight: () => {
+      if (!mobileSingleColumn) {
+        freezeListPaneDuringAnimation();
+        void setMemoListVisible(true);
+      }
+    },
+    onSwipeLeft: () => {
+      if (mobileSingleColumn) {
+        setMobileListOverlay(false);
+        return;
+      }
+      freezeListPaneDuringAnimation();
+      void setMemoListVisible(false);
+    },
   });
   const workSurfaceViewId = workColumnPresentation.content.status === 'surface'
     ? workColumnPresentation.content.surface.instanceKey
@@ -705,7 +763,7 @@ export function MainLayout({
     sidebar: {
       hidden: effectiveMemoListHidden,
       noteNavigationVisible,
-      onToggle: handleToggleListColumn,
+      onToggle: mobileSingleColumn ? handleToggleListColumn : handleToggleListColumnDesktop,
     },
     navigation: {
       canNavigateBack,
@@ -806,10 +864,11 @@ export function MainLayout({
             previewPhase={memoListPreviewPhase === 'open' ? 'open' : 'closing'}
             memoColWidth={memoColWidth}
             mobileFullWidth={mobileSingleColumn}
+            containerRef={mobileListGestureRef}
             isDraggingListDivider={isDraggingListDivider}
             selectedNotebook={selectedNotebook}
             noteNavigationPhase={noteNavigationPhase}
-            onCollapseMemoList={handleCollapseListColumn}
+            onCollapseMemoList={mobileSingleColumn ? handleCollapseListColumn : handleCollapseListColumnDesktop}
             onOpenPreferences={(tab) => void windows.openPreferences(tab)}
             onPreviewEnter={handleMemoListPreviewEnter}
             onPreviewLeave={handleMemoListPreviewLeave}
@@ -865,14 +924,19 @@ export function MainLayout({
           >
           {/* Memo detail */}
             <div
-              ref={mobileGestureRef}
+              ref={(node) => {
+                mobileGestureRef.current = node;
+                listPaneRef.current = node;
+              }}
               className="relative h-full min-w-0 flex flex-col bg-[var(--document-bg)]"
-              style={effectiveBrowserColumnVisible
-                ? {
-                    minWidth: mobileSingleColumn ? 0 : DOCUMENT_PANEL_MIN_WIDTH,
-                    flex: `0 0 ${browserColumnLayout.mainColumnWidth}px`,
-                  }
-                : { minWidth: mobileSingleColumn ? 0 : DOCUMENT_PANEL_MIN_WIDTH, flex: 1 }}
+              style={frozenListPaneWidth != null
+                ? { width: frozenListPaneWidth, minWidth: 0, flex: '0 0 auto' }
+                : effectiveBrowserColumnVisible
+                  ? {
+                      minWidth: mobileSingleColumn ? 0 : DOCUMENT_PANEL_MIN_WIDTH,
+                      flex: `0 0 ${browserColumnLayout.mainColumnWidth}px`,
+                    }
+                  : { minWidth: mobileSingleColumn ? 0 : DOCUMENT_PANEL_MIN_WIDTH, flex: 1 }}
               data-workspace-host="main-third"
               data-workspace-focused={focusedHostId === 'main-third' ? '' : undefined}
               onPointerDown={(event) => focusWorkspaceHostFromEvent(event, 'main-third')}

@@ -46,6 +46,9 @@ export function BlockActionMenu({
   const menuElementRef = useRef<HTMLDivElement | null>(null)
   const submenuRef = useRef<HTMLDivElement | null>(null)
   const closeTimerRef = useRef<number | null>(null)
+  // 触屏没有 hover: 记录本次按压的 pointer 类型, 让带子菜单的父行点击只展开
+  // 二级菜单, 不执行默认动作 (默认动作会直接收起整个菜单)。
+  const lastPointerTypeRef = useRef<'mouse' | 'touch' | 'pen' | ''>('')
 
   const cancelPendingClose = useCallback(() => {
     if (closeTimerRef.current === null) return
@@ -105,6 +108,13 @@ export function BlockActionMenu({
     // `onSelect` (which typically performs the row's default behaviour and
     // closes the menu); the panel itself is revealed by hover / ArrowRight, so
     // a stray click must not silently swallow the action.
+    // 触屏没有 hover: 父行点击只展开二级菜单 ── 若沿用鼠标行为先执行
+    // onSelect 会直接分栏并收起菜单, 用户永远看不到"分成几栏"的选项。
+    if (hasChildren && lastPointerTypeRef.current === 'touch') {
+      cancelPendingClose()
+      setOpenSubmenuIndex(index)
+      return
+    }
     if (action.onSelect) action.onSelect()
     if (hasChildren && openSubmenuIndex !== index) {
       cancelPendingClose()
@@ -152,7 +162,10 @@ export function BlockActionMenu({
       role="menu"
       aria-label={ariaLabel}
       tabIndex={-1}
-      onPointerDown={(event) => event.stopPropagation()}
+      onPointerDown={(event) => {
+        lastPointerTypeRef.current = event.pointerType
+        event.stopPropagation()
+      }}
       onMouseDown={(event) => event.stopPropagation()}
       onKeyDown={(event) => {
         if (handleSubmenuKeyDown(event)) return

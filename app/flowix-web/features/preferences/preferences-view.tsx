@@ -20,9 +20,12 @@ import { useI18n } from '@/lib/i18n';
 import { getCurrentWindow } from '@platform/tauri/window';
 import { useExperimentalMode } from '@platform/tauri/use-experimental-mode';
 import { product, type ProductInfo } from '@platform/tauri/client';
+import { isMobileDevice } from '@shared/platform';
 
 function isWindowsPlatform(): boolean {
-	return /Windows/i.test(navigator.userAgent) || /Win/i.test(navigator.platform);
+	// Android WebView 不含 Win 标识, 会误选 Mac 变体 (预留苹果状态区);
+	// 移动端与 Windows 一致使用紧凑标题栏 (含返回按钮)。
+	return /Windows|Android/i.test(navigator.userAgent) || /Win/i.test(navigator.platform);
 }
 
 const LEGACY_TAB_REDIRECTS: Readonly<Record<string, ActiveSettingsTab>> = {
@@ -43,14 +46,24 @@ function normalizeInitialTab(tab: string): ActiveSettingsTab | null {
 	return PREFERENCE_TAB_BY_ID.has(tab as ActiveSettingsTab) ? tab as ActiveSettingsTab : null;
 }
 
+/** 移动端 v1 无 AI 服务: 这些分区整体隐藏。 */
+const MOBILE_HIDDEN_TABS: ReadonlySet<ActiveSettingsTab> = new Set([
+	'pi',
+	'dsh',
+	'aiAgent',
+	'mcp',
+] as ActiveSettingsTab[]);
+
 function getVisibleTabGroups({ isDevBuild, experimental }: { isDevBuild: boolean; experimental: boolean }) {
 	const groups: readonly PreferencesTabGroup<ActiveSettingsTab>[] = isDevBuild
 		? [...PREFERENCE_TAB_GROUPS, DEVELOPMENT_PREFERENCE_TAB_GROUP]
 		: PREFERENCE_TAB_GROUPS;
+	const mobile = isMobileDevice();
 	return groups
 		.map((group) => ({
 			...group,
-			tabs: group.tabs.filter((tab) => experimental || !tab.experimentalOnly),
+			tabs: group.tabs.filter((tab) => (experimental || !tab.experimentalOnly)
+				&& !(mobile && MOBILE_HIDDEN_TABS.has(tab.id))),
 		}))
 		.filter((group) => group.tabs.length > 0);
 }
