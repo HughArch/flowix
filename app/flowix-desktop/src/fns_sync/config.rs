@@ -14,6 +14,8 @@ const BOOT_DIR: &str = "boot";
 const FILE_NAME: &str = "fns-sync.json";
 
 pub const DEFAULT_MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
+pub const DEFAULT_STARTUP_SYNC_DELAY_SECONDS: u64 = 8;
+pub const DEFAULT_MAX_RETRY_ATTEMPTS: u32 = 10;
 pub const DEFAULT_CLIENT_TYPE: &str = "flowix";
 
 /// One named credential. `client_type` belongs to the token because the server
@@ -51,6 +53,12 @@ pub struct FnsConfig {
     /// Attachments larger than this are not synced. `0` disables attachment
     /// sync entirely.
     pub max_attachment_bytes: u64,
+    /// Seconds to wait after startup before the first sync. `0` disables the
+    /// startup sync.
+    pub startup_sync_delay_seconds: u64,
+    /// Stop retrying a failing notebook after this many consecutive attempts.
+    /// A new local edit resets the counter.
+    pub max_retry_attempts: u32,
     pub tokens: Vec<FnsToken>,
     /// Pre-token-list configuration. Read once for migration, never written.
     #[serde(default, skip_serializing, rename = "token")]
@@ -65,6 +73,8 @@ impl Default for FnsConfig {
             enabled: false,
             api: String::new(),
             max_attachment_bytes: DEFAULT_MAX_ATTACHMENT_BYTES,
+            startup_sync_delay_seconds: DEFAULT_STARTUP_SYNC_DELAY_SECONDS,
+            max_retry_attempts: DEFAULT_MAX_RETRY_ATTEMPTS,
             tokens: Vec::new(),
             legacy_token: String::new(),
             legacy_client_type: String::new(),
@@ -148,21 +158,16 @@ impl FnsConfig {
         None
     }
 
-    /// Add a token or update the existing one. Returns the stored entry.
+    /// Add a token or update the existing one. The client type is always
+    /// `flowix`: tokens are expected to be issued with `c:flowix` in scope.
     pub fn upsert_token(
         &mut self,
         id: Option<&str>,
         label: &str,
         token: &str,
-        client_type: &str,
     ) -> Option<FnsToken> {
         let label = label.trim();
         let token = token.trim();
-        let client_type = if client_type.trim().is_empty() {
-            DEFAULT_CLIENT_TYPE
-        } else {
-            client_type.trim()
-        };
 
         if let Some(id) = id.filter(|id| !id.is_empty()) {
             let entry = self.tokens.iter_mut().find(|entry| entry.id == id)?;
@@ -173,14 +178,14 @@ impl FnsConfig {
             if !token.is_empty() {
                 entry.token = token.to_owned();
             }
-            entry.client_type = client_type.to_owned();
+            entry.client_type = DEFAULT_CLIENT_TYPE.to_owned();
             return Some(entry.clone());
         }
 
         if label.is_empty() || token.is_empty() {
             return None;
         }
-        let entry = FnsToken::new(label, token, client_type);
+        let entry = FnsToken::new(label, token, DEFAULT_CLIENT_TYPE);
         self.tokens.push(entry.clone());
         Some(entry)
     }
@@ -205,7 +210,6 @@ impl FnsConfig {
 pub struct FnsTokenView {
     pub id: String,
     pub label: String,
-    pub client_type: String,
     pub has_token: bool,
 }
 
@@ -214,7 +218,6 @@ impl From<&FnsToken> for FnsTokenView {
         Self {
             id: token.id.clone(),
             label: token.label.clone(),
-            client_type: token.client_type.clone(),
             has_token: !token.token.trim().is_empty(),
         }
     }
@@ -226,6 +229,8 @@ pub struct FnsConfigView {
     pub enabled: bool,
     pub api: String,
     pub max_attachment_bytes: u64,
+    pub startup_sync_delay_seconds: u64,
+    pub max_retry_attempts: u32,
     pub tokens: Vec<FnsTokenView>,
     pub configured: bool,
 }
@@ -236,6 +241,8 @@ impl From<&FnsConfig> for FnsConfigView {
             enabled: config.enabled,
             api: config.api.clone(),
             max_attachment_bytes: config.max_attachment_bytes,
+            startup_sync_delay_seconds: config.startup_sync_delay_seconds,
+            max_retry_attempts: config.max_retry_attempts,
             tokens: config.tokens.iter().map(FnsTokenView::from).collect(),
             configured: config.is_ready(),
         }
@@ -249,6 +256,8 @@ pub struct FnsConfigPatch {
     pub enabled: Option<bool>,
     pub api: Option<String>,
     pub max_attachment_bytes: Option<u64>,
+    pub startup_sync_delay_seconds: Option<u64>,
+    pub max_retry_attempts: Option<u32>,
 }
 
 impl FnsConfig {
@@ -262,6 +271,12 @@ impl FnsConfig {
         if let Some(bytes) = patch.max_attachment_bytes {
             self.max_attachment_bytes = bytes;
         }
+        if let Some(seconds) = patch.startup_sync_delay_seconds {
+            self.startup_sync_delay_seconds = seconds;
+        }
+        if let Some(attempts) = patch.max_retry_attempts {
+            self.max_retry_attempts = attempts;
+        }
     }
 }
 
@@ -272,7 +287,6 @@ pub struct FnsTokenInput {
     pub label: String,
     #[serde(default)]
     pub token: String,
-    pub client_type: Option<String>,
 }
 
 #[cfg(test)]
@@ -308,13 +322,13 @@ mod tests {
     #[test]
     fn upsert_keeps_existing_secret_when_blank() {
         let mut config = FnsConfig::default();
-        let token = config.upsert_token(None, "work", "secret", "flowix").unwrap();
+        let token = config.upsert_token(None, "work", "secret").unwrap();
         let updated = config
-            .upsert_token(Some(&token.id), "work 2", "", "obsidianPlugin")
+            .upsert_token(Some(&token.id), "work 2", "")
             .unwrap();
         assert_eq!(updated.token, "secret");
         assert_eq!(updated.label, "work 2");
-        assert_eq!(updated.client_type, "obsidianPlugin");
+        assert_eq!(updated.client_type, "flowix");
     }
 
     #[test]

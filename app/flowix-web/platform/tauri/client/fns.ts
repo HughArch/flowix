@@ -3,7 +3,6 @@ import { invoke } from '@tauri-apps/api/core';
 export interface FnsTokenView {
   id: string;
   label: string;
-  clientType: string;
   /** The token itself never leaves the backend. */
   hasToken: boolean;
 }
@@ -13,6 +12,10 @@ export interface FnsConfigView {
   api: string;
   /** Attachments larger than this are not synced (0 disables attachment sync). */
   maxAttachmentBytes: number;
+  /** Seconds to wait after startup before the first sync (0 disables it). */
+  startupSyncDelaySeconds: number;
+  /** Stop retrying after this many consecutive failures (0 disables retries). */
+  maxRetryAttempts: number;
   tokens: FnsTokenView[];
   configured: boolean;
 }
@@ -21,6 +24,8 @@ export interface FnsConfigPatch {
   enabled?: boolean;
   api?: string;
   maxAttachmentBytes?: number;
+  startupSyncDelaySeconds?: number;
+  maxRetryAttempts?: number;
 }
 
 export interface FnsTokenInput {
@@ -28,7 +33,6 @@ export interface FnsTokenInput {
   label: string;
   /** Empty keeps the stored secret when `id` is set. */
   token?: string;
-  clientType?: string;
 }
 
 export type FnsSyncPhase = 'scanning' | 'notesPull' | 'notesPush' | 'filesPull' | 'filesPush';

@@ -258,17 +258,8 @@ impl FnsSyncService {
             .config
             .write()
             .map_err(|_| "FNS config lock poisoned".to_owned())?;
-        let client_type = input
-            .client_type
-            .clone()
-            .unwrap_or_else(|| crate::fns_sync::config::DEFAULT_CLIENT_TYPE.to_owned());
         config
-            .upsert_token(
-                input.id.as_deref(),
-                &input.label,
-                &input.token,
-                &client_type,
-            )
+            .upsert_token(input.id.as_deref(), &input.label, &input.token)
             .ok_or_else(|| "label and token are required for a new token".to_owned())?;
         config.save(&self.config_dir).map_err(|error| error.to_string())?;
         Ok(FnsConfigView::from(&*config))
@@ -424,7 +415,8 @@ impl FnsSyncService {
                     elapsed_ms = started.elapsed().as_millis() as u64,
                     "FNS sync failed"
                 );
-                let delay = self.schedule_retry(app, notebook_id);
+                let retry = self.schedule_retry(app, notebook_id);
+                let exhausted = retry.is_none();
                 self.record_history(FnsSyncRecord {
                     at: started_at,
                     notebook_id: notebook_id.to_owned(),
@@ -441,24 +433,37 @@ impl FnsSyncService {
                 self.set_status(|status| {
                     status.running = false;
                     status.progress = None;
-                    status.last_error = Some(error.clone());
+                    status.last_error = Some(if exhausted {
+                        format!("{error}（已达到最大重试次数，自动重试已暂停）")
+                    } else {
+                        error.clone()
+                    });
                     status.consecutive_failures = status.consecutive_failures.saturating_add(1);
-                    status.next_retry_at = Some(now_ms() + delay.as_millis() as i64);
+                    status.next_retry_at =
+                        retry.map(|delay| now_ms() + delay.as_millis() as i64);
                 });
             }
         }
         result
     }
 
-    /// Schedule the next attempt with exponential backoff. Returns the delay so
-    /// the status can expose `nextRetryAt`.
-    fn schedule_retry(self: &Arc<Self>, app: &AppHandle, notebook_id: &str) -> Duration {
+    /// Schedule the next attempt with exponential backoff. Returns `None` once
+    /// the configured attempt budget is exhausted.
+    fn schedule_retry(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        notebook_id: &str,
+    ) -> Option<Duration> {
+        let max_attempts = self.read_config().max_retry_attempts;
         let (token, delay) = {
             let mut retry = self
                 .retry
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
             let entry = retry.entry(notebook_id.to_owned()).or_default();
+            if max_attempts == 0 || entry.attempts >= max_attempts {
+                return None;
+            }
             entry.token = entry.token.wrapping_add(1);
             let attempts = entry.attempts;
             entry.attempts = entry.attempts.saturating_add(1);
@@ -481,7 +486,7 @@ impl FnsSyncService {
             }
             let _ = service.sync_notebook(&app, &id).await;
         });
-        delay
+        Some(delay)
     }
 
     fn clear_retry(&self, notebook_id: &str) {
@@ -682,6 +687,24 @@ impl FnsSyncService {
             status: self.status(),
             history: self.history(Some(notebook_id)),
         })
+    }
+
+    /// Wait the configured startup delay, then pull bound notebooks.
+    pub async fn sync_after_startup(self: &Arc<Self>, app: AppHandle) {
+        let (ready, delay) = {
+            let config = self.read_config();
+            (config.is_ready(), config.startup_sync_delay_seconds)
+        };
+        if !ready {
+            return;
+        }
+        if delay > 0 {
+            tracing::info!(delay_seconds = delay, "FNS startup sync scheduled");
+            tokio::time::sleep(Duration::from_secs(delay)).await;
+        }
+        if let Err(error) = self.sync_bound_notebooks(&app).await {
+            tracing::warn!("startup FNS sync failed: {error}");
+        }
     }
 
     pub async fn sync_bound_notebooks(
