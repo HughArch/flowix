@@ -14,7 +14,7 @@ use flowix_fns::{
 };
 
 use crate::app::state::AppState;
-use crate::fns_sync::config::{FnsConfig, FnsConfigPatch, FnsConfigView};
+use crate::fns_sync::config::{FnsConfig, FnsConfigPatch, FnsConfigView, FnsTokenInput};
 use crate::fns_sync::store::MemoFileStore;
 use crate::lock_utils::read_lock;
 
@@ -30,6 +30,8 @@ pub struct FnsSyncStatus {
     pub consecutive_failures: u32,
     /// Epoch milliseconds of the next scheduled retry, when one is pending.
     pub next_retry_at: Option<i64>,
+    /// Notebook the current/last status belongs to.
+    pub notebook_id: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, Default)]
@@ -73,6 +75,19 @@ pub struct FnsSyncRecord {
 
 const HISTORY_LIMIT: usize = 50;
 
+/// Binding and recent activity for one notebook.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FnsNotebookState {
+    pub notebook_id: String,
+    pub bound: bool,
+    pub vault: String,
+    pub token_id: String,
+    pub token_label: Option<String>,
+    pub status: FnsSyncStatus,
+    pub history: Vec<FnsSyncRecord>,
+}
+
 pub struct FnsSyncService {
     config_dir: PathBuf,
     config: RwLock<FnsConfig>,
@@ -103,10 +118,19 @@ impl FnsSyncService {
         }
     }
 
-    pub fn history(&self) -> Vec<FnsSyncRecord> {
+    /// Newest-first history, optionally restricted to one notebook.
+    pub fn history(&self, notebook_id: Option<&str>) -> Vec<FnsSyncRecord> {
         self.history
             .lock()
-            .map(|history| history.clone())
+            .map(|history| {
+                history
+                    .iter()
+                    .filter(|record| {
+                        notebook_id.is_none_or(|id| record.notebook_id == id)
+                    })
+                    .cloned()
+                    .collect()
+            })
             .unwrap_or_default()
     }
 
@@ -203,6 +227,37 @@ impl FnsSyncService {
         Ok(FnsConfigView::from(&*config))
     }
 
+    pub fn upsert_token(&self, input: FnsTokenInput) -> Result<FnsConfigView, String> {
+        let mut config = self
+            .config
+            .write()
+            .map_err(|_| "FNS config lock poisoned".to_owned())?;
+        let client_type = input
+            .client_type
+            .clone()
+            .unwrap_or_else(|| crate::fns_sync::config::DEFAULT_CLIENT_TYPE.to_owned());
+        config
+            .upsert_token(
+                input.id.as_deref(),
+                &input.label,
+                &input.token,
+                &client_type,
+            )
+            .ok_or_else(|| "label and token are required for a new token".to_owned())?;
+        config.save(&self.config_dir).map_err(|error| error.to_string())?;
+        Ok(FnsConfigView::from(&*config))
+    }
+
+    pub fn delete_token(&self, id: &str) -> Result<FnsConfigView, String> {
+        let mut config = self
+            .config
+            .write()
+            .map_err(|_| "FNS config lock poisoned".to_owned())?;
+        config.remove_token(id);
+        config.save(&self.config_dir).map_err(|error| error.to_string())?;
+        Ok(FnsConfigView::from(&*config))
+    }
+
     pub fn status(&self) -> FnsSyncStatus {
         self.status
             .read()
@@ -247,6 +302,7 @@ impl FnsSyncService {
         self.set_status(|status| {
             status.running = true;
             status.last_error = None;
+            status.notebook_id = Some(notebook_id.to_owned());
         });
 
         let started = std::time::Instant::now();
@@ -363,12 +419,12 @@ impl FnsSyncService {
         offline_strategy: flowix_fns::OfflineSyncStrategy,
     ) -> Result<Option<FnsNotebookSyncOutcome>, String> {
         let state = app.state::<AppState>();
-        let (notebook_name, root) = {
+        let root = {
             let memo_file = read_lock(&state.memo_file, "memo_file");
             let notebook = memo_file
                 .get_notebook_config_by_id(notebook_id)
                 .ok_or_else(|| format!("notebook not found: {notebook_id}"))?;
-            (notebook.name, PathBuf::from(notebook.path))
+            PathBuf::from(notebook.path)
         };
 
         if !root.is_dir() {
@@ -378,10 +434,20 @@ impl FnsSyncService {
             ));
         }
 
+        // Binding is explicit: a notebook without sync state is not synced.
         let mut sync_state = match SyncState::load(&root).map_err(|error| error.to_string())? {
             Some(state) => state,
-            None => SyncState::new(&notebook_name, uuid::Uuid::new_v4().to_string()),
+            None => return Ok(None),
         };
+
+        let token = match config.token(&sync_state.token_id) {
+            Some(token) => token.clone(),
+            None => return Ok(None),
+        };
+        if sync_state.token_id.is_empty() {
+            // Older state without an explicit binding: adopt the only token.
+            sync_state.token_id = token.id.clone();
+        }
 
         let store = MemoFileStore::new(
             app.clone(),
@@ -391,13 +457,13 @@ impl FnsSyncService {
         );
 
         let info = ClientInfo {
-            name: config.client_name.clone(),
-            version: config.client_version.clone(),
-            client_type: config.client_type.clone(),
+            name: "Flowix".to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            client_type: token.client_type.clone(),
             offline_sync_strategy: Some(offline_strategy.as_str().to_owned()),
         };
 
-        let mut client = FnsClient::connect(&config.api, &config.token, &info)
+        let mut client = FnsClient::connect(&config.api, &token.token, &info)
             .await
             .map_err(|error| error.to_string())?;
 
@@ -437,6 +503,104 @@ impl FnsSyncService {
 
     /// Sync every notebook that already has a binding. Used on startup and by
     /// the "sync all" command.
+    /// Bind a notebook to one token and one vault.
+    pub fn bind_notebook(
+        &self,
+        app: &AppHandle,
+        notebook_id: &str,
+        token_id: &str,
+        vault: &str,
+    ) -> Result<FnsNotebookState, String> {
+        let (notebook_name, root) = notebook_root(app, notebook_id)?;
+
+        if token_id.trim().is_empty() {
+            return Err("token id is required".to_owned());
+        }
+        {
+            let config = self.read_config();
+            if config.token(token_id).is_none() {
+                return Err("token not found".to_owned());
+            }
+        }
+
+        let existing = SyncState::load(&root).map_err(|error| error.to_string())?;
+        let vault_name = {
+            let trimmed = vault.trim();
+            if trimmed.is_empty() {
+                notebook_name
+            } else {
+                trimmed.to_owned()
+            }
+        };
+
+        let mut state = existing.clone().unwrap_or_else(|| {
+            SyncState::new(vault_name.clone(), uuid::Uuid::new_v4().to_string())
+        });
+
+        let vault_changed = existing
+            .as_ref()
+            .is_some_and(|previous| previous.vault != vault_name);
+        if vault_changed {
+            // Cursors and snapshots belong to the previous vault.
+            state.last_time = 0;
+            state.file_last_time = 0;
+            state.notes.clear();
+            state.files.clear();
+        }
+
+        state.vault = vault_name;
+        state.token_id = token_id.to_owned();
+        state.save(&root).map_err(|error| error.to_string())?;
+
+        self.notebook_state(app, notebook_id)
+    }
+
+    /// Remove the binding. Synced files stay on disk; the server is untouched.
+    pub fn unbind_notebook(&self, app: &AppHandle, notebook_id: &str) -> Result<(), String> {
+        let (_, root) = notebook_root(app, notebook_id)?;
+        let path = SyncState::path_for(&root);
+        match std::fs::remove_file(&path) {
+            Ok(()) => Ok(()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(error) => Err(error.to_string()),
+        }
+    }
+
+    pub fn notebook_state(
+        &self,
+        app: &AppHandle,
+        notebook_id: &str,
+    ) -> Result<FnsNotebookState, String> {
+        let (_, root) = notebook_root(app, notebook_id)?;
+        let state = SyncState::load(&root).map_err(|error| error.to_string())?;
+        let config = self.read_config();
+
+        let (bound, vault, token_id, token_label) = match &state {
+            Some(state) => {
+                let label = config
+                    .token(&state.token_id)
+                    .map(|token| token.label.clone());
+                (
+                    config.token(&state.token_id).is_some(),
+                    state.vault.clone(),
+                    state.token_id.clone(),
+                    label,
+                )
+            }
+            None => (false, String::new(), String::new(), None),
+        };
+
+        Ok(FnsNotebookState {
+            notebook_id: notebook_id.to_owned(),
+            bound,
+            vault,
+            token_id,
+            token_label,
+            status: self.status(),
+            history: self.history(Some(notebook_id)),
+        })
+    }
+
     pub async fn sync_bound_notebooks(
         self: &Arc<Self>,
         app: &AppHandle,
@@ -475,6 +639,15 @@ impl FnsSyncService {
 
 pub fn now_ms() -> i64 {
     flowix_fns::engine::now_ms()
+}
+
+fn notebook_root(app: &AppHandle, notebook_id: &str) -> Result<(String, PathBuf), String> {
+    let state = app.state::<AppState>();
+    let memo_file = read_lock(&state.memo_file, "memo_file");
+    let notebook = memo_file
+        .get_notebook_config_by_id(notebook_id)
+        .ok_or_else(|| format!("notebook not found: {notebook_id}"))?;
+    Ok((notebook.name, PathBuf::from(notebook.path)))
 }
 
 /// 2s, 4s, 8s … capped at 256s.

@@ -29,6 +29,10 @@ pub struct SyncState {
     /// FNS vault name bound to this notebook. Defaults to the notebook name on
     /// first bind and is intentionally *not* renamed when the notebook is.
     pub vault: String,
+    /// Id of the token (stored in the app config, never here) used for this
+    /// notebook. Empty means "the only configured token", for older state.
+    #[serde(default)]
+    pub token_id: String,
     /// Server-side incremental cursor for notes, in milliseconds.
     pub last_time: i64,
     /// Separate cursor for attachments. Notes and files advance at different
@@ -54,6 +58,7 @@ impl SyncState {
         Self {
             version: STATE_VERSION,
             vault: vault.into(),
+            token_id: String::new(),
             last_time: 0,
             file_last_time: 0,
             device_id: device_id.into(),
@@ -61,6 +66,11 @@ impl SyncState {
             notes: BTreeMap::new(),
             files: BTreeMap::new(),
         }
+    }
+
+    /// Bind this notebook to a specific token.
+    pub fn bind_token(&mut self, token_id: impl Into<String>) {
+        self.token_id = token_id.into();
     }
 
     /// Paths that existed at the end of the previous sync but are gone now.

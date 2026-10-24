@@ -7,25 +7,25 @@ import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { errorMessage } from '@/lib/error-message';
 import { fns, type FnsConfigPatch, type FnsConfigView, type FnsSyncStatus } from '@platform/tauri/client';
-import { useNoteStore } from '@features/memo/store/note-store';
 
 export function FnsSyncSection() {
   const { t, language } = useI18n();
-  const selectedNotebookId = useNoteStore((state) => state.selectedNotebookId);
   const [config, setConfig] = useState<FnsConfigView | null>(null);
   const [status, setStatus] = useState<FnsSyncStatus | null>(null);
   const [api, setApi] = useState('');
-  const [token, setToken] = useState('');
-  const [clientType, setClientType] = useState('flowix');
   const [maxAttachmentMb, setMaxAttachmentMb] = useState('20');
   const [busy, setBusy] = useState(false);
+
+  const [editingId, setEditingId] = useState<string | null>(null);
+  const [tokenLabel, setTokenLabel] = useState('');
+  const [tokenValue, setTokenValue] = useState('');
+  const [tokenClientType, setTokenClientType] = useState('flowix');
 
   const load = useCallback(async () => {
     const [nextConfig, nextStatus] = await Promise.all([fns.getConfig(), fns.getStatus()]);
     setConfig(nextConfig);
     setStatus(nextStatus);
     setApi(nextConfig.api);
-    setClientType(nextConfig.clientType);
     setMaxAttachmentMb(String(Math.round(nextConfig.maxAttachmentBytes / (1024 * 1024))));
   }, []);
 
@@ -33,7 +33,6 @@ export function FnsSyncSection() {
     void load().catch((error) => toast.error(errorMessage(error)));
   }, [load]);
 
-  // Keep the status (including retry countdown) fresh while the page is open.
   useEffect(() => {
     if (!config?.configured) return;
     const timer = setInterval(() => {
@@ -42,14 +41,12 @@ export function FnsSyncSection() {
     return () => clearInterval(timer);
   }, [config?.configured]);
 
-  const save = useCallback(async (patch: FnsConfigPatch) => {
+  const saveGlobal = useCallback(async (patch: FnsConfigPatch) => {
     setBusy(true);
     try {
       const next = await fns.patchConfig(patch);
       setConfig(next);
       setApi(next.api);
-      setClientType(next.clientType);
-      setToken('');
       toast.success(t('preferences.fns.saved'));
     } catch (error) {
       toast.error(errorMessage(error));
@@ -58,23 +55,44 @@ export function FnsSyncSection() {
     }
   }, [t]);
 
-  const syncCurrent = useCallback(async () => {
-    if (!selectedNotebookId) return;
+  const resetTokenForm = useCallback(() => {
+    setEditingId(null);
+    setTokenLabel('');
+    setTokenValue('');
+    setTokenClientType('flowix');
+  }, []);
+
+  const saveToken = useCallback(async () => {
+    if (!tokenLabel.trim() || (!editingId && !tokenValue.trim())) return;
     setBusy(true);
     try {
-      const outcome = await fns.syncNotebook(selectedNotebookId);
-      setStatus(await fns.getStatus());
-      if (outcome) {
-        toast.success(
-          `${t('preferences.fns.syncDone')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed} · ${t('preferences.fns.attachments')} ↓${outcome.filesPulled} ↑${outcome.filesPushed}`,
-        );
-      }
+      const next = await fns.upsertToken({
+        id: editingId ?? undefined,
+        label: tokenLabel,
+        token: tokenValue,
+        clientType: tokenClientType,
+      });
+      setConfig(next);
+      resetTokenForm();
+      toast.success(t('preferences.fns.saved'));
     } catch (error) {
-      toast.error(`${t('preferences.fns.syncFailed')}: ${errorMessage(error)}`);
+      toast.error(errorMessage(error));
     } finally {
       setBusy(false);
     }
-  }, [selectedNotebookId, t]);
+  }, [editingId, resetTokenForm, t, tokenClientType, tokenLabel, tokenValue]);
+
+  const removeToken = useCallback(async (id: string) => {
+    setBusy(true);
+    try {
+      setConfig(await fns.deleteToken(id));
+      if (editingId === id) resetTokenForm();
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setBusy(false);
+    }
+  }, [editingId, resetTokenForm]);
 
   const syncNow = useCallback(async () => {
     setBusy(true);
@@ -82,12 +100,8 @@ export function FnsSyncSection() {
       const outcomes = await fns.syncAll();
       const pulled = outcomes.reduce((sum, item) => sum + item.pulled, 0);
       const pushed = outcomes.reduce((sum, item) => sum + item.pushed, 0);
-      const filesPulled = outcomes.reduce((sum, item) => sum + item.filesPulled, 0);
-      const filesPushed = outcomes.reduce((sum, item) => sum + item.filesPushed, 0);
       setStatus(await fns.getStatus());
-      toast.success(
-        `${t('preferences.fns.syncDone')} · ↓${pulled} ↑${pushed} · ${t('preferences.fns.attachments')} ↓${filesPulled} ↑${filesPushed}`,
-      );
+      toast.success(`${t('preferences.fns.syncDone')} · ↓${pulled} ↑${pushed}`);
     } catch (error) {
       toast.error(`${t('preferences.fns.syncFailed')}: ${errorMessage(error)}`);
     } finally {
@@ -102,12 +116,6 @@ export function FnsSyncSection() {
       }).format(new Date(status.lastSyncAt))
     : t('preferences.fns.never');
 
-  const retryAt = status?.nextRetryAt
-    ? new Intl.DateTimeFormat(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
-        timeStyle: 'medium',
-      }).format(new Date(status.nextRetryAt))
-    : null;
-
   return (
     <div className="space-y-5 pb-6">
       <SectionHeader title={t('preferences.fns.title')} description={t('preferences.fns.description')} />
@@ -118,7 +126,7 @@ export function FnsSyncSection() {
           type="checkbox"
           disabled={busy || !config}
           checked={config?.enabled ?? false}
-          onChange={(event) => void save({ enabled: event.target.checked })}
+          onChange={(event) => void saveGlobal({ enabled: event.target.checked })}
         />
       </FieldRow>
 
@@ -130,41 +138,7 @@ export function FnsSyncSection() {
           placeholder={t('preferences.fns.apiPlaceholder')}
           onChange={(event) => setApi(event.target.value)}
           onBlur={() => {
-            if (api !== (config?.api ?? '')) void save({ api });
-          }}
-        />
-      </Field>
-
-      <Field
-        title={t('preferences.fns.token')}
-        controlId="fns-token"
-        hint={config?.hasToken ? t('preferences.fns.tokenConfigured') : undefined}
-      >
-        <input
-          id="fns-token"
-          type="password"
-          className={FIELD_INPUT_CLASS}
-          value={token}
-          placeholder={t('preferences.fns.tokenPlaceholder')}
-          onChange={(event) => setToken(event.target.value)}
-          onBlur={() => {
-            if (token.trim()) void save({ token });
-          }}
-        />
-      </Field>
-
-      <Field
-        title={t('preferences.fns.clientType')}
-        controlId="fns-client-type"
-        hint={t('preferences.fns.clientTypeHint')}
-      >
-        <input
-          id="fns-client-type"
-          className={FIELD_INPUT_CLASS}
-          value={clientType}
-          onChange={(event) => setClientType(event.target.value)}
-          onBlur={() => {
-            if (clientType !== (config?.clientType ?? '')) void save({ clientType });
+            if (api !== (config?.api ?? '')) void saveGlobal({ api });
           }}
         />
       </Field>
@@ -187,41 +161,119 @@ export function FnsSyncSection() {
             if (!Number.isFinite(megabytes) || megabytes < 0) return;
             const bytes = Math.round(megabytes * 1024 * 1024);
             if (bytes !== config?.maxAttachmentBytes) {
-              void save({ maxAttachmentBytes: bytes });
+              void saveGlobal({ maxAttachmentBytes: bytes });
             }
           }}
         />
       </Field>
 
+      <div className="space-y-2 border-t border-[var(--divider)] pt-4">
+        <span className="text-sm text-[var(--foreground)]">{t('preferences.fns.tokens')}</span>
+        <p className="text-sm text-[var(--muted-foreground)]">{t('preferences.fns.tokensHint')}</p>
+
+        {(config?.tokens.length ?? 0) === 0 && (
+          <p className="py-2 text-sm text-[var(--muted-foreground)]">{t('preferences.fns.noTokens')}</p>
+        )}
+
+        {config?.tokens.map((token) => (
+          <div
+            key={token.id}
+            className="flex items-center justify-between gap-3 rounded-lg border border-[var(--border)] px-3 py-2"
+          >
+            <div className="min-w-0">
+              <div className="truncate text-sm text-[var(--foreground)]">{token.label}</div>
+              <div className="text-xs text-[var(--muted-foreground)]">
+                {token.clientType}
+                {token.hasToken ? ` · ${t('preferences.fns.tokenConfigured')}` : ''}
+              </div>
+            </div>
+            <div className="flex shrink-0 gap-1">
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 rounded-lg px-2"
+                disabled={busy}
+                onClick={() => {
+                  setEditingId(token.id);
+                  setTokenLabel(token.label);
+                  setTokenValue('');
+                  setTokenClientType(token.clientType);
+                }}
+              >
+                {t('preferences.fns.editToken')}
+              </Button>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="h-7 rounded-lg px-2 text-[var(--destructive)]"
+                disabled={busy}
+                onClick={() => void removeToken(token.id)}
+              >
+                {t('preferences.fns.deleteToken')}
+              </Button>
+            </div>
+          </div>
+        ))}
+
+        <div className="space-y-2 rounded-lg border border-[var(--border)] p-3">
+          <div className="text-sm text-[var(--foreground)]">
+            {editingId ? t('preferences.fns.editToken') : t('preferences.fns.addToken')}
+          </div>
+          <input
+            className={FIELD_INPUT_CLASS}
+            value={tokenLabel}
+            placeholder={t('preferences.fns.tokenLabel')}
+            onChange={(event) => setTokenLabel(event.target.value)}
+          />
+          <input
+            className={FIELD_INPUT_CLASS}
+            type="password"
+            value={tokenValue}
+            placeholder={t('preferences.fns.tokenPlaceholder')}
+            onChange={(event) => setTokenValue(event.target.value)}
+          />
+          <input
+            className={FIELD_INPUT_CLASS}
+            value={tokenClientType}
+            placeholder={t('preferences.fns.clientType')}
+            onChange={(event) => setTokenClientType(event.target.value)}
+          />
+          <p className="text-xs text-[var(--muted-foreground)]">{t('preferences.fns.clientTypeHint')}</p>
+          <div className="flex gap-2">
+            <Button
+              size="sm"
+              className="rounded-lg"
+              disabled={busy || !tokenLabel.trim() || (!editingId && !tokenValue.trim())}
+              onClick={() => void saveToken()}
+            >
+              {t('preferences.fns.save')}
+            </Button>
+            {editingId && (
+              <Button size="sm" variant="outline" className="rounded-lg" onClick={resetTokenForm}>
+                {t('preferences.fns.cancel')}
+              </Button>
+            )}
+          </div>
+        </div>
+      </div>
+
       <div className="flex items-center justify-between gap-4 border-t border-[var(--divider)] pt-4">
         <div className="space-y-0.5">
           <span className="text-sm text-[var(--foreground)]">{t('preferences.fns.status')}</span>
           <p className="text-sm text-[var(--muted-foreground)]">
-            {status?.running
-              ? t('preferences.fns.running')
-              : `${t('preferences.fns.lastSync')}: ${lastSync}`}
-            {retryAt ? ` · ${t('preferences.fns.retryScheduled')} ${retryAt}` : ''}
+            {status?.running ? t('preferences.fns.running') : `${t('preferences.fns.lastSync')}: ${lastSync}`}
             {status?.lastError ? ` · ${status.lastError}` : ''}
             {!config?.configured ? ` · ${t('preferences.fns.notConfigured')}` : ''}
           </p>
         </div>
-        <div className="flex items-center gap-2">
-          <Button
-            size="sm"
-            disabled={busy || !config?.configured || !selectedNotebookId}
-            onClick={() => void syncCurrent()}
-          >
-            {t('preferences.fns.syncCurrent')}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            disabled={busy || !config?.configured}
-            onClick={() => void syncNow()}
-          >
-            {t('preferences.fns.syncAll')}
-          </Button>
-        </div>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={busy || !config?.configured}
+          onClick={() => void syncNow()}
+        >
+          {t('preferences.fns.syncAll')}
+        </Button>
       </div>
     </div>
   );

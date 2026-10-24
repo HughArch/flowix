@@ -7,7 +7,12 @@ import { Button } from '@shared/ui/button';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { errorMessage } from '@/lib/error-message';
-import { fns, type FnsSyncRecord, type FnsSyncStatus } from '@platform/tauri/client';
+import {
+  fns,
+  type FnsConfigView,
+  type FnsNotebookState,
+  type FnsSyncRecord,
+} from '@platform/tauri/client';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { useSyncPanelStore } from './sync-panel-store';
 
@@ -53,15 +58,22 @@ export function SyncStatusPanel() {
   const open = useSyncPanelStore((state) => state.open);
   const setOpen = useSyncPanelStore((state) => state.setOpen);
   const selectedNotebookId = useNoteStore((state) => state.selectedNotebookId);
-  const [status, setStatus] = useState<FnsSyncStatus | null>(null);
-  const [history, setHistory] = useState<FnsSyncRecord[]>([]);
+
+  const [config, setConfig] = useState<FnsConfigView | null>(null);
+  const [notebookState, setNotebookState] = useState<FnsNotebookState | null>(null);
+  const [selectedTokenId, setSelectedTokenId] = useState('');
+  const [vault, setVault] = useState('');
   const [busy, setBusy] = useState(false);
 
   const refresh = useCallback(async () => {
-    const [nextStatus, nextHistory] = await Promise.all([fns.getStatus(), fns.getHistory()]);
-    setStatus(nextStatus);
-    setHistory(nextHistory);
-  }, []);
+    const nextConfig = await fns.getConfig();
+    setConfig(nextConfig);
+    if (selectedNotebookId) {
+      setNotebookState(await fns.getNotebookState(selectedNotebookId));
+    } else {
+      setNotebookState(null);
+    }
+  }, [selectedNotebookId]);
 
   useEffect(() => {
     if (!open) return;
@@ -71,6 +83,16 @@ export function SyncStatusPanel() {
     }, 3000);
     return () => clearInterval(timer);
   }, [open, refresh]);
+
+  useEffect(() => {
+    if (!notebookState) return;
+    if (notebookState.bound) {
+      setSelectedTokenId(notebookState.tokenId);
+      setVault(notebookState.vault);
+    } else if (!selectedTokenId && config?.tokens.length === 1) {
+      setSelectedTokenId(config.tokens[0].id);
+    }
+  }, [config?.tokens, notebookState, selectedTokenId]);
 
   // Edge swipe: start near the right edge and drag left to open. Pointer
   // Events are used instead of Touch Events because remote-desktop clients
@@ -95,7 +117,6 @@ export function SyncStatusPanel() {
       tracking = true;
       startX = event.clientX;
       startY = event.clientY;
-      // Dragging from the edge would otherwise select text on desktop.
       document.body.style.userSelect = 'none';
     };
 
@@ -120,24 +141,33 @@ export function SyncStatusPanel() {
     };
   }, [open]);
 
-  const runSync = useCallback(async (target: 'current' | 'all') => {
+  const bind = useCallback(async () => {
+    if (!selectedNotebookId || !selectedTokenId) return;
     setBusy(true);
     try {
-      if (target === 'current') {
-        if (!selectedNotebookId) return;
-        const outcome = await fns.syncNotebook(selectedNotebookId);
-        if (outcome) {
-          toast.success(
-            `${t('sync.panel.done')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed}`,
-          );
-        }
-      } else {
-        const outcomes = await fns.syncAll();
-        const pulled = outcomes.reduce((sum, item) => sum + item.pulled, 0);
-        const pushed = outcomes.reduce((sum, item) => sum + item.pushed, 0);
-        toast.success(`${t('sync.panel.done')} · ↓${pulled} ↑${pushed}`);
+      setNotebookState(await fns.bindNotebook(selectedNotebookId, selectedTokenId, vault));
+      toast.success(t('sync.panel.bound'));
+      try {
+        await fns.syncNotebook(selectedNotebookId);
+        await refresh();
+      } catch (error) {
+        // Binding succeeded; the first sync may still fail (permissions, etc.).
+        toast.error(`${t('sync.panel.failed')}: ${errorMessage(error)}`);
       }
+    } catch (error) {
+      toast.error(`${t('sync.panel.failed')}: ${errorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [refresh, selectedNotebookId, selectedTokenId, t, vault]);
+
+  const unbind = useCallback(async () => {
+    if (!selectedNotebookId) return;
+    setBusy(true);
+    try {
+      await fns.unbindNotebook(selectedNotebookId);
       await refresh();
+      toast.success(t('sync.panel.unbound'));
     } catch (error) {
       toast.error(`${t('sync.panel.failed')}: ${errorMessage(error)}`);
     } finally {
@@ -145,7 +175,32 @@ export function SyncStatusPanel() {
     }
   }, [refresh, selectedNotebookId, t]);
 
-  const lastSync = status?.lastSyncAt ? formatTime(status.lastSyncAt, language) : t('sync.panel.never');
+  const syncNow = useCallback(async () => {
+    if (!selectedNotebookId) return;
+    setBusy(true);
+    try {
+      const outcome = await fns.syncNotebook(selectedNotebookId);
+      await refresh();
+      if (outcome) {
+        toast.success(
+          `${t('sync.panel.done')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed}`,
+        );
+      }
+    } catch (error) {
+      toast.error(`${t('sync.panel.failed')}: ${errorMessage(error)}`);
+    } finally {
+      setBusy(false);
+    }
+  }, [refresh, selectedNotebookId, t]);
+
+  const globalStatus = notebookState?.status;
+  const status = globalStatus && globalStatus.notebookId === selectedNotebookId
+    ? globalStatus
+    : null;
+  const lastRecord = notebookState?.history[0];
+  const lastSync = lastRecord
+    ? formatTime(lastRecord.at, language)
+    : t('sync.panel.never');
   const retryAt = status?.nextRetryAt ? formatTime(status.nextRetryAt, language) : null;
 
   return (
@@ -180,58 +235,110 @@ export function SyncStatusPanel() {
           </Button>
         </header>
 
-        <div className="space-y-2 border-y border-[var(--divider)] px-3 py-3 text-xs">
-          <div className="flex items-center justify-between">
-            <span className="text-[var(--muted-foreground)]">{t('sync.panel.status')}</span>
-            <span className="text-[var(--foreground)]">
-              {status?.running ? t('sync.panel.running') : t('sync.panel.idle')}
-            </span>
+        {!selectedNotebookId ? (
+          <p className="px-3 py-6 text-center text-xs text-[var(--muted-foreground)]">
+            {t('sync.panel.noNotebook')}
+          </p>
+        ) : !notebookState?.bound ? (
+          <div className="space-y-2 border-y border-[var(--divider)] px-3 py-3 text-xs">
+            <p className="text-[var(--muted-foreground)]">{t('sync.panel.notBound')}</p>
+            <label className="block space-y-1">
+              <span className="text-[var(--muted-foreground)]">{t('sync.panel.token')}</span>
+              <select
+                className="h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 text-sm"
+                value={selectedTokenId}
+                onChange={(event) => setSelectedTokenId(event.target.value)}
+              >
+                <option value="">{t('sync.panel.noToken')}</option>
+                {config?.tokens.map((token) => (
+                  <option key={token.id} value={token.id}>{token.label}</option>
+                ))}
+              </select>
+            </label>
+            <label className="block space-y-1">
+              <span className="text-[var(--muted-foreground)]">{t('sync.panel.vault')}</span>
+              <input
+                className="h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 text-sm"
+                value={vault}
+                placeholder={t('sync.panel.vaultHint')}
+                onChange={(event) => setVault(event.target.value)}
+              />
+            </label>
+            <Button
+              size="sm"
+              className="w-full rounded-lg"
+              disabled={busy || !selectedTokenId}
+              onClick={() => void bind()}
+            >
+              {t('sync.panel.bind')}
+            </Button>
           </div>
-          <div className="flex items-center justify-between">
-            <span className="text-[var(--muted-foreground)]">{t('sync.panel.lastSync')}</span>
-            <span className="text-[var(--foreground)]">{lastSync}</span>
-          </div>
-          {retryAt && (
+        ) : (
+          <div className="space-y-2 border-y border-[var(--divider)] px-3 py-3 text-xs">
             <div className="flex items-center justify-between">
-              <span className="text-[var(--muted-foreground)]">{t('sync.panel.retryAt')}</span>
-              <span className="text-[var(--foreground)]">{retryAt}</span>
+              <span className="text-[var(--muted-foreground)]">{t('sync.panel.vault')}</span>
+              <span className="text-[var(--foreground)]">{notebookState.vault}</span>
             </div>
-          )}
-          {status?.lastError && (
-            <p className="break-words text-[var(--destructive)]">{status.lastError}</p>
-          )}
-        </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--muted-foreground)]">{t('sync.panel.token')}</span>
+              <span className="text-[var(--foreground)]">
+                {notebookState.tokenLabel ?? notebookState.tokenId}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--muted-foreground)]">{t('sync.panel.status')}</span>
+              <span className="text-[var(--foreground)]">
+                {status?.running ? t('sync.panel.running') : t('sync.panel.idle')}
+              </span>
+            </div>
+            <div className="flex items-center justify-between">
+              <span className="text-[var(--muted-foreground)]">{t('sync.panel.lastSync')}</span>
+              <span className="text-[var(--foreground)]">{lastSync}</span>
+            </div>
+            {retryAt && (
+              <div className="flex items-center justify-between">
+                <span className="text-[var(--muted-foreground)]">{t('sync.panel.retryAt')}</span>
+                <span className="text-[var(--foreground)]">{retryAt}</span>
+              </div>
+            )}
+            {status?.lastError && (
+              <p className="break-words text-[var(--destructive)]">{status.lastError}</p>
+            )}
+          </div>
+        )}
 
-        <div className="flex gap-2 px-3 py-3">
-          <Button
-            size="sm"
-            className="flex-1 rounded-lg"
-            disabled={busy || !selectedNotebookId || status?.running}
-            onClick={() => void runSync('current')}
-          >
-            {t('sync.panel.syncCurrent')}
-          </Button>
-          <Button
-            size="sm"
-            variant="outline"
-            className="flex-1 rounded-lg"
-            disabled={busy || status?.running}
-            onClick={() => void runSync('all')}
-          >
-            {t('sync.panel.syncAll')}
-          </Button>
-        </div>
+        {notebookState?.bound && (
+          <div className="flex gap-2 px-3 py-3">
+            <Button
+              size="sm"
+              className="flex-1 rounded-lg"
+              disabled={busy || status?.running}
+              onClick={() => void syncNow()}
+            >
+              {t('sync.panel.syncCurrent')}
+            </Button>
+            <Button
+              size="sm"
+              variant="outline"
+              className="rounded-lg"
+              disabled={busy || status?.running}
+              onClick={() => void unbind()}
+            >
+              {t('sync.panel.unbind')}
+            </Button>
+          </div>
+        )}
 
         <div className="min-h-0 flex-1 overflow-auto px-1 pb-3">
           <div className="px-2 py-1 text-xs font-medium text-[var(--muted-foreground)]">
             {t('sync.panel.history')}
           </div>
-          {history.length === 0 ? (
+          {(notebookState?.history.length ?? 0) === 0 ? (
             <p className="px-2 py-6 text-center text-xs text-[var(--muted-foreground)]">
               {t('sync.panel.empty')}
             </p>
           ) : (
-            history.map((record, index) => (
+            notebookState?.history.map((record, index) => (
               <RecordRow key={`${record.at}-${index}`} record={record} language={language} />
             ))
           )}

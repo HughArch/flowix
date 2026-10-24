@@ -10,8 +10,8 @@ mod service;
 mod store;
 
 pub use commands::*;
-pub use config::{FnsConfig, FnsConfigPatch, FnsConfigView};
+pub use config::{FnsConfig, FnsConfigPatch, FnsConfigView, FnsTokenInput, FnsTokenView};
 pub use service::{
-    now_ms, schedule_notebook_sync, FnsNotebookSyncOutcome, FnsSyncRecord, FnsSyncService,
-    FnsSyncStatus,
+    now_ms, schedule_notebook_sync, FnsNotebookState, FnsNotebookSyncOutcome, FnsSyncRecord,
+    FnsSyncService, FnsSyncStatus,
 };
