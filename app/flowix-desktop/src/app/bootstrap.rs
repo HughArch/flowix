@@ -52,6 +52,10 @@ pub fn run() {
     let app_data_path = get_app_data_path();
     std::fs::create_dir_all(&app_data_path).ok();
 
+    // 移动端 `dirs::home_dir()` 为 None ── 存储方案 A: 主目录 = app 私有目录。
+    #[cfg(mobile)]
+    let home_dir = crate::app::paths::mobile_home_dir();
+    #[cfg(desktop)]
     let home_dir = dirs::home_dir().unwrap_or_else(|| PathBuf::from("/tmp"));
     runtime_log::record_event(
         "info",
@@ -66,6 +70,7 @@ pub fn run() {
     // �?��时在 `~/.local/bin/flowix-cli` 建一�?symlink。�?情�?
     // `cli_link` 模块: 幂等 (每�?�?��都跑, 已存在就不动), 失败�?warn
     // This is idempotent and failures do not block GUI startup.
+    #[cfg(desktop)]
     cli_link::ensure_cli_symlink();
 
     let user_config_dir = get_user_config_dir(&home_dir);
@@ -1069,6 +1074,24 @@ fn prepare_startup_storage(
     {
         let memo = crate::lock_utils::read_lock(memo_file, "memo_file");
         let result = memo.initialize_registry_storage();
+        if let Err(error) = result.as_ref() {
+            // 完整错误链落日志: sqlite_to_io 包装的原始 sqlite 报错在 source 里,
+            // 移动端排障 (EACCES/readonly) 依赖这一层细节。
+            let mut chain = format!("{error}");
+            let mut source = std::error::Error::source(error);
+            while let Some(err) = source {
+                chain.push_str(&format!(" | caused by: {err}"));
+                source = err.source();
+            }
+            tracing::error!("notebook registry init failed: {chain}");
+            // 移动端路径排障: 确认 wry 注入的包名与进程 HOME 实际值。
+            tracing::error!(
+                "WRY_ANDROID_PACKAGE={:?} HOME={:?} USER_CONFIG_DIR={:?}",
+                std::env::var("WRY_ANDROID_PACKAGE"),
+                std::env::var("HOME"),
+                user_config_dir
+            );
+        }
         result.map_err(|error| format!("initialize notebook registry failed: {error}"))?;
     }
     if version_init_pending {

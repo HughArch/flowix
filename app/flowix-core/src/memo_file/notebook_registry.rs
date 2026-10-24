@@ -39,9 +39,13 @@ impl NotebookRegistry {
         run_legacy_migrations: bool,
     ) -> std::io::Result<Connection> {
         if let Some(parent) = self.db_path().parent() {
-            fs::create_dir_all(parent)?;
+            fs::create_dir_all(parent).map_err(|error| {
+                tracing::error!(%error, dir = %parent.display(), "create db dir failed");
+                error
+            })?;
         }
         let path = self.db_path();
+        tracing::info!(path = %path.display(), "opening notebook registry");
         if let Ok(metadata) = fs::symlink_metadata(&path) {
             if !metadata.file_type().is_file() {
                 return Err(std::io::Error::new(
@@ -50,14 +54,22 @@ impl NotebookRegistry {
                 ));
             }
         }
-        if !path.try_exists()? {
+        if !path.try_exists().map_err(|error| {
+            tracing::error!(%error, path = %path.display(), "registry try_exists failed");
+            error
+        })? {
             let initialized = self.config_dir.join("notebook-registry-initialized");
             let companions = ["-wal", "-shm", "-journal"]
                 .iter()
                 .any(|suffix| path.with_file_name(format!("local.db{suffix}")).exists());
-            if initialized.try_exists()?
-                || companions
-                || self.config_dir.join("local.db").try_exists()?
+            if initialized.try_exists().map_err(|error| {
+                tracing::error!(%error, "initialized marker try_exists failed");
+                error
+            })? || companions
+                || self.config_dir.join("local.db").try_exists().map_err(|error| {
+                    tracing::error!(%error, "legacy local.db try_exists failed");
+                    error
+                })?
             {
                 return Err(std::io::Error::new(std::io::ErrorKind::NotFound,
                     "notebook registry is missing; restore or migrate the existing registry before opening"));
@@ -70,15 +82,26 @@ impl NotebookRegistry {
                 .config_dir
                 .join("notebook-registry-initialized")
                 .try_exists()?;
-        let mut database = Connection::open(&path).map_err(sqlite_to_io)?;
+        let mut database = Connection::open(&path).map_err(|error| {
+            // sqlite_to_io 只保留 os code; SQLite 的原始报错 (如 readonly /
+            // unable to open) 是移动端排障的关键信号, 失败时全量落日志。
+            tracing::error!(%error, path = %path.display(), "notebook registry open failed");
+            sqlite_to_io(error)
+        })?;
         database
             .busy_timeout(Duration::from_secs(10))
-            .map_err(sqlite_to_io)?;
+            .map_err(|error| {
+                tracing::error!(%error, "notebook registry busy_timeout failed");
+                sqlite_to_io(error)
+            })?;
         database
             .execute_batch(
                 "PRAGMA journal_mode=WAL; PRAGMA synchronous=NORMAL; PRAGMA foreign_keys=ON;",
             )
-            .map_err(sqlite_to_io)?;
+            .map_err(|error| {
+                tracing::error!(%error, "notebook registry PRAGMA setup failed");
+                sqlite_to_io(error)
+            })?;
         let setup_upgrade_allowed = if run_legacy_migrations && existing_database {
             snapshot_before_registry_upgrade(&database, &path)?
         } else {
@@ -99,11 +122,29 @@ impl NotebookRegistry {
             .map_err(sqlite_to_io)?;
         // An existing database without identities is not a fresh installation.
         // Do not silently populate an unrelated or partially damaged database with an empty registry.
+        // 例外: 共享本库的伴生存储 (property presets / 本地迁移日志) 可能先于
+        // registry 完成建表 (移动端 WebView 先于 native 启动的竞态), 那仍是
+        // 本应用的全新库, 应当继续创建 notebooks schema。
         if !notebooks_table_exists && existing_database {
-            return Err(std::io::Error::new(
-                std::io::ErrorKind::InvalidData,
-                "existing notebook registry has no notebooks table; recovery required",
-            ));
+            let foreign_tables: Vec<String> = conn
+                .prepare(
+                    "SELECT name FROM sqlite_master WHERE type='table' AND name NOT LIKE 'sqlite_%'",
+                )
+                .map_err(sqlite_to_io)?
+                .query_map([], |row| row.get::<_, String>(0))
+                .map_err(sqlite_to_io)?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(sqlite_to_io)?;
+            let known_companions = ["local_migrations", "property_presets", "property_preset_options"];
+            if foreign_tables
+                .iter()
+                .any(|table| !known_companions.contains(&table.as_str()))
+            {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidData,
+                    "existing notebook registry has no notebooks table; recovery required",
+                ));
+            }
         }
         let preserved_columns = if notebooks_table_exists && run_legacy_migrations {
             let mut statement = conn
@@ -362,8 +403,18 @@ impl NotebookRegistry {
         }
         conn.commit().map_err(sqlite_to_io)?;
         let initialized = self.config_dir.join("notebook-registry-initialized");
-        if !initialized.try_exists()? {
-            super::atomic_write_bytes(&initialized, b"1")?;
+        if !initialized.try_exists().map_err(|error| {
+            tracing::error!(%error, "initialized marker try_exists failed");
+            error
+        })? {
+            super::atomic_write_bytes(&initialized, b"1").map_err(|error| {
+                tracing::error!(
+                    %error,
+                    marker = %initialized.display(),
+                    "initialized marker atomic write failed"
+                );
+                error
+            })?;
         }
         Ok(database)
     }
@@ -449,7 +500,10 @@ fn snapshot_before_registry_upgrade(
             .ok_or_else(|| std::io::Error::other("registry has no parent"))?
             .join("registry-backups")
             .join(format!("schema-v1-{digest}"));
-        fs::create_dir_all(&directory)?;
+        fs::create_dir_all(&directory).map_err(|error| {
+            tracing::error!(%error, dir = %directory.display(), "snapshot create_dir_all failed");
+            error
+        })?;
         let target = directory.join("local.db");
         let validate = |candidate: &std::path::Path| -> std::io::Result<()> {
             let backup =
@@ -466,12 +520,18 @@ fn snapshot_before_registry_upgrade(
             }
             Ok(())
         };
-        if target.try_exists()? {
+        if target.try_exists().map_err(|error| {
+            tracing::error!(%error, "snapshot target try_exists failed");
+            error
+        })? {
             return validate(&target);
         }
         // VACUUM INTO needs a nonexistent destination. The temporary directory
         // cleans up interrupted failures without leaving a partial reusable backup.
-        let temporary = tempfile::tempdir_in(&directory)?;
+        let temporary = tempfile::tempdir_in(&directory).map_err(|error| {
+            tracing::error!(%error, dir = %directory.display(), "snapshot tempdir_in failed");
+            error
+        })?;
         let staged = temporary.path().join("local.db");
         conn.execute("VACUUM INTO ?1", [staged.to_string_lossy().as_ref()])
             .map_err(sqlite_to_io)?;
@@ -480,7 +540,10 @@ fn snapshot_before_registry_upgrade(
             .write(true)
             .open(&staged)?
             .sync_all()?;
-        match fs::hard_link(&staged, &target) {
+        // Android SELinux 禁止 untrusted_app 对 app_data_file 执行 link(),
+        // hard_link 在移动端必然 EACCES; rename 语义等价 ── staged 是临时
+        // 目录里的一次性产物, 且仅在 target 不存在时执行。
+        match fs::rename(&staged, &target) {
             Ok(()) => Ok(()),
             Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => validate(&target),
             Err(error) => Err(error),
