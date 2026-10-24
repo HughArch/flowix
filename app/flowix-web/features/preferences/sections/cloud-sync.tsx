@@ -276,6 +276,10 @@ export function CloudSyncSection() {
     <div className="space-y-5 pb-8">
       <SectionHeader title={t('preferences.cloud.title')} description={t('preferences.cloud.description')} />
 
+      <p className="rounded-lg border border-[var(--border)] bg-[var(--muted)] px-3 py-2 text-sm text-[var(--muted-foreground)]">
+        {t('preferences.cloud.noteSyncRetired')}
+      </p>
+
       {(stateLoadError ?? state?.authError) && (
         <p className="break-words text-sm text-[var(--destructive)]">
           {stateLoadError ?? state?.authError}

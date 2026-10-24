@@ -122,6 +122,7 @@ const zhCN = {
     "preferences.tabs.plugins": "插件",
 
     "preferences.cloud.title": "账号",
+    "preferences.cloud.noteSyncRetired": "云笔记同步已停用。请使用「笔记同步」连接 Fast Note Sync；账号登录与 AI 凭据不受影响。",
     "preferences.cloud.description": "使用云服务进行 笔记 同步",
     "preferences.cloud.membershipLoading": "读取会员状态...",
     "preferences.cloud.membershipFailed": "会员状态更新失败，已显示的信息可能不是最新",

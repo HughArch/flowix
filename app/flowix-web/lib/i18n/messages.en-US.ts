@@ -127,6 +127,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "preferences.tabs.plugins": "Plugins",
 
     "preferences.cloud.title": "Account",
+    "preferences.cloud.noteSyncRetired": "Cloud note sync is retired. Use “Note Sync” to connect to Fast Note Sync; account login and AI credentials are unaffected.",
     "preferences.cloud.description": "Sync notes with cloud services.",
     "preferences.cloud.membershipLoading": "Loading membership...",
     "preferences.cloud.membershipFailed": "Membership update failed; displayed information may be outdated",

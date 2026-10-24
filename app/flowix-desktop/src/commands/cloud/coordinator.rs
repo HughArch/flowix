@@ -132,7 +132,16 @@ fn send_sync_request(app: &AppHandle, request: SyncCoordinatorRequest) -> Result
         .map_err(|_| "cloud sync coordinator is unavailable".to_string())
 }
 
+/// Cloud *note* sync is retired in favour of Fast Note Sync. Authentication,
+/// membership and AI credential plumbing stay available; only the notebook
+/// replication paths are disabled here so two sync engines never write the
+/// same files.
+pub(crate) const CLOUD_NOTE_SYNC_RETIRED: bool = true;
+
 fn automatic_sync_available(app: &AppHandle, notebook_id: &str) -> bool {
+    if CLOUD_NOTE_SYNC_RETIRED {
+        return false;
+    }
     let state = app.state::<AppState>();
     state
         .cloud_sync
@@ -148,6 +157,9 @@ fn automatic_sync_available(app: &AppHandle, notebook_id: &str) -> bool {
 }
 
 fn automatic_sync_target_available(app: &AppHandle, target: &SyncTarget) -> bool {
+    if CLOUD_NOTE_SYNC_RETIRED {
+        return false;
+    }
     match target {
         SyncTarget::Notebook(notebook_id) => automatic_sync_available(app, notebook_id),
         SyncTarget::FullAccount => {
@@ -787,6 +799,10 @@ fn schedule_retry_after_failure(app: &AppHandle, target: SyncTarget) {
 }
 
 pub(crate) fn start_cloud_sync_polling(app: AppHandle) {
+    if CLOUD_NOTE_SYNC_RETIRED {
+        tracing::info!("cloud note sync is retired; periodic polling is disabled");
+        return;
+    }
     if POLLING_STARTED.swap(true, Ordering::SeqCst) {
         return;
     }
@@ -821,6 +837,9 @@ pub(super) async fn sync_now(
     notebook_id: Option<String>,
     app: AppHandle,
 ) -> Result<CloudSyncResult, String> {
+    if CLOUD_NOTE_SYNC_RETIRED {
+        return Err("云笔记同步已停用，请使用「笔记同步（Fast Note Sync）」".to_string());
+    }
     let target = match notebook_id {
         Some(notebook_id) => SyncTarget::Notebook(notebook_id),
         None => SyncTarget::FullAccount,

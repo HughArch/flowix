@@ -1,8 +1,10 @@
 //! FNS sync orchestration for the desktop shell.
 
+use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::RwLock;
+use std::sync::{Arc, Mutex, RwLock};
+use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
@@ -44,7 +46,12 @@ pub struct FnsSyncService {
     config: RwLock<FnsConfig>,
     status: RwLock<FnsSyncStatus>,
     running: AtomicBool,
+    /// Per-notebook debounce generation. A scheduled run whose generation has
+    /// been superseded does nothing.
+    scheduled: Mutex<HashMap<String, u64>>,
 }
+
+const AUTO_SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
 
 impl FnsSyncService {
     pub fn new(config_dir: PathBuf) -> Self {
@@ -54,7 +61,68 @@ impl FnsSyncService {
             config: RwLock::new(config),
             status: RwLock::new(FnsSyncStatus::default()),
             running: AtomicBool::new(false),
+            scheduled: Mutex::new(HashMap::new()),
         }
+    }
+
+    /// Debounced sync after a local edit. Only applies to notebooks that
+    /// already have a vault binding; the first binding is always explicit.
+    pub fn schedule_sync(self: &Arc<Self>, app: AppHandle, notebook_id: String) {
+        let ready = {
+            let config = self.read_config();
+            config.is_ready()
+        };
+        if !ready {
+            return;
+        }
+
+        if !self.notebook_is_bound(&app, &notebook_id) {
+            return;
+        }
+
+        let generation = {
+            let mut scheduled = self
+                .scheduled
+                .lock()
+                .unwrap_or_else(|poisoned| poisoned.into_inner());
+            let entry = scheduled.entry(notebook_id.clone()).or_insert(0);
+            *entry = entry.wrapping_add(1);
+            *entry
+        };
+
+        let service = self.clone();
+        let app = app.clone();
+        tauri::async_runtime::spawn(async move {
+            tokio::time::sleep(AUTO_SYNC_DEBOUNCE).await;
+            {
+                let scheduled = service
+                    .scheduled
+                    .lock()
+                    .unwrap_or_else(|poisoned| poisoned.into_inner());
+                if scheduled.get(&notebook_id).copied() != Some(generation) {
+                    return;
+                }
+            }
+            match service.sync_notebook(&app, &notebook_id).await {
+                Ok(_) => {}
+                Err(error) => tracing::warn!(
+                    notebook_id = %notebook_id,
+                    "FNS automatic sync failed: {error}"
+                ),
+            }
+        });
+    }
+
+    fn notebook_is_bound(&self, app: &AppHandle, notebook_id: &str) -> bool {
+        let state = app.state::<AppState>();
+        let root = {
+            let memo_file = read_lock(&state.memo_file, "memo_file");
+            memo_file
+                .get_notebook_config_by_id(notebook_id)
+                .map(|notebook| PathBuf::from(notebook.path))
+        };
+        root.and_then(|root| SyncState::load(&root).ok().flatten())
+            .is_some()
     }
 
     pub fn config_view(&self) -> FnsConfigView {
@@ -247,4 +315,11 @@ impl FnsSyncService {
 
 pub fn now_ms() -> i64 {
     flowix_fns::engine::now_ms()
+}
+
+/// Debounced FNS sync for one notebook, callable from the watcher and memo
+/// event paths without borrowing the service.
+pub fn schedule_notebook_sync(app: &AppHandle, notebook_id: &str) {
+    let service = app.state::<AppState>().fns_sync.clone();
+    service.schedule_sync(app.clone(), notebook_id.to_owned());
 }

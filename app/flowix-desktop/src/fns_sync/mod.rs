@@ -11,4 +11,6 @@ mod store;
 
 pub use commands::*;
 pub use config::{FnsConfig, FnsConfigPatch, FnsConfigView};
-pub use service::{FnsNotebookSyncOutcome, FnsSyncService, FnsSyncStatus};
+pub use service::{
+    now_ms, schedule_notebook_sync, FnsNotebookSyncOutcome, FnsSyncService, FnsSyncStatus,
+};

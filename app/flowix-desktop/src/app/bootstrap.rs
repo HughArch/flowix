@@ -361,6 +361,18 @@ pub fn run() {
             };
             app_state.upload_sessions.start_cleanup();
             app.manage(app_state);
+            {
+                // Pull remote changes once the UI is up. Only notebooks that
+                // already have a vault binding participate.
+                let fns_service = app.state::<AppState>().fns_sync.clone();
+                let fns_app = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    tokio::time::sleep(Duration::from_secs(8)).await;
+                    if let Err(error) = fns_service.sync_bound_notebooks(&fns_app).await {
+                        tracing::warn!("startup FNS sync failed: {error}");
+                    }
+                });
+            }
             external_runtimes.listen_for_terminal_events(app.handle());
             #[cfg(windows)]
             {
