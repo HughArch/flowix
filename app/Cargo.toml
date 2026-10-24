@@ -50,7 +50,6 @@ shell-words = "1.1"
 # Win32_Foundation 必须开: SetConsoleCP/SetConsoleOutputCP 返回 BOOL, 被该 feature 门控。
 windows-sys = { version = "0.59", features = ["Win32_System_Console", "Win32_Foundation"] }
 rusqlite = { version = "0.31", features = ["bundled"] }
-reqwest = { version = "0.12", features = ["json"] }
 tokio = { version = "1", features = ["sync", "time"] }
 
 # ── 生产体积优化（release 专用，不影响 dev 调试）──────────────────────────────
