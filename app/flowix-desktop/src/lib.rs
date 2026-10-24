@@ -20,6 +20,7 @@ mod document_mutation;
 mod document_io;
 mod dsh;
 mod events;
+mod fns_sync;
 mod frame_scrollbar;
 mod lock_utils;
 mod maintenance;
