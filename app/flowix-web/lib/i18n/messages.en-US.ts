@@ -1022,6 +1022,8 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "agent.flowixSession.title": "Flowix assistant session",
     "agent.mobilePanel.title": "AI Assistant",
     "agent.mobilePanel.newConversation": "New conversation",
+    "agent.mobilePanel.selectConversation": "Switch conversation",
+    "agent.mobilePanel.openDocumentFirst": "Open a note first to use the AI assistant",
     "agent.mobilePanel.emptyConversations": "No conversations yet",
     "agent.mobilePanel.untitledConversation": "Untitled conversation",
     "agent.mobilePanel.deleteConversation": "Delete conversation",

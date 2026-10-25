@@ -38,6 +38,37 @@ struct RunRegistry {
     cancels: Mutex<HashMap<String, Arc<AtomicBool>>>,
 }
 
+/// Emit one `agent-chunk` with the metadata every chunk must carry:
+/// `run_id` + `agent_type`. The frontend event mapper rejects chunks without
+/// `run_id` (`Agent chunk is missing run_id`), so every emit must go through
+/// this helper — a bare `emit_to` silently drops the chunk and leaves the
+/// conversation stuck in "running".
+fn emit_builtin_chunk(app: &AppHandle, chunk: AgentChunk, run_id: &str) {
+    let mut payload = serde_json::to_value(&chunk).unwrap_or(serde_json::Value::Null);
+    if let serde_json::Value::Object(object) = &mut payload {
+        object.insert(
+            "run_id".to_owned(),
+            serde_json::Value::String(run_id.to_owned()),
+        );
+        object.insert(
+            "agent_type".to_owned(),
+            serde_json::Value::String(super::AGENT_ID.to_owned()),
+        );
+    }
+    let _ = emit_to(app, "agent-chunk", payload);
+}
+
+/// Frontend passes the run id it used for the optimistic user row; reuse it so
+/// the live row and the persisted row share one identity. Fall back to a
+/// generated id for direct/harness callers.
+fn resolve_run_id(thread_id: &str, provided: Option<&str>) -> String {
+    provided
+        .map(str::trim)
+        .filter(|value| !value.is_empty())
+        .map(str::to_owned)
+        .unwrap_or_else(|| format!("run-{thread_id}-{}", uuid::Uuid::new_v4()))
+}
+
 pub struct BuiltinAiService {
     runs: RunRegistry,
     user_config_dir: std::path::PathBuf,
@@ -216,33 +247,46 @@ impl BuiltinAiService {
         cancel: Arc<AtomicBool>,
     ) {
         let started = std::time::Instant::now();
-        let _ = emit_to(&app, "agent-chunk", AgentChunk::StreamStart {
-            thread_id: thread_id.clone(),
-            model: Some(config.model.clone()),
-            reasoning_effort: None,
-        });
+        let run_id = resolve_run_id(&thread_id, message.run_id.as_deref());
+        emit_builtin_chunk(
+            &app,
+            AgentChunk::StreamStart {
+                thread_id: thread_id.clone(),
+                model: Some(config.model.clone()),
+                reasoning_effort: None,
+            },
+            &run_id,
+        );
 
         let result = self
-            .run_inner(&app, &thread_id, &message, &config, &scope, &cancel)
+            .run_inner(&app, &thread_id, &run_id, &message, &config, &scope, &cancel)
             .await;
 
         let reason = match &result {
             Ok(()) => None,
             Err(RunError::Cancelled) => Some("stopped".to_owned()),
             Err(RunError::Failed(error)) => {
-                let _ = emit_to(&app, "agent-chunk", AgentChunk::Error {
-                    thread_id: thread_id.clone(),
-                    message: error.clone(),
-                    error_details: None,
-                });
+                emit_builtin_chunk(
+                    &app,
+                    AgentChunk::Error {
+                        thread_id: thread_id.clone(),
+                        message: error.clone(),
+                        error_details: None,
+                    },
+                    &run_id,
+                );
                 Some("error".to_owned())
             }
         };
-        let _ = emit_to(&app, "agent-chunk", AgentChunk::StreamEnd {
-            thread_id: thread_id.clone(),
-            reason,
-            duration_ms: Some(started.elapsed().as_millis() as u64),
-        });
+        emit_builtin_chunk(
+            &app,
+            AgentChunk::StreamEnd {
+                thread_id: thread_id.clone(),
+                reason,
+                duration_ms: Some(started.elapsed().as_millis() as u64),
+            },
+            &run_id,
+        );
         self.finish(&thread_id);
     }
 
@@ -250,6 +294,7 @@ impl BuiltinAiService {
         self: &Arc<Self>,
         app: &AppHandle,
         thread_id: &str,
+        run_id: &str,
         message: &AgentUserMessage,
         config: &BuiltinAiConfig,
         scope: &ToolScope,
@@ -258,10 +303,18 @@ impl BuiltinAiService {
         // 1. Persist + emit the user turn. Composer note references arrive as
         //    `flowix://open?...relativePath=...` markdown links; humanize them
         //    into llm_content so the model sees readable paths (display keeps
-        //    the original).
-        let llm_content = humanize_note_references(&message.content);
+        //    the original). The id matches the frontend's optimistic row
+        //    (`completedRunUserMessageId` = `user-<runId>`) so the live row is
+        //    adopted in place instead of duplicated.
+        let user_message_id = format!("user-{run_id}");
+        // Keep the frontend-built LLM content (first-message context block:
+        // current note excerpt + task tag) and only humanize note references
+        // inside it. The display content stays untouched.
+        let llm_content = humanize_note_references(
+            message.llm_content.as_deref().unwrap_or(&message.content),
+        );
         let user_message = ChatMessage {
-            id: new_message_id("user"),
+            id: user_message_id.clone(),
             role: "user".into(),
             message_type: None,
             content: message.content.clone(),
@@ -289,13 +342,17 @@ impl BuiltinAiService {
             .add_message(thread_id, user_message.clone())
             .await
             .map_err(|error| RunError::Failed(error.to_string()))?;
-        let _ = emit_to(app, "agent-chunk", AgentChunk::UserMessage {
-            thread_id: thread_id.to_owned(),
-            id: user_message.id.clone(),
-            text: message.content.clone(),
-            timestamp: now_millis(),
-            attachments: Vec::new(),
-        });
+        emit_builtin_chunk(
+            app,
+            AgentChunk::UserMessage {
+                thread_id: thread_id.to_owned(),
+                id: user_message_id,
+                text: message.content.clone(),
+                timestamp: now_millis(),
+                attachments: Vec::new(),
+            },
+            run_id,
+        );
 
         // 2. Assemble provider messages: system + history (already contains
         //    the just-persisted user turn; its llm_content carries the
@@ -328,21 +385,36 @@ impl BuiltinAiService {
                 Arc::clone(cancel),
                 |event| match event {
                     StreamEvent::Text(text) => {
-                        let _ = emit_to(app, "agent-chunk", AgentChunk::Text {
-                            thread_id: thread_id.to_owned(),
-                            text,
-                        });
+                        emit_builtin_chunk(
+                            app,
+                            AgentChunk::Text {
+                                thread_id: thread_id.to_owned(),
+                                text,
+                            },
+                            run_id,
+                        );
                     }
                     StreamEvent::Reasoning(text) => {
-                        let _ = emit_to(app, "agent-chunk", AgentChunk::Reasoning {
-                            thread_id: thread_id.to_owned(),
-                            text,
-                        });
+                        emit_builtin_chunk(
+                            app,
+                            AgentChunk::Reasoning {
+                                thread_id: thread_id.to_owned(),
+                                text,
+                            },
+                            run_id,
+                        );
                     }
                 },
             )
             .await
             .map_err(map_provider_error)?;
+
+            // Persist the reasoning transcript so reopening the conversation
+            // shows what the model thought (the live row is collapsed by
+            // default; see the render controller).
+            if !completion.reasoning.is_empty() {
+                self.persist_reasoning(thread_id, &completion.reasoning).await?;
+            }
 
             if completion.tool_calls.is_empty() {
                 // Final answer for this turn.
@@ -383,14 +455,21 @@ impl BuiltinAiService {
                 if cancel.load(Ordering::Relaxed) {
                     return Err(RunError::Cancelled);
                 }
-                let call_id = new_message_id("tool");
-                let _ = emit_to(app, "agent-chunk", AgentChunk::ToolCall {
-                    thread_id: thread_id.to_owned(),
-                    id: call_id.clone(),
-                    name: call.name.clone(),
-                    input: serde_json::from_str(&call.arguments)
-                        .unwrap_or(serde_json::json!({ "raw": call.arguments })),
-                });
+                // Provider call id doubles as the live tool row id so history
+                // reconciliation (which matches on toolCallId) merges instead
+                // of duplicating the tool row.
+                let call_id = call.id.clone();
+                emit_builtin_chunk(
+                    app,
+                    AgentChunk::ToolCall {
+                        thread_id: thread_id.to_owned(),
+                        id: call_id.clone(),
+                        name: call.name.clone(),
+                        input: serde_json::from_str(&call.arguments)
+                            .unwrap_or(serde_json::json!({ "raw": call.arguments })),
+                    },
+                    run_id,
+                );
 
                 let memo_file = Arc::clone(&self.memo_file);
                 let scope = scope.clone();
@@ -405,19 +484,23 @@ impl BuiltinAiService {
                     serde_json::json!({ "ok": false, "error": format!("工具执行任务失败: {error}") })
                 });
 
-                let _ = emit_to(app, "agent-chunk", AgentChunk::ToolResult {
-                    thread_id: thread_id.to_owned(),
-                    id: call_id.clone(),
-                    name: call.name.clone(),
-                    result: result.clone(),
-                });
+                emit_builtin_chunk(
+                    app,
+                    AgentChunk::ToolResult {
+                        thread_id: thread_id.to_owned(),
+                        id: call_id.clone(),
+                        name: call.name.clone(),
+                        result: result.clone(),
+                    },
+                    run_id,
+                );
 
                 let result_text = serde_json::to_string(&result)
                     .unwrap_or_else(|_| result.to_string());
                 self.thread_manager
                     .add_message(
                         thread_id,
-                        tool_message(&call_id, &call.id, &call.name, &result_text),
+                        tool_message(&format!("tool-{call_id}"), &call.id, &call.name, &result_text),
                     )
                     .await
                     .map_err(|error| RunError::Failed(error.to_string()))?;
@@ -445,6 +528,42 @@ impl BuiltinAiService {
             .await
             .map_err(|error| RunError::Failed(error.to_string()))?;
         Ok(page.messages)
+    }
+
+    /// Persist one reasoning segment. The live row is produced by the reducer
+    /// from `Reasoning` deltas; this row makes the transcript survive a
+    /// reopen. `history_to_provider` ignores reasoning rows, so they never
+    /// re-enter the model context.
+    async fn persist_reasoning(&self, thread_id: &str, text: &str) -> Result<(), RunError> {
+        let message = ChatMessage {
+            id: new_message_id("reasoning"),
+            role: "reasoning".into(),
+            message_type: None,
+            content: text.to_owned(),
+            attachments: None,
+            llm_content: None,
+            system_reminder_directory: None,
+            timestamp: now_rfc3339(),
+            source_sequence: None,
+            is_loading: None,
+            tool_call_id: None,
+            tool_name: None,
+            tool_data: None,
+            tool_input: None,
+            tool_call: None,
+            tool_result: None,
+            tool_calls: None,
+            reasoning: None,
+            is_completed: Some(true),
+            error_details: None,
+            is_collapsed: Some(true),
+            codex_turn_id: None,
+            turn_duration_ms: None,
+        };
+        self.thread_manager
+            .add_message(thread_id, message)
+            .await
+            .map_err(|error| RunError::Failed(error.to_string()))
     }
 
     async fn persist_assistant(

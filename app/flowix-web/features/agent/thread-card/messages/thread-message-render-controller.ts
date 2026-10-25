@@ -564,8 +564,11 @@ export class ThreadMessageRenderController {
   }
 
   private getReasoningCollapsed(message: AgentMessage): boolean {
+    // 内置助手（flowix）的思考过程默认折叠 —— 流式过程中也保持折叠，
+    // 用户点击标题可展开。其他 runtime 维持原语义（完成后才折叠）。
+    const defaultCollapsed = this.getTypeKey() === "flowix" ? true : !!message.isCompleted;
     return (
-      this.reasoningCollapsedOverrides.get(messageRenderKey(message)) ?? !!message.isCompleted
+      this.reasoningCollapsedOverrides.get(messageRenderKey(message)) ?? defaultCollapsed
     );
   }
 

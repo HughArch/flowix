@@ -17,6 +17,7 @@ import {
   createAndOpenPiConversation,
 } from '@features/agent/public/shell-api';
 import { useMobileAgentPanelStore } from '@features/agent/components/mobile-agent-panel';
+import { toast } from '@/lib/toast';
 import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
 import { normalizeAgentRuntimeStatus } from '@features/agent/runtime/agent-runtime-status';
 import { useI18n } from '@/lib/i18n';
@@ -223,7 +224,13 @@ export function StatusBar({
           <Tooltip content={t('agent.mobilePanel.title')} side="top">
             <button
               type="button"
-              onClick={() => useMobileAgentPanelStore.getState().openForCurrentDocument()}
+              onClick={() => {
+                const store = useMobileAgentPanelStore.getState();
+                store.openForCurrentDocument();
+                if (!useMobileAgentPanelStore.getState().open) {
+                  toast.error(t('agent.mobilePanel.openDocumentFirst'));
+                }
+              }}
               className="h-full flex items-center justify-center px-1.5 py-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
               aria-label={t('agent.mobilePanel.title')}
             >

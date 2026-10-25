@@ -1001,6 +1001,8 @@ const zhCN = {
     "agent.flowixSession.title": "Flowix 助手会话",
     "agent.mobilePanel.title": "AI 助手",
     "agent.mobilePanel.newConversation": "新建对话",
+    "agent.mobilePanel.selectConversation": "切换对话",
+    "agent.mobilePanel.openDocumentFirst": "请先打开一篇笔记，再使用 AI 助手",
     "agent.mobilePanel.emptyConversations": "暂无对话",
     "agent.mobilePanel.untitledConversation": "未命名对话",
     "agent.mobilePanel.deleteConversation": "删除对话",
