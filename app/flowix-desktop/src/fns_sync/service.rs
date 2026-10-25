@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
+use tokio::sync::Mutex as AsyncMutex;
 
 use flowix_fns::{
     sync_notebook as run_engine_sync, ClientInfo, FnsClient, SyncProgress, SyncProgressSink,
@@ -106,7 +106,14 @@ pub struct FnsSyncService {
     config_dir: PathBuf,
     config: RwLock<FnsConfig>,
     status: Arc<RwLock<FnsSyncStatus>>,
-    running: AtomicBool,
+    /// Serializes sync runs across every trigger source (edit debounce,
+    /// realtime broadcast, manual command, retry). Queuing beats failing:
+    /// a dropped trigger may never re-fire on its own — a remote change
+    /// notification, for instance, is not repeated until the next edit.
+    sync_lock: AsyncMutex<()>,
+    /// Realtime change listener; restarted whenever credentials or notebook
+    /// bindings change.
+    listener: Arc<super::listener::FnsListener>,
     /// Per-notebook debounce generation. A scheduled run whose generation has
     /// been superseded does nothing.
     scheduled: Mutex<HashMap<String, u64>>,
@@ -121,15 +128,6 @@ const AUTO_SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
 /// leaving the UI stuck on "syncing" forever.
 const SYNC_TIMEOUT: Duration = Duration::from_secs(120);
 
-/// Resets the running flag even if the sync future panics or is cancelled.
-struct RunningGuard<'a>(&'a AtomicBool);
-
-impl Drop for RunningGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
-    }
-}
-
 impl FnsSyncService {
     pub fn new(config_dir: PathBuf) -> Self {
         let config = FnsConfig::load(&config_dir);
@@ -137,11 +135,25 @@ impl FnsSyncService {
             config_dir,
             config: RwLock::new(config),
             status: Arc::new(RwLock::new(FnsSyncStatus::default())),
-            running: AtomicBool::new(false),
+            sync_lock: AsyncMutex::new(()),
+            listener: Arc::new(super::listener::FnsListener::new()),
             scheduled: Mutex::new(HashMap::new()),
             retry: Mutex::new(HashMap::new()),
             history: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Realtime listener supervisor. Call [`FnsListener::start`] once at
+    /// startup; this accessor exists so the bootstrap wiring can reach it
+    /// without exposing the field.
+    pub fn listener(&self) -> &Arc<super::listener::FnsListener> {
+        &self.listener
+    }
+
+    /// Clone of the current credential config, for listeners planning their
+    /// connections.
+    pub(crate) fn config_snapshot(&self) -> FnsConfig {
+        self.read_config().clone()
     }
 
     /// Newest-first history, optionally restricted to one notebook.
@@ -250,6 +262,7 @@ impl FnsSyncService {
             .map_err(|_| "FNS config lock poisoned".to_owned())?;
         config.apply(patch);
         config.save(&self.config_dir).map_err(|error| error.to_string())?;
+        self.listener.restart();
         Ok(FnsConfigView::from(&*config))
     }
 
@@ -262,6 +275,7 @@ impl FnsSyncService {
             .upsert_token(input.id.as_deref(), &input.label, &input.token)
             .ok_or_else(|| "label and token are required for a new token".to_owned())?;
         config.save(&self.config_dir).map_err(|error| error.to_string())?;
+        self.listener.restart();
         Ok(FnsConfigView::from(&*config))
     }
 
@@ -272,6 +286,7 @@ impl FnsSyncService {
             .map_err(|_| "FNS config lock poisoned".to_owned())?;
         config.remove_token(id);
         config.save(&self.config_dir).map_err(|error| error.to_string())?;
+        self.listener.restart();
         Ok(FnsConfigView::from(&*config))
     }
 
@@ -333,19 +348,15 @@ impl FnsSyncService {
             (config.clone(), config.offline_sync_strategy())
         };
 
-        if self
-            .running
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return Err("FNS sync is already running".to_owned());
-        }
+        // Wait for any in-flight sync instead of failing: every trigger path
+        // is a "please sync this notebook soon" request, and none of them
+        // benefits from being discarded here.
+        let _sync_lock = self.sync_lock.lock().await;
         self.set_status(|status| {
             status.running = true;
             status.last_error = None;
             status.notebook_id = Some(notebook_id.to_owned());
         });
-        let _running_guard = RunningGuard(&self.running);
 
         tracing::info!(notebook_id, "FNS sync started");
         let started = std::time::Instant::now();
@@ -639,6 +650,7 @@ impl FnsSyncService {
         state.vault = vault_name;
         state.token_id = token_id.to_owned();
         state.save(&root).map_err(|error| error.to_string())?;
+        self.listener.restart();
 
         self.notebook_state(app, notebook_id)
     }
@@ -648,7 +660,10 @@ impl FnsSyncService {
         let (_, root) = notebook_root(app, notebook_id)?;
         let path = SyncState::path_for(&root);
         match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.listener.restart();
+                Ok(())
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.to_string()),
         }

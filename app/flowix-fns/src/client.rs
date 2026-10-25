@@ -249,6 +249,28 @@ impl FnsClient {
         }
     }
 
+    /// Override the per-frame wait. Long-lived listeners raise this so a
+    /// quiet (but healthy) connection is not mistaken for a stalled sync.
+    pub fn set_timeout(&mut self, timeout: Duration) {
+        self.timeout = timeout;
+    }
+
+    /// Send a WebSocket-level ping. Used by listeners as a liveness probe:
+    /// the pong (or the failure to read anything afterwards) decides whether
+    /// the connection is worth keeping.
+    pub async fn ping(&mut self) -> Result<()> {
+        self.stream.send(Message::Ping(Vec::new())).await?;
+        Ok(())
+    }
+
+    /// Half-close: send a Close frame without consuming the client. Unlike
+    /// [`FnsClient::close`] this is usable when the client is behind a
+    /// borrow (listeners keep it in a loop).
+    pub async fn shutdown(&mut self) -> Result<()> {
+        self.stream.send(Message::Close(None)).await?;
+        Ok(())
+    }
+
     /// Send one file chunk: `"00"` + session id (36 bytes) + big-endian index
     /// + payload.
     pub async fn send_binary_chunk(

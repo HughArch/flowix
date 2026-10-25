@@ -6,6 +6,7 @@
 
 mod commands;
 pub mod config;
+pub mod listener;
 mod service;
 mod store;
 

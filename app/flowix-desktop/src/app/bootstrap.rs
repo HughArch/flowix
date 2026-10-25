@@ -316,6 +316,15 @@ pub fn run() {
                     fns_service.sync_after_startup(fns_app).await;
                 });
             }
+            {
+                // Realtime listener: keep one WebSocket per bound token open
+                // and turn server change broadcasts into debounced syncs, so
+                // remote edits no longer wait for a local trigger to arrive.
+                let fns_service = app.state::<AppState>().fns_sync.clone();
+                fns_service
+                    .listener()
+                    .start(app.handle().clone(), Arc::downgrade(&fns_service));
+            }
             external_runtimes.listen_for_terminal_events(app.handle());
             #[cfg(windows)]
             {
