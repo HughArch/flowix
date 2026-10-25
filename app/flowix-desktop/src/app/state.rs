@@ -73,6 +73,9 @@ pub struct AppState {
     /// Fast Note Sync Service client. It owns its own credentials, vault
     /// bindings and cursors.
     pub fns_sync: Arc<crate::fns_sync::FnsSyncService>,
+    /// Built-in AI assistant (移动端内置 Agent). Self-contained runtime on
+    /// top of `NoteService`; independent from the external CLI agent cluster.
+    pub agent_builtin: Arc<crate::agent_builtin::BuiltinAiService>,
     /// Legacy system metadata reader used to migrate notebook tag state into
     /// each notebook's `.flowix/system.json`.
     pub system_data: SystemData,

@@ -284,6 +284,11 @@ pub fn run() {
                 fns_sync: Arc::new(crate::fns_sync::FnsSyncService::new(
                     user_config_for_state.config_dir().clone(),
                 )),
+                agent_builtin: Arc::new(crate::agent_builtin::BuiltinAiService::new(
+                    user_config_for_state.config_dir().clone(),
+                    memo_file_for_state.clone(),
+                    thread_manager_for_state.clone(),
+                )),
                 system_data,
                 memo_file: memo_file_for_state.clone(),
                 agents: ExternalAgentState {
@@ -696,6 +701,9 @@ pub fn run() {
             commands::agent::image_cache::delete_cached_agent_image,
             commands::agent::image_cache::read_cached_agent_image,
             commands::agent::chat::chat_with_agent_stream,
+            crate::agent_builtin::commands::agent_builtin_get_config,
+            crate::agent_builtin::commands::agent_builtin_set_config,
+            crate::agent_builtin::commands::agent_builtin_test_connection,
             commands::agent::chat::steer_agent_stream,
             commands::agent::chat::promote_pi_follow_up_to_steer,
             commands::agent::chat::delete_pi_queued_message,

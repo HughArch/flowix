@@ -54,10 +54,13 @@ pub(crate) async fn stop_any_runtime_chat(
     state: &AppState,
     app_handle: &tauri::AppHandle,
 ) -> bool {
-    state
+    // 内置助手不在 external_runtimes 注册表里，单独停。
+    let builtin_stopped = state.agent_builtin.stop(thread_id);
+    let external_stopped = state
         .agents.external_runtimes
         .stop_chat_all(thread_id, app_handle)
-        .await
+        .await;
+    builtin_stopped || external_stopped
 }
 
 #[cfg(test)]

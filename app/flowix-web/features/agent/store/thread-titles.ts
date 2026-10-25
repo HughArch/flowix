@@ -23,6 +23,7 @@ const AGENT_SESSION_TITLE_KEYS: Record<AgentTypeKey, I18nKey> = {
   opencode: "agent.opencodeSession.title",
   pi: "agent.piSession.title",
   dsh: "agent.deepseekHarnessSession.title",
+  flowix: "agent.flowixSession.title",
 };
 
 const AGENT_THREAD_CARD_TITLE_KEYS: Record<AgentTypeKey, I18nKey> = {

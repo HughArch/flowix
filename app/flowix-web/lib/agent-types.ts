@@ -13,6 +13,7 @@ import iconHermesAgent from '@/assets/icon-hermes-agent.svg';
 import iconOpenCode from '@/assets/icon-opencode.svg';
 import iconDeepSeek from '@/assets/icon-deepseek.svg';
 import iconPi from '@/assets/icon-pi.svg';
+import iconFlowixAgent from '@/assets/flowix-agent.svg';
 
 // DSH is an optional separately installed runtime. Keep the product default on
 // an external CLI path so users who never install DSH do not create unusable
@@ -30,7 +31,8 @@ export function normalizeAgentId(value: string | null | undefined): AgentTypeKey
     case 'hermes':
     case 'opencode':
     case 'pi':
-    case 'dsh': return value;
+    case 'dsh':
+    case 'flowix': return value;
     default: return null;
   }
 }
@@ -142,6 +144,22 @@ export const AGENT_TYPES: AgentType[] = [
     nameKey: 'agent.types.deepseekHarness.name',
     descKey: 'agent.types.deepseekHarness.desc',
     capabilities: { ...STREAMING_EXTERNAL_CLI_CAPABILITIES, supportsThreadArchive: true },
+  },
+  {
+    // 内置笔记助手（移动端主力）：进程内 ReAct 循环 + NoteService 工具，
+    // 不依赖外部 CLI。桌面端同样可用，但入口主要在移动端。
+    id: 'flowix',
+    runtimeKind: 'builtin',
+    icon: iconFlowixAgent,
+    name: 'Flowix',
+    desc: 'Use the built-in Flowix note assistant',
+    nameKey: 'agent.types.flowix.name',
+    descKey: 'agent.types.flowix.desc',
+    capabilities: {
+      supportsTextStreaming: true,
+      supportsToolEvents: true,
+      externalSessionBacked: false,
+    },
   },
 ];
 

@@ -34,6 +34,8 @@ export type PreferencesTabItem<Id extends string = string> = {
   contentWidth: 'normal' | 'wide';
   experimentalOnly?: boolean;
   visibleInProductMenu?: boolean;
+  /** 移动端专属分区：桌面偏好里不显示（桌面 AI 配置走各 agent 自己的分区）。 */
+  mobileOnly?: boolean;
 };
 
 export type PreferencesTabGroup<Id extends string = string> = {
@@ -81,6 +83,12 @@ export const PREFERENCE_TAB_GROUPS = [
   {
     labelKey: 'preferences.groups.ai',
     tabs: [
+      {
+        id: 'builtinAi', labelKey: 'preferences.tabs.builtinAi',
+        icon: <AgentIcon typeKey="flowix" alt="" className="w-4 h-4 object-contain" />, contentWidth: 'normal',
+        mobileOnly: true,
+        ...lazyPreferenceTab(() => import('@features/preferences/sections/builtin-ai').then((module) => ({ default: module.BuiltinAiSection }))),
+      },
       {
         id: 'pi', labelKey: 'preferences.tabs.pi',
         icon: <AgentIcon typeKey="pi" alt="" className="w-4 h-4 object-contain" />, contentWidth: 'wide',

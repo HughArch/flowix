@@ -66,6 +66,9 @@ struct AgentRuntimeAgents {
     hermes: AgentRuntimeSnapshot,
     #[serde(rename = "dsh")]
     dsh: AgentRuntimeSnapshot,
+    /// Built-in assistant (移动端): no binary to detect; configured = ready.
+    #[serde(rename = "flowix")]
+    flowix_builtin: AgentRuntimeSnapshot,
 }
 
 #[derive(Clone, Debug, Serialize)]
@@ -269,8 +272,33 @@ pub async fn agent_runtime_status(
             opencode,
             hermes,
             dsh: deepseek_harness,
+            flowix_builtin: builtin_availability(&state),
         },
     })
+}
+
+/// Built-in assistant availability: pure configuration check, no binary
+/// detection. Enabled + fully configured → ready; otherwise missing with a
+/// setup hint so the UI can route the user to its dedicated config entry.
+fn builtin_availability(state: &State<'_, AppState>) -> AgentRuntimeSnapshot {
+    let config = state.agent_builtin.load_config();
+    if config.enabled && config.is_configured() {
+        AgentRuntimeSnapshot::new(InstallationState::Installed, ReadinessState::Ready, None, None)
+    } else if config.enabled {
+        AgentRuntimeSnapshot::new(
+            InstallationState::Installed,
+            ReadinessState::Blocked,
+            Some("no-model-configured"),
+            Some("内置 AI 助手缺少 API 地址 / Key / 模型配置".to_string()),
+        )
+    } else {
+        AgentRuntimeSnapshot::new(
+            InstallationState::Missing,
+            ReadinessState::Unknown,
+            Some("runtime-not-installed"),
+            Some("内置 AI 助手未启用".to_string()),
+        )
+    }
 }
 
 /// 偏好设置展示用的 external agent 条目视图�?

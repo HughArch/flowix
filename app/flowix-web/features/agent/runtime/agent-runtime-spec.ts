@@ -234,6 +234,16 @@ const AGENT_RUNTIME_SPECS: Record<AgentId, AgentRuntimeSpec> = {
       },
     }),
   },
+  flowix: {
+    typeKey: "flowix",
+    // 内置助手没有沙箱/工作区概念：作用域固定为会话所属笔记本，
+    // 由后端 NoteService 工具层强制执行。
+    emptySettings: [],
+    accessOptions: [],
+    modeOptions: [],
+    workspace: { selectBeforeFirstRun: false, switchWhileRunning: false, switchBetweenRuns: false, switchRequiresRuntimeRestart: false, preservesConversationSession: false },
+    buildRuntimeConfig: () => ({}),
+  },
 };
 
 export function getAgentRuntimeSpec(typeKey: AgentTypeKey): AgentRuntimeSpec {

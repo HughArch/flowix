@@ -68,6 +68,8 @@ const FLOWIX_CLI_PROMPT_BLOCK = [
 const NATIVE_AGENTS_INSTRUCTION_AGENT_TYPES = new Set<AgentTypeKey>([
   "codex",
   "dsh",
+  // 内置助手有原生笔记工具，不需要 flowix CLI 说明块。
+  "flowix",
 ]);
 
 export function appendFirstMessageContext(

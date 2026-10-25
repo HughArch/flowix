@@ -165,7 +165,7 @@ export interface AgentDataStoreState {
 }
 
 const AGENT_TYPES: AgentTypeKey[] = [
-  "codex", "claudecode", "hermes", "opencode", "pi", "dsh",
+  "codex", "claudecode", "hermes", "opencode", "pi", "dsh", "flowix",
 ];
 
 function canonicalAgentMap<T>(source: object | undefined): Partial<Record<AgentTypeKey, T>> {

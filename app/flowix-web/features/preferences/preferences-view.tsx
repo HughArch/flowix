@@ -63,7 +63,8 @@ function getVisibleTabGroups({ isDevBuild, experimental }: { isDevBuild: boolean
 		.map((group) => ({
 			...group,
 			tabs: group.tabs.filter((tab) => (experimental || !tab.experimentalOnly)
-				&& !(mobile && MOBILE_HIDDEN_TABS.has(tab.id))),
+				&& !(mobile && MOBILE_HIDDEN_TABS.has(tab.id))
+				&& !(!mobile && 'mobileOnly' in tab && tab.mobileOnly)),
 		}))
 		.filter((group) => group.tabs.length > 0);
 }

@@ -74,6 +74,7 @@ const AGENT_THREAD_TYPE_BY_SLASH_ID: Record<AgentThreadSlashMenuItemId, AgentTyp
   'agent-thread-hermes': 'hermes',
   'agent-thread-opencode': 'opencode',
   'agent-thread-deepseek-harness': 'dsh',
+  'agent-thread-flowix': 'flowix',
 };
 
 const TABLE_VIEW_TYPE_BY_SLASH_ID: Partial<Record<SlashMenuItem['id'], TableViewType>> = {
@@ -95,6 +96,15 @@ function getAvailableSlashAgentTypes(): Set<AgentTypeKey> {
     isAgentTypeEnabled,
   );
 
+  // 移动端只暴露内置助手：外部 CLI 在移动端不可执行，Pi 兜底也仅限桌面。
+  if (isMobileDevice()) {
+    return new Set(
+      availableAgents
+        .filter((type) => type.runtimeKind === 'builtin')
+        .map((type) => type.id),
+    );
+  }
+
   if (availableAgents.length > 0) {
     return new Set(availableAgents.map((type) => type.id));
   }
@@ -108,10 +118,6 @@ function getAvailableSlashAgentTypes(): Set<AgentTypeKey> {
 }
 
 function getAvailableSlashMenuItems(): SlashMenuItem[] {
-  // 移动端 v1 无 AI 服务: 不展示任何 Agent 会话入口。
-  if (isMobileDevice()) {
-    return SLASH_MENU_ITEMS.filter((item) => !isAgentThreadSlashMenuItemId(item.id));
-  }
   const availableAgentTypes = getAvailableSlashAgentTypes();
 
   return SLASH_MENU_ITEMS.filter((item) => {

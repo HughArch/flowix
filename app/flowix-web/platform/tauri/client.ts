@@ -4,6 +4,7 @@ import { invoke } from '@tauri-apps/api/core';
 
 export type { ChatMessage } from '@/types/agent';
 export * from './client/agent';
+export * from './client/builtin-ai';
 export * from './client/fns';
 export * from './client/desktop';
 export * from './client/plugin';

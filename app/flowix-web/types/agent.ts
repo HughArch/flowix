@@ -12,7 +12,7 @@ export interface ThreadListItem {
 
 // Core message type used throughout the app
 /** Stable identity values used by frontend state and the backend protocol. */
-export type AgentId = "pi" | "codex" | "claudecode" | "opencode" | "hermes" | "dsh";
+export type AgentId = "pi" | "codex" | "claudecode" | "opencode" | "hermes" | "dsh" | "flowix";
 
 export type ActiveAgentTypeKey = AgentId;
 export type AgentTypeKey = AgentId;

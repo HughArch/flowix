@@ -22,6 +22,17 @@ pub async fn chat_with_agent_stream(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<AgentChatResponse, String> {
+    // 内置助手（移动端）在进入外部 CLI 运行时解析之前分流：它没有
+    // cwd / workspace 概念，工具走 NoteService。
+    if crate::agent_builtin::commands::is_builtin(message.agent_type.as_deref()) {
+        return crate::agent_builtin::commands::chat_with_builtin(
+            threadId,
+            message,
+            state,
+            app_handle,
+        )
+        .await;
+    }
     let runtime = runtime_from_message(&message)?;
     if message.image_paths.len() > MAX_AGENT_IMAGE_COUNT {
         return Err(format!(
@@ -391,6 +402,9 @@ pub async fn stop_agent_stream(
     state: State<'_, AppState>,
     app_handle: tauri::AppHandle,
 ) -> Result<bool, String> {
+    if crate::agent_builtin::commands::is_builtin(agentType.as_deref()) {
+        return Ok(state.agent_builtin.stop(&threadId));
+    }
     let runtime = match agentType.as_deref() {
         Some(agent_type) => Some(runtime_from_agent_type(Some(agent_type))?),
         None => None,

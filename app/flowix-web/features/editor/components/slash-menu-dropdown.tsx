@@ -67,6 +67,7 @@ export type SlashMenuItemId =
   | 'agent-thread-opencode'
   | 'agent-thread-deepseek-harness'
   | 'agent-thread-pi'
+  | 'agent-thread-flowix'
   | 'create-child-note'
   | 'reference-note';
 
@@ -124,6 +125,14 @@ export function getSlashMenuItemSection(item: SlashMenuItem, language: AppLangua
 }
 
 export const SLASH_MENU_ITEMS: SlashMenuItem[] = [
+  {
+    id: 'agent-thread-flowix',
+    label: getAgentType('flowix').name,
+    description: 'AI Agent',
+    keywords: ['flowix', 'note', 'assistant', 'agent', 'bijiben', '笔记', '助手', 'zhushou', 'task'],
+    icon: getAgentType('flowix').icon,
+    sectionKey: 'editor.slash.section.agent',
+  },
   {
     id: 'agent-thread-pi',
     label: getAgentType('pi').name,

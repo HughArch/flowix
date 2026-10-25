@@ -28,6 +28,7 @@ function normalizeRuntimeStatusReport(report: unknown): RuntimeStatusByType {
     opencode: ['opencode'],
     hermes: ['hermes'],
     dsh: ['dsh', 'deepseek-harness', 'deepseek_harness'],
+    flowix: ['flowix'],
   };
   const result: RuntimeStatusByType = {};
 
