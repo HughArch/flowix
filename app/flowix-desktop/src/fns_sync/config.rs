@@ -17,6 +17,14 @@ pub const DEFAULT_MAX_ATTACHMENT_BYTES: u64 = 20 * 1024 * 1024;
 pub const DEFAULT_STARTUP_SYNC_DELAY_SECONDS: u64 = 8;
 pub const DEFAULT_MAX_RETRY_ATTEMPTS: u32 = 10;
 pub const DEFAULT_CLIENT_TYPE: &str = "flowix";
+/// `manualMerge` keeps the server from ever writing its own merge result or
+/// `.conflict.` copies: rejections come back as 530 and the client settles
+/// them. Change in the config file as an escape hatch.
+pub const DEFAULT_OFFLINE_SYNC_STRATEGY: &str = "manualMerge";
+
+fn default_offline_sync_strategy() -> String {
+    DEFAULT_OFFLINE_SYNC_STRATEGY.to_owned()
+}
 
 /// One named credential. `client_type` belongs to the token because the server
 /// binds the token's scope to a `c:` client dimension.
@@ -59,6 +67,11 @@ pub struct FnsConfig {
     /// Stop retrying a failing notebook after this many consecutive attempts.
     /// A new local edit resets the counter.
     pub max_retry_attempts: u32,
+    /// How conflicting edits settle when this device pushes over a changed
+    /// server version: `manualMerge` (default), `newTimeMerge`,
+    /// `ignoreTimeMerge`. Not exposed in the UI on purpose.
+    #[serde(default = "default_offline_sync_strategy")]
+    pub offline_sync_strategy: String,
     pub tokens: Vec<FnsToken>,
     /// Pre-token-list configuration. Read once for migration, never written.
     #[serde(default, skip_serializing, rename = "token")]
@@ -75,6 +88,7 @@ impl Default for FnsConfig {
             max_attachment_bytes: DEFAULT_MAX_ATTACHMENT_BYTES,
             startup_sync_delay_seconds: DEFAULT_STARTUP_SYNC_DELAY_SECONDS,
             max_retry_attempts: DEFAULT_MAX_RETRY_ATTEMPTS,
+            offline_sync_strategy: DEFAULT_OFFLINE_SYNC_STRATEGY.to_owned(),
             tokens: Vec::new(),
             legacy_token: String::new(),
             legacy_client_type: String::new(),
@@ -197,7 +211,11 @@ impl FnsConfig {
     }
 
     pub fn offline_sync_strategy(&self) -> flowix_fns::OfflineSyncStrategy {
-        flowix_fns::OfflineSyncStrategy::NewTimeMerge
+        match self.offline_sync_strategy.as_str() {
+            "newTimeMerge" => flowix_fns::OfflineSyncStrategy::NewTimeMerge,
+            "ignoreTimeMerge" => flowix_fns::OfflineSyncStrategy::IgnoreTimeMerge,
+            _ => flowix_fns::OfflineSyncStrategy::ManualMerge,
+        }
     }
 }
 
@@ -350,5 +368,38 @@ mod tests {
         assert_eq!(loaded.api, config.api);
         assert_eq!(loaded.tokens.len(), 1);
         assert_eq!(loaded.tokens[0].token, "secret");
+    }
+
+    #[test]
+    fn strategy_defaults_to_manual_merge_with_escape_hatch() {
+        // Default (and anything unrecognized) is manual merge.
+        let config = FnsConfig::default();
+        assert!(matches!(
+            config.offline_sync_strategy(),
+            flowix_fns::OfflineSyncStrategy::ManualMerge
+        ));
+
+        // Older configs without the field load with the default.
+        let dir = tempfile::tempdir().unwrap();
+        let path = FnsConfig::path(dir.path());
+        fs::create_dir_all(path.parent().unwrap()).unwrap();
+        fs::write(
+            &path,
+            br#"{"enabled":true,"api":"https://example.com","tokens":[]}"#,
+        )
+        .unwrap();
+        let loaded = FnsConfig::load(dir.path());
+        assert!(matches!(
+            loaded.offline_sync_strategy(),
+            flowix_fns::OfflineSyncStrategy::ManualMerge
+        ));
+
+        // The old behavior stays reachable from the config file.
+        let mut config = FnsConfig::default();
+        config.offline_sync_strategy = "newTimeMerge".to_owned();
+        assert!(matches!(
+            config.offline_sync_strategy(),
+            flowix_fns::OfflineSyncStrategy::NewTimeMerge
+        ));
     }
 }

@@ -953,6 +953,67 @@ impl FnsSyncService {
         Ok(())
     }
 
+    /// Server-written `*.conflict.<timestamp>` copies left behind by the old
+    /// force-merge behavior, listed for one-click cleanup.
+    pub fn legacy_conflict_copies(
+        &self,
+        app: &AppHandle,
+        notebook_id: &str,
+    ) -> Result<Vec<String>, String> {
+        let (_, root) = notebook_root(app, notebook_id)?;
+        let store = self.memo_file_store(app, notebook_id, root);
+        let notes = store.list_notes().map_err(|error| error.to_string())?;
+        Ok(notes
+            .into_iter()
+            .map(|note| note.path)
+            .filter(|path| is_legacy_conflict_path(path))
+            .collect())
+    }
+
+    /// Delete every legacy conflict copy locally and schedule a sync so the
+    /// deletions propagate to the server as tombstones.
+    pub async fn cleanup_legacy_conflict_copies(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        notebook_id: &str,
+    ) -> Result<usize, String> {
+        let _sync_lock = self.sync_lock.lock().await;
+        let (_, root) = notebook_root(app, notebook_id)?;
+        let store = self.memo_file_store(app, notebook_id, root);
+        let notes = store.list_notes().map_err(|error| error.to_string())?;
+        let mut deleted = 0;
+        for note in &notes {
+            if !is_legacy_conflict_path(&note.path) {
+                continue;
+            }
+            store
+                .delete_note(&note.path)
+                .map_err(|error| error.to_string())?;
+            deleted += 1;
+        }
+        drop(_sync_lock);
+        if deleted > 0 {
+            self.schedule_sync(app.clone(), notebook_id.to_owned());
+        }
+        tracing::info!(notebook_id, deleted, "FNS legacy conflict copies cleaned up");
+        Ok(deleted)
+    }
+
+    fn memo_file_store(
+        &self,
+        app: &AppHandle,
+        notebook_id: &str,
+        root: PathBuf,
+    ) -> MemoFileStore {
+        let state = app.state::<AppState>();
+        MemoFileStore::new(
+            app.clone(),
+            state.memo_file.clone(),
+            notebook_id.to_owned(),
+            root,
+        )
+    }
+
     /// Wait the configured startup delay, then pull bound notebooks.
     pub async fn sync_after_startup(self: &Arc<Self>, app: AppHandle) {
         let (ready, delay) = {
@@ -1088,6 +1149,27 @@ fn notebook_root(app: &AppHandle, notebook_id: &str) -> Result<(String, PathBuf)
     Ok((notebook.name, PathBuf::from(notebook.path)))
 }
 
+/// Matches the server's conflict-copy naming from its force-merge path:
+/// `{base}.conflict.{yyyyMMddHHmmss}{ext}` (conflict_service.go), e.g.
+/// `notes/test.conflict.20060102150405.md`. The extension is optional when
+/// the original note had none.
+fn is_legacy_conflict_path(path: &str) -> bool {
+    const MARKER: &str = ".conflict.";
+    let Some(position) = path.find(MARKER) else {
+        return false;
+    };
+    let suffix = &path[position + MARKER.len()..];
+    let mut digits = suffix.chars().take(14);
+    if digits.count() < 14 || !suffix.chars().take(14).all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    match suffix.chars().nth(14) {
+        None => true,
+        Some('.') => true,
+        _ => false,
+    }
+}
+
 /// 2s, 4s, 8s … capped at 256s.
 fn retry_delay(attempts: u32) -> Duration {
     let factor = 1u64.checked_shl(attempts.min(7)).unwrap_or(128);
@@ -1096,7 +1178,21 @@ fn retry_delay(attempts: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::{retry_delay, FnsNotebookSyncOutcome};
+    use super::{is_legacy_conflict_path, retry_delay, FnsNotebookSyncOutcome};
+
+    #[test]
+    fn legacy_conflict_paths_match_server_naming() {
+        assert!(is_legacy_conflict_path("notes/test.conflict.20060102150405.md"));
+        assert!(is_legacy_conflict_path("test.conflict.20060102150405"));
+        assert!(is_legacy_conflict_path("笔记/测试.conflict.20260102030405.md"));
+
+        assert!(!is_legacy_conflict_path("notes/test.md"));
+        assert!(!is_legacy_conflict_path("notes/test.conflict.md"));
+        assert!(!is_legacy_conflict_path("notes/test.conflict.2026010.md"));
+        // 14 digits must be followed by end-of-name or an extension dot.
+        assert!(!is_legacy_conflict_path("notes/test.conflict.200601021504050.md"));
+        assert!(!is_legacy_conflict_path("notes/my.conflict.notes.md"));
+    }
 
     #[test]
     fn retry_delay_is_exponential_and_capped() {

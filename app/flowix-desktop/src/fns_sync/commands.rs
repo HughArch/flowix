@@ -142,3 +142,27 @@ pub async fn fns_conflict_dismiss(
     let service = app.state::<AppState>().fns_sync.clone();
     service.dismiss_conflict(&app, &notebook_id, &path).await
 }
+
+/// Server-written conflict copies from the old force-merge behavior.
+#[tauri::command]
+pub fn fns_legacy_conflict_copies(
+    app: AppHandle,
+    notebook_id: String,
+) -> Result<Vec<String>, String> {
+    app.state::<AppState>()
+        .fns_sync
+        .legacy_conflict_copies(&app, &notebook_id)
+}
+
+/// Delete all legacy conflict copies locally and schedule a sync so the
+/// deletions propagate server-side. Returns the number removed.
+#[tauri::command]
+pub async fn fns_cleanup_legacy_conflict_copies(
+    app: AppHandle,
+    notebook_id: String,
+) -> Result<usize, String> {
+    let service = app.state::<AppState>().fns_sync.clone();
+    service
+        .cleanup_legacy_conflict_copies(&app, &notebook_id)
+        .await
+}

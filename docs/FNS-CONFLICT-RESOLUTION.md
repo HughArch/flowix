@@ -1,6 +1,6 @@
 # FNS 同步冲突解决方案
 
-> 分支：`feat/fns-conflict-resolution` · 2026-10-25 · 状态：PR1 已实现（`flowix-fns` 状态机 + 桌面接线），PR2/PR3 未开始
+> 分支：`feat/fns-conflict-resolution` · 2026-10-25 · 状态：PR1/PR2/PR3 已实现（PR4 服务端增强未做，非阻塞）
 
 ## 1. 现状与问题
 
@@ -163,10 +163,10 @@ resolve 时**重读本地文件**（挂起期间用户可能又编辑过，以�
 
 ### 3.7 存量 `.conflict.` 文件
 
-新管线关闭生产源后，存量副本（`*.conflict.<14位时间戳>.*`）处理：
+新管线关闭生产源后，存量副本（`*.conflict.<14位时间戳>.*`）处理（PR3 实现为按命名模式识别，未做 memo property 打标——清理按命名匹配即可覆盖，避免为每个副本写属性的写放大）：
 
-1. 引擎 pull 侧识别该命名模式（`\.conflict\.\d{14}\.`），正常落盘但打标（memo property），不触发额外逻辑。
-2. 冲突中心提供一次性「历史冲突副本清理」：按同名 base 分组列出，支持批量删除（删除走正常 `NoteDelete` tombstone 同步）。
+1. `fns_legacy_conflict_copies` 按命名模式（`.conflict.` + 14 位数字 + 结尾或扩展点）列出存量副本；同步面板在有副本时显示「历史冲突副本（N）」区块。
+2. `fns_cleanup_legacy_conflict_copies` 一键删除全部本地副本（经 `MemoFileStore` 正式删除），并自动调度一次同步，让删除以 tombstone 传播到服务端与其他设备。
 
 ## 4. 为什么不用其他方案
 
@@ -197,9 +197,9 @@ resolve 时**重读本地文件**（挂起期间用户可能又编辑过，以�
 
 | PR | 内容 | 依赖 |
 |---|---|---|
-| PR1 | `flowix-fns`：`is_conflict_resolved` 参数化 + `SyncState.pending_conflicts` + `.flowix/conflicts/` 存储 + engine 状态机（skip/530/自动解决）+ 单测 | — |
-| PR2 | 桌面层：IPC 命令 + 冲突中心 UI + 状态栏徽标 | PR1 |
-| PR3 | 策略切 `manualMerge`（可配置，默认 manual）+ 存量副本打标与清理入口 | PR1 |
+| PR1 ✅ | `flowix-fns`：`is_conflict_resolved` 参数化 + `SyncState.pending_conflicts` + `.flowix/conflicts/` 存储 + engine 状态机（skip/快照排除/自愈/530/自动解决）+ 单测 | — |
+| PR2 ✅ | 桌面层：IPC 命令（list/resolve/dismiss）+ 同步面板冲突中心（keepLocal/keepRemote/merge/忽略）+ 同步结果 toast 计数 | PR1 |
+| PR3 ✅ | 策略切 `manualMerge`（config 文件可配，默认 manual，不进 UI）+ 存量副本按命名模式列出与一键清理 | PR1 |
 | PR4（可选，另一仓库） | 服务端 §6 增强 | — |
 
 ## 8. 测试要点

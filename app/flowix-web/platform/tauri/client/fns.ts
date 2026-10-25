@@ -135,4 +135,9 @@ export const fns = {
     invoke<void>('fns_conflict_resolve', { notebookId, path, action }),
   dismissConflict: (notebookId: string, path: string) =>
     invoke<void>('fns_conflict_dismiss', { notebookId, path }),
+  /** Server-written `*.conflict.<timestamp>` copies from old force-merges. */
+  listLegacyConflictCopies: (notebookId: string) =>
+    invoke<string[]>('fns_legacy_conflict_copies', { notebookId }),
+  cleanupLegacyConflictCopies: (notebookId: string) =>
+    invoke<number>('fns_cleanup_legacy_conflict_copies', { notebookId }),
 };
