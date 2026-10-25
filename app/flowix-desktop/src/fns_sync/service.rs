@@ -59,6 +59,21 @@ pub struct FnsNotebookSyncOutcome {
     pub last_time: i64,
 }
 
+impl FnsNotebookSyncOutcome {
+    /// True when the run transferred nothing in either direction. Realtime
+    /// triggers produce many such runs; they stay out of history and info
+    /// logs so the journal keeps meaning "something actually moved".
+    pub fn is_empty(&self) -> bool {
+        self.pulled == 0
+            && self.pushed == 0
+            && self.deleted_local == 0
+            && self.renamed == 0
+            && self.files_pulled == 0
+            && self.files_pushed == 0
+            && self.conflicts.is_empty()
+    }
+}
+
 /// One entry in the in-memory sync history shown by the status panel.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,7 +91,10 @@ pub struct FnsSyncRecord {
     pub error: Option<String>,
 }
 
-const HISTORY_LIMIT: usize = 50;
+/// Newest-first in-memory sync records per panel. Only runs that moved data
+/// (or failed) are journaled, so this covers a meaningful session rather
+/// than filling up with realtime no-op entries. Cleared on app exit.
+const HISTORY_LIMIT: usize = 200;
 
 /// Forwards engine progress into the shared status snapshot.
 struct StatusSink(Arc<RwLock<FnsSyncStatus>>);
@@ -401,30 +419,45 @@ impl FnsSyncService {
 
         match &result {
             Ok(Some(outcome)) => {
-                tracing::info!(
-                    notebook_id,
-                    vault = %outcome.vault,
-                    pulled = outcome.pulled,
-                    pushed = outcome.pushed,
-                    files_pulled = outcome.files_pulled,
-                    files_pushed = outcome.files_pushed,
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    "FNS sync finished"
-                );
+                // Realtime triggers produce many no-op runs (own-push echoes,
+                // focus pulls). Log and journal only runs that moved data so
+                // the history panel and info logs stay meaningful.
+                let moved_data = !outcome.is_empty();
+                if moved_data {
+                    tracing::info!(
+                        notebook_id,
+                        vault = %outcome.vault,
+                        pulled = outcome.pulled,
+                        pushed = outcome.pushed,
+                        files_pulled = outcome.files_pulled,
+                        files_pushed = outcome.files_pushed,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "FNS sync finished"
+                    );
+                } else {
+                    tracing::debug!(
+                        notebook_id,
+                        vault = %outcome.vault,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "FNS sync finished without changes"
+                    );
+                }
                 self.clear_retry(notebook_id);
-                self.record_history(FnsSyncRecord {
-                    at: started_at,
-                    notebook_id: outcome.notebook_id.clone(),
-                    vault: outcome.vault.clone(),
-                    ok: true,
-                    pulled: outcome.pulled,
-                    pushed: outcome.pushed,
-                    files_pulled: outcome.files_pulled,
-                    files_pushed: outcome.files_pushed,
-                    deleted_local: outcome.deleted_local,
-                    duration_ms: started.elapsed().as_millis() as i64,
-                    error: None,
-                });
+                if moved_data {
+                    self.record_history(FnsSyncRecord {
+                        at: started_at,
+                        notebook_id: outcome.notebook_id.clone(),
+                        vault: outcome.vault.clone(),
+                        ok: true,
+                        pulled: outcome.pulled,
+                        pushed: outcome.pushed,
+                        files_pulled: outcome.files_pulled,
+                        files_pushed: outcome.files_pushed,
+                        deleted_local: outcome.deleted_local,
+                        duration_ms: started.elapsed().as_millis() as i64,
+                        error: None,
+                    });
+                }
                 self.set_status(|status| {
                     status.running = false;
                     status.progress = None;
@@ -856,7 +889,7 @@ fn retry_delay(attempts: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::retry_delay;
+    use super::{retry_delay, FnsNotebookSyncOutcome};
 
     #[test]
     fn retry_delay_is_exponential_and_capped() {
@@ -865,6 +898,35 @@ mod tests {
         assert_eq!(retry_delay(3).as_secs(), 16);
         assert_eq!(retry_delay(7).as_secs(), 256);
         assert_eq!(retry_delay(20).as_secs(), 256);
+    }
+
+    #[test]
+    fn outcome_emptiness_ignores_cursor() {
+        let empty = FnsNotebookSyncOutcome {
+            notebook_id: "n".into(),
+            vault: "v".into(),
+            pulled: 0,
+            pushed: 0,
+            deleted_local: 0,
+            renamed: 0,
+            files_pulled: 0,
+            files_pushed: 0,
+            conflicts: Vec::new(),
+            last_time: 12345,
+        };
+        assert!(empty.is_empty());
+
+        let with_conflict = FnsNotebookSyncOutcome {
+            conflicts: vec!["a.md".into()],
+            ..empty.clone()
+        };
+        assert!(!with_conflict.is_empty());
+
+        let with_push = FnsNotebookSyncOutcome {
+            pushed: 1,
+            ..empty
+        };
+        assert!(!with_push.is_empty());
     }
 }
 
