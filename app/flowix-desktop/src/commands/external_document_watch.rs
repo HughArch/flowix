@@ -18,7 +18,13 @@ const REVISION_POLL_INTERVAL: Duration = Duration::from_millis(750);
 #[derive(Debug, Clone)]
 struct WatchLease {
     window_label: String,
+    /// Resolved real path: what the native watch and revision checks use.
     path: PathBuf,
+    /// The path exactly as the webview submitted it. On Android the resolved
+    /// path can differ (`/data/data/...` vs the `/data/user/0/...` alias the
+    /// frontend holds), and events must echo the string the frontend can
+    /// match its subscriptions against.
+    client_path: String,
 }
 
 #[derive(Debug, Default)]
@@ -109,7 +115,13 @@ fn rebase_registry_paths(registry: &mut WatchRegistry, previous: &Path, next: &P
         })
         .collect::<Vec<_>>();
     for (id, path) in moved {
-        registry.leases.get_mut(&id).expect("existing lease").path = path;
+        let lease = registry.leases.get_mut(&id).expect("existing lease");
+        lease.path = path;
+        // Keep the client alias consistent with the resolved path so events
+        // emitted after the move still match the webview's subscriptions.
+        if let Some(client_suffix) = Path::new(&lease.client_path).strip_prefix(previous).ok() {
+            lease.client_path = next.join(client_suffix).to_string_lossy().to_string();
+        }
         *registry.generations.entry(id.clone()).or_default() += 1;
         invalidate_delivery(registry, &id);
         // Preserve the last observed revision: a content change concurrent
@@ -205,7 +217,7 @@ impl ExternalDocumentWatchState {
         }
     }
 
-    fn watch(&self, window_label: &str, path: PathBuf) -> Result<String, String> {
+    fn watch(&self, window_label: &str, path: PathBuf, client_path: String) -> Result<String, String> {
         let lease_id = format!(
             "external-watch:{}:{}",
             window_label,
@@ -222,11 +234,24 @@ impl ExternalDocumentWatchState {
                 .watcher
                 .lock()
                 .map_err(|_| "external document watcher poisoned".to_string())?;
-            watcher
-                .as_mut()
-                .ok_or_else(|| "external document watcher is unavailable".to_string())?
-                .watch(&path, RecursiveMode::NonRecursive)
-                .map_err(|error| format!("failed to watch {}: {error}", path.display()))?;
+            // The native watch is an optimization, not a requirement: the
+            // revision poll delivers changes on its own. On Android inotify
+            // can be unavailable or exhausted while the lease is still
+            // perfectly serviceable, so register it regardless.
+            match watcher.as_mut() {
+                Some(watcher) => {
+                    if let Err(error) = watcher.watch(&path, RecursiveMode::NonRecursive) {
+                        tracing::warn!(
+                            "[external-watch] native watch failed for {}, delivering via revision polling: {error}",
+                            path.display()
+                        );
+                    }
+                }
+                None => tracing::warn!(
+                    "[external-watch] watcher unavailable, {} delivers via revision polling",
+                    path.display()
+                ),
+            }
         }
         *registry.path_ref_counts.entry(path.clone()).or_insert(0) += 1;
         let initial_revision = file_revision(&path);
@@ -235,6 +260,7 @@ impl ExternalDocumentWatchState {
             WatchLease {
                 window_label: window_label.to_string(),
                 path: path.clone(),
+                client_path,
             },
         );
         registry.generations.insert(lease_id.clone(), 0);
@@ -531,7 +557,11 @@ fn emit_external_document_changed(
 ) -> bool {
     let exists = lease.path.is_file();
     let payload = ExternalDocumentChangedPayload {
-        path: lease.path.to_string_lossy().to_string(),
+        path: if lease.client_path.is_empty() {
+            lease.path.to_string_lossy().to_string()
+        } else {
+            lease.client_path.clone()
+        },
         kind: if exists { "modified" } else { "deleted" },
         revision,
         source,
@@ -657,7 +687,7 @@ pub fn watch_external_document(
 ) -> Result<String, String> {
     let path =
         exact_existing_external_path(&file_path, scopePath.as_deref(), window.label(), &app_state)?;
-    watches.watch(window.label(), path)
+    watches.watch(window.label(), path, file_path)
 }
 
 #[tauri::command]
@@ -679,6 +709,7 @@ mod tests {
             WatchLease {
                 window_label: id.into(),
                 path: path.into(),
+                client_path: path.to_string_lossy().to_string(),
             },
         );
         *registry.path_ref_counts.entry(path.into()).or_default() += 1;
@@ -900,6 +931,7 @@ mod tests {
             WatchLease {
                 window_label: "main".to_string(),
                 path: path.clone(),
+            client_path: String::new(),
             },
         );
 
@@ -937,6 +969,7 @@ mod tests {
             WatchLease {
                 window_label: "main".into(),
                 path: path.clone(),
+            client_path: String::new(),
             },
         );
         registry.active_writes.insert(path.clone(), 1);
@@ -960,6 +993,7 @@ mod tests {
             WatchLease {
                 window_label: "main".to_string(),
                 path,
+                client_path: String::new(),
             },
         );
         registry.delivering.insert(lease_id.clone());
@@ -990,6 +1024,7 @@ mod tests {
             WatchLease {
                 window_label: "main".into(),
                 path: path.clone(),
+            client_path: String::new(),
             },
         );
         assert!(try_claim_revision(&mut registry, &lease_id, &path, "old"));
@@ -1019,6 +1054,7 @@ mod tests {
             WatchLease {
                 window_label: "main".to_string(),
                 path: original.clone(),
+            client_path: String::new(),
             },
         );
 

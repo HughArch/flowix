@@ -2,12 +2,12 @@
 
 use std::collections::HashMap;
 use std::path::PathBuf;
-use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::Duration;
 
 use serde::Serialize;
 use tauri::{AppHandle, Manager};
+use tokio::sync::Mutex as AsyncMutex;
 
 use flowix_fns::{
     sync_notebook as run_engine_sync, ClientInfo, FnsClient, SyncProgress, SyncProgressSink,
@@ -59,6 +59,21 @@ pub struct FnsNotebookSyncOutcome {
     pub last_time: i64,
 }
 
+impl FnsNotebookSyncOutcome {
+    /// True when the run transferred nothing in either direction. Realtime
+    /// triggers produce many such runs; they stay out of history and info
+    /// logs so the journal keeps meaning "something actually moved".
+    pub fn is_empty(&self) -> bool {
+        self.pulled == 0
+            && self.pushed == 0
+            && self.deleted_local == 0
+            && self.renamed == 0
+            && self.files_pulled == 0
+            && self.files_pushed == 0
+            && self.conflicts.is_empty()
+    }
+}
+
 /// One entry in the in-memory sync history shown by the status panel.
 #[derive(Debug, Clone, Serialize)]
 #[serde(rename_all = "camelCase")]
@@ -76,7 +91,10 @@ pub struct FnsSyncRecord {
     pub error: Option<String>,
 }
 
-const HISTORY_LIMIT: usize = 50;
+/// Newest-first in-memory sync records per panel. Only runs that moved data
+/// (or failed) are journaled, so this covers a meaningful session rather
+/// than filling up with realtime no-op entries. Cleared on app exit.
+const HISTORY_LIMIT: usize = 200;
 
 /// Forwards engine progress into the shared status snapshot.
 struct StatusSink(Arc<RwLock<FnsSyncStatus>>);
@@ -106,29 +124,30 @@ pub struct FnsSyncService {
     config_dir: PathBuf,
     config: RwLock<FnsConfig>,
     status: Arc<RwLock<FnsSyncStatus>>,
-    running: AtomicBool,
-    /// Per-notebook debounce generation. A scheduled run whose generation has
-    /// been superseded does nothing.
-    scheduled: Mutex<HashMap<String, u64>>,
+    /// Serializes sync runs across every trigger source (edit debounce,
+    /// realtime broadcast, manual command, retry). Queuing beats failing:
+    /// a dropped trigger may never re-fire on its own — a remote change
+    /// notification, for instance, is not repeated until the next edit.
+    sync_lock: AsyncMutex<()>,
+    /// Realtime change listener; restarted whenever credentials or notebook
+    /// bindings change.
+    listener: Arc<super::listener::FnsListener>,
+    /// Per-notebook pending run deadline. A scheduled run that no longer owns
+    /// the slot (a newer trigger scheduled an earlier deadline) does nothing.
+    scheduled: Mutex<HashMap<String, std::time::Instant>>,
     /// Per-notebook exponential backoff state for failed syncs.
     retry: Mutex<HashMap<String, RetryEntry>>,
     /// Newest-first history for the status panel.
     history: Mutex<Vec<FnsSyncRecord>>,
 }
 
-const AUTO_SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
+/// Local edits coalesce behind this trailing debounce. Scans are cheap
+/// (incremental hash walk), so this is tuned for propagation speed rather
+/// than scan avoidance; rapid keystrokes still collapse into one run.
+const AUTO_SYNC_DEBOUNCE: Duration = Duration::from_secs(1);
 /// Upper bound for one notebook sync. Prevents a wedged network call from
 /// leaving the UI stuck on "syncing" forever.
 const SYNC_TIMEOUT: Duration = Duration::from_secs(120);
-
-/// Resets the running flag even if the sync future panics or is cancelled.
-struct RunningGuard<'a>(&'a AtomicBool);
-
-impl Drop for RunningGuard<'_> {
-    fn drop(&mut self) {
-        self.0.store(false, Ordering::SeqCst);
-    }
-}
 
 impl FnsSyncService {
     pub fn new(config_dir: PathBuf) -> Self {
@@ -137,11 +156,25 @@ impl FnsSyncService {
             config_dir,
             config: RwLock::new(config),
             status: Arc::new(RwLock::new(FnsSyncStatus::default())),
-            running: AtomicBool::new(false),
+            sync_lock: AsyncMutex::new(()),
+            listener: Arc::new(super::listener::FnsListener::new()),
             scheduled: Mutex::new(HashMap::new()),
             retry: Mutex::new(HashMap::new()),
             history: Mutex::new(Vec::new()),
         }
+    }
+
+    /// Realtime listener supervisor. Call [`FnsListener::start`] once at
+    /// startup; this accessor exists so the bootstrap wiring can reach it
+    /// without exposing the field.
+    pub fn listener(&self) -> &Arc<super::listener::FnsListener> {
+        &self.listener
+    }
+
+    /// Clone of the current credential config, for listeners planning their
+    /// connections.
+    pub(crate) fn config_snapshot(&self) -> FnsConfig {
+        self.read_config().clone()
     }
 
     /// Newest-first history, optionally restricted to one notebook.
@@ -170,6 +203,22 @@ impl FnsSyncService {
     /// Debounced sync after a local edit. Only applies to notebooks that
     /// already have a vault binding; the first binding is always explicit.
     pub fn schedule_sync(self: &Arc<Self>, app: AppHandle, notebook_id: String) {
+        self.schedule_sync_with_delay(app, notebook_id, AUTO_SYNC_DEBOUNCE);
+    }
+
+    /// Debounced sync with an explicit delay. The per-notebook slot holds the
+    /// earliest pending deadline: a new trigger takes over only when it wants
+    /// to run *sooner*; a later trigger is already covered by the pending run
+    /// (its scan happens at fire time, so it sees the newest state).
+    ///
+    /// The slot is released when the run starts, not when it finishes — edits
+    /// made during a long sync must be able to schedule the next run.
+    pub fn schedule_sync_with_delay(
+        self: &Arc<Self>,
+        app: AppHandle,
+        notebook_id: String,
+        delay: Duration,
+    ) {
         let ready = {
             let config = self.read_config();
             config.is_ready()
@@ -194,28 +243,34 @@ impl FnsSyncService {
             }
         }
 
-        let generation = {
+        let deadline = std::time::Instant::now() + delay;
+        {
             let mut scheduled = self
                 .scheduled
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let entry = scheduled.entry(notebook_id.clone()).or_insert(0);
-            *entry = entry.wrapping_add(1);
-            *entry
-        };
+            match scheduled.get(&notebook_id) {
+                // An earlier (or equally timed) pending run covers this one.
+                Some(current) if *current <= deadline => return,
+                _ => {
+                    scheduled.insert(notebook_id.clone(), deadline);
+                }
+            }
+        }
 
         let service = self.clone();
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(AUTO_SYNC_DEBOUNCE).await;
+            tokio::time::sleep(delay).await;
             {
-                let scheduled = service
+                let mut scheduled = service
                     .scheduled
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                if scheduled.get(&notebook_id).copied() != Some(generation) {
+                if scheduled.get(&notebook_id).copied() != Some(deadline) {
                     return;
                 }
+                scheduled.remove(&notebook_id);
             }
             match service.sync_notebook(&app, &notebook_id).await {
                 Ok(_) => {}
@@ -250,6 +305,7 @@ impl FnsSyncService {
             .map_err(|_| "FNS config lock poisoned".to_owned())?;
         config.apply(patch);
         config.save(&self.config_dir).map_err(|error| error.to_string())?;
+        self.listener.restart();
         Ok(FnsConfigView::from(&*config))
     }
 
@@ -262,6 +318,7 @@ impl FnsSyncService {
             .upsert_token(input.id.as_deref(), &input.label, &input.token)
             .ok_or_else(|| "label and token are required for a new token".to_owned())?;
         config.save(&self.config_dir).map_err(|error| error.to_string())?;
+        self.listener.restart();
         Ok(FnsConfigView::from(&*config))
     }
 
@@ -272,6 +329,7 @@ impl FnsSyncService {
             .map_err(|_| "FNS config lock poisoned".to_owned())?;
         config.remove_token(id);
         config.save(&self.config_dir).map_err(|error| error.to_string())?;
+        self.listener.restart();
         Ok(FnsConfigView::from(&*config))
     }
 
@@ -333,19 +391,15 @@ impl FnsSyncService {
             (config.clone(), config.offline_sync_strategy())
         };
 
-        if self
-            .running
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return Err("FNS sync is already running".to_owned());
-        }
+        // Wait for any in-flight sync instead of failing: every trigger path
+        // is a "please sync this notebook soon" request, and none of them
+        // benefits from being discarded here.
+        let _sync_lock = self.sync_lock.lock().await;
         self.set_status(|status| {
             status.running = true;
             status.last_error = None;
             status.notebook_id = Some(notebook_id.to_owned());
         });
-        let _running_guard = RunningGuard(&self.running);
 
         tracing::info!(notebook_id, "FNS sync started");
         let started = std::time::Instant::now();
@@ -365,30 +419,45 @@ impl FnsSyncService {
 
         match &result {
             Ok(Some(outcome)) => {
-                tracing::info!(
-                    notebook_id,
-                    vault = %outcome.vault,
-                    pulled = outcome.pulled,
-                    pushed = outcome.pushed,
-                    files_pulled = outcome.files_pulled,
-                    files_pushed = outcome.files_pushed,
-                    elapsed_ms = started.elapsed().as_millis() as u64,
-                    "FNS sync finished"
-                );
+                // Realtime triggers produce many no-op runs (own-push echoes,
+                // focus pulls). Log and journal only runs that moved data so
+                // the history panel and info logs stay meaningful.
+                let moved_data = !outcome.is_empty();
+                if moved_data {
+                    tracing::info!(
+                        notebook_id,
+                        vault = %outcome.vault,
+                        pulled = outcome.pulled,
+                        pushed = outcome.pushed,
+                        files_pulled = outcome.files_pulled,
+                        files_pushed = outcome.files_pushed,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "FNS sync finished"
+                    );
+                } else {
+                    tracing::debug!(
+                        notebook_id,
+                        vault = %outcome.vault,
+                        elapsed_ms = started.elapsed().as_millis() as u64,
+                        "FNS sync finished without changes"
+                    );
+                }
                 self.clear_retry(notebook_id);
-                self.record_history(FnsSyncRecord {
-                    at: started_at,
-                    notebook_id: outcome.notebook_id.clone(),
-                    vault: outcome.vault.clone(),
-                    ok: true,
-                    pulled: outcome.pulled,
-                    pushed: outcome.pushed,
-                    files_pulled: outcome.files_pulled,
-                    files_pushed: outcome.files_pushed,
-                    deleted_local: outcome.deleted_local,
-                    duration_ms: started.elapsed().as_millis() as i64,
-                    error: None,
-                });
+                if moved_data {
+                    self.record_history(FnsSyncRecord {
+                        at: started_at,
+                        notebook_id: outcome.notebook_id.clone(),
+                        vault: outcome.vault.clone(),
+                        ok: true,
+                        pulled: outcome.pulled,
+                        pushed: outcome.pushed,
+                        files_pulled: outcome.files_pulled,
+                        files_pushed: outcome.files_pushed,
+                        deleted_local: outcome.deleted_local,
+                        duration_ms: started.elapsed().as_millis() as i64,
+                        error: None,
+                    });
+                }
                 self.set_status(|status| {
                     status.running = false;
                     status.progress = None;
@@ -639,6 +708,7 @@ impl FnsSyncService {
         state.vault = vault_name;
         state.token_id = token_id.to_owned();
         state.save(&root).map_err(|error| error.to_string())?;
+        self.listener.restart();
 
         self.notebook_state(app, notebook_id)
     }
@@ -648,7 +718,10 @@ impl FnsSyncService {
         let (_, root) = notebook_root(app, notebook_id)?;
         let path = SyncState::path_for(&root);
         match std::fs::remove_file(&path) {
-            Ok(()) => Ok(()),
+            Ok(()) => {
+                self.listener.restart();
+                Ok(())
+            }
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
             Err(error) => Err(error.to_string()),
         }
@@ -741,6 +814,36 @@ impl FnsSyncService {
         }
         Ok(outcomes)
     }
+
+    /// Schedule a debounced sync for every bound notebook without running it
+    /// inline. Used when the app returns to the foreground: while backgrounded
+    /// the realtime listener can lose its connection (Android freezes
+    /// background network, desktop sleeps), so the returning focus pulls once
+    /// instead of waiting out the reconnect backoff. The deadline slot
+    /// collapses repeated focus events, and a run with nothing to do costs
+    /// only a cursor round trip.
+    pub fn schedule_bound_notebook_syncs(self: &Arc<Self>, app: &AppHandle) {
+        let state = app.state::<AppState>();
+        let notebooks = {
+            let memo_file = read_lock(&state.memo_file, "memo_file");
+            match memo_file.read_notebook_configs() {
+                Ok(notebooks) => notebooks,
+                Err(error) => {
+                    tracing::warn!("FNS focus sync: could not list notebooks: {error}");
+                    return;
+                }
+            }
+        };
+        for notebook in notebooks {
+            let root = PathBuf::from(&notebook.path);
+            let bound = SyncState::load(&root)
+                .map(|state| state.is_some())
+                .unwrap_or(false);
+            if bound {
+                self.schedule_sync(app.clone(), notebook.id.clone());
+            }
+        }
+    }
 }
 
 pub fn now_ms() -> i64 {
@@ -786,7 +889,7 @@ fn retry_delay(attempts: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::retry_delay;
+    use super::{retry_delay, FnsNotebookSyncOutcome};
 
     #[test]
     fn retry_delay_is_exponential_and_capped() {
@@ -795,6 +898,35 @@ mod tests {
         assert_eq!(retry_delay(3).as_secs(), 16);
         assert_eq!(retry_delay(7).as_secs(), 256);
         assert_eq!(retry_delay(20).as_secs(), 256);
+    }
+
+    #[test]
+    fn outcome_emptiness_ignores_cursor() {
+        let empty = FnsNotebookSyncOutcome {
+            notebook_id: "n".into(),
+            vault: "v".into(),
+            pulled: 0,
+            pushed: 0,
+            deleted_local: 0,
+            renamed: 0,
+            files_pulled: 0,
+            files_pushed: 0,
+            conflicts: Vec::new(),
+            last_time: 12345,
+        };
+        assert!(empty.is_empty());
+
+        let with_conflict = FnsNotebookSyncOutcome {
+            conflicts: vec!["a.md".into()],
+            ..empty.clone()
+        };
+        assert!(!with_conflict.is_empty());
+
+        let with_push = FnsNotebookSyncOutcome {
+            pushed: 1,
+            ..empty
+        };
+        assert!(!with_push.is_empty());
     }
 }
 

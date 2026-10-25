@@ -821,6 +821,10 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       });
     };
     editorDom.addEventListener('compositionstart', handleCompositionStart);
+    // Without this the composing flag sticks after the first IME session and
+    // every external content update parks in `pendingExternalContentRef`
+    // until the document is remounted.
+    editorDom.addEventListener('compositionend', handleCompositionEnd);
 
     const detachLinkHoverTooltip = attachLinkHoverTooltip(
       editor,

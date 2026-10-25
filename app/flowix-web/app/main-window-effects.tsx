@@ -31,6 +31,7 @@ import {
   mountOpenTargetListener,
   unmountOpenTargetListener,
 } from "@features/memo/public/app-api";
+import { fns } from "@platform/tauri/client/fns";
 import { initializeMainWindowStartup } from './main-window-startup';
 import { createLogger } from '@/lib/logger';
 import { joinNotebookMemoPath } from '@/lib/path';
@@ -120,6 +121,21 @@ export function MainWindowEffects() {
   }, [mainWindowTitle]);
 
   useEffect(() => mountMainWindowNotebookEvents(), []);
+
+  useEffect(() => {
+    // Foreground return after a background freeze: Android drops listener
+    // events and may kill the sync connection while backgrounded. The
+    // backend also watches native window focus; this covers the WebView
+    // resume path directly.
+    const onVisibilityChange = () => {
+      if (document.visibilityState !== 'visible') return;
+      void fns.scheduleFocusSync().catch((error) => {
+        logger.warn('focus sync scheduling failed', { error });
+      });
+    };
+    document.addEventListener('visibilitychange', onVisibilityChange);
+    return () => document.removeEventListener('visibilitychange', onVisibilityChange);
+  }, []);
 
   useEffect(() => {
     let unsubscribe: (() => void) | undefined;
