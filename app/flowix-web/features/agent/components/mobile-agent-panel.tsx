@@ -28,8 +28,9 @@ interface MobileAgentPanelState {
   open: boolean;
   instanceId: string | null;
   boundPath: string | null;
-  openForCurrentDocument: () => void;
-  newConversation: () => void;
+  /** Open the drawer for the current document. Returns false when no document is open. */
+  openForCurrentDocument: () => Promise<boolean>;
+  newConversation: () => Promise<boolean>;
   selectConversation: (instanceId: string) => void;
   close: () => void;
 }
@@ -105,19 +106,26 @@ export const useMobileAgentPanelStore = create<MobileAgentPanelState>((set) => (
   open: false,
   instanceId: null,
   boundPath: null,
-  openForCurrentDocument: () => {
+  openForCurrentDocument: async () => {
     const path = useDocumentStore.getState().currentDocumentPath;
-    if (!path) return;
+    if (!path) return false;
+    // Persisted instances are not hydrated at startup; pull them before
+    // matching so a reopened app selects the document's existing conversation
+    // instead of minting a fresh one.
+    await useAgentSessionStore.getState().hydrateFromBackend();
     const instance = resolveConversationFor(path);
     set({ open: true, instanceId: instance.instanceId, boundPath: path });
+    return true;
   },
-  newConversation: () => {
+  newConversation: async () => {
     const path = useMobileAgentPanelStore.getState().boundPath
       ?? useDocumentStore.getState().currentDocumentPath;
-    if (!path) return;
+    if (!path) return false;
+    await useAgentSessionStore.getState().hydrateFromBackend();
     const blank = listDocumentConversations(path).find(isBlankConversation);
     const instance = blank ?? createDocumentConversation(path);
     set({ open: true, instanceId: instance.instanceId, boundPath: path });
+    return true;
   },
   selectConversation: (instanceId) => set({ instanceId, open: true }),
   close: () => set({ open: false }),

@@ -225,11 +225,12 @@ export function StatusBar({
             <button
               type="button"
               onClick={() => {
-                const store = useMobileAgentPanelStore.getState();
-                store.openForCurrentDocument();
-                if (!useMobileAgentPanelStore.getState().open) {
-                  toast.error(t('agent.mobilePanel.openDocumentFirst'));
-                }
+                void useMobileAgentPanelStore
+                  .getState()
+                  .openForCurrentDocument()
+                  .then((opened) => {
+                    if (!opened) toast.error(t('agent.mobilePanel.openDocumentFirst'));
+                  });
               }}
               className="h-full flex items-center justify-center px-1.5 py-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
               aria-label={t('agent.mobilePanel.title')}
