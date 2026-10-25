@@ -8,6 +8,7 @@ import type { SurfacePresentationUpdate } from '@features/workspace/model/surfac
 import { DEFAULT_AGENT_TYPE_KEY } from '@/lib/agent-types';
 import type { AgentTypeKey } from '@/types/agent';
 import { useI18n } from '@/lib/i18n';
+import { isMobileDevice } from '@shared/platform';
 import { toast } from '@/lib/toast';
 import { createLogger } from '@/lib/logger';
 import { agent } from '@platform/tauri/client/agent';
@@ -523,15 +524,20 @@ function AgentConversationDetailContent({
       toast: (kind, message) => toast[kind](message),
     });
     externalSettingsRef.current = externalSettings;
-    const composerModelButton = externalSettings.createComposerModelButton();
-    if (composerModelButton) composerActions.append(composerModelButton);
-    const composerModeButton = externalSettings.createComposerModeButton();
-    if (composerModeButton) composerActions.append(composerModeButton);
-    const composerPermissionButton = externalSettings.createComposerPermissionButton();
-    if (composerPermissionButton) composerActions.append(composerPermissionButton);
-    const composerWorkspaceButton = externalSettings.createComposerWorkspaceButton();
-    if (composerWorkspaceButton) composerActions.append(composerWorkspaceButton);
-    externalSettings.loadDefaultModel();
+    // External-agent controls (model/mode/permission/workspace + 「添加仓库」)
+    // are desktop-only capabilities. Mobile has no external runtimes and the
+    // built-in assistant does not consume repositories.
+    if (!isMobileDevice()) {
+      const composerModelButton = externalSettings.createComposerModelButton();
+      if (composerModelButton) composerActions.append(composerModelButton);
+      const composerModeButton = externalSettings.createComposerModeButton();
+      if (composerModeButton) composerActions.append(composerModeButton);
+      const composerPermissionButton = externalSettings.createComposerPermissionButton();
+      if (composerPermissionButton) composerActions.append(composerPermissionButton);
+      const composerWorkspaceButton = externalSettings.createComposerWorkspaceButton();
+      if (composerWorkspaceButton) composerActions.append(composerWorkspaceButton);
+      externalSettings.loadDefaultModel();
+    }
     const composerDraft = new ComposerDraftController({
       persistDelayMs: 0,
       persist: (draft) => {

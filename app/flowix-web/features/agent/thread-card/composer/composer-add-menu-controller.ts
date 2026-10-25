@@ -1,4 +1,5 @@
 import type { I18nKey } from "@/lib/i18n";
+import { isMobileDevice } from '@shared/platform';
 import type { NotePickerController } from "@features/agent/thread-card/note/note-picker-controller";
 import type { ComposerAttachmentController } from "./composer-attachment-controller";
 import { COMPOSER_ATTACHMENT_ACCEPT } from "./composer-attachment-controller";
@@ -128,12 +129,16 @@ export class ComposerAddMenuController {
         items.push(this.createSettingsItem(this.options.t(label), onHover, popupRole));
       });
     }
-    const projectAiSettings = this.createItem(this.options.t("editor.threadCard.projectAiSettings"), false, () => {
-      this.setOpen(false);
-      this.options.openNotebookAgentSettings();
-    });
-    if (settings.length > 0) items.push(this.createSeparator());
-    items.push(projectAiSettings);
+    // 项目 AI 设置（.agents skills/agents/mcp）是桌面端外部 Agent 的能力；
+    // 移动端内置助手不消费这些配置，入口直接隐藏。
+    if (!isMobileDevice()) {
+      const projectAiSettings = this.createItem(this.options.t("editor.threadCard.projectAiSettings"), false, () => {
+        this.setOpen(false);
+        this.options.openNotebookAgentSettings();
+      });
+      if (settings.length > 0) items.push(this.createSeparator());
+      items.push(projectAiSettings);
+    }
     this.options.popover.replaceChildren(...items);
     this.noteItem = note;
     // The parent item and level-2 popover form one continuous hover region.
