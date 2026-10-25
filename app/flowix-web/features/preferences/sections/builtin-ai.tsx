@@ -14,8 +14,9 @@ const SECTION_LABEL = 'text-xs font-medium uppercase tracking-wider text-[var(--
 /**
  * 内置 AI 助手（移动端 builtin agent）的独立配置分区。
  *
- * 与桌面外部 Agent 的配置分区（pi / dsh / aiAgent / mcp）互不相干：
- * 这里只管理进程内助手的 OpenAI-compatible provider 三要素。
+ * 表单值即真源：测试连接 / 获取模型都把当前表单值传给后端（空 Key 回落
+ * 已存密钥），先填先测，不依赖失焦自动保存的时序。输入框失焦仍会静默
+ * 持久化，保存动作本身保持无感。
  */
 export function BuiltinAiSection() {
   const { t } = useI18n();
@@ -25,6 +26,8 @@ export function BuiltinAiSection() {
   const [model, setModel] = useState('');
   const [busy, setBusy] = useState(false);
   const [testing, setTesting] = useState(false);
+  const [fetchingModels, setFetchingModels] = useState(false);
+  const [modelOptions, setModelOptions] = useState<string[]>([]);
 
   useEffect(() => {
     let disposed = false;
@@ -38,6 +41,11 @@ export function BuiltinAiSection() {
       .catch((error) => toast.error(errorMessage(error)));
     return () => { disposed = true; };
   }, []);
+
+  // 表单三要素是否齐全（Key 可以用已存密钥兜底）。
+  const formComplete = Boolean(
+    apiUrl.trim() && model.trim() && (apiKey.trim() || config?.hasApiKey),
+  );
 
   const save = useCallback(async (patch: {
     enabled?: boolean;
@@ -56,6 +64,7 @@ export function BuiltinAiSection() {
       setConfig(view);
       setApiUrl(view.apiUrl);
       setModel(view.model);
+      // 保存成功后清空明文输入框，避免已保存的密钥看起来像没保存。
       if (patch.apiKey !== undefined && patch.apiKey !== '') setApiKey('');
       toast.success(t('preferences.builtinAi.saved'));
     } catch (error) {
@@ -68,14 +77,36 @@ export function BuiltinAiSection() {
   const testConnection = useCallback(async () => {
     setTesting(true);
     try {
-      const message = await builtinAi.testConnection();
+      const message = await builtinAi.testConnection({
+        apiUrl,
+        apiKey: apiKey.trim() || undefined,
+        model,
+      });
       toast.success(message);
+      // 顺手把当前表单值持久化，省一步失焦保存。
+      await save({});
     } catch (error) {
       toast.error(errorMessage(error));
     } finally {
       setTesting(false);
     }
-  }, []);
+  }, [apiUrl, apiKey, model, save]);
+
+  const fetchModels = useCallback(async () => {
+    setFetchingModels(true);
+    try {
+      const models = await builtinAi.listModels({
+        apiUrl,
+        apiKey: apiKey.trim() || undefined,
+      });
+      setModelOptions(models);
+      toast.success(t('preferences.builtinAi.modelsFetched', { count: models.length }));
+    } catch (error) {
+      toast.error(errorMessage(error));
+    } finally {
+      setFetchingModels(false);
+    }
+  }, [apiUrl, apiKey, t]);
 
   return (
     <div className="space-y-7 pb-8">
@@ -133,28 +164,57 @@ export function BuiltinAiSection() {
           />
         </Field>
 
-        <Field title={t('preferences.builtinAi.model')} controlId="builtin-ai-model">
-          <Input
-            id="builtin-ai-model"
-            value={model}
-            placeholder={t('preferences.builtinAi.modelPlaceholder')}
-            onChange={(event) => setModel(event.target.value)}
-            onBlur={() => {
-              if (model !== (config?.model ?? '')) void save({ model });
-            }}
-          />
+        <Field
+          title={t('preferences.builtinAi.model')}
+          controlId="builtin-ai-model"
+          hint={t('preferences.builtinAi.modelHint')}
+        >
+          <div className="flex w-full items-center gap-2">
+            <Input
+              id="builtin-ai-model"
+              list="builtin-ai-model-options"
+              value={model}
+              placeholder={t('preferences.builtinAi.modelPlaceholder')}
+              className="min-w-0 flex-1"
+              onChange={(event) => setModel(event.target.value)}
+              onBlur={() => {
+                if (model !== (config?.model ?? '')) void save({ model });
+              }}
+            />
+            <Button
+              type="button"
+              variant="outline"
+              size="sm"
+              className="shrink-0"
+              disabled={fetchingModels || !apiUrl.trim() || !(apiKey.trim() || config?.hasApiKey)}
+              onClick={() => void fetchModels()}
+            >
+              {fetchingModels ? t('preferences.builtinAi.fetchingModels') : t('preferences.builtinAi.fetchModels')}
+            </Button>
+            <datalist id="builtin-ai-model-options">
+              {modelOptions.map((option) => (
+                <option key={option} value={option} />
+              ))}
+            </datalist>
+          </div>
         </Field>
 
         <div className="flex items-center gap-3">
           <Button
             variant="outline"
             size="sm"
-            disabled={testing || busy || !config?.hasApiKey}
+            disabled={testing || busy || !formComplete}
             onClick={() => void testConnection()}
           >
             {testing ? t('preferences.builtinAi.testing') : t('preferences.builtinAi.test')}
           </Button>
-          <span className="text-xs text-[var(--muted-foreground)]">
+          <span
+            className={
+              config?.configured
+                ? 'rounded-full bg-[var(--success,#22c55e)]/10 px-2 py-0.5 text-xs text-[var(--success,#22c55e)]'
+                : 'rounded-full bg-[var(--muted)] px-2 py-0.5 text-xs text-[var(--muted-foreground)]'
+            }
+          >
             {config?.configured
               ? t('preferences.builtinAi.configured')
               : t('preferences.builtinAi.notConfigured')}

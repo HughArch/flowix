@@ -67,7 +67,8 @@ impl BuiltinAiConfig {
         }
         let bytes = serde_json::to_vec_pretty(self)
             .map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error.to_string()))?;
-        flowix_core::memo_file::atomic_create_bytes(&path, &bytes)
+        // 覆盖写（noclobber 版本在文件已存在时报 AlreadyExists）。
+        flowix_core::memo_file::atomic_write_bytes(&path, &bytes)
     }
 
     /// True when chat can actually start: the three provider fields are set.
@@ -80,8 +81,16 @@ impl BuiltinAiConfig {
     /// Base URL for the chat-completions endpoint. Accepts both
     /// `https://host` and `https://host/v1` styles.
     pub fn chat_endpoint(&self) -> String {
-        let base = self.api_url.trim().trim_end_matches('/');
-        format!("{base}/chat/completions")
+        format!("{}/chat/completions", self.api_base())
+    }
+
+    /// Base URL for the models-list endpoint.
+    pub fn models_endpoint(&self) -> String {
+        format!("{}/models", self.api_base())
+    }
+
+    fn api_base(&self) -> &str {
+        self.api_url.trim().trim_end_matches('/')
     }
 }
 
@@ -153,6 +162,8 @@ mod tests {
             max_total_tokens: Some(50_000),
         });
         config.save(dir.path()).unwrap();
+        // 重复保存（覆盖已存在文件）不能再报 AlreadyExists。
+        config.save(dir.path()).unwrap();
         let loaded = BuiltinAiConfig::load(dir.path());
         assert!(loaded.enabled);
         assert_eq!(loaded.api_url, "https://api.deepseek.com");
@@ -161,6 +172,7 @@ mod tests {
         assert_eq!(loaded.max_total_tokens, 50_000);
         assert!(loaded.is_configured());
         assert_eq!(loaded.chat_endpoint(), "https://api.deepseek.com/chat/completions");
+        assert_eq!(loaded.models_endpoint(), "https://api.deepseek.com/models");
     }
 
     #[test]

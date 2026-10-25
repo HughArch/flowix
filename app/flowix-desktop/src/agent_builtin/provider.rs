@@ -329,6 +329,48 @@ pub async fn complete_once(
         .ok_or_else(|| ProviderError::Format("missing choices[0].message.content".into()))
 }
 
+/// Fetch the provider's model list (`GET /models`, OpenAI-compatible).
+/// Accepts both the standard `{"data":[{"id":..}]}` shape and a bare array.
+pub async fn list_models(
+    models_endpoint: &str,
+    api_key: &str,
+) -> Result<Vec<String>, ProviderError> {
+    let client = reqwest::Client::builder()
+        .connect_timeout(CONNECT_TIMEOUT)
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let response = client
+        .get(models_endpoint)
+        .bearer_auth(api_key)
+        .send()
+        .await?;
+    let status = response.status();
+    let text = response.text().await.unwrap_or_default();
+    if !status.is_success() {
+        return Err(ProviderError::Status {
+            status: status.as_u16(),
+            body: text.chars().take(300).collect(),
+        });
+    }
+    let value: Value =
+        serde_json::from_str(&text).map_err(|error| ProviderError::Format(error.to_string()))?;
+    let items = if let Some(data) = value.get("data").and_then(Value::as_array) {
+        data.clone()
+    } else if let Some(array) = value.as_array() {
+        array.clone()
+    } else {
+        return Err(ProviderError::Format("models response has no data array".into()));
+    };
+    let mut ids: Vec<String> = items
+        .iter()
+        .filter_map(|item| item.get("id").and_then(Value::as_str))
+        .map(str::to_owned)
+        .collect();
+    ids.sort();
+    ids.dedup();
+    Ok(ids)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

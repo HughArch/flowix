@@ -704,6 +704,7 @@ pub fn run() {
             crate::agent_builtin::commands::agent_builtin_get_config,
             crate::agent_builtin::commands::agent_builtin_set_config,
             crate::agent_builtin::commands::agent_builtin_test_connection,
+            crate::agent_builtin::commands::agent_builtin_list_models,
             commands::agent::chat::steer_agent_stream,
             commands::agent::chat::promote_pi_follow_up_to_steer,
             commands::agent::chat::delete_pi_queued_message,

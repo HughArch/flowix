@@ -24,9 +24,20 @@ export interface BuiltinAiConfigInput {
   maxTotalTokens?: number;
 }
 
+export interface BuiltinAiOverride {
+  apiUrl?: string;
+  /** Empty/undefined falls back to the stored key. */
+  apiKey?: string;
+  model?: string;
+}
+
 export const builtinAi = {
   getConfig: () => invoke<BuiltinAiConfigView>('agent_builtin_get_config'),
   setConfig: (input: BuiltinAiConfigInput) =>
     invoke<BuiltinAiConfigView>('agent_builtin_set_config', { input }),
-  testConnection: () => invoke<string>('agent_builtin_test_connection'),
+  /** Tests the given form values; empty apiKey falls back to the stored key. */
+  testConnection: (over?: BuiltinAiOverride) =>
+    invoke<string>('agent_builtin_test_connection', { over: over ?? null }),
+  listModels: (over?: BuiltinAiOverride) =>
+    invoke<string[]>('agent_builtin_list_models', { over: over ?? null }),
 };
