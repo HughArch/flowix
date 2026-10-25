@@ -208,3 +208,22 @@ resolve 时**重读本地文件**（挂起期间用户可能又编辑过，以�
 - `text_merge` 集成：base 缺失退化路径；二进制 `Unsupported`。
 - 服务端契约（已有）：`ws_note_conflict_notify_test.go` 530 契约不回归。
 - 手工场景清单：双端离线各改同一段 / 各改不同段（应静默合并）/ 一端删一端改 / 挂起期间他端解决 / 冲突期间继续编辑。
+
+## 9. 双端端到端实测记录（2026-10-25，桌面 dev + 小米平板，真实服务端 Docker:9000）
+
+| 场景 | 结果 |
+|---|---|
+| S0 冒烟：桌面建笔记 → 服务端 → 平板 | ✅ 三端字节一致 |
+| S0' 顺序编辑（无意中串行化的双端修改） | ✅ 干净 fast-forward，无冲突 |
+| S2 同段真冲突（平板 force-stop 离线编辑，桌面先推） | ✅ 530 → pending 落盘（sync-state + `.flowix/conflicts/` 记录，server/base 内容正确）→ 平板 UI 冲突中心出现条目（mergeable 正确显示）→ 智能合并按设计拒绝（真冲突）→ 用本地 resolved 推送 → 服务端接受 → 桌面实时收敛 |
+| S1' 不同段真冲突（期望自动合并） | ⚠️ 530 正确挂起，但**自动合并被退化 base 挡住**：logcat `reason="no independent base available"`——对端 keepLocal resolved 推送仅 60s 前，服务端历史快照未落（20-30s 延迟），530 的 baseContent 退化为服务端当前内容，客户端守卫正确拒绝（否则丢一边）→ 用云端解决收敛 |
+| S4 副本风暴检查 | ✅ 全程多次真 530，服务端**零** `.conflict.` 副本 |
+| S5 删除传播 | ✅ 桌面删除 → tombstone → 平板文件消失 |
+| 防循环 | ✅ 挂起期间快照排除生效（conflict-e2e.md 不在 notes 快照），重复 need_push 被 skip，无 530 风暴 |
+
+**实测结论：**
+
+1. PR4 服务端「历史快照即时化」从可选项升级为**自动合并体验的关键路径**：只要冲突双方中较新的一方在对方上次同步后 ~30s 内写入，历史查不到 base → 自动合并必然退化为手动。备选客户端方案：`NoteModify` 请求附带 `baseContent`（服务端原样回显进 530 payload），可彻底摆脱对服务端历史的依赖，代价是每次 push 多传一份基线文本。
+2. 服务端环境问题（与冲突管线无关）：Docker bind-mount 上 SQLite 间歇性 `unable to open database file (14)` → 客户端收到 301 `Database query failed`（授权查询失败）。客户端指数退避重试正常兜住。需在服务端仓库排查 WAL 与 Windows 挂载的兼容性。
+3. 测试工具怪癖（非应用 bug）：MIUI WebView 上 `adb shell input tap` 时常不触发 click，零距离 `input swipe x y x y 120` 稳定。
+4. 桌面端冲突中心 UI 未单独实测（桌面全程未挂起），与平板共用 `sync-status-panel.tsx` 同一份组件，平板已验证。
