@@ -1,4 +1,4 @@
-// Regenerates the desktop icon set from app/flowix-web/assets/app-icon-source.png.
+// Regenerates the app icon set from app/flowix-web/assets/app-icon-source.png.
 //
 // This script must never rewrite app/flowix-web/assets/product-logo.svg.
 // product-logo.svg is the in-app titlebar logo; app-icon-source.png is the
@@ -19,6 +19,13 @@
 // doesn't visually crowd the macOS rounded-square mask. Windows generation
 // uses the same trim flow and is unaffected — the trim happens against the
 // content bbox, so adding outer transparency does not change Windows output.
+//
+// Android uses an adaptive icon: the launcher supplies the mask and the tile
+// gradient, so the foreground must not carry the rounded-square background.
+// Legacy mipmaps (API < 26) reuse the trimmed full-tile art; the adaptive
+// foreground is rendered from app-icon-android-foreground.svg. The gradient
+// background and the mipmap-anydpi-v26 descriptors live in the tracked
+// gen/android project and are not regenerated here.
 
 import { execSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
@@ -32,6 +39,8 @@ const root = resolve(here, '..');
 const backendDir = resolve(root, 'app/flowix-desktop');
 const productLogoSvg = resolve(root, 'app/flowix-web/assets/product-logo.svg');
 const sourcePng = resolve(root, 'app/flowix-web/assets/app-icon-source.png');
+const androidForegroundSvg = resolve(root, 'app/flowix-web/assets/app-icon-android-foreground.svg');
+const androidResDir = resolve(backendDir, 'gen/android/app/src/main/res');
 const iconsDir = resolve(backendDir, 'icons');
 const tmpDir = resolve(root, '.tmp-icon-build');
 const macIconsDir = resolve(tmpDir, 'mac');
@@ -60,6 +69,17 @@ const WINDOWS_ICON_FILES = [
 	'Square150x150Logo.png',
 	'Square284x284Logo.png',
 	'Square310x310Logo.png',
+];
+
+// Android mipmap densities and their adaptive foreground sizes (108dp scaled
+// by density; the safe-zone inset is baked into the foreground source SVG).
+// Legacy ic_launcher PNGs are taken from tauri icon's Android output.
+const ANDROID_MIPMAPS = [
+	{ density: 'mdpi', foregroundSize: 108 },
+	{ density: 'hdpi', foregroundSize: 162 },
+	{ density: 'xhdpi', foregroundSize: 216 },
+	{ density: 'xxhdpi', foregroundSize: 324 },
+	{ density: 'xxxhdpi', foregroundSize: 432 },
 ];
 
 console.log(`source  ${sourcePng}`);
@@ -97,7 +117,11 @@ for (const file of WINDOWS_ICON_FILES) {
 	}
 }
 
-// Drop non-desktop assets the CLI just produced; this project is desktop only.
+installAndroidIcons();
+
+// Drop the Android/iOS trees from the desktop icon dir; Android assets are
+// installed into the tracked gen/android project above, and there is no iOS
+// project in this repo.
 for (const sub of ['android', 'ios']) {
 	rmSync(resolve(iconsDir, sub), { recursive: true, force: true });
 }
@@ -149,6 +173,45 @@ function createMacIconset(pngDir, iconsetDir) {
 	for (const [target, source] of Object.entries(iconsetMap)) {
 		cpSync(resolve(pngDir, source), resolve(iconsetDir, target));
 	}
+}
+
+// Refreshes the Android mipmaps in the tracked gen/android project.
+// - ic_launcher.png / ic_launcher_round.png: legacy (API < 26) full-tile art.
+// - ic_launcher_foreground.png: adaptive foreground, mark only, no tile.
+// The adaptive descriptor and gradient background are hand-maintained under
+// gen/android/app/src/main/res and deliberately left untouched.
+function installAndroidIcons() {
+	if (!existsSync(androidResDir)) {
+		console.log('android project not found, skipped android icons');
+		return;
+	}
+	if (!existsSync(androidForegroundSvg)) {
+		throw new Error(`Missing Android adaptive foreground: ${androidForegroundSvg}`);
+	}
+
+	const foregroundDir = resolve(tmpDir, 'android-foreground');
+	const pngArgs = ANDROID_MIPMAPS.flatMap(({ foregroundSize }) => [
+		'--png',
+		String(foregroundSize),
+	]).join(' ');
+	execSync(`npx tauri icon "${androidForegroundSvg}" --output "${foregroundDir}" ${pngArgs}`, {
+		cwd: backendDir,
+		stdio: 'inherit',
+	});
+
+	const legacyDir = resolve(winIconsDir, 'android');
+	for (const { density, foregroundSize } of ANDROID_MIPMAPS) {
+		const target = resolve(androidResDir, `mipmap-${density}`);
+		mkdirSync(target, { recursive: true });
+		for (const file of ['ic_launcher.png', 'ic_launcher_round.png']) {
+			cpSync(resolve(legacyDir, `mipmap-${density}`, file), resolve(target, file));
+		}
+		cpSync(
+			resolve(foregroundDir, `${foregroundSize}x${foregroundSize}.png`),
+			resolve(target, 'ic_launcher_foreground.png'),
+		);
+	}
+	console.log(`android mipmaps -> ${androidResDir}/mipmap-*`);
 }
 
 function trimTransparentPngToSquare(input, output) {
