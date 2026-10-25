@@ -225,7 +225,12 @@ pub async fn sync_notebook(
     }
 
     // The server asked for these because both sides changed. Upload the local
-    // copy; with `newTimeMerge` the server reconciles by mtime.
+    // copy. The snapshot hash is the version the server acknowledged at the
+    // last successful sync — the base the local edit grew from. The server
+    // fast-forwards when it is still on that version, and can run a real
+    // three-way merge when it has moved on. Sending no base would push the
+    // server into its "unknown base" path, which always force-merges and
+    // writes a `.conflict.` copy — one per edit.
     let push_total = pulled.need_push.len();
     let mut push_done = 0;
     for note in &pulled.need_push {
@@ -248,7 +253,7 @@ pub async fn sync_notebook(
                 content: &content,
                 ctime_ms: now,
                 mtime_ms: now,
-                base_hash: None,
+                base_hash: state.base_hash_for(&note.path),
                 create_only: false,
             },
         )

@@ -84,6 +84,15 @@ impl SyncState {
             .collect()
     }
 
+    /// Content hash of the version the server acknowledged at the last
+    /// successful sync — the base a pending local edit grew from. `None` for
+    /// a path the server has never seen from this client (a fresh note).
+    pub fn base_hash_for(&self, path: &str) -> Option<String> {
+        self.notes
+            .get(path)
+            .map(|snapshot| snapshot.content_hash.clone())
+    }
+
     /// Replace the snapshot with the current local state.
     pub fn record_snapshot(&mut self, current: &[crate::local::LocalNote]) {
         self.notes = current
@@ -177,5 +186,21 @@ mod tests {
         fs::create_dir_all(path.parent().unwrap()).unwrap();
         fs::write(&path, br#"{"version":99,"vault":"v","lastTime":0,"deviceId":"d","lastSyncAt":0}"#).unwrap();
         assert!(SyncState::load(dir.path()).is_err());
+    }
+
+    #[test]
+    fn base_hash_tracks_last_synced_version() {
+        use crate::local::LocalNoteStore;
+
+        let mut state = SyncState::new("vault", "device-1");
+        assert_eq!(state.base_hash_for("a.md"), None);
+
+        let store = crate::local::MemoryNoteStore::new();
+        store.insert("a.md", "hello", 1);
+        state.record_snapshot(&store.list_notes().unwrap());
+        assert_eq!(
+            state.base_hash_for("a.md"),
+            Some(crate::hash::content_hash("hello"))
+        );
     }
 }

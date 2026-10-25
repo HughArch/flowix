@@ -15,6 +15,7 @@ import {
   type FnsSyncRecord,
 } from '@platform/tauri/client';
 import { useNoteStore } from '@features/memo/store/note-store';
+import { flushOpenDocumentsForNotebook, reloadOpenDocumentsAfterSync } from '@features/document/public/sync-coordination';
 import { useSyncPanelStore } from './sync-panel-store';
 
 const PHASE_KEYS: Record<FnsSyncPhase, I18nKey> = {
@@ -160,7 +161,9 @@ export function SyncStatusPanel() {
       setNotebookState(await fns.bindNotebook(selectedNotebookId, selectedTokenId, vault));
       toast.success(t('sync.panel.bound'));
       try {
+        await flushOpenDocumentsForNotebook(selectedNotebookId);
         await fns.syncNotebook(selectedNotebookId);
+        await reloadOpenDocumentsAfterSync(selectedNotebookId);
         await refresh();
       } catch (error) {
         // Binding succeeded; the first sync may still fail (permissions, etc.).
@@ -193,7 +196,12 @@ export function SyncStatusPanel() {
     // Reflect progress immediately; the backend flips `running` a moment later.
     void refresh().catch(() => {});
     try {
+      // The engine reads and writes notebook files on disk while editor saves
+      // are blur/debounce-triggered: capture pending edits first, and feed
+      // pulled remote changes back into the open views afterwards.
+      await flushOpenDocumentsForNotebook(selectedNotebookId);
       const outcome = await fns.syncNotebook(selectedNotebookId);
+      await reloadOpenDocumentsAfterSync(selectedNotebookId);
       await refresh();
       if (outcome) {
         toast.success(
