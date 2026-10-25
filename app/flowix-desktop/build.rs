@@ -53,9 +53,30 @@ fn generate_notebook_template_assets() {
     fs::write(generated_file, generated).expect("failed to write generated template asset list");
 }
 
+// tauri-build compiles `icons/icon.ico` into the Windows resource and embeds
+// the default window icon through `generate_context!`, but it only declares
+// the Tauri config as a build input. Declaring the icon files here keeps the
+// embedded icon in sync: otherwise a rebuilt icon set is silently ignored and
+// `tauri dev` keeps launching a binary that still carries the old artwork.
+fn rerun_on_icon_change() {
+    let manifest_dir =
+        PathBuf::from(std::env::var_os("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR is set"));
+    for icon in [
+        "icons/icon.ico",
+        "icons/icon.icns",
+        "icons/icon.png",
+        "icons/32x32.png",
+        "icons/128x128.png",
+        "icons/128x128@2x.png",
+    ] {
+        println!("cargo:rerun-if-changed={}", manifest_dir.join(icon).display());
+    }
+}
+
 fn main() {
     generate_notebook_template_assets();
     embed_windows_manifest();
+    rerun_on_icon_change();
     let dev_mode = std::env::var_os("FLOWIX_DEV_MODE").is_some();
     println!("cargo:rerun-if-env-changed=FLOWIX_DEV_MODE");
     println!("cargo:rustc-env=FLOWIX_DEV_MODE={}", if dev_mode { "1" } else { "0" });
