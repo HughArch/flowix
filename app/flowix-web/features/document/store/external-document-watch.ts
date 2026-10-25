@@ -65,10 +65,26 @@ function isDuplicateEvent(key: string): boolean {
 function dispatchExternalDocumentChange(event: ExternalDocumentChangedEvent): void {
   const path = canonicalPath(event.path);
   const groups = [...watchGroups.values()].filter((group) => group.path === path && group.active);
-  if (groups.length === 0 || isDuplicateEvent(eventKey(path, event))) return;
+  if (groups.length === 0) {
+    logger.info('external change dropped: no watch group', { path, kind: event.kind, source: event.source });
+    return;
+  }
+  if (isDuplicateEvent(eventKey(path, event))) {
+    logger.info('external change dropped: duplicate', { path, kind: event.kind });
+    return;
+  }
 
   if (event.source === 'user_edit' && event.originWindowLabel === getCurrentWindow().label) return;
-  if (consumeExpectedExternalDocumentEvent(path, event.kind, event.revision)) return;
+  if (consumeExpectedExternalDocumentEvent(path, event.kind, event.revision)) {
+    logger.info('external change swallowed: expected operation', { path, kind: event.kind });
+    return;
+  }
+  logger.info('external change dispatching', {
+    path,
+    kind: event.kind,
+    source: event.source,
+    subscribers: groups.reduce((count, group) => count + group.subscribers.size, 0),
+  });
 
   // Several path/scope leases can target the same file in one window. Route a
   // matching revision once, while each mounted view updates its own local state.

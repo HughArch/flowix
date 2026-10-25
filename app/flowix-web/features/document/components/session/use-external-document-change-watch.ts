@@ -12,8 +12,11 @@ import { translate } from '@/lib/i18n';
 import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api';
 import { toast } from '@/lib/toast';
 import { canonicalPath } from '@/lib/path';
+import { createLogger } from '@/lib/logger';
 import { findFileDisplayPath } from '@/lib/file-display-registry';
 import { subscribeExternalDocumentChanges } from '@features/document/store/external-document-watch';
+
+const logger = createLogger('external-document-change-watch');
 
 interface UseExternalDocumentChangeWatchOptions {
   filePath: string;
@@ -40,7 +43,15 @@ export function useExternalDocumentChangeWatch({
 
     const identityKey = documentIdentityKey(identity);
     const unsubscribe = subscribeExternalDocumentChanges(filePath, scopePath, async (payload, context) => {
-      if (disposed || !stillWatchingCurrentPath() || canonicalPath(payload.path) !== currentPath) return;
+      if (disposed || !stillWatchingCurrentPath() || canonicalPath(payload.path) !== currentPath) {
+        logger.info('external change ignored by handler', {
+          path: payload.path,
+          disposed,
+          watchingCurrent: stillWatchingCurrentPath(),
+        });
+        return;
+      }
+      logger.info('external change accepted by handler', { path: payload.path, kind: payload.kind });
       captureLatestDocumentContent(identity);
       if (payload.kind === 'deleted') {
         await context.runOnce('missing-warning', () => {
