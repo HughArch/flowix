@@ -748,7 +748,7 @@ fn system_prompt(scope: &ToolScope, web_search_enabled: bool) -> String {
 - note_delete 是硬删除且不可恢复，只在用户明确要求删除时使用。
 - 新建笔记用 note_create，把用户要求的标签（如 #项目/Flowix）写进正文。
 - Flowix 支持富内容：callout（提示块）、toggle（折叠块）、columns（多列布局）、background（行背景）。用户要求这些效果时调用同名工具，不要手写 ::: 语法。
-  · 多列/分栏 → columns action=add count=2..4
+  · 多列/分栏 → columns action=add contents=[左栏 Markdown, 右栏 Markdown]（或 count=2..4 先建空栏）
   · 提示块/警告框 → callout action=add
   · 折叠详情 → toggle action=add
   · 文字行背景 → background action=set

@@ -232,8 +232,27 @@ fn columns_op(
             "blocks": columns::parse(&body),
         })),
         "add" => {
-            let count = usize_arg(args, "count").ok_or("columns add 需要 count（2-4）")?;
-            let next = columns::insert(&body, usize_arg(args, "at"), count)?;
+            // `contents` lets the model generate a filled layout in one call;
+            // otherwise fall back to an empty block with `count` columns.
+            let contents = args.get("contents").and_then(Value::as_array).map(|values| {
+                values
+                    .iter()
+                    .map(|value| value.as_str().unwrap_or_default().to_owned())
+                    .collect::<Vec<_>>()
+            });
+            let next = if let Some(contents) = contents {
+                let specs: Vec<columns::ColumnSpec> = contents
+                    .into_iter()
+                    .map(|content| columns::ColumnSpec {
+                        width: columns::DEFAULT_WIDTH,
+                        content,
+                    })
+                    .collect();
+                columns::insert_specs(&body, usize_arg(args, "at"), &specs)?
+            } else {
+                let count = usize_arg(args, "count").ok_or("columns add 需要 count（2-4）或 contents")?;
+                columns::insert(&body, usize_arg(args, "at"), count)?
+            };
             save_body(service, notebook, &path, &next, &body)?;
             Ok(json!({
                 "ok": true, "action": "columns.add", "path": path,
@@ -373,15 +392,19 @@ mod tests {
             &mut service,
             &notebook,
             "columns",
-            &json!({ "action": "add", "path": path, "count": 2 }),
+            &json!({ "action": "add", "path": path, "contents": ["左栏内容", "右栏内容"] }),
         )
         .unwrap();
         assert_eq!(columns["blocks"].as_array().unwrap().len(), 1, "{columns}");
+        let block = &columns["blocks"][0];
+        assert_eq!(block["columns"][0]["content"], "左栏内容");
+        assert_eq!(block["columns"][1]["content"], "右栏内容");
 
         let body = service.get(&notebook, &path).unwrap().body;
         assert!(body.contains("::: callout"));
         assert!(body.contains("::: toggle"));
         assert!(body.contains("::: columns"));
+        assert!(body.contains("左栏内容"));
     }
 
     #[test]

@@ -178,14 +178,15 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
             "type": "function",
             "function": {
                 "name": "columns",
-                "description": "管理笔记里的多列布局。用户要求多列/分栏时用它，不要手写 ::: columns 语法。action: list/add/remove/width；block 从 1 开始。",
+                "description": "管理笔记里的多列布局。用户要求多列/分栏时用它，不要手写 ::: columns 语法。action: list/add/remove/width；add 可用 contents 一次写入各栏 Markdown；block 从 1 开始。",
                 "parameters": {
                     "type": "object",
                     "properties": {
                         "action": { "type": "string", "enum": ["list", "add", "remove", "width"] },
                         "path": { "type": "string", "description": "笔记本内相对路径" },
                         "at": { "type": "integer", "description": "插入位置行号（1 开始），默认末尾" },
-                        "count": { "type": "integer", "description": "列数（2-4）" },
+                        "count": { "type": "integer", "description": "列数（2-4）；提供 contents 时可省略" },
+                        "contents": { "type": "array", "items": { "type": "string" }, "description": "各栏内容（Markdown）；列数由数组长度决定，建议 2-4 栏" },
                         "block": { "type": "integer", "description": "目标 columns 块序号（1 开始）" },
                         "column": { "type": "integer", "description": "要删除的列序号（1 开始）" },
                         "widths": { "type": "array", "items": { "type": "integer" }, "description": "各列相对宽度，例如 [100,100]" }

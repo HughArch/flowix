@@ -156,12 +156,6 @@ pub fn render(columns: &[ColumnSpec]) -> String {
 
 /// Insert an empty columns block before `at_line` (1-based), or append it.
 pub fn insert(markdown: &str, at_line: Option<usize>, count: usize) -> Result<String, String> {
-    if !(MIN_COLUMNS..=MAX_COLUMNS).contains(&count) {
-        return Err(format!(
-            "columns count must be between {MIN_COLUMNS} and {MAX_COLUMNS}"
-        ));
-    }
-
     let columns = vec![
         ColumnSpec {
             width: DEFAULT_WIDTH,
@@ -169,12 +163,28 @@ pub fn insert(markdown: &str, at_line: Option<usize>, count: usize) -> Result<St
         };
         count
     ];
-    let block = render(&columns);
+    insert_specs(markdown, at_line, &columns)
+}
+
+/// Insert a columns block with explicit per-column content. Used by agents
+/// that generate a filled layout in one call.
+pub fn insert_specs(
+    markdown: &str,
+    at_line: Option<usize>,
+    columns: &[ColumnSpec],
+) -> Result<String, String> {
+    if !(MIN_COLUMNS..=MAX_COLUMNS).contains(&columns.len()) {
+        return Err(format!(
+            "columns count must be between {MIN_COLUMNS} and {MAX_COLUMNS}"
+        ));
+    }
+
+    let block = render(columns);
     let lines: Vec<&str> = markdown.lines().collect();
     let insert_at = at_line
         .map(|line| line.saturating_sub(1).min(lines.len()))
         .unwrap_or(lines.len());
-    let mut result: Vec<String> = Vec::with_capacity(lines.len() + count);
+    let mut result: Vec<String> = Vec::with_capacity(lines.len() + columns.len());
 
     for (index, line) in lines.iter().enumerate() {
         if index == insert_at {
