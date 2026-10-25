@@ -123,7 +123,10 @@ pub struct FnsSyncService {
     history: Mutex<Vec<FnsSyncRecord>>,
 }
 
-const AUTO_SYNC_DEBOUNCE: Duration = Duration::from_secs(5);
+/// Local edits coalesce behind this trailing debounce. Scans are cheap
+/// (incremental hash walk), so this is tuned for propagation speed rather
+/// than scan avoidance; rapid keystrokes still collapse into one run.
+const AUTO_SYNC_DEBOUNCE: Duration = Duration::from_secs(1);
 /// Upper bound for one notebook sync. Prevents a wedged network call from
 /// leaving the UI stuck on "syncing" forever.
 const SYNC_TIMEOUT: Duration = Duration::from_secs(120);
