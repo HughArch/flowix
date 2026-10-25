@@ -106,6 +106,18 @@ export interface FnsConflictView {
   mergeable: boolean;
 }
 
+export interface FnsConflictDetail {
+  path: string;
+  detectedAt: number;
+  mergeable: boolean;
+  /** Current local file content (may be newer than at detection time). */
+  localContent: string;
+  /** Content the server held when the push was rejected. */
+  serverContent: string;
+  /** Content both sides diverged from. */
+  baseContent: string;
+}
+
 export type FnsConflictAction = 'keepLocal' | 'keepRemote' | 'merge';
 
 export const fns = {
@@ -131,6 +143,8 @@ export const fns = {
   scheduleFocusSync: () => invoke<void>('fns_schedule_focus_sync'),
   listConflicts: (notebookId: string) =>
     invoke<FnsConflictView[]>('fns_conflict_list', { notebookId }),
+  getConflictDetail: (notebookId: string, path: string) =>
+    invoke<FnsConflictDetail>('fns_conflict_detail', { notebookId, path }),
   resolveConflict: (notebookId: string, path: string, action: FnsConflictAction) =>
     invoke<void>('fns_conflict_resolve', { notebookId, path, action }),
   dismissConflict: (notebookId: string, path: string) =>

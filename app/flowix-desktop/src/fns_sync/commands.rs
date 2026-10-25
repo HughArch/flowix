@@ -5,8 +5,8 @@ use tauri::{AppHandle, Manager, State};
 use crate::app::state::AppState;
 use crate::fns_sync::config::{FnsConfigPatch, FnsConfigView, FnsTokenInput};
 use crate::fns_sync::service::{
-    ConflictResolutionChoice, FnsConflictView, FnsNotebookState, FnsNotebookSyncOutcome,
-    FnsSyncRecord, FnsSyncStatus,
+    ConflictResolutionChoice, FnsConflictDetail, FnsConflictView, FnsNotebookState,
+    FnsNotebookSyncOutcome, FnsSyncRecord, FnsSyncStatus,
 };
 
 #[tauri::command]
@@ -108,6 +108,18 @@ pub fn fns_conflict_list(
     notebook_id: String,
 ) -> Result<Vec<FnsConflictView>, String> {
     app.state::<AppState>().fns_sync.conflicts(&app, &notebook_id)
+}
+
+/// The three versions behind one pending conflict, for the diff dialog.
+#[tauri::command]
+pub fn fns_conflict_detail(
+    app: AppHandle,
+    notebook_id: String,
+    path: String,
+) -> Result<FnsConflictDetail, String> {
+    app.state::<AppState>()
+        .fns_sync
+        .conflict_detail(&app, &notebook_id, &path)
 }
 
 /// Resolve one pending conflict with an explicit user choice

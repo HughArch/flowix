@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { GitCompare, X } from 'lucide-react';
 import { ArrowsClockwiseIcon, CheckCircleIcon, WarningCircleIcon } from '@phosphor-icons/react';
 import { Button } from '@shared/ui/button';
 import { useI18n, type I18nKey } from '@/lib/i18n';
@@ -19,6 +19,7 @@ import {
 import { useNoteStore } from '@features/memo/store/note-store';
 import { flushOpenDocumentsForNotebook, reloadOpenDocumentsAfterSync } from '@features/document/public/sync-coordination';
 import { useSyncPanelStore } from './sync-panel-store';
+import { ConflictDiffDialog } from './conflict-diff-dialog';
 
 const PHASE_KEYS: Record<FnsSyncPhase, I18nKey> = {
   scanning: 'sync.panel.phaseScanning',
@@ -71,19 +72,29 @@ function ConflictRow({
   disabled,
   onResolve,
   onDismiss,
+  onViewDiff,
 }: {
   conflict: FnsConflictView;
   busy: boolean;
   disabled: boolean;
   onResolve: (action: FnsConflictAction) => void;
   onDismiss: () => void;
+  onViewDiff: () => void;
 }) {
   const { t } = useI18n();
   return (
     <div className="space-y-1 rounded-lg border border-[var(--border)] px-2 py-1.5">
-      <p className="truncate text-xs text-[var(--foreground)]" title={conflict.path}>
-        {conflict.path}
-      </p>
+      <button
+        type="button"
+        className="flex w-full items-center gap-1 rounded text-left"
+        onClick={onViewDiff}
+        title={t('sync.conflict.viewDiff')}
+      >
+        <GitCompare className="h-3 w-3 shrink-0 text-[var(--muted-foreground)]" />
+        <span className="truncate text-xs text-[var(--foreground)] underline decoration-dotted underline-offset-2">
+          {conflict.path}
+        </span>
+      </button>
       <div className="flex items-center gap-1">
         {conflict.mergeable && (
           <Button
@@ -141,6 +152,7 @@ export function SyncStatusPanel() {
   const [notebookState, setNotebookState] = useState<FnsNotebookState | null>(null);
   const [conflicts, setConflicts] = useState<FnsConflictView[]>([]);
   const [conflictBusy, setConflictBusy] = useState<string | null>(null);
+  const [diffPath, setDiffPath] = useState<string | null>(null);
   const [legacyCopies, setLegacyCopies] = useState<string[]>([]);
   const [legacyBusy, setLegacyBusy] = useState(false);
   const [selectedTokenId, setSelectedTokenId] = useState('');
@@ -531,10 +543,19 @@ export function SyncStatusPanel() {
                 disabled={conflictBusy !== null}
                 onResolve={(action) => void resolveConflict(conflict.path, action)}
                 onDismiss={() => void dismissConflict(conflict.path)}
+                onViewDiff={() => setDiffPath(conflict.path)}
               />
             ))}
           </div>
         )}
+
+        <ConflictDiffDialog
+          notebookId={selectedNotebookId ?? ''}
+          path={diffPath}
+          busy={conflictBusy !== null}
+          onResolve={(path, action) => void resolveConflict(path, action)}
+          onClose={() => setDiffPath(null)}
+        />
 
         {notebookState?.bound && conflicts.length === 0 && legacyCopies.length > 0 && (
           <div className="border-b border-[var(--divider)] px-3 pb-3">

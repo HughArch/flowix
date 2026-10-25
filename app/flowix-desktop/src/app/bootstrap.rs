@@ -526,6 +526,7 @@ pub fn run() {
             crate::fns_sync::fns_sync_all,
             crate::fns_sync::fns_schedule_focus_sync,
             crate::fns_sync::fns_conflict_list,
+            crate::fns_sync::fns_conflict_detail,
             crate::fns_sync::fns_conflict_resolve,
             crate::fns_sync::fns_conflict_dismiss,
             crate::fns_sync::fns_legacy_conflict_copies,

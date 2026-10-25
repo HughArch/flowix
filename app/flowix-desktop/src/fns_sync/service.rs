@@ -137,6 +137,22 @@ pub struct FnsConflictView {
     pub mergeable: bool,
 }
 
+/// Full conflict context for the diff dialog: the three versions behind a
+/// pending conflict.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FnsConflictDetail {
+    pub path: String,
+    pub detected_at: i64,
+    pub mergeable: bool,
+    /// Current content of the local file (may be newer than at detection).
+    pub local_content: String,
+    /// Content the server held when the push was rejected.
+    pub server_content: String,
+    /// Content both sides diverged from, as recorded at detection.
+    pub base_content: String,
+}
+
 /// User-facing resolution choice for a pending conflict.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum ConflictResolutionChoice {
@@ -821,6 +837,45 @@ impl FnsSyncService {
             .collect();
         views.sort_by_key(|view| view.detected_at);
         Ok(views)
+    }
+
+    /// The three versions behind one pending conflict, for the diff dialog.
+    /// The local side is re-read live: the user may have edited the file
+    /// since the conflict was detected.
+    pub fn conflict_detail(
+        &self,
+        app: &AppHandle,
+        notebook_id: &str,
+        path: &str,
+    ) -> Result<FnsConflictDetail, String> {
+        let (_, root) = notebook_root(app, notebook_id)?;
+        let Some(sync_state) = SyncState::load(&root).map_err(|error| error.to_string())? else {
+            return Err("notebook is not bound to a token".to_owned());
+        };
+        let detected_at = *sync_state
+            .pending_conflicts
+            .get(path)
+            .ok_or_else(|| "conflict not found (already resolved?)".to_owned())?;
+
+        let record = ConflictStore::new(&root)
+            .load(path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "conflict record not found".to_owned())?;
+
+        let store = self.memo_file_store(app, notebook_id, root);
+        let local_content = store
+            .read_note(path)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+
+        Ok(FnsConflictDetail {
+            path: path.to_owned(),
+            detected_at,
+            mergeable: record.has_independent_base(),
+            local_content,
+            server_content: record.server_content,
+            base_content: record.base_content,
+        })
     }
 
     /// Resolve one pending conflict with an explicit user choice.
