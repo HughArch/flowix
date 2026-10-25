@@ -5,7 +5,6 @@ import { Pencil, Plus, Trash2 } from 'lucide-react';
 import { SectionHeader, Field, FieldRow } from '@features/preferences/sections/primitives';
 import { Input } from '@shared/ui/input';
 import { Button } from '@shared/ui/button';
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@shared/ui/select';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { errorMessage } from '@/lib/error-message';
@@ -221,30 +220,6 @@ export function FnsSyncSection() {
               }
             }}
           />
-        </Field>
-
-        <Field
-          title={t('preferences.fns.conflictStrategy')}
-          controlId="fns-conflict-strategy"
-          hint={t('preferences.fns.conflictStrategyHint')}
-        >
-          <Select
-            value={config?.offlineSyncStrategy ?? 'newTimeMerge'}
-            disabled={busy || !config}
-            onValueChange={(value) => {
-              if (value === 'newTimeMerge' || value === 'ignoreTimeMerge') {
-                void saveGlobal({ offlineSyncStrategy: value });
-              }
-            }}
-          >
-            <SelectTrigger id="fns-conflict-strategy" className="w-56">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="newTimeMerge">{t('preferences.fns.strategyNewTime')}</SelectItem>
-              <SelectItem value="ignoreTimeMerge">{t('preferences.fns.strategyIgnoreTime')}</SelectItem>
-            </SelectContent>
-          </Select>
         </Field>
       </section>
 

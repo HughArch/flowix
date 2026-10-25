@@ -16,8 +16,6 @@ export interface FnsConfigView {
   startupSyncDelaySeconds: number;
   /** Stop retrying after this many consecutive failures (0 disables retries). */
   maxRetryAttempts: number;
-  /** How the server resolves notes changed on both sides. */
-  offlineSyncStrategy: 'newTimeMerge' | 'ignoreTimeMerge';
   tokens: FnsTokenView[];
   configured: boolean;
 }
@@ -28,7 +26,6 @@ export interface FnsConfigPatch {
   maxAttachmentBytes?: number;
   startupSyncDelaySeconds?: number;
   maxRetryAttempts?: number;
-  offlineSyncStrategy?: 'newTimeMerge' | 'ignoreTimeMerge';
 }
 
 export interface FnsTokenInput {
