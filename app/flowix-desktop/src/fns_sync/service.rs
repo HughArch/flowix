@@ -10,8 +10,8 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex as AsyncMutex;
 
 use flowix_fns::{
-    sync_notebook as run_engine_sync, ClientInfo, FnsClient, SyncProgress, SyncProgressSink,
-    SyncReport, SyncState,
+    sync_notebook as run_engine_sync, ClientInfo, ConflictStore, FnsClient, SyncProgress,
+    SyncProgressSink, SyncReport, SyncState,
 };
 
 use crate::app::state::AppState;
@@ -55,7 +55,10 @@ pub struct FnsNotebookSyncOutcome {
     pub renamed: usize,
     pub files_pulled: usize,
     pub files_pushed: usize,
+    /// Paths still conflict-pending after this run (surfaced to the UI).
     pub conflicts: Vec<String>,
+    /// Conflicts settled automatically during this run.
+    pub conflicts_auto_resolved: usize,
     pub last_time: i64,
 }
 
@@ -71,6 +74,7 @@ impl FnsNotebookSyncOutcome {
             && self.files_pulled == 0
             && self.files_pushed == 0
             && self.conflicts.is_empty()
+            && self.conflicts_auto_resolved == 0
     }
 }
 
@@ -624,7 +628,9 @@ impl FnsSyncService {
 
         let options = flowix_fns::SyncOptions {
             max_attachment_bytes: config.max_attachment_bytes.min(i64::MAX as u64) as i64,
+            auto_merge: Some(auto_merge_markdown),
         };
+        let conflict_store = ConflictStore::new(&root);
         let sink = StatusSink(self.status.clone());
         let report: SyncReport = run_engine_sync(
             &mut client,
@@ -633,6 +639,7 @@ impl FnsSyncService {
             &mut sync_state,
             offline_strategy,
             &options,
+            &conflict_store,
             &sink,
         )
         .await
@@ -654,6 +661,7 @@ impl FnsSyncService {
             files_pulled: report.files_pulled,
             files_pushed: report.files_pushed,
             conflicts: report.conflicts,
+            conflicts_auto_resolved: report.conflicts_auto_resolved,
             last_time: report.last_time,
         }))
     }
@@ -850,6 +858,22 @@ pub fn now_ms() -> i64 {
     flowix_fns::engine::now_ms()
 }
 
+/// Conservative three-way merge for conflict auto-resolution. `None` means
+/// the merge has a real conflict — the engine then leaves the decision to
+/// the user instead of writing markers into the note.
+fn auto_merge_markdown(base: &str, local: &str, remote: &str) -> Option<String> {
+    let outcome = flowix_core::text_merge::merge_markdown(
+        base.as_bytes(),
+        local.as_bytes(),
+        remote.as_bytes(),
+    );
+    match outcome {
+        flowix_core::text_merge::MergeOutcome::Merged(bytes) => String::from_utf8(bytes).ok(),
+        flowix_core::text_merge::MergeOutcome::Conflict
+        | flowix_core::text_merge::MergeOutcome::Unsupported => None,
+    }
+}
+
 fn describe_sync_error(error: flowix_fns::FnsError) -> String {
     match &error {
         flowix_fns::FnsError::Server { code: 315, message }
@@ -912,6 +936,7 @@ mod tests {
             files_pulled: 0,
             files_pushed: 0,
             conflicts: Vec::new(),
+            conflicts_auto_resolved: 0,
             last_time: 12345,
         };
         assert!(empty.is_empty());
@@ -921,6 +946,12 @@ mod tests {
             ..empty.clone()
         };
         assert!(!with_conflict.is_empty());
+
+        let with_auto_resolved = FnsNotebookSyncOutcome {
+            conflicts_auto_resolved: 1,
+            ..empty.clone()
+        };
+        assert!(!with_auto_resolved.is_empty());
 
         let with_push = FnsNotebookSyncOutcome {
             pushed: 1,

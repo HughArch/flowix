@@ -150,6 +150,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
             &mut state,
             OfflineSyncStrategy::NewTimeMerge,
             &flowix_fns::SyncOptions::default(),
+            &flowix_fns::ConflictStore::new(root_path),
             sink.as_ref(),
         )
         .await?;
@@ -183,6 +184,7 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
                 mtime_ms: now,
                 base_hash: None,
                 create_only: false,
+                conflict_resolved: false,
             },
         )
         .await?;

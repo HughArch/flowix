@@ -51,6 +51,22 @@ pub struct SyncState {
     /// Same bookkeeping for attachments.
     #[serde(default)]
     pub files: BTreeMap<String, NoteSnapshot>,
+    /// Paths with an unresolved sync conflict, mapped to the epoch-ms time of
+    /// their latest detection. The engine must not auto-push these; the
+    /// contents needed to settle them live in `.flowix/conflicts/`
+    /// ([`crate::conflicts::ConflictStore`]).
+    #[serde(default)]
+    pub pending_conflicts: BTreeMap<String, i64>,
+}
+
+fn note_snapshot(note: &crate::local::LocalNote) -> (String, NoteSnapshot) {
+    (
+        note.path.clone(),
+        NoteSnapshot {
+            content_hash: note.content_hash.clone(),
+            mtime_ms: note.mtime_ms,
+        },
+    )
 }
 
 impl SyncState {
@@ -65,6 +81,7 @@ impl SyncState {
             last_sync_at: 0,
             notes: BTreeMap::new(),
             files: BTreeMap::new(),
+            pending_conflicts: BTreeMap::new(),
         }
     }
 
@@ -93,19 +110,38 @@ impl SyncState {
             .map(|snapshot| snapshot.content_hash.clone())
     }
 
+    /// Mark a path as conflict-pending. Re-detections refresh the timestamp.
+    /// Returns `true` when the path was not pending before.
+    pub fn record_pending_conflict(&mut self, path: &str, detected_at: i64) -> bool {
+        self.pending_conflicts
+            .insert(path.to_owned(), detected_at)
+            .is_none()
+    }
+
+    /// Drop a pending conflict marker. Returns `true` when it existed.
+    pub fn clear_pending_conflict(&mut self, path: &str) -> bool {
+        self.pending_conflicts.remove(path).is_some()
+    }
+
+    pub fn is_pending_conflict(&self, path: &str) -> bool {
+        self.pending_conflicts.contains_key(path)
+    }
+
     /// Replace the snapshot with the current local state.
     pub fn record_snapshot(&mut self, current: &[crate::local::LocalNote]) {
+        self.notes = current.iter().map(note_snapshot).collect();
+    }
+
+    /// Like [`SyncState::record_snapshot`], but keeps conflict-pending paths
+    /// out. Their local content was never acknowledged by the server, so it
+    /// must not become the next push base — and a pending path must stay in
+    /// every `NoteSync` report until the conflict settles, because the
+    /// server only asks for pushes on notes it sees reported.
+    pub fn record_snapshot_ignoring_pending(&mut self, current: &[crate::local::LocalNote]) {
         self.notes = current
             .iter()
-            .map(|note| {
-                (
-                    note.path.clone(),
-                    NoteSnapshot {
-                        content_hash: note.content_hash.clone(),
-                        mtime_ms: note.mtime_ms,
-                    },
-                )
-            })
+            .filter(|note| !self.pending_conflicts.contains_key(&note.path))
+            .map(note_snapshot)
             .collect();
     }
 
@@ -202,5 +238,40 @@ mod tests {
             state.base_hash_for("a.md"),
             Some(crate::hash::content_hash("hello"))
         );
+    }
+
+    #[test]
+    fn pending_conflicts_refresh_and_clear() {
+        let mut state = SyncState::new("vault", "device-1");
+        assert!(!state.is_pending_conflict("a.md"));
+
+        assert!(state.record_pending_conflict("a.md", 1));
+        assert!(!state.record_pending_conflict("a.md", 2));
+        assert_eq!(state.pending_conflicts.get("a.md"), Some(&2));
+
+        assert!(state.clear_pending_conflict("a.md"));
+        assert!(!state.clear_pending_conflict("a.md"));
+        assert!(!state.is_pending_conflict("a.md"));
+    }
+
+    #[test]
+    fn snapshot_exclusion_keeps_pending_paths_reported() {
+        use crate::local::LocalNoteStore;
+
+        let mut state = SyncState::new("vault", "device-1");
+        state.record_pending_conflict("conflicted.md", 1);
+
+        let store = crate::local::MemoryNoteStore::new();
+        store.insert("clean.md", "clean", 1);
+        store.insert("conflicted.md", "local edit", 2);
+        state.record_snapshot_ignoring_pending(&store.list_notes().unwrap());
+
+        assert!(state.notes.contains_key("clean.md"));
+        assert!(!state.notes.contains_key("conflicted.md"));
+        // Excluded paths must not be mistaken for local deletions.
+        assert!(state.locally_deleted(&store.list_notes().unwrap()).is_empty());
+        // The plain snapshot keeps its behaviour.
+        state.record_snapshot(&store.list_notes().unwrap());
+        assert!(state.notes.contains_key("conflicted.md"));
     }
 }
