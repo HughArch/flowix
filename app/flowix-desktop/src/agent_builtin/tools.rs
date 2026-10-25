@@ -320,9 +320,16 @@ fn apply_create_metadata(args: &Value, content: &str) -> Result<String, String> 
         }
     }
 
-    if overrides.is_empty() {
-        return Ok(content.to_owned());
+    // Deterministic date default: the model may choose the rest, but a new
+    // note always carries its creation date unless explicitly provided.
+    if !overrides.contains_key("created") {
+        let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+        overrides.insert(
+            "created".to_owned(),
+            serde_json::to_string(&today).map_err(|error| error.to_string())?,
+        );
     }
+
     Ok(merge_frontmatter(content, &overrides))
 }
 
