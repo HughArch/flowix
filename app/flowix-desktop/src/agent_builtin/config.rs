@@ -26,6 +26,9 @@ pub struct BuiltinAiConfig {
     pub api_key: String,
     pub model: String,
     pub max_total_tokens: u32,
+    /// Expose the `web_search` tool. Off by default: it calls an external
+    /// search service, which the user must opt into.
+    pub web_search_enabled: bool,
 }
 
 impl Default for BuiltinAiConfig {
@@ -36,6 +39,7 @@ impl Default for BuiltinAiConfig {
             api_key: String::new(),
             model: String::new(),
             max_total_tokens: DEFAULT_MAX_TOTAL_TOKENS,
+            web_search_enabled: false,
         }
     }
 }
@@ -102,6 +106,7 @@ pub struct BuiltinAiConfigView {
     pub api_url: String,
     pub model: String,
     pub max_total_tokens: u32,
+    pub web_search_enabled: bool,
     pub has_api_key: bool,
     pub configured: bool,
 }
@@ -113,6 +118,7 @@ impl BuiltinAiConfig {
             api_url: self.api_url.clone(),
             model: self.model.clone(),
             max_total_tokens: self.max_total_tokens,
+            web_search_enabled: self.web_search_enabled,
             has_api_key: !self.api_key.trim().is_empty(),
             configured: self.is_configured(),
         }
@@ -130,6 +136,8 @@ pub struct BuiltinAiConfigInput {
     pub model: String,
     #[serde(default)]
     pub max_total_tokens: Option<u32>,
+    #[serde(default)]
+    pub web_search_enabled: bool,
 }
 
 impl BuiltinAiConfig {
@@ -140,6 +148,7 @@ impl BuiltinAiConfig {
             self.api_key = key.trim().to_owned();
         }
         self.model = input.model.trim().to_owned();
+        self.web_search_enabled = input.web_search_enabled;
         if let Some(budget) = input.max_total_tokens {
             self.max_total_tokens = budget.max(1_000);
         }
@@ -160,6 +169,7 @@ mod tests {
             api_key: Some(" sk-test ".into()),
             model: "deepseek-chat".into(),
             max_total_tokens: Some(50_000),
+            web_search_enabled: true,
         });
         config.save(dir.path()).unwrap();
         // 重复保存（覆盖已存在文件）不能再报 AlreadyExists。
@@ -170,6 +180,7 @@ mod tests {
         assert_eq!(loaded.api_key, "sk-test");
         assert_eq!(loaded.model, "deepseek-chat");
         assert_eq!(loaded.max_total_tokens, 50_000);
+        assert!(loaded.web_search_enabled);
         assert!(loaded.is_configured());
         assert_eq!(loaded.chat_endpoint(), "https://api.deepseek.com/chat/completions");
         assert_eq!(loaded.models_endpoint(), "https://api.deepseek.com/models");
@@ -193,6 +204,7 @@ mod tests {
             api_key: None,
             model: "m".into(),
             max_total_tokens: None,
+            web_search_enabled: false,
         });
         assert_eq!(config.api_key, "keep-me");
         assert_eq!(config.chat_endpoint(), "https://x/v1/chat/completions");

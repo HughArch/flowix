@@ -58,18 +58,37 @@ function normalizeThreadTitle(title: string | null | undefined): string {
 const DERIVED_TITLE_MAX_CHARS = 28;
 
 /**
+ * 去掉首条消息里的笔记/文件夹引用。移动端内置助手会在输入框里自动放一个
+ * 当前文档的 `flowix://open?b=..&f=..` 引用；如果直接拿 prompt 当标题，
+ * 会显示成 `[Welcome](flowix://...)`。
+ */
+const NOTE_REFERENCE_LINK_RE = /\[[^\]\n]*\]\(flowix:\/\/[^)\n]*\)/gi;
+const BARE_FLOWIX_URL_RE = /flowix:\/\/\S+/gi;
+
+export function stripNoteReferences(text: string): string {
+  return text
+    .replace(NOTE_REFERENCE_LINK_RE, " ")
+    .replace(BARE_FLOWIX_URL_RE, " ");
+}
+
+/**
  * 从一段 prompt 文本派生可显示标题: strip 系统块 → 折叠空白 → 截断。
  * 空则回退 `fallback`。首条 user 消息是跨 agent (flowix / claude / codex /
  * hermes / opencode) 唯一共有的标题信号, 故标题恢复统一走这条路径。
  *
  * `thread-card` 的 card 视图与 title-edit-controller 共用此实现, 避免截断
- * 长度 / 清洗规则漂移。
+ * 长度 / 清洗规则漂移。`agentType` 仅用于给内置助手额外剥离文档引用，
+ * 其它 runtime 的标题规则保持原样。
  */
 export function deriveThreadTitleFromPrompt(
   prompt: string,
   fallback = "",
+  agentType?: AgentTypeKey,
 ): string {
-  const title = stripSystemBlock(prompt).replace(/\s+/g, " ").trim();
+  const source = agentType === "flowix"
+    ? stripNoteReferences(stripSystemBlock(prompt))
+    : stripSystemBlock(prompt);
+  const title = source.replace(/\s+/g, " ").trim();
   return title ? title.slice(0, DERIVED_TITLE_MAX_CHARS) : fallback;
 }
 

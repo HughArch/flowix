@@ -1,14 +1,26 @@
 'use client';
 
-import { useCallback, useEffect, useMemo } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { create } from 'zustand';
-import { Plus, X } from 'lucide-react';
+import { Check, ChevronDown, Pencil, Plus, X } from 'lucide-react';
 import { AgentConversationDetail } from '@features/agent/components/agent-conversation-detail';
+import { ConversationRenameDialog } from '@features/agent/components/conversation-rename-dialog';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
 import { useDocumentStore } from '@features/document/store/document-store';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { canonicalPath } from '@/lib/path';
+import { displayTitleFromFilename } from '@/lib/utils';
+import { buildNoteOpenLink } from '@platform/open-target/path-link';
+import { escapeMarkdownLinkText } from '@features/editor/extensions/note-link/note-reference-markdown';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@shared/ui/dropdown-menu';
 import { useI18n } from '@/lib/i18n';
 import { isMobileDevice } from '@shared/platform';
 
@@ -21,8 +33,11 @@ import { isMobileDevice } from '@shared/platform';
  *   notebookId）；文档被删除时 `main-window-notebook-events` 会按同样的
  *   匹配规则清除这些会话（thread + messages + instance）。
  * - 首次打开只创建 instance（threadId 为空），发出第一条消息才真正建线程；
- *   空会话不落库，发过消息后才会持久化。
+ *   空会话不落库，发过消息后才会持久化。新建空会话时会在输入框里预置
+ *   当前文档的 @ 引用。
  */
+
+const DETAIL_DRAFT_KEY_PREFIX = 'flowix:agent-conversation-draft:';
 
 interface MobileAgentPanelState {
   open: boolean;
@@ -80,15 +95,38 @@ function isBlankConversation(instance: AgentConversationInstance): boolean {
   return !instance.threadId && !instance.title.trim();
 }
 
+/**
+ * Seed a fresh conversation's composer with a @reference to the document it
+ * is bound to. `AgentConversationDetail` reads this draft on mount and its
+ * Tiptap composer parses the markdown link into a note-reference card.
+ */
+function seedDocumentReference(instanceId: string, path: string): void {
+  try {
+    const key = `${DETAIL_DRAFT_KEY_PREFIX}${instanceId}`;
+    if (window.localStorage.getItem(key)) return;
+    const { notebookId, relativePath } = resolveDocumentContext(path);
+    if (!notebookId || !relativePath) return;
+    const notebook = useNoteStore.getState().notebooks.find((item) => item.id === notebookId);
+    if (!notebook?.name) return;
+    const title = escapeMarkdownLinkText(displayTitleFromFilename(relativePath));
+    const target = buildNoteOpenLink(notebook.name, relativePath);
+    window.localStorage.setItem(key, `[${title}](${target})`);
+  } catch {
+    // Draft seeding is a convenience; blocked storage must not break the drawer.
+  }
+}
+
 function createDocumentConversation(path: string): AgentConversationInstance {
   const { notebookId, relativePath } = resolveDocumentContext(path);
-  return useAgentSessionStore.getState().createInstance({
+  const instance = useAgentSessionStore.getState().createInstance({
     agentType: 'flowix',
     title: '',
     threadId: null,
     source: { kind: 'thread-card', documentPath: path, relativePath, notebookId },
     runtimeConfig: { notebookId: notebookId ?? undefined },
   });
+  seedDocumentReference(instance.instanceId, path);
+  return instance;
 }
 
 /** Pick the conversation a freshly opened drawer should show for `path`. */
@@ -99,7 +137,11 @@ function resolveConversationFor(path: string): AgentConversationInstance {
   const withContent = existing.find((instance) => !isBlankConversation(instance));
   if (withContent) return withContent;
   const blank = existing.find(isBlankConversation);
-  return blank ?? createDocumentConversation(path);
+  if (blank) {
+    seedDocumentReference(blank.instanceId, path);
+    return blank;
+  }
+  return createDocumentConversation(path);
 }
 
 export const useMobileAgentPanelStore = create<MobileAgentPanelState>((set) => ({
@@ -124,6 +166,7 @@ export const useMobileAgentPanelStore = create<MobileAgentPanelState>((set) => (
     await useAgentSessionStore.getState().hydrateFromBackend();
     const blank = listDocumentConversations(path).find(isBlankConversation);
     const instance = blank ?? createDocumentConversation(path);
+    if (blank) seedDocumentReference(blank.instanceId, path);
     set({ open: true, instanceId: instance.instanceId, boundPath: path });
     return true;
   },
@@ -140,6 +183,7 @@ export function MobileAgentPanel() {
   const close = useMobileAgentPanelStore((state) => state.close);
   const selectConversation = useMobileAgentPanelStore((state) => state.selectConversation);
   const newConversation = useMobileAgentPanelStore((state) => state.newConversation);
+  const [renameOpen, setRenameOpen] = useState(false);
 
   // Subscribe to the registry so the switcher updates as titles arrive.
   const instances = useAgentSessionStore((state) => state.conversationRegistry.instances);
@@ -151,8 +195,8 @@ export function MobileAgentPanel() {
       : [],
     [instances, boundPath],
   );
-
-  const documentTitle = boundPath?.split(/[\\/]/).pop()?.replace(/\.md$/i, '') ?? '';
+  const current = conversations.find((instance) => instance.instanceId === instanceId) ?? null;
+  const currentTitle = current?.title.trim() || t('agent.mobilePanel.untitledConversation');
 
   // 追随文档切换：面板开着时切到另一篇文档，自动选中那篇文档的会话。
   useEffect(() => {
@@ -191,24 +235,63 @@ export function MobileAgentPanel() {
         }`}
       >
         <header className="flex h-11 shrink-0 items-center gap-1.5 border-b border-[var(--border)] px-2">
-          <span className="min-w-0 max-w-[40%] truncate text-xs font-medium text-[var(--foreground)]">
-            {documentTitle || t('agent.mobilePanel.title')}
+          <span className="shrink-0 text-xs font-semibold text-[var(--foreground)]">
+            {t('agent.mobilePanel.title')}
           </span>
-          <select
-            className="min-w-0 flex-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-1.5 py-1 text-xs text-[var(--foreground)]"
-            aria-label={t('agent.mobilePanel.selectConversation')}
-            value={instanceId ?? ''}
-            onChange={(event) => selectConversation(event.target.value)}
-          >
-            {conversations.map((instance) => (
-              <option key={instance.instanceId} value={instance.instanceId}>
-                {instance.title.trim() || t('agent.mobilePanel.untitledConversation')}
-              </option>
-            ))}
-          </select>
+          <DropdownMenu>
+            <DropdownMenuTrigger asChild>
+              <button
+                type="button"
+                className="flex min-w-0 flex-1 items-center gap-1 rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-xs text-[var(--foreground)] hover:bg-[var(--muted)]"
+                aria-label={t('agent.mobilePanel.selectConversation')}
+              >
+                <span className="min-w-0 flex-1 truncate text-left">{currentTitle}</span>
+                <ChevronDown className="h-3.5 w-3.5 shrink-0 opacity-60" />
+              </button>
+            </DropdownMenuTrigger>
+            <DropdownMenuContent align="end" className="max-h-72 w-64 overflow-y-auto">
+              <DropdownMenuLabel>{t('agent.mobilePanel.conversations')}</DropdownMenuLabel>
+              {conversations.length === 0 && (
+                <DropdownMenuItem disabled>
+                  {t('agent.mobilePanel.emptyConversations')}
+                </DropdownMenuItem>
+              )}
+              {conversations.map((instance) => (
+                <DropdownMenuItem
+                  key={instance.instanceId}
+                  onClick={() => selectConversation(instance.instanceId)}
+                >
+                  <span className="min-w-0 flex-1 truncate">
+                    {instance.title.trim() || t('agent.mobilePanel.untitledConversation')}
+                  </span>
+                  {instance.instanceId === instanceId && (
+                    <Check className="ml-2 h-3.5 w-3.5 shrink-0 text-[var(--brand)]" />
+                  )}
+                </DropdownMenuItem>
+              ))}
+              <DropdownMenuSeparator />
+              <DropdownMenuItem onClick={() => void newConversation()}>
+                <Plus className="mr-2 h-3.5 w-3.5" />
+                {t('agent.mobilePanel.newConversation')}
+              </DropdownMenuItem>
+              <DropdownMenuItem disabled={!current} onClick={() => setRenameOpen(true)}>
+                <Pencil className="mr-2 h-3.5 w-3.5" />
+                {t('agent.mobilePanel.renameConversation')}
+              </DropdownMenuItem>
+            </DropdownMenuContent>
+          </DropdownMenu>
           <button
             type="button"
-            onClick={newConversation}
+            disabled={!current}
+            onClick={() => setRenameOpen(true)}
+            className="shrink-0 rounded-md p-1 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-40"
+            aria-label={t('agent.mobilePanel.renameConversation')}
+          >
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            onClick={() => void newConversation()}
             className="shrink-0 rounded-md p-1 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
             aria-label={t('agent.mobilePanel.newConversation')}
           >
@@ -229,6 +312,20 @@ export function MobileAgentPanel() {
           )}
         </div>
       </aside>
+      <ConversationRenameDialog
+        open={renameOpen}
+        initialTitle={current?.title ?? ''}
+        onOpenChange={setRenameOpen}
+        onSubmit={(title) => {
+          if (!current) return;
+          void useAgentSessionStore.getState().renameAgentConversation({
+            instanceId: current.instanceId,
+            threadId: current.threadId,
+            title,
+            typeKey: 'flowix',
+          });
+        }}
+      />
     </>
   );
 }

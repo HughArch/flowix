@@ -21,6 +21,7 @@ mod config;
 mod provider;
 mod runtime;
 mod tools;
+mod web_search;
 
 pub use runtime::BuiltinAiService;
 

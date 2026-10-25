@@ -359,7 +359,10 @@ impl BuiltinAiService {
         //    humanized references).
         let mut provider_messages =
             Vec::with_capacity(HISTORY_MESSAGE_LIMIT as usize + 8);
-        provider_messages.push(ProviderMessage::system(system_prompt(scope)));
+        provider_messages.push(ProviderMessage::system(system_prompt(
+            scope,
+            config.web_search_enabled,
+        )));
         for record in self.load_history(thread_id).await? {
             if let Some(converted) = history_to_provider(&record) {
                 provider_messages.push(converted);
@@ -380,7 +383,7 @@ impl BuiltinAiService {
                 &config.api_key,
                 &config.model,
                 &provider_messages,
-                &tools::tool_definitions(),
+                &tools::tool_definitions(config.web_search_enabled),
                 config.max_total_tokens,
                 Arc::clone(cancel),
                 |event| match event {
@@ -471,18 +474,41 @@ impl BuiltinAiService {
                     run_id,
                 );
 
-                let memo_file = Arc::clone(&self.memo_file);
-                let scope = scope.clone();
-                let name = call.name.clone();
-                let arguments = call.arguments.clone();
-                // Blocking file/sqlite work stays off the async reactor.
-                let result = tauri::async_runtime::spawn_blocking(move || {
-                    tools::execute(&memo_file, &scope, &name, &arguments)
-                })
-                .await
-                .unwrap_or_else(|error| {
-                    serde_json::json!({ "ok": false, "error": format!("工具执行任务失败: {error}") })
-                });
+                // Web search is async; note tools are blocking file/sqlite work
+                // and stay off the async reactor.
+                let result = if call.name == "web_search" {
+                    if !config.web_search_enabled {
+                        serde_json::json!({ "ok": false, "error": "联网搜索未启用，请在设置中开启" })
+                    } else {
+                        let args: serde_json::Value =
+                            serde_json::from_str(&call.arguments).unwrap_or_default();
+                        let query = args
+                            .get("query")
+                            .and_then(serde_json::Value::as_str)
+                            .unwrap_or_default();
+                        let limit = args.get("limit").and_then(serde_json::Value::as_u64);
+                        match super::web_search::search(config, query, limit).await {
+                            Ok(response) => serde_json::to_value(response)
+                                .unwrap_or_else(|error| serde_json::json!({
+                                    "ok": false,
+                                    "error": format!("搜索结果序列化失败: {error}")
+                                })),
+                            Err(error) => serde_json::json!({ "ok": false, "error": error }),
+                        }
+                    }
+                } else {
+                    let memo_file = Arc::clone(&self.memo_file);
+                    let scope = scope.clone();
+                    let name = call.name.clone();
+                    let arguments = call.arguments.clone();
+                    tauri::async_runtime::spawn_blocking(move || {
+                        tools::execute(&memo_file, &scope, &name, &arguments)
+                    })
+                    .await
+                    .unwrap_or_else(|error| {
+                        serde_json::json!({ "ok": false, "error": format!("工具执行任务失败: {error}") })
+                    })
+                };
 
                 emit_builtin_chunk(
                     app,
@@ -678,8 +704,13 @@ fn tool_message(message_id: &str, provider_call_id: &str, name: &str, result_tex
     }
 }
 
-fn system_prompt(scope: &ToolScope) -> String {
+fn system_prompt(scope: &ToolScope, web_search_enabled: bool) -> String {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
+    let web_search_rule = if web_search_enabled {
+        "- 需要最新或外部信息时用 web_search；回答里引用返回结果的 URL，不要把搜索结果当成笔记内容。"
+    } else {
+        "- 当前没有联网搜索工具；用户要求联网搜索时，明确说明需要在设置中开启「联网搜索」。"
+    };
     format!(
         "你是 Flowix 内置笔记助手，运行在用户设备上的 Flowix 应用内，\
 只能通过提供的笔记工具访问用户的笔记。
@@ -694,10 +725,12 @@ fn system_prompt(scope: &ToolScope) -> String {
 - note_delete 是硬删除且不可恢复，只在用户明确要求删除时使用。
 - 新建笔记用 note_create，把用户要求的标签（如 #项目/Flowix）写进正文。
 - 用户消息中 @标题 形式的提及通常对应 relativePath 为「标题.md」的笔记。
+{web_search_rule}
 - 用用户的语言回答；提到笔记时给出其相对路径；不要虚构笔记内容。",
         name = scope.notebook_name,
         notebook_id = scope.notebook_id,
         today = today,
+        web_search_rule = web_search_rule,
     )
 }
 
@@ -721,13 +754,16 @@ fn humanize_note_references(content: &str) -> String {
             .find(|c: char| c == ')' || c == '"' || c == '\'' || c.is_whitespace())
             .unwrap_or(tail.len());
         let query = &tail[..end];
-        let decoded_query = url::form_urlencoded::parse(query.as_bytes())
-            .map(|(key, value)| format!("{key}={value}"))
-            .collect::<Vec<_>>()
-            .join("&");
-        let relative = decoded_query
-            .split('&')
-            .find_map(|pair| pair.strip_prefix("relativePath="));
+        let pairs: Vec<(String, String)> = url::form_urlencoded::parse(query.as_bytes())
+            .map(|(key, value)| (key.into_owned(), value.into_owned()))
+            .collect();
+        // `buildNoteOpenLink` emits `b=<notebook>&f=<relative>`; older links
+        // may use `relativePath` / `file` / `path`.
+        let relative = pairs.iter().find_map(|(key, value)| match key.as_str() {
+            "relativePath" | "f" | "file" => Some(value.as_str()),
+            "path" if !value.starts_with('/') => Some(value.as_str()),
+            _ => None,
+        });
         match relative {
             Some(path) if !path.is_empty() => {
                 out.push('@');
@@ -745,8 +781,25 @@ fn humanize_note_references(content: &str) -> String {
     out
 }
 
+/// Remove note/folder references from a first message before deriving the
+/// conversation title. The mobile composer seeds the input with
+/// `[Title](flowix://open?b=..&f=..)`, which would otherwise become the title.
+fn strip_note_references(content: &str) -> String {
+    use std::sync::OnceLock;
+    static LINK_RE: OnceLock<regex::Regex> = OnceLock::new();
+    static URL_RE: OnceLock<regex::Regex> = OnceLock::new();
+    let link_re = LINK_RE.get_or_init(|| {
+        regex::Regex::new(r"\[[^\]\n]*\]\(flowix://[^)\n]*\)").expect("note link regex")
+    });
+    let url_re = URL_RE
+        .get_or_init(|| regex::Regex::new(r"flowix://\S+").expect("note url regex"));
+    let without_links = link_re.replace_all(content, " ");
+    url_re.replace_all(&without_links, " ").into_owned()
+}
+
 pub(crate) fn derive_title(content: &str) -> String {
-    let collapsed = content.split_whitespace().collect::<Vec<_>>().join(" ");
+    let cleaned = strip_note_references(content);
+    let collapsed = cleaned.split_whitespace().collect::<Vec<_>>().join(" ");
     let truncated: String = collapsed.chars().take(40).collect();
     if truncated.is_empty() {
         "新对话".to_owned()

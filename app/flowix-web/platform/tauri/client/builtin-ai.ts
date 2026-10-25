@@ -11,6 +11,7 @@ export interface BuiltinAiConfigView {
   apiUrl: string;
   model: string;
   maxTotalTokens: number;
+  webSearchEnabled: boolean;
   hasApiKey: boolean;
   configured: boolean;
 }
@@ -22,6 +23,7 @@ export interface BuiltinAiConfigInput {
   apiKey: string | null;
   model: string;
   maxTotalTokens?: number;
+  webSearchEnabled?: boolean;
 }
 
 export interface BuiltinAiOverride {

@@ -1,8 +1,16 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
+import { Check, ChevronDown } from 'lucide-react';
 import { Button } from '@shared/ui/button';
 import { Input } from '@shared/ui/input';
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuLabel,
+  DropdownMenuTrigger,
+} from '@shared/ui/dropdown-menu';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
 import { errorMessage } from '@/lib/error-message';
@@ -52,6 +60,7 @@ export function BuiltinAiSection() {
     apiUrl?: string;
     apiKey?: string | null;
     model?: string;
+    webSearchEnabled?: boolean;
   }) => {
     setBusy(true);
     try {
@@ -60,6 +69,7 @@ export function BuiltinAiSection() {
         apiUrl: patch.apiUrl ?? apiUrl,
         apiKey: patch.apiKey !== undefined ? patch.apiKey : null,
         model: patch.model ?? model,
+        webSearchEnabled: patch.webSearchEnabled ?? config?.webSearchEnabled ?? false,
       });
       setConfig(view);
       setApiUrl(view.apiUrl);
@@ -172,7 +182,6 @@ export function BuiltinAiSection() {
           <div className="flex w-full items-center gap-2">
             <Input
               id="builtin-ai-model"
-              list="builtin-ai-model-options"
               value={model}
               placeholder={t('preferences.builtinAi.modelPlaceholder')}
               className="min-w-0 flex-1"
@@ -181,6 +190,37 @@ export function BuiltinAiSection() {
                 if (model !== (config?.model ?? '')) void save({ model });
               }}
             />
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  className="shrink-0 px-2"
+                  disabled={modelOptions.length === 0}
+                  aria-label={t('preferences.builtinAi.chooseModel')}
+                >
+                  <ChevronDown className="h-4 w-4" />
+                </Button>
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="max-h-64 w-64 overflow-y-auto">
+                <DropdownMenuLabel>{t('preferences.builtinAi.chooseModel')}</DropdownMenuLabel>
+                {modelOptions.map((option) => (
+                  <DropdownMenuItem
+                    key={option}
+                    onClick={() => {
+                      setModel(option);
+                      void save({ model: option });
+                    }}
+                  >
+                    <span className="min-w-0 flex-1 truncate">{option}</span>
+                    {option === model && (
+                      <Check className="ml-2 h-3.5 w-3.5 shrink-0 text-[var(--brand)]" />
+                    )}
+                  </DropdownMenuItem>
+                ))}
+              </DropdownMenuContent>
+            </DropdownMenu>
             <Button
               type="button"
               variant="outline"
@@ -191,13 +231,23 @@ export function BuiltinAiSection() {
             >
               {fetchingModels ? t('preferences.builtinAi.fetchingModels') : t('preferences.builtinAi.fetchModels')}
             </Button>
-            <datalist id="builtin-ai-model-options">
-              {modelOptions.map((option) => (
-                <option key={option} value={option} />
-              ))}
-            </datalist>
           </div>
         </Field>
+
+        <FieldRow
+          title={t('preferences.builtinAi.webSearch')}
+          description={t('preferences.builtinAi.webSearchHint')}
+          controlId="builtin-ai-web-search"
+        >
+          <input
+            id="builtin-ai-web-search"
+            type="checkbox"
+            className="h-4 w-4 accent-[var(--brand)]"
+            disabled={busy || !config}
+            checked={config?.webSearchEnabled ?? false}
+            onChange={(event) => void save({ webSearchEnabled: event.target.checked })}
+          />
+        </FieldRow>
 
         <div className="flex items-center gap-3">
           <Button

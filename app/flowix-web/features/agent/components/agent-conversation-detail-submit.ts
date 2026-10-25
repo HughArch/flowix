@@ -44,7 +44,8 @@ export async function ensureAgentConversationDetailThread(input: {
     currentThreadId: null,
     runtimeHandleId: input.runtimeHandleId,
     instanceId: input.instanceId,
-    buildTitle: (prompt, fallback) => deriveThreadTitleFromPrompt(prompt, fallback),
+    buildTitle: (prompt, fallback) =>
+      deriveThreadTitleFromPrompt(prompt, fallback, input.typeKey),
   });
   if (!ensured) throw new Error("Agent thread id was not created");
 

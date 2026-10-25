@@ -24,8 +24,8 @@ pub struct ToolScope {
     pub notebook_name: String,
 }
 
-pub fn tool_definitions() -> Value {
-    json!([
+pub fn tool_definitions(web_search_enabled: bool) -> Value {
+    let mut tools = json!([
         {
             "type": "function",
             "function": {
@@ -130,7 +130,28 @@ pub fn tool_definitions() -> Value {
                 }
             }
         },
-    ])
+    ]);
+    if web_search_enabled {
+        tools
+            .as_array_mut()
+            .expect("tool list is an array")
+            .push(json!({
+                "type": "function",
+                "function": {
+                    "name": "web_search",
+                    "description": "联网搜索公开网页，返回标题、URL 和摘要。用于需要最新或外部信息的问题；回答时引用返回的 URL。",
+                    "parameters": {
+                        "type": "object",
+                        "properties": {
+                            "query": { "type": "string", "description": "搜索关键词" },
+                            "limit": { "type": "integer", "description": "返回条数，默认 5，最多 10" }
+                        },
+                        "required": ["query"]
+                    }
+                }
+            }));
+    }
+    tools
 }
 
 /// Validate and normalize a notebook-relative note path from model input.
