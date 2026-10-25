@@ -647,6 +647,13 @@ function AgentConversationDetailContent({
         listFolders: () => getCurrentNotebookComposerFolders(),
         folderGroupLabel: tRef.current("agent.files.referenceLocal"),
         noteGroupLabel: tRef.current("agent.files.projectNotes"),
+        getPreferredNote: () => {
+          const source = instanceRef.current?.source;
+          if (source?.kind === 'thread-card' && source.notebookId && source.relativePath) {
+            return { notebookId: source.notebookId, relativePath: source.relativePath };
+          }
+          return null;
+        },
         onModelSelect: () => {
           clearComposerAfterSettingsCommand();
           externalSettings.openComposerModelPicker();

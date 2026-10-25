@@ -77,6 +77,8 @@ export interface ComposerControllerOptions {
   folderGroupLabel?: string;
   listNotes?: (query: string) => Promise<readonly MentionNoteItem[]>;
   noteGroupLabel?: string;
+  /** Document associated with this conversation; mobile @ picker pins it first. */
+  getPreferredNote?: () => { notebookId: string; relativePath: string } | null;
   onModelSelect?: () => void;
   onPermissionSelect?: () => void;
   onDirectCommand?: (command: ComposerSlashCommand) => void;
@@ -210,6 +212,7 @@ export class ComposerController {
       groupLabel: options.folderGroupLabel,
       listNotes: options.listNotes ?? queryMentionNotes,
       noteGroupLabel: options.noteGroupLabel,
+      getPreferredNote: options.getPreferredNote,
       onChange: () => this.handleEditorUpdate(),
       focusInput: () => this.focus(),
     });

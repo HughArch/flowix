@@ -2,7 +2,7 @@ import type { Editor } from "@tiptap/core";
 import { isMobileDevice } from "@shared/platform";
 import { useDocumentStore } from "@features/document/store/document-store";
 import { useNoteStore } from "@features/memo/store/note-store";
-import { canonicalPath } from "@/lib/path";
+import { canonicalPath, joinNotebookMemoPath } from "@/lib/path";
 import { displayTitleFromFilename } from "@/lib/utils";
 import {
   insertComposerFolderToken,
@@ -55,6 +55,32 @@ function resolveCurrentDocumentMention(): MentionNoteItem | null {
   };
 }
 
+/**
+ * Project the conversation's bound document into the @ picker's note shape.
+ * This is the authoritative "current document" for the AI drawer; the main
+ * editor may be showing a different note.
+ */
+function resolvePreferredMention(
+  getter: (() => { notebookId: string; relativePath: string } | null) | undefined,
+): MentionNoteItem | null {
+  if (!isMobileDevice() || !getter) return null;
+  const ref = getter();
+  if (!ref?.notebookId || !ref.relativePath) return null;
+  const notebook = useNoteStore.getState().notebooks.find((item) => item.id === ref.notebookId);
+  if (!notebook) return null;
+  const relativePath = ref.relativePath.replace(/\\/g, "/");
+  return {
+    relativePath,
+    filename: relativePath.split("/").pop() ?? relativePath,
+    title: displayTitleFromFilename(relativePath),
+    updatedAt: Date.now(),
+    notebookId: notebook.id,
+    notebookName: notebook.name,
+    notebookPath: notebook.path,
+    originalPath: joinNotebookMemoPath(notebook.path, relativePath),
+  };
+}
+
 export interface ComposerFolderControllerOptions {
   editor: Editor;
   input: HTMLDivElement;
@@ -64,6 +90,8 @@ export interface ComposerFolderControllerOptions {
   listNotes?: (query: string) => Promise<readonly MentionNoteItem[]>;
   noteGroupLabel?: string;
   noteEmptyLabel?: string;
+  /** Document associated with this conversation; mobile @ picker pins it first. */
+  getPreferredNote?: () => { notebookId: string; relativePath: string } | null;
   onChange?: () => void;
   focusInput?: () => void;
 }
@@ -80,6 +108,7 @@ export class ComposerFolderController {
   private readonly listFolders: () => readonly ComposerFolderReference[];
   private readonly groupLabel: string;
   private readonly listNotes: (query: string) => Promise<readonly MentionNoteItem[]>;
+  private readonly getPreferredNote?: () => { notebookId: string; relativePath: string } | null;
   private readonly noteGroupLabel: string;
   private readonly noteEmptyLabel: string;
   private readonly onChange: () => void;
@@ -105,6 +134,7 @@ export class ComposerFolderController {
     this.listFolders = options.listFolders;
     this.groupLabel = options.groupLabel ?? "引用仓库";
     this.listNotes = options.listNotes ?? (async () => []);
+    this.getPreferredNote = options.getPreferredNote;
     this.noteGroupLabel = options.noteGroupLabel ?? "笔记";
     this.noteEmptyLabel = options.noteEmptyLabel ?? "暂无笔记";
     this.onChange = options.onChange ?? (() => undefined);
@@ -221,7 +251,10 @@ export class ComposerFolderController {
       // Mobile AI panel: surface the document currently being edited as the
       // first candidate when the query is empty (or still matches it).
       let notes = fetched;
-      const current = resolveCurrentDocumentMention();
+      // Prefer the document bound to this conversation; fall back to the
+      // editor's current document for unrelated composers.
+      const current = resolvePreferredMention(this.getPreferredNote)
+        ?? resolveCurrentDocumentMention();
       if (current) {
         const normalizedQuery = query.trim().toLocaleLowerCase();
         const matches = !normalizedQuery
@@ -458,10 +491,17 @@ export class ComposerFolderController {
     name.textContent = note.title || note.filename;
     const notebook = document.createElement("span");
     notebook.className = "agent-composer-slash-menu__description";
-    // Mobile AI panel: show the note's full notebook-relative path instead of
-    // the notebook name (the panel is already notebook-scoped).
-    notebook.textContent = isMobileDevice() ? note.relativePath : note.notebookName;
-    item.append(name, notebook);
+    // Mobile AI panel: the left side already shows the filename, so the right
+    // side only needs the parent directory path (no notebook name).
+    const description = isMobileDevice()
+      ? note.relativePath.split("/").slice(0, -1).join("/")
+      : note.notebookName;
+    if (description) {
+      notebook.textContent = description;
+      item.append(name, notebook);
+    } else {
+      item.append(name);
+    }
     item.addEventListener("mousemove", (event) => this.handleItemMouseMove(event, index));
     item.addEventListener("pointerdown", (event) => event.preventDefault());
     item.addEventListener("click", () => this.select({ kind: "note", value: note }));
