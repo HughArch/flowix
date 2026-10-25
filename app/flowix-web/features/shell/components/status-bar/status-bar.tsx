@@ -16,6 +16,7 @@ import {
   AgentIcon,
   createAndOpenPiConversation,
 } from '@features/agent/public/shell-api';
+import { useMobileAgentPanelStore } from '@features/agent/components/mobile-agent-panel';
 import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
 import { normalizeAgentRuntimeStatus } from '@features/agent/runtime/agent-runtime-status';
 import { useI18n } from '@/lib/i18n';
@@ -216,7 +217,21 @@ export function StatusBar({
         {/* 移动端 v1 无 AI 服务: 不渲染 PI 运行时入口。 */}
         {!isMobileDevice() && <PiRuntimeStatusIndicator />}
         <SyncEntryButton />
-        <Tooltip content={t('preferences.tabs.mcp')} side="top">
+        {/* 移动端：插头（MCP）入口替换为 AI 侧边栏入口 —— 打开与当前文档
+            关联的内置助手会话。同步面板仍可从右缘滑动手势打开。 */}
+        {isMobileDevice() ? (
+          <Tooltip content={t('agent.mobilePanel.title')} side="top">
+            <button
+              type="button"
+              onClick={() => useMobileAgentPanelStore.getState().openForCurrentDocument()}
+              className="h-full flex items-center justify-center px-1.5 py-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+              aria-label={t('agent.mobilePanel.title')}
+            >
+              <AgentIcon typeKey="flowix" alt="" className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
+        ) : (
+          <Tooltip content={t('preferences.tabs.mcp')} side="top">
           <button
             type="button"
             onClick={onOpenMcpPreferences}
@@ -233,6 +248,7 @@ export function StatusBar({
             />
           </button>
         </Tooltip>
+        )}
         <Tooltip content={t('shell.productIntro.button')} side="top">
           <button
             type="button"

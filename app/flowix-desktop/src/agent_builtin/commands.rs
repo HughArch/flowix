@@ -124,6 +124,24 @@ pub async fn agent_builtin_list_models(
         .map_err(|error| error.to_string())
 }
 
+/// Hard-delete a built-in assistant thread together with its conversation
+/// instances and messages. Used when the source document is deleted (the
+/// document-scoped conversation dies with it) and by the conversation list's
+/// delete action. External runtimes have their own lifecycle commands; this
+/// one is builtin-only and touches no provider.
+#[tauri::command]
+pub async fn agent_builtin_delete_thread(
+    thread_id: String,
+    state: State<'_, AppState>,
+) -> Result<bool, String> {
+    state.agent_builtin.stop(&thread_id);
+    state
+        .thread_manager
+        .delete_thread_with_agent_conversations(&thread_id)
+        .await
+        .map_err(|error| error.to_string())
+}
+
 /// Entry used by `chat_with_agent_stream` when `agentType == "flowix"`.
 /// Fire-and-forget like every runtime: progress flows via `agent-chunk`.
 pub(crate) async fn chat_with_builtin(

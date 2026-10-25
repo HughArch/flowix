@@ -35,6 +35,7 @@ import {
 } from '@features/memo/public/shell-api';
 import { AgentConversationTitlebar } from '@features/agent/public/shell-api';
 import { SyncStatusPanel } from '@features/sync-status';
+import { MobileAgentPanel } from '@features/agent/components/mobile-agent-panel';
 import { useSettingsStore } from '@/lib/store/settings-store';
 import { useWorkspaceStartupStore, isWorkspaceInteractive } from '@/lib/store/workspace-startup-store';
 import { useShallow } from 'zustand/react/shallow';
@@ -840,6 +841,8 @@ export function MainLayout({
     >
       <WindowsTitlebarControls />
       <SyncStatusPanel />
+      {/* 移动端右侧 AI 侧边栏（当前文档关联会话）；桌面不渲染任何 DOM。 */}
+      <MobileAgentPanel />
       {/* Keep window controls and startup retry UI outside the business barrier. */}
       <div className="contents" inert={!interactive} aria-busy={!interactive}>
       {interactive && <ExternalFileDropOverlay />}

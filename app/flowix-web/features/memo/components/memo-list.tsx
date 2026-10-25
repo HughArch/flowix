@@ -73,6 +73,8 @@ import { canonicalDirectoryPath } from '@/lib/path';
 import type { AgentTypeKey } from '@/types/agent';
 import { useAgentRuntimeStore } from '@features/agent/store/agent-runtime-store';
 import { useNewConversationAgentSelection } from '@features/agent/hooks/use-new-conversation-agent-selection';
+import { MobileConversationsSection } from '@features/agent/components/mobile-conversations-section';
+import { isMobileDevice } from '@shared/platform';
 import { AgentConversationTypeMenuItems } from '@features/agent/components/agent-conversation-type-menu-items';
 import {
   createAndOpenAgentConversation,
@@ -1253,6 +1255,9 @@ export function MemoList({
       </div>
 
       {documentCreateRequest && <NotebookDocumentCreateDialog request={documentCreateRequest} onClose={() => setDocumentCreateRequest(null)} />}
+
+      {/* 移动端左侧抽屉的全局对话入口（桌面 memo-list 不渲染）。 */}
+      {isMobileDevice() && <MobileConversationsSection />}
 
       <ListSurfaceViewport className="flex">
         {navigationDrawerEnabled && !navigationDrawerControlled && (

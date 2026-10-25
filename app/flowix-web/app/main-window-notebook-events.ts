@@ -11,8 +11,53 @@ import { removeBrowserColumnTabsByPath, applyNotebookPathMove, openExternallyCre
 import { clearWorkspaceTargetForDeletedFile } from '@features/workspace/public/shell-api';
 import { createLogger } from '@/lib/logger';
 import { joinNotebookMemoPath } from '@/lib/path';
+import { invoke } from '@tauri-apps/api/core';
+import { isMobileDevice } from '@shared/platform';
+import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
+import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
 
 const logger = createLogger('main-window-notebook-events');
+
+/**
+ * 移动端：删除文档时，连带删除绑定到它的内置助手会话
+ * （thread + messages + instance）。匹配规则与右侧 AI 侧边栏的
+ * 绑定规则一致：source.documentPath（绝对路径）或
+ * notebookId + relativePath。只处理 flowix（thread-card source）会话。
+ */
+async function purgeDocumentConversations(
+  notebookId: string,
+  relativePath: string,
+  absolutePath: string,
+): Promise<void> {
+  const instances = useAgentSessionStore.getState().conversationRegistry.instances;
+  const matches: AgentConversationInstance[] = Object.values(instances).filter((instance) => {
+    if (instance.agentType !== 'flowix' || instance.source.kind !== 'thread-card') return false;
+    if (instance.source.documentPath === absolutePath) return true;
+    return instance.source.notebookId === notebookId
+      && !!instance.source.relativePath
+      && (instance.source.relativePath === relativePath
+        || `${relativePath}/`.startsWith(`${instance.source.relativePath}/`));
+  });
+  for (const instance of matches) {
+    try {
+      if (instance.threadId) {
+        await invoke<boolean>('agent_builtin_delete_thread', { threadId: instance.threadId });
+        useAgentSessionStore.getState().removeInstancesForThreadAndWait(instance.threadId);
+      } else {
+        useAgentSessionStore.getState().removeInstance(instance.instanceId);
+      }
+    } catch (error) {
+      logger.warn('purge document conversation failed', { error, instanceId: instance.instanceId });
+    }
+  }
+  if (matches.length > 0) {
+    logger.info('purged document conversations after note deletion', {
+      notebookId,
+      relativePath,
+      count: matches.length,
+    });
+  }
+}
 
 /** Mount the main window's production notebook path event projections. */
 export function mountMainWindowNotebookEvents(): () => void {
@@ -62,6 +107,11 @@ export function mountMainWindowNotebookEvents(): () => void {
         if (path) {
           removeBrowserColumnTabsByPath(path);
           await clearWorkspaceTargetForDeletedFile(path);
+          // 移动端专属：文档关联的内置助手会话随文档一起删除。
+          // 桌面文档删除不清理会话（保持既有行为）。
+          if (isMobileDevice() && notebookPath) {
+            await purgeDocumentConversations(notebookId, relativePath, path);
+          }
         }
       }).catch((error) => logger.warn('resolve deleted note path failed', { error, notebookId, relativePath }));
     }
