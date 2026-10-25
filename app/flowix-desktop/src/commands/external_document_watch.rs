@@ -222,11 +222,24 @@ impl ExternalDocumentWatchState {
                 .watcher
                 .lock()
                 .map_err(|_| "external document watcher poisoned".to_string())?;
-            watcher
-                .as_mut()
-                .ok_or_else(|| "external document watcher is unavailable".to_string())?
-                .watch(&path, RecursiveMode::NonRecursive)
-                .map_err(|error| format!("failed to watch {}: {error}", path.display()))?;
+            // The native watch is an optimization, not a requirement: the
+            // revision poll delivers changes on its own. On Android inotify
+            // can be unavailable or exhausted while the lease is still
+            // perfectly serviceable, so register it regardless.
+            match watcher.as_mut() {
+                Some(watcher) => {
+                    if let Err(error) = watcher.watch(&path, RecursiveMode::NonRecursive) {
+                        tracing::warn!(
+                            "[external-watch] native watch failed for {}, delivering via revision polling: {error}",
+                            path.display()
+                        );
+                    }
+                }
+                None => tracing::warn!(
+                    "[external-watch] watcher unavailable, {} delivers via revision polling",
+                    path.display()
+                ),
+            }
         }
         *registry.path_ref_counts.entry(path.clone()).or_insert(0) += 1;
         let initial_revision = file_revision(&path);

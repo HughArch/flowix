@@ -114,9 +114,9 @@ pub struct FnsSyncService {
     /// Realtime change listener; restarted whenever credentials or notebook
     /// bindings change.
     listener: Arc<super::listener::FnsListener>,
-    /// Per-notebook debounce generation. A scheduled run whose generation has
-    /// been superseded does nothing.
-    scheduled: Mutex<HashMap<String, u64>>,
+    /// Per-notebook pending run deadline. A scheduled run that no longer owns
+    /// the slot (a newer trigger scheduled an earlier deadline) does nothing.
+    scheduled: Mutex<HashMap<String, std::time::Instant>>,
     /// Per-notebook exponential backoff state for failed syncs.
     retry: Mutex<HashMap<String, RetryEntry>>,
     /// Newest-first history for the status panel.
@@ -182,6 +182,22 @@ impl FnsSyncService {
     /// Debounced sync after a local edit. Only applies to notebooks that
     /// already have a vault binding; the first binding is always explicit.
     pub fn schedule_sync(self: &Arc<Self>, app: AppHandle, notebook_id: String) {
+        self.schedule_sync_with_delay(app, notebook_id, AUTO_SYNC_DEBOUNCE);
+    }
+
+    /// Debounced sync with an explicit delay. The per-notebook slot holds the
+    /// earliest pending deadline: a new trigger takes over only when it wants
+    /// to run *sooner*; a later trigger is already covered by the pending run
+    /// (its scan happens at fire time, so it sees the newest state).
+    ///
+    /// The slot is released when the run starts, not when it finishes — edits
+    /// made during a long sync must be able to schedule the next run.
+    pub fn schedule_sync_with_delay(
+        self: &Arc<Self>,
+        app: AppHandle,
+        notebook_id: String,
+        delay: Duration,
+    ) {
         let ready = {
             let config = self.read_config();
             config.is_ready()
@@ -206,28 +222,34 @@ impl FnsSyncService {
             }
         }
 
-        let generation = {
+        let deadline = std::time::Instant::now() + delay;
+        {
             let mut scheduled = self
                 .scheduled
                 .lock()
                 .unwrap_or_else(|poisoned| poisoned.into_inner());
-            let entry = scheduled.entry(notebook_id.clone()).or_insert(0);
-            *entry = entry.wrapping_add(1);
-            *entry
-        };
+            match scheduled.get(&notebook_id) {
+                // An earlier (or equally timed) pending run covers this one.
+                Some(current) if *current <= deadline => return,
+                _ => {
+                    scheduled.insert(notebook_id.clone(), deadline);
+                }
+            }
+        }
 
         let service = self.clone();
         let app = app.clone();
         tauri::async_runtime::spawn(async move {
-            tokio::time::sleep(AUTO_SYNC_DEBOUNCE).await;
+            tokio::time::sleep(delay).await;
             {
-                let scheduled = service
+                let mut scheduled = service
                     .scheduled
                     .lock()
                     .unwrap_or_else(|poisoned| poisoned.into_inner());
-                if scheduled.get(&notebook_id).copied() != Some(generation) {
+                if scheduled.get(&notebook_id).copied() != Some(deadline) {
                     return;
                 }
+                scheduled.remove(&notebook_id);
             }
             match service.sync_notebook(&app, &notebook_id).await {
                 Ok(_) => {}

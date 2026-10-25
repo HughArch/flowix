@@ -56,6 +56,10 @@ const LISTENER_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
 /// Reconnect backoff: doubles from here, capped at [`RECONNECT_MAX`].
 const RECONNECT_MIN: Duration = Duration::from_secs(2);
 const RECONNECT_MAX: Duration = Duration::from_secs(60);
+/// Coalescing window for broadcast-triggered syncs. The 5s edit debounce
+/// would put a floor on remote-change latency; broadcasts arrive in bursts
+/// (one message per changed note), so a short window still merges them.
+const BROADCAST_SYNC_DEBOUNCE: Duration = Duration::from_millis(500);
 
 /// One desired connection: a bound token plus the vaults it serves.
 struct ConnSpec {
@@ -321,7 +325,11 @@ fn sync_vault(
             notebook_id = %notebook_id,
             "FNS listener: change broadcast, scheduling sync"
         );
-        service.schedule_sync(app.clone(), notebook_id.clone());
+        service.schedule_sync_with_delay(
+            app.clone(),
+            notebook_id.clone(),
+            BROADCAST_SYNC_DEBOUNCE,
+        );
     }
 }
 

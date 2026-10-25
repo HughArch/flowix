@@ -187,10 +187,12 @@ impl LocalNoteStore for MemoFileStore {
             fs::create_dir_all(parent)?;
         }
         self.write_locked(&target, content)?;
+        // Finalize mtime before marking the self-write, so the recorded
+        // revision matches the file state the watcher will observe.
+        set_mtime(&target, mtime_ms);
         mark_self_write_for(&self.app, &target);
         let memo_file = read_lock(&self.memo_file, "memo_file");
         refresh_notebook_note_index(&memo_file, &target);
-        set_mtime(&target, mtime_ms);
         Ok(())
     }
 
@@ -389,8 +391,9 @@ impl LocalFileStore for MemoFileStore {
             fs::create_dir_all(parent)?;
         }
         self.write_bytes_locked(&target, data)?;
-        mark_self_write_for(&self.app, &target);
+        // Same ordering as `write_note`: final mtime before the marker.
         set_mtime(&target, mtime_ms);
+        mark_self_write_for(&self.app, &target);
         Ok(())
     }
 
