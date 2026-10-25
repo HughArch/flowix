@@ -18,6 +18,12 @@ pub const DEFAULT_STARTUP_SYNC_DELAY_SECONDS: u64 = 8;
 pub const DEFAULT_MAX_RETRY_ATTEMPTS: u32 = 10;
 pub const DEFAULT_CLIENT_TYPE: &str = "flowix";
 
+/// Server-side overwrite strategies offered in settings. Both are automatic;
+/// the server's `manualMerge` strategy is deliberately not exposed.
+pub const OFFLINE_SYNC_STRATEGY_NEW_TIME: &str = "newTimeMerge";
+pub const OFFLINE_SYNC_STRATEGY_IGNORE_TIME: &str = "ignoreTimeMerge";
+pub const DEFAULT_OFFLINE_SYNC_STRATEGY: &str = OFFLINE_SYNC_STRATEGY_NEW_TIME;
+
 /// One named credential. `client_type` belongs to the token because the server
 /// binds the token's scope to a `c:` client dimension.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -59,6 +65,9 @@ pub struct FnsConfig {
     /// Stop retrying a failing notebook after this many consecutive attempts.
     /// A new local edit resets the counter.
     pub max_retry_attempts: u32,
+    /// How the server resolves a note changed on both sides. One of
+    /// [`OFFLINE_SYNC_STRATEGY_NEW_TIME`] or [`OFFLINE_SYNC_STRATEGY_IGNORE_TIME`].
+    pub offline_sync_strategy: String,
     pub tokens: Vec<FnsToken>,
     /// Pre-token-list configuration. Read once for migration, never written.
     #[serde(default, skip_serializing, rename = "token")]
@@ -75,6 +84,7 @@ impl Default for FnsConfig {
             max_attachment_bytes: DEFAULT_MAX_ATTACHMENT_BYTES,
             startup_sync_delay_seconds: DEFAULT_STARTUP_SYNC_DELAY_SECONDS,
             max_retry_attempts: DEFAULT_MAX_RETRY_ATTEMPTS,
+            offline_sync_strategy: DEFAULT_OFFLINE_SYNC_STRATEGY.to_owned(),
             tokens: Vec::new(),
             legacy_token: String::new(),
             legacy_client_type: String::new(),
@@ -196,8 +206,14 @@ impl FnsConfig {
         self.tokens.len() != before
     }
 
+    /// Parse the stored strategy. Unknown values (including the unexposed
+    /// `manualMerge`) fall back to the default so a hand-edited config can
+    /// never switch the client into a mode it cannot finish.
     pub fn offline_sync_strategy(&self) -> flowix_fns::OfflineSyncStrategy {
-        flowix_fns::OfflineSyncStrategy::NewTimeMerge
+        match self.offline_sync_strategy.as_str() {
+            OFFLINE_SYNC_STRATEGY_IGNORE_TIME => flowix_fns::OfflineSyncStrategy::IgnoreTimeMerge,
+            _ => flowix_fns::OfflineSyncStrategy::NewTimeMerge,
+        }
     }
 }
 
@@ -231,6 +247,7 @@ pub struct FnsConfigView {
     pub max_attachment_bytes: u64,
     pub startup_sync_delay_seconds: u64,
     pub max_retry_attempts: u32,
+    pub offline_sync_strategy: String,
     pub tokens: Vec<FnsTokenView>,
     pub configured: bool,
 }
@@ -243,6 +260,7 @@ impl From<&FnsConfig> for FnsConfigView {
             max_attachment_bytes: config.max_attachment_bytes,
             startup_sync_delay_seconds: config.startup_sync_delay_seconds,
             max_retry_attempts: config.max_retry_attempts,
+            offline_sync_strategy: config.offline_sync_strategy.clone(),
             tokens: config.tokens.iter().map(FnsTokenView::from).collect(),
             configured: config.is_ready(),
         }
@@ -250,7 +268,7 @@ impl From<&FnsConfig> for FnsConfigView {
 }
 
 /// Global settings patch. Token editing has its own commands.
-#[derive(Debug, Clone, Deserialize)]
+#[derive(Debug, Clone, Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct FnsConfigPatch {
     pub enabled: Option<bool>,
@@ -258,6 +276,7 @@ pub struct FnsConfigPatch {
     pub max_attachment_bytes: Option<u64>,
     pub startup_sync_delay_seconds: Option<u64>,
     pub max_retry_attempts: Option<u32>,
+    pub offline_sync_strategy: Option<String>,
 }
 
 impl FnsConfig {
@@ -276,6 +295,15 @@ impl FnsConfig {
         }
         if let Some(attempts) = patch.max_retry_attempts {
             self.max_retry_attempts = attempts;
+        }
+        if let Some(strategy) = patch.offline_sync_strategy {
+            let strategy = strategy.trim();
+            if matches!(
+                strategy,
+                OFFLINE_SYNC_STRATEGY_NEW_TIME | OFFLINE_SYNC_STRATEGY_IGNORE_TIME
+            ) {
+                self.offline_sync_strategy = strategy.to_owned();
+            }
         }
     }
 }
@@ -350,5 +378,30 @@ mod tests {
         assert_eq!(loaded.api, config.api);
         assert_eq!(loaded.tokens.len(), 1);
         assert_eq!(loaded.tokens[0].token, "secret");
+    }
+
+    #[test]
+    fn offline_strategy_accepts_only_the_two_overwrite_modes() {
+        let mut config = FnsConfig::default();
+        assert_eq!(config.offline_sync_strategy().as_str(), "newTimeMerge");
+
+        config.apply(FnsConfigPatch {
+            offline_sync_strategy: Some("ignoreTimeMerge".into()),
+            ..Default::default()
+        });
+        assert_eq!(config.offline_sync_strategy().as_str(), "ignoreTimeMerge");
+
+        // Manual merge and garbage values keep the stored strategy.
+        for rejected in ["manualMerge", "", "bogus"] {
+            config.apply(FnsConfigPatch {
+                offline_sync_strategy: Some(rejected.into()),
+                ..Default::default()
+            });
+            assert_eq!(config.offline_sync_strategy().as_str(), "ignoreTimeMerge");
+        }
+
+        // A hand-edited config file cannot select an unsupported strategy.
+        config.offline_sync_strategy = "manualMerge".into();
+        assert_eq!(config.offline_sync_strategy().as_str(), "newTimeMerge");
     }
 }
