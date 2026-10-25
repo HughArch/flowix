@@ -8,12 +8,13 @@ use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use crate::client::{FnsClient, FnsError, Result};
+use crate::conflicts::{ConflictRecord, ConflictStore};
 use crate::file::{download_file, pull_files, upload_file};
 use crate::hash::{content_hash, path_hash};
 use crate::local::{LocalFileStore, LocalNoteStore, Result as LocalResult};
 use crate::protocol::{
-    FileSyncCheckRequest, FileSyncDelFile, NoteSyncCheckRequest, NoteSyncDelNote,
-    OfflineSyncStrategy,
+    ConflictPayload, FileSyncCheckRequest, FileSyncDelFile, NoteSyncCheckRequest,
+    NoteSyncDelNote, OfflineSyncStrategy,
 };
 use crate::state::SyncState;
 use crate::sync::{pull_notes, push_note, PushNote};
@@ -31,8 +32,12 @@ pub struct SyncReport {
     /// Attachments uploaded to the server.
     pub files_pushed: usize,
     pub files_deleted_local: usize,
-    /// Notes the server refused to merge automatically.
+    /// Notes the server refused to merge automatically and that are still
+    /// unresolved — surfaced to the UI, one entry per pending path.
     pub conflicts: Vec<String>,
+    /// Conflicts settled during this run without user interaction: the
+    /// three-way merge succeeded and the server accepted the resolution.
+    pub conflicts_auto_resolved: usize,
     /// New cursor; assign to `SyncState::last_time` after a successful run.
     pub last_time: i64,
 }
@@ -47,6 +52,7 @@ impl SyncReport {
             && self.files_pushed == 0
             && self.files_deleted_local == 0
             && self.conflicts.is_empty()
+            && self.conflicts_auto_resolved == 0
     }
 }
 
@@ -83,18 +89,29 @@ impl SyncProgressSink for NoProgress {
     fn report(&self, _progress: SyncProgress) {}
 }
 
+/// Conservative three-way merge used for conflict auto-resolution:
+/// `(base, local, remote) -> merged`, or `None` when the merge has a real
+/// conflict. Supplied by the shell so this crate keeps no dependency on any
+/// particular merge implementation.
+pub type AutoMergeFn = fn(&str, &str, &str) -> Option<String>;
+
 /// Sync knobs that depend on user settings.
 #[derive(Debug, Clone, Copy)]
 pub struct SyncOptions {
     /// Attachments larger than this are neither uploaded nor downloaded.
     /// `0` disables attachment sync entirely.
     pub max_attachment_bytes: i64,
+    /// Merge used to auto-resolve conflicts without user interaction. `None`
+    /// (or a `None` result) leaves the conflict pending for manual
+    /// resolution.
+    pub auto_merge: Option<AutoMergeFn>,
 }
 
 impl Default for SyncOptions {
     fn default() -> Self {
         Self {
             max_attachment_bytes: 20 * 1024 * 1024,
+            auto_merge: None,
         }
     }
 }
@@ -108,6 +125,7 @@ pub async fn sync_notebook(
     state: &mut SyncState,
     strategy: OfflineSyncStrategy,
     options: &SyncOptions,
+    conflicts: &ConflictStore,
     progress: &dyn SyncProgressSink,
 ) -> Result<SyncReport> {
     progress.report(SyncProgress {
@@ -241,6 +259,16 @@ pub async fn sync_notebook(
             current_path: Some(note.path.clone()),
         });
         push_done += 1;
+
+        // An unresolved conflict must not be re-pushed: the server would
+        // reject it with 530 again, forever. Pending paths are also kept out
+        // of the snapshot below, so the server keeps asking for them until
+        // the conflict settles instead of the marker going silent.
+        if state.is_pending_conflict(&note.path) {
+            self_heal_conflict(store, state, conflicts, &note.path);
+            continue;
+        }
+
         let Some(content) = store.read_note(&note.path).map_err(local_error)? else {
             continue;
         };
@@ -255,12 +283,21 @@ pub async fn sync_notebook(
                 mtime_ms: now,
                 base_hash: state.base_hash_for(&note.path),
                 create_only: false,
+                conflict_resolved: false,
             },
         )
         .await;
         match result {
             Ok(_) => report.pushed += 1,
-            Err(FnsError::Conflict { .. }) => report.conflicts.push(note.path.clone()),
+            Err(FnsError::Conflict { path, payload }) => {
+                if resolve_conflict(client, store, state, conflicts, options, &path, &payload)
+                    .await
+                {
+                    report.conflicts_auto_resolved += 1;
+                } else {
+                    report.conflicts.push(path);
+                }
+            }
             Err(error) => return Err(error),
         }
     }
@@ -268,9 +305,10 @@ pub async fn sync_notebook(
     state.last_time = report.last_time;
     state.last_sync_at = now_ms();
     // Snapshot after all remote changes have been applied, so the next run can
-    // distinguish local deletions from files that never existed.
+    // distinguish local deletions from files that never existed. Pending
+    // conflicts stay unsnapshotted; see `record_snapshot_ignoring_pending`.
     let after = store.list_notes().map_err(local_error)?;
-    state.record_snapshot(&after);
+    state.record_snapshot_ignoring_pending(&after);
 
     if options.max_attachment_bytes > 0 {
         let (pulled, pushed, deleted) = sync_files(
@@ -287,6 +325,142 @@ pub async fn sync_notebook(
     }
 
     Ok(report)
+}
+
+/// Handle a push rejected with 530: record the conflict, then try to settle
+/// it without user interaction. Returns `true` when the conflict was resolved
+/// and the server accepted the merged content; otherwise the path stays
+/// pending (in `SyncState` and the conflict store) for manual resolution.
+///
+/// Local IO and push failures are deliberately non-fatal here: the sync run
+/// has already done most of its work, and a pending conflict is retried on
+/// the next run anyway.
+async fn resolve_conflict(
+    client: &mut FnsClient,
+    store: &dyn LocalNoteStore,
+    state: &mut SyncState,
+    conflicts: &ConflictStore,
+    options: &SyncOptions,
+    path: &str,
+    payload: &ConflictPayload,
+) -> bool {
+    let now = now_ms();
+    state.record_pending_conflict(path, now);
+
+    let record = ConflictRecord {
+        path: path.to_owned(),
+        server_content: payload.server_content.clone(),
+        server_hash: payload.server_hash.clone(),
+        base_content: payload.base_content.clone(),
+        base_hash: state.base_hash_for(path),
+        detected_at: now,
+    };
+    if let Err(error) = conflicts.record(&record) {
+        // Loop prevention lives in sync-state.json; a failed record only
+        // degrades later manual resolution.
+        tracing::warn!(path, %error, "failed to persist conflict record");
+    }
+
+    let local = store.read_note(path).ok().flatten();
+    match plan_conflict_resolution(options.auto_merge, &record, local.as_deref()) {
+        ConflictResolution::Merged(content) => {
+            if let Err(error) = store.write_note(path, &content, now) {
+                tracing::warn!(path, %error, "failed to write auto-merged content");
+                return false;
+            }
+            let result = push_note(
+                client,
+                PushNote {
+                    vault: &state.vault,
+                    path,
+                    content: &content,
+                    ctime_ms: now,
+                    mtime_ms: now,
+                    base_hash: record.base_hash.clone(),
+                    create_only: false,
+                    conflict_resolved: true,
+                },
+            )
+            .await;
+            match result {
+                Ok(_) => {
+                    state.clear_pending_conflict(path);
+                    let _ = conflicts.remove(path);
+                    tracing::info!(path, "conflict auto-resolved via three-way merge");
+                    true
+                }
+                Err(error) => {
+                    // The merged content is now the local version; the next
+                    // run re-reports the path (snapshot exclusion) and can
+                    // retry the resolution push.
+                    tracing::warn!(path, %error, "conflict resolution push failed");
+                    false
+                }
+            }
+        }
+        ConflictResolution::NeedsHuman(reason) => {
+            tracing::info!(path, reason, "conflict left pending for manual resolution");
+            false
+        }
+    }
+}
+
+/// Outcome of examining a fresh conflict without touching the network.
+#[derive(Debug)]
+enum ConflictResolution {
+    /// A merged result that supersedes the local file and must be pushed
+    /// with `conflict_resolved`.
+    Merged(String),
+    /// Leave the decision to the user; carries the reason for the log.
+    NeedsHuman(&'static str),
+}
+
+/// Pure decision core of [`resolve_conflict`], kept separate so the state
+/// machine can be unit-tested without a server.
+fn plan_conflict_resolution(
+    auto_merge: Option<AutoMergeFn>,
+    record: &ConflictRecord,
+    local: Option<&str>,
+) -> ConflictResolution {
+    let Some(merge) = auto_merge else {
+        return ConflictResolution::NeedsHuman("no auto-merge configured");
+    };
+    // The server substitutes its current content for the base when its
+    // history lookup misses; merging against that pseudo-base would keep
+    // only the local side, silently dropping the remote edits.
+    if !record.has_independent_base() {
+        return ConflictResolution::NeedsHuman("no independent base available");
+    }
+    let Some(local) = local else {
+        return ConflictResolution::NeedsHuman("local note is missing");
+    };
+    match merge(&record.base_content, local, &record.server_content) {
+        Some(merged) => ConflictResolution::Merged(merged),
+        None => ConflictResolution::NeedsHuman("auto-merge reported a conflict"),
+    }
+}
+
+/// Drop a stale pending marker when the conflict has already settled: the
+/// local file now carries exactly the content the conflict recorded as the
+/// server version — the other side's resolution arrived via pull, or the
+/// user copied it in by hand.
+fn self_heal_conflict(
+    store: &dyn LocalNoteStore,
+    state: &mut SyncState,
+    conflicts: &ConflictStore,
+    path: &str,
+) {
+    let Ok(Some(record)) = conflicts.load(path) else {
+        return;
+    };
+    let Ok(Some(local)) = store.read_note(path) else {
+        return;
+    };
+    if !record.server_hash.is_empty() && content_hash(&local) == record.server_hash {
+        state.clear_pending_conflict(path);
+        let _ = conflicts.remove(path);
+        tracing::info!(path, "pending conflict cleared: server content is now local");
+    }
 }
 
 /// Reconcile attachments. Returns `(downloaded, uploaded, deleted_locally)`.
@@ -459,5 +633,102 @@ mod tests {
         assert_eq!(notes.len(), 1);
         assert_eq!(notes[0].path, "a.md");
         assert_eq!(notes[0].content_hash, content_hash("hello"));
+    }
+
+    /// Toy merge for the decision core: succeeds only when the server
+    /// content extends the base (the server appended; the local edit is the
+    /// only other difference), so tests can drive both outcomes.
+    fn toy_merge(base: &str, local: &str, remote: &str) -> Option<String> {
+        remote
+            .strip_prefix(base)
+            .map(|added| format!("{local}{added}"))
+    }
+
+    fn conflict_record(base: &str, server: &str) -> ConflictRecord {
+        ConflictRecord {
+            path: "a.md".to_owned(),
+            server_content: server.to_owned(),
+            server_hash: content_hash(server),
+            base_content: base.to_owned(),
+            base_hash: Some(content_hash(base)),
+            detected_at: 0,
+        }
+    }
+
+    fn needs_human(outcome: ConflictResolution) -> String {
+        match outcome {
+            ConflictResolution::NeedsHuman(reason) => reason.to_owned(),
+            ConflictResolution::Merged(_) => panic!("expected NeedsHuman, got Merged"),
+        }
+    }
+
+    #[test]
+    fn report_emptiness_counts_auto_resolved() {
+        let report = SyncReport {
+            conflicts_auto_resolved: 1,
+            ..Default::default()
+        };
+        assert!(!report.is_empty());
+    }
+
+    #[test]
+    fn auto_resolution_requires_merge_independent_base_and_local() {
+        let record = conflict_record("base", "server");
+
+        let reason = needs_human(plan_conflict_resolution(None, &record, Some("local")));
+        assert!(reason.contains("no auto-merge"));
+
+        // Degraded base (server history lookup missed): merging would drop
+        // one side, so the decision core must refuse.
+        let degraded = conflict_record("server", "server");
+        let reason = needs_human(plan_conflict_resolution(
+            Some(toy_merge),
+            &degraded,
+            Some("local"),
+        ));
+        assert!(reason.contains("independent base"));
+
+        let reason = needs_human(plan_conflict_resolution(Some(toy_merge), &record, None));
+        assert!(reason.contains("missing"));
+
+        // A real merge conflict is deferred to the user.
+        let reason = needs_human(plan_conflict_resolution(Some(toy_merge), &record, Some("local")));
+        assert!(reason.contains("conflict"));
+    }
+
+    #[test]
+    fn auto_resolution_merges_when_clean() {
+        let record = conflict_record("base", "base-more");
+        match plan_conflict_resolution(Some(toy_merge), &record, Some("local")) {
+            ConflictResolution::Merged(content) => assert_eq!(content, "local-more"),
+            outcome => panic!("expected Merged, got {outcome:?}"),
+        }
+    }
+
+    #[test]
+    fn self_heal_clears_pending_only_when_local_matches_server() {
+        let dir = tempfile::tempdir().unwrap();
+        let conflicts = ConflictStore::new(dir.path());
+        let store = MemoryNoteStore::new();
+        let mut state = SyncState::new("vault", "device-1");
+
+        store.insert("a.md", "server text", 1);
+        state.record_pending_conflict("a.md", 1);
+        conflicts
+            .record(&conflict_record("base", "server text"))
+            .unwrap();
+
+        self_heal_conflict(&store, &mut state, &conflicts, "a.md");
+        assert!(!state.is_pending_conflict("a.md"));
+        assert!(conflicts.load("a.md").unwrap().is_none());
+
+        // Diverging local content keeps the conflict pending.
+        conflicts
+            .record(&conflict_record("base", "server text"))
+            .unwrap();
+        store.insert("a.md", "user kept editing", 2);
+        state.record_pending_conflict("a.md", 2);
+        self_heal_conflict(&store, &mut state, &conflicts, "a.md");
+        assert!(state.is_pending_conflict("a.md"));
     }
 }

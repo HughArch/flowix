@@ -5,7 +5,8 @@ use tauri::{AppHandle, Manager, State};
 use crate::app::state::AppState;
 use crate::fns_sync::config::{FnsConfigPatch, FnsConfigView, FnsTokenInput};
 use crate::fns_sync::service::{
-    FnsNotebookState, FnsNotebookSyncOutcome, FnsSyncRecord, FnsSyncStatus,
+    ConflictResolutionChoice, FnsConflictDetail, FnsConflictView, FnsNotebookState,
+    FnsNotebookSyncOutcome, FnsSyncRecord, FnsSyncStatus,
 };
 
 #[tauri::command]
@@ -98,4 +99,82 @@ pub fn fns_schedule_focus_sync(app: AppHandle) {
     app.state::<AppState>()
         .fns_sync
         .schedule_bound_notebook_syncs(&app);
+}
+
+/// Pending sync conflicts for one notebook, oldest first.
+#[tauri::command]
+pub fn fns_conflict_list(
+    app: AppHandle,
+    notebook_id: String,
+) -> Result<Vec<FnsConflictView>, String> {
+    app.state::<AppState>().fns_sync.conflicts(&app, &notebook_id)
+}
+
+/// The three versions behind one pending conflict, for the diff dialog.
+#[tauri::command]
+pub fn fns_conflict_detail(
+    app: AppHandle,
+    notebook_id: String,
+    path: String,
+) -> Result<FnsConflictDetail, String> {
+    app.state::<AppState>()
+        .fns_sync
+        .conflict_detail(&app, &notebook_id, &path)
+}
+
+/// Resolve one pending conflict with an explicit user choice
+/// (`keepLocal` / `keepRemote` / `merge`).
+#[tauri::command]
+pub async fn fns_conflict_resolve(
+    app: AppHandle,
+    notebook_id: String,
+    path: String,
+    action: String,
+) -> Result<(), String> {
+    let choice = match action.as_str() {
+        "keepLocal" => ConflictResolutionChoice::KeepLocal,
+        "keepRemote" => ConflictResolutionChoice::KeepRemote,
+        "merge" => ConflictResolutionChoice::Merge,
+        other => return Err(format!("unknown conflict action: {other}")),
+    };
+    let service = app.state::<AppState>().fns_sync.clone();
+    service
+        .resolve_conflict(&app, &notebook_id, &path, choice)
+        .await
+}
+
+/// Drop a pending conflict marker without touching any content; the next
+/// sync may re-detect it.
+#[tauri::command]
+pub async fn fns_conflict_dismiss(
+    app: AppHandle,
+    notebook_id: String,
+    path: String,
+) -> Result<(), String> {
+    let service = app.state::<AppState>().fns_sync.clone();
+    service.dismiss_conflict(&app, &notebook_id, &path).await
+}
+
+/// Server-written conflict copies from the old force-merge behavior.
+#[tauri::command]
+pub fn fns_legacy_conflict_copies(
+    app: AppHandle,
+    notebook_id: String,
+) -> Result<Vec<String>, String> {
+    app.state::<AppState>()
+        .fns_sync
+        .legacy_conflict_copies(&app, &notebook_id)
+}
+
+/// Delete all legacy conflict copies locally and schedule a sync so the
+/// deletions propagate server-side. Returns the number removed.
+#[tauri::command]
+pub async fn fns_cleanup_legacy_conflict_copies(
+    app: AppHandle,
+    notebook_id: String,
+) -> Result<usize, String> {
+    let service = app.state::<AppState>().fns_sync.clone();
+    service
+        .cleanup_legacy_conflict_copies(&app, &notebook_id)
+        .await
 }

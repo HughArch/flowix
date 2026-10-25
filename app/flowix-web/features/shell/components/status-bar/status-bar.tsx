@@ -21,9 +21,72 @@ import { normalizeAgentRuntimeStatus } from '@features/agent/runtime/agent-runti
 import { useI18n } from '@/lib/i18n';
 import { useDocumentMetricsStore } from '@features/document/store/document-metrics-store';
 import { useNoteStore } from '@features/memo/store/note-store';
+import { fns } from '@platform/tauri/client';
 import { TagSvgIcon } from '@shared/ui/tag-icon';
 import type { AppUpdaterState } from '@features/shell/hooks/use-app-updater';
 import { useSyncPanelStore } from '@features/sync-status';
+
+/// True while the selected notebook has unresolved sync conflicts or the
+/// last sync attempt failed — drives the red dot on the sync entry button.
+/// Polls on a slow interval; the payloads are tiny IPC reads.
+function useSyncAttention(): boolean {
+  const [attention, setAttention] = useState(false);
+  const selectedNotebookId = useNoteStore((state) => state.selectedNotebookId);
+
+  useEffect(() => {
+    let cancelled = false;
+    const check = async () => {
+      try {
+        const [status, conflicts] = await Promise.all([
+          fns.getStatus(),
+          selectedNotebookId
+            ? fns.listConflicts(selectedNotebookId).catch(() => [])
+            : Promise.resolve([]),
+        ]);
+        if (!cancelled) {
+          setAttention(conflicts.length > 0 || status.consecutiveFailures > 0);
+        }
+      } catch {
+        // Keep the last known state; a transient IPC failure must not clear
+        // a badge the user has not seen yet.
+      }
+    };
+    void check();
+    const timer = setInterval(() => void check(), 8000);
+    return () => {
+      cancelled = true;
+      clearInterval(timer);
+    };
+  }, [selectedNotebookId]);
+
+  return attention;
+}
+
+/// Bottom-right sync entry: opens the sync panel; shows a red dot while
+/// there is something the user should look at (pending conflicts or a
+/// failed sync).
+function SyncEntryButton() {
+  const { t } = useI18n();
+  const attention = useSyncAttention();
+  return (
+    <Tooltip content={t('sync.panel.open')} side="top">
+      <button
+        type="button"
+        onClick={() => useSyncPanelStore.getState().toggle()}
+        className="relative h-full flex items-center justify-center px-1.5 py-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
+        aria-label={t('sync.panel.open')}
+      >
+        <ArrowsClockwiseIcon className="h-3.5 w-3.5" />
+        {attention && (
+          <span
+            aria-hidden="true"
+            className="absolute right-0.5 top-0.5 h-1.5 w-1.5 rounded-full bg-[var(--destructive)]"
+          />
+        )}
+      </button>
+    </Tooltip>
+  );
+}
 
 interface StatusBarProps {
   onSelectNotebook: (notebook: Notebook) => void;
@@ -152,16 +215,7 @@ export function StatusBar({
         )}
         {/* 移动端 v1 无 AI 服务: 不渲染 PI 运行时入口。 */}
         {!isMobileDevice() && <PiRuntimeStatusIndicator />}
-        <Tooltip content={t('sync.panel.open')} side="top">
-          <button
-            type="button"
-            onClick={() => useSyncPanelStore.getState().toggle()}
-            className="h-full flex items-center justify-center px-1.5 py-0 text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
-            aria-label={t('sync.panel.open')}
-          >
-            <ArrowsClockwiseIcon className="h-3.5 w-3.5" />
-          </button>
-        </Tooltip>
+        <SyncEntryButton />
         <Tooltip content={t('preferences.tabs.mcp')} side="top">
           <button
             type="button"

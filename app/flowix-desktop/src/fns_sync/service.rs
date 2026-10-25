@@ -10,8 +10,8 @@ use tauri::{AppHandle, Manager};
 use tokio::sync::Mutex as AsyncMutex;
 
 use flowix_fns::{
-    sync_notebook as run_engine_sync, ClientInfo, FnsClient, SyncProgress, SyncProgressSink,
-    SyncReport, SyncState,
+    push_note, sync_notebook as run_engine_sync, ClientInfo, ConflictStore, FnsClient,
+    LocalNoteStore, PushNote, SyncProgress, SyncProgressSink, SyncReport, SyncState,
 };
 
 use crate::app::state::AppState;
@@ -55,7 +55,10 @@ pub struct FnsNotebookSyncOutcome {
     pub renamed: usize,
     pub files_pulled: usize,
     pub files_pushed: usize,
+    /// Paths still conflict-pending after this run (surfaced to the UI).
     pub conflicts: Vec<String>,
+    /// Conflicts settled automatically during this run.
+    pub conflicts_auto_resolved: usize,
     pub last_time: i64,
 }
 
@@ -71,6 +74,7 @@ impl FnsNotebookSyncOutcome {
             && self.files_pulled == 0
             && self.files_pushed == 0
             && self.conflicts.is_empty()
+            && self.conflicts_auto_resolved == 0
     }
 }
 
@@ -118,6 +122,47 @@ pub struct FnsNotebookState {
     pub token_label: Option<String>,
     pub status: FnsSyncStatus,
     pub history: Vec<FnsSyncRecord>,
+}
+
+/// One pending conflict as surfaced to the conflict panel.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FnsConflictView {
+    pub path: String,
+    /// Epoch ms of the latest detection.
+    pub detected_at: i64,
+    /// Whether a clean automatic merge is plausible (the recorded base is a
+    /// genuine common ancestor). Non-mergeable records can still be resolved
+    /// with keep-local / keep-remote.
+    pub mergeable: bool,
+}
+
+/// Full conflict context for the diff dialog: the three versions behind a
+/// pending conflict.
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FnsConflictDetail {
+    pub path: String,
+    pub detected_at: i64,
+    pub mergeable: bool,
+    /// Current content of the local file (may be newer than at detection).
+    pub local_content: String,
+    /// Content the server held when the push was rejected.
+    pub server_content: String,
+    /// Content both sides diverged from, as recorded at detection.
+    pub base_content: String,
+}
+
+/// User-facing resolution choice for a pending conflict.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ConflictResolutionChoice {
+    /// Push the current local content, making this device's version canonical.
+    KeepLocal,
+    /// Overwrite the local file with the recorded server content and push it.
+    KeepRemote,
+    /// Run the conservative three-way merge; fails when it cannot merge
+    /// cleanly.
+    Merge,
 }
 
 pub struct FnsSyncService {
@@ -624,7 +669,9 @@ impl FnsSyncService {
 
         let options = flowix_fns::SyncOptions {
             max_attachment_bytes: config.max_attachment_bytes.min(i64::MAX as u64) as i64,
+            auto_merge: Some(auto_merge_markdown),
         };
+        let conflict_store = ConflictStore::new(&root);
         let sink = StatusSink(self.status.clone());
         let report: SyncReport = run_engine_sync(
             &mut client,
@@ -633,6 +680,7 @@ impl FnsSyncService {
             &mut sync_state,
             offline_strategy,
             &options,
+            &conflict_store,
             &sink,
         )
         .await
@@ -654,6 +702,7 @@ impl FnsSyncService {
             files_pulled: report.files_pulled,
             files_pushed: report.files_pushed,
             conflicts: report.conflicts,
+            conflicts_auto_resolved: report.conflicts_auto_resolved,
             last_time: report.last_time,
         }))
     }
@@ -762,6 +811,264 @@ impl FnsSyncService {
         })
     }
 
+    /// Pending conflicts for one notebook, oldest first.
+    pub fn conflicts(
+        &self,
+        app: &AppHandle,
+        notebook_id: &str,
+    ) -> Result<Vec<FnsConflictView>, String> {
+        let (_, root) = notebook_root(app, notebook_id)?;
+        let Some(sync_state) = SyncState::load(&root).map_err(|error| error.to_string())? else {
+            return Ok(Vec::new());
+        };
+        let conflict_store = ConflictStore::new(&root);
+        let mut views: Vec<FnsConflictView> = sync_state
+            .pending_conflicts
+            .iter()
+            .map(|(path, detected_at)| FnsConflictView {
+                path: path.clone(),
+                detected_at: *detected_at,
+                mergeable: conflict_store
+                    .load(path)
+                    .ok()
+                    .flatten()
+                    .is_some_and(|record| record.has_independent_base()),
+            })
+            .collect();
+        views.sort_by_key(|view| view.detected_at);
+        Ok(views)
+    }
+
+    /// The three versions behind one pending conflict, for the diff dialog.
+    /// The local side is re-read live: the user may have edited the file
+    /// since the conflict was detected.
+    pub fn conflict_detail(
+        &self,
+        app: &AppHandle,
+        notebook_id: &str,
+        path: &str,
+    ) -> Result<FnsConflictDetail, String> {
+        let (_, root) = notebook_root(app, notebook_id)?;
+        let Some(sync_state) = SyncState::load(&root).map_err(|error| error.to_string())? else {
+            return Err("notebook is not bound to a token".to_owned());
+        };
+        let detected_at = *sync_state
+            .pending_conflicts
+            .get(path)
+            .ok_or_else(|| "conflict not found (already resolved?)".to_owned())?;
+
+        let record = ConflictStore::new(&root)
+            .load(path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "conflict record not found".to_owned())?;
+
+        let store = self.memo_file_store(app, notebook_id, root);
+        let local_content = store
+            .read_note(path)
+            .map_err(|error| error.to_string())?
+            .unwrap_or_default();
+
+        Ok(FnsConflictDetail {
+            path: path.to_owned(),
+            detected_at,
+            mergeable: record.has_independent_base(),
+            local_content,
+            server_content: record.server_content,
+            base_content: record.base_content,
+        })
+    }
+
+    /// Resolve one pending conflict with an explicit user choice.
+    ///
+    /// Serialized against sync runs (shared `sync_lock`): both rewrite
+    /// notebook files and advance the sync state. The push carries
+    /// `conflict_resolved = true`, which the server treats as final — every
+    /// device receives the resolution broadcast immediately.
+    pub async fn resolve_conflict(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        notebook_id: &str,
+        path: &str,
+        choice: ConflictResolutionChoice,
+    ) -> Result<(), String> {
+        let _sync_lock = self.sync_lock.lock().await;
+        let config = self.read_config().clone();
+        if !config.is_ready() {
+            return Err("sync is not configured".to_owned());
+        }
+        let (_, root) = notebook_root(app, notebook_id)?;
+        let mut sync_state = SyncState::load(&root)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "notebook is not bound to a token".to_owned())?;
+        let token = config
+            .token(&sync_state.token_id)
+            .cloned()
+            .ok_or_else(|| "the bound token no longer exists".to_owned())?;
+        if sync_state.token_id.is_empty() {
+            sync_state.token_id = token.id.clone();
+        }
+
+        let conflict_store = ConflictStore::new(&root);
+        let record = conflict_store
+            .load(path)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "conflict record not found (already resolved?)".to_owned())?;
+
+        let app_state = app.state::<AppState>();
+        let store = MemoFileStore::new(
+            app.clone(),
+            app_state.memo_file.clone(),
+            notebook_id.to_owned(),
+            root.clone(),
+        );
+
+        let now = now_ms();
+        let content = match choice {
+            ConflictResolutionChoice::KeepLocal => store
+                .read_note(path)
+                .map_err(|error| error.to_string())?
+                .ok_or_else(|| "本地文件已不存在，无法保留本地版本".to_owned())?,
+            ConflictResolutionChoice::KeepRemote => {
+                let content = record.server_content.clone();
+                store
+                    .write_note(path, &content, now)
+                    .map_err(|error| error.to_string())?;
+                content
+            }
+            ConflictResolutionChoice::Merge => {
+                let local = store
+                    .read_note(path)
+                    .map_err(|error| error.to_string())?
+                    .ok_or_else(|| "本地文件已不存在，无法自动合并".to_owned())?;
+                let merged = auto_merge_markdown(
+                    &record.base_content,
+                    &local,
+                    &record.server_content,
+                )
+                .ok_or_else(|| "无法自动合并：两侧改动了同一段落，请选择保留一方".to_owned())?;
+                store
+                    .write_note(path, &merged, now)
+                    .map_err(|error| error.to_string())?;
+                merged
+            }
+        };
+
+        let info = ClientInfo {
+            name: "Flowix".to_owned(),
+            version: env!("CARGO_PKG_VERSION").to_owned(),
+            client_type: token.client_type.clone(),
+            offline_sync_strategy: Some(config.offline_sync_strategy().as_str().to_owned()),
+        };
+        tracing::info!(notebook_id, path, "FNS sync: connecting for conflict resolution");
+        let mut client = FnsClient::connect(&config.api, &token.token, &info)
+            .await
+            .map_err(describe_sync_error)?;
+        let push_result = push_note(
+            &mut client,
+            PushNote {
+                vault: &sync_state.vault,
+                path,
+                content: &content,
+                ctime_ms: now,
+                mtime_ms: now,
+                base_hash: record.base_hash.clone(),
+                create_only: false,
+                conflict_resolved: true,
+            },
+        )
+        .await;
+        let _ = client.close().await;
+        push_result.map_err(describe_sync_error)?;
+
+        sync_state.clear_pending_conflict(path);
+        sync_state.save(&root).map_err(|error| error.to_string())?;
+        let _ = conflict_store.remove(path);
+        tracing::info!(notebook_id, path, ?choice, "FNS conflict resolved by user");
+        Ok(())
+    }
+
+    /// Forget a pending conflict without touching any content. The next sync
+    /// re-reports the path and may re-detect the conflict.
+    pub async fn dismiss_conflict(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        notebook_id: &str,
+        path: &str,
+    ) -> Result<(), String> {
+        let _sync_lock = self.sync_lock.lock().await;
+        let (_, root) = notebook_root(app, notebook_id)?;
+        let mut sync_state = SyncState::load(&root)
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "notebook is not bound to a token".to_owned())?;
+        sync_state.clear_pending_conflict(path);
+        sync_state.save(&root).map_err(|error| error.to_string())?;
+        ConflictStore::new(&root)
+            .remove(path)
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// Server-written `*.conflict.<timestamp>` copies left behind by the old
+    /// force-merge behavior, listed for one-click cleanup.
+    pub fn legacy_conflict_copies(
+        &self,
+        app: &AppHandle,
+        notebook_id: &str,
+    ) -> Result<Vec<String>, String> {
+        let (_, root) = notebook_root(app, notebook_id)?;
+        let store = self.memo_file_store(app, notebook_id, root);
+        let notes = store.list_notes().map_err(|error| error.to_string())?;
+        Ok(notes
+            .into_iter()
+            .map(|note| note.path)
+            .filter(|path| is_legacy_conflict_path(path))
+            .collect())
+    }
+
+    /// Delete every legacy conflict copy locally and schedule a sync so the
+    /// deletions propagate to the server as tombstones.
+    pub async fn cleanup_legacy_conflict_copies(
+        self: &Arc<Self>,
+        app: &AppHandle,
+        notebook_id: &str,
+    ) -> Result<usize, String> {
+        let _sync_lock = self.sync_lock.lock().await;
+        let (_, root) = notebook_root(app, notebook_id)?;
+        let store = self.memo_file_store(app, notebook_id, root);
+        let notes = store.list_notes().map_err(|error| error.to_string())?;
+        let mut deleted = 0;
+        for note in &notes {
+            if !is_legacy_conflict_path(&note.path) {
+                continue;
+            }
+            store
+                .delete_note(&note.path)
+                .map_err(|error| error.to_string())?;
+            deleted += 1;
+        }
+        drop(_sync_lock);
+        if deleted > 0 {
+            self.schedule_sync(app.clone(), notebook_id.to_owned());
+        }
+        tracing::info!(notebook_id, deleted, "FNS legacy conflict copies cleaned up");
+        Ok(deleted)
+    }
+
+    fn memo_file_store(
+        &self,
+        app: &AppHandle,
+        notebook_id: &str,
+        root: PathBuf,
+    ) -> MemoFileStore {
+        let state = app.state::<AppState>();
+        MemoFileStore::new(
+            app.clone(),
+            state.memo_file.clone(),
+            notebook_id.to_owned(),
+            root,
+        )
+    }
+
     /// Wait the configured startup delay, then pull bound notebooks.
     pub async fn sync_after_startup(self: &Arc<Self>, app: AppHandle) {
         let (ready, delay) = {
@@ -850,6 +1157,22 @@ pub fn now_ms() -> i64 {
     flowix_fns::engine::now_ms()
 }
 
+/// Conservative three-way merge for conflict auto-resolution. `None` means
+/// the merge has a real conflict — the engine then leaves the decision to
+/// the user instead of writing markers into the note.
+fn auto_merge_markdown(base: &str, local: &str, remote: &str) -> Option<String> {
+    let outcome = flowix_core::text_merge::merge_markdown(
+        base.as_bytes(),
+        local.as_bytes(),
+        remote.as_bytes(),
+    );
+    match outcome {
+        flowix_core::text_merge::MergeOutcome::Merged(bytes) => String::from_utf8(bytes).ok(),
+        flowix_core::text_merge::MergeOutcome::Conflict
+        | flowix_core::text_merge::MergeOutcome::Unsupported => None,
+    }
+}
+
 fn describe_sync_error(error: flowix_fns::FnsError) -> String {
     match &error {
         flowix_fns::FnsError::Server { code: 315, message }
@@ -881,6 +1204,27 @@ fn notebook_root(app: &AppHandle, notebook_id: &str) -> Result<(String, PathBuf)
     Ok((notebook.name, PathBuf::from(notebook.path)))
 }
 
+/// Matches the server's conflict-copy naming from its force-merge path:
+/// `{base}.conflict.{yyyyMMddHHmmss}{ext}` (conflict_service.go), e.g.
+/// `notes/test.conflict.20060102150405.md`. The extension is optional when
+/// the original note had none.
+fn is_legacy_conflict_path(path: &str) -> bool {
+    const MARKER: &str = ".conflict.";
+    let Some(position) = path.find(MARKER) else {
+        return false;
+    };
+    let suffix = &path[position + MARKER.len()..];
+    let mut digits = suffix.chars().take(14);
+    if digits.count() < 14 || !suffix.chars().take(14).all(|c| c.is_ascii_digit()) {
+        return false;
+    }
+    match suffix.chars().nth(14) {
+        None => true,
+        Some('.') => true,
+        _ => false,
+    }
+}
+
 /// 2s, 4s, 8s … capped at 256s.
 fn retry_delay(attempts: u32) -> Duration {
     let factor = 1u64.checked_shl(attempts.min(7)).unwrap_or(128);
@@ -889,7 +1233,21 @@ fn retry_delay(attempts: u32) -> Duration {
 
 #[cfg(test)]
 mod tests {
-    use super::{retry_delay, FnsNotebookSyncOutcome};
+    use super::{is_legacy_conflict_path, retry_delay, FnsNotebookSyncOutcome};
+
+    #[test]
+    fn legacy_conflict_paths_match_server_naming() {
+        assert!(is_legacy_conflict_path("notes/test.conflict.20060102150405.md"));
+        assert!(is_legacy_conflict_path("test.conflict.20060102150405"));
+        assert!(is_legacy_conflict_path("笔记/测试.conflict.20260102030405.md"));
+
+        assert!(!is_legacy_conflict_path("notes/test.md"));
+        assert!(!is_legacy_conflict_path("notes/test.conflict.md"));
+        assert!(!is_legacy_conflict_path("notes/test.conflict.2026010.md"));
+        // 14 digits must be followed by end-of-name or an extension dot.
+        assert!(!is_legacy_conflict_path("notes/test.conflict.200601021504050.md"));
+        assert!(!is_legacy_conflict_path("notes/my.conflict.notes.md"));
+    }
 
     #[test]
     fn retry_delay_is_exponential_and_capped() {
@@ -912,6 +1270,7 @@ mod tests {
             files_pulled: 0,
             files_pushed: 0,
             conflicts: Vec::new(),
+            conflicts_auto_resolved: 0,
             last_time: 12345,
         };
         assert!(empty.is_empty());
@@ -921,6 +1280,12 @@ mod tests {
             ..empty.clone()
         };
         assert!(!with_conflict.is_empty());
+
+        let with_auto_resolved = FnsNotebookSyncOutcome {
+            conflicts_auto_resolved: 1,
+            ..empty.clone()
+        };
+        assert!(!with_auto_resolved.is_empty());
 
         let with_push = FnsNotebookSyncOutcome {
             pushed: 1,

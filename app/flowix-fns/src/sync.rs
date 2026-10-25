@@ -180,6 +180,10 @@ pub struct PushNote<'a> {
     pub mtime_ms: i64,
     pub base_hash: Option<String>,
     pub create_only: bool,
+    /// Marks this push as the outcome of a conflict resolution (manual or
+    /// automatic). The server skips its merge protection for these and
+    /// writes the content directly, broadcasting it to every device.
+    pub conflict_resolved: bool,
 }
 
 pub async fn push_note(client: &mut FnsClient, note: PushNote<'_>) -> Result<NoteModifyAck> {
@@ -195,7 +199,7 @@ pub async fn push_note(client: &mut FnsClient, note: PushNote<'_>) -> Result<Not
         mtime: note.mtime_ms,
         create_only: note.create_only,
         context: Some(new_context()),
-        is_conflict_resolved: false,
+        is_conflict_resolved: note.conflict_resolved,
     };
 
     client.send_json(action::NOTE_MODIFY, &request).await?;

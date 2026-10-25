@@ -9,6 +9,7 @@
 //! - incremental pull: `NoteSync` -> `NoteSyncEnd` -> `PageAck(-1)` -> pages
 
 pub mod client;
+pub mod conflicts;
 pub mod engine;
 pub mod file;
 pub mod fs_store;
@@ -19,9 +20,10 @@ pub mod state;
 pub mod sync;
 
 pub use client::{sync_endpoint, FnsClient, FnsError, Incoming, Result, CLIENT_TYPE};
+pub use conflicts::{ConflictRecord, ConflictStore};
 pub use engine::{
-    sync_notebook, NoProgress, SyncOptions, SyncPhase, SyncProgress, SyncProgressSink,
-    SyncReport,
+    sync_notebook, AutoMergeFn, NoProgress, SyncOptions, SyncPhase, SyncProgress,
+    SyncProgressSink, SyncReport,
 };
 pub use file::{download_file, pull_files, upload_check, upload_file, PullFilesResult};
 pub use fs_store::FsNoteStore;

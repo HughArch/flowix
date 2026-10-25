@@ -1,7 +1,7 @@
 'use client';
 
 import { useCallback, useEffect, useState } from 'react';
-import { X } from 'lucide-react';
+import { GitCompare, X } from 'lucide-react';
 import { ArrowsClockwiseIcon, CheckCircleIcon, WarningCircleIcon } from '@phosphor-icons/react';
 import { Button } from '@shared/ui/button';
 import { useI18n, type I18nKey } from '@/lib/i18n';
@@ -9,6 +9,8 @@ import { toast } from '@/lib/toast';
 import { errorMessage } from '@/lib/error-message';
 import {
   fns,
+  type FnsConflictAction,
+  type FnsConflictView,
   type FnsConfigView,
   type FnsNotebookState,
   type FnsSyncPhase,
@@ -17,6 +19,7 @@ import {
 import { useNoteStore } from '@features/memo/store/note-store';
 import { flushOpenDocumentsForNotebook, reloadOpenDocumentsAfterSync } from '@features/document/public/sync-coordination';
 import { useSyncPanelStore } from './sync-panel-store';
+import { ConflictDiffDialog } from './conflict-diff-dialog';
 
 const PHASE_KEYS: Record<FnsSyncPhase, I18nKey> = {
   scanning: 'sync.panel.phaseScanning',
@@ -63,6 +66,82 @@ function RecordRow({ record, language }: { record: FnsSyncRecord; language: stri
   );
 }
 
+function ConflictRow({
+  conflict,
+  busy,
+  disabled,
+  onResolve,
+  onDismiss,
+  onViewDiff,
+}: {
+  conflict: FnsConflictView;
+  busy: boolean;
+  disabled: boolean;
+  onResolve: (action: FnsConflictAction) => void;
+  onDismiss: () => void;
+  onViewDiff: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="space-y-1 rounded-lg border border-[var(--border)] px-2 py-1.5">
+      <button
+        type="button"
+        className="flex w-full items-center gap-1 rounded text-left"
+        onClick={onViewDiff}
+        title={t('sync.conflict.viewDiff')}
+      >
+        <GitCompare className="h-3 w-3 shrink-0 text-[var(--muted-foreground)]" />
+        <span className="truncate text-xs text-[var(--foreground)] underline decoration-dotted underline-offset-2">
+          {conflict.path}
+        </span>
+      </button>
+      <div className="flex items-center gap-1">
+        {conflict.mergeable && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 rounded-md px-2 text-[11px]"
+            disabled={disabled}
+            title={t('sync.conflict.mergeHint')}
+            onClick={() => onResolve('merge')}
+          >
+            {busy ? t('sync.panel.running') : t('sync.conflict.merge')}
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 rounded-md px-2 text-[11px]"
+          disabled={disabled}
+          onClick={() => onResolve('keepLocal')}
+        >
+          {t('sync.conflict.keepLocal')}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 rounded-md px-2 text-[11px]"
+          disabled={disabled}
+          onClick={() => onResolve('keepRemote')}
+        >
+          {t('sync.conflict.keepRemote')}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ml-auto h-6 w-6 rounded-md p-0"
+          aria-label={t('sync.conflict.dismiss')}
+          title={t('sync.conflict.dismiss')}
+          disabled={disabled}
+          onClick={onDismiss}
+        >
+          <X className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function SyncStatusPanel() {
   const { t, language } = useI18n();
   const open = useSyncPanelStore((state) => state.open);
@@ -71,6 +150,11 @@ export function SyncStatusPanel() {
 
   const [config, setConfig] = useState<FnsConfigView | null>(null);
   const [notebookState, setNotebookState] = useState<FnsNotebookState | null>(null);
+  const [conflicts, setConflicts] = useState<FnsConflictView[]>([]);
+  const [conflictBusy, setConflictBusy] = useState<string | null>(null);
+  const [diffPath, setDiffPath] = useState<string | null>(null);
+  const [legacyCopies, setLegacyCopies] = useState<string[]>([]);
+  const [legacyBusy, setLegacyBusy] = useState(false);
   const [selectedTokenId, setSelectedTokenId] = useState('');
   const [vault, setVault] = useState('');
   const [busy, setBusy] = useState(false);
@@ -80,8 +164,12 @@ export function SyncStatusPanel() {
     setConfig(nextConfig);
     if (selectedNotebookId) {
       setNotebookState(await fns.getNotebookState(selectedNotebookId));
+      setConflicts(await fns.listConflicts(selectedNotebookId).catch(() => []));
+      setLegacyCopies(await fns.listLegacyConflictCopies(selectedNotebookId).catch(() => []));
     } else {
       setNotebookState(null);
+      setConflicts([]);
+      setLegacyCopies([]);
     }
   }, [selectedNotebookId]);
 
@@ -204,9 +292,13 @@ export function SyncStatusPanel() {
       await reloadOpenDocumentsAfterSync(selectedNotebookId);
       await refresh();
       if (outcome) {
-        toast.success(
-          `${t('sync.panel.done')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed} · 📎 ↓${outcome.filesPulled} ↑${outcome.filesPushed}`,
-        );
+        let summary = `${t('sync.panel.done')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed} · 📎 ↓${outcome.filesPulled} ↑${outcome.filesPushed}`;
+        if (outcome.conflicts.length > 0) {
+          summary += ` · ⚠ ${t('sync.panel.conflicts').replace('{count}', String(outcome.conflicts.length))}`;
+        } else if (outcome.conflictsAutoResolved > 0) {
+          summary += ` · ✓ ${t('sync.conflict.autoResolved').replace('{count}', String(outcome.conflictsAutoResolved))}`;
+        }
+        toast.success(summary);
       } else {
         toast.error(t('sync.panel.skipped'));
       }
@@ -215,6 +307,56 @@ export function SyncStatusPanel() {
       await refresh().catch(() => {});
     } finally {
       setBusy(false);
+    }
+  }, [refresh, selectedNotebookId, t]);
+
+  const resolveConflict = useCallback(async (path: string, action: FnsConflictAction) => {
+    if (!selectedNotebookId) return;
+    setConflictBusy(path);
+    try {
+      // keepRemote/merge rewrite the file: capture open editors first and
+      // feed the rewritten content back into the views afterwards.
+      if (action !== 'keepLocal') {
+        await flushOpenDocumentsForNotebook(selectedNotebookId);
+      }
+      await fns.resolveConflict(selectedNotebookId, path, action);
+      await reloadOpenDocumentsAfterSync(selectedNotebookId);
+      await refresh();
+      toast.success(t('sync.conflict.resolved'));
+    } catch (error) {
+      toast.error(`${t('sync.panel.failed')}: ${errorMessage(error)}`);
+    } finally {
+      setConflictBusy(null);
+    }
+  }, [refresh, selectedNotebookId, t]);
+
+  const dismissConflict = useCallback(async (path: string) => {
+    if (!selectedNotebookId) return;
+    setConflictBusy(path);
+    try {
+      await fns.dismissConflict(selectedNotebookId, path);
+      await refresh();
+      toast.success(t('sync.conflict.dismissed'));
+    } catch (error) {
+      toast.error(`${t('sync.panel.failed')}: ${errorMessage(error)}`);
+    } finally {
+      setConflictBusy(null);
+    }
+  }, [refresh, selectedNotebookId, t]);
+
+  const cleanupLegacy = useCallback(async () => {
+    if (!selectedNotebookId) return;
+    setLegacyBusy(true);
+    try {
+      await flushOpenDocumentsForNotebook(selectedNotebookId);
+      const deleted = await fns.cleanupLegacyConflictCopies(selectedNotebookId);
+      await reloadOpenDocumentsAfterSync(selectedNotebookId);
+      await refresh();
+      toast.success(t('sync.panel.legacyCleaned').replace('{count}', String(deleted)));
+    } catch (error) {
+      toast.error(`${t('sync.panel.failed')}: ${errorMessage(error)}`);
+    } finally {
+      setLegacyBusy(false);
     }
   }, [refresh, selectedNotebookId, t]);
 
@@ -384,6 +526,60 @@ export function SyncStatusPanel() {
             >
               {t('sync.panel.unbind')}
             </Button>
+          </div>
+        )}
+
+        {notebookState?.bound && conflicts.length > 0 && (
+          <div className="space-y-1 border-b border-[var(--divider)] px-3 pb-3">
+            <div className="flex items-center gap-1.5 px-2 pt-1 text-xs font-medium text-[var(--warning,#eab308)]">
+              <WarningCircleIcon className="h-3.5 w-3.5" />
+              {t('sync.panel.conflicts').replace('{count}', String(conflicts.length))}
+            </div>
+            {conflicts.map((conflict) => (
+              <ConflictRow
+                key={conflict.path}
+                conflict={conflict}
+                busy={conflictBusy === conflict.path}
+                disabled={conflictBusy !== null}
+                onResolve={(action) => void resolveConflict(conflict.path, action)}
+                onDismiss={() => void dismissConflict(conflict.path)}
+                onViewDiff={() => setDiffPath(conflict.path)}
+              />
+            ))}
+          </div>
+        )}
+
+        <ConflictDiffDialog
+          notebookId={selectedNotebookId ?? ''}
+          path={diffPath}
+          busy={conflictBusy !== null}
+          onResolve={(path, action) => void resolveConflict(path, action)}
+          onClose={() => setDiffPath(null)}
+        />
+
+        {notebookState?.bound && conflicts.length === 0 && legacyCopies.length > 0 && (
+          <div className="border-b border-[var(--divider)] px-3 pb-3">
+            <div className="flex items-center justify-between px-2 pt-1">
+              <span className="text-xs font-medium text-[var(--muted-foreground)]">
+                {t('sync.panel.legacyCopies').replace('{count}', String(legacyCopies.length))}
+              </span>
+              <Button
+                size="sm"
+                variant="outline"
+                className="h-6 rounded-md px-2 text-[11px]"
+                disabled={legacyBusy}
+                onClick={() => void cleanupLegacy()}
+              >
+                {t('sync.panel.cleanup')}
+              </Button>
+            </div>
+            <p
+              className="truncate px-2 pt-1 text-[11px] text-[var(--muted-foreground)]"
+              title={legacyCopies.join('\n')}
+            >
+              {legacyCopies[0]}
+              {legacyCopies.length > 1 && ` +${legacyCopies.length - 1}`}
+            </p>
           </div>
         )}
 

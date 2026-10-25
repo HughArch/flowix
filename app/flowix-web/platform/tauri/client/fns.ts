@@ -93,8 +93,32 @@ export interface FnsNotebookSyncOutcome {
   filesPulled: number;
   filesPushed: number;
   conflicts: string[];
+  /** Conflicts settled automatically during this run. */
+  conflictsAutoResolved: number;
   lastTime: number;
 }
+
+export interface FnsConflictView {
+  path: string;
+  /** Epoch ms of the latest detection. */
+  detectedAt: number;
+  /** Whether a clean automatic merge is plausible. */
+  mergeable: boolean;
+}
+
+export interface FnsConflictDetail {
+  path: string;
+  detectedAt: number;
+  mergeable: boolean;
+  /** Current local file content (may be newer than at detection time). */
+  localContent: string;
+  /** Content the server held when the push was rejected. */
+  serverContent: string;
+  /** Content both sides diverged from. */
+  baseContent: string;
+}
+
+export type FnsConflictAction = 'keepLocal' | 'keepRemote' | 'merge';
 
 export const fns = {
   getConfig: () => invoke<FnsConfigView>('fns_get_config'),
@@ -117,4 +141,17 @@ export const fns = {
   syncAll: () => invoke<FnsNotebookSyncOutcome[]>('fns_sync_all'),
   /** Foreground return: debounced pull for bound notebooks. */
   scheduleFocusSync: () => invoke<void>('fns_schedule_focus_sync'),
+  listConflicts: (notebookId: string) =>
+    invoke<FnsConflictView[]>('fns_conflict_list', { notebookId }),
+  getConflictDetail: (notebookId: string, path: string) =>
+    invoke<FnsConflictDetail>('fns_conflict_detail', { notebookId, path }),
+  resolveConflict: (notebookId: string, path: string, action: FnsConflictAction) =>
+    invoke<void>('fns_conflict_resolve', { notebookId, path, action }),
+  dismissConflict: (notebookId: string, path: string) =>
+    invoke<void>('fns_conflict_dismiss', { notebookId, path }),
+  /** Server-written `*.conflict.<timestamp>` copies from old force-merges. */
+  listLegacyConflictCopies: (notebookId: string) =>
+    invoke<string[]>('fns_legacy_conflict_copies', { notebookId }),
+  cleanupLegacyConflictCopies: (notebookId: string) =>
+    invoke<number>('fns_cleanup_legacy_conflict_copies', { notebookId }),
 };
