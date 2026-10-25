@@ -93,8 +93,20 @@ export interface FnsNotebookSyncOutcome {
   filesPulled: number;
   filesPushed: number;
   conflicts: string[];
+  /** Conflicts settled automatically during this run. */
+  conflictsAutoResolved: number;
   lastTime: number;
 }
+
+export interface FnsConflictView {
+  path: string;
+  /** Epoch ms of the latest detection. */
+  detectedAt: number;
+  /** Whether a clean automatic merge is plausible. */
+  mergeable: boolean;
+}
+
+export type FnsConflictAction = 'keepLocal' | 'keepRemote' | 'merge';
 
 export const fns = {
   getConfig: () => invoke<FnsConfigView>('fns_get_config'),
@@ -117,4 +129,10 @@ export const fns = {
   syncAll: () => invoke<FnsNotebookSyncOutcome[]>('fns_sync_all'),
   /** Foreground return: debounced pull for bound notebooks. */
   scheduleFocusSync: () => invoke<void>('fns_schedule_focus_sync'),
+  listConflicts: (notebookId: string) =>
+    invoke<FnsConflictView[]>('fns_conflict_list', { notebookId }),
+  resolveConflict: (notebookId: string, path: string, action: FnsConflictAction) =>
+    invoke<void>('fns_conflict_resolve', { notebookId, path, action }),
+  dismissConflict: (notebookId: string, path: string) =>
+    invoke<void>('fns_conflict_dismiss', { notebookId, path }),
 };

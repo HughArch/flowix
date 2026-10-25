@@ -9,6 +9,8 @@ import { toast } from '@/lib/toast';
 import { errorMessage } from '@/lib/error-message';
 import {
   fns,
+  type FnsConflictAction,
+  type FnsConflictView,
   type FnsConfigView,
   type FnsNotebookState,
   type FnsSyncPhase,
@@ -63,6 +65,72 @@ function RecordRow({ record, language }: { record: FnsSyncRecord; language: stri
   );
 }
 
+function ConflictRow({
+  conflict,
+  busy,
+  disabled,
+  onResolve,
+  onDismiss,
+}: {
+  conflict: FnsConflictView;
+  busy: boolean;
+  disabled: boolean;
+  onResolve: (action: FnsConflictAction) => void;
+  onDismiss: () => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <div className="space-y-1 rounded-lg border border-[var(--border)] px-2 py-1.5">
+      <p className="truncate text-xs text-[var(--foreground)]" title={conflict.path}>
+        {conflict.path}
+      </p>
+      <div className="flex items-center gap-1">
+        {conflict.mergeable && (
+          <Button
+            size="sm"
+            variant="outline"
+            className="h-6 rounded-md px-2 text-[11px]"
+            disabled={disabled}
+            title={t('sync.conflict.mergeHint')}
+            onClick={() => onResolve('merge')}
+          >
+            {busy ? t('sync.panel.running') : t('sync.conflict.merge')}
+          </Button>
+        )}
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 rounded-md px-2 text-[11px]"
+          disabled={disabled}
+          onClick={() => onResolve('keepLocal')}
+        >
+          {t('sync.conflict.keepLocal')}
+        </Button>
+        <Button
+          size="sm"
+          variant="outline"
+          className="h-6 rounded-md px-2 text-[11px]"
+          disabled={disabled}
+          onClick={() => onResolve('keepRemote')}
+        >
+          {t('sync.conflict.keepRemote')}
+        </Button>
+        <Button
+          size="sm"
+          variant="ghost"
+          className="ml-auto h-6 w-6 rounded-md p-0"
+          aria-label={t('sync.conflict.dismiss')}
+          title={t('sync.conflict.dismiss')}
+          disabled={disabled}
+          onClick={onDismiss}
+        >
+          <X className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function SyncStatusPanel() {
   const { t, language } = useI18n();
   const open = useSyncPanelStore((state) => state.open);
@@ -71,6 +139,8 @@ export function SyncStatusPanel() {
 
   const [config, setConfig] = useState<FnsConfigView | null>(null);
   const [notebookState, setNotebookState] = useState<FnsNotebookState | null>(null);
+  const [conflicts, setConflicts] = useState<FnsConflictView[]>([]);
+  const [conflictBusy, setConflictBusy] = useState<string | null>(null);
   const [selectedTokenId, setSelectedTokenId] = useState('');
   const [vault, setVault] = useState('');
   const [busy, setBusy] = useState(false);
@@ -80,8 +150,10 @@ export function SyncStatusPanel() {
     setConfig(nextConfig);
     if (selectedNotebookId) {
       setNotebookState(await fns.getNotebookState(selectedNotebookId));
+      setConflicts(await fns.listConflicts(selectedNotebookId).catch(() => []));
     } else {
       setNotebookState(null);
+      setConflicts([]);
     }
   }, [selectedNotebookId]);
 
@@ -204,9 +276,13 @@ export function SyncStatusPanel() {
       await reloadOpenDocumentsAfterSync(selectedNotebookId);
       await refresh();
       if (outcome) {
-        toast.success(
-          `${t('sync.panel.done')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed} · 📎 ↓${outcome.filesPulled} ↑${outcome.filesPushed}`,
-        );
+        let summary = `${t('sync.panel.done')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed} · 📎 ↓${outcome.filesPulled} ↑${outcome.filesPushed}`;
+        if (outcome.conflicts.length > 0) {
+          summary += ` · ⚠ ${t('sync.panel.conflicts').replace('{count}', String(outcome.conflicts.length))}`;
+        } else if (outcome.conflictsAutoResolved > 0) {
+          summary += ` · ✓ ${t('sync.conflict.autoResolved').replace('{count}', String(outcome.conflictsAutoResolved))}`;
+        }
+        toast.success(summary);
       } else {
         toast.error(t('sync.panel.skipped'));
       }
@@ -215,6 +291,40 @@ export function SyncStatusPanel() {
       await refresh().catch(() => {});
     } finally {
       setBusy(false);
+    }
+  }, [refresh, selectedNotebookId, t]);
+
+  const resolveConflict = useCallback(async (path: string, action: FnsConflictAction) => {
+    if (!selectedNotebookId) return;
+    setConflictBusy(path);
+    try {
+      // keepRemote/merge rewrite the file: capture open editors first and
+      // feed the rewritten content back into the views afterwards.
+      if (action !== 'keepLocal') {
+        await flushOpenDocumentsForNotebook(selectedNotebookId);
+      }
+      await fns.resolveConflict(selectedNotebookId, path, action);
+      await reloadOpenDocumentsAfterSync(selectedNotebookId);
+      await refresh();
+      toast.success(t('sync.conflict.resolved'));
+    } catch (error) {
+      toast.error(`${t('sync.panel.failed')}: ${errorMessage(error)}`);
+    } finally {
+      setConflictBusy(null);
+    }
+  }, [refresh, selectedNotebookId, t]);
+
+  const dismissConflict = useCallback(async (path: string) => {
+    if (!selectedNotebookId) return;
+    setConflictBusy(path);
+    try {
+      await fns.dismissConflict(selectedNotebookId, path);
+      await refresh();
+      toast.success(t('sync.conflict.dismissed'));
+    } catch (error) {
+      toast.error(`${t('sync.panel.failed')}: ${errorMessage(error)}`);
+    } finally {
+      setConflictBusy(null);
     }
   }, [refresh, selectedNotebookId, t]);
 
@@ -384,6 +494,25 @@ export function SyncStatusPanel() {
             >
               {t('sync.panel.unbind')}
             </Button>
+          </div>
+        )}
+
+        {notebookState?.bound && conflicts.length > 0 && (
+          <div className="space-y-1 border-b border-[var(--divider)] px-3 pb-3">
+            <div className="flex items-center gap-1.5 px-2 pt-1 text-xs font-medium text-[var(--warning,#eab308)]">
+              <WarningCircleIcon className="h-3.5 w-3.5" />
+              {t('sync.panel.conflicts').replace('{count}', String(conflicts.length))}
+            </div>
+            {conflicts.map((conflict) => (
+              <ConflictRow
+                key={conflict.path}
+                conflict={conflict}
+                busy={conflictBusy === conflict.path}
+                disabled={conflictBusy !== null}
+                onResolve={(action) => void resolveConflict(conflict.path, action)}
+                onDismiss={() => void dismissConflict(conflict.path)}
+              />
+            ))}
           </div>
         )}
 

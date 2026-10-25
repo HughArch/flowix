@@ -525,6 +525,9 @@ pub fn run() {
             crate::fns_sync::fns_sync_notebook,
             crate::fns_sync::fns_sync_all,
             crate::fns_sync::fns_schedule_focus_sync,
+            crate::fns_sync::fns_conflict_list,
+            crate::fns_sync::fns_conflict_resolve,
+            crate::fns_sync::fns_conflict_dismiss,
             commands::history::list_local_path_archives,
             commands::history::restore_local_path_version,
             // Device-local notebook workspaces (local.db).
