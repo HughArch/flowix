@@ -15,7 +15,7 @@ use regex::Regex;
 use serde::Serialize;
 use serde_json::Value;
 
-use super::config::BuiltinAiConfig;
+use super::config::BuiltinAiProvider;
 
 const DEFAULT_LIMIT: usize = 5;
 const MAX_LIMIT: usize = 10;
@@ -47,7 +47,7 @@ fn truncate_chars(value: &str, max: usize) -> String {
 /// Run a search. `config` supplies the provider/API key; `query` is the raw
 /// user/model query.
 pub async fn search(
-    config: &BuiltinAiConfig,
+    provider: &BuiltinAiProvider,
     query: &str,
     limit: Option<u64>,
 ) -> Result<SearchResponse, String> {
@@ -57,8 +57,8 @@ pub async fn search(
     }
     let limit = clamp_limit(limit);
 
-    if is_deepseek(config) {
-        match deepseek_search(config, query, limit).await {
+    if is_deepseek(provider) {
+        match deepseek_search(provider, query, limit).await {
             Ok(results) if !results.is_empty() => {
                 return Ok(SearchResponse {
                     ok: true,
@@ -85,8 +85,8 @@ pub async fn search(
     })
 }
 
-fn is_deepseek(config: &BuiltinAiConfig) -> bool {
-    config.api_url.to_ascii_lowercase().contains("deepseek")
+fn is_deepseek(provider: &BuiltinAiProvider) -> bool {
+    provider.api_url.to_ascii_lowercase().contains("deepseek")
 }
 
 fn deepseek_search_endpoint(api_url: &str) -> String {
@@ -99,11 +99,11 @@ fn deepseek_search_endpoint(api_url: &str) -> String {
 }
 
 async fn deepseek_search(
-    config: &BuiltinAiConfig,
+    provider: &BuiltinAiProvider,
     query: &str,
     limit: usize,
 ) -> Result<Vec<SearchResult>, String> {
-    let endpoint = deepseek_search_endpoint(&config.api_url);
+    let endpoint = deepseek_search_endpoint(&provider.api_url);
     let client = reqwest::Client::builder()
         .connect_timeout(Duration::from_secs(10))
         .timeout(Duration::from_secs(30))
@@ -111,7 +111,7 @@ async fn deepseek_search(
         .map_err(|error| format!("web_search: 无法创建 HTTP 客户端: {error}"))?;
     let response = client
         .post(&endpoint)
-        .bearer_auth(&config.api_key)
+        .bearer_auth(&provider.api_key)
         .json(&serde_json::json!({
             "query": query,
             "count": limit,

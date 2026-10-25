@@ -19,6 +19,7 @@
 pub(crate) mod commands;
 mod config;
 mod provider;
+mod rich_content;
 mod runtime;
 mod tools;
 mod web_search;

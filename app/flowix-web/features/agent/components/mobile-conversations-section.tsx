@@ -2,7 +2,8 @@
 
 import { useCallback, useEffect, useState } from 'react';
 import { invoke } from '@tauri-apps/api/core';
-import { MessageSquare, Plus, Trash2 } from 'lucide-react';
+import { MessageSquare, Pencil, Plus, Trash2 } from 'lucide-react';
+import { ConversationRenameDialog } from '@features/agent/components/conversation-rename-dialog';
 import { Button } from '@shared/ui/button';
 import { useI18n } from '@/lib/i18n';
 import { toast } from '@/lib/toast';
@@ -37,6 +38,7 @@ export function MobileConversationsSection() {
   const [conversations, setConversations] = useState<AgentConversationInstance[]>([]);
   const [expanded, setExpanded] = useState(false);
   const [busy, setBusy] = useState(false);
+  const [renameTarget, setRenameTarget] = useState<AgentConversationInstance | null>(null);
 
   const refresh = useCallback(async () => {
     try {
@@ -153,7 +155,16 @@ export function MobileConversationsSection() {
               <button
                 type="button"
                 disabled={busy}
-                className="shrink-0 rounded-md p-1.5 text-[var(--muted-foreground)] opacity-0 transition-opacity hover:bg-[var(--muted)] hover:text-[var(--destructive)] focus-visible:opacity-100 group-hover:opacity-100 disabled:opacity-50"
+                className="shrink-0 rounded-md p-1.5 text-[var(--muted-foreground)] opacity-70 transition-opacity hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:opacity-50"
+                aria-label={t('agent.mobilePanel.renameConversation')}
+                onClick={() => setRenameTarget(instance)}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                disabled={busy}
+                className="shrink-0 rounded-md p-1.5 text-[var(--muted-foreground)] opacity-70 transition-opacity hover:bg-[var(--muted)] hover:text-[var(--destructive)] disabled:opacity-50"
                 aria-label={t('agent.mobilePanel.deleteConversation')}
                 onClick={() => void handleDelete(instance)}
               >
@@ -163,6 +174,29 @@ export function MobileConversationsSection() {
           ))}
         </ul>
       )}
+      <ConversationRenameDialog
+        open={renameTarget !== null}
+        initialTitle={renameTarget?.threadTitle ?? ''}
+        onOpenChange={(next) => {
+          if (!next) setRenameTarget(null);
+        }}
+        onSubmit={(title) => {
+          if (!renameTarget) return;
+          void (async () => {
+            try {
+              await useAgentSessionStore.getState().renameAgentConversation({
+                instanceId: renameTarget.instanceId,
+                threadId: renameTarget.threadId,
+                title,
+                typeKey: 'flowix',
+              });
+              await refresh();
+            } catch (error) {
+              toast.error(errorMessage(error));
+            }
+          })();
+        }}
+      />
     </section>
   );
 }

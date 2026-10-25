@@ -21,7 +21,7 @@ use crate::events::emit_to;
 use crate::lock_utils::read_lock;
 use flowix_core::memo_file::MemoFile;
 
-use super::config::BuiltinAiConfig;
+use super::config::{BuiltinAiConfig, BuiltinAiProvider};
 use super::provider::{self, ProviderMessage, ProviderError, StreamEvent};
 use super::tools::{self, ToolScope};
 
@@ -140,8 +140,12 @@ impl BuiltinAiService {
         if !config.enabled {
             return Err("内置 AI 助手未启用：请在设置中开启并配置模型".into());
         }
-        if !config.is_configured() {
-            return Err("内置 AI 助手缺少 API 地址 / Key / 模型配置".into());
+        let provider = config
+            .active_provider()
+            .cloned()
+            .ok_or_else(|| "内置 AI 助手尚未配置任何厂商".to_owned())?;
+        if !provider.is_configured() {
+            return Err("当前 AI 厂商缺少 API 地址 / Key / 模型配置".into());
         }
         if !message.image_paths.is_empty() {
             return Err("内置 AI 助手暂不支持图片或文件附件".into());
@@ -168,6 +172,8 @@ impl BuiltinAiService {
         let service = Arc::clone(self);
         let run_thread_id = thread_id.clone();
         let title = super::runtime::derive_title(&message.content);
+        let run_id = resolve_run_id(&thread_id, message.run_id.as_deref());
+        let run_id_for_error = run_id.clone();
         tauri::async_runtime::spawn(async move {
             // Ensure the thread row exists so history / conversation lists see
             // the run even if it fails immediately afterwards.
@@ -182,14 +188,20 @@ impl BuiltinAiService {
                 .map_err(|error| error.to_string());
             if let Err(error) = ensured {
                 service.finish(&run_thread_id);
-                let _ = emit_to(
+                emit_builtin_chunk(
                     &app,
-                    "agent-chunk",
-                    AgentChunk::Error { thread_id: run_thread_id, message: error, error_details: None },
+                    AgentChunk::Error {
+                        thread_id: run_thread_id,
+                        message: error,
+                        error_details: None,
+                    },
+                    &run_id_for_error,
                 );
                 return;
             }
-            service.run(app, run_thread_id, message, config, scope, cancel).await;
+            service
+                .run(app, run_thread_id, message, config, provider, scope, cancel, run_id)
+                .await;
         });
         Ok(())
     }
@@ -243,23 +255,33 @@ impl BuiltinAiService {
         thread_id: String,
         message: AgentUserMessage,
         config: BuiltinAiConfig,
+        provider: BuiltinAiProvider,
         scope: ToolScope,
         cancel: Arc<AtomicBool>,
+        run_id: String,
     ) {
         let started = std::time::Instant::now();
-        let run_id = resolve_run_id(&thread_id, message.run_id.as_deref());
         emit_builtin_chunk(
             &app,
             AgentChunk::StreamStart {
                 thread_id: thread_id.clone(),
-                model: Some(config.model.clone()),
+                model: Some(provider.model.clone()),
                 reasoning_effort: None,
             },
             &run_id,
         );
 
         let result = self
-            .run_inner(&app, &thread_id, &run_id, &message, &config, &scope, &cancel)
+            .run_inner(
+                &app,
+                &thread_id,
+                &run_id,
+                &message,
+                &config,
+                &provider,
+                &scope,
+                &cancel,
+            )
             .await;
 
         let reason = match &result {
@@ -297,6 +319,7 @@ impl BuiltinAiService {
         run_id: &str,
         message: &AgentUserMessage,
         config: &BuiltinAiConfig,
+        provider: &BuiltinAiProvider,
         scope: &ToolScope,
         cancel: &Arc<AtomicBool>,
     ) -> Result<(), RunError> {
@@ -379,9 +402,9 @@ impl BuiltinAiService {
             }
 
             let completion = provider::stream_chat(
-                &config.chat_endpoint(),
-                &config.api_key,
-                &config.model,
+                &provider.chat_endpoint(),
+                &provider.api_key,
+                &provider.model,
                 &provider_messages,
                 &tools::tool_definitions(config.web_search_enabled),
                 config.max_total_tokens,
@@ -487,7 +510,7 @@ impl BuiltinAiService {
                             .and_then(serde_json::Value::as_str)
                             .unwrap_or_default();
                         let limit = args.get("limit").and_then(serde_json::Value::as_u64);
-                        match super::web_search::search(config, query, limit).await {
+                        match super::web_search::search(provider, query, limit).await {
                             Ok(response) => serde_json::to_value(response)
                                 .unwrap_or_else(|error| serde_json::json!({
                                     "ok": false,
@@ -724,6 +747,12 @@ fn system_prompt(scope: &ToolScope, web_search_enabled: bool) -> String {
 - note_write 会整篇覆盖正文，仅在重写整篇时使用。
 - note_delete 是硬删除且不可恢复，只在用户明确要求删除时使用。
 - 新建笔记用 note_create，把用户要求的标签（如 #项目/Flowix）写进正文。
+- Flowix 支持富内容：callout（提示块）、toggle（折叠块）、columns（多列布局）、background（行背景）。用户要求这些效果时调用同名工具，不要手写 ::: 语法。
+  · 多列/分栏 → columns action=add count=2..4
+  · 提示块/警告框 → callout action=add
+  · 折叠详情 → toggle action=add
+  · 文字行背景 → background action=set
+  · 序号（block/column/line）都从 1 开始；修改前先 list 确认序号。
 - 用户消息中 @标题 形式的提及通常对应 relativePath 为「标题.md」的笔记。
 {web_search_rule}
 - 用用户的语言回答；提到笔记时给出其相对路径；不要虚构笔记内容。",

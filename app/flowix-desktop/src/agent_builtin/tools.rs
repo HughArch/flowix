@@ -130,6 +130,87 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
                 }
             }
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "callout",
+                "description": "管理笔记里的提示块（callout）。用户要求 callout/提示块/警告框时用它，不要手写 ::: callout 语法。action: list/add/set/remove；block 从 1 开始。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["list", "add", "set", "remove"] },
+                        "path": { "type": "string", "description": "笔记本内相对路径" },
+                        "at": { "type": "integer", "description": "插入位置行号（1 开始），默认末尾" },
+                        "block": { "type": "integer", "description": "目标 callout 序号（1 开始）" },
+                        "icon": { "type": "string", "description": "emoji 图标" },
+                        "color": { "type": "string", "description": "颜色，如 yellow/red/blue" },
+                        "content": { "type": "string", "description": "提示内容（Markdown）" },
+                        "keepContent": { "type": "boolean", "description": "remove 时是否保留正文" }
+                    },
+                    "required": ["action", "path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "toggle",
+                "description": "管理笔记里的折叠块（toggle）。用户要求折叠/展开详情时用它，不要手写 ::: toggle 语法。action: list/add/set/remove；block 从 1 开始。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["list", "add", "set", "remove"] },
+                        "path": { "type": "string", "description": "笔记本内相对路径" },
+                        "at": { "type": "integer", "description": "插入位置行号（1 开始），默认末尾" },
+                        "block": { "type": "integer", "description": "目标 toggle 序号（1 开始）" },
+                        "title": { "type": "string", "description": "折叠块标题" },
+                        "content": { "type": "string", "description": "折叠块正文（Markdown）" },
+                        "open": { "type": "boolean", "description": "是否默认展开" },
+                        "bg": { "type": "string", "description": "整块背景色" },
+                        "clearBg": { "type": "boolean", "description": "清除背景色" },
+                        "keepContent": { "type": "boolean", "description": "remove 时是否保留正文" }
+                    },
+                    "required": ["action", "path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "columns",
+                "description": "管理笔记里的多列布局。用户要求多列/分栏时用它，不要手写 ::: columns 语法。action: list/add/remove/width；block 从 1 开始。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["list", "add", "remove", "width"] },
+                        "path": { "type": "string", "description": "笔记本内相对路径" },
+                        "at": { "type": "integer", "description": "插入位置行号（1 开始），默认末尾" },
+                        "count": { "type": "integer", "description": "列数（2-4）" },
+                        "block": { "type": "integer", "description": "目标 columns 块序号（1 开始）" },
+                        "column": { "type": "integer", "description": "要删除的列序号（1 开始）" },
+                        "widths": { "type": "array", "items": { "type": "integer" }, "description": "各列相对宽度，例如 [100,100]" }
+                    },
+                    "required": ["action", "path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "background",
+                "description": "管理笔记的文字行背景色。action: list/set/clear；line 从 1 开始。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["list", "set", "clear"] },
+                        "path": { "type": "string", "description": "笔记本内相对路径" },
+                        "line": { "type": "integer", "description": "目标行号（1 开始）" },
+                        "color": { "type": "string", "description": "背景色，如 yellow/red/blue" }
+                    },
+                    "required": ["action", "path"]
+                }
+            }
+        },
     ]);
     if web_search_enabled {
         tools
@@ -155,7 +236,7 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
 }
 
 /// Validate and normalize a notebook-relative note path from model input.
-fn normalize_path(raw: &str) -> Result<String, String> {
+pub(crate) fn normalize_path(raw: &str) -> Result<String, String> {
     let normalized = raw.trim().replace('\\', "/");
     if normalized.is_empty() {
         return Err("path 不能为空".into());
@@ -242,6 +323,12 @@ fn execute_with_service(
     args: &Value,
 ) -> Result<Value, String> {
     let notebook = &scope.notebook_id;
+
+    // Flowix rich content (callouts / toggles / columns / line backgrounds)
+    // lives in dedicated modules; dispatch before the plain note tools.
+    if matches!(name, "callout" | "toggle" | "columns" | "background") {
+        return super::rich_content::execute(service, notebook, name, &args);
+    }
 
     match name {
         "note_list" => {

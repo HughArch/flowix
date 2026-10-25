@@ -15,13 +15,15 @@ use tauri::State;
 use crate::agent_wire::{AgentChatResponse, AgentUserMessage};
 use crate::app::state::AppState;
 
-use super::config::{BuiltinAiConfig, BuiltinAiConfigInput, BuiltinAiConfigView};
+use super::config::{
+    BuiltinAiConfigInput, BuiltinAiConfigView, BuiltinAiProvider,
+};
 use super::provider;
 use super::AGENT_ID;
 
 /// Form overrides for test/model-list calls. `None` fields fall back to the
-/// stored configuration; an empty-string api_key means "the form field is
-/// empty", which also falls back to the stored key.
+/// active provider; an empty-string api_key means "the form field is empty",
+/// which also falls back to the stored key.
 #[derive(Debug, Clone, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct BuiltinAiOverride {
@@ -30,26 +32,44 @@ pub struct BuiltinAiOverride {
     pub model: Option<String>,
 }
 
-/// Merge stored config with form overrides into an ephemeral config.
-fn resolve_effective_config(state: &AppState, over: Option<BuiltinAiOverride>) -> BuiltinAiConfig {
-    let mut config = state.agent_builtin.load_config();
-    let Some(over) = over else { return config };
-    if let Some(url) = over.api_url.map(|v| v.trim().trim_end_matches('/').to_owned()) {
-        if !url.is_empty() {
-            config.api_url = url;
+/// Merge the active provider with form overrides into an ephemeral provider.
+fn resolve_effective_provider(
+    state: &AppState,
+    over: Option<BuiltinAiOverride>,
+) -> Option<BuiltinAiProvider> {
+    let config = state.agent_builtin.load_config();
+    let mut provider = config.active_provider().cloned().unwrap_or_default();
+    if let Some(over) = over {
+        if let Some(url) = over.api_url.map(|v| v.trim().trim_end_matches('/').to_owned()) {
+            if !url.is_empty() {
+                provider.api_url = url;
+            }
+        }
+        if let Some(key) = over.api_key.map(|v| v.trim().to_owned()) {
+            if !key.is_empty() {
+                provider.api_key = key;
+            }
+        }
+        if let Some(model) = over.model.map(|v| v.trim().to_owned()) {
+            if !model.is_empty() {
+                provider.model = model;
+            }
         }
     }
-    if let Some(key) = over.api_key.map(|v| v.trim().to_owned()) {
-        if !key.is_empty() {
-            config.api_key = key;
-        }
+    Some(provider)
+}
+
+fn validate_provider(provider: &BuiltinAiProvider, require_model: bool) -> Result<(), String> {
+    if provider.api_url.trim().is_empty() {
+        return Err("请先填写 API 地址".into());
     }
-    if let Some(model) = over.model.map(|v| v.trim().to_owned()) {
-        if !model.is_empty() {
-            config.model = model;
-        }
+    if provider.api_key.trim().is_empty() {
+        return Err("请先填写 API Key".into());
     }
-    config
+    if require_model && provider.model.trim().is_empty() {
+        return Err("请先填写模型".into());
+    }
+    Ok(())
 }
 
 /// Current built-in assistant configuration. The API key is never echoed.
@@ -71,26 +91,32 @@ pub fn agent_builtin_set_config(
     Ok(config.view())
 }
 
-/// One-shot non-streaming request against the given (or stored) settings.
+/// Switch the active provider for subsequent runs. Each run re-reads the
+/// config, so the next message uses the new vendor without a restart.
+#[tauri::command]
+pub fn agent_builtin_set_active_provider(
+    provider_id: String,
+    state: State<'_, AppState>,
+) -> Result<BuiltinAiConfigView, String> {
+    let mut config = state.agent_builtin.load_config();
+    config.set_active_provider(&provider_id)?;
+    state.agent_builtin.save_config(&config)?;
+    Ok(config.view())
+}
+
+/// One-shot non-streaming request against the given (or active) provider.
 #[tauri::command]
 pub async fn agent_builtin_test_connection(
     over: Option<BuiltinAiOverride>,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
-    let config = resolve_effective_config(&state, over);
-    if config.api_url.trim().is_empty() {
-        return Err("请先填写 API 地址".into());
-    }
-    if config.api_key.trim().is_empty() {
-        return Err("请先填写 API Key".into());
-    }
-    if config.model.trim().is_empty() {
-        return Err("请先填写模型".into());
-    }
+    let provider = resolve_effective_provider(&state, over)
+        .ok_or_else(|| "尚未配置 AI 厂商".to_owned())?;
+    validate_provider(&provider, true)?;
     provider::complete_once(
-        &config.chat_endpoint(),
-        &config.api_key,
-        &config.model,
+        &provider.chat_endpoint(),
+        &provider.api_key,
+        &provider.model,
         "Reply with the single word: ok",
     )
     .await
@@ -105,21 +131,17 @@ pub async fn agent_builtin_test_connection(
     .map_err(|error| error.to_string())
 }
 
-/// Fetch the provider's model list for the model dropdown. Uses form values
-/// when provided, otherwise the stored configuration.
+/// Fetch a provider's model list for the model dropdown. Uses form values when
+/// provided, otherwise the active provider.
 #[tauri::command]
 pub async fn agent_builtin_list_models(
     over: Option<BuiltinAiOverride>,
     state: State<'_, AppState>,
 ) -> Result<Vec<String>, String> {
-    let config = resolve_effective_config(&state, over);
-    if config.api_url.trim().is_empty() {
-        return Err("请先填写 API 地址".into());
-    }
-    if config.api_key.trim().is_empty() {
-        return Err("请先填写 API Key".into());
-    }
-    provider::list_models(&config.models_endpoint(), &config.api_key)
+    let provider = resolve_effective_provider(&state, over)
+        .ok_or_else(|| "尚未配置 AI 厂商".to_owned())?;
+    validate_provider(&provider, false)?;
+    provider::list_models(&provider.models_endpoint(), &provider.api_key)
         .await
         .map_err(|error| error.to_string())
 }
