@@ -1,0 +1,19 @@
+<!-- Android adaptive-icon foreground: the F mark only, no tile.
+     The launcher mask supplies the shape, so this layer stays transparent and
+     the art is kept inside the 66dp safe zone of the 108dp canvas (scale 0.85
+     puts the tallest dimension at ~50% of the canvas).
+     scripts/gen-icon.mjs renders this to mipmap-*/ic_launcher_foreground.png. -->
+<svg width="1024" height="1024" viewBox="0 0 1024 1024" fill="none" xmlns="http://www.w3.org/2000/svg">
+<defs>
+<linearGradient id="fg" x1="300" y1="240" x2="730" y2="790" gradientUnits="userSpaceOnUse">
+<stop stop-color="#FFFAEE"/>
+<stop offset="1" stop-color="#FBE7BE"/>
+</linearGradient>
+</defs>
+<g transform="translate(512 512) scale(0.85) translate(-512 -512)">
+<g fill="none" stroke-linecap="round" stroke-linejoin="round" stroke-width="132">
+<path d="M348 294V730M348 294H676M348 506H604" stroke="#57407F" stroke-opacity="0.28" transform="translate(32 32)"/>
+<path d="M348 294V730M348 294H676M348 506H604" stroke="url(#fg)"/>
+</g>
+</g>
+</svg>
