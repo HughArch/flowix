@@ -1,8 +1,10 @@
 // Regenerates the app icon set from app/flowix-web/assets/app-icon-source.png.
 //
 // This script must never rewrite app/flowix-web/assets/product-logo.svg.
-// product-logo.svg is the in-app titlebar logo; app-icon-source.png is the
-// packaged desktop App icon source.
+// product-logo.svg is a separately maintained brand asset; app-icon-source.png
+// is the packaged App icon source. The in-app product mark (productlogo.png)
+// IS derived from app-icon-source.png, so the memo header chip and the OS icon
+// cannot drift apart.
 //
 // Run from repo root:
 //
@@ -41,6 +43,10 @@ const productLogoSvg = resolve(root, 'app/flowix-web/assets/product-logo.svg');
 const sourcePng = resolve(root, 'app/flowix-web/assets/app-icon-source.png');
 const androidForegroundSvg = resolve(root, 'app/flowix-web/assets/app-icon-android-foreground.svg');
 const androidResDir = resolve(backendDir, 'gen/android/app/src/main/res');
+// In-app product mark (memo list header). Same artwork as the app icon so the
+// two can never drift; rendered at 256px for 3x displays of an 18px chip.
+const inAppMarkPng = resolve(root, 'app/flowix-web/assets/productlogo.png');
+const IN_APP_MARK_SIZE = 256;
 const iconsDir = resolve(backendDir, 'icons');
 const tmpDir = resolve(root, '.tmp-icon-build');
 const macIconsDir = resolve(tmpDir, 'mac');
@@ -118,6 +124,7 @@ for (const file of WINDOWS_ICON_FILES) {
 }
 
 installAndroidIcons();
+syncInAppMark();
 
 // Drop the Android/iOS trees from the desktop icon dir; Android assets are
 // installed into the tracked gen/android project above, and there is no iOS
@@ -212,6 +219,19 @@ function installAndroidIcons() {
 		);
 	}
 	console.log(`android mipmaps -> ${androidResDir}/mipmap-*`);
+}
+
+// Renders the in-app product mark from the app icon source. The memo list
+// header shows it at 18px (30% opacity until hover), so a 256px PNG covers 3x
+// displays with room to spare.
+function syncInAppMark() {
+	const outputDir = resolve(tmpDir, 'in-app-mark');
+	execSync(
+		`npx tauri icon "${sourcePng}" --output "${outputDir}" --png ${IN_APP_MARK_SIZE}`,
+		{ cwd: backendDir, stdio: 'inherit' },
+	);
+	cpSync(resolve(outputDir, `${IN_APP_MARK_SIZE}x${IN_APP_MARK_SIZE}.png`), inAppMarkPng);
+	console.log(`in-app mark -> ${inAppMarkPng}`);
 }
 
 function trimTransparentPngToSquare(input, output) {
