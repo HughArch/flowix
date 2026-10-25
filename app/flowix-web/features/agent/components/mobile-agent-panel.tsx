@@ -156,12 +156,9 @@ export const useMobileAgentPanelStore = create<MobileAgentPanelState>((set) => (
   instanceId: null,
   boundPath: null,
   openForCurrentDocument: async () => {
-    const initialPath = useDocumentStore.getState().currentDocumentPath;
-    if (!initialPath) return false;
+    const path = useDocumentStore.getState().currentDocumentPath;
+    if (!path) return false;
     await useAgentSessionStore.getState().hydrateFromBackend();
-    // The editor may finish switching documents while hydration runs; bind to
-    // the latest path, not the one captured before the await.
-    const path = useDocumentStore.getState().currentDocumentPath ?? initialPath;
     const instance = resolveConversationFor(path);
     set({ open: true, instanceId: instance.instanceId, boundPath: path });
     return true;
@@ -330,13 +327,6 @@ export function MobileAgentPanel() {
     [instances, boundPath],
   );
   const currentInstance = conversations.find((instance) => instance.instanceId === instanceId) ?? null;
-  // The drawer's bound path is authoritative for the @ picker even if the
-  // conversation instance was created before the document finished switching.
-  const preferredNote = useMemo(() => {
-    if (!boundPath) return null;
-    const { notebookId, relativePath } = resolveDocumentContext(boundPath);
-    return notebookId && relativePath ? { notebookId, relativePath } : null;
-  }, [boundPath]);
   // Provider is bound per conversation. A missing/deleted provider falls back
   // to the global active provider from settings.
   const boundProviderId = currentInstance?.runtimeConfig?.builtinProviderId;
@@ -365,19 +355,15 @@ export function MobileAgentPanel() {
       setTabMenu(null);
       return;
     }
-    const syncBoundDocument = () => {
-      const path = useDocumentStore.getState().currentDocumentPath;
+    return useDocumentStore.subscribe((state) => {
+      const path = state.currentDocumentPath;
       if (!path || path === useMobileAgentPanelStore.getState().boundPath) return;
       const instance = resolveConversationFor(path);
       useMobileAgentPanelStore.setState({
         instanceId: instance.instanceId,
         boundPath: path,
       });
-    };
-    // The document may have finished switching between `openForCurrentDocument`
-    // and this effect; reconcile immediately before waiting for the next change.
-    syncBoundDocument();
-    return useDocumentStore.subscribe(syncBoundDocument);
+    });
   }, [open]);
 
   // New conversations default to the global active provider; the choice is
@@ -496,7 +482,6 @@ export function MobileAgentPanel() {
           {open && instanceId ? (
             <AgentConversationDetail
               instanceId={instanceId}
-              preferredNote={preferredNote}
               composerExtra={
                 <ConversationProviderSelector
                   providers={providers}

@@ -127,14 +127,11 @@ export function AgentConversationDetail({
   instanceId,
   reportPresentation,
   composerExtra,
-  preferredNote,
 }: {
   instanceId: string;
   reportPresentation?: (update: SurfacePresentationUpdate) => void;
   /** Optional host control rendered next to the composer's + button. */
   composerExtra?: ReactNode;
-  /** Host-authoritative document for the @ picker (drawer's bound document). */
-  preferredNote?: { notebookId: string; relativePath: string } | null;
 }) {
   const { t } = useI18n();
   const { instance, status, retry } = useAgentConversationSurface(instanceId, reportPresentation);
@@ -146,7 +143,6 @@ export function AgentConversationDetail({
         instanceId={instanceId}
         instance={instance}
         composerExtra={composerExtra}
-        preferredNote={preferredNote}
       />
     );
   }
@@ -172,12 +168,10 @@ function AgentConversationDetailContent({
   instanceId,
   instance,
   composerExtra,
-  preferredNote,
 }: {
   instanceId: string;
   instance: AgentConversationInstance;
   composerExtra?: ReactNode;
-  preferredNote?: { notebookId: string; relativePath: string } | null;
 }) {
   const { language, t } = useI18n();
   const selectedNotebookId = useNoteStore((state) => state.selectedNotebook?.id ?? null);
@@ -654,9 +648,6 @@ function AgentConversationDetailContent({
         folderGroupLabel: tRef.current("agent.files.referenceLocal"),
         noteGroupLabel: tRef.current("agent.files.projectNotes"),
         getPreferredNote: () => {
-          if (preferredNote?.notebookId && preferredNote.relativePath) {
-            return preferredNote;
-          }
           const source = instanceRef.current?.source;
           if (source?.kind === 'thread-card' && source.notebookId && source.relativePath) {
             return { notebookId: source.notebookId, relativePath: source.relativePath };
