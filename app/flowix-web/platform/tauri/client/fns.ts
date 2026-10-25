@@ -115,4 +115,6 @@ export const fns = {
   syncNotebook: (notebookId: string) =>
     invoke<FnsNotebookSyncOutcome | null>('fns_sync_notebook', { notebookId }),
   syncAll: () => invoke<FnsNotebookSyncOutcome[]>('fns_sync_all'),
+  /** Foreground return: debounced pull for bound notebooks. */
+  scheduleFocusSync: () => invoke<void>('fns_schedule_focus_sync'),
 };

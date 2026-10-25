@@ -781,6 +781,36 @@ impl FnsSyncService {
         }
         Ok(outcomes)
     }
+
+    /// Schedule a debounced sync for every bound notebook without running it
+    /// inline. Used when the app returns to the foreground: while backgrounded
+    /// the realtime listener can lose its connection (Android freezes
+    /// background network, desktop sleeps), so the returning focus pulls once
+    /// instead of waiting out the reconnect backoff. The deadline slot
+    /// collapses repeated focus events, and a run with nothing to do costs
+    /// only a cursor round trip.
+    pub fn schedule_bound_notebook_syncs(self: &Arc<Self>, app: &AppHandle) {
+        let state = app.state::<AppState>();
+        let notebooks = {
+            let memo_file = read_lock(&state.memo_file, "memo_file");
+            match memo_file.read_notebook_configs() {
+                Ok(notebooks) => notebooks,
+                Err(error) => {
+                    tracing::warn!("FNS focus sync: could not list notebooks: {error}");
+                    return;
+                }
+            }
+        };
+        for notebook in notebooks {
+            let root = PathBuf::from(&notebook.path);
+            let bound = SyncState::load(&root)
+                .map(|state| state.is_some())
+                .unwrap_or(false);
+            if bound {
+                self.schedule_sync(app.clone(), notebook.id.clone());
+            }
+        }
+    }
 }
 
 pub fn now_ms() -> i64 {

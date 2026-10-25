@@ -363,6 +363,19 @@ pub fn run() {
                         }
                     }
                 });
+
+                // While the app sits in the background the realtime listener
+                // can lose its connection (Android freezes background network,
+                // desktop sleeps). Pull once when the main window regains
+                // focus instead of waiting out the reconnect backoff; the
+                // schedule slot collapses repeated focus events.
+                let fns_service_for_focus = app.state::<AppState>().fns_sync.clone();
+                let focus_app = app.handle().clone();
+                window.on_window_event(move |event| {
+                    if let tauri::WindowEvent::Focused(true) = event {
+                        fns_service_for_focus.schedule_bound_notebook_syncs(&focus_app);
+                    }
+                });
             }
 
             // �?setup 阶�? manage dispatcher, 因为
@@ -511,6 +524,7 @@ pub fn run() {
             crate::fns_sync::fns_unbind_notebook,
             crate::fns_sync::fns_sync_notebook,
             crate::fns_sync::fns_sync_all,
+            crate::fns_sync::fns_schedule_focus_sync,
             commands::history::list_local_path_archives,
             commands::history::restore_local_path_version,
             // Device-local notebook workspaces (local.db).

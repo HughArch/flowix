@@ -90,3 +90,12 @@ pub async fn fns_sync_all(app: AppHandle) -> Result<Vec<FnsNotebookSyncOutcome>,
     let service = app.state::<AppState>().fns_sync.clone();
     service.sync_bound_notebooks(&app).await
 }
+
+/// App returned to the foreground: pull once in case the background freeze
+/// dropped listener events or the connection itself.
+#[tauri::command]
+pub fn fns_schedule_focus_sync(app: AppHandle) {
+    app.state::<AppState>()
+        .fns_sync
+        .schedule_bound_notebook_syncs(&app);
+}
