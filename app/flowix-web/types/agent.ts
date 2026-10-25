@@ -248,6 +248,8 @@ export interface RuntimeConfig {
   /** Owning notebook identity. Persisted with the conversation and forwarded
    * as backend workspace-validation metadata; local.db owns its mounts. */
   notebookId?: string;
+  /** Built-in assistant only: provider id bound to this conversation. */
+  builtinProviderId?: string;
 }
 
 /**

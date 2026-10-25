@@ -85,5 +85,6 @@ export async function dispatchChatStream({
     runtimeConfig,
     imagePaths,
     conversationTitle,
+    builtinProviderId: instanceRuntimeConfig?.builtinProviderId,
   });
 }

@@ -359,6 +359,7 @@ fn queued_follow_up_from_submission(
             codex_model: None,
             codex_reasoning_effort: None,
             conversation_title: None,
+            builtin_provider_id: None,
         },
         run_id,
     })
@@ -2636,6 +2637,7 @@ impl CodexAppServerManager {
             codex_model: None,
             codex_reasoning_effort: None,
             conversation_title: None,
+            builtin_provider_id: None,
         };
         let codex_thread_id = match select_external_session_for_runtime(stored, None) {
             Some(codex_thread_id) => codex_thread_id,

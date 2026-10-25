@@ -79,7 +79,26 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
                     "properties": {
                         "title": { "type": "string", "description": "笔记标题（决定文件名）" },
                         "content": { "type": "string", "description": "Markdown 正文" },
-                        "parent": { "type": "string", "description": "可选目标文件夹相对路径" }
+                        "parent": { "type": "string", "description": "目标文件夹相对路径；用户未说明位置时先询问" },
+                        "tags": {
+                            "type": "array",
+                            "items": { "type": "string" },
+                            "description": "默认标签，例如 [\"项目/Flowix\"]"
+                        },
+                        "icon": {
+                            "type": "string",
+                            "description": "笔记图标（单个 emoji），写入 flowix_icon"
+                        },
+                        "colors": {
+                            "type": "array",
+                            "items": { "type": "string", "enum": ["red", "orange", "yellow", "green", "cyan", "blue", "gray"] },
+                            "description": "笔记颜色，写入 flowix_colors"
+                        },
+                        "properties": {
+                            "type": "object",
+                            "description": "额外 frontmatter 属性，例如 { \"created\": \"2026-10-25\" }",
+                            "additionalProperties": true
+                        }
                     },
                     "required": ["title", "content"]
                 }
@@ -120,7 +139,7 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
             "type": "function",
             "function": {
                 "name": "note_delete",
-                "description": "删除一篇笔记。破坏性操作：本地为硬删除，仅在用户明确要求删除时调用。",
+                "description": "删除一篇笔记。破坏性操作：调用前必须在对话中得到用户明确同意；本地为硬删除，不可恢复。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -234,6 +253,77 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
             }));
     }
     tools
+}
+
+/// Apply `tags` / `icon` / `colors` / `properties` from `note_create` into the
+/// leading YAML frontmatter. Explicit fields win over `properties`.
+fn apply_create_metadata(args: &Value, content: &str) -> Result<String, String> {
+    use flowix_core::memo_file::frontmatter::{merge_frontmatter, MergeOverrides};
+
+    let mut overrides: MergeOverrides = MergeOverrides::new();
+    if let Some(properties) = args.get("properties").and_then(Value::as_object) {
+        for (key, value) in properties {
+            let key = key.trim();
+            if key.is_empty() {
+                continue;
+            }
+            overrides.insert(
+                key.to_owned(),
+                serde_json::to_string(value)
+                    .map_err(|error| format!("properties.{key} 序列化失败: {error}"))?,
+            );
+        }
+    }
+
+    if let Some(tags) = args.get("tags").and_then(Value::as_array) {
+        let tags: Vec<String> = tags
+            .iter()
+            .filter_map(Value::as_str)
+            .map(str::trim)
+            .filter(|tag| !tag.is_empty())
+            .map(str::to_owned)
+            .collect();
+        if !tags.is_empty() {
+            overrides.insert(
+                "tags".to_owned(),
+                serde_json::to_string(&tags).map_err(|error| error.to_string())?,
+            );
+        }
+    }
+
+    if let Some(icon) = string_arg(args, "icon") {
+        overrides.insert(
+            "flowix_icon".to_owned(),
+            serde_json::to_string(icon.trim()).map_err(|error| error.to_string())?,
+        );
+    }
+
+    if let Some(colors) = args.get("colors").and_then(Value::as_array) {
+        const ALLOWED: &[&str] = &["red", "orange", "yellow", "green", "cyan", "blue", "gray"];
+        let colors: Vec<String> = colors
+            .iter()
+            .filter_map(Value::as_str)
+            .map(|color| color.trim().to_ascii_lowercase())
+            .filter(|color| !color.is_empty())
+            .collect();
+        if let Some(invalid) = colors.iter().find(|color| !ALLOWED.contains(&color.as_str())) {
+            return Err(format!(
+                "不支持的笔记颜色 `{invalid}`，可用：{}",
+                ALLOWED.join(", ")
+            ));
+        }
+        if !colors.is_empty() {
+            overrides.insert(
+                "flowix_colors".to_owned(),
+                serde_json::to_string(&colors).map_err(|error| error.to_string())?,
+            );
+        }
+    }
+
+    if overrides.is_empty() {
+        return Ok(content.to_owned());
+    }
+    Ok(merge_frontmatter(content, &overrides))
 }
 
 /// Validate and normalize a notebook-relative note path from model input.
@@ -389,6 +479,7 @@ fn execute_with_service(
                 .filter(|s| !s.is_empty())
                 .map(normalize_path)
                 .transpose()?;
+            let content = apply_create_metadata(&args, &content)?;
             let document = service
                 .create(notebook, parent.as_deref(), &title, &content)
                 .map_err(|error| error.to_string())?;
@@ -529,6 +620,35 @@ mod tests {
 
         let list = execute(&memo, &scope, "note_list", "{}");
         assert_eq!(list["total"], 1, "{list}");
+    }
+
+    #[test]
+    fn create_applies_default_metadata() {
+        let (tmp, memo, scope) = fixture();
+        let created = execute(
+            &memo,
+            &scope,
+            "note_create",
+            &json!({
+                "title": "Styled",
+                "content": "# Styled\n正文\n",
+                "tags": ["项目/Flowix"],
+                "icon": "📝",
+                "colors": ["yellow"],
+                "properties": { "created": "2026-10-25" }
+            })
+            .to_string(),
+        );
+        assert_eq!(created["ok"], true, "{created}");
+        let path = created["note"]["relativePath"].as_str().unwrap();
+        let file = tmp.path().join("notes").join(path);
+        let body = std::fs::read_to_string(file).unwrap();
+        assert!(body.contains("tags:"), "{body}");
+        assert!(body.contains("flowix_icon:"), "{body}");
+        assert!(body.contains("flowix_colors:"), "{body}");
+        assert!(body.contains("created: \"2026-10-25\""), "{body}");
+        assert!(body.contains("项目/Flowix"), "{body}");
+        assert!(body.contains("# Styled"), "{body}");
     }
 
     #[test]

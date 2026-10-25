@@ -787,6 +787,18 @@ export function createAgentThreadCardMessageElement(options: {
         event.stopPropagation();
       });
 
+      // 展开状态下点击思考正文任意位置即可收起，不必滚回顶部点标题。
+      // 链接点击与文本选择不触发，避免误收起。
+      body.addEventListener("click", (event) => {
+        const target = event.target as HTMLElement | null;
+        if (target?.closest("a")) return;
+        if (window.getSelection()?.toString().trim()) return;
+        if (item.classList.contains("agent-thread-card__message--reasoning-collapsed")) return;
+        event.stopPropagation();
+        setReasoningCollapsed(messageRenderKey(message), true);
+        apply(true);
+      });
+
       item.append(header, body);
     } else if (message.role === "system") {
       const content = document.createElement("div");

@@ -107,6 +107,10 @@ pub struct AgentUserMessage {
     pub codex_model: Option<String>,
     pub codex_reasoning_effort: Option<String>,
     pub conversation_title: Option<String>,
+    /// Built-in assistant only: provider bound to the conversation. Falls back
+    /// to the global active provider when absent/unknown.
+    #[serde(default)]
+    pub builtin_provider_id: Option<String>,
 }
 
 impl AgentUserMessage {

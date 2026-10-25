@@ -170,6 +170,8 @@ interface AgentUserMessage {
   codexModel?: AgentCodexModel;
   codexReasoningEffort?: AgentCodexReasoningEffort;
   conversationTitle?: string;
+  /** Built-in assistant only: provider bound to the conversation. */
+  builtinProviderId?: string;
 }
 
 export interface ThreadInfo {

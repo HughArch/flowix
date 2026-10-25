@@ -28,7 +28,7 @@ mod storage_repair;
 mod derivation;
 mod file_management;
 mod file_io;
-pub(crate) mod frontmatter;
+pub mod frontmatter;
 mod index_store;
 mod internal_migration;
 mod local_migrations;

@@ -166,6 +166,7 @@ pub async fn plugin_run(
         codex_model: None,
         codex_reasoning_effort: None,
         conversation_title: Some(format!("plugin:{plugin_id}")),
+        builtin_provider_id: None,
     };
     let plugin_id_for_task = plugin_id.clone();
     let (stream_end_tx, stream_end_rx) = tokio::sync::mpsc::unbounded_channel();

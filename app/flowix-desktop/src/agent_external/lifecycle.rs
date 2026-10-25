@@ -239,6 +239,7 @@ mod tests {
             codex_model: None,
             codex_reasoning_effort: None,
             conversation_title: None,
+            builtin_provider_id: None,
         };
 
         assert!(matches!(

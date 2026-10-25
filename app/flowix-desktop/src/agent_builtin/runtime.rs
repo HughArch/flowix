@@ -26,7 +26,7 @@ use super::provider::{self, ProviderMessage, ProviderError, StreamEvent};
 use super::tools::{self, ToolScope};
 
 /// Tool-call round trips allowed per run before the loop gives up.
-const MAX_TOOL_CYCLES: usize = 8;
+const MAX_TOOL_CYCLES: usize = 20;
 /// History messages fed to the model, newest first.
 const HISTORY_MESSAGE_LIMIT: i64 = 60;
 /// Provider-message cap (system + history + current turn + tool rounds).
@@ -140,9 +140,14 @@ impl BuiltinAiService {
         if !config.enabled {
             return Err("内置 AI 助手未启用：请在设置中开启并配置模型".into());
         }
-        let provider = config
-            .active_provider()
+        // Provider is per conversation; fall back to the global active
+        // provider when the bound one was removed.
+        let provider = message
+            .builtin_provider_id
+            .as_deref()
+            .and_then(|id| config.providers.iter().find(|provider| provider.id == id))
             .cloned()
+            .or_else(|| config.active_provider().cloned())
             .ok_or_else(|| "内置 AI 助手尚未配置任何厂商".to_owned())?;
         if !provider.is_configured() {
             return Err("当前 AI 厂商缺少 API 地址 / Key / 模型配置".into());
@@ -742,11 +747,18 @@ fn system_prompt(scope: &ToolScope, web_search_enabled: bool) -> String {
 今天的日期：{today}。
 
 工具使用规范：
-- 修改任何笔记前必须先 note_read 拿到最新正文。
+- 修改任何笔记前必须先 note_read 拿到最新正文。除非用户明确说“当前文档/这篇笔记/指定路径”，否则先询问用户要修改哪篇笔记，不要自行猜测。
 - 常规修改优先用 note_edit：old 片段必须在正文中恰好出现一次，不要凭记忆编写 old。
 - note_write 会整篇覆盖正文，仅在重写整篇时使用。
-- note_delete 是硬删除且不可恢复，只在用户明确要求删除时使用。
-- 新建笔记用 note_create，把用户要求的标签（如 #项目/Flowix）写进正文。
+- note_delete 是硬删除且不可恢复：**必须先向用户说明要删除哪篇，并得到用户明确同意后才能调用**；用户未确认时绝不删除。
+- 新建笔记前先确认位置（哪个文件夹/相对路径）。用户没说位置时先询问，不要默认建在根目录。
+- 新建笔记用 note_create，并默认补充元数据（除非用户明确不要）：
+  · tags：从用户意图/当前任务标签派生，例如 [项目/Flowix]
+  · icon：一个贴合主题的 emoji，例如 📝
+  · colors：从 red/orange/yellow/green/cyan/blue/gray 中选一个
+  · properties：例如 {{created: YYYY-MM-DD}}
+  这些通过 note_create 的 tags/icon/colors/properties 参数传入，不要手写 YAML frontmatter。
+- 新建文档要排版精美：合理使用标题层级、列表、表格；在合适位置用 callout/toggle/columns/background 工具突出重点、分组信息、对比内容，避免堆砌。
 - Flowix 支持富内容：callout（提示块）、toggle（折叠块）、columns（多列布局）、background（行背景）。用户要求这些效果时调用同名工具，不要手写 ::: 语法。
   · 多列/分栏 → columns action=add contents=[左栏 Markdown, 右栏 Markdown]（或 count=2..4 先建空栏）
   · 提示块/警告框 → callout action=add
