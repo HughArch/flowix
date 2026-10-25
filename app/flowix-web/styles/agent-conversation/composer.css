@@ -91,6 +91,18 @@
   gap: 0.1rem;
 }
 
+/* Host-managed extra control next to the + button (mobile built-in provider
+ * selector). Empty on every other surface, so it must not consume space. */
+.agent-composer__extra {
+  display: inline-flex;
+  align-items: center;
+  min-width: 0;
+}
+
+.agent-composer__extra:empty {
+  display: none;
+}
+
 .agent-conversation-surface .agent-composer__model {
   display: none;
 }

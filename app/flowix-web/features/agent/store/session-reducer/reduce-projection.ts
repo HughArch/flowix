@@ -54,6 +54,8 @@ export function reduceProjection(
       return applyReasoningDeltaToProjection(projection, event);
     case "context_compaction":
       return applyContextCompactionToProjection(projection, event);
+    case "notice":
+      return applyNoticeToProjection(projection, event);
     case "final_message":
       return applyFinalMessageToProjection(projection, event);
     case "tool_call":
@@ -271,6 +273,28 @@ function applyContextCompactionToProjection(
     codexTurnId: event.codexTurnId,
   };
   if (p.messages.some((item) => item.id === message.id)) return p;
+  return {
+    ...p,
+    messages: insertAgentMessageBySourceOrder(p.messages, message),
+  };
+}
+
+function applyNoticeToProjection(
+  p: ThreadProjection,
+  event: AgentEvent & { kind: "notice" },
+): ThreadProjection {
+  if (p.messages.some((item) => item.id === event.id)) return p;
+  const message = {
+    id: event.id,
+    role: "system" as const,
+    content: event.text,
+    messageType: "notice" as const,
+    timestamp: new Date(event.sourceTimestamp ?? event.timestamp).toISOString(),
+    sourceTimestamp: event.sourceTimestamp,
+    sourceSequence: event.sourceSequence,
+    sourceSubsequence: event.sourceSubsequence,
+    isCompleted: true,
+  };
   return {
     ...p,
     messages: insertAgentMessageBySourceOrder(p.messages, message),

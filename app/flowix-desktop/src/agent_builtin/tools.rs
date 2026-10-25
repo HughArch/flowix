@@ -22,6 +22,8 @@ const SEARCH_LIMIT: usize = 20;
 pub struct ToolScope {
     pub notebook_id: String,
     pub notebook_name: String,
+    /// Notebook root on disk; used to load the optional `AGENTS.md`.
+    pub notebook_path: std::path::PathBuf,
 }
 
 pub fn tool_definitions(web_search_enabled: bool) -> Value {
@@ -206,6 +208,7 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
                         "at": { "type": "integer", "description": "插入位置行号（1 开始），默认末尾" },
                         "count": { "type": "integer", "description": "列数（2-4）；提供 contents 时可省略" },
                         "contents": { "type": "array", "items": { "type": "string" }, "description": "各栏内容（Markdown）；列数由数组长度决定，建议 2-4 栏" },
+                        "titleColor": { "type": "string", "description": "分栏标题（每栏第一行）的行背景色，默认 yellow" },
                         "block": { "type": "integer", "description": "目标 columns 块序号（1 开始）" },
                         "column": { "type": "integer", "description": "要删除的列序号（1 开始）" },
                         "widths": { "type": "array", "items": { "type": "integer" }, "description": "各列相对宽度，例如 [100,100]" }
@@ -579,7 +582,11 @@ mod tests {
                 updated_at: 0,
             }])
             .unwrap();
-        let scope = ToolScope { notebook_id: "work".into(), notebook_name: "Work".into() };
+        let scope = ToolScope {
+            notebook_id: "work".into(),
+            notebook_name: "Work".into(),
+            notebook_path: notebook_path,
+        };
         (tmp, Arc::new(RwLock::new(memo)), scope)
     }
 

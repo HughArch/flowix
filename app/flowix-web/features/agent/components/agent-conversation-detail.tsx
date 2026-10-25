@@ -1,6 +1,7 @@
 'use client';
 
-import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type UIEventHandler, type WheelEventHandler } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useRef, useState, type CSSProperties, type ReactNode, type UIEventHandler, type WheelEventHandler } from 'react';
+import { createRoot, type Root } from 'react-dom/client';
 import { useShallow } from 'zustand/react/shallow';
 
 import type { SurfacePresentationUpdate } from '@features/workspace/model/surface-contract';
@@ -124,15 +125,25 @@ function persistDetailDraft(instanceId: string, draft: string | null): void {
 export function AgentConversationDetail({
   instanceId,
   reportPresentation,
+  composerExtra,
 }: {
   instanceId: string;
   reportPresentation?: (update: SurfacePresentationUpdate) => void;
+  /** Optional host control rendered next to the composer's + button. */
+  composerExtra?: ReactNode;
 }) {
   const { t } = useI18n();
   const { instance, status, retry } = useAgentConversationSurface(instanceId, reportPresentation);
 
   if (instance) {
-    return <AgentConversationDetailContent key={instanceId} instanceId={instanceId} instance={instance} />;
+    return (
+      <AgentConversationDetailContent
+        key={instanceId}
+        instanceId={instanceId}
+        instance={instance}
+        composerExtra={composerExtra}
+      />
+    );
   }
 
   if (reportPresentation) return null;
@@ -155,9 +166,11 @@ export function AgentConversationDetail({
 function AgentConversationDetailContent({
   instanceId,
   instance,
+  composerExtra,
 }: {
   instanceId: string;
   instance: AgentConversationInstance;
+  composerExtra?: ReactNode;
 }) {
   const { language, t } = useI18n();
   const selectedNotebookId = useNoteStore((state) => state.selectedNotebook?.id ?? null);
@@ -222,6 +235,9 @@ function AgentConversationDetailContent({
   const surfaceRef = useRef<AgentConversationSurfaceController | null>(null);
   const draftRef = useRef<string | null>(null);
   const destroyedRef = useRef(false);
+  const composerExtraRef = useRef<ReactNode>(composerExtra);
+  composerExtraRef.current = composerExtra;
+  const composerExtraRootRef = useRef<Root | null>(null);
   const renderThreadIdRef = useRef<string | null>(renderThreadId);
   const typeKeyRef = useRef<AgentTypeKey>(instance?.agentType ?? DEFAULT_AGENT_TYPE_KEY);
   const messagesRef = useRef(messages);
@@ -465,6 +481,12 @@ function AgentConversationDetailContent({
       t: (key) => tRef.current(key),
     });
     composerMount.append(composerParts.composer);
+    // Host-managed composer extra (mobile built-in provider selector).
+    // The root is created unconditionally so a later prop update can render
+    // into it without recreating the composer.
+    const composerExtraRoot = createRoot(composerParts.composerExtraMount);
+    composerExtraRoot.render(composerExtraRef.current ?? null);
+    composerExtraRootRef.current = composerExtraRoot;
     const {
       composer,
       composerActions,
@@ -691,6 +713,8 @@ function AgentConversationDetailContent({
 
     return () => {
       destroyedRef.current = true;
+      composerExtraRootRef.current?.unmount();
+      composerExtraRootRef.current = null;
       body.removeEventListener('click', handleMessageLinkClick);
       composerController.flushPendingDraft();
       surface.dispose();
@@ -711,6 +735,12 @@ function AgentConversationDetailContent({
       pendingFirstMessageRef.current = null;
     };
   }, [instanceId, renderCurrentMessages]);
+
+  // Keep the composer's host control in sync when its props change (provider
+  // list / selected provider) without rebuilding the composer.
+  useEffect(() => {
+    composerExtraRootRef.current?.render(composerExtra ?? null);
+  }, [composerExtra]);
 
   useEffect(() => {
     renderCurrentMessages();

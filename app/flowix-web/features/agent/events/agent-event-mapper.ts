@@ -144,6 +144,13 @@ export function mapAgentChunkToEvent(
           chunk.id,
         ) ?? chunk.id,
       };
+    case "notice":
+      return {
+        ...base,
+        kind: "notice",
+        id: chunk.id,
+        text: chunk.text,
+      };
     case "tool_call":
       return {
         ...base,

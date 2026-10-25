@@ -234,6 +234,7 @@ impl BuiltinAiService {
         Some(ToolScope {
             notebook_id: notebook.id.clone(),
             notebook_name: notebook.name.clone(),
+            notebook_path: std::path::PathBuf::from(&notebook.path),
         })
     }
 
@@ -387,10 +388,30 @@ impl BuiltinAiService {
         //    humanized references).
         let mut provider_messages =
             Vec::with_capacity(HISTORY_MESSAGE_LIMIT as usize + 8);
+        // Optional notebook-level instructions. The file is user-authored and
+        // treated as project guidance; the UI gets a visible notice.
+        let agents_md = load_agents_md(&scope.notebook_path);
         provider_messages.push(ProviderMessage::system(system_prompt(
             scope,
             config.web_search_enabled,
+            agents_md.as_deref(),
         )));
+        if let Some(content) = &agents_md {
+            emit_builtin_chunk(
+                app,
+                AgentChunk::Notice {
+                    thread_id: thread_id.to_owned(),
+                    // Stable per-thread id: the UI shows the notice once even
+                    // though every run reloads AGENTS.md.
+                    id: format!("notice-agents-md-{thread_id}"),
+                    text: format!(
+                        "已加载笔记本 AGENTS.md 作为项目指令（{} 字符）",
+                        content.chars().count()
+                    ),
+                },
+                run_id,
+            );
+        }
         for record in self.load_history(thread_id).await? {
             if let Some(converted) = history_to_provider(&record) {
                 provider_messages.push(converted);
@@ -732,13 +753,38 @@ fn tool_message(message_id: &str, provider_call_id: &str, name: &str, result_tex
     }
 }
 
-fn system_prompt(scope: &ToolScope, web_search_enabled: bool) -> String {
+/// Read `<notebook>/AGENTS.md` if present. Notes are user data; cap the file
+/// so a pathological file cannot blow the context budget.
+fn load_agents_md(notebook_path: &std::path::Path) -> Option<String> {
+    const MAX_AGENTS_MD_BYTES: u64 = 64 * 1024;
+    let path = notebook_path.join("AGENTS.md");
+    let metadata = std::fs::metadata(&path).ok()?;
+    if !metadata.is_file() || metadata.len() > MAX_AGENTS_MD_BYTES {
+        return None;
+    }
+    let content = std::fs::read_to_string(&path).ok()?;
+    let trimmed = content.trim();
+    (!trimmed.is_empty()).then(|| trimmed.to_owned())
+}
+
+fn system_prompt(
+    scope: &ToolScope,
+    web_search_enabled: bool,
+    agents_md: Option<&str>,
+) -> String {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let web_search_rule = if web_search_enabled {
         "- 需要最新或外部信息时用 web_search；回答里引用返回结果的 URL，不要把搜索结果当成笔记内容。"
     } else {
         "- 当前没有联网搜索工具；用户要求联网搜索时，明确说明需要在设置中开启「联网搜索」。"
     };
+    let agents_section = agents_md
+        .map(|content| {
+            format!(
+                "\n\n## 笔记本 AGENTS.md 指令\n以下内容来自当前笔记本根目录的 AGENTS.md，作为本会话的项目指令：\n\n{content}"
+            )
+        })
+        .unwrap_or_default();
     format!(
         "你是 Flowix 内置笔记助手，运行在用户设备上的 Flowix 应用内，\
 只能通过提供的笔记工具访问用户的笔记。
@@ -752,26 +798,26 @@ fn system_prompt(scope: &ToolScope, web_search_enabled: bool) -> String {
 - note_write 会整篇覆盖正文，仅在重写整篇时使用。
 - note_delete 是硬删除且不可恢复：**必须先向用户说明要删除哪篇，并得到用户明确同意后才能调用**；用户未确认时绝不删除。
 - 新建笔记前先确认位置（哪个文件夹/相对路径）。用户没说位置时先询问，不要默认建在根目录。
-- 新建笔记用 note_create，并默认补充元数据（除非用户明确不要）：
-  · tags：从用户意图/当前任务标签派生，例如 [项目/Flowix]
-  · icon：一个贴合主题的 emoji，例如 📝
-  · colors：从 red/orange/yellow/green/cyan/blue/gray 中选一个
-  · properties：例如 {{created: YYYY-MM-DD}}
+- 新建笔记用 note_create。默认只补充 created 日期（工具会自动写入）；**不要默认添加颜色或标签**：
+  · tags / colors 只在用户明确要求，或内容主题明显需要分类时添加
+  · icon 可选，用户未要求时可省略
+  · 其他属性通过 properties 传入
   这些通过 note_create 的 tags/icon/colors/properties 参数传入，不要手写 YAML frontmatter。
 - 新建文档要排版精美：合理使用标题层级、列表、表格；在合适位置用 callout/toggle/columns/background 工具突出重点、分组信息、对比内容，避免堆砌。
 - Flowix 支持富内容：callout（提示块）、toggle（折叠块）、columns（多列布局）、background（行背景）。用户要求这些效果时调用同名工具，不要手写 ::: 语法。
-  · 多列/分栏 → columns action=add contents=[左栏 Markdown, 右栏 Markdown]（或 count=2..4 先建空栏）
+  · 多列/分栏 → columns action=add contents=[左栏 Markdown, 右栏 Markdown] titleColor=yellow（分栏标题即每栏第一行会自动加行背景；titleColor 可选 yellow/blue/green 等）
   · 提示块/警告框 → callout action=add
   · 折叠详情 → toggle action=add
   · 文字行背景 → background action=set
   · 序号（block/column/line）都从 1 开始；修改前先 list 确认序号。
 - 用户消息中 @标题 形式的提及通常对应 relativePath 为「标题.md」的笔记。
 {web_search_rule}
-- 用用户的语言回答；提到笔记时给出其相对路径；不要虚构笔记内容。",
+- 用用户的语言回答；提到笔记时给出其相对路径；不要虚构笔记内容。{agents_section}",
         name = scope.notebook_name,
         notebook_id = scope.notebook_id,
         today = today,
         web_search_rule = web_search_rule,
+        agents_section = agents_section,
     )
 }
 

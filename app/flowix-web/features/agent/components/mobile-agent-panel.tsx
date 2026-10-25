@@ -259,6 +259,50 @@ function ConversationTab({
   );
 }
 
+/** Provider chip rendered inside the composer actions row, next to +. */
+function ConversationProviderSelector({
+  providers,
+  providerId,
+  onChange,
+}: {
+  providers: BuiltinAiProviderView[];
+  providerId: string;
+  onChange: (providerId: string) => void;
+}) {
+  const { t } = useI18n();
+  if (providers.length === 0) return null;
+  const current = providers.find((provider) => provider.id === providerId) ?? null;
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          className="flex h-6 max-w-[112px] items-center gap-1 rounded-md px-1.5 text-[11px] text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
+          aria-label={t('agent.mobilePanel.provider')}
+        >
+          <span className="min-w-0 flex-1 truncate text-left">
+            {current?.name || t('agent.mobilePanel.noProvider')}
+          </span>
+          <ChevronDown className="h-3 w-3 shrink-0" />
+        </button>
+      </DropdownMenuTrigger>
+      <DropdownMenuContent align="start" className="w-52">
+        <DropdownMenuLabel>{t('agent.mobilePanel.provider')}</DropdownMenuLabel>
+        {providers.map((provider) => (
+          <DropdownMenuItem key={provider.id} onClick={() => onChange(provider.id)}>
+            <span className="min-w-0 flex-1 truncate">
+              {provider.name || provider.apiUrl}
+            </span>
+            {provider.id === providerId && (
+              <Check className="ml-2 h-3.5 w-3.5 shrink-0 text-[var(--brand)]" />
+            )}
+          </DropdownMenuItem>
+        ))}
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 export function MobileAgentPanel() {
   const { t } = useI18n();
   const open = useMobileAgentPanelStore((state) => state.open);
@@ -286,11 +330,10 @@ export function MobileAgentPanel() {
   // Provider is bound per conversation. A missing/deleted provider falls back
   // to the global active provider from settings.
   const boundProviderId = currentInstance?.runtimeConfig?.builtinProviderId;
-  const conversationProviderId = providers.some((provider) => provider.id === boundProviderId)
+  const conversationProviderId = (boundProviderId
+    && providers.some((provider) => provider.id === boundProviderId)
     ? boundProviderId
-    : activeProviderId;
-  const conversationProvider =
-    providers.find((provider) => provider.id === conversationProviderId) ?? null;
+    : activeProviderId) || '';
 
   // Refresh provider config whenever the drawer opens (settings may have
   // changed while it was closed).
@@ -437,7 +480,16 @@ export function MobileAgentPanel() {
         </header>
         <div className="min-h-0 flex-1">
           {open && instanceId ? (
-            <AgentConversationDetail instanceId={instanceId} />
+            <AgentConversationDetail
+              instanceId={instanceId}
+              composerExtra={
+                <ConversationProviderSelector
+                  providers={providers}
+                  providerId={conversationProviderId}
+                  onChange={setConversationProvider}
+                />
+              }
+            />
           ) : (
             <div className="flex h-full flex-col items-center justify-center gap-3 px-6 text-center">
               <p className="text-sm text-[var(--muted-foreground)]">
@@ -450,44 +502,6 @@ export function MobileAgentPanel() {
             </div>
           )}
         </div>
-        {/* 厂商切换跟随对话：放在输入框下方，仅影响当前会话。 */}
-        {providers.length > 0 && instanceId && (
-          <div className="flex h-9 shrink-0 items-center justify-end gap-2 border-t border-[var(--border)] px-3">
-            <span className="text-[11px] text-[var(--muted-foreground)]">
-              {t('agent.mobilePanel.provider')}
-            </span>
-            <DropdownMenu>
-              <DropdownMenuTrigger asChild>
-                <button
-                  type="button"
-                  className="flex h-7 max-w-[180px] items-center gap-1 rounded-md border border-[var(--border)] px-2 text-[11px] text-[var(--foreground)] hover:bg-[var(--muted)]"
-                  aria-label={t('agent.mobilePanel.provider')}
-                >
-                  <span className="min-w-0 flex-1 truncate text-left">
-                    {conversationProvider?.name || t('agent.mobilePanel.noProvider')}
-                  </span>
-                  <ChevronDown className="h-3 w-3 shrink-0" />
-                </button>
-              </DropdownMenuTrigger>
-              <DropdownMenuContent align="end" className="w-52">
-                <DropdownMenuLabel>{t('agent.mobilePanel.provider')}</DropdownMenuLabel>
-                {providers.map((provider) => (
-                  <DropdownMenuItem
-                    key={provider.id}
-                    onClick={() => setConversationProvider(provider.id)}
-                  >
-                    <span className="min-w-0 flex-1 truncate">
-                      {provider.name || provider.apiUrl}
-                    </span>
-                    {provider.id === conversationProviderId && (
-                      <Check className="ml-2 h-3.5 w-3.5 shrink-0 text-[var(--brand)]" />
-                    )}
-                  </DropdownMenuItem>
-                ))}
-              </DropdownMenuContent>
-            </DropdownMenu>
-          </div>
-        )}
       </aside>
 
       {/* Long-press menu */}

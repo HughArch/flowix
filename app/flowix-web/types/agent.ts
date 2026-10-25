@@ -321,6 +321,8 @@ export type AgentMessageType =
   /** Provider commentary/progress item. It remains a normal transcript row. */
   | "agent-commentary"
   | "context-compaction"
+  /** Built-in assistant system notice (e.g. AGENTS.md loaded). */
+  | "notice"
   | "goal-round"
   | "goal-complete"
   | "goal-blocked"
@@ -355,6 +357,7 @@ export type AgentChunk =
   | AgentChunkText
   | AgentChunkReasoning
   | AgentChunkContextCompaction
+  | AgentChunkNotice
   | AgentChunkToolCall
   | AgentChunkToolResult
   | AgentChunkDshCommand
@@ -421,6 +424,18 @@ export interface AgentChunkContextCompaction {
   codex_turn_id?: string;
   message_phase?: "started" | "updated" | "completed";
   content_mode?: "delta" | "snapshot";
+  source_timestamp?: number;
+  source_sequence?: number;
+  source_subsequence?: number;
+}
+
+export interface AgentChunkNotice {
+  kind: "notice";
+  thread_id: string;
+  id: string;
+  text: string;
+  agent_type?: AgentTypeKey;
+  run_id?: string;
   source_timestamp?: number;
   source_sequence?: number;
   source_subsequence?: number;
@@ -696,6 +711,7 @@ export type AgentEvent =
   | (AgentEventBase & { kind: "final_message"; text: string })
   | (AgentEventBase & { kind: "reasoning_delta"; text: string })
   | (AgentEventBase & { kind: "context_compaction"; id: string })
+  | (AgentEventBase & { kind: "notice"; id: string; text: string })
   | (AgentEventBase & {
       kind: "tool_call";
       toolCallId: string;

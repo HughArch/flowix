@@ -803,7 +803,10 @@ export function createAgentThreadCardMessageElement(options: {
     } else if (message.role === "system") {
       const content = document.createElement("div");
       content.className = "agent-thread-card__message-content";
-      if (message.messageType === "context-compaction") {
+      if (message.messageType === "notice") {
+        content.className = "agent-thread-card__message-content text-xs text-[var(--muted-foreground)]";
+        content.textContent = messageView.visibleContent;
+      } else if (message.messageType === "context-compaction") {
         content.className = "agent-thread-card__message-context-compaction";
         const compactedResult = message.content.trim().replace(/^DSH\s+/u, "");
         content.textContent = compactedResult

@@ -11,6 +11,7 @@ export interface AgentComposerDomParts {
   composer: HTMLElement;
   inputRow: HTMLDivElement;
   composerActions: HTMLDivElement;
+  composerExtraMount: HTMLDivElement;
   composerRoleIcon: HTMLButtonElement;
   composerAddPopover: HTMLDivElement;
   input: HTMLDivElement;
@@ -140,6 +141,10 @@ export function createAgentComposerDom(
   sendButtonMount.className = 'agent-composer__send-tooltip';
   const composerActions = document.createElement('div');
   composerActions.className = 'agent-composer__actions';
+  // Host-managed extra control (mobile built-in agent provider selector).
+  // Empty on every other surface; the host renders into it if needed.
+  const composerExtraMount = document.createElement('div');
+  composerExtraMount.className = 'agent-composer__extra';
   const codexSettingsPopover = document.createElement('div');
   codexSettingsPopover.className = 'agent-thread-card__codex-settings-popover';
   codexSettingsPopover.setAttribute('role', 'menu');
@@ -152,7 +157,7 @@ export function createAgentComposerDom(
   composerAddPopover.className = 'agent-composer__add-popover';
   composerAddPopover.setAttribute('role', 'menu');
   composerAddPopover.hidden = true;
-  composerActions.append(composerRoleIcon);
+  composerActions.append(composerRoleIcon, composerExtraMount);
   // DOM 顺序 ── composerActions (添加按钮) 放在 input 之前, 让非全屏
   // flex (默认 row, DOM 顺序 = 视觉顺序) 状态下添加按钮显示在 input
   // 左侧, 跟全屏态 grid 布局 `grid-column: 1` 把 actions 显式钉在第一列
@@ -170,6 +175,7 @@ export function createAgentComposerDom(
     composer,
     inputRow,
     composerActions,
+    composerExtraMount,
     composerRoleIcon,
     input,
     codexSettingsPopover,

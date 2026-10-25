@@ -218,6 +218,22 @@ fn toggle_op(
     }
 }
 
+/// Give the first non-empty line of a column (its title) a line background.
+/// Invalid colors or non-text first blocks leave the content untouched.
+fn apply_column_title_background(content: &str, color: &str) -> String {
+    if content.trim().is_empty() {
+        return content.to_owned();
+    }
+    let Some(line) = content
+        .lines()
+        .position(|line| !line.trim().is_empty())
+        .map(|index| index + 1)
+    else {
+        return content.to_owned();
+    };
+    line_background::set(content, line, color).unwrap_or_else(|_| content.to_owned())
+}
+
 fn columns_op(
     service: &mut NoteService<'_>,
     notebook: &str,
@@ -241,11 +257,12 @@ fn columns_op(
                     .collect::<Vec<_>>()
             });
             let next = if let Some(contents) = contents {
+                let title_color = string_arg(args, "titleColor").unwrap_or_else(|| "yellow".to_owned());
                 let specs: Vec<columns::ColumnSpec> = contents
                     .into_iter()
                     .map(|content| columns::ColumnSpec {
                         width: columns::DEFAULT_WIDTH,
-                        content,
+                        content: apply_column_title_background(&content, &title_color),
                     })
                     .collect();
                 columns::insert_specs(&body, usize_arg(args, "at"), &specs)?
@@ -397,8 +414,13 @@ mod tests {
         .unwrap();
         assert_eq!(columns["blocks"].as_array().unwrap().len(), 1, "{columns}");
         let block = &columns["blocks"][0];
-        assert_eq!(block["columns"][0]["content"], "左栏内容");
-        assert_eq!(block["columns"][1]["content"], "右栏内容");
+        let left = block["columns"][0]["content"].as_str().unwrap();
+        let right = block["columns"][1]["content"].as_str().unwrap();
+        assert!(left.contains("左栏内容"), "{left}");
+        assert!(right.contains("右栏内容"), "{right}");
+        // Column titles get a default line background marker.
+        assert!(left.contains("flowix:block-bg"), "{left}");
+        assert!(right.contains("flowix:block-bg"), "{right}");
 
         let body = service.get(&notebook, &path).unwrap().body;
         assert!(body.contains("::: callout"));

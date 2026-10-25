@@ -343,6 +343,12 @@ pub enum AgentChunk {
     Reasoning { thread_id: String, text: String },
     /// Codex automatically compacted the conversation context.
     ContextCompaction { thread_id: String, id: String },
+    /// Built-in assistant system notice (e.g. notebook AGENTS.md loaded).
+    Notice {
+        thread_id: String,
+        id: String,
+        text: String,
+    },
     /// LLM 发出的工具调用
     ToolCall {
         thread_id: String,
@@ -447,6 +453,7 @@ impl AgentChunk {
             Self::Text { .. } => "text",
             Self::Reasoning { .. } => "reasoning",
             Self::ContextCompaction { .. } => "context_compaction",
+            Self::Notice { .. } => "notice",
             Self::ToolCall { .. } => "tool_call",
             Self::ToolResult { .. } => "tool_result",
             Self::DshCommand { .. } => "dsh_command",
@@ -465,6 +472,7 @@ impl AgentChunk {
             | Self::Text { thread_id, .. }
             | Self::Reasoning { thread_id, .. }
             | Self::ContextCompaction { thread_id, .. }
+            | Self::Notice { thread_id, .. }
             | Self::ToolCall { thread_id, .. }
             | Self::ToolResult { thread_id, .. }
             | Self::DshCommand { thread_id, .. }
