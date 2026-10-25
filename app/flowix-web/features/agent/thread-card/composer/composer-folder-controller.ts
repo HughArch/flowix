@@ -20,29 +20,11 @@ export interface ComposerFolderReference {
 const NOTE_SEARCH_DEBOUNCE_MS = 150;
 const MENU_SCROLLBAR_HIDE_DELAY_MS = 700;
 
-/**
- * The document currently open in the editor, projected into the @ picker's
- * note shape. Mobile AI panel shows it as the first candidate.
- */
-function resolveCurrentDocumentMention(): MentionNoteItem | null {
-  if (!isMobileDevice()) return null;
-  const documentPath = useDocumentStore.getState().currentDocumentPath;
-  if (!documentPath) return null;
-  const normalized = canonicalPath(documentPath);
-  const notebooks = useNoteStore.getState().notebooks;
-  let owner: { id: string; name: string; path: string } | null = null;
-  let ownerRootLength = -1;
-  for (const notebook of notebooks) {
-    const root = canonicalPath(notebook.path);
-    const prefix = `${root}/`;
-    if (normalized.startsWith(prefix) && root.length > ownerRootLength) {
-      owner = notebook;
-      ownerRootLength = root.length;
-    }
-  }
-  if (!owner) return null;
-  const relativePath = normalized.slice(ownerRootLength + 1);
-  if (!relativePath) return null;
+function mentionItemFromNotebook(
+  owner: { id: string; name: string; path: string },
+  relativePath: string,
+  documentPath: string,
+): MentionNoteItem {
   return {
     relativePath,
     filename: relativePath.split("/").pop() ?? relativePath,
@@ -53,6 +35,43 @@ function resolveCurrentDocumentMention(): MentionNoteItem | null {
     notebookPath: owner.path,
     originalPath: documentPath,
   };
+}
+
+/**
+ * The document currently open in the editor, projected into the @ picker's
+ * note shape. Mobile AI panel shows it as the first candidate.
+ */
+function resolveCurrentDocumentMention(): MentionNoteItem | null {
+  if (!isMobileDevice()) return null;
+  const documentState = useDocumentStore.getState();
+  const documentPath = documentState.currentDocumentPath;
+  if (!documentPath) return null;
+  const notebooks = useNoteStore.getState().notebooks;
+  // The open session carries the notebook identity chosen at open time —
+  // authoritative on Android where the notebook root's spelling can differ
+  // from the document path (e.g. /data/data vs /data/user/0 symlinks).
+  const session = documentState.activeExternalSession;
+  if (session?.notebookId && session.relativePath) {
+    const notebook = notebooks.find((item) => item.id === session.notebookId);
+    if (notebook) return mentionItemFromNotebook(notebook, session.relativePath, documentPath);
+  }
+  const normalized = canonicalPath(documentPath);
+  let owner: { id: string; name: string; path: string } | null = null;
+  let ownerRootLength = -1;
+  for (const notebook of notebooks) {
+    // Android reports notebook roots with a trailing slash; strip it or the
+    // `root + '/'` prefix can never match.
+    const root = canonicalPath(notebook.path).replace(/\/+$/, '');
+    const prefix = `${root}/`;
+    if (normalized.startsWith(prefix) && root.length > ownerRootLength) {
+      owner = notebook;
+      ownerRootLength = root.length;
+    }
+  }
+  if (!owner) return null;
+  const relativePath = normalized.slice(ownerRootLength + 1);
+  if (!relativePath) return null;
+  return mentionItemFromNotebook(owner, relativePath, documentPath);
 }
 
 /**

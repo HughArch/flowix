@@ -63,12 +63,27 @@ function resolveDocumentContext(path: string): {
   notebookId: string | null;
   relativePath: string | null;
 } {
+  const documentState = useDocumentStore.getState();
   const notebooks = useNoteStore.getState().notebooks;
+  // Prefer the open session's identity: Android notebook roots may not
+  // prefix-match document paths verbatim (symlinked /data/data spellings),
+  // and the session carries what was chosen at open time.
+  const session = documentState.activeExternalSession;
+  if (
+    session?.notebookId
+    && session.relativePath
+    && documentState.currentDocumentPath
+    && canonicalPath(documentState.currentDocumentPath) === canonicalPath(path)
+  ) {
+    return { notebookId: session.notebookId, relativePath: session.relativePath };
+  }
   const normalized = canonicalPath(path);
   let owner: { id: string; path: string } | null = null;
   let ownerRootLength = -1;
   for (const notebook of notebooks) {
-    const root = canonicalPath(notebook.path);
+    // Android reports notebook roots with a trailing slash; strip it or the
+    // `root + '/'` prefix can never match.
+    const root = canonicalPath(notebook.path).replace(/\/+$/, '');
     const prefix = `${root}/`;
     if (normalized.startsWith(prefix) && root.length > ownerRootLength) {
       owner = notebook;
