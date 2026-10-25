@@ -1,8 +1,8 @@
 import { createLogger } from '@/lib/logger';
-import { Editor } from '@tiptap/core';
+import { Editor, Extension } from '@tiptap/core';
 import type { JSONContent } from '@tiptap/core';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
-import { NodeSelection, TextSelection } from '@tiptap/pm/state';
+import { NodeSelection, Plugin, PluginKey, TextSelection } from '@tiptap/pm/state';
 import { forwardRef, useEffect, useImperativeHandle, useLayoutEffect, useRef, useState, useCallback, type MouseEvent as ReactMouseEvent, type ReactNode } from 'react';
 import { useShortcutScope, pushHandler } from '@features/shortcuts';
 import { TableBubbleMenu } from '@features/editor/extensions/table/table-bubble-menu';
@@ -311,6 +311,9 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   const initialParsedContentRef = useRef(initialParsedContent);
   initialParsedContentRef.current = initialParsedContent;
   const isApplyingExternalContentRef = useRef(false);
+  // The initial placeholder normalization rewrites the parsed document before
+  // any user can edit it, so it runs outside the read-only transaction guard.
+  const allowInitialProgrammaticChangeRef = useRef(false);
   const isComposingRef = useRef(false);
   const pendingSerializeDirtyRef = useRef(false);
   const localEditVersionRef = useRef(0);
@@ -669,6 +672,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
       return;
     }
     const mountStartedAt = performance.now();
+    allowInitialProgrammaticChangeRef.current = true;
     const initialContent = content;
     const parsedContent = initialParsedContentRef.current;
     contentRef.current = initialContent;
@@ -723,18 +727,34 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           return false;
         },
       },
-      extensions: createMarkdownEditorExtensions({
-        ownerPath,
-        getOwnerPath: getCurrentAttachmentOwnerPath,
-        getAttachmentNotebookId: getCurrentAttachmentNotebookId,
-        propertyTargetId,
-        onViewSourceMode,
-        transitionId,
-        workspaceHost,
-        getPlaceholder: () => resolvedPlaceholderRef.current,
-        getHeadingFoldLabels: () => headingFoldLabelsRef.current,
-        getJsonFoldLabels: () => jsonFoldLabelsRef.current,
-      }, CodeBlockShiki),
+      extensions: [
+        ...createMarkdownEditorExtensions({
+          ownerPath,
+          getOwnerPath: getCurrentAttachmentOwnerPath,
+          getAttachmentNotebookId: getCurrentAttachmentNotebookId,
+          propertyTargetId,
+          onViewSourceMode,
+          transitionId,
+          workspaceHost,
+          getPlaceholder: () => resolvedPlaceholderRef.current,
+          getHeadingFoldLabels: () => headingFoldLabelsRef.current,
+          getJsonFoldLabels: () => jsonFoldLabelsRef.current,
+        }, CodeBlockShiki),
+        // `editable: false` only stops DOM input; toolbar and floating menu
+        // commands still dispatch transactions. Drop document changes at the
+        // state layer so a read-only host is genuinely read-only. Authoritative
+        // external replacements (sync, version restore) keep working.
+        Extension.create({
+          name: 'readOnlyDocumentGuard',
+          addProseMirrorPlugins: () => [new Plugin({
+            key: new PluginKey('readOnlyDocumentGuard'),
+            filterTransaction: (transaction) => !transaction.docChanged
+              || editableRef.current
+              || isApplyingExternalContentRef.current
+              || allowInitialProgrammaticChangeRef.current,
+          })],
+        }),
+      ],
       content: parsedContent ?? initialContent,
       contentType: parsedContent ? 'json' : 'markdown',
       editable,
@@ -759,6 +779,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     });
     const placeholderNormalizationStartedAt = performance.now();
     normalizeTaskItemPlaceholders(editor);
+    allowInitialProgrammaticChangeRef.current = false;
     logEditorPerf('MarkdownEditor:normalizeTaskPlaceholders', placeholderNormalizationStartedAt);
     const documentScanStartedAt = performance.now();
     let codeBlockCount = 0;

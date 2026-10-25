@@ -113,7 +113,8 @@ export async function generatePropertyKey(displayName: string): Promise<string> 
 }
 
 export const SYSTEM_PROPERTY_KEYS = new Set([
-  'name', 'description', 'tags', 'flowix_colors', 'flowix_icon', 'flowix_favorited', 'status', 'calendar_date',
+  'name', 'description', 'tags', 'flowix_colors', 'flowix_icon', 'flowix_favorited', 'flowix_locked',
+  'status', 'calendar_date',
 ]);
 export function isSystemPropertyKey(key: string): boolean {
   return SYSTEM_PROPERTY_KEYS.has(canonicalizePropertyKey(key).toLowerCase());

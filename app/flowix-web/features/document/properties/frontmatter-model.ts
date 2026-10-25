@@ -8,9 +8,11 @@ import { isValidTagPath } from '@/lib/tag-path';
 import { NOTE_COLORS } from '@/types/note-item';
 
 export const FRONTMATTER_RE = /^\uFEFF?(?:[ \t]*\r?\n)*---\r?\n([\s\S]*?)\r?\n---(?:\r?\n|$)/;
+/** Lock state is toggled from the document menu, never from a property row. */
+export const DOCUMENT_LOCK_KEY = 'flowix_locked';
 // Only editor metadata is hidden. Historical memo identity fields are ordinary
 // YAML properties and are no longer interpreted by note indexing.
-export const SYSTEM_FRONTMATTER_KEYS = new Set([PROPERTY_TYPES_KEY]);
+export const SYSTEM_FRONTMATTER_KEYS = new Set([PROPERTY_TYPES_KEY, DOCUMENT_LOCK_KEY]);
 /** Identity fields that stay editable but are never imported through a paste. */
 const PASTE_EXCLUDED_KEYS = new Set(['flowix_key']);
 

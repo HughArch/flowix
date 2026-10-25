@@ -9,6 +9,7 @@ import { useEditorFontSize } from '@features/preferences/public/font-api';
 import { applyLoadedDocumentContent, getDocumentBuffer, saveDocumentPath } from '../store/document-session-service';
 import { documentIdentityFromFile } from '../store/document-identity';
 import { useEditorFontSwitch } from './editor-font-switcher';
+import { useDocumentLock } from './use-document-lock';
 import { useDocumentTitlebarColors } from './use-document-titlebar-colors';
 import type { DocumentTitlebarTarget } from './document-titlebar-model';
 import type { FontSizeMode } from '@shared/ui/font-size-switcher';
@@ -18,6 +19,7 @@ const logger = createLogger('document-titlebar-actions');
 export function useDocumentTitlebarActions(target: DocumentTitlebarTarget) {
   const { t } = useI18n();
   const { colors, changeColors } = useDocumentTitlebarColors(target);
+  const lock = useDocumentLock(target.fileIdentity);
   const [confirmVersion, setConfirmVersion] = useState<PathVersionMeta | null>(null);
   const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
   const [versionRefreshKey, setVersionRefreshKey] = useState(0);
@@ -52,8 +54,22 @@ export function useDocumentTitlebarActions(target: DocumentTitlebarTarget) {
     }
   };
 
+  /** Restoring replaces the document body, so a locked note must be unlocked first. */
+  const requestRestoreVersion = (version: PathVersionMeta) => {
+    if (lock.locked) {
+      toast.info(t('document.lock.restoreBlocked'));
+      return;
+    }
+    setConfirmVersion(version);
+  };
+
   const restorePathVersion = async () => {
     if (!target.notebookId || !target.relativePath || !confirmVersion || restoring.current || !isSamePath()) return;
+    if (lock.locked) {
+      setConfirmVersion(null);
+      toast.info(t('document.lock.restoreBlocked'));
+      return;
+    }
     restoring.current = true;
     setRestoringVersionId(confirmVersion.id);
     try {
@@ -97,7 +113,8 @@ export function useDocumentTitlebarActions(target: DocumentTitlebarTarget) {
 
   return {
     colors, changeColors, fontSwitch, selectedFontSizeMode, setEditorFontSizeMode,
-    confirmVersion, setConfirmVersion, restoringVersionId, versionRefreshKey,
+    lock,
+    confirmVersion, setConfirmVersion, requestRestoreVersion, restoringVersionId, versionRefreshKey,
     archiveVersion, restorePathVersion, copyFolderPath, revealFile,
   };
 }

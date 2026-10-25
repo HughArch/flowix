@@ -1,6 +1,6 @@
 import { useState } from 'react';
-import { Check, Code2, Ellipsis } from 'lucide-react';
-import { LinkSimpleIcon, CopyIcon, FolderOpenIcon, FileMdIcon, FileDocIcon, FilePdfIcon, ClockIcon, MapPinSimpleAreaIcon, TrashSimpleIcon, SwatchesIcon, ArrowsClockwiseIcon } from '@phosphor-icons/react';
+import { Check, Code2, Ellipsis, Lock } from 'lucide-react';
+import { LinkSimpleIcon, CopyIcon, FolderOpenIcon, FileMdIcon, FileDocIcon, FilePdfIcon, ClockIcon, MapPinSimpleAreaIcon, TrashSimpleIcon, SwatchesIcon, ArrowsClockwiseIcon, LockSimpleIcon, LockSimpleOpenIcon } from '@phosphor-icons/react';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@shared/ui/dropdown-menu';
 import { POPUP_SEPARATOR_CLASS } from '@shared/ui/popup-separator';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@shared/ui/dialog';
@@ -50,9 +50,11 @@ export function DocumentTitlebarActions({
   const { t, language } = useI18n();
   const {
     colors, changeColors, fontSwitch, selectedFontSizeMode, setEditorFontSizeMode,
-    confirmVersion, setConfirmVersion, restoringVersionId, versionRefreshKey,
+    lock,
+    confirmVersion, setConfirmVersion, requestRestoreVersion, restoringVersionId, versionRefreshKey,
     archiveVersion, restorePathVersion, copyFolderPath, revealFile,
   } = useDocumentTitlebarActions(target);
+  const { locked, busy: lockBusy, toggle: toggleLock } = lock;
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [pendingViewType, setPendingViewType] = useState<'table' | 'media_library' | null>(null);
   const filePath = target.fileIdentity.path;
@@ -66,9 +68,19 @@ export function DocumentTitlebarActions({
 
   return (
     <>
-    {canEditColors && (
+    {canEditColors && !locked && (
       <NoteColorPicker colors={colors} iconButtonClass={iconButtonClass}
         onChange={changeColors} />
+    )}
+    {locked && (
+      <span
+        role="img"
+        aria-label={t('document.lock.tooltip')}
+        title={t('document.lock.tooltip')}
+        className="flex h-8 w-8 shrink-0 items-center justify-center text-[var(--muted-foreground)]"
+      >
+        <Lock className="h-4 w-4" />
+      </span>
     )}
     <DropdownMenu>
       <DropdownMenuTrigger asChild>
@@ -163,11 +175,23 @@ export function DocumentTitlebarActions({
               relativePath={target.relativePath}
               refreshKey={versionRefreshKey}
               restoringVersionId={restoringVersionId}
-              onSelectVersion={setConfirmVersion}
+              onSelectVersion={requestRestoreVersion}
             />
           </>
         )}
         <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
+        {(indexable || locked) && (
+          <DropdownMenuItem
+            className={itemClass}
+            disabled={lockBusy}
+            onClick={() => { void toggleLock(); }}
+          >
+            {locked
+              ? <LockSimpleOpenIcon className="h-4 w-4" />
+              : <LockSimpleIcon className="h-4 w-4" />}
+            {t(locked ? 'document.action.unlock' : 'document.action.lock')}
+          </DropdownMenuItem>
+        )}
         <DropdownMenuItem
           className={itemClass}
           onClick={() => useSyncPanelStore.getState().setOpen(true)}

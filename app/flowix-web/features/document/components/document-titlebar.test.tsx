@@ -19,8 +19,9 @@ vi.mock('./use-document-titlebar-actions', () => ({
   useDocumentTitlebarActions: () => ({
     colors: [], changeColors: vi.fn(), fontSwitch: {}, selectedFontSizeMode: null,
     setEditorFontSizeMode: vi.fn(), confirmVersion: null, setConfirmVersion: vi.fn(),
-    restoringVersionId: null, versionRefreshKey: 0, archiveVersion: vi.fn(),
+    requestRestoreVersion: vi.fn(), restoringVersionId: null, versionRefreshKey: 0, archiveVersion: vi.fn(),
     restorePathVersion: vi.fn(), copyFolderPath: vi.fn(), revealFile: vi.fn(),
+    lock: { locked: false, busy: false, setLocked: vi.fn(), toggle: vi.fn() },
   }),
 }));
 vi.mock('@features/collection/public/folder-api', () => ({ FolderCollectionSwitchConfirmDialog: () => null }));

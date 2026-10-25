@@ -33,6 +33,7 @@ import { useDocumentContent } from '@features/document/components/session/use-do
 import { useDocumentAutosave } from '@features/document/components/session/use-document-autosave';
 import { DocumentContentBoundary } from './session/document-content-boundary';
 import { useDocumentMetainfo } from './session/use-document-metainfo';
+import { useDocumentLocked } from './use-document-lock';
 import { useExternalDocumentChangeWatch } from '@features/document/components/session/use-external-document-change-watch';
 import {
   LazyDocumentEditor,
@@ -105,7 +106,10 @@ export function DocumentContainer({
   const hostId = workspaceHost ?? (documentSessionMode === 'isolated' ? 'browser-column' : 'main-third');
   const locationViewId = navigationViewId ?? hostId;
   const focusedHostId = useWorkspaceFocusStore((store) => store.focusedHostId);
-  const readOnly = forcedReadOnly || focusedHostId !== hostId;
+  // A locked note rejects UI edits (title, body, properties) on every surface.
+  // External writers such as sync still update the buffer through the watchers.
+  const locked = useDocumentLocked(fileIdentity);
+  const readOnly = forcedReadOnly || locked || focusedHostId !== hostId;
   const containerRef = useRef<HTMLDivElement>(null);
   const resolvedExternalDisplayId = isExternalDocument ? displayId : null;
   const documentInstanceKey = useMemo(

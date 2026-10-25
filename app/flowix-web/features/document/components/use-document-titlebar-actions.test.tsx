@@ -13,6 +13,7 @@ vi.mock('@platform/tauri/client', () => ({ notes: { createVersion: mocks.archive
 vi.mock('@features/preferences/public/font-api', () => ({ useEditorFontSize: () => ({ fontSize: 16, setFontSize: vi.fn() }) }));
 vi.mock('./editor-font-switcher', () => ({ useEditorFontSwitch: () => ({}) }));
 vi.mock('./use-document-titlebar-colors', () => ({ useDocumentTitlebarColors: () => ({ colors: [], changeColors: vi.fn() }) }));
+vi.mock('./use-document-lock', () => ({ useDocumentLock: () => ({ locked: false, busy: false, setLocked: vi.fn(), toggle: vi.fn() }) }));
 vi.mock('@/lib/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
 vi.mock('@/lib/toast', () => ({ toast: { error: mocks.error } }));
 vi.mock('@/lib/logger', () => ({ createLogger: () => ({ error: vi.fn(), warn: vi.fn() }) }));

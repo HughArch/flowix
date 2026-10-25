@@ -1,5 +1,6 @@
 import { resolvePropertyType } from '../properties/property-type';
 import { getPropertyPresets } from '@features/properties/public-api';
+import { DOCUMENT_LOCK_KEY } from '../properties/frontmatter-model';
 import { PROPERTY_TYPES_KEY, backfillPropertyTypes, patchPropertyTypes, readPropertyTypes } from '../properties/property-type-metadata';
 import type { PropertyKind } from '@/lib/property-types';
 import { isMap, parseDocument } from 'yaml';
@@ -31,7 +32,8 @@ export function patchDocumentProperties(content: string, properties: Record<stri
     ...types,
   };
   for (const [key, value] of Object.entries(properties)) {
-    if (types[key] !== undefined) continue;
+    // Editor state keys are not user properties and must not gain a type row.
+    if (types[key] !== undefined || key === DOCUMENT_LOCK_KEY) continue;
     const previousValue = Object.prototype.hasOwnProperty.call(previousData, key) ? previousData[key] : value;
     typeChanges[key] = resolvePropertyType(key, previousValue, false, getPropertyPresets(), previousTypes).kind;
   }
@@ -43,7 +45,12 @@ export function patchDocumentProperties(content: string, properties: Record<stri
   if (!isMap(document.contents)) document.set(PROPERTY_TYPES_KEY, {});
   if (isMap(document.contents)) {
     patchPropertyTypes(document.contents, typeChanges, forceNonPresetKeys);
-    backfillPropertyTypes(document.contents, document.toJS() ?? {}, Object.keys(types).filter((key) => types[key] === null), forceNonPresetKeys);
+    backfillPropertyTypes(
+      document.contents,
+      document.toJS() ?? {},
+      [...Object.keys(types).filter((key) => types[key] === null), DOCUMENT_LOCK_KEY],
+      forceNonPresetKeys,
+    );
   }
   const body = match ? content.slice(match[0].length) : content.replace(/^\uFEFF/, '');
   return '---\n' + document.toString() + '---\n' + body;
