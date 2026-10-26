@@ -33,9 +33,14 @@ pub(crate) fn agent_image_extension(mime_type: &str) -> Option<&'static str> {
 }
 
 fn agent_image_cache_root() -> Result<PathBuf, String> {
-    dirs::home_dir()
-        .map(|home| home.join(".flowix").join("cache").join("images"))
-        .ok_or_else(|| "Home directory is unavailable".to_string())
+    // Android has no $HOME (dirs::home_dir() is None), so mobile reuses the
+    // app-private home from bootstrap's storage plan A; the cache, preview and
+    // send paths all authorize against this single root.
+    #[cfg(mobile)]
+    let home = crate::app::paths::mobile_home_dir();
+    #[cfg(desktop)]
+    let home = dirs::home_dir().ok_or_else(|| "Home directory is unavailable".to_string())?;
+    Ok(home.join(".flowix").join("cache").join("images"))
 }
 
 fn ensure_path_within_image_cache(root: &Path, candidate: &Path) -> Result<(), String> {
