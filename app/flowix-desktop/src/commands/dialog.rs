@@ -391,7 +391,9 @@ pub async fn open_attachment_file(
 
 // ==================== IPC: 瀵煎嚭 ====================
 
-#[tauri::command]
+// Async dispatch keeps the command off the main thread: on Android it awaits
+// the Kotlin export plugin, whose commands are dispatched on the main thread.
+#[tauri::command(async)]
 pub fn write_export_file(
     app: tauri::AppHandle,
     window: tauri::WebviewWindow,

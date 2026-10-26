@@ -56,16 +56,25 @@ class FlowixExportPlugin(private val activity: Activity) : Plugin(activity) {
 
   @Command
   fun writeTextToUri(invoke: Invoke) {
-    try {
-      val args = invoke.parseArgs(WriteTextArgs::class.java)
-      openOutputStream(args.uri).use { output ->
-        output.write(args.content.toByteArray(Charsets.UTF_8))
-        output.flush()
-      }
-      invoke.resolve()
+    val args = try {
+      invoke.parseArgs(WriteTextArgs::class.java)
     } catch (error: Exception) {
-      invoke.reject(error.message ?: "failed to write export file")
+      invoke.reject(error.message ?: "invalid export payload")
+      return
     }
+
+    // Content providers do disk I/O; keep it off the UI thread.
+    Thread {
+      try {
+        openOutputStream(args.uri).use { output ->
+          output.write(args.content.toByteArray(Charsets.UTF_8))
+          output.flush()
+        }
+        invoke.resolve()
+      } catch (error: Exception) {
+        invoke.reject(error.message ?: "failed to write export file")
+      }
+    }.start()
   }
 
   @Command
