@@ -8,12 +8,16 @@ import { FontSizeSwitcher } from '@shared/ui/font-size-switcher';
 import { FolderCollectionSwitchConfirmDialog } from '@features/collection/public/folder-api';
 import { useI18n, type I18nParams } from '@/lib/i18n';
 import { isMobileDevice } from '@shared/platform';
+import { fns } from '@platform/tauri/client';
 import { useSyncPanelStore } from '@features/sync-status';
 import { useMobileBackInterceptor } from '@features/shell/hooks/use-mobile-back-button';
 import { EditorFontSwitcher } from './editor-font-switcher';
 import { DocumentPageWidthSlider } from './document-page-width-slider';
 import { NoteColorPicker } from './document-titlebar-controls';
-import { VersionHistorySubmenu, VersionHistoryDialog, formatVersionTime } from './document-version-history-menu';
+import {
+  CloudHistorySubmenu, CloudHistoryDialog,
+  VersionHistorySubmenu, VersionHistoryDialog, formatVersionTime,
+} from './document-version-history-menu';
 import { useDocumentTitlebarActions } from './use-document-titlebar-actions';
 import type { DocumentTitlebarProps, DocumentTitlebarTarget } from './document-titlebar-model';
 import type { DocumentEditorMode } from '@features/document/store/document-editor-view-store';
@@ -53,7 +57,9 @@ export function DocumentTitlebarActions({
   const {
     colors, changeColors, fontSwitch, selectedFontSizeMode, setEditorFontSizeMode,
     lock,
-    confirmVersion, setConfirmVersion, requestRestoreVersion, restoringVersionId, versionRefreshKey,
+    confirmVersion, setConfirmVersion, requestRestoreVersion,
+    confirmCloudVersion, setConfirmCloudVersion, requestRestoreCloudVersion, restoreCloudVersion,
+    restoringVersionId, versionRefreshKey,
     archiveVersion, restorePathVersion, copyFolderPath, revealFile,
   } = useDocumentTitlebarActions(target);
   const { locked, busy: lockBusy, toggle: toggleLock } = lock;
@@ -61,9 +67,13 @@ export function DocumentTitlebarActions({
   const [pendingViewType, setPendingViewType] = useState<'table' | 'media_library' | null>(null);
   // 移动端历史版本选择弹窗 (桌面走 hover 子菜单, 不经过此状态)。
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+  const [cloudHistoryDialogOpen, setCloudHistoryDialogOpen] = useState(false);
+  // notebook 是否绑定了 FNS (云端历史入口门控; 菜单每次打开时重新查询, 关闭即失效)。
+  const [cloudAvailable, setCloudAvailable] = useState(false);
   // 触屏上恢复确认弹窗也要接住 Android 返回键, 避免弹窗开着先退回列表。
-  useMobileBackInterceptor(!!confirmVersion, () => {
+  useMobileBackInterceptor(!!confirmVersion || !!confirmCloudVersion, () => {
     setConfirmVersion(null);
+    setConfirmCloudVersion(null);
     return true;
   });
   const filePath = target.fileIdentity.path;
@@ -91,7 +101,15 @@ export function DocumentTitlebarActions({
         <Lock className="h-4 w-4" />
       </span>
     )}
-    <DropdownMenu>
+    <DropdownMenu onOpenChange={(open) => {
+      // 只在打开时刷新绑定状态; 关闭不能重置 —— 菜单收起后云端弹窗仍由
+      // cloudAvailable 门控, 重置会连带卸载刚要打开的弹窗。
+      if (open && target.notebookId) {
+        fns.cloudHistoryAvailable(target.notebookId)
+          .then(setCloudAvailable)
+          .catch(() => setCloudAvailable(false));
+      }
+    }}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -192,6 +210,21 @@ export function DocumentTitlebarActions({
                 onSelectVersion={requestRestoreVersion}
               />
             )}
+            {cloudAvailable && (
+              isMobileDevice() ? (
+                <DropdownMenuItem className={itemClass} onClick={() => setCloudHistoryDialogOpen(true)}>
+                  <ClockIcon className="h-4 w-4" /> {t('document.version.cloud.menuLabel')}
+                </DropdownMenuItem>
+              ) : (
+                <CloudHistorySubmenu
+                  notebookId={target.notebookId}
+                  relativePath={target.relativePath}
+                  refreshKey={versionRefreshKey}
+                  restoringVersionId={restoringVersionId}
+                  onSelectVersion={requestRestoreCloudVersion}
+                />
+              )
+            )}
           </>
         )}
         <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
@@ -282,15 +315,46 @@ export function DocumentTitlebarActions({
         </DialogContent>
       </Dialog>
       {canViewVersionHistory && target.notebookId && target.relativePath && (
-        <VersionHistoryDialog
-          open={historyDialogOpen}
-          onOpenChange={setHistoryDialogOpen}
-          notebookId={target.notebookId}
-          relativePath={target.relativePath}
-          refreshKey={versionRefreshKey}
-          restoringVersionId={restoringVersionId}
-          onSelectVersion={requestRestoreVersion}
-        />
+        <>
+          <VersionHistoryDialog
+            open={historyDialogOpen}
+            onOpenChange={setHistoryDialogOpen}
+            notebookId={target.notebookId}
+            relativePath={target.relativePath}
+            refreshKey={versionRefreshKey}
+            restoringVersionId={restoringVersionId}
+            onSelectVersion={requestRestoreVersion}
+          />
+          {cloudAvailable && (
+            <CloudHistoryDialog
+              open={cloudHistoryDialogOpen}
+              onOpenChange={setCloudHistoryDialogOpen}
+              notebookId={target.notebookId}
+              relativePath={target.relativePath}
+              refreshKey={versionRefreshKey}
+              restoringVersionId={restoringVersionId}
+              onSelectVersion={requestRestoreCloudVersion}
+            />
+          )}
+          <Dialog open={!!confirmCloudVersion} onOpenChange={(open) => !open && setConfirmCloudVersion(null)}>
+            <DialogContent>
+              <DialogHeader>
+                <DialogTitle>{t('document.version.confirmTitle')}</DialogTitle>
+                <DialogDescription>{t('document.version.cloud.confirmDescription', {
+                  time: confirmCloudVersion ? formatVersionTime(confirmCloudVersion.createdAtMs, language) : '',
+                } satisfies I18nParams)}</DialogDescription>
+              </DialogHeader>
+              <div className="mt-4 flex justify-end gap-2">
+                <button type="button" disabled={!!restoringVersionId} onClick={() => setConfirmCloudVersion(null)} className="h-8 rounded-lg px-3 text-sm hover:bg-[var(--muted)] disabled:opacity-60">
+                  {t('document.version.cancel')}
+                </button>
+                <button type="button" disabled={!!restoringVersionId} onClick={() => { void restoreCloudVersion(); }} className="h-8 rounded-lg bg-[var(--primary)] px-3 text-sm text-[var(--primary-foreground)] disabled:opacity-60">
+                  {t('document.version.confirm')}
+                </button>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </>
       )}
     </DropdownMenu>
     </>

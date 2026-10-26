@@ -4,10 +4,61 @@ use tauri::{AppHandle, Manager, State};
 
 use crate::app::state::AppState;
 use crate::fns_sync::config::{FnsConfigPatch, FnsConfigView, FnsTokenInput};
+use crate::fns_sync::history::{FnsApiError, FnsCloudHistoryPage};
 use crate::fns_sync::service::{
     ConflictResolutionChoice, FnsConflictDetail, FnsConflictView, FnsNotebookState,
     FnsNotebookSyncOutcome, FnsSyncRecord, FnsSyncStatus,
 };
+
+/// 统一把 `FnsApiError` 摊平成前端可读的字符串; 业务码原样携带。
+fn api_error_message(error: FnsApiError) -> String {
+    if error.code == 0 {
+        error.message
+    } else {
+        format!("[{code}] {message}", code = error.code, message = error.message)
+    }
+}
+
+/// `...` 菜单云端历史入口的门控: notebook 是否已绑定 FNS 且凭据齐备。
+#[tauri::command]
+pub fn fns_cloud_history_available(app: AppHandle, notebook_id: String) -> bool {
+    let service = app.state::<AppState>().fns_sync.clone();
+    super::history::cloud_available(&app, &service, &notebook_id)
+}
+
+/// 云端版本列表 (分页)。查无笔记返回 `NotSynced` 形态而非错误。
+#[tauri::command]
+pub async fn fns_note_history_list(
+    app: AppHandle,
+    notebook_id: String,
+    relative_path: String,
+    page: Option<u32>,
+    page_size: Option<u32>,
+) -> Result<FnsCloudHistoryPage, String> {
+    let service = app.state::<AppState>().fns_sync.clone();
+    super::history::list_note_history(
+        &app, &service, &notebook_id, &relative_path,
+        page.unwrap_or(1).max(1), page_size.unwrap_or(20).clamp(1, 100),
+    )
+    .await
+    .map_err(api_error_message)
+}
+
+/// 拉取并重建某云端版本修改后的完整正文。
+#[tauri::command]
+pub async fn fns_note_history_content(
+    app: AppHandle,
+    notebook_id: String,
+    relative_path: String,
+    history_id: i64,
+) -> Result<String, String> {
+    let service = app.state::<AppState>().fns_sync.clone();
+    super::history::note_history_content(
+        &app, &service, &notebook_id, &relative_path, history_id,
+    )
+    .await
+    .map_err(api_error_message)
+}
 
 #[tauri::command]
 pub fn fns_get_config(state: State<AppState>) -> FnsConfigView {

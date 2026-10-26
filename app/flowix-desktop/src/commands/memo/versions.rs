@@ -43,25 +43,52 @@ pub fn create_path_version(notebook_id: String, relative_path: String, source: O
         }).ok()?
 }
 
+/// 恢复的共享写侧: expectedContent 悲观校验 → 当前内容自保为 restore_backup →
+/// 原子覆写。本地归档恢复与云端版本恢复共用, 返回 `Ok(false)` 表示内容已变化拒绝写入。
+fn write_restored_content(memo_file: &flowix_core::memo_file::MemoFile, notebook_id: &str,
+    relative_path: &str, path: &std::path::Path, target: &str,
+    expected_content: Option<&str>) -> std::io::Result<bool> {
+    memo_file.with_file_write(notebook_id, path, FileLockIntent::Existing,
+        "restore_path_version", |locked_path| {
+            let current = fs::read_to_string(locked_path)?;
+            if expected_content.is_some_and(|expected| expected != current) {
+                return Ok(false);
+            }
+            memo_file.create_path_version(notebook_id, relative_path, &current,
+                MemoVersionSource::RestoreBackup)?;
+            atomic_write_bytes(locked_path, target.as_bytes())?;
+            Ok(true)
+        })
+}
+
+fn finish_restore(state: &State<AppState>, app: &AppHandle, path: &std::path::Path,
+    memo_file: &flowix_core::memo_file::MemoFile, target: String) -> String {
+    mark_self_write_for(app, path);
+    crate::commands::helpers::refresh_notebook_note_index(memo_file, path);
+    target
+}
+
 #[tauri::command]
 pub fn restore_path_version(notebook_id: String, relative_path: String, version_id: String,
     expected_content: Option<String>, state: State<AppState>, app: AppHandle) -> Option<String> {
     let path = path_archive_document(&state, &notebook_id, &relative_path)?;
     let memo_file = read_lock(&state.memo_file, "memo_file");
     let target = memo_file.read_path_version(&notebook_id, &relative_path, &version_id)?;
-    let restored = memo_file.with_file_write(&notebook_id, &path, FileLockIntent::Existing,
-        "restore_path_version", |locked_path| {
-            let current = fs::read_to_string(locked_path)?;
-            if expected_content.as_deref().is_some_and(|expected| expected != current) {
-                return Ok(false);
-            }
-            memo_file.create_path_version(&notebook_id, &relative_path, &current,
-                MemoVersionSource::RestoreBackup)?;
-            atomic_write_bytes(locked_path, target.as_bytes())?;
-            Ok(true)
-        }).ok()?;
+    let restored = write_restored_content(&memo_file, &notebook_id, &relative_path, &path,
+        &target, expected_content.as_deref()).ok()?;
     if !restored { return None; }
-    mark_self_write_for(&app, &path);
-    crate::commands::helpers::refresh_notebook_note_index(&memo_file, &path);
-    Some(target)
+    Some(finish_restore(&state, &app, &path, &memo_file, target))
+}
+
+/// 云端版本恢复: 正文已由 `fns_note_history_content` 重建, 走同一条本地恢复
+/// 管线落盘, 之后由同步上行传播到其他设备 (docs/VERSION-HISTORY-CLOUD.md §3 D2)。
+#[tauri::command]
+pub fn restore_path_content(notebook_id: String, relative_path: String, content: String,
+    expected_content: Option<String>, state: State<AppState>, app: AppHandle) -> Option<String> {
+    let path = path_archive_document(&state, &notebook_id, &relative_path)?;
+    let memo_file = read_lock(&state.memo_file, "memo_file");
+    let restored = write_restored_content(&memo_file, &notebook_id, &relative_path, &path,
+        &content, expected_content.as_deref()).ok()?;
+    if !restored { return None; }
+    Some(finish_restore(&state, &app, &path, &memo_file, content))
 }

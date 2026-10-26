@@ -120,6 +120,23 @@ export interface FnsConflictDetail {
 
 export type FnsConflictAction = 'keepLocal' | 'keepRemote' | 'merge';
 
+/** 一条云端笔记版本的元数据 (不含正文), 来自 FNS `note_history`。 */
+export interface FnsCloudVersionMeta {
+  historyId: number;
+  /** 服务端笔记内递增版本号。 */
+  version: number;
+  createdAtMs: number;
+  clientName: string;
+  clientType: string;
+  clientVersion: string;
+  path: string;
+}
+
+/** 云端版本列表页。`notSynced` = 服务端查无此笔记 (从未同步过)。 */
+export type FnsCloudHistoryPage =
+  | { status: 'ok'; items: FnsCloudVersionMeta[]; total: number; hasMore: boolean }
+  | { status: 'notSynced' };
+
 export const fns = {
   getConfig: () => invoke<FnsConfigView>('fns_get_config'),
   patchConfig: (patch: FnsConfigPatch) =>
@@ -154,4 +171,12 @@ export const fns = {
     invoke<string[]>('fns_legacy_conflict_copies', { notebookId }),
   cleanupLegacyConflictCopies: (notebookId: string) =>
     invoke<number>('fns_cleanup_legacy_conflict_copies', { notebookId }),
+  /** `...` 菜单云端历史入口的门控: notebook 已绑定 FNS 且凭据齐备。 */
+  cloudHistoryAvailable: (notebookId: string) =>
+    invoke<boolean>('fns_cloud_history_available', { notebookId }),
+  listNoteHistory: (notebookId: string, relativePath: string, page = 1, pageSize = 20) =>
+    invoke<FnsCloudHistoryPage>('fns_note_history_list', { notebookId, relativePath, page, pageSize }),
+  /** 拉取并重建某云端版本修改后的完整正文。 */
+  noteHistoryContent: (notebookId: string, relativePath: string, historyId: number) =>
+    invoke<string>('fns_note_history_content', { notebookId, relativePath, historyId }),
 };

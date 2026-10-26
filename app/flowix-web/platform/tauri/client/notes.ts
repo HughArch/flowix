@@ -161,4 +161,7 @@ export const notes = {
     invoke<PathVersionMeta | null>('create_path_version', { notebookId, relativePath, source: 'manual' }),
   restoreVersion: (notebookId: string, relativePath: string, versionId: string, expectedContent?: string) =>
     invoke<string | null>('restore_path_version', { notebookId, relativePath, versionId, expectedContent }),
+  /** 云端版本恢复: 正文走同一条本地恢复管线 (自保 + 原子写), null = 内容已变化被拒。 */
+  restorePathContent: (notebookId: string, relativePath: string, content: string, expectedContent?: string) =>
+    invoke<string | null>('restore_path_content', { notebookId, relativePath, content, expectedContent }),
 };

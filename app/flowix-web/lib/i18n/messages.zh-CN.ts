@@ -1707,6 +1707,12 @@ const zhCN = {
       "确定切换到 {time} 版本使用吗？当前内容会先保存为一个历史版本。",
     "document.version.cancel": "取消",
     "document.version.confirm": "确定",
+    "document.version.cloud.menuLabel": "云端历史版本",
+    "document.version.cloud.notSynced": "该笔记尚未同步到云端",
+    "document.version.cloud.empty": "云端暂无历史版本",
+    "document.version.cloud.loadFailed": "云端历史读取失败",
+    "document.version.cloud.confirmDescription":
+      "确定切换到 {time} 的云端版本吗？当前内容会先保存为一个历史版本，并同步到其他设备。",
     "document.action.copyLink": "复制链接",
     "document.action.copyFullText": "复制全文",
     "document.action.unpin": "取消置顶",

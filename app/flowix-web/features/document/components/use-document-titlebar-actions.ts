@@ -4,7 +4,7 @@ import { parentDirectoryPath } from '@/lib/path';
 import { useI18n } from '@/lib/i18n';
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
-import { notes, product, type PathVersionMeta } from '@platform/tauri/client';
+import { fns, notes, product, type FnsCloudVersionMeta, type PathVersionMeta } from '@platform/tauri/client';
 import { useEditorFontSize } from '@features/preferences/public/font-api';
 import { applyLoadedDocumentContent, getDocumentBuffer, saveDocumentPath } from '../store/document-session-service';
 import { documentIdentityFromFile } from '../store/document-identity';
@@ -21,6 +21,7 @@ export function useDocumentTitlebarActions(target: DocumentTitlebarTarget) {
   const { colors, changeColors } = useDocumentTitlebarColors(target);
   const lock = useDocumentLock(target.fileIdentity);
   const [confirmVersion, setConfirmVersion] = useState<PathVersionMeta | null>(null);
+  const [confirmCloudVersion, setConfirmCloudVersion] = useState<FnsCloudVersionMeta | null>(null);
   const [restoringVersionId, setRestoringVersionId] = useState<string | null>(null);
   const [versionRefreshKey, setVersionRefreshKey] = useState(0);
   const mounted = useRef(false);
@@ -61,6 +62,52 @@ export function useDocumentTitlebarActions(target: DocumentTitlebarTarget) {
       return;
     }
     setConfirmVersion(version);
+  };
+
+  const requestRestoreCloudVersion = (version: FnsCloudVersionMeta) => {
+    if (lock.locked) {
+      toast.info(t('document.lock.restoreBlocked'));
+      return;
+    }
+    setConfirmCloudVersion(version);
+  };
+
+  /**
+   * 云端恢复: 拉取重建正文后走同一条本地恢复管线落盘 (自保 + 原子写 + 同步上行),
+   * 不直推服务端 —— 文件是唯一事实源 (docs/VERSION-HISTORY-CLOUD.md §3 D2)。
+   */
+  const restoreCloudVersion = async () => {
+    if (!target.notebookId || !target.relativePath || !confirmCloudVersion || restoring.current || !isSamePath()) return;
+    if (lock.locked) {
+      setConfirmCloudVersion(null);
+      toast.info(t('document.lock.restoreBlocked'));
+      return;
+    }
+    restoring.current = true;
+    setRestoringVersionId(`cloud-${confirmCloudVersion.historyId}`);
+    try {
+      if (!await saveDocumentPath(identity, filePath, target.scopePath)) {
+        if (mounted.current) toast.error(t('document.version.saveCurrentFailed'));
+        return;
+      }
+      if (!mounted.current || !isSamePath()) return;
+      const expectedContent = getDocumentBuffer(identity).lastSavedContent;
+      const content = await fns.noteHistoryContent(target.notebookId, target.relativePath, confirmCloudVersion.historyId);
+      const restored = await notes.restorePathContent(target.notebookId, target.relativePath, content, expectedContent);
+      if (restored === null || !isSamePath()) throw new Error('Cloud version restore was refused');
+      applyLoadedDocumentContent(identity, filePath, restored, { preservePending: false, setAsCurrent: false });
+      if (mounted.current) {
+        setConfirmCloudVersion(null);
+        setVersionRefreshKey((key) => key + 1);
+        toast.success(t('document.version.restored'));
+      }
+    } catch (error) {
+      logger.error('restore cloud version failed', { error, filePath });
+      if (mounted.current) toast.error(t('document.version.restoreFailed'));
+    } finally {
+      restoring.current = false;
+      if (mounted.current) setRestoringVersionId(null);
+    }
   };
 
   const restorePathVersion = async () => {
@@ -114,7 +161,9 @@ export function useDocumentTitlebarActions(target: DocumentTitlebarTarget) {
   return {
     colors, changeColors, fontSwitch, selectedFontSizeMode, setEditorFontSizeMode,
     lock,
-    confirmVersion, setConfirmVersion, requestRestoreVersion, restoringVersionId, versionRefreshKey,
+    confirmVersion, setConfirmVersion, requestRestoreVersion,
+    confirmCloudVersion, setConfirmCloudVersion, requestRestoreCloudVersion, restoreCloudVersion,
+    restoringVersionId, versionRefreshKey,
     archiveVersion, restorePathVersion, copyFolderPath, revealFile,
   };
 }

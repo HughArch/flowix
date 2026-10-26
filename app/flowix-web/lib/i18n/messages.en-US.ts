@@ -1731,6 +1731,12 @@ const enUS: Record<keyof typeof zhCN, string> = {
       "Switch to the {time} version? Your current content will be saved as a version first.",
     "document.version.cancel": "Cancel",
     "document.version.confirm": "Confirm",
+    "document.version.cloud.menuLabel": "Cloud history",
+    "document.version.cloud.notSynced": "Not synced to the cloud yet",
+    "document.version.cloud.empty": "No cloud history yet",
+    "document.version.cloud.loadFailed": "Failed to load cloud history",
+    "document.version.cloud.confirmDescription":
+      "Switch to the cloud version from {time}? Your current content will be saved as a version first and synced to your other devices.",
     "document.action.copyLink": "Copy link",
     "document.action.copyFullText": "Copy full text",
     "document.action.unpin": "Unpin",

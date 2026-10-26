@@ -385,7 +385,7 @@ impl FnsSyncService {
             .unwrap_or_default()
     }
 
-    fn read_config(&self) -> std::sync::RwLockReadGuard<'_, FnsConfig> {
+    pub(crate) fn read_config(&self) -> std::sync::RwLockReadGuard<'_, FnsConfig> {
         self.config
             .read()
             .unwrap_or_else(|poisoned| poisoned.into_inner())
@@ -1195,7 +1195,7 @@ fn describe_sync_error(error: flowix_fns::FnsError) -> String {
     }
 }
 
-fn notebook_root(app: &AppHandle, notebook_id: &str) -> Result<(String, PathBuf), String> {
+pub(crate) fn notebook_root(app: &AppHandle, notebook_id: &str) -> Result<(String, PathBuf), String> {
     let state = app.state::<AppState>();
     let memo_file = read_lock(&state.memo_file, "memo_file");
     let notebook = memo_file
