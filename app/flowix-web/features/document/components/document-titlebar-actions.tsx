@@ -156,12 +156,15 @@ export function DocumentTitlebarActions({
             <CopyIcon className="h-4 w-4" /> {t('document.action.copyFullText')}
           </DropdownMenuItem>
         )}
-        <DropdownMenuItem
-          onClick={() => { void revealFile(); }}
-          className={itemClass}
-        >
-          <FolderOpenIcon className="h-4 w-4" /> {t('document.file.reveal')}
-        </DropdownMenuItem>
+        {/* 移动端是 App 私有目录, 没有“在文件夹中显示”的对应物。 */}
+        {!isMobileDevice() && (
+          <DropdownMenuItem
+            onClick={() => { void revealFile(); }}
+            className={itemClass}
+          >
+            <FolderOpenIcon className="h-4 w-4" /> {t('document.file.reveal')}
+          </DropdownMenuItem>
+        )}
         {showEditorModeToggle && (
           <DropdownMenuItem
             onClick={() => onSetEditorMode?.(editorMode === 'source' ? 'rich' : 'source')}
