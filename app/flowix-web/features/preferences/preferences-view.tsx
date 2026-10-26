@@ -76,7 +76,9 @@ interface PreferencesViewProps {
 export function PreferencesView({ initialTab }: PreferencesViewProps) {
 	const { t } = useI18n();
 	const experimental = useExperimentalMode();
-	const [activeTab, setActiveTab] = useState<ActiveSettingsTab>('general');
+	const isMobile = isMobileDevice();
+	// 移动端窄屏走单屏主从导航: null = 停在分区菜单层; 桌面恒显示分区 (默认 general)。
+	const [activeTab, setActiveTab] = useState<ActiveSettingsTab | null>(() => (isMobile ? null : 'general'));
 	const [tabRetryVersion, setTabRetryVersion] = useState(0);
 	const [productInfo, setProductInfo] = useState<ProductInfo | null>(null);
 	const title = t('preferences.title');
@@ -94,7 +96,7 @@ export function PreferencesView({ initialTab }: PreferencesViewProps) {
 		() => new Set(visibleTabGroups.flatMap((group) => group.tabs.map((tab) => tab.id))),
 		[visibleTabGroups],
 	);
-	const activeTabDefinition = PREFERENCE_TAB_BY_ID.get(activeTab);
+	const activeTabDefinition = activeTab === null ? undefined : PREFERENCE_TAB_BY_ID.get(activeTab);
 	const ActiveTabComponent = useMemo(
 		() => activeTabDefinition?.createComponent() ?? null,
 		[activeTabDefinition, tabRetryVersion],
@@ -110,10 +112,10 @@ export function PreferencesView({ initialTab }: PreferencesViewProps) {
 	}, [experimental, initialTab, initialTabName, visibleTabIds]);
 
 	useEffect(() => {
-		if (!visibleTabIds.has(activeTab)) {
-			setActiveTab('general');
+		if (activeTab !== null && !visibleTabIds.has(activeTab)) {
+			setActiveTab(isMobile ? null : 'general');
 		}
-	}, [activeTab, visibleTabIds]);
+	}, [activeTab, isMobile, visibleTabIds]);
 
 	useEffect(() => {
 		document.title = title;
@@ -122,17 +124,34 @@ export function PreferencesView({ initialTab }: PreferencesViewProps) {
 		});
 	}, [title]);
 
+	const handleTitlebarBack = () => {
+		// 移动端两级返回: 分区内 ← 回菜单层, 菜单层 ← 退出设置回主界面。
+		if (isMobile && activeTab !== null) {
+			setActiveTab(null);
+			return;
+		}
+		window.location.hash = '';
+	};
+
 	return (
 		<div className="flex h-screen w-screen select-none flex-col overflow-hidden bg-[var(--background)]">
 			<WindowsTitlebarControls showBottomBorder />
-			{isWindowsPlatform() ? <PreferencesTitlebarWin /> : <PreferencesTitlebarMac />}
+			{isWindowsPlatform() ? <PreferencesTitlebarWin onBack={handleTitlebarBack} /> : <PreferencesTitlebarMac />}
 			<div className="flex-1 flex min-h-0">
-				{/* Left sidebar */}
-				<OverlayScrollbar
-					className="flex h-full w-[204px] min-h-0 shrink-0 border-r border-solid border-[var(--divider)] bg-[var(--card)]"
-					scrollerClassName="h-full min-h-0 px-2 pt-5 pb-2"
-				>
-					<nav aria-label={title} className="flex min-h-full flex-col gap-4">
+				{/* Left sidebar: 移动端菜单层独占全宽, 分区层隐藏 (单屏主从导航)。 */}
+				{(!isMobile || activeTab === null) && (
+					<OverlayScrollbar
+						className={cn(
+							'flex h-full min-h-0 shrink-0 bg-[var(--card)]',
+							// 全宽菜单层贴屏幕右缘, 分隔线无意义; 桌面保留与内容区的分割。
+							isMobile ? 'w-full' : 'w-[204px] border-r border-solid border-[var(--divider)]',
+						)}
+						scrollerClassName="h-full min-h-0 px-2 pt-5 pb-2"
+					>
+						<nav
+							aria-label={title}
+							className={cn('flex min-h-full flex-col gap-4', isMobile && 'mx-auto w-full max-w-[480px]')}
+						>
 						{visibleTabGroups.map((group) => (
 							<div key={group.labelKey} className="space-y-1">
 								<div className="px-2 pb-1 text-xs font-medium text-[var(--muted-foreground)]">
@@ -161,9 +180,11 @@ export function PreferencesView({ initialTab }: PreferencesViewProps) {
 								</div>
 							</div>
 						))}
-					</nav>
-				</OverlayScrollbar>
-				{/* Right content */}
+						</nav>
+					</OverlayScrollbar>
+				)}
+				{/* Right content: 移动端分区层独占全宽。 */}
+				{(!isMobile || activeTab !== null) && (
 				<main aria-label={title} className="h-full min-w-0 min-h-0 flex-1">
 					<OverlayScrollbar className="h-full w-full min-h-0" scrollerClassName="flex h-full min-h-0 flex-col">
 						<div className="flex min-h-full flex-1 flex-col">
@@ -200,6 +221,7 @@ export function PreferencesView({ initialTab }: PreferencesViewProps) {
 						</div>
 					</OverlayScrollbar>
 				</main>
+				)}
 			</div>
 		</div>
 	);

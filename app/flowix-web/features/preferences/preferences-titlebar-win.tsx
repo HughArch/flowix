@@ -20,7 +20,12 @@ function closePreferences() {
  *   渲染的最小化/最大化/关闭按钮
  * - 整条都作为 Tauri drag region
  */
-export function PreferencesTitlebarWin() {
+interface PreferencesTitlebarWinProps {
+  /** 移动端返回按钮的回调; 未传时保持退出设置 (回主界面) 的默认行为。 */
+  onBack?: () => void;
+}
+
+export function PreferencesTitlebarWin({ onBack }: PreferencesTitlebarWinProps) {
   const { t } = useI18n();
   const title = t('preferences.title');
 
@@ -32,7 +37,7 @@ export function PreferencesTitlebarWin() {
       {isMobileDevice() && (
         <button
           type="button"
-          onClick={closePreferences}
+          onClick={onBack ?? closePreferences}
           aria-label={t('common.back')}
           className="flex h-7 w-7 shrink-0 items-center justify-center rounded-lg text-[var(--muted-foreground)] hover:bg-[var(--muted)] hover:text-[var(--foreground)]"
         >
