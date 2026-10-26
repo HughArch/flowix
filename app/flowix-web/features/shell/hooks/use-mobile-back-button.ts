@@ -12,6 +12,15 @@ export interface MobileBackButtonOptions {
   onShowList(): void;
 }
 
+type BackInterceptor = () => boolean;
+
+/**
+ * 弹层返回键拦截器注册表 (后注册先响应)。
+ * 历史版本弹窗、恢复确认弹窗等浮层在展开期间经 `useMobileBackInterceptor`
+ * 挂入, 返回键优先关最上层的浮层, 而不是落到「返回列表 / 退出」。
+ */
+const backInterceptors: BackInterceptor[] = [];
+
 /**
  * Android 返回键导航。
  *
@@ -42,6 +51,9 @@ export function useMobileBackButton({
     void import('@tauri-apps/api/app')
       .then(({ onBackButtonPress }) => onBackButtonPress(() => {
         const state = stateRef.current;
+        for (let i = backInterceptors.length - 1; i >= 0; i -= 1) {
+          if (backInterceptors[i]()) return;
+        }
         if (state.isDrawerOpen) {
           state.onCloseDrawer();
           return;
@@ -69,4 +81,22 @@ export function useMobileBackButton({
       unlisten?.();
     };
   }, [isMobile]);
+}
+
+/**
+ * 浮层挂载期间的返回键拦截: `active` 为 true 时入栈, 返回键从栈顶依次询问,
+ * 返回 true 表示已消费 (通常 = 关闭该浮层)。供弹窗组件自行接入, 桌面无副作用。
+ */
+export function useMobileBackInterceptor(active: boolean, handler: () => boolean) {
+  const handlerRef = useRef(handler);
+  handlerRef.current = handler;
+  useEffect(() => {
+    if (!active) return;
+    const interceptor = () => handlerRef.current();
+    backInterceptors.push(interceptor);
+    return () => {
+      const index = backInterceptors.indexOf(interceptor);
+      if (index >= 0) backInterceptors.splice(index, 1);
+    };
+  }, [active]);
 }

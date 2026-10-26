@@ -7,11 +7,13 @@ import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } f
 import { FontSizeSwitcher } from '@shared/ui/font-size-switcher';
 import { FolderCollectionSwitchConfirmDialog } from '@features/collection/public/folder-api';
 import { useI18n, type I18nParams } from '@/lib/i18n';
+import { isMobileDevice } from '@shared/platform';
 import { useSyncPanelStore } from '@features/sync-status';
+import { useMobileBackInterceptor } from '@features/shell/hooks/use-mobile-back-button';
 import { EditorFontSwitcher } from './editor-font-switcher';
 import { DocumentPageWidthSlider } from './document-page-width-slider';
 import { NoteColorPicker } from './document-titlebar-controls';
-import { VersionHistorySubmenu, formatVersionTime } from './document-version-history-menu';
+import { VersionHistorySubmenu, VersionHistoryDialog, formatVersionTime } from './document-version-history-menu';
 import { useDocumentTitlebarActions } from './use-document-titlebar-actions';
 import type { DocumentTitlebarProps, DocumentTitlebarTarget } from './document-titlebar-model';
 import type { DocumentEditorMode } from '@features/document/store/document-editor-view-store';
@@ -57,6 +59,13 @@ export function DocumentTitlebarActions({
   const { locked, busy: lockBusy, toggle: toggleLock } = lock;
   const [confirmDelete, setConfirmDelete] = useState(false);
   const [pendingViewType, setPendingViewType] = useState<'table' | 'media_library' | null>(null);
+  // 移动端历史版本选择弹窗 (桌面走 hover 子菜单, 不经过此状态)。
+  const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
+  // 触屏上恢复确认弹窗也要接住 Android 返回键, 避免弹窗开着先退回列表。
+  useMobileBackInterceptor(!!confirmVersion, () => {
+    setConfirmVersion(null);
+    return true;
+  });
   const filePath = target.fileIdentity.path;
   const indexable = target.indexable;
   const hideDeleteAction = Boolean(folderCollectionViewType || target.isOutsideCurrentNotebook);
@@ -170,13 +179,19 @@ export function DocumentTitlebarActions({
         {canViewVersionHistory && target.notebookId && target.relativePath && (
           <>
             <DropdownMenuItem className={itemClass} onClick={() => { void archiveVersion(); }}><ClockIcon className="h-4 w-4" /> 保存归档</DropdownMenuItem>
-            <VersionHistorySubmenu
-              notebookId={target.notebookId}
-              relativePath={target.relativePath}
-              refreshKey={versionRefreshKey}
-              restoringVersionId={restoringVersionId}
-              onSelectVersion={requestRestoreVersion}
-            />
+            {isMobileDevice() ? (
+              <DropdownMenuItem className={itemClass} onClick={() => setHistoryDialogOpen(true)}>
+                <ClockIcon className="h-4 w-4" /> {t('document.version.menuLabel')}
+              </DropdownMenuItem>
+            ) : (
+              <VersionHistorySubmenu
+                notebookId={target.notebookId}
+                relativePath={target.relativePath}
+                refreshKey={versionRefreshKey}
+                restoringVersionId={restoringVersionId}
+                onSelectVersion={requestRestoreVersion}
+              />
+            )}
           </>
         )}
         <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
@@ -266,6 +281,17 @@ export function DocumentTitlebarActions({
           </div>
         </DialogContent>
       </Dialog>
+      {canViewVersionHistory && target.notebookId && target.relativePath && (
+        <VersionHistoryDialog
+          open={historyDialogOpen}
+          onOpenChange={setHistoryDialogOpen}
+          notebookId={target.notebookId}
+          relativePath={target.relativePath}
+          refreshKey={versionRefreshKey}
+          restoringVersionId={restoringVersionId}
+          onSelectVersion={requestRestoreVersion}
+        />
+      )}
     </DropdownMenu>
     </>
   );

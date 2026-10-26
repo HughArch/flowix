@@ -5,6 +5,8 @@ import { notes as notesClient, type PathVersionMeta } from '@platform/tauri/clie
 import { useI18n, translate, type AppLanguage, type I18nKey } from '@/lib/i18n';
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
+import { Dialog, DialogContent, DialogTitle } from '@shared/ui/dialog';
+import { useMobileBackInterceptor } from '@features/shell/hooks/use-mobile-back-button';
 
 type VersionDisplay = PathVersionMeta;
 const logger = createLogger('document-version-history');
@@ -33,6 +35,151 @@ function formatVersionSize(size: number): string {
   return `${(size / 1024 / 1024).toFixed(1)} MB`;
 }
 
+/** `enabled` 期间加载版本列表; requestSeq 防止过期响应回写。子菜单与移动端弹窗共用。 */
+function useVersionHistoryList(
+  notebookId: string,
+  relativePath: string,
+  refreshKey: number,
+  enabled: boolean,
+) {
+  const { t } = useI18n();
+  const [versions, setVersions] = useState<VersionDisplay[]>([]);
+  const [loading, setLoading] = useState(false);
+  const [failed, setFailed] = useState(false);
+  const requestSeqRef = useRef(0);
+  const mountedRef = useRef(true);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  useEffect(() => {
+    if (!enabled) return;
+
+    const requestSeq = ++requestSeqRef.current;
+    setLoading(true);
+    setFailed(false);
+
+    void notesClient.listVersions(notebookId, relativePath)
+      .then((items) => {
+        if (!mountedRef.current || requestSeqRef.current !== requestSeq) return;
+        setVersions(items);
+      })
+      .catch((err) => {
+        if (!mountedRef.current || requestSeqRef.current !== requestSeq) return;
+        logger.error('list versions failed', { error: err, notebookId, relativePath });
+        setFailed(true);
+        toast.error(t("document.version.loadFailed"));
+      })
+      .finally(() => {
+        if (mountedRef.current && requestSeqRef.current === requestSeq) {
+          setLoading(false);
+        }
+      });
+  }, [enabled, notebookId, relativePath, refreshKey, t]);
+
+  const orderedVersions = useMemo(
+    () => [...versions].sort((a, b) => b.createdAt - a.createdAt),
+    [versions],
+  );
+
+  return { versions: orderedVersions, loading, failed };
+}
+
+function VersionListItem({
+  version,
+  relativePath,
+  restoringVersionId,
+  onSelect,
+}: {
+  version: VersionDisplay;
+  relativePath: string;
+  restoringVersionId: string | null;
+  onSelect: (version: VersionDisplay) => void;
+}) {
+  const { language } = useI18n();
+  const isRestoring = restoringVersionId === version.id;
+  return (
+    <button
+      key={version.id}
+      type="button"
+      disabled={isRestoring}
+      onClick={() => onSelect(version)}
+      className="group block w-full rounded-lg px-2 py-2 text-left hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-60"
+      title={relativePath}
+    >
+      <div className="flex items-center gap-2">
+        <span className="min-w-0 flex-1 truncate text-xs text-[var(--foreground)] group-hover:text-[var(--foreground)]">
+          {formatVersionTime(version.createdAt, language)}
+        </span>
+        {isRestoring && (
+          <Loader2 className="h-3 w-3 flowix-spin text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]" />
+        )}
+        <span className="rounded bg-[var(--background)] px-1.5 py-0.5 text-[10px] text-[var(--muted-foreground)] group-hover:bg-[var(--card)] group-hover:text-[var(--foreground)]">
+          {translate(language, VERSION_SOURCE_LABEL_KEYS[version.source] ?? "") || version.source}
+        </span>
+      </div>
+      <div className="mt-1 flex items-center gap-2 text-[11px] text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]">
+        <span className="min-w-0 flex-1 truncate group-hover:text-[var(--foreground)]">
+          {relativePath}
+        </span>
+        <span className="shrink-0">{formatVersionSize(version.size)}</span>
+      </div>
+    </button>
+  );
+}
+
+function VersionListBody({
+  loading,
+  failed,
+  versions,
+  relativePath,
+  restoringVersionId,
+  onSelect,
+}: {
+  loading: boolean;
+  failed: boolean;
+  versions: VersionDisplay[];
+  relativePath: string;
+  restoringVersionId: string | null;
+  onSelect: (version: VersionDisplay) => void;
+}) {
+  const { t } = useI18n();
+  return (
+    <>
+      {loading && (
+        <div className="flex items-center gap-1 px-2 py-3 text-xs text-[var(--muted-foreground)]">
+          <Loader2 className="h-3.5 w-3.5 flowix-spin" />
+          {t("document.version.loading")}
+        </div>
+      )}
+
+      {!loading && failed && (
+        <div className="px-2 py-3 text-xs text-[var(--muted-foreground)]">
+          {t("document.version.loadFailed")}
+        </div>
+      )}
+
+      {!loading && !failed && versions.length === 0 && (
+        <div className="px-2 py-3 text-xs text-[var(--muted-foreground)]">
+          {t("document.version.empty")}
+        </div>
+      )}
+
+      {!loading && !failed && versions.map((version) => (
+        <VersionListItem
+          key={version.id}
+          version={version}
+          relativePath={relativePath}
+          restoringVersionId={restoringVersionId}
+          onSelect={onSelect}
+        />
+      ))}
+    </>
+  );
+}
+
 export function VersionHistorySubmenu({
   notebookId,
   relativePath,
@@ -46,46 +193,9 @@ export function VersionHistorySubmenu({
   restoringVersionId: string | null;
   onSelectVersion: (version: VersionDisplay) => void;
 }) {
-  const { t, language } = useI18n();
+  const { t } = useI18n();
   const [open, setOpen] = useState(false);
-  const [versions, setVersions] = useState<VersionDisplay[]>([]);
-  const [loading, setLoading] = useState(false);
-  const requestSeqRef = useRef(0);
-  const mountedRef = useRef(true);
-
-  useEffect(() => {
-    mountedRef.current = true;
-    return () => { mountedRef.current = false; };
-  }, []);
-
-  useEffect(() => {
-    if (!open) return;
-
-    const requestSeq = ++requestSeqRef.current;
-    setLoading(true);
-
-    void notesClient.listVersions(notebookId, relativePath)
-      .then((items) => {
-        if (!mountedRef.current || requestSeqRef.current !== requestSeq) return;
-        setVersions(items);
-      })
-      .catch((err) => {
-        if (!mountedRef.current || requestSeqRef.current !== requestSeq) return;
-        logger.error('list versions failed', { error: err, notebookId, relativePath });
-        setOpen(false);
-        toast.error(t("document.version.loadFailed"));
-      })
-      .finally(() => {
-        if (mountedRef.current && requestSeqRef.current === requestSeq) {
-          setLoading(false);
-        }
-      });
-  }, [open, notebookId, relativePath, refreshKey, t]);
-
-  const orderedVersions = useMemo(
-    () => [...versions].sort((a, b) => b.createdAt - a.createdAt),
-    [versions],
-  );
+  const { versions, loading, failed } = useVersionHistoryList(notebookId, relativePath, refreshKey, open);
 
   return (
     <div
@@ -116,57 +226,22 @@ export function VersionHistorySubmenu({
               {t("document.version.allHistory")}
             </div>
             <div className="text-[11px] text-[var(--muted-foreground)]">
-              {orderedVersions.length}
+              {versions.length}
             </div>
           </div>
 
           <div className="max-h-[272px] overflow-y-auto px-1">
-            {loading && (
-              <div className="flex items-center gap-1 px-2 py-3 text-xs text-[var(--muted-foreground)]">
-                <Loader2 className="h-3.5 w-3.5 flowix-spin" />
-                {t("document.version.loading")}
-              </div>
-            )}
-
-            {!loading && orderedVersions.length === 0 && (
-              <div className="px-2 py-3 text-xs text-[var(--muted-foreground)]">
-                {t("document.version.empty")}
-              </div>
-            )}
-
-            {!loading && orderedVersions.map((version) => {
-              const isRestoring = restoringVersionId === version.id;
-              return (
-              <button
-                key={version.id}
-                type="button"
-                disabled={isRestoring}
-                onClick={() => {
-                  setOpen(false);
-                  onSelectVersion(version);
-                }}
-                className="group block w-full rounded-lg px-2 py-2 text-left hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:cursor-not-allowed disabled:opacity-60"
-                title={relativePath}
-              >
-                <div className="flex items-center gap-2">
-                  <span className="min-w-0 flex-1 truncate text-xs text-[var(--foreground)] group-hover:text-[var(--foreground)]">
-                    {formatVersionTime(version.createdAt, language)}
-                  </span>
-                  {isRestoring && (
-                    <Loader2 className="h-3 w-3 flowix-spin text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]" />
-                  )}
-                  <span className="rounded bg-[var(--background)] px-1.5 py-0.5 text-[10px] text-[var(--muted-foreground)] group-hover:bg-[var(--card)] group-hover:text-[var(--foreground)]">
-                    {translate(language, VERSION_SOURCE_LABEL_KEYS[version.source] ?? "") || version.source}
-                  </span>
-                </div>
-                <div className="mt-1 flex items-center gap-2 text-[11px] text-[var(--muted-foreground)] group-hover:text-[var(--foreground)]">
-                  <span className="min-w-0 flex-1 truncate group-hover:text-[var(--foreground)]">
-                    {relativePath}
-                  </span>
-                  <span className="shrink-0">{formatVersionSize(version.size)}</span>
-                </div>
-              </button>
-            )})}
+            <VersionListBody
+              loading={loading}
+              failed={failed}
+              versions={versions}
+              relativePath={relativePath}
+              restoringVersionId={restoringVersionId}
+              onSelect={(version) => {
+                setOpen(false);
+                onSelectVersion(version);
+              }}
+            />
           </div>
         </div>
       )}
@@ -174,3 +249,58 @@ export function VersionHistorySubmenu({
   );
 }
 
+/**
+ * 移动端历史版本选择弹窗。触屏没有 hover, 且向左弹的子菜单会被屏幕边缘裁剪
+ * (见 docs/VERSION-HISTORY-CLOUD.md §4.3), 因此用贴底弹窗承载同一份列表;
+ * 数据加载与行渲染与桌面子菜单完全共享。
+ */
+export function VersionHistoryDialog({
+  open,
+  onOpenChange,
+  notebookId,
+  relativePath,
+  refreshKey,
+  restoringVersionId,
+  onSelectVersion,
+}: {
+  open: boolean;
+  onOpenChange: (open: boolean) => void;
+  notebookId: string;
+  relativePath: string;
+  refreshKey: number;
+  restoringVersionId: string | null;
+  onSelectVersion: (version: VersionDisplay) => void;
+}) {
+  const { t } = useI18n();
+  const { versions, loading, failed } = useVersionHistoryList(notebookId, relativePath, refreshKey, open);
+  useMobileBackInterceptor(open, () => {
+    onOpenChange(false);
+    return true;
+  });
+
+  return (
+    <Dialog open={open} onOpenChange={onOpenChange}>
+      {/* 贴底弹窗: 覆盖居中定位 (wrapper 为 flex 容器, self-end 底对齐), 顶边圆角。 */}
+      <DialogContent className="flex max-h-[70dvh] w-full flex-col self-end rounded-b-none rounded-t-2xl px-4 pb-4 pt-3 max-w-none">
+        <div className="flex items-center justify-between pr-10">
+          <DialogTitle>{t("document.version.menuLabel")}</DialogTitle>
+          <span className="text-[11px] text-[var(--muted-foreground)]">{versions.length}</span>
+        </div>
+
+        <div className="mt-1 flex-1 overflow-y-auto px-1 pt-1">
+          <VersionListBody
+            loading={loading}
+            failed={failed}
+            versions={versions}
+            relativePath={relativePath}
+            restoringVersionId={restoringVersionId}
+            onSelect={(version) => {
+              onOpenChange(false);
+              onSelectVersion(version);
+            }}
+          />
+        </div>
+      </DialogContent>
+    </Dialog>
+  );
+}
