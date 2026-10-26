@@ -15,6 +15,8 @@ export interface AgentComposerDomParts {
   composerRoleIcon: HTMLButtonElement;
   composerAddPopover: HTMLDivElement;
   input: HTMLDivElement;
+  /** Attachment chip strip above the input; hidden while empty. */
+  attachmentStrip: HTMLDivElement;
   codexSettingsPopover: HTMLDivElement;
   composerRolePopover: HTMLDivElement;
   sendButtonMount: HTMLSpanElement;
@@ -157,13 +159,20 @@ export function createAgentComposerDom(
   composerAddPopover.className = 'agent-composer__add-popover';
   composerAddPopover.setAttribute('role', 'menu');
   composerAddPopover.hidden = true;
+  // Attachment chips hang above the input inside the capsule (mainstream
+  // chat-composer pattern). The attachment controller fills it; empty by
+  // default so both the flex (compact) and grid (expanded) layouts are
+  // unaffected until the first attachment arrives.
+  const attachmentStrip = document.createElement('div');
+  attachmentStrip.className = 'agent-composer__attachments';
+  attachmentStrip.hidden = true;
   composerActions.append(composerRoleIcon, composerExtraMount);
   // DOM 顺序 ── composerActions (添加按钮) 放在 input 之前, 让非全屏
   // flex (默认 row, DOM 顺序 = 视觉顺序) 状态下添加按钮显示在 input
   // 左侧, 跟全屏态 grid 布局 `grid-column: 1` 把 actions 显式钉在第一列
   // ── 视觉位置对齐。 send button 仍以 sendButtonMount 收尾, 留在最右。
   inputRow.append(input);
-  composer.append(composerActions, inputRow, sendButtonMount);
+  composer.append(attachmentStrip, composerActions, inputRow, sendButtonMount);
   document.body.append(codexSettingsPopover, composerAddPopover, composerRolePopover);
   // 空区域点击聚焦 ── 见上方 COMPOSER_FOCUS_INTERACTIVE_SELECTOR 注释。
   // 优先使用 pointerdown，避免 click 时浏览器先把焦点移到 body；
@@ -178,6 +187,7 @@ export function createAgentComposerDom(
     composerExtraMount,
     composerRoleIcon,
     input,
+    attachmentStrip,
     codexSettingsPopover,
     composerRolePopover,
     composerAddPopover,

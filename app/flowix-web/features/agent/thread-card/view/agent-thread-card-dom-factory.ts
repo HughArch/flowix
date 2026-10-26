@@ -49,6 +49,7 @@ export interface AgentThreadCardDomParts {
   composer: HTMLElement;
   inputRow: HTMLDivElement;
   composerActions: HTMLDivElement;
+  attachmentStrip: HTMLDivElement;
   composerRoleIcon: HTMLButtonElement;
   composerAddPopover: HTMLDivElement;
   input: HTMLDivElement;
@@ -223,6 +224,7 @@ export function createAgentThreadCardDom(
     composer,
     inputRow,
     composerActions,
+    attachmentStrip,
     composerRoleIcon,
     composerAddPopover,
     input,
@@ -284,6 +286,7 @@ export function createAgentThreadCardDom(
     composer,
     inputRow,
     composerActions,
+    attachmentStrip,
     composerRoleIcon,
     composerAddPopover,
     input,

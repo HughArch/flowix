@@ -31,7 +31,6 @@ import {
   getComposerRuntimeState,
   ComposerDraftController,
   ComposerAttachmentController,
-  ComposerAttachmentDocument,
   ComposerAddMenuController,
   getCurrentNotebookComposerFolders,
   createAgentComposerDom,
@@ -672,9 +671,7 @@ function AgentConversationDetailContent({
     });
     messageController = surface.messages;
     const composerController = surface.composer;
-    composerAttachmentsController.connectDocument(
-      new ComposerAttachmentDocument(composerController.editorInstance),
-    );
+    composerAttachmentsController.connectStrip(composerParts.attachmentStrip);
     const notePicker = new NotePickerController({
       trigger: composerRoleButton,
       popover: rolePopover,

@@ -55,7 +55,6 @@ import {
   getComposerRuntimeState,
   ComposerDraftController,
   ComposerAttachmentController,
-  ComposerAttachmentDocument,
   ComposerAddMenuController,
   getCurrentNotebookComposerFolders,
   type AgentThreadCardInputAttachment,
@@ -173,6 +172,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
   private sendButtonMount: HTMLSpanElement;
   private body: HTMLElement;
   private composer: HTMLElement;
+  private attachmentStrip: HTMLDivElement;
   // 输入框左侧的添加内容按钮，打开笔记、附件与设置菜单。
   private composerRoleIcon: HTMLButtonElement;
   private chrome: AgentThreadCardChromeController;
@@ -470,6 +470,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
     this.composer = domParts.composer;
     this.composerRoleIcon = domParts.composerRoleIcon;
     this.input = domParts.input;
+    this.attachmentStrip = domParts.attachmentStrip;
     this.sendButtonMount = domParts.sendButtonMount;
     this.input.addEventListener("focus", this.boundHandleInputFocus);
 
@@ -709,9 +710,7 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
     });
     this.messages = this.surface.messages;
     this.composerController = this.surface.composer;
-    this.composerAttachments.connectDocument(
-      new ComposerAttachmentDocument(this.composerController.editorInstance),
-    );
+    this.composerAttachments.connectStrip(this.attachmentStrip);
     this.composerController.setSendButtonState("");
 
     this.refreshAttrs();

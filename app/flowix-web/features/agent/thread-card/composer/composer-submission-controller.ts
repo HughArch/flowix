@@ -62,7 +62,12 @@ export class ComposerSubmissionController {
     composer: SubmissionComposer;
     images: Pick<
       ComposerAttachmentController,
-      "hasAttachments" | "hasPending" | "readyAttachments" | "setLocked" | "clearAfterSubmit"
+      | "hasAttachments"
+      | "hasPending"
+      | "readyAttachments"
+      | "setLocked"
+      | "clearAfterSubmit"
+      | "documentPromptLinks"
     >;
     getRuntime: () => ComposerRuntimeState;
     isDisposed: () => boolean;
@@ -88,7 +93,12 @@ export class ComposerSubmissionController {
 
     const snapshot: ComposerSubmissionSnapshot = {
       markdown: composer.getDraftMarkdown(),
-      prompt: composer.getPrompt().trim() || "Analyze the attached image(s).",
+      // Document attachments ride the prompt as file links (the chips strip
+      // keeps them out of the editor text); images ride `attachments`.
+      prompt:
+        [composer.getPrompt().trim(), images.documentPromptLinks()]
+          .filter(Boolean)
+          .join("\n") || "Analyze the attached image(s).",
       attachments: images.readyAttachments.map((attachment) => ({ ...attachment })),
     };
     this.snapshot = snapshot;

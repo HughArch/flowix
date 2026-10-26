@@ -9,7 +9,7 @@ import {
   disposeAgentComposerDom,
   type ComposerControllerOptions,
 } from "./index";
-import { insertComposerAttachmentToken } from "./composer-attachment-document";
+import { COMPOSER_ATTACHMENT_NODE_NAME } from "./composer-attachment-compat";
 import { insertComposerSkillToken } from "./composer-skill-token";
 
 const controllers: ComposerController[] = [];
@@ -315,10 +315,9 @@ describe("composer draft history", () => {
   it("restores inline attachments and skills when returning from message history", () => {
     const { controller } = setup({ getUserHistoryMessages: () => ["previous message"] });
     insertComposerSkillToken(controller.editorInstance, "figma:figma-use");
-    insertComposerAttachmentToken(controller.editorInstance, {
-      path: "/tmp/report.pdf",
-      name: "report.pdf",
-      mimeType: "application/pdf",
+    controller.editorInstance.commands.insertContentAt(1, {
+      type: COMPOSER_ATTACHMENT_NODE_NAME,
+      attrs: { path: "/tmp/report.pdf", name: "report.pdf", mimeType: "application/pdf" },
     });
     const draft = controller.getDraftMarkdown();
     controller.editorInstance.commands.setTextSelection(1);

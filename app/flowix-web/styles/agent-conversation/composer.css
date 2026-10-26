@@ -1746,3 +1746,123 @@
   background: var(--warning);
   filter: brightness(1.08);
 }
+
+/* ── Attachment chip strip ──────────────────────────────────────────────────
+ * 选中的附件以可移除的小卡片悬挂在输入框上方（主流 AI 对话框形态）。
+ * 条带挂在 composer 胶囊内部、输入行之上；空态整体隐藏，flex（紧凑态）与
+ * grid（全屏态）布局在无附件时完全不受影响。控制器通过
+ * .agent-composer--has-attachments 控制显隐。 */
+.agent-composer__attachments {
+  display: none;
+}
+
+.agent-composer--has-attachments .agent-composer__attachments {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 0.35rem;
+}
+
+/* 紧凑态（笔记内嵌卡片）是单行 flex：有附件时允许换行，附件条独占一行。 */
+.agent-conversation-surface
+  .agent-composer:not(.agent-composer--expanded).agent-composer--has-attachments {
+  flex-wrap: wrap;
+}
+
+.agent-conversation-surface
+  .agent-composer:not(.agent-composer--expanded).agent-composer--has-attachments
+  .agent-composer__attachments {
+  flex: 1 0 100%;
+  padding: 0.3rem 0.2rem 0;
+}
+
+/* 全屏态 grid：附件条插入输入行之上的第一行（有附件时才切换模板）。 */
+.agent-conversation-surface
+  .agent-composer--expanded.agent-composer--has-attachments {
+  grid-template-areas:
+    "strip strip"
+    "input input"
+    "actions send";
+  grid-template-rows: auto minmax(var(--agent-composer-input-min-height), auto) auto;
+}
+
+.agent-conversation-surface .agent-composer--expanded .agent-composer__attachments {
+  grid-area: strip;
+  padding: 0.15rem 0.2rem 0.4rem;
+  border-bottom: 1px solid var(--border);
+}
+
+.agent-conversation-surface .agent-composer .agent-composer__attachment-chip {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.3rem;
+  max-width: 11rem;
+  height: 1.5rem;
+  padding: 0 0.15rem 0 0.35rem;
+  border: 1px solid var(--border);
+  border-radius: 0.45rem;
+  background: var(--muted);
+  font-size: calc(var(--font-size, 16px) * 0.72);
+  line-height: 1;
+  cursor: pointer;
+  user-select: none;
+}
+
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__attachment-chip-label {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  color: var(--foreground);
+}
+
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__attachment-chip
+  .agent-composer__attachment-token-preview,
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__attachment-chip
+  .agent-composer__attachment-token-icon {
+  display: inline-flex;
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.2rem;
+  object-fit: cover;
+}
+
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__attachment-chip-remove {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1rem;
+  height: 1rem;
+  flex: 0 0 auto;
+  padding: 0;
+  border: 0;
+  border-radius: 50%;
+  background: transparent;
+  color: var(--muted-foreground);
+}
+
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__attachment-chip-remove:hover {
+  background: var(--border);
+  color: var(--foreground);
+}
+
+.agent-conversation-surface
+  .agent-composer
+  .agent-composer__attachment-chip-remove
+  svg {
+  width: 0.7rem;
+  height: 0.7rem;
+}

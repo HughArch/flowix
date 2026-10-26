@@ -332,7 +332,6 @@ export class ComposerAddMenuController {
   };
 
   private pickAttachments(): void {
-    this.options.attachments.captureInsertionAnchor();
     const input = document.createElement("input");
     input.type = "file";
     input.accept = COMPOSER_ATTACHMENT_ACCEPT;
@@ -343,7 +342,6 @@ export class ComposerAddMenuController {
       input.remove();
     }, { once: true });
     input.addEventListener("cancel", () => {
-      this.options.attachments.cancelInsertionAnchor();
       input.remove();
     }, { once: true });
     document.body.append(input);

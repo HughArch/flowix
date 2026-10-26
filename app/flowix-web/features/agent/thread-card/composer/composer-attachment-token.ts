@@ -97,7 +97,9 @@ export const ComposerAttachmentToken = Node.create({
   },
 });
 
-function toLocalFileUrl(path: string): string {
+/** File URL for a cached attachment path; shared by token serialization and
+ * the chip strip's document prompt links. */
+export function composerAttachmentFileUrl(path: string): string {
   const normalized = path.replace(/\\/g, "/");
   const encodeSegments = (value: string) => value.split("/").map(encodeURIComponent).join("/");
 
@@ -113,7 +115,7 @@ function toLocalFileUrl(path: string): string {
   return `file://${encodeSegments(absolutePath)}`;
 }
 
-function escapeMarkdownLinkLabel(label: string): string {
+export function escapeMarkdownLinkLabel(label: string): string {
   return label
     .replace(/[\u0000-\u001f\u007f]/gu, " ")
     .replace(/\\/g, "\\\\")
@@ -129,7 +131,7 @@ export function composerAttachmentMarkdownToPrompt(markdown: string): string {
       const mimeType = decode(encodedMimeType).toLowerCase();
       if (mimeType.startsWith("image/")) return "";
       if (!path) return "";
-      return `[${escapeMarkdownLinkLabel(name)}](${toLocalFileUrl(path)})`;
+      return `[${escapeMarkdownLinkLabel(name)}](${composerAttachmentFileUrl(path)})`;
     },
   );
 }

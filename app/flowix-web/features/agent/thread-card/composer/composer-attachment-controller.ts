@@ -1,6 +1,13 @@
 import { agent } from "@platform/tauri/client";
-import type { ComposerInsertionAnchor, ComposerInsertionPoint } from "./composer-insertion-anchor";
-import type { ComposerAttachmentDocumentPort } from "./composer-attachment-document";
+import {
+  createComposerAttachmentPreview,
+  type ComposerAttachmentPreview,
+} from "./composer-attachment-preview";
+import { createInlineAtomCloseIcon } from "@features/editor/extensions/shared/inline-atom-nodeview";
+import {
+  composerAttachmentFileUrl,
+  escapeMarkdownLinkLabel,
+} from "./composer-attachment-token";
 import type { AgentThreadCardInputAttachment } from "./composer-attachment-types";
 
 export type { AgentThreadCardInputAttachment } from "./composer-attachment-types";
@@ -66,17 +73,19 @@ function readFileAsDataUrl(file: File): Promise<string> {
   });
 }
 
+/**
+ * Composer attachment state. Selected files are cached on the host and
+ * rendered as removable chips in a strip above the input (mainstream
+ * chat-composer pattern); the text input stays plain text.
+ */
 export class ComposerAttachmentController {
   private attachments: AgentThreadCardInputAttachment[];
-  /** Detached tokens stay cached while editor undo/history can restore them. */
-  private readonly detachedAttachments = new Map<string, AgentThreadCardInputAttachment>();
   private pending = 0;
   private disposed = false;
   private locked = false;
   private readonly submittedPaths = new Set<string>();
-  private insertionAnchor?: ComposerInsertionAnchor;
-  private readonly activeAnchors = new Set<ComposerInsertionAnchor>();
-  private document?: ComposerAttachmentDocumentPort;
+  private strip?: HTMLElement;
+  private readonly chipPreviews = new Map<string, ComposerAttachmentPreview>();
 
   constructor(private readonly options: ComposerAttachmentControllerOptions) {
     this.attachments = options.initialAttachments.slice(0, MAX_COMPOSER_ATTACHMENT_COUNT);
@@ -98,44 +107,25 @@ export class ComposerAttachmentController {
     return this.pending > 0;
   }
 
-  connectDocument(document: ComposerAttachmentDocumentPort): void {
+  /** Attach the strip that renders the attachment chips above the input. */
+  connectStrip(strip: HTMLElement): void {
     if (this.disposed) return;
-    this.document?.dispose();
-    this.document = document;
-
-    // Restore persisted attachments into the editor before tracking removals.
-    let position: ComposerInsertionPoint = { from: 1, to: 1 };
-    for (const image of this.attachments) {
-      position = document.insertAttachmentToken(image, position) ?? position;
-    }
-    document.setAttachmentTokensChanged((attachments) => this.syncInlineAttachments(attachments));
+    this.strip = strip;
+    this.renderStrip();
   }
 
-  captureInsertionAnchor(): void {
-    this.cancelInsertionAnchor();
-    this.insertionAnchor = this.document?.captureAttachmentInsertionAnchor();
-  }
-
-  cancelInsertionAnchor(): void {
-    this.insertionAnchor?.dispose();
-    this.insertionAnchor = undefined;
-  }
-
-  syncInlineAttachments(attachments: readonly AgentThreadCardInputAttachment[]): void {
-    if (this.disposed) return;
-    const paths = new Set(attachments.map((attachment) => attachment.path));
-    for (const image of this.attachments) {
-      if (!paths.has(image.path)) this.detachedAttachments.set(image.path, image);
-    }
-    const nextAttachments = [...new Map(attachments.map((attachment) => [attachment.path, attachment])).values()];
-    for (const image of nextAttachments) this.detachedAttachments.delete(image.path);
-
-    const unchanged = nextAttachments.length === this.attachments.length &&
-      nextAttachments.every((image, index) => image.path === this.attachments[index]?.path);
-    if (unchanged) return;
-    this.attachments = nextAttachments;
-    this.options.onChange(this.readyAttachments);
-    this.options.onStateChange();
+  /**
+   * Prompt markdown contributed by document attachments. Images ride the
+   * wire as image paths; documents become file links the (text-capable)
+   * agent can open, mirroring the legacy inline-token serialization.
+   */
+  documentPromptLinks(): string {
+    return this.attachments
+      .filter((attachment) => !isImageAttachment(attachment) && attachment.path)
+      .map((attachment) =>
+        `[${escapeMarkdownLinkLabel(attachment.name || "Attachment")}](${composerAttachmentFileUrl(attachment.path)})`,
+      )
+      .join(" ");
   }
 
   /** Add picker-selected attachments through the same cache path as pasted attachments. */
@@ -154,25 +144,22 @@ export class ComposerAttachmentController {
     if (eligibleFiles.length > availableSlots) {
       this.options.onLimitExceeded("count");
     }
-    const anchor = this.insertionAnchor;
-    this.insertionAnchor = undefined;
     const acceptedFiles = eligibleFiles.slice(0, availableSlots);
     this.pending += acceptedFiles.length;
     this.options.onStateChange();
-    void this.cacheFilesInOrder(acceptedFiles, anchor);
+    void this.cacheFilesInOrder(acceptedFiles);
+  }
+
+  /** Chip remove button; a locked (in-flight) submission pins its files. */
+  removeAttachment(path: string): void {
+    this.removeByPath(path, true);
   }
 
   clearAfterSubmit(): void {
+    this.deleteUnsubmittedAttachments();
     this.attachments = [];
-    for (const image of this.detachedAttachments.values()) {
-      if (!this.submittedPaths.has(image.path)) {
-        void agent.deleteCachedAttachment(image.path).catch(() => undefined);
-      }
-    }
-    this.detachedAttachments.clear();
+    this.renderStrip();
     this.options.onChange([]);
-    // Acceptance may leave an edited follow-up draft visible. Rebuild from that document.
-    this.document?.setAttachmentTokensChanged((attachments) => this.syncInlineAttachments(attachments));
     this.options.onStateChange();
   }
 
@@ -188,17 +175,10 @@ export class ComposerAttachmentController {
     if (this.disposed) return;
     this.disposed = true;
     this.options.input.removeEventListener("paste", this.handlePaste);
-    this.document?.dispose();
-    this.document = undefined;
-    this.cancelInsertionAnchor();
-    for (const anchor of this.activeAnchors) anchor.dispose();
-    this.activeAnchors.clear();
-    for (const image of this.detachedAttachments.values()) {
-      if (!this.submittedPaths.has(image.path)) {
-        void agent.deleteCachedAttachment(image.path).catch(() => undefined);
-      }
-    }
-    this.detachedAttachments.clear();
+    for (const preview of this.chipPreviews.values()) preview.destroy();
+    this.chipPreviews.clear();
+    this.strip = undefined;
+    this.deleteUnsubmittedAttachments();
   }
 
   private readonly handlePaste = (event: ClipboardEvent): void => {
@@ -211,11 +191,10 @@ export class ComposerAttachmentController {
     // Clipboard image payloads often also contain a generated filename as text.
     // Prevent that text from being inserted; genuine text-only paste stays native.
     event.preventDefault();
-    this.captureInsertionAnchor();
     this.addFiles(files);
   };
 
-  private async cache(file: File, anchor?: ComposerInsertionAnchor): Promise<void> {
+  private async cache(file: File): Promise<void> {
     try {
       const content = await readFileAsDataUrl(file);
       const result = await agent.cacheAttachment(content, getAttachmentMimeType(file) ?? file.type);
@@ -225,10 +204,7 @@ export class ComposerAttachmentController {
         return;
       }
       this.attachments = [...this.attachments, cached];
-      if (this.document) {
-        const nextPosition = this.document.insertAttachmentToken(cached, anchor?.resolve());
-        if (nextPosition) anchor?.advance(nextPosition);
-      }
+      this.renderStrip();
       this.options.onChange(this.readyAttachments);
     } catch (error) {
       if (!this.disposed) this.options.onError(error instanceof Error ? error.message : String(error));
@@ -238,35 +214,40 @@ export class ComposerAttachmentController {
     }
   }
 
-  private async cacheFilesInOrder(files: File[], anchor?: ComposerInsertionAnchor): Promise<void> {
-    if (anchor) this.activeAnchors.add(anchor);
+  private async cacheFilesInOrder(files: File[]): Promise<void> {
     let processed = 0;
     try {
       for (const file of files) {
         if (this.disposed || this.locked) break;
-        await this.cache(file, anchor);
+        await this.cache(file);
         processed += 1;
       }
     } finally {
       this.pending = Math.max(0, this.pending - (files.length - processed));
-      anchor?.dispose();
-      if (anchor) this.activeAnchors.delete(anchor);
       if (!this.disposed) this.options.onStateChange();
     }
   }
 
-  private remove(
-    image: AgentThreadCardInputAttachment,
-    deleteCachedFile: boolean = true,
-  ): void {
+  private removeByPath(path: string, deleteCachedFile: boolean): void {
+    const attachment = this.attachments.find((candidate) => candidate.path === path);
+    if (!attachment) return;
     if (this.locked && deleteCachedFile) return;
-    this.attachments = this.attachments.filter((candidate) => candidate.path !== image.path);
+    this.attachments = this.attachments.filter((candidate) => candidate.path !== path);
+    this.destroyChipPreview(path);
+    this.renderStrip();
     this.options.onChange(this.readyAttachments);
     this.options.onStateChange();
     if (deleteCachedFile) {
-      void agent.deleteCachedAttachment(image.path).catch(() => undefined);
-    } else {
-      this.document?.removeAttachmentToken(image.path);
+      void agent.deleteCachedAttachment(path).catch(() => undefined);
+    }
+  }
+
+  /** Delete cache files that are not part of an accepted submission. */
+  private deleteUnsubmittedAttachments(): void {
+    for (const image of this.attachments) {
+      if (!this.submittedPaths.has(image.path)) {
+        void agent.deleteCachedAttachment(image.path).catch(() => undefined);
+      }
     }
   }
 
@@ -276,7 +257,7 @@ export class ComposerAttachmentController {
       if (this.disposed) return;
       if (!this.attachments.some((candidate) => candidate.path === image.path)) return;
       if (!content) {
-        this.remove(image, false);
+        this.removeByPath(image.path, false);
         return;
       }
     } catch (error) {
@@ -286,5 +267,61 @@ export class ComposerAttachmentController {
         );
       }
     }
+  }
+
+  private renderStrip(): void {
+    const strip = this.strip;
+    if (!strip) return;
+    for (const preview of this.chipPreviews.values()) preview.destroy();
+    this.chipPreviews.clear();
+    strip.replaceChildren();
+    for (const attachment of this.attachments) {
+      strip.append(this.createChip(attachment));
+    }
+    strip.hidden = this.attachments.length === 0;
+    const composer = strip.closest(".agent-composer");
+    composer?.classList.toggle(
+      "agent-composer--has-attachments",
+      this.attachments.length > 0,
+    );
+  }
+
+  private createChip(attachment: AgentThreadCardInputAttachment): HTMLDivElement {
+    const chip = document.createElement("div");
+    chip.className = "agent-composer__attachment-chip";
+    chip.title = attachment.name;
+
+    const preview = createComposerAttachmentPreview(
+      attachment.path,
+      attachment.name,
+      attachment.mimeType,
+      chip,
+    );
+    this.chipPreviews.set(attachment.path, preview);
+    chip.addEventListener("click", () => preview.onClick());
+
+    const label = document.createElement("span");
+    label.className = "agent-composer__attachment-chip-label";
+    label.textContent = attachment.name;
+    label.title = attachment.name;
+
+    const removeButton = document.createElement("button");
+    removeButton.type = "button";
+    removeButton.className = "agent-composer__attachment-chip-remove";
+    removeButton.setAttribute("aria-label", `移除附件 ${attachment.name}`);
+    removeButton.append(createInlineAtomCloseIcon());
+    removeButton.addEventListener("click", (event) => {
+      // Chip-level click opens the preview popover; removal must not.
+      event.stopPropagation();
+      this.removeAttachment(attachment.path);
+    });
+
+    chip.append(preview.element, label, removeButton);
+    return chip;
+  }
+
+  private destroyChipPreview(path: string): void {
+    this.chipPreviews.get(path)?.destroy();
+    this.chipPreviews.delete(path);
   }
 }

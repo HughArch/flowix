@@ -17,8 +17,6 @@ export {
   ComposerAttachmentToken,
   composerAttachmentMarkdownToPrompt,
 } from "./composer-attachment-token";
-export { ComposerAttachmentDocument, type ComposerAttachmentDocumentPort } from "./composer-attachment-document";
-export { insertComposerAttachmentToken } from "./composer-attachment-document";
 export {
   ComposerAddMenuController,
   type ComposerAddMenuControllerOptions,

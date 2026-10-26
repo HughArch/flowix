@@ -27,7 +27,7 @@ function setup() {
   const images = {
     hasAttachments: true, hasPending: false,
     readyAttachments: [{ path: "/tmp/file.png", mimeType: "image/png", name: "file.png" }],
-    setLocked: vi.fn(), clearAfterSubmit: vi.fn(),
+    setLocked: vi.fn(), clearAfterSubmit: vi.fn(), documentPromptLinks: vi.fn(() => ''),
   };
   const phases: string[] = [];
   const options = {
