@@ -4,14 +4,19 @@
 //! WebView to turn that DOM into PDF bytes, then commits the result through the
 //! existing export authorization and atomic-write path.
 
-use std::fs::{self, File};
-use std::path::{Path, PathBuf};
+#[cfg(not(target_os = "android"))]
+use std::{
+    fs::{self, File},
+    path::{Path, PathBuf},
+};
 
 use tauri::{State, WebviewWindow};
 
 use crate::app::state::AppState;
+#[cfg(not(target_os = "android"))]
 use crate::lock_utils::read_lock;
 
+#[cfg(not(target_os = "android"))]
 fn temporary_pdf_path(target: &Path) -> Result<PathBuf, String> {
     let parent = target
         .parent()
@@ -59,33 +64,62 @@ pub async fn export_pdf(
     file_path: String,
     state: State<'_, AppState>,
 ) -> Result<bool, String> {
-    let requested = Path::new(&file_path);
-    let target = state
-        .export_access
-        .authorized_target(window.label(), requested)
-        .map_err(|error| error.to_string())?;
-    let temporary = temporary_pdf_path(&target)?;
+    #[cfg(target_os = "android")]
+    {
+        let _ = (&window, &state, &file_path);
+        Err("use print_pdf on Android".to_string())
+    }
 
-    let native_result = export_pdf_native(window.clone(), temporary.clone()).await;
-    let result = match native_result {
-        Ok(()) => {
-            let mut reader = File::open(&temporary).map_err(|error| error.to_string())?;
-            state
-                .export_access
-                .save(
-                    window.label(),
-                    &target,
-                    &mut reader,
-                    &read_lock(&state.memo_file, "memo_file"),
-                )
-                .map(|()| true)
-                .map_err(|error| error.to_string())
-        }
-        Err(error) => Err(error),
-    };
+    #[cfg(not(target_os = "android"))]
+    {
+        let requested = Path::new(&file_path);
+        let target = state
+            .export_access
+            .authorized_target(window.label(), requested)
+            .map_err(|error| error.to_string())?;
+        let temporary = temporary_pdf_path(&target)?;
 
-    let _ = fs::remove_file(&temporary);
-    result
+        let native_result = export_pdf_native(window.clone(), temporary.clone()).await;
+        let result = match native_result {
+            Ok(()) => {
+                let mut reader = File::open(&temporary).map_err(|error| error.to_string())?;
+                state
+                    .export_access
+                    .save(
+                        window.label(),
+                        &target,
+                        &mut reader,
+                        &read_lock(&state.memo_file, "memo_file"),
+                    )
+                    .map(|()| true)
+                    .map_err(|error| error.to_string())
+            }
+            Err(error) => Err(error),
+        };
+
+        let _ = fs::remove_file(&temporary);
+        result
+    }
+}
+
+/// Android has no writable WebView-PDF primitive: the system print framework
+/// owns the destination document. The web layer calls this instead of the
+/// desktop [`export_pdf`] and lets the user pick "Save as PDF" in the print
+/// sheet. Resolves once the spooler has finished with the document so the
+/// web layer can restore the print DOM.
+#[tauri::command]
+pub async fn print_pdf(app: tauri::AppHandle, job_name: Option<String>) -> Result<bool, String> {
+    #[cfg(target_os = "android")]
+    {
+        let job_name = job_name.unwrap_or_else(|| "Flowix".to_string());
+        crate::mobile_export::print_document(&app, &job_name).await
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = (app, job_name);
+        Err("Native PDF printing is only available on Android".to_string())
+    }
 }
 
 #[cfg(target_os = "macos")]
@@ -211,11 +245,13 @@ async fn export_pdf_native(window: WebviewWindow, output: PathBuf) -> Result<(),
                 let printable = core.cast::<ICoreWebView2_7>()?;
                 let environment = environment.cast::<ICoreWebView2Environment6>()?;
                 let settings = unsafe { environment.CreatePrintSettings()? };
-                // PDF output is a document representation, not a screenshot of
-                // the themed app surface. Keep page/background painting off;
-                // the print stylesheet also deliberately uses transparent
-                // backgrounds.
-                unsafe { settings.SetShouldPrintBackgrounds(false)? };
+                // Document content uses backgrounds as first-class formatting:
+                // line/paragraph fills, mark highlights, table header fills and
+                // zebra rows are all painted with `background-color`. Turning
+                // this off silently drops them from the PDF. The print
+                // stylesheet keeps the page itself transparent, so enabling
+                // backgrounds only affects the document body.
+                unsafe { settings.SetShouldPrintBackgrounds(true)? };
                 let output = PCWSTR(output.as_ptr());
                 let callback_sender = sender.clone();
                 let callback =
@@ -251,7 +287,10 @@ async fn export_pdf_native(window: WebviewWindow, output: PathBuf) -> Result<(),
     .map_err(|error| error.to_string())?
 }
 
-#[cfg(not(any(target_os = "macos", target_os = "windows")))]
-async fn export_pdf_native(_window: WebviewWindow, _output: PathBuf) -> Result<(), String> {
+#[cfg(not(any(target_os = "macos", target_os = "windows", target_os = "android")))]
+async fn export_pdf_native(
+    _window: WebviewWindow,
+    _output: std::path::PathBuf,
+) -> Result<(), String> {
     Err("Native PDF export is not supported on this platform yet".to_string())
 }

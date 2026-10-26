@@ -11,6 +11,7 @@ import { memoDocumentOperations } from '@features/document/use-cases/memo-docume
 import { translate } from '@/lib/i18n';
 import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api';
 import { toast } from '@/lib/toast';
+import { isMobileDevice } from '@shared/platform';
 import { preparePdfPrint } from '@features/document/pdf-print';
 import type { Editor } from '@tiptap/core';
 
@@ -222,6 +223,19 @@ export function useDocumentCommands({
     try {
       const doc = await requireExportableDocument();
       if (!doc) return;
+
+      if (isMobileDevice()) {
+        // The Android print framework owns the PDF destination: the user
+        // completes the export with "Save as PDF" in the system print sheet.
+        // Keeping the print DOM prepared until this resolves lets the spooler
+        // render the page after the sheet closes.
+        restorePrintView = await preparePdfPrint(getCurrentDocumentEditor());
+        const printed = await dialogs.printPdf(sanitizeFileName(doc.title));
+        toast[printed ? 'success' : 'error'](
+          tCmd(printed ? 'document.command.exportPdf.success' : 'document.command.exportPdf.failed'),
+        );
+        return;
+      }
 
       const pdfName = tCmd('document.command.pdfName');
       const target = await promptExportTarget(doc, 'pdf', { name: pdfName, extensions: ['pdf'] });

@@ -190,6 +190,37 @@ fn record_bookmark_directory(app: &tauri::AppHandle, path: &Path) {
     let _ = (app, path);
 }
 
+/// Turn the save dialog result into the value handed back to the web layer.
+///
+/// Android's document picker returns a `content://` URI whose file was already
+/// created by the system picker; it is not a filesystem path and therefore
+/// cannot go through [`crate::app::export_access::ExportAccess::grant_for_generation`].
+/// Record the URI separately so the later write is still tied to a real user
+/// selection.
+fn authorize_saved_target(
+    app: &tauri::AppHandle,
+    window: &tauri::WebviewWindow,
+    generation: u64,
+    path: tauri_plugin_dialog::FilePath,
+) -> Option<String> {
+    let target = path.to_string();
+    #[cfg(target_os = "android")]
+    {
+        let _ = generation;
+        app.state::<AppState>()
+            .export_access
+            .grant_uri(window.label(), &target);
+        Some(target)
+    }
+    #[cfg(not(target_os = "android"))]
+    {
+        app.state::<AppState>()
+            .export_access
+            .grant_for_generation(window.label(), generation, Path::new(&target))
+            .map(|path| path.to_string_lossy().into_owned())
+    }
+}
+
 #[tauri::command]
 pub async fn save_file_dialog(
     app: tauri::AppHandle,
@@ -227,13 +258,9 @@ pub async fn save_file_dialog(
             }
         }
 
-        let result = builder.blocking_save_file().and_then(|path| {
-            handle
-                .state::<AppState>()
-                .export_access
-                .grant_for_generation(window.label(), generation, Path::new(&path.to_string()))
-                .map(|path| path.to_string_lossy().into_owned())
-        });
+        let result = builder
+            .blocking_save_file()
+            .and_then(|path| authorize_saved_target(&handle, &window, generation, path));
         result
     })
     .await
@@ -366,18 +393,29 @@ pub async fn open_attachment_file(
 
 #[tauri::command]
 pub fn write_export_file(
+    app: tauri::AppHandle,
     window: tauri::WebviewWindow,
     file_path: String,
     content: String,
     state: State<'_, AppState>,
 ) -> bool {
-    state
-        .export_access
-        .save(
-            window.label(),
-            Path::new(&file_path),
-            &mut content.as_bytes(),
-            &read_lock(&state.memo_file, "memo_file"),
-        )
-        .is_ok()
+    #[cfg(target_os = "android")]
+    {
+        return state.export_access.take_uri(window.label(), &file_path)
+            && crate::mobile_export::write_text(&app, &file_path, &content).is_ok();
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = &app;
+        state
+            .export_access
+            .save(
+                window.label(),
+                Path::new(&file_path),
+                &mut content.as_bytes(),
+                &read_lock(&state.memo_file, "memo_file"),
+            )
+            .is_ok()
+    }
 }

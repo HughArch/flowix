@@ -209,6 +209,10 @@ pub fn run() {
         .plugin(tauri_plugin_deep_link::init())
         .plugin(tauri_plugin_process::init())
         .plugin(crate::frame_scrollbar::init());
+    // Android's SAF documents are content URIs; the write/PDF half runs in a
+    // small Kotlin plugin registered here.
+    #[cfg(target_os = "android")]
+    let builder = builder.plugin(crate::mobile_export::init());
     #[cfg(desktop)]
     let builder = builder.manage(crate::app_update::AppUpdateState::default());
     builder
@@ -685,6 +689,7 @@ pub fn run() {
             commands::dialog::save_file_dialog,
             commands::dialog::write_export_file,
             commands::export::export_pdf,
+            commands::export::print_pdf,
             commands::dialog::save_notebook_asset,
             commands::dialog::upload_sessions::begin_attachment_upload,
             commands::dialog::upload_sessions::append_attachment_upload,

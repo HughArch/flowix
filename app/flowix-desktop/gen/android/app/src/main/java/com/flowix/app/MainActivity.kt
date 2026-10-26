@@ -44,8 +44,29 @@ class MainActivity : TauriActivity() {
    */
   override fun onWebViewCreate(webView: WebView) {
     super.onWebViewCreate(webView)
+    currentWebView = webView
     webView.addJavascriptInterface(NativeThemeBridge(), "FlowixNative")
     android.util.Log.i("FlowixTheme", "bridge injected via onWebViewCreate")
+  }
+
+  override fun onResume() {
+    super.onResume()
+    // The system print sheet is another activity. Its dismissal resumes this
+    // one; if the print adapter never delivered `onFinish` (some OEM print
+    // services drop it), the pending export still settles here.
+    val pending = pendingPrintCompletion
+    pendingPrintCompletion = null
+    pending?.invoke()
+  }
+
+  companion object {
+    /** Live document WebView, used by [FlowixExportPlugin] for PDF rendering. */
+    @Volatile
+    var currentWebView: WebView? = null
+
+    /** Fallback completion for an export while the print sheet is open. */
+    @Volatile
+    var pendingPrintCompletion: (() -> Unit)? = null
   }
 
   override fun onCreate(savedInstanceState: Bundle?) {

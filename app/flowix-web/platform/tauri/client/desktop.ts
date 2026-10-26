@@ -336,6 +336,9 @@ export const dialogs = {
     invoke<boolean>('write_export_file', { filePath, content }),
   exportPdf: (filePath: string) =>
     invoke<boolean>('export_pdf', { filePath }),
+  /** Mobile only: opens the system print sheet where the spooler saves the PDF. */
+  printPdf: (jobName?: string) =>
+    invoke<boolean>('print_pdf', { jobName }),
   copyAttachmentFile: (sourcePath: string, targetPath: string) =>
     invoke<boolean>('copy_attachment_file', { sourcePath, targetPath }),
 };

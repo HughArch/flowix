@@ -987,7 +987,7 @@ export function MainLayout({
 
             {/* Content area */}
             <div className="relative isolate flex-1 min-w-0 overflow-hidden">
-              {recentExportPath && workColumnPresentation.header.kind === 'document' && (
+              {!isMobileDevice() && recentExportPath && workColumnPresentation.header.kind === 'document' && (
                 <div className="absolute inset-x-0 top-0 z-50 flex h-[50px] items-center justify-center gap-2 border-b border-[var(--border)] bg-[color-mix(in_oklch,var(--card)_78%,transparent)] px-4 backdrop-blur-md">
                   <Button
                     type="button"

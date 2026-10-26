@@ -21,6 +21,11 @@ fn fingerprint(path: &Path) -> io::Result<[u8; 32]> {
 #[derive(Default)]
 pub struct ExportAccess {
     targets: Mutex<HashMap<(String, PathBuf), Option<[u8; 32]>>>,
+    /// Mobile save dialogs return a `content://` URI instead of a filesystem
+    /// path, so the path-based authorization above cannot represent them.
+    /// Only the URI most recently returned by the dialog for a window may be
+    /// written, and only once.
+    uri_targets: Mutex<HashMap<String, String>>,
     generations: Mutex<HashMap<String, u64>>,
 }
 
@@ -33,6 +38,32 @@ impl ExportAccess {
         *generation = generation.saturating_add(1);
         if let Ok(mut targets) = self.targets.lock() {
             targets.retain(|(owner, _), _| owner != window);
+        }
+        if let Ok(mut targets) = self.uri_targets.lock() {
+            targets.remove(window);
+        }
+    }
+
+    /// Authorize the URI returned by a mobile document picker.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn grant_uri(&self, window: &str, uri: &str) {
+        if let Ok(mut targets) = self.uri_targets.lock() {
+            targets.insert(window.to_string(), uri.to_string());
+        }
+    }
+
+    /// Consume a previously granted URI. The authorization is single-use so a
+    /// second write needs a new save-dialog interaction.
+    #[cfg_attr(not(target_os = "android"), allow(dead_code))]
+    pub fn take_uri(&self, window: &str, uri: &str) -> bool {
+        let Ok(mut targets) = self.uri_targets.lock() else {
+            return false;
+        };
+        if targets.get(window).is_some_and(|granted| granted == uri) {
+            targets.remove(window);
+            true
+        } else {
+            false
         }
     }
 
@@ -48,6 +79,7 @@ impl ExportAccess {
             .unwrap_or(u64::MAX)
     }
 
+    #[cfg(not(target_os = "android"))]
     pub fn grant_for_generation(
         &self,
         window: &str,
@@ -138,17 +170,18 @@ impl ExportAccess {
                 let _guard = memo_file.acquire_cross_process_write_lock()?;
                 publish(&target)
             }
-            _ => {
-                memo_file.with_registered_path_change(&[target.as_path()], "export_save_nested_notebooks", || {
-                    publish(&target)
-                })
-            }
+            _ => memo_file.with_registered_path_change(
+                &[target.as_path()],
+                "export_save_nested_notebooks",
+                || publish(&target),
+            ),
         }
     }
 
     /// Check that a path was selected by the save dialog without consuming the
     /// authorization. Native exporters write to a temporary file first and
     /// then call [`Self::save`] to perform the authorized atomic commit.
+    #[cfg(not(target_os = "android"))]
     pub fn authorized_target(&self, window: &str, path: &Path) -> io::Result<PathBuf> {
         let (target, _) = resolve_target(path)?;
         let targets = self

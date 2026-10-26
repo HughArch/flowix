@@ -180,6 +180,43 @@ fn invalid_destination_is_not_granted() {
 }
 
 #[test]
+fn uri_grant_is_window_scoped_and_single_use() {
+    let access = ExportAccess::default();
+    access.grant_uri(
+        "main",
+        "content://com.android.providers.downloads/document/1",
+    );
+    assert!(!access.take_uri(
+        "other",
+        "content://com.android.providers.downloads/document/1"
+    ));
+    assert!(access.take_uri(
+        "main",
+        "content://com.android.providers.downloads/document/1"
+    ));
+    assert!(!access.take_uri(
+        "main",
+        "content://com.android.providers.downloads/document/1"
+    ));
+}
+
+#[test]
+fn revoke_clears_pending_uri_grant() {
+    let access = ExportAccess::default();
+    access.grant_uri("main", "content://export/1");
+    access.revoke("main");
+    assert!(!access.take_uri("main", "content://export/1"));
+}
+
+#[test]
+fn uri_grant_only_matches_the_exact_uri() {
+    let access = ExportAccess::default();
+    access.grant_uri("main", "content://export/1");
+    assert!(!access.take_uri("main", "content://export/2"));
+    assert!(access.take_uri("main", "content://export/1"));
+}
+
+#[test]
 fn revoking_one_window_does_not_revoke_another() {
     let (_directory, store, access, target) = fixture();
     access.grant("main", &target).unwrap();

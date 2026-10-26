@@ -26,6 +26,8 @@ mod frame_scrollbar;
 mod lock_utils;
 mod maintenance;
 mod memo_events;
+#[cfg(target_os = "android")]
+mod mobile_export;
 mod plugin;
 mod process_window;
 mod runtime_log;

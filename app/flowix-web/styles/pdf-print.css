@@ -13,11 +13,28 @@
 }
 
 @media print {
+  /* Backgrounds are document formatting here: paragraph/line fills, text
+   * highlights and table zebra rows. WebKit (macOS) drops them from the print
+   * pipeline unless color adjustment is exact; WebView2 has an equivalent
+   * `ShouldPrintBackgrounds` print setting. */
+  html.flowix-pdf-printing,
+  html.flowix-pdf-printing * {
+    -webkit-print-color-adjust: exact !important;
+    print-color-adjust: exact !important;
+  }
+
   html.flowix-pdf-printing,
   html.flowix-pdf-printing body {
     height: auto !important;
     min-height: 0 !important;
     overflow: visible !important;
+    background: transparent !important;
+  }
+
+  /* The app shell paint belongs to the screen, not to the printed document.
+   * Keep only the scope's own content backgrounds. */
+  html.flowix-pdf-printing .flowix-pdf-print-ancestor,
+  html.flowix-pdf-printing .flowix-pdf-print-scope {
     background: transparent !important;
   }
 
