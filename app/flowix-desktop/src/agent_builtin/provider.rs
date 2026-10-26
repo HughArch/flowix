@@ -24,6 +24,9 @@ const READ_TIMEOUT: Duration = Duration::from_secs(120);
 pub struct ProviderMessage {
     pub role: String,
     pub content: String,
+    /// OpenAI vision `image_url` parts. When non-empty the wire `content`
+    /// becomes a parts array with `content` as the leading text part.
+    pub image_parts: Vec<Value>,
     /// OpenAI tool_calls array (assistant messages that invoke tools).
     pub tool_calls: Option<Value>,
     pub tool_call_id: Option<String>,
@@ -31,24 +34,38 @@ pub struct ProviderMessage {
 
 impl ProviderMessage {
     pub fn system(content: impl Into<String>) -> Self {
-        Self { role: "system".into(), content: content.into(), tool_calls: None, tool_call_id: None }
+        Self { role: "system".into(), content: content.into(), image_parts: Vec::new(), tool_calls: None, tool_call_id: None }
     }
 
     pub fn user(content: impl Into<String>) -> Self {
-        Self { role: "user".into(), content: content.into(), tool_calls: None, tool_call_id: None }
+        Self { role: "user".into(), content: content.into(), image_parts: Vec::new(), tool_calls: None, tool_call_id: None }
+    }
+
+    /// User message carrying vision images (`image_url` parts, already
+    /// data URLs). Text stays the leading part so model sees the prompt first.
+    pub fn user_with_images(content: impl Into<String>, image_parts: Vec<Value>) -> Self {
+        Self { role: "user".into(), content: content.into(), image_parts, tool_calls: None, tool_call_id: None }
     }
 
     pub fn tool(call_id: &str, content: impl Into<String>) -> Self {
         Self {
             role: "tool".into(),
             content: content.into(),
+            image_parts: Vec::new(),
             tool_calls: None,
             tool_call_id: Some(call_id.to_owned()),
         }
     }
 
     fn to_json(&self) -> Value {
-        let mut object = json!({ "role": self.role, "content": self.content });
+        let content = if self.image_parts.is_empty() {
+            json!(self.content)
+        } else {
+            let mut parts = vec![json!({ "type": "text", "text": self.content })];
+            parts.extend(self.image_parts.iter().cloned());
+            json!(parts)
+        };
+        let mut object = json!({ "role": self.role, "content": content });
         if let Some(calls) = &self.tool_calls {
             object["tool_calls"] = calls.clone();
         }
@@ -447,6 +464,7 @@ mod tests {
         let assistant = ProviderMessage {
             role: "assistant".into(),
             content: String::new(),
+            image_parts: Vec::new(),
             tool_calls: Some(json!([{ "id": "c1", "type": "function" }])),
             tool_call_id: None,
         };
@@ -454,5 +472,26 @@ mod tests {
         assert_eq!(assistant.to_json()["tool_calls"][0]["id"], "c1");
         assert_eq!(tool.to_json()["tool_call_id"], "c1");
         assert_eq!(tool.to_json()["role"], "tool");
+    }
+
+    #[test]
+    fn multimodal_user_message_serializes_content_parts() {
+        let text_only = ProviderMessage::user("hello");
+        assert_eq!(text_only.to_json()["content"], "hello");
+
+        let multimodal = ProviderMessage::user_with_images(
+            "看这张图",
+            vec![json!({
+                "type": "image_url",
+                "image_url": { "url": "data:image/png;base64,AQID" },
+            })],
+        );
+        let wire = multimodal.to_json();
+        let parts = wire["content"].as_array().expect("content parts array");
+        assert_eq!(parts.len(), 2);
+        assert_eq!(parts[0]["type"], "text");
+        assert_eq!(parts[0]["text"], "看这张图");
+        assert_eq!(parts[1]["type"], "image_url");
+        assert_eq!(parts[1]["image_url"]["url"], "data:image/png;base64,AQID");
     }
 }

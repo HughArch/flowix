@@ -152,9 +152,6 @@ impl BuiltinAiService {
         if !provider.is_configured() {
             return Err("当前 AI 厂商缺少 API 地址 / Key / 模型配置".into());
         }
-        if !message.image_paths.is_empty() {
-            return Err("内置 AI 助手暂不支持图片或文件附件".into());
-        }
         if self.is_running(&thread_id) {
             return Err("该会话已有正在运行的回复".into());
         }
@@ -343,13 +340,24 @@ impl BuiltinAiService {
         let llm_content = humanize_note_references(
             message.llm_content.as_deref().unwrap_or(&message.content),
         );
+        // Resolve attachments before persisting anything so a bad attachment
+        // surfaces as a clean composer error instead of a phantom user row.
+        let attachments = message.message_attachments();
+        if attachments.iter().any(|attachment| attachment.r#type != "input_image") {
+            return Err(RunError::Failed(
+                "内置 AI 助手仅支持图片附件，暂不支持文档附件".into(),
+            ));
+        }
+        let image_parts = build_vision_parts(&message.image_paths)
+            .await
+            .map_err(RunError::Failed)?;
         let user_message = ChatMessage {
             id: user_message_id.clone(),
             role: "user".into(),
             message_type: None,
             content: message.content.clone(),
-            llm_content: Some(llm_content),
-            attachments: None,
+            llm_content: Some(llm_content.clone()),
+            attachments: (!attachments.is_empty()).then(|| attachments.clone()),
             system_reminder_directory: None,
             timestamp: now_rfc3339(),
             source_sequence: None,
@@ -376,10 +384,10 @@ impl BuiltinAiService {
             app,
             AgentChunk::UserMessage {
                 thread_id: thread_id.to_owned(),
-                id: user_message_id,
+                id: user_message_id.clone(),
                 text: message.content.clone(),
                 timestamp: now_millis(),
-                attachments: Vec::new(),
+                attachments: attachments.clone(),
             },
             run_id,
         );
@@ -414,6 +422,12 @@ impl BuiltinAiService {
             );
         }
         for record in self.load_history(thread_id).await? {
+            // The current turn's user row is replaced by the multimodal
+            // message below (text + vision parts); replaying it here as well
+            // would duplicate the turn.
+            if record.id == user_message_id {
+                continue;
+            }
             if let Some(converted) = history_to_provider(&record) {
                 provider_messages.push(converted);
                 if provider_messages.len() >= MAX_PROVIDER_MESSAGES {
@@ -421,6 +435,7 @@ impl BuiltinAiService {
                 }
             }
         }
+        provider_messages.push(ProviderMessage::user_with_images(llm_content, image_parts));
 
         // 3. Tool loop.
         for _cycle in 0..MAX_TOOL_CYCLES {
@@ -492,6 +507,7 @@ impl BuiltinAiService {
             self.persist_assistant(thread_id, &completion.text, calls_json)
                 .await?;
             provider_messages.push(ProviderMessage {
+                image_parts: Vec::new(),
                 role: "assistant".into(),
                 content: completion.text.clone(),
                 tool_calls: Some(serde_json::to_value(completion.tool_calls.iter().map(|call| {
@@ -692,9 +708,29 @@ fn map_provider_error(error: ProviderError) -> RunError {
     }
 }
 
+/// Resolve cached attachment paths into OpenAI vision `image_url` parts.
+/// Count / size / type validation and the cache-root authorization live in
+/// the shared image cache module.
+async fn build_vision_parts(paths: &[String]) -> Result<Vec<serde_json::Value>, String> {
+    let encoded =
+        crate::commands::agent::image_cache::encode_cached_agent_images(paths).await?;
+    Ok(encoded
+        .into_iter()
+        .map(|(media_type, data, _name)| {
+            serde_json::json!({
+                "type": "image_url",
+                "image_url": { "url": format!("data:{media_type};base64,{data}") },
+            })
+        })
+        .collect())
+}
+
 /// Map one persisted row into a provider message; returns `None` for rows
 /// that carry no conversational content (loading placeholders, empty
 /// assistant tool-turn carriers are kept only when they carry tool_calls).
+/// History user rows replay as text only: images are sent in the turn they
+/// arrive and are deliberately not re-uploaded for later turns (context and
+/// payload budget); the visible transcript still shows them.
 fn history_to_provider(record: &ChatMessage) -> Option<ProviderMessage> {
     match record.role.as_str() {
         "user" => Some(ProviderMessage::user(
@@ -703,6 +739,7 @@ fn history_to_provider(record: &ChatMessage) -> Option<ProviderMessage> {
         "assistant" => {
             if let Some(calls) = &record.tool_calls {
                 return Some(ProviderMessage {
+                    image_parts: Vec::new(),
                     role: "assistant".into(),
                     content: record.content.clone(),
                     tool_calls: Some(calls.clone()),
@@ -711,6 +748,7 @@ fn history_to_provider(record: &ChatMessage) -> Option<ProviderMessage> {
             }
             (!record.content.is_empty())
                 .then(|| ProviderMessage {
+                    image_parts: Vec::new(),
                     role: "assistant".into(),
                     content: record.content.clone(),
                     tool_calls: None,
