@@ -157,7 +157,7 @@ impl BuiltinAiService {
         }
 
         let scope = self
-            .resolve_scope(&message)
+            .resolve_scope(&app, &message)
             .ok_or_else(|| "无法确定目标笔记本：请先选择一个笔记本".to_owned())?;
 
 
@@ -208,7 +208,7 @@ impl BuiltinAiService {
         Ok(())
     }
 
-    fn resolve_scope(&self, message: &AgentUserMessage) -> Option<ToolScope> {
+    fn resolve_scope(&self, app: &AppHandle, message: &AgentUserMessage) -> Option<ToolScope> {
         let guard = read_lock(&self.memo_file, "memo_file");
         // Scope priority: explicit conversation notebook > selected notebook
         // > default notebook > first registered notebook.
@@ -233,6 +233,7 @@ impl BuiltinAiService {
             notebook_name: notebook.name.clone(),
             notebook_path: std::path::PathBuf::from(&notebook.path),
             config_dir: self.user_config_dir.clone(),
+            mark_self_write: super::tools::self_write_marker(app.clone()),
         })
     }
 
@@ -843,6 +844,7 @@ fn system_prompt(
   · 其他属性通过 properties 传入
   这些通过 note_create 的 tags/icon/colors/properties 参数传入，不要手写 YAML frontmatter。
 - 新建文档要排版精美：合理使用标题层级、列表、表格；在合适位置用 callout/toggle/columns/background 工具突出重点、分组信息、对比内容，避免堆砌。
+- 用户需要 HTML / CSS / JSON / 源代码等非 Markdown 文件时，用 file_create 生成，path 必须带扩展名（如 输出/index.html）；不要把这类内容塞进 .md 笔记，也不要在文件末尾强加 .md 后缀。file 工具操作原始文件：不进笔记列表、不支持 frontmatter/标签；更新前先 file_read，再 file_write 整篇覆盖。
 - Flowix 支持富内容：callout（提示块）、toggle（折叠块）、columns（多列布局）、background（行背景）。用户要求这些效果时调用同名工具，不要手写 ::: 语法。
   · 多列/分栏 → columns action=add contents=[左栏 Markdown, 右栏 Markdown] titleColor=yellow（分栏标题即每栏第一行会自动加行背景；titleColor 可选 yellow/blue/green 等）
   · 提示块/警告框 → callout action=add

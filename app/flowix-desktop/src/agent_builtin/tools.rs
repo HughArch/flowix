@@ -1,31 +1,62 @@
-//! Note tools for the built-in assistant.
+//! Note and file tools for the built-in assistant.
 //!
-//! Every tool is scoped to one notebook (the conversation's notebook) and
-//! goes through `flowix_core::NoteService`, which owns path validation, the
-//! note index and compare-and-save protection. Tool results are plain JSON
-//! values the model reads back on the next turn.
+//! Note tools go through `flowix_core::NoteService`, which owns path
+//! validation, the note index and compare-and-save protection. The `file_*`
+//! tools operate on raw non-Markdown text files (HTML, CSS, JSON, source
+//! code, ...) below the same notebook root: they skip the note index and
+//! frontmatter machinery entirely. Tool results are plain JSON values the
+//! model reads back on the next turn.
 
+use std::io;
+use std::path::{Path, PathBuf};
 use std::sync::{Arc, RwLock};
 
-use flowix_core::memo_file::MemoFile;
+use flowix_core::memo_file::{notebook_path_from_relative, MemoFile};
 use flowix_core::{NoteSaveOutcome, NoteService};
 use serde_json::{json, Value};
+use tauri::AppHandle;
 
 /// Result size sent back to the model. Full data still reaches the UI via the
 /// ToolResult chunk when smaller; oversized bodies are truncated here.
 const MAX_TOOL_RESULT_CHARS: usize = 24_000;
 const LIST_PAGE_SIZE: usize = 100;
 const SEARCH_LIMIT: usize = 20;
+/// Files above this are refused by `file_read`: the result could never fit a
+/// model context anyway (results truncate at `MAX_TOOL_RESULT_CHARS`).
+const MAX_FILE_READ_BYTES: u64 = 1024 * 1024;
 
 /// The notebook all tool calls operate on.
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct ToolScope {
     pub notebook_id: String,
     pub notebook_name: String,
-    /// Notebook root on disk; used to load the optional `AGENTS.md`.
+    /// Notebook root on disk; used to load the optional `AGENTS.md` and to
+    /// resolve `file_*` tool paths.
     pub notebook_path: std::path::PathBuf,
     /// 用户配置目录 (`~/.flowix`): 云端历史工具从这里读 `boot/fns-sync.json`。
     pub config_dir: std::path::PathBuf,
+    /// Marks a just-written path as backend-owned so the watcher does not
+    /// treat it as an external edit. Boxed instead of carrying the
+    /// `AppHandle` so tests can pass a no-op without a Tauri runtime.
+    pub mark_self_write: Arc<dyn Fn(&Path) + Send + Sync>,
+}
+
+impl std::fmt::Debug for ToolScope {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("ToolScope")
+            .field("notebook_id", &self.notebook_id)
+            .field("notebook_name", &self.notebook_name)
+            .field("notebook_path", &self.notebook_path)
+            .field("config_dir", &self.config_dir)
+            .finish_non_exhaustive()
+    }
+}
+
+/// Watcher self-write marker bound to the real app handle (see
+/// [`ToolScope::mark_self_write`]). Degrades to a no-op when the watcher is
+/// not running.
+pub fn self_write_marker(app: AppHandle) -> Arc<dyn Fn(&Path) + Send + Sync> {
+    Arc::new(move |path| crate::watcher::runtime::mark_self_write_for(&app, path))
 }
 
 pub fn tool_definitions(web_search_enabled: bool) -> Value {
@@ -150,6 +181,50 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
                         "path": { "type": "string", "description": "笔记本内相对路径" }
                     },
                     "required": ["path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "file_create",
+                "description": "在当前笔记本新建一个非 Markdown 的文本文件（HTML / CSS / JSON / 源代码等），内容原样写入，不追加 frontmatter。路径必须带扩展名；文件已存在时报错。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "笔记本内相对路径，必须带扩展名，如 输出/index.html" },
+                        "content": { "type": "string", "description": "完整文件内容（UTF-8 文本）" }
+                    },
+                    "required": ["path", "content"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "file_read",
+                "description": "读取笔记本内一个文本文件的原始内容（任意扩展名，含 .md；上限约 1MB）。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "笔记本内相对路径" }
+                    },
+                    "required": ["path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "file_write",
+                "description": "整篇覆盖一个已存在的非 Markdown 文本文件。修改前先 file_read；新建文件用 file_create；.md 笔记请用 note_write。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "笔记本内相对路径，必须带扩展名" },
+                        "content": { "type": "string", "description": "完整文件内容（UTF-8 文本）" }
+                    },
+                    "required": ["path", "content"]
                 }
             }
         },
@@ -522,9 +597,12 @@ fn execute_inner(
         let guard = memo_file
             .read()
             .map_err(|_| "note storage lock poisoned".to_owned())?;
-        // 云端历史工具只读 MemoFile + 用户配置, 不需要 NoteService。
+        // 云端历史工具只读 MemoFile + 用户配置; file 工具只做原始文件 IO，
+        // 两者都不走 NoteService 的笔记索引管线。
         if matches!(name, "cloud_versions" | "cloud_restore") {
             execute_cloud_tool(&guard, scope, name, &args)
+        } else if matches!(name, "file_create" | "file_read" | "file_write") {
+            execute_file_tool(&guard, scope, name, &args)
         } else {
             let mut service = NoteService::new(&guard);
             execute_with_service(&mut service, scope, name, &args)
@@ -670,6 +748,126 @@ fn save_cas(
     }
 }
 
+/// Raw non-Markdown text files: create / read / overwrite below the notebook
+/// root. Writes go through the shared `MemoFile` file locks and mark
+/// self-writes, so the watcher and FNS sync treat them like any other
+/// backend-owned write. There is deliberately no `file_delete` / `file_edit`:
+/// the model rewrites the whole file via `file_write` instead.
+fn execute_file_tool(
+    memo_file: &MemoFile,
+    scope: &ToolScope,
+    name: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    match name {
+        "file_create" => {
+            let raw = string_arg(args, "path").ok_or("缺少 path")?;
+            let content = string_arg(args, "content").ok_or("缺少 content")?;
+            let (relative, absolute) = resolve_writable_file_path(scope, memo_file, &raw)?;
+            // The file lock canonicalizes the parent, so intermediate
+            // directories must exist before the create intent is taken (same
+            // ordering as the FNS sync writer).
+            if let Some(parent) = absolute.parent() {
+                std::fs::create_dir_all(parent)
+                    .map_err(|error| format!("创建目录失败: {error}"))?;
+            }
+            memo_file
+                .create_file_for_notebook(&scope.notebook_id, &absolute, content.as_bytes())
+                .map_err(|error| match error.kind() {
+                    io::ErrorKind::AlreadyExists => format!(
+                        "文件已存在: {relative}。先 file_read 查看内容，需要覆盖时用 file_write，或换一个文件名。"
+                    ),
+                    _ => format!("创建文件失败: {error}"),
+                })?;
+            mark_file_self_write(scope, &absolute);
+            Ok(json!({ "ok": true, "action": "created", "path": relative }))
+        }
+        "file_read" => {
+            let raw = string_arg(args, "path").ok_or("缺少 path")?;
+            let relative = normalize_path(&raw)?;
+            let absolute =
+                notebook_path_from_relative(&scope.notebook_path, &relative)
+                    .map_err(|error| format!("path 非法: {error}"))?;
+            let metadata = std::fs::metadata(&absolute).map_err(|error| match error.kind() {
+                io::ErrorKind::NotFound => format!("文件不存在: {relative}"),
+                _ => format!("读取文件失败: {error}"),
+            })?;
+            if !metadata.is_file() {
+                return Err(format!("path 不是文件: {relative}"));
+            }
+            if metadata.len() > MAX_FILE_READ_BYTES {
+                return Err(format!(
+                    "文件过大（{} 字节，上限 {MAX_FILE_READ_BYTES}）: {relative}",
+                    metadata.len()
+                ));
+            }
+            let content = std::fs::read_to_string(&absolute).map_err(|error| match error.kind() {
+                io::ErrorKind::NotFound => format!("文件不存在: {relative}"),
+                _ if error.kind() == io::ErrorKind::InvalidData => {
+                    format!("不是 UTF-8 文本文件，无法读取: {relative}")
+                }
+                _ => format!("读取文件失败: {error}"),
+            })?;
+            Ok(json!({ "ok": true, "path": relative, "content": content }))
+        }
+        "file_write" => {
+            let raw = string_arg(args, "path").ok_or("缺少 path")?;
+            let content = string_arg(args, "content").ok_or("缺少 content")?;
+            let (relative, absolute) = resolve_writable_file_path(scope, memo_file, &raw)?;
+            memo_file
+                .write_file_for_notebook(&scope.notebook_id, &absolute, content.as_bytes())
+                .map_err(|error| match error.kind() {
+                    io::ErrorKind::NotFound => {
+                        format!("文件不存在: {relative}。新建文件用 file_create。")
+                    }
+                    _ => format!("写入文件失败: {error}"),
+                })?;
+            mark_file_self_write(scope, &absolute);
+            Ok(json!({ "ok": true, "action": "written", "path": relative }))
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Validate a model-supplied path for `file_create` / `file_write` and return
+/// `(notebook-relative, absolute)`. Markdown is rejected: `.md` files must go
+/// through the note tools or they would bypass the note index and its
+/// frontmatter / CAS invariants.
+fn resolve_writable_file_path(
+    scope: &ToolScope,
+    memo_file: &MemoFile,
+    raw: &str,
+) -> Result<(String, PathBuf), String> {
+    let relative = normalize_path(raw)?;
+    let relative_path = Path::new(&relative);
+    let extension = relative_path
+        .extension()
+        .and_then(|extension| extension.to_str())
+        .unwrap_or_default();
+    if extension.is_empty() || extension.len() > 16 || !extension.chars().all(|c| c.is_ascii_alphanumeric())
+    {
+        return Err(format!(
+            "path 必须带 1-16 位字母数字扩展名（如 .html / .css / .json）: {raw}"
+        ));
+    }
+    if matches!(extension.to_ascii_lowercase().as_str(), "md" | "markdown") {
+        return Err("Markdown 笔记请改用 note_create / note_write，file 工具不处理 .md".into());
+    }
+    if memo_file
+        .file_management_policy(&scope.notebook_id)
+        .is_index_ignored_at(&scope.notebook_path, relative_path)
+    {
+        return Err(format!("path 位于被忽略的目录内: {raw}"));
+    }
+    let absolute = notebook_path_from_relative(&scope.notebook_path, &relative)
+        .map_err(|error| format!("path 非法: {error}"))?;
+    Ok((relative, absolute))
+}
+
+fn mark_file_self_write(scope: &ToolScope, absolute: &Path) {
+    (scope.mark_self_write)(absolute);
+}
+
 fn string_arg(args: &Value, key: &str) -> Option<String> {
     args.get(key)
         .and_then(Value::as_str)
@@ -703,6 +901,7 @@ mod tests {
             notebook_name: "Work".into(),
             notebook_path: notebook_path,
             config_dir: tmp.path().join("config"),
+            mark_self_write: Arc::new(|_| {}),
         };
         (tmp, Arc::new(RwLock::new(memo)), scope)
     }
@@ -787,5 +986,104 @@ mod tests {
         let (_tmp, memo, scope) = fixture();
         let out = execute(&memo, &scope, "note_shell", "{}");
         assert!(out["error"].as_str().unwrap().contains("未知工具"));
+    }
+
+    #[test]
+    fn file_create_read_write_round_trip() {
+        let (tmp, memo, scope) = fixture();
+        let created = execute(
+            &memo,
+            &scope,
+            "file_create",
+            r##"{"path":"输出/index.html","content":"<!doctype html>\n<html><body>hello</body></html>\n"}"##,
+        );
+        assert_eq!(created["ok"], true, "{created}");
+        assert_eq!(created["path"], "输出/index.html", "{created}");
+
+        // Content lands verbatim on disk — no frontmatter injection.
+        let on_disk =
+            std::fs::read_to_string(tmp.path().join("notes").join("输出").join("index.html"))
+                .unwrap();
+        assert!(on_disk.starts_with("<!doctype html>"), "{on_disk}");
+
+        let read = execute(
+            &memo,
+            &scope,
+            "file_read",
+            &json!({ "path": "输出/index.html" }).to_string(),
+        );
+        assert_eq!(read["content"], on_disk, "{read}");
+
+        let written = execute(
+            &memo,
+            &scope,
+            "file_write",
+            r##"{"path":"输出/index.html","content":"<html>updated</html>"}"##,
+        );
+        assert_eq!(written["ok"], true, "{written}");
+        let updated =
+            std::fs::read_to_string(tmp.path().join("notes").join("输出").join("index.html"))
+                .unwrap();
+        assert_eq!(updated, "<html>updated</html>");
+    }
+
+    #[test]
+    fn file_create_rejects_existing_md_and_bad_paths() {
+        let (_tmp, memo, scope) = fixture();
+        let duplicate = execute(
+            &memo,
+            &scope,
+            "file_create",
+            r##"{"path":"dup.txt","content":"a"}"##,
+        );
+        assert_eq!(duplicate["ok"], true, "{duplicate}");
+        let again = execute(
+            &memo,
+            &scope,
+            "file_create",
+            r##"{"path":"dup.txt","content":"b"}"##,
+        );
+        assert!(again["error"].as_str().unwrap().contains("已存在"), "{again}");
+
+        let markdown = execute(
+            &memo,
+            &scope,
+            "file_create",
+            r##"{"path":"note.md","content":"# x"}"##,
+        );
+        assert!(
+            markdown["error"].as_str().unwrap().contains("note_create"),
+            "{markdown}"
+        );
+
+        let no_extension = execute(
+            &memo,
+            &scope,
+            "file_create",
+            r##"{"path":"Makefile","content":"all:"}"##,
+        );
+        assert!(
+            no_extension["error"].as_str().unwrap().contains("扩展名"),
+            "{no_extension}"
+        );
+
+        let missing = execute(
+            &memo,
+            &scope,
+            "file_write",
+            r##"{"path":"ghost.html","content":"x"}"##,
+        );
+        assert!(
+            missing["error"].as_str().unwrap().contains("不存在"),
+            "{missing}"
+        );
+
+        let escaped = execute(
+            &memo,
+            &scope,
+            "file_create",
+            r##"{"path":"../evil.html","content":"x"}"##,
+        );
+        assert!(escaped["error"].is_string(), "{escaped}");
     }
 }
