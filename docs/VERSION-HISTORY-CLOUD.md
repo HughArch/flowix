@@ -232,6 +232,22 @@ struct FnsDiff { r#type: i32, text: String }
 - 确认弹窗与恢复执行完全复用 `use-document-titlebar-actions` 现有 `confirmVersion/restoringVersionId` 状态机，仅数据源不同：新增 `pendingCloudVersion` 分支，恢复时先 `fns_note_history_content` 再 `restore_path_content`。
 - i18n：`document.version.cloud.menuLabel / empty / notSynced / loadFailed / restored / confirmDescription` 等键，中英双份。
 
+## 5.6 Agent / CLI / MCP 接入（P0 已实现）
+
+三端共用同一份实现，避免各写一套 REST 与恢复逻辑：
+
+| 层 | 位置 | 说明 |
+|---|---|---|
+| 共享核心 | `flowix-core/src/fns_history.rs` | 阻塞式 REST 客户端 + go-diff 重建 + 类型; TLS roots 按 target 分段（桌面 native-roots / Android webpki） |
+| 凭据单源 | `flowix-core/src/fns_config.rs` | 由 `fns_sync/config.rs` 下沉而来（CLI 与内置 Agent 读同一份 `boot/fns-sync.json`），桌面侧仅 re-export + 策略枚举映射 |
+| 恢复写侧 | `MemoFile::write_restored_content` / `resolve_notebook_md_path` | 从桌面命令下沉到 core，三端共用 restore_backup 自保 + 原子覆写 |
+| 桌面壳 | `flowix-desktop/src/fns_sync/history.rs` | 解析 app 内绑定，`spawn_blocking` 包装 core 阻塞调用 |
+| CLI | `flowix-cli/src/cloud.rs` | `flowix cloud-versions <path> [-b notebook] [--page N] [--json]`、`flowix cloud-restore <path> --history <id>` |
+| MCP | `memo` 工具两个结构化 action | `cloud.versions`（`path`, 可选 `notebook`/`page`）、`cloud.restore`（`path`, `historyId` 必填）；`memo-tool-schema.json` 同步扩 enum 与 allOf |
+| 移动端内置 Agent | `agent_builtin/tools.rs` | 工具 `cloud_versions` / `cloud_restore`；`ToolScope` 新增 `config_dir` 以读取 FNS 凭据 |
+
+CLI / Agent 无前端 buffer，恢复不做 expectedContent 校验（`write_restored_content(..., None)`），与桌面「先保存 buffer 再比对」的区别只在并发保护层。
+
 ## 6. 边界与错误处理
 
 | 场景 | 行为 |

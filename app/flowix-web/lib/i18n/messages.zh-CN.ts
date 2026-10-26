@@ -1695,7 +1695,7 @@ const zhCN = {
     "document.version.source.restoreBackup": "恢复前",
     "document.version.source.cloudConflict": "云同步冲突",
     "document.version.loadFailed": "读取失败",
-    "document.version.menuLabel": "历史版本",
+    "document.version.menuLabel": "本地历史版本",
     "document.version.allHistory": "全部历史版本",
     "document.version.loading": "正在读取",
     "document.version.empty": "暂无历史版本",

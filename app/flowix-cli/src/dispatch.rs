@@ -3,8 +3,8 @@
 //! `cli` 模块只负责把 argv 解析成结构化命令；这里负责把命令转给执行层。
 
 use crate::{
-    background_store, callout_store, cli, columns_store, errors::CliError, mcp, operation,
-    path_store, plugin, store, toggle_store,
+    background_store, callout_store, cli, cloud, columns_store, errors::CliError, mcp, operation,
+    path_store, paths, plugin, store, toggle_store,
 };
 
 /// 跑 CLI 主入口。
@@ -82,6 +82,35 @@ pub fn run_cli(args: &[String]) -> Result<(), CliError> {
             let content = path_store::read_input(file.as_deref(), stdin, "write")?;
             path_store::print(path_store::write(&id, &content)?, json)
         },
+        cli::Cli::CloudVersions { notebook, path, page, json } => {
+            let paths = paths::resolve()?;
+            let notebook = store::resolve_notebook_key(notebook.as_deref())?;
+            let data = cloud::list(&paths, &notebook, &path, page)?;
+            if json { println!("{}", serde_json::to_string_pretty(&data).map_err(|e| CliError::Usage(e.to_string()))?); }
+            else if let Some(versions) = data.get("versions").and_then(|v| v.as_array()) {
+                if versions.is_empty() {
+                    println!("no cloud versions ({}).", data.get("status").and_then(|s| s.as_str()).unwrap_or("ok"));
+                }
+                for version in versions {
+                    println!("{}	{}	{}	{}",
+                        version.get("historyId").and_then(|v| v.as_i64()).unwrap_or(0),
+                        version.get("version").and_then(|v| v.as_i64()).unwrap_or(0),
+                        version.get("createdAtMs").and_then(|v| v.as_i64()).unwrap_or(0),
+                        version.get("clientName").and_then(|v| v.as_str()).unwrap_or(""));
+                }
+            } else {
+                println!("{}", data.get("message").and_then(|m| m.as_str()).unwrap_or("no cloud versions"));
+            }
+            Ok(())
+        }
+        cli::Cli::CloudRestore { notebook, path, history, json } => {
+            let paths = paths::resolve()?;
+            let notebook = store::resolve_notebook_key(notebook.as_deref())?;
+            let data = cloud::restore(&paths, &notebook, &path, history)?;
+            if json { println!("{}", serde_json::to_string_pretty(&data).map_err(|e| CliError::Usage(e.to_string()))?); }
+            else { println!("restored {} to cloud history {} (previous content archived as restore_backup)", path, history); }
+            Ok(())
+        }
         cli::Cli::PluginList { json } => plugin::cmd_list(json),
         cli::Cli::PluginDescribe { plugin_id, json } => plugin::cmd_describe(&plugin_id, json),
         cli::Cli::PluginCreate {

@@ -1718,7 +1718,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "document.version.source.restoreBackup": "Before restoration",
     "document.version.source.cloudConflict": "Cloud sync conflict",
     "document.version.loadFailed": "Failed to read",
-    "document.version.menuLabel": "Version history",
+    "document.version.menuLabel": "Local history",
     "document.version.allHistory": "All versions",
     "document.version.loading": "Loading",
     "document.version.empty": "No history yet",

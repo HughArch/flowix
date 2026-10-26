@@ -71,6 +71,20 @@ pub enum Cli {
         stdin: bool,
         json: bool,
     },
+    /// 列出一篇笔记的云端 (FNS note_history) 历史版本。
+    CloudVersions {
+        notebook: Option<String>,
+        path: String,
+        page: u32,
+        json: bool,
+    },
+    /// 恢复一篇笔记到指定云端版本 (当前内容先本地自保为 restore_backup)。
+    CloudRestore {
+        notebook: Option<String>,
+        path: String,
+        history: i64,
+        json: bool,
+    },
     PluginList {
         json: bool,
     },
@@ -293,6 +307,24 @@ pub(crate) fn parse(args: &[String]) -> Result<Option<Cli>, CliError> {
             id: required_string(sub, "id")?,
             file: sub.get_one::<String>("file").cloned(),
             stdin: sub.get_flag("stdin"),
+            json,
+        })),
+        Some(("cloud-versions", sub)) => {
+            let page = *sub.get_one::<u32>("page").unwrap_or(&1);
+            if page == 0 {
+                return Err(CliError::Usage("cloud-versions: --page requires a positive integer".into()));
+            }
+            Ok(Some(Cli::CloudVersions {
+                notebook: sub.get_one::<String>("notebook").cloned(),
+                path: required_string(sub, "path")?,
+                page,
+                json,
+            }))
+        }
+        Some(("cloud-restore", sub)) => Ok(Some(Cli::CloudRestore {
+            notebook: sub.get_one::<String>("notebook").cloned(),
+            path: required_string(sub, "path")?,
+            history: *sub.get_one::<i64>("history").unwrap_or(&0),
             json,
         })),
         Some(("search", sub)) => {
@@ -590,6 +622,20 @@ pub(crate) fn cli_command() -> Command {
                 .arg(Arg::new("file").long("file").short('f').value_name("UTF-8-MARKDOWN").help("Recommended: read Markdown content directly from a UTF-8 file").num_args(1))
                 .arg(Arg::new("stdin").long("stdin").action(ArgAction::SetTrue).help("Read Markdown from stdin; required explicitly on Windows"))
                 .group(clap::ArgGroup::new("input").args(["file", "stdin"]).multiple(false)),
+        )
+        .subcommand(
+            Command::new("cloud-versions")
+                .about("List cloud (FNS note_history) versions of a note")
+                .arg(required_arg("path"))
+                .arg(Arg::new("notebook").long("notebook").short('b').num_args(1))
+                .arg(Arg::new("page").long("page").num_args(1).value_parser(clap::value_parser!(u32)).help("1-based page, 20 per page")),
+        )
+        .subcommand(
+            Command::new("cloud-restore")
+                .about("Restore a note to a cloud version (current content is archived locally as restore_backup first)")
+                .arg(required_arg("path"))
+                .arg(Arg::new("notebook").long("notebook").short('b').num_args(1))
+                .arg(Arg::new("history").long("history").required(true).num_args(1).value_parser(clap::value_parser!(i64)).help("Cloud history id, from cloud-versions")),
         )
         .subcommand(
             Command::new("search")

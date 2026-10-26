@@ -1,7 +1,7 @@
 //! Transport-neutral Flowix operations shared by CLI and MCP adapters.
 
 use crate::{
-    background_store, callout_store, collection_store, columns_store, errors::CliError, fmt,
+    background_store, callout_store, cloud, collection_store, columns_store, errors::CliError, fmt,
     output, path_store, plugin, store, toggle_store,
 };
 use serde_json::Value;
@@ -42,6 +42,16 @@ pub(crate) enum FlowixOperation {
     },
     Delete {
         address: String,
+    },
+    CloudVersions {
+        notebook: Option<String>,
+        path: String,
+        page: u32,
+    },
+    CloudRestore {
+        notebook: Option<String>,
+        path: String,
+        history_id: i64,
     },
     CollectionRead {
         notebook: String,
@@ -201,6 +211,16 @@ pub(crate) fn execute(operation: FlowixOperation) -> Result<Value, CliError> {
         }
         FlowixOperation::Delete { address } => {
             path_store::delete(&address)
+        }
+        FlowixOperation::CloudVersions { notebook, path, page } => {
+            let paths = crate::paths::resolve()?;
+            let notebook = store::resolve_notebook_key(notebook.as_deref())?;
+            cloud::list(&paths, &notebook, &path, page)
+        }
+        FlowixOperation::CloudRestore { notebook, path, history_id } => {
+            let paths = crate::paths::resolve()?;
+            let notebook = store::resolve_notebook_key(notebook.as_deref())?;
+            cloud::restore(&paths, &notebook, &path, history_id)
         }
         FlowixOperation::CollectionRead { notebook, collection_id, path } => {
             collection_store::read(&notebook, collection_id.as_deref(), path.as_deref())

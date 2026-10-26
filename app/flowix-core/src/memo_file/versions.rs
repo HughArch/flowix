@@ -333,6 +333,63 @@ impl MemoFile {
         }
         self.create_path_version_bytes_locked(notebook_id, relative_path, content.as_bytes(), MemoVersionSource::Auto)
     }
+
+    /// 恢复的共享写侧: expectedContent 悲观校验 → 当前内容自保为 restore_backup →
+    /// 原子覆写。桌面命令 / CLI / 内置 Agent 的恢复共用; `Ok(false)` = 磁盘内容
+    /// 与 expected 不符, 拒绝写入。
+    pub fn write_restored_content(
+        &self,
+        notebook_id: &str,
+        relative_path: &str,
+        path: &Path,
+        target: &str,
+        expected_content: Option<&str>,
+    ) -> std::io::Result<bool> {
+        self.with_file_write(notebook_id, path, super::FileLockIntent::Existing,
+            "restore_path_version", |locked_path| {
+                let current = fs::read_to_string(locked_path)?;
+                if expected_content.is_some_and(|expected| expected != current) {
+                    return Ok(false);
+                }
+                self.create_path_version(notebook_id, relative_path, &current,
+                    MemoVersionSource::RestoreBackup)?;
+                atomic_write_bytes(locked_path, target.as_bytes())?;
+                Ok(true)
+            })
+    }
+
+    /// 相对路径 → 笔记本内绝对 .md 路径。拒绝绝对路径、`..` 分量与非 md,
+    /// canonicalize 后必须仍在笔记本根内 (与 path_archive_document 同一口径)。
+    pub fn resolve_notebook_md_path(
+        &self,
+        notebook_id: &str,
+        relative_path: &str,
+    ) -> std::io::Result<PathBuf> {
+        use super::IsMd;
+        let notebook = self.get_notebook_config_by_id(notebook_id)
+            .ok_or_else(|| io_not_found("notebook not found"))?;
+        let root = PathBuf::from(notebook.path).canonicalize()?;
+        let relative = Path::new(relative_path);
+        if relative.is_absolute()
+            || !relative.is_md()
+            || relative.components().any(|part| !matches!(part, std::path::Component::Normal(_)))
+        {
+            return Err(io_invalid("unsafe relative path"));
+        }
+        let path = root.join(relative).canonicalize()?;
+        if !path.starts_with(&root) || !path.is_file() {
+            return Err(io_not_found("note file not found"));
+        }
+        Ok(path)
+    }
+}
+
+fn io_not_found(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::NotFound, message.to_owned())
+}
+
+fn io_invalid(message: &str) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::InvalidInput, message.to_owned())
 }
 
 #[cfg(test)]

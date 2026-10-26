@@ -11,13 +11,9 @@ use crate::fns_sync::service::{
 };
 
 /// 统一把 `FnsApiError` 摊平成前端可读的字符串; 业务码原样携带。
-fn api_error_message(error: FnsApiError) -> String {
-    if error.code == 0 {
-        error.message
-    } else {
-        format!("[{code}] {message}", code = error.code, message = error.message)
-    }
-}
+/// (错误文案已在 history.rs 内摊平, 此处保留类型引用防误删。)
+#[allow(unused_imports)]
+use crate::fns_sync::history::FnsApiError as _FnsApiErrorKeep;
 
 /// `...` 菜单云端历史入口的门控: notebook 是否已绑定 FNS 且凭据齐备。
 #[tauri::command]
@@ -37,11 +33,10 @@ pub async fn fns_note_history_list(
 ) -> Result<FnsCloudHistoryPage, String> {
     let service = app.state::<AppState>().fns_sync.clone();
     super::history::list_note_history(
-        &app, &service, &notebook_id, &relative_path,
+        app, service, notebook_id, relative_path,
         page.unwrap_or(1).max(1), page_size.unwrap_or(20).clamp(1, 100),
     )
     .await
-    .map_err(api_error_message)
 }
 
 /// 拉取并重建某云端版本修改后的完整正文。
@@ -54,10 +49,9 @@ pub async fn fns_note_history_content(
 ) -> Result<String, String> {
     let service = app.state::<AppState>().fns_sync.clone();
     super::history::note_history_content(
-        &app, &service, &notebook_id, &relative_path, history_id,
+        app, service, notebook_id, relative_path, history_id,
     )
     .await
-    .map_err(api_error_message)
 }
 
 #[tauri::command]

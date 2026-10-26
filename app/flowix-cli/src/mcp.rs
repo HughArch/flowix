@@ -79,7 +79,7 @@ fn initialize_result(params: &Value) -> Value {
             "title": "Flowix Memo",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Use the memo tool to search and manage Flowix Markdown memos, read collection datasets with collection.read by collectionId or notebook-relative path, and create declared plugin artifacts such as mind maps."
+        "instructions": "Use the memo tool to search and manage Flowix Markdown memos, read collection datasets with collection.read by collectionId or notebook-relative path, create declared plugin artifacts such as mind maps, and inspect or restore cloud (FNS) note history with cloud.versions and cloud.restore."
     })
 }
 
@@ -187,6 +187,7 @@ fn validate_argument_keys(arguments: &Map<String, Value>) -> Result<(), CliError
         "bg",
         "clearBg",
         "keepContent",
+        "historyId",
         "command",
         "stdin",
     ];
@@ -247,6 +248,16 @@ fn parse_structured_operation(
             content: content()?,
         }),
         "delete" => Ok(FlowixOperation::Delete { address: address()? }),
+        "cloud.versions" => Ok(FlowixOperation::CloudVersions {
+            notebook,
+            path: required_string(arguments, "path")?,
+            page: integer(arguments, "page", 1, 1, 1000)? as u32,
+        }),
+        "cloud.restore" => Ok(FlowixOperation::CloudRestore {
+            notebook,
+            path: required_string(arguments, "path")?,
+            history_id: required_integer(arguments, "historyId")?,
+        }),
         "artifact.list" => Ok(FlowixOperation::ArtifactList),
         "artifact.describe" => Ok(FlowixOperation::ArtifactDescribe {
             plugin_id: required_string(arguments, "pluginId")?,
@@ -354,6 +365,13 @@ fn optional_string(arguments: &Map<String, Value>, key: &str) -> Result<Option<S
                 .ok_or_else(|| CliError::Usage(format!("memo.{key} must be a string")))
         })
         .transpose()
+}
+
+fn required_integer(arguments: &Map<String, Value>, key: &str) -> Result<i64, CliError> {
+    arguments
+        .get(key)
+        .and_then(Value::as_i64)
+        .ok_or_else(|| CliError::Usage(format!("memo.{key} is required and must be an integer")))
 }
 
 fn integer(
@@ -541,6 +559,18 @@ fn execute_command(command: &str, stdin: Option<&str>) -> Result<Value, CliError
             }
             let body = require_stdin(stdin, "write")?;
             path_store::write(&id, body)
+        }
+        cli::Cli::CloudVersions { notebook, path, page, .. } => {
+            reject_stdin(stdin)?;
+            let paths = crate::paths::resolve()?;
+            let notebook = store::resolve_notebook_key(notebook.as_deref())?;
+            crate::cloud::list(&paths, &notebook, &path, page)
+        }
+        cli::Cli::CloudRestore { notebook, path, history, .. } => {
+            reject_stdin(stdin)?;
+            let paths = crate::paths::resolve()?;
+            let notebook = store::resolve_notebook_key(notebook.as_deref())?;
+            crate::cloud::restore(&paths, &notebook, &path, history)
         }
         cli::Cli::PluginList { .. } => {
             reject_stdin(stdin)?;

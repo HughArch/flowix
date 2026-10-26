@@ -235,6 +235,7 @@ impl BuiltinAiService {
             notebook_id: notebook.id.clone(),
             notebook_name: notebook.name.clone(),
             notebook_path: std::path::PathBuf::from(&notebook.path),
+            config_dir: self.user_config_dir.clone(),
         })
     }
 

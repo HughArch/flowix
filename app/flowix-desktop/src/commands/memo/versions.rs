@@ -43,24 +43,8 @@ pub fn create_path_version(notebook_id: String, relative_path: String, source: O
         }).ok()?
 }
 
-/// 恢复的共享写侧: expectedContent 悲观校验 → 当前内容自保为 restore_backup →
-/// 原子覆写。本地归档恢复与云端版本恢复共用, 返回 `Ok(false)` 表示内容已变化拒绝写入。
-fn write_restored_content(memo_file: &flowix_core::memo_file::MemoFile, notebook_id: &str,
-    relative_path: &str, path: &std::path::Path, target: &str,
-    expected_content: Option<&str>) -> std::io::Result<bool> {
-    memo_file.with_file_write(notebook_id, path, FileLockIntent::Existing,
-        "restore_path_version", |locked_path| {
-            let current = fs::read_to_string(locked_path)?;
-            if expected_content.is_some_and(|expected| expected != current) {
-                return Ok(false);
-            }
-            memo_file.create_path_version(notebook_id, relative_path, &current,
-                MemoVersionSource::RestoreBackup)?;
-            atomic_write_bytes(locked_path, target.as_bytes())?;
-            Ok(true)
-        })
-}
-
+/// 恢复写侧下沉到 core (`MemoFile::write_restored_content`), 供桌面命令 /
+/// CLI / 内置 Agent 三端共用; 此处只补 watcher 免回环标记与索引刷新。
 fn finish_restore(state: &State<AppState>, app: &AppHandle, path: &std::path::Path,
     memo_file: &flowix_core::memo_file::MemoFile, target: String) -> String {
     mark_self_write_for(app, path);
@@ -74,7 +58,7 @@ pub fn restore_path_version(notebook_id: String, relative_path: String, version_
     let path = path_archive_document(&state, &notebook_id, &relative_path)?;
     let memo_file = read_lock(&state.memo_file, "memo_file");
     let target = memo_file.read_path_version(&notebook_id, &relative_path, &version_id)?;
-    let restored = write_restored_content(&memo_file, &notebook_id, &relative_path, &path,
+    let restored = memo_file.write_restored_content(&notebook_id, &relative_path, &path,
         &target, expected_content.as_deref()).ok()?;
     if !restored { return None; }
     Some(finish_restore(&state, &app, &path, &memo_file, target))
@@ -87,7 +71,7 @@ pub fn restore_path_content(notebook_id: String, relative_path: String, content:
     expected_content: Option<String>, state: State<AppState>, app: AppHandle) -> Option<String> {
     let path = path_archive_document(&state, &notebook_id, &relative_path)?;
     let memo_file = read_lock(&state.memo_file, "memo_file");
-    let restored = write_restored_content(&memo_file, &notebook_id, &relative_path, &path,
+    let restored = memo_file.write_restored_content(&notebook_id, &relative_path, &path,
         &content, expected_content.as_deref()).ok()?;
     if !restored { return None; }
     Some(finish_restore(&state, &app, &path, &memo_file, content))

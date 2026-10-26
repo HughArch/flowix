@@ -24,6 +24,8 @@ pub struct ToolScope {
     pub notebook_name: String,
     /// Notebook root on disk; used to load the optional `AGENTS.md`.
     pub notebook_path: std::path::PathBuf,
+    /// 用户配置目录 (`~/.flowix`): 云端历史工具从这里读 `boot/fns-sync.json`。
+    pub config_dir: std::path::PathBuf,
 }
 
 pub fn tool_definitions(web_search_enabled: bool) -> Value {
@@ -148,6 +150,36 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
                         "path": { "type": "string", "description": "笔记本内相对路径" }
                     },
                     "required": ["path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "cloud_versions",
+                "description": "列出一篇笔记的云端历史版本（FNS 同步服务记录，跨设备共享）。笔记本未绑定同步或笔记从未同步过时会说明原因。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "笔记本内相对路径" },
+                        "page": { "type": "integer", "description": "页码（1 开始），每页 20 条" }
+                    },
+                    "required": ["path"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
+                "name": "cloud_restore",
+                "description": "把一篇笔记恢复到指定云端历史版本。当前内容会先本地归档为 restore_backup，随后同步到其他设备。破坏性操作：调用前必须先向用户确认目标版本。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "path": { "type": "string", "description": "笔记本内相对路径" },
+                        "historyId": { "type": "integer", "description": "云端历史 id，来自 cloud_versions 的结果" }
+                    },
+                    "required": ["path", "historyId"]
                 }
             }
         },
@@ -391,6 +423,85 @@ pub fn execute(
     }
 }
 
+/// 云端历史 (FNS note_history): 凭据解析与桌面命令同源 —— 全局
+/// `boot/fns-sync.json` + 笔记本 `.flowix/sync-state.json`; REST 与 diff 重建
+/// 在 [`flowix_core::fns_history`]。恢复复用 `write_restored_content` 共享写侧。
+fn execute_cloud_tool(
+    memo_file: &MemoFile,
+    scope: &ToolScope,
+    name: &str,
+    args: &Value,
+) -> Result<Value, String> {
+    let notebook = &scope.notebook_id;
+    let path = normalize_path(&string_arg(args, "path").ok_or("缺少 path")?)?;
+
+    let config = flowix_core::fns_config::FnsConfig::load(&scope.config_dir);
+    if !config.is_ready() {
+        return Err("当前设备未配置云端同步（FNS），无法读取云端历史".into());
+    }
+    let sync_state = flowix_fns::state::SyncState::load(&scope.notebook_path)
+        .map_err(|error| format!("读取同步绑定失败: {error}"))?
+        .ok_or("当前笔记本未绑定云端同步，无法读取云端历史")?;
+    if sync_state.vault.trim().is_empty() {
+        return Err("当前笔记本没有绑定 vault".into());
+    }
+    let token = config
+        .token(&sync_state.token_id)
+        .ok_or("绑定的同步令牌已不存在，请重新绑定")?;
+
+    match name {
+        "cloud_versions" => {
+            let page = args.get("page").and_then(Value::as_u64).unwrap_or(1).max(1) as u32;
+            match flowix_core::fns_history::list_note_history_or_not_synced(
+                config.api.trim(),
+                &token.token,
+                &token.client_type,
+                &sync_state.vault,
+                &path,
+                page,
+                20,
+            )
+            .map_err(|error| error.to_string())?
+            {
+                flowix_core::fns_history::FnsCloudHistoryPage::NotSynced => {
+                    Ok(json!({ "ok": true, "status": "notSynced",
+                        "message": "该笔记尚未同步到云端，暂无云端历史" }))
+                }
+                flowix_core::fns_history::FnsCloudHistoryPage::Ok { items, total, has_more } => {
+                    Ok(json!({ "ok": true, "status": "ok", "total": total,
+                        "hasMore": has_more, "page": page, "versions": items }))
+                }
+            }
+        }
+        "cloud_restore" => {
+            let history_id = args
+                .get("historyId")
+                .and_then(Value::as_i64)
+                .ok_or("缺少 historyId")?;
+            let content = flowix_core::fns_history::note_history_content(
+                config.api.trim(),
+                &token.token,
+                &token.client_type,
+                history_id,
+            )
+            .map_err(|error| error.to_string())?;
+            let absolute = memo_file
+                .resolve_notebook_md_path(notebook, &path)
+                .map_err(|error| format!("笔记文件不可用: {error}"))?;
+            let restored = memo_file
+                .write_restored_content(notebook, &path, &absolute, &content, None)
+                .map_err(|error| format!("恢复写入失败: {error}"))?;
+            if !restored {
+                return Err("恢复被拒绝：笔记内容在恢复期间发生变化".into());
+            }
+            Ok(json!({ "ok": true, "action": "restored", "path": path,
+                "historyId": history_id,
+                "note": "当前内容已本地归档为 restore_backup，下次同步会上行到其他设备" }))
+        }
+        _ => unreachable!(),
+    }
+}
+
 fn execute_inner(
     memo_file: &Arc<RwLock<MemoFile>>,
     scope: &ToolScope,
@@ -411,8 +522,13 @@ fn execute_inner(
         let guard = memo_file
             .read()
             .map_err(|_| "note storage lock poisoned".to_owned())?;
-        let mut service = NoteService::new(&guard);
-        execute_with_service(&mut service, scope, name, &args)
+        // 云端历史工具只读 MemoFile + 用户配置, 不需要 NoteService。
+        if matches!(name, "cloud_versions" | "cloud_restore") {
+            execute_cloud_tool(&guard, scope, name, &args)
+        } else {
+            let mut service = NoteService::new(&guard);
+            execute_with_service(&mut service, scope, name, &args)
+        }
     };
     result
 }
@@ -586,6 +702,7 @@ mod tests {
             notebook_id: "work".into(),
             notebook_name: "Work".into(),
             notebook_path: notebook_path,
+            config_dir: tmp.path().join("config"),
         };
         (tmp, Arc::new(RwLock::new(memo)), scope)
     }

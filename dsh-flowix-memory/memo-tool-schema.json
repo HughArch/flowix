@@ -3,11 +3,12 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["notebooks", "list", "tags", "show", "search", "create", "edit", "write", "delete", "collection.read", "artifact.list", "artifact.describe", "artifact.create", "columns.list", "columns.add", "columns.remove", "columns.width", "background.list", "background.set", "background.clear", "callout.list", "callout.add", "callout.set", "callout.remove", "toggle.list", "toggle.add", "toggle.set", "toggle.remove"],
+      "enum": ["notebooks", "list", "tags", "show", "search", "create", "edit", "write", "delete", "cloud.versions", "cloud.restore", "collection.read", "artifact.list", "artifact.describe", "artifact.create", "columns.list", "columns.add", "columns.remove", "columns.width", "background.list", "background.set", "background.clear", "callout.list", "callout.add", "callout.set", "callout.remove", "toggle.list", "toggle.add", "toggle.set", "toggle.remove"],
       "description": "Structured operation. Prefer this over the legacy command field."
     },
     "notebook": { "type": "string", "description": "Notebook name or id; defaults to the current notebook where supported." },
     "id": { "type": "string", "description": "Memo id or filename." },
+    "historyId": { "type": "integer", "description": "Cloud history id for cloud.restore, taken from cloud.versions." },
     "query": { "type": "string" },
     "tag": { "type": "string", "description": "Optional tag path filter. Matches the path itself and all sub-tags; a leading # is accepted (for example 项目/Flowix)." },
     "content": { "type": "string", "description": "Complete Markdown, replacement body, artifact source, callout body for callout.add, or toggle body for toggle.add/set." },
@@ -38,6 +39,12 @@
   },
   "anyOf": [{ "required": ["action"] }, { "required": ["command"] }],
   "allOf": [{
+    "if": { "properties": { "action": { "const": "cloud.versions" } }, "required": ["action"] },
+    "then": { "required": ["path"] }
+  }, {
+    "if": { "properties": { "action": { "const": "cloud.restore" } }, "required": ["action"] },
+    "then": { "required": ["path", "historyId"] }
+  }, {
     "if": { "properties": { "action": { "const": "collection.read" } }, "required": ["action"] },
     "then": {
       "required": ["notebook"],

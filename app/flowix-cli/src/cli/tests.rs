@@ -638,3 +638,31 @@ fn exit_codes() {
     assert_eq!(CliError::Conflict("x".into()).code(), "CONFLICT");
     assert_eq!(CliError::Other("x".into()).exit_code(), 1);
 }
+
+// ===== 云端历史 =====
+
+#[test]
+fn cloud_versions_parses_path_page_and_notebook() {
+    assert!(matches!(
+        parse_args(&["cloud-versions", "笔记/a.md", "--page", "2", "-b", "work"]),
+        Ok(Some(Cli::CloudVersions { path, page: 2, notebook: Some(notebook), json: false }))
+            if path == "笔记/a.md" && notebook == "work"
+    ));
+    // 默认第 1 页
+    assert!(matches!(
+        parse_args(&["cloud-versions", "a.md"]),
+        Ok(Some(Cli::CloudVersions { page: 1, .. }))
+    ));
+    // 0 页是非法输入
+    assert!(parse_args(&["cloud-versions", "a.md", "--page", "0"]).is_err());
+}
+
+#[test]
+fn cloud_restore_requires_history_id() {
+    let err = parse_args(&["cloud-restore", "a.md"]).unwrap_err();
+    assert_err_contains(&err, "--history");
+    assert!(matches!(
+        parse_args(&["cloud-restore", "a.md", "--history", "107"]),
+        Ok(Some(Cli::CloudRestore { history: 107, path, .. })) if path == "a.md"
+    ));
+}

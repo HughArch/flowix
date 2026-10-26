@@ -433,7 +433,7 @@ impl FnsSyncService {
             if !config.is_ready() {
                 return Ok(None);
             }
-            (config.clone(), config.offline_sync_strategy())
+            (config.clone(), crate::fns_sync::config::offline_sync_strategy(&config))
         };
 
         // Wait for any in-flight sync instead of failing: every trigger path
@@ -957,7 +957,7 @@ impl FnsSyncService {
             name: "Flowix".to_owned(),
             version: env!("CARGO_PKG_VERSION").to_owned(),
             client_type: token.client_type.clone(),
-            offline_sync_strategy: Some(config.offline_sync_strategy().as_str().to_owned()),
+            offline_sync_strategy: Some(crate::fns_sync::config::offline_sync_strategy(&config).as_str().to_owned()),
         };
         tracing::info!(notebook_id, path, "FNS sync: connecting for conflict resolution");
         let mut client = FnsClient::connect(&config.api, &token.token, &info)
