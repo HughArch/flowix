@@ -259,6 +259,7 @@ function FileEditor({
   onCancel,
   onSave,
   error,
+  mobileLayout = false,
 }: {
   kind: FileKind;
   form: NotebookAgentFile;
@@ -266,6 +267,7 @@ function FileEditor({
   onCancel: () => void;
   onSave: () => void;
   error: string | null;
+  mobileLayout?: boolean;
 }) {
   const isSkill = kind === "skill";
   return (
@@ -294,7 +296,9 @@ function FileEditor({
           }} placeholder={isSkill ? "code-review" : "code-reviewer"} />
         </Field>
       </div>
-      {isSkill && <Field label="Pi 命令名" hint="Pi 中使用 /skill:<命令名>；旧格式会自动使用安全名称">
+      {/* Mobile has no Pi runtime to address; the command name stays equal to
+       * the ID so the file remains valid when it syncs back to desktop. */}
+      {isSkill && !mobileLayout && <Field label="Pi 命令名" hint="Pi 中使用 /skill:<命令名>；旧格式会自动使用安全名称">
         <input className={cn(inputClass, "font-mono text-xs")} value={form.commandName ?? form.id} onChange={(event) => onChange({ commandName: event.target.value.toLowerCase() })} placeholder="code-review" />
       </Field>}
       <Field label="一句话说明">
@@ -1095,9 +1099,13 @@ function NotebookAgentSettingsDialog({
       setFormError(`${label} ID 只能使用小写字母、数字和连字符。`);
       return;
     }
-    const commandName = fileForm.commandName?.trim() || id;
+    // Mobile hides the Pi command-name field, so the command always mirrors
+    // the ID there (which also keeps the synced file addressable on desktop).
+    const commandName = mobileLayout ? id : fileForm.commandName?.trim() || id;
     if (editor.fileKind === "skill" && !isValidPiSkillCommandName(commandName)) {
-      setFormError("Pi Skill 命令名只能使用小写字母、数字和单个连字符，且不能以连字符开头或结尾。");
+      setFormError(mobileLayout
+        ? `${label} ID 只能使用小写字母、数字和单个连字符，且不能以连字符开头或结尾。`
+        : "Pi Skill 命令名只能使用小写字母、数字和单个连字符，且不能以连字符开头或结尾。");
       return;
     }
     if (!fileForm.name.trim()) {
@@ -1248,7 +1256,7 @@ function NotebookAgentSettingsDialog({
                 <SectionHeader title="Skills" description="把可复用的工作流程保存为 Markdown Skill，之后可被不同 Agent 使用。" action={skillAgent === "general" ? <Button variant="default" className="gap-[3px] px-3" onClick={() => openFile("skill", null)} disabled={!!editor}><Plus />创建</Button> : null} />
                 {showAgentSubTabs && <AgentTabs active={skillAgent} ariaLabel="Skill Agent" onChange={(agentKey) => { setSkillAgent(agentKey); closeEditor(); }} />}
                 {skillAgent === "codex" ? <CodexSkillsList notebookPath={notebookPath} /> : skillAgent === "dsh" ? <DeepSeekHarnessSkillsList /> : <div className="space-y-3">
-                  {editor?.kind === "file" && editor.fileKind === "skill" && fileForm && <FileEditor kind="skill" form={fileForm} onChange={(patch) => setFileForm((current) => current ? { ...current, ...patch } : current)} onCancel={closeEditor} onSave={saveFileDraft} error={formError} />}
+                  {editor?.kind === "file" && editor.fileKind === "skill" && fileForm && <FileEditor kind="skill" form={fileForm} onChange={(patch) => setFileForm((current) => current ? { ...current, ...patch } : current)} onCancel={closeEditor} onSave={saveFileDraft} error={formError} mobileLayout={mobileLayout} />}
                   <FileList kind="skill" items={(workspace ?? EMPTY_WORKSPACE).skills} onAdd={() => openFile("skill", null)} onEdit={(id) => openFile("skill", id)} onDelete={(id) => deleteFile("skill", id)} onToggle={(id, enabled) => toggleFile("skill", id, enabled)} />
                 </div>}
               </>}
