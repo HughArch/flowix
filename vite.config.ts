@@ -139,7 +139,8 @@ export default defineConfig(({ command }) => {
     clearScreen: false,
     // 2. tauri expects a fixed port, fail if that port is not available
     server: {
-      port: 1420,
+      // FLOWIX_VITE_PORT lets a second dev instance run beside the default one.
+      port: Number(process.env.FLOWIX_VITE_PORT) || 1420,
       strictPort: true,
       host: host || false,
       hmr: host
