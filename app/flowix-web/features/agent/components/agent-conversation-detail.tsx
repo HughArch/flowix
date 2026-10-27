@@ -702,14 +702,16 @@ function AgentConversationDetailContent({
         const notebookPath = resolveFlowixNotebookPath(instanceRef.current);
         if (notebookPath) {
           notebookAgentSettingsDialogRef.current ??= new NotebookAgentSettingsDialogController();
-          // The builtin flowix assistant only consumes project skills; scope
-          // the dialog to that tab and use the touch-friendly layout.
+          // The builtin flowix assistant consumes project skills and, via
+          // .agents/mcp.json, remote MCP servers; scope the dialog to those
+          // tabs (通用 content only — no per-agent sub tabs) and use the
+          // touch-friendly layout.
           notebookAgentSettingsDialogRef.current.open(
             notebookPath,
             typeKeyRef.current === 'flowix'
               ? {
                 initialTab: "skills",
-                tabs: ["skills"],
+                tabs: ["skills", "mcp"],
                 showAgentSubTabs: false,
                 mobileLayout: isMobileDevice(),
               }

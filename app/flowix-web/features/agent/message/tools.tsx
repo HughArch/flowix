@@ -489,6 +489,9 @@ export function getToolLabel(
   const meta = getToolMeta(input);
   if (meta) return translate(language, meta.labelKey);
   if (!toolName) return translate(language, "agent.tools.unknown");
+  // 内置 MCP 工具名（mcp__<服务>__<工具>）按原样展示：双下划线会被
+  // titleCase 切分打碎，而原名本身已经足够可读。
+  if (toolName.startsWith("mcp__")) return toolName;
   return toolName
     .split("_")
     .map((word) => word.charAt(0).toUpperCase() + word.slice(1).toLowerCase())
