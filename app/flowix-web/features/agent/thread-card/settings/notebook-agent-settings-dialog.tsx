@@ -27,6 +27,7 @@ import type { CodexSkillCatalogItem } from "@features/agent/services/codex-slash
 import { invalidateNotebookSkills, loadNotebookSkillCatalog } from "@features/agent/services/agent-catalog-service";
 import { useAgentDataStore } from "@features/agent/store/agent-data-store";
 import { useAgentWorkspaceStore } from "@features/agent/store/agent-workspace-store";
+import { toast } from "@/lib/toast";
 import { useNoteStore } from "@features/memo/store/note-store";
 import { isValidPiSkillCommandName } from "@features/agent/services/pi-skill-name";
 
@@ -972,7 +973,6 @@ function NotebookAgentSettingsDialog({
   const [childAgent, setChildAgent] = useState<AgentResourceKey>("general");
   const [workspace, setWorkspace] = useState<NotebookAgentWorkspace | null>(null);
   const [loading, setLoading] = useState(true);
-  const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [editor, setEditor] = useState<EditorState | null>(null);
   const [mcpForm, setMcpForm] = useState<ReturnType<typeof mcpFormFrom> | null>(null);
@@ -980,13 +980,15 @@ function NotebookAgentSettingsDialog({
   const [formError, setFormError] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<{ message: string; action: () => void } | null>(null);
   const writeChainRef = useRef<Promise<void>>(Promise.resolve());
-  const pendingWritesRef = useRef(0);
+  /** Last workspace known to be on disk; the rollback target for failed writes. */
+  const savedWorkspaceRef = useRef<NotebookAgentWorkspace | null>(null);
 
   const load = useCallback(async () => {
     setLoading(true);
     setError(null);
     try {
       const next = cloneWorkspace(await agent.readNotebookAgentWorkspace(notebookPath));
+      savedWorkspaceRef.current = cloneWorkspace(next);
       setWorkspace(next);
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
@@ -1135,18 +1137,21 @@ function NotebookAgentSettingsDialog({
 
   /**
    * Write the workspace straight to `.agents/`. Every mutation in this dialog
-   * commits on its own (no draft-then-save step), so the footer only reports
-   * state and closes.
+   * commits on its own (no draft-then-save step), so there is no footer save.
+   * A failed write rolls the optimistic update back to the last state that is
+   * actually on disk, and the error is surfaced both inline and as a toast
+   * (the inline banner can be scrolled out of view inside a long form).
    */
   const persistWorkspace = useCallback((next: NotebookAgentWorkspace): Promise<void> => {
     setWorkspace(next);
-    setSaving(true);
     setError(null);
     // Serialize writes: each commit sends the whole workspace, so an
     // out-of-order response must not resurrect an older snapshot.
     const run = writeChainRef.current.then(async () => {
       try {
-        setWorkspace(cloneWorkspace(await agent.writeNotebookAgentWorkspace(notebookPath, next)));
+        const saved = cloneWorkspace(await agent.writeNotebookAgentWorkspace(notebookPath, next));
+        savedWorkspaceRef.current = saved;
+        setWorkspace(saved);
         const skillScopeId = getNotebookSkillScopeId(notebookPath);
         if (skillScopeId) {
           for (const agentType of ["codex", "pi", "flowix"] as const) {
@@ -1157,15 +1162,14 @@ function NotebookAgentSettingsDialog({
           }
         }
       } catch (cause) {
-        setError(cause instanceof Error ? cause.message : String(cause));
+        const message = cause instanceof Error ? cause.message : String(cause);
+        setError(message);
+        toast.error(message);
+        if (savedWorkspaceRef.current) setWorkspace(cloneWorkspace(savedWorkspaceRef.current));
       }
     });
-    pendingWritesRef.current += 1;
     writeChainRef.current = run.catch(() => undefined);
-    return run.finally(() => {
-      pendingWritesRef.current -= 1;
-      if (pendingWritesRef.current === 0) setSaving(false);
-    }).catch(() => undefined);
+    return run.catch(() => undefined);
   }, [notebookPath]);
 
   const deleteMcp = (id: string) => {
@@ -1275,10 +1279,6 @@ function NotebookAgentSettingsDialog({
           </main>
         </div>
 
-        <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-[var(--divider)] bg-[color-mix(in_oklch,var(--background)_92%,var(--card))] px-5 py-3 sm:px-6">
-          <div className="min-w-0 text-xs text-[var(--muted-foreground)]">{saving ? <span className="inline-flex items-center gap-1.5"><Loader2 className="flowix-spin h-3.5 w-3.5" />保存中…</span> : error ? <span className="text-[var(--destructive)]">保存失败</span> : <span className="inline-flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-[var(--primary)]" />已保存</span>}</div>
-          <div className="flex items-center gap-2"><Button type="button" variant="ghost" onClick={requestClose}>关闭</Button></div>
-        </footer>
       </div>
       {pendingConfirm && (
         <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/50 p-6">
