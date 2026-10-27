@@ -13,11 +13,13 @@
 //!   agent-config / Pi / DSH 配置互不影响；
 //! - [`provider`] — 无状态的 chat-completions SSE 客户端；
 //! - [`tools`] — 笔记工具定义与执行（当前笔记本沙箱 + CAS 保护）；
+//! - [`mcp`] — 笔记本 `.agents/mcp.json` 远程 MCP 服务的最小客户端；
 //! - [`runtime`] — 工具循环、事件派发、取消与持久化；
 //! - [`commands`] — 配置 IPC。
 
 pub(crate) mod commands;
 mod config;
+mod mcp;
 mod provider;
 mod rich_content;
 mod runtime;

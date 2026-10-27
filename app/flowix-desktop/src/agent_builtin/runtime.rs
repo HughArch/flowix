@@ -401,9 +401,37 @@ impl BuiltinAiService {
         // Optional notebook-level instructions. The file is user-authored and
         // treated as project guidance; the UI gets a visible notice.
         let agents_md = load_agents_md(&scope.notebook_path);
+        // Notebook MCP servers (`.agents/mcp.json`, synced like skills).
+        // Connection happens here so the tool loop only deals with ready
+        // clients; per-server failures degrade to a notice, never a run error.
+        let mcp = super::mcp::McpRuntime::connect_notebook_servers(&scope.notebook_path).await;
+        if mcp.has_tools() || mcp.has_failures() {
+            let mut text = String::new();
+            if mcp.has_tools() {
+                text.push_str(&format!("已加载笔记本 MCP 服务：{}", mcp.summary()));
+            }
+            if mcp.has_failures() {
+                if !text.is_empty() {
+                    text.push_str("；");
+                }
+                text.push_str(&format!("连接失败：{}", mcp.failure_summary()));
+            }
+            emit_builtin_chunk(
+                app,
+                AgentChunk::Notice {
+                    thread_id: thread_id.to_owned(),
+                    // Stable per-thread id: the UI shows the notice once even
+                    // though every run reconnects.
+                    id: format!("notice-mcp-{thread_id}"),
+                    text,
+                },
+                run_id,
+            );
+        }
         provider_messages.push(ProviderMessage::system(system_prompt(
             scope,
             config.web_search_enabled,
+            mcp.has_tools(),
             agents_md.as_deref(),
         )));
         if let Some(content) = &agents_md {
@@ -438,7 +466,14 @@ impl BuiltinAiService {
         }
         provider_messages.push(ProviderMessage::user_with_images(llm_content, image_parts));
 
-        // 3. Tool loop.
+        // 3. Tool loop. Definitions are static for the whole run: built-ins
+        //    plus whatever the notebook's MCP servers exposed.
+        let mut tool_definitions = tools::tool_definitions(config.web_search_enabled);
+        if mcp.has_tools() {
+            if let Some(array) = tool_definitions.as_array_mut() {
+                array.extend(mcp.tool_definitions());
+            }
+        }
         for _cycle in 0..MAX_TOOL_CYCLES {
             if cancel.load(Ordering::Relaxed) {
                 return Err(RunError::Cancelled);
@@ -449,7 +484,7 @@ impl BuiltinAiService {
                 &provider.api_key,
                 &provider.model,
                 &provider_messages,
-                &tools::tool_definitions(config.web_search_enabled),
+                &tool_definitions,
                 Arc::clone(cancel),
                 |event| match event {
                     StreamEvent::Text(text) => {
@@ -540,8 +575,8 @@ impl BuiltinAiService {
                     run_id,
                 );
 
-                // Web search is async; note tools are blocking file/sqlite work
-                // and stay off the async reactor.
+                // Web search and MCP calls are async; note tools are blocking
+                // file/sqlite work and stay off the async reactor.
                 let result = if call.name == "web_search" {
                     if !config.web_search_enabled {
                         serde_json::json!({ "ok": false, "error": "联网搜索未启用，请在设置中开启" })
@@ -561,6 +596,14 @@ impl BuiltinAiService {
                                 })),
                             Err(error) => serde_json::json!({ "ok": false, "error": error }),
                         }
+                    }
+                } else if call.name.starts_with("mcp__") {
+                    if !mcp.has_tools() {
+                        serde_json::json!({ "ok": false, "error": "没有可用的 MCP 服务（笔记本 .agents/mcp.json 未配置或全部连接失败）" })
+                    } else {
+                        let args: serde_json::Value =
+                            serde_json::from_str(&call.arguments).unwrap_or_default();
+                        mcp.call(&call.name, args).await
                     }
                 } else {
                     let memo_file = Arc::clone(&self.memo_file);
@@ -809,6 +852,7 @@ fn load_agents_md(notebook_path: &std::path::Path) -> Option<String> {
 fn system_prompt(
     scope: &ToolScope,
     web_search_enabled: bool,
+    mcp_tools_available: bool,
     agents_md: Option<&str>,
 ) -> String {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
@@ -816,6 +860,11 @@ fn system_prompt(
         "- 需要最新或外部信息时用 web_search；回答里引用返回结果的 URL，不要把搜索结果当成笔记内容。"
     } else {
         "- 当前没有联网搜索工具；用户要求联网搜索时，明确说明需要在设置中开启「联网搜索」。"
+    };
+    let mcp_rule = if mcp_tools_available {
+        "\n- 你还接入了笔记本 .agents/mcp.json 配置的 MCP 外部工具（名称形如 mcp__服务__工具）；按各工具描述调用，失败时把错误转述给用户，同一工具连续失败两次后停止重试。"
+    } else {
+        ""
     };
     let agents_section = agents_md
         .map(|content| {
@@ -851,12 +900,13 @@ fn system_prompt(
   · 文字行背景 → background action=set
   · 序号（block/column/line）都从 1 开始；修改前先 list 确认序号。
 - 用户消息中 @标题 形式的提及通常对应 relativePath 为「标题.md」的笔记。
-{web_search_rule}
+{web_search_rule}{mcp_rule}
 - 用用户的语言回答；提到笔记时给出其相对路径；不要虚构笔记内容。{agents_section}",
         name = scope.notebook_name,
         notebook_id = scope.notebook_id,
         today = today,
         web_search_rule = web_search_rule,
+        mcp_rule = mcp_rule,
         agents_section = agents_section,
     )
 }

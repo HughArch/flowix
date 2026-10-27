@@ -90,8 +90,28 @@ function mcpFormFrom(id: string, definition: NotebookMcpDefinition) {
     command: typeof definition.command === "string" ? definition.command : "",
     args: Array.isArray(definition.args) ? definition.args.filter((item): item is string => typeof item === "string").join("\n") : "",
     url: typeof definition.url === "string" ? definition.url : "",
+    headers: definition.headers && typeof definition.headers === "object" && !Array.isArray(definition.headers)
+      ? JSON.stringify(definition.headers, null, 2)
+      : "",
     enabled: definition.enabled !== false,
   };
+}
+
+/** Headers form field → `Record<string, string>`; empty input means "none". */
+function parseMcpHeaders(raw: string): Record<string, string> {
+  const trimmed = raw.trim();
+  if (!trimmed) return {};
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(trimmed);
+  } catch {
+    throw new Error("请求头不是合法的 JSON。");
+  }
+  if (!parsed || typeof parsed !== "object" || Array.isArray(parsed)
+    || !Object.entries(parsed).every(([key, value]) => Boolean(key) && typeof value === "string")) {
+    throw new Error("请求头必须是字符串到字符串的对象，例如 {\"x-api-key\": \"...\"}。");
+  }
+  return parsed as Record<string, string>;
 }
 
 function emptyFile(kind: FileKind): NotebookAgentFile {
@@ -227,9 +247,14 @@ function McpEditor({
         </div>
       </Field>
       {isRemote ? (
-        <Field label="服务 URL">
-          <input className={inputClass} value={form.url} onChange={(event) => onChange({ url: event.target.value })} placeholder="https://example.com/mcp" inputMode="url" />
-        </Field>
+        <>
+          <Field label="服务 URL">
+            <input className={inputClass} value={form.url} onChange={(event) => onChange({ url: event.target.value })} placeholder="https://example.com/mcp" inputMode="url" />
+          </Field>
+          <Field label="请求头" hint='可选，JSON，如 {"x-api-key": "..."}（会随 FNS 同步）'>
+            <textarea className={cn(textareaClass, "min-h-[5.75rem] font-mono text-xs leading-5")} value={form.headers} onChange={(event) => onChange({ headers: event.target.value })} placeholder={'{"x-api-key": "your-key"}'} />
+          </Field>
+        </>
       ) : (
         <div className="grid gap-4 sm:grid-cols-2">
           <Field label="启动命令">
@@ -1029,7 +1054,7 @@ function NotebookAgentSettingsDialog({
   const openMcp = (id: string | null) => {
     if (!workspace) return;
     const definition = id ? workspace.mcpServers[id] ?? {} : {};
-    setMcpForm(id ? mcpFormFrom(id, definition) : { id: newId("mcp"), description: "", transport: "stdio", command: "", args: "", url: "", enabled: true });
+    setMcpForm(id ? mcpFormFrom(id, definition) : { id: newId("mcp"), description: "", transport: "stdio", command: "", args: "", url: "", headers: "", enabled: true });
     setFormError(null);
     setEditor({ kind: "mcp", id });
   };
@@ -1069,6 +1094,13 @@ function NotebookAgentSettingsDialog({
       setFormError("请输入服务 URL。");
       return;
     }
+    let headers: Record<string, string>;
+    try {
+      headers = parseMcpHeaders(mcpForm.headers);
+    } catch (error) {
+      setFormError(error instanceof Error ? error.message : String(error));
+      return;
+    }
     const previous = editor.id ? workspace.mcpServers[editor.id] : undefined;
     const definition: NotebookMcpDefinition = { ...(previous ?? {}) };
     definition.transport = mcpForm.transport;
@@ -1079,8 +1111,11 @@ function NotebookAgentSettingsDialog({
       definition.command = mcpForm.command.trim();
       definition.args = mcpForm.args.split(/\r?\n/).map((item) => item.trim()).filter(Boolean);
       delete definition.url;
+      delete definition.headers;
     } else {
       definition.url = mcpForm.url.trim();
+      if (Object.keys(headers).length > 0) definition.headers = headers;
+      else delete definition.headers;
       delete definition.command;
       delete definition.args;
     }

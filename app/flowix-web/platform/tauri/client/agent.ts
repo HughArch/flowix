@@ -46,6 +46,7 @@ export interface NotebookMcpDefinition {
   command?: string;
   args?: string[];
   url?: string;
+  headers?: Record<string, string>;
   transport?: 'stdio' | 'streamable-http' | 'http' | string;
   enabled?: boolean;
   description?: string;
