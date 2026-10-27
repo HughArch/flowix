@@ -17,8 +17,6 @@ use serde::{Deserialize, Serialize};
 
 const BOOT_DIR: &str = "boot";
 const FILE_NAME: &str = "builtin-ai.json";
-/// Rough token budget across one run (system + history + tool results).
-pub const DEFAULT_MAX_TOTAL_TOKENS: u32 = 180_000;
 
 /// One provider configuration (vendor endpoint + credentials + default model).
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -70,7 +68,6 @@ impl BuiltinAiProvider {
 #[serde(rename_all = "camelCase", default)]
 pub struct BuiltinAiConfig {
     pub enabled: bool,
-    pub max_total_tokens: u32,
     /// Expose the `web_search` tool. Off by default: it calls an external
     /// search service, which the user must opt into.
     pub web_search_enabled: bool,
@@ -89,7 +86,6 @@ impl Default for BuiltinAiConfig {
     fn default() -> Self {
         Self {
             enabled: false,
-            max_total_tokens: DEFAULT_MAX_TOTAL_TOKENS,
             web_search_enabled: false,
             providers: Vec::new(),
             active_provider_id: String::new(),
@@ -213,7 +209,6 @@ pub struct BuiltinAiProviderView {
 #[serde(rename_all = "camelCase")]
 pub struct BuiltinAiConfigView {
     pub enabled: bool,
-    pub max_total_tokens: u32,
     pub web_search_enabled: bool,
     pub providers: Vec<BuiltinAiProviderView>,
     pub active_provider_id: String,
@@ -224,7 +219,6 @@ impl BuiltinAiConfig {
     pub fn view(&self) -> BuiltinAiConfigView {
         BuiltinAiConfigView {
             enabled: self.enabled,
-            max_total_tokens: self.max_total_tokens,
             web_search_enabled: self.web_search_enabled,
             providers: self
                 .providers
@@ -261,8 +255,6 @@ pub struct BuiltinAiProviderInput {
 pub struct BuiltinAiConfigInput {
     pub enabled: bool,
     #[serde(default)]
-    pub max_total_tokens: Option<u32>,
-    #[serde(default)]
     pub web_search_enabled: bool,
     pub providers: Vec<BuiltinAiProviderInput>,
     #[serde(default)]
@@ -273,9 +265,6 @@ impl BuiltinAiConfig {
     pub fn apply(&mut self, input: BuiltinAiConfigInput) {
         self.enabled = input.enabled;
         self.web_search_enabled = input.web_search_enabled;
-        if let Some(budget) = input.max_total_tokens {
-            self.max_total_tokens = budget.max(1_000);
-        }
 
         let previous = std::mem::take(&mut self.providers);
         let mut next = Vec::with_capacity(input.providers.len());
@@ -346,7 +335,6 @@ mod tests {
         let mut config = BuiltinAiConfig::default();
         config.apply(BuiltinAiConfigInput {
             enabled: true,
-            max_total_tokens: Some(50_000),
             web_search_enabled: true,
             providers: vec![
                 provider_input(None, "DeepSeek", "https://api.deepseek.com/", Some(" sk-ds "), "deepseek-chat"),
@@ -364,7 +352,6 @@ mod tests {
         let loaded = BuiltinAiConfig::load(dir.path());
         assert!(loaded.enabled);
         assert!(loaded.web_search_enabled);
-        assert_eq!(loaded.max_total_tokens, 50_000);
         assert_eq!(loaded.providers.len(), 2);
         assert_eq!(loaded.active_provider().unwrap().name, "OpenAI");
         assert_eq!(loaded.active_provider().unwrap().api_key, "sk-oa");
@@ -392,7 +379,6 @@ mod tests {
         assert_eq!(provider.api_key, "sk-old");
         assert_eq!(provider.model, "deepseek-chat");
         assert_eq!(provider.name, "api.deepseek.com");
-        assert_eq!(config.max_total_tokens, 42_000);
         assert!(config.is_configured());
     }
 
@@ -410,7 +396,6 @@ mod tests {
         let mut config = BuiltinAiConfig::default();
         config.apply(BuiltinAiConfigInput {
             enabled: true,
-            max_total_tokens: None,
             web_search_enabled: false,
             providers: vec![provider_input(None, "Keep", "https://x/v1", Some("keep-me"), "m")],
             active_provider_id: String::new(),
@@ -419,7 +404,6 @@ mod tests {
         // A second save with `api_key: None` must preserve the stored key.
         config.apply(BuiltinAiConfigInput {
             enabled: true,
-            max_total_tokens: None,
             web_search_enabled: false,
             providers: vec![provider_input(Some(&id), "Keep", "https://x/v1", None, "m2")],
             active_provider_id: id,

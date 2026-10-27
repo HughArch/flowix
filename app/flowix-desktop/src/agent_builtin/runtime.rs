@@ -450,7 +450,6 @@ impl BuiltinAiService {
                 &provider.model,
                 &provider_messages,
                 &tools::tool_definitions(config.web_search_enabled),
-                config.max_total_tokens,
                 Arc::clone(cancel),
                 |event| match event {
                     StreamEvent::Text(text) => {
