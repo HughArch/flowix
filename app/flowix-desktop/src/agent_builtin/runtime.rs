@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use tauri::AppHandle;
 
+use sha2::{Digest, Sha256};
+
 use crate::agent_session::types::ChatMessage;
 use crate::agent_session::ThreadManager;
 use crate::agent_types::AgentId;
@@ -421,14 +423,14 @@ impl BuiltinAiService {
                 app,
                 AgentChunk::Notice {
                     thread_id: thread_id.to_owned(),
-                    // Stable per-thread id: shown once even though every run
-                    // re-reads the catalog.
-                    id: format!("notice-builtin-skills-{thread_id}"),
-                    text: format!(
-                        "已加载 {} 个笔记本技能到系统提示词{}",
-                        skill_catalog.entries.len(),
-                        if skill_catalog.truncated { "（清单已截断）" } else { "" },
+                    // Id is derived from the loaded skill names: the UI shows
+                    // the notice once, and a changed skill set produces a
+                    // fresh notice instead of being swallowed by the old id.
+                    id: format!(
+                        "notice-builtin-skills-{thread_id}-{}",
+                        skill_catalog_fingerprint(&skill_catalog),
                     ),
+                    text: skill_notice_text(&skill_catalog),
                 },
                 run_id,
             );
@@ -907,6 +909,36 @@ fn load_skill_catalog(notebook_path: &std::path::Path) -> SkillCatalog {
     }
 }
 
+/// Stable fingerprint of the loaded skill set (names only) used in the
+/// notice id, so the conversation UI dedups unchanged reruns but surfaces a
+/// fresh notice when the user adds or removes skills.
+fn skill_catalog_fingerprint(catalog: &SkillCatalog) -> String {
+    let mut hasher = Sha256::new();
+    for skill in &catalog.entries {
+        hasher.update(skill.name.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("{:x}", hasher.finalize())[..8].to_owned()
+}
+
+/// One-line notice listing the skills that entered the system prompt.
+fn skill_notice_text(catalog: &SkillCatalog) -> String {
+    let mut text = format!(
+        "已加载 {} 个笔记本技能到系统提示词：{}",
+        catalog.entries.len(),
+        catalog
+            .entries
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>()
+            .join("、"),
+    );
+    if catalog.truncated {
+        text.push_str("（其余技能因长度限制未加载）");
+    }
+    text
+}
+
 /// Render the `## 笔记本技能` block appended after the AGENTS.md section.
 fn skill_catalog_section(catalog: &SkillCatalog) -> String {
     if catalog.entries.is_empty() {
@@ -1184,6 +1216,62 @@ mod tests {
         assert_eq!(entry.description, "生成每日工作日报");
         assert_eq!(entry.path, ".agents/skills/demo/SKILL.md");
         assert!(!catalog.truncated);
+    }
+
+    #[test]
+    fn skill_notice_lists_loaded_skill_names() {
+        let catalog = SkillCatalog {
+            entries: vec![
+                SkillCatalogEntry {
+                    name: "日报".into(),
+                    description: "a".into(),
+                    path: "p1".into(),
+                },
+                SkillCatalogEntry {
+                    name: "周报".into(),
+                    description: "b".into(),
+                    path: "p2".into(),
+                },
+            ],
+            truncated: false,
+        };
+        assert_eq!(
+            skill_notice_text(&catalog),
+            "已加载 2 个笔记本技能到系统提示词：日报、周报"
+        );
+
+        let truncated = SkillCatalog {
+            entries: catalog.entries,
+            truncated: true,
+        };
+        assert!(
+            skill_notice_text(&truncated).ends_with("（其余技能因长度限制未加载）"),
+            "{}",
+            skill_notice_text(&truncated)
+        );
+    }
+
+    #[test]
+    fn skill_notice_fingerprint_tracks_the_loaded_skill_set() {
+        let make = |names: &[&str]| SkillCatalog {
+            entries: names
+                .iter()
+                .map(|name| SkillCatalogEntry {
+                    name: (*name).into(),
+                    description: "d".into(),
+                    path: "p".into(),
+                })
+                .collect(),
+            truncated: false,
+        };
+        assert_eq!(
+            skill_catalog_fingerprint(&make(&["日报", "周报"])),
+            skill_catalog_fingerprint(&make(&["日报", "周报"]))
+        );
+        assert_ne!(
+            skill_catalog_fingerprint(&make(&["日报", "周报"])),
+            skill_catalog_fingerprint(&make(&["日报"]))
+        );
     }
 
     #[test]
