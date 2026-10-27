@@ -263,8 +263,8 @@ export function AgentConversationRenderer({ surface, context }: RendererProps<'a
   const instance = useAgentSessionStore(
     (state) => state.conversationRegistry.instances[surface.instanceId] ?? null,
   );
-  // 内置助手的云厂商选择：与笔记级侧边栏同一套 chip 样式/绑定逻辑。
-  // 外部 CLI 会话和桌面端不需要它。
+  // 内置助手的模型配置选择（模型 · 配置名 chip）：与笔记级侧边栏同一套
+  // 样式/绑定逻辑。外部 CLI 会话和桌面端不需要它。
   const isBuiltinAssistant = isMobileDevice() && instance?.agentType === 'flowix';
   const providerControl = useBuiltinConversationProvider(isBuiltinAssistant ? instance : null);
   return (

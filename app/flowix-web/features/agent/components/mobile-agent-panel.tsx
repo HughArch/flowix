@@ -37,7 +37,8 @@ import { isMobileDevice } from '@shared/platform';
  *   长按标签弹出重命名/删除菜单。
  * - 支持在同一文档下新建多条会话；首次新建的空会话会在输入框里
  *   预置当前文档的 @ 引用。
- * - 标题栏右侧可切换当前 AI 厂商；切换后下一条消息生效。
+ * - composer 操作行可切换当前模型配置（模型 · 配置名）；切换后下一条
+ *   消息生效。
  */
 
 const DETAIL_DRAFT_KEY_PREFIX = 'flowix:agent-conversation-draft:';
