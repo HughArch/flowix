@@ -61,6 +61,10 @@ import {
   listCodexSkills,
 } from '@features/agent/services/codex-slash-command-service';
 import { listPiSkills } from '@features/agent/services/pi-slash-command-service';
+import {
+  listFlowixSkills,
+  resolveFlowixNotebookPath,
+} from '@features/agent/services/flowix-skill-service';
 import { isCodexGoalCommand } from '@features/agent/thread-card/agent-thread-card-selectors';
 import { acceptComposerSubmission, type ComposerConversationBinding } from '@features/agent/services/composer-submission-service';
 import { WorkspaceEmptyState } from '@shared/ui/workspace-empty-state';
@@ -643,6 +647,10 @@ function AgentConversationDetailContent({
             ?? runtimeConfig.cwd;
           return listPiSkills(cwd ?? '');
         },
+        listFlowixSkills: async () => {
+          if (typeKeyRef.current !== 'flowix') return [];
+          return listFlowixSkills(resolveFlowixNotebookPath(instanceRef.current) ?? '');
+        },
         listFolders: () => getCurrentNotebookComposerFolders(),
         folderGroupLabel: tRef.current("agent.files.referenceLocal"),
         noteGroupLabel: tRef.current("agent.files.projectNotes"),
@@ -691,23 +699,25 @@ function AgentConversationDetailContent({
       t: (key) => tRef.current(key),
       isDestroyed: () => destroyedRef.current,
       openNotebookAgentSettings: () => {
-        const runtimeConfig = instanceRef.current?.runtimeConfig;
-        const snapshot = runtimeConfig?.workspaceSnapshot;
-        const notebookId = runtimeConfig?.notebookId
-          ?? snapshot?.notebookId
-          ?? instanceRef.current?.source.notebookId
-          ?? null;
-        const snapshotNotebookPath = snapshot?.notebookPath?.trim();
-        const notebookPath = snapshotNotebookPath
-          || (notebookId
-            ? useNoteStore.getState().notebooks.find((item) => item.id === notebookId)?.path
-            : undefined)
-          || useNoteStore.getState().selectedNotebook?.path;
+        const notebookPath = resolveFlowixNotebookPath(instanceRef.current);
         if (notebookPath) {
           notebookAgentSettingsDialogRef.current ??= new NotebookAgentSettingsDialogController();
-          notebookAgentSettingsDialogRef.current.open(notebookPath);
+          // The builtin flowix assistant only consumes project skills; scope
+          // the dialog to that tab and use the touch-friendly layout.
+          notebookAgentSettingsDialogRef.current.open(
+            notebookPath,
+            typeKeyRef.current === 'flowix'
+              ? {
+                initialTab: "skills",
+                tabs: ["skills"],
+                showAgentSubTabs: false,
+                mobileLayout: isMobileDevice(),
+              }
+              : undefined,
+          );
         }
       },
+      showProjectAiSettings: () => !isMobileDevice() || typeKeyRef.current === 'flowix',
     });
     messagesControllerRef.current = messageController;
     composerControllerRef.current = composerController;

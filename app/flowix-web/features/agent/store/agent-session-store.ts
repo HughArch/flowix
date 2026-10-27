@@ -111,6 +111,8 @@ export interface AgentSessionStore
       runId?: string;
       /** Composer transactions must distinguish rejection from acceptance. */
       rejectOnFailure?: boolean;
+      /** Flowix-only: skill body blocks loaded via `/` chips (see flowix-skill-service). */
+      skillContext?: string;
     },
   ) => Promise<void>;
   stopStream: () => Promise<void>;
@@ -268,6 +270,7 @@ export const useAgentSessionStore = create<AgentSessionStore>()(
               options?.runtimeConfig?.workspaceSnapshot?.notebookPath,
             attachments:
               options?.attachments ?? createAgentMessageAttachments(options?.imagePaths),
+            skillContext: options?.skillContext,
           });
           if (
             (type.id === "codex" || type.id === "dsh" || type.id === "pi") &&

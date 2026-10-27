@@ -38,6 +38,9 @@ impl Default for WhitelistConfig {
         Self {
             skip_dirs: vec![
                 ".flowix".into(),
+                // `.agents/` holds project AI settings (skills, agent configs).
+                // Always internal, like `.flowix`.
+                ".agents".into(),
                 // Plugin artifacts are implementation files, not notebook
                 // notes. Their Markdown must never be registered by the
                 // generic watcher; the plugin pointer note is the user-facing
@@ -66,13 +69,13 @@ impl WhitelistConfig {
 
     /// �?���?��通过白名单�?查。返�?`Ok(())` 放�?, `Err(DropReason)` 拒绝�?
     pub fn allows(&self, path: &Path) -> Result<(), DropReason> {
-        // `.flowix` is always a system directory. This check intentionally
-        // precedes `watch_hidden`, so enabling hidden-file watching can never
-        // expose internal versions or plugin artifacts as notes.
-        if path
-            .components()
-            .any(|component| component.as_os_str() == ".flowix")
-        {
+        // `.flowix` and `.agents` are always system directories. This check
+        // intentionally precedes `watch_hidden`, so enabling hidden-file
+        // watching can never expose internal versions, plugin artifacts, or
+        // project AI settings as notes.
+        if path.components().any(|component| {
+            component.as_os_str() == ".flowix" || component.as_os_str() == ".agents"
+        }) {
             return Err(DropReason::InternalDirectory);
         }
 
@@ -191,6 +194,23 @@ mod tests {
             w.allows(Path::new("/x/.flowix/versions/memo/v_1.md")),
             Err(DropReason::InternalDirectory)
         );
+    }
+
+    #[test]
+    fn agents_dir_is_always_skipped_even_when_hidden_watching_is_enabled() {
+        let mut w = WhitelistConfig::default();
+        w.watch_hidden = true;
+        assert_eq!(
+            w.allows(Path::new("/x/.agents/skills/demo/SKILL.md")),
+            Err(DropReason::InternalDirectory)
+        );
+        assert_eq!(
+            w.allows(Path::new("/x/.agents/mcp.json")),
+            Err(DropReason::InternalDirectory)
+        );
+        // The notebook-root AGENTS.md memo is unaffected by the `.agents`
+        // directory rule (different path component).
+        assert!(w.allows(Path::new("/x/AGENTS.md")).is_ok());
     }
 
     #[test]

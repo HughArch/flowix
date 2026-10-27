@@ -3,6 +3,7 @@ import { getFallbackAgentModelOptions } from "@features/agent/config/agent-model
 import { formatModelDisplayLabel } from "@features/agent/config/codex-options";
 import { listCodexSkillCatalog } from "@features/agent/services/codex-slash-command-service";
 import { listPiSkills } from "@features/agent/services/pi-slash-command-service";
+import { listFlowixSkills } from "@features/agent/services/flowix-skill-service";
 import {
   type AgentCatalogModel,
   type AgentCatalogSkill,
@@ -47,7 +48,7 @@ export function prefetchAvailableAgentModels(
 
 /** Warm project skills for notebook-scoped Agent adapters that need no session. */
 export function prefetchNotebookSkills(
-  agentType: "codex" | "pi",
+  agentType: "codex" | "pi" | "flowix",
   notebookId: string,
   notebookPath: string,
 ): void {
@@ -58,7 +59,7 @@ export function prefetchNotebookSkills(
 
 /** Load a notebook-scoped skill catalog through the shared persistent cache. */
 export function loadNotebookSkillCatalog(
-  agentType: "codex" | "pi",
+  agentType: "codex" | "pi" | "flowix",
   notebookId: string,
   notebookPath: string,
   options: { force?: boolean } = {},
@@ -67,7 +68,9 @@ export function loadNotebookSkillCatalog(
   if (!path) return Promise.resolve([]);
   const loader = agentType === "codex"
     ? () => listCodexSkillCatalog(path)
-    : () => listPiSkills(path);
+    : agentType === "flowix"
+      ? () => listFlowixSkills(path)
+      : () => listPiSkills(path);
   return useAgentDataStore.getState().loadSkillCatalog(
     agentType,
     notebookId,

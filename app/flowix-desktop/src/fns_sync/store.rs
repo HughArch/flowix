@@ -6,6 +6,7 @@
 //! external edits.
 
 use std::fs;
+use std::ffi::OsStr;
 use std::path::{Component, Path, PathBuf};
 use std::sync::{Arc, RwLock};
 use std::time::{SystemTime, UNIX_EPOCH};
@@ -119,6 +120,7 @@ impl LocalNoteStore for MemoFileStore {
             if self
                 .policy
                 .is_index_ignored_at(&self.root, relative_path)
+                && !is_agents_skills_path(path, &self.root)
             {
                 continue;
             }
@@ -191,8 +193,12 @@ impl LocalNoteStore for MemoFileStore {
         // revision matches the file state the watcher will observe.
         set_mtime(&target, mtime_ms);
         mark_self_write_for(&self.app, &target);
-        let memo_file = read_lock(&self.memo_file, "memo_file");
-        refresh_notebook_note_index(&memo_file, &target);
+        // `.agents/**` (skills, agent configs) is intentionally invisible to
+        // the note index; refreshing would only log a warning per file.
+        if !is_agents_internal_path(&target, &self.root) {
+            let memo_file = read_lock(&self.memo_file, "memo_file");
+            refresh_notebook_note_index(&memo_file, &target);
+        }
         Ok(())
     }
 
@@ -210,7 +216,9 @@ impl LocalNoteStore for MemoFileStore {
                 "fns_sync_delete",
                 |locked| fs::remove_file(locked),
             )?;
-            refresh_notebook_note_index(&memo_file, &target);
+            if !is_agents_internal_path(&target, &self.root) {
+                refresh_notebook_note_index(&memo_file, &target);
+            }
         }
         mark_self_write_for(&self.app, &target);
         Ok(())
@@ -227,13 +235,24 @@ impl LocalNoteStore for MemoFileStore {
     }
 }
 
-fn should_skip_entry(path: &Path, root: &Path) -> bool {    if path == root {
+fn should_skip_entry(path: &Path, root: &Path) -> bool {
+    if path == root {
         return false;
     }
     let Some(name) = path.file_name().map(|name| name.to_string_lossy()) else {
         return true;
     };
     if path.is_dir() {
+        if is_agents_skills_path(path, root) {
+            // `.agents/skills/**` rides the note sync so project skills reach
+            // mobile; the walker must descend into it despite the dot prefix.
+            return false;
+        }
+        if is_agents_internal_path(path, root) {
+            // Other `.agents/` subtrees stay internal (their component names
+            // no longer carry the dot prefix once inside).
+            return true;
+        }
         return name.starts_with('.')
             || matches!(
                 name.as_ref(),
@@ -245,6 +264,30 @@ fn should_skip_entry(path: &Path, root: &Path) -> bool {    if path == root {
             );
     }
     false
+}
+
+/// True for the notebook's `.agents` directory itself and anything inside its
+/// `skills/` subtree. Everything else under `.agents/` (mcp.json, agents/,
+/// ...) stays out of the note sync.
+fn is_agents_skills_path(path: &Path, root: &Path) -> bool {
+    let Ok(relative) = path.strip_prefix(root) else {
+        return false;
+    };
+    let mut components = relative.iter();
+    if components.next() != Some(OsStr::new(".agents")) {
+        return false;
+    }
+    match components.next() {
+        None => true,
+        Some(second) => second == OsStr::new("skills"),
+    }
+}
+
+/// True for any path inside the notebook's `.agents` directory. These files
+/// are sync-visible (at most the skills subtree) but never note-index-visible.
+fn is_agents_internal_path(path: &Path, root: &Path) -> bool {
+    path.strip_prefix(root)
+        .is_ok_and(|relative| relative.iter().next() == Some(OsStr::new(".agents")))
 }
 
 fn is_markdown(path: &Path) -> bool {
@@ -432,4 +475,78 @@ fn now_ms() -> i64 {
         .duration_since(UNIX_EPOCH)
         .map(|d| d.as_millis() as i64)
         .unwrap_or_default()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn agents_skills_paths_are_whitelisted() {
+        let root = Path::new("/nb");
+        assert!(is_agents_skills_path(Path::new("/nb/.agents"), root));
+        assert!(is_agents_skills_path(Path::new("/nb/.agents/skills"), root));
+        assert!(is_agents_skills_path(Path::new("/nb/.agents/skills/demo"), root));
+        assert!(is_agents_skills_path(
+            Path::new("/nb/.agents/skills/demo/SKILL.md"),
+            root
+        ));
+    }
+
+    #[test]
+    fn non_skill_agents_paths_are_not_whitelisted() {
+        let root = Path::new("/nb");
+        assert!(!is_agents_skills_path(
+            Path::new("/nb/.agents/mcp.json"),
+            root
+        ));
+        assert!(!is_agents_skills_path(
+            Path::new("/nb/.agents/agents/demo/agent.md"),
+            root
+        ));
+        assert!(!is_agents_skills_path(Path::new("/nb/notes/a.md"), root));
+        assert!(!is_agents_skills_path(
+            Path::new("/other/.agents/skills/x.md"),
+            root
+        ));
+    }
+
+    #[test]
+    fn any_agents_path_is_internal() {
+        let root = Path::new("/nb");
+        assert!(is_agents_internal_path(
+            Path::new("/nb/.agents/mcp.json"),
+            root
+        ));
+        assert!(is_agents_internal_path(
+            Path::new("/nb/.agents/skills/demo/SKILL.md"),
+            root
+        ));
+        assert!(!is_agents_internal_path(Path::new("/nb/notes/a.md"), root));
+    }
+
+    #[test]
+    fn walker_descends_into_agents_skills_only() {
+        let root = tempfile::tempdir().unwrap();
+        let agents = root.path().join(".agents");
+        let skills = agents.join("skills/demo");
+        let agents_sub = agents.join("agents/demo");
+        let flowix = root.path().join(".flowix");
+        let attachments = root.path().join("attachments");
+        std::fs::create_dir_all(&skills).unwrap();
+        std::fs::create_dir_all(&agents_sub).unwrap();
+        std::fs::create_dir_all(&flowix).unwrap();
+        std::fs::create_dir_all(&attachments).unwrap();
+
+        // The walker must keep `.agents` and its skills subtree visible so
+        // skills reach the note channel.
+        assert!(!should_skip_entry(root.path(), root.path()));
+        assert!(!should_skip_entry(&agents, root.path()));
+        assert!(!should_skip_entry(&skills, root.path()));
+        // Other `.agents/` subtrees stay pruned.
+        assert!(should_skip_entry(&agents_sub, root.path()));
+        // System directories keep their existing behavior.
+        assert!(should_skip_entry(&flowix, root.path()));
+        assert!(should_skip_entry(&attachments, root.path()));
+    }
 }

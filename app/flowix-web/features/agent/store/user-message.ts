@@ -30,6 +30,11 @@ export interface PrepareUserMessageOptions {
   currentNoteContent?: string;
   systemReminderDirectory?: string;
   attachments?: AgentMessageAttachment[];
+  /**
+   * Flowix-only: pre-built skill body blocks the user loaded via `/` chips.
+   * Appended to `llmContent` (never `content`), so bubbles stay clean.
+   */
+  skillContext?: string;
 }
 
 type AgentMessageAttachmentSource = Pick<AgentMessageAttachment, "path" | "name" | "mimeType">;
@@ -86,10 +91,16 @@ export function prepareUserMessage({
   currentNoteContent,
   systemReminderDirectory,
   attachments,
+  skillContext,
 }: PrepareUserMessageOptions): PreparedUserMessage {
   const userPayload = buildUserLlmContent(content, systemReminderDirectory);
+  // Skill blocks are material the user explicitly attached, so they sit right
+  // after the typed text and before the first-message notebook context.
+  const withSkillContext = skillContext
+    ? `${userPayload.llmContent}\n\n${skillContext}`
+    : userPayload.llmContent;
   const llmContent = appendFirstMessageContext(
-    userPayload.llmContent,
+    withSkillContext,
     isFirstMessage,
     currentNoteContent,
     agentType,

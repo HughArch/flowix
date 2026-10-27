@@ -944,8 +944,29 @@ function CodexOtherSettings({ notebookPath }: { notebookPath: string }) {
   return <div className="space-y-5"><CodexSettingGroup title="模型" items={groups.model} /><CodexSettingGroup title="权限" items={groups.permissions} /></div>;
 }
 
-function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: string; onClose: () => void }) {
-  const [tab, setTab] = useState<Tab>("mcp");
+export interface NotebookAgentSettingsDialogOptions {
+  /** Initial tab. Defaults to "mcp" (desktop full dialog). */
+  initialTab?: Tab;
+  /** Visible tabs. Defaults to all six; hosts may scope (e.g. ["skills"]). */
+  tabs?: readonly Tab[];
+  /** Show the Codex/DeepSeek/通用 sub-tab switchers. Defaults to true. */
+  showAgentSubTabs?: boolean;
+  /** Full-screen sheet + in-dialog confirmation instead of window.confirm. */
+  mobileLayout?: boolean;
+}
+
+function NotebookAgentSettingsDialog({
+  notebookPath,
+  onClose,
+  initialTab,
+  tabs,
+  showAgentSubTabs = true,
+  mobileLayout = false,
+}: {
+  notebookPath: string;
+  onClose: () => void;
+} & NotebookAgentSettingsDialogOptions) {
+  const [tab, setTab] = useState<Tab>(initialTab ?? "mcp");
   const [mcpAgent, setMcpAgent] = useState<AgentResourceKey>("general");
   const [skillAgent, setSkillAgent] = useState<AgentResourceKey>("general");
   const [childAgent, setChildAgent] = useState<AgentResourceKey>("general");
@@ -958,6 +979,7 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
   const [mcpForm, setMcpForm] = useState<ReturnType<typeof mcpFormFrom> | null>(null);
   const [fileForm, setFileForm] = useState<NotebookAgentFile | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
+  const [pendingConfirm, setPendingConfirm] = useState<{ message: string; action: () => void } | null>(null);
   const dirty = workspace !== null && original !== null && JSON.stringify(workspace) !== JSON.stringify(original);
 
   const load = useCallback(async () => {
@@ -976,10 +998,21 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
 
   useEffect(() => { void load(); }, [load]);
 
+  const requestConfirmation = useCallback((message: string, action: () => void): void => {
+    if (!mobileLayout) {
+      if (window.confirm(message)) action();
+      return;
+    }
+    setPendingConfirm({ message, action });
+  }, [mobileLayout]);
+
   const requestClose = useCallback(() => {
-    if (dirty && !window.confirm("还有未保存的 Agent 配置，确定要放弃吗？")) return;
+    if (dirty) {
+      requestConfirmation("还有未保存的 Agent 配置，确定要放弃吗？", onClose);
+      return;
+    }
     onClose();
-  }, [dirty, onClose]);
+  }, [dirty, onClose, requestConfirmation]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1114,7 +1147,7 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
       closeEditor();
       const skillScopeId = getNotebookSkillScopeId(notebookPath);
       if (skillScopeId) {
-        for (const agentType of ["codex", "pi"] as const) {
+        for (const agentType of ["codex", "pi", "flowix"] as const) {
           invalidateNotebookSkills(agentType, skillScopeId);
           void loadNotebookSkillCatalog(agentType, skillScopeId, notebookPath, { force: true }).catch((cause) => {
             console.warn(`Failed to refresh ${agentType} skills after saving notebook Agent settings`, cause);
@@ -1129,17 +1162,21 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
   };
 
   const deleteMcp = (id: string) => {
-    if (!workspace || !window.confirm(`确定删除 MCP 服务“${id}”？`)) return;
-    const next = { ...workspace.mcpServers };
-    delete next[id];
-    setWorkspace({ ...workspace, mcpServers: next });
+    if (!workspace) return;
+    requestConfirmation(`确定删除 MCP 服务“${id}”？`, () => {
+      const next = { ...workspace.mcpServers };
+      delete next[id];
+      setWorkspace({ ...workspace, mcpServers: next });
+    });
   };
 
   const deleteFile = (kind: FileKind, id: string) => {
-    if (!workspace || !window.confirm(`确定删除这个${kind === "skill" ? "Skill" : "子 Agent"}？`)) return;
-    const collection = kind === "skill" ? workspace.skills : workspace.agents;
-    const next = collection.filter((item) => item.id !== id);
-    setWorkspace(kind === "skill" ? { ...workspace, skills: next } : { ...workspace, agents: next });
+    if (!workspace) return;
+    requestConfirmation(`确定删除这个${kind === "skill" ? "Skill" : "子 Agent"}？`, () => {
+      const collection = kind === "skill" ? workspace.skills : workspace.agents;
+      const next = collection.filter((item) => item.id !== id);
+      setWorkspace(kind === "skill" ? { ...workspace, skills: next } : { ...workspace, agents: next });
+    });
   };
 
   const toggleMcp = (id: string, enabled: boolean) => {
@@ -1155,12 +1192,14 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
   };
 
   if (loading) {
-    return <div className="fixed inset-0 z-[135] flex items-center justify-center bg-black/50 p-3"><div role="dialog" aria-modal="true" aria-label="项目 AI 设置" className="notebook-agent-settings-dialog flex h-[min(760px,calc(100vh-80px))] w-full max-w-[980px] items-center justify-center rounded-2xl bg-[var(--background)] text-sm text-[var(--muted-foreground)] shadow-2xl">加载中…</div></div>;
+    return <div className={cn("fixed inset-0 z-[135] flex items-center justify-center bg-black/50", mobileLayout ? "" : "p-3")}><div role="dialog" aria-modal="true" aria-label="项目 AI 设置" className={cn("notebook-agent-settings-dialog flex items-center justify-center bg-[var(--background)] text-sm text-[var(--muted-foreground)] shadow-2xl", mobileLayout ? "h-[100dvh] w-full max-w-none rounded-none" : "h-[min(760px,calc(100vh-80px))] w-full max-w-[980px] rounded-2xl")}>加载中…</div></div>;
   }
 
+  const showTab = (id: Tab): boolean => !tabs || tabs.includes(id);
+
   return (
-    <div className="fixed inset-0 z-[135] flex items-center justify-center bg-black/50 p-3" onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
-      <div role="dialog" aria-modal="true" aria-label="项目 AI 设置" className="notebook-agent-settings-dialog relative flex h-[min(820px,calc(100vh-80px))] w-full max-w-[980px] flex-col overflow-hidden rounded-2xl bg-[var(--background)] shadow-2xl">
+    <div className={cn("fixed inset-0 z-[135] flex items-center justify-center bg-black/50", mobileLayout ? "" : "p-3")} onMouseDown={(event) => { if (event.target === event.currentTarget) requestClose(); }}>
+      <div role="dialog" aria-modal="true" aria-label="项目 AI 设置" className={cn("notebook-agent-settings-dialog relative flex flex-col overflow-hidden bg-[var(--background)] shadow-2xl", mobileLayout ? "h-[100dvh] w-full max-w-none rounded-none" : "h-[min(820px,calc(100vh-80px))] w-full max-w-[980px] rounded-2xl")}>
         <header className="flex shrink-0 items-center gap-4 border-b border-[var(--divider)] pl-4 pr-4 py-1.5">
           <h1 className="min-w-0 flex-1 truncate whitespace-nowrap text-base font-semibold tracking-[-0.02em] text-[var(--foreground)]">项目 AI 设置</h1>
           <button type="button" aria-label="关闭" className="ml-auto flex h-8 w-8 shrink-0 translate-x-1 items-center justify-center rounded-lg text-[var(--muted-foreground)] transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)]" onClick={requestClose}>
@@ -1171,12 +1210,12 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
         <div className="flex min-h-0 flex-1 flex-col md:flex-row">
           <nav className="flex shrink-0 border-b border-[var(--divider)] bg-[color-mix(in_oklch,var(--card)_45%,transparent)] p-2 md:w-48 md:flex-col md:border-b-0 md:border-r md:p-3" aria-label="项目 AI 设置导航">
             <div className="flex gap-1 md:flex-col md:gap-0 md:space-y-1" role="tablist">
-              <TabButton active={tab === "mcp"} icon={EjectIcon} label="MCP" onClick={() => { setTab("mcp"); closeEditor(); }} />
-              <TabButton active={tab === "skills"} icon={Sparkles} label="技能" onClick={() => { setTab("skills"); closeEditor(); }} />
-              <TabButton active={tab === "agents"} icon={Bot} label="智能体" onClick={() => { setTab("agents"); closeEditor(); }} />
-              <TabButton active={tab === "plugins"} icon={Puzzle} label="插件" onClick={() => { setTab("plugins"); closeEditor(); }} />
-              <TabButton active={tab === "other"} icon={Settings2} label="其他" onClick={() => { setTab("other"); closeEditor(); }} />
-              <TabButton active={tab === "memory"} icon={Brain} label="记忆" onClick={() => { setTab("memory"); closeEditor(); }} />
+              {showTab("mcp") && <TabButton active={tab === "mcp"} icon={EjectIcon} label="MCP" onClick={() => { setTab("mcp"); closeEditor(); }} />}
+              {showTab("skills") && <TabButton active={tab === "skills"} icon={Sparkles} label="技能" onClick={() => { setTab("skills"); closeEditor(); }} />}
+              {showTab("agents") && <TabButton active={tab === "agents"} icon={Bot} label="智能体" onClick={() => { setTab("agents"); closeEditor(); }} />}
+              {showTab("plugins") && <TabButton active={tab === "plugins"} icon={Puzzle} label="插件" onClick={() => { setTab("plugins"); closeEditor(); }} />}
+              {showTab("other") && <TabButton active={tab === "other"} icon={Settings2} label="其他" onClick={() => { setTab("other"); closeEditor(); }} />}
+              {showTab("memory") && <TabButton active={tab === "memory"} icon={Brain} label="记忆" onClick={() => { setTab("memory"); closeEditor(); }} />}
             </div>
             <div className="mt-auto hidden rounded-xl border border-[var(--border)] bg-white px-3 py-2.5 md:flex md:items-center md:gap-2.5">
               <p className="min-w-0 whitespace-normal break-words text-xs font-medium leading-5 text-[var(--foreground)]">配置内容对当前笔记本生效</p>
@@ -1188,7 +1227,7 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
               {error && <InlineError message={error} />}
               {tab === "mcp" && <>
                 <SectionHeader title="MCP 服务" description="为这个笔记本里的 Agent 添加可调用的外部工具与数据源。" action={mcpAgent === "general" ? <Button variant="default" className="gap-[3px] px-3" onClick={() => openMcp(null)} disabled={!!editor}><Plus />添加</Button> : null} />
-                <AgentTabs active={mcpAgent} ariaLabel="MCP Agent" onChange={(agentKey) => { setMcpAgent(agentKey); closeEditor(); }} />
+                {showAgentSubTabs && <AgentTabs active={mcpAgent} ariaLabel="MCP Agent" onChange={(agentKey) => { setMcpAgent(agentKey); closeEditor(); }} />}
                 {mcpAgent === "codex" ? <CodexMcpList notebookPath={notebookPath} /> : mcpAgent === "dsh" ? <DeepSeekHarnessMcpList /> : <>
                   {editor?.kind === "mcp" && mcpForm && <McpEditor form={mcpForm} onChange={(patch) => setMcpForm((current) => current ? { ...current, ...patch } : current)} onCancel={closeEditor} onSave={saveMcpDraft} error={formError} saving={false} />}
                   <McpList workspace={workspace ?? EMPTY_WORKSPACE} onAdd={() => openMcp(null)} onEdit={openMcp} onDelete={deleteMcp} onToggle={toggleMcp} />
@@ -1196,7 +1235,7 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
               </>}
               {tab === "skills" && <>
                 <SectionHeader title="Skills" description="把可复用的工作流程保存为 Markdown Skill，之后可被不同 Agent 使用。" action={skillAgent === "general" ? <Button variant="default" className="gap-[3px] px-3" onClick={() => openFile("skill", null)} disabled={!!editor}><Plus />创建</Button> : null} />
-                <AgentTabs active={skillAgent} ariaLabel="Skill Agent" onChange={(agentKey) => { setSkillAgent(agentKey); closeEditor(); }} />
+                {showAgentSubTabs && <AgentTabs active={skillAgent} ariaLabel="Skill Agent" onChange={(agentKey) => { setSkillAgent(agentKey); closeEditor(); }} />}
                 {skillAgent === "codex" ? <CodexSkillsList notebookPath={notebookPath} /> : skillAgent === "dsh" ? <DeepSeekHarnessSkillsList /> : <div className="space-y-3">
                   {editor?.kind === "file" && editor.fileKind === "skill" && fileForm && <FileEditor kind="skill" form={fileForm} onChange={(patch) => setFileForm((current) => current ? { ...current, ...patch } : current)} onCancel={closeEditor} onSave={saveFileDraft} error={formError} />}
                   <FileList kind="skill" items={(workspace ?? EMPTY_WORKSPACE).skills} onAdd={() => openFile("skill", null)} onEdit={(id) => openFile("skill", id)} onDelete={(id) => deleteFile("skill", id)} onToggle={(id, enabled) => toggleFile("skill", id, enabled)} />
@@ -1204,7 +1243,7 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
               </>}
               {tab === "agents" && <>
                 <SectionHeader title="子 Agent" description="创建专门角色，让主 Agent 可以把任务交给更合适的处理者。" action={childAgent === "general" ? <Button variant="default" className="gap-[3px] px-3" onClick={() => openFile("agent", null)} disabled={!!editor}><Plus />创建</Button> : null} />
-                <AgentTabs active={childAgent} ariaLabel="子 Agent" onChange={(agentKey) => { setChildAgent(agentKey); closeEditor(); }} />
+                {showAgentSubTabs && <AgentTabs active={childAgent} ariaLabel="子 Agent" onChange={(agentKey) => { setChildAgent(agentKey); closeEditor(); }} />}
                 {childAgent === "codex" ? <CodexAgentsList notebookPath={notebookPath} /> : childAgent === "dsh" ? <DeepSeekHarnessAgentsList /> : <div className="space-y-3">
                   {editor?.kind === "file" && editor.fileKind === "agent" && fileForm && <FileEditor kind="agent" form={fileForm} onChange={(patch) => setFileForm((current) => current ? { ...current, ...patch } : current)} onCancel={closeEditor} onSave={saveFileDraft} error={formError} />}
                   <FileList kind="agent" items={(workspace ?? EMPTY_WORKSPACE).agents} onAdd={() => openFile("agent", null)} onEdit={(id) => openFile("agent", id)} onDelete={(id) => deleteFile("agent", id)} onToggle={(id, enabled) => toggleFile("agent", id, enabled)} />
@@ -1234,6 +1273,21 @@ function NotebookAgentSettingsDialog({ notebookPath, onClose }: { notebookPath: 
           <div className="flex items-center gap-2"><Button type="button" variant="ghost" onClick={requestClose}>取消</Button><Button type="button" disabled={!dirty || saving} onClick={() => void saveWorkspace()}>{saving ? <Loader2 className="flowix-spin" /> : null}保存</Button></div>
         </footer>
       </div>
+      {pendingConfirm && (
+        <div className="fixed inset-0 z-[140] flex items-center justify-center bg-black/50 p-6">
+          <div role="alertdialog" aria-modal="true" className="w-full max-w-xs rounded-2xl bg-[var(--background)] p-5 shadow-2xl">
+            <p className="text-sm leading-6 text-[var(--foreground)]">{pendingConfirm.message}</p>
+            <div className="mt-4 flex justify-end gap-2">
+              <Button type="button" variant="ghost" onClick={() => setPendingConfirm(null)}>取消</Button>
+              <Button type="button" onClick={() => {
+                const { action } = pendingConfirm;
+                setPendingConfirm(null);
+                action();
+              }}>确定</Button>
+            </div>
+          </div>
+        </div>
+      )}
     </div>
   );
 }
@@ -1242,14 +1296,23 @@ export class NotebookAgentSettingsDialogController {
   private container: HTMLDivElement | null = null;
   private root: Root | null = null;
 
-  open(notebookPath: string): void {
+  open(notebookPath: string, options?: NotebookAgentSettingsDialogOptions): void {
     this.close();
     const container = document.createElement("div");
     container.dataset.notebookAgentSettingsDialog = "true";
     document.body.append(container);
     this.container = container;
     this.root = createRoot(container);
-    this.root.render(<NotebookAgentSettingsDialog notebookPath={notebookPath} onClose={() => this.close()} />);
+    this.root.render(
+      <NotebookAgentSettingsDialog
+        notebookPath={notebookPath}
+        onClose={() => this.close()}
+        initialTab={options?.initialTab}
+        tabs={options?.tabs}
+        showAgentSubTabs={options?.showAgentSubTabs}
+        mobileLayout={options?.mobileLayout}
+      />,
+    );
   }
 
   close(): void {

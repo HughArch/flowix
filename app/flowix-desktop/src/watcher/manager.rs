@@ -178,7 +178,7 @@ impl MemoWatcher {
             let mut config = new_cfg;
             // Name exclusions now come from the new notebook-local policy.
             // Keep only the internal directories in the global event filter.
-            config.skip_dirs = vec![".flowix".into(), ".plugin-output".into()];
+            config.skip_dirs = vec![".flowix".into(), ".agents".into(), ".plugin-output".into()];
             config.skip_files.clear();
             config.allowed_filename_patterns.clear();
             config.watch_hidden = true;

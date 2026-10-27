@@ -73,6 +73,7 @@ export interface ComposerControllerOptions {
   listDshSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   listCodexSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   listPiSkills?: () => Promise<readonly ComposerSlashSkill[]>;
+  listFlowixSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   listFolders?: () => readonly ComposerFolderReference[];
   folderGroupLabel?: string;
   listNotes?: (query: string) => Promise<readonly MentionNoteItem[]>;
@@ -193,6 +194,7 @@ export class ComposerController {
       listDshSkills: options.listDshSkills,
       listCodexSkills: options.listCodexSkills,
       listPiSkills: options.listPiSkills,
+      listFlowixSkills: options.listFlowixSkills,
       onModelSelect: options.onModelSelect,
       onPermissionSelect: options.onPermissionSelect,
       onDirectCommand: options.onDirectCommand,

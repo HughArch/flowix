@@ -39,6 +39,7 @@ import {
   listCodexSkills,
 } from "@features/agent/services/codex-slash-command-service";
 import { listPiSkills } from "@features/agent/services/pi-slash-command-service";
+import { listFlowixSkills } from "@features/agent/services/flowix-skill-service";
 import {
   createArrowBendDownRightIcon,
   createFullscreenIcon,
@@ -687,6 +688,12 @@ export class AgentThreadCardView implements ProseMirrorNodeView {
       listPiSkills: async () => {
         if (this.typeKey !== "pi") return [];
         return listPiSkills(this.notebookPath ?? "");
+      },
+      listFlowixSkills: async () => {
+        // Desktop thread cards never host the builtin flowix assistant; the
+        // callback only keeps the composer options shape symmetric.
+        if (this.typeKey !== "flowix") return [];
+        return listFlowixSkills(this.notebookPath ?? "");
       },
       listFolders: () => getCurrentNotebookComposerFolders(),
       folderGroupLabel: this.t("agent.files.referenceLocal"),

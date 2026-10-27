@@ -1,8 +1,10 @@
 import type { Editor } from "@tiptap/core";
 import {
   getComposerSlashToken,
+  insertComposerFlowixSkillToken,
   insertComposerSlashToken,
   removeComposerSlashToken,
+  stripComposerFlowixSkillTokens,
 } from "@features/agent/thread-card/composer/composer-slash-token";
 import {
   displayNameForComposerSkill,
@@ -58,6 +60,7 @@ export interface ComposerSlashCommandControllerOptions {
   listDshSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   listCodexSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   listPiSkills?: () => Promise<readonly ComposerSlashSkill[]>;
+  listFlowixSkills?: () => Promise<readonly ComposerSlashSkill[]>;
   onModelSelect?: () => void;
   onPermissionSelect?: () => void;
   onDirectCommand?: (command: ComposerSlashCommand) => void;
@@ -83,6 +86,7 @@ export class ComposerSlashCommandController {
   private readonly listDshSkills: (() => Promise<readonly ComposerSlashSkill[]>) | undefined;
   private readonly listCodexSkills: (() => Promise<readonly ComposerSlashSkill[]>) | undefined;
   private readonly listPiSkills: (() => Promise<readonly ComposerSlashSkill[]>) | undefined;
+  private readonly listFlowixSkills: (() => Promise<readonly ComposerSlashSkill[]>) | undefined;
   private readonly onModelSelect: (() => void) | undefined;
   private readonly onPermissionSelect: (() => void) | undefined;
   private readonly canExecuteCommand: ComposerSlashCommandControllerOptions["canExecuteCommand"];
@@ -112,6 +116,7 @@ export class ComposerSlashCommandController {
     this.listDshSkills = options.listDshSkills;
     this.listCodexSkills = options.listCodexSkills;
     this.listPiSkills = options.listPiSkills;
+    this.listFlowixSkills = options.listFlowixSkills;
     this.onModelSelect = options.onModelSelect;
     this.onPermissionSelect = options.onPermissionSelect;
     this.onDirectCommand = options.onDirectCommand;
@@ -165,15 +170,22 @@ export class ComposerSlashCommandController {
   refresh(): void {
     // Keep the agent scope at the controller boundary so unscoped/custom
     // descriptors cannot accidentally make a command available to another
-    // Agent.
-    if (this.disposed || !this.agentType || getComposerSlashToken(this.editor)) {
+    // Agent. Flowix skill chips are payload carriers, not commands, so they
+    // must not block the menu (one message may hold several skills).
+    const activeToken = getComposerSlashToken(this.editor);
+    const blockedByToken = activeToken && !(
+      this.agentType === "flowix"
+      && activeToken.agentType === "flowix"
+      && activeToken.command.toLowerCase().startsWith("skill:")
+    );
+    if (this.disposed || !this.agentType || blockedByToken) {
       this.slashActive = false;
       this.closeMenu();
       return;
     }
 
     const { selection, doc } = this.editor.state;
-    const value = this.editor.getMarkdown().trim();
+    const value = this.currentSlashQueryValue();
     const cursorAtEnd = selection.empty && selection.from === doc.content.size - 1;
     const match = cursorAtEnd ? /^\/([a-z0-9._-]*)$/i.exec(value) : null;
     if (!match) {
@@ -188,7 +200,7 @@ export class ComposerSlashCommandController {
 
     // Refresh once per slash entry, including after a transient failure.
     // Filtering an open slash must not start another catalog request.
-    if ((this.agentType === "dsh" || this.agentType === "pi") && !this.slashActive &&
+    if ((this.agentType === "dsh" || this.agentType === "pi" || this.agentType === "flowix") && !this.slashActive &&
       (this.skillsStatus === "ready" || this.skillsStatus === "error")) {
       this.skillsStatus = "idle";
     }
@@ -228,6 +240,18 @@ export class ComposerSlashCommandController {
     this.dismissedValue = null;
     this.refresh();
   };
+
+  /**
+   * Draft text for slash-query matching. Flowix skill chips carry payload,
+   * not commands, so they are stripped before the `^/query$` match — leaving
+   * only the trailing `/` query the user is typing.
+   */
+  private currentSlashQueryValue(): string {
+    const value = this.editor.getMarkdown().trim();
+    return this.agentType === "flowix"
+      ? stripComposerFlowixSkillTokens(value).trim()
+      : value;
+  }
 
   private readonly handleInputRowPointerDown = (event: PointerEvent): void => {
     this.focusInputRow(event);
@@ -295,7 +319,7 @@ export class ComposerSlashCommandController {
       if (event.key === "Escape") {
         event.preventDefault();
         event.stopImmediatePropagation();
-        this.dismissedValue = this.editor.getMarkdown().trim();
+        this.dismissedValue = this.currentSlashQueryValue();
         this.slashActive = false;
         this.closeMenu();
         return;
@@ -318,7 +342,7 @@ export class ComposerSlashCommandController {
     if (!this.menu) return;
     const target = event.target as Node | null;
     if (target && (this.composer.contains(target) || this.menu.contains(target))) return;
-    this.dismissedValue = this.editor.getMarkdown().trim();
+    this.dismissedValue = this.currentSlashQueryValue();
     this.slashActive = false;
     this.closeMenu();
   };
@@ -491,7 +515,9 @@ export class ComposerSlashCommandController {
       ? this.listCodexSkills
       : this.agentType === "pi"
         ? this.listPiSkills
-        : this.listDshSkills;
+        : this.agentType === "flowix"
+          ? this.listFlowixSkills
+          : this.listDshSkills;
     if (!listSkills) {
       this.skillsStatus = "ready";
       return;
@@ -527,6 +553,8 @@ export class ComposerSlashCommandController {
       insertComposerSkillToken(this.editor, skill.name, skill.displayName);
     } else if (this.agentType === "pi") {
       insertComposerSlashToken(this.editor, `skill:${skill.name}`, "pi", skill.displayName);
+    } else if (this.agentType === "flowix") {
+      insertComposerFlowixSkillToken(this.editor, `skill:${skill.name}`, skill.displayName || skill.name);
     } else {
       insertComposerSlashToken(this.editor, skill.name, "dsh");
     }

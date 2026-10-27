@@ -25,8 +25,8 @@ export interface ComposerSlashTokenValue {
   agentType?: AgentTypeKey;
 }
 
-const SLASH_TOKEN_RE = /^\[((?:\\.|[^\]\n])*)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex|pi)\/)?([a-z0-9._:-]+)\)/i;
-const SLASH_TOKEN_GLOBAL_RE = /\[((?:\\.|[^\]\n])*)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex|pi)\/)?([a-z0-9._:-]+)\)/gi;
+const SLASH_TOKEN_RE = /^\[((?:\\.|[^\]\n])*)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex|pi|flowix)\/)?([a-z0-9._:-]+)\)/i;
+const SLASH_TOKEN_GLOBAL_RE = /\[((?:\\.|[^\]\n])*)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex|pi|flowix)\/)?([a-z0-9._:-]+)\)/gi;
 const LEGACY_DSH_COMMANDS = new Set([
   "compact",
   "skill",
@@ -42,8 +42,9 @@ function isControlCommand(command: string): boolean {
   return CONTROL_COMMANDS.has(command.trim().toLowerCase());
 }
 
-function isPiSkillCommand(command: string, agentType: string): boolean {
-  return agentType === "pi" && command.toLowerCase().startsWith("skill:");
+function isComposerSkillCommand(command: string, agentType: string): boolean {
+  return (agentType === "pi" || agentType === "flowix")
+    && command.toLowerCase().startsWith("skill:");
 }
 
 function piSkillName(command: string): string {
@@ -158,13 +159,14 @@ export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
     const path = href.replace(/^flowix:\/\/slash\//i, "");
     const parts = path.split("/");
     const agentType = parts[0] === "dsh" || parts[0] === "codex" || parts[0] === "pi"
+      || parts[0] === "flowix"
       ? parts[0]
       : undefined;
     const command = (agentType ? parts[1] : parts[0]) ||
       String(token.text ?? "").replace(/^\//, "");
     const label = unescapeSlashTokenLabel(String(token.text ?? "").trim());
-    const isPiSkill = agentType === "pi" && command.toLowerCase().startsWith("skill:");
-    const displayName = isPiSkill && label !== `/${command}` ? label || null : null;
+    const isSkill = isComposerSkillCommand(command, agentType ?? "");
+    const displayName = isSkill && label !== `/${command}` ? label || null : null;
     return { type: "composerSlashToken", attrs: { command, agentType, displayName } };
   },
 
@@ -172,7 +174,7 @@ export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
     const command = String(node.attrs?.command ?? "");
     const agentType = String(node.attrs?.agentType ?? "");
     const displayName = String(node.attrs?.displayName ?? "").trim();
-    const label = isPiSkillCommand(command, agentType)
+    const label = isComposerSkillCommand(command, agentType)
       ? displayName || piSkillName(command)
       : `/${command}`;
     return `[${escapeSlashTokenLabel(label)}](flowix://slash/${agentType ? `${agentType}/` : ""}${command})`;
@@ -183,7 +185,7 @@ export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
       const command = String(node.attrs.command ?? "");
       const agentType = String(node.attrs.agentType ?? "");
       const displayName = String(node.attrs.displayName ?? "").trim();
-      const piSkill = isPiSkillCommand(command, agentType);
+      const piSkill = isComposerSkillCommand(command, agentType);
       const skillLabel = displayName || piSkillName(command);
       const nodeView = createInlineAtomNodeView({
         caretGeometry: 'single-line',
@@ -337,7 +339,15 @@ export function insertComposerSlashToken(
 export function composerSlashMarkdownToPrompt(markdown: string): string {
   return markdown.replace(
     SLASH_TOKEN_GLOBAL_RE,
-    (match, _label: string, scopedAgent: string | undefined, command: string, offset: number, source: string) => {
+    (match, label: string, scopedAgent: string | undefined, command: string, offset: number, source: string) => {
+      // Flowix skill chips are UI-only references: they expand to their
+      // display name in the visible message while the skill body rides
+      // `llmContent` (see flowix-skill-service.ts).
+      if (scopedAgent?.toLowerCase() === "flowix") {
+        const text = unescapeSlashTokenLabel(label).trim() || piSkillName(command);
+        const after = source.slice(offset + match.length);
+        return `${text}${after && !/^\s/u.test(after) ? " " : ""}`;
+      }
       // Unscoped chips are legacy data. Preserve old DSH drafts while keeping
       // the product-only permission chips UI-only as before.
       if (
@@ -369,4 +379,48 @@ export function removeComposerSlashToken(editor: Editor): void {
   if (!found) return;
   const range = found as { from: number; to: number };
   editor.view.dispatch(editor.state.tr.delete(range.from, range.to));
+}
+
+const FLOWIX_SKILL_TOKEN_GLOBAL_RE = /\[((?:\\.|[^\]\n])*)\]\(flowix:\/\/slash\/flowix\/(skill:[a-z0-9._:-]+)\)/gi;
+
+/** Markdown with flowix skill chips removed (other content preserved). */
+export function stripComposerFlowixSkillTokens(markdown: string): string {
+  return markdown.replace(FLOWIX_SKILL_TOKEN_GLOBAL_RE, "");
+}
+
+/** Skill command names (`skill:<name>`) carried by flowix chips, in order. */
+export function extractComposerFlowixSkillNames(markdown: string): string[] {
+  const names: string[] = [];
+  for (const match of markdown.matchAll(FLOWIX_SKILL_TOKEN_GLOBAL_RE)) {
+    names.push(match[2]);
+  }
+  return names;
+}
+
+/**
+ * Insert a flowix skill chip at the cursor without clearing the composer, so
+ * one message can carry several skills (unlike `insertComposerSlashToken`,
+ * which resets the whole draft for the single-chip DSH/pi commands).
+ */
+export function insertComposerFlowixSkillToken(
+  editor: Editor,
+  command: string,
+  displayName?: string,
+): void {
+  const { selection } = editor.state;
+  const docSize = editor.state.doc.content.size;
+  const tail = editor.state.doc.textBetween(Math.max(0, docSize - 65), docSize - 1, "\n");
+  const activeQuery = /(?:^|\n)\/([a-z0-9._-]*)$/i.exec(tail);
+  const chain = editor.chain().focus();
+  if (activeQuery) {
+    const queryStart = docSize - 1 - (tail.length - activeQuery.index);
+    chain.deleteRange({ from: queryStart, to: selection.to });
+  }
+  chain.insertContent([
+    {
+      type: "composerSlashToken",
+      attrs: { command, agentType: "flowix", displayName: displayName ?? null },
+    },
+    { type: "text", text: " " },
+  ]).run();
 }

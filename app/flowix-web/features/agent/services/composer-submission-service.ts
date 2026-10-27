@@ -8,6 +8,7 @@ import { markConversationWorkspaceStarted } from "@features/agent/runtime/worksp
 import type { ComposerSubmissionSnapshot } from "@features/agent/thread-card/composer/composer-submission-controller";
 import { isAgentThreadCardImageAttachment } from "@features/agent/thread-card/composer/composer-attachment-types";
 import type { ComposerSubmissionKind } from "@features/agent/thread-card/composer/composer-submission-state";
+import { buildFlowixSkillContext, resolveFlowixNotebookPath } from "./flowix-skill-service";
 import { runDshCommand } from "./dsh-command-service";
 import {
   beginCodexSlashCommand, createCodexCommandLifecycle,
@@ -36,6 +37,19 @@ export async function acceptComposerSubmission(
   const imageAttachments = snapshot.attachments.filter(isAgentThreadCardImageAttachment);
   const imagePaths = imageAttachments.map((image) => image.path);
   if (kind === "message") {
+    let skillContext: string | undefined;
+    if (bound.typeKey === "flowix") {
+      // Must never throw: the draft is already cleared at this point, so a
+      // rejection would restore it and invite an unsafe resend. A failed
+      // skill read degrades to sending the message without skill bodies.
+      skillContext = await buildFlowixSkillContext({
+        markdown: snapshot.markdown,
+        notebookPath: resolveFlowixNotebookPath(bound),
+      }).catch((error) => {
+        logger.warn("Failed to load flowix skill bodies", { error });
+        return undefined;
+      });
+    }
     await useAgentSessionStore.getState().sendMessageToThread(
       bound.threadId, snapshot.prompt, bound.typeKey, {
         instanceId: bound.instanceId, conversationTitle: bound.title,
@@ -43,6 +57,7 @@ export async function acceptComposerSubmission(
         runId: bound.runId,
         currentNoteContent: documentContext, imagePaths,
         attachments: createAgentMessageAttachments(imageAttachments),
+        skillContext,
         rejectOnFailure: true,
       },
     );

@@ -14,6 +14,12 @@ export interface ComposerAddMenuControllerOptions {
   t: (key: I18nKey) => string;
   isDestroyed: () => boolean;
   openNotebookAgentSettings: () => void;
+  /**
+   * Whether the "项目 AI 设置" entry is offered. Defaults to desktop-only;
+   * hosts expose it on mobile for agent types that consume the settings
+   * (the builtin flowix assistant reads project skills).
+   */
+  showProjectAiSettings?: () => boolean;
   settings?: readonly {
     label: I18nKey;
     popupRole?: "menu" | "dialog";
@@ -129,9 +135,9 @@ export class ComposerAddMenuController {
         items.push(this.createSettingsItem(this.options.t(label), onHover, popupRole));
       });
     }
-    // 项目 AI 设置（.agents skills/agents/mcp）是桌面端外部 Agent 的能力；
-    // 移动端内置助手不消费这些配置，入口直接隐藏。
-    if (!isMobileDevice()) {
+    // 项目 AI 设置（.agents skills/agents/mcp）默认仅桌面外部 Agent 可用；
+    // 内置 flowix 助手消费项目技能，宿主可通过 showProjectAiSettings 放开。
+    if (this.options.showProjectAiSettings?.() ?? !isMobileDevice()) {
       const projectAiSettings = this.createItem(this.options.t("editor.threadCard.projectAiSettings"), false, () => {
         this.setOpen(false);
         this.options.openNotebookAgentSettings();
