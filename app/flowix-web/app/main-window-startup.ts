@@ -21,6 +21,7 @@ import { getWorkspaceNavigationRevision } from '@features/workspace/public/shell
 import { getWorkspaceMemoState } from '@features/memo/public/workspace-api';
 import { admitStartupStage3, runStartupStage3Task } from '@/lib/startup-stage3';
 import { waitForWorkbenchMounted } from '@/lib/workbench-mount';
+import { scheduleAfterFirstPaint } from './after-first-paint';
 
 let startupAttemptSequence = 0;
 let startupPromise: Promise<void> | null = null;
@@ -48,10 +49,24 @@ export function initializeMainWindowStartup(): Promise<void> {
   if (status === 'ready' || status === 'degraded') {
     admitStartupStage3();
     void runStartupStage3Task('pending-note-link-updates', resumePendingNoteLinkUpdates);
+    scheduleSurfacePreload();
     return Promise.resolve();
   }
   startupPromise = performMainWindowStartup().finally(() => { startupPromise = null; });
   return startupPromise;
+}
+
+/**
+ * Warm the document surface chunks once the shell is interactive. A document
+ * open suspends on these chunks, and the suspended boundary renders an empty
+ * fallback until React retries — a visible stall on the first open.
+ */
+function scheduleSurfacePreload(): void {
+  scheduleAfterFirstPaint(() => {
+    void import('@features/surface/workspace-surface-renderer-registry')
+      .then((module) => module.preloadMarkdownRenderer())
+      .catch(() => undefined);
+  });
 }
 
 async function performMainWindowStartup(): Promise<void> {
