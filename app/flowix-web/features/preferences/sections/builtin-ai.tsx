@@ -127,7 +127,6 @@ export function BuiltinAiSection() {
     try {
       const view = await builtinAi.setConfig({
         enabled,
-        maxTotalTokens: config?.maxTotalTokens,
         webSearchEnabled,
         activeProviderId,
         providers: providers.map((provider) => ({
@@ -145,7 +144,7 @@ export function BuiltinAiSection() {
     } finally {
       setBusy(false);
     }
-  }, [activeProviderId, applyView, config?.maxTotalTokens, enabled, providers, t, webSearchEnabled]);
+  }, [activeProviderId, applyView, enabled, providers, t, webSearchEnabled]);
 
   const setActive = useCallback((providerId: string) => {
     setActiveProviderId(providerId);

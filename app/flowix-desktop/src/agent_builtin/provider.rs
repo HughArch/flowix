@@ -170,13 +170,17 @@ struct SseUsage {
 /// assembled [`Completion`] is returned once the stream ends. `cancel` is
 /// polled between network reads — cancellation may cut the stream mid-flight
 /// and yields [`ProviderError::Cancelled`].
+///
+/// `max_tokens` is deliberately omitted: providers cap the output budget at
+/// very different values (DeepSeek rejects anything above 8k, GLM accepts up
+/// to 131,072 and returns HTTP 400 outside `[1, 131072]`), so no single value
+/// is portable. Leaving it out lets each provider apply its own default.
 pub async fn stream_chat(
     endpoint: &str,
     api_key: &str,
     model: &str,
     messages: &[ProviderMessage],
     tools: &Value,
-    max_tokens: u32,
     cancel: Arc<std::sync::atomic::AtomicBool>,
     mut on_event: impl FnMut(StreamEvent),
 ) -> Result<Completion, ProviderError> {
@@ -185,7 +189,6 @@ pub async fn stream_chat(
         "messages": messages.iter().map(ProviderMessage::to_json).collect::<Vec<_>>(),
         "tools": tools,
         "stream": true,
-        "max_tokens": max_tokens,
     });
 
     let client = reqwest::Client::builder()

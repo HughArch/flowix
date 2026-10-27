@@ -18,7 +18,6 @@ export interface BuiltinAiProviderView {
 
 export interface BuiltinAiConfigView {
   enabled: boolean;
-  maxTotalTokens: number;
   webSearchEnabled: boolean;
   providers: BuiltinAiProviderView[];
   activeProviderId: string;
@@ -37,7 +36,6 @@ export interface BuiltinAiProviderInput {
 
 export interface BuiltinAiConfigInput {
   enabled: boolean;
-  maxTotalTokens?: number;
   webSearchEnabled: boolean;
   providers: BuiltinAiProviderInput[];
   activeProviderId: string;
