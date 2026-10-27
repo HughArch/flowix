@@ -60,7 +60,9 @@ export async function listFlowixSkills(cwd: string): Promise<readonly ComposerSl
     )
     .map(({ skill, commandName }) => ({
       name: commandName,
-      description: skill.description.trim() || skill.name.trim() || commandName,
+      // Kept verbatim: the menu already shows the display name, so echoing it
+      // here for a blank description would render the same label twice.
+      description: skill.description.trim(),
       displayName: skill.name.trim() || commandName,
       scope: "workspace",
     }));

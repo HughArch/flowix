@@ -62,11 +62,11 @@ describe('listFlowixSkills', () => {
         displayName: '演示技能',
         scope: 'workspace',
       },
-      // Flowix chips are picked manually, so a blank description only
-      // degrades the menu caption; the skill itself stays selectable.
+      // Flowix chips are picked manually, so a blank description only leaves
+      // the menu caption empty; the skill itself stays selectable.
       {
         name: 'nod',
-        description: '无描述',
+        description: '',
         displayName: '无描述',
         scope: 'workspace',
       },
