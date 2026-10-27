@@ -27,10 +27,14 @@ use super::tools::{self, ToolScope};
 
 /// Tool-call round trips allowed per run before the loop gives up.
 const MAX_TOOL_CYCLES: usize = 20;
-/// History messages fed to the model, newest first.
-const HISTORY_MESSAGE_LIMIT: i64 = 60;
+/// History messages fed to the model, newest first. Sized for current
+/// ~1M-token context windows: 1,000 chat messages stay far inside the window
+/// while keeping the thread.db replay bounded.
+const HISTORY_MESSAGE_LIMIT: i64 = 1_000;
 /// Provider-message cap (system + history + current turn + tool rounds).
-const MAX_PROVIDER_MESSAGES: usize = 160;
+/// 2,000 messages at a pessimistic ~500 tokens/message ≈ the 1M-token window,
+/// so the cap trips roughly when the provider's context does.
+const MAX_PROVIDER_MESSAGES: usize = 2_000;
 
 /// Per-run cancellation + lifecycle registry.
 #[derive(Default)]
