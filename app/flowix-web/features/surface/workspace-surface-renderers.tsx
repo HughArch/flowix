@@ -1,6 +1,6 @@
 'use client';
 
-import { lazy, useCallback, useEffect } from 'react';
+import { lazy, useCallback, useEffect, type ComponentProps } from 'react';
 
 import { useExternalFileContentDetection } from '@features/editor/use-external-file-content-detection';
 import { externalFileViewKind } from '@features/editor/public/code-file';
@@ -79,7 +79,42 @@ const MediaLibraryView = lazy(() => import('@features/media-library/media-librar
 const MediaResourceView = lazy(() => import('./media-resource-view').then((module) => ({ default: module.MediaResourceView })));
 const WorkDocumentsView = lazy(() => import('./work-documents-view').then((module) => ({ default: module.WorkDocumentsView })));
 const WorkDocumentsCollectionView = lazy(() => import('./work-documents-collection-view').then((module) => ({ default: module.WorkDocumentsCollectionView })));
-const MarkdownDocumentSurface = lazy(() => import('./markdown-document-surface').then((module) => ({ default: module.MarkdownDocumentSurface })));
+type MarkdownSurfaceModule = typeof import('./markdown-document-surface');
+type MarkdownSurfaceProps = ComponentProps<MarkdownSurfaceModule['MarkdownDocumentSurface']>;
+
+let markdownSurfaceModule: MarkdownSurfaceModule | null = null;
+let markdownSurfacePromise: Promise<MarkdownSurfaceModule> | null = null;
+
+function loadMarkdownSurfaceModule(): Promise<MarkdownSurfaceModule> {
+  markdownSurfacePromise ??= import('./markdown-document-surface')
+    .then((module) => {
+      markdownSurfaceModule = module;
+      return module;
+    })
+    .catch((error) => {
+      markdownSurfacePromise = null;
+      throw error;
+    });
+  return markdownSurfacePromise;
+}
+
+/**
+ * Warm the Markdown surface chunk ahead of the first document open.
+ * `React.lazy` suspends on its first render even when the chunk is already
+ * cached, and the retry that follows is throttled — which showed up as a
+ * ~200ms blank pane on open. Resolving the module eagerly lets the surface
+ * render synchronously.
+ */
+export function preloadMarkdownDocumentSurface(): void {
+  void loadMarkdownSurfaceModule().catch(() => undefined);
+}
+
+function MarkdownDocumentSurface(props: MarkdownSurfaceProps) {
+  if (!markdownSurfaceModule) throw loadMarkdownSurfaceModule();
+  const Surface = markdownSurfaceModule.MarkdownDocumentSurface;
+  return <Surface {...props} />;
+}
+
 const HtmlResourceView = lazy(() => import('./html-resource-view').then((module) => ({ default: module.HtmlResourceView })));
 const CodeSurfaceFileBrowser = lazy(() => import('./work-file-browser-view').then((module) => ({ default: module.CodeSurfaceFileBrowser })));
 

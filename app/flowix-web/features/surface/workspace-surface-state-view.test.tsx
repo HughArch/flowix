@@ -125,6 +125,37 @@ describe('WorkspaceSurfaceStateView', () => {
     expect(load).toHaveBeenCalledOnce();
   });
 
+  it('reuses a resolved renderer instead of suspending in a new retry scope', async () => {
+    // Each document open remounts the surface boundary, so it arrives with a
+    // fresh retry scope. A renderer whose module already loaded must render
+    // synchronously; suspending again costs a throttled React retry.
+    const load = vi.fn(async (): Promise<{ default: ComponentType }> => ({
+      default: () => <div>warm renderer</div>,
+    }));
+    function LazyRenderer() {
+      const Renderer = useWorkspaceSurfaceRendererLazy(load);
+      return <Renderer />;
+    }
+    const mountInFreshBoundary = async (target: HTMLElement) => {
+      const boundaryRoot = createRoot(target);
+      await act(async () => boundaryRoot.render(<WorkspaceSurfaceErrorBoundary appearance={appearance}>
+        <Suspense fallback={<div>loading</div>}><LazyRenderer /></Suspense>
+      </WorkspaceSurfaceErrorBoundary>));
+      return boundaryRoot;
+    };
+
+    const warmHost = document.createElement('div');
+    const warmRoot = await mountInFreshBoundary(warmHost);
+    expect(warmHost.textContent).toBe('warm renderer');
+    await act(async () => warmRoot.unmount());
+
+    host = document.createElement('div');
+    root = await mountInFreshBoundary(host);
+    expect(host.textContent).toBe('warm renderer');
+    // The module is resolved once; later scopes reuse it instead of reloading.
+    expect(load).toHaveBeenCalledOnce();
+  });
+
   it('retries a rejected lazy renderer with a fresh React lazy wrapper', async () => {
     host = document.createElement('div');
     root = createRoot(host);

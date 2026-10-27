@@ -14,7 +14,7 @@ import type {
   WorkspaceSurfaceHost,
   WorkspaceSurfaceKind,
 } from '@features/workspace/public/surface-api';
-import { useWorkspaceSurfaceRendererLazy, WorkspaceSurfaceErrorBoundary, WorkspaceSurfaceStateView } from './workspace-surface-state-view';
+import { preloadResolvedRenderer, useWorkspaceSurfaceRendererLazy, WorkspaceSurfaceErrorBoundary, WorkspaceSurfaceStateView } from './workspace-surface-state-view';
 import { registerStartupSurfaceHostView, useWorkspaceSurfacePresentation } from './workspace-surface-runtime';
 import { CsvTableLoadingSkeleton } from '@shared/ui/csv-table-loading-skeleton';
 import { MultidimensionalTableLoadingSkeleton } from '@shared/ui/multidimensional-table-loading-skeleton';
@@ -80,9 +80,25 @@ function implementRenderer<R extends RendererId>(
   };
 }
 
+const loadRendererModule = () => import('./workspace-surface-renderers');
+const loadMarkdownRenderer = () => loadRendererModule().then((module) => ({ default: module.MarkdownRenderer }));
+
+/**
+ * Resolve the Markdown renderer and its surface chunk before the first
+ * document open. The surface boundary suspends until they are available and
+ * React throttles the retry that follows, so a cold open otherwise shows a
+ * blank pane.
+ */
+export function preloadMarkdownRenderer(): void {
+  preloadResolvedRenderer(loadMarkdownRenderer);
+  void loadRendererModule()
+    .then((module) => module.preloadMarkdownDocumentSurface())
+    .catch(() => undefined);
+}
+
 /** Implementations have no host registration or independent support declarations. */
 const rendererImplementations = {
-  'file-markdown': implementRenderer('file-markdown', () => import('./workspace-surface-renderers').then((module) => ({ default: module.MarkdownRenderer }))),
+  'file-markdown': implementRenderer('file-markdown', loadMarkdownRenderer),
   'file-code': implementRenderer('file-code', () => import('./workspace-surface-renderers').then((module) => ({ default: module.CodeRenderer }))),
   'file-csv': implementRenderer('file-csv', () => import('./workspace-surface-renderers').then((module) => ({ default: module.CsvRenderer }))),
   'file-image': implementRenderer('file-image', () => import('./workspace-surface-renderers').then((module) => ({ default: module.ImageRenderer }))),

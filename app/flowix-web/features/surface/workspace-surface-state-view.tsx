@@ -1,6 +1,6 @@
 'use client';
 
-import { Component, createContext, Fragment, lazy, useContext, type ComponentType, type ErrorInfo, type LazyExoticComponent, type ReactNode } from 'react';
+import { Component, createContext, Fragment, lazy, useContext, type ComponentType, type ErrorInfo, type ReactNode } from 'react';
 import { CenteredLoadingSpinner } from '@shared/ui/centered-loading-spinner';
 import { WorkspaceEmptyState } from '@shared/ui/workspace-empty-state';
 import { useI18n } from '@/lib/i18n';
@@ -9,11 +9,28 @@ import type { SurfaceAppearance, SurfaceMessage, SurfacePresentationUpdate, Surf
 
 const WorkspaceSurfaceRendererRetryContext = createContext<object>({});
 const rendererCache = new WeakMap<object, WeakMap<object, unknown>>();
+/**
+ * Modules that already resolved. The surface boundary remounts per document
+ * (its key carries the content identity), which hands every open a fresh retry
+ * scope; reusing the resolved component keeps those opens from suspending
+ * again, which otherwise costs a throttled React retry (~300ms blank pane).
+ */
+const resolvedRenderers = new WeakMap<object, ComponentType<Record<string, unknown>>>();
+
+/** Resolve a renderer module ahead of the first open so it never suspends. */
+export function preloadResolvedRenderer<P extends object>(
+  load: () => Promise<{ default: ComponentType<P> }>,
+): void {
+  if (resolvedRenderers.has(load)) return;
+  void load()
+    .then((module) => { resolvedRenderers.set(load, module.default as ComponentType<Record<string, unknown>>); })
+    .catch(() => undefined);
+}
 
 /** Recreate a lazy component when the shared renderer boundary retries. */
 export function useWorkspaceSurfaceRendererLazy<P extends object>(
   load: () => Promise<{ default: ComponentType<P> }>,
-): LazyExoticComponent<ComponentType<P>> {
+): ComponentType<P> {
   const retryScope = useContext(WorkspaceSurfaceRendererRetryContext);
   // Initial suspension discards hook state, including useMemo. Cache outside
   // the suspending component so retries reuse the same resolved lazy wrapper.
@@ -22,9 +39,17 @@ export function useWorkspaceSurfaceRendererLazy<P extends object>(
     scopes = new WeakMap();
     rendererCache.set(load, scopes);
   }
-  let renderer = scopes.get(retryScope) as LazyExoticComponent<ComponentType<P>> | undefined;
+  let renderer = scopes.get(retryScope) as ComponentType<P> | undefined;
   if (!renderer) {
-    renderer = lazy(load);
+    const resolved = resolvedRenderers.get(load) as ComponentType<P> | undefined;
+    if (resolved) {
+      renderer = resolved;
+    } else {
+      renderer = lazy(() => load().then((module) => {
+        resolvedRenderers.set(load, module.default as ComponentType<Record<string, unknown>>);
+        return module;
+      })) as unknown as ComponentType<P>;
+    }
     scopes.set(retryScope, renderer);
   }
   return renderer;
