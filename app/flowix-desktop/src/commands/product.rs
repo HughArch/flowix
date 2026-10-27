@@ -45,6 +45,14 @@ pub fn get_product_info() -> ProductInfo {
     product_info()
 }
 
+/// Fire-and-forget bridge for frontend performance traces. The WebView console
+/// is not captured anywhere durable, so open-document timelines are mirrored
+/// into `app.log` where they can be read next to the native timing logs.
+#[tauri::command]
+pub fn record_frontend_trace(event: String, message: String) {
+    runtime_log::record_event("info", &event, message);
+}
+
 #[tauri::command]
 pub fn open_log_dir(app: AppHandle) -> Result<(), String> {
     let dir = runtime_log::ensure_log_dir().map_err(|err| err.to_string())?;

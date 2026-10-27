@@ -1,6 +1,7 @@
 import { forwardRef, lazy, Suspense } from 'react';
 import type { ComponentProps } from 'react';
 import type { MarkdownEditorHandle } from '@features/editor/markdown-editor';
+import { recordOpenPerfNote } from '@/lib/document-open-perf';
 
 type DocumentEditorProps = ComponentProps<
   typeof import('@features/editor/markdown-editor').MarkdownEditor
@@ -12,7 +13,11 @@ let markdownEditorModulePromise: Promise<MarkdownEditorModule> | null = null;
 
 function loadMarkdownEditor(): Promise<MarkdownEditorModule> {
   if (!markdownEditorModulePromise) {
-    markdownEditorModulePromise = import('@features/editor/markdown-editor').catch((error) => {
+    recordOpenPerfNote('lazy-editor:import-start');
+    markdownEditorModulePromise = import('@features/editor/markdown-editor').then((module) => {
+      recordOpenPerfNote('lazy-editor:import-end');
+      return module;
+    }).catch((error) => {
       markdownEditorModulePromise = null;
       throw error;
     });

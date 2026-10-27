@@ -457,6 +457,7 @@ pub fn run() {
         .invoke_handler(tauri::generate_handler![
             // 偏好 (JSON, �?user_config)
             commands::product::get_product_info,
+            commands::product::record_frontend_trace,
             commands::product::open_log_dir,
             commands::product::open_file_with_default_app,
             commands::product::reveal_in_file_manager,
