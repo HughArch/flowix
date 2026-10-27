@@ -7,6 +7,12 @@ import { externalFileViewKind } from '@features/editor/public/code-file';
 import { workspaceSurfaceAppearance, workspaceSurfaceContentPresentation } from '@features/workspace/public/surface-api';
 
 import { LazyAgentConversationDetail } from '@features/agent/components/lazy-agent-conversation-detail';
+import {
+  ConversationProviderSelector,
+  useBuiltinConversationProvider,
+} from '@features/agent/components/builtin-conversation-provider';
+import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
+import { isMobileDevice } from '@shared/platform';
 import { LazyPluginDocumentView, LazyPluginWorkbench } from '@features/plugin/public/surface-api';
 
 import type { WorkspaceSurfaceRendererData, WorkspaceSurfaceRenderContext } from './workspace-surface-renderer-registry';
@@ -254,7 +260,26 @@ export function MediaResourceRenderer({ surface, context }: RendererProps<'media
 }
 
 export function AgentConversationRenderer({ surface, context }: RendererProps<'agent-conversation'>) {
-  return <LazyAgentConversationDetail instanceId={surface.instanceId} reportPresentation={context.reportPresentation} />;
+  const instance = useAgentSessionStore(
+    (state) => state.conversationRegistry.instances[surface.instanceId] ?? null,
+  );
+  // 内置助手的云厂商选择：与笔记级侧边栏同一套 chip 样式/绑定逻辑。
+  // 外部 CLI 会话和桌面端不需要它。
+  const isBuiltinAssistant = isMobileDevice() && instance?.agentType === 'flowix';
+  const providerControl = useBuiltinConversationProvider(isBuiltinAssistant ? instance : null);
+  return (
+    <LazyAgentConversationDetail
+      instanceId={surface.instanceId}
+      composerExtra={isBuiltinAssistant ? (
+        <ConversationProviderSelector
+          providers={providerControl.providers}
+          providerId={providerControl.providerId}
+          onChange={providerControl.setProvider}
+        />
+      ) : null}
+      reportPresentation={context.reportPresentation}
+    />
+  );
 }
 
 export function PluginDocumentRenderer({ surface, context }: RendererProps<'mindmap' | 'plugin-artifact'>) {

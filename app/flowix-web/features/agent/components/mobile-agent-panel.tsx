@@ -3,8 +3,12 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { create } from 'zustand';
 import { invoke } from '@tauri-apps/api/core';
-import { Check, ChevronDown, Plus, X } from 'lucide-react';
+import { Plus, X } from 'lucide-react';
 import { AgentConversationDetail } from '@features/agent/components/agent-conversation-detail';
+import {
+  ConversationProviderSelector,
+  useBuiltinConversationProvider,
+} from '@features/agent/components/builtin-conversation-provider';
 import { ConversationRenameDialog } from '@features/agent/components/conversation-rename-dialog';
 import { useAgentSessionStore } from '@features/agent/store/agent-session-store';
 import type { AgentConversationInstance } from '@features/agent/store/agent-conversation-types';
@@ -14,17 +18,6 @@ import { canonicalPath } from '@/lib/path';
 import { displayTitleFromFilename } from '@/lib/utils';
 import { buildNoteOpenLink } from '@platform/open-target/path-link';
 import { escapeMarkdownLinkText } from '@features/editor/extensions/note-link/note-reference-markdown';
-import {
-  builtinAi,
-  type BuiltinAiProviderView,
-} from '@platform/tauri/client';
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuLabel,
-  DropdownMenuTrigger,
-} from '@shared/ui/dropdown-menu';
 import { Button } from '@shared/ui/button';
 import {
   Dialog,
@@ -274,50 +267,6 @@ function ConversationTab({
   );
 }
 
-/** Provider chip rendered inside the composer actions row, next to +. */
-function ConversationProviderSelector({
-  providers,
-  providerId,
-  onChange,
-}: {
-  providers: BuiltinAiProviderView[];
-  providerId: string;
-  onChange: (providerId: string) => void;
-}) {
-  const { t } = useI18n();
-  if (providers.length === 0) return null;
-  const current = providers.find((provider) => provider.id === providerId) ?? null;
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          className="flex h-6 max-w-[112px] items-center gap-1 rounded-md px-1.5 text-[11px] text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
-          aria-label={t('agent.mobilePanel.provider')}
-        >
-          <span className="min-w-0 flex-1 truncate text-left">
-            {current?.name || t('agent.mobilePanel.noProvider')}
-          </span>
-          <ChevronDown className="h-3 w-3 shrink-0" />
-        </button>
-      </DropdownMenuTrigger>
-      <DropdownMenuContent align="start" className="w-52">
-        <DropdownMenuLabel>{t('agent.mobilePanel.provider')}</DropdownMenuLabel>
-        {providers.map((provider) => (
-          <DropdownMenuItem key={provider.id} onClick={() => onChange(provider.id)}>
-            <span className="min-w-0 flex-1 truncate">
-              {provider.name || provider.apiUrl}
-            </span>
-            {provider.id === providerId && (
-              <Check className="ml-2 h-3.5 w-3.5 shrink-0 text-[var(--brand)]" />
-            )}
-          </DropdownMenuItem>
-        ))}
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
 export function MobileAgentPanel() {
   const { t } = useI18n();
   const open = useMobileAgentPanelStore((state) => state.open);
@@ -329,8 +278,6 @@ export function MobileAgentPanel() {
   const [renameTarget, setRenameTarget] = useState<AgentConversationInstance | null>(null);
   const [deleteTarget, setDeleteTarget] = useState<AgentConversationInstance | null>(null);
   const [tabMenu, setTabMenu] = useState<{ instance: AgentConversationInstance; x: number; y: number } | null>(null);
-  const [providers, setProviders] = useState<BuiltinAiProviderView[]>([]);
-  const [activeProviderId, setActiveProviderId] = useState('');
 
   const instances = useAgentSessionStore((state) => state.conversationRegistry.instances);
   const conversations = useMemo(
@@ -342,28 +289,10 @@ export function MobileAgentPanel() {
     [instances, boundPath],
   );
   const currentInstance = conversations.find((instance) => instance.instanceId === instanceId) ?? null;
-  // Provider is bound per conversation. A missing/deleted provider falls back
-  // to the global active provider from settings.
-  const boundProviderId = currentInstance?.runtimeConfig?.builtinProviderId;
-  const conversationProviderId = (boundProviderId
-    && providers.some((provider) => provider.id === boundProviderId)
-    ? boundProviderId
-    : activeProviderId) || '';
-
-  // Refresh provider config whenever the drawer opens (settings may have
-  // changed while it was closed).
-  useEffect(() => {
-    if (!open) return;
-    let disposed = false;
-    void builtinAi.getConfig()
-      .then((view) => {
-        if (disposed) return;
-        setProviders(view.providers);
-        setActiveProviderId(view.activeProviderId);
-      })
-      .catch(() => {});
-    return () => { disposed = true; };
-  }, [open]);
+  // Provider is bound per conversation; logic shared with the left-panel
+  // conversation surface. `reloadKey: open` re-reads the config each time the
+  // drawer opens (settings may have changed while it was closed).
+  const providerControl = useBuiltinConversationProvider(currentInstance, { enabled: open, reloadKey: open });
 
   useEffect(() => {
     if (!open) {
@@ -380,29 +309,6 @@ export function MobileAgentPanel() {
       });
     });
   }, [open]);
-
-  // New conversations default to the global active provider; the choice is
-  // persisted on the conversation instance, not globally.
-  useEffect(() => {
-    if (!open || !currentInstance || !activeProviderId) return;
-    if (boundProviderId && providers.some((provider) => provider.id === boundProviderId)) return;
-    useAgentSessionStore.getState().upsertInstance(currentInstance.instanceId, {
-      runtimeConfig: {
-        ...(currentInstance.runtimeConfig ?? {}),
-        builtinProviderId: activeProviderId,
-      },
-    });
-  }, [activeProviderId, boundProviderId, currentInstance, open, providers]);
-
-  const setConversationProvider = useCallback((providerId: string) => {
-    if (!currentInstance) return;
-    useAgentSessionStore.getState().upsertInstance(currentInstance.instanceId, {
-      runtimeConfig: {
-        ...(currentInstance.runtimeConfig ?? {}),
-        builtinProviderId: providerId,
-      },
-    });
-  }, [currentInstance]);
 
   const deleteConversation = useCallback(async (instance: AgentConversationInstance) => {
     try {
@@ -499,9 +405,9 @@ export function MobileAgentPanel() {
               instanceId={instanceId}
               composerExtra={
                 <ConversationProviderSelector
-                  providers={providers}
-                  providerId={conversationProviderId}
-                  onChange={setConversationProvider}
+                  providers={providerControl.providers}
+                  providerId={providerControl.providerId}
+                  onChange={providerControl.setProvider}
                 />
               }
             />
