@@ -921,10 +921,12 @@ fn skill_catalog_fingerprint(catalog: &SkillCatalog) -> String {
     format!("{:x}", hasher.finalize())[..8].to_owned()
 }
 
-/// One-line notice listing the skills that entered the system prompt.
+/// One-line notice listing the skills whose catalog entered the system
+/// prompt. Worded to make clear only the listing is injected up front — the
+/// model still fetches a SKILL.md body on demand.
 fn skill_notice_text(catalog: &SkillCatalog) -> String {
     let mut text = format!(
-        "已加载 {} 个笔记本技能到系统提示词：{}",
+        "笔记本技能清单已就绪（{} 个）：{}，正文由助手按需读取",
         catalog.entries.len(),
         catalog
             .entries
@@ -934,7 +936,7 @@ fn skill_notice_text(catalog: &SkillCatalog) -> String {
             .join("、"),
     );
     if catalog.truncated {
-        text.push_str("（其余技能因长度限制未加载）");
+        text.push_str("；其余技能因长度限制未列入");
     }
     text
 }
@@ -1237,7 +1239,7 @@ mod tests {
         };
         assert_eq!(
             skill_notice_text(&catalog),
-            "已加载 2 个笔记本技能到系统提示词：日报、周报"
+            "笔记本技能清单已就绪（2 个）：日报、周报，正文由助手按需读取"
         );
 
         let truncated = SkillCatalog {
@@ -1245,7 +1247,7 @@ mod tests {
             truncated: true,
         };
         assert!(
-            skill_notice_text(&truncated).ends_with("（其余技能因长度限制未加载）"),
+            skill_notice_text(&truncated).ends_with("；其余技能因长度限制未列入"),
             "{}",
             skill_notice_text(&truncated)
         );
