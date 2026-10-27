@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useState } from "react";
+import { useCallback, useEffect, useRef, useState } from "react";
 import { createRoot, type Root } from "react-dom/client";
 import { EjectIcon } from "@phosphor-icons/react";
 import {
@@ -971,7 +971,6 @@ function NotebookAgentSettingsDialog({
   const [skillAgent, setSkillAgent] = useState<AgentResourceKey>("general");
   const [childAgent, setChildAgent] = useState<AgentResourceKey>("general");
   const [workspace, setWorkspace] = useState<NotebookAgentWorkspace | null>(null);
-  const [original, setOriginal] = useState<NotebookAgentWorkspace | null>(null);
   const [loading, setLoading] = useState(true);
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState<string | null>(null);
@@ -980,7 +979,8 @@ function NotebookAgentSettingsDialog({
   const [fileForm, setFileForm] = useState<NotebookAgentFile | null>(null);
   const [formError, setFormError] = useState<string | null>(null);
   const [pendingConfirm, setPendingConfirm] = useState<{ message: string; action: () => void } | null>(null);
-  const dirty = workspace !== null && original !== null && JSON.stringify(workspace) !== JSON.stringify(original);
+  const writeChainRef = useRef<Promise<void>>(Promise.resolve());
+  const pendingWritesRef = useRef(0);
 
   const load = useCallback(async () => {
     setLoading(true);
@@ -988,7 +988,6 @@ function NotebookAgentSettingsDialog({
     try {
       const next = cloneWorkspace(await agent.readNotebookAgentWorkspace(notebookPath));
       setWorkspace(next);
-      setOriginal(cloneWorkspace(next));
     } catch (cause) {
       setError(cause instanceof Error ? cause.message : String(cause));
     } finally {
@@ -1007,12 +1006,8 @@ function NotebookAgentSettingsDialog({
   }, [mobileLayout]);
 
   const requestClose = useCallback(() => {
-    if (dirty) {
-      requestConfirmation("还有未保存的 Agent 配置，确定要放弃吗？", onClose);
-      return;
-    }
     onClose();
-  }, [dirty, onClose, requestConfirmation]);
+  }, [onClose]);
 
   useEffect(() => {
     const handleKeyDown = (event: KeyboardEvent) => {
@@ -1086,8 +1081,8 @@ function NotebookAgentSettingsDialog({
     const nextServers = { ...workspace.mcpServers };
     if (editor.id && editor.id !== id) delete nextServers[editor.id];
     nextServers[id] = definition;
-    setWorkspace({ ...workspace, mcpServers: nextServers });
     closeEditor();
+    void persistWorkspace({ ...workspace, mcpServers: nextServers });
   };
 
   const saveFileDraft = () => {
@@ -1132,41 +1127,53 @@ function NotebookAgentSettingsDialog({
     const nextCollection = editor.id
       ? collection.map((item) => (item.id === editor.id ? nextFile : item))
       : [...collection, nextFile];
-    setWorkspace(editor.fileKind === "skill" ? { ...workspace, skills: nextCollection } : { ...workspace, agents: nextCollection });
     closeEditor();
+    void persistWorkspace(editor.fileKind === "skill"
+      ? { ...workspace, skills: nextCollection }
+      : { ...workspace, agents: nextCollection });
   };
 
-  const saveWorkspace = async () => {
-    if (!workspace || saving) return;
+  /**
+   * Write the workspace straight to `.agents/`. Every mutation in this dialog
+   * commits on its own (no draft-then-save step), so the footer only reports
+   * state and closes.
+   */
+  const persistWorkspace = useCallback((next: NotebookAgentWorkspace): Promise<void> => {
+    setWorkspace(next);
     setSaving(true);
     setError(null);
-    try {
-      const next = cloneWorkspace(await agent.writeNotebookAgentWorkspace(notebookPath, workspace));
-      setWorkspace(next);
-      setOriginal(cloneWorkspace(next));
-      closeEditor();
-      const skillScopeId = getNotebookSkillScopeId(notebookPath);
-      if (skillScopeId) {
-        for (const agentType of ["codex", "pi", "flowix"] as const) {
-          invalidateNotebookSkills(agentType, skillScopeId);
-          void loadNotebookSkillCatalog(agentType, skillScopeId, notebookPath, { force: true }).catch((cause) => {
-            console.warn(`Failed to refresh ${agentType} skills after saving notebook Agent settings`, cause);
-          });
+    // Serialize writes: each commit sends the whole workspace, so an
+    // out-of-order response must not resurrect an older snapshot.
+    const run = writeChainRef.current.then(async () => {
+      try {
+        setWorkspace(cloneWorkspace(await agent.writeNotebookAgentWorkspace(notebookPath, next)));
+        const skillScopeId = getNotebookSkillScopeId(notebookPath);
+        if (skillScopeId) {
+          for (const agentType of ["codex", "pi", "flowix"] as const) {
+            invalidateNotebookSkills(agentType, skillScopeId);
+            void loadNotebookSkillCatalog(agentType, skillScopeId, notebookPath, { force: true }).catch((cause) => {
+              console.warn(`Failed to refresh ${agentType} skills after saving notebook Agent settings`, cause);
+            });
+          }
         }
+      } catch (cause) {
+        setError(cause instanceof Error ? cause.message : String(cause));
       }
-    } catch (cause) {
-      setError(cause instanceof Error ? cause.message : String(cause));
-    } finally {
-      setSaving(false);
-    }
-  };
+    });
+    pendingWritesRef.current += 1;
+    writeChainRef.current = run.catch(() => undefined);
+    return run.finally(() => {
+      pendingWritesRef.current -= 1;
+      if (pendingWritesRef.current === 0) setSaving(false);
+    }).catch(() => undefined);
+  }, [notebookPath]);
 
   const deleteMcp = (id: string) => {
     if (!workspace) return;
     requestConfirmation(`确定删除 MCP 服务“${id}”？`, () => {
       const next = { ...workspace.mcpServers };
       delete next[id];
-      setWorkspace({ ...workspace, mcpServers: next });
+      void persistWorkspace({ ...workspace, mcpServers: next });
     });
   };
 
@@ -1175,20 +1182,20 @@ function NotebookAgentSettingsDialog({
     requestConfirmation(`确定删除这个${kind === "skill" ? "Skill" : "子 Agent"}？`, () => {
       const collection = kind === "skill" ? workspace.skills : workspace.agents;
       const next = collection.filter((item) => item.id !== id);
-      setWorkspace(kind === "skill" ? { ...workspace, skills: next } : { ...workspace, agents: next });
+      void persistWorkspace(kind === "skill" ? { ...workspace, skills: next } : { ...workspace, agents: next });
     });
   };
 
   const toggleMcp = (id: string, enabled: boolean) => {
     if (!workspace || !workspace.mcpServers[id]) return;
-    setWorkspace({ ...workspace, mcpServers: { ...workspace.mcpServers, [id]: { ...workspace.mcpServers[id], enabled } } });
+    void persistWorkspace({ ...workspace, mcpServers: { ...workspace.mcpServers, [id]: { ...workspace.mcpServers[id], enabled } } });
   };
 
   const toggleFile = (kind: FileKind, id: string, enabled: boolean) => {
     if (!workspace) return;
     const collection = kind === "skill" ? workspace.skills : workspace.agents;
     const next = collection.map((item) => item.id === id ? { ...item, enabled } : item);
-    setWorkspace(kind === "skill" ? { ...workspace, skills: next } : { ...workspace, agents: next });
+    void persistWorkspace(kind === "skill" ? { ...workspace, skills: next } : { ...workspace, agents: next });
   };
 
   if (loading) {
@@ -1269,8 +1276,8 @@ function NotebookAgentSettingsDialog({
         </div>
 
         <footer className="flex shrink-0 items-center justify-between gap-3 border-t border-[var(--divider)] bg-[color-mix(in_oklch,var(--background)_92%,var(--card))] px-5 py-3 sm:px-6">
-          <div className="min-w-0 text-xs text-[var(--muted-foreground)]">{dirty ? <span className="text-[var(--primary)]">有未保存更改</span> : <span className="inline-flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-[var(--primary)]" /></span>}</div>
-          <div className="flex items-center gap-2"><Button type="button" variant="ghost" onClick={requestClose}>取消</Button><Button type="button" disabled={!dirty || saving} onClick={() => void saveWorkspace()}>{saving ? <Loader2 className="flowix-spin" /> : null}保存</Button></div>
+          <div className="min-w-0 text-xs text-[var(--muted-foreground)]">{saving ? <span className="inline-flex items-center gap-1.5"><Loader2 className="flowix-spin h-3.5 w-3.5" />保存中…</span> : error ? <span className="text-[var(--destructive)]">保存失败</span> : <span className="inline-flex items-center gap-1.5"><Check className="h-3.5 w-3.5 text-[var(--primary)]" />已保存</span>}</div>
+          <div className="flex items-center gap-2"><Button type="button" variant="ghost" onClick={requestClose}>关闭</Button></div>
         </footer>
       </div>
       {pendingConfirm && (
