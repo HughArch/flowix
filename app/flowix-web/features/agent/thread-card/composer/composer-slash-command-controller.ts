@@ -28,22 +28,6 @@ export interface ComposerSlashSkill {
   modelInvocable?: boolean;
 }
 
-function composerSkillScopeLabel(scope?: string): string | undefined {
-  switch (scope) {
-    case "repo":
-    case "workspace":
-      return "项目";
-    case "user":
-      return "个人";
-    case "system":
-    case "admin":
-    case "managed":
-      return "系统";
-    default:
-      return undefined;
-  }
-}
-
 type ComposerSlashMenuItem =
   | { kind: "command"; value: ComposerSlashCommand }
   | { kind: "skill"; value: ComposerSlashSkill };
@@ -218,7 +202,7 @@ export class ComposerSlashCommandController {
     this.filtered = [...commands, ...skills].filter((item) => {
       const value = item.kind === "command" ? item.value.name : item.value.name;
       const label = item.kind === "skill"
-        ? `${item.value.displayName ?? ""} ${item.value.description} ${item.value.shortDescription ?? ""} ${composerSkillScopeLabel(item.value.scope) ?? ""}`
+        ? `${item.value.displayName ?? ""} ${item.value.description} ${item.value.shortDescription ?? ""}`
         : item.value.description;
       return `${value} ${label}`.toLowerCase().includes(query);
     });
@@ -413,15 +397,6 @@ export class ComposerSlashCommandController {
       description.textContent = candidate.kind === "command"
         ? candidate.value.description
         : candidate.value.shortDescription || candidate.value.description || candidate.value.whenToUse || "";
-      if (candidate.kind === "skill") {
-        const scopeLabel = composerSkillScopeLabel(candidate.value.scope);
-        if (scopeLabel) {
-          const scope = document.createElement("span");
-          scope.className = "agent-composer-slash-menu__scope";
-          scope.textContent = scopeLabel;
-          item.append(scope);
-        }
-      }
       item.append(name, description);
       item.addEventListener("mousemove", (event) => this.handleItemMouseMove(event, index));
       item.addEventListener("pointerdown", (event) => event.preventDefault());

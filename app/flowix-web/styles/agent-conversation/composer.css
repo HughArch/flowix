@@ -553,20 +553,14 @@
   .agent-composer-slash-menu__name,
 .agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:hover
   .agent-composer-slash-menu__description,
-.agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:hover
-  .agent-composer-slash-menu__scope,
 .agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:focus-visible
   .agent-composer-slash-menu__name,
 .agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:focus-visible
   .agent-composer-slash-menu__description,
-.agent-composer-slash-menu:not(.is-keyboard-navigation) .agent-composer-slash-menu__item:focus-visible
-  .agent-composer-slash-menu__scope,
 .agent-composer-slash-menu__item--active
   .agent-composer-slash-menu__name,
 .agent-composer-slash-menu__item--active
-  .agent-composer-slash-menu__description,
-.agent-composer-slash-menu__item--active
-  .agent-composer-slash-menu__scope {
+  .agent-composer-slash-menu__description {
   color: var(--foreground);
 }
 
@@ -598,17 +592,6 @@
 
 .agent-composer-slash-menu__item--skill .agent-composer-slash-menu__description {
   flex: 1 1 auto;
-}
-
-.agent-composer-slash-menu__scope {
-  flex: 0 0 auto;
-  padding: 0.1rem 0.4rem;
-  border-radius: 999px;
-  background: color-mix(in oklch, var(--foreground) 6%, transparent);
-  color: var(--muted-foreground);
-  font-size: calc(var(--font-size, 16px) * 0.72);
-  line-height: 1.3;
-  white-space: nowrap;
 }
 
 .agent-composer-slash-menu__item--folder .agent-composer-slash-menu__name {

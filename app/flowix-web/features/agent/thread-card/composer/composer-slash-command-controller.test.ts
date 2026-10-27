@@ -402,7 +402,8 @@ describe('ComposerSlashCommandController', () => {
     await vi.waitFor(() => expect([...document.querySelectorAll('.agent-composer-slash-menu__name')]
       .map((node) => node.textContent)).toContain('review'));
     expect(document.querySelector('.agent-composer-slash-menu__item--skill')).not.toBeNull();
-    expect(document.querySelector('.agent-composer-slash-menu__scope')?.textContent).toBe('项目');
+    // Scope badges were dropped: the menu shows only the name and description.
+    expect(document.querySelector('.agent-composer-slash-menu__scope')).toBeNull();
     type(nextEditor, '');
     type(nextEditor, '/');
     await vi.waitFor(() => expect(listDshSkills).toHaveBeenCalledTimes(2));
