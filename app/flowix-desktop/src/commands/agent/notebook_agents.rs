@@ -507,6 +507,14 @@ fn validate_mcp(name: &str, definition: &Value) -> Result<(), String> {
             return Err(format!("MCP {name} 的 url 必须是字符串"));
         }
     }
+    if let Some(headers) = object.get("headers") {
+        let Some(map) = headers.as_object() else {
+            return Err(format!("MCP {name} 的 headers 必须是对象"));
+        };
+        if !map.values().all(Value::is_string) {
+            return Err(format!("MCP {name} 的 headers 值必须是字符串"));
+        }
+    }
     Ok(())
 }
 

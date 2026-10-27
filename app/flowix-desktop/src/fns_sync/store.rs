@@ -111,7 +111,11 @@ impl LocalNoteStore for MemoFileStore {
                 continue;
             }
             let path = entry.path();
-            if !is_markdown(path) || FileManagementPolicy::has_hidden_attribute(path) {
+            let is_mcp_json = is_agents_mcp_json_path(path, &self.root);
+            if !is_markdown(path) && !is_mcp_json {
+                continue;
+            }
+            if FileManagementPolicy::has_hidden_attribute(path) {
                 continue;
             }
             let Ok(relative_path) = path.strip_prefix(&self.root) else {
@@ -121,6 +125,7 @@ impl LocalNoteStore for MemoFileStore {
                 .policy
                 .is_index_ignored_at(&self.root, relative_path)
                 && !is_agents_skills_path(path, &self.root)
+                && !is_mcp_json
             {
                 continue;
             }
@@ -266,9 +271,23 @@ fn should_skip_entry(path: &Path, root: &Path) -> bool {
     false
 }
 
+/// True for the notebook's `.agents/mcp.json`. It rides the note sync exactly
+/// like `skills/**` so a notebook's MCP servers configured on desktop reach
+/// the builtin agent on mobile. Still note-index-invisible via
+/// [`is_agents_internal_path`].
+fn is_agents_mcp_json_path(path: &Path, root: &Path) -> bool {
+    path.strip_prefix(root).is_ok_and(|relative| {
+        let mut components = relative.iter();
+        components.next() == Some(OsStr::new(".agents"))
+            && components.next() == Some(OsStr::new("mcp.json"))
+            && components.next().is_none()
+    })
+}
+
 /// True for the notebook's `.agents` directory itself and anything inside its
-/// `skills/` subtree. Everything else under `.agents/` (mcp.json, agents/,
-/// ...) stays out of the note sync.
+/// `skills/` subtree. Everything else under `.agents/` (agents/, ...) stays
+/// out of the note sync; `mcp.json` rides along via
+/// [`is_agents_mcp_json_path`].
 fn is_agents_skills_path(path: &Path, root: &Path) -> bool {
     let Ok(relative) = path.strip_prefix(root) else {
         return false;
@@ -489,6 +508,29 @@ mod tests {
         assert!(is_agents_skills_path(Path::new("/nb/.agents/skills/demo"), root));
         assert!(is_agents_skills_path(
             Path::new("/nb/.agents/skills/demo/SKILL.md"),
+            root
+        ));
+    }
+
+    #[test]
+    fn agents_mcp_json_is_sync_whitelisted() {
+        let root = Path::new("/nb");
+        assert!(is_agents_mcp_json_path(
+            Path::new("/nb/.agents/mcp.json"),
+            root
+        ));
+        // The allowance is exact: no nesting, no other files.
+        assert!(!is_agents_mcp_json_path(
+            Path::new("/nb/.agents/agents/mcp.json"),
+            root
+        ));
+        assert!(!is_agents_mcp_json_path(
+            Path::new("/nb/.agents/mcp.json.bak"),
+            root
+        ));
+        assert!(!is_agents_mcp_json_path(Path::new("/nb/mcp.json"), root));
+        assert!(!is_agents_mcp_json_path(
+            Path::new("/other/.agents/mcp.json"),
             root
         ));
     }
