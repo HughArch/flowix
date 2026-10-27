@@ -203,7 +203,7 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
             "type": "function",
             "function": {
                 "name": "file_read",
-                "description": "读取笔记本内一个文本文件的原始内容（任意扩展名，含 .md；上限约 1MB）。",
+                "description": "读取笔记本内一个文本文件的原始内容（任意扩展名，含 .md；上限约 1MB）。技能库 .agents/skills/ 下的 SKILL.md 也用本工具读取。",
                 "parameters": {
                     "type": "object",
                     "properties": {
@@ -446,6 +446,42 @@ fn apply_create_metadata(args: &Value, content: &str) -> Result<String, String> 
 /// Validate and normalize a notebook-relative note path from model input.
 pub(crate) fn normalize_path(raw: &str) -> Result<String, String> {
     let normalized = raw.trim().replace('\\', "/");
+    validate_common_path(&normalized, raw)?;
+    reject_hidden_component(&normalized, raw)?;
+    Ok(normalized)
+}
+
+/// `file_read` counterpart of [`normalize_path`]: identical rules, except the
+/// notebook skill library `.agents/skills/**` is readable — the system-prompt
+/// skill catalog hands the model these exact paths so it can load a SKILL.md
+/// body on demand. Writes (`file_create` / `file_write`) and note tools keep
+/// the strict hidden-path rule: skill files are config managed by the
+/// settings dialog, not agent-writable content.
+pub(crate) fn normalize_read_path(raw: &str) -> Result<String, String> {
+    let normalized = raw.trim().replace('\\', "/");
+    validate_common_path(&normalized, raw)?;
+    let parts: Vec<&str> = normalized.split('/').collect();
+    if parts.first() == Some(&".agents") && parts.get(1) == Some(&"skills") {
+        if normalized.split('/').skip(2).any(|part| part.starts_with('.')) {
+            return Err(format!("path 不允许访问隐藏路径: {raw}"));
+        }
+        return Ok(normalized);
+    }
+    reject_hidden_component(&normalized, raw)?;
+    Ok(normalized)
+}
+
+/// Reject any dot-prefixed path component: hidden trees (`.flowix`,
+/// `.agents`, `.index.yaml` …) are notebook internals, not agent content.
+fn reject_hidden_component(normalized: &str, raw: &str) -> Result<(), String> {
+    if normalized.split('/').any(|part| part.starts_with('.')) {
+        return Err(format!("path 不允许访问隐藏路径: {raw}"));
+    }
+    Ok(())
+}
+
+/// Relative-only, no empty / `.` / `..` segments.
+fn validate_common_path(normalized: &str, raw: &str) -> Result<(), String> {
     if normalized.is_empty() {
         return Err("path 不能为空".into());
     }
@@ -456,13 +492,10 @@ pub(crate) fn normalize_path(raw: &str) -> Result<String, String> {
         match component {
             "" | "." => return Err(format!("path 含有空段或 `.`: {raw}")),
             ".." => return Err(format!("path 不允许包含 `..`: {raw}")),
-            hidden if hidden.starts_with('.') => {
-                return Err(format!("path 不允许访问隐藏路径: {raw}"))
-            }
             _ => {}
         }
     }
-    Ok(normalized)
+    Ok(())
 }
 
 fn truncate(value: Value) -> Value {
@@ -784,7 +817,7 @@ fn execute_file_tool(
         }
         "file_read" => {
             let raw = string_arg(args, "path").ok_or("缺少 path")?;
-            let relative = normalize_path(&raw)?;
+            let relative = normalize_read_path(&raw)?;
             let absolute =
                 notebook_path_from_relative(&scope.notebook_path, &relative)
                     .map_err(|error| format!("path 非法: {error}"))?;
@@ -936,6 +969,27 @@ mod tests {
         assert!(normalize_path("notes/.flowix/x.md").is_err());
         assert!(normalize_path("a/./b.md").is_err());
         assert_eq!(normalize_path("notes\\2026-10-25.md").unwrap(), "notes/2026-10-25.md");
+    }
+
+    #[test]
+    fn read_path_allows_only_the_skill_library() {
+        assert_eq!(
+            normalize_read_path(".agents/skills/demo/SKILL.md").unwrap(),
+            ".agents/skills/demo/SKILL.md"
+        );
+        // Legacy lowercase skill filenames ride the same subtree rule.
+        assert_eq!(
+            normalize_read_path(".agents/skills/demo/skill.md").unwrap(),
+            ".agents/skills/demo/skill.md"
+        );
+        // Other hidden trees stay off-limits, and the strict rule is
+        // unchanged for writes / note tools.
+        assert!(normalize_read_path(".agents/mcp.json").is_err());
+        assert!(normalize_read_path(".agents/skills/.stash/x.md").is_err());
+        assert!(normalize_read_path(".flowix/x.md").is_err());
+        assert!(normalize_read_path("notes/../.agents/mcp.json").is_err());
+        assert!(normalize_read_path(".agents/skills//SKILL.md").is_err());
+        assert!(normalize_path(".agents/skills/demo/SKILL.md").is_err());
     }
 
     #[test]

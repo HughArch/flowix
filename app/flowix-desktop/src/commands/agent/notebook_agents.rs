@@ -353,7 +353,7 @@ fn assign_unique_pi_skill_names(files: &mut [(NotebookAgentFile, String)]) {
     }
 }
 
-fn read_markdown_collection(root: &Path, kind: &str) -> Result<Vec<NotebookAgentFile>, String> {
+pub(crate) fn read_markdown_collection(root: &Path, kind: &str) -> Result<Vec<NotebookAgentFile>, String> {
     Ok(read_markdown_collection_with_contents(root, kind)?
         .into_iter()
         .map(|(file, _)| file)

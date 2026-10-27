@@ -13,6 +13,8 @@ use std::sync::{Arc, Mutex};
 
 use tauri::AppHandle;
 
+use sha2::{Digest, Sha256};
+
 use crate::agent_session::types::ChatMessage;
 use crate::agent_session::ThreadManager;
 use crate::agent_types::AgentId;
@@ -31,6 +33,12 @@ const MAX_TOOL_CYCLES: usize = 20;
 const HISTORY_MESSAGE_LIMIT: i64 = 60;
 /// Provider-message cap (system + history + current turn + tool rounds).
 const MAX_PROVIDER_MESSAGES: usize = 160;
+/// Skill-catalog budget in the system prompt (name + description + path per
+/// entry); a notebook with many skills must not crowd out the conversation.
+const MAX_SKILL_CATALOG_CHARS: usize = 4_000;
+/// Per-skill description cap in the catalog. Saves are capped too; this
+/// covers hand-edited SKILL.md frontmatter.
+const MAX_SKILL_DESCRIPTION_CHARS: usize = 500;
 
 /// Per-run cancellation + lifecycle registry.
 #[derive(Default)]
@@ -401,11 +409,32 @@ impl BuiltinAiService {
         // Optional notebook-level instructions. The file is user-authored and
         // treated as project guidance; the UI gets a visible notice.
         let agents_md = load_agents_md(&scope.notebook_path);
+        // Skill bodies stay on disk; only the name+description catalog enters
+        // the prompt and the model fetches a SKILL.md via file_read on demand.
+        let skill_catalog = load_skill_catalog(&scope.notebook_path);
         provider_messages.push(ProviderMessage::system(system_prompt(
             scope,
             config.web_search_enabled,
             agents_md.as_deref(),
+            &skill_catalog,
         )));
+        if !skill_catalog.entries.is_empty() {
+            emit_builtin_chunk(
+                app,
+                AgentChunk::Notice {
+                    thread_id: thread_id.to_owned(),
+                    // Id is derived from the loaded skill names: the UI shows
+                    // the notice once, and a changed skill set produces a
+                    // fresh notice instead of being swallowed by the old id.
+                    id: format!(
+                        "notice-builtin-skills-{thread_id}-{}",
+                        skill_catalog_fingerprint(&skill_catalog),
+                    ),
+                    text: skill_notice_text(&skill_catalog),
+                },
+                run_id,
+            );
+        }
         if let Some(content) = &agents_md {
             emit_builtin_chunk(
                 app,
@@ -806,10 +835,140 @@ fn load_agents_md(notebook_path: &std::path::Path) -> Option<String> {
     (!trimmed.is_empty()).then(|| trimmed.to_owned())
 }
 
+/// One enabled notebook skill in the system-prompt catalog. `path` is
+/// notebook-relative so the model can fetch the body with `file_read`.
+struct SkillCatalogEntry {
+    name: String,
+    description: String,
+    path: String,
+}
+
+/// Enabled-skill catalog for the system prompt: name + description only,
+/// bodies stay on disk. The `.agents/` tree is user data; any read failure
+/// degrades to an empty catalog instead of failing the run.
+struct SkillCatalog {
+    entries: Vec<SkillCatalogEntry>,
+    /// True when entries were dropped because the catalog exceeded its budget.
+    truncated: bool,
+}
+
+fn load_skill_catalog(notebook_path: &std::path::Path) -> SkillCatalog {
+    let skills = match crate::commands::agent::notebook_agents::read_markdown_collection(
+        notebook_path,
+        "skills",
+    ) {
+        Ok(skills) => skills,
+        Err(_) => {
+            return SkillCatalog {
+                entries: Vec::new(),
+                truncated: false,
+            }
+        }
+    };
+    let mut entries = Vec::new();
+    let mut budget = MAX_SKILL_CATALOG_CHARS;
+    for skill in skills {
+        if !skill.enabled {
+            continue;
+        }
+        // The catalog exists so the model can judge when a skill applies; a
+        // skill without a description cannot be judged, so it stays out.
+        let description = skill
+            .description
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        if description.is_empty() {
+            continue;
+        }
+        let name = skill.name.trim();
+        let path = skill.path.trim();
+        if name.is_empty() || path.is_empty() {
+            continue;
+        }
+        let description = description
+            .chars()
+            .take(MAX_SKILL_DESCRIPTION_CHARS)
+            .collect::<String>();
+        // 24 covers the per-entry line scaffolding (bullet, dash, and the path label).
+        let cost = name.chars().count() + description.chars().count() + path.chars().count() + 24;
+        if cost > budget {
+            let truncated = !entries.is_empty();
+            return SkillCatalog { entries, truncated };
+        }
+        budget -= cost;
+        entries.push(SkillCatalogEntry {
+            name: name.to_owned(),
+            description,
+            path: path.to_owned(),
+        });
+    }
+    SkillCatalog {
+        entries,
+        truncated: false,
+    }
+}
+
+/// Stable fingerprint of the loaded skill set (names only) used in the
+/// notice id, so the conversation UI dedups unchanged reruns but surfaces a
+/// fresh notice when the user adds or removes skills.
+fn skill_catalog_fingerprint(catalog: &SkillCatalog) -> String {
+    let mut hasher = Sha256::new();
+    for skill in &catalog.entries {
+        hasher.update(skill.name.as_bytes());
+        hasher.update(b"\n");
+    }
+    format!("{:x}", hasher.finalize())[..8].to_owned()
+}
+
+/// One-line notice listing the skills whose catalog entered the system
+/// prompt. Worded to make clear only the listing is injected up front — the
+/// model still fetches a SKILL.md body on demand.
+fn skill_notice_text(catalog: &SkillCatalog) -> String {
+    let mut text = format!(
+        "笔记本技能清单已就绪（{} 个）：{}，正文由助手按需读取",
+        catalog.entries.len(),
+        catalog
+            .entries
+            .iter()
+            .map(|skill| skill.name.as_str())
+            .collect::<Vec<_>>()
+            .join("、"),
+    );
+    if catalog.truncated {
+        text.push_str("；其余技能因长度限制未列入");
+    }
+    text
+}
+
+/// Render the `## 笔记本技能` block appended after the AGENTS.md section.
+fn skill_catalog_section(catalog: &SkillCatalog) -> String {
+    if catalog.entries.is_empty() {
+        return String::new();
+    }
+    let mut section = String::from(
+        "\n\n## 笔记本技能\n以下是用户安装在当前笔记本的技能清单，每项对应一个 SKILL.md 操作指南。",
+    );
+    section.push_str(
+        "当用户请求与某个技能的用途相关时，先用 file_read 读取对应 SKILL.md，再按其中的步骤执行；读取正文前不要臆测技能内容：",
+    );
+    for skill in &catalog.entries {
+        section.push_str(&format!(
+            "\n- {} — {}（SKILL.md 路径：{}）",
+            skill.name, skill.description, skill.path
+        ));
+    }
+    if catalog.truncated {
+        section.push_str("\n（其余技能因长度限制未列出）");
+    }
+    section
+}
+
 fn system_prompt(
     scope: &ToolScope,
     web_search_enabled: bool,
     agents_md: Option<&str>,
+    skill_catalog: &SkillCatalog,
 ) -> String {
     let today = chrono::Utc::now().format("%Y-%m-%d").to_string();
     let web_search_rule = if web_search_enabled {
@@ -852,12 +1011,13 @@ fn system_prompt(
   · 序号（block/column/line）都从 1 开始；修改前先 list 确认序号。
 - 用户消息中 @标题 形式的提及通常对应 relativePath 为「标题.md」的笔记。
 {web_search_rule}
-- 用用户的语言回答；提到笔记时给出其相对路径；不要虚构笔记内容。{agents_section}",
+- 用用户的语言回答；提到笔记时给出其相对路径；不要虚构笔记内容。{agents_section}{skills_section}",
         name = scope.notebook_name,
         notebook_id = scope.notebook_id,
         today = today,
         web_search_rule = web_search_rule,
         agents_section = agents_section,
+        skills_section = skill_catalog_section(skill_catalog),
     )
 }
 
@@ -1023,5 +1183,138 @@ mod tests {
     #[test]
     fn plain_content_passes_through() {
         assert_eq!(humanize_note_references("普通文本 @笔记.md"), "普通文本 @笔记.md");
+    }
+
+    fn skill_fixture(root: &std::path::Path, id: &str, frontmatter: &str) {
+        let directory = root.join(".agents").join("skills").join(id);
+        std::fs::create_dir_all(&directory).unwrap();
+        std::fs::write(
+            directory.join("SKILL.md"),
+            format!("---\n{frontmatter}\n---\n\n正文步骤"),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn skill_catalog_lists_enabled_described_skills_only() {
+        let tmp = tempfile::tempdir().unwrap();
+        let root = tmp.path();
+        skill_fixture(
+            root,
+            "demo",
+            "id: demo\nname: 日报\ndescription: 生成每日工作日报\nenabled: true",
+        );
+        skill_fixture(
+            root,
+            "off",
+            "id: off\nname: 关闭\ndescription: 不应出现\nenabled: false",
+        );
+        skill_fixture(root, "blank", "id: blank\nname: 无描述");
+
+        let catalog = load_skill_catalog(root);
+        assert_eq!(catalog.entries.len(), 1, "仅 enabled 且有描述的技能进入清单");
+        let entry = &catalog.entries[0];
+        assert_eq!(entry.name, "日报");
+        assert_eq!(entry.description, "生成每日工作日报");
+        assert_eq!(entry.path, ".agents/skills/demo/SKILL.md");
+        assert!(!catalog.truncated);
+    }
+
+    #[test]
+    fn skill_notice_lists_loaded_skill_names() {
+        let catalog = SkillCatalog {
+            entries: vec![
+                SkillCatalogEntry {
+                    name: "日报".into(),
+                    description: "a".into(),
+                    path: "p1".into(),
+                },
+                SkillCatalogEntry {
+                    name: "周报".into(),
+                    description: "b".into(),
+                    path: "p2".into(),
+                },
+            ],
+            truncated: false,
+        };
+        assert_eq!(
+            skill_notice_text(&catalog),
+            "笔记本技能清单已就绪（2 个）：日报、周报，正文由助手按需读取"
+        );
+
+        let truncated = SkillCatalog {
+            entries: catalog.entries,
+            truncated: true,
+        };
+        assert!(
+            skill_notice_text(&truncated).ends_with("；其余技能因长度限制未列入"),
+            "{}",
+            skill_notice_text(&truncated)
+        );
+    }
+
+    #[test]
+    fn skill_notice_fingerprint_tracks_the_loaded_skill_set() {
+        let make = |names: &[&str]| SkillCatalog {
+            entries: names
+                .iter()
+                .map(|name| SkillCatalogEntry {
+                    name: (*name).into(),
+                    description: "d".into(),
+                    path: "p".into(),
+                })
+                .collect(),
+            truncated: false,
+        };
+        assert_eq!(
+            skill_catalog_fingerprint(&make(&["日报", "周报"])),
+            skill_catalog_fingerprint(&make(&["日报", "周报"]))
+        );
+        assert_ne!(
+            skill_catalog_fingerprint(&make(&["日报", "周报"])),
+            skill_catalog_fingerprint(&make(&["日报"]))
+        );
+    }
+
+    #[test]
+    fn skill_catalog_missing_agents_dir_degrades_to_empty() {
+        let tmp = tempfile::tempdir().unwrap();
+        let catalog = load_skill_catalog(tmp.path());
+        assert!(catalog.entries.is_empty());
+        assert!(!catalog.truncated);
+    }
+
+    #[test]
+    fn system_prompt_embeds_skill_catalog_with_read_instruction() {
+        let tmp = tempfile::tempdir().unwrap();
+        let scope = ToolScope {
+            notebook_id: "work".into(),
+            notebook_name: "Work".into(),
+            notebook_path: tmp.path().to_path_buf(),
+            config_dir: tmp.path().join("config"),
+            mark_self_write: Arc::new(|_| {}),
+        };
+        let catalog = SkillCatalog {
+            entries: vec![SkillCatalogEntry {
+                name: "日报".into(),
+                description: "生成每日工作日报".into(),
+                path: ".agents/skills/demo/SKILL.md".into(),
+            }],
+            truncated: false,
+        };
+        let prompt = system_prompt(&scope, false, None, &catalog);
+        assert!(prompt.contains("## 笔记本技能"), "{prompt}");
+        assert!(
+            prompt.contains("- 日报 — 生成每日工作日报（SKILL.md 路径：.agents/skills/demo/SKILL.md）"),
+            "{prompt}"
+        );
+        assert!(prompt.contains("先用 file_read 读取对应 SKILL.md"), "{prompt}");
+
+        let empty = SkillCatalog {
+            entries: Vec::new(),
+            truncated: false,
+        };
+        let without = system_prompt(&scope, false, None, &empty);
+        assert!(!without.contains("笔记本技能"), "{without}");
     }
 }
