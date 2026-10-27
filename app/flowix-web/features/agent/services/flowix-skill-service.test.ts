@@ -45,7 +45,7 @@ beforeEach(() => {
 });
 
 describe('listFlowixSkills', () => {
-  it('filters and maps notebook skills like the pi loader', async () => {
+  it('filters and maps notebook skills, keeping blank descriptions with a name fallback', async () => {
     readNotebookAgentSkills.mockResolvedValue([
       skillFile(),
       skillFile({ id: 'off', commandName: 'off', name: '关', enabled: false }),
@@ -60,6 +60,14 @@ describe('listFlowixSkills', () => {
         name: 'demo',
         description: '一个演示技能',
         displayName: '演示技能',
+        scope: 'workspace',
+      },
+      // Flowix chips are picked manually, so a blank description only
+      // degrades the menu caption; the skill itself stays selectable.
+      {
+        name: 'nod',
+        description: '无描述',
+        displayName: '无描述',
         scope: 'workspace',
       },
       {

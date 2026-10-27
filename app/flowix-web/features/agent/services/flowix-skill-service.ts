@@ -37,7 +37,14 @@ export function resolveFlowixNotebookPath(instance: {
     || undefined;
 }
 
-/** Read notebook skills for the builtin (flowix) composer slash menu. */
+/**
+ * Read notebook skills for the builtin (flowix) composer slash menu.
+ *
+ * Unlike the pi loader, an empty description does not disqualify a skill:
+ * flowix chips are picked manually from the slash menu, so the description
+ * carries no auto-trigger semantics and the settings dialog lets users save
+ * without one. The menu falls back to the skill name for its caption.
+ */
 export async function listFlowixSkills(cwd: string): Promise<readonly ComposerSlashSkill[]> {
   if (!cwd.trim()) return [];
   const skills = await agent.readNotebookAgentSkills(cwd);
@@ -48,13 +55,12 @@ export async function listFlowixSkills(cwd: string): Promise<readonly ComposerSl
     }))
     .filter(({ skill, commandName }) =>
       skill.enabled &&
-      skill.description.trim() &&
       skill.path.replace(/\\/g, "/").endsWith("/SKILL.md") &&
       isValidPiSkillCommandName(commandName),
     )
     .map(({ skill, commandName }) => ({
       name: commandName,
-      description: skill.description,
+      description: skill.description.trim() || skill.name.trim() || commandName,
       displayName: skill.name.trim() || commandName,
       scope: "workspace",
     }));
