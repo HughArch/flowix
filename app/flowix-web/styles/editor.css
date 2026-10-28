@@ -477,6 +477,19 @@ html[data-platform="mac"] .markdown-editor .editor-content {
   tab-size: 5;
 }
 
+/* 手机窄视口 (断点与 use-is-mobile-viewport 的 MOBILE_VIEWPORT_MAX_WIDTH
+ * 一致): 正文与标题头两侧留白 2.5rem → 1rem, 桌面档位在小屏上会吃掉
+ * 近 1/5 的有效阅读宽度。仅收窄左右, 顶部 / 底部留白保持不动。 */
+@media (max-width: 767px) {
+  .markdown-editor .ProseMirror:not(.agent-composer__input-content) {
+    padding-inline: 1rem;
+  }
+
+  .memo-document-header {
+    padding-inline: 1rem;
+  }
+}
+
 /* Browser-column memo surfaces can be read-only while remaining selectable.
  * Make that contract explicit because contenteditable=false alone removes
  * keyboard focus behavior in WebKit. */

@@ -23,6 +23,7 @@ import {
   captureLatestDocumentContent,
   setDocumentEditorMode,
   useDocumentEditorMode,
+  useMobileChromeStore,
   type DocumentEditorMode,
   type DocumentHistoryEntry,
 } from '@features/document/public/shell-api';
@@ -57,6 +58,7 @@ import { useMobileSwipeGestures, useImeVisible } from '@features/shell/hooks/use
 import { isMobileDevice } from '@shared/platform';
 import { ListColumn } from '@features/shell/components/list-column';
 import { ListColumnContent } from '@features/shell/components/list-column-content';
+import { MobileChromeCollapse } from '@features/shell/components/mobile-chrome-collapse';
 import { useI18n } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
 import { toast } from '@/lib/toast';
@@ -616,6 +618,12 @@ export function MainLayout({
   }, []);
   const handleCollapseListColumn = mobileSingleColumn ? () => setMobileListOverlay(false) : collapseMemoList;
   const handleToggleListColumn = mobileSingleColumn ? toggleMobileList : handleToggleMemoList;
+  // ── 移动端滚动收合 chrome ────────────────────────────────────────────
+  // 编辑器上滑浏览时收起标题栏 / 状态栏 (意图由 mobile-chrome-store 的
+  // 滚动追踪器写入), 下滑回看或任何导航 / 列表覆盖时恢复。列表覆盖层
+  // 全屏展示时不收合, 否则标题栏按钮会一起消失。
+  const mobileChromeHidden = useMobileChromeStore((state) => state.hidden);
+  const hideMobileChrome = isMobileDevice() && mobileChromeHidden && !showMobileList;
   // ── 侧栏动画掉帧修复 ────────────────────────────────────────────────
   // 侧栏宽度动画的每一帧都会强制右侧编辑器全量重排 (大 DOM 全宽折行),
   // 平板/手机上表现为明显丢帧。收起/展开的动画期间把文档列宽度冻结在
@@ -625,13 +633,16 @@ export function MainLayout({
   const [frozenListPaneWidth, setFrozenListPaneWidth] = useState<number | null>(null);
   const freezeListPaneDuringAnimation = useCallback(() => {
     if (mobileSingleColumn) return;
+    // reduced-motion 下侧栏宽度动画被禁用 (瞬时切换), 无需冻结文档列。
+    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
     const width = listPaneRef.current?.getBoundingClientRect().width;
     if (!width || width <= 0) return;
     setFrozenListPaneWidth(width);
     if (paneUnfreezeTimerRef.current != null) {
       window.clearTimeout(paneUnfreezeTimerRef.current);
     }
-    paneUnfreezeTimerRef.current = window.setTimeout(() => setFrozenListPaneWidth(null), 220);
+    // 与 ListColumn 的宽度动画时长 (200ms) 对齐, 留一帧余量。
+    paneUnfreezeTimerRef.current = window.setTimeout(() => setFrozenListPaneWidth(null), 240);
   }, [mobileSingleColumn]);
   const handleCollapseListColumnDesktop = useCallback(() => {
     freezeListPaneDuringAnimation();
@@ -648,6 +659,11 @@ export function MainLayout({
     window.addEventListener('flowix:open-note-from-list', handleOpenNote);
     return () => window.removeEventListener('flowix:open-note-from-list', handleOpenNote);
   }, [mobileSingleColumn]);
+  // 导航 / 列表覆盖层变化时恢复 chrome 显示, 避免换页后标题栏 / 状态栏
+  // 停留在滚动收起的隐藏状态。
+  useEffect(() => {
+    useMobileChromeStore.getState().setHidden(false);
+  }, [showMobileList, navigationState.target]);
   // Android 返回键: 抽屉 → 文档返回列表 → 退出应用。
   useMobileBackButton({
     isMobile: isMobileDevice(),
@@ -830,6 +846,38 @@ export function MainLayout({
         }
       : undefined,
   };
+  // 顶部标题栏 / 底部状态栏节点: 桌面直接渲染; 移动端包一层滚动收合容器,
+  // 上滑浏览内容时与状态栏一起收起 (hideMobileChrome)。
+  const workColumnTitlebar = workColumnPresentation.header.kind === 'agent' ? (
+    <AgentConversationTitlebar
+      instanceId={workColumnPresentation.header.instanceId}
+      reserveWindowsControls={!effectiveBrowserColumnVisible}
+      isMiddleColumnCollapsed={effectiveMemoListHidden}
+      isSidebarVisible={noteNavigationPhase !== 'closed'}
+      onExpandSidebar={handleToggleListColumn}
+      canNavigateBack={canNavigateBack}
+      canNavigateForward={canNavigateForward}
+      onNavigateBack={handleNavigateBack}
+      onNavigateForward={handleNavigateForward}
+    />
+  ) : isWindowsPlatform() ? (
+    <DocumentTitlebarWin {...documentTitlebarProps} />
+  ) : (
+    <DocumentTitlebarMac {...documentTitlebarProps} />
+  );
+  const statusBarNode = (
+    <MainStatusBarHost
+      onSelectNotebook={handleSelectNotebook}
+      onEditNotebook={handleEditNotebook}
+      onDeleteNotebook={handleDeleteNotebook}
+      onCreateNotebook={handleCreateNotebook}
+      onOpenTodos={handleOpenTodos}
+      onOpenTagPanel={handleOpenTagPanel}
+      productIntroOpen={productIntroOpen}
+      onProductIntroOpenChange={setProductIntroOpen}
+      updater={updater}
+    />
+  );
 
   return (
     <div
@@ -907,9 +955,18 @@ export function MainLayout({
               />
             </ListColumnContent>
           </ListColumn>
-          {/* List <-> Memo detail divider */}
-          {!effectiveMemoListHidden && !mobileSingleColumn && (
-            <div className="relative z-[60] h-full w-px shrink-0 bg-[var(--divider)]">
+          {/* List <-> Memo detail divider: 保持挂载随侧栏一起淡入淡出,
+              避免收起/展开瞬间 1px 分隔线突兀消失。visibility 按规范在
+              过渡期间保持可见、结束后才翻转 ── 收起后拖拽把手 (绝对定位
+              越界, tabIndex=0) 不残留焦点/命中区域。 */}
+          {!mobileSingleColumn && (
+            <div
+              className={cn(
+                'relative z-[60] h-full shrink-0 bg-[var(--divider)]',
+                'transition-[width,opacity,visibility] duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none',
+                effectiveMemoListHidden ? 'w-0 opacity-0 invisible' : 'w-px opacity-100 visible',
+              )}
+            >
               <ColumnResizeHandle label="调整列表列宽度" width={memoColWidth} onResize={resizeMemoList} onDraggingChange={setIsDraggingListDivider} />
             </div>
           )}
@@ -967,23 +1024,9 @@ export function MainLayout({
               </button>
             )}
             {/* Fixed top navigation bar */}
-            {workColumnPresentation.header.kind === 'agent' ? (
-              <AgentConversationTitlebar
-                instanceId={workColumnPresentation.header.instanceId}
-                reserveWindowsControls={!effectiveBrowserColumnVisible}
-                isMiddleColumnCollapsed={effectiveMemoListHidden}
-                isSidebarVisible={noteNavigationPhase !== 'closed'}
-                onExpandSidebar={handleToggleListColumn}
-                canNavigateBack={canNavigateBack}
-                canNavigateForward={canNavigateForward}
-                onNavigateBack={handleNavigateBack}
-                onNavigateForward={handleNavigateForward}
-              />
-            ) : isWindowsPlatform() ? (
-              <DocumentTitlebarWin {...documentTitlebarProps} />
-            ) : (
-              <DocumentTitlebarMac {...documentTitlebarProps} />
-            )}
+            {isMobileDevice() ? (
+              <MobileChromeCollapse hidden={hideMobileChrome}>{workColumnTitlebar}</MobileChromeCollapse>
+            ) : workColumnTitlebar}
 
             {/* Content area */}
             <div className="relative isolate flex-1 min-w-0 overflow-hidden">
@@ -1058,17 +1101,9 @@ export function MainLayout({
           </div>
           </div>
           {/* Status bar */}
-          <MainStatusBarHost
-            onSelectNotebook={handleSelectNotebook}
-            onEditNotebook={handleEditNotebook}
-            onDeleteNotebook={handleDeleteNotebook}
-            onCreateNotebook={handleCreateNotebook}
-            onOpenTodos={handleOpenTodos}
-            onOpenTagPanel={handleOpenTagPanel}
-            productIntroOpen={productIntroOpen}
-            onProductIntroOpenChange={setProductIntroOpen}
-            updater={updater}
-          />
+          {isMobileDevice() ? (
+            <MobileChromeCollapse hidden={hideMobileChrome}>{statusBarNode}</MobileChromeCollapse>
+          ) : statusBarNode}
         </div>
       </div>
 
