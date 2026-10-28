@@ -46,6 +46,7 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
   const sceneRef = useRef<PersistedScene | null>(null);
   const dirtyRef = useRef(false);
   const timerRef = useRef<number | null>(null);
+  const lastSavedTextRef = useRef<string | null>(null);
 
   const retryLoad = useCallback(() => setRetryToken((token) => token + 1), []);
 
@@ -68,6 +69,7 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
           appState: readPersistedAppState(document),
           files: document.files as BinaryFiles,
         };
+        lastSavedTextRef.current = text;
         setState({ status: 'ready', document });
       } catch (error) {
         setState({ status: 'error', message: error instanceof CanvasParseError ? error.message : String(error) });
@@ -87,10 +89,18 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
     const scene = sceneRef.current;
     if (!document || !scene || !dirtyRef.current) return true;
     const { text, droppedFileCount } = serializeCanvasDocument(document, scene.elements, scene.appState, scene.files);
+    // Excalidraw fires onChange on mount and for selection-only tweaks; skip
+    // the write when the serialized bytes match what is already on disk so an
+    // opened-but-unedited canvas never touches the sync channel.
+    if (text === lastSavedTextRef.current) {
+      dirtyRef.current = false;
+      return true;
+    }
     try {
       const saved = await files.write(filePath, text, undefined, notebookPath ?? undefined);
       if (!saved) throw new Error('write_file returned false');
       dirtyRef.current = false;
+      lastSavedTextRef.current = text;
       if (droppedFileCount > 0) toast.warning(t('canvas.save.filesDropped', { count: droppedFileCount }));
       return true;
     } catch (error) {
