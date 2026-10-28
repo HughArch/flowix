@@ -11,7 +11,7 @@ declare module '@tiptap/core' {
     interface Storage {
         attachmentLink: {
             getNotebookId?: () => string | undefined;
-            /** Absolute path for a persisted attachment key (relative or legacy absolute). */
+            /** Absolute path for a persisted notebook-relative attachment key. */
             resolveStorageKey?: (storageKey: string) => string;
         };
     }

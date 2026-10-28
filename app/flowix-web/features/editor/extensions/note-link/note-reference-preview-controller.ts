@@ -24,8 +24,7 @@ interface NoteReferencePreviewControllerOptions {
 function noteReferenceThumbnailUrl(thumbnail: string | null, notebookPath?: string | null): string | null {
   if (!thumbnail) return null;
   const storageKey = decodeStorageKey(thumbnail);
-  // Attachment keys are notebook-relative (or legacy absolute paths synced
-  // from another device), so resolve them against the referenced note's notebook.
+  // Attachment keys are notebook-relative; resolve against the referenced note's notebook.
   return storageKey ? resolveAttachmentUrl(storageKey, notebookPath) : thumbnail;
 }
 

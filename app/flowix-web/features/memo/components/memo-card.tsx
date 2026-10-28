@@ -76,8 +76,7 @@ interface MemoCardShellProps {
 function thumbnailSrc(thumbnail: string | null | undefined, notebookPath?: string | null): string | null {
   if (!thumbnail) return null;
   const storageKey = decodeStorageKey(thumbnail);
-  // Attachment keys are notebook-relative (or legacy absolute paths from
-  // another device), so they must resolve against this device's notebook root.
+  // Attachment keys are notebook-relative; resolve against this device's root.
   return storageKey ? resolveAttachmentUrl(storageKey, notebookPath) : thumbnail;
 }
 

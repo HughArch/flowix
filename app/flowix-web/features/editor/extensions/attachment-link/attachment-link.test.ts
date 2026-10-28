@@ -46,19 +46,4 @@ describe('AttachmentLink storage key resolution', () => {
     // Joined keys use the canonical forward-slash form.
     expect(img?.dataset.src).toBe('asset://localhost/C%3A%2Fvault%2Fattachments%2Fphoto.jpg');
   });
-
-  it('rebases a legacy absolute key synced from another device', () => {
-    const editor = createEditor(
-      {
-        src: 'asset://localhost/D%3A%5Cflowix%5Cattachments%5Cphoto.jpg',
-        alt: 'photo',
-        storageMode: 'attachment',
-        storageKey: 'D:\\flowix\\attachments\\photo.jpg',
-      },
-      '/data/flowix',
-    );
-
-    const img = editor.view.dom.querySelector('img');
-    expect(img?.dataset.src).toBe('asset://localhost/%2Fdata%2Fflowix%2Fattachments%2Fphoto.jpg');
-  });
 });

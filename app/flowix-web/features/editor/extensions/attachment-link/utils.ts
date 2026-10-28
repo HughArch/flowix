@@ -27,53 +27,30 @@ export function safeFileName(name: string): string {
   return name.replace(/[\\/:*?"<>|]/g, '_');
 }
 
-const WINDOWS_ABSOLUTE_KEY = /^[a-zA-Z]:[\\/]/;
-const UNC_ABSOLUTE_KEY = /^[\\/]{2}[^\\/]/;
-const ATTACHMENTS_TAIL_KEY = /(?:^|[\\/])attachments[\\/]([^\\/]+)$/i;
+const ABSOLUTE_KEY = /^[a-zA-Z]:[\\/]|^\//;
 
-/** Whether a storage key is a device-local absolute path rather than a notebook-relative key. */
+/** Whether a storage key is already a device-local absolute path. */
 export function isAbsoluteStorageKey(storageKey: string): boolean {
-  const key = storageKey.trim();
-  return WINDOWS_ABSOLUTE_KEY.test(key) || UNC_ABSOLUTE_KEY.test(key) || key.startsWith('/');
-}
-
-function comparablePath(path: string): string {
-  const canonical = canonicalPath(path).replace(/\/+$/, '');
-  // Drive-letter paths are case-insensitive; POSIX paths are not.
-  return WINDOWS_ABSOLUTE_KEY.test(canonical) ? canonical.toLowerCase() : canonical;
+  return ABSOLUTE_KEY.test(storageKey.trim());
 }
 
 /**
  * Resolve a persisted attachment key to an absolute path on this device.
  *
- * New content stores notebook-relative keys (`attachments/photo.jpg`) so the
- * same note works after FNS sync on another device. Older content persisted
- * absolute paths; when such a path does not belong to a local notebook it is
- * rebased onto the owning notebook's `attachments/` directory, because the sync
- * channel keeps the notebook-relative layout.
+ * Content stores notebook-relative keys (`attachments/photo.jpg`) so the same
+ * note works after FNS sync on another device; each device joins the key onto
+ * its own notebook root.
  */
 export function resolveAttachmentStorageKey(
   storageKey: string,
   notebookPath?: string | null,
 ): string {
   const key = storageKey.trim();
-  if (!key) return key;
+  if (!key || isAbsoluteStorageKey(key)) return key;
   const root = notebookPath ? canonicalDirectoryPath(notebookPath) : null;
-  if (!isAbsoluteStorageKey(key)) {
-    if (!root) return key;
-    const relative = canonicalPath(key).replace(/^\/+/, '');
-    return root === '/' ? `/${relative}` : `${root}/${relative}`;
-  }
   if (!root) return key;
-
-  const comparableKey = comparablePath(key);
-  const comparableRoot = comparablePath(root);
-  if (comparableKey === comparableRoot || comparableKey.startsWith(`${comparableRoot}/`)) {
-    return key;
-  }
-
-  const tail = ATTACHMENTS_TAIL_KEY.exec(canonicalPath(key));
-  return tail ? `${root === '/' ? '' : root}/attachments/${tail[1]}` : key;
+  const relative = canonicalPath(key).replace(/^\/+/, '');
+  return root === '/' ? `/${relative}` : `${root}/${relative}`;
 }
 
 /** `asset:` URL for a persisted key, resolved against the owning notebook. */
