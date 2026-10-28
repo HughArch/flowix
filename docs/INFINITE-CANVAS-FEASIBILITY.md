@@ -225,3 +225,32 @@ B 的真实基座是 **react-flow 骨架 + 自研业务层**（吸收 AFFiNE 的
 | 手绘层 | Excalidraw（降级为笔迹供应商） | elements 字段存 excalidraw elements；只读走 exportToSvg，编辑走覆盖层模式 |
 
 react-flow 替我们免写约 60-70% 的通用画布管道工程；纯自研 canvas2d（AFFiNE 式）是 react-flow 撞到硬上限后的最后手段。
+
+## 11. 存储模型决策：独立文件 + 引用，不做 AFFiNE 式笔记画布融合
+
+结论：画布是**独立文件（引用模型）**，卡片通过 memoId 指向笔记，笔记文件零改动；**不采用**「每篇笔记自带/融合一块画布」的 AFFiNE 模型。
+
+### 11.1 AFFiNE 融合模型的前提在 Flowix 不成立
+
+AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖其**数据库存储**（每 doc 一个 Yjs 文档存 SQLite，画布元素是 doc 内的 surface block）。「笔记=画布」是存储架构的推论，不可单独移植。Flowix 是 .md 文件 + FNS 文件级同步，融合模型的具体代价：
+
+1. **污染笔记管线**：画布 JSON 进 .md = 进索引 → FTS 坐标噪音、agent note_read 读到垃圾、markdown 可移植性破功。
+2. **冲突风险引向笔记**：画布高频编辑每次重写笔记文件 → 笔记通道同步流量与 conflict 风险；独立文件则把冲突爆炸半径隔离在画布文件内。
+3. **复现已修的性能坑**：打开笔记需检查/加载画布 surface，即 document-open 延迟修复中「surface 按文档重挂」同类问题。
+4. **绝大多数笔记不需要画布**，自动挂载是浪费与 UI 噪音。
+
+### 11.2 引用模型的净收益
+
+多对多严格强于 1:1：一篇笔记可同时出现在多块画布（项目总览/周报/研究图谱），一块画布组织多篇笔记。Heptabase / Obsidian Canvas / tldraw docs 均为引用模型。
+
+### 11.3 用桥接补齐 AFFiNE 的无缝体验（不融合存储）
+
+1. **反向链接入口**：笔记 surface 显示「出现在 N 块画布」→ 跳转（轻量前端扫描 memoId，不碰 memo 索引门槛）。
+2. **笔记内画布预览块**：仿 mermaid 模式（lazy + 只读预览），编辑器扩展位。
+3. **双向创建流**：笔记「从此笔记创建画布」（首卡即本笔记）；画布「卡片转成新笔记」。
+
+### 11.4 缺口与补救
+
+- **画布无版本历史**：versions.rs 已覆盖非 md 的 `attachments/`，机制未锁死 md——把 `.flowix-canvas` 加入快照范围是定向小改（不动 IsMd 门槛），排入 Phase 2。
+- **可发现性**：`DocTreeResourceKind` 加 canvas 分类（改动清单第 7 项），避免显示为 Other。
+- 保存位置：画布文件放笔记本目录树用户选择处（与笔记同级），不藏内部目录——必须 FNS 可见。
