@@ -1050,9 +1050,9 @@ fn system_prompt(
 - note_write 会整篇覆盖正文，仅在重写整篇时使用。
 - note_delete 是硬删除且不可恢复：**必须先向用户说明要删除哪篇，并得到用户明确同意后才能调用**；用户未确认时绝不删除。
 - 新建笔记前先确认位置（哪个文件夹/相对路径）。用户没说位置时先询问，不要默认建在根目录。
-- 新建笔记用 note_create。默认只补充 created 日期（工具会自动写入）；**不要默认添加颜色或标签**：
-  · tags / colors 只在用户明确要求，或内容主题明显需要分类时添加
-  · icon 可选，用户未要求时可省略
+- 新建笔记用 note_create。默认只补充 created 日期（工具会自动写入）；**颜色默认不添加**，但需要根据笔记内容添加合适的标签和图标：
+  · tags / icon：创建时默认根据内容主题选择贴合的值
+  · colors 只在用户明确要求时添加
   · 其他属性通过 properties 传入
   这些通过 note_create 的 tags/icon/colors/properties 参数传入，不要手写 YAML frontmatter。
 - 新建文档要排版精美：合理使用标题层级、列表、表格；在合适位置用 callout/toggle/columns/background 工具突出重点、分组信息、对比内容，避免堆砌。
