@@ -209,3 +209,19 @@ B 的最大代价：**卡内渲染**。画布上几十张卡不得各挂一个 T
 - 工期预期：Phase 1 以周计，Phase 2 以月计；桌面先行，移动端只读摘要策略。
 
 一句话：**A 是一个功能，B 是一个平台；Flowix 该要的是平台，而平台的地基恰好就是 A。**
+
+### 10.5 B 的基座选择：不是 Excalidraw 二次开发
+
+B 的卡片层**不能**基于 Excalidraw 二开：其 public API 不支持自定义 element type（元素类型写死，无法注册「note-card 元素」用 React 渲染活卡片），fork 整个白板 = 永久背上上游 rebase 负担，框架外挂 hack（Obsidian 插件式的图片快照嵌入）= 卡片是死的。能力错位：Excalidraw 的强项（手绘平滑、图形工具箱）恰是 B 不太需要的，短板（封闭元素模型）恰是 B 最需要的。技术上最合适的 tldraw（custom shape 一等公民）被商用许可排除。
+
+B 的真实基座是 **react-flow 骨架 + 自研业务层**（吸收 AFFiNE 的架构分层思想，不背 BlockSuite 框架）：
+
+| 层 | 提供方 | 内容 |
+|---|---|---|
+| 格式层 | 自研 | `.flowix-canvas` schema（cards + elements） |
+| 画布骨架 | react-flow（MIT） | 视口/缩放平移、节点拖拽、连线交互、框选、小地图 |
+| 卡片节点 | 自研（React 组件） | memo 只读摘要、数据绑定、点开进笔记 surface |
+| 知识层 | 自研 | 反向链接扫描、agent canvas_* 工具 |
+| 手绘层 | Excalidraw（降级为笔迹供应商） | elements 字段存 excalidraw elements；只读走 exportToSvg，编辑走覆盖层模式 |
+
+react-flow 替我们免写约 60-70% 的通用画布管道工程；纯自研 canvas2d（AFFiNE 式）是 react-flow 撞到硬上限后的最后手段。
