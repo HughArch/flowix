@@ -361,6 +361,20 @@ export type NotebookAssetSaveOptions = {
 };
 
 export const notebookAssets = {
+  /** Persist inline bytes (canvas images, clipboard payloads) as an attachment. */
+  saveContent: (params: {
+    content: string;
+    fileName: string;
+    notebookId?: string;
+    notePath?: string;
+    deduplicate?: boolean;
+  }) => invoke<NotebookAssetSaveResult>('save_notebook_asset_content', {
+    contentBase64: params.content,
+    fileName: params.fileName,
+    ...(params.notebookId ? { notebookId: params.notebookId } : {}),
+    ...(params.notePath ? { notePath: params.notePath } : {}),
+    deduplicate: params.deduplicate ?? true,
+  }),
   /** Save with same-name SHA-256 deduplication; local-path reuse is opt-in. */
   saveFromPath: (sourcePath: string, options: NotebookAssetSaveOptions) =>
     invoke<NotebookAssetSaveResult | null>('save_notebook_asset', {

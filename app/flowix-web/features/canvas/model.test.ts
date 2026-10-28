@@ -2,9 +2,12 @@ import { describe, expect, it } from 'vitest';
 import {
   CANVAS_DOCUMENT_TYPE,
   CanvasParseError,
+  canvasFileNameFor,
   createCanvasDocumentText,
+  dataUrlPayload,
   isCanvasFilePath,
   parseCanvasDocument,
+  readCanvasFileEntries,
   readPersistedAppState,
   serializeCanvasDocument,
 } from './model';
@@ -87,5 +90,40 @@ describe('serializeCanvasDocument', () => {
     expect(droppedFileCount).toBe(1);
     const parsed = JSON.parse(serializeCanvasDocument(document, [], {}, { keep: small, drop: huge }).text);
     expect(Object.keys(parsed.files)).toEqual(['keep']);
+  });
+});
+
+describe('externalized bitmaps', () => {
+  it('persists a storage key instead of the inline data URL', () => {
+    const document = parseCanvasDocument(createCanvasDocumentText());
+    const { text } = serializeCanvasDocument(
+      document,
+      [],
+      {},
+      { img1: { id: 'img1', mimeType: 'image/png', dataURL: 'data:image/png;base64,AAAA' } },
+      new Map([['img1', 'attachments/img1.png']]),
+    );
+    const parsed = JSON.parse(text);
+    expect(parsed.files.img1).toEqual({ id: 'img1', mimeType: 'image/png', storageKey: 'attachments/img1.png' });
+  });
+
+  it('reads entries written with a key or as legacy inline data', () => {
+    const entries = readCanvasFileEntries({
+      a: { id: 'a', mimeType: 'image/png', storageKey: 'attachments/a.png' },
+      b: { id: 'b', mimeType: 'image/jpeg', dataURL: 'data:image/jpeg;base64,BBBB' },
+      broken: { dataURL: 'not-a-data-url' },
+    });
+    expect(entries).toEqual([
+      { id: 'a', mimeType: 'image/png', storageKey: 'attachments/a.png' },
+      { id: 'b', mimeType: 'image/jpeg', dataURL: 'data:image/jpeg;base64,BBBB' },
+    ]);
+  });
+
+  it('derives payloads, file names and extensions', () => {
+    expect(dataUrlPayload('data:image/png;base64,AAAA')).toBe('AAAA');
+    expect(dataUrlPayload('https://example.com/a.png')).toBeNull();
+    expect(canvasFileNameFor('img1', 'image/jpeg')).toBe('img1.jpg');
+    expect(canvasFileNameFor('img1', 'image/svg+xml')).toBe('img1.svg');
+    expect(canvasFileNameFor('img1', 'application/octet-stream')).toBe('img1.png');
   });
 });

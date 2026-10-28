@@ -270,6 +270,55 @@ pub async fn save_file_dialog(
 
 // ==================== IPC: notebook asset import ====================
 
+/// Persist attachment bytes supplied inline (canvas images, clipboard payloads).
+///
+/// Content-based counterpart of [`save_notebook_asset`]: callers hand over a
+/// base64 payload instead of a local path, and the notebook-relative `key` in
+/// the result is what note/canvas content persists.
+#[tauri::command]
+pub async fn save_notebook_asset_content(
+    content_base64: String,
+    file_name: String,
+    notebook_id: Option<String>,
+    note_path: Option<String>,
+    deduplicate: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<attachments::SavedNotebookAsset, String> {
+    let permit = upload_quota::UPLOAD_QUOTA.acquire()?;
+    let name = file_name.trim().to_string();
+    if name.is_empty() || name.contains(['/', '\\']) {
+        return Err("Invalid attachment file name".to_string());
+    }
+    if content_base64.len() > attachments::MAX_ATTACHMENT_BYTES as usize * 4 / 3 + 4 {
+        return Err("ATTACHMENT_FILE_TOO_LARGE".to_string());
+    }
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(content_base64.as_bytes())
+        .map_err(|error| format!("ATTACHMENT_BASE64_INVALID: {error}"))?;
+    if bytes.len() as u64 > attachments::MAX_ATTACHMENT_BYTES {
+        return Err("ATTACHMENT_FILE_TOO_LARGE".to_string());
+    }
+    let memo_file = state.memo_file.clone();
+    let deduplicate = deduplicate.unwrap_or(true);
+    tokio::task::spawn_blocking(move || -> Result<attachments::SavedNotebookAsset, String> {
+        let _permit = permit;
+        let store = read_lock(&memo_file, "memo_file");
+        let mut reader = std::io::Cursor::new(bytes);
+        attachments::save_for_owner(
+            &store,
+            notebook_id.as_deref(),
+            note_path.as_deref(),
+            &name,
+            &mut reader,
+            deduplicate,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub async fn save_notebook_asset(
     window: tauri::WebviewWindow,

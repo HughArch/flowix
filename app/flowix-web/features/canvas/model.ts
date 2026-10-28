@@ -30,6 +30,18 @@ export interface PersistedCanvasAppState {
   gridModeEnabled?: boolean;
 }
 
+/**
+ * Persisted image reference. New content stores a notebook-relative
+ * `storageKey` (resolved through the attachments directory on each device);
+ * `dataURL` remains readable for canvases written before externalization.
+ */
+export interface CanvasFileEntry {
+  id: string;
+  mimeType: string;
+  storageKey?: string;
+  dataURL?: string;
+}
+
 export interface FlowixCanvasDocument {
   type: 'flowix/canvas';
   version: 1;
@@ -112,6 +124,49 @@ export function parseCanvasDocument(text: string): FlowixCanvasDocument {
   return document;
 }
 
+const DATA_URL_RE = /^data:([^;,]+)?(?:;[^,]*)?;base64,/i;
+
+/** Normalize the persisted `files` map into typed entries. */
+export function readCanvasFileEntries(files: Record<string, unknown>): CanvasFileEntry[] {
+  const entries: CanvasFileEntry[] = [];
+  for (const [id, value] of Object.entries(files)) {
+    if (!isPlainObject(value)) continue;
+    const mimeType = typeof value.mimeType === 'string' ? value.mimeType : 'image/png';
+    const storageKey = typeof value.storageKey === 'string' && value.storageKey.trim()
+      ? value.storageKey
+      : undefined;
+    const dataURL = typeof value.dataURL === 'string' && DATA_URL_RE.test(value.dataURL)
+      ? value.dataURL
+      : undefined;
+    if (storageKey || dataURL) entries.push({ id, mimeType, ...(storageKey ? { storageKey } : {}), ...(dataURL ? { dataURL } : {}) });
+  }
+  return entries;
+}
+
+/** `data:image/png;base64,AAAA` -> `AAAA`. */
+export function dataUrlPayload(dataURL: string): string | null {
+  const match = DATA_URL_RE.exec(dataURL);
+  if (!match) return null;
+  return dataURL.slice(match[0].length);
+}
+
+const EXTENSION_BY_MIME: Record<string, string> = {
+  'image/png': 'png',
+  'image/jpeg': 'jpg',
+  'image/gif': 'gif',
+  'image/webp': 'webp',
+  'image/svg+xml': 'svg',
+  'image/bmp': 'bmp',
+  'image/avif': 'avif',
+  'image/x-icon': 'ico',
+};
+
+/** File name used when persisting a canvas bitmap into attachments/. */
+export function canvasFileNameFor(id: string, mimeType: string): string {
+  const extension = EXTENSION_BY_MIME[mimeType] ?? 'png';
+  return `${id}.${extension}`;
+}
+
 /**
  * Merge live editor state into a document and serialize it.
  * Returns the JSON text plus how many oversized bitmaps were dropped; the view
@@ -122,12 +177,20 @@ export function serializeCanvasDocument(
   elements: readonly unknown[],
   appState: PersistedCanvasAppState | null | undefined,
   files: Record<string, unknown> | null | undefined,
+  storageKeys?: ReadonlyMap<string, string>,
 ): { text: string; droppedFileCount: number } {
   const keptElements = elements.filter(isPlainObject).slice(0, MAX_CANVAS_ELEMENTS);
   const keptFiles: Record<string, unknown> = {};
   let totalBytes = 0;
   let droppedFileCount = 0;
   for (const [id, file] of Object.entries(files ?? {})) {
+    const mimeType = isPlainObject(file) && typeof file.mimeType === 'string' ? file.mimeType : 'image/png';
+    // Externalized bitmaps live in attachments/; only their key is persisted.
+    const storageKey = storageKeys?.get(id);
+    if (storageKey) {
+      keptFiles[id] = { id, mimeType, storageKey };
+      continue;
+    }
     const size = dataUrlByteLength(file);
     if (size > MAX_CANVAS_FILE_BYTES || totalBytes + size > MAX_CANVAS_FILES_TOTAL_BYTES) {
       droppedFileCount += 1;
