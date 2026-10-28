@@ -1,12 +1,12 @@
 'use client';
 
-import { useState, type ReactNode } from 'react';
+import { useEffect, useState, type ReactNode } from 'react';
 import { Check, Copy } from 'lucide-react';
 import { useAppUpdater } from '@features/shell/hooks/use-app-updater';
 import { Select, SelectTrigger, SelectContent, SelectItem } from '@shared/ui/select';
 import { Button } from '@shared/ui/button';
 import { UpdateProgress } from '@shared/ui/update-progress';
-import type { ProductInfo } from '@platform/tauri/client';
+import { autostart, type ProductInfo } from '@platform/tauri/client';
 import { toast } from '@/lib/toast';
 import {
   FieldRow,
@@ -14,23 +14,73 @@ import {
   FIELD_TITLE_CLASS,
 } from '@features/preferences/sections/primitives';
 import { LANGUAGE_OPTIONS, useI18n, type AppLanguage } from '@/lib/i18n';
+import type { WindowCloseAction } from '@/lib/constants';
 
 interface GeneralSectionProps {
   language: AppLanguage;
   productInfo: ProductInfo | null;
+  windowCloseAction: WindowCloseAction;
   afterGeneral?: ReactNode;
   updateSettings: (updates: {
     language?: AppLanguage;
+    windowCloseAction?: WindowCloseAction;
     productUpdates?: Partial<{ lastCheckedAt: number }>;
   }) => Promise<void>;
 }
 
-export function GeneralSection({ language, productInfo, afterGeneral, updateSettings }: GeneralSectionProps) {
+export function GeneralSection({
+  language,
+  productInfo,
+  windowCloseAction,
+  afterGeneral,
+  updateSettings,
+}: GeneralSectionProps) {
   const { t } = useI18n();
   const [versionCopied, setVersionCopied] = useState(false);
   const updater = useAppUpdater();
   const currentLanguageLabel =
     LANGUAGE_OPTIONS.find((option) => option.value === language)?.label ?? language;
+
+  // 托盘相关设置只在桌面端有意义; 移动端 (productInfo.os 为 android/ios) 隐藏。
+  const isDesktop =
+    productInfo?.os === 'windows' || productInfo?.os === 'macos' || productInfo?.os === 'linux';
+  // 开机自启状态真源在 OS (注册表 / LaunchAgent), 不进 UserSettings; 插件 API 异步读。
+  const [autostartState, setAutostartState] = useState<'loading' | 'on' | 'off'>('loading');
+
+  useEffect(() => {
+    if (!isDesktop) return;
+    let cancelled = false;
+    setAutostartState('loading');
+    autostart
+      .isEnabled()
+      .then((enabled) => {
+        if (!cancelled) setAutostartState(enabled ? 'on' : 'off');
+      })
+      .catch(() => {
+        if (!cancelled) setAutostartState('off');
+      });
+    return () => {
+      cancelled = true;
+    };
+  }, [isDesktop]);
+
+  const handleToggleAutostart = async (value: string) => {
+    const desired = value === 'on';
+    if (autostartState === 'loading' || desired === (autostartState === 'on')) return;
+    const previous = autostartState;
+    setAutostartState(desired ? 'on' : 'off'); // 乐观更新, 失败回滚
+    try {
+      if (desired) await autostart.enable();
+      else await autostart.disable();
+    } catch {
+      setAutostartState(previous);
+      toast.error(t('preferences.general.autostart.failed'));
+    }
+  };
+
+  const handleCloseActionChange = (value: string) => {
+    void updateSettings({ windowCloseAction: value === 'exit' ? 'exit' : 'minimize' });
+  };
 
   const handleCheckProductUpdates = async () => {
     try {
@@ -102,6 +152,60 @@ export function GeneralSection({ language, productInfo, afterGeneral, updateSett
           </SelectContent>
         </Select>
       </FieldRow>
+
+      {isDesktop && (
+        <>
+          <FieldRow
+            title={t('preferences.general.windowClose.title')}
+            description={t('preferences.general.windowClose.description')}
+            controlId="preferences-window-close"
+          >
+            <Select value={windowCloseAction} onValueChange={handleCloseActionChange}>
+              <SelectTrigger id="preferences-window-close" className="w-40">
+                <span>
+                  {t(
+                    windowCloseAction === 'exit'
+                      ? 'preferences.general.windowClose.exit'
+                      : 'preferences.general.windowClose.minimize',
+                  )}
+                </span>
+              </SelectTrigger>
+              <SelectContent className="flowix-preferences-select-content">
+                <SelectItem value="minimize">
+                  {t('preferences.general.windowClose.minimize')}
+                </SelectItem>
+                <SelectItem value="exit">{t('preferences.general.windowClose.exit')}</SelectItem>
+              </SelectContent>
+            </Select>
+          </FieldRow>
+
+          <FieldRow
+            title={t('preferences.general.autostart.title')}
+            description={t('preferences.general.autostart.description')}
+            controlId="preferences-autostart"
+          >
+            <Select
+              value={autostartState === 'on' ? 'on' : 'off'}
+              onValueChange={(value) => void handleToggleAutostart(value)}
+              disabled={autostartState === 'loading'}
+            >
+              <SelectTrigger id="preferences-autostart" className="w-40">
+                <span>
+                  {t(
+                    autostartState === 'on'
+                      ? 'preferences.general.autostart.on'
+                      : 'preferences.general.autostart.off',
+                  )}
+                </span>
+              </SelectTrigger>
+              <SelectContent className="flowix-preferences-select-content">
+                <SelectItem value="on">{t('preferences.general.autostart.on')}</SelectItem>
+                <SelectItem value="off">{t('preferences.general.autostart.off')}</SelectItem>
+              </SelectContent>
+            </Select>
+          </FieldRow>
+        </>
+      )}
 
       {afterGeneral}
 

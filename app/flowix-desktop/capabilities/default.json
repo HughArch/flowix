@@ -20,6 +20,7 @@
     "core:window:allow-toggle-maximize",
     "core:window:allow-close",
     "core:window:allow-destroy",
-    "process:allow-exit"
+    "process:allow-exit",
+    "autostart:default"
   ]
 }

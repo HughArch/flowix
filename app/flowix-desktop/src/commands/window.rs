@@ -162,8 +162,9 @@ pub async fn apply_window_theme(
     receiver.await.map_err(|error| error.to_string())
 }
 
-/// Keep the native application menu in sync with the frontend language.
+/// Keep the native application menu and the tray menu in sync with the frontend language.
 #[tauri::command]
 pub fn apply_menu_language(language: String, app: tauri::AppHandle) -> Result<(), String> {
-    crate::app::native_menu::set_language(&app, &language).map_err(|error| error.to_string())
+    crate::app::native_menu::set_language(&app, &language).map_err(|error| error.to_string())?;
+    crate::app::tray::set_language(&app, &language).map_err(|error| error.to_string())
 }

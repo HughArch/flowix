@@ -203,6 +203,12 @@ pub fn run() {
     }));
     #[cfg(desktop)]
     let builder = builder.plugin(tauri_plugin_updater::Builder::new().build());
+    // 开机自启动 ── 桌面专属插件; 以 --hidden 拉起, 开机后静默常驻托盘。
+    #[cfg(desktop)]
+    let builder = builder.plugin(tauri_plugin_autostart::init(
+        tauri_plugin_autostart::MacosLauncher::LaunchAgent,
+        Some(vec!["--hidden"]),
+    ));
     let builder = builder
         .plugin(tauri_plugin_opener::init())
         .plugin(tauri_plugin_dialog::init())
@@ -354,6 +360,12 @@ pub fn run() {
                 };
                 crate::window_chrome::apply_window_chrome_theme(&window, theme);
 
+                // 开机自启动以 --hidden 拉起: 静默进后台 (托盘常驻), 不弹主窗口。
+                #[cfg(desktop)]
+                if std::env::args().any(|arg| arg == "--hidden") {
+                    let _ = window.hide();
+                }
+
                 // Theme::System 时跟�?OS 明暗实时切换窗口背景�? 仅当窗口�??显式
                 // theme (�?��用所有窗口都�? �?Tauri 才派�?ThemeChanged, 故这�?                // 监听主窗口即�?��发一次全局刷新 (apply_window_chrome_theme_all 遍历所有窗�?�?
                 let app_for_window_event = app.handle().clone();
@@ -386,6 +398,10 @@ pub fn run() {
                     }
                 });
             }
+
+            // 系统托盘 ── 桌面专属; 菜单文案读偏好语言, 故在 AppState manage 之后。
+            #[cfg(desktop)]
+            crate::app::tray::setup(app.handle())?;
 
             // �?setup 阶�? manage dispatcher, 因为
             // TauriDispatcher::new 需�?AppHandle, builder chain 里拿不到�?
@@ -1332,6 +1348,17 @@ fn handle_run_event(app: &tauri::AppHandle, event: tauri::RunEvent) {
                     .map(|path| path.to_string_lossy().into_owned()).collect();
                 open_targets::dispatch(&app, paths, "macos-opened");
             });
+        }
+        // macOS: 点击 Dock 图标的 Reopen 事件 ── 「关闭即隐藏」后 Dock 是
+        // 除托盘外恢复主窗口的入口。已有可见窗口时保持系统默认行为。
+        #[cfg(target_os = "macos")]
+        tauri::RunEvent::Reopen { has_visible_windows, .. } => {
+            if commands::window_shutdown::is_exiting() {
+                return;
+            }
+            if !has_visible_windows {
+                open_targets::focus_main_window(app);
+            }
         }
         tauri::RunEvent::ExitRequested { api, code, .. } => {
             if !commands::window_shutdown::request_exit(app, code.unwrap_or(0)) {

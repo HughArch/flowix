@@ -7,6 +7,9 @@ use std::{
 };
 use tauri::{AppHandle, Emitter, Manager};
 
+use crate::app::state::AppState;
+use crate::config::WindowCloseAction;
+
 #[path = "window_lifetime.rs"]
 mod lifetime;
 #[path = "window_shutdown_state.rs"]
@@ -65,6 +68,13 @@ enum Completion {
     Exit(i32),
     #[cfg(windows)]
     Prepared(tokio::sync::oneshot::Sender<UpdatePreparation>),
+}
+
+/// 读取主窗口关闭行为；AppState 未就绪 (极端时序) 时按默认最小化处理。
+fn close_action(app: &AppHandle) -> WindowCloseAction {
+    app.try_state::<AppState>()
+        .map(|state| state.user_config.get_preference().window_close_action)
+        .unwrap_or_default()
 }
 fn state() -> &'static Mutex<Shutdown> {
     static STATE: OnceLock<Mutex<Shutdown>> = OnceLock::new();
@@ -171,6 +181,16 @@ pub(crate) fn on_window_event(window: &tauri::Window, event: &tauri::WindowEvent
 
 fn request_target(target: Arc<CloseTarget>, started: Instant) {
     if !target.lifetime.is_alive() {
+        return;
+    }
+    // 「关闭 = 最小化到后台」在进入文档保存协调前改道：直接隐藏主窗口，
+    // 不触发保存管线，也不武装 watchdog。仅主窗口生效，偏好窗口照常关闭；
+    // 真正的退出路径 (托盘退出 / ExitRequested / 更新) 由 is_exiting() 放行。
+    if !is_exiting()
+        && target.window.label() == "main"
+        && close_action(target.window.app_handle()) == WindowCloseAction::Minimize
+    {
+        let _ = target.window.hide();
         return;
     }
     let mut first = false;

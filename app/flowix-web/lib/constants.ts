@@ -79,6 +79,9 @@ export type { PropertyFieldType, PropertyPresetOption, PropertyFieldConfig, Prop
 
 export type MemoListView = 'detailed' | 'folders';
 
+/** 主窗口关闭按钮行为 ── minimize: 隐藏到系统托盘后台 (默认); exit: 直接退出。 */
+export type WindowCloseAction = 'minimize' | 'exit';
+
 export interface AgentsConfig {
   enabledByType: Partial<Record<AgentTypeKey, boolean>>;
 }
@@ -106,6 +109,8 @@ export interface UserSettings {
   memoListView: MemoListView;
   /** Whether newly created notes are automatically opened in the Browser Column. */
   autoOpenCreatedNotesInBrowser: boolean;
+  /** 主窗口关闭按钮行为; 持久化到 preference.json 的 `windowCloseAction`。 */
+  windowCloseAction: WindowCloseAction;
   /**
    * 快捷键用户覆盖层 — actionId → chord 字符串 (e.g. 'Mod+Shift+K')。
    * 只存与 ActionDefinition.defaultBinding 不同的部分, 缺省走默认。
@@ -255,6 +260,7 @@ export const DEFAULT_USER_SETTINGS: UserSettings = {
   region: 'mainland',
   memoListView: 'folders',
   autoOpenCreatedNotesInBrowser: true,
+  windowCloseAction: 'minimize',
   // 启动时无任何用户覆盖, 所有 action 走 ActionDefinition.defaultBinding。
   shortcuts: {},
   agents: {
