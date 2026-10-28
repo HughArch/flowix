@@ -287,3 +287,10 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 - **移动端**：同一 bundle 直接可用；`viewModeEnabled` 跟随 host readOnly
 
 已知边界（Phase 1/2 处理）：多端同时编辑同一画布为 last-writer-wins（文件通道无合并）；外部同步修改不触发热重载；画布内图片以 dataURL 存于 `files`（有上限），正式的附件外链方案待定。
+
+## 13. Phase 1 进展（2026-10-29）
+
+- **画布图片外链（A1）**：图片不再以 dataURL 内嵌在画布 JSON 中，而是落盘到笔记本 `attachments/`，文档只存 `{ id, mimeType, storageKey }`（key 为笔记本相对路径，跨端有效）。新增 IPC `save_notebook_asset_content`（内联 base64 → 附件，带窗口授权校验）；打开画布时按 key 解析本机路径并读取为 dataURL 喂给 Excalidraw；新插入图片顺序上传；旧的内嵌 dataURL 画布仍可打开，并在下次编辑时自动迁移。
+- **文件树图标（A2）**：`.flowix-canvas` 使用专属 Frame 图标（`content-icon.tsx`），不再显示为通用文档。
+- **导出（A4）**：画布左下「导出」菜单支持 `.excalidraw` / SVG / PNG。新增 IPC `write_export_file_bytes`（桌面直接写字节；Android 走 Kotlin `writeBase64ToUri`），文本格式复用 `write_export_file`。
+- 已知取舍：删除画布中的图片不会清理 `attachments/` 里的孤立文件；导出尺寸以当前视口/画布内容为准（Excalidraw 默认导出范围）。

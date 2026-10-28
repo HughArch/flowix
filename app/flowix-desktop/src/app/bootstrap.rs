@@ -711,6 +711,7 @@ pub fn run() {
             commands::dialog::select_files,
             commands::dialog::save_file_dialog,
             commands::dialog::write_export_file,
+            commands::dialog::write_export_file_bytes,
             commands::export::export_pdf,
             commands::export::print_pdf,
             commands::dialog::save_notebook_asset,

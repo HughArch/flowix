@@ -2,9 +2,13 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
-import type { AppState, BinaryFileData, BinaryFiles } from '@excalidraw/excalidraw/types';
+import type { AppState, BinaryFileData, BinaryFiles, ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
 import { resolveAttachmentStorageKey } from '@features/editor/extensions/attachment-link/utils';
-import { files, notebookAssets } from '@platform/tauri/client';
+import { dialogs, files, notebookAssets } from '@platform/tauri/client';
+import { Download } from 'lucide-react';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@shared/ui/dropdown-menu';
 import type { SurfaceLifecycle, SurfacePresentationUpdate } from '@features/workspace/public/surface-api';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
@@ -23,6 +27,15 @@ import {
 import { LazyExcalidraw } from './excalidraw-lazy';
 
 const SAVE_DEBOUNCE_MS = 800;
+
+function blobToBase64(blob: Blob): Promise<string> {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onload = () => resolve(String(reader.result ?? '').split(',')[1] ?? '');
+    reader.onerror = () => reject(reader.error);
+    reader.readAsDataURL(blob);
+  });
+}
 
 export interface CanvasSurfaceViewProps {
   filePath: string;
@@ -60,6 +73,8 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
   const fileKeysRef = useRef<Map<string, string>>(new Map());
   const pendingUploadsRef = useRef<Set<string>>(new Set());
   const uploadChainRef = useRef<Promise<void>>(Promise.resolve());
+  const excalidrawApiRef = useRef<ExcalidrawImperativeAPI | null>(null);
+  const disposedRef = useRef(false);
 
   const retryLoad = useCallback(() => setRetryToken((token) => token + 1), []);
 
@@ -154,6 +169,7 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
   }, [flush]);
 
   useEffect(() => () => {
+    disposedRef.current = true;
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
   }, []);
 
@@ -175,7 +191,7 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
             fileName: canvasFileNameFor(id, mimeType),
             notePath: filePath,
           });
-          if (saved?.key) {
+          if (saved?.key && !disposedRef.current) {
             fileKeysRef.current.set(id, saved.key);
             scheduleFlush();
           }
@@ -246,6 +262,39 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
     return () => onSurfaceLifecycleReady?.(null);
   }, [flush, onSurfaceLifecycleReady, state.status]);
 
+  const handleExport = useCallback(async (format: 'excalidraw' | 'svg' | 'png') => {
+    const api = excalidrawApiRef.current;
+    if (!api) return;
+    try {
+      const elements = api.getSceneElements();
+      const appState = api.getAppState();
+      const sceneFiles = api.getFiles();
+      const stem = (filePath.split(/[\/]/).pop() ?? 'canvas').replace(/\.flowix-canvas$/i, '');
+      if (format === 'excalidraw') {
+        const { serializeAsJSON } = await import('@excalidraw/excalidraw');
+        const text = serializeAsJSON(elements, appState, sceneFiles, 'local');
+        const target = await dialogs.saveFile(`${stem}.excalidraw`, [{ name: 'Excalidraw', extensions: ['excalidraw'] }]);
+        if (!target) return;
+        if (!(await dialogs.writeExportFile(target, text))) throw new Error('write failed');
+      } else if (format === 'svg') {
+        const { exportToSvg } = await import('@excalidraw/excalidraw');
+        const svg = await exportToSvg({ elements, appState, files: sceneFiles });
+        const target = await dialogs.saveFile(`${stem}.svg`, [{ name: 'SVG', extensions: ['svg'] }]);
+        if (!target) return;
+        if (!(await dialogs.writeExportFile(target, svg.outerHTML))) throw new Error('write failed');
+      } else {
+        const { exportToBlob } = await import('@excalidraw/excalidraw');
+        const blob = await exportToBlob({ elements, appState, files: sceneFiles, mimeType: 'image/png' });
+        const base64 = await blobToBase64(blob);
+        const target = await dialogs.saveFile(`${stem}.png`, [{ name: 'PNG', extensions: ['png'] }]);
+        if (!target) return;
+        if (!(await dialogs.writeExportBytes(target, base64))) throw new Error('write failed');
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('canvas.export.failed'));
+    }
+  }, [filePath, t]);
+
   if (state.status !== 'ready' || !initialData) {
     return reportPresentation
       ? null
@@ -264,10 +313,30 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
       <LazyExcalidraw
         initialData={initialData}
         onChange={handleSceneChange}
+        excalidrawAPI={(api) => { excalidrawApiRef.current = api; }}
         langCode={excalidrawLangCode}
         viewModeEnabled={readOnly}
         UIOptions={{ canvasActions: { export: false, loadScene: false } }}
       />
+      <div className="absolute bottom-24 left-4 z-10">
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button
+              type="button"
+              aria-label={t('canvas.export.menu')}
+              className="flex h-8 items-center gap-1.5 rounded-lg border border-[var(--border)] bg-[var(--card)] px-2.5 text-xs text-[var(--foreground)] shadow-sm hover:bg-[var(--muted)]"
+            >
+              <Download className="h-3.5 w-3.5" aria-hidden="true" />
+              {t('canvas.export.menu')}
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-[168px]">
+            <DropdownMenuItem onClick={() => { void handleExport('excalidraw'); }}>{t('canvas.export.excalidraw')}</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => { void handleExport('svg'); }}>{t('canvas.export.svg')}</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => { void handleExport('png'); }}>{t('canvas.export.png')}</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
+      </div>
     </div>
   );
 }

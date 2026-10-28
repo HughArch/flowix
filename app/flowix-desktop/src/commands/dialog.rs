@@ -277,6 +277,7 @@ pub async fn save_file_dialog(
 /// the result is what note/canvas content persists.
 #[tauri::command]
 pub async fn save_notebook_asset_content(
+    window: tauri::WebviewWindow,
     content_base64: String,
     file_name: String,
     notebook_id: Option<String>,
@@ -285,6 +286,13 @@ pub async fn save_notebook_asset_content(
     state: State<'_, AppState>,
 ) -> Result<attachments::SavedNotebookAsset, String> {
     let permit = upload_quota::UPLOAD_QUOTA.acquire()?;
+    // COSEC: inline payloads may only land next to a document this window is
+    // authorized to open.
+    if let Some(note_path) = note_path.as_deref() {
+        if !super::helpers::can_access_document_path(Path::new(note_path), window.label(), &state) {
+            return Err("Notebook asset target is not authorized".to_string());
+        }
+    }
     let name = file_name.trim().to_string();
     if name.is_empty() || name.contains(['/', '\\']) {
         return Err("Invalid attachment file name".to_string());
@@ -437,6 +445,40 @@ pub async fn open_attachment_file(
     app.opener()
         .open_path(source.display().to_string(), None::<String>)
         .map_err(|e| e.to_string())
+}
+
+/// Binary counterpart of [`write_export_file`] (PNG exports, images).
+#[tauri::command(async)]
+pub fn write_export_file_bytes(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    file_path: String,
+    content_base64: String,
+    state: State<'_, AppState>,
+) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        return state.export_access.take_uri(window.label(), &file_path)
+            && crate::mobile_export::write_base64(&app, &file_path, &content_base64).is_ok();
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = &app;
+        use base64::Engine as _;
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(content_base64.as_bytes()) else {
+            return false;
+        };
+        state
+            .export_access
+            .save(
+                window.label(),
+                Path::new(&file_path),
+                &mut bytes.as_slice(),
+                &read_lock(&state.memo_file, "memo_file"),
+            )
+            .is_ok()
+    }
 }
 
 // ==================== IPC: 瀵煎嚭 ====================

@@ -335,6 +335,8 @@ export const dialogs = {
     }),
   writeExportFile: (filePath: string, content: string) =>
     invoke<boolean>('write_export_file', { filePath, content }),
+  writeExportBytes: (filePath: string, contentBase64: string) =>
+    invoke<boolean>('write_export_file_bytes', { filePath, contentBase64 }),
   exportPdf: (filePath: string) =>
     invoke<boolean>('export_pdf', { filePath }),
   /** Mobile only: opens the system print sheet where the spooler saves the PDF. */
