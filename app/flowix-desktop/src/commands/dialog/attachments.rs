@@ -14,8 +14,20 @@ pub(super) const MAX_ATTACHMENT_BYTES: u64 = 1024 * 1024 * 1024;
 #[derive(Debug, Serialize)]
 #[serde(rename_all = "camelCase")]
 pub(crate) struct SavedNotebookAsset {
+    /// Absolute path on this device, for immediate local use.
     pub(super) path: String,
+    /// Notebook-relative key with forward slashes. Note content must persist
+    /// this key instead of `path`: the same notebook lives under a different
+    /// root on every device, so absolute paths break after FNS sync.
+    pub(super) key: String,
     pub(super) created: bool,
+}
+
+/// Portable key for `path`, relative to the notebook `root`.
+pub(super) fn notebook_relative_key(root: &Path, path: &Path) -> String {
+    path.strip_prefix(root)
+        .map(|relative| relative.to_string_lossy().replace('\\', "/"))
+        .unwrap_or_else(|_| path.to_string_lossy().replace('\\', "/"))
 }
 
 fn copy_bounded(
@@ -293,6 +305,7 @@ fn save_locked(
                 if existing_file_matches(store, &lock_id, &attachment, &fingerprint)? {
                     return Ok(SavedNotebookAsset {
                         path: attachment.to_string_lossy().into_owned(),
+                        key: notebook_relative_key(&root, &attachment),
                         created: false,
                     });
                 }
@@ -349,12 +362,14 @@ fn save_locked(
             TargetResult::Created => {
                 return Ok(SavedNotebookAsset {
                     path: target.to_string_lossy().into_owned(),
+                    key: notebook_relative_key(&root, &target),
                     created: true,
                 });
             }
             TargetResult::Reused => {
                 return Ok(SavedNotebookAsset {
                     path: target.to_string_lossy().into_owned(),
+                    key: notebook_relative_key(&root, &target),
                     created: false,
                 });
             }

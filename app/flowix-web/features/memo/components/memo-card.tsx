@@ -22,7 +22,7 @@ import {
   ContextMenuItem,
 } from '@shared/ui/context-menu';
 import { MemoCardActions } from '@features/memo/components/memo-card-actions';
-import { assetUrl, decodeStorageKey } from '@features/editor/extensions/attachment-link/utils';
+import { decodeStorageKey, resolveAttachmentUrl } from '@features/editor/extensions/attachment-link/utils';
 import { TagIcon } from '@shared/ui/tag-icon';
 import { joinNotebookMemoPath } from '@/lib/path';
 import { ensureFileDisplayIdentity } from '@/lib/file-display-registry';
@@ -73,10 +73,12 @@ interface MemoCardShellProps {
   onKeepAliveChange?: (memo: NoteListItem, active: boolean) => void;
 }
 
-function thumbnailSrc(thumbnail: string | null | undefined): string | null {
+function thumbnailSrc(thumbnail: string | null | undefined, notebookPath?: string | null): string | null {
   if (!thumbnail) return null;
   const storageKey = decodeStorageKey(thumbnail);
-  return storageKey ? assetUrl(storageKey) : thumbnail;
+  // Attachment keys are notebook-relative (or legacy absolute paths from
+  // another device), so they must resolve against this device's notebook root.
+  return storageKey ? resolveAttachmentUrl(storageKey, notebookPath) : thumbnail;
 }
 
 function AgentTodoIcons({
@@ -378,7 +380,10 @@ export function MemoCardImpl({
   onKeepAliveChange,
 }: MemoCardProps) {
   const { t } = useI18n();
-  const thumbnail = thumbnailSrc(memo.thumbnail);
+  const notebookPath = useNoteStore.getState().notebooks.find(
+    (notebook) => notebook.id === memo.notebookId,
+  )?.path;
+  const thumbnail = thumbnailSrc(memo.thumbnail, notebookPath);
   const [thumbnailFailed, setThumbnailFailed] = useState(false);
   const hasAgents = (memo.agents?.length ?? 0) > 0;
   const hasTodos = (memo.todos?.length ?? 0) > 0;

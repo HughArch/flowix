@@ -30,7 +30,13 @@ class FileView implements ProseMirrorNodeView {
     selected = false;
     private suppressNextClickSelection = false;
 
-    constructor(node: ProseMirrorNode, view: EditorView, getPos: () => number, decorations: readonly Decoration[]) {
+    constructor(
+        node: ProseMirrorNode,
+        view: EditorView,
+        getPos: () => number,
+        decorations: readonly Decoration[],
+        private readonly resolveStorageKey: (storageKey: string) => string = (storageKey) => storageKey,
+    ) {
         this.node = node;
         this.view = view;
         this.getPos = getPos;
@@ -142,7 +148,7 @@ class FileView implements ProseMirrorNodeView {
         try {
             const targetPath = await dialogs.saveFile(suggestedName);
             if (!targetPath) return;
-            await dialogs.copyAttachmentFile(String(storageKey), targetPath);
+            await dialogs.copyAttachmentFile(this.resolveStorageKey(String(storageKey)), targetPath);
         } catch (error) {
             console.error('[file-attachment] failed to save attachment:', error);
         }
@@ -299,7 +305,8 @@ export const FileAttachment = Node.create({
             props.node,
             props.view,
             () => props.getPos?.() ?? 0,
-            props.decorations
+            props.decorations,
+            (storageKey) => props.editor.storage.attachmentLink?.resolveStorageKey?.(storageKey) ?? storageKey,
         );
     },
 

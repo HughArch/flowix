@@ -37,13 +37,18 @@ export async function createAttachmentUpload(
         const kind = getFileKind(file);
         const fileName = safeFileName(file.name);
 
+        // `storageKey` is what note content persists: notebook-relative so the
+        // same note resolves on every device. `localPath` only backs the
+        // immediate preview URL.
         let storageKey: string | null = null;
+        let localPath: string | null = null;
         let created = true;
         let release: (() => void) | undefined;
         try {
             release = acquireUploadSlot();
             if (saveFile) {
                 storageKey = await saveFile({ file, fileName });
+                localPath = storageKey;
             } else {
                 if (file.size > MAX_ATTACHMENT_CONTENT_BYTES) {
                     throw new Error('ATTACHMENT_CONTENT_TOO_LARGE');
@@ -52,9 +57,11 @@ export async function createAttachmentUpload(
                     const base64Content = await readFileBase64(file, signal);
                     if (signal?.aborted) break;
                     storageKey = await saveContent({ content: base64Content, fileName });
+                    localPath = storageKey;
                 } else {
                     const saved = await uploadInChunks(file, fileName, ownerPath!, signal, deduplicate);
-                    storageKey = saved.path;
+                    storageKey = saved.key || saved.path;
+                    localPath = saved.path;
                     created = saved.created;
                 }
             }
@@ -70,7 +77,7 @@ export async function createAttachmentUpload(
 
         assets.push({
             kind,
-            url: assetUrl(storageKey),
+            url: assetUrl(localPath ?? storageKey),
             name: file.name,
             mimeType: file.type || 'application/octet-stream',
             size: file.size,
@@ -100,6 +107,7 @@ export async function createAttachmentUploadFromPaths(
         const name = fileNameFromPath(path);
         const fileName = safeFileName(name);
         let storageKey: string | null = null;
+        let localPath: string | null = null;
         let created = true;
         let release: (() => void) | undefined;
 
@@ -113,7 +121,8 @@ export async function createAttachmentUploadFromPaths(
                 reuseNotebookFile: false,
             });
             if (!saved?.path) throw new Error('Attachment save returned no path');
-            storageKey = saved.path;
+            storageKey = saved.key || saved.path;
+            localPath = saved.path;
             created = saved.created;
         } catch (err) {
             console.error('[FileUpload] Failed to save attachment:', err);
@@ -126,7 +135,7 @@ export async function createAttachmentUploadFromPaths(
 
         assets.push({
             kind: getFileKindFromName(name),
-            url: storageKey ? assetUrl(storageKey) : '',
+            url: assetUrl(localPath ?? storageKey),
             name,
             mimeType: mimeTypeFromName(name),
             size: 0,

@@ -12,7 +12,9 @@ export function buildUploadContent(assets: StoredAsset[]): JSONContent[] {
             return [{
                 type: 'image',
                 attrs: {
-                    src: assetUrl(asset.storageKey) || asset.url,
+                    // `src` is a device-local preview URL; `storageKey` is the
+                    // portable value that gets persisted.
+                    src: asset.url || assetUrl(asset.storageKey),
                     alt: asset.name,
                     title: asset.name,
                     fileName,
@@ -27,7 +29,7 @@ export function buildUploadContent(assets: StoredAsset[]): JSONContent[] {
             return [{
                 type: 'videoAttachment',
                 attrs: {
-                    src: assetUrl(asset.storageKey) || asset.url,
+                    src: asset.url || assetUrl(asset.storageKey),
                     title: asset.name,
                     fileName,
                     mimeType: asset.mimeType,
@@ -40,7 +42,7 @@ export function buildUploadContent(assets: StoredAsset[]): JSONContent[] {
         return [{
             type: 'fileAttachment',
             attrs: {
-                url: assetUrl(asset.storageKey) || asset.url,
+                url: asset.url || assetUrl(asset.storageKey),
                 name: fileName,
                 fileName,
                 mimeType: asset.mimeType || '',

@@ -343,8 +343,12 @@ export const dialogs = {
     invoke<boolean>('copy_attachment_file', { sourcePath, targetPath }),
 };
 
-/** `created` is false when the operation reused or directly referenced a file. */
-export type NotebookAssetSaveResult = { path: string; created: boolean };
+/**
+ * `created` is false when the operation reused or directly referenced a file.
+ * `path` is absolute on this device; `key` is the notebook-relative key that
+ * note content must persist so it stays valid after syncing to another device.
+ */
+export type NotebookAssetSaveResult = { path: string; key: string; created: boolean };
 /** Select an owner and optionally override the default `attachments/` destination. */
 export type NotebookAssetSaveOptions = {
   notebookId?: string;

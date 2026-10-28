@@ -312,3 +312,39 @@ fn target_only_dedup_does_not_reuse_an_attachment_in_another_directory() {
     assert!(different.path.ends_with("photo_1.jpg"));
     assert_eq!(fs::read(&existing.path).unwrap(), b"image");
 }
+
+#[test]
+fn saved_asset_reports_notebook_relative_key() {
+    let (_directory, store) = fixture();
+    let saved = save_for_owner(
+        &store,
+        Some("second"),
+        None,
+        "photo.jpg",
+        &mut &b"image"[..],
+        true,
+    )
+    .unwrap();
+    assert!(Path::new(&saved.path).is_absolute());
+    assert_eq!(saved.key, "attachments/photo.jpg");
+    assert!(saved.created);
+}
+
+#[test]
+fn saved_asset_in_custom_directory_keeps_relative_key() {
+    let (directory, store) = fixture();
+    let gallery = directory.path().join("second/gallery");
+    fs::create_dir(&gallery).unwrap();
+    let saved = save_for_owner_in_directory(
+        &store,
+        Some("second"),
+        None,
+        "photo.jpg",
+        &mut &b"image"[..],
+        true,
+        Some(&gallery),
+        true,
+    )
+    .unwrap();
+    assert_eq!(saved.key, "gallery/photo.jpg");
+}

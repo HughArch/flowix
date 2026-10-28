@@ -1,5 +1,5 @@
 import type { I18nKey } from '@/lib/i18n';
-import { assetUrl, decodeStorageKey } from '@features/editor/extensions/attachment-link/utils';
+import { decodeStorageKey, resolveAttachmentUrl } from '@features/editor/extensions/attachment-link/utils';
 
 export interface NoteReferencePreviewData {
   title: string;
@@ -21,10 +21,12 @@ interface NoteReferencePreviewControllerOptions {
   onError: (error: unknown) => void;
 }
 
-function noteReferenceThumbnailUrl(thumbnail: string | null): string | null {
+function noteReferenceThumbnailUrl(thumbnail: string | null, notebookPath?: string | null): string | null {
   if (!thumbnail) return null;
   const storageKey = decodeStorageKey(thumbnail);
-  return storageKey ? assetUrl(storageKey) : thumbnail;
+  // Attachment keys are notebook-relative (or legacy absolute paths synced
+  // from another device), so resolve them against the referenced note's notebook.
+  return storageKey ? resolveAttachmentUrl(storageKey, notebookPath) : thumbnail;
 }
 
 /** Owns the composer note-reference preview's DOM, async lifecycle, and placement. */
@@ -197,7 +199,7 @@ export class NoteReferencePreviewController {
         this.text!.textContent = data.preview.trim()
           || this.options.t('editor.noteLink.previewEmpty');
         this.openButton!.disabled = false;
-        const thumbnailUrl = noteReferenceThumbnailUrl(data.thumbnail);
+        const thumbnailUrl = noteReferenceThumbnailUrl(data.thumbnail, data.notebookPath);
         if (thumbnailUrl && this.image) {
           this.image.hidden = false;
           if (this.image.src !== thumbnailUrl) this.image.src = thumbnailUrl;

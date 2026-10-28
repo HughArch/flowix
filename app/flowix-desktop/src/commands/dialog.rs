@@ -313,6 +313,7 @@ pub async fn save_notebook_asset(
     if reuse_notebook_file.unwrap_or(false) && source.starts_with(&root) {
         return Ok(Some(attachments::SavedNotebookAsset {
             path: source.to_string_lossy().into_owned(),
+            key: attachments::notebook_relative_key(&root, &source),
             created: false,
         }));
     }
