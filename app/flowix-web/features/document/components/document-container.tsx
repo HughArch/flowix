@@ -9,6 +9,7 @@ import {
   hasDocumentUnsavedChanges,
 } from '@features/document/store/document-session-service';
 import { useDocumentStore } from '@features/document/store/document-store';
+import { createMobileChromeScrollTracker } from '@features/document/store/mobile-chrome-store';
 import {
   setDocumentEditorMode,
   useDocumentEditorMode,
@@ -359,14 +360,17 @@ export function DocumentContainer({
   const flushPendingEditorChanges = useCallback(() => {
     return editorHandleRef.current?.flushPendingChanges() ?? null;
   }, []);
+  const mobileChromeScrollTracker = useMemo(() => createMobileChromeScrollTracker(), []);
   const handleEditorScroll = useCallback((scrollTop: number) => {
+    // 移动端: 上滑浏览时收起标题栏 / 状态栏, 下滑回看时恢复 (主布局消费)。
+    mobileChromeScrollTracker(scrollTop);
     const isScrolled = scrollTop > 90;
     setState((prev) => (
       prev.isScrolled === isScrolled
         ? prev
         : { ...prev, isScrolled }
     ));
-  }, [setState]);
+  }, [mobileChromeScrollTracker, setState]);
 
   const handleMoveTitleToBody = useCallback(({
     trailingContent,

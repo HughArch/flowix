@@ -147,7 +147,7 @@ export function ListColumn({
         'relative flex h-full shrink-0 flex-col will-change-[width]',
         isDraggingListDivider
           ? 'transition-none'
-          : 'transition-[width] duration-150 ease-out',
+          : 'transition-[width] duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none',
         previewVisible ? 'overflow-visible' : 'overflow-hidden',
       )}
       style={{ width: hidden ? 0 : mobileFullWidth ? '100%' : memoColWidth }}
@@ -169,11 +169,19 @@ export function ListColumn({
                 'border border-[var(--border-popup)] bg-[var(--list-bg)]',
                 'shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]',
               )
-            : 'relative h-full w-full overflow-hidden bg-[var(--list-bg)]',
+            : cn(
+                'relative h-full overflow-hidden bg-[var(--list-bg)]',
+                // 收起/展开期间内容淡出淡入, 配合外层宽度过渡, 避免
+                // 列表被生硬裁切; 内容宽度固定, 宽度动画不再逐帧重排。
+                'transition-opacity duration-150 motion-reduce:transition-none',
+                hidden ? 'opacity-0' : 'opacity-100',
+              ),
         )}
-        style={previewVisible && noteNavigationPhase === 'open'
-          ? { left: 'calc(var(--flowix-note-navigation-drawer-width) + 0.25rem)' }
-          : undefined}
+        style={previewVisible
+          ? (noteNavigationPhase === 'open'
+              ? { left: 'calc(var(--flowix-note-navigation-drawer-width) + 0.25rem)' }
+              : undefined)
+          : { width: mobileFullWidth ? '100vw' : memoColWidth }}
       >
         <ListColumnTitlebar
           previewVisible={previewVisible}
