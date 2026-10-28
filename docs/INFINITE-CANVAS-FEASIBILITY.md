@@ -254,3 +254,23 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 - **画布无版本历史**：versions.rs 已覆盖非 md 的 `attachments/`，机制未锁死 md——把 `.flowix-canvas` 加入快照范围是定向小改（不动 IsMd 门槛），排入 Phase 2。
 - **可发现性**：`DocTreeResourceKind` 加 canvas 分类（改动清单第 7 项），避免显示为 Other。
 - 保存位置：画布文件放笔记本目录树用户选择处（与笔记同级），不藏内部目录——必须 FNS 可见。
+
+### 11.5 云端版本历史边界澄清（2026-10-28 对 §11.4 的修正）
+
+§11.4 原表述「画布无版本历史」不准确，实际分层如下：
+
+| 历史层 | 笔记 (.md) | 附件 | 画布（文件通道） |
+|---|---|---|---|
+| 本地归档（memo_file/versions.rs） | ✅ | ✅（attachments/ 已覆盖） | ❌ 未覆盖；机制未锁死 md，定向小改可加 |
+| 云端历史（FNS 服务端） | ✅（~20s 去抖自动落版） | ❌ 服务端本来就没有 | ❌ 同左 |
+
+服务端源码证据（fast-note-sync-service）：`NoteHistoryDelayPush` 仅在 note_service create/update 与 history restore 路径调用；`file_service.go` 无任何 History 引用；历史体系整体笔记键控（note_history 表 + /api/note/* 端点 + go-diff 按正文）。设计稿 VERSION-HISTORY-CLOUD.md 中「附件与非 md 文件入口不出现」即源于此能力边界，非客户端 UI 限制。
+
+推论：**附件云端历史缺失是现有产品的既有缺口**，非画布特有。
+
+补救路径：
+
+1. **推荐：扩服务端**——file_history 表 + file_service 修改路径加延迟落版钩子 + /api/file/history 端点，复用 note_history 的去抖/diff/清理模式；一次工作同时补齐附件与画布的云端历史。
+2. 不推荐：画布搭笔记通道便车（如 .agents/mcp.json 特例）——需动客户端 is_markdown 门并连带 memo 索引/FTS 污染，为省服务端工作重新引入 §11.1 的代价。
+
+排期：本地归档扩展（versions.rs）与云端文件历史（服务端）均为 Phase 2 项，云端部分需 fast-note-sync-service 发版配合。
