@@ -35,6 +35,23 @@ function findScrollableAncestor(start: Element | null): HTMLElement | null {
 }
 
 /**
+ * 触点是否位于横向可滚动区域内 (宽表格的 .tableWrapper、代码块、公式块等)。
+ * 这类区域里横滑属于原生平移, 挥手不得抢夺; `overflow-x: visible/hidden`
+ * 的元素即使有布局溢出也无法手指滚动, 需按计算样式排除。
+ */
+function hasScrollableXAncestor(start: Element | null): boolean {
+  let node = start instanceof HTMLElement ? start : null;
+  while (node) {
+    if (node.scrollWidth > node.clientWidth + 1) {
+      const overflowX = getComputedStyle(node).overflowX;
+      if (overflowX === 'auto' || overflowX === 'scroll') return true;
+    }
+    node = node.parentElement;
+  }
+  return false;
+}
+
+/**
  * 软键盘可见性检测。
  *
  * IME inset 已在原生层做了 content padding, 因此键盘弹出表现为
@@ -63,6 +80,9 @@ export function useImeVisible(): boolean {
  * - 右滑: 左侧列表面板
  * - 左滑: 目录 (outline)
  *
+ * 触点落在横向可滚动区域 (宽表格 / 代码块 / 公式块) 内时, 横滑让位给该区域
+ * 的原生平移, 左右挥手与 preventDefault 均不生效。
+ *
  * touchmove 必须注册为非 passive: 横向滑动手势需要 preventDefault,
  * 否则 contenteditable 会把它当成文本选择拖拽, 弹出系统放大镜。
  * 纵向不拦截, 正文滚动与文本选择交给原生。
@@ -90,11 +110,13 @@ export function useMobileSwipeGestures({
     let startedAt = 0;
     let atTop = false;
     let consumed = false;
+    let nativePanX = false;
 
     const reset = () => {
       tracking = false;
       intercepting = false;
       consumed = false;
+      nativePanX = false;
     };
 
     const handleTouchStart = (event: TouchEvent) => {
@@ -103,6 +125,7 @@ export function useMobileSwipeGestures({
       tracking = true;
       intercepting = false;
       consumed = false;
+      nativePanX = hasScrollableXAncestor(event.target as Element | null);
       startX = touch.clientX;
       startY = touch.clientY;
       startedAt = Date.now();
@@ -119,14 +142,16 @@ export function useMobileSwipeGestures({
       const absY = Math.abs(dy);
 
       // 横向意图成型即接管: 阻止 WebView 启动文本选择/放大镜。
-      if (!intercepting && !consumed && absX > INTERCEPT_THRESHOLD && absX > absY) {
+      // 例外: 触点落在横向可滚动区域 (宽表格等) 内, 横滑归该区域的原生平移,
+      // 不拦截也不触发左右挥手, 避免滑动表格误开列表/目录。
+      if (!intercepting && !consumed && !nativePanX && absX > INTERCEPT_THRESHOLD && absX > absY) {
         intercepting = true;
       }
       if (intercepting) event.preventDefault();
 
       if (consumed || Date.now() - startedAt > MAX_GESTURE_MS) return;
 
-      if (absX >= HORIZONTAL_THRESHOLD && absX > absY * AXIS_RATIO) {
+      if (!nativePanX && absX >= HORIZONTAL_THRESHOLD && absX > absY * AXIS_RATIO) {
         consumed = true;
         if (dx > 0) callbacksRef.current.onSwipeRight();
         else callbacksRef.current.onSwipeLeft();
