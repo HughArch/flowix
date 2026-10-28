@@ -161,3 +161,51 @@
 - tldraw license（水印/商用）：https://tldraw.dev/license
 - Obsidian Excalidraw 插件（.excalidraw.md 存储先例）：https://github.com/zsviczian/obsidian-excalidraw-plugin
 - react-flow（xyflow，MIT）：https://reactflow.dev
+
+## 10. 附：形态 A vs B 深度对比与推荐（2026-10-28 决策讨论）
+
+结论：**产品终局选 B（卡片无界笔记），实现路径走 A**——A 的全部技术成果（文件格式、surface 注册、FNS/agent 链路）是 B 的地基，且 B 包含 A（卡片画布上可叠手绘板），A 不包含 B。
+
+### 10.1 七维对比
+
+| 维度 | A 白板手绘 | B 卡片无界笔记 |
+|---|---|---|
+| 与核心资产协同 | 弱：画布文字是游离文本，不进索引、无互链 | 强：卡片引用 memo，反向链接补全知识体系 |
+| agent 战略价值 | 低：被现有 mermaid 稀释 | 高：「把 10 篇笔记整理成画布」是 agent 独占场景 |
+| 使用频率/动线 | 低频（画图时才开） | 高频（整理思路/项目/研究） |
+| 差异化 | 近零：Obsidian/Logseq 均已嵌 Excalidraw | 高：本地文件 + agent + 卡片画布组合罕见 |
+| 实现成本 | 低（1-2 天 spike，现成组件） | 高（以周/月计，react-flow 骨架 + 卡片渲染自研） |
+| 移动端风险 | 低（Excalidraw 触控现成） | 高（WebView 多卡片渲染 + 手势冲突） |
+| 数据同步友好度 | 差（elements 含坐标/样式/seed，diff 噪音大） | 好（nodes/edges 极简，agent 可直接生成） |
+
+### 10.2 A 的天花板
+
+1. **内容黑洞**：画进白板的内容困在坐标系统里，搜索不到、互链不上、agent 检索不到。
+2. **无独占价值**：画图需求 excalidraw.com 免费直开，嵌 Excalidraw 不构成打开 Flowix 的理由。
+3. **agent 价值被 mermaid 稀释**：agent 生成 mermaid 文本更自然（进索引、可 diff），A 剩余价值仅自由草图（低频）。
+
+### 10.3 B 的 Flowix 特有契合点
+
+1. **互链体系补全**：note-link / note-mention / 标签 / FTS 已有，唯独缺空间维度；B 的反向链接（哪些画布引用此笔记）与现有体系是乘法关系。
+2. **agent 战略舞台**：`canvas_add_node(memoId)` 批量整理笔记是 mermaid 做不到的独占场景。
+3. **本地文件哲学对齐**：JSON Canvas 式极简格式 diff 小、agent 可生成、未来进 FTS 成本远低于 excalidraw elements。
+
+B 的最大代价：**卡内渲染**。画布上几十张卡不得各挂一个 Tiptap 实例（Android WebView 会很难看）。业界共识做法（Heptabase / Obsidian Canvas 同款）：**卡上只渲染只读摘要，点开进正常笔记 surface 编辑**；反向链接用轻量前端扫描（JSON 的 memoId 字段级），不碰 memo_file 的 IsMd 门槛。
+
+### 10.4 格式演进设计（A→B 增量，非迁移）
+
+```jsonc
+// MyCanvas.flowix-canvas —— v1 顶层就预留 cards
+{
+  "type": "flowix/canvas",
+  "version": 1,
+  "elements": [ /* Phase 1：Excalidraw 兼容手绘层 */ ],
+  "cards":   [ /* Phase 2：{ id, x, y, w, h, memoId } 卡片层 */ ]
+}
+```
+
+- Phase 1（A）：嵌 Excalidraw 交付手绘，实质是验证整条链路（surface / 格式 / FNS / 移动端 / agent 读写），B 100% 复用。
+- Phase 2（B）：react-flow 骨架 + 卡片只读摘要 + 反向链接 + agent 结构化工具；Excalidraw 降级为卡片画布上的绘图模式。
+- 工期预期：Phase 1 以周计，Phase 2 以月计；桌面先行，移动端只读摘要策略。
+
+一句话：**A 是一个功能，B 是一个平台；Flowix 该要的是平台，而平台的地基恰好就是 A。**
