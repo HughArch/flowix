@@ -31,7 +31,7 @@ beforeEach(() => {
   vi.resetAllMocks();
   vi.mocked(mediaResources.get).mockRejectedValue(new Error('Not indexed yet'));
   vi.mocked(mediaResources.delete).mockResolvedValue(true);
-  vi.mocked(notebookAssets.saveFromPath).mockResolvedValue({ path: '/notes/attachments/photo.jpg', created: true });
+  vi.mocked(notebookAssets.saveFromPath).mockResolvedValue({ path: '/notes/attachments/photo.jpg', key: 'attachments/photo.jpg', created: true });
   vi.spyOn(console, 'error').mockImplementation(() => {});
 });
 
@@ -48,7 +48,7 @@ describe('media upload destination', () => {
 
   it('imports into Browse and Save without reusing a copy in attachments', async () => {
     const input = options(setFolder(createMediaLibrary('Library'), 'gallery'));
-    vi.mocked(notebookAssets.saveFromPath).mockResolvedValue({ path: '/notes/gallery/photo.jpg', created: true });
+    vi.mocked(notebookAssets.saveFromPath).mockResolvedValue({ path: '/notes/gallery/photo.jpg', key: 'gallery/photo.jpg', created: true });
     await importMediaLibraryFiles(input);
     expect(notebookAssets.saveFromPath).toHaveBeenCalledWith('/local/photo.jpg', expect.objectContaining({
       targetDirectoryPath: '/notes/gallery', reuseNotebookFile: false, reuseExistingAttachment: false,
@@ -81,7 +81,7 @@ describe('media import persistence and rollback', () => {
   it('counts a reused destination once and adds only one record', async () => {
     const input = options();
     input.paths = ['/local/photo.jpg', '/another/photo.jpg'];
-    vi.mocked(notebookAssets.saveFromPath).mockResolvedValue({ path: '/notes/attachments/photo.jpg', created: false });
+    vi.mocked(notebookAssets.saveFromPath).mockResolvedValue({ path: '/notes/attachments/photo.jpg', key: 'attachments/photo.jpg', created: false });
     let persisted: MediaLibraryDocument | undefined;
     input.persist.mockImplementation(async (mutate) => { persisted = mutate(input.document); return true; });
     const result = await importMediaLibraryFiles(input);
@@ -99,7 +99,7 @@ describe('media import persistence and rollback', () => {
 
   it('never deletes a reused file after save failure', async () => {
     const input = options();
-    vi.mocked(notebookAssets.saveFromPath).mockResolvedValue({ path: '/notes/attachments/photo.jpg', created: false });
+    vi.mocked(notebookAssets.saveFromPath).mockResolvedValue({ path: '/notes/attachments/photo.jpg', key: 'attachments/photo.jpg', created: false });
     input.persist.mockResolvedValue(false);
     expect((await importMediaLibraryFiles(input)).completed).toEqual([]);
     expect(mediaResources.delete).not.toHaveBeenCalled();

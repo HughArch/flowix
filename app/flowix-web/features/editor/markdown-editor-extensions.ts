@@ -292,6 +292,8 @@ export interface MarkdownEditorExtensionContext {
   ownerPath?: string;
   getOwnerPath: () => string | undefined;
   getAttachmentNotebookId: () => string | undefined;
+  /** Notebook root on this device; resolves notebook-relative attachment keys. */
+  getAttachmentNotebookPath?: () => string | undefined;
   propertyTargetId?: string;
   onViewSourceMode?: () => void;
   transitionId?: number | null;
@@ -306,6 +308,7 @@ export function createMarkdownEditorExtensions({
   ownerPath,
   getOwnerPath,
   getAttachmentNotebookId,
+  getAttachmentNotebookPath,
   propertyTargetId,
   onViewSourceMode,
   transitionId,
@@ -338,7 +341,12 @@ export function createMarkdownEditorExtensions({
     MarkdownEscape,
     HTMLStrongFallback,
     LegacyAdjacentStrongMarkdown,
-    AttachmentLink.configure({ ownerPath, getOwnerPath, getNotebookId: getAttachmentNotebookId }),
+    AttachmentLink.configure({
+      ownerPath,
+      getOwnerPath,
+      getNotebookId: getAttachmentNotebookId,
+      getNotebookPath: getAttachmentNotebookPath,
+    }),
     MarkdownLink,
     LinkSelectionHighlight,
     codeBlockExtension.configure({ traceId: transitionId }),

@@ -144,6 +144,12 @@ export function DocumentContainer({
   const getAttachmentNotebookId = useCallback(() => {
     return resolveNotebookIdForPath(documentIdentity.path, getWorkspaceMemoState().notebooks);
   }, [documentIdentity]);
+  // Attachment keys persist notebook-relative; the editor resolves them against
+  // this device's notebook root so synced notes point at local files.
+  const getAttachmentNotebookPath = useCallback(() => {
+    const notebookId = getAttachmentNotebookId();
+    return getWorkspaceMemoState().notebooks.find(notebook => notebook.id === notebookId)?.path;
+  }, [getAttachmentNotebookId]);
   const getAttachmentOwnerPath = useCallback(() => {
     // COSEC: Uploads must belong to a note inside a registered notebook.
     return getAttachmentNotebookId() ? getCurrentFilePath() : undefined;
@@ -645,6 +651,7 @@ export function DocumentContainer({
             ownerPath={documentIdentity.path}
             getAttachmentOwnerPath={getAttachmentOwnerPath}
             getAttachmentNotebookId={getAttachmentNotebookId}
+            getAttachmentNotebookPath={getAttachmentNotebookPath}
             workspaceHost={hostId}
             propertyTargetId={propertyTargetId}
             onViewSourceMode={handleToggleEditorMode}
