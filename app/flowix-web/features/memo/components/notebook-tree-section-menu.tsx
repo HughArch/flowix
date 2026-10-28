@@ -5,6 +5,7 @@ import {
   ArrowDownUp,
   Check,
   ChevronRight,
+  CircleDashed,
   GalleryHorizontalEnd,
   MoreHorizontal,
   Plus,
@@ -22,6 +23,7 @@ import {
 
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
+import { supportsHover } from '@shared/platform';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -91,6 +93,7 @@ interface NotebookTreeSectionMenuProps {
   onCreateTable?: (viewType?: TableViewType) => void;
   onCreateMediaLibrary?: () => void;
   onCreateWorkDocuments?: () => void;
+  onCreateCanvas?: () => void;
   onImportFiles?: () => void;
   onImportFolder?: () => void;
   sort?: FolderTreeSort;
@@ -109,6 +112,7 @@ export function NotebookTreeSectionMenu({
   onCreateTable,
   onCreateMediaLibrary,
   onCreateWorkDocuments,
+  onCreateCanvas,
   onImportFiles,
   onImportFolder,
   sort,
@@ -124,7 +128,7 @@ export function NotebookTreeSectionMenu({
   const sortSubmenuPosition = useViewportSubmenuPosition(sortSubmenuOpen);
   const itemClassName = 'group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)] disabled:cursor-not-allowed disabled:opacity-40';
   const hasActionsAfterMovement = Boolean(
-    onCreateNote || onCreateFolder || onCreateTable || onCreateMediaLibrary || onCreateWorkDocuments || onImportFiles || onImportFolder || (sort && onSort),
+    onCreateNote || onCreateFolder || onCreateTable || onCreateMediaLibrary || onCreateWorkDocuments || onCreateCanvas || onImportFiles || onImportFolder || (sort && onSort),
   );
 
   return (
@@ -167,11 +171,11 @@ export function NotebookTreeSectionMenu({
             {t('memo.fileTree.newFolder')}
           </DropdownMenuItem>
         )}
-        {(onCreateTable || onCreateMediaLibrary || onCreateWorkDocuments) && (
+        {(onCreateTable || onCreateMediaLibrary || onCreateWorkDocuments || onCreateCanvas) && (
           <div
             className="relative"
-            onMouseEnter={() => setCreateSubmenuOpen(true)}
-            onMouseLeave={() => setCreateSubmenuOpen(false)}
+            onMouseEnter={() => { if (supportsHover()) setCreateSubmenuOpen(true); }}
+            onMouseLeave={() => { if (supportsHover()) setCreateSubmenuOpen(false); }}
           >
             <button
               type="button"
@@ -213,12 +217,21 @@ export function NotebookTreeSectionMenu({
                     </span>
                   </DropdownMenuItem>
                 )}
+                {onCreateCanvas && (
+                  <DropdownMenuItem onClick={onCreateCanvas} className={itemClassName}>
+                    <CircleDashed className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>{t('memo.create.canvas')}</span>
+                    <span className="ml-auto text-xs text-[var(--muted-foreground)] opacity-50 group-hover:text-[var(--primary-foreground)] group-focus-visible:text-[var(--primary-foreground)]">
+                      .flowix-canvas
+                    </span>
+                  </DropdownMenuItem>
+                )}
               </div>
             )}
           </div>
         )}
         {(onImportFiles || onImportFolder) && (
-          <div className="relative" onMouseEnter={() => setImportSubmenuOpen(true)} onMouseLeave={() => setImportSubmenuOpen(false)}>
+          <div className="relative" onMouseEnter={() => { if (supportsHover()) setImportSubmenuOpen(true); }} onMouseLeave={() => { if (supportsHover()) setImportSubmenuOpen(false); }}>
             <button
               type="button"
               ref={importSubmenuPosition.triggerRef}

@@ -1084,6 +1084,7 @@ export function NotebookFileTree({
                   onCreateTable={(viewType) => openNewTableDialog(true, undefined, viewType)}
                   onCreateMediaLibrary={() => openNewMediaLibraryDialog(true)}
                   onCreateWorkDocuments={() => openNewWorkDocumentsDialog()}
+                  onCreateCanvas={() => openNewCanvasDialog()}
                   onCustomizeDisplay={openCustomizeDisplay}
                 />
               )}
@@ -1197,6 +1198,7 @@ export function NotebookFileTree({
                 onCreateTable={(viewType) => openNewTableDialog(false, undefined, viewType)}
                 onCreateMediaLibrary={() => openNewMediaLibraryDialog()}
                 onCreateWorkDocuments={() => openNewWorkDocumentsDialog()}
+                onCreateCanvas={() => openNewCanvasDialog()}
                 onImportFiles={() => { void handleImportFiles(notebookPath); }}
                 onImportFolder={() => { void handleImportFolder(notebookPath); }}
                 sort={fileTreeSort}
@@ -1297,6 +1299,7 @@ export function NotebookFileTree({
                 onCreateTable={(viewType) => openNewTableDialog(false, notebookPath, viewType)}
                 onCreateMediaLibrary={() => openNewMediaLibraryDialog(false, notebookPath)}
                 onCreateWorkDocuments={() => openNewWorkDocumentsDialog(notebookPath)}
+                onCreateCanvas={() => openNewCanvasDialog(notebookPath)}
                 onImportFiles={() => { void handleImportFiles(notebookPath); }}
                 onImportFolder={() => { void handleImportFolder(notebookPath); }}
               />

@@ -106,6 +106,8 @@ export interface UnavailableFileSurface extends FileSurfaceBase {
 export interface CanvasFileSurface extends FileSurfaceBase {
   kind: 'canvas-file';
   scopePath: string | null;
+  /** Owns the open transition so the host loading layer can clear on mount. */
+  transitionId: number | null;
 }
 
 export interface MediaResourceSurface extends FileSurfaceBase {

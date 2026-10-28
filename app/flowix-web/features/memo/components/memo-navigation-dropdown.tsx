@@ -7,6 +7,7 @@ import { MapPinSimpleAreaIcon } from '@phosphor-icons/react';
 
 import { useI18n, type I18nKey } from '@/lib/i18n';
 import { cn } from '@/lib/utils';
+import { supportsHover } from '@shared/platform';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { useTagStore } from '@features/memo/store/tag-store';
 import { TagTree } from '@features/memo/components/tag-tree';
@@ -135,10 +136,14 @@ export function MemoNavigationSubmenu({
     <div
       className="relative"
       onMouseEnter={() => {
+        if (!supportsHover()) return;
         cancelClose();
         onOpenChange(true);
       }}
-      onMouseLeave={scheduleClose}
+      onMouseLeave={() => {
+        if (!supportsHover()) return;
+        scheduleClose();
+      }}
     >
       <button
         type="button"

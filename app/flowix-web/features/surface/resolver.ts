@@ -75,7 +75,7 @@ function resolveExternalDocumentSurface(
     case 'work-documents':
       return { kind: 'work-documents-file', instanceKey, fileIdentity, notebookPath: scopePath, notebookId: null };
     case 'canvas':
-      return { kind: 'canvas-file', instanceKey, fileIdentity, scopePath };
+      return { kind: 'canvas-file', instanceKey, fileIdentity, scopePath, transitionId: document.identity.transitionId };
   }
 }
 

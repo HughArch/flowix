@@ -7,3 +7,12 @@
 export function isMobileDevice(): boolean {
   return typeof navigator !== 'undefined' && /android|iphone|ipad|ipod/i.test(navigator.userAgent);
 }
+
+/**
+ * True when the pointer cannot hover (touch-only). Hover-opened submenus must
+ * skip their mouseenter open path there, or the synthetic hover that precedes
+ * the first tap cancels the click's toggle and the menu needs two taps.
+ */
+export function supportsHover(): boolean {
+  return typeof window !== 'undefined' && !(window.matchMedia?.('(hover: none), (pointer: coarse)')?.matches ?? false);
+}

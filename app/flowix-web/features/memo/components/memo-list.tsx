@@ -22,6 +22,7 @@ import {
   SquarePen,
   Table2,
   GalleryHorizontalEnd,
+  CircleDashed,
 } from 'lucide-react';
 import {
   getVisibleCreateFilter,
@@ -1040,6 +1041,21 @@ export function MemoList({
                   <span className="mention-note-title">{t('memo.create.workDocuments')}</span>
                 </span>
                 <span className="mention-note-notebook opacity-50">{t('memo.create.workDocumentsTypes')}</span>
+              </button>
+              <button
+                type="button"
+                disabled={!selectedNotebook || selectedNotebook.missing}
+                className="memo-navigation-submenu-item mention-note-item !h-7 !min-h-7 !rounded-lg !py-0 !pl-[6px] !pr-2 hover:bg-[var(--brand)] focus-visible:bg-[var(--brand)] focus-visible:outline-none disabled:cursor-not-allowed disabled:opacity-50"
+                onMouseDown={(event) => event.preventDefault()}
+                onClick={() => {
+                  openDocumentCreateDialog('canvas');
+                }}
+              >
+                <span className="flex min-w-0 items-center gap-2">
+                  <CircleDashed className="h-4 w-4 shrink-0" aria-hidden="true" />
+                  <span className="mention-note-title">{t('memo.create.canvas')}</span>
+                </span>
+                <span className="mention-note-notebook opacity-50">.flowix-canvas</span>
               </button>
             </div>
           )}

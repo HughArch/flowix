@@ -81,6 +81,7 @@ function transitionForSurface(surface: WorkColumnSurface): { id: number; finishO
   let finishOnMount = false;
   switch (surface.kind) {
     case 'csv-file':
+    case 'canvas-file':
       id = surface.transitionId ?? null;
       finishOnMount = true;
       break;

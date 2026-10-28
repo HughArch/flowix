@@ -187,7 +187,12 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
   }
 
   return (
-    <div className="h-full min-h-0 w-full" data-canvas-surface={filePath}>
+    <div
+      className="h-full min-h-0 w-full"
+      data-canvas-surface={filePath}
+      // Excalidraw owns pan/zoom; the shell's swipe-down must not steal drags.
+      data-mobile-swipe-ignore="true"
+    >
       <LazyExcalidraw
         initialData={initialData}
         onChange={handleSceneChange}
