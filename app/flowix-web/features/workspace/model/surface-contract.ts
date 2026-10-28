@@ -10,7 +10,7 @@ export type WorkspaceSurfaceCapability =
 
 export type WorkspaceFileSurfaceKind =
   | 'markdown' | 'code' | 'csv' | 'image' | 'video' | 'table'
-  | 'media-library' | 'work-documents' | 'html' | 'docx' | 'unavailable';
+  | 'media-library' | 'work-documents' | 'html' | 'docx' | 'canvas' | 'unavailable';
 
 /** Canonical surface kinds shared by the Work and Browser hosts. */
 export type WorkspaceSurfaceKind =

@@ -47,6 +47,8 @@ function surface(kind: WorkColumnSurfaceKind): WorkColumnSurface {
         kind, instanceKey: 'html-file:1', fileIdentity: fileIdentity('/workspace/index.html'), scopePath: '/workspace',
         props: { isExternalDocument: true },
       };
+    case 'canvas-file':
+      return { kind, instanceKey: 'canvas-file:1', fileIdentity: fileIdentity('/workspace/plan.flowix-canvas'), scopePath: '/workspace' };
     case 'unavailable-file':
       return {
         kind, instanceKey: 'unavailable:1', fileIdentity: fileIdentity('/workspace/archive.bin'),

@@ -1,5 +1,5 @@
 import { DownloadSimpleIcon, FileIcon, FolderSimplePlusIcon, PlusIcon } from '@phosphor-icons/react';
-import { GalleryHorizontalEnd, Table2 } from 'lucide-react';
+import { CircleDashed, GalleryHorizontalEnd, Table2 } from 'lucide-react';
 import { useI18n } from '@/lib/i18n';
 import { ContextMenuItem, ContextMenuSeparator, ContextMenuSubmenu } from '@shared/ui/context-menu';
 import type { TableViewType } from '@features/multidimensional-table/public/create-api';
@@ -15,6 +15,7 @@ export function NotebookCreateContextMenuItems({
   onCreateTable,
   onCreateMediaLibrary,
   onCreateWorkDocuments,
+  onCreateCanvas,
   onImportFiles,
   onImportFolder,
 }: {
@@ -23,6 +24,7 @@ export function NotebookCreateContextMenuItems({
   onCreateTable: (viewType?: TableViewType) => void;
   onCreateMediaLibrary: () => void;
   onCreateWorkDocuments?: () => void;
+  onCreateCanvas?: () => void;
   onImportFiles?: () => void;
   onImportFolder?: () => void;
 }) {
@@ -58,6 +60,13 @@ export function NotebookCreateContextMenuItems({
           <span>{t('memo.create.workDocuments')}</span>
           <span className="ml-auto text-xs text-[var(--muted-foreground)] opacity-50 group-hover:text-[var(--primary-foreground)] group-focus-visible:text-[var(--primary-foreground)]">
             {t('memo.create.workDocumentsTypes')}
+          </span>
+        </ContextMenuItem>}
+        {onCreateCanvas && <ContextMenuItem onClick={onCreateCanvas} className={MENU_ITEM_CLASS}>
+          <CircleDashed className="mr-2 h-4 w-4" aria-hidden="true" />
+          <span>{t('memo.create.canvas')}</span>
+          <span className="ml-auto text-xs text-[var(--muted-foreground)] opacity-50 group-hover:text-[var(--primary-foreground)] group-focus-visible:text-[var(--primary-foreground)]">
+            .flowix-canvas
           </span>
         </ContextMenuItem>}
       </ContextMenuSubmenu>

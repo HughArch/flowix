@@ -142,6 +142,9 @@ export function FileBrowserRenderer({ surface: data, context }: {
     case 'html':
       fileSurface = { kind: 'file-html', fileIdentity, scopePath: surface.scopePath, documentProps: surface.documentProps };
       break;
+    case 'canvas':
+      fileSurface = { kind: 'file-canvas', fileIdentity, scopePath: surface.scopePath };
+      break;
     case 'docx':
       fileSurface = { kind: 'file-docx', fileIdentity, scopePath: surface.scopePath };
       break;

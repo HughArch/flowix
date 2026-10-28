@@ -107,6 +107,7 @@ const rendererImplementations = {
   'file-media-library': implementRenderer('file-media-library', () => import('./workspace-surface-renderers').then((module) => ({ default: module.MediaLibraryRenderer }))),
   'file-work-documents': implementRenderer('file-work-documents', () => import('./workspace-surface-renderers').then((module) => ({ default: module.WorkDocumentsCollectionRenderer }))),
   'file-html': implementRenderer('file-html', () => import('./workspace-surface-renderers').then((module) => ({ default: module.HtmlRenderer }))),
+  'file-canvas': implementRenderer('file-canvas', () => import('./workspace-surface-renderers').then((module) => ({ default: module.CanvasRenderer }))),
   'file-docx': implementRenderer('file-docx', () => import('./workspace-surface-renderers').then((module) => ({ default: module.DocxRenderer }))),
   'file-unavailable': implementRenderer('file-unavailable', () => import('./workspace-surface-renderers').then((module) => ({ default: module.UnavailableRenderer }))),
   media: implementRenderer('media', () => import('./workspace-surface-renderers').then((module) => ({ default: module.MediaResourceRenderer }))),

@@ -102,6 +102,12 @@ export interface UnavailableFileSurface extends FileSurfaceBase {
   props: ExternalDocumentProps;
 }
 
+/** Infinite-canvas documents (`.flowix-canvas`), rendered outside the markdown session pipeline. */
+export interface CanvasFileSurface extends FileSurfaceBase {
+  kind: 'canvas-file';
+  scopePath: string | null;
+}
+
 export interface MediaResourceSurface extends FileSurfaceBase {
   kind: 'media';
   notebookId: string | null;
@@ -165,6 +171,7 @@ export type WorkColumnSurface =
   | FolderCollectionSurface
   | HtmlFileSurface
   | UnavailableFileSurface
+  | CanvasFileSurface
   | MediaResourceSurface
   | MindmapSurface
   | HtmlSurface

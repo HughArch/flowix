@@ -75,6 +75,7 @@ const UnavailableFileView = lazy(() => import('@features/document/components/doc
 const DocxPreview = lazy(() => import('@features/document/components/docx-preview').then((module) => ({ default: module.DocxPreview })));
 const CsvPreview = lazy(() => import('@features/document/components/csv-preview').then((module) => ({ default: module.CsvPreview })));
 const TableDocumentView = lazy(() => import('@features/multidimensional-table/public/surface-api').then((module) => ({ default: module.TableDocumentView })));
+const CanvasSurfaceView = lazy(() => import('@features/canvas/public/surface-api').then((module) => ({ default: module.CanvasSurfaceView })));
 const MediaLibraryView = lazy(() => import('@features/media-library/media-library-view').then((module) => ({ default: module.MediaLibraryView })));
 const MediaResourceView = lazy(() => import('./media-resource-view').then((module) => ({ default: module.MediaResourceView })));
 const WorkDocumentsView = lazy(() => import('./work-documents-view').then((module) => ({ default: module.WorkDocumentsView })));
@@ -187,6 +188,15 @@ export function VideoRenderer({ surface, context }: RendererProps<'file-video'>)
 export function TableRenderer({ surface, context }: RendererProps<'file-table'>) {
   const props = useWorkspaceSurfaceLifecycleBridge(surface.props, context.registerLifecycle);
   return <TableDocumentView {...props} fileIdentity={surface.fileIdentity} reportPresentation={context.reportPresentation} />;
+}
+
+export function CanvasRenderer({ surface, context }: RendererProps<'file-canvas'>) {
+  return <CanvasSurfaceView
+    filePath={surface.fileIdentity.path}
+    notebookPath={surface.scopePath}
+    readOnly={context.readOnly}
+    reportPresentation={context.reportPresentation}
+  />;
 }
 
 export function MediaLibraryRenderer({ surface, context }: RendererProps<'file-media-library'>) {

@@ -6,11 +6,12 @@ import { openWorkspaceSurface } from '@features/workspace/public/open-surface-ap
 import { createTableDocumentFile, type TableViewType } from '@features/multidimensional-table/public/create-api';
 import { createMediaLibraryFile } from '@features/media-library/model';
 import { createWorkDocumentsCollectionFile } from '@features/work-documents/model';
+import { createCanvasFile } from '@features/canvas/create-canvas-file';
 import { Dialog, DialogContent, DialogDescription, DialogHeader, DialogTitle } from '@shared/ui/dialog';
 import { Button } from '@shared/ui/button';
 
 export interface NotebookDocumentCreateRequest {
-  kind: 'table' | 'media-library' | 'work-documents';
+  kind: 'table' | 'media-library' | 'work-documents' | 'canvas';
   notebook: { id: string; path: string };
   viewType?: TableViewType;
   parentFolder: () => Promise<string | null | undefined> | string | null | undefined;
@@ -36,7 +37,9 @@ export function NotebookDocumentCreateDialog({ request, onClose }: {
     ? [t(defaults[type][0]), t(defaults[type][1]), t('memo.create.tableDescription')]
     : request.kind === 'media-library'
       ? [t('memo.create.mediaLibraryDefaultName'), t('memo.create.mediaLibraryTitle'), t('memo.create.mediaLibraryDescription')]
-      : [t('memo.create.workDocuments'), t('memo.create.workDocumentsTitle'), t('memo.create.workDocumentsDescription')];
+      : request.kind === 'canvas'
+        ? [t('memo.create.canvasDefaultName'), t('memo.create.canvasDialogTitle'), t('memo.create.canvasDescription')]
+        : [t('memo.create.workDocuments'), t('memo.create.workDocumentsTitle'), t('memo.create.workDocumentsDescription')];
   const [name, setName] = useState(defaultName);
   const [saving, setSaving] = useState(false);
   const savingRef = useRef(false);
@@ -62,6 +65,8 @@ export function NotebookDocumentCreateDialog({ request, onClose }: {
         const created = await createMediaLibraryFile(notebook.path, parent, name);
         filePath = created.filePath;
         if (request.inViews) await files.setMediaLibraryInViews(notebook.id, created.document.collection.id, true);
+      } else if (request.kind === 'canvas') {
+        filePath = (await createCanvasFile(notebook.path, parent, name)).filePath;
       } else {
         filePath = (await createWorkDocumentsCollectionFile(notebook.path, parent, name)).filePath;
       }
