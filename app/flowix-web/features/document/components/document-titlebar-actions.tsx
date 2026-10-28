@@ -1,6 +1,6 @@
 import { useState } from 'react';
 import { Check, Code2, Ellipsis, Lock } from 'lucide-react';
-import { LinkSimpleIcon, CopyIcon, FolderOpenIcon, FileMdIcon, FileDocIcon, FilePdfIcon, ClockIcon, MapPinSimpleAreaIcon, TrashSimpleIcon, SwatchesIcon, ArrowsClockwiseIcon, LockSimpleIcon, LockSimpleOpenIcon } from '@phosphor-icons/react';
+import { LinkSimpleIcon, CopyIcon, FolderOpenIcon, FileMdIcon, FileDocIcon, FilePdfIcon, ClockIcon, MapPinSimpleAreaIcon, ShareNetworkIcon, TrashSimpleIcon, SwatchesIcon, ArrowsClockwiseIcon, LockSimpleIcon, LockSimpleOpenIcon } from '@phosphor-icons/react';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@shared/ui/dropdown-menu';
 import { POPUP_SEPARATOR_CLASS } from '@shared/ui/popup-separator';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogDescription } from '@shared/ui/dialog';
@@ -18,6 +18,7 @@ import {
   CloudHistorySubmenu, CloudHistoryDialog,
   VersionHistorySubmenu, VersionHistoryDialog, formatVersionTime,
 } from './document-version-history-menu';
+import { DocumentShareDialog } from './document-share-dialog';
 import { useDocumentTitlebarActions } from './use-document-titlebar-actions';
 import type { DocumentTitlebarProps, DocumentTitlebarTarget } from './document-titlebar-model';
 import type { DocumentEditorMode } from '@features/document/store/document-editor-view-store';
@@ -68,7 +69,9 @@ export function DocumentTitlebarActions({
   // 移动端历史版本选择弹窗 (桌面走 hover 子菜单, 不经过此状态)。
   const [historyDialogOpen, setHistoryDialogOpen] = useState(false);
   const [cloudHistoryDialogOpen, setCloudHistoryDialogOpen] = useState(false);
-  // notebook 是否绑定了 FNS (云端历史入口门控; 菜单每次打开时重新查询, 关闭即失效)。
+  // 分享弹窗桌面/移动共用同一形态。
+  const [shareDialogOpen, setShareDialogOpen] = useState(false);
+  // notebook 是否绑定了 FNS (云端历史/分享入口门控; 菜单每次打开时重新查询, 关闭即失效)。
   const [cloudAvailable, setCloudAvailable] = useState(false);
   // 触屏上恢复确认弹窗也要接住 Android 返回键, 避免弹窗开着先退回列表。
   useMobileBackInterceptor(!!confirmVersion || !!confirmCloudVersion, () => {
@@ -230,6 +233,11 @@ export function DocumentTitlebarActions({
             )}
           </>
         )}
+        {cloudAvailable && target.notebookId && target.relativePath && !folderCollectionViewType && (
+          <DropdownMenuItem className={itemClass} onClick={() => setShareDialogOpen(true)}>
+            <ShareNetworkIcon className="h-4 w-4" /> {t('share.menuLabel')}
+          </DropdownMenuItem>
+        )}
         <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
         {(indexable || locked) && (
           <DropdownMenuItem
@@ -358,6 +366,14 @@ export function DocumentTitlebarActions({
             </DialogContent>
           </Dialog>
         </>
+      )}
+      {cloudAvailable && target.notebookId && target.relativePath && (
+        <DocumentShareDialog
+          open={shareDialogOpen}
+          onOpenChange={setShareDialogOpen}
+          notebookId={target.notebookId}
+          relativePath={target.relativePath}
+        />
       )}
     </DropdownMenu>
     </>

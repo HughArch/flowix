@@ -5,6 +5,7 @@ use tauri::{AppHandle, Manager, State};
 use crate::app::state::AppState;
 use crate::fns_sync::config::{FnsConfigPatch, FnsConfigView, FnsTokenInput};
 use crate::fns_sync::history::{FnsApiError, FnsCloudHistoryPage};
+use crate::fns_sync::share::FnsShareView;
 use crate::fns_sync::service::{
     ConflictResolutionChoice, FnsConflictDetail, FnsConflictView, FnsNotebookState,
     FnsNotebookSyncOutcome, FnsSyncRecord, FnsSyncStatus,
@@ -52,6 +53,77 @@ pub async fn fns_note_history_content(
         app, service, notebook_id, relative_path, history_id,
     )
     .await
+}
+
+/// `...` 菜单分享入口的门控: notebook 是否已绑定 FNS 且凭据齐备。
+#[tauri::command]
+pub fn fns_share_available(app: AppHandle, notebook_id: String) -> bool {
+    let service = app.state::<AppState>().fns_sync.clone();
+    super::share::share_available(&app, &service, &notebook_id)
+}
+
+/// 创建分享 (服务端幂等)。`expire_at_sec` 缺省/0 = 永久。
+#[tauri::command]
+pub async fn fns_share_create(
+    app: AppHandle,
+    notebook_id: String,
+    relative_path: String,
+    password: Option<String>,
+    expire_at_sec: Option<i64>,
+) -> Result<FnsShareView, String> {
+    let service = app.state::<AppState>().fns_sync.clone();
+    super::share::share_create(
+        app, service, notebook_id, relative_path, password, expire_at_sec,
+    )
+    .await
+}
+
+/// 查询当前分享。无 active 分享返回 `null` 而非错误。
+#[tauri::command]
+pub async fn fns_share_query(
+    app: AppHandle,
+    notebook_id: String,
+    relative_path: String,
+) -> Result<Option<FnsShareView>, String> {
+    let service = app.state::<AppState>().fns_sync.clone();
+    super::share::share_query(app, service, notebook_id, relative_path).await
+}
+
+/// 取消 (撤销) 分享。外部分享链接随即失效, 不可恢复。
+#[tauri::command]
+pub async fn fns_share_cancel(
+    app: AppHandle,
+    notebook_id: String,
+    relative_path: String,
+) -> Result<(), String> {
+    let service = app.state::<AppState>().fns_sync.clone();
+    super::share::share_cancel(app, service, notebook_id, relative_path).await
+}
+
+/// 更新分享密码与过期时间。
+#[tauri::command]
+pub async fn fns_share_password(
+    app: AppHandle,
+    notebook_id: String,
+    relative_path: String,
+    password: Option<String>,
+    expire_at_sec: Option<i64>,
+) -> Result<(), String> {
+    let service = app.state::<AppState>().fns_sync.clone();
+    super::share::share_update_password(
+        app, service, notebook_id, relative_path, password, expire_at_sec,
+    )
+    .await
+}
+
+/// vault 内所有 active 分享的笔记路径 (预留: 列表角标 / 分享管理)。
+#[tauri::command]
+pub async fn fns_share_paths(
+    app: AppHandle,
+    notebook_id: String,
+) -> Result<Vec<String>, String> {
+    let service = app.state::<AppState>().fns_sync.clone();
+    super::share::active_note_share_paths(app, service, notebook_id).await
 }
 
 #[tauri::command]

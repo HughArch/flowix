@@ -1,0 +1,10 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "autostart",
+  "description": "Launch Flowix at system login (desktop only; the plugin has no mobile implementation)",
+  "platforms": ["macOS", "windows", "linux"],
+  "windows": ["main", "preferences", "tab-host-*"],
+  "permissions": [
+    "autostart:default"
+  ]
+}

@@ -14,6 +14,7 @@
 
 pub mod fns_config;
 pub mod fns_history;
+pub mod fns_share;
 pub mod memo_file;
 pub mod secret;
 pub mod service;
