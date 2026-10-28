@@ -178,6 +178,15 @@ pub enum Theme {
     Ember,
 }
 
+/// 主窗口关闭按钮行为。默认最小化到后台 (托盘常驻)，用户可选择直接退出。
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum WindowCloseAction {
+    #[default]
+    Minimize,
+    Exit,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub struct PreferenceFile {
@@ -222,6 +231,9 @@ pub struct PreferenceFile {
     /// PR3 鎺ュ叆 IPC 鐑洿鏂般€?
     #[serde(default)]
     pub watcher: crate::watcher::WhitelistConfig,
+    /// 主窗口关闭按钮行为 ── minimize: 隐藏到托盘后台 (默认); exit: 走完整退出流程。
+    #[serde(default)]
+    pub window_close_action: WindowCloseAction,
 }
 
 fn default_true() -> bool {
@@ -245,6 +257,7 @@ impl Default for PreferenceFile {
             agents: AgentsConfig::default(),
             product_updates: ProductUpdatesConfig::default(),
             watcher: crate::watcher::WhitelistConfig::default(),
+            window_close_action: WindowCloseAction::default(),
         }
     }
 }

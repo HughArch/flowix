@@ -8,12 +8,14 @@ import { useUserSettings, useUserSettingsActions } from '@features/preferences/h
 export function GeneralPreferencesTab({ productInfo = null }: { productInfo?: ProductInfo | null }) {
   const language = useUserSettings((settings) => settings.language);
   const theme = useUserSettings((settings) => settings.theme);
+  const windowCloseAction = useUserSettings((settings) => settings.windowCloseAction);
   const { updateSettings } = useUserSettingsActions();
 
   return (
     <GeneralSection
       language={language}
       productInfo={productInfo}
+      windowCloseAction={windowCloseAction}
       updateSettings={updateSettings}
       afterGeneral={<ThemeSection settings={{ theme }} updateSettings={updateSettings} />}
     />

@@ -9,6 +9,7 @@ import {
   type MemoListView,
   type ProductUpdatesConfig,
   type UserSettings,
+  type WindowCloseAction,
   normalizePageWidthScale,
 } from '@/lib/constants';
 import { sanitizeTheme, type ThemeId } from '@features/theme';
@@ -78,6 +79,10 @@ function normalizeMemoListView(value: unknown): MemoListView {
   return DEFAULT_USER_SETTINGS.memoListView;
 }
 
+function normalizeWindowCloseAction(value: unknown): WindowCloseAction {
+  return value === 'exit' ? 'exit' : 'minimize';
+}
+
 /**
  * 偏好设置全局单例 store。
  *
@@ -118,6 +123,9 @@ function mergeSettings(base: UserSettings, updates: UserSettingsUpdate): UserSet
     memoListView: normalizeMemoListView(updates.memoListView ?? base.memoListView),
     autoOpenCreatedNotesInBrowser:
       updates.autoOpenCreatedNotesInBrowser ?? base.autoOpenCreatedNotesInBrowser,
+    windowCloseAction: normalizeWindowCloseAction(
+      updates.windowCloseAction ?? base.windowCloseAction,
+    ),
     shortcuts: { ...base.shortcuts, ...(updates.shortcuts ?? {}) },
     agents: {
       enabledByType: {
@@ -187,6 +195,7 @@ function sanitizeSettings(settings: UserSettings): UserSettings {
     region: sanitizeRegion(settings.region),
     memoListView: normalizeMemoListView(settings.memoListView),
     autoOpenCreatedNotesInBrowser: settings.autoOpenCreatedNotesInBrowser !== false,
+    windowCloseAction: normalizeWindowCloseAction(settings.windowCloseAction),
     shortcuts: { ...DEFAULT_USER_SETTINGS.shortcuts, ...(settings.shortcuts ?? {}) },
     agents: sanitizeAgentsConfig(settings.agents),
     productUpdates: sanitizeProductUpdatesConfig(settings.productUpdates),
@@ -250,6 +259,7 @@ export interface UserSettingsUpdate {
   language?: AppLanguage;
   memoListView?: MemoListView;
   autoOpenCreatedNotesInBrowser?: boolean;
+  windowCloseAction?: WindowCloseAction;
   productUpdates?: Partial<ProductUpdatesConfig>;
   /**
    * 快捷键覆盖的浅合并 — 传入的字段会覆盖现有覆盖, 未提及的字段保留。

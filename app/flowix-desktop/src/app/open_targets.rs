@@ -11,8 +11,9 @@ use tauri::{Emitter, Manager};
 const CHANGED_EVENT: &str = "flowix:open-targets-changed";
 
 /// Both process startup and the single-instance plugin supply argv including argv[0].
+/// `--hidden` is the autostart silent-launch flag, never an open target.
 pub fn command_line_targets(args: impl IntoIterator<Item = String>) -> Vec<String> {
-    args.into_iter().skip(1).collect()
+    args.into_iter().skip(1).filter(|arg| arg != "--hidden").collect()
 }
 
 #[derive(Clone, Copy, serde::Deserialize, PartialEq)]

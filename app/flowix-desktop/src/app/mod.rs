@@ -8,6 +8,7 @@ pub mod panic;
 pub mod paths;
 pub mod startup;
 pub mod state;
+pub mod tray;
 pub mod watchdog;
 
 pub use bootstrap::run;

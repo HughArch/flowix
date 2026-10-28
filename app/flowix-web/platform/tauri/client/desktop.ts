@@ -2,6 +2,7 @@ import { acceptPathMutationResult, publishNotebookPathMove, type PathMutationRes
 import { invokeDocumentMutation } from './document-mutation';
 import { convertFileSrc, invoke } from '@platform/tauri/core';
 import { applyWindowTheme } from './window-theme';
+import { disable as autostartDisable, enable as autostartEnable, isEnabled as autostartIsEnabled } from '@tauri-apps/plugin-autostart';
 import type { NoteColor } from '@/types/note-item';
 import type { MarkdownLocation } from './notes';
 
@@ -402,6 +403,16 @@ export const windows = {
     invoke<string>('watch_external_document', { filePath, scopePath: scopePath ?? null }),
   unwatchExternalDocument: (leaseId: string) =>
     invoke<void>('unwatch_external_document', { leaseId }),
+};
+
+/**
+ * 开机自启动 ── 状态真源在 OS (Windows 注册表 Run 键 / macOS LaunchAgent)，
+ * 不进 UserSettings；插件仅在桌面端注册，移动端调用会 reject。
+ */
+export const autostart = {
+  isEnabled: () => autostartIsEnabled(),
+  enable: () => autostartEnable(),
+  disable: () => autostartDisable(),
 };
 
 export interface ProductInfo {
