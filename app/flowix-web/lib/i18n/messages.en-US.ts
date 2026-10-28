@@ -2294,6 +2294,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "share.createHint": "Create a public link so anyone can view this note.",
     "share.createAction": "Create share link",
     "share.created": "Share link created",
+    "share.createdAndCopied": "Share link created and copied to clipboard",
     "share.updated": "Share settings updated",
     "share.cancelled": "Share removed",
     "share.actionFailed": "Action failed, please retry",

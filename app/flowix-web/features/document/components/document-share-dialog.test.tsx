@@ -137,6 +137,11 @@ describe('DocumentShareDialog', () => {
   });
 
   it('creates a share with password and expiry converted to unix seconds', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined);
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText },
+    });
     mocks.shareQuery.mockResolvedValue(null);
     mocks.shareCreate.mockResolvedValue(ACTIVE_VIEW);
     renderDialog();
@@ -147,6 +152,8 @@ describe('DocumentShareDialog', () => {
     });
     await clickButton(root, container, 'share.createAction');
     expect(mocks.shareCreate).toHaveBeenCalledWith('book', 'a.md', '123', expect.any(Number));
+    // 创建的链接直接进剪贴板, 不必再手动点复制。
+    expect(writeText).toHaveBeenCalledWith(ACTIVE_VIEW.shareUrl);
     // 创建成功后重新查询回显。
     expect(mocks.shareQuery).toHaveBeenCalledTimes(2);
   });

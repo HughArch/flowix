@@ -8,9 +8,21 @@ import { toast } from '@/lib/toast';
 import { Button } from '@shared/ui/button';
 import { Dialog, DialogContent, DialogTitle } from '@shared/ui/dialog';
 import { Input } from '@shared/ui/input';
+import { isMobileDevice } from '@shared/platform';
 import { useMobileBackInterceptor } from '@features/shell/hooks/use-mobile-back-button';
 
 const logger = createLogger('document-share');
+
+/** 复制到剪贴板; WebView 未暴露 clipboard API 时返回 false 由调用方降级提示。 */
+async function copyToClipboard(text: string): Promise<boolean> {
+  if (!navigator.clipboard?.writeText) return false;
+  try {
+    await navigator.clipboard.writeText(text);
+    return true;
+  } catch {
+    return false;
+  }
+}
 
 /** 过期档位 → 传给服务端的绝对 unix 秒; 0 = 永久。 */
 function expiryToUnixSeconds(deltaSeconds: number): number {
@@ -33,8 +45,8 @@ function formatExpiry(value: string, language: AppLanguage): string {
 
 /**
  * 分享弹窗: 打开即查询当前分享状态, 无分享给创建表单, 有分享展示链接与
- * 管理 (改密码/有效期、取消分享) 操作。桌面/移动共用贴底弹窗形态,
- * 契约见 docs/NOTE-SHARE-CLOUD.md。
+ * 管理 (改密码/有效期、取消分享) 操作。桌面为居中弹窗 (对齐全局搜索面板的
+ * 视觉规范), 移动端保持贴底弹窗 (触屏可达性)。契约见 docs/NOTE-SHARE-CLOUD.md。
  */
 export function DocumentShareDialog({
   open,
@@ -112,13 +124,16 @@ export function DocumentShareDialog({
 
   const handleCreate = () => withBusy(async () => {
     try {
-      await fns.shareCreate(
+      const created = await fns.shareCreate(
         notebookId,
         relativePath,
         password.trim() || undefined,
         expiryToUnixSeconds(expiryDelta),
       );
-      toast.success(t('share.created'));
+      // 创建即复制: 分享的自然下一步就是粘贴到聊天/文档, 省掉一次手动点击。
+      // 剪贴板不可用时退化为普通创建提示, 链接仍在弹窗里可手动复制。
+      const copied = await copyToClipboard(created.shareUrl);
+      toast.success(t(copied ? 'share.createdAndCopied' : 'share.created'));
       refresh(true);
     } catch (err) {
       logger.error('share create failed', { error: err, notebookId, relativePath });
@@ -156,9 +171,11 @@ export function DocumentShareDialog({
 
   const handleCopy = () => {
     if (!view) return;
-    void navigator.clipboard.writeText(view.shareUrl)
-      .then(() => toast.success(t('share.linkCopied')))
-      .catch(() => toast.error(t('share.copyFailed')));
+    void copyToClipboard(view.shareUrl)
+      .then((copied) => {
+        if (copied) toast.success(t('share.linkCopied'));
+        else toast.error(t('share.copyFailed'));
+      });
   };
 
   const expiryChips = (
@@ -306,9 +323,15 @@ export function DocumentShareDialog({
     );
   }
 
+  // 桌面居中 (与全局搜索面板同一套 popover 视觉: popover 底色 / border-popup /
+  // 24px 投影), 移动端保留贴底弹窗形态。
+  const contentClassName = isMobileDevice()
+    ? 'flex max-h-[70dvh] w-full flex-col self-end overflow-y-auto rounded-b-none rounded-t-2xl px-4 pb-4 pt-3 max-w-none'
+    : 'flex w-[440px] max-w-[calc(100vw-2rem)] flex-col overflow-y-auto rounded-xl border border-[var(--border-popup)] bg-[var(--popover)] px-5 pb-5 pt-4 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]';
+
   return (
     <Dialog open={open} onOpenChange={onOpenChange}>
-      <DialogContent className="flex max-h-[70dvh] w-full flex-col self-end overflow-y-auto rounded-b-none rounded-t-2xl px-4 pb-4 pt-3 max-w-none">
+      <DialogContent className={contentClassName}>
         <div className="flex items-center justify-between pr-10">
           <DialogTitle>{t('share.menuLabel')}</DialogTitle>
         </div>

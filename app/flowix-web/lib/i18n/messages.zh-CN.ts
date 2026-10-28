@@ -2265,6 +2265,7 @@ const zhCN = {
     "share.createHint": "创建一个公开链接，任何人都可以通过链接查看这篇笔记。",
     "share.createAction": "创建分享链接",
     "share.created": "分享链接已创建",
+    "share.createdAndCopied": "分享链接已创建并复制到剪贴板",
     "share.updated": "分享设置已更新",
     "share.cancelled": "已取消分享",
     "share.actionFailed": "操作失败，请重试",
