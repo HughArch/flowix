@@ -120,6 +120,29 @@ export interface FnsConflictDetail {
 
 export type FnsConflictAction = 'keepLocal' | 'keepRemote' | 'merge';
 
+/** 一条笔记分享的当前状态 (URL 已由 Rust 侧拼好)。契约见 docs/NOTE-SHARE-CLOUD.md §3。 */
+export interface FnsShareView {
+  /** 笔记 (或文件) 表 ID, 分享页 URL 的 `/{id}` 段。 */
+  id: number;
+  /** `note` | `file`。 */
+  shareType: 'note' | 'file' | string;
+  token: string;
+  isPassword: boolean;
+  /** Go time.Time RFC3339 字符串; 零值 = 永久。 */
+  expiresAt: string;
+  shortLink: string;
+  baseUrl: string;
+  shareUrl: string;
+}
+
+/** 创建/改密码的有效期档位, `0` = 永久。 */
+export const FNS_SHARE_EXPIRY_OPTIONS = [
+  { value: 0, i18nKey: 'share.expiry.never' },
+  { value: 86400, i18nKey: 'share.expiry.oneDay' },
+  { value: 604800, i18nKey: 'share.expiry.sevenDays' },
+  { value: 2592000, i18nKey: 'share.expiry.thirtyDays' },
+] as const;
+
 /** 一条云端笔记版本的元数据 (不含正文), 来自 FNS `note_history`。 */
 export interface FnsCloudVersionMeta {
   historyId: number;
@@ -179,4 +202,22 @@ export const fns = {
   /** 拉取并重建某云端版本修改后的完整正文。 */
   noteHistoryContent: (notebookId: string, relativePath: string, historyId: number) =>
     invoke<string>('fns_note_history_content', { notebookId, relativePath, historyId }),
+  /** `...` 菜单分享入口的门控: notebook 已绑定 FNS 且凭据齐备。 */
+  shareAvailable: (notebookId: string) =>
+    invoke<boolean>('fns_share_available', { notebookId }),
+  /** 创建分享 (服务端幂等: 同资源已有 active 分享先撤销再建)。`expireAtSec` 0/缺省 = 永久。 */
+  shareCreate: (notebookId: string, relativePath: string, password?: string, expireAtSec?: number) =>
+    invoke<FnsShareView>('fns_share_create', { notebookId, relativePath, password, expireAtSec }),
+  /** 查询当前分享; 无 active 分享返回 `null`。 */
+  shareQuery: (notebookId: string, relativePath: string) =>
+    invoke<FnsShareView | null>('fns_share_query', { notebookId, relativePath }),
+  /** 取消 (撤销) 分享。外部分享链接随即失效, 不可恢复。 */
+  shareCancel: (notebookId: string, relativePath: string) =>
+    invoke<void>('fns_share_cancel', { notebookId, relativePath }),
+  /** 更新分享密码与过期时间 (`password` 传空串 = 去掉密码)。 */
+  sharePassword: (notebookId: string, relativePath: string, password?: string, expireAtSec?: number) =>
+    invoke<void>('fns_share_password', { notebookId, relativePath, password, expireAtSec }),
+  /** vault 内所有 active 分享的笔记路径 (预留: 列表角标)。 */
+  sharePaths: (notebookId: string) =>
+    invoke<string[]>('fns_share_paths', { notebookId }),
 };
