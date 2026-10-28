@@ -7,6 +7,7 @@ import { files } from '@platform/tauri/client';
 import type { SurfaceLifecycle, SurfacePresentationUpdate } from '@features/workspace/public/surface-api';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
+import { useAppLanguage } from '@features/preferences/public/runtime-api';
 import {
   CanvasParseError,
   parseCanvasDocument,
@@ -40,6 +41,10 @@ interface PersistedScene {
 
 export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, onSurfaceLifecycleReady, reportPresentation }: CanvasSurfaceViewProps) {
   const { t } = useI18n();
+  const appLanguage = useAppLanguage();
+  // Excalidraw ships its own locale bundles; follow the app language so the
+  // canvas chrome matches the note UI (zh-CN / en).
+  const excalidrawLangCode = appLanguage === 'zh-CN' ? 'zh-CN' : 'en';
   const [state, setState] = useState<CanvasLoadState>({ status: 'loading' });
   const [retryToken, setRetryToken] = useState(0);
   const documentRef = useRef<FlowixCanvasDocument | null>(null);
@@ -196,6 +201,7 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
       <LazyExcalidraw
         initialData={initialData}
         onChange={handleSceneChange}
+        langCode={excalidrawLangCode}
         viewModeEnabled={readOnly}
         UIOptions={{ canvasActions: { export: false, loadScene: false } }}
       />
