@@ -131,10 +131,11 @@ export function DocumentShareDialog({
         expiryToUnixSeconds(expiryDelta),
       );
       // 创建即复制: 分享的自然下一步就是粘贴到聊天/文档, 省掉一次手动点击。
-      // 剪贴板不可用时退化为普通创建提示, 链接仍在弹窗里可手动复制。
+      // 剪贴板不可用时退化为普通创建提示。
       const copied = await copyToClipboard(created.shareUrl);
       toast.success(t(copied ? 'share.createdAndCopied' : 'share.created'));
-      refresh(true);
+      // 结果已经通过剪贴板 + toast 交付, 弹窗使命完成; 下次打开会重新查询。
+      onOpenChange(false);
     } catch (err) {
       logger.error('share create failed', { error: err, notebookId, relativePath });
       toast.error(t('share.actionFailed'));
@@ -151,7 +152,7 @@ export function DocumentShareDialog({
         expiryToUnixSeconds(expiryDelta),
       );
       toast.success(t('share.updated'));
-      refresh(true);
+      onOpenChange(false);
     } catch (err) {
       logger.error('share update failed', { error: err, notebookId, relativePath });
       toast.error(t('share.actionFailed'));

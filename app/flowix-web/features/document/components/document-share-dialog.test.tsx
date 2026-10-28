@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   shareCreate: vi.fn(),
   shareCancel: vi.fn(),
   sharePassword: vi.fn(),
+  onOpenChange: vi.fn(),
 }));
 // 真实 Provider 的 t 经 useMemo 稳定; mock 也必须返回同一函数实例,
 // 否则依赖 t 的 useCallback 链会随每次渲染变 identity, 触发 effect 死循环。
@@ -95,7 +96,7 @@ function renderDialog() {
     root.render(
       <DocumentShareDialog
         open
-        onOpenChange={() => {}}
+        onOpenChange={mocks.onOpenChange}
         notebookId="book"
         relativePath="a.md"
       />,
@@ -154,8 +155,19 @@ describe('DocumentShareDialog', () => {
     expect(mocks.shareCreate).toHaveBeenCalledWith('book', 'a.md', '123', expect.any(Number));
     // 创建的链接直接进剪贴板, 不必再手动点复制。
     expect(writeText).toHaveBeenCalledWith(ACTIVE_VIEW.shareUrl);
-    // 创建成功后重新查询回显。
-    expect(mocks.shareQuery).toHaveBeenCalledTimes(2);
+    // 结果已交付 (剪贴板 + toast), 弹窗随即关闭, 不再原地刷新。
+    expect(mocks.onOpenChange).toHaveBeenCalledWith(false);
+    expect(mocks.shareQuery).toHaveBeenCalledTimes(1);
+  });
+
+  it('closes the dialog after updating the share settings', async () => {
+    mocks.shareQuery.mockResolvedValue(ACTIVE_VIEW);
+    mocks.sharePassword.mockResolvedValue(undefined);
+    renderDialog();
+    await act(async () => {});
+    await clickButton(root, container, 'share.updateAction');
+    expect(mocks.sharePassword).toHaveBeenCalledWith('book', 'a.md', undefined, 0);
+    expect(mocks.onOpenChange).toHaveBeenCalledWith(false);
   });
 
   it('requires confirmation before cancelling and then refreshes', async () => {
