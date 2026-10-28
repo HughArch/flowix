@@ -274,3 +274,16 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 2. 不推荐：画布搭笔记通道便车（如 .agents/mcp.json 特例）——需动客户端 is_markdown 门并连带 memo 索引/FTS 污染，为省服务端工作重新引入 §11.1 的代价。
 
 排期：本地归档扩展（versions.rs）与云端文件历史（服务端）均为 Phase 2 项，云端部分需 fast-note-sync-service 发版配合。
+
+## 12. Phase 0 实施记录（2026-10-28，分支 explore/infinite-canvas）
+
+已按 §5 路线完成 Phase 0，全部为前端改动（存储/同步/agent 零改动，符合 §3 预判）：
+
+- **文件**：`.flowix-canvas`（UTF-8 JSON，`type: "flowix/canvas"`，v1；`cards` 预留恒空）
+- **surface**：`file-canvas` 注册双 host，capabilities `fullscreen`；`.flowix-canvas` 后缀在 `resolveWorkspaceFileSurfaceKind` 特殊后缀优先路由（先于 `externalFileViewKind`）
+- **模块**：`features/canvas/` —— model（解析/序列化/appState 白名单/位图体积上限：单文件 2MB、总量 8MB、元素 5000）+ 惰性创建 + Excalidraw 视图（800ms 防抖原子写、lifecycle flush、序列化字节不变则跳过写入）
+- **创建入口**：文件树右键「新建」→ 画布；复用 `NotebookDocumentCreateDialog`
+- **依赖**：`@excalidraw/excalidraw@0.18.1`（已声明支持 React 19，无需 overrides）；CSS 随懒加载 chunk 拆分，启动包预算门禁通过
+- **移动端**：同一 bundle 直接可用；`viewModeEnabled` 跟随 host readOnly
+
+已知边界（Phase 1/2 处理）：多端同时编辑同一画布为 last-writer-wins（文件通道无合并）；外部同步修改不触发热重载；画布内图片以 dataURL 存于 `files`（有上限），正式的附件外链方案待定。
