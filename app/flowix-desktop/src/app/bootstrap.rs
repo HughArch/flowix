@@ -560,6 +560,12 @@ pub fn run() {
             crate::fns_sync::fns_cloud_history_available,
             crate::fns_sync::fns_note_history_list,
             crate::fns_sync::fns_note_history_content,
+            crate::fns_sync::fns_share_available,
+            crate::fns_sync::fns_share_create,
+            crate::fns_sync::fns_share_query,
+            crate::fns_sync::fns_share_cancel,
+            crate::fns_sync::fns_share_password,
+            crate::fns_sync::fns_share_paths,
             commands::history::list_local_path_archives,
             commands::history::restore_local_path_version,
             // Device-local notebook workspaces (local.db).

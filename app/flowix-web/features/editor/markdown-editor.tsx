@@ -43,6 +43,8 @@ interface MarkdownEditorProps {
   /** Read the current path when an upload starts, including after a rename. */
   getAttachmentOwnerPath?: () => string | undefined;
   getAttachmentNotebookId?: () => string | undefined;
+  /** Notebook root used to resolve notebook-relative attachment keys. */
+  getAttachmentNotebookPath?: () => string | undefined;
   propertyTargetId?: string;
   onViewSourceMode?: () => void;
   transitionId?: number | null;
@@ -247,6 +249,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   workspaceHost = 'main-third',
   getAttachmentOwnerPath,
   getAttachmentNotebookId,
+  getAttachmentNotebookPath,
   propertyTargetId,
   onViewSourceMode,
   transitionId = null,
@@ -326,7 +329,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   const onFocusTitleRef = useRef(onFocusTitle);
   const onAppendToTitleRef = useRef(onAppendToTitle);
   const editableRef = useRef(editable);
-  const attachmentOwnerRef = useRef({ ownerPath, getAttachmentOwnerPath, getAttachmentNotebookId });
+  const attachmentOwnerRef = useRef({ ownerPath, getAttachmentOwnerPath, getAttachmentNotebookId, getAttachmentNotebookPath });
   // 链接导航上下文走 ref：mount effect 不因文档路径变化重建编辑器，
   // 点击时始终读取最新值。
   const linkContextRef = useRef<EditorLinkContext | undefined>(linkContext);
@@ -337,7 +340,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   onFocusTitleRef.current = onFocusTitle;
   onAppendToTitleRef.current = onAppendToTitle;
   editableRef.current = editable;
-  attachmentOwnerRef.current = { ownerPath, getAttachmentOwnerPath, getAttachmentNotebookId };
+  attachmentOwnerRef.current = { ownerPath, getAttachmentOwnerPath, getAttachmentNotebookId, getAttachmentNotebookPath };
   linkContextRef.current = linkContext;
 
   const getCurrentAttachmentOwnerPath = useCallback(() => {
@@ -345,6 +348,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
     return current.getAttachmentOwnerPath ? current.getAttachmentOwnerPath() : current.ownerPath;
   }, []);
   const getCurrentAttachmentNotebookId = useCallback(() => attachmentOwnerRef.current.getAttachmentNotebookId?.(), []);
+  const getCurrentAttachmentNotebookPath = useCallback(() => attachmentOwnerRef.current.getAttachmentNotebookPath?.(), []);
 
   const clearSerializeTimer = useCallback(() => {
     if (serializeTimerRef.current) {
@@ -732,6 +736,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
           ownerPath,
           getOwnerPath: getCurrentAttachmentOwnerPath,
           getAttachmentNotebookId: getCurrentAttachmentNotebookId,
+          getAttachmentNotebookPath: getCurrentAttachmentNotebookPath,
           propertyTargetId,
           onViewSourceMode,
           transitionId,

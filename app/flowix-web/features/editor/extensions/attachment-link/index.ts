@@ -4,12 +4,15 @@ import { VideoAttachment } from '@features/editor/extensions/attachment-link/nod
 import { FileAttachment } from '@features/editor/extensions/attachment-link/nodes/view-file';
 import { createAttachmentCommands } from '@features/editor/extensions/attachment-link/upload/commands';
 import { createFileUploadPlugin } from '@features/editor/extensions/attachment-link/upload/plugin';
+import { resolveAttachmentStorageKey } from '@features/editor/extensions/attachment-link/utils';
 import type { AttachmentUploadOptions, OpenFileDialogParams } from '@features/editor/extensions/attachment-link/upload/file-source';
 
 declare module '@tiptap/core' {
     interface Storage {
         attachmentLink: {
             getNotebookId?: () => string | undefined;
+            /** Absolute path for a persisted notebook-relative attachment key. */
+            resolveStorageKey?: (storageKey: string) => string;
         };
     }
 
@@ -51,6 +54,8 @@ export const AttachmentLink = Extension.create<AttachmentUploadOptions>({
     addStorage() {
         return {
             getNotebookId: () => this.options.getNotebookId?.(),
+            resolveStorageKey: (storageKey: string) =>
+                resolveAttachmentStorageKey(storageKey, this.options.getNotebookPath?.()),
         };
     },
 

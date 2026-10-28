@@ -134,7 +134,13 @@ class VideoView implements ProseMirrorNodeView {
         this.seekBy(direction === 'backward' ? -MEDIA_SEEK_STEP_SECONDS : MEDIA_SEEK_STEP_SECONDS);
     };
 
-    constructor(node: ProseMirrorNode, view: EditorView, getPos: () => number, decorations: readonly Decoration[]) {
+    constructor(
+        node: ProseMirrorNode,
+        view: EditorView,
+        getPos: () => number,
+        decorations: readonly Decoration[],
+        private readonly resolveStorageKey: (storageKey: string) => string = (storageKey) => storageKey,
+    ) {
         this.node = node;
         this.view = view;
         this.getPos = getPos;
@@ -241,7 +247,7 @@ class VideoView implements ProseMirrorNodeView {
     private applySrc(video: HTMLVideoElement, attrs: VideoAttributes): void {
         const storageKey = stringAttribute(attrs.storageKey);
         const nextSrc = attrs.storageMode === 'attachment' && storageKey
-            ? assetUrl(storageKey)
+            ? assetUrl(this.resolveStorageKey(storageKey))
             : stringAttribute(attrs.src);
 
         if (nextSrc === this.appliedSrc) return;
@@ -455,7 +461,8 @@ export const VideoAttachment = Node.create({
                 }
                 return pos;
             },
-            props.decorations
+            props.decorations,
+            (storageKey) => props.editor.storage.attachmentLink?.resolveStorageKey?.(storageKey) ?? storageKey,
         );
     },
 

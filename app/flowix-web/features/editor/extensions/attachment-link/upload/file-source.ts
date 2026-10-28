@@ -16,7 +16,10 @@ export type StoredAsset = {
 };
 
 export type AttachmentSaveResult = {
+    /** Absolute path on this device. */
     path: string;
+    /** Notebook-relative key persisted in note content. */
+    key?: string;
     created: boolean;
 };
 
@@ -24,6 +27,8 @@ export type AttachmentUploadOptions = {
     ownerPath?: string;
     getOwnerPath?: () => string | undefined;
     getNotebookId?: () => string | undefined;
+    /** Notebook root on this device; resolves persisted relative attachment keys. */
+    getNotebookPath?: () => string | undefined;
     storage: { mode: 'attachment' };
     picker: { accept: string | undefined; multiple: boolean };
     ingest: {

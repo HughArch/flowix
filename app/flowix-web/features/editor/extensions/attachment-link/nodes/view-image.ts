@@ -73,7 +73,13 @@ class ImageView implements ProseMirrorNodeView {
     private lastResizeWidthPercent: number | null = null;
     private isResizing = false;
 
-    constructor(node: ProseMirrorNode, view: EditorView, getPos: () => number, decorations: readonly Decoration[]) {
+    constructor(
+        node: ProseMirrorNode,
+        view: EditorView,
+        getPos: () => number,
+        decorations: readonly Decoration[],
+        private readonly resolveStorageKey: (storageKey: string) => string = (storageKey) => storageKey,
+    ) {
         this.node = node;
         this.view = view;
         this.getPos = getPos;
@@ -122,7 +128,7 @@ class ImageView implements ProseMirrorNodeView {
     private getSource(attrs: ImageAttributes): string {
         const storageKey = stringAttribute(attrs.storageKey);
         return attrs.storageMode === 'attachment' && storageKey
-            ? assetUrl(storageKey)
+            ? assetUrl(this.resolveStorageKey(storageKey))
             : stringAttribute(attrs.src);
     }
 
@@ -149,7 +155,7 @@ class ImageView implements ProseMirrorNodeView {
 
         const path = this.getOpenablePath(this.node.attrs);
         if (!path) return;
-        void invoke('open_attachment_file', { sourcePath: path }).catch((error) => {
+        void invoke('open_attachment_file', { sourcePath: this.resolveStorageKey(path) }).catch((error) => {
             console.error('[ImageAttachment] Failed to open image in system viewer:', error);
         });
     }
@@ -340,7 +346,7 @@ class ImageView implements ProseMirrorNodeView {
         const img = this.dom.querySelector('img');
         if (img) {
             if (attributes.storageMode === 'attachment' && attributes.storageKey) {
-                attributes.src = assetUrl(String(attributes.storageKey));
+                attributes.src = assetUrl(this.resolveStorageKey(String(attributes.storageKey)));
             }
             Object.entries(attributes).forEach(([key, value]) => {
                 if (key === 'src') return;
@@ -538,7 +544,8 @@ export const ImageAttachment = Node.create({
             props.node,
             props.view,
             () => props.getPos?.() ?? 0,
-            props.decorations
+            props.decorations,
+            (storageKey) => props.editor.storage.attachmentLink?.resolveStorageKey?.(storageKey) ?? storageKey,
         );
     },
 

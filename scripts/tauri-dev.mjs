@@ -18,6 +18,20 @@ const requestedConfig = configArgs[0] ?? 'app/flowix-desktop/tauri.conf.dev.json
 const config = process.platform === 'win32' && requestedConfig === 'app/flowix-desktop/tauri.conf.dev.json'
   ? 'app/flowix-desktop/tauri.windows.dev.conf.json'
   : requestedConfig
+// FLOWIX_VITE_PORT moves the vite dev server (vite.config.ts reads the same
+// variable). The Tauri devUrl must follow, otherwise the webview keeps
+// loading the default 1420. The overlay JSON is passed inline so the
+// untouched config files stay canonical.
+const devPort = Number(process.env.FLOWIX_VITE_PORT) || 1420
+if (devPort !== 1420 && (!Number.isInteger(devPort) || devPort < 1 || devPort > 65535)) {
+  throw new Error(`FLOWIX_VITE_PORT=${process.env.FLOWIX_VITE_PORT} is not a valid port`)
+}
+const configArg = devPort === 1420
+  ? config
+  : JSON.stringify((() => {
+      const overlay = JSON.parse(readFileSync(resolve(repoRoot, config), 'utf8'))
+      return { ...overlay, build: { ...overlay.build, devUrl: `http://localhost:${devPort}` } }
+    })())
 const childEnv = { ...process.env }
 // Pi is shipped by Flowix; do not let a shell override change the runtime.
 delete childEnv.PI_CLI_PATH
@@ -112,7 +126,7 @@ if (process.env.FLOWIX_BUILD_DSH === '1') {
 
 function runTauriDev() {
   if (process.platform !== 'darwin' || childEnv.FLOWIX_DEV_MODE !== '1') {
-    run(process.execPath, [tauriEntrypoint, 'dev', '--config', config])
+    run(process.execPath, [tauriEntrypoint, 'dev', '--config', configArg])
     return
   }
 
@@ -121,7 +135,7 @@ function runTauriDev() {
     tauriEntrypoint,
     'dev',
     '--config',
-    config,
+    configArg,
     '--runner',
     runner,
   ], {

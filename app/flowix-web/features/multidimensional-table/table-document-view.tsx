@@ -34,7 +34,7 @@ import { canonicalizePropertyKey, isSystemPropertyKey } from '@features/properti
 import type { PropertyFieldConfig } from '@/lib/constants';
 import { compareAndPatchDocumentProperties, removeDocumentProperty, setDocumentProperties } from '@features/document/public/path-properties';
 import { PROPERTY_URL_RE } from '@features/document/properties/property-type';
-import { assetUrl, decodeStorageKey } from '@features/editor/extensions/attachment-link/utils';
+import { decodeStorageKey, resolveAttachmentUrl } from '@features/editor/extensions/attachment-link/utils';
 import { getAllPresets, resolvePropertyPreset, resolvePropertyDisplayName, type PropertyPreset } from '@features/document/properties/presets';
 import { usePropertyPresets } from '@features/properties/public-api';
 import { createFileBrowserTarget } from '@features/workspace/public/browser-column-api';
@@ -271,10 +271,10 @@ function renameNoteProperty(
   return { ...note, properties };
 }
 
-function noteThumbnailUrl(thumbnail: string | null | undefined): string | null {
+function noteThumbnailUrl(thumbnail: string | null | undefined, notebookPath?: string | null): string | null {
   if (!thumbnail) return null;
   const storageKey = decodeStorageKey(thumbnail);
-  return storageKey ? assetUrl(storageKey) : thumbnail;
+  return storageKey ? resolveAttachmentUrl(storageKey, notebookPath) : thumbnail;
 }
 
 function isoDate(date: Date): string {
@@ -3358,7 +3358,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
           const path = imagePaths(notePropertyEditorValue(noteForRecord(record), field))[0];
           return path ? imageUrls[`${record.id}:${field.id}:${path}`] ?? null : null;
         }}
-        noteThumbnail={(record) => noteThumbnailUrl(noteForRecord(record)?.thumbnail)}
+        noteThumbnail={(record) => noteThumbnailUrl(noteForRecord(record)?.thumbnail, notebookPath)}
         onOpenRecord={(record, anchorRect) => {
           const note = noteForRecord(record);
           if (note) openLinkedNote(note);
