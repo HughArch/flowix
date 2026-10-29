@@ -38,7 +38,7 @@ describe('boardToSvg', () => {
     expect(svg).toContain('这是卡片正文摘录');
     expect(svg).toContain('便签内容');
     expect(svg).toContain('网关层');
-    expect(svg).toContain('<ellipse');
+    expect(svg).toContain('<path'); // rough outline
     expect(svg).toContain('<polygon'); // arrow head
     expect(svg).toContain('stroke-dasharray="6 6"'); // frame
     expect(svg).toContain('#10b981'); // ink stroke color

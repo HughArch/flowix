@@ -8,6 +8,7 @@
  */
 
 import { getStroke } from 'perfect-freehand';
+import { roughLinePath, roughPathsFor } from './board-rough';
 import {
   readBoardCards,
   readBoardEdges,
@@ -79,9 +80,7 @@ function wrapText(text: string, maxChars: number, maxLines: number): string[] {
 
 function shapeMarkup(shape: BoardShape): string {
   const stroke = shape.stroke ?? '#64748b';
-  const fill = shape.fill ?? 'none';
   const strokeWidth = shape.strokeWidth ?? 2;
-  const dash = shape.strokeStyle === 'dashed' ? ' stroke-dasharray="8 6"' : shape.strokeStyle === 'dotted' ? ' stroke-dasharray="2 5"' : '';
 
   if (shape.shape === 'arrow') {
     const x2 = shape.x2 ?? shape.x + shape.w;
@@ -91,7 +90,7 @@ function shapeMarkup(shape: BoardShape): string {
     const spread = Math.PI / 7;
     const h1 = [x2 - head * Math.cos(angle - spread), y2 - head * Math.sin(angle - spread)];
     const h2 = [x2 - head * Math.cos(angle + spread), y2 - head * Math.sin(angle + spread)];
-    return `<line x1="${shape.x}" y1="${shape.y}" x2="${x2}" y2="${y2}" stroke="${stroke}" stroke-width="${strokeWidth}"${dash} stroke-linecap="round"/>`
+    return `<path d="${roughLinePath(shape.x, shape.y, x2, y2, shape)}" stroke="${stroke}" stroke-width="${strokeWidth}" fill="none" stroke-linecap="round"/>`
       + `<polygon points="${x2},${y2} ${h1[0]},${h1[1]} ${h2[0]},${h2[1]}" fill="${stroke}"/>`;
   }
 
@@ -112,12 +111,11 @@ function shapeMarkup(shape: BoardShape): string {
     return `<text x="${shape.x + shape.w / 2}" y="${startY}" font-size="${size}" fill="#0f172a" text-anchor="middle" font-family="system-ui, sans-serif">${spans}</text>`;
   })() : '';
 
-  const outline = shape.shape === 'ellipse'
-    ? `<ellipse cx="${shape.x + shape.w / 2}" cy="${shape.y + shape.h / 2}" rx="${shape.w / 2}" ry="${shape.h / 2}"/>`
-    : shape.shape === 'diamond'
-      ? `<polygon points="${shape.x + shape.w / 2},${shape.y} ${shape.x + shape.w},${shape.y + shape.h / 2} ${shape.x + shape.w / 2},${shape.y + shape.h} ${shape.x},${shape.y + shape.h / 2}"/>`
-      : `<rect x="${shape.x}" y="${shape.y}" width="${shape.w}" height="${shape.h}" rx="6"/>`;
-  return `<g fill="${fill}" stroke="${stroke}" stroke-width="${strokeWidth}"${dash}>${outline}</g>${label}`;
+  // Same roughjs outline as the live board so exports match what users see.
+  const sketch = roughPathsFor(shape)
+    .map((path) => `<path d="${path.d}" stroke="${path.stroke}" stroke-width="${path.strokeWidth}" fill="${path.fill ?? 'none'}" stroke-linecap="round" stroke-linejoin="round"/>`)
+    .join('');
+  return `${sketch}${label}`;
 }
 
 function cardMarkup(card: BoardCard, summary: BoardExportSummary | undefined): string {
