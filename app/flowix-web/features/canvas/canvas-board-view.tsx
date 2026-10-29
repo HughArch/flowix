@@ -12,8 +12,6 @@
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import {
-  Background,
-  BackgroundVariant,
   Handle,
   Position,
   ReactFlow,
@@ -31,10 +29,12 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { Eraser, FileText, Frame as FrameIcon, Image as ImageIcon, MousePointer2, Pencil } from 'lucide-react';
-import { files, notebookAssets } from '@platform/tauri/client';
+import { Eraser, FileText, Frame as FrameIcon, Image as ImageIcon, Maximize2, MousePointer2, Pencil } from 'lucide-react';
+import { files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
+import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
+import { useNoteStore } from '@features/memo/store/note-store';
 import { openNoteByNotebookPath } from '@features/memo/public/note-navigation-api';
 import { subscribeExternalDocumentChanges } from '@features/document/store/external-document-watch';
 import { createLogger } from '@/lib/logger';
@@ -63,6 +63,7 @@ const IMAGE_RETRY_DELAYS_MS = [3_000, 8_000, 15_000];
 interface BoardNodeData extends Record<string, unknown> {
   card: BoardCard;
   dataUrl: string | null;
+  summary: NoteCardSummary | null;
 }
 
 type BoardNode = Node<BoardNodeData>;
@@ -86,23 +87,58 @@ function CardHandles() {
   );
 }
 
+/** Compact relative timestamp for card footers. */
+function relativeTime(ms: number): string {
+  if (!ms) return '';
+  const delta = Date.now() - ms;
+  const minutes = Math.round(delta / 60_000);
+  if (minutes < 1) return '刚刚';
+  if (minutes < 60) return `${minutes} 分钟前`;
+  const hours = Math.round(minutes / 60);
+  if (hours < 24) return `${hours} 小时前`;
+  const days = Math.round(hours / 24);
+  if (days < 30) return `${days} 天前`;
+  const date = new Date(ms);
+  return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
+}
+
 function NoteCardNode({ data }: NodeProps<BoardNode>) {
   const { t } = useI18n();
-  const { card } = data;
+  const { card, summary } = data;
+  const tags = summary?.tags.slice(0, 2) ?? [];
+  const extraTags = (summary?.tags.length ?? 0) - tags.length;
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-[10px] border border-[var(--border)] bg-[var(--card)] shadow-sm">
       <div className="flex items-center gap-1.5 border-b border-[var(--border)] px-2.5 py-1.5">
         <FileText className="h-3 w-3 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
-        <span className="truncate text-xs font-semibold text-[var(--foreground)]">{cardTitle(card)}</span>
+        <span className="truncate text-xs font-semibold text-[var(--foreground)]">
+          {summary?.title || cardTitle(card)}
+        </span>
       </div>
-      <div className="flex flex-1 items-center justify-center px-2.5 text-[11px] leading-relaxed text-[var(--muted-foreground)]">
-        {t('canvas.board.doubleClickOpen')}
-      </div>
-      {card.path ? (
-        <div className="truncate border-t border-[var(--border)] px-2.5 py-1 text-[10px] text-[var(--muted-foreground)]">
-          {card.path}
+      {summary?.excerpt ? (
+        <div className="flex-1 overflow-hidden px-2.5 py-1.5">
+          <p className="whitespace-pre-wrap break-words text-[11px] leading-[1.6] text-[var(--muted-foreground)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:5]">
+            {summary.excerpt}
+          </p>
         </div>
-      ) : null}
+      ) : (
+        <div className="flex flex-1 items-center justify-center px-2.5 text-[11px] leading-relaxed text-[var(--muted-foreground)]">
+          {t('canvas.board.emptyNote')}
+        </div>
+      )}
+      <div className="flex items-center gap-1.5 px-2.5 pb-1.5 pt-0.5">
+        {tags.map((tag) => (
+          <span key={tag} className="truncate rounded bg-[var(--muted)] px-1.5 py-0.5 text-[10px] text-[var(--muted-foreground)]">
+            #{tag}
+          </span>
+        ))}
+        {extraTags > 0 ? (
+          <span className="text-[10px] text-[var(--muted-foreground)]">+{extraTags}</span>
+        ) : null}
+        {summary?.modifiedAt ? (
+          <span className="ml-auto shrink-0 text-[10px] text-[var(--muted-foreground)]">{relativeTime(summary.modifiedAt)}</span>
+        ) : null}
+      </div>
       <CardHandles />
     </div>
   );
@@ -246,6 +282,8 @@ function nodeKindForCard(card: BoardCard): BoardNode['type'] {
 function buildBoardGraph(
   document: FlowixCanvasDocument,
   dataUrls: ReadonlyMap<string, string>,
+  summaries: ReadonlyMap<string, NoteCardSummary>,
+  absolutePathOf: (card: BoardCard) => string | null,
 ): { nodes: BoardNode[]; edges: Edge[] } {
   const nodes: BoardNode[] = [];
   for (const frame of readBoardFrames(document)) {
@@ -254,17 +292,26 @@ function buildBoardGraph(
       type: 'frame',
       position: { x: frame.x, y: frame.y },
       zIndex: 0,
-      data: { card: { id: frame.id, kind: 'text', x: frame.x, y: frame.y, w: frame.w, h: frame.h, title: frame.title }, dataUrl: null },
+      data: {
+        card: { id: frame.id, kind: 'text', x: frame.x, y: frame.y, w: frame.w, h: frame.h, title: frame.title },
+        dataUrl: null,
+        summary: null,
+      },
       style: { width: frame.w, height: frame.h },
     });
   }
   for (const card of readBoardCards(document)) {
+    const absolute = card.kind === 'note' ? absolutePathOf(card) : null;
     nodes.push({
       id: card.id,
       type: nodeKindForCard(card),
       position: { x: card.x, y: card.y },
       zIndex: 10,
-      data: { card, dataUrl: card.fileId ? dataUrls.get(card.fileId) ?? null : null },
+      data: {
+        card,
+        dataUrl: card.fileId ? dataUrls.get(card.fileId) ?? null : null,
+        summary: absolute ? summaries.get(absolute) ?? null : null,
+      },
       style: { width: card.w, height: card.h },
     });
   }
@@ -350,14 +397,50 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
    * programmatic and must not look like an edit (an open would rewrite the
    * file and re-sort the tree, the same trap the drawing surface hit). */
   const moveSeedRef = useRef<Viewport | null>(null);
+  /** Absolute note path -> summary; fetched in one batch per board open. */
+  const summariesRef = useRef<Map<string, NoteCardSummary>>(new Map());
+  /** Notebook id -> root, so cards referencing another notebook still resolve. */
+  const notebooksRef = useRef<Array<{ id: string; path: string }>>([]);
 
   const retryLoad = useCallback(() => setRetryToken((token) => token + 1), []);
 
+  const absolutePathOf = useCallback((card: BoardCard): string | null => {
+    if (!card.path) return null;
+    const root = card.notebookId
+      ? notebooksRef.current.find((notebook) => notebook.id === card.notebookId)?.path
+      : notebooksRef.current[0]?.path;
+    if (!root) return null;
+    return `${root.replace(/[\\/]+$/, '')}/${card.path.replace(/^[\\/]+/, '')}`;
+  }, []);
+
   const applyGraph = useCallback((document: FlowixCanvasDocument) => {
-    const { nodes: nextNodes, edges: nextEdges } = buildBoardGraph(document, dataUrlsRef.current);
+    const { nodes: nextNodes, edges: nextEdges } = buildBoardGraph(
+      document,
+      dataUrlsRef.current,
+      summariesRef.current,
+      absolutePathOf,
+    );
     setNodes(nextNodes);
     setEdges(nextEdges);
-  }, []);
+  }, [absolutePathOf]);
+
+  /** Load every note-card summary in one IPC round-trip. */
+  const loadCardSummaries = useCallback(async (document: FlowixCanvasDocument): Promise<boolean> => {
+    const paths = readBoardCards(document)
+      .filter((card) => card.kind === 'note')
+      .map((card) => absolutePathOf(card))
+      .filter((path): path is string => Boolean(path));
+    if (paths.length === 0) return false;
+    const summaries = await notesClient.readCardSummaries([...new Set(paths)]).catch(() => []);
+    if (summaries.length === 0) return false;
+    for (const summary of summaries) summariesRef.current.set(summary.filePath, summary);
+    return true;
+  }, [absolutePathOf]);
+
+  const notebooks = useNoteStore((state) => state.notebooks);
+  useEffect(() => {
+    notebooksRef.current = notebooks.map((notebook) => ({ id: notebook.id, path: notebook.path }));
+  }, [notebooks]);
 
   useEffect(() => {
     let cancelled = false;
@@ -369,6 +452,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     setTool('select');
     setLivePoints(null);
     dataUrlsRef.current = new Map();
+    summariesRef.current = new Map();
     void (async () => {
       const text = await files.read(filePath, notebookPath ?? undefined);
       if (cancelled) return;
@@ -395,11 +479,27 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       setInitialViewport(storedViewport);
       applyGraph(document);
       setState({ status: 'ready' });
+      // Card bodies arrive after the board paints; the graph rebuilds with them.
+      const loaded = await loadCardSummaries(document);
+      if (!cancelled && loaded) applyGraph(document);
     })().catch((error) => {
       if (!cancelled) setState({ status: 'error', message: error instanceof CanvasParseError ? error.message : error instanceof Error ? error.message : String(error) });
     });
     return () => { cancelled = true; };
-  }, [applyGraph, filePath, notebookPath, retryToken, t]);
+  }, [applyGraph, filePath, loadCardSummaries, notebookPath, retryToken, t]);
+
+  // Notebook roots can arrive after the board paints; resolve card paths again
+  // once they are known so summaries are not silently missing.
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    const document = documentRef.current;
+    if (!document) return;
+    let cancelled = false;
+    void loadCardSummaries(document).then((loaded) => {
+      if (!cancelled && loaded) applyGraph(document);
+    });
+    return () => { cancelled = true; };
+  }, [applyGraph, loadCardSummaries, notebooks, state.status]);
 
   const flush = useCallback(async (): Promise<boolean> => {
     if (timerRef.current !== null) {
@@ -674,10 +774,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         );
         lastSavedTextRef.current = text;
         moveSeedRef.current = readBoardViewport(document);
+        await loadCardSummaries(document);
         applyGraph(document);
       });
     });
-  }, [applyGraph, filePath, notebookPath, state.status]);
+  }, [applyGraph, filePath, loadCardSummaries, notebookPath, state.status]);
 
   const defaultViewport = useMemo<Viewport>(
     () => initialViewport ?? { x: 0, y: 0, zoom: 1 },
@@ -749,6 +850,15 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         <button type="button" aria-label={t('canvas.board.tool.eraser')} className={toolButtonClass(tool === 'eraser')} onClick={() => setTool('eraser')}>
           <Eraser className="h-3.5 w-3.5" />
         </button>
+        <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+        <button
+          type="button"
+          aria-label={t('canvas.board.tool.fit')}
+          className={toolButtonClass(false)}
+          onClick={() => { void reactFlow.fitView({ padding: 0.2, maxZoom: 1.2 }); }}
+        >
+          <Maximize2 className="h-3.5 w-3.5" />
+        </button>
         {tool === 'pen' ? (
           <>
             <div className="mx-1 h-5 w-px bg-[var(--border)]" />
@@ -797,7 +907,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         onlyRenderVisibleElements
         deleteKeyCode={null}
       >
-        <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
+        {/* Plain whiteboard background: the board is a canvas, not a grid sheet. */}
         <ViewportPortal>
           {inkBounds ? (
             <svg

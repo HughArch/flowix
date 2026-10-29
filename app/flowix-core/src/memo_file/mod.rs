@@ -54,7 +54,7 @@ pub use operation_locks::{FileLockIntent, FileWriteGuard, OperationLocks};
 
 // 公开 API re-export — 跟旧 `memo_file.rs` 的 pub use 边界一致。
 pub use derivation::{
-    apply_derived_memo_fields, extract_agent_threads_from_body,
+    apply_derived_memo_fields, extract_agent_threads_from_body, extract_card_excerpt,
     extract_title_and_preview, extract_todos_from_body, normalize_search_tag_filter,
     normalize_tag_path, tag_path_matches_filter,
 };

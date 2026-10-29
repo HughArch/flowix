@@ -408,3 +408,69 @@ pub async fn search_path_notes(
     .await
     .map_err(|error| error.to_string())?
 }
+
+/// One note card rendered on a canvas board.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteCardSummary {
+    /// Echoed so the board can map results back to its cards.
+    pub file_path: String,
+    pub title: String,
+    pub excerpt: String,
+    pub tags: Vec<String>,
+    pub modified_at: u64,
+    pub char_count: usize,
+}
+
+const NOTE_CARD_SUMMARY_LIMIT: usize = 500;
+const NOTE_CARD_EXCERPT_CHARS: usize = 240;
+
+/// Batch summaries for canvas board note cards.
+///
+/// `preview` in the note index is the title line, so cards need a real body
+/// excerpt; one batched call avoids one IPC round-trip per card.
+#[tauri::command]
+pub async fn read_note_card_summaries(
+    window: tauri::WebviewWindow,
+    file_paths: Vec<String>,
+    app: AppHandle,
+) -> Vec<NoteCardSummary> {
+    crate::document_io::run("read_note_card_summaries", move || {
+        let state = app.state::<AppState>();
+        let mut summaries = Vec::new();
+        for file_path in file_paths.into_iter().take(NOTE_CARD_SUMMARY_LIMIT) {
+            let path = Path::new(&file_path);
+            if !crate::commands::helpers::can_access_document_path(path, window.label(), &state) {
+                continue;
+            }
+            let Ok(metadata) = fs::metadata(path) else { continue };
+            if !metadata.is_file() {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(path) else { continue };
+            let (title, _) = flowix_core::memo_file::extract_title_and_preview(&content);
+            let excerpt = flowix_core::memo_file::extract_card_excerpt(&content, NOTE_CARD_EXCERPT_CHARS);
+            let tags = flowix_core::memo_file::extract_document_metadata(&content)
+                .map(|metadata| metadata.tags)
+                .unwrap_or_default();
+            let modified_at = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0);
+            let char_count = content.chars().filter(|character| !character.is_whitespace()).count();
+            summaries.push(NoteCardSummary {
+                file_path,
+                title,
+                excerpt,
+                tags,
+                modified_at,
+                char_count,
+            });
+        }
+        summaries
+    })
+    .await
+    .unwrap_or_default()
+}

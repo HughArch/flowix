@@ -31,6 +31,16 @@ export interface NoteEntry {
   properties: Record<string, unknown>;
 }
 
+/** Card-board summary; `preview` in `NoteEntry` is the title line, not body text. */
+export interface NoteCardSummary {
+  filePath: string;
+  title: string;
+  excerpt: string;
+  tags: string[];
+  modifiedAt: number;
+  charCount: number;
+}
+
 export interface CreatedNoteDocument {
   notebookId: string;
   relativePath: string;
@@ -115,6 +125,9 @@ export const notes = {
   list: (notebookId: string) => invoke<NoteEntry[]>('list_notes_by_path', { notebookId }),
   getIndexed: (notebookId: string, relativePath: string) =>
     invoke<NoteEntry | null>('get_indexed_note_by_path', { notebookId, relativePath }),
+  /** Batched title/excerpt/tags for canvas board cards (one IPC for the whole board). */
+  readCardSummaries: (filePaths: string[]) =>
+    invoke<NoteCardSummary[]>('read_note_card_summaries', { filePaths }),
   getPage: (params: {
     notebookId: string;
     filter?: FilterType;
