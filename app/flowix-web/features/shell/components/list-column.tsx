@@ -15,7 +15,10 @@ interface ListColumnProps {
   previewVisible: boolean;
   previewPhase: ListColumnPreviewPhase;
   memoColWidth: number;
-  /** 手机单栏: 列表占满整屏, 忽略拖拽保存的列宽。 */
+  /**
+   * 手机单栏: 列表脱离文档流, 变成绝对定位的整屏抽屉, transform 滑入/滑出
+   * (文档列保持挂载在下层), 忽略拖拽保存的列宽。
+   */
   mobileFullWidth?: boolean;
   /** 手机单栏覆盖层模式: 外层挂手势监听用。 */
   containerRef?: RefObject<HTMLDivElement | null>;
@@ -144,14 +147,27 @@ export function ListColumn({
     <div
       ref={containerRef}
       className={cn(
-        'relative flex h-full shrink-0 flex-col will-change-[width]',
-        isDraggingListDivider
-          ? 'transition-none'
-          : 'transition-[width] duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none',
-        previewVisible ? 'overflow-visible' : 'overflow-hidden',
+        'relative flex h-full flex-col',
+        mobileFullWidth
+          ? // 手机抽屉: 绝对定位整屏滑入/滑出。transform 走合成器动画,
+            // 不触发任何重排; 文档列保持挂载在被覆盖的下层。
+            cn(
+              'absolute inset-y-0 left-0 z-[80] w-full will-change-[transform]',
+              'shadow-[12px_0_28px_-12px_rgb(0_0_0_/_0.28)]',
+              'transition-transform duration-[260ms] ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none',
+              hidden ? '-translate-x-full' : 'translate-x-0',
+            )
+          : cn(
+              'shrink-0 will-change-[width]',
+              isDraggingListDivider
+                ? 'transition-none'
+                : 'transition-[width] duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none',
+              previewVisible ? 'overflow-visible' : 'overflow-hidden',
+            ),
       )}
-      style={{ width: hidden ? 0 : mobileFullWidth ? '100%' : memoColWidth }}
+      style={mobileFullWidth ? undefined : { width: hidden ? 0 : memoColWidth }}
       aria-hidden={hidden && !previewVisible}
+      inert={mobileFullWidth && hidden ? true : undefined}
       onPointerDown={onPointerDown}
     >
       <div
@@ -169,19 +185,24 @@ export function ListColumn({
                 'border border-[var(--border-popup)] bg-[var(--list-bg)]',
                 'shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]',
               )
-            : cn(
-                'relative h-full overflow-hidden bg-[var(--list-bg)]',
-                // 收起/展开期间内容淡出淡入, 配合外层宽度过渡, 避免
-                // 列表被生硬裁切; 内容宽度固定, 宽度动画不再逐帧重排。
-                'transition-opacity duration-150 motion-reduce:transition-none',
-                hidden ? 'opacity-0' : 'opacity-100',
-              ),
+            : mobileFullWidth
+              ? // 抽屉整体滑动, 内容保持不透明 (淡出只服务于停靠模式的宽度裁切)。
+                'relative h-full w-full overflow-hidden bg-[var(--list-bg)]'
+              : cn(
+                  'relative h-full overflow-hidden bg-[var(--list-bg)]',
+                  // 收起/展开期间内容淡出淡入, 配合外层宽度过渡, 避免
+                  // 列表被生硬裁切; 内容宽度固定, 宽度动画不再逐帧重排。
+                  'transition-opacity duration-150 motion-reduce:transition-none',
+                  hidden ? 'opacity-0' : 'opacity-100',
+                ),
         )}
         style={previewVisible
           ? (noteNavigationPhase === 'open'
               ? { left: 'calc(var(--flowix-note-navigation-drawer-width) + 0.25rem)' }
               : undefined)
-          : { width: mobileFullWidth ? '100vw' : memoColWidth }}
+          : mobileFullWidth
+            ? undefined
+            : { width: memoColWidth }}
       >
         <ListColumnTitlebar
           previewVisible={previewVisible}
