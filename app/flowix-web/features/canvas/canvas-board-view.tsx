@@ -30,7 +30,7 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { ArrowUpRight, Circle, Diamond, Download, Eraser, FileText, Frame as FrameIcon, Image as ImageIcon, Maximize2, MousePointer2, Pencil, Redo2, Square, Type, Undo2 } from 'lucide-react';
+import { ArrowUpRight, Circle, Diamond, Download, Eraser, Hand, FileText, Frame as FrameIcon, Image as ImageIcon, Maximize2, MousePointer2, Pencil, Redo2, Square, Type, Undo2 } from 'lucide-react';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
@@ -59,6 +59,7 @@ import {
 } from './model';
 import { type CanvasSurfaceViewProps } from './surface-props';
 import { boardToSvg, svgToPngBase64 } from './board-export';
+import { cachedRoughPaths, roughLinePath } from './board-rough';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@shared/ui/dropdown-menu';
@@ -89,12 +90,24 @@ function cardTitle(card: BoardCard): string {
   return card.id;
 }
 
-/** Shared card chrome: hidden handles let future edges anchor on any render. */
-function CardHandles() {
+/**
+ * Connection anchors. The target handle is always present (invisible) so a
+ * dragged connector can land on any node; the source handle only appears on
+ * the selected node, keeping the resting board clean.
+ */
+function CardHandles({ visible = false }: { visible?: boolean }) {
   return (
     <>
-      <Handle type="target" position={Position.Top} isConnectable={false} className="!opacity-0" />
-      <Handle type="source" position={Position.Bottom} isConnectable={false} className="!opacity-0" />
+      <Handle
+        type="target"
+        position={Position.Top}
+        className={visible
+          ? '!h-2.5 !w-2.5 !border-0 !bg-[var(--muted-foreground)]/60'
+          : '!h-3 !w-3 !border-0 !bg-transparent'}
+      />
+      {visible ? (
+        <Handle type="source" position={Position.Bottom} className="!h-2.5 !w-2.5 !border-0 !bg-[var(--muted-foreground)]/60" />
+      ) : null}
     </>
   );
 }
@@ -114,7 +127,7 @@ function relativeTime(ms: number): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
 
-function NoteCardNode({ data }: NodeProps<BoardNode>) {
+function NoteCardNode({ data, selected }: NodeProps<BoardNode>) {
   const { t } = useI18n();
   const { card, summary } = data;
   const tags = summary?.tags.slice(0, 2) ?? [];
@@ -151,24 +164,24 @@ function NoteCardNode({ data }: NodeProps<BoardNode>) {
           <span className="ml-auto shrink-0 text-[10px] text-[var(--muted-foreground)]">{relativeTime(summary.modifiedAt)}</span>
         ) : null}
       </div>
-      <CardHandles />
+      <CardHandles visible={selected} />
     </div>
   );
 }
 
-function StickyNode({ data }: NodeProps<BoardNode>) {
+function StickyNode({ data, selected }: NodeProps<BoardNode>) {
   const { card } = data;
   return (
     <div className="h-full w-full overflow-hidden rounded-[10px] border border-amber-300/60 bg-amber-50 p-2 shadow-sm dark:border-amber-500/30 dark:bg-amber-950/40">
       <div className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[var(--foreground)]">
         {card.text || ''}
       </div>
-      <CardHandles />
+      <CardHandles visible={selected} />
     </div>
   );
 }
 
-function ImageCardNode({ data }: NodeProps<BoardNode>) {
+function ImageCardNode({ data, selected }: NodeProps<BoardNode>) {
   const { t } = useI18n();
   const { dataUrl } = data;
   return (
@@ -181,12 +194,12 @@ function ImageCardNode({ data }: NodeProps<BoardNode>) {
             <span className="text-[10px]">{t('canvas.board.imageMissing')}</span>
           </div>
         )}
-      <CardHandles />
+      <CardHandles visible={selected} />
     </div>
   );
 }
 
-function CanvasRefNode({ data }: NodeProps<BoardNode>) {
+function CanvasRefNode({ data, selected }: NodeProps<BoardNode>) {
   const { t } = useI18n();
   const { card } = data;
   return (
@@ -198,7 +211,7 @@ function CanvasRefNode({ data }: NodeProps<BoardNode>) {
       <div className="flex flex-1 items-center justify-center px-2.5 text-[11px] text-[var(--muted-foreground)]">
         {t('canvas.board.doubleClickOpen')}
       </div>
-      <CardHandles />
+      <CardHandles visible={selected} />
     </div>
   );
 }
@@ -228,18 +241,50 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   const shape = data.shape;
   if (!shape) return null;
   const stroke = shape.stroke ?? '#64748b';
-  const fill = shape.fill ?? 'transparent';
   const strokeWidth = shape.strokeWidth ?? 2;
-  const dashArray = shape.strokeStyle === 'dashed' ? '8 6' : shape.strokeStyle === 'dotted' ? '2 5' : undefined;
-  const borderStyle = shape.strokeStyle === 'dashed' ? 'dashed' : shape.strokeStyle === 'dotted' ? 'dotted' : 'solid';
   const fontSize = shape.fontSize ?? 16;
-  const inset = 2;
-  const box = {
-    position: 'absolute' as const,
-    inset,
-    width: `calc(100% - ${inset * 2}px)`,
-    height: `calc(100% - ${inset * 2}px)`,
-  };
+  const origin = shape.shape === 'arrow' ? arrowBox(shape) : { x: shape.x, y: shape.y };
+
+  const sketch = shape.shape === 'text' ? null : (
+    <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none' }}>
+      <g transform={`translate(${-origin.x},${-origin.y})`}>
+        {shape.shape === 'arrow' ? (
+          (() => {
+            const x2 = shape.x2 ?? shape.x + shape.w;
+            const y2 = shape.y2 ?? shape.y + shape.h;
+            const angle = Math.atan2(y2 - shape.y, x2 - shape.x);
+            const head = 10 + strokeWidth * 2;
+            const spread = Math.PI / 7;
+            const h1 = [x2 - head * Math.cos(angle - spread), y2 - head * Math.sin(angle - spread)];
+            const h2 = [x2 - head * Math.cos(angle + spread), y2 - head * Math.sin(angle + spread)];
+            return (
+              <>
+                <path
+                  d={roughLinePath(shape.x, shape.y, x2, y2, shape)}
+                  stroke={stroke}
+                  strokeWidth={strokeWidth}
+                  strokeLinecap="round"
+                  fill="none"
+                />
+                <polygon points={`${x2},${y2} ${h1[0]},${h1[1]} ${h2[0]},${h2[1]}`} fill={stroke} />
+              </>
+            );
+          })()
+        ) : cachedRoughPaths(shape).map((path, index) => (
+          <path
+            key={index}
+            d={path.d}
+            stroke={path.stroke}
+            strokeWidth={path.strokeWidth}
+            fill={path.fill ?? 'none'}
+            strokeLinecap="round"
+            strokeLinejoin="round"
+          />
+        ))}
+      </g>
+    </svg>
+  );
+
   return (
     <div className="relative h-full w-full">
       <NodeResizer
@@ -250,44 +295,7 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
         lineClassName="!border-[var(--foreground)]/40"
         handleClassName="!bg-[var(--card)] !border-[var(--foreground)]/60"
       />
-      {shape.shape === 'arrow' ? (
-        <svg className="pointer-events-none" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible' }}>
-          {(() => {
-            const x2 = shape.x2 ?? shape.x + shape.w;
-            const y2 = shape.y2 ?? shape.y + shape.h;
-            const minX = Math.min(shape.x, x2) - ARROW_PADDING;
-            const minY = Math.min(shape.y, y2) - ARROW_PADDING;
-            const sx = shape.x - minX;
-            const sy = shape.y - minY;
-            const ex = x2 - minX;
-            const ey = y2 - minY;
-            const angle = Math.atan2(ey - sy, ex - sx);
-            const head = 10 + strokeWidth * 2;
-            const spread = Math.PI / 7;
-            const h1 = [ex - head * Math.cos(angle - spread), ey - head * Math.sin(angle - spread)];
-            const h2 = [ex - head * Math.cos(angle + spread), ey - head * Math.sin(angle + spread)];
-            return (
-              <>
-                <line
-                  x1={sx} y1={sy} x2={ex} y2={ey}
-                  stroke={stroke} strokeWidth={strokeWidth}
-                  strokeDasharray={dashArray} strokeLinecap="round"
-                />
-                <polygon points={`${ex},${ey} ${h1[0]},${h1[1]} ${h2[0]},${h2[1]}`} fill={stroke} />
-              </>
-            );
-          })()}
-        </svg>
-      ) : shape.shape === 'text' ? null
-        : shape.shape === 'rect' ? (
-          <div style={{ ...box, border: `${strokeWidth}px ${borderStyle} ${stroke}`, background: fill, borderRadius: 6 }} />
-        ) : (
-          <svg style={box} viewBox="0 0 100 100" preserveAspectRatio="none">
-            {shape.shape === 'ellipse'
-              ? <ellipse cx="50" cy="50" rx="49" ry="49" fill={fill} stroke={stroke} strokeWidth={strokeWidth} strokeDasharray={dashArray} vectorEffect="non-scaling-stroke" />
-              : <polygon points="50,1 99,50 50,99 1,50" fill={fill} stroke={stroke} strokeWidth={strokeWidth} strokeDasharray={dashArray} vectorEffect="non-scaling-stroke" />}
-          </svg>
-        )}
+      {sketch}
       <div
         className="absolute inset-0 flex items-center justify-center px-2 text-center"
         onDoubleClick={(event) => {
@@ -307,13 +315,13 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
               if (event.key === 'Escape') { setEditing(false); }
               if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); setEditing(false); data.onShapeTextCommit?.(shape.id, draft); }
             }}
-            style={{ fontSize, color: shape.shape === 'text' ? stroke : undefined }}
+            style={{ fontSize, color: shape.shape === 'text' ? stroke : undefined, fontFamily: HAND_FONT }}
             className="h-full w-full resize-none bg-transparent text-center leading-snug text-[var(--foreground)] outline-none"
           />
         ) : shape.text ? (
           <span
             className="pointer-events-none whitespace-pre-wrap break-words leading-snug"
-            style={{ color: shape.shape === 'text' ? stroke : 'var(--foreground)', fontSize }}
+            style={{ color: shape.shape === 'text' ? stroke : 'var(--foreground)', fontSize, fontFamily: HAND_FONT }}
           >
             {shape.text}
           </span>
@@ -321,7 +329,7 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
           <span className="pointer-events-none text-[10px] text-[var(--muted-foreground)]">{t('canvas.board.shape.labelHint')}</span>
         ) : null}
       </div>
-      <CardHandles />
+      <CardHandles visible={selected} />
     </div>
   );
 }
@@ -335,7 +343,9 @@ const NODE_TYPES = {
   shape: ShapeNode,
 };
 
-type BoardTool = 'select' | 'pen' | 'eraser' | BoardShapeKind;
+type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | BoardShapeKind;
+/** Handwriting stack: CJK brushes first, then Latin sketch fonts. */
+const HAND_FONT = "'Xiaolai SC','Kaiti SC',KaiTi,STKaiti,'Segoe Print','Comic Sans MS',cursive";
 const SHAPE_TOOLS: BoardShapeKind[] = ['rect', 'ellipse', 'diamond', 'text', 'arrow'];
 const isShapeTool = (tool: BoardTool): tool is BoardShapeKind =>
   tool === 'rect' || tool === 'ellipse' || tool === 'diamond' || tool === 'text' || tool === 'arrow';
@@ -404,6 +414,23 @@ function nodeKindForCard(card: BoardCard): BoardNode['type'] {
   if (card.kind === 'image') return 'image';
   if (card.kind === 'canvas') return 'canvasref';
   return 'note';
+}
+
+/** Node under a flow-space point, for arrow endpoint snapping. */
+function nodeAtPoint(
+  cards: BoardCard[],
+  shapes: BoardShape[],
+  x: number,
+  y: number,
+): { id: string } | null {
+  for (const card of cards) {
+    if (x >= card.x && x <= card.x + card.w && y >= card.y && y <= card.y + card.h) return card;
+  }
+  for (const shape of shapes) {
+    if (shape.shape === 'arrow' || shape.shape === 'text') continue;
+    if (x >= shape.x && x <= shape.x + shape.w && y >= shape.y && y <= shape.y + shape.h) return shape;
+  }
+  return null;
 }
 
 function normalizeRect(a: number[], b: number[]): { x: number; y: number; w: number; h: number } {
@@ -509,7 +536,7 @@ function buildBoardGraph(
       style: { width: card.w, height: card.h },
     });
   }
-  const cardIds = new Set(nodes.filter((node) => node.zIndex === 10).map((node) => node.id));
+  const cardIds = new Set(nodes.filter((node) => node.zIndex === 10 || node.zIndex === 5).map((node) => node.id));
   const edges: Edge[] = [];
   for (const edge of readBoardEdges(document)) {
     if (!cardIds.has(edge.from) || !cardIds.has(edge.to)) continue;
@@ -573,7 +600,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [initialViewport, setInitialViewport] = useState<Viewport | null>(null);
   const [ink, setInk] = useState<BoardInkStroke[]>([]);
   const [livePoints, setLivePoints] = useState<number[][] | null>(null);
-  const [shapePreview, setShapePreview] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [shapePreview, setShapePreview] = useState<{ start: number[]; end: number[] } | null>(null);
   const [selectedShapeIds, setSelectedShapeIds] = useState<string[]>([]);
   const selectedIdsRef = useRef<string[]>([]);
   /** Linear undo stack of serialized documents; index points at the current one. */
@@ -591,6 +618,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   /** Filled after `scheduleFlush` exists; card/shape callbacks may run earlier. */
   const scheduleFlushRef = useRef<() => void>(() => {});
   const pushHistoryRef = useRef<() => void>(() => {});
+  const clipboardRef = useRef<{ cards: BoardCard[]; shapes: BoardShape[] } | null>(null);
   const liveStrokeRef = useRef<number[][] | null>(null);
   const dataUrlsRef = useRef<Map<string, string>>(new Map());
   const dirtyRef = useRef(false);
@@ -915,6 +943,98 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     handleShapeResizeRef.current = handleShapeResize;
   });
 
+  /** Drag a handle between two nodes to add a connector. */
+  const handleConnect = useCallback((connection: { source: string | null; target: string | null }) => {
+    const document = documentRef.current;
+    if (!document || !connection.source || !connection.target) return;
+    if (connection.source === connection.target) return;
+    const edges = readBoardEdges(document);
+    if (edges.some((edge) => edge.from === connection.source && edge.to === connection.target)) return;
+    document.edges = [...edges, {
+      id: `e_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      from: connection.source,
+      to: connection.target,
+    }];
+    applyGraph(document);
+    scheduleFlush();
+    pushHistory();
+  }, [applyGraph, pushHistory, scheduleFlush]);
+
+  /** Selection clipboard; paste clones with fresh ids and a small offset. */
+  const copySelection = useCallback(() => {
+    const ids = new Set(selectedIdsRef.current);
+    if (ids.size === 0) return;
+    clipboardRef.current = {
+      cards: cardsRef.current.filter((card) => ids.has(card.id)).map((card) => ({ ...card })),
+      shapes: shapesRef.current.filter((shape) => ids.has(shape.id)).map((shape) => ({ ...shape })),
+    };
+  }, []);
+
+  const pasteClipboard = useCallback(() => {
+    const clipboard = clipboardRef.current;
+    const document = documentRef.current;
+    if (!clipboard || !document) return;
+    if (clipboard.cards.length === 0 && clipboard.shapes.length === 0) return;
+    const offset = 28;
+    const newIds: string[] = [];
+    const nextCards = [...cardsRef.current, ...clipboard.cards.map((card) => {
+      const clone = { ...card, id: `${card.id.split('_')[0]}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`, x: card.x + offset, y: card.y + offset };
+      newIds.push(clone.id);
+      return clone;
+    })];
+    const nextShapes = [...shapesRef.current, ...clipboard.shapes.map((shape) => {
+      const id = shapeId();
+      newIds.push(id);
+      return {
+        ...shape,
+        id,
+        x: shape.x + offset,
+        y: shape.y + offset,
+        ...(shape.x2 !== undefined ? { x2: shape.x2 + offset } : {}),
+        ...(shape.y2 !== undefined ? { y2: shape.y2 + offset } : {}),
+      };
+    })];
+    cardsRef.current = nextCards;
+    shapesRef.current = nextShapes;
+    document.cards = nextCards;
+    document.shapes = nextShapes;
+    selectedIdsRef.current = newIds;
+    setSelectedShapeIds(nextShapes.filter((shape) => newIds.includes(shape.id)).map((shape) => shape.id));
+    applyGraph(document);
+    scheduleFlush();
+    pushHistory();
+  }, [applyGraph, pushHistory, scheduleFlush]);
+
+  const duplicateSelection = useCallback(() => {
+    copySelection();
+    pasteClipboard();
+  }, [copySelection, pasteClipboard]);
+
+  /** Double-click on empty canvas drops a text element and starts editing. */
+  const handleSurfaceDoubleClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
+    if (readOnly || tool !== 'select') return;
+    if ((event.target as Element).closest('.react-flow__node, [data-board-toolbar]')) return;
+    const document = documentRef.current;
+    if (!document) return;
+    const position = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    const shape: BoardShape = {
+      id: shapeId(),
+      shape: 'text',
+      x: position.x,
+      y: position.y - 12,
+      w: 240,
+      h: 40,
+      stroke: penColor,
+      fontSize: 20,
+      text: '',
+    };
+    shapesRef.current = [...shapesRef.current, shape];
+    document.shapes = shapesRef.current;
+    setNodes((current) => [...current, shapeNodeFor(shape, commitShapeText, handleShapeResizeRef.current, true)]);
+    scheduleFlush();
+    pushHistory();
+  }, [commitShapeText, penColor, pushHistory, reactFlow, readOnly, scheduleFlush, tool]);
+
   /** Delete key on a selected card/shape edits the document, not just the view. */
   const handleNodesDelete = useCallback((deleted: BoardNode[]) => {
     const document = documentRef.current;
@@ -1020,7 +1140,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     if (isShapeTool(tool)) {
       const start = flowPositionOf(event);
       shapeDraftRef.current = { start, current: start };
-      setShapePreview({ x: start[0], y: start[1], w: 0, h: 0 });
+      setShapePreview({ start, end: start });
       return;
     }
     eraseInkAt(flowPositionOf(event));
@@ -1041,7 +1161,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       const current = flowPositionOf(event);
       const { start } = shapeDraftRef.current;
       shapeDraftRef.current.current = current;
-      setShapePreview(normalizeRect(start, current));
+      setShapePreview({ start, end: current });
       return;
     }
     if (tool === 'eraser' && event.buttons % 2 === 1) eraseInkAt(flowPositionOf(event));
@@ -1065,6 +1185,25 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       const document = documentRef.current;
       if (!document) return;
       const isArrow = tool === 'arrow';
+      if (isArrow) {
+        const fromNode = nodeAtPoint(cardsRef.current, shapesRef.current, draft.start[0], draft.start[1]);
+        const toNode = nodeAtPoint(cardsRef.current, shapesRef.current, draft.current[0], draft.current[1]);
+        if (fromNode && toNode && fromNode.id !== toNode.id) {
+          const edges = readBoardEdges(document);
+          if (!edges.some((edge) => edge.from === fromNode.id && edge.to === toNode.id)) {
+            document.edges = [...edges, {
+              id: `e_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+              from: fromNode.id,
+              to: toNode.id,
+            }];
+            applyGraph(document);
+            scheduleFlush();
+            pushHistory();
+          }
+          setTool('select');
+          return;
+        }
+      }
       const arrowStart = draft.start;
       const arrowEnd = rect.w < 24 && rect.h < 24
         ? [draft.start[0] + 160, draft.start[1]]
@@ -1111,7 +1250,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       color: penColor,
       width: penWidth,
     }]);
-  }, [commitShapeText, penColor, penWidth, scheduleFlush, syncInkToDocument, tool]);
+  }, [applyGraph, commitShapeText, penColor, penWidth, pushHistory, scheduleFlush, syncInkToDocument, tool]);
 
   useEffect(() => {
     const title = filePath.split(/[\\/]/).filter(Boolean).pop() ?? filePath;
@@ -1225,6 +1364,20 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [redo, undo]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey)) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA'].includes(target.tagName))) return;
+      const key = event.key.toLowerCase();
+      if (key === 'c') { event.preventDefault(); copySelection(); return; }
+      if (key === 'v') { event.preventDefault(); pasteClipboard(); return; }
+      if (key === 'd') { event.preventDefault(); duplicateSelection(); }
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [copySelection, duplicateSelection, pasteClipboard]);
+
   const defaultViewport = useMemo<Viewport>(
     () => initialViewport ?? { x: 0, y: 0, zoom: 1 },
     [initialViewport],
@@ -1284,6 +1437,24 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     }
   }, [absolutePathOf, filePath, t]);
 
+  const previewShape: BoardShape | null = (() => {
+    if (!shapePreview || !isShapeTool(tool)) return null;
+    const [sx, sy] = shapePreview.start;
+    const [ex, ey] = shapePreview.end;
+    const minX = Math.min(sx, ex);
+    const minY = Math.min(sy, ey);
+    return {
+      id: 'preview',
+      shape: tool,
+      x: tool === 'arrow' ? sx : minX,
+      y: tool === 'arrow' ? sy : minY,
+      w: Math.abs(ex - sx),
+      h: Math.abs(ey - sy),
+      ...(tool === 'arrow' ? { x2: ex, y2: ey } : {}),
+      stroke: penColor,
+    };
+  })();
+
   const selectedShapes = nodes
     .filter((node) => node.type === 'shape' && selectedShapeIds.includes(node.id))
     .map((node) => node.data.shape)
@@ -1310,7 +1481,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
 
   return (
     <div
-      className={`h-full min-h-0 w-full ${tool !== 'select' ? 'cursor-crosshair' : ''}`}
+      className={`h-full min-h-0 w-full ${tool === 'hand' ? 'cursor-grab' : tool !== 'select' ? 'cursor-crosshair' : ''}`}
       data-canvas-surface={filePath}
       // The board owns pan/zoom gestures; the shell's swipe-down must not steal them.
       data-mobile-swipe-ignore="true"
@@ -1318,10 +1489,14 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       onPointerMove={handleBoardPointerMove}
       onPointerUp={handleBoardPointerUp}
       onPointerCancel={handleBoardPointerUp}
+      onDoubleClick={handleSurfaceDoubleClick}
     >
       <div data-board-toolbar className="absolute left-3 top-3 z-30 flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm">
         <button type="button" aria-label={t('canvas.board.tool.select')} className={toolButtonClass(tool === 'select')} onClick={() => setTool('select')}>
           <MousePointer2 className="h-3.5 w-3.5" />
+        </button>
+        <button type="button" aria-label={t('canvas.board.tool.hand')} className={toolButtonClass(tool === 'hand')} onClick={() => setTool('hand')}>
+          <Hand className="h-3.5 w-3.5" />
         </button>
         <button type="button" aria-label={t('canvas.board.tool.pen')} className={toolButtonClass(tool === 'pen')} onClick={() => setTool('pen')}>
           <Pencil className="h-3.5 w-3.5" />
@@ -1502,10 +1677,13 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
         minZoom={0.05}
         maxZoom={4}
-        panOnDrag={tool === 'select'}
+        // Selection tool rubber-bands a multi-select; the hand tool pans.
+        panOnDrag={tool === 'hand'}
+        selectionOnDrag={tool === 'select'}
         nodesDraggable={!readOnly && tool === 'select'}
-        nodesConnectable={false}
+        nodesConnectable={!readOnly && tool === 'select'}
         elementsSelectable={tool === 'select'}
+        onConnect={handleConnect}
         onlyRenderVisibleElements
         deleteKeyCode={['Delete']}
         onNodesDelete={handleNodesDelete}
@@ -1513,20 +1691,33 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       >
         {/* Plain whiteboard background: the board is a canvas, not a grid sheet. */}
         <ViewportPortal>
-          {shapePreview && shapePreview.w + shapePreview.h > 0 ? (
-            <div
+          {previewShape && previewShape.w + previewShape.h > 0 ? (
+            <svg
               style={{
                 position: 'absolute',
-                left: shapePreview.x,
-                top: shapePreview.y,
-                width: shapePreview.w,
-                height: shapePreview.h,
+                left: Math.min(previewShape.x, previewShape.x2 ?? previewShape.x) - 16,
+                top: Math.min(previewShape.y, previewShape.y2 ?? previewShape.y) - 16,
+                width: Math.abs((previewShape.x2 ?? previewShape.x + previewShape.w) - previewShape.x) + 32,
+                height: Math.abs((previewShape.y2 ?? previewShape.y + previewShape.h) - previewShape.y) + 32,
                 zIndex: INK_Z_INDEX + 1,
-                border: `2px dashed ${penColor}`,
-                borderRadius: 6,
                 pointerEvents: 'none',
+                overflow: 'visible',
               }}
-            />
+            >
+              <g transform={`translate(${-Math.min(previewShape.x, previewShape.x2 ?? previewShape.x) + 16},${-Math.min(previewShape.y, previewShape.y2 ?? previewShape.y) + 16})`}>
+                {previewShape.shape === 'arrow' ? (
+                  <path
+                    d={roughLinePath(previewShape.x, previewShape.y, previewShape.x2 ?? previewShape.x, previewShape.y2 ?? previewShape.y, previewShape, { preview: true })}
+                    stroke={penColor}
+                    strokeWidth={2}
+                    fill="none"
+                    strokeLinecap="round"
+                  />
+                ) : cachedRoughPaths(previewShape, true).map((path, index) => (
+                  <path key={index} d={path.d} stroke={path.stroke} strokeWidth={path.strokeWidth} fill="none" strokeLinecap="round" />
+                ))}
+              </g>
+            </svg>
           ) : null}
           {inkBounds ? (
             <svg

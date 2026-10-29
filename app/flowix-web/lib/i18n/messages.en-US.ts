@@ -1394,6 +1394,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "canvas.export.svg": "SVG image",
     "canvas.export.png": "PNG image",
     "canvas.export.failed": "Export failed",
+    "canvas.board.tool.hand": "Pan",
     "canvas.board.emptyNote": "Empty note",
     "canvas.board.imageMissing": "Image not synced",
     "canvas.board.openFailed": "Failed to open the note",
