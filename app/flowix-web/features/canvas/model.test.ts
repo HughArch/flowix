@@ -9,6 +9,10 @@ import {
   parseCanvasDocument,
   readCanvasFileEntries,
   readPersistedAppState,
+  readBoardCards,
+  readBoardEdges,
+  readBoardFrames,
+  readBoardViewport,
   serializeCanvasDocument,
 } from './model';
 
@@ -162,5 +166,74 @@ describe('updatedAt stability', () => {
     }));
     const { text } = serializeCanvasDocument(document, [], {}, {});
     expect(JSON.parse(text).meta.updatedAt).not.toBe('2026-01-02T00:00:00.000Z');
+  });
+});
+
+describe('board layer', () => {
+  const boardText = JSON.stringify({
+    type: 'flowix/canvas',
+    version: 1,
+    elements: [],
+    cards: [
+      { id: 'c1', kind: 'note', x: 0, y: 0, w: 320, h: 220, notebookId: 'nb1', path: 'research/a.md', title: 'A' },
+      { id: 'c2', kind: 'text', x: 10, y: 10, w: 240, h: 150, text: 'sticky' },
+      { id: 'c3', kind: 'image', x: 20, y: 20, w: 320, h: 220, fileId: 'img1' },
+      { id: 'bad', x: 'oops', y: 0, w: 10, h: 10 },
+    ],
+    shapes: [{ id: 's1', shape: 'rect', x: 0, y: 0, w: 10, h: 10 }],
+    ink: [{ id: 'k1', points: [[0, 0]] }],
+    edges: [{ id: 'e1', from: 'c1', to: 'c2' }],
+    frames: [{ id: 'f1', title: 'Q4', x: -40, y: -40, w: 900, h: 700 }],
+    files: { img1: { id: 'img1', mimeType: 'image/png', storageKey: 'attachments/img1.png' } },
+    appState: { viewport: { x: 12, y: -3, zoom: 0.8 } },
+  });
+
+  it('parses board collections and typed readers coerce entries', () => {
+    const document = parseCanvasDocument(boardText);
+    expect(readBoardCards(document).map((card) => card.id)).toEqual(['c1', 'c2', 'c3']);
+    expect(readBoardCards(document)[0]).toMatchObject({ kind: 'note', notebookId: 'nb1', path: 'research/a.md' });
+    expect(readBoardCards(document)[1].kind).toBe('text');
+    expect(readBoardEdges(document)).toEqual([{ id: 'e1', from: 'c1', to: 'c2' }]);
+    expect(readBoardFrames(document)[0]).toMatchObject({ id: 'f1', title: 'Q4' });
+    expect(readBoardViewport(document)).toEqual({ x: 12, y: -3, zoom: 0.8 });
+  });
+
+  it('defaults unknown card kinds to note and drops malformed entries', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      cards: [{ id: 'x', kind: 'mystery', x: 1, y: 2, w: 3, h: 4 }, { id: 'y' }],
+    }));
+    const cards = readBoardCards(document);
+    expect(cards).toHaveLength(1);
+    expect(cards[0].kind).toBe('note');
+  });
+
+  it('keeps board collections and viewport across a serialize round-trip', () => {
+    const document = parseCanvasDocument(boardText);
+    const { text } = serializeCanvasDocument(
+      document, document.elements, readPersistedAppState(document), document.files,
+      new Map([['img1', 'attachments/img1.png']]), { touchUpdatedAt: false },
+    );
+    const parsed = JSON.parse(text);
+    expect(parsed.cards).toHaveLength(4);
+    expect(parsed.shapes).toEqual([{ id: 's1', shape: 'rect', x: 0, y: 0, w: 10, h: 10 }]);
+    expect(parsed.ink).toEqual([{ id: 'k1', points: [[0, 0]] }]);
+    expect(parsed.edges).toEqual([{ id: 'e1', from: 'c1', to: 'c2' }]);
+    expect(parsed.frames).toHaveLength(1);
+    expect(parsed.appState.viewport).toEqual({ x: 12, y: -3, zoom: 0.8 });
+    expect(parsed.files.img1).toEqual({ id: 'img1', mimeType: 'image/png', storageKey: 'attachments/img1.png' });
+  });
+
+  it('drops an invalid viewport instead of failing the file', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      appState: { viewport: { x: 1, y: 2, zoom: 0 } },
+    }));
+    expect(readBoardViewport(document)).toBeNull();
+  });
+
+  it('a document without cards routes to the drawing surface', () => {
+    const document = parseCanvasDocument(createCanvasDocumentText());
+    expect(readBoardCards(document)).toHaveLength(0);
   });
 });
