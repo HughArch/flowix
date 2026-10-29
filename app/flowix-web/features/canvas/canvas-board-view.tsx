@@ -31,7 +31,7 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, Circle, Copy, Diamond, Download, Eraser, Hand, Link2, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, Circle, Copy, Diamond, Download, Eraser, Hand, Link2, Menu, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
@@ -61,7 +61,7 @@ import {
 } from './model';
 import { type CanvasSurfaceViewProps } from './surface-props';
 import { boardToSvg, svgToPngBase64 } from './board-export';
-import { cachedRoughPaths, roughLinePath } from './board-rough';
+import { cachedRoughPaths, roughLineSketch } from './board-rough';
 import { alignShapes, distributeShapes, type BoardAlignMode } from './board-align';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
@@ -255,6 +255,7 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
           (() => {
             const x2 = shape.x2 ?? shape.x + shape.w;
             const y2 = shape.y2 ?? shape.y + shape.h;
+            const sketch = roughLineSketch(shape.x, shape.y, x2, y2, shape);
             const angle = Math.atan2(y2 - shape.y, x2 - shape.x);
             const head = 10 + strokeWidth * 2;
             const spread = Math.PI / 7;
@@ -263,7 +264,8 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
             return (
               <>
                 <path
-                  d={roughLinePath(shape.x, shape.y, x2, y2, shape)}
+                  d={sketch.d}
+                  strokeDasharray={sketch.dash}
                   stroke={stroke}
                   strokeWidth={strokeWidth}
                   strokeLinecap="round"
@@ -279,6 +281,7 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
             d={path.d}
             stroke={path.stroke}
             strokeWidth={path.strokeWidth}
+            strokeDasharray={path.strokeDash}
             fill={path.fill ?? 'none'}
             strokeLinecap="round"
             strokeLinejoin="round"
@@ -637,6 +640,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [toolRoughness, setToolRoughness] = useState(1);
   const [toolEdges, setToolEdges] = useState<'sharp' | 'round'>('sharp');
   const [linkEditing, setLinkEditing] = useState(false);
+  /** Obsidian: the properties dashboard can be collapsed via its menu button. */
+  const [panelCollapsed, setPanelCollapsed] = useState(false);
   const [linkDraft, setLinkDraft] = useState('');
   const documentRef = useRef<FlowixCanvasDocument | null>(null);
   const cardsRef = useRef<BoardCard[]>([]);
@@ -907,6 +912,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     const ids = selected.map((node) => node.id);
     selectedIdsRef.current = ids;
     setSelectedShapeIds(selected.filter((node) => node.type === 'shape').map((node) => node.id));
+    if (selected.some((node) => node.type === 'shape')) setPanelCollapsed(false);
   }, []);
 
   /** Apply a style patch to every selected shape (Excalidraw-style panel).
@@ -1688,30 +1694,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         </button>
       </div>
       <div className="absolute bottom-4 left-3 z-30 flex flex-col items-start gap-2">
-        <div data-board-toolbar className="flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm">
-          <button type="button" aria-label={t('canvas.board.zoom.out')} className={toolButtonClass(false)} onClick={() => { void reactFlow.zoomOut({ duration: 150 }); }}>
-            <Minus className="h-3.5 w-3.5" />
-          </button>
-          <button
-            type="button"
-            aria-label={t('canvas.board.zoom.reset')}
-            onClick={resetZoom}
-            className="w-11 rounded-md px-1 py-1 text-center text-[11px] tabular-nums text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
-          >
-            {Math.round(zoom * 100)}%
-          </button>
-          <button type="button" aria-label={t('canvas.board.zoom.in')} className={toolButtonClass(false)} onClick={() => { void reactFlow.zoomIn({ duration: 150 }); }}>
-            <Plus className="h-3.5 w-3.5" />
-          </button>
-          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-          <button type="button" aria-label={t('canvas.board.tool.undo')} className={toolButtonClass(false)} disabled={historyDepth.index <= 0} onClick={undo}>
-            <Undo2 className="h-3.5 w-3.5" />
-          </button>
-          <button type="button" aria-label={t('canvas.board.tool.redo')} className={toolButtonClass(false)} disabled={historyDepth.index >= historyDepth.length - 1} onClick={redo}>
-            <Redo2 className="h-3.5 w-3.5" />
-          </button>
-        </div>
-        {(tool === 'pen' || isShapeTool(tool) || selectionMode) ? (
+        {(tool === 'pen' || isShapeTool(tool) || selectionMode) && !panelCollapsed ? (
         <div
           data-board-toolbar
           className="flex max-h-[calc(100%-120px)] w-[184px] flex-col gap-2.5 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
@@ -1880,7 +1863,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
             </PanelRow>
           ) : null}
           {showOpacity ? (
-            <PanelRow label={t('canvas.board.style.opacity')}>
+            <div>
+              <div className="mb-1 text-[10px] leading-none text-[var(--muted-foreground)]">{t('canvas.board.style.transparency')}</div>
               <input
                 type="range"
                 min={5}
@@ -1892,11 +1876,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
                 onKeyUp={() => pushHistory()}
                 className="w-full accent-[var(--foreground)]"
               />
-              <div className="flex justify-between text-[10px] leading-none text-[var(--muted-foreground)]">
+              <div className="mt-1 flex justify-between text-[10px] leading-none text-[var(--muted-foreground)]">
                 <span>0</span>
                 <span>100</span>
               </div>
-            </PanelRow>
+            </div>
           ) : null}
           {selectionMode && selectedShapeCount >= 2 ? (
             <PanelRow label={t('canvas.board.align.title')}>
@@ -2005,6 +1989,64 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           ) : null}
         </div>
         ) : null}
+        <div className="flex items-center gap-2">
+          <div data-board-toolbar className="flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm">
+            <button
+              type="button"
+              aria-label={t('canvas.board.panel.toggle')}
+              aria-pressed={!panelCollapsed}
+              className={toolButtonClass(!panelCollapsed)}
+              onClick={() => setPanelCollapsed((collapsed) => !collapsed)}
+            >
+              <Menu className="h-3.5 w-3.5" />
+            </button>
+            {!panelCollapsed ? (
+              <>
+                <button
+                  type="button"
+                  aria-label={t('canvas.board.action.duplicate')}
+                  className={toolButtonClass(false)}
+                  disabled={selectedShapeCount === 0}
+                  onClick={duplicateSelection}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={t('canvas.board.action.delete')}
+                  className={toolButtonClass(false)}
+                  disabled={selectedShapeCount === 0}
+                  onClick={() => removeByIds(selectedIdsRef.current)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+                <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+              </>
+            ) : null}
+            <button type="button" aria-label={t('canvas.board.tool.undo')} className={toolButtonClass(false)} disabled={historyDepth.index <= 0} onClick={undo}>
+              <Undo2 className="h-3.5 w-3.5" />
+            </button>
+            <button type="button" aria-label={t('canvas.board.tool.redo')} className={toolButtonClass(false)} disabled={historyDepth.index >= historyDepth.length - 1} onClick={redo}>
+              <Redo2 className="h-3.5 w-3.5" />
+            </button>
+          </div>
+          <div data-board-toolbar className="flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm">
+            <button type="button" aria-label={t('canvas.board.zoom.out')} className={toolButtonClass(false)} onClick={() => { void reactFlow.zoomOut({ duration: 150 }); }}>
+              <Minus className="h-3.5 w-3.5" />
+            </button>
+            <button
+              type="button"
+              aria-label={t('canvas.board.zoom.reset')}
+              onClick={resetZoom}
+              className="w-11 rounded-md px-1 py-1 text-center text-[11px] tabular-nums text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
+            >
+              {Math.round(zoom * 100)}%
+            </button>
+            <button type="button" aria-label={t('canvas.board.zoom.in')} className={toolButtonClass(false)} onClick={() => { void reactFlow.zoomIn({ duration: 150 }); }}>
+              <Plus className="h-3.5 w-3.5" />
+            </button>
+          </div>
+        </div>
       </div>
           {selectedShapeCount >= 2 ? (
             <>
@@ -2061,6 +2103,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         // Selection tool rubber-bands a multi-select; the hand tool pans.
         panOnDrag={tool === 'hand'}
         selectionOnDrag={tool === 'select'}
+        // Selected nodes must not jump above others, or layer ordering looks broken.
+        elevateNodesOnSelect={false}
         nodesDraggable={!readOnly && tool === 'select'}
         nodesConnectable={!readOnly && tool === 'select'}
         elementsSelectable={tool === 'select'}
@@ -2088,7 +2132,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
               <g transform={`translate(${-Math.min(previewShape.x, previewShape.x2 ?? previewShape.x) + 16},${-Math.min(previewShape.y, previewShape.y2 ?? previewShape.y) + 16})`}>
                 {previewShape.shape === 'arrow' ? (
                   <path
-                    d={roughLinePath(previewShape.x, previewShape.y, previewShape.x2 ?? previewShape.x, previewShape.y2 ?? previewShape.y, previewShape, { preview: true })}
+                    d={roughLineSketch(previewShape.x, previewShape.y, previewShape.x2 ?? previewShape.x, previewShape.y2 ?? previewShape.y, previewShape, { preview: true }).d}
                     stroke={penColor}
                     strokeWidth={2}
                     fill="none"

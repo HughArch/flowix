@@ -8,7 +8,7 @@
  */
 
 import { getStroke } from 'perfect-freehand';
-import { roughLinePath, roughPathsFor } from './board-rough';
+import { roughLineSketch, roughPathsFor } from './board-rough';
 import {
   readBoardCards,
   readBoardEdges,
@@ -90,7 +90,8 @@ function shapeMarkup(shape: BoardShape): string {
     const spread = Math.PI / 7;
     const h1 = [x2 - head * Math.cos(angle - spread), y2 - head * Math.sin(angle - spread)];
     const h2 = [x2 - head * Math.cos(angle + spread), y2 - head * Math.sin(angle + spread)];
-    return `<path d="${roughLinePath(shape.x, shape.y, x2, y2, shape)}" stroke="${stroke}" stroke-width="${strokeWidth}" fill="none" stroke-linecap="round"/>`
+    const lineSketch = roughLineSketch(shape.x, shape.y, x2, y2, shape);
+    return `<path d="${lineSketch.d}" stroke="${stroke}" stroke-width="${strokeWidth}"${lineSketch.dash ? ` stroke-dasharray="${lineSketch.dash}"` : ''} fill="none" stroke-linecap="round"/>`
       + `<polygon points="${x2},${y2} ${h1[0]},${h1[1]} ${h2[0]},${h2[1]}" fill="${stroke}"/>`;
   }
 
@@ -113,7 +114,7 @@ function shapeMarkup(shape: BoardShape): string {
 
   // Same roughjs outline as the live board so exports match what users see.
   const sketch = roughPathsFor(shape)
-    .map((path) => `<path d="${path.d}" stroke="${path.stroke}" stroke-width="${path.strokeWidth}" fill="${path.fill ?? 'none'}" stroke-linecap="round" stroke-linejoin="round"/>`)
+    .map((path) => `<path d="${path.d}" stroke="${path.stroke}" stroke-width="${path.strokeWidth}" fill="${path.fill ?? 'none'}"${path.strokeDash ? ` stroke-dasharray="${path.strokeDash}"` : ''} stroke-linecap="round" stroke-linejoin="round"/>`)
     .join('');
   return `${sketch}${label}`;
 }

@@ -14,6 +14,8 @@ export interface RoughPath {
   stroke: string;
   strokeWidth: number;
   fill?: string;
+  /** Dash pattern from roughjs, rendered via stroke-dasharray. */
+  strokeDash?: string;
   /** 0..1 alpha for the fill paint of this path. */
   fillAlpha?: number;
 }
@@ -69,11 +71,16 @@ export function roughPathsFor(shape: BoardShape, options: RoughOptions = {}): Ro
       )
       : generator.path(roundedRectPath(shape.x, shape.y, width, height, shape.edges === 'round' ? Math.min(24, Math.min(width, height) / 4) : 0), base);
 
+  // toPaths() drops strokeLineDash — it only survives on drawable.options and
+  // roughjs's own SVG renderer reads it from there. Carry it onto the stroke
+  // paths ourselves.
+  const dash = (drawable.options as { strokeLineDash?: number[] }).strokeLineDash;
   return generator.toPaths(drawable).map((path) => ({
     d: path.d,
     stroke: path.stroke ?? stroke,
     strokeWidth: path.strokeWidth ?? strokeWidth,
     ...(path.fill && path.fill !== 'none' ? { fill: path.fill } : {}),
+    ...(dash && path.stroke !== 'none' ? { strokeDash: dash.join(' ') } : {}),
   }));
 }
 
@@ -95,14 +102,14 @@ function roundedRectPath(x: number, y: number, w: number, h: number, radius: num
 }
 
 /** Rough line for arrows, so connectors match the sketch style. */
-export function roughLinePath(
+export function roughLineSketch(
   x1: number,
   y1: number,
   x2: number,
   y2: number,
   shape: BoardShape,
   options: RoughOptions = {},
-): string {
+): { d: string; dash?: string } {
   const drawable = generator.line(x1, y1, x2, y2, {
     stroke: shape.stroke ?? '#64748b',
     strokeWidth: shape.strokeWidth ?? 2,
@@ -111,7 +118,11 @@ export function roughLinePath(
     seed: seedFor(shape.id),
     ...(dashFor(shape) ? { strokeLineDash: dashFor(shape) } : {}),
   });
-  return generator.toPaths(drawable).map((path) => path.d).join(' ');
+  const dash = (drawable.options as { strokeLineDash?: number[] }).strokeLineDash;
+  return {
+    d: generator.toPaths(drawable).map((path) => path.d).join(' '),
+    ...(dash ? { dash: dash.join(' ') } : {}),
+  };
 }
 
 /** Cache key: geometry + style; anything visual that changes the sketch. */

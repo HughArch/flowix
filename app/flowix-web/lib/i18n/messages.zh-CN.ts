@@ -1407,6 +1407,8 @@ const zhCN = {
     "canvas.board.style.edgesSharp": '直角',
     "canvas.board.style.edgesRound": '圆角',
     "canvas.board.action.link": '链接',
+    "canvas.board.style.transparency": '透明度',
+    "canvas.board.panel.toggle": '属性面板',
     "canvas.board.emptyNote": "空笔记",
     "canvas.board.imageMissing": "图片未同步",
     "canvas.board.openFailed": "打开笔记失败",

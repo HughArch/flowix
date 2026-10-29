@@ -1430,6 +1430,8 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "canvas.board.style.edgesSharp": 'Sharp',
     "canvas.board.style.edgesRound": 'Round',
     "canvas.board.action.link": 'Link',
+    "canvas.board.style.transparency": 'Transparency',
+    "canvas.board.panel.toggle": 'Properties panel',
     "canvas.board.emptyNote": "Empty note",
     "canvas.board.imageMissing": "Image not synced",
     "canvas.board.openFailed": "Failed to open the note",
