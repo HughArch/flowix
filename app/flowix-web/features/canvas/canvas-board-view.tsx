@@ -152,7 +152,10 @@ function CanvasRefNode({ data }: NodeProps<BoardNode>) {
 function FrameNode({ data }: NodeProps<BoardNode>) {
   const { card } = data;
   return (
-    <div className="h-full w-full rounded-xl border-2 border-dashed border-[var(--border-strong)] bg-[var(--muted)]/30">
+    <div
+      className="h-full w-full rounded-xl border-2 border-dashed bg-[var(--muted)]/30"
+      style={{ borderColor: 'color-mix(in srgb, var(--muted-foreground) 45%, transparent)' }}
+    >
       {card.title ? (
         <div className="absolute -top-6 left-0 flex items-center gap-1 whitespace-nowrap text-[11px] font-medium text-[var(--muted-foreground)]">
           <FrameIcon className="h-3 w-3" aria-hidden="true" />
@@ -212,7 +215,7 @@ function buildBoardGraph(
       source: edge.from,
       target: edge.to,
       ...(edge.label ? { label: edge.label } : {}),
-      style: { stroke: 'var(--border-strong)', strokeWidth: 1.5 },
+      style: { stroke: 'color-mix(in srgb, var(--muted-foreground) 55%, transparent)', strokeWidth: 1.5 },
     });
   }
   return { nodes, edges };
@@ -266,6 +269,10 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, init
   const storageKeysRef = useRef<Map<string, string>>(new Map());
   const imageRetryRef = useRef<number | null>(null);
   const initialTextRef = useRef<string | null | undefined>(initialText);
+  /** Viewport seen at load; the first move-end after a fitView mount is
+   * programmatic and must not look like an edit (an open would rewrite the
+   * file and re-sort the tree, the same trap the drawing surface hit). */
+  const moveSeedRef = useRef<Viewport | null>(null);
 
   const retryLoad = useCallback(() => setRetryToken((token) => token + 1), []);
 
@@ -302,7 +309,9 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, init
           .map((entry) => [entry.id, entry.storageKey as string]),
       );
       lastSavedTextRef.current = text;
-      setInitialViewport(readBoardViewport(document) ?? null);
+      const storedViewport = readBoardViewport(document) ?? null;
+      moveSeedRef.current = storedViewport;
+      setInitialViewport(storedViewport);
       applyGraph(document);
       setState({ status: 'ready' });
     })().catch((error) => {
@@ -393,10 +402,22 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, init
     void event;
     const document = documentRef.current;
     if (!document) return;
+    const seeded = moveSeedRef.current;
+    const same = (a: Viewport | null, b: Viewport) =>
+      !!a && a.x === b.x && a.y === b.y && a.zoom === b.zoom;
+    if (same(seeded, viewport)) return;
+    if (!seeded) {
+      // Programmatic fitView on a board without a stored viewport.
+      moveSeedRef.current = viewport;
+      return;
+    }
+    const persisted = readBoardViewport(document);
+    if (same(persisted, viewport)) return;
     document.appState = {
       ...readPersistedAppState(document),
       viewport: { x: viewport.x, y: viewport.y, zoom: viewport.zoom },
     };
+    moveSeedRef.current = { ...viewport };
     scheduleFlush();
   }, [scheduleFlush]);
 
@@ -503,6 +524,7 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, init
             .map((entry) => [entry.id, entry.storageKey as string]),
         );
         lastSavedTextRef.current = text;
+        moveSeedRef.current = readBoardViewport(document);
         applyGraph(document);
       });
     });
