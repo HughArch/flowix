@@ -17,6 +17,7 @@ import {
   ReactFlow,
   NodeResizer,
   ReactFlowProvider,
+  useStore,
   ViewportPortal,
   applyNodeChanges,
   useReactFlow,
@@ -30,7 +31,7 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowUpRight, Circle, Diamond, Download, Eraser, Hand, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, MousePointer2, Pencil, Redo2, Square, Type, Undo2 } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowUpRight, Circle, Diamond, Download, Eraser, Hand, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Type, Undo2 } from 'lucide-react';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
@@ -577,6 +578,53 @@ async function hydrateImageCards(
   return dataUrls;
 }
 
+/** Palette trigger: shows the current color, opens the swatch grid on click. */
+function ColorPopover({ label, color, colors, allowTransparent, onPick }: {
+  label: string;
+  color: string;
+  colors: readonly string[];
+  allowTransparent?: boolean;
+  onPick: (color: string) => void;
+}) {
+  return (
+    <DropdownMenu>
+      <DropdownMenuTrigger asChild>
+        <button
+          type="button"
+          aria-label={`${label} ${color}`}
+          className="h-5 w-5 rounded-full border border-[var(--border)]"
+          style={color === 'transparent'
+            ? { backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--muted-foreground) 45%, var(--muted-foreground) 55%, transparent 55%)' }
+            : { backgroundColor: color }}
+        />
+      </DropdownMenuTrigger>
+      <DropdownMenuContent className="w-[148px] p-2">
+        <div className="grid grid-cols-6 gap-1">
+          {allowTransparent ? (
+            <button
+              type="button"
+              aria-label={label}
+              onClick={() => onPick('transparent')}
+              className={`h-5 w-5 rounded border ${color === 'transparent' ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'} bg-[var(--card)]`}
+              style={{ backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--muted-foreground) 45%, var(--muted-foreground) 55%, transparent 55%)' }}
+            />
+          ) : null}
+          {colors.map((item) => (
+            <button
+              key={item}
+              type="button"
+              aria-label={`${label} ${item}`}
+              onClick={() => onPick(item)}
+              className={`h-5 w-5 rounded-full border ${color === item ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
+              style={{ backgroundColor: item }}
+            />
+          ))}
+        </div>
+      </DropdownMenuContent>
+    </DropdownMenu>
+  );
+}
+
 function PanelRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
@@ -604,6 +652,8 @@ export function CanvasBoardView(props: CanvasBoardViewProps) {
 function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifecycleReady, reportPresentation }: CanvasBoardViewProps) {
   const { t } = useI18n();
   const reactFlow = useReactFlow();
+  const boardRef = useRef<HTMLDivElement>(null);
+  const zoom = useStore((state) => state.transform[2]);
   const [state, setState] = useState<BoardLoadState>({ status: 'loading' });
   const [retryToken, setRetryToken] = useState(0);
   const [nodes, setNodes] = useState<BoardNode[]>([]);
@@ -1148,6 +1198,18 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     }
   }, [t, tool]);
 
+  /** Reset the camera to 100% around the current center (Obsidian-style). */
+  const resetZoom = useCallback(() => {
+    const rect = boardRef.current?.getBoundingClientRect();
+    if (!rect) return;
+    const cx = rect.left + rect.width / 2;
+    const cy = rect.top + rect.height / 2;
+    const viewport = reactFlow.getViewport();
+    const flowX = (cx - viewport.x) / viewport.zoom;
+    const flowY = (cy - viewport.y) / viewport.zoom;
+    void reactFlow.setViewport({ x: cx - flowX, y: cy - flowY, zoom: 1 });
+  }, [reactFlow]);
+
   const flowPositionOf = useCallback(
     (event: { clientX: number; clientY: number }): number[] => {
       const position = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
@@ -1530,6 +1592,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
 
   return (
     <div
+      ref={boardRef}
       className={`h-full min-h-0 w-full ${tool === 'hand' ? 'cursor-grab' : tool !== 'select' ? 'cursor-crosshair' : ''}`}
       data-canvas-surface={filePath}
       // The board owns pan/zoom gestures; the shell's swipe-down must not steal them.
@@ -1568,26 +1631,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
                     : <Type className="h-3.5 w-3.5" />}
           </button>
         ))}
-        <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-        <button
-          type="button"
-          aria-label={t('canvas.board.tool.undo')}
-          className={toolButtonClass(false)}
-          disabled={historyDepth.index <= 0}
-          onClick={undo}
-        >
-          <Undo2 className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
-          aria-label={t('canvas.board.tool.redo')}
-          className={toolButtonClass(false)}
-          disabled={historyDepth.index >= historyDepth.length - 1}
-          onClick={redo}
-        >
-          <Redo2 className="h-3.5 w-3.5" />
-        </button>
-        <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button type="button" aria-label={t('canvas.export.menu')} className={toolButtonClass(false)}>
@@ -1617,42 +1661,52 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           {toolLocked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
         </button>
       </div>
-      {tool === 'pen' || isShapeTool(tool) ? (
+      <div className="absolute bottom-4 left-3 z-30 flex flex-col items-start gap-2">
+        <div data-board-toolbar className="flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm">
+          <button type="button" aria-label={t('canvas.board.zoom.out')} className={toolButtonClass(false)} onClick={() => { void reactFlow.zoomOut({ duration: 150 }); }}>
+            <Minus className="h-3.5 w-3.5" />
+          </button>
+          <button
+            type="button"
+            aria-label={t('canvas.board.zoom.reset')}
+            onClick={resetZoom}
+            className="w-11 rounded-md px-1 py-1 text-center text-[11px] tabular-nums text-[var(--muted-foreground)] hover:bg-[var(--muted)]"
+          >
+            {Math.round(zoom * 100)}%
+          </button>
+          <button type="button" aria-label={t('canvas.board.zoom.in')} className={toolButtonClass(false)} onClick={() => { void reactFlow.zoomIn({ duration: 150 }); }}>
+            <Plus className="h-3.5 w-3.5" />
+          </button>
+          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+          <button type="button" aria-label={t('canvas.board.tool.undo')} className={toolButtonClass(false)} disabled={historyDepth.index <= 0} onClick={undo}>
+            <Undo2 className="h-3.5 w-3.5" />
+          </button>
+          <button type="button" aria-label={t('canvas.board.tool.redo')} className={toolButtonClass(false)} disabled={historyDepth.index >= historyDepth.length - 1} onClick={redo}>
+            <Redo2 className="h-3.5 w-3.5" />
+          </button>
+        </div>
+        {tool === 'pen' || isShapeTool(tool) ? (
         <div
           data-board-toolbar
-          className="absolute bottom-4 left-3 z-30 flex w-[176px] flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
+          className="flex w-[176px] flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
         >
           <PanelRow label={t('canvas.board.style.stroke')}>
-            {INK_COLORS.map((color) => (
-              <button
-                key={color}
-                type="button"
-                aria-label={`${t('canvas.board.style.stroke')} ${color}`}
-                onClick={() => setPenColor(color)}
-                className={`h-5 w-5 rounded-full border ${penColor === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
-                style={{ backgroundColor: color }}
-              />
-            ))}
+            <ColorPopover
+              label={t('canvas.board.style.stroke')}
+              color={penColor}
+              colors={INK_COLORS}
+              onPick={setPenColor}
+            />
           </PanelRow>
           {tool !== 'pen' && tool !== 'text' && tool !== 'arrow' ? (
             <PanelRow label={t('canvas.board.style.background')}>
-              <button
-                type="button"
-                aria-label={t('canvas.board.style.backgroundTransparent')}
-                onClick={() => setToolFill('transparent')}
-                className={`h-5 w-5 rounded border ${toolFill === 'transparent' ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'} bg-[var(--card)]`}
-                style={{ backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--muted-foreground) 45%, var(--muted-foreground) 55%, transparent 55%)' }}
+              <ColorPopover
+                label={t('canvas.board.style.background')}
+                color={toolFill}
+                colors={FILL_COLORS}
+                allowTransparent
+                onPick={setToolFill}
               />
-              {FILL_COLORS.map((color) => (
-                <button
-                  key={color}
-                  type="button"
-                  aria-label={`${t('canvas.board.style.background')} ${color}`}
-                  onClick={() => setToolFill(color)}
-                  className={`h-5 w-5 rounded border ${toolFill === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'}`}
-                  style={{ backgroundColor: color }}
-                />
-              ))}
             </PanelRow>
           ) : null}
           <PanelRow label={t('canvas.board.style.strokeWidth')}>
@@ -1712,40 +1766,27 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
             </PanelRow>
           ) : null}
         </div>
-      ) : null}
+        ) : null}
+      </div>
       {tool === 'select' && selectedShapeCount > 0 ? (
         <div
           data-board-toolbar
           className="absolute left-1/2 top-16 z-30 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1.5 shadow-sm"
         >
-          {INK_COLORS.map((color) => (
-            <button
-              key={`stroke-${color}`}
-              type="button"
-              aria-label={t('canvas.board.style.stroke')}
-              onClick={() => patchSelectedShapes({ stroke: color })}
-              className={`h-5 w-5 rounded-full border ${activeStroke === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
-              style={{ backgroundColor: color }}
-            />
-          ))}
-          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-          <button
-            type="button"
-            aria-label={t('canvas.board.style.backgroundTransparent')}
-            onClick={() => patchSelectedShapes({ fill: 'transparent' })}
-            className={`h-5 w-5 rounded border ${activeFill === 'transparent' ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'} bg-[var(--card)]`}
-            style={{ backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--muted-foreground) 45%, var(--muted-foreground) 55%, transparent 55%)' }}
+          <ColorPopover
+            label={t('canvas.board.style.stroke')}
+            color={activeStroke}
+            colors={INK_COLORS}
+            onPick={(color) => patchSelectedShapes({ stroke: color })}
           />
-          {FILL_COLORS.map((color) => (
-            <button
-              key={`fill-${color}`}
-              type="button"
-              aria-label={t('canvas.board.style.background')}
-              onClick={() => patchSelectedShapes({ fill: color })}
-              className={`h-5 w-5 rounded border ${activeFill === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'}`}
-              style={{ backgroundColor: color }}
-            />
-          ))}
+          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+          <ColorPopover
+            label={t('canvas.board.style.background')}
+            color={activeFill}
+            colors={FILL_COLORS}
+            allowTransparent
+            onPick={(color) => patchSelectedShapes({ fill: color })}
+          />
           <div className="mx-1 h-5 w-px bg-[var(--border)]" />
           {STROKE_WIDTHS.map((width) => (
             <button
