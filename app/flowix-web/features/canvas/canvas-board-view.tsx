@@ -30,8 +30,8 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { Circle, Diamond, Eraser, FileText, Frame as FrameIcon, Image as ImageIcon, Maximize2, MousePointer2, Pencil, Square, Type } from 'lucide-react';
-import { files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
+import { ArrowUpRight, Circle, Diamond, Download, Eraser, FileText, Frame as FrameIcon, Image as ImageIcon, Maximize2, MousePointer2, Pencil, Redo2, Square, Type, Undo2 } from 'lucide-react';
+import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
@@ -58,6 +58,10 @@ import {
   type FlowixCanvasDocument,
 } from './model';
 import { type CanvasSurfaceViewProps } from './surface-props';
+import { boardToSvg, svgToPngBase64 } from './board-export';
+import {
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+} from '@shared/ui/dropdown-menu';
 
 const SAVE_DEBOUNCE_MS = 800;
 const logger = createLogger('canvas-board');
@@ -239,14 +243,42 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   return (
     <div className="relative h-full w-full">
       <NodeResizer
-        isVisible={selected}
+        isVisible={selected && shape.shape !== 'arrow'}
         minWidth={40}
         minHeight={30}
         onResizeEnd={(_, params) => data.onShapeResize?.(shape.id, params)}
         lineClassName="!border-[var(--foreground)]/40"
         handleClassName="!bg-[var(--card)] !border-[var(--foreground)]/60"
       />
-      {shape.shape === 'text' ? null
+      {shape.shape === 'arrow' ? (
+        <svg className="pointer-events-none" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible' }}>
+          {(() => {
+            const x2 = shape.x2 ?? shape.x + shape.w;
+            const y2 = shape.y2 ?? shape.y + shape.h;
+            const minX = Math.min(shape.x, x2) - ARROW_PADDING;
+            const minY = Math.min(shape.y, y2) - ARROW_PADDING;
+            const sx = shape.x - minX;
+            const sy = shape.y - minY;
+            const ex = x2 - minX;
+            const ey = y2 - minY;
+            const angle = Math.atan2(ey - sy, ex - sx);
+            const head = 10 + strokeWidth * 2;
+            const spread = Math.PI / 7;
+            const h1 = [ex - head * Math.cos(angle - spread), ey - head * Math.sin(angle - spread)];
+            const h2 = [ex - head * Math.cos(angle + spread), ey - head * Math.sin(angle + spread)];
+            return (
+              <>
+                <line
+                  x1={sx} y1={sy} x2={ex} y2={ey}
+                  stroke={stroke} strokeWidth={strokeWidth}
+                  strokeDasharray={dashArray} strokeLinecap="round"
+                />
+                <polygon points={`${ex},${ey} ${h1[0]},${h1[1]} ${h2[0]},${h2[1]}`} fill={stroke} />
+              </>
+            );
+          })()}
+        </svg>
+      ) : shape.shape === 'text' ? null
         : shape.shape === 'rect' ? (
           <div style={{ ...box, border: `${strokeWidth}px ${borderStyle} ${stroke}`, background: fill, borderRadius: 6 }} />
         ) : (
@@ -304,9 +336,9 @@ const NODE_TYPES = {
 };
 
 type BoardTool = 'select' | 'pen' | 'eraser' | BoardShapeKind;
-const SHAPE_TOOLS: BoardShapeKind[] = ['rect', 'ellipse', 'diamond', 'text'];
+const SHAPE_TOOLS: BoardShapeKind[] = ['rect', 'ellipse', 'diamond', 'text', 'arrow'];
 const isShapeTool = (tool: BoardTool): tool is BoardShapeKind =>
-  tool === 'rect' || tool === 'ellipse' || tool === 'diamond' || tool === 'text';
+  tool === 'rect' || tool === 'ellipse' || tool === 'diamond' || tool === 'text' || tool === 'arrow';
 
 const INK_COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#a855f7', '#64748b'];
 /** Background tints for shapes, matching the stroke palette order. */
@@ -394,13 +426,17 @@ function shapeNodeFor(
   onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void,
   initialEditing = false,
 ): BoardNode {
+  const arrow = shape.shape === 'arrow' && shape.x2 !== undefined && shape.y2 !== undefined;
+  const box = arrow
+    ? arrowBox(shape)
+    : { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
   return {
     id: shape.id,
     type: 'shape',
-    position: { x: shape.x, y: shape.y },
+    position: { x: box.x, y: box.y },
     zIndex: 5,
     data: {
-      card: { id: shape.id, kind: 'text', x: shape.x, y: shape.y, w: shape.w, h: shape.h },
+      card: { id: shape.id, kind: 'text', x: box.x, y: box.y, w: box.w, h: box.h },
       dataUrl: null,
       summary: null,
       shape,
@@ -408,7 +444,25 @@ function shapeNodeFor(
       ...(onShapeResize ? { onShapeResize } : {}),
       ...(initialEditing ? { initialEditing } : {}),
     },
-    style: { width: shape.w, height: shape.h },
+    style: { width: box.w, height: box.h },
+  };
+}
+
+const ARROW_PADDING = 14;
+
+/** Node box for an arrow: the endpoint bounding box plus padding for the head. */
+function arrowBox(shape: BoardShape): { x: number; y: number; w: number; h: number } {
+  const x2 = shape.x2 ?? shape.x + shape.w;
+  const y2 = shape.y2 ?? shape.y + shape.h;
+  const minX = Math.min(shape.x, x2);
+  const minY = Math.min(shape.y, y2);
+  const maxX = Math.max(shape.x, x2);
+  const maxY = Math.max(shape.y, y2);
+  return {
+    x: minX - ARROW_PADDING,
+    y: minY - ARROW_PADDING,
+    w: maxX - minX + ARROW_PADDING * 2,
+    h: maxY - minY + ARROW_PADDING * 2,
   };
 }
 
@@ -522,6 +576,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [shapePreview, setShapePreview] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [selectedShapeIds, setSelectedShapeIds] = useState<string[]>([]);
   const selectedIdsRef = useRef<string[]>([]);
+  /** Linear undo stack of serialized documents; index points at the current one. */
+  const historyRef = useRef<{ stack: string[]; index: number }>({ stack: [], index: -1 });
+  const [historyDepth, setHistoryDepth] = useState({ index: -1, length: 0 });
   const [tool, setTool] = useState<BoardTool>('select');
   const [penColor, setPenColor] = useState(INK_COLORS[3]);
   const [penWidth, setPenWidth] = useState(INK_WIDTHS[1]);
@@ -533,6 +590,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const handleShapeResizeRef = useRef<(nodeId: string, box: { x: number; y: number; width: number; height: number }) => void>(() => {});
   /** Filled after `scheduleFlush` exists; card/shape callbacks may run earlier. */
   const scheduleFlushRef = useRef<() => void>(() => {});
+  const pushHistoryRef = useRef<() => void>(() => {});
   const liveStrokeRef = useRef<number[][] | null>(null);
   const dataUrlsRef = useRef<Map<string, string>>(new Map());
   const dirtyRef = useRef(false);
@@ -571,6 +629,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     shape.text = next || undefined;
     document.shapes = shapesRef.current;
     scheduleFlushRef.current();
+    pushHistoryRef.current();
   }, []);
 
   const applyGraph = useCallback((document: FlowixCanvasDocument) => {
@@ -590,6 +649,62 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       : nextNodes.map((node) => (selected.includes(node.id) ? { ...node, selected: true } : node)));
     setEdges(nextEdges);
   }, [absolutePathOf, commitShapeText]);
+
+  const snapshotDocument = useCallback((): string | null => {
+    const document = documentRef.current;
+    if (!document) return null;
+    return serializeCanvasDocument(
+      document,
+      document.elements,
+      readPersistedAppState(document),
+      document.files,
+      storageKeysRef.current,
+      { touchUpdatedAt: false },
+    ).text;
+  }, []);
+
+  /** Record the post-mutation document; forward entries are dropped. */
+  const pushHistory = useCallback(() => {
+    const text = snapshotDocument();
+    if (!text) return;
+    const history = historyRef.current;
+    if (history.stack[history.index] === text) return;
+    history.stack = [...history.stack.slice(0, history.index + 1), text].slice(-100);
+    history.index = history.stack.length - 1;
+    setHistoryDepth({ index: history.index, length: history.stack.length });
+  }, [snapshotDocument]);
+
+  const applySnapshot = useCallback((text: string) => {
+    const document = parseCanvasDocument(text);
+    documentRef.current = document;
+    cardsRef.current = readBoardCards(document);
+    shapesRef.current = readBoardShapes(document);
+    inkRef.current = readBoardInk(document);
+    setInk(inkRef.current);
+    storageKeysRef.current = new Map(
+      readCanvasFileEntries(document.files)
+        .filter((entry) => entry.storageKey)
+        .map((entry) => [entry.id, entry.storageKey as string]),
+    );
+    applyGraph(document);
+    scheduleFlushRef.current();
+  }, [applyGraph]);
+
+  const undo = useCallback(() => {
+    const history = historyRef.current;
+    if (history.index <= 0) return;
+    history.index -= 1;
+    setHistoryDepth({ index: history.index, length: history.stack.length });
+    applySnapshot(history.stack[history.index]);
+  }, [applySnapshot]);
+
+  const redo = useCallback(() => {
+    const history = historyRef.current;
+    if (history.index >= history.stack.length - 1) return;
+    history.index += 1;
+    setHistoryDepth({ index: history.index, length: history.stack.length });
+    applySnapshot(history.stack[history.index]);
+  }, [applySnapshot]);
 
   /** Load every note-card summary in one IPC round-trip. */
   const loadCardSummaries = useCallback(async (document: FlowixCanvasDocument): Promise<boolean> => {
@@ -649,6 +764,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       moveSeedRef.current = storedViewport;
       setInitialViewport(storedViewport);
       applyGraph(document);
+      historyRef.current = { stack: [snapshotDocument() ?? ''], index: 0 };
+      setHistoryDepth({ index: 0, length: 1 });
       setState({ status: 'ready' });
       // Card bodies arrive after the board paints; the graph rebuilds with them.
       const loaded = await loadCardSummaries(document);
@@ -717,7 +834,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
 
   useEffect(() => {
     scheduleFlushRef.current = scheduleFlush;
-  }, [scheduleFlush]);
+    pushHistoryRef.current = pushHistory;
+  }, [pushHistory, scheduleFlush]);
 
   useEffect(() => () => {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
@@ -745,7 +863,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     document.shapes = shapesRef.current;
     applyGraph(document);
     scheduleFlush();
-  }, [applyGraph, scheduleFlush, selectedShapeIds]);
+    pushHistory();
+  }, [applyGraph, pushHistory, scheduleFlush, selectedShapeIds]);
 
   const syncPositionsToDocument = useCallback((dragged: BoardNode[]) => {
     const document = documentRef.current;
@@ -771,6 +890,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     if (cardsChanged) document.cards = cardsRef.current;
     if (shapesChanged) document.shapes = shapesRef.current;
     scheduleFlush();
+    pushHistory();
   }, [scheduleFlush]);
 
   /** Resize handles write the new box straight back into the document. */
@@ -786,7 +906,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     shape.h = box.height;
     document.shapes = shapesRef.current;
     scheduleFlush();
-  }, [scheduleFlush]);
+    pushHistory();
+  }, [pushHistory, scheduleFlush]);
 
   // No dependency array: the callback runs after the handler's declaration is
   // initialized, so it can be assigned without a TDZ read during render.
@@ -814,7 +935,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     }
     selectedIdsRef.current = selectedIdsRef.current.filter((id) => !ids.has(id));
     scheduleFlush();
-  }, [scheduleFlush]);
+    pushHistory();
+  }, [pushHistory, scheduleFlush]);
 
   const handleNodeDragStop = useCallback(
     (event: unknown, node: BoardNode, dragged: BoardNode[]) => {
@@ -877,7 +999,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     // First real edit swaps the passthrough array for normalized values.
     document.ink = strokes;
     scheduleFlush();
-  }, [scheduleFlush]);
+    pushHistory();
+  }, [pushHistory, scheduleFlush]);
 
   const eraseInkAt = useCallback((position: number[]) => {
     const zoom = reactFlow.getViewport().zoom;
@@ -941,20 +1064,38 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           : rect;
       const document = documentRef.current;
       if (!document) return;
-      const shape: BoardShape = {
-        id: shapeId(),
-        shape: tool as BoardShapeKind,
-        x: box.x,
-        y: box.y,
-        w: box.w,
-        h: box.h,
-        stroke: penColor,
-        ...(isLabel ? { fontSize: 20, text: '' } : {}),
-      };
+      const isArrow = tool === 'arrow';
+      const arrowStart = draft.start;
+      const arrowEnd = rect.w < 24 && rect.h < 24
+        ? [draft.start[0] + 160, draft.start[1]]
+        : draft.current;
+      const shape: BoardShape = isArrow
+        ? {
+          id: shapeId(),
+          shape: 'arrow',
+          x: arrowStart[0],
+          y: arrowStart[1],
+          x2: arrowEnd[0],
+          y2: arrowEnd[1],
+          w: Math.abs(arrowEnd[0] - arrowStart[0]),
+          h: Math.abs(arrowEnd[1] - arrowStart[1]),
+          stroke: penColor,
+        }
+        : {
+          id: shapeId(),
+          shape: tool as BoardShapeKind,
+          x: box.x,
+          y: box.y,
+          w: box.w,
+          h: box.h,
+          stroke: penColor,
+          ...(isLabel ? { fontSize: 20, text: '' } : {}),
+        };
       shapesRef.current = [...shapesRef.current, shape];
       document.shapes = shapesRef.current;
       setNodes((current) => [...current, shapeNodeFor(shape, commitShapeText, handleShapeResizeRef.current, isLabel)]);
       scheduleFlush();
+      pushHistory();
       setTool('select');
       return;
     }
@@ -1071,6 +1212,19 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     });
   }, [applyGraph, filePath, loadCardSummaries, notebookPath, state.status]);
 
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (!(event.metaKey || event.ctrlKey) || event.key.toLowerCase() !== 'z' && event.key.toLowerCase() !== 'y') return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA'].includes(target.tagName))) return;
+      event.preventDefault();
+      if (event.key.toLowerCase() === 'y' || event.shiftKey) redo();
+      else undo();
+    };
+    window.addEventListener('keydown', onKeyDown);
+    return () => window.removeEventListener('keydown', onKeyDown);
+  }, [redo, undo]);
+
   const defaultViewport = useMemo<Viewport>(
     () => initialViewport ?? { x: 0, y: 0, zoom: 1 },
     [initialViewport],
@@ -1108,6 +1262,27 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       h: Math.ceil(maxY - minY + padding * 2),
     };
   }, [ink, livePoints]);
+
+  const handleExport = useCallback(async (format: 'svg' | 'png') => {
+    const document = documentRef.current;
+    if (!document) return;
+    try {
+      const stem = (filePath.split(/[\/]/).pop() ?? 'canvas').replace(/\.flowix-canvas$/i, '');
+      const svg = boardToSvg(document, summariesRef.current, absolutePathOf);
+      if (format === 'svg') {
+        const target = await dialogs.saveFile(`${stem}.svg`, [{ name: 'SVG', extensions: ['svg'] }]);
+        if (!target) return;
+        if (!(await dialogs.writeExportFile(target, svg))) throw new Error('write failed');
+      } else {
+        const base64 = await svgToPngBase64(svg);
+        const target = await dialogs.saveFile(`${stem}.png`, [{ name: 'PNG', extensions: ['png'] }]);
+        if (!target) return;
+        if (!(await dialogs.writeExportBytes(target, base64))) throw new Error('write failed');
+      }
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : t('canvas.export.failed'));
+    }
+  }, [absolutePathOf, filePath, t]);
 
   const selectedShapes = nodes
     .filter((node) => node.type === 'shape' && selectedShapeIds.includes(node.id))
@@ -1164,10 +1339,42 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           >
             {shapeKind === 'rect' ? <Square className="h-3.5 w-3.5" />
               : shapeKind === 'ellipse' ? <Circle className="h-3.5 w-3.5" />
-                : shapeKind === 'diamond' ? <Diamond className="h-3.5 w-3.5" /> : <Type className="h-3.5 w-3.5" />}
+                : shapeKind === 'diamond' ? <Diamond className="h-3.5 w-3.5" />
+                  : shapeKind === 'arrow' ? <ArrowUpRight className="h-3.5 w-3.5" />
+                    : <Type className="h-3.5 w-3.5" />}
           </button>
         ))}
         <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+        <button
+          type="button"
+          aria-label={t('canvas.board.tool.undo')}
+          className={toolButtonClass(false)}
+          disabled={historyDepth.index <= 0}
+          onClick={undo}
+        >
+          <Undo2 className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          aria-label={t('canvas.board.tool.redo')}
+          className={toolButtonClass(false)}
+          disabled={historyDepth.index >= historyDepth.length - 1}
+          onClick={redo}
+        >
+          <Redo2 className="h-3.5 w-3.5" />
+        </button>
+        <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" aria-label={t('canvas.export.menu')} className={toolButtonClass(false)}>
+              <Download className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-[168px]">
+            <DropdownMenuItem onClick={() => { void handleExport('svg'); }}>{t('canvas.export.svg')}</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => { void handleExport('png'); }}>{t('canvas.export.png')}</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <button
           type="button"
           aria-label={t('canvas.board.tool.fit')}
@@ -1306,7 +1513,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       >
         {/* Plain whiteboard background: the board is a canvas, not a grid sheet. */}
         <ViewportPortal>
-          {shapePreview && shapePreview.w > 0 && shapePreview.h > 0 ? (
+          {shapePreview && shapePreview.w + shapePreview.h > 0 ? (
             <div
               style={{
                 position: 'absolute',
