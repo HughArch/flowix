@@ -17,7 +17,10 @@ import {
   Handle,
   Position,
   ReactFlow,
+  ReactFlowProvider,
+  ViewportPortal,
   applyNodeChanges,
+  useReactFlow,
   type Edge,
   type Node,
   type NodeChange,
@@ -26,8 +29,9 @@ import {
   type OnNodesChange,
   type Viewport,
 } from '@xyflow/react';
+import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { FileText, Frame as FrameIcon, Image as ImageIcon } from 'lucide-react';
+import { Eraser, FileText, Frame as FrameIcon, Image as ImageIcon, MousePointer2, Pencil } from 'lucide-react';
 import { files, notebookAssets } from '@platform/tauri/client';
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
@@ -40,11 +44,13 @@ import {
   readBoardCards,
   readBoardEdges,
   readBoardFrames,
+  readBoardInk,
   readBoardViewport,
   readCanvasFileEntries,
   readPersistedAppState,
   serializeCanvasDocument,
   type BoardCard,
+  type BoardInkStroke,
   type FlowixCanvasDocument,
 } from './model';
 import { type CanvasSurfaceViewProps } from './surface-props';
@@ -174,6 +180,62 @@ const NODE_TYPES = {
   frame: FrameNode,
 };
 
+type BoardTool = 'select' | 'pen' | 'eraser';
+
+const INK_COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#a855f7', '#64748b'];
+const INK_WIDTHS = [2, 5, 10];
+/** Ink renders above cards: annotation strokes cross card bodies like on a whiteboard. */
+const INK_Z_INDEX = 20;
+const INK_ERASE_PADDING = 8;
+
+function freehandOptions(width: number) {
+  return { size: width * 2, thinning: 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: true };
+}
+
+/** perfect-freehand outline points -> filled SVG path (README helper). */
+function svgPathFromStroke(stroke: number[][], closed = true): string {
+  const length = stroke.length;
+  if (length < 4) return '';
+  const avg = (a: number, b: number) => (a + b) / 2;
+  let [a, b, c] = stroke;
+  let result = `M${a[0]},${a[1]} Q${b[0]},${b[1]} ${avg(b[0], c[0])},${avg(b[1], c[1])} T`;
+  for (let i = 2; i < length - 1; i += 1) {
+    a = stroke[i];
+    b = stroke[i + 1];
+    result += `${avg(a[0], b[0])},${avg(a[1], b[1])} `;
+  }
+  return closed ? `${result}Z` : result;
+}
+
+function inkPathFor(stroke: BoardInkStroke): string {
+  return svgPathFromStroke(getStroke(stroke.points, freehandOptions(stroke.width)));
+}
+
+function distanceToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
+  const dx = bx - ax;
+  const dy = by - ay;
+  const lengthSquared = dx * dx + dy * dy;
+  const t = lengthSquared === 0 ? 0 : Math.max(0, Math.min(1, ((px - ax) * dx + (py - ay) * dy) / lengthSquared));
+  const cx = ax + t * dx;
+  const cy = ay + t * dy;
+  return Math.hypot(px - cx, py - cy);
+}
+
+/** Stroke eraser hit test: sample the polyline, not the rendered outline. */
+function inkStrokeHit(stroke: BoardInkStroke, x: number, y: number, zoom: number): boolean {
+  const threshold = stroke.width / 2 + INK_ERASE_PADDING / Math.max(0.1, zoom);
+  const points = stroke.points;
+  if (points.length === 1) return Math.hypot(x - points[0][0], y - points[0][1]) <= threshold;
+  for (let i = 0; i < points.length - 1; i += 1) {
+    if (distanceToSegment(x, y, points[i][0], points[i][1], points[i + 1][0], points[i + 1][1]) <= threshold) return true;
+  }
+  return false;
+}
+
+function inkStrokeId(): string {
+  return `k_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
 function nodeKindForCard(card: BoardCard): BoardNode['type'] {
   if (card.kind === 'text') return 'sticky';
   if (card.kind === 'image') return 'image';
@@ -252,15 +314,31 @@ type BoardLoadState =
   | { status: 'ready' }
   | { status: 'error'; message: string };
 
-export function CanvasBoardView({ filePath, notebookPath, readOnly = false, onSurfaceLifecycleReady, reportPresentation }: CanvasBoardViewProps) {
+export function CanvasBoardView(props: CanvasBoardViewProps) {
+  return (
+    <ReactFlowProvider>
+      <BoardSurface {...props} />
+    </ReactFlowProvider>
+  );
+}
+
+function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifecycleReady, reportPresentation }: CanvasBoardViewProps) {
   const { t } = useI18n();
+  const reactFlow = useReactFlow();
   const [state, setState] = useState<BoardLoadState>({ status: 'loading' });
   const [retryToken, setRetryToken] = useState(0);
   const [nodes, setNodes] = useState<BoardNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [initialViewport, setInitialViewport] = useState<Viewport | null>(null);
+  const [ink, setInk] = useState<BoardInkStroke[]>([]);
+  const [livePoints, setLivePoints] = useState<number[][] | null>(null);
+  const [tool, setTool] = useState<BoardTool>('select');
+  const [penColor, setPenColor] = useState(INK_COLORS[3]);
+  const [penWidth, setPenWidth] = useState(INK_WIDTHS[1]);
   const documentRef = useRef<FlowixCanvasDocument | null>(null);
   const cardsRef = useRef<BoardCard[]>([]);
+  const inkRef = useRef<BoardInkStroke[]>([]);
+  const liveStrokeRef = useRef<number[][] | null>(null);
   const dataUrlsRef = useRef<Map<string, string>>(new Map());
   const dirtyRef = useRef(false);
   const timerRef = useRef<number | null>(null);
@@ -286,6 +364,10 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, onSu
     setState({ status: 'loading' });
     documentRef.current = null;
     cardsRef.current = [];
+    inkRef.current = [];
+    liveStrokeRef.current = null;
+    setTool('select');
+    setLivePoints(null);
     dataUrlsRef.current = new Map();
     void (async () => {
       const text = await files.read(filePath, notebookPath ?? undefined);
@@ -299,6 +381,8 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, onSu
       if (cancelled) return;
       documentRef.current = document;
       cardsRef.current = readBoardCards(document);
+      inkRef.current = readBoardInk(document);
+      setInk(inkRef.current);
       dataUrlsRef.current = dataUrls;
       storageKeysRef.current = new Map(
         readCanvasFileEntries(document.files)
@@ -420,6 +504,7 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, onSu
 
   const handleNodeDoubleClick = useCallback<NodeMouseHandler<BoardNode>>(async (event, node) => {
     void event;
+    if (tool !== 'select') return;
     const card = cardsRef.current.find((item) => item.id === node.id);
     if (!card || (card.kind !== 'note' && card.kind !== 'canvas')) return;
     if (!card.notebookId || !card.path) return;
@@ -429,7 +514,72 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, onSu
       logger.warn('canvas board open card failed', { path: card.path, error: String(error) });
       toast.error(t('canvas.board.openFailed'));
     }
-  }, [t]);
+  }, [t, tool]);
+
+  const flowPositionOf = useCallback(
+    (event: { clientX: number; clientY: number }): number[] => {
+      const position = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+      return [position.x, position.y];
+    },
+    [reactFlow],
+  );
+
+  const syncInkToDocument = useCallback((strokes: BoardInkStroke[]) => {
+    const document = documentRef.current;
+    if (!document) return;
+    inkRef.current = strokes;
+    setInk(strokes);
+    // First real edit swaps the passthrough array for normalized values.
+    document.ink = strokes;
+    scheduleFlush();
+  }, [scheduleFlush]);
+
+  const eraseInkAt = useCallback((position: number[]) => {
+    const zoom = reactFlow.getViewport().zoom;
+    const kept = inkRef.current.filter((stroke) => !inkStrokeHit(stroke, position[0], position[1], zoom));
+    if (kept.length !== inkRef.current.length) syncInkToDocument(kept);
+  }, [reactFlow, syncInkToDocument]);
+
+  const handleBoardPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (readOnly || tool === 'select' || event.button !== 0) return;
+    if ((event.target as Element).closest('[data-board-toolbar]')) return;
+    try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* synthetic pointers cannot capture */ }
+    if (tool === 'pen') {
+      liveStrokeRef.current = [flowPositionOf(event)];
+      setLivePoints(liveStrokeRef.current);
+      return;
+    }
+    eraseInkAt(flowPositionOf(event));
+  }, [eraseInkAt, flowPositionOf, readOnly, tool]);
+
+  const handleBoardPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (readOnly || tool === 'select') return;
+    const stroke = liveStrokeRef.current;
+    if (tool === 'pen' && stroke) {
+      const position = flowPositionOf(event);
+      const last = stroke[stroke.length - 1];
+      if (Math.hypot(position[0] - last[0], position[1] - last[1]) < 1) return;
+      stroke.push(position);
+      setLivePoints([...stroke]);
+      return;
+    }
+    if (tool === 'eraser' && event.buttons % 2 === 1) eraseInkAt(flowPositionOf(event));
+  }, [eraseInkAt, flowPositionOf, readOnly, tool]);
+
+  const handleBoardPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const stroke = liveStrokeRef.current;
+    liveStrokeRef.current = null;
+    setLivePoints(null);
+    if (!stroke) return;
+    try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    if (stroke.length === 1) stroke.push([stroke[0][0] + 0.01, stroke[0][1] + 0.01]);
+    syncInkToDocument([...inkRef.current, {
+      id: inkStrokeId(),
+      points: stroke,
+      color: penColor,
+      width: penWidth,
+    }]);
+  }, [penColor, penWidth, syncInkToDocument]);
 
   useEffect(() => {
     const title = filePath.split(/[\\/]/).filter(Boolean).pop() ?? filePath;
@@ -514,6 +664,8 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, onSu
         const dataUrls = await hydrateImageCards(document, notebookPath);
         documentRef.current = document;
         cardsRef.current = readBoardCards(document);
+        inkRef.current = readBoardInk(document);
+        setInk(inkRef.current);
         dataUrlsRef.current = dataUrls;
         storageKeysRef.current = new Map(
           readCanvasFileEntries(document.files)
@@ -532,6 +684,39 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, onSu
     [initialViewport],
   );
 
+  const inkPaths = useMemo(() => ink.map(inkPathFor), [ink]);
+  const livePath = useMemo(
+    () => (livePoints && livePoints.length >= 2 ? svgPathFromStroke(getStroke(livePoints, freehandOptions(penWidth))) : ''),
+    [livePoints, penWidth],
+  );
+  // WebView2 does not paint content overflowing a tiny SVG root (even with
+  // `overflow: visible`), so the ink SVG is sized to the stroke bounding box
+  // and a group translate maps flow coordinates into it.
+  const inkBounds = useMemo(() => {
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    const grow = (points: number[][]) => {
+      for (const [x, y] of points) {
+        if (x < minX) minX = x;
+        if (y < minY) minY = y;
+        if (x > maxX) maxX = x;
+        if (y > maxY) maxY = y;
+      }
+    };
+    for (const stroke of ink) grow(stroke.points);
+    if (livePoints && livePoints.length > 0) grow(livePoints);
+    if (!Number.isFinite(minX)) return null;
+    const padding = 60;
+    return {
+      x: Math.floor(minX - padding),
+      y: Math.floor(minY - padding),
+      w: Math.ceil(maxX - minX + padding * 2),
+      h: Math.ceil(maxY - minY + padding * 2),
+    };
+  }, [ink, livePoints]);
+
   if (state.status !== 'ready') {
     return reportPresentation
       ? null
@@ -540,13 +725,58 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, onSu
         </div>;
   }
 
+  const toolButtonClass = (active: boolean) =>
+    `flex h-7 w-7 items-center justify-center rounded-md ${active ? 'bg-[var(--foreground)] text-[var(--background)]' : 'text-[var(--muted-foreground)] hover:bg-[var(--muted)]'}`;
+
   return (
     <div
-      className="h-full min-h-0 w-full"
+      className={`h-full min-h-0 w-full ${tool !== 'select' ? 'cursor-crosshair' : ''}`}
       data-canvas-surface={filePath}
       // The board owns pan/zoom gestures; the shell's swipe-down must not steal them.
       data-mobile-swipe-ignore="true"
+      onPointerDown={handleBoardPointerDown}
+      onPointerMove={handleBoardPointerMove}
+      onPointerUp={handleBoardPointerUp}
+      onPointerCancel={handleBoardPointerUp}
     >
+      <div data-board-toolbar className="absolute left-3 top-3 z-30 flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm">
+        <button type="button" aria-label={t('canvas.board.tool.select')} className={toolButtonClass(tool === 'select')} onClick={() => setTool('select')}>
+          <MousePointer2 className="h-3.5 w-3.5" />
+        </button>
+        <button type="button" aria-label={t('canvas.board.tool.pen')} className={toolButtonClass(tool === 'pen')} onClick={() => setTool('pen')}>
+          <Pencil className="h-3.5 w-3.5" />
+        </button>
+        <button type="button" aria-label={t('canvas.board.tool.eraser')} className={toolButtonClass(tool === 'eraser')} onClick={() => setTool('eraser')}>
+          <Eraser className="h-3.5 w-3.5" />
+        </button>
+        {tool === 'pen' ? (
+          <>
+            <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+            {INK_COLORS.map((color) => (
+              <button
+                key={color}
+                type="button"
+                aria-label={`${t('canvas.board.tool.pen')} ${color}`}
+                onClick={() => setPenColor(color)}
+                className={`h-5 w-5 rounded-full border ${penColor === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
+                style={{ backgroundColor: color }}
+              />
+            ))}
+            <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+            {INK_WIDTHS.map((width) => (
+              <button
+                key={width}
+                type="button"
+                aria-label={`${t('canvas.board.tool.pen')} ${width}`}
+                onClick={() => setPenWidth(width)}
+                className={toolButtonClass(penWidth === width)}
+              >
+                <span className="block rounded-full bg-current" style={{ width: width + 3, height: width + 3 }} />
+              </button>
+            ))}
+          </>
+        ) : null}
+      </div>
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -560,13 +790,36 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, onSu
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
         minZoom={0.05}
         maxZoom={4}
-        nodesDraggable={!readOnly}
+        panOnDrag={tool === 'select'}
+        nodesDraggable={!readOnly && tool === 'select'}
         nodesConnectable={false}
-        elementsSelectable
+        elementsSelectable={tool === 'select'}
         onlyRenderVisibleElements
         deleteKeyCode={null}
       >
         <Background variant={BackgroundVariant.Dots} gap={16} size={1} />
+        <ViewportPortal>
+          {inkBounds ? (
+            <svg
+              style={{
+                position: 'absolute',
+                left: inkBounds.x,
+                top: inkBounds.y,
+                zIndex: INK_Z_INDEX,
+                width: inkBounds.w,
+                height: inkBounds.h,
+                pointerEvents: 'none',
+              }}
+            >
+              <g transform={`translate(${-inkBounds.x},${-inkBounds.y})`}>
+                {ink.map((stroke, index) => (
+                  <path key={stroke.id} d={inkPaths[index] ?? ''} fill={stroke.color} />
+                ))}
+                {livePath ? <path d={livePath} fill={penColor} /> : null}
+              </g>
+            </svg>
+          ) : null}
+        </ViewportPortal>
       </ReactFlow>
     </div>
   );

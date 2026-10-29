@@ -20,6 +20,8 @@ export const MAX_CANVAS_FILES_TOTAL_BYTES = 8 * 1024 * 1024;
 export const MAX_CANVAS_ELEMENTS = 5000;
 /** Board-layer guard: cards/edges/frames are far lighter than elements but still need a ceiling. */
 export const MAX_CANVAS_CARDS = 2000;
+export const MAX_CANVAS_INK_STROKES = 2000;
+export const MAX_CANVAS_INK_POINTS = 4000;
 
 export interface FlowixCanvasMeta {
   createdAt: string;
@@ -74,6 +76,14 @@ export interface BoardViewport {
   x: number;
   y: number;
   zoom: number;
+}
+
+/** Freehand stroke in board (flow) coordinates. */
+export interface BoardInkStroke {
+  id: string;
+  points: number[][];
+  color: string;
+  width: number;
 }
 
 /**
@@ -407,4 +417,27 @@ export function readBoardFrames(document: FlowixCanvasDocument): BoardFrame[] {
 
 export function readBoardViewport(document: FlowixCanvasDocument): BoardViewport | null {
   return readPersistedAppState(document).viewport ?? null;
+}
+
+export function readBoardInk(document: FlowixCanvasDocument): BoardInkStroke[] {
+  const strokes: BoardInkStroke[] = [];
+  for (const raw of document.ink.slice(0, MAX_CANVAS_INK_STROKES)) {
+    if (!isPlainObject(raw)) continue;
+    const id = typeof raw.id === 'string' && raw.id ? raw.id : null;
+    const color = typeof raw.color === 'string' && raw.color ? raw.color : null;
+    const width = readFiniteNumber(raw.width);
+    if (!id || !color || width === null || width <= 0) continue;
+    const rawPoints = Array.isArray(raw.points) ? raw.points.slice(0, MAX_CANVAS_INK_POINTS) : [];
+    const points: number[][] = [];
+    for (const point of rawPoints) {
+      if (!Array.isArray(point)) continue;
+      const x = readFiniteNumber(point[0]);
+      const y = readFiniteNumber(point[1]);
+      if (x === null || y === null) continue;
+      points.push([x, y]);
+    }
+    if (points.length < 2) continue;
+    strokes.push({ id, points, color, width });
+  }
+  return strokes;
 }

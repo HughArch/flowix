@@ -12,6 +12,7 @@ import {
   readBoardCards,
   readBoardEdges,
   readBoardFrames,
+  readBoardInk,
   readBoardViewport,
   serializeCanvasDocument,
 } from './model';
@@ -232,8 +233,35 @@ describe('board layer', () => {
     expect(readBoardViewport(document)).toBeNull();
   });
 
-  it('a document without cards routes to the drawing surface', () => {
+  it('a document without cards routes to the board renderer', () => {
     const document = parseCanvasDocument(createCanvasDocumentText());
     expect(readBoardCards(document)).toHaveLength(0);
+  });
+});
+
+describe('board ink layer', () => {
+  it('reads valid strokes and drops malformed ones', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      ink: [
+        { id: 'k1', points: [[0, 0], [10, 4], [20, 8]], color: '#3b82f6', width: 5 },
+        { id: 'bad', points: [[0, 0]], color: '#fff', width: 2 },
+        { id: 'k2', points: [[1, 1], 'x', [3, 3]], color: '#ef4444', width: 0 },
+        'garbage',
+      ],
+    }));
+    const strokes = readBoardInk(document);
+    expect(strokes).toHaveLength(1);
+    expect(strokes[0]).toMatchObject({ id: 'k1', color: '#3b82f6', width: 5 });
+    expect(strokes[0].points).toEqual([[0, 0], [10, 4], [20, 8]]);
+  });
+
+  it('survives a serialize round-trip', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      ink: [{ id: 'k1', points: [[1, 2], [3, 4]], color: '#111827', width: 10 }],
+    }));
+    const { text } = serializeCanvasDocument(document, document.elements, {}, document.files, new Map(), { touchUpdatedAt: false });
+    expect(JSON.parse(text).ink).toEqual([{ id: 'k1', points: [[1, 2], [3, 4]], color: '#111827', width: 10 }]);
   });
 });
