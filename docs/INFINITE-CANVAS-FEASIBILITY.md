@@ -326,3 +326,56 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 - 3000 元素在软件渲染下仍可用；真机 GPU 预期更好。**保持 5000 元素保存上限**作为护栏，不做移动端只读降级。
 - 打开耗时随元素数增长平缓（< 0.6s），懒加载 + 单次 `initialData` 渲染没有明显瓶颈。
 - 待真机确认：平板（25053RP5CC）上重跑同一组画布，重点看 3000 元素时的捏合缩放手感。
+
+## 15. Phase 2 定稿：卡片无界笔记（2026-10-29，分支 feat/canvas-cards）
+
+产品终局确认为**自由无界笔记 + 卡片**（AFFiNE edgeless 的能力面）：一张画布上手写批注、便签、笔记卡片、图形、图片、连线共存。本节记录对 §10/§11 的落地修订。
+
+### 15.1 修订决策（相对早期讨论）
+
+1. **同扩展名，不另开 `.flowix-board`**。终局是一个画布体系；`.flowix-canvas` 格式顶层预留的 `cards` 字段按原计划启用。渲染路由按内容分流：文件含 `cards` → 统一画布 surface；纯手绘旧文件 → 继续走 Excalidraw surface（零回归）。
+2. **Excalidraw 退役计划**。它在 Phase 0/1 的角色是探路车（验证 surface/格式/FNS/移动端/附件链路）+ 保险；终局形态下白板级绘图非必需。P2 起新画布全部走统一 surface，P2.5 提供旧文件一次性转换（freedraw→笔迹、rect/ellipse/diamond→形状、arrow/line→连线、text→便签、image→图片卡，storageKey 直接复用），随后移除依赖（前端包 -1MB+，少一个 React 19 overrides 维护点）。笔迹质量不降级：渲染内核用 `perfect-freehand`（MIT，Excalidraw 同款底层），触屏无压感时 `simulatePressure` 按速度模拟。
+3. **卡内不编辑，三层可见阶梯**。卡面常显 = 标题 + 正文前 200 字摘要（去 markdown 噪音）+ 标签 + 相对时间，L 档卡内可滚动渲染至 ~2000 字；速览 = 全局共享单个只读渲染实例，桌面 hover 300ms / 移动端长按触发；双击 = 正常笔记 surface 编辑，返回画布视口保持。理由：50 张卡全量挂 Tiptap ≈ 打开 +0.5~1.5s 且移动端不可行（document-open 重挂教训的放大版）。
+4. **卡片身份 = `notebookId + relativePath`**，与 note-link（`flowix://open?notebookId=…&f=…`）同一套约定，复用 `tryMatchPhysicalMemoPath` 式解析；`title` 存快照供 stale 展示与重绑候选。`memos` 主键是 `relative_path`，不自造稳定 id。
+5. **摘要数据通路**：`memos.preview` 取的是首条正文行（≈标题），不能当摘要用；新增批量 IPC `read_note_cards(paths[])`，Rust 侧剥 frontmatter/markdown 噪音返回 `{title, excerpt, tags, wordCount, mtime}`。禁止每卡一次 IPC。
+
+### 15.2 格式扩展（.flowix-canvas v1 内增量）
+
+```jsonc
+{
+  "type": "flowix/canvas", "version": 1,
+  "meta": { /* 不变 */ },
+  "elements": [ /* 不变：Excalidraw 手绘层（统一 surface 中作只读底图） */ ],
+  "cards": [
+    { "id": "c_1", "kind": "note",   "x": 0, "y": 0, "w": 320, "h": 220,
+      "notebookId": "nb_1", "path": "research/a.md", "title": "快照" },
+    { "id": "c_2", "kind": "text",   "x": 0, "y": 260, "w": 240, "h": 150, "text": "…" },
+    { "id": "c_3", "kind": "image",  "x": 400, "y": 0, "w": 320, "h": 220, "fileId": "img_01" },
+    { "id": "c_4", "kind": "canvas", "x": 800, "y": 0, "w": 320, "h": 220,
+      "notebookId": "nb_1", "path": "sketches/b.flowix-canvas", "title": "白板引用" }
+  ],
+  "shapes": [ { "id": "s_1", "shape": "rect|ellipse|diamond", "x": 0, "y": 0, "w": 200, "h": 120,
+                "fill": "blue", "stroke": "solid", "text": "标签" } ],
+  "ink":    [ { "id": "k_1", "points": [[0,0],[12,3]], "color": "#e11", "width": 2, "z": "below|above" } ],
+  "edges":  [ { "id": "e_1", "from": "c_1", "to": "c_2", "label": null, "kind": "manual" } ],
+  "frames": [ { "id": "f_1", "title": "Q4", "x": -40, "y": -40, "w": 900, "h": 700, "color": "blue" } ],
+  "files":  { /* 不变 */ },
+  "appState": { /* 不变 + viewport */ }
+}
+```
+
+序列化规则沿用已验证的三条铁律：持久化引用永不丢（§14 的教训）、字节不变跳写、`touchUpdatedAt:false` 比较。
+
+### 15.3 分期
+
+| 阶段 | 内容 | 验收 |
+|---|---|---|
+| P2.1 | react-flow 骨架、含 cards 文件的 surface 路由、卡片只读渲染、视口持久化；**第一天 react-flow 移动端 spike** | 桌面 100 卡拖拽 60fps；打开 <400ms；重开视口不变、mtime 不变 |
+| P2.2 | 编辑交互：便签、文件树拖入、连线、分组框、尺寸档、右键菜单、⌘K 插入 | 全流程键盘可达；Android WebView HTML5 DnD 不可用则改 pointer 自绘拖拽 |
+| P2.3 | 笔迹层（perfect-freehand + 橡皮 + 图层顺序）、形状四件套、图形文字、undo/redo、导出 PNG/SVG | 手绘与卡片同坐标系对齐；模式切换时手势仲裁无冲突 |
+| P2.4 | 移动端：单指拖卡/空白平移、双指缩放、长按菜单、底部工具条、`onlyRenderVisibleElements` 虚拟化 | 模拟器 + 平板：300 卡可用，A3 同款测法 |
+| P2.5 | 知识层：反向链接「出现在 N 块画布」（Rust 扫 resource_catalog + mtime 缓存）、stale 卡重绑、agent `canvas_list/add_card/link`；旧文件转换器 + 移除 Excalidraw | agent 一句话把 10 篇笔记摆成画布 |
+
+### 15.4 v1 不做清单
+
+卡内编辑、笔记内嵌画布块、画布嵌画布（引用卡除外）、跨笔记本卡片、多点拐弯箭头、图形库、富文本图形标签、对齐分布工具。
