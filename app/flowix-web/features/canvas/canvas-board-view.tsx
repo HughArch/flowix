@@ -77,6 +77,7 @@ interface BoardNodeData extends Record<string, unknown> {
   dataUrl: string | null;
   summary: NoteCardSummary | null;
   shape: BoardShape | null;
+  inkStroke: BoardInkStroke | null;
   onShapeTextCommit?: (shapeId: string, text: string) => void;
   onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
   initialEditing?: boolean;
@@ -246,7 +247,8 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   const stroke = shape.stroke ?? '#64748b';
   const strokeWidth = shape.strokeWidth ?? 2;
   const fontSize = shape.fontSize ?? 16;
-  const origin = shape.shape === 'arrow' ? arrowBox(shape) : { x: shape.x, y: shape.y };
+  // Node boxes are padded, so paths must be translated by the padded origin.
+  const origin = shape.shape === 'arrow' ? arrowBox(shape) : shapeBoxWithPadding(shape);
 
   const sketch = shape.shape === 'text' ? null : (
     <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none' }}>
@@ -340,6 +342,26 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   );
 }
 
+function InkNode({ data, selected }: NodeProps<BoardNode>) {
+  const stroke = data.inkStroke;
+  if (!stroke) return null;
+  const box = inkBox(stroke);
+  return (
+    <div
+      className="relative h-full w-full"
+      style={selected
+        ? { outline: '1px solid color-mix(in srgb, var(--muted-foreground) 55%, transparent)' }
+        : undefined}
+    >
+      <svg className="pointer-events-none" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible' }}>
+        <g transform={`translate(${-box.x},${-box.y})`}>
+          <path d={inkPathFor(stroke)} fill={stroke.color} />
+        </g>
+      </svg>
+    </div>
+  );
+}
+
 const NODE_TYPES = {
   note: NoteCardNode,
   sticky: StickyNode,
@@ -347,6 +369,7 @@ const NODE_TYPES = {
   canvasref: CanvasRefNode,
   frame: FrameNode,
   shape: ShapeNode,
+  ink: InkNode,
 };
 
 type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | BoardShapeKind;
@@ -462,9 +485,11 @@ function shapeNodeFor(
   initialEditing = false,
 ): BoardNode {
   const arrow = shape.shape === 'arrow' && shape.x2 !== undefined && shape.y2 !== undefined;
+  // Node boxes carry padding so the selection ring sits outside the drawing
+  // (Obsidian-style) instead of overlapping the shape outline.
   const box = arrow
     ? arrowBox(shape)
-    : { x: shape.x, y: shape.y, w: shape.w, h: shape.h };
+    : shapeBoxWithPadding(shape);
   return {
     id: shape.id,
     type: 'shape',
@@ -475,6 +500,7 @@ function shapeNodeFor(
       dataUrl: null,
       summary: null,
       shape,
+      inkStroke: null,
       ...(onShapeTextCommit ? { onShapeTextCommit } : {}),
       ...(onShapeResize ? { onShapeResize } : {}),
       ...(initialEditing ? { initialEditing } : {}),
@@ -484,6 +510,59 @@ function shapeNodeFor(
 }
 
 const ARROW_PADDING = 14;
+/** Selection ring padding around shapes; the node box is the shape plus this. */
+const SHAPE_PADDING = 12;
+
+/** Node box for a plain shape: the shape inflated by the selection padding. */
+function shapeBoxWithPadding(shape: BoardShape): { x: number; y: number; w: number; h: number } {
+  return {
+    x: shape.x - SHAPE_PADDING,
+    y: shape.y - SHAPE_PADDING,
+    w: shape.w + SHAPE_PADDING * 2,
+    h: shape.h + SHAPE_PADDING * 2,
+  };
+}
+
+/** Bounding box of an ink stroke, padded for selection/hit area. */
+function inkBox(stroke: BoardInkStroke): { x: number; y: number; w: number; h: number } {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  for (const [x, y] of stroke.points) {
+    if (x < minX) minX = x;
+    if (y < minY) minY = y;
+    if (x > maxX) maxX = x;
+    if (y > maxY) maxY = y;
+  }
+  if (!Number.isFinite(minX)) return { x: 0, y: 0, w: 1, h: 1 };
+  const padding = 16;
+  return {
+    x: Math.floor(minX - padding),
+    y: Math.floor(minY - padding),
+    w: Math.ceil(maxX - minX + padding * 2),
+    h: Math.ceil(maxY - minY + padding * 2),
+  };
+}
+
+/** One react-flow node for an ink stroke (selectable, layerable). */
+function inkNodeFor(stroke: BoardInkStroke): BoardNode {
+  const box = inkBox(stroke);
+  return {
+    id: stroke.id,
+    type: 'ink',
+    position: { x: box.x, y: box.y },
+    zIndex: 20,
+    data: {
+      card: { id: stroke.id, kind: 'text', x: box.x, y: box.y, w: box.w, h: box.h },
+      dataUrl: null,
+      summary: null,
+      shape: null,
+      inkStroke: stroke,
+    },
+    style: { width: box.w, height: box.h },
+  };
+}
 
 /** Node box for an arrow: the endpoint bounding box plus padding for the head. */
 function arrowBox(shape: BoardShape): { x: number; y: number; w: number; h: number } {
@@ -521,12 +600,16 @@ function buildBoardGraph(
         dataUrl: null,
         summary: null,
         shape: null,
+        inkStroke: null,
       },
       style: { width: frame.w, height: frame.h },
     });
   }
   for (const shape of readBoardShapes(document)) {
     nodes.push(shapeNodeFor(shape, onShapeTextCommit, onShapeResize));
+  }
+  for (const stroke of readBoardInk(document)) {
+    nodes.push(inkNodeFor(stroke));
   }
   for (const card of readBoardCards(document)) {
     const absolute = card.kind === 'note' ? absolutePathOf(card) : null;
@@ -540,6 +623,7 @@ function buildBoardGraph(
         dataUrl: card.fileId ? dataUrls.get(card.fileId) ?? null : null,
         summary: absolute ? summaries.get(absolute) ?? null : null,
         shape: null,
+        inkStroke: null,
       },
       style: { width: card.w, height: card.h },
     });
@@ -617,10 +701,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [nodes, setNodes] = useState<BoardNode[]>([]);
   const [edges, setEdges] = useState<Edge[]>([]);
   const [initialViewport, setInitialViewport] = useState<Viewport | null>(null);
-  const [ink, setInk] = useState<BoardInkStroke[]>([]);
   const [livePoints, setLivePoints] = useState<number[][] | null>(null);
   const [shapePreview, setShapePreview] = useState<{ start: number[]; end: number[] } | null>(null);
   const [selectedShapeIds, setSelectedShapeIds] = useState<string[]>([]);
+  const [selectedInkIds, setSelectedInkIds] = useState<string[]>([]);
   const selectedIdsRef = useRef<string[]>([]);
   /** Linear undo stack of serialized documents; index points at the current one. */
   const historyRef = useRef<{ stack: string[]; index: number }>({ stack: [], index: -1 });
@@ -652,7 +736,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   /** Filled after `scheduleFlush` exists; card/shape callbacks may run earlier. */
   const scheduleFlushRef = useRef<() => void>(() => {});
   const pushHistoryRef = useRef<() => void>(() => {});
-  const clipboardRef = useRef<{ cards: BoardCard[]; shapes: BoardShape[] } | null>(null);
+  const clipboardRef = useRef<{ cards: BoardCard[]; shapes: BoardShape[]; ink: BoardInkStroke[] } | null>(null);
+  /** Ink geometry captured at drag start so a move translates the points. */
+  const inkDragStartRef = useRef<Map<string, { boxX: number; boxY: number; points: number[][] }>>(new Map());
   const liveStrokeRef = useRef<number[][] | null>(null);
   const dataUrlsRef = useRef<Map<string, string>>(new Map());
   const dirtyRef = useRef(false);
@@ -742,7 +828,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     cardsRef.current = readBoardCards(document);
     shapesRef.current = readBoardShapes(document);
     inkRef.current = readBoardInk(document);
-    setInk(inkRef.current);
     storageKeysRef.current = new Map(
       readCanvasFileEntries(document.files)
         .filter((entry) => entry.storageKey)
@@ -813,7 +898,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       documentRef.current = document;
       cardsRef.current = readBoardCards(document);
       inkRef.current = readBoardInk(document);
-      setInk(inkRef.current);
       shapesRef.current = readBoardShapes(document);
       dataUrlsRef.current = dataUrls;
       storageKeysRef.current = new Map(
@@ -912,7 +996,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     const ids = selected.map((node) => node.id);
     selectedIdsRef.current = ids;
     setSelectedShapeIds(selected.filter((node) => node.type === 'shape').map((node) => node.id));
-    if (selected.some((node) => node.type === 'shape')) setPanelCollapsed(false);
+    setSelectedInkIds(selected.filter((node) => node.type === 'ink').map((node) => node.id));
+    if (selected.some((node) => node.type === 'shape' || node.type === 'ink')) setPanelCollapsed(false);
   }, []);
 
   /** Apply a style patch to every selected shape (Excalidraw-style panel).
@@ -931,6 +1016,20 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     if (record) pushHistory();
   }, [applyGraph, pushHistory, scheduleFlush, selectedShapeIds]);
 
+  /** Apply colour/width changes to selected ink strokes. */
+  const patchSelectedInk = useCallback((patch: Partial<BoardInkStroke>, record = true) => {
+    const document = documentRef.current;
+    if (!document || selectedInkIds.length === 0) return;
+    const ids = new Set(selectedInkIds);
+    for (const stroke of inkRef.current) {
+      if (ids.has(stroke.id)) Object.assign(stroke, patch);
+    }
+    document.ink = inkRef.current;
+    applyGraph(document);
+    scheduleFlush();
+    if (record) pushHistory();
+  }, [applyGraph, pushHistory, scheduleFlush, selectedInkIds]);
+
   /** Align selected shapes inside their common bounding box. */
   const alignSelectedShapes = useCallback((mode: BoardAlignMode) => {
     const document = documentRef.current;
@@ -942,7 +1041,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     applyGraph(document);
     scheduleFlush();
     pushHistory();
-  }, [applyGraph, pushHistory, scheduleFlush, selectedShapeIds]);
+  }, [applyGraph, pushHistory, scheduleFlush, selectedInkIds, selectedShapeIds]);
 
   /** Even spacing between the outermost selected shapes on one axis. */
   const distributeSelectedShapes = useCallback((axis: 'h' | 'v') => {
@@ -961,6 +1060,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     if (!document) return;
     let cardsChanged = false;
     let shapesChanged = false;
+    let inkChanged = false;
     for (const node of dragged) {
       const card = cardsRef.current.find((item) => item.id === node.id);
       if (card && (card.x !== node.position.x || card.y !== node.position.y)) {
@@ -968,14 +1068,31 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         card.y = node.position.y;
         cardsChanged = true;
       }
+      // Node boxes are padded; the shape origin sits SHAPE_PADDING inside.
       const shape = shapesRef.current.find((item) => item.id === node.id);
-      if (shape && (shape.x !== node.position.x || shape.y !== node.position.y)) {
-        shape.x = node.position.x;
-        shape.y = node.position.y;
-        shapesChanged = true;
+      if (shape) {
+        const originX = node.position.x + SHAPE_PADDING;
+        const originY = node.position.y + SHAPE_PADDING;
+        if (shape.x !== originX || shape.y !== originY) {
+          shape.x = originX;
+          shape.y = originY;
+          shapesChanged = true;
+        }
       }
     }
-    if (!cardsChanged && !shapesChanged) return;
+    for (const node of dragged) {
+      const start = inkDragStartRef.current.get(node.id);
+      const stroke = inkRef.current.find((item) => item.id === node.id);
+      if (!start || !stroke) continue;
+      const dx = node.position.x - start.boxX;
+      const dy = node.position.y - start.boxY;
+      if (dx === 0 && dy === 0) continue;
+      stroke.points = start.points.map(([x, y]) => [x + dx, y + dy]);
+      inkChanged = true;
+    }
+    if (inkChanged) document.ink = inkRef.current;
+    inkDragStartRef.current.clear();
+    if (!cardsChanged && !shapesChanged && !inkChanged) return;
     // First real edit swaps the passthrough arrays for normalized values.
     if (cardsChanged) document.cards = cardsRef.current;
     if (shapesChanged) document.shapes = shapesRef.current;
@@ -989,11 +1106,15 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     if (!document) return;
     const shape = shapesRef.current.find((item) => item.id === nodeId);
     if (!shape) return;
-    if (shape.x === box.x && shape.y === box.y && shape.w === box.width && shape.h === box.height) return;
-    shape.x = box.x;
-    shape.y = box.y;
-    shape.w = box.width;
-    shape.h = box.height;
+    const x = box.x + SHAPE_PADDING;
+    const y = box.y + SHAPE_PADDING;
+    const w = Math.max(16, box.width - SHAPE_PADDING * 2);
+    const h = Math.max(16, box.height - SHAPE_PADDING * 2);
+    if (shape.x === x && shape.y === y && shape.w === w && shape.h === h) return;
+    shape.x = x;
+    shape.y = y;
+    shape.w = w;
+    shape.h = h;
     document.shapes = shapesRef.current;
     scheduleFlush();
     pushHistory();
@@ -1029,6 +1150,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     clipboardRef.current = {
       cards: cardsRef.current.filter((card) => ids.has(card.id)).map((card) => ({ ...card })),
       shapes: shapesRef.current.filter((shape) => ids.has(shape.id)).map((shape) => ({ ...shape })),
+      ink: inkRef.current.filter((stroke) => ids.has(stroke.id)).map((stroke) => ({ ...stroke, points: stroke.points.map((point) => [...point]) })),
     };
   }, []);
 
@@ -1036,7 +1158,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     const clipboard = clipboardRef.current;
     const document = documentRef.current;
     if (!clipboard || !document) return;
-    if (clipboard.cards.length === 0 && clipboard.shapes.length === 0) return;
+    if (clipboard.cards.length === 0 && clipboard.shapes.length === 0 && clipboard.ink.length === 0) return;
     const offset = 28;
     const newIds: string[] = [];
     const nextCards = [...cardsRef.current, ...clipboard.cards.map((card) => {
@@ -1056,10 +1178,17 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         ...(shape.y2 !== undefined ? { y2: shape.y2 + offset } : {}),
       };
     })];
+    const nextInk = [...inkRef.current, ...clipboard.ink.map((stroke) => {
+      const id = inkStrokeId();
+      newIds.push(id);
+      return { ...stroke, id, points: stroke.points.map(([x, y]) => [x + offset, y + offset]) };
+    })];
     cardsRef.current = nextCards;
     shapesRef.current = nextShapes;
+    inkRef.current = nextInk;
     document.cards = nextCards;
     document.shapes = nextShapes;
+    document.ink = nextInk;
     selectedIdsRef.current = newIds;
     setSelectedShapeIds(nextShapes.filter((shape) => newIds.includes(shape.id)).map((shape) => shape.id));
     applyGraph(document);
@@ -1104,9 +1233,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     const idSet = new Set(ids);
     const nextShapes = shapesRef.current.filter((shape) => !idSet.has(shape.id));
     const nextCards = cardsRef.current.filter((card) => !idSet.has(card.id));
+    const nextInk = inkRef.current.filter((stroke) => !idSet.has(stroke.id));
     const shapesChanged = nextShapes.length !== shapesRef.current.length;
     const cardsChanged = nextCards.length !== cardsRef.current.length;
-    if (!shapesChanged && !cardsChanged) return;
+    const inkChanged = nextInk.length !== inkRef.current.length;
+    if (!shapesChanged && !cardsChanged && !inkChanged) return;
     if (shapesChanged) {
       shapesRef.current = nextShapes;
       document.shapes = nextShapes;
@@ -1115,7 +1246,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       cardsRef.current = nextCards;
       document.cards = nextCards;
     }
+    if (inkChanged) {
+      inkRef.current = nextInk;
+      document.ink = nextInk;
+    }
     selectedIdsRef.current = selectedIdsRef.current.filter((id) => !idSet.has(id));
+    setSelectedInkIds((current) => current.filter((id) => !idSet.has(id)));
     applyGraph(document);
     scheduleFlush();
     pushHistory();
@@ -1157,12 +1293,38 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     };
     document.shapes = reorder(shapesRef.current);
     document.cards = reorder(cardsRef.current);
+    // Ink has its own stacking array; reorder it too so card/shape/ink
+    // relative order within each layer still responds to the buttons.
+    const inkIds = new Set(selectedInkIds);
+    const pickedInk = inkRef.current.filter((stroke) => inkIds.has(stroke.id));
+    if (pickedInk.length > 0) {
+      const restInk = inkRef.current.filter((stroke) => !inkIds.has(stroke.id));
+      document.ink = layer === 'front' ? [...restInk, ...pickedInk]
+        : layer === 'back' ? [...pickedInk, ...restInk]
+          : inkRef.current;
+      inkRef.current = document.ink as BoardInkStroke[];
+    }
     shapesRef.current = [...document.shapes] as BoardShape[];
     cardsRef.current = [...document.cards] as BoardCard[];
     applyGraph(document);
     scheduleFlush();
     pushHistory();
   }, [applyGraph, pushHistory, scheduleFlush, selectedShapeIds]);
+
+  const handleNodeDragStart = useCallback((_event: unknown, node: BoardNode, dragged: BoardNode[]) => {
+    inkDragStartRef.current.clear();
+    for (const item of dragged.length > 0 ? dragged : [node]) {
+      if (item.type !== 'ink') continue;
+      const stroke = inkRef.current.find((entry) => entry.id === item.id);
+      const box = stroke ? inkBox(stroke) : null;
+      if (!stroke || !box) continue;
+      inkDragStartRef.current.set(item.id, {
+        boxX: box.x,
+        boxY: box.y,
+        points: stroke.points.map(([x, y]) => [x, y]),
+      });
+    }
+  }, []);
 
   const handleNodeDragStop = useCallback(
     (event: unknown, node: BoardNode, dragged: BoardNode[]) => {
@@ -1233,7 +1395,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     const document = documentRef.current;
     if (!document) return;
     inkRef.current = strokes;
-    setInk(strokes);
     // First real edit swaps the passthrough array for normalized values.
     document.ink = strokes;
     scheduleFlush();
@@ -1467,7 +1628,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         documentRef.current = document;
         cardsRef.current = readBoardCards(document);
         inkRef.current = readBoardInk(document);
-        setInk(inkRef.current);
         dataUrlsRef.current = dataUrls;
         storageKeysRef.current = new Map(
           readCanvasFileEntries(document.files)
@@ -1514,29 +1674,25 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     [initialViewport],
   );
 
-  const inkPaths = useMemo(() => ink.map(inkPathFor), [ink]);
   const livePath = useMemo(
     () => (livePoints && livePoints.length >= 2 ? svgPathFromStroke(getStroke(livePoints, freehandOptions(penWidth, toolPressure))) : ''),
     [livePoints, penWidth, toolPressure],
   );
   // WebView2 does not paint content overflowing a tiny SVG root (even with
-  // `overflow: visible`), so the ink SVG is sized to the stroke bounding box
-  // and a group translate maps flow coordinates into it.
-  const inkBounds = useMemo(() => {
+  // `overflow: visible`), so the in-progress stroke gets a box sized to its
+  // own bounds and a group translate maps flow coordinates into it.
+  const liveBounds = useMemo(() => {
+    if (!livePoints || livePoints.length === 0) return null;
     let minX = Infinity;
     let minY = Infinity;
     let maxX = -Infinity;
     let maxY = -Infinity;
-    const grow = (points: number[][]) => {
-      for (const [x, y] of points) {
-        if (x < minX) minX = x;
-        if (y < minY) minY = y;
-        if (x > maxX) maxX = x;
-        if (y > maxY) maxY = y;
-      }
-    };
-    for (const stroke of ink) grow(stroke.points);
-    if (livePoints && livePoints.length > 0) grow(livePoints);
+    for (const [x, y] of livePoints) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
     if (!Number.isFinite(minX)) return null;
     const padding = 60;
     return {
@@ -1545,7 +1701,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       w: Math.ceil(maxX - minX + padding * 2),
       h: Math.ceil(maxY - minY + padding * 2),
     };
-  }, [ink, livePoints]);
+  }, [livePoints]);
 
   const handleExport = useCallback(async (format: 'svg' | 'png') => {
     const document = documentRef.current;
@@ -1591,25 +1747,42 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     .map((node) => node.data.shape)
     .filter((shape): shape is BoardShape => Boolean(shape));
   const selectedShapeCount = selectedShapes.length;
-  const selectionMode = selectedShapeCount > 0;
+  const selectedStrokes = inkRef.current.filter((stroke) => selectedInkIds.includes(stroke.id));
+  const inkOnlySelection = selectedShapeCount === 0 && selectedStrokes.length > 0;
+  const selectionMode = selectedShapeCount > 0 || selectedStrokes.length > 0;
   const firstSelected = selectedShapes[0] ?? null;
-  const styleStroke = selectionMode ? firstSelected?.stroke ?? '#64748b' : penColor;
+  const firstStroke = selectedStrokes[0] ?? null;
+  const allSelectedLabel = selectedShapeCount > 0 && selectedShapes.every((shape) => shape.shape === 'text');
+  const styleStroke = inkOnlySelection ? firstStroke?.color ?? '#1e1e1e'
+    : selectionMode ? firstSelected?.stroke ?? '#64748b' : penColor;
   const styleFill = selectionMode ? firstSelected?.fill ?? 'transparent' : toolFill;
-  const styleStrokeWidth = selectionMode ? firstSelected?.strokeWidth ?? 2 : penWidth;
+  const styleStrokeWidth = inkOnlySelection ? firstStroke?.width ?? 5
+    : selectionMode ? firstSelected?.strokeWidth ?? 2 : penWidth;
   const styleStrokeStyle = selectionMode ? firstSelected?.strokeStyle ?? 'solid' : toolStrokeStyle;
   const styleFontSize = selectionMode ? firstSelected?.fontSize ?? 20 : toolFontSize;
   const styleOpacity = selectionMode ? firstSelected?.opacity ?? 100 : toolOpacity;
-  const allSelectedLabel = selectedShapeCount > 0 && selectedShapes.every((shape) => shape.shape === 'text');
-  const showFill = selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow') : tool !== 'pen' && tool !== 'text' && tool !== 'arrow';
-  const showStrokeStyle = selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : tool !== 'pen' && tool !== 'text';
-  const showFontSize = selectionMode ? allSelectedLabel : tool === 'text';
-  const showOpacity = selectionMode || isShapeTool(tool);
-  const showFillStyle = selectionMode ? selectedShapes.some((shape) => shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond') : tool === 'rect' || tool === 'ellipse' || tool === 'diamond';
-  const showRoughness = selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : isShapeTool(tool) && tool !== 'text';
-  const showEdges = selectionMode ? selectedShapes.length > 0 && selectedShapes.every((shape) => shape.shape === 'rect') : tool === 'rect';
+  // Ink has no fill/line-style/edges; every shape-only row hides for it.
+  const showFill = inkOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow') : tool !== 'pen' && tool !== 'text' && tool !== 'arrow';
+  const showStrokeStyle = inkOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : tool !== 'pen' && tool !== 'text';
+  const showFontSize = inkOnlySelection ? false : selectionMode ? allSelectedLabel : tool === 'text';
+  const showOpacity = inkOnlySelection ? false : selectionMode || isShapeTool(tool);
+  const showFillStyle = inkOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond') : tool === 'rect' || tool === 'ellipse' || tool === 'diamond';
+  const showRoughness = inkOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : isShapeTool(tool) && tool !== 'text';
+  const showEdges = inkOnlySelection ? false : selectionMode ? selectedShapes.length > 0 && selectedShapes.every((shape) => shape.shape === 'rect') : tool === 'rect';
   const styleFillStyle = selectionMode ? firstSelected?.fillStyle ?? 'hachure' : toolFillStyle;
   const styleRoughness = selectionMode ? firstSelected?.roughness ?? 1 : toolRoughness;
   const styleEdges = selectionMode ? firstSelected?.edges ?? 'sharp' : toolEdges;
+  /** Route a style change to ink or shapes depending on what is selected. */
+  const applyStroke = (color: string) => {
+    if (inkOnlySelection) patchSelectedInk({ color });
+    else if (selectionMode) patchSelectedShapes({ stroke: color });
+    else setPenColor(color);
+  };
+  const applyStrokeWidth = (width: number) => {
+    if (inkOnlySelection) patchSelectedInk({ width });
+    else if (selectionMode) patchSelectedShapes({ strokeWidth: width });
+    else setPenWidth(width);
+  };
 
   if (state.status !== 'ready') {
     return reportPresentation
@@ -1706,7 +1879,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
                   key={color}
                   type="button"
                   aria-label={`${t('canvas.board.style.stroke')} ${color}`}
-                  onClick={() => (selectionMode ? patchSelectedShapes({ stroke: color }) : setPenColor(color))}
+                  onClick={() => applyStroke(color)}
                   className={`h-5 w-5 rounded-[4px] border ${styleStroke === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
                   style={{ backgroundColor: color }}
                 />
@@ -1763,12 +1936,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
             </PanelRow>
           ) : null}
           <PanelRow label={t('canvas.board.style.strokeWidth')}>
-            {(selectionMode || tool !== 'pen' ? STROKE_WIDTHS : INK_WIDTHS).map((width) => (
+            {(inkOnlySelection || (selectionMode ? false : tool === 'pen') ? INK_WIDTHS : STROKE_WIDTHS).map((width) => (
               <button
                 key={width}
                 type="button"
                 aria-label={`${t('canvas.board.style.strokeWidth')} ${width}`}
-                onClick={() => (selectionMode ? patchSelectedShapes({ strokeWidth: width }) : setPenWidth(width))}
+                onClick={() => applyStrokeWidth(width)}
                 className={toolButtonClass(styleStrokeWidth === width)}
               >
                 <span className="block rounded-full bg-current" style={{ width: width + 3, height: width + 3 }} />
@@ -2006,7 +2179,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
                   type="button"
                   aria-label={t('canvas.board.action.duplicate')}
                   className={toolButtonClass(false)}
-                  disabled={selectedShapeCount === 0}
+                  disabled={!selectionMode}
                   onClick={duplicateSelection}
                 >
                   <Copy className="h-3.5 w-3.5" />
@@ -2015,7 +2188,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
                   type="button"
                   aria-label={t('canvas.board.action.delete')}
                   className={toolButtonClass(false)}
-                  disabled={selectedShapeCount === 0}
+                  disabled={!selectionMode}
                   onClick={() => removeByIds(selectedIdsRef.current)}
                 >
                   <Trash2 className="h-3.5 w-3.5" />
@@ -2092,6 +2265,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         edges={edges}
         nodeTypes={NODE_TYPES}
         onNodesChange={handleNodesChange}
+        onNodeDragStart={handleNodeDragStart}
         onNodeDragStop={handleNodeDragStop}
         onMoveEnd={handleMoveEnd}
         onNodeDoubleClick={handleNodeDoubleClick}
@@ -2144,23 +2318,22 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
               </g>
             </svg>
           ) : null}
-          {inkBounds ? (
+          {/* Committed strokes render as selectable nodes; only the in-progress
+              stroke needs this portal layer. */}
+          {livePath && liveBounds ? (
             <svg
               style={{
                 position: 'absolute',
-                left: inkBounds.x,
-                top: inkBounds.y,
+                left: liveBounds.x,
+                top: liveBounds.y,
                 zIndex: INK_Z_INDEX,
-                width: inkBounds.w,
-                height: inkBounds.h,
+                width: liveBounds.w,
+                height: liveBounds.h,
                 pointerEvents: 'none',
               }}
             >
-              <g transform={`translate(${-inkBounds.x},${-inkBounds.y})`}>
-                {ink.map((stroke, index) => (
-                  <path key={stroke.id} d={inkPaths[index] ?? ''} fill={stroke.color} />
-                ))}
-                {livePath ? <path d={livePath} fill={penColor} /> : null}
+              <g transform={`translate(${-liveBounds.x},${-liveBounds.y})`}>
+                <path d={livePath} fill={penColor} />
               </g>
             </svg>
           ) : null}
