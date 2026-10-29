@@ -294,3 +294,19 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 - **文件树图标（A2）**：`.flowix-canvas` 使用专属 Frame 图标（`content-icon.tsx`），不再显示为通用文档。
 - **导出（A4）**：画布左下「导出」菜单支持 `.excalidraw` / SVG / PNG。新增 IPC `write_export_file_bytes`（桌面直接写字节；Android 走 Kotlin `writeBase64ToUri`），文本格式复用 `write_export_file`。
 - 已知取舍：删除画布中的图片不会清理 `attachments/` 里的孤立文件；导出尺寸以当前视口/画布内容为准（Excalidraw 默认导出范围）。
+
+## 14. 桌面端图片丢失与排序跳动（2026-10-29，已修复）
+
+现象：桌面端插入图片保存正常、同步到移动端也正常，但桌面「切走再切回」后图片不显示；且打开任一画布后该文件在文件树中跳到首位。
+
+两个独立根因：
+
+1. **图片读取路径与保存路径不一致（嵌套笔记本）**
+   `D:\flowix` 与 `D:\flowix\test` 同时注册为笔记本时，保存侧 `resolve_note_owner` 取配置顺序中的**第一个**匹配根（外层 `D:\flowix`），附件因此落在 `D:\flowix\attachments`；而画布视图用自身 scope（画布所在文件夹）拼路径去读 → 路径不存在 → 水合为空。
+   修复：新增 IPC `read_notebook_asset_content(storageKey, notePath)`，由 Rust 按保存侧同一套归属规则解析并读取（并在所有注册根间回退），前端不再自行拼路径。归属规则保持与保存一致（首匹配 + 跨根回退），避免破坏已落盘的历史附件。
+
+2. **打开即写盘导致排序跳动**
+   序列化无条件刷新 `meta.updatedAt`，加上 Excalidraw 挂载时对元素的规范化，打开画布必触发一次写盘 → mtime 变化 → 按更新时间排序的文件树把该画布顶到首位。
+   修复：flush 先用「不改 `meta.updatedAt` 的序列化结果」与磁盘内容比较，仅内容真正变化时才落盘；场景签名（元素版本/背景/文件集合）作为二次护栏，挂载规范化只作为基线。
+
+验证（桌面 dev 实例 + CDP）：切走再切回图片正常渲染；打开画布前后 mtime 不变。
