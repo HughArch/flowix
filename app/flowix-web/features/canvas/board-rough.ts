@@ -47,19 +47,16 @@ export function roughPathsFor(shape: BoardShape, options: RoughOptions = {}): Ro
   const base = {
     stroke,
     strokeWidth,
-    roughness: options.preview ? 1.2 : 1,
+    roughness: options.preview ? 1.2 : shape.roughness ?? 1,
     bowing: 1,
     seed: seedFor(shape.id),
+    ...(fill ? { fill, fillStyle: shape.fillStyle ?? 'solid' as const, fillWeight: 1 } : {}),
     ...(dashFor(shape) ? { strokeLineDash: dashFor(shape) } : {}),
-  };
-  const withFill = {
-    ...base,
-    ...(fill ? { fill, fillStyle: 'solid' as const, fillWeight: 1 } : {}),
   };
   const width = Math.max(2, shape.w);
   const height = Math.max(2, shape.h);
   const drawable = shape.shape === 'ellipse'
-    ? generator.ellipse(shape.x + width / 2, shape.y + height / 2, width, height, withFill)
+    ? generator.ellipse(shape.x + width / 2, shape.y + height / 2, width, height, base)
     : shape.shape === 'diamond'
       ? generator.polygon(
         [
@@ -68,9 +65,9 @@ export function roughPathsFor(shape: BoardShape, options: RoughOptions = {}): Ro
           [shape.x + width / 2, shape.y + height],
           [shape.x, shape.y + height / 2],
         ],
-        withFill,
+        base,
       )
-      : generator.rectangle(shape.x, shape.y, width, height, withFill);
+      : generator.path(roundedRectPath(shape.x, shape.y, width, height, shape.edges === 'round' ? Math.min(24, Math.min(width, height) / 4) : 0), base);
 
   return generator.toPaths(drawable).map((path) => ({
     d: path.d,
@@ -78,6 +75,23 @@ export function roughPathsFor(shape: BoardShape, options: RoughOptions = {}): Ro
     strokeWidth: path.strokeWidth ?? strokeWidth,
     ...(path.fill && path.fill !== 'none' ? { fill: path.fill } : {}),
   }));
+}
+
+/** Rounded-corner rectangle path; radius 0 degenerates to sharp corners. */
+function roundedRectPath(x: number, y: number, w: number, h: number, radius: number): string {
+  if (radius <= 0) return `M${x},${y} h${w} v${h} h${-w} Z`;
+  return [
+    `M${x + radius},${y}`,
+    `h${w - radius * 2}`,
+    `a${radius},${radius} 0 0 1 ${radius},${radius}`,
+    `v${h - radius * 2}`,
+    `a${radius},${radius} 0 0 1 ${-radius},${radius}`,
+    `h${-(w - radius * 2)}`,
+    `a${radius},${radius} 0 0 1 ${-radius},${-radius}`,
+    `v${-(h - radius * 2)}`,
+    `a${radius},${radius} 0 0 1 ${radius},${-radius}`,
+    'Z',
+  ].join(' ');
 }
 
 /** Rough line for arrows, so connectors match the sketch style. */
@@ -92,7 +106,7 @@ export function roughLinePath(
   const drawable = generator.line(x1, y1, x2, y2, {
     stroke: shape.stroke ?? '#64748b',
     strokeWidth: shape.strokeWidth ?? 2,
-    roughness: options.preview ? 1.2 : 1,
+    roughness: options.preview ? 1.2 : shape.roughness ?? 1,
     bowing: 1,
     seed: seedFor(shape.id),
     ...(dashFor(shape) ? { strokeLineDash: dashFor(shape) } : {}),
@@ -104,7 +118,8 @@ export function roughLinePath(
 export function roughSignature(shape: BoardShape, preview = false): string {
   return [
     shape.id, shape.shape, shape.x, shape.y, shape.w, shape.h,
-    shape.stroke, shape.fill, shape.strokeWidth, shape.strokeStyle, preview ? 'p' : '',
+    shape.stroke, shape.fill, shape.fillStyle, shape.strokeWidth, shape.strokeStyle,
+    shape.roughness, shape.edges, preview ? 'p' : '',
   ].join('|');
 }
 

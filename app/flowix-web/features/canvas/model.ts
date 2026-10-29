@@ -84,6 +84,8 @@ export interface BoardInkStroke {
   points: number[][];
   color: string;
   width: number;
+  /** False when the stroke was drawn with simulated-pressure off. */
+  pressure?: boolean;
 }
 
 export type BoardShapeKind = 'rect' | 'ellipse' | 'diamond' | 'text' | 'arrow';
@@ -101,6 +103,14 @@ export interface BoardShape {
   h: number;
   /** Background paint; `transparent` means no fill. */
   fill?: string;
+  /** roughjs fill paint style. */
+  fillStyle?: 'hachure' | 'solid' | 'cross-hatch';
+  /** Hand-drawn wobble amount: 0 architect, 1 artist, 2.5 scribbler. */
+  roughness?: number;
+  /** Rectangle corner treatment. */
+  edges?: 'sharp' | 'round';
+  /** Click-through URL shown as a badge on the shape. */
+  link?: string;
   /** Outline color, also the text color for standalone labels. */
   stroke?: string;
   strokeWidth?: number;
@@ -473,6 +483,10 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
     const x2 = readFiniteNumber(raw.x2);
     const y2 = readFiniteNumber(raw.y2);
     const opacity = readFiniteNumber(raw.opacity);
+    const fillStyle = raw.fillStyle === 'solid' || raw.fillStyle === 'cross-hatch' ? raw.fillStyle : raw.fillStyle === 'hachure' ? 'hachure' : undefined;
+    const roughness = readFiniteNumber(raw.roughness);
+    const edges = raw.edges === 'round' ? 'round' : raw.edges === 'sharp' ? 'sharp' : undefined;
+    const link = typeof raw.link === 'string' && raw.link.trim() ? raw.link.trim() : undefined;
     shapes.push({
       id,
       shape,
@@ -482,6 +496,10 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
       h: Math.max(16, h),
       ...(shape === 'arrow' && x2 !== null && y2 !== null ? { x2, y2 } : {}),
       ...(opacity !== null ? { opacity: Math.min(100, Math.max(1, Math.round(opacity))) } : {}),
+      ...(fillStyle ? { fillStyle } : {}),
+      ...(roughness !== null && roughness >= 0 ? { roughness: Math.min(2.5, roughness) } : {}),
+      ...(edges ? { edges } : {}),
+      ...(link ? { link } : {}),
       ...(fill ? { fill } : {}),
       ...(stroke ? { stroke } : {}),
       ...(fontSize && fontSize > 0 ? { fontSize } : {}),
@@ -511,7 +529,7 @@ export function readBoardInk(document: FlowixCanvasDocument): BoardInkStroke[] {
       points.push([x, y]);
     }
     if (points.length < 2) continue;
-    strokes.push({ id, points, color, width });
+    strokes.push({ id, points, color, width, ...(raw.pressure === false ? { pressure: false } : {}) });
   }
   return strokes;
 }

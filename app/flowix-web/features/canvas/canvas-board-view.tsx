@@ -31,7 +31,7 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowUp, ArrowUpRight, BringToFront, Circle, Copy, Diamond, Download, Eraser, Hand, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, SendToBack, Square, Trash2, Type, Undo2 } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, Circle, Copy, Diamond, Download, Eraser, Hand, Link2, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
@@ -353,19 +353,21 @@ const SHAPE_TOOLS: BoardShapeKind[] = ['rect', 'ellipse', 'diamond', 'text', 'ar
 const isShapeTool = (tool: BoardTool): tool is BoardShapeKind =>
   tool === 'rect' || tool === 'ellipse' || tool === 'diamond' || tool === 'text' || tool === 'arrow';
 
-const INK_COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#a855f7', '#64748b'];
+const INK_COLORS = ['#1e1e1e', '#e03131', '#2f9e44', '#1971c2', '#f08c00'];
 /** Background tints for shapes, matching the stroke palette order. */
-const FILL_COLORS = ['#fee2e2', '#fef3c7', '#d1fae5', '#dbeafe', '#f3e8ff', '#e2e8f0'];
-const STROKE_WIDTHS = [1, 2, 4];
+const FILL_COLORS = ['#ffffff', '#ffe3e3', '#d3f9d8', '#d0ebff', '#fff3bf'];
+const STROKE_WIDTHS = [1, 2, 4, 8, 16];
 const STROKE_STYLES = ['solid', 'dashed', 'dotted'] as const;
+const FILL_STYLES = ['hachure', 'solid', 'cross-hatch'] as const;
+const ROUGHNESS_LEVELS = [0, 1, 2.5] as const;
 const FONT_SIZES = [14, 20, 28, 36];
 const INK_WIDTHS = [2, 5, 10];
 /** Ink renders above cards: annotation strokes cross card bodies like on a whiteboard. */
 const INK_Z_INDEX = 20;
 const INK_ERASE_PADDING = 8;
 
-function freehandOptions(width: number) {
-  return { size: width * 2, thinning: 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: true };
+function freehandOptions(width: number, pressure = true) {
+  return { size: width * 2, thinning: 0.5, smoothing: 0.5, streamline: 0.5, simulatePressure: pressure };
 }
 
 /** perfect-freehand outline points -> filled SVG path (README helper). */
@@ -384,7 +386,7 @@ function svgPathFromStroke(stroke: number[][], closed = true): string {
 }
 
 function inkPathFor(stroke: BoardInkStroke): string {
-  return svgPathFromStroke(getStroke(stroke.points, freehandOptions(stroke.width)));
+  return svgPathFromStroke(getStroke(stroke.points, freehandOptions(stroke.width, stroke.pressure ?? true)));
 }
 
 function distanceToSegment(px: number, py: number, ax: number, ay: number, bx: number, by: number): number {
@@ -623,13 +625,19 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [tool, setTool] = useState<BoardTool>('select');
   /** Excalidraw-style lock: keep the drawing tool active after each stroke. */
   const [toolLocked, setToolLocked] = useState(false);
-  const [penColor, setPenColor] = useState(INK_COLORS[3]);
+  const [penColor, setPenColor] = useState(INK_COLORS[0]);
   const [penWidth, setPenWidth] = useState(INK_WIDTHS[1]);
   /** Defaults for the next drawn shape (Excalidraw keeps these per-tool too). */
   const [toolFill, setToolFill] = useState('transparent');
   const [toolStrokeStyle, setToolStrokeStyle] = useState<BoardStrokeStyle>('solid');
   const [toolFontSize, setToolFontSize] = useState(20);
   const [toolOpacity, setToolOpacity] = useState(100);
+  const [toolPressure, setToolPressure] = useState(true);
+  const [toolFillStyle, setToolFillStyle] = useState<'hachure' | 'solid' | 'cross-hatch'>('hachure');
+  const [toolRoughness, setToolRoughness] = useState(1);
+  const [toolEdges, setToolEdges] = useState<'sharp' | 'round'>('sharp');
+  const [linkEditing, setLinkEditing] = useState(false);
+  const [linkDraft, setLinkDraft] = useState('');
   const documentRef = useRef<FlowixCanvasDocument | null>(null);
   const cardsRef = useRef<BoardCard[]>([]);
   const inkRef = useRef<BoardInkStroke[]>([]);
@@ -1324,6 +1332,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           h: Math.abs(arrowEnd[1] - arrowStart[1]),
           stroke: penColor,
           ...(toolStrokeStyle !== 'solid' ? { strokeStyle: toolStrokeStyle } : {}),
+          ...(toolRoughness !== 1 ? { roughness: toolRoughness } : {}),
           ...(toolOpacity < 100 ? { opacity: toolOpacity } : {}),
         }
         : {
@@ -1334,7 +1343,15 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           w: box.w,
           h: box.h,
           stroke: penColor,
-          ...(isLabel ? { fontSize: toolFontSize, text: '' } : { fill: toolFill, strokeStyle: toolStrokeStyle }),
+          ...(isLabel
+            ? { fontSize: toolFontSize, text: '' }
+            : {
+                fill: toolFill,
+                fillStyle: toolFillStyle,
+                strokeStyle: toolStrokeStyle,
+                roughness: toolRoughness,
+                edges: toolEdges,
+              }),
           ...(toolOpacity < 100 ? { opacity: toolOpacity } : {}),
         };
       shapesRef.current = [...shapesRef.current, shape];
@@ -1356,6 +1373,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       points: stroke,
       color: penColor,
       width: penWidth,
+      ...(toolPressure ? {} : { pressure: false }),
     }]);
   }, [applyGraph, commitShapeText, penColor, penWidth, pushHistory, scheduleFlush, syncInkToDocument, tool]);
 
@@ -1492,8 +1510,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
 
   const inkPaths = useMemo(() => ink.map(inkPathFor), [ink]);
   const livePath = useMemo(
-    () => (livePoints && livePoints.length >= 2 ? svgPathFromStroke(getStroke(livePoints, freehandOptions(penWidth))) : ''),
-    [livePoints, penWidth],
+    () => (livePoints && livePoints.length >= 2 ? svgPathFromStroke(getStroke(livePoints, freehandOptions(penWidth, toolPressure))) : ''),
+    [livePoints, penWidth, toolPressure],
   );
   // WebView2 does not paint content overflowing a tiny SVG root (even with
   // `overflow: visible`), so the ink SVG is sized to the stroke bounding box
@@ -1580,6 +1598,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const showStrokeStyle = selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : tool !== 'pen' && tool !== 'text';
   const showFontSize = selectionMode ? allSelectedLabel : tool === 'text';
   const showOpacity = selectionMode || isShapeTool(tool);
+  const showFillStyle = selectionMode ? selectedShapes.some((shape) => shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond') : tool === 'rect' || tool === 'ellipse' || tool === 'diamond';
+  const showRoughness = selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : isShapeTool(tool) && tool !== 'text';
+  const showEdges = selectionMode ? selectedShapes.length > 0 && selectedShapes.every((shape) => shape.shape === 'rect') : tool === 'rect';
+  const styleFillStyle = selectionMode ? firstSelected?.fillStyle ?? 'hachure' : toolFillStyle;
+  const styleRoughness = selectionMode ? firstSelected?.roughness ?? 1 : toolRoughness;
+  const styleEdges = selectionMode ? firstSelected?.edges ?? 'sharp' : toolEdges;
 
   if (state.status !== 'ready') {
     return reportPresentation
@@ -1693,17 +1717,18 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           className="flex max-h-[calc(100%-120px)] w-[184px] flex-col gap-2.5 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
         >
           <PanelRow label={t('canvas.board.style.stroke')}>
-            <div className="flex flex-wrap items-center gap-1">
+            <div className="flex flex-wrap items-center gap-1.5">
               {INK_COLORS.map((color) => (
                 <button
                   key={color}
                   type="button"
                   aria-label={`${t('canvas.board.style.stroke')} ${color}`}
                   onClick={() => (selectionMode ? patchSelectedShapes({ stroke: color }) : setPenColor(color))}
-                  className={`h-5 w-5 rounded-full border ${styleStroke === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
+                  className={`h-5 w-5 rounded-[4px] border ${styleStroke === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
                   style={{ backgroundColor: color }}
                 />
               ))}
+              <span className="ml-auto block h-6 w-6 rounded-md border border-[var(--border)]" style={{ backgroundColor: styleStroke }} />
             </div>
           </PanelRow>
           {showFill ? (
@@ -1713,7 +1738,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
                   type="button"
                   aria-label={t('canvas.board.style.backgroundTransparent')}
                   onClick={() => (selectionMode ? patchSelectedShapes({ fill: 'transparent' }) : setToolFill('transparent'))}
-                  className={`h-5 w-5 rounded border ${styleFill === 'transparent' ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'} bg-[var(--card)]`}
+                  className={`h-5 w-5 rounded-[4px] border ${styleFill === 'transparent' ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'} bg-[var(--card)]`}
                   style={{ backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--muted-foreground) 45%, var(--muted-foreground) 55%, transparent 55%)' }}
                 />
                 {FILL_COLORS.map((color) => (
@@ -1722,9 +1747,34 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
                     type="button"
                     aria-label={`${t('canvas.board.style.background')} ${color}`}
                     onClick={() => (selectionMode ? patchSelectedShapes({ fill: color }) : setToolFill(color))}
-                    className={`h-5 w-5 rounded border ${styleFill === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'}`}
+                    className={`h-5 w-5 rounded-[4px] border ${styleFill === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'}`}
                     style={{ backgroundColor: color }}
                   />
+                ))}
+                <span className="ml-auto block h-6 w-6 rounded-md border border-[var(--border)]" style={{ backgroundColor: styleFill === 'transparent' ? 'var(--card)' : styleFill }} />
+              </div>
+            </PanelRow>
+          ) : null}
+          {showFillStyle ? (
+            <PanelRow label={t('canvas.board.style.fill')}>
+              <div className="flex items-center gap-1">
+                {FILL_STYLES.map((style) => (
+                  <button
+                    key={style}
+                    type="button"
+                    aria-label={t(`canvas.board.fillStyle.${style}`)}
+                    onClick={() => (selectionMode ? patchSelectedShapes({ fillStyle: style }) : setToolFillStyle(style))}
+                    className={toolButtonClass(styleFillStyle === style)}
+                  >
+                    <span
+                      className="block h-3.5 w-3.5 rounded-sm border border-current"
+                      style={style === 'solid'
+                        ? { backgroundColor: 'currentColor' }
+                        : { backgroundImage: style === 'hachure'
+                            ? 'repeating-linear-gradient(45deg, currentColor 0 1px, transparent 1px 4px)'
+                            : 'repeating-linear-gradient(45deg, currentColor 0 1px, transparent 1px 3px), repeating-linear-gradient(-45deg, currentColor 0 1px, transparent 1px 3px)' }}
+                    />
+                  </button>
                 ))}
               </div>
             </PanelRow>
@@ -1742,6 +1792,63 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
               </button>
             ))}
           </PanelRow>
+          {tool === 'pen' ? (
+            <PanelRow label={t('canvas.board.style.pressure')}>
+              <button
+                type="button"
+                aria-label={t('canvas.board.style.pressureOn')}
+                aria-pressed={toolPressure}
+                className={toolButtonClass(toolPressure)}
+                onClick={() => setToolPressure(true)}
+              >
+                <Waves className="h-3.5 w-3.5" />
+              </button>
+              <button
+                type="button"
+                aria-label={t('canvas.board.style.pressureOff')}
+                aria-pressed={!toolPressure}
+                className={toolButtonClass(!toolPressure)}
+                onClick={() => setToolPressure(false)}
+              >
+                <Minus className="h-3.5 w-3.5" />
+              </button>
+            </PanelRow>
+          ) : null}
+          {showRoughness ? (
+            <PanelRow label={t('canvas.board.style.roughness')}>
+              {ROUGHNESS_LEVELS.map((level) => (
+                <button
+                  key={level}
+                  type="button"
+                  aria-label={`${t('canvas.board.style.roughness')} ${level}`}
+                  onClick={() => (selectionMode ? patchSelectedShapes({ roughness: level }) : setToolRoughness(level))}
+                  className={toolButtonClass(styleRoughness === level)}
+                >
+                  {level === 0 ? <Minus className="h-3.5 w-3.5" /> : level === 1 ? <span className="block w-3.5 border-t-2 border-current" style={{ transform: 'rotate(-8deg)' }} /> : <Waves className="h-3.5 w-3.5" />}
+                </button>
+              ))}
+            </PanelRow>
+          ) : null}
+          {showEdges ? (
+            <PanelRow label={t('canvas.board.style.edges')}>
+              <button
+                type="button"
+                aria-label={t('canvas.board.style.edgesSharp')}
+                onClick={() => (selectionMode ? patchSelectedShapes({ edges: 'sharp' }) : setToolEdges('sharp'))}
+                className={toolButtonClass(styleEdges === 'sharp')}
+              >
+                <span className="block h-3.5 w-3.5 rounded-none border-2 border-current" />
+              </button>
+              <button
+                type="button"
+                aria-label={t('canvas.board.style.edgesRound')}
+                onClick={() => (selectionMode ? patchSelectedShapes({ edges: 'round' }) : setToolEdges('round'))}
+                className={toolButtonClass(styleEdges === 'round')}
+              >
+                <span className="block h-3.5 w-3.5 rounded-[6px] border-2 border-current" />
+              </button>
+            </PanelRow>
+          ) : null}
           {showStrokeStyle ? (
             <PanelRow label={t('canvas.board.style.strokeType')}>
               {STROKE_STYLES.map((style) => (
@@ -1785,6 +1892,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
                 onKeyUp={() => pushHistory()}
                 className="w-full accent-[var(--foreground)]"
               />
+              <div className="flex justify-between text-[10px] leading-none text-[var(--muted-foreground)]">
+                <span>0</span>
+                <span>100</span>
+              </div>
             </PanelRow>
           ) : null}
           {selectionMode && selectedShapeCount >= 2 ? (
@@ -1831,7 +1942,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
             <PanelRow label={t('canvas.board.layer.title')}>
               <div className="flex items-center gap-1">
                 {([
-                  ['back', SendToBack], ['backward', ArrowDown], ['forward', ArrowUp], ['front', BringToFront],
+                  ['back', ArrowDownToLine], ['backward', ArrowDown], ['forward', ArrowUp], ['front', ArrowUpToLine],
                 ] as const).map(([layer, Icon]) => (
                   <button
                     key={layer}
@@ -1865,7 +1976,31 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
                 >
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
+                <button
+                  type="button"
+                  aria-label={t('canvas.board.action.link')}
+                  aria-pressed={linkEditing}
+                  className={toolButtonClass(linkEditing)}
+                  onClick={() => { setLinkDraft(firstSelected?.link ?? ''); setLinkEditing((editing) => !editing); }}
+                >
+                  <Link2 className="h-3.5 w-3.5" />
+                </button>
               </div>
+              {linkEditing ? (
+                <input
+                  autoFocus
+                  value={linkDraft}
+                  placeholder="https://..."
+                  onChange={(event) => setLinkDraft(event.target.value)}
+                  onKeyDown={(event) => {
+                    event.stopPropagation();
+                    if (event.key === 'Enter') { patchSelectedShapes({ link: linkDraft.trim() || undefined }); setLinkEditing(false); }
+                    if (event.key === 'Escape') setLinkEditing(false);
+                  }}
+                  onBlur={() => { patchSelectedShapes({ link: linkDraft.trim() || undefined }); setLinkEditing(false); }}
+                  className="mt-1.5 w-full rounded-md border border-[var(--border)] bg-[var(--background)] px-2 py-1 text-xs text-[var(--foreground)] outline-none"
+                />
+              ) : null}
             </PanelRow>
           ) : null}
         </div>
