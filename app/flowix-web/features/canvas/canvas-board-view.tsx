@@ -15,6 +15,7 @@ import {
   Handle,
   Position,
   ReactFlow,
+  NodeResizer,
   ReactFlowProvider,
   ViewportPortal,
   applyNodeChanges,
@@ -29,7 +30,7 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { Eraser, FileText, Frame as FrameIcon, Image as ImageIcon, Maximize2, MousePointer2, Pencil } from 'lucide-react';
+import { Circle, Diamond, Eraser, FileText, Frame as FrameIcon, Image as ImageIcon, Maximize2, MousePointer2, Pencil, Square } from 'lucide-react';
 import { files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
@@ -45,12 +46,15 @@ import {
   readBoardEdges,
   readBoardFrames,
   readBoardInk,
+  readBoardShapes,
   readBoardViewport,
   readCanvasFileEntries,
   readPersistedAppState,
   serializeCanvasDocument,
   type BoardCard,
   type BoardInkStroke,
+  type BoardShape,
+  type BoardShapeKind,
   type FlowixCanvasDocument,
 } from './model';
 import { type CanvasSurfaceViewProps } from './surface-props';
@@ -64,6 +68,9 @@ interface BoardNodeData extends Record<string, unknown> {
   card: BoardCard;
   dataUrl: string | null;
   summary: NoteCardSummary | null;
+  shape: BoardShape | null;
+  onShapeTextCommit?: (shapeId: string, text: string) => void;
+  onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
 }
 
 type BoardNode = Node<BoardNodeData>;
@@ -208,15 +215,86 @@ function FrameNode({ data }: NodeProps<BoardNode>) {
   );
 }
 
+/** Rect/ellipse/diamond with an inline text label, resizable when selected. */
+function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
+  const { t } = useI18n();
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(data.shape?.text ?? '');
+  const shape = data.shape;
+  if (!shape) return null;
+  const stroke = shape.stroke ?? '#64748b';
+  const fill = shape.fill ?? 'transparent';
+  const inset = 2;
+  const box = {
+    position: 'absolute' as const,
+    inset,
+    width: `calc(100% - ${inset * 2}px)`,
+    height: `calc(100% - ${inset * 2}px)`,
+  };
+  return (
+    <div className="relative h-full w-full">
+      <NodeResizer
+        isVisible={selected}
+        minWidth={40}
+        minHeight={30}
+        onResizeEnd={(_, params) => data.onShapeResize?.(shape.id, params)}
+        lineClassName="!border-[var(--foreground)]/40"
+        handleClassName="!bg-[var(--card)] !border-[var(--foreground)]/60"
+      />
+      {shape.shape === 'rect' ? (
+        <div style={{ ...box, border: `2px solid ${stroke}`, background: fill, borderRadius: 6 }} />
+      ) : (
+        <svg style={box} viewBox="0 0 100 100" preserveAspectRatio="none">
+          {shape.shape === 'ellipse'
+            ? <ellipse cx="50" cy="50" rx="49" ry="49" fill={fill} stroke={stroke} strokeWidth="2" vectorEffect="non-scaling-stroke" />
+            : <polygon points="50,1 99,50 50,99 1,50" fill={fill} stroke={stroke} strokeWidth="2" vectorEffect="non-scaling-stroke" />}
+        </svg>
+      )}
+      <div
+        className="absolute inset-0 flex items-center justify-center px-2 text-center"
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          setDraft(shape.text ?? '');
+          setEditing(true);
+        }}
+      >
+        {editing ? (
+          <textarea
+            autoFocus
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={() => { setEditing(false); data.onShapeTextCommit?.(shape.id, draft); }}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === 'Escape') { setEditing(false); }
+              if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); setEditing(false); data.onShapeTextCommit?.(shape.id, draft); }
+            }}
+            className="h-full w-full resize-none bg-transparent text-center text-xs leading-snug text-[var(--foreground)] outline-none"
+          />
+        ) : shape.text ? (
+          <span className="pointer-events-none whitespace-pre-wrap break-words text-xs leading-snug text-[var(--foreground)]">{shape.text}</span>
+        ) : selected ? (
+          <span className="pointer-events-none text-[10px] text-[var(--muted-foreground)]">{t('canvas.board.shape.labelHint')}</span>
+        ) : null}
+      </div>
+      <CardHandles />
+    </div>
+  );
+}
+
 const NODE_TYPES = {
   note: NoteCardNode,
   sticky: StickyNode,
   image: ImageCardNode,
   canvasref: CanvasRefNode,
   frame: FrameNode,
+  shape: ShapeNode,
 };
 
-type BoardTool = 'select' | 'pen' | 'eraser';
+type BoardTool = 'select' | 'pen' | 'eraser' | BoardShapeKind;
+const SHAPE_TOOLS: BoardShapeKind[] = ['rect', 'ellipse', 'diamond'];
+const isShapeTool = (tool: BoardTool): tool is BoardShapeKind =>
+  tool === 'rect' || tool === 'ellipse' || tool === 'diamond';
 
 const INK_COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#a855f7', '#64748b'];
 const INK_WIDTHS = [2, 5, 10];
@@ -279,11 +357,49 @@ function nodeKindForCard(card: BoardCard): BoardNode['type'] {
   return 'note';
 }
 
+function normalizeRect(a: number[], b: number[]): { x: number; y: number; w: number; h: number } {
+  return {
+    x: Math.min(a[0], b[0]),
+    y: Math.min(a[1], b[1]),
+    w: Math.abs(b[0] - a[0]),
+    h: Math.abs(b[1] - a[1]),
+  };
+}
+
+function shapeId(): string {
+  return `s_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
+}
+
+/** One react-flow node for a shape; shared by graph rebuild and live creation. */
+function shapeNodeFor(
+  shape: BoardShape,
+  onShapeTextCommit?: (shapeId: string, text: string) => void,
+  onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void,
+): BoardNode {
+  return {
+    id: shape.id,
+    type: 'shape',
+    position: { x: shape.x, y: shape.y },
+    zIndex: 5,
+    data: {
+      card: { id: shape.id, kind: 'text', x: shape.x, y: shape.y, w: shape.w, h: shape.h },
+      dataUrl: null,
+      summary: null,
+      shape,
+      ...(onShapeTextCommit ? { onShapeTextCommit } : {}),
+      ...(onShapeResize ? { onShapeResize } : {}),
+    },
+    style: { width: shape.w, height: shape.h },
+  };
+}
+
 function buildBoardGraph(
   document: FlowixCanvasDocument,
   dataUrls: ReadonlyMap<string, string>,
   summaries: ReadonlyMap<string, NoteCardSummary>,
   absolutePathOf: (card: BoardCard) => string | null,
+  onShapeTextCommit?: (shapeId: string, text: string) => void,
+  onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void,
 ): { nodes: BoardNode[]; edges: Edge[] } {
   const nodes: BoardNode[] = [];
   for (const frame of readBoardFrames(document)) {
@@ -296,9 +412,13 @@ function buildBoardGraph(
         card: { id: frame.id, kind: 'text', x: frame.x, y: frame.y, w: frame.w, h: frame.h, title: frame.title },
         dataUrl: null,
         summary: null,
+        shape: null,
       },
       style: { width: frame.w, height: frame.h },
     });
+  }
+  for (const shape of readBoardShapes(document)) {
+    nodes.push(shapeNodeFor(shape, onShapeTextCommit, onShapeResize));
   }
   for (const card of readBoardCards(document)) {
     const absolute = card.kind === 'note' ? absolutePathOf(card) : null;
@@ -311,6 +431,7 @@ function buildBoardGraph(
         card,
         dataUrl: card.fileId ? dataUrls.get(card.fileId) ?? null : null,
         summary: absolute ? summaries.get(absolute) ?? null : null,
+        shape: null,
       },
       style: { width: card.w, height: card.h },
     });
@@ -379,12 +500,18 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [initialViewport, setInitialViewport] = useState<Viewport | null>(null);
   const [ink, setInk] = useState<BoardInkStroke[]>([]);
   const [livePoints, setLivePoints] = useState<number[][] | null>(null);
+  const [shapePreview, setShapePreview] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
   const [tool, setTool] = useState<BoardTool>('select');
   const [penColor, setPenColor] = useState(INK_COLORS[3]);
   const [penWidth, setPenWidth] = useState(INK_WIDTHS[1]);
   const documentRef = useRef<FlowixCanvasDocument | null>(null);
   const cardsRef = useRef<BoardCard[]>([]);
   const inkRef = useRef<BoardInkStroke[]>([]);
+  const shapesRef = useRef<BoardShape[]>([]);
+  const shapeDraftRef = useRef<{ start: number[]; current: number[] } | null>(null);
+  const handleShapeResizeRef = useRef<(nodeId: string, box: { x: number; y: number; width: number; height: number }) => void>(() => {});
+  /** Filled after `scheduleFlush` exists; card/shape callbacks may run earlier. */
+  const scheduleFlushRef = useRef<() => void>(() => {});
   const liveStrokeRef = useRef<number[][] | null>(null);
   const dataUrlsRef = useRef<Map<string, string>>(new Map());
   const dirtyRef = useRef(false);
@@ -413,16 +540,30 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     return `${root.replace(/[\\/]+$/, '')}/${card.path.replace(/^[\\/]+/, '')}`;
   }, []);
 
+  const commitShapeText = useCallback((shapeId: string, text: string) => {
+    const document = documentRef.current;
+    if (!document) return;
+    const shape = shapesRef.current.find((item) => item.id === shapeId);
+    if (!shape) return;
+    const next = text.trim();
+    if ((shape.text ?? '') === next) return;
+    shape.text = next || undefined;
+    document.shapes = shapesRef.current;
+    scheduleFlushRef.current();
+  }, []);
+
   const applyGraph = useCallback((document: FlowixCanvasDocument) => {
     const { nodes: nextNodes, edges: nextEdges } = buildBoardGraph(
       document,
       dataUrlsRef.current,
       summariesRef.current,
       absolutePathOf,
+      commitShapeText,
+      handleShapeResizeRef.current,
     );
     setNodes(nextNodes);
     setEdges(nextEdges);
-  }, [absolutePathOf]);
+  }, [absolutePathOf, commitShapeText]);
 
   /** Load every note-card summary in one IPC round-trip. */
   const loadCardSummaries = useCallback(async (document: FlowixCanvasDocument): Promise<boolean> => {
@@ -448,6 +589,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     documentRef.current = null;
     cardsRef.current = [];
     inkRef.current = [];
+    shapesRef.current = [];
+    shapeDraftRef.current = null;
+    setShapePreview(null);
     liveStrokeRef.current = null;
     setTool('select');
     setLivePoints(null);
@@ -467,6 +611,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       cardsRef.current = readBoardCards(document);
       inkRef.current = readBoardInk(document);
       setInk(inkRef.current);
+      shapesRef.current = readBoardShapes(document);
       dataUrlsRef.current = dataUrls;
       storageKeysRef.current = new Map(
         readCanvasFileEntries(document.files)
@@ -544,6 +689,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     }, SAVE_DEBOUNCE_MS);
   }, [flush]);
 
+  useEffect(() => {
+    scheduleFlushRef.current = scheduleFlush;
+  }, [scheduleFlush]);
+
   useEffect(() => () => {
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
     if (imageRetryRef.current !== null) window.clearTimeout(imageRetryRef.current);
@@ -556,18 +705,68 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const syncPositionsToDocument = useCallback((dragged: BoardNode[]) => {
     const document = documentRef.current;
     if (!document) return;
-    let changed = false;
+    let cardsChanged = false;
+    let shapesChanged = false;
     for (const node of dragged) {
       const card = cardsRef.current.find((item) => item.id === node.id);
       if (card && (card.x !== node.position.x || card.y !== node.position.y)) {
         card.x = node.position.x;
         card.y = node.position.y;
-        changed = true;
+        cardsChanged = true;
+      }
+      const shape = shapesRef.current.find((item) => item.id === node.id);
+      if (shape && (shape.x !== node.position.x || shape.y !== node.position.y)) {
+        shape.x = node.position.x;
+        shape.y = node.position.y;
+        shapesChanged = true;
       }
     }
-    if (!changed) return;
+    if (!cardsChanged && !shapesChanged) return;
     // First real edit swaps the passthrough arrays for normalized values.
-    document.cards = cardsRef.current;
+    if (cardsChanged) document.cards = cardsRef.current;
+    if (shapesChanged) document.shapes = shapesRef.current;
+    scheduleFlush();
+  }, [scheduleFlush]);
+
+  /** Resize handles write the new box straight back into the document. */
+  const handleShapeResize = useCallback((nodeId: string, box: { x: number; y: number; width: number; height: number }) => {
+    const document = documentRef.current;
+    if (!document) return;
+    const shape = shapesRef.current.find((item) => item.id === nodeId);
+    if (!shape) return;
+    if (shape.x === box.x && shape.y === box.y && shape.w === box.width && shape.h === box.height) return;
+    shape.x = box.x;
+    shape.y = box.y;
+    shape.w = box.width;
+    shape.h = box.height;
+    document.shapes = shapesRef.current;
+    scheduleFlush();
+  }, [scheduleFlush]);
+
+  // No dependency array: the callback runs after the handler's declaration is
+  // initialized, so it can be assigned without a TDZ read during render.
+  useEffect(() => {
+    handleShapeResizeRef.current = handleShapeResize;
+  });
+
+  /** Delete key on a selected card/shape edits the document, not just the view. */
+  const handleNodesDelete = useCallback((deleted: BoardNode[]) => {
+    const document = documentRef.current;
+    if (!document || deleted.length === 0) return;
+    const ids = new Set(deleted.map((node) => node.id));
+    const nextShapes = shapesRef.current.filter((shape) => !ids.has(shape.id));
+    const nextCards = cardsRef.current.filter((card) => !ids.has(card.id));
+    const shapesChanged = nextShapes.length !== shapesRef.current.length;
+    const cardsChanged = nextCards.length !== cardsRef.current.length;
+    if (!shapesChanged && !cardsChanged) return;
+    if (shapesChanged) {
+      shapesRef.current = nextShapes;
+      document.shapes = nextShapes;
+    }
+    if (cardsChanged) {
+      cardsRef.current = nextCards;
+      document.cards = nextCards;
+    }
     scheduleFlush();
   }, [scheduleFlush]);
 
@@ -649,6 +848,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       setLivePoints(liveStrokeRef.current);
       return;
     }
+    if (isShapeTool(tool)) {
+      const start = flowPositionOf(event);
+      shapeDraftRef.current = { start, current: start };
+      setShapePreview({ x: start[0], y: start[1], w: 0, h: 0 });
+      return;
+    }
     eraseInkAt(flowPositionOf(event));
   }, [eraseInkAt, flowPositionOf, readOnly, tool]);
 
@@ -663,10 +868,45 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       setLivePoints([...stroke]);
       return;
     }
+    if (isShapeTool(tool) && shapeDraftRef.current) {
+      const current = flowPositionOf(event);
+      const { start } = shapeDraftRef.current;
+      shapeDraftRef.current.current = current;
+      setShapePreview(normalizeRect(start, current));
+      return;
+    }
     if (tool === 'eraser' && event.buttons % 2 === 1) eraseInkAt(flowPositionOf(event));
   }, [eraseInkAt, flowPositionOf, readOnly, tool]);
 
   const handleBoardPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const draft = shapeDraftRef.current;
+    shapeDraftRef.current = null;
+    setShapePreview(null);
+    if (draft) {
+      try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+      const rect = normalizeRect(draft.start, draft.current);
+      // A click without a drag still drops a default-sized shape.
+      const box = rect.w < 24 || rect.h < 24
+        ? { x: draft.start[0] - 80, y: draft.start[1] - 50, w: 160, h: 100 }
+        : rect;
+      const document = documentRef.current;
+      if (!document) return;
+      const shape: BoardShape = {
+        id: shapeId(),
+        shape: tool as BoardShapeKind,
+        x: box.x,
+        y: box.y,
+        w: box.w,
+        h: box.h,
+        stroke: penColor,
+      };
+      shapesRef.current = [...shapesRef.current, shape];
+      document.shapes = shapesRef.current;
+      setNodes((current) => [...current, shapeNodeFor(shape, commitShapeText, handleShapeResizeRef.current)]);
+      scheduleFlush();
+      setTool('select');
+      return;
+    }
     const stroke = liveStrokeRef.current;
     liveStrokeRef.current = null;
     setLivePoints(null);
@@ -679,7 +919,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       color: penColor,
       width: penWidth,
     }]);
-  }, [penColor, penWidth, syncInkToDocument]);
+  }, [commitShapeText, penColor, penWidth, scheduleFlush, syncInkToDocument, tool]);
 
   useEffect(() => {
     const title = filePath.split(/[\\/]/).filter(Boolean).pop() ?? filePath;
@@ -850,6 +1090,19 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         <button type="button" aria-label={t('canvas.board.tool.eraser')} className={toolButtonClass(tool === 'eraser')} onClick={() => setTool('eraser')}>
           <Eraser className="h-3.5 w-3.5" />
         </button>
+        {SHAPE_TOOLS.map((shapeKind) => (
+          <button
+            key={shapeKind}
+            type="button"
+            aria-label={t(`canvas.board.tool.${shapeKind}`)}
+            className={toolButtonClass(tool === shapeKind)}
+            onClick={() => setTool(shapeKind)}
+          >
+            {shapeKind === 'rect' ? <Square className="h-3.5 w-3.5" />
+              : shapeKind === 'ellipse' ? <Circle className="h-3.5 w-3.5" />
+                : <Diamond className="h-3.5 w-3.5" />}
+          </button>
+        ))}
         <div className="mx-1 h-5 w-px bg-[var(--border)]" />
         <button
           type="button"
@@ -859,7 +1112,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         >
           <Maximize2 className="h-3.5 w-3.5" />
         </button>
-        {tool === 'pen' ? (
+        {tool === 'pen' || isShapeTool(tool) ? (
           <>
             <div className="mx-1 h-5 w-px bg-[var(--border)]" />
             {INK_COLORS.map((color) => (
@@ -905,10 +1158,26 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         nodesConnectable={false}
         elementsSelectable={tool === 'select'}
         onlyRenderVisibleElements
-        deleteKeyCode={null}
+        deleteKeyCode={['Delete']}
+        onNodesDelete={handleNodesDelete}
       >
         {/* Plain whiteboard background: the board is a canvas, not a grid sheet. */}
         <ViewportPortal>
+          {shapePreview && shapePreview.w > 0 && shapePreview.h > 0 ? (
+            <div
+              style={{
+                position: 'absolute',
+                left: shapePreview.x,
+                top: shapePreview.y,
+                width: shapePreview.w,
+                height: shapePreview.h,
+                zIndex: INK_Z_INDEX + 1,
+                border: `2px dashed ${penColor}`,
+                borderRadius: 6,
+                pointerEvents: 'none',
+              }}
+            />
+          ) : null}
           {inkBounds ? (
             <svg
               style={{

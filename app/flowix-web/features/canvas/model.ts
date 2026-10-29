@@ -86,6 +86,21 @@ export interface BoardInkStroke {
   width: number;
 }
 
+export type BoardShapeKind = 'rect' | 'ellipse' | 'diamond';
+
+/** Diagram shape in board (flow) coordinates; `text` is the inline label. */
+export interface BoardShape {
+  id: string;
+  shape: BoardShapeKind;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  fill?: string;
+  stroke?: string;
+  text?: string;
+}
+
 /**
  * Persisted image reference. New content stores a notebook-relative
  * `storageKey` (resolved through the attachments directory on each device);
@@ -417,6 +432,35 @@ export function readBoardFrames(document: FlowixCanvasDocument): BoardFrame[] {
 
 export function readBoardViewport(document: FlowixCanvasDocument): BoardViewport | null {
   return readPersistedAppState(document).viewport ?? null;
+}
+
+export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
+  const shapes: BoardShape[] = [];
+  for (const raw of document.shapes.slice(0, MAX_CANVAS_CARDS)) {
+    if (!isPlainObject(raw)) continue;
+    const id = typeof raw.id === 'string' && raw.id ? raw.id : null;
+    const x = readFiniteNumber(raw.x);
+    const y = readFiniteNumber(raw.y);
+    const w = readFiniteNumber(raw.w);
+    const h = readFiniteNumber(raw.h);
+    if (!id || x === null || y === null || w === null || h === null) continue;
+    const shape = raw.shape === 'ellipse' || raw.shape === 'diamond' ? raw.shape : 'rect';
+    const text = typeof raw.text === 'string' && raw.text ? raw.text : undefined;
+    const fill = typeof raw.fill === 'string' && raw.fill ? raw.fill : undefined;
+    const stroke = typeof raw.stroke === 'string' && raw.stroke ? raw.stroke : undefined;
+    shapes.push({
+      id,
+      shape,
+      x,
+      y,
+      w: Math.max(16, w),
+      h: Math.max(16, h),
+      ...(fill ? { fill } : {}),
+      ...(stroke ? { stroke } : {}),
+      ...(text ? { text } : {}),
+    });
+  }
+  return shapes;
 }
 
 export function readBoardInk(document: FlowixCanvasDocument): BoardInkStroke[] {

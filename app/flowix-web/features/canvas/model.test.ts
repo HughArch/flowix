@@ -13,6 +13,7 @@ import {
   readBoardEdges,
   readBoardFrames,
   readBoardInk,
+  readBoardShapes,
   readBoardViewport,
   serializeCanvasDocument,
 } from './model';
@@ -263,5 +264,31 @@ describe('board ink layer', () => {
     }));
     const { text } = serializeCanvasDocument(document, document.elements, {}, document.files, new Map(), { touchUpdatedAt: false });
     expect(JSON.parse(text).ink).toEqual([{ id: 'k1', points: [[1, 2], [3, 4]], color: '#111827', width: 10 }]);
+  });
+});
+
+describe('board shapes', () => {
+  it('reads valid shapes and drops malformed entries', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      shapes: [
+        { id: 's1', shape: 'rect', x: 0, y: 0, w: 160, h: 100, stroke: '#3b82f6', text: '网关' },
+        { id: 's2', shape: 'ellipse', x: 10, y: 10, w: 80, h: 60 },
+        { id: 's3', shape: 'weird', x: 0, y: 0, w: 40, h: 40 },
+        { id: 'bad', shape: 'rect', x: 'nope', y: 0, w: 10, h: 10 },
+      ],
+    }));
+    const shapes = readBoardShapes(document);
+    expect(shapes.map((shape) => shape.shape)).toEqual(['rect', 'ellipse', 'rect']);
+    expect(shapes[0]).toMatchObject({ id: 's1', stroke: '#3b82f6', text: '网关' });
+  });
+
+  it('survives a serialize round-trip', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      shapes: [{ id: 's1', shape: 'diamond', x: 1, y: 2, w: 120, h: 80, text: '判断' }],
+    }));
+    const { text } = serializeCanvasDocument(document, document.elements, {}, document.files, new Map(), { touchUpdatedAt: false });
+    expect(JSON.parse(text).shapes).toEqual([{ id: 's1', shape: 'diamond', x: 1, y: 2, w: 120, h: 80, text: '判断' }]);
   });
 });
