@@ -86,18 +86,27 @@ export interface BoardInkStroke {
   width: number;
 }
 
-export type BoardShapeKind = 'rect' | 'ellipse' | 'diamond';
+export type BoardShapeKind = 'rect' | 'ellipse' | 'diamond' | 'text';
 
 /** Diagram shape in board (flow) coordinates; `text` is the inline label. */
+export type BoardStrokeStyle = 'solid' | 'dashed' | 'dotted';
+
 export interface BoardShape {
   id: string;
+  /** `text` is a standalone label with no outline. */
   shape: BoardShapeKind;
   x: number;
   y: number;
   w: number;
   h: number;
+  /** Background paint; `transparent` means no fill. */
   fill?: string;
+  /** Outline color, also the text color for standalone labels. */
   stroke?: string;
+  strokeWidth?: number;
+  strokeStyle?: BoardStrokeStyle;
+  /** Label size in flow pixels. */
+  fontSize?: number;
   text?: string;
 }
 
@@ -444,10 +453,17 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
     const w = readFiniteNumber(raw.w);
     const h = readFiniteNumber(raw.h);
     if (!id || x === null || y === null || w === null || h === null) continue;
-    const shape = raw.shape === 'ellipse' || raw.shape === 'diamond' ? raw.shape : 'rect';
+    const shape: BoardShapeKind = raw.shape === 'ellipse' || raw.shape === 'diamond' || raw.shape === 'text'
+      ? raw.shape
+      : 'rect';
     const text = typeof raw.text === 'string' && raw.text ? raw.text : undefined;
     const fill = typeof raw.fill === 'string' && raw.fill ? raw.fill : undefined;
     const stroke = typeof raw.stroke === 'string' && raw.stroke ? raw.stroke : undefined;
+    const fontSize = readFiniteNumber(raw.fontSize);
+    const strokeWidth = readFiniteNumber(raw.strokeWidth);
+    const strokeStyle: BoardStrokeStyle | undefined = raw.strokeStyle === 'dashed' || raw.strokeStyle === 'dotted'
+      ? raw.strokeStyle
+      : raw.strokeStyle === 'solid' ? 'solid' : undefined;
     shapes.push({
       id,
       shape,
@@ -457,6 +473,9 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
       h: Math.max(16, h),
       ...(fill ? { fill } : {}),
       ...(stroke ? { stroke } : {}),
+      ...(fontSize && fontSize > 0 ? { fontSize } : {}),
+      ...(strokeWidth && strokeWidth > 0 ? { strokeWidth } : {}),
+      ...(strokeStyle ? { strokeStyle } : {}),
       ...(text ? { text } : {}),
     });
   }

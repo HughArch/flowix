@@ -30,7 +30,7 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { Circle, Diamond, Eraser, FileText, Frame as FrameIcon, Image as ImageIcon, Maximize2, MousePointer2, Pencil, Square } from 'lucide-react';
+import { Circle, Diamond, Eraser, FileText, Frame as FrameIcon, Image as ImageIcon, Maximize2, MousePointer2, Pencil, Square, Type } from 'lucide-react';
 import { files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
@@ -71,6 +71,7 @@ interface BoardNodeData extends Record<string, unknown> {
   shape: BoardShape | null;
   onShapeTextCommit?: (shapeId: string, text: string) => void;
   onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
+  initialEditing?: boolean;
 }
 
 type BoardNode = Node<BoardNodeData>;
@@ -218,12 +219,16 @@ function FrameNode({ data }: NodeProps<BoardNode>) {
 /** Rect/ellipse/diamond with an inline text label, resizable when selected. */
 function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   const { t } = useI18n();
-  const [editing, setEditing] = useState(false);
+  const [editing, setEditing] = useState(Boolean(data.initialEditing));
   const [draft, setDraft] = useState(data.shape?.text ?? '');
   const shape = data.shape;
   if (!shape) return null;
   const stroke = shape.stroke ?? '#64748b';
   const fill = shape.fill ?? 'transparent';
+  const strokeWidth = shape.strokeWidth ?? 2;
+  const dashArray = shape.strokeStyle === 'dashed' ? '8 6' : shape.strokeStyle === 'dotted' ? '2 5' : undefined;
+  const borderStyle = shape.strokeStyle === 'dashed' ? 'dashed' : shape.strokeStyle === 'dotted' ? 'dotted' : 'solid';
+  const fontSize = shape.fontSize ?? 16;
   const inset = 2;
   const box = {
     position: 'absolute' as const,
@@ -241,15 +246,16 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
         lineClassName="!border-[var(--foreground)]/40"
         handleClassName="!bg-[var(--card)] !border-[var(--foreground)]/60"
       />
-      {shape.shape === 'rect' ? (
-        <div style={{ ...box, border: `2px solid ${stroke}`, background: fill, borderRadius: 6 }} />
-      ) : (
-        <svg style={box} viewBox="0 0 100 100" preserveAspectRatio="none">
-          {shape.shape === 'ellipse'
-            ? <ellipse cx="50" cy="50" rx="49" ry="49" fill={fill} stroke={stroke} strokeWidth="2" vectorEffect="non-scaling-stroke" />
-            : <polygon points="50,1 99,50 50,99 1,50" fill={fill} stroke={stroke} strokeWidth="2" vectorEffect="non-scaling-stroke" />}
-        </svg>
-      )}
+      {shape.shape === 'text' ? null
+        : shape.shape === 'rect' ? (
+          <div style={{ ...box, border: `${strokeWidth}px ${borderStyle} ${stroke}`, background: fill, borderRadius: 6 }} />
+        ) : (
+          <svg style={box} viewBox="0 0 100 100" preserveAspectRatio="none">
+            {shape.shape === 'ellipse'
+              ? <ellipse cx="50" cy="50" rx="49" ry="49" fill={fill} stroke={stroke} strokeWidth={strokeWidth} strokeDasharray={dashArray} vectorEffect="non-scaling-stroke" />
+              : <polygon points="50,1 99,50 50,99 1,50" fill={fill} stroke={stroke} strokeWidth={strokeWidth} strokeDasharray={dashArray} vectorEffect="non-scaling-stroke" />}
+          </svg>
+        )}
       <div
         className="absolute inset-0 flex items-center justify-center px-2 text-center"
         onDoubleClick={(event) => {
@@ -269,10 +275,16 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
               if (event.key === 'Escape') { setEditing(false); }
               if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); setEditing(false); data.onShapeTextCommit?.(shape.id, draft); }
             }}
-            className="h-full w-full resize-none bg-transparent text-center text-xs leading-snug text-[var(--foreground)] outline-none"
+            style={{ fontSize, color: shape.shape === 'text' ? stroke : undefined }}
+            className="h-full w-full resize-none bg-transparent text-center leading-snug text-[var(--foreground)] outline-none"
           />
         ) : shape.text ? (
-          <span className="pointer-events-none whitespace-pre-wrap break-words text-xs leading-snug text-[var(--foreground)]">{shape.text}</span>
+          <span
+            className="pointer-events-none whitespace-pre-wrap break-words leading-snug"
+            style={{ color: shape.shape === 'text' ? stroke : 'var(--foreground)', fontSize }}
+          >
+            {shape.text}
+          </span>
         ) : selected ? (
           <span className="pointer-events-none text-[10px] text-[var(--muted-foreground)]">{t('canvas.board.shape.labelHint')}</span>
         ) : null}
@@ -292,11 +304,16 @@ const NODE_TYPES = {
 };
 
 type BoardTool = 'select' | 'pen' | 'eraser' | BoardShapeKind;
-const SHAPE_TOOLS: BoardShapeKind[] = ['rect', 'ellipse', 'diamond'];
+const SHAPE_TOOLS: BoardShapeKind[] = ['rect', 'ellipse', 'diamond', 'text'];
 const isShapeTool = (tool: BoardTool): tool is BoardShapeKind =>
-  tool === 'rect' || tool === 'ellipse' || tool === 'diamond';
+  tool === 'rect' || tool === 'ellipse' || tool === 'diamond' || tool === 'text';
 
 const INK_COLORS = ['#ef4444', '#f59e0b', '#10b981', '#3b82f6', '#a855f7', '#64748b'];
+/** Background tints for shapes, matching the stroke palette order. */
+const FILL_COLORS = ['#fee2e2', '#fef3c7', '#d1fae5', '#dbeafe', '#f3e8ff', '#e2e8f0'];
+const STROKE_WIDTHS = [1, 2, 4];
+const STROKE_STYLES = ['solid', 'dashed', 'dotted'] as const;
+const FONT_SIZES = [14, 20, 28, 36];
 const INK_WIDTHS = [2, 5, 10];
 /** Ink renders above cards: annotation strokes cross card bodies like on a whiteboard. */
 const INK_Z_INDEX = 20;
@@ -375,6 +392,7 @@ function shapeNodeFor(
   shape: BoardShape,
   onShapeTextCommit?: (shapeId: string, text: string) => void,
   onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void,
+  initialEditing = false,
 ): BoardNode {
   return {
     id: shape.id,
@@ -388,6 +406,7 @@ function shapeNodeFor(
       shape,
       ...(onShapeTextCommit ? { onShapeTextCommit } : {}),
       ...(onShapeResize ? { onShapeResize } : {}),
+      ...(initialEditing ? { initialEditing } : {}),
     },
     style: { width: shape.w, height: shape.h },
   };
@@ -501,6 +520,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [ink, setInk] = useState<BoardInkStroke[]>([]);
   const [livePoints, setLivePoints] = useState<number[][] | null>(null);
   const [shapePreview, setShapePreview] = useState<{ x: number; y: number; w: number; h: number } | null>(null);
+  const [selectedShapeIds, setSelectedShapeIds] = useState<string[]>([]);
+  const selectedIdsRef = useRef<string[]>([]);
   const [tool, setTool] = useState<BoardTool>('select');
   const [penColor, setPenColor] = useState(INK_COLORS[3]);
   const [penWidth, setPenWidth] = useState(INK_WIDTHS[1]);
@@ -561,7 +582,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       commitShapeText,
       handleShapeResizeRef.current,
     );
-    setNodes(nextNodes);
+    // Rebuilding the graph must not drop the user's selection: react-flow reads
+    // `selected` off the node objects we hand it.
+    const selected = selectedIdsRef.current;
+    setNodes(selected.length === 0
+      ? nextNodes
+      : nextNodes.map((node) => (selected.includes(node.id) ? { ...node, selected: true } : node)));
     setEdges(nextEdges);
   }, [absolutePathOf, commitShapeText]);
 
@@ -702,6 +728,25 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     setNodes((current) => applyNodeChanges(changes, current));
   }, []);
 
+  const handleSelectionChange = useCallback(({ nodes: selected }: { nodes: BoardNode[] }) => {
+    const ids = selected.map((node) => node.id);
+    selectedIdsRef.current = ids;
+    setSelectedShapeIds(selected.filter((node) => node.type === 'shape').map((node) => node.id));
+  }, []);
+
+  /** Apply a style patch to every selected shape (Excalidraw-style panel). */
+  const patchSelectedShapes = useCallback((patch: Partial<BoardShape>) => {
+    const document = documentRef.current;
+    if (!document || selectedShapeIds.length === 0) return;
+    const ids = new Set(selectedShapeIds);
+    for (const shape of shapesRef.current) {
+      if (ids.has(shape.id)) Object.assign(shape, patch);
+    }
+    document.shapes = shapesRef.current;
+    applyGraph(document);
+    scheduleFlush();
+  }, [applyGraph, scheduleFlush, selectedShapeIds]);
+
   const syncPositionsToDocument = useCallback((dragged: BoardNode[]) => {
     const document = documentRef.current;
     if (!document) return;
@@ -767,6 +812,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       cardsRef.current = nextCards;
       document.cards = nextCards;
     }
+    selectedIdsRef.current = selectedIdsRef.current.filter((id) => !ids.has(id));
     scheduleFlush();
   }, [scheduleFlush]);
 
@@ -885,10 +931,14 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     if (draft) {
       try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
       const rect = normalizeRect(draft.start, draft.current);
-      // A click without a drag still drops a default-sized shape.
-      const box = rect.w < 24 || rect.h < 24
-        ? { x: draft.start[0] - 80, y: draft.start[1] - 50, w: 160, h: 100 }
-        : rect;
+      const isLabel = tool === 'text';
+      // A click without a drag still drops a default-sized shape; labels are
+      // always click-placed and start in edit mode like Excalidraw text.
+      const box = isLabel
+        ? { x: draft.start[0], y: draft.start[1] - 12, w: 240, h: 40 }
+        : rect.w < 24 || rect.h < 24
+          ? { x: draft.start[0] - 80, y: draft.start[1] - 50, w: 160, h: 100 }
+          : rect;
       const document = documentRef.current;
       if (!document) return;
       const shape: BoardShape = {
@@ -899,10 +949,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         w: box.w,
         h: box.h,
         stroke: penColor,
+        ...(isLabel ? { fontSize: 20, text: '' } : {}),
       };
       shapesRef.current = [...shapesRef.current, shape];
       document.shapes = shapesRef.current;
-      setNodes((current) => [...current, shapeNodeFor(shape, commitShapeText, handleShapeResizeRef.current)]);
+      setNodes((current) => [...current, shapeNodeFor(shape, commitShapeText, handleShapeResizeRef.current, isLabel)]);
       scheduleFlush();
       setTool('select');
       return;
@@ -1058,6 +1109,19 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     };
   }, [ink, livePoints]);
 
+  const selectedShapes = nodes
+    .filter((node) => node.type === 'shape' && selectedShapeIds.includes(node.id))
+    .map((node) => node.data.shape)
+    .filter((shape): shape is BoardShape => Boolean(shape));
+  const selectedShapeCount = selectedShapes.length;
+  const firstSelected = selectedShapes[0] ?? null;
+  const activeStroke = firstSelected?.stroke ?? '#64748b';
+  const activeFill = firstSelected?.fill ?? 'transparent';
+  const activeStrokeWidth = firstSelected?.strokeWidth ?? 2;
+  const activeStrokeStyle = firstSelected?.strokeStyle ?? 'solid';
+  const activeFontSize = firstSelected?.fontSize ?? 20;
+  const allSelectedLabel = selectedShapeCount > 0 && selectedShapes.every((shape) => shape.shape === 'text');
+
   if (state.status !== 'ready') {
     return reportPresentation
       ? null
@@ -1100,7 +1164,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           >
             {shapeKind === 'rect' ? <Square className="h-3.5 w-3.5" />
               : shapeKind === 'ellipse' ? <Circle className="h-3.5 w-3.5" />
-                : <Diamond className="h-3.5 w-3.5" />}
+                : shapeKind === 'diamond' ? <Diamond className="h-3.5 w-3.5" /> : <Type className="h-3.5 w-3.5" />}
           </button>
         ))}
         <div className="mx-1 h-5 w-px bg-[var(--border)]" />
@@ -1140,6 +1204,84 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           </>
         ) : null}
       </div>
+      {tool === 'select' && selectedShapeCount > 0 ? (
+        <div
+          data-board-toolbar
+          className="absolute left-1/2 top-16 z-30 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1.5 shadow-sm"
+        >
+          {INK_COLORS.map((color) => (
+            <button
+              key={`stroke-${color}`}
+              type="button"
+              aria-label={t('canvas.board.style.stroke')}
+              onClick={() => patchSelectedShapes({ stroke: color })}
+              className={`h-5 w-5 rounded-full border ${activeStroke === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
+              style={{ backgroundColor: color }}
+            />
+          ))}
+          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+          <button
+            type="button"
+            aria-label={t('canvas.board.style.backgroundTransparent')}
+            onClick={() => patchSelectedShapes({ fill: 'transparent' })}
+            className={`h-5 w-5 rounded border ${activeFill === 'transparent' ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'} bg-[var(--card)]`}
+            style={{ backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--muted-foreground) 45%, var(--muted-foreground) 55%, transparent 55%)' }}
+          />
+          {FILL_COLORS.map((color) => (
+            <button
+              key={`fill-${color}`}
+              type="button"
+              aria-label={t('canvas.board.style.background')}
+              onClick={() => patchSelectedShapes({ fill: color })}
+              className={`h-5 w-5 rounded border ${activeFill === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'}`}
+              style={{ backgroundColor: color }}
+            />
+          ))}
+          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+          {STROKE_WIDTHS.map((width) => (
+            <button
+              key={`width-${width}`}
+              type="button"
+              aria-label={t('canvas.board.style.strokeWidth')}
+              onClick={() => patchSelectedShapes({ strokeWidth: width })}
+              className={toolButtonClass(activeStrokeWidth === width)}
+            >
+              <span className="block rounded-full bg-current" style={{ width: width * 3 + 4, height: width * 3 + 4 }} />
+            </button>
+          ))}
+          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+          {STROKE_STYLES.map((style) => (
+            <button
+              key={`style-${style}`}
+              type="button"
+              aria-label={t(`canvas.board.style.${style}`)}
+              onClick={() => patchSelectedShapes({ strokeStyle: style })}
+              className={toolButtonClass(activeStrokeStyle === style)}
+            >
+              <span
+                className="block w-4 border-t-2 border-current"
+                style={{ borderTopStyle: style }}
+              />
+            </button>
+          ))}
+          {selectedShapeCount > 0 && allSelectedLabel ? (
+            <>
+              <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+              {FONT_SIZES.map((size) => (
+                <button
+                  key={`font-${size}`}
+                  type="button"
+                  aria-label={t('canvas.board.style.fontSize')}
+                  onClick={() => patchSelectedShapes({ fontSize: size })}
+                  className={toolButtonClass(activeFontSize === size)}
+                >
+                  <span style={{ fontSize: Math.max(9, size / 2.4) }}>A</span>
+                </button>
+              ))}
+            </>
+          ) : null}
+        </div>
+      ) : null}
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -1160,6 +1302,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         onlyRenderVisibleElements
         deleteKeyCode={['Delete']}
         onNodesDelete={handleNodesDelete}
+        onSelectionChange={handleSelectionChange}
       >
         {/* Plain whiteboard background: the board is a canvas, not a grid sheet. */}
         <ViewportPortal>

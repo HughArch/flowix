@@ -292,3 +292,21 @@ describe('board shapes', () => {
     expect(JSON.parse(text).shapes).toEqual([{ id: 's1', shape: 'diamond', x: 1, y: 2, w: 120, h: 80, text: '判断' }]);
   });
 });
+
+describe('board shape styling', () => {
+  it('reads stroke width/style, fill and label size', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      shapes: [
+        { id: 's1', shape: 'rect', x: 0, y: 0, w: 100, h: 80, stroke: '#ef4444', fill: '#fee2e2', strokeWidth: 4, strokeStyle: 'dashed' },
+        { id: 's2', shape: 'text', x: 0, y: 0, w: 200, h: 40, text: 'hello', fontSize: 28 },
+        { id: 's3', shape: 'rect', x: 0, y: 0, w: 10, h: 10, strokeStyle: 'wavy', strokeWidth: -1 },
+      ],
+    }));
+    const shapes = readBoardShapes(document);
+    expect(shapes[0]).toMatchObject({ strokeWidth: 4, strokeStyle: 'dashed', fill: '#fee2e2' });
+    expect(shapes[1]).toMatchObject({ shape: 'text', fontSize: 28 });
+    expect(shapes[2].strokeStyle).toBeUndefined();
+    expect(shapes[2].strokeWidth).toBeUndefined();
+  });
+});
