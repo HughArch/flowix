@@ -478,13 +478,28 @@ pub async fn read_notebook_asset_content(
         let store = read_lock(&memo_file, "memo_file");
         let (owner, _) = attachments::resolve_note_owner(&store, notebook_id.as_deref(), note_path.as_deref())
             .map_err(|error| error.to_string())?;
-        let root = attachments::notebook_root(&store, Some(&owner)).map_err(|error| error.to_string())?;
-        let path = root.join(&key);
+        let owner_root =
+            attachments::notebook_root(&store, Some(&owner)).map_err(|error| error.to_string())?;
         // The key was component-validated above, so the join cannot escape the
         // notebook root; this is a belt-and-braces containment re-check.
-        if !path.starts_with(&root) || !path.is_file() {
-            return Ok(None);
+        // Nested notebook registrations mean the bitmap may live under an
+        // enclosing root, so fall back to every registered notebook before
+        // reporting the key as missing.
+        let mut roots = vec![owner_root];
+        if let Ok(configs) = store.read_notebook_configs() {
+            for config in configs {
+                if let Ok(root) = dunce::canonicalize(&config.path) {
+                    roots.push(root);
+                }
+            }
         }
+        let Some(path) = roots
+            .into_iter()
+            .map(|root| root.join(&key))
+            .find(|candidate| candidate.is_file())
+        else {
+            return Ok(None);
+        };
         let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
             Some("png") => "image/png",
             Some("jpg") | Some("jpeg") => "image/jpeg",

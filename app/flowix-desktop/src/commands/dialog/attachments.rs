@@ -85,9 +85,6 @@ pub(super) fn resolve_note_owner(
                 format!("owner note not found: {error}"),
             )
         })?;
-        // Nested notebooks are legal; the most specific (deepest) root owns the
-        // note, matching the longest-prefix ownership rule used elsewhere.
-        let mut owner: Option<(usize, String, Option<String>)> = None;
         for notebook in store.read_notebook_configs()? {
             let Ok(root) = dunce::canonicalize(&notebook.path) else {
                 continue;
@@ -99,18 +96,11 @@ pub(super) fn resolve_note_owner(
                         "attachment notebook does not match note",
                     ));
                 }
-                let depth = root.components().count();
-                if owner.as_ref().is_none_or(|(best, _, _)| depth > *best) {
-                    owner = Some((
-                        depth,
-                        notebook.id,
-                        Some(relative.to_string_lossy().replace('\\', "/")),
-                    ));
-                }
+                return Ok((
+                    notebook.id,
+                    Some(relative.to_string_lossy().replace('\\', "/")),
+                ));
             }
-        }
-        if let Some((_, id, relative)) = owner {
-            return Ok((id, relative));
         }
         return Err(io::Error::new(
             io::ErrorKind::NotFound,
