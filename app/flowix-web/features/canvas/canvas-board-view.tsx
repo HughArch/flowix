@@ -31,7 +31,7 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowUpRight, Circle, Diamond, Download, Eraser, Hand, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Type, Undo2 } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowUp, ArrowUpRight, BringToFront, Circle, Copy, Diamond, Download, Eraser, Hand, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, SendToBack, Square, Trash2, Type, Undo2 } from 'lucide-react';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
@@ -578,53 +578,6 @@ async function hydrateImageCards(
   return dataUrls;
 }
 
-/** Palette trigger: shows the current color, opens the swatch grid on click. */
-function ColorPopover({ label, color, colors, allowTransparent, onPick }: {
-  label: string;
-  color: string;
-  colors: readonly string[];
-  allowTransparent?: boolean;
-  onPick: (color: string) => void;
-}) {
-  return (
-    <DropdownMenu>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
-          aria-label={`${label} ${color}`}
-          className="h-5 w-5 rounded-full border border-[var(--border)]"
-          style={color === 'transparent'
-            ? { backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--muted-foreground) 45%, var(--muted-foreground) 55%, transparent 55%)' }
-            : { backgroundColor: color }}
-        />
-      </DropdownMenuTrigger>
-      <DropdownMenuContent className="w-[148px] p-2">
-        <div className="grid grid-cols-6 gap-1">
-          {allowTransparent ? (
-            <button
-              type="button"
-              aria-label={label}
-              onClick={() => onPick('transparent')}
-              className={`h-5 w-5 rounded border ${color === 'transparent' ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'} bg-[var(--card)]`}
-              style={{ backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--muted-foreground) 45%, var(--muted-foreground) 55%, transparent 55%)' }}
-            />
-          ) : null}
-          {colors.map((item) => (
-            <button
-              key={item}
-              type="button"
-              aria-label={`${label} ${item}`}
-              onClick={() => onPick(item)}
-              className={`h-5 w-5 rounded-full border ${color === item ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
-              style={{ backgroundColor: item }}
-            />
-          ))}
-        </div>
-      </DropdownMenuContent>
-    </DropdownMenu>
-  );
-}
-
 function PanelRow({ label, children }: { label: string; children: React.ReactNode }) {
   return (
     <div>
@@ -1131,12 +1084,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   }, [commitShapeText, penColor, pushHistory, reactFlow, readOnly, scheduleFlush, tool]);
 
   /** Delete key on a selected card/shape edits the document, not just the view. */
-  const handleNodesDelete = useCallback((deleted: BoardNode[]) => {
+  const removeByIds = useCallback((ids: string[]) => {
     const document = documentRef.current;
-    if (!document || deleted.length === 0) return;
-    const ids = new Set(deleted.map((node) => node.id));
-    const nextShapes = shapesRef.current.filter((shape) => !ids.has(shape.id));
-    const nextCards = cardsRef.current.filter((card) => !ids.has(card.id));
+    if (!document || ids.length === 0) return;
+    const idSet = new Set(ids);
+    const nextShapes = shapesRef.current.filter((shape) => !idSet.has(shape.id));
+    const nextCards = cardsRef.current.filter((card) => !idSet.has(card.id));
     const shapesChanged = nextShapes.length !== shapesRef.current.length;
     const cardsChanged = nextCards.length !== cardsRef.current.length;
     if (!shapesChanged && !cardsChanged) return;
@@ -1148,10 +1101,54 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       cardsRef.current = nextCards;
       document.cards = nextCards;
     }
-    selectedIdsRef.current = selectedIdsRef.current.filter((id) => !ids.has(id));
+    selectedIdsRef.current = selectedIdsRef.current.filter((id) => !idSet.has(id));
+    applyGraph(document);
     scheduleFlush();
     pushHistory();
-  }, [pushHistory, scheduleFlush]);
+  }, [applyGraph, pushHistory, scheduleFlush]);
+
+  const handleNodesDelete = useCallback((deleted: BoardNode[]) => {
+    removeByIds(deleted.map((node) => node.id));
+  }, [removeByIds]);
+
+  /** Layer ordering within cards/shapes arrays; front/back jump the ends. */
+  const moveSelectedLayer = useCallback((layer: 'front' | 'forward' | 'backward' | 'back') => {
+    const document = documentRef.current;
+    if (!document || selectedShapeIds.length === 0) return;
+    const ids = new Set(selectedShapeIds);
+    const reorder = (list: (BoardShape | BoardCard)[]) => {
+      const picked = list.filter((item) => ids.has(item.id));
+      if (picked.length === 0) return list;
+      const rest = list.filter((item) => !ids.has(item.id));
+      if (layer === 'front') return [...rest, ...picked];
+      if (layer === 'back') return [...picked, ...rest];
+      const next = [...list];
+      const step = layer === 'forward' ? 1 : -1;
+      const indexes = next.map((item, index) => (ids.has(item.id) ? index : -1)).filter((index) => index >= 0);
+      if (step === 1) {
+        for (let i = indexes.length - 1; i >= 0; i -= 1) {
+          const index = indexes[i];
+          if (index < next.length - 1) {
+            [next[index], next[index + 1]] = [next[index + 1], next[index]];
+          }
+        }
+      } else {
+        for (const index of indexes) {
+          if (index > 0) {
+            [next[index], next[index - 1]] = [next[index - 1], next[index]];
+          }
+        }
+      }
+      return next;
+    };
+    document.shapes = reorder(shapesRef.current);
+    document.cards = reorder(cardsRef.current);
+    shapesRef.current = [...document.shapes] as BoardShape[];
+    cardsRef.current = [...document.cards] as BoardCard[];
+    applyGraph(document);
+    scheduleFlush();
+    pushHistory();
+  }, [applyGraph, pushHistory, scheduleFlush, selectedShapeIds]);
 
   const handleNodeDragStop = useCallback(
     (event: unknown, node: BoardNode, dragged: BoardNode[]) => {
@@ -1570,14 +1567,19 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     .map((node) => node.data.shape)
     .filter((shape): shape is BoardShape => Boolean(shape));
   const selectedShapeCount = selectedShapes.length;
+  const selectionMode = selectedShapeCount > 0;
   const firstSelected = selectedShapes[0] ?? null;
-  const activeStroke = firstSelected?.stroke ?? '#64748b';
-  const activeFill = firstSelected?.fill ?? 'transparent';
-  const activeStrokeWidth = firstSelected?.strokeWidth ?? 2;
-  const activeStrokeStyle = firstSelected?.strokeStyle ?? 'solid';
-  const activeFontSize = firstSelected?.fontSize ?? 20;
-  const activeOpacity = firstSelected?.opacity ?? 100;
+  const styleStroke = selectionMode ? firstSelected?.stroke ?? '#64748b' : penColor;
+  const styleFill = selectionMode ? firstSelected?.fill ?? 'transparent' : toolFill;
+  const styleStrokeWidth = selectionMode ? firstSelected?.strokeWidth ?? 2 : penWidth;
+  const styleStrokeStyle = selectionMode ? firstSelected?.strokeStyle ?? 'solid' : toolStrokeStyle;
+  const styleFontSize = selectionMode ? firstSelected?.fontSize ?? 20 : toolFontSize;
+  const styleOpacity = selectionMode ? firstSelected?.opacity ?? 100 : toolOpacity;
   const allSelectedLabel = selectedShapeCount > 0 && selectedShapes.every((shape) => shape.shape === 'text');
+  const showFill = selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow') : tool !== 'pen' && tool !== 'text' && tool !== 'arrow';
+  const showStrokeStyle = selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : tool !== 'pen' && tool !== 'text';
+  const showFontSize = selectionMode ? allSelectedLabel : tool === 'text';
+  const showOpacity = selectionMode || isShapeTool(tool);
 
   if (state.status !== 'ready') {
     return reportPresentation
@@ -1685,151 +1687,190 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
             <Redo2 className="h-3.5 w-3.5" />
           </button>
         </div>
-        {tool === 'pen' || isShapeTool(tool) ? (
+        {(tool === 'pen' || isShapeTool(tool) || selectionMode) ? (
         <div
           data-board-toolbar
-          className="flex w-[176px] flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
+          className="flex max-h-[calc(100%-120px)] w-[184px] flex-col gap-2.5 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
         >
           <PanelRow label={t('canvas.board.style.stroke')}>
-            <ColorPopover
-              label={t('canvas.board.style.stroke')}
-              color={penColor}
-              colors={INK_COLORS}
-              onPick={setPenColor}
-            />
+            <div className="flex flex-wrap items-center gap-1">
+              {INK_COLORS.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  aria-label={`${t('canvas.board.style.stroke')} ${color}`}
+                  onClick={() => (selectionMode ? patchSelectedShapes({ stroke: color }) : setPenColor(color))}
+                  className={`h-5 w-5 rounded-full border ${styleStroke === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
+                  style={{ backgroundColor: color }}
+                />
+              ))}
+            </div>
           </PanelRow>
-          {tool !== 'pen' && tool !== 'text' && tool !== 'arrow' ? (
+          {showFill ? (
             <PanelRow label={t('canvas.board.style.background')}>
-              <ColorPopover
-                label={t('canvas.board.style.background')}
-                color={toolFill}
-                colors={FILL_COLORS}
-                allowTransparent
-                onPick={setToolFill}
-              />
+              <div className="flex flex-wrap items-center gap-1">
+                <button
+                  type="button"
+                  aria-label={t('canvas.board.style.backgroundTransparent')}
+                  onClick={() => (selectionMode ? patchSelectedShapes({ fill: 'transparent' }) : setToolFill('transparent'))}
+                  className={`h-5 w-5 rounded border ${styleFill === 'transparent' ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'} bg-[var(--card)]`}
+                  style={{ backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--muted-foreground) 45%, var(--muted-foreground) 55%, transparent 55%)' }}
+                />
+                {FILL_COLORS.map((color) => (
+                  <button
+                    key={color}
+                    type="button"
+                    aria-label={`${t('canvas.board.style.background')} ${color}`}
+                    onClick={() => (selectionMode ? patchSelectedShapes({ fill: color }) : setToolFill(color))}
+                    className={`h-5 w-5 rounded border ${styleFill === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'}`}
+                    style={{ backgroundColor: color }}
+                  />
+                ))}
+              </div>
             </PanelRow>
           ) : null}
           <PanelRow label={t('canvas.board.style.strokeWidth')}>
-            {(tool === 'pen' ? INK_WIDTHS : STROKE_WIDTHS).map((width) => (
+            {(selectionMode || tool !== 'pen' ? STROKE_WIDTHS : INK_WIDTHS).map((width) => (
               <button
                 key={width}
                 type="button"
                 aria-label={`${t('canvas.board.style.strokeWidth')} ${width}`}
-                onClick={() => setPenWidth(width)}
-                className={toolButtonClass(penWidth === width)}
+                onClick={() => (selectionMode ? patchSelectedShapes({ strokeWidth: width }) : setPenWidth(width))}
+                className={toolButtonClass(styleStrokeWidth === width)}
               >
                 <span className="block rounded-full bg-current" style={{ width: width + 3, height: width + 3 }} />
               </button>
             ))}
           </PanelRow>
-          {tool !== 'pen' && tool !== 'text' ? (
+          {showStrokeStyle ? (
             <PanelRow label={t('canvas.board.style.strokeType')}>
               {STROKE_STYLES.map((style) => (
                 <button
                   key={style}
                   type="button"
                   aria-label={t(`canvas.board.style.${style}`)}
-                  onClick={() => setToolStrokeStyle(style)}
-                  className={toolButtonClass(toolStrokeStyle === style)}
+                  onClick={() => (selectionMode ? patchSelectedShapes({ strokeStyle: style }) : setToolStrokeStyle(style))}
+                  className={toolButtonClass(styleStrokeStyle === style)}
                 >
                   <span className="block w-4 border-t-2 border-current" style={{ borderTopStyle: style }} />
                 </button>
               ))}
             </PanelRow>
           ) : null}
-          {tool === 'text' ? (
+          {showFontSize ? (
             <PanelRow label={t('canvas.board.style.fontSize')}>
               {FONT_SIZES.map((size) => (
                 <button
                   key={size}
                   type="button"
                   aria-label={`${t('canvas.board.style.fontSize')} ${size}`}
-                  onClick={() => setToolFontSize(size)}
-                  className={toolButtonClass(toolFontSize === size)}
+                  onClick={() => (selectionMode ? patchSelectedShapes({ fontSize: size }) : setToolFontSize(size))}
+                  className={toolButtonClass(styleFontSize === size)}
                 >
                   <span style={{ fontSize: Math.max(9, size / 2.4) }}>A</span>
                 </button>
               ))}
             </PanelRow>
           ) : null}
-          {isShapeTool(tool) ? (
+          {showOpacity ? (
             <PanelRow label={t('canvas.board.style.opacity')}>
               <input
                 type="range"
                 min={5}
                 max={100}
                 step={5}
-                value={toolOpacity}
-                onChange={(event) => setToolOpacity(Number(event.target.value))}
+                value={styleOpacity}
+                onChange={(event) => (selectionMode ? patchSelectedShapes({ opacity: Number(event.target.value) }, false) : setToolOpacity(Number(event.target.value)))}
+                onPointerUp={() => pushHistory()}
+                onKeyUp={() => pushHistory()}
                 className="w-full accent-[var(--foreground)]"
               />
+            </PanelRow>
+          ) : null}
+          {selectionMode && selectedShapeCount >= 2 ? (
+            <PanelRow label={t('canvas.board.align.title')}>
+              <div className="flex flex-wrap items-center gap-1">
+                {([
+                  ['left', AlignStartVertical], ['hcenter', AlignCenterVertical], ['right', AlignEndVertical],
+                  ['top', AlignStartHorizontal], ['vcenter', AlignCenterHorizontal], ['bottom', AlignEndHorizontal],
+                ] as const).map(([mode, Icon]) => (
+                  <button
+                    key={mode}
+                    type="button"
+                    aria-label={t(`canvas.board.align.${mode}`)}
+                    className={toolButtonClass(false)}
+                    onClick={() => alignSelectedShapes(mode)}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                  </button>
+                ))}
+                {selectedShapeCount >= 3 ? (
+                  <>
+                    <button
+                      type="button"
+                      aria-label={t('canvas.board.distribute.h')}
+                      className={toolButtonClass(false)}
+                      onClick={() => distributeSelectedShapes('h')}
+                    >
+                      <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
+                    </button>
+                    <button
+                      type="button"
+                      aria-label={t('canvas.board.distribute.v')}
+                      className={toolButtonClass(false)}
+                      onClick={() => distributeSelectedShapes('v')}
+                    >
+                      <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            </PanelRow>
+          ) : null}
+          {selectionMode ? (
+            <PanelRow label={t('canvas.board.layer.title')}>
+              <div className="flex items-center gap-1">
+                {([
+                  ['back', SendToBack], ['backward', ArrowDown], ['forward', ArrowUp], ['front', BringToFront],
+                ] as const).map(([layer, Icon]) => (
+                  <button
+                    key={layer}
+                    type="button"
+                    aria-label={t(`canvas.board.layer.${layer}`)}
+                    className={toolButtonClass(false)}
+                    onClick={() => moveSelectedLayer(layer)}
+                  >
+                    <Icon className="h-3.5 w-3.5" />
+                  </button>
+                ))}
+              </div>
+            </PanelRow>
+          ) : null}
+          {selectionMode ? (
+            <PanelRow label={t('canvas.board.action.title')}>
+              <div className="flex items-center gap-1">
+                <button
+                  type="button"
+                  aria-label={t('canvas.board.action.duplicate')}
+                  className={toolButtonClass(false)}
+                  onClick={duplicateSelection}
+                >
+                  <Copy className="h-3.5 w-3.5" />
+                </button>
+                <button
+                  type="button"
+                  aria-label={t('canvas.board.action.delete')}
+                  className={toolButtonClass(false)}
+                  onClick={() => removeByIds(selectedIdsRef.current)}
+                >
+                  <Trash2 className="h-3.5 w-3.5" />
+                </button>
+              </div>
             </PanelRow>
           ) : null}
         </div>
         ) : null}
       </div>
-      {tool === 'select' && selectedShapeCount > 0 ? (
-        <div
-          data-board-toolbar
-          className="absolute left-1/2 top-16 z-30 flex -translate-x-1/2 items-center gap-1 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1.5 shadow-sm"
-        >
-          <ColorPopover
-            label={t('canvas.board.style.stroke')}
-            color={activeStroke}
-            colors={INK_COLORS}
-            onPick={(color) => patchSelectedShapes({ stroke: color })}
-          />
-          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-          <ColorPopover
-            label={t('canvas.board.style.background')}
-            color={activeFill}
-            colors={FILL_COLORS}
-            allowTransparent
-            onPick={(color) => patchSelectedShapes({ fill: color })}
-          />
-          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-          {STROKE_WIDTHS.map((width) => (
-            <button
-              key={`width-${width}`}
-              type="button"
-              aria-label={t('canvas.board.style.strokeWidth')}
-              onClick={() => patchSelectedShapes({ strokeWidth: width })}
-              className={toolButtonClass(activeStrokeWidth === width)}
-            >
-              <span className="block rounded-full bg-current" style={{ width: width * 3 + 4, height: width * 3 + 4 }} />
-            </button>
-          ))}
-          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-          {STROKE_STYLES.map((style) => (
-            <button
-              key={`style-${style}`}
-              type="button"
-              aria-label={t(`canvas.board.style.${style}`)}
-              onClick={() => patchSelectedShapes({ strokeStyle: style })}
-              className={toolButtonClass(activeStrokeStyle === style)}
-            >
-              <span
-                className="block w-4 border-t-2 border-current"
-                style={{ borderTopStyle: style }}
-              />
-            </button>
-          ))}
-          {selectedShapeCount > 0 && allSelectedLabel ? (
-            <>
-              <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-              {FONT_SIZES.map((size) => (
-                <button
-                  key={`font-${size}`}
-                  type="button"
-                  aria-label={t('canvas.board.style.fontSize')}
-                  onClick={() => patchSelectedShapes({ fontSize: size })}
-                  className={toolButtonClass(activeFontSize === size)}
-                >
-                  <span style={{ fontSize: Math.max(9, size / 2.4) }}>A</span>
-                </button>
-              ))}
-            </>
-          ) : null}
           {selectedShapeCount >= 2 ? (
             <>
               <div className="mx-1 h-5 w-px bg-[var(--border)]" />
@@ -1869,22 +1910,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
               ) : null}
             </>
           ) : null}
-          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-          <input
-            type="range"
-            aria-label={t('canvas.board.style.opacity')}
-            min={5}
-            max={100}
-            step={5}
-            value={activeOpacity}
-            onChange={(event) => patchSelectedShapes({ opacity: Number(event.target.value) }, false)}
-            onPointerUp={() => pushHistory()}
-            onKeyUp={() => pushHistory()}
-            className="w-20 accent-[var(--foreground)]"
-          />
-          <span className="w-8 text-[10px] tabular-nums text-[var(--muted-foreground)]">{activeOpacity}%</span>
-        </div>
-      ) : null}
       <ReactFlow
         nodes={nodes}
         edges={edges}
