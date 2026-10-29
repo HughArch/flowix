@@ -137,4 +137,21 @@ describe('useMobileSwipeGestures', () => {
     fireTouch(wrapper, 'touchmove', 101, 200);
     expect(callbacks.onSwipeDown).toHaveBeenCalledTimes(1);
   });
+
+  it('自带 pan/zoom 的区域 (画布) 通过 opt-out 标记屏蔽下滑与左右滑', () => {
+    const callbacks = mount(createElement('div', {
+      'data-testid': 'canvas',
+      'data-mobile-swipe-ignore': 'true',
+    }));
+    const canvas = targetRef.current!.querySelector('[data-testid="canvas"]') as HTMLElement;
+
+    fireTouch(canvas, 'touchstart', 100, 100);
+    fireTouch(canvas, 'touchmove', 101, 220);
+    swipeLeft(canvas);
+    swipeRight(canvas);
+
+    expect(callbacks.onSwipeDown).not.toHaveBeenCalled();
+    expect(callbacks.onSwipeLeft).not.toHaveBeenCalled();
+    expect(callbacks.onSwipeRight).not.toHaveBeenCalled();
+  });
 });

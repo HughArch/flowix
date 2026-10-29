@@ -121,6 +121,9 @@ export function useMobileSwipeGestures({
 
     const handleTouchStart = (event: TouchEvent) => {
       if (event.touches.length !== 1 || tracking) return;
+      // Surfaces that own their own pan/zoom (infinite canvas) opt out:
+      // a downward drag there must pan the scene, not open the search panel.
+      if ((event.target as Element | null)?.closest?.('[data-mobile-swipe-ignore]')) return;
       const touch = event.touches[0];
       tracking = true;
       intercepting = false;

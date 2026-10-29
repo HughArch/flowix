@@ -50,6 +50,19 @@ pub fn write_text(app: &AppHandle, uri: &str, content: &str) -> Result<(), Strin
         .map_err(|error| error.to_string())
 }
 
+#[derive(Serialize)]
+struct Base64Payload<'a> {
+    uri: &'a str,
+    base64: &'a str,
+}
+
+/// Write raw bytes (base64 payload) into a SAF document.
+pub fn write_base64(app: &AppHandle, uri: &str, base64: &str) -> Result<(), String> {
+    plugin(app)?
+        .run_mobile_plugin::<()>("writeBase64ToUri", Base64Payload { uri, base64 })
+        .map_err(|error| error.to_string())
+}
+
 /// Open Android's print sheet for the live document. The spooler writes the
 /// PDF itself ("Save as PDF"); the returned flag reports whether the job
 /// reached the write phase, i.e. whether the user actually saved a document.

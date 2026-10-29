@@ -1,10 +1,11 @@
 'use client';
 
-import { useLayoutEffect, useRef, useState, type CSSProperties } from 'react';
+import { useLayoutEffect, useRef, useState, type CSSProperties, type MouseEvent as ReactMouseEvent } from 'react';
 import {
   ArrowDownUp,
   Check,
   ChevronRight,
+  CircleDashed,
   GalleryHorizontalEnd,
   MoreHorizontal,
   Plus,
@@ -22,6 +23,7 @@ import {
 
 import { cn } from '@/lib/utils';
 import { useI18n } from '@/lib/i18n';
+import { isTouchGeneratedMouseEvent, supportsHover } from '@shared/platform';
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -42,10 +44,15 @@ export function getPopupOriginRect(target: HTMLElement): DOMRect {
 function useViewportSubmenuPosition(open: boolean) {
   const triggerRef = useRef<HTMLButtonElement | null>(null);
   const contentRef = useRef<HTMLDivElement | null>(null);
-  const [style, setStyle] = useState<CSSProperties>({ left: '100%', top: 0 });
+  // Hidden until the layout effect has measured and positioned the panel, so a
+  // submenu never paints once at the previous submenu's position.
+  const [style, setStyle] = useState<CSSProperties>({ left: '100%', top: 0, visibility: 'hidden' });
 
   useLayoutEffect(() => {
-    if (!open) return;
+    if (!open) {
+      setStyle((current) => (current.visibility === 'hidden' ? current : { ...current, visibility: 'hidden' }));
+      return;
+    }
     const updatePosition = () => {
       const trigger = triggerRef.current;
       const content = contentRef.current;
@@ -59,6 +66,7 @@ function useViewportSubmenuPosition(open: boolean) {
         left: opensLeft ? undefined : '100%',
         right: opensLeft ? '100%' : undefined,
         top: top - triggerRect.top,
+        visibility: 'visible',
       });
     };
     updatePosition();
@@ -91,6 +99,7 @@ interface NotebookTreeSectionMenuProps {
   onCreateTable?: (viewType?: TableViewType) => void;
   onCreateMediaLibrary?: () => void;
   onCreateWorkDocuments?: () => void;
+  onCreateCanvas?: () => void;
   onImportFiles?: () => void;
   onImportFolder?: () => void;
   sort?: FolderTreeSort;
@@ -109,6 +118,7 @@ export function NotebookTreeSectionMenu({
   onCreateTable,
   onCreateMediaLibrary,
   onCreateWorkDocuments,
+  onCreateCanvas,
   onImportFiles,
   onImportFolder,
   sort,
@@ -116,24 +126,34 @@ export function NotebookTreeSectionMenu({
   onCustomizeDisplay,
 }: NotebookTreeSectionMenuProps) {
   const { t } = useI18n();
-  const [sortSubmenuOpen, setSortSubmenuOpen] = useState(false);
-  const [createSubmenuOpen, setCreateSubmenuOpen] = useState(false);
-  const [importSubmenuOpen, setImportSubmenuOpen] = useState(false);
+  // One submenu at a time: opening a trigger implicitly closes its siblings,
+  // otherwise both stay on screen until the previous one unmounts.
+  const [openSubmenu, setOpenSubmenu] = useState<'create' | 'import' | 'sort' | null>(null);
+  const createSubmenuOpen = openSubmenu === 'create';
+  const importSubmenuOpen = openSubmenu === 'import';
+  const sortSubmenuOpen = openSubmenu === 'sort';
+  const toggleSubmenu = (name: 'create' | 'import' | 'sort') =>
+    setOpenSubmenu((current) => (current === name ? null : name));
+  // Unmount a sibling panel on pointerdown (one frame before click) so switching
+  // submenus never leaves the previous panel painted over the new one.
+  const closeSiblings = (name: 'create' | 'import' | 'sort') => {
+    setOpenSubmenu((current) => (current && current !== name ? null : current));
+  };
+  // Hover may only pre-open a submenu for a real pointer; touch devices also
+  // synthesize mouseenter right before the tap's click.
+  const hoverOpens = (event: ReactMouseEvent) =>
+    supportsHover() && !isTouchGeneratedMouseEvent(event as unknown as { sourceCapabilities?: { firesTouchEvents?: boolean } | null });
   const createSubmenuPosition = useViewportSubmenuPosition(createSubmenuOpen);
   const importSubmenuPosition = useViewportSubmenuPosition(importSubmenuOpen);
   const sortSubmenuPosition = useViewportSubmenuPosition(sortSubmenuOpen);
   const itemClassName = 'group h-7 items-center justify-start gap-2 rounded-lg px-2 py-0 text-left hover:bg-[var(--brand)] hover:text-[var(--primary-foreground)] disabled:cursor-not-allowed disabled:opacity-40';
   const hasActionsAfterMovement = Boolean(
-    onCreateNote || onCreateFolder || onCreateTable || onCreateMediaLibrary || onCreateWorkDocuments || onImportFiles || onImportFolder || (sort && onSort),
+    onCreateNote || onCreateFolder || onCreateTable || onCreateMediaLibrary || onCreateWorkDocuments || onCreateCanvas || onImportFiles || onImportFolder || (sort && onSort),
   );
 
   return (
     <DropdownMenu onOpenChange={(open) => {
-      if (!open) {
-        setCreateSubmenuOpen(false);
-        setImportSubmenuOpen(false);
-        setSortSubmenuOpen(false);
-      }
+      if (!open) setOpenSubmenu(null);
     }}>
       <DropdownMenuTrigger asChild>
         <button
@@ -167,17 +187,18 @@ export function NotebookTreeSectionMenu({
             {t('memo.fileTree.newFolder')}
           </DropdownMenuItem>
         )}
-        {(onCreateTable || onCreateMediaLibrary || onCreateWorkDocuments) && (
+        {(onCreateTable || onCreateMediaLibrary || onCreateWorkDocuments || onCreateCanvas) && (
           <div
             className="relative"
-            onMouseEnter={() => setCreateSubmenuOpen(true)}
-            onMouseLeave={() => setCreateSubmenuOpen(false)}
+            onMouseEnter={(event) => { if (hoverOpens(event)) setOpenSubmenu('create'); }}
+            onMouseLeave={() => { if (supportsHover()) setOpenSubmenu((current) => (current === 'create' ? null : current)); }}
           >
             <button
               type="button"
               ref={createSubmenuPosition.triggerRef}
               className={cn(itemClassName, 'flex w-full items-center justify-between text-sm')}
-              onClick={() => setCreateSubmenuOpen((open) => !open)}
+              onPointerDown={() => closeSiblings('create')}
+              onClick={() => toggleSubmenu('create')}
               onMouseDown={(event) => event.preventDefault()}
             >
               <span className="flex items-center gap-2">
@@ -187,7 +208,7 @@ export function NotebookTreeSectionMenu({
               <ChevronRight className="h-3.5 w-3.5" aria-hidden="true" />
             </button>
             {createSubmenuOpen && (
-              <div ref={createSubmenuPosition.contentRef} style={{ ...createSubmenuPosition.style, maxWidth: 'calc(100vw - 8px)', maxHeight: 'calc(100vh - 8px)', overflowY: 'auto' }} className="absolute w-[176px] space-y-0.5 rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+              <div data-tree-submenu="create" ref={createSubmenuPosition.contentRef} style={{ ...createSubmenuPosition.style, maxWidth: 'calc(100vw - 8px)', maxHeight: 'calc(100vh - 8px)', overflowY: 'auto' }} className="absolute w-[176px] space-y-0.5 rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
                 {onCreateTable && MEMO_CREATE_VIEW_OPTIONS.map(({ type, labelKey }) => (
                   <DropdownMenuItem key={type} onClick={() => onCreateTable(type)} className={itemClassName}>
                     {type === 'table' ? <Table2 className="h-3.5 w-3.5" aria-hidden="true" /> : <span className="h-3.5 w-3.5 shrink-0" aria-hidden="true" />}
@@ -213,16 +234,30 @@ export function NotebookTreeSectionMenu({
                     </span>
                   </DropdownMenuItem>
                 )}
+                {onCreateCanvas && (
+                  <DropdownMenuItem onClick={onCreateCanvas} className={itemClassName}>
+                    <CircleDashed className="h-3.5 w-3.5" aria-hidden="true" />
+                    <span>{t('memo.create.canvas')}</span>
+                    <span className="ml-auto text-xs text-[var(--muted-foreground)] opacity-50 group-hover:text-[var(--primary-foreground)] group-focus-visible:text-[var(--primary-foreground)]">
+                      .flowix-canvas
+                    </span>
+                  </DropdownMenuItem>
+                )}
               </div>
             )}
           </div>
         )}
         {(onImportFiles || onImportFolder) && (
-          <div className="relative" onMouseEnter={() => setImportSubmenuOpen(true)} onMouseLeave={() => setImportSubmenuOpen(false)}>
+          <div
+            className="relative"
+            onMouseEnter={(event) => { if (hoverOpens(event)) setOpenSubmenu('import'); }}
+            onMouseLeave={() => { if (supportsHover()) setOpenSubmenu((current) => (current === 'import' ? null : current)); }}
+          >
             <button
               type="button"
               ref={importSubmenuPosition.triggerRef}
-              onClick={() => setImportSubmenuOpen((open) => !open)}
+              onPointerDown={() => closeSiblings('import')}
+              onClick={() => toggleSubmenu('import')}
               onMouseDown={(event) => event.preventDefault()}
               className={cn(itemClassName, 'flex w-full items-center text-sm')}
             >
@@ -232,6 +267,7 @@ export function NotebookTreeSectionMenu({
             </button>
             {importSubmenuOpen && (
               <div
+                data-tree-submenu="import"
                 ref={importSubmenuPosition.contentRef}
                 style={importSubmenuPosition.style}
                 className="absolute z-50 w-[156px] space-y-0.5 rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]"
@@ -245,14 +281,15 @@ export function NotebookTreeSectionMenu({
         {sort && onSort && (
           <div
             className="relative"
-            onMouseEnter={() => setSortSubmenuOpen(true)}
-            onMouseLeave={() => setSortSubmenuOpen(false)}
+            onMouseEnter={(event) => { if (hoverOpens(event)) setOpenSubmenu('sort'); }}
+            onMouseLeave={() => { if (supportsHover()) setOpenSubmenu((current) => (current === 'sort' ? null : current)); }}
           >
             <button
               type="button"
               ref={sortSubmenuPosition.triggerRef}
               className={cn(itemClassName, 'memo-navigation-submenu-trigger flex w-full items-center justify-between text-sm')}
-              onClick={() => setSortSubmenuOpen(true)}
+              onPointerDown={() => closeSiblings('sort')}
+              onClick={() => toggleSubmenu('sort')}
               onMouseDown={(event) => event.preventDefault()}
             >
               <span className="flex items-center gap-2">
@@ -265,7 +302,7 @@ export function NotebookTreeSectionMenu({
               </span>
             </button>
             {sortSubmenuOpen && (
-              <div ref={sortSubmenuPosition.contentRef} style={{ ...sortSubmenuPosition.style, maxWidth: 'calc(100vw - 8px)', maxHeight: 'calc(100vh - 8px)', overflowY: 'auto' }} className="absolute w-[176px] space-y-0.5 rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+              <div data-tree-submenu="sort" ref={sortSubmenuPosition.contentRef} style={{ ...sortSubmenuPosition.style, maxWidth: 'calc(100vw - 8px)', maxHeight: 'calc(100vh - 8px)', overflowY: 'auto' }} className="absolute w-[176px] space-y-0.5 rounded-xl border border-[var(--border-popup)] bg-[var(--card)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
                 {([
                   ['createdAt', 'memo.list.sortCreated'],
                   ['updatedAt', 'memo.list.sortUpdated'],

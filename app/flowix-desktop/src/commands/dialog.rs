@@ -270,6 +270,63 @@ pub async fn save_file_dialog(
 
 // ==================== IPC: notebook asset import ====================
 
+/// Persist attachment bytes supplied inline (canvas images, clipboard payloads).
+///
+/// Content-based counterpart of [`save_notebook_asset`]: callers hand over a
+/// base64 payload instead of a local path, and the notebook-relative `key` in
+/// the result is what note/canvas content persists.
+#[tauri::command]
+pub async fn save_notebook_asset_content(
+    window: tauri::WebviewWindow,
+    content_base64: String,
+    file_name: String,
+    notebook_id: Option<String>,
+    note_path: Option<String>,
+    deduplicate: Option<bool>,
+    state: State<'_, AppState>,
+) -> Result<attachments::SavedNotebookAsset, String> {
+    let permit = upload_quota::UPLOAD_QUOTA.acquire()?;
+    // COSEC: inline payloads may only land next to a document this window is
+    // authorized to open.
+    if let Some(note_path) = note_path.as_deref() {
+        if !super::helpers::can_access_document_path(Path::new(note_path), window.label(), &state) {
+            return Err("Notebook asset target is not authorized".to_string());
+        }
+    }
+    let name = file_name.trim().to_string();
+    if name.is_empty() || name.contains(['/', '\\']) {
+        return Err("Invalid attachment file name".to_string());
+    }
+    if content_base64.len() > attachments::MAX_ATTACHMENT_BYTES as usize * 4 / 3 + 4 {
+        return Err("ATTACHMENT_FILE_TOO_LARGE".to_string());
+    }
+    use base64::Engine as _;
+    let bytes = base64::engine::general_purpose::STANDARD
+        .decode(content_base64.as_bytes())
+        .map_err(|error| format!("ATTACHMENT_BASE64_INVALID: {error}"))?;
+    if bytes.len() as u64 > attachments::MAX_ATTACHMENT_BYTES {
+        return Err("ATTACHMENT_FILE_TOO_LARGE".to_string());
+    }
+    let memo_file = state.memo_file.clone();
+    let deduplicate = deduplicate.unwrap_or(true);
+    tokio::task::spawn_blocking(move || -> Result<attachments::SavedNotebookAsset, String> {
+        let _permit = permit;
+        let store = read_lock(&memo_file, "memo_file");
+        let mut reader = std::io::Cursor::new(bytes);
+        attachments::save_for_owner(
+            &store,
+            notebook_id.as_deref(),
+            note_path.as_deref(),
+            &name,
+            &mut reader,
+            deduplicate,
+        )
+        .map_err(|error| error.to_string())
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 #[tauri::command]
 pub async fn save_notebook_asset(
     window: tauri::WebviewWindow,
@@ -388,6 +445,111 @@ pub async fn open_attachment_file(
     app.opener()
         .open_path(source.display().to_string(), None::<String>)
         .map_err(|e| e.to_string())
+}
+
+/// Read an attachment bitmap by storage key for canvas hydration.
+///
+/// The key is notebook-relative and resolved against the owner notebook of the
+/// canvas file, so identical canvas JSON renders on every device regardless of
+/// where the notebook root lives.
+#[tauri::command]
+pub async fn read_notebook_asset_content(
+    window: tauri::WebviewWindow,
+    storage_key: String,
+    note_path: Option<String>,
+    notebook_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    if let Some(note_path) = note_path.as_deref() {
+        if !super::helpers::can_access_document_path(Path::new(note_path), window.label(), &state) {
+            return Err("Notebook asset source is not authorized".to_string());
+        }
+    }
+    let key = storage_key.trim().trim_start_matches(['/', '\\']).to_string();
+    let invalid_key = key.is_empty()
+        || Path::new(&key)
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)));
+    if invalid_key {
+        return Err("Invalid attachment storage key".to_string());
+    }
+    let memo_file = state.memo_file.clone();
+    tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+        let store = read_lock(&memo_file, "memo_file");
+        let (owner, _) = attachments::resolve_note_owner(&store, notebook_id.as_deref(), note_path.as_deref())
+            .map_err(|error| error.to_string())?;
+        let owner_root =
+            attachments::notebook_root(&store, Some(&owner)).map_err(|error| error.to_string())?;
+        // The key was component-validated above, so the join cannot escape the
+        // notebook root; this is a belt-and-braces containment re-check.
+        // Nested notebook registrations mean the bitmap may live under an
+        // enclosing root, so fall back to every registered notebook before
+        // reporting the key as missing.
+        let mut roots = vec![owner_root];
+        if let Ok(configs) = store.read_notebook_configs() {
+            for config in configs {
+                if let Ok(root) = dunce::canonicalize(&config.path) {
+                    roots.push(root);
+                }
+            }
+        }
+        let Some(path) = roots
+            .into_iter()
+            .map(|root| root.join(&key))
+            .find(|candidate| candidate.is_file())
+        else {
+            return Ok(None);
+        };
+        let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+            Some("png") => "image/png",
+            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            Some("svg") => "image/svg+xml",
+            Some("bmp") => "image/bmp",
+            Some("avif") => "image/avif",
+            _ => return Ok(None),
+        };
+        let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+        use base64::Engine as _;
+        Ok(Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
+/// Binary counterpart of [`write_export_file`] (PNG exports, images).
+#[tauri::command(async)]
+pub fn write_export_file_bytes(
+    app: tauri::AppHandle,
+    window: tauri::WebviewWindow,
+    file_path: String,
+    content_base64: String,
+    state: State<'_, AppState>,
+) -> bool {
+    #[cfg(target_os = "android")]
+    {
+        return state.export_access.take_uri(window.label(), &file_path)
+            && crate::mobile_export::write_base64(&app, &file_path, &content_base64).is_ok();
+    }
+
+    #[cfg(not(target_os = "android"))]
+    {
+        let _ = &app;
+        use base64::Engine as _;
+        let Ok(bytes) = base64::engine::general_purpose::STANDARD.decode(content_base64.as_bytes()) else {
+            return false;
+        };
+        state
+            .export_access
+            .save(
+                window.label(),
+                Path::new(&file_path),
+                &mut bytes.as_slice(),
+                &read_lock(&state.memo_file, "memo_file"),
+            )
+            .is_ok()
+    }
 }
 
 // ==================== IPC: 瀵煎嚭 ====================

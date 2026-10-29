@@ -33,6 +33,7 @@ export function workspaceSurfaceRendererDataFromWorkSurface(surface: WorkColumnS
     case 'media-library-file': return { kind: 'file-media-library', fileIdentity: surface.fileIdentity, notebookPath: surface.notebookPath, notebookId: surface.notebookId };
     case 'work-documents-file': return { kind: 'file-work-documents', fileIdentity: surface.fileIdentity, notebookPath: surface.notebookPath, notebookId: surface.notebookId, expectedCollectionId: surface.expectedCollectionId };
     case 'html-file': return { kind: 'file-html', fileIdentity: surface.fileIdentity, scopePath: surface.scopePath, documentProps: surface.props };
+    case 'canvas-file': return { kind: 'file-canvas', fileIdentity: surface.fileIdentity, scopePath: surface.scopePath };
     case 'unavailable-file':
       return externalFileViewKind(surface.fileIdentity.path) === 'docx'
         ? { kind: 'file-docx', fileIdentity: surface.fileIdentity, scopePath: surface.scopePath }

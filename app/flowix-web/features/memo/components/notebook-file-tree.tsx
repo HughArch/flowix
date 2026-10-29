@@ -380,7 +380,7 @@ export function NotebookFileTree({
   });
   const {
     openNewTableDialog, openNewMediaLibraryDialog, handleCreateMediaLibraryAtPath,
-    openNewWorkDocumentsDialog, creationDialog,
+    openNewWorkDocumentsDialog, openNewCanvasDialog, creationDialog,
   } = useNotebookTreeCreation({ notebookId, notebookPath, defaultCreateFolder, refreshTables, refreshMediaLibraries });
   const viewTableDocuments = useMemo(() => tableDocuments.filter((table) => table.inViews), [tableDocuments]);
   const viewMediaLibraries = useMemo(() => mediaLibraries.filter((library) => library.inViews), [mediaLibraries]);
@@ -926,6 +926,7 @@ export function NotebookFileTree({
           onCreateView={handleCreateViewAtPath}
           onCreateMediaLibrary={handleCreateMediaLibraryAtPath}
           onCreateWorkDocuments={openNewWorkDocumentsDialog}
+          onCreateCanvas={openNewCanvasDialog}
           tableViewVisibility={tableViewVisibility}
           mediaLibraryViewVisibility={mediaLibraryViewVisibility}
           onRename={handleRename}
@@ -1052,6 +1053,7 @@ export function NotebookFileTree({
                   onCreateView={(parentPath, viewType) => openNewTableDialog(false, parentPath, viewType)}
                   onCreateMediaLibrary={(parentPath) => openNewMediaLibraryDialog(false, parentPath)}
                   onCreateWorkDocuments={(parentPath) => openNewWorkDocumentsDialog(parentPath)}
+                    onCreateCanvas={(parentPath) => openNewCanvasDialog(parentPath)}
                   onRename={handleRename}
                   onDeleteFile={onDeleteFile}
                   onPointerDown={() => {}}
@@ -1082,6 +1084,7 @@ export function NotebookFileTree({
                   onCreateTable={(viewType) => openNewTableDialog(true, undefined, viewType)}
                   onCreateMediaLibrary={() => openNewMediaLibraryDialog(true)}
                   onCreateWorkDocuments={() => openNewWorkDocumentsDialog()}
+                  onCreateCanvas={() => openNewCanvasDialog()}
                   onCustomizeDisplay={openCustomizeDisplay}
                 />
               )}
@@ -1108,6 +1111,7 @@ export function NotebookFileTree({
                     onCreateView={(parentPath, viewType) => openNewTableDialog(true, parentPath, viewType)}
                     onCreateMediaLibrary={(parentPath) => openNewMediaLibraryDialog(true, parentPath)}
                     onCreateWorkDocuments={(parentPath) => openNewWorkDocumentsDialog(parentPath)}
+                    onCreateCanvas={(parentPath) => openNewCanvasDialog(parentPath)}
                     tableViewVisibility={tableViewVisibilityByPath.get(canonicalPath(tablePath))}
                     onRename={handleRenameTableDocument}
                     onDeleteFile={handleDeleteTableDocument}
@@ -1140,6 +1144,7 @@ export function NotebookFileTree({
                     onCreateView={(parentPath, viewType) => openNewTableDialog(true, parentPath, viewType)}
                     onCreateMediaLibrary={(parentPath) => openNewMediaLibraryDialog(true, parentPath)}
                     onCreateWorkDocuments={(parentPath) => openNewWorkDocumentsDialog(parentPath)}
+                    onCreateCanvas={(parentPath) => openNewCanvasDialog(parentPath)}
                     mediaLibraryViewVisibility={mediaLibraryViewVisibilityByPath.get(canonicalPath(libraryPath))}
                     onRename={handleRename}
                     onDeleteFile={handleDeleteMediaLibrary}
@@ -1193,6 +1198,7 @@ export function NotebookFileTree({
                 onCreateTable={(viewType) => openNewTableDialog(false, undefined, viewType)}
                 onCreateMediaLibrary={() => openNewMediaLibraryDialog()}
                 onCreateWorkDocuments={() => openNewWorkDocumentsDialog()}
+                onCreateCanvas={() => openNewCanvasDialog()}
                 onImportFiles={() => { void handleImportFiles(notebookPath); }}
                 onImportFolder={() => { void handleImportFolder(notebookPath); }}
                 sort={fileTreeSort}
@@ -1293,6 +1299,7 @@ export function NotebookFileTree({
                 onCreateTable={(viewType) => openNewTableDialog(false, notebookPath, viewType)}
                 onCreateMediaLibrary={() => openNewMediaLibraryDialog(false, notebookPath)}
                 onCreateWorkDocuments={() => openNewWorkDocumentsDialog(notebookPath)}
+                onCreateCanvas={() => openNewCanvasDialog(notebookPath)}
                 onImportFiles={() => { void handleImportFiles(notebookPath); }}
                 onImportFolder={() => { void handleImportFolder(notebookPath); }}
               />

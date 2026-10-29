@@ -31,6 +31,7 @@ export function useNotebookTreeCreation({ notebookId, notebookPath, defaultCreat
     openNewMediaLibraryDialog: (inViews = false, parentPath?: string) => open('media-library', inViews, parentPath),
     handleCreateMediaLibraryAtPath: (parentPath: string) => open('media-library', false, parentPath),
     openNewWorkDocumentsDialog: (parentPath?: string) => open('work-documents', false, parentPath),
+    openNewCanvasDialog: (parentPath?: string) => open('canvas', false, parentPath),
   }), [open]);
   return {
     ...actions,

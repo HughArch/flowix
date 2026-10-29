@@ -48,6 +48,7 @@ export const workspaceSurfaceRegistry = Object.freeze({
   'file-work-documents': { rendererId: 'file-work-documents', hosts: ['main-third', 'browser-column'], capabilities: [], appearance: DOCUMENT_APPEARANCE },
   'file-html': { rendererId: 'file-html', hosts: ['main-third', 'browser-column'], capabilities: [], appearance: DOCUMENT_APPEARANCE },
   'file-docx': { rendererId: 'file-docx', hosts: ['main-third', 'browser-column'], capabilities: [], appearance: DOCUMENT_APPEARANCE },
+  'file-canvas': { rendererId: 'file-canvas', hosts: ['main-third', 'browser-column'], capabilities: ['fullscreen'], appearance: DOCUMENT_APPEARANCE },
   'file-unavailable': { rendererId: 'file-unavailable', hosts: ['main-third', 'browser-column'], capabilities: [], appearance: DOCUMENT_APPEARANCE },
   'file-browser': { rendererId: 'file-browser', hosts: ['browser-column'], capabilities: [], appearance: DOCUMENT_APPEARANCE },
   collection: { rendererId: 'collection', hosts: ['main-third', 'browser-column'], capabilities: [], appearance: DOCUMENT_APPEARANCE },
@@ -91,6 +92,7 @@ export function resolveWorkspaceFileSurfaceKind(
   if (/\.lib\.ya?ml$/i.test(path)) return 'media-library';
   if (/\.workdocs\.ya?ml$/i.test(path)) return 'work-documents';
   if (/\.table\.ya?ml$/i.test(path)) return 'table';
+  if (/\.flowix-canvas$/i.test(path)) return 'canvas';
   switch (externalFileViewKind(path, mimeType, detectedTextContent)) {
     case 'markdown': return 'markdown';
     case 'code': return 'code';

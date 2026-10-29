@@ -27,6 +27,12 @@ class WriteTextArgs {
 }
 
 @InvokeArg
+class WriteBase64Args {
+  lateinit var uri: String
+  lateinit var base64: String
+}
+
+@InvokeArg
 class PrintDocumentArgs {
   var jobName: String? = null
 }
@@ -68,6 +74,29 @@ class FlowixExportPlugin(private val activity: Activity) : Plugin(activity) {
       try {
         openOutputStream(args.uri).use { output ->
           output.write(args.content.toByteArray(Charsets.UTF_8))
+          output.flush()
+        }
+        invoke.resolve()
+      } catch (error: Exception) {
+        invoke.reject(error.message ?: "failed to write export file")
+      }
+    }.start()
+  }
+
+  @Command
+  fun writeBase64ToUri(invoke: Invoke) {
+    val args = try {
+      invoke.parseArgs(WriteBase64Args::class.java)
+    } catch (error: Exception) {
+      invoke.reject(error.message ?: "invalid export payload")
+      return
+    }
+
+    Thread {
+      try {
+        val bytes = android.util.Base64.decode(args.base64, android.util.Base64.DEFAULT)
+        openOutputStream(args.uri).use { output ->
+          output.write(bytes)
           output.flush()
         }
         invoke.resolve()

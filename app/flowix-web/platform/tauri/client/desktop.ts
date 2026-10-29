@@ -335,6 +335,8 @@ export const dialogs = {
     }),
   writeExportFile: (filePath: string, content: string) =>
     invoke<boolean>('write_export_file', { filePath, content }),
+  writeExportBytes: (filePath: string, contentBase64: string) =>
+    invoke<boolean>('write_export_file_bytes', { filePath, contentBase64 }),
   exportPdf: (filePath: string) =>
     invoke<boolean>('export_pdf', { filePath }),
   /** Mobile only: opens the system print sheet where the spooler saves the PDF. */
@@ -361,6 +363,27 @@ export type NotebookAssetSaveOptions = {
 };
 
 export const notebookAssets = {
+  /** Persist inline bytes (canvas images, clipboard payloads) as an attachment. */
+  saveContent: (params: {
+    content: string;
+    fileName: string;
+    notebookId?: string;
+    notePath?: string;
+    deduplicate?: boolean;
+  }) => invoke<NotebookAssetSaveResult>('save_notebook_asset_content', {
+    contentBase64: params.content,
+    fileName: params.fileName,
+    ...(params.notebookId ? { notebookId: params.notebookId } : {}),
+    ...(params.notePath ? { notePath: params.notePath } : {}),
+    deduplicate: params.deduplicate ?? true,
+  }),
+  /** Read an attachment bitmap by notebook-relative key (canvas hydration). */
+  readContent: (params: { storageKey: string; notePath?: string; notebookId?: string }) =>
+    invoke<string | null>('read_notebook_asset_content', {
+      storageKey: params.storageKey,
+      ...(params.notePath ? { notePath: params.notePath } : {}),
+      ...(params.notebookId ? { notebookId: params.notebookId } : {}),
+    }),
   /** Save with same-name SHA-256 deduplication; local-path reuse is opt-in. */
   saveFromPath: (sourcePath: string, options: NotebookAssetSaveOptions) =>
     invoke<NotebookAssetSaveResult | null>('save_notebook_asset', {

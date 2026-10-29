@@ -35,6 +35,7 @@ export type WorkspaceSurfaceRendererData =
   | { kind: 'file-media-library'; fileIdentity: FileDisplayIdentity; notebookPath: string | null; notebookId: string | null; expectedCollectionId?: string | null }
   | { kind: 'file-work-documents'; fileIdentity: FileDisplayIdentity; notebookPath: string | null; notebookId: string | null; expectedCollectionId?: string | null }
   | { kind: 'file-html'; fileIdentity: FileDisplayIdentity; scopePath: string | null; documentProps: ExternalDocumentProps }
+  | { kind: 'file-canvas'; fileIdentity: FileDisplayIdentity; scopePath: string | null }
   | { kind: 'file-docx'; fileIdentity: FileDisplayIdentity; scopePath: string | null }
   | { kind: 'file-unavailable'; fileIdentity: FileDisplayIdentity; scopePath: string | null; documentProps?: ExternalDocumentProps }
   | { kind: 'media'; fileIdentity: FileDisplayIdentity; notebookPath: string | null; notebookId: string | null; resourceKind: 'image' | 'video' }

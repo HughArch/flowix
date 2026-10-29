@@ -1,6 +1,6 @@
 import { forwardRef } from 'react';
 import type { Icon, IconProps } from '@phosphor-icons/react';
-import { Folder, Globe } from 'lucide-react';
+import { Folder, Frame, Globe } from 'lucide-react';
 import {
   FileCodeIcon,
   FileDocIcon,
@@ -36,7 +36,7 @@ const PHOSPHOR_ICON_BY_KIND: Record<ContentFileIconKind, Icon> = {
 };
 
 /** Flat icon categories; special resources sit beside file categories. */
-export type ContentKind = FileContentKind | 'folder' | 'web' | 'media-library' | 'multidimensional-table';
+export type ContentKind = FileContentKind | 'folder' | 'web' | 'media-library' | 'multidimensional-table' | 'canvas';
 
 export type ContentDescription =
   | { kind: 'file'; path: string; mimeType?: string | null }
@@ -52,6 +52,7 @@ export function ContentIcon({ content, className }: { content: ContentDescriptio
   if (kind === 'note') return <NoteContentIcon className={className} />;
   if (kind === 'media-library') return <MediaLibraryIcon className={className} />;
   if (kind === 'multidimensional-table') return <TableDocumentIcon className={className} />;
+  if (kind === 'canvas') return <Frame aria-hidden="true" className={className} />;
   return <FileKindIcon kind={kind} className={className} />;
 }
 
@@ -69,6 +70,7 @@ export function getFileIcon(path: string): Icon {
 export function FileTypeIcon({ path, className }: { path: string; className?: string }) {
   if (isTableDocumentPath(path)) return <ContentIcon content={{ kind: 'multidimensional-table' }} className={className} />;
   if (/\.lib\.ya?ml$/i.test(path)) return <ContentIcon content={{ kind: 'media-library' }} className={className} />;
+  if (/\.flowix-canvas$/i.test(path)) return <ContentIcon content={{ kind: 'canvas' }} className={className} />;
   return <ContentIcon content={{ kind: 'file', path }} className={className} />;
 }
 
@@ -82,7 +84,9 @@ export function NotebookTreeResourceIcon({ path, className, collectionType }: { 
       ? { kind: 'media-library' }
       : legacyCollectionType === 'work_documents'
         ? { kind: 'document' }
-      : { kind: 'file', path };
+      : /\.flowix-canvas$/i.test(path)
+        ? { kind: 'canvas' }
+        : { kind: 'file', path };
   return <ContentIcon content={content} className={className} />;
 }
 

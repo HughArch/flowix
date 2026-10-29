@@ -131,5 +131,20 @@ childEnv.CARGO_TARGET_DIR = path.resolve(
 )
 
 const forwarded = process.argv.slice(2)
-process.stdout.write(`Android SDK: ${sdk}\nNDK: ${ndkHome}\ntauri android build ${forwarded.join(' ')}\n`)
-run(process.execPath, [tauriEntrypoint, 'android', 'build', ...forwarded], childEnv)
+const devMode = forwarded[0] === '--dev'
+// --with-debuginfo selects the symbol policy above; the editor script must not
+// forward it to the Tauri CLI.
+const tauriArgs = (devMode ? forwarded.slice(1) : forwarded).filter((arg) => arg !== '--with-debuginfo')
+const subcommand = devMode ? 'dev' : 'build'
+// Debug APKs ship the Rust library with full DWARF by default (~450 MB), which
+// makes every `adb install` a minute-long transfer. JS iteration never needs it,
+// so drop debug info for debug Android builds; the dev profile is still
+// unoptimized. Pass --with-debuginfo to keep symbols for native debugging.
+if (forwarded.includes('--debug') && !forwarded.includes('--with-debuginfo')) {
+  childEnv.CARGO_PROFILE_DEV_DEBUG = '0'
+  // Symbols are not needed to drive JS iteration; stripping them roughly halves
+  // the shared library and every install.
+  childEnv.CARGO_PROFILE_DEV_STRIP = 'symbols'
+}
+process.stdout.write(`Android SDK: ${sdk}\nNDK: ${ndkHome}\ntauri android ${subcommand} ${tauriArgs.join(' ')}\n`)
+run(process.execPath, [tauriEntrypoint, 'android', subcommand, ...tauriArgs], childEnv)
