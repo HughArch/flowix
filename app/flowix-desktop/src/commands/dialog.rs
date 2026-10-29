@@ -447,6 +447,62 @@ pub async fn open_attachment_file(
         .map_err(|e| e.to_string())
 }
 
+/// Read an attachment bitmap by storage key for canvas hydration.
+///
+/// The key is notebook-relative and resolved against the owner notebook of the
+/// canvas file, so identical canvas JSON renders on every device regardless of
+/// where the notebook root lives.
+#[tauri::command]
+pub async fn read_notebook_asset_content(
+    window: tauri::WebviewWindow,
+    storage_key: String,
+    note_path: Option<String>,
+    notebook_id: Option<String>,
+    state: State<'_, AppState>,
+) -> Result<Option<String>, String> {
+    if let Some(note_path) = note_path.as_deref() {
+        if !super::helpers::can_access_document_path(Path::new(note_path), window.label(), &state) {
+            return Err("Notebook asset source is not authorized".to_string());
+        }
+    }
+    let key = storage_key.trim().trim_start_matches(['/', '\\']).to_string();
+    let invalid_key = key.is_empty()
+        || Path::new(&key)
+            .components()
+            .any(|component| !matches!(component, std::path::Component::Normal(_)));
+    if invalid_key {
+        return Err("Invalid attachment storage key".to_string());
+    }
+    let memo_file = state.memo_file.clone();
+    tokio::task::spawn_blocking(move || -> Result<Option<String>, String> {
+        let store = read_lock(&memo_file, "memo_file");
+        let (owner, _) = attachments::resolve_note_owner(&store, notebook_id.as_deref(), note_path.as_deref())
+            .map_err(|error| error.to_string())?;
+        let root = attachments::notebook_root(&store, Some(&owner)).map_err(|error| error.to_string())?;
+        let path = root.join(&key);
+        // The key was component-validated above, so the join cannot escape the
+        // notebook root; this is a belt-and-braces containment re-check.
+        if !path.starts_with(&root) || !path.is_file() {
+            return Ok(None);
+        }
+        let mime = match path.extension().and_then(|e| e.to_str()).map(str::to_ascii_lowercase).as_deref() {
+            Some("png") => "image/png",
+            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            Some("svg") => "image/svg+xml",
+            Some("bmp") => "image/bmp",
+            Some("avif") => "image/avif",
+            _ => return Ok(None),
+        };
+        let bytes = fs::read(&path).map_err(|error| error.to_string())?;
+        use base64::Engine as _;
+        Ok(Some(format!("data:{mime};base64,{}", base64::engine::general_purpose::STANDARD.encode(bytes))))
+    })
+    .await
+    .map_err(|error| error.to_string())?
+}
+
 /// Binary counterpart of [`write_export_file`] (PNG exports, images).
 #[tauri::command(async)]
 pub fn write_export_file_bytes(

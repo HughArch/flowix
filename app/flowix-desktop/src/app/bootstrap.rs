@@ -716,6 +716,7 @@ pub fn run() {
             commands::export::print_pdf,
             commands::dialog::save_notebook_asset,
             commands::dialog::save_notebook_asset_content,
+            commands::dialog::read_notebook_asset_content,
             commands::dialog::upload_sessions::begin_attachment_upload,
             commands::dialog::upload_sessions::append_attachment_upload,
             commands::dialog::upload_sessions::finish_attachment_upload,

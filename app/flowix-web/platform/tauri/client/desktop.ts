@@ -377,6 +377,13 @@ export const notebookAssets = {
     ...(params.notePath ? { notePath: params.notePath } : {}),
     deduplicate: params.deduplicate ?? true,
   }),
+  /** Read an attachment bitmap by notebook-relative key (canvas hydration). */
+  readContent: (params: { storageKey: string; notePath?: string; notebookId?: string }) =>
+    invoke<string | null>('read_notebook_asset_content', {
+      storageKey: params.storageKey,
+      ...(params.notePath ? { notePath: params.notePath } : {}),
+      ...(params.notebookId ? { notebookId: params.notebookId } : {}),
+    }),
   /** Save with same-name SHA-256 deduplication; local-path reuse is opt-in. */
   saveFromPath: (sourcePath: string, options: NotebookAssetSaveOptions) =>
     invoke<NotebookAssetSaveResult | null>('save_notebook_asset', {
