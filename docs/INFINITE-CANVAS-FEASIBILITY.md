@@ -379,3 +379,9 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 ### 15.4 v1 不做清单
 
 卡内编辑、笔记内嵌画布块、画布嵌画布（引用卡除外）、跨笔记本卡片、多点拐弯箭头、图形库、富文本图形标签、对齐分布工具。
+
+### 15.5 修订：不做旧画布兼容（2026-10-29，commit 8ff3b8ff）
+
+产品决策：只考虑新版画布。§15.1 第 1 条的「纯手绘旧文件继续走 Excalidraw surface」和 15.3 P2.5 的旧文件转换器**作废**——所有 `.flowix-canvas` 文件一律渲染卡片板；旧文件的 `elements` 数据仍在磁盘上（model 透传保留），但不再渲染。Excalidraw surface、lazy loader 与 `@excalidraw/excalidraw` 依赖当日移除（前端包 -1MB+ 提前兑现）。笔迹/形状能力按 §15.3 P2.3 自研计划不变。
+
+P2.1 骨架实测记录（桌面 dev + CDP）：板打开 171ms；打开不写盘（fitView 触发 onMoveEnd 的坑用「载入时 seed 首个 move-end」修复）；卡片拖拽与平移均经字节不变跳写落盘；视口持久化恢复；双击笔记卡经 `openNoteByNotebookPath` 打开；老画布开空板。已知局限：固定 bottom→top 锚点对右上方向连线出现小环，P2.2 换浮动锚点。
