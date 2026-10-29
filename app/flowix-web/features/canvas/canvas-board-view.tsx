@@ -1007,13 +1007,33 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     setNodes((current) => applyNodeChanges(changes, current));
   }, []);
 
+  /**
+   * Keep the selection mirror in sync with what react-flow actually renders.
+   * Programmatic selection changes (graph rebuilds restoring `selected`,
+   * deletes clearing it) never fire onSelectionChange, so deriving the mirror
+   * from the node list is the only reliable source of truth.
+   */
+  const syncSelectionFromNodes = useCallback((nextNodes: BoardNode[]) => {
+    const selected = nextNodes.filter((node) => node.selected);
+    const ids = selected.map((node) => node.id);
+    selectedIdsRef.current = ids;
+    setSelectedShapeIds(selected.filter((node) => node.type === 'shape').map((node) => node.id));
+    setSelectedInkIds(selected.filter((node) => node.type === 'ink').map((node) => node.id));
+    if (selected.length > 0) setPanelCollapsed(false);
+  }, []);
+
   const handleSelectionChange = useCallback(({ nodes: selected }: { nodes: BoardNode[] }) => {
     const ids = selected.map((node) => node.id);
     selectedIdsRef.current = ids;
     setSelectedShapeIds(selected.filter((node) => node.type === 'shape').map((node) => node.id));
     setSelectedInkIds(selected.filter((node) => node.type === 'ink').map((node) => node.id));
-    if (selected.some((node) => node.type === 'shape' || node.type === 'ink')) setPanelCollapsed(false);
+    if (selected.length > 0) setPanelCollapsed(false);
   }, []);
+
+  /** Every nodes update re-derives the selection mirror (idempotent). */
+  useEffect(() => {
+    syncSelectionFromNodes(nodes);
+  }, [nodes, syncSelectionFromNodes]);
 
   /** Apply a style patch to every selected shape (Excalidraw-style panel).
    * `record: false` skips the undo entry so a slider can stream changes and
@@ -1427,6 +1447,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const handleBoardPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (readOnly || tool === 'select' || event.button !== 0) return;
     if ((event.target as Element).closest('[data-board-toolbar]')) return;
+    // Clicking an existing element selects it instead of drawing on top of it.
+    if ((event.target as Element).closest('.react-flow__node')) return;
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* synthetic pointers cannot capture */ }
     if (tool === 'pen') {
       liveStrokeRef.current = [flowPositionOf(event)];
@@ -1765,8 +1787,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     .filter((shape): shape is BoardShape => Boolean(shape));
   const selectedShapeCount = selectedShapes.length;
   const selectedStrokes = inkRef.current.filter((stroke) => selectedInkIds.includes(stroke.id));
+  const selectedNodeCount = nodes.filter((node) => node.selected).length;
   const inkOnlySelection = selectedShapeCount === 0 && selectedStrokes.length > 0;
-  const selectionMode = selectedShapeCount > 0 || selectedStrokes.length > 0;
+  // Any selection opens the panel (cards too); shape/ink rows are gated below.
+  const selectionMode = selectedNodeCount > 0;
+  const cardOnlySelection = selectionMode && selectedShapeCount === 0 && selectedStrokes.length === 0;
   const firstSelected = selectedShapes[0] ?? null;
   const firstStroke = selectedStrokes[0] ?? null;
   const allSelectedLabel = selectedShapeCount > 0 && selectedShapes.every((shape) => shape.shape === 'text');
@@ -1779,18 +1804,18 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const styleFontSize = selectionMode ? firstSelected?.fontSize ?? 20 : toolFontSize;
   const styleOpacity = selectionMode ? firstSelected?.opacity ?? 100 : toolOpacity;
   // Ink has no fill/line-style/edges; every shape-only row hides for it.
-  const showFill = inkOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow') : tool !== 'pen' && tool !== 'text' && tool !== 'arrow';
-  const showStrokeStyle = inkOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : tool !== 'pen' && tool !== 'text';
-  const showFontSize = inkOnlySelection ? false : selectionMode ? allSelectedLabel : tool === 'text';
-  const textOnlySelection = selectionMode && allSelectedLabel;
+  const showFill = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow') : tool !== 'pen' && tool !== 'text' && tool !== 'arrow';
+  const showStrokeStyle = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : tool !== 'pen' && tool !== 'text';
+  const showFontSize = inkOnlySelection || cardOnlySelection ? false : selectionMode ? allSelectedLabel : tool === 'text';
+  const textOnlySelection = selectionMode && !cardOnlySelection && !inkOnlySelection && allSelectedLabel;
   const showFontFamily = textOnlySelection || (!selectionMode && tool === 'text');
   const showTextAlign = textOnlySelection || (!selectionMode && tool === 'text');
   const styleFontFamily = selectionMode ? firstSelected?.fontFamily ?? 'hand' : toolFontFamily;
   const styleTextAlign = selectionMode ? firstSelected?.textAlign ?? 'center' : toolTextAlign;
-  const showOpacity = inkOnlySelection ? false : selectionMode || isShapeTool(tool);
-  const showFillStyle = inkOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond') : tool === 'rect' || tool === 'ellipse' || tool === 'diamond';
-  const showRoughness = inkOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : isShapeTool(tool) && tool !== 'text';
-  const showEdges = inkOnlySelection ? false : selectionMode ? selectedShapes.length > 0 && selectedShapes.every((shape) => shape.shape === 'rect') : tool === 'rect';
+  const showOpacity = inkOnlySelection || cardOnlySelection ? false : selectionMode || isShapeTool(tool);
+  const showFillStyle = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond') : tool === 'rect' || tool === 'ellipse' || tool === 'diamond';
+  const showRoughness = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : isShapeTool(tool) && tool !== 'text';
+  const showEdges = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.length > 0 && selectedShapes.every((shape) => shape.shape === 'rect') : tool === 'rect';
   const styleFillStyle = selectionMode ? firstSelected?.fillStyle ?? 'hachure' : toolFillStyle;
   const styleRoughness = selectionMode ? firstSelected?.roughness ?? 1 : toolRoughness;
   const styleEdges = selectionMode ? firstSelected?.edges ?? 'sharp' : toolEdges;
@@ -1894,6 +1919,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           data-board-toolbar
           className="flex max-h-[calc(100%-120px)] w-[184px] flex-col gap-2.5 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
         >
+          {!cardOnlySelection ? (
           <PanelRow label={t('canvas.board.style.stroke')}>
             <div className="flex flex-wrap items-center gap-1.5">
               {INK_COLORS.map((color) => (
@@ -1909,6 +1935,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
               <span className="ml-auto block h-6 w-6 rounded-md border border-[var(--border)]" style={{ backgroundColor: styleStroke }} />
             </div>
           </PanelRow>
+          ) : null}
           {showFill ? (
             <PanelRow label={t('canvas.board.style.background')}>
               <div className="flex flex-wrap items-center gap-1">
@@ -1957,7 +1984,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
               </div>
             </PanelRow>
           ) : null}
-          {textOnlySelection ? null : (
+          {textOnlySelection || cardOnlySelection ? null : (
           <PanelRow label={t('canvas.board.style.strokeWidth')}>
             {(inkOnlySelection || (selectionMode ? false : tool === 'pen') ? INK_WIDTHS : STROKE_WIDTHS).map((width) => (
               <button
@@ -2341,7 +2368,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         elevateNodesOnSelect={false}
         nodesDraggable={!readOnly && tool === 'select'}
         nodesConnectable={!readOnly && tool === 'select'}
-        elementsSelectable={tool === 'select'}
+        // Elements stay clickable even with a drawing tool active, so
+        // selecting always switches the panel to the right element type.
+        elementsSelectable={true}
         onConnect={handleConnect}
         onlyRenderVisibleElements
         deleteKeyCode={['Delete']}
