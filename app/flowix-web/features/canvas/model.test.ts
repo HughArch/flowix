@@ -127,3 +127,18 @@ describe('externalized bitmaps', () => {
     expect(canvasFileNameFor('img1', 'application/octet-stream')).toBe('img1.png');
   });
 });
+
+describe('serialization keeps persisted references', () => {
+  it('never drops an entry the live scene could not hydrate', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas',
+      version: 1,
+      elements: [],
+      files: { img1: { id: 'img1', mimeType: 'image/png', storageKey: 'attachments/img1.png' } },
+    }));
+    // Live scene has no hydrated file for img1 (attachment not synced yet).
+    const { text } = serializeCanvasDocument(document, [], {}, {}, new Map());
+    const parsed = JSON.parse(text);
+    expect(parsed.files.img1).toEqual({ id: 'img1', mimeType: 'image/png', storageKey: 'attachments/img1.png' });
+  });
+});

@@ -13,6 +13,8 @@ import type { SurfaceLifecycle, SurfacePresentationUpdate } from '@features/work
 import { toast } from '@/lib/toast';
 import { useI18n } from '@/lib/i18n';
 import { useAppLanguage } from '@features/preferences/public/runtime-api';
+import { subscribeExternalDocumentChanges } from '@features/document/store/external-document-watch';
+import { createLogger } from '@/lib/logger';
 import {
   CanvasParseError,
   canvasFileNameFor,
@@ -27,6 +29,9 @@ import {
 import { LazyExcalidraw } from './excalidraw-lazy';
 
 const SAVE_DEBOUNCE_MS = 800;
+const logger = createLogger('canvas-surface');
+/** Retry cadence for bitmaps whose attachment had not synced when the canvas opened. */
+const HYDRATION_RETRY_DELAYS_MS = [3_000, 6_000, 10_000, 15_000, 20_000];
 
 function blobToBase64(blob: Blob): Promise<string> {
   return new Promise((resolve, reject) => {
@@ -35,6 +40,44 @@ function blobToBase64(blob: Blob): Promise<string> {
     reader.onerror = () => reject(reader.error);
     reader.readAsDataURL(blob);
   });
+}
+
+/** Hydrate persisted file entries into Excalidraw-ready scene files. */
+async function hydrateSceneFiles(
+  document: FlowixCanvasDocument,
+  notebookPath: string | null,
+): Promise<{ files: BinaryFiles; failedIds: Set<string> }> {
+  const files: BinaryFiles = {};
+  const failedIds = new Set<string>();
+  for (const entry of readCanvasFileEntries(document.files)) {
+    if (entry.storageKey) {
+      const absolute = resolveAttachmentStorageKey(entry.storageKey, notebookPath);
+      const dataURL = await files_readImageSafe(absolute, notebookPath);
+      if (!dataURL) {
+        failedIds.add(entry.id);
+        continue;
+      }
+      files[entry.id] = {
+        id: entry.id as BinaryFileData['id'],
+        dataURL: dataURL as BinaryFileData['dataURL'],
+        mimeType: entry.mimeType as BinaryFileData['mimeType'],
+        created: Date.now(),
+      };
+    } else if (entry.dataURL) {
+      files[entry.id] = {
+        id: entry.id as BinaryFileData['id'],
+        dataURL: entry.dataURL as BinaryFileData['dataURL'],
+        mimeType: entry.mimeType as BinaryFileData['mimeType'],
+        created: Date.now(),
+      };
+    }
+  }
+  return { files, failedIds };
+}
+
+// Indirection keeps the import list honest: the IPC module is imported at the top.
+function files_readImageSafe(absolute: string, notebookPath: string | null): Promise<string | null> {
+  return files.readImage(absolute, notebookPath ?? undefined).catch(() => null);
 }
 
 export interface CanvasSurfaceViewProps {
@@ -75,6 +118,7 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
   const uploadChainRef = useRef<Promise<void>>(Promise.resolve());
   const excalidrawApiRef = useRef<ExcalidrawImperativeAPI | null>(null);
   const disposedRef = useRef(false);
+  const hydrationRetryRef = useRef<number | null>(null);
 
   const retryLoad = useCallback(() => setRetryToken((token) => token + 1), []);
 
@@ -95,25 +139,8 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
       const document = parseCanvasDocument(text);
       // Bitmaps live in attachments/; hydrate Excalidraw with data URLs from
       // this device so the scene renders before the first interaction.
-      const sceneFiles: BinaryFiles = {};
-      for (const entry of readCanvasFileEntries(document.files)) {
-        if (entry.storageKey) {
-          fileKeysRef.current.set(entry.id, entry.storageKey);
-          const absolute = resolveAttachmentStorageKey(entry.storageKey, notebookPath);
-          const dataURL = await files.readImage(absolute, notebookPath ?? undefined).catch(() => null);
-          if (cancelled) return;
-          if (!dataURL) continue;
-          sceneFiles[entry.id] = {
-            id: entry.id as BinaryFileData['id'], dataURL: dataURL as BinaryFileData['dataURL'],
-            mimeType: entry.mimeType as BinaryFileData['mimeType'], created: Date.now(),
-          };
-        } else if (entry.dataURL) {
-          sceneFiles[entry.id] = {
-            id: entry.id as BinaryFileData['id'], dataURL: entry.dataURL as BinaryFileData['dataURL'],
-            mimeType: entry.mimeType as BinaryFileData['mimeType'], created: Date.now(),
-          };
-        }
-      }
+      const { files: sceneFiles } = await hydrateSceneFiles(document, notebookPath);
+      if (cancelled) return;
       documentRef.current = document;
       sceneRef.current = {
         elements: document.elements as ExcalidrawElement[],
@@ -171,6 +198,7 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
   useEffect(() => () => {
     disposedRef.current = true;
     if (timerRef.current !== null) window.clearTimeout(timerRef.current);
+    if (hydrationRetryRef.current !== null) window.clearTimeout(hydrationRetryRef.current);
   }, []);
 
   // New bitmaps are persisted into attachments/ and only their key is written
@@ -261,6 +289,84 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
     });
     return () => onSurfaceLifecycleReady?.(null);
   }, [flush, onSurfaceLifecycleReady, state.status]);
+
+  // Late-arriving bitmaps: the attachment may not have synced when the canvas
+  // opened. Poll a few times and push hydrated files into the live scene.
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    let cancelled = false;
+    let delayIndex = 0;
+    const pendingIds = () => readCanvasFileEntries(state.document.files)
+      .filter((entry) => entry.storageKey && !sceneRef.current?.files[entry.id])
+      .map((entry) => entry.id);
+    if (pendingIds().length === 0) return;
+    const run = async (): Promise<boolean> => {
+      const ids = pendingIds();
+      if (cancelled || ids.length === 0) return true;
+      const pendingDocument = {
+        ...state.document,
+        files: Object.fromEntries(Object.entries(state.document.files).filter(([id]) => ids.includes(id))),
+      };
+      const { files: hydrated } = await hydrateSceneFiles(pendingDocument, notebookPath);
+      if (cancelled || Object.keys(hydrated).length === 0) return false;
+      excalidrawApiRef.current?.addFiles(Object.values(hydrated));
+      if (sceneRef.current) sceneRef.current.files = { ...sceneRef.current.files, ...hydrated };
+      setState((current) => current.status === 'ready'
+        ? { ...current, files: { ...current.files, ...hydrated } }
+        : current);
+      return true;
+    };
+    const scheduleNext = () => {
+      if (cancelled || delayIndex >= HYDRATION_RETRY_DELAYS_MS.length) return;
+      const delay = HYDRATION_RETRY_DELAYS_MS[delayIndex++];
+      hydrationRetryRef.current = window.setTimeout(() => {
+        hydrationRetryRef.current = null;
+        void run().then((done) => { if (!done && !cancelled) scheduleNext(); });
+      }, delay);
+    };
+    scheduleNext();
+    return () => {
+      cancelled = true;
+      if (hydrationRetryRef.current !== null) window.clearTimeout(hydrationRetryRef.current);
+    };
+  }, [state, notebookPath]);
+
+  // Live refresh: FNS delivers remote canvas edits by writing this file; the
+  // shell watcher turns that into an external change, and we re-read the scene
+  // unless local edits would be lost. Our own writes are byte-identical to
+  // lastSavedText and no-op here.
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    return subscribeExternalDocumentChanges(filePath, notebookPath, async (payload, context) => {
+      if (payload.kind !== 'modified') return;
+      if (dirtyRef.current || pendingUploadsRef.current.size > 0) {
+        logger.info('canvas external change skipped: local edits pending', { filePath: payload.path });
+        return;
+      }
+      await context.runOnce(`canvas-reload:${filePath}`, async () => {
+        const text = await files.read(filePath, notebookPath ?? undefined).catch(() => null);
+        if (text == null || text === lastSavedTextRef.current) return;
+        const document = parseCanvasDocument(text);
+        const { files: hydratedFiles } = await hydrateSceneFiles(document, notebookPath);
+        fileKeysRef.current = new Map(
+          readCanvasFileEntries(document.files)
+            .filter((entry) => entry.storageKey)
+            .map((entry) => [entry.id, entry.storageKey as string]),
+        );
+        documentRef.current = document;
+        sceneRef.current = {
+          elements: document.elements as ExcalidrawElement[],
+          appState: readPersistedAppState(document),
+          files: hydratedFiles,
+        };
+        lastSavedTextRef.current = text;
+        const api = excalidrawApiRef.current;
+        api?.addFiles(Object.values(hydratedFiles));
+        api?.updateScene({ elements: document.elements as ExcalidrawElement[] });
+        setState({ status: 'ready', document, files: hydratedFiles });
+      });
+    });
+  }, [filePath, notebookPath, state.status]);
 
   const handleExport = useCallback(async (format: 'excalidraw' | 'svg' | 'png') => {
     const api = excalidrawApiRef.current;

@@ -183,6 +183,13 @@ export function serializeCanvasDocument(
   const keptFiles: Record<string, unknown> = {};
   let totalBytes = 0;
   let droppedFileCount = 0;
+  // Persisted references always survive serialization. A device that could not
+  // hydrate an image (attachment not synced yet, transient read failure) still
+  // has the reference in its scene; dropping it here would erase the image for
+  // every other device on the next sync.
+  for (const entry of readCanvasFileEntries(document.files)) {
+    if (!storageKeys?.has(entry.id)) keptFiles[entry.id] = document.files[entry.id];
+  }
   for (const [id, file] of Object.entries(files ?? {})) {
     const mimeType = isPlainObject(file) && typeof file.mimeType === 'string' ? file.mimeType : 'image/png';
     // Externalized bitmaps live in attachments/; only their key is persisted.
