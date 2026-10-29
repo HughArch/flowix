@@ -1,13 +1,13 @@
 'use client';
 
 /**
- * Board-layer canvas renderer (Phase 2.1 skeleton).
+ * Card board canvas renderer (Phase 2.1 skeleton) — the only `.flowix-canvas`
+ * renderer since the Excalidraw drawing surface was retired.
  *
- * A document with board cards opens here instead of the Excalidraw surface:
  * react-flow owns the viewport, cards render as custom nodes, and every
- * mutation (drag, pan) flows through the same byte-compare flush as the
- * drawing surface so opening a board is never an edit. Card summaries are
- * title snapshots for now; the batch excerpt IPC lands in the next chunk.
+ * mutation (drag, pan) flows through a byte-compare flush so opening a board
+ * is never an edit. Card summaries are title snapshots for now; the batch
+ * excerpt IPC lands in the next chunk.
  */
 
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
@@ -47,7 +47,7 @@ import {
   type BoardCard,
   type FlowixCanvasDocument,
 } from './model';
-import { type CanvasSurfaceViewProps, type InitialTextSource } from './surface-props';
+import { type CanvasSurfaceViewProps } from './surface-props';
 
 const SAVE_DEBOUNCE_MS = 800;
 const logger = createLogger('canvas-board');
@@ -245,14 +245,14 @@ async function hydrateImageCards(
   return dataUrls;
 }
 
-export interface CanvasBoardViewProps extends CanvasSurfaceViewProps, InitialTextSource {}
+export interface CanvasBoardViewProps extends CanvasSurfaceViewProps {}
 
 type BoardLoadState =
   | { status: 'loading' }
   | { status: 'ready' }
   | { status: 'error'; message: string };
 
-export function CanvasBoardView({ filePath, notebookPath, readOnly = false, initialText, onSurfaceLifecycleReady, reportPresentation }: CanvasBoardViewProps) {
+export function CanvasBoardView({ filePath, notebookPath, readOnly = false, onSurfaceLifecycleReady, reportPresentation }: CanvasBoardViewProps) {
   const { t } = useI18n();
   const [state, setState] = useState<BoardLoadState>({ status: 'loading' });
   const [retryToken, setRetryToken] = useState(0);
@@ -268,7 +268,6 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, init
   /** Canvas file id -> notebook-relative attachment key, for reference-safe serialization. */
   const storageKeysRef = useRef<Map<string, string>>(new Map());
   const imageRetryRef = useRef<number | null>(null);
-  const initialTextRef = useRef<string | null | undefined>(initialText);
   /** Viewport seen at load; the first move-end after a fitView mount is
    * programmatic and must not look like an edit (an open would rewrite the
    * file and re-sort the tree, the same trap the drawing surface hit). */
@@ -289,9 +288,7 @@ export function CanvasBoardView({ filePath, notebookPath, readOnly = false, init
     cardsRef.current = [];
     dataUrlsRef.current = new Map();
     void (async () => {
-      const handedOver = initialTextRef.current;
-      initialTextRef.current = null;
-      const text = handedOver ?? await files.read(filePath, notebookPath ?? undefined);
+      const text = await files.read(filePath, notebookPath ?? undefined);
       if (cancelled) return;
       if (text == null) {
         setState({ status: 'error', message: t('canvas.load.missing') });
