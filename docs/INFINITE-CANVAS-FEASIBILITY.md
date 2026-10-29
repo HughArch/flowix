@@ -456,3 +456,10 @@ P2.1 骨架实测记录（桌面 dev + CDP）：板打开 171ms；打开不写�
 - **图层图标**：ArrowDownToLine/ArrowDown/ArrowUp/ArrowUpToLine（与 Obsidian 一致）。
 - **操作第三个按钮 = 链接**：`shape.link` 存储，面板内联输入框编辑，形状右上角渲染 🔗 徽标（`<a target=_blank>`）。
 - 34 canvas 单测 / 104 全量 / 构建绿；CDP 截图确认面板行渲染（描边/背景/填充/线宽/线条风格/边角/线型/不透明度/图层/操作）。
+
+### 15.15 修复批次（2026-10-30，commit 5b30dc5c）
+
+1. **线型不生效**：roughjs `toPaths()` 输出不带 `strokeLineDash`（dash 只在 `drawable.options` 上，官方 SVG 渲染器从那里读）。修复 = 从 drawable.options 取 dash 附加到 stroke 路径，并透传到 SVG 导出。
+2. **图层不生效**：react-flow 默认 `elevateNodesOnSelect` 把选中节点抬到 z 1000，选中状态下置底永远「看不见」。设为 false。
+3. **透明度行**：文案改「透明度」，0/100 刻度独立一行（此前挤成 0100）。
+4. **底栏照抄 Obsidian**：`[☰] [⧉ 🗑] [↺ ↻]` + 右侧独立缩放胶囊 `[− 100% +]`；☰ 收起/展开属性面板，选中图形自动展开。
