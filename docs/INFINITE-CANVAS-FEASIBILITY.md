@@ -385,3 +385,14 @@ AFFiNE 的「每篇 doc 即画布」（page/edgeless 双模式同数据）依赖
 产品决策：只考虑新版画布。§15.1 第 1 条的「纯手绘旧文件继续走 Excalidraw surface」和 15.3 P2.5 的旧文件转换器**作废**——所有 `.flowix-canvas` 文件一律渲染卡片板；旧文件的 `elements` 数据仍在磁盘上（model 透传保留），但不再渲染。Excalidraw surface、lazy loader 与 `@excalidraw/excalidraw` 依赖当日移除（前端包 -1MB+ 提前兑现）。笔迹/形状能力按 §15.3 P2.3 自研计划不变。
 
 P2.1 骨架实测记录（桌面 dev + CDP）：板打开 171ms；打开不写盘（fitView 触发 onMoveEnd 的坑用「载入时 seed 首个 move-end」修复）；卡片拖拽与平移均经字节不变跳写落盘；视口持久化恢复；双击笔记卡经 `openNoteByNotebookPath` 打开；老画布开空板。已知局限：固定 bottom→top 锚点对右上方向连线出现小环，P2.2 换浮动锚点。
+
+### 15.6 P2.3 提前：手绘笔迹层第一版（2026-10-29，commit 79c2e26d）
+
+应产品确认「一张画布上既有卡片又能手绘」提前落地：
+
+- **笔迹层**：`perfect-freehand`（Excalidraw 同款笔迹内核）渲染，`ViewportPortal` 内 SVG 与卡片同坐标系、随缩放平移；z 序在卡片之上（批注语义）。
+- **工具条**：选择/画笔/橡皮 + 6 色 + 3 档粗细；笔/橡皮模式禁用 pan 与节点拖拽（双指缩放保留），笔模式下双击卡片不触发打开。
+- **存储**：`document.ink = [{id, points, color, width}]`（flow 坐标），护栏 2000 笔 × 4000 点；沿用字节不变跳写。
+- **橡皮**：折线段距离采样按笔擦除，一次手势合并一次落盘。
+- **WebView2 坑**：1×1 SVG + `overflow: visible` 的溢出绘制技巧在 WebView2 不生效（页内对照实验证实），改为按笔迹包围盒动态定位 SVG + `<g>` 平移映射。
+- CDP 实测：画线落盘 `{points,color,width}`、橡皮擦除落盘、三色笔迹随视口变换渲染正确。
