@@ -31,7 +31,7 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, Circle, Copy, Diamond, Download, Eraser, Hand, Link2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Link2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
@@ -42,6 +42,7 @@ import { subscribeExternalDocumentChanges } from '@features/document/store/exter
 import { createLogger } from '@/lib/logger';
 import {
   CanvasParseError,
+  dataUrlPayload,
   parseCanvasDocument,
   readBoardCards,
   readBoardEdges,
@@ -84,6 +85,16 @@ interface BoardNodeData extends Record<string, unknown> {
 }
 
 type BoardNode = Node<BoardNodeData>;
+
+/** Decoded pixel size of a data URL image. */
+function imageSizeOf(dataUrl: string): Promise<{ width: number; height: number }> {
+  return new Promise((resolve, reject) => {
+    const image = new Image();
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight });
+    image.onerror = () => reject(new Error('image decode failed'));
+    image.src = dataUrl;
+  });
+}
 
 function cardTitle(card: BoardCard): string {
   if (card.title) return card.title;
@@ -748,6 +759,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const shapesRef = useRef<BoardShape[]>([]);
   const shapeDraftRef = useRef<{ start: number[]; current: number[] } | null>(null);
   const handleShapeResizeRef = useRef<(nodeId: string, box: { x: number; y: number; width: number; height: number }) => void>(() => {});
+  const applyGraphRef = useRef<(document: FlowixCanvasDocument) => void>(() => {});
   /** Filled after `scheduleFlush` exists; card/shape callbacks may run earlier. */
   const scheduleFlushRef = useRef<() => void>(() => {});
   const pushHistoryRef = useRef<() => void>(() => {});
@@ -1151,6 +1163,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     shape.w = w;
     shape.h = h;
     document.shapes = shapesRef.current;
+    // The rough paths are generated from the shape geometry, so the node must
+    // be rebuilt — otherwise only the hit box grows and the drawing stays put.
+    applyGraphRef.current(document);
     scheduleFlush();
     pushHistory();
   }, [pushHistory, scheduleFlush]);
@@ -1160,6 +1175,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   useEffect(() => {
     handleShapeResizeRef.current = handleShapeResize;
   });
+
+  useEffect(() => {
+    applyGraphRef.current = applyGraph;
+  }, [applyGraph]);
 
   /** Drag a handle between two nodes to add a connector. */
   const handleConnect = useCallback((connection: { source: string | null; target: string | null }) => {
@@ -1235,6 +1254,149 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     copySelection();
     pasteClipboard();
   }, [copySelection, pasteClipboard]);
+
+  /**
+   * Insert an image card. Bytes are persisted into attachments/ and only the
+   * notebook-relative key lands in the canvas JSON, so the same board renders
+   * on every device.
+   */
+  const insertImage = useCallback(async (params: {
+    dataUrl: string;
+    mimeType: string;
+    fileName: string;
+    flowX: number;
+    flowY: number;
+    /** Skip the attachment write when the caller already stored the bytes. */
+    storageKey?: string;
+  }) => {
+    const document = documentRef.current;
+    if (!document) return;
+    let storageKey = params.storageKey ?? null;
+    if (!storageKey) {
+      const payload = dataUrlPayload(params.dataUrl);
+      if (!payload) return;
+      try {
+        const saved = await notebookAssets.saveContent({
+          content: payload,
+          fileName: params.fileName,
+          notePath: filePath,
+        });
+        storageKey = saved?.key ?? null;
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : t('canvas.save.failed'));
+        return;
+      }
+    }
+    if (!storageKey) return;
+    // Natural aspect ratio, clamped to a comfortable default width.
+    const size = await imageSizeOf(params.dataUrl).catch(() => null);
+    // Fit large images, but never insert something too small to grab.
+    const maxWidth = 360;
+    const minWidth = 96;
+    const scale = size
+      ? (size.width > maxWidth ? maxWidth / size.width : size.width < minWidth ? minWidth / size.width : 1)
+      : 1;
+    const width = size ? Math.round(size.width * scale) : 320;
+    const height = size ? Math.round(size.height * scale) : 240;
+
+    const fileId = `img_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`;
+    const card: BoardCard = {
+      id: `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      kind: 'image',
+      x: params.flowX,
+      y: params.flowY,
+      w: width,
+      h: height,
+      fileId,
+    };
+    document.files = {
+      ...document.files,
+      [fileId]: { id: fileId, mimeType: params.mimeType, storageKey },
+    };
+    storageKeysRef.current.set(fileId, storageKey);
+    dataUrlsRef.current.set(fileId, params.dataUrl);
+    cardsRef.current = [...cardsRef.current, card];
+    document.cards = cardsRef.current;
+    selectedIdsRef.current = [card.id];
+    applyGraphRef.current(document);
+    scheduleFlush();
+    pushHistory();
+  }, [filePath, pushHistory, scheduleFlush, t]);
+
+  /** Insert whatever image files the clipboard or a drop carries. */
+  const insertImageFiles = useCallback(async (files: File[], flowX: number, flowY: number) => {
+    let offset = 0;
+    for (const file of files) {
+      if (!file.type.startsWith('image/')) continue;
+      const dataUrl = await new Promise<string | null>((resolve) => {
+        const reader = new FileReader();
+        reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : null);
+        reader.onerror = () => resolve(null);
+        reader.readAsDataURL(file);
+      });
+      if (!dataUrl) continue;
+      await insertImage({
+        dataUrl,
+        mimeType: file.type || 'image/png',
+        fileName: file.name || `image-${Date.now()}.png`,
+        flowX: flowX + offset,
+        flowY: flowY + offset,
+      });
+      offset += 28;
+    }
+  }, [insertImage]);
+
+  // Clipboard paste works without focusing the canvas first.
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    const onPaste = (event: ClipboardEvent) => {
+      const files = [...(event.clipboardData?.files ?? [])].filter((file) => file.type.startsWith('image/'));
+      if (files.length === 0) return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA'].includes(target.tagName))) return;
+      event.preventDefault();
+      const viewport = reactFlow.getViewport();
+      const rect = boardRef.current?.getBoundingClientRect();
+      const flowX = rect ? (rect.width / 2 - viewport.x) / viewport.zoom : 0;
+      const flowY = rect ? (rect.height / 2 - viewport.y) / viewport.zoom : 0;
+      void insertImageFiles(files, flowX, flowY);
+    };
+    window.addEventListener('paste', onPaste);
+    return () => window.removeEventListener('paste', onPaste);
+  }, [insertImageFiles, reactFlow, state.status]);
+
+  /** Toolbar entry: pick image files from disk and drop them on the board. */
+  const pickImages = useCallback(async () => {
+    const paths = await dialogs.selectFiles({ accept: 'image/*', multiple: true });
+    if (!paths || paths.length === 0) return;
+    const viewport = reactFlow.getViewport();
+    const rect = boardRef.current?.getBoundingClientRect();
+    const centerX = rect ? (rect.width / 2 - viewport.x) / viewport.zoom : 0;
+    const centerY = rect ? (rect.height / 2 - viewport.y) / viewport.zoom : 0;
+    let offset = 0;
+    for (const path of paths) {
+      try {
+        const saved = await notebookAssets.saveFromPath(path, { notePath: filePath });
+        const key = saved?.key;
+        if (!key) continue;
+        const dataUrl = await notebookAssets.readContent({ storageKey: key, notePath: filePath });
+        if (!dataUrl) continue;
+        const fileName = path.split(/[\\/]/).pop() ?? 'image.png';
+        const mimeType = dataUrl.slice(5, dataUrl.indexOf(';')) || 'image/png';
+        await insertImage({
+          dataUrl,
+          mimeType,
+          fileName,
+          flowX: centerX + offset,
+          flowY: centerY + offset,
+          storageKey: key,
+        });
+        offset += 28;
+      } catch (error) {
+        toast.error(error instanceof Error ? error.message : t('canvas.save.failed'));
+      }
+    }
+  }, [filePath, insertImage, reactFlow, t]);
 
   /** Double-click on empty canvas drops a text element and starts editing. */
   const handleSurfaceDoubleClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
@@ -1854,6 +2016,26 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       onPointerUp={handleBoardPointerUp}
       onPointerCancel={handleBoardPointerUp}
       onDoubleClick={handleSurfaceDoubleClick}
+      onPaste={(event) => {
+        const images = [...(event.clipboardData?.files ?? [])].filter((file) => file.type.startsWith('image/'));
+        if (images.length === 0) return;
+        event.preventDefault();
+        const viewport = reactFlow.getViewport();
+        const rect = boardRef.current?.getBoundingClientRect();
+        const flowX = rect ? (rect.width / 2 - viewport.x) / viewport.zoom : 0;
+        const flowY = rect ? (rect.height / 2 - viewport.y) / viewport.zoom : 0;
+        void insertImageFiles(images, flowX, flowY);
+      }}
+      onDragOver={(event) => {
+        if ([...(event.dataTransfer?.items ?? [])].some((item) => item.kind === 'file')) event.preventDefault();
+      }}
+      onDrop={(event) => {
+        const files = [...(event.dataTransfer?.files ?? [])].filter((file) => file.type.startsWith('image/'));
+        if (files.length === 0) return;
+        event.preventDefault();
+        const position = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+        void insertImageFiles(files, position.x, position.y);
+      }}
     >
       <div data-board-toolbar className="absolute left-3 top-3 z-30 flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm">
         <button type="button" aria-label={t('canvas.board.tool.select')} className={toolButtonClass(tool === 'select')} onClick={() => setTool('select')}>
@@ -1883,7 +2065,14 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
                     : <Type className="h-3.5 w-3.5" />}
           </button>
         ))}
-
+        <button
+          type="button"
+          aria-label={t('canvas.board.tool.image')}
+          className={toolButtonClass(false)}
+          onClick={() => { void pickImages(); }}
+        >
+          <ImagePlus className="h-3.5 w-3.5" />
+        </button>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button type="button" aria-label={t('canvas.export.menu')} className={toolButtonClass(false)}>

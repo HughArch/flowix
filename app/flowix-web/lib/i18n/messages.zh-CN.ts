@@ -1414,6 +1414,7 @@ const zhCN = {
     "canvas.board.textAlign.left": '左对齐',
     "canvas.board.textAlign.center": '居中',
     "canvas.board.textAlign.right": '右对齐',
+    "canvas.board.tool.image": '图片',
     "canvas.board.emptyNote": "空笔记",
     "canvas.board.imageMissing": "图片未同步",
     "canvas.board.openFailed": "打开笔记失败",

@@ -1437,6 +1437,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "canvas.board.textAlign.left": 'Align left',
     "canvas.board.textAlign.center": 'Center',
     "canvas.board.textAlign.right": 'Align right',
+    "canvas.board.tool.image": 'Image',
     "canvas.board.emptyNote": "Empty note",
     "canvas.board.imageMissing": "Image not synced",
     "canvas.board.openFailed": "Failed to open the note",
