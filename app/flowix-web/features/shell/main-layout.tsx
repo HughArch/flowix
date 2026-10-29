@@ -602,7 +602,9 @@ export function MainLayout({
   });
   // ── 手机单栏 ──────────────────────────────────────────────────────────
   // 窄视口下不做三栏并排: 有文档时整屏显示文档, 否则整屏显示列表。
-  // 列表可临时覆盖回来 (标题栏侧栏按钮), 选中任意目标后自动收起覆盖。
+  // 列表是绝对定位的整屏抽屉 (transform 滑入/滑出), 文档列始终挂载在
+  // 下层, 抽屉滑入时逐渐盖住 / 滑出时逐渐露出; 抽屉全屏展示时下层
+  // 文档整体 inert, 防止误触被覆盖的编辑器。
   const mobileSingleColumn = useIsMobileViewport();
   const hasOpenWorkSurface = workColumnPresentation.content.status !== 'empty';
   const [mobileListOverlay, setMobileListOverlay] = useState(false);
@@ -611,7 +613,6 @@ export function MainLayout({
   }, [mobileSingleColumn, navigationState.target]);
   const showMobileList = mobileSingleColumn && (mobileListOverlay || !hasOpenWorkSurface);
   const effectiveMemoListHidden = mobileSingleColumn ? !showMobileList : isMemoListHidden;
-  const effectiveDocumentHidden = mobileSingleColumn && showMobileList;
   const effectiveBrowserColumnVisible = browserColumnVisible && !mobileSingleColumn;
   const toggleMobileList = useCallback(() => {
     setMobileListOverlay((visible) => !visible);
@@ -970,13 +971,12 @@ export function MainLayout({
               <ColumnResizeHandle label="调整列表列宽度" width={memoColWidth} onResize={resizeMemoList} onDraggingChange={setIsDraggingListDivider} />
             </div>
           )}
-          {/* Keep the drop overlay outside the scrolling columns so it covers the viewport. */}
+          {/* Keep the drop overlay outside the scrolling columns so it covers the viewport.
+              手机抽屉模式下文档列保持挂载 (抽屉滑入时盖住它), 被盖住时整体 inert。 */}
           <div
             data-workspace-drop-overlay-host
-            className={cn(
-              'relative isolate flex min-h-0 min-w-0 flex-1 overflow-hidden',
-              effectiveDocumentHidden && 'hidden',
-            )}
+            inert={mobileSingleColumn && showMobileList ? true : undefined}
+            className="relative isolate flex min-h-0 min-w-0 flex-1 overflow-hidden"
           >
           <div
             data-document-columns-layout="split"
