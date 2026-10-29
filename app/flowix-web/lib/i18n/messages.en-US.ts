@@ -1381,6 +1381,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "canvas.board.style.stroke": "Stroke",
     "canvas.board.style.background": "Background",
     "canvas.board.style.backgroundTransparent": "No fill",
+    "canvas.board.style.strokeType": "Stroke style",
     "canvas.board.style.strokeWidth": "Stroke width",
     "canvas.board.style.solid": "Solid",
     "canvas.board.style.dashed": "Dashed",

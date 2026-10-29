@@ -55,6 +55,7 @@ import {
   type BoardInkStroke,
   type BoardShape,
   type BoardShapeKind,
+  type BoardStrokeStyle,
   type FlowixCanvasDocument,
 } from './model';
 import { type CanvasSurfaceViewProps } from './surface-props';
@@ -576,6 +577,15 @@ async function hydrateImageCards(
   return dataUrls;
 }
 
+function PanelRow({ label, children }: { label: string; children: React.ReactNode }) {
+  return (
+    <div>
+      <div className="mb-1 text-[10px] leading-none text-[var(--muted-foreground)]">{label}</div>
+      <div className="flex items-center gap-1">{children}</div>
+    </div>
+  );
+}
+
 export interface CanvasBoardViewProps extends CanvasSurfaceViewProps {}
 
 type BoardLoadState =
@@ -612,6 +622,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [toolLocked, setToolLocked] = useState(false);
   const [penColor, setPenColor] = useState(INK_COLORS[3]);
   const [penWidth, setPenWidth] = useState(INK_WIDTHS[1]);
+  /** Defaults for the next drawn shape (Excalidraw keeps these per-tool too). */
+  const [toolFill, setToolFill] = useState('transparent');
+  const [toolStrokeStyle, setToolStrokeStyle] = useState<BoardStrokeStyle>('solid');
+  const [toolFontSize, setToolFontSize] = useState(20);
+  const [toolOpacity, setToolOpacity] = useState(100);
   const documentRef = useRef<FlowixCanvasDocument | null>(null);
   const cardsRef = useRef<BoardCard[]>([]);
   const inkRef = useRef<BoardInkStroke[]>([]);
@@ -1249,6 +1264,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           w: Math.abs(arrowEnd[0] - arrowStart[0]),
           h: Math.abs(arrowEnd[1] - arrowStart[1]),
           stroke: penColor,
+          ...(toolStrokeStyle !== 'solid' ? { strokeStyle: toolStrokeStyle } : {}),
+          ...(toolOpacity < 100 ? { opacity: toolOpacity } : {}),
         }
         : {
           id: shapeId(),
@@ -1258,7 +1275,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           w: box.w,
           h: box.h,
           stroke: penColor,
-          ...(isLabel ? { fontSize: 20, text: '' } : {}),
+          ...(isLabel ? { fontSize: toolFontSize, text: '' } : { fill: toolFill, strokeStyle: toolStrokeStyle }),
+          ...(toolOpacity < 100 ? { opacity: toolOpacity } : {}),
         };
       shapesRef.current = [...shapesRef.current, shape];
       document.shapes = shapesRef.current;
@@ -1598,34 +1616,103 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         >
           {toolLocked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
         </button>
-        {tool === 'pen' || isShapeTool(tool) ? (
-          <>
-            <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+      </div>
+      {tool === 'pen' || isShapeTool(tool) ? (
+        <div
+          data-board-toolbar
+          className="absolute bottom-4 left-3 z-30 flex w-[176px] flex-col gap-2 rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
+        >
+          <PanelRow label={t('canvas.board.style.stroke')}>
             {INK_COLORS.map((color) => (
               <button
                 key={color}
                 type="button"
-                aria-label={`${t('canvas.board.tool.pen')} ${color}`}
+                aria-label={`${t('canvas.board.style.stroke')} ${color}`}
                 onClick={() => setPenColor(color)}
                 className={`h-5 w-5 rounded-full border ${penColor === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
                 style={{ backgroundColor: color }}
               />
             ))}
-            <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-            {INK_WIDTHS.map((width) => (
+          </PanelRow>
+          {tool !== 'pen' && tool !== 'text' && tool !== 'arrow' ? (
+            <PanelRow label={t('canvas.board.style.background')}>
+              <button
+                type="button"
+                aria-label={t('canvas.board.style.backgroundTransparent')}
+                onClick={() => setToolFill('transparent')}
+                className={`h-5 w-5 rounded border ${toolFill === 'transparent' ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'} bg-[var(--card)]`}
+                style={{ backgroundImage: 'linear-gradient(135deg, transparent 45%, var(--muted-foreground) 45%, var(--muted-foreground) 55%, transparent 55%)' }}
+              />
+              {FILL_COLORS.map((color) => (
+                <button
+                  key={color}
+                  type="button"
+                  aria-label={`${t('canvas.board.style.background')} ${color}`}
+                  onClick={() => setToolFill(color)}
+                  className={`h-5 w-5 rounded border ${toolFill === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-[var(--border)]'}`}
+                  style={{ backgroundColor: color }}
+                />
+              ))}
+            </PanelRow>
+          ) : null}
+          <PanelRow label={t('canvas.board.style.strokeWidth')}>
+            {(tool === 'pen' ? INK_WIDTHS : STROKE_WIDTHS).map((width) => (
               <button
                 key={width}
                 type="button"
-                aria-label={`${t('canvas.board.tool.pen')} ${width}`}
+                aria-label={`${t('canvas.board.style.strokeWidth')} ${width}`}
                 onClick={() => setPenWidth(width)}
                 className={toolButtonClass(penWidth === width)}
               >
                 <span className="block rounded-full bg-current" style={{ width: width + 3, height: width + 3 }} />
               </button>
             ))}
-          </>
-        ) : null}
-      </div>
+          </PanelRow>
+          {tool !== 'pen' && tool !== 'text' ? (
+            <PanelRow label={t('canvas.board.style.strokeType')}>
+              {STROKE_STYLES.map((style) => (
+                <button
+                  key={style}
+                  type="button"
+                  aria-label={t(`canvas.board.style.${style}`)}
+                  onClick={() => setToolStrokeStyle(style)}
+                  className={toolButtonClass(toolStrokeStyle === style)}
+                >
+                  <span className="block w-4 border-t-2 border-current" style={{ borderTopStyle: style }} />
+                </button>
+              ))}
+            </PanelRow>
+          ) : null}
+          {tool === 'text' ? (
+            <PanelRow label={t('canvas.board.style.fontSize')}>
+              {FONT_SIZES.map((size) => (
+                <button
+                  key={size}
+                  type="button"
+                  aria-label={`${t('canvas.board.style.fontSize')} ${size}`}
+                  onClick={() => setToolFontSize(size)}
+                  className={toolButtonClass(toolFontSize === size)}
+                >
+                  <span style={{ fontSize: Math.max(9, size / 2.4) }}>A</span>
+                </button>
+              ))}
+            </PanelRow>
+          ) : null}
+          {isShapeTool(tool) ? (
+            <PanelRow label={t('canvas.board.style.opacity')}>
+              <input
+                type="range"
+                min={5}
+                max={100}
+                step={5}
+                value={toolOpacity}
+                onChange={(event) => setToolOpacity(Number(event.target.value))}
+                className="w-full accent-[var(--foreground)]"
+              />
+            </PanelRow>
+          ) : null}
+        </div>
+      ) : null}
       {tool === 'select' && selectedShapeCount > 0 ? (
         <div
           data-board-toolbar

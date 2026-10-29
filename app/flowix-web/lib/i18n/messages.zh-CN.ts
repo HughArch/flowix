@@ -1358,6 +1358,7 @@ const zhCN = {
     "canvas.board.style.stroke": "描边",
     "canvas.board.style.background": "背景",
     "canvas.board.style.backgroundTransparent": "无填充",
+    "canvas.board.style.strokeType": "线型",
     "canvas.board.style.strokeWidth": "线宽",
     "canvas.board.style.solid": "实线",
     "canvas.board.style.dashed": "虚线",
