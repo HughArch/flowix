@@ -310,3 +310,20 @@ describe('board shape styling', () => {
     expect(shapes[2].strokeWidth).toBeUndefined();
   });
 });
+
+describe('board shape opacity', () => {
+  it('clamps opacity into 1-100 and defaults to opaque', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      shapes: [
+        { id: 'a', shape: 'rect', x: 0, y: 0, w: 10, h: 10, opacity: 250 },
+        { id: 'b', shape: 'rect', x: 0, y: 0, w: 10, h: 10, opacity: 40 },
+        { id: 'c', shape: 'rect', x: 0, y: 0, w: 10, h: 10 },
+      ],
+    }));
+    const shapes = readBoardShapes(document);
+    expect(shapes[0].opacity).toBe(100);
+    expect(shapes[1].opacity).toBe(40);
+    expect(shapes[2].opacity).toBeUndefined();
+  });
+});

@@ -111,6 +111,8 @@ export interface BoardShape {
   /** Arrow head position in flow coordinates (`x`/`y` is the tail). */
   x2?: number;
   y2?: number;
+  /** 1-100; omitted means fully opaque. */
+  opacity?: number;
 }
 
 /**
@@ -470,6 +472,7 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
       : raw.strokeStyle === 'solid' ? 'solid' : undefined;
     const x2 = readFiniteNumber(raw.x2);
     const y2 = readFiniteNumber(raw.y2);
+    const opacity = readFiniteNumber(raw.opacity);
     shapes.push({
       id,
       shape,
@@ -478,6 +481,7 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
       w: Math.max(16, w),
       h: Math.max(16, h),
       ...(shape === 'arrow' && x2 !== null && y2 !== null ? { x2, y2 } : {}),
+      ...(opacity !== null ? { opacity: Math.min(100, Math.max(1, Math.round(opacity))) } : {}),
       ...(fill ? { fill } : {}),
       ...(stroke ? { stroke } : {}),
       ...(fontSize && fontSize > 0 ? { fontSize } : {}),

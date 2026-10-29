@@ -30,7 +30,7 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { ArrowUpRight, Circle, Diamond, Download, Eraser, Hand, FileText, Frame as FrameIcon, Image as ImageIcon, Maximize2, MousePointer2, Pencil, Redo2, Square, Type, Undo2 } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowUpRight, Circle, Diamond, Download, Eraser, Hand, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, MousePointer2, Pencil, Redo2, Square, Type, Undo2 } from 'lucide-react';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
@@ -60,6 +60,7 @@ import {
 import { type CanvasSurfaceViewProps } from './surface-props';
 import { boardToSvg, svgToPngBase64 } from './board-export';
 import { cachedRoughPaths, roughLinePath } from './board-rough';
+import { alignShapes, distributeShapes, type BoardAlignMode } from './board-align';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
 } from '@shared/ui/dropdown-menu';
@@ -286,7 +287,7 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   );
 
   return (
-    <div className="relative h-full w-full">
+    <div className="relative h-full w-full" style={{ opacity: (shape.opacity ?? 100) / 100 }}>
       <NodeResizer
         isVisible={selected && shape.shape !== 'arrow'}
         minWidth={40}
@@ -607,6 +608,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const historyRef = useRef<{ stack: string[]; index: number }>({ stack: [], index: -1 });
   const [historyDepth, setHistoryDepth] = useState({ index: -1, length: 0 });
   const [tool, setTool] = useState<BoardTool>('select');
+  /** Excalidraw-style lock: keep the drawing tool active after each stroke. */
+  const [toolLocked, setToolLocked] = useState(false);
   const [penColor, setPenColor] = useState(INK_COLORS[3]);
   const [penWidth, setPenWidth] = useState(INK_WIDTHS[1]);
   const documentRef = useRef<FlowixCanvasDocument | null>(null);
@@ -880,8 +883,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     setSelectedShapeIds(selected.filter((node) => node.type === 'shape').map((node) => node.id));
   }, []);
 
-  /** Apply a style patch to every selected shape (Excalidraw-style panel). */
-  const patchSelectedShapes = useCallback((patch: Partial<BoardShape>) => {
+  /** Apply a style patch to every selected shape (Excalidraw-style panel).
+   * `record: false` skips the undo entry so a slider can stream changes and
+   * record once when the gesture ends. */
+  const patchSelectedShapes = useCallback((patch: Partial<BoardShape>, record = true) => {
     const document = documentRef.current;
     if (!document || selectedShapeIds.length === 0) return;
     const ids = new Set(selectedShapeIds);
@@ -891,9 +896,34 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     document.shapes = shapesRef.current;
     applyGraph(document);
     scheduleFlush();
+    if (record) pushHistory();
+  }, [applyGraph, pushHistory, scheduleFlush, selectedShapeIds]);
+
+  /** Align selected shapes inside their common bounding box. */
+  const alignSelectedShapes = useCallback((mode: BoardAlignMode) => {
+    const document = documentRef.current;
+    if (!document || selectedShapeIds.length < 2) return;
+    const ids = new Set(selectedShapeIds);
+    const shapes = shapesRef.current.filter((shape) => ids.has(shape.id));
+    alignShapes(shapes, mode);
+    document.shapes = shapesRef.current;
+    applyGraph(document);
+    scheduleFlush();
     pushHistory();
   }, [applyGraph, pushHistory, scheduleFlush, selectedShapeIds]);
 
+  /** Even spacing between the outermost selected shapes on one axis. */
+  const distributeSelectedShapes = useCallback((axis: 'h' | 'v') => {
+    const document = documentRef.current;
+    if (!document || selectedShapeIds.length < 3) return;
+    const ids = new Set(selectedShapeIds);
+    const shapes = shapesRef.current.filter((shape) => ids.has(shape.id));
+    distributeShapes(shapes, axis);
+    document.shapes = shapesRef.current;
+    applyGraph(document);
+    scheduleFlush();
+    pushHistory();
+  }, [applyGraph, pushHistory, scheduleFlush, selectedShapeIds]);
   const syncPositionsToDocument = useCallback((dragged: BoardNode[]) => {
     const document = documentRef.current;
     if (!document) return;
@@ -1235,7 +1265,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       setNodes((current) => [...current, shapeNodeFor(shape, commitShapeText, handleShapeResizeRef.current, isLabel)]);
       scheduleFlush();
       pushHistory();
-      setTool('select');
+      if (!toolLocked) setTool('select');
       return;
     }
     const stroke = liveStrokeRef.current;
@@ -1466,6 +1496,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const activeStrokeWidth = firstSelected?.strokeWidth ?? 2;
   const activeStrokeStyle = firstSelected?.strokeStyle ?? 'solid';
   const activeFontSize = firstSelected?.fontSize ?? 20;
+  const activeOpacity = firstSelected?.opacity ?? 100;
   const allSelectedLabel = selectedShapeCount > 0 && selectedShapes.every((shape) => shape.shape === 'text');
 
   if (state.status !== 'ready') {
@@ -1557,6 +1588,15 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           onClick={() => { void reactFlow.fitView({ padding: 0.2, maxZoom: 1.2 }); }}
         >
           <Maximize2 className="h-3.5 w-3.5" />
+        </button>
+        <button
+          type="button"
+          aria-label={t('canvas.board.tool.lock')}
+          aria-pressed={toolLocked}
+          className={toolButtonClass(toolLocked)}
+          onClick={() => setToolLocked((locked) => !locked)}
+        >
+          {toolLocked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
         </button>
         {tool === 'pen' || isShapeTool(tool) ? (
           <>
@@ -1662,6 +1702,59 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
               ))}
             </>
           ) : null}
+          {selectedShapeCount >= 2 ? (
+            <>
+              <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+              {([
+                ['left', AlignStartVertical], ['hcenter', AlignCenterVertical], ['right', AlignEndVertical],
+                ['top', AlignStartHorizontal], ['vcenter', AlignCenterHorizontal], ['bottom', AlignEndHorizontal],
+              ] as const).map(([mode, Icon]) => (
+                <button
+                  key={`align-${mode}`}
+                  type="button"
+                  aria-label={t(`canvas.board.align.${mode}`)}
+                  className={toolButtonClass(false)}
+                  onClick={() => alignSelectedShapes(mode)}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                </button>
+              ))}
+              {selectedShapeCount >= 3 ? (
+                <>
+                  <button
+                    type="button"
+                    aria-label={t('canvas.board.distribute.h')}
+                    className={toolButtonClass(false)}
+                    onClick={() => distributeSelectedShapes('h')}
+                  >
+                    <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
+                  </button>
+                  <button
+                    type="button"
+                    aria-label={t('canvas.board.distribute.v')}
+                    className={toolButtonClass(false)}
+                    onClick={() => distributeSelectedShapes('v')}
+                  >
+                    <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
+                  </button>
+                </>
+              ) : null}
+            </>
+          ) : null}
+          <div className="mx-1 h-5 w-px bg-[var(--border)]" />
+          <input
+            type="range"
+            aria-label={t('canvas.board.style.opacity')}
+            min={5}
+            max={100}
+            step={5}
+            value={activeOpacity}
+            onChange={(event) => patchSelectedShapes({ opacity: Number(event.target.value) }, false)}
+            onPointerUp={() => pushHistory()}
+            onKeyUp={() => pushHistory()}
+            className="w-20 accent-[var(--foreground)]"
+          />
+          <span className="w-8 text-[10px] tabular-nums text-[var(--muted-foreground)]">{activeOpacity}%</span>
         </div>
       ) : null}
       <ReactFlow
