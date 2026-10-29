@@ -396,3 +396,10 @@ P2.1 骨架实测记录（桌面 dev + CDP）：板打开 171ms；打开不写�
 - **橡皮**：折线段距离采样按笔擦除，一次手势合并一次落盘。
 - **WebView2 坑**：1×1 SVG + `overflow: visible` 的溢出绘制技巧在 WebView2 不生效（页内对照实验证实），改为按笔迹包围盒动态定位 SVG + `<g>` 平移映射。
 - CDP 实测：画线落盘 `{points,color,width}`、橡皮擦除落盘、三色笔迹随视口变换渲染正确。
+
+### 15.7 卡片正文 / 纯白板背景 / 形状（2026-10-29）
+
+- **卡片正文（commit 3eab930e）**：卡片不再显示「双击打开」占位。新增批量 IPC `read_note_card_summaries(filePaths[])`（上限 500/次），Rust 侧返回 `{title, excerpt, tags, modifiedAt, charCount}`；core 新增 `extract_card_excerpt`（跳过标题行、丢弃 `:::` 指令行、剥掉 `++`/`==` 行内标记，带单元测试）。卡面布局：标题栏 + 正文（5 行截断）+ 标签 chips + 相对时间；空笔记显示「空笔记」。打开画布只发一次 IPC，不在每张卡上各发一次。
+- **纯白板背景（同 commit）**：移除点阵网格，画布为纯背景色；新增「适应视图」工具栏按钮，避免还原的视口成为死路。
+- **形状（commit 1fd40aeb）**：矩形/圆/菱形 = `document.shapes` 节点，拖拽创建（单击落默认 160×100）、拖动、选中后八向缩放、双击内联文字（Enter 提交 / Esc 取消）、Delete 删除；z 序在卡片之下、笔迹之上。缩放/移动/删除直接回写文档并走字节跳写契约。
+- **验证坑**：xyflow 的 `deleteKeyCode` 只响应真实按键，合成的 `KeyboardEvent` 无效 —— CDP 验证要用 `Input.dispatchKeyEvent`；同理文本提交用 `focusout`（React 的 onBlur 挂在 focusout 上），合成 `blur` 不触发。
