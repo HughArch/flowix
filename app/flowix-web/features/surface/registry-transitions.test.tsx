@@ -78,10 +78,12 @@ describe('work column external-file transition completion', () => {
         await act(async () => root.render(<WorkColumnSurfaceHost surface={externalSurface(kind, 12)} />));
         expect(useDocumentStore.getState().isDocumentTransitioning).toBe(false);
         if (kind === 'unavailable-file') {
+          // The lazy UnavailableFileView chunk can take a few seconds to flush
+          // under act on a loaded machine; the default 1s waitFor is too tight.
           await vi.waitFor(async () => {
             await act(async () => {});
             expect(element.querySelector('[data-file-path]')?.getAttribute('data-file-path')).toBe('/notebook/report.pdf');
-          });
+          }, { timeout: 10_000, interval: 100 });
           expect(element.querySelector('[data-open-folder]')?.getAttribute('data-open-folder')).toBe('true');
         }
       } finally {
