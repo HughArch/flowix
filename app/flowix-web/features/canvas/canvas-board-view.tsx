@@ -31,7 +31,7 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, Circle, Copy, Diamond, Download, Eraser, Hand, Link2, Menu, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, Circle, Copy, Diamond, Download, Eraser, Hand, Link2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
@@ -247,6 +247,9 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   const stroke = shape.stroke ?? '#64748b';
   const strokeWidth = shape.strokeWidth ?? 2;
   const fontSize = shape.fontSize ?? 16;
+  const fontStack = TEXT_FONTS[shape.fontFamily ?? 'hand'];
+  const textAlign = shape.textAlign ?? 'center';
+  const alignClass = textAlign === 'left' ? 'text-left' : textAlign === 'right' ? 'text-right' : 'text-center';
   // Node boxes are padded, so paths must be translated by the padded origin.
   const origin = shape.shape === 'arrow' ? arrowBox(shape) : shapeBoxWithPadding(shape);
 
@@ -305,7 +308,7 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
       />
       {sketch}
       <div
-        className="absolute inset-0 flex items-center justify-center px-2 text-center"
+        className={`absolute inset-0 flex items-center px-2 ${alignClass} ${textAlign === 'center' ? 'justify-center' : ''}`}
         onDoubleClick={(event) => {
           event.stopPropagation();
           setDraft(shape.text ?? '');
@@ -323,13 +326,13 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
               if (event.key === 'Escape') { setEditing(false); }
               if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); setEditing(false); data.onShapeTextCommit?.(shape.id, draft); }
             }}
-            style={{ fontSize, color: shape.shape === 'text' ? stroke : undefined, fontFamily: HAND_FONT }}
-            className="h-full w-full resize-none bg-transparent text-center leading-snug text-[var(--foreground)] outline-none"
+            style={{ fontSize, color: shape.shape === 'text' ? stroke : undefined, fontFamily: fontStack }}
+            className={`h-full w-full resize-none bg-transparent ${alignClass} leading-snug text-[var(--foreground)] outline-none`}
           />
         ) : shape.text ? (
           <span
-            className="pointer-events-none whitespace-pre-wrap break-words leading-snug"
-            style={{ color: shape.shape === 'text' ? stroke : 'var(--foreground)', fontSize, fontFamily: HAND_FONT }}
+            className={`pointer-events-none whitespace-pre-wrap break-words leading-snug ${alignClass}`}
+            style={{ color: shape.shape === 'text' ? stroke : 'var(--foreground)', fontSize, fontFamily: fontStack }}
           >
             {shape.text}
           </span>
@@ -375,6 +378,13 @@ const NODE_TYPES = {
 type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | BoardShapeKind;
 /** Handwriting stack: CJK brushes first, then Latin sketch fonts. */
 const HAND_FONT = "'Xiaolai SC','Kaiti SC',KaiTi,STKaiti,'Segoe Print','Comic Sans MS',cursive";
+/** Font faces for the text panel row (Obsidian: handwriting / normal / code / serif). */
+const TEXT_FONTS: Record<'hand' | 'sans' | 'mono' | 'serif', string> = {
+  hand: HAND_FONT,
+  sans: 'system-ui, -apple-system, "Segoe UI", sans-serif',
+  mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
+  serif: 'Georgia, "Times New Roman", "Songti SC", serif',
+};
 const SHAPE_TOOLS: BoardShapeKind[] = ['rect', 'ellipse', 'diamond', 'text', 'arrow'];
 const isShapeTool = (tool: BoardTool): tool is BoardShapeKind =>
   tool === 'rect' || tool === 'ellipse' || tool === 'diamond' || tool === 'text' || tool === 'arrow';
@@ -386,7 +396,10 @@ const STROKE_WIDTHS = [1, 2, 4, 8, 16];
 const STROKE_STYLES = ['solid', 'dashed', 'dotted'] as const;
 const FILL_STYLES = ['hachure', 'solid', 'cross-hatch'] as const;
 const ROUGHNESS_LEVELS = [0, 1, 2.5] as const;
-const FONT_SIZES = [14, 20, 28, 36];
+const FONT_SIZES = [12, 16, 20, 28, 36];
+const FONT_SIZE_LABELS = ['XS', 'S', 'M', 'L', 'XL'] as const;
+const TEXT_ALIGNS = ['left', 'center', 'right'] as const;
+const TEXT_FONT_KEYS = ['hand', 'sans', 'mono', 'serif'] as const;
 const INK_WIDTHS = [2, 5, 10];
 /** Ink renders above cards: annotation strokes cross card bodies like on a whiteboard. */
 const INK_Z_INDEX = 20;
@@ -718,6 +731,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [toolFill, setToolFill] = useState('transparent');
   const [toolStrokeStyle, setToolStrokeStyle] = useState<BoardStrokeStyle>('solid');
   const [toolFontSize, setToolFontSize] = useState(20);
+  const [toolFontFamily, setToolFontFamily] = useState<'hand' | 'sans' | 'mono' | 'serif'>('hand');
+  const [toolTextAlign, setToolTextAlign] = useState<'left' | 'center' | 'right'>('center');
   const [toolOpacity, setToolOpacity] = useState(100);
   const [toolPressure, setToolPressure] = useState(true);
   const [toolFillStyle, setToolFillStyle] = useState<'hachure' | 'solid' | 'cross-hatch'>('hachure');
@@ -1216,7 +1231,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       w: 240,
       h: 40,
       stroke: penColor,
-      fontSize: 20,
+      fontSize: toolFontSize,
+      fontFamily: toolFontFamily,
+      textAlign: toolTextAlign,
       text: '',
     };
     shapesRef.current = [...shapesRef.current, shape];
@@ -1224,7 +1241,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     setNodes((current) => [...current, shapeNodeFor(shape, commitShapeText, handleShapeResizeRef.current, true)]);
     scheduleFlush();
     pushHistory();
-  }, [commitShapeText, penColor, pushHistory, reactFlow, readOnly, scheduleFlush, tool]);
+  }, [commitShapeText, penColor, pushHistory, reactFlow, readOnly, scheduleFlush, tool, toolFontFamily, toolFontSize, toolTextAlign]);
 
   /** Delete key on a selected card/shape edits the document, not just the view. */
   const removeByIds = useCallback((ids: string[]) => {
@@ -1511,7 +1528,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           h: box.h,
           stroke: penColor,
           ...(isLabel
-            ? { fontSize: toolFontSize, text: '' }
+            ? { fontSize: toolFontSize, fontFamily: toolFontFamily, textAlign: toolTextAlign, text: '' }
             : {
                 fill: toolFill,
                 fillStyle: toolFillStyle,
@@ -1765,6 +1782,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const showFill = inkOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow') : tool !== 'pen' && tool !== 'text' && tool !== 'arrow';
   const showStrokeStyle = inkOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : tool !== 'pen' && tool !== 'text';
   const showFontSize = inkOnlySelection ? false : selectionMode ? allSelectedLabel : tool === 'text';
+  const textOnlySelection = selectionMode && allSelectedLabel;
+  const showFontFamily = textOnlySelection || (!selectionMode && tool === 'text');
+  const showTextAlign = textOnlySelection || (!selectionMode && tool === 'text');
+  const styleFontFamily = selectionMode ? firstSelected?.fontFamily ?? 'hand' : toolFontFamily;
+  const styleTextAlign = selectionMode ? firstSelected?.textAlign ?? 'center' : toolTextAlign;
   const showOpacity = inkOnlySelection ? false : selectionMode || isShapeTool(tool);
   const showFillStyle = inkOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond') : tool === 'rect' || tool === 'ellipse' || tool === 'diamond';
   const showRoughness = inkOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : isShapeTool(tool) && tool !== 'text';
@@ -1935,6 +1957,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
               </div>
             </PanelRow>
           ) : null}
+          {textOnlySelection ? null : (
           <PanelRow label={t('canvas.board.style.strokeWidth')}>
             {(inkOnlySelection || (selectionMode ? false : tool === 'pen') ? INK_WIDTHS : STROKE_WIDTHS).map((width) => (
               <button
@@ -1948,6 +1971,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
               </button>
             ))}
           </PanelRow>
+          )}
           {tool === 'pen' ? (
             <PanelRow label={t('canvas.board.style.pressure')}>
               <button
@@ -2020,17 +2044,53 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
               ))}
             </PanelRow>
           ) : null}
+          {showFontFamily ? (
+            <PanelRow label={t('canvas.board.style.font')}>
+              {TEXT_FONT_KEYS.map((key) => (
+                <button
+                  key={key}
+                  type="button"
+                  aria-label={`${t('canvas.board.style.font')} ${key}`}
+                  onClick={() => (selectionMode ? patchSelectedShapes({ fontFamily: key }) : setToolFontFamily(key))}
+                  className={toolButtonClass(styleFontFamily === key)}
+                >
+                  <span style={{ fontFamily: TEXT_FONTS[key], fontSize: 13, fontWeight: key === 'serif' ? 700 : 400 }}>
+                    {key === 'hand' ? <Pencil className="h-3.5 w-3.5" /> : key === 'mono' ? '</>' : 'A'}
+                  </span>
+                </button>
+              ))}
+            </PanelRow>
+          ) : null}
           {showFontSize ? (
             <PanelRow label={t('canvas.board.style.fontSize')}>
-              {FONT_SIZES.map((size) => (
+              {FONT_SIZES.map((size, index) => (
                 <button
                   key={size}
                   type="button"
-                  aria-label={`${t('canvas.board.style.fontSize')} ${size}`}
+                  aria-label={`${t('canvas.board.style.fontSize')} ${FONT_SIZE_LABELS[index]}`}
                   onClick={() => (selectionMode ? patchSelectedShapes({ fontSize: size }) : setToolFontSize(size))}
-                  className={toolButtonClass(styleFontSize === size)}
+                  className={`${toolButtonClass(styleFontSize === size)} w-7 text-[10px]`}
                 >
-                  <span style={{ fontSize: Math.max(9, size / 2.4) }}>A</span>
+                  {FONT_SIZE_LABELS[index]}
+                </button>
+              ))}
+            </PanelRow>
+          ) : null}
+          {showTextAlign ? (
+            <PanelRow label={t('canvas.board.style.textAlign')}>
+              {TEXT_ALIGNS.map((align) => (
+                <button
+                  key={align}
+                  type="button"
+                  aria-label={t(`canvas.board.textAlign.${align}`)}
+                  onClick={() => (selectionMode ? patchSelectedShapes({ textAlign: align }) : setToolTextAlign(align))}
+                  className={toolButtonClass(styleTextAlign === align)}
+                >
+                  <span className={`flex w-3.5 flex-col gap-[3px] ${align === 'left' ? 'items-start' : align === 'right' ? 'items-end' : 'items-center'}`}>
+                    <span className="block h-[2px] w-full bg-current" />
+                    <span className="block h-[2px] w-2/3 bg-current" />
+                    <span className="block h-[2px] w-full bg-current" />
+                  </span>
                 </button>
               ))}
             </PanelRow>
@@ -2171,7 +2231,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
               className={toolButtonClass(!panelCollapsed)}
               onClick={() => setPanelCollapsed((collapsed) => !collapsed)}
             >
-              <Menu className="h-3.5 w-3.5" />
+              <Palette className="h-3.5 w-3.5" />
             </button>
             {!panelCollapsed ? (
               <>

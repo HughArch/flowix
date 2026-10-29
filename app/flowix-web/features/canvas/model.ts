@@ -92,6 +92,8 @@ export type BoardShapeKind = 'rect' | 'ellipse' | 'diamond' | 'text' | 'arrow';
 
 /** Diagram shape in board (flow) coordinates; `text` is the inline label. */
 export type BoardStrokeStyle = 'solid' | 'dashed' | 'dotted';
+export type BoardFontFamily = 'hand' | 'sans' | 'mono' | 'serif';
+export type BoardTextAlign = 'left' | 'center' | 'right';
 
 export interface BoardShape {
   id: string;
@@ -117,6 +119,10 @@ export interface BoardShape {
   strokeStyle?: BoardStrokeStyle;
   /** Label size in flow pixels. */
   fontSize?: number;
+  /** Text face: handwriting, sans, mono, serif (Obsidian's font row). */
+  fontFamily?: BoardFontFamily;
+  /** Text alignment inside the shape box. */
+  textAlign?: BoardTextAlign;
   text?: string;
   /** Arrow head position in flow coordinates (`x`/`y` is the tail). */
   x2?: number;
@@ -484,6 +490,12 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
     const y2 = readFiniteNumber(raw.y2);
     const opacity = readFiniteNumber(raw.opacity);
     const fillStyle = raw.fillStyle === 'solid' || raw.fillStyle === 'cross-hatch' ? raw.fillStyle : raw.fillStyle === 'hachure' ? 'hachure' : undefined;
+    const fontFamily: BoardFontFamily | undefined = raw.fontFamily === 'sans' || raw.fontFamily === 'mono' || raw.fontFamily === 'serif'
+      ? raw.fontFamily
+      : raw.fontFamily === 'hand' ? 'hand' : undefined;
+    const textAlign: BoardTextAlign | undefined = raw.textAlign === 'left' || raw.textAlign === 'right'
+      ? raw.textAlign
+      : raw.textAlign === 'center' ? 'center' : undefined;
     const roughness = readFiniteNumber(raw.roughness);
     const edges = raw.edges === 'round' ? 'round' : raw.edges === 'sharp' ? 'sharp' : undefined;
     const link = typeof raw.link === 'string' && raw.link.trim() ? raw.link.trim() : undefined;
@@ -503,6 +515,8 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
       ...(fill ? { fill } : {}),
       ...(stroke ? { stroke } : {}),
       ...(fontSize && fontSize > 0 ? { fontSize } : {}),
+      ...(fontFamily ? { fontFamily } : {}),
+      ...(textAlign ? { textAlign } : {}),
       ...(strokeWidth && strokeWidth > 0 ? { strokeWidth } : {}),
       ...(strokeStyle ? { strokeStyle } : {}),
       ...(text ? { text } : {}),
