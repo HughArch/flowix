@@ -178,6 +178,7 @@ export function serializeCanvasDocument(
   appState: PersistedCanvasAppState | null | undefined,
   files: Record<string, unknown> | null | undefined,
   storageKeys?: ReadonlyMap<string, string>,
+  options?: { touchUpdatedAt?: boolean },
 ): { text: string; droppedFileCount: number } {
   const keptElements = elements.filter(isPlainObject).slice(0, MAX_CANVAS_ELEMENTS);
   const keptFiles: Record<string, unknown> = {};
@@ -208,7 +209,10 @@ export function serializeCanvasDocument(
   }
   const next: FlowixCanvasDocument = {
     ...document,
-    meta: { ...document.meta, updatedAt: nowIso() },
+    // Callers compare an untouchable serialization against what is on disk
+    // first: touching updatedAt unconditionally made every open look like an
+    // edit, which rewrote the file and re-sorted it in the tree.
+    meta: { ...document.meta, updatedAt: options?.touchUpdatedAt === false ? document.meta.updatedAt : nowIso() },
     elements: keptElements,
     cards: document.cards,
     files: keptFiles,

@@ -142,3 +142,25 @@ describe('serialization keeps persisted references', () => {
     expect(parsed.files.img1).toEqual({ id: 'img1', mimeType: 'image/png', storageKey: 'attachments/img1.png' });
   });
 });
+
+describe('updatedAt stability', () => {
+  it('keeps updatedAt when touchUpdatedAt is false so opens are not edits', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      meta: { createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-02T00:00:00.000Z' },
+      elements: [], files: {},
+    }));
+    const { text } = serializeCanvasDocument(document, [], {}, {}, undefined, { touchUpdatedAt: false });
+    expect(JSON.parse(text).meta.updatedAt).toBe('2026-01-02T00:00:00.000Z');
+  });
+
+  it('stamps a fresh updatedAt by default', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      meta: { createdAt: '2026-01-01T00:00:00.000Z', updatedAt: '2026-01-02T00:00:00.000Z' },
+      elements: [], files: {},
+    }));
+    const { text } = serializeCanvasDocument(document, [], {}, {});
+    expect(JSON.parse(text).meta.updatedAt).not.toBe('2026-01-02T00:00:00.000Z');
+  });
+});

@@ -3,7 +3,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import type { ExcalidrawElement } from '@excalidraw/excalidraw/element/types';
 import type { AppState, BinaryFileData, BinaryFiles, ExcalidrawImperativeAPI } from '@excalidraw/excalidraw/types';
-import { resolveAttachmentStorageKey } from '@features/editor/extensions/attachment-link/utils';
 import { dialogs, files, notebookAssets } from '@platform/tauri/client';
 import { Download } from 'lucide-react';
 import {
@@ -51,8 +50,11 @@ async function hydrateSceneFiles(
   const failedIds = new Set<string>();
   for (const entry of readCanvasFileEntries(document.files)) {
     if (entry.storageKey) {
-      const absolute = resolveAttachmentStorageKey(entry.storageKey, notebookPath);
-      const dataURL = await files_readImageSafe(absolute, notebookPath);
+      // Resolution happens Rust-side against the owner notebook's root, so the
+      // canvas file's containing folder is irrelevant.
+      const dataURL = await notebookAssets
+        .readContent({ storageKey: entry.storageKey, notePath: notebookPath ?? undefined })
+        .catch(() => null);
       if (!dataURL) {
         failedIds.add(entry.id);
         continue;
@@ -75,9 +77,21 @@ async function hydrateSceneFiles(
   return { files, failedIds };
 }
 
-// Indirection keeps the import list honest: the IPC module is imported at the top.
-function files_readImageSafe(absolute: string, notebookPath: string | null): Promise<string | null> {
-  return files.readImage(absolute, notebookPath ?? undefined).catch(() => null);
+/** Stable identity of the editable scene; selection/cursor changes do not move it. */
+function sceneSignature(
+  elements: readonly ExcalidrawElement[],
+  appState: PersistedCanvasAppState,
+  files: BinaryFiles,
+): string {
+  return JSON.stringify({
+    elements: elements.map((element) => [
+      element.id, element.version, element.versionNonce, element.isDeleted,
+    ]),
+    appState: [
+      appState.viewBackgroundColor ?? null, appState.gridSize ?? null, appState.gridModeEnabled ?? null,
+    ],
+    files: Object.keys(files).sort().map((id) => [id, files[id]?.mimeType ?? null]),
+  });
 }
 
 export interface CanvasSurfaceViewProps {
@@ -112,6 +126,8 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
   const dirtyRef = useRef(false);
   const timerRef = useRef<number | null>(null);
   const lastSavedTextRef = useRef<string | null>(null);
+  /** Scene signature last seen; the first change after mount only seeds it. */
+  const sceneSignatureRef = useRef<string | null>(null);
   /** Excalidraw file id -> notebook-relative attachment key. */
   const fileKeysRef = useRef<Map<string, string>>(new Map());
   const pendingUploadsRef = useRef<Set<string>>(new Set());
@@ -129,6 +145,7 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
     sceneRef.current = null;
     fileKeysRef.current = new Map();
     pendingUploadsRef.current = new Set();
+    sceneSignatureRef.current = null;
     void (async () => {
       const text = await files.read(filePath, notebookPath ?? undefined);
       if (cancelled) return;
@@ -163,16 +180,22 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
     const document = documentRef.current;
     const scene = sceneRef.current;
     if (!document || !scene || !dirtyRef.current) return true;
-    const { text, droppedFileCount } = serializeCanvasDocument(
+    // Compare without touching updatedAt: Excalidraw fires onChange on mount
+    // and for selection-only tweaks, and stamping updatedAt first would make
+    // every open look like an edit (rewritten file, re-sorted tree entry).
+    const stable = serializeCanvasDocument(
       document, scene.elements, scene.appState, scene.files, fileKeysRef.current,
+      { touchUpdatedAt: false },
     );
-    // Excalidraw fires onChange on mount and for selection-only tweaks; skip
-    // the write when the serialized bytes match what is already on disk so an
-    // opened-but-unedited canvas never touches the sync channel.
-    if (text === lastSavedTextRef.current) {
+    if (stable.text === lastSavedTextRef.current) {
       dirtyRef.current = false;
       return true;
     }
+    document.meta = { ...document.meta, updatedAt: new Date().toISOString() };
+    const { text, droppedFileCount } = serializeCanvasDocument(
+      document, scene.elements, scene.appState, scene.files, fileKeysRef.current,
+      { touchUpdatedAt: false },
+    );
     try {
       const saved = await files.write(filePath, text, undefined, notebookPath ?? undefined);
       if (!saved) throw new Error('write_file returned false');
@@ -234,16 +257,23 @@ export function CanvasSurfaceView({ filePath, notebookPath, readOnly = false, on
   }, [filePath, readOnly, scheduleFlush, t]);
 
   const handleSceneChange = useCallback((elements: readonly ExcalidrawElement[], appState: AppState, sceneFiles: BinaryFiles) => {
-    sceneRef.current = {
-      elements,
-      appState: {
-        viewBackgroundColor: appState.viewBackgroundColor,
-        gridSize: appState.gridSize ?? null,
-        gridModeEnabled: appState.gridModeEnabled,
-      },
-      files: sceneFiles,
+    const persistedAppState: PersistedCanvasAppState = {
+      viewBackgroundColor: appState.viewBackgroundColor,
+      gridSize: appState.gridSize ?? null,
+      gridModeEnabled: appState.gridModeEnabled,
     };
+    sceneRef.current = { elements, appState: persistedAppState, files: sceneFiles };
     queueFileUploads(sceneFiles);
+    const signature = sceneSignature(elements, persistedAppState, sceneFiles);
+    // Mount normalization (restore adds fields, reformats) is not an edit:
+    // seeding the signature here keeps opening a canvas from rewriting the
+    // file, which would bump mtime and re-sort the tree by modified time.
+    if (sceneSignatureRef.current === null) {
+      sceneSignatureRef.current = signature;
+      return;
+    }
+    if (sceneSignatureRef.current === signature) return;
+    sceneSignatureRef.current = signature;
     scheduleFlush();
   }, [queueFileUploads, scheduleFlush]);
 
