@@ -579,3 +579,23 @@ APK（x86_64 debug）装到 `Pixel_7` 模拟器后暴露一串只在触控下出
 修复：触摸拖拽结束时（`handleNodeDragStop` + `touchDraggingRef`）清空选中（节点选中/面板/`selectedIdsRef`），卡片回到"可拖动"状态。交互模型固定为：**未选中/刚拖完 = 可拖动；轻点选中 = 阅读模式，单指上下滚动；选中时拖标题栏仍可移动**。桌面鼠标拖拽不受影响（按 pointerType 门控）。
 
 补充：React Flow 对**轻点**也会触发 `onNodeDragStart/Stop`，直接按 dragStop 取消选中会把"点选卡片阅读"一起打掉。改为在 dragStart 记录几何、dragStop 比较位移（>3 flow 单位才视为拖动）后再取消选中；轻点保持选中。验证：连续两次触摸拖动位置均变化且每次拖后 `selected=false`；轻点后 `selected=true`。
+
+### 15.27 便签与画框工具 + 工具栏快捷键（2026-10-30）
+
+参考 Obsidian Canvas 补齐两类元素和整套工具快捷键。
+
+1. **便签（N）**：`kind: 'text'` 的卡片获得完整生命周期——工具按下/拖拽放置（点按落 Obsidian 默认 220×180，拖拽按框），放置后**直接进入文字编辑**（textarea，Enter 换行、Esc/Cmd+Enter 结束、失焦提交）；`BoardCard.color` 持久化五种 Obsidian 式底色（黄/红/绿/蓝/紫），属性面板的「便签颜色」行在便签工具或选中便签时显示：无选中改的是"下一张便签"的默认色，选中时直接改卡。
+2. **画框（F）**：新元素类型落在 `document.frames`，虚线框 + 顶部标题带。设计成**背景容器**：节点体 `pointer-events-none`（框内卡片照常点选/拖动），只有标题带可交互——单击选中（出现 NodeResizer 八向控制点）、拖动移动、双击进入标题编辑；`resize` 的控制点通过 `canvas-board.css` 对 `.react-flow__node-frame .react-flow__resize-control { pointer-events: all }` 重新开启（否则被节点体的 none 继承，控制点全部失效）。新画的画框同样自动进入标题编辑。
+3. **快捷键系统扩展**：`parseChord` 增加 `allowBareKey` 选项（默认关闭），`ActionDefinition.allowBareKey` 声明后 `resolveBinding/resolveBindings` 才按裸键解析——应用级动作仍强制修饰键，避免破坏全局语义。画布工具表收敛在 `features/canvas/canvas-tool-shortcuts.ts`（单一来源）：`V 选择 / H 抓手 / P 画笔 / E 橡皮 / R 矩形 / O 圆形 / D 菱形 / A 箭头 / T 文字 / N 便签 / F 画框 / Esc 退出绘制`，actions.ts 循环注册（scope `no-input` + `allowBareKey` + `when: isCanvasSurfaceActive`），偏好设置的快捷键面板出现「画布」分组且可改键。
+4. **激活面判定**：`features/canvas/canvas-focus.ts` 维护模块级 active surface（StrictMode 引用计数）。画布挂载时 claim、卸载时 release；document 级 pointerdown/focusin capture：落点在画布内 → 标记该画布，落在任何画布外 → 清空。handler 侧再用 `isActive: getActiveCanvasSurface() === surfaceId` 双保险，保证分屏双画布时只有最后交互的那块响应按键，编辑器/左栏焦点时 V/H 不劫持输入。
+5. **工具栏悬浮说明**：所有工具按钮包 `Tooltip`（bottom），`shortcut` 传 actionId → `ShortcutKbd` 显示平台格式化的按键（改键后自动跟随）。图片/笔记插入/导出/适应视图/锁定只有文案无按键。
+6. **实现细节**：`applyGraph` 消费 `pendingEditingRef`（新建便签/画框挂载即带 `initialEditing`）；便签/画框编辑器在 mount 后用 `setTimeout(0)` 抢回焦点——React Flow 在放置拖拽的微任务里把焦点还给节点包装层，`autoFocus` 必输；**Esc 或卸载路径必须显式 commit**（卸载已聚焦元素不触发 blur，只 `setEditing(false)` 会静默丢稿）；卡片节点数据补挂 `onCardTextCommit`。样式面板在便签模式下只显示颜色行（`showFill`/`showStrokeStyle` 改为按 `isShapeTool` 收敛，`strokeWidth` 行加 `stickyPlacing` 门控），不再漏出无关的形状样式行。
+7. **删除路径**：`removeByIds` 增加 frames 过滤，Delete/面板删除对画框生效；画框标题为空时渲染占位符（"画框标题"），提交空串清除 title 字段。
+8. **验证记录**（桌面 dev + CDP 真键鼠事件）：N→拖拽→键入→Esc，文本落盘；选红色色板后新便签 `color:"red"`；点选便签改绿色即时生效并落盘；F→拖拽画框→自动进标题编辑→键入 Enter，title 落盘；标题带选中→八向控制点 pointer-events all→拖拽右下角 w/h 347×153→525×290 落盘；Delete 删除画框落盘；H/V/R/Esc 切换工具与退出均生效（未激活画布时按键穿透）；悬浮提示显示「选择 V」。
+
+### 15.28 便签文字工具 + 手势与命中区修正（2026-10-30）
+
+1. **便签文字工具**：`BoardCard` 增加 `fontSize/fontFamily/textAlign/textColor`（便签专属，coercion 收敛取值），StickyNode 按卡渲染（缺省 12px/正常/左对齐/随底色前景）。属性面板在便签模式下新增 字体（手绘直选 + A 菜单）/字号 XS-XL/对齐/文字颜色 四行，`applyStickyStyle(patch)` 统一路由：无选中=改“下一张便签”的工具默认（stickyFontSize 等五个 state），有选中=改卡并入撤销。新建便签继承全部默认值。i18n 增 `canvas.board.style.textColor`。
+2. **缩放手势命中区**：此前 10px 控制点 + 1px 边线要“瞄准”才出缩放光标。修复 = canvas-board.css 给 `.react-flow__resize-control.handle/line::before` 画 `inset:-8px` 的透明 halo——伪元素命中区随元素放大，光标反馈范围同步变大（实测手柄外 9px、边线外 6px 仍是 nwse/ns-resize，12px/10px 处让位）。视觉不变。
+3. **选择器状态下的双指缩放**：RF 的 zoom filter 在 `!panOnDrag && touchstart` 时直接拒绝（system/index.js 2939 行），而选择工具的 user-selection（selectionOnDrag）又会吞掉第二根手指 → 触摸双指缩放完全失效。修复 = 触摸语义切分：`handleBoardPointerDown` 按 pointerType 维护 `touchMode`，选择工具下 `selectionOnDrag={tool==='select' && !touchMode}`、`panOnDrag={tool==='hand' || (tool==='select' && touchMode)}`——**触摸：单指拖空白=平移、双指=捏合缩放、点按=选中元素；鼠标：拖拽=框选多选**（Obsidian mobile 同语义）。
+4. **验证记录**（桌面 dev + CDP 真触摸事件 `Input.dispatchTouchEvent`）：选择工具下双指从 300px 撑到 480px，viewport zoom 1.112→1.779；捏合回落 480→300，zoom 回 1.112；单指触摸拖拽平移 translate (-503,66)→(-653,16) 与手势同向等距；鼠标框选不受影响（touchMode 按 pointerType 门控）。便签：放置→点选→字号 XL+文字颜色蓝，DOM 36px/#1971c2、文件 fontSize/textColor 落盘。

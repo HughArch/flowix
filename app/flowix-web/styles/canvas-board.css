@@ -58,3 +58,25 @@
   flex: 0 0 auto;
   color: var(--muted-foreground);
 }
+
+/* Frames are click-through backdrops (pointer-events: none on the node body),
+ * so their resize controls must opt back in or the handles are unusable. */
+.react-flow__node-frame .react-flow__resize-control {
+  pointer-events: all;
+}
+
+/* Fat invisible hit areas around the resize handles and edge strips: the
+ * 10px handles / 5px lines need sniper precision with a mouse and are worse
+ * with a finger. The ::before halo enlarges the grab zone without changing
+ * what is drawn (and extends the resize cursor's hover area with it). */
+.react-flow__resize-control.handle::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
+
+.react-flow__resize-control.line::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}

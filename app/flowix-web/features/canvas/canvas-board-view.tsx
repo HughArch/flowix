@@ -33,7 +33,11 @@ import {
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
 import '../../styles/canvas-board.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Link2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Link2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { Tooltip } from '@shared/ui/tooltip';
+import { pushHandler } from '@/lib/shortcuts';
+import { claimCanvasSurface, getActiveCanvasSurface, releaseCanvasSurface, setActiveCanvasSurface } from './canvas-focus';
+import { CANVAS_TOOL_SHORTCUTS } from './canvas-tool-shortcuts';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { parseMarkdownInWorker } from '@features/editor/markdown-parser';
@@ -66,10 +70,13 @@ import {
   readPersistedAppState,
   serializeCanvasDocument,
   type BoardCard,
+  type BoardFontFamily,
+  type BoardFrame,
   type BoardInkStroke,
   type BoardShape,
   type BoardShapeKind,
   type BoardStrokeStyle,
+  type BoardTextAlign,
   type FlowixCanvasDocument,
 } from './model';
 import { type CanvasSurfaceViewProps } from './surface-props';
@@ -94,6 +101,11 @@ interface BoardNodeData extends Record<string, unknown> {
   shape: BoardShape | null;
   inkStroke: BoardInkStroke | null;
   onShapeTextCommit?: (shapeId: string, text: string) => void;
+  /** Sticky-note text commit (kind: 'text' cards edit in place). */
+  onCardTextCommit?: (cardId: string, text: string) => void;
+  /** Frame label commit; frames are containers, not cards. */
+  onFrameTitleCommit?: (frameId: string, title: string) => void;
+  onFrameResize?: (nodeId: string, box: ResizeBoxRect, phase: ResizePhase) => void;
   onShapeResize?: (nodeId: string, box: ResizeBoxRect, phase: ResizePhase) => void;
   onCardResize?: (nodeId: string, box: ResizeBoxRect, phase: ResizePhase) => void;
   onInkResize?: (nodeId: string, box: ResizeBoxRect, phase: ResizePhase) => void;
@@ -254,15 +266,70 @@ function NoteCardNode({ data, selected }: NodeProps<BoardNode>) {
 }
 
 function StickyNode({ data, selected }: NodeProps<BoardNode>) {
+  const { t } = useI18n();
   const { card } = data;
+  const [editing, setEditing] = useState(Boolean(data.initialEditing));
+  const [draft, setDraft] = useState(card.text ?? '');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
     data.onCardResize?.(card.id, params, 'end');
+  const tint = STICKY_COLORS.find((entry) => entry.value === card.color) ?? STICKY_COLORS[0];
+  /** Text tools (字号/字体/对齐/文字颜色) apply to the sticky body text. */
+  const fontSize = card.fontSize ?? 12;
+  const fontFamilyKey = card.fontFamily ?? 'sans';
+  const fontStack = TEXT_FONTS[fontFamilyKey];
+  const fontWeight = TEXT_FONT_WEIGHTS[fontFamilyKey];
+  const textAlign = card.textAlign ?? 'left';
+  const alignClass = textAlign === 'left' ? 'text-left' : textAlign === 'right' ? 'text-right' : 'text-center';
+  const textColor = card.textColor ?? tint.foreground;
+  const commit = () => {
+    setEditing(false);
+    data.onCardTextCommit?.(card.id, draft);
+  };
+  // React Flow refocuses the node wrapper in a microtask after the placing
+  // drag, stealing the autofocus — reclaim on a macrotask so typing lands in
+  // the note right away.
+  useEffect(() => {
+    if (!editing) return;
+    const focusTimer = window.setTimeout(() => textareaRef.current?.focus(), 0);
+    return () => window.clearTimeout(focusTimer);
+  }, [editing]);
   return (
-    <div className="h-full w-full overflow-hidden rounded-[10px] border border-amber-300/60 bg-amber-50 p-2 shadow-sm dark:border-amber-500/30 dark:bg-amber-950/40">
+    <div
+      className="relative flex h-full w-full flex-col overflow-hidden rounded-[10px] border p-2 shadow-sm"
+      style={{ backgroundColor: tint.background, borderColor: tint.border }}
+      onDoubleClick={(event) => {
+        event.stopPropagation();
+        setDraft(card.text ?? '');
+        setEditing(true);
+      }}
+    >
       <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
-      <div className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[var(--foreground)]">
-        {card.text || ''}
-      </div>
+      {editing ? (
+        <textarea
+          ref={textareaRef}
+          value={draft}
+          onChange={(event) => setDraft(event.target.value)}
+          onBlur={commit}
+          onKeyDown={(event) => {
+            event.stopPropagation();
+            // Esc finishes editing and keeps the text (unmounting a focused
+            // element never fires blur, so commit here or the draft is lost).
+            if (event.key === 'Escape') { commit(); return; }
+            // Enter inserts a line break like Obsidian; Cmd/Ctrl+Enter commits.
+            if (event.key === 'Enter' && (event.metaKey || event.ctrlKey)) { event.preventDefault(); commit(); }
+          }}
+          placeholder={t('canvas.board.sticky.placeholder')}
+          className={`nodrag nowheel h-full w-full resize-none bg-transparent leading-relaxed outline-none placeholder:opacity-50 ${alignClass}`}
+          style={{ color: textColor, fontSize, fontFamily: fontStack, fontWeight }}
+        />
+      ) : card.text ? (
+        <div className={`min-h-0 flex-1 whitespace-pre-wrap break-words leading-relaxed ${alignClass}`} style={{ color: textColor, fontSize, fontFamily: fontStack, fontWeight }}>
+          {card.text}
+        </div>
+      ) : (
+        <div className="text-[11px] leading-relaxed opacity-60">{t('canvas.board.sticky.placeholder')}</div>
+      )}
       <CardHandles visible={selected} />
     </div>
   );
@@ -309,19 +376,61 @@ function CanvasRefNode({ data, selected }: NodeProps<BoardNode>) {
   );
 }
 
-function FrameNode({ data }: NodeProps<BoardNode>) {
+function FrameNode({ data, selected }: NodeProps<BoardNode>) {
+  const { t } = useI18n();
   const { card } = data;
+  const [editing, setEditing] = useState(Boolean(data.initialEditing));
+  const [draft, setDraft] = useState(card.title ?? '');
+  const inputRef = useRef<HTMLInputElement>(null);
+  const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
+    data.onFrameResize?.(card.id, params, 'end');
+  const commit = () => {
+    setEditing(false);
+    data.onFrameTitleCommit?.(card.id, draft.trim());
+  };
+  // Same reclaim as the sticky note: React Flow refocuses the node wrapper in
+  // a microtask after the placing drag, so the title input needs a macrotask.
+  useEffect(() => {
+    if (!editing) return;
+    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 0);
+    return () => window.clearTimeout(focusTimer);
+  }, [editing]);
   return (
     <div
-      className="pointer-events-none h-full w-full rounded-xl border-2 border-dashed bg-[var(--muted)]/30"
+      // The frame is a backdrop: it must never swallow clicks meant for the
+      // cards inside it, so only the border/title band is interactive.
+      className="pointer-events-none relative h-full w-full rounded-xl border-2 border-dashed bg-[var(--muted)]/20"
       style={{ borderColor: 'color-mix(in srgb, var(--muted-foreground) 45%, transparent)' }}
     >
-      {card.title ? (
-        <div className="absolute -top-6 left-0 flex items-center gap-1 whitespace-nowrap text-[11px] font-medium text-[var(--muted-foreground)]">
-          <FrameIcon className="h-3 w-3" aria-hidden="true" />
-          {card.title}
-        </div>
-      ) : null}
+      <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
+      <div
+        className="pointer-events-auto absolute -top-6 left-0 flex max-w-full items-center gap-1 whitespace-nowrap text-[11px] font-medium text-[var(--muted-foreground)]"
+        onDoubleClick={(event) => {
+          event.stopPropagation();
+          setDraft(card.title ?? '');
+          setEditing(true);
+        }}
+      >
+        <FrameIcon className="h-3 w-3 shrink-0" aria-hidden="true" />
+        {editing ? (
+          <input
+            ref={inputRef}
+            value={draft}
+            onChange={(event) => setDraft(event.target.value)}
+            onBlur={commit}
+            onKeyDown={(event) => {
+              event.stopPropagation();
+              if (event.key === 'Enter') { event.preventDefault(); commit(); }
+              // Esc keeps the typed title (unmount skips blur, so commit here).
+              if (event.key === 'Escape') commit();
+            }}
+            placeholder={t('canvas.board.frame.placeholder')}
+            className="nodrag w-40 rounded border border-[var(--border)] bg-[var(--card)] px-1 py-0.5 text-[11px] text-[var(--foreground)] outline-none"
+          />
+        ) : (
+          <span className="truncate">{card.title || t('canvas.board.frame.placeholder')}</span>
+        )}
+      </div>
     </div>
   );
 }
@@ -490,7 +599,7 @@ const NODE_TYPES = {
   ink: InkNode,
 };
 
-type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | BoardShapeKind;
+type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | 'sticky' | 'frame' | BoardShapeKind;
 /** Handwriting stack: CJK brushes first, then Latin sketch fonts. */
 /** Font faces for the text panel row, matching Obsidian's five slots. */
 const TEXT_FONTS: Record<'hand' | 'sans' | 'mono' | 'bold' | 'serif', string> = {
@@ -508,8 +617,21 @@ const TEXT_FONT_WEIGHTS: Record<'hand' | 'sans' | 'mono' | 'bold' | 'serif', num
 const SHAPE_TOOLS: BoardShapeKind[] = ['rect', 'ellipse', 'diamond', 'text', 'arrow'];
 const isShapeTool = (tool: BoardTool): tool is BoardShapeKind =>
   tool === 'rect' || tool === 'ellipse' || tool === 'diamond' || tool === 'text' || tool === 'arrow';
+/** Tools drawn by dragging a box: shapes plus sticky notes and frames. */
+const isBoxTool = (tool: BoardTool): boolean => isShapeTool(tool) || tool === 'sticky' || tool === 'frame';
 
 const INK_COLORS = ['#1e1e1e', '#e03131', '#2f9e44', '#1971c2', '#f08c00'];
+/** Sticky-note tints, mirroring Obsidian's colour row (yellow / red / green / blue / purple). */
+const STICKY_COLORS = [
+  { value: 'yellow', background: '#fff8d6', border: '#f0e2a6', foreground: '#4a3b00' },
+  { value: 'red', background: '#ffe3e3', border: '#f5c2c2', foreground: '#5c1a1a' },
+  { value: 'green', background: '#d8f5dd', border: '#a9dcb4', foreground: '#14432a' },
+  { value: 'blue', background: '#dceafd', border: '#b3cdf2', foreground: '#123a63' },
+  { value: 'purple', background: '#ece1fb', border: '#cdb8ef', foreground: '#3a1f63' },
+] as const;
+type StickyColor = (typeof STICKY_COLORS)[number]['value'];
+const DEFAULT_STICKY_SIZE = { w: 220, h: 180 };
+const DEFAULT_FRAME_SIZE = { w: 480, h: 360 };
 /** Background tints for shapes, matching the stroke palette order. */
 const FILL_COLORS = ['#ffffff', '#ffe3e3', '#d3f9d8', '#d0ebff', '#fff3bf'];
 const STROKE_WIDTHS = [1, 2, 4, 8, 16];
@@ -733,6 +855,9 @@ function buildBoardGraph(
     onShapeTextCommit?: (shapeId: string, text: string) => void;
     onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
     onCardResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
+    onCardTextCommit?: (cardId: string, text: string) => void;
+    onFrameTitleCommit?: (frameId: string, title: string) => void;
+    onFrameResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
     onInkResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
   },
 ): { nodes: BoardNode[]; edges: Edge[] } {
@@ -743,6 +868,8 @@ function buildBoardGraph(
       type: 'frame',
       position: { x: frame.x, y: frame.y },
       zIndex: 0,
+      // Frames sit under every other layer: a frame is a backdrop, not content.
+      selectable: true,
       data: {
         card: { id: frame.id, kind: 'text', x: frame.x, y: frame.y, w: frame.w, h: frame.h, title: frame.title },
         dataUrl: null,
@@ -750,6 +877,8 @@ function buildBoardGraph(
         contentHtml: null,
         shape: null,
         inkStroke: null,
+        ...(callbacks.onFrameTitleCommit ? { onFrameTitleCommit: callbacks.onFrameTitleCommit } : {}),
+        ...(callbacks.onFrameResize ? { onFrameResize: callbacks.onFrameResize } : {}),
       },
       style: { width: frame.w, height: frame.h },
     });
@@ -776,6 +905,7 @@ function buildBoardGraph(
         shape: null,
         inkStroke: null,
         ...(callbacks.onCardResize ? { onCardResize: callbacks.onCardResize } : {}),
+        ...(callbacks.onCardTextCommit ? { onCardTextCommit: callbacks.onCardTextCommit } : {}),
       },
       style: { width: card.w, height: card.h },
     });
@@ -906,6 +1036,18 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const historyRef = useRef<{ stack: string[]; index: number }>({ stack: [], index: -1 });
   const [historyDepth, setHistoryDepth] = useState({ index: -1, length: 0 });
   const [tool, setTool] = useState<BoardTool>('select');
+  /** Latest pointer was touch: select mode pans/pinches instead of rubber band. */
+  const [touchMode, setTouchMode] = useState(false);
+  /** Sticky defaults for the next sticky note (Obsidian keeps the last used). */
+  const [stickyColor, setStickyColor] = useState<StickyColor>('yellow');
+  const [stickyFontSize, setStickyFontSize] = useState(FONT_SIZES[2]);
+  const [stickyFontFamily, setStickyFontFamily] = useState<BoardFontFamily>('sans');
+  const [stickyTextAlign, setStickyTextAlign] = useState<BoardTextAlign>('left');
+  const [stickyTextColor, setStickyTextColor] = useState(INK_COLORS[0]);
+  /** Obsidian: the sticky font row keeps a hand shortcut plus an "A" menu. */
+  const [stickyFontMenuOpen, setStickyFontMenuOpen] = useState(false);
+  /** Node that should mount in text-edit mode (a freshly placed sticky/frame). */
+  const pendingEditingRef = useRef<string | null>(null);
   /** Excalidraw-style lock: keep the drawing tool active after each stroke. */
   const [toolLocked, setToolLocked] = useState(false);
   const [penColor, setPenColor] = useState(INK_COLORS[0]);
@@ -955,7 +1097,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const handleShapeResizeRef = useRef<(nodeId: string, box: ResizeBoxRect, phase?: ResizePhase) => void>(() => {});
   const applyGraphRef = useRef<(document: FlowixCanvasDocument) => void>(() => {});
   const handleCardResizeRef = useRef<(nodeId: string, box: ResizeBoxRect, phase?: ResizePhase) => void>(() => {});
+  const handleFrameResizeRef = useRef<(nodeId: string, box: ResizeBoxRect, phase?: ResizePhase) => void>(() => {});
   const handleInkResizeRef = useRef<(nodeId: string, box: ResizeBoxRect, phase?: ResizePhase) => void>(() => {});
+  /** Late-bound card/frame commits: `applyGraph` runs before they are defined. */
+  const commitCardTextRef = useRef<(cardId: string, text: string) => void>(() => {});
+  const commitFrameTitleRef = useRef<(frameId: string, title: string) => void>(() => {});
   /** Filled after `scheduleFlush` exists; card/shape callbacks may run earlier. */
   const scheduleFlushRef = useRef<() => void>(() => {});
   const pushHistoryRef = useRef<() => void>(() => {});
@@ -1061,15 +1207,27 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         onShapeTextCommit: commitShapeText,
         onShapeResize: handleShapeResizeRef.current,
         onCardResize: handleCardResizeRef.current,
+        onCardTextCommit: (cardId, text) => commitCardTextRef.current(cardId, text),
+        onFrameTitleCommit: (frameId, title) => commitFrameTitleRef.current(frameId, title),
+        onFrameResize: handleFrameResizeRef.current,
         onInkResize: handleInkResizeRef.current,
       },
     );
     // Rebuilding the graph must not drop the user's selection: react-flow reads
     // `selected` off the node objects we hand it.
     const selected = selectedIdsRef.current;
+    // A freshly placed sticky/frame mounts in text-edit mode (Obsidian drops
+    // you straight into typing); the flag is consumed by this rebuild.
+    const pendingEditing = pendingEditingRef.current;
+    pendingEditingRef.current = null;
+    const withEditing = pendingEditing
+      ? nextNodes.map((node) => (node.id === pendingEditing
+        ? { ...node, data: { ...node.data, initialEditing: true } }
+        : node))
+      : nextNodes;
     setNodes(selected.length === 0
-      ? nextNodes
-      : nextNodes.map((node) => (selected.includes(node.id) ? { ...node, selected: true } : node)));
+      ? withEditing
+      : withEditing.map((node) => (selected.includes(node.id) ? { ...node, selected: true } : node)));
     const selectedEdge = selectedEdgeIdRef.current;
     setEdges(selectedEdge
       ? nextEdges.map((edge) => (edge.id === selectedEdge ? markEdgeSelected(edge, true) : edge))
@@ -1681,8 +1839,47 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     applyGraphRef.current = applyGraph;
     handleShapeResizeRef.current = handleShapeResize;
     handleCardResizeRef.current = handleCardResize;
+    handleFrameResizeRef.current = handleFrameResize;
     handleInkResizeRef.current = handleInkResize;
+    commitCardTextRef.current = commitCardText;
+    commitFrameTitleRef.current = commitFrameTitle;
   });
+
+  // Obsidian-style tool keys (V/H/P/E/R/O/D/A/T/N/F, Esc): claim this board
+  // as the shortcut surface on mount, and only hand the pointer to the last
+  // board the user actually touched (a second board in split view must win).
+  const surfaceId = useMemo(() => `canvas-board:${workspaceHost}:${filePath}`, [filePath, workspaceHost]);
+  useEffect(() => {
+    claimCanvasSurface(surfaceId);
+    return () => releaseCanvasSurface(surfaceId);
+  }, [surfaceId]);
+  useEffect(() => {
+    const markSurface = (event: PointerEvent | FocusEvent) => {
+      const board = boardRef.current;
+      const target = event.target;
+      if (board && target instanceof Node && board.contains(target)) setActiveCanvasSurface(surfaceId);
+      else if (target instanceof Element && !target.closest('[data-canvas-surface]')) setActiveCanvasSurface(null);
+    };
+    document.addEventListener('pointerdown', markSurface, true);
+    document.addEventListener('focusin', markSurface, true);
+    return () => {
+      document.removeEventListener('pointerdown', markSurface, true);
+      document.removeEventListener('focusin', markSurface, true);
+    };
+  }, [surfaceId]);
+  useEffect(() => {
+    if (readOnly) return;
+    const ownedByThisBoard = () => getActiveCanvasSurface() === surfaceId;
+    const pops = CANVAS_TOOL_SHORTCUTS.map(({ actionId, tool }) => pushHandler(actionId, () => {
+      selectTool(tool as BoardTool);
+      return true;
+    }, { isActive: ownedByThisBoard }));
+    pops.push(pushHandler('canvas.tool.cancel', () => {
+      selectTool('select');
+      return true;
+    }, { isActive: ownedByThisBoard }));
+    return () => pops.forEach((pop) => pop());
+  }, [readOnly, selectTool, surfaceId]);
 
   /** Drag a handle between two nodes to add a connector. */
   const handleConnect = useCallback((connection: { source: string | null; target: string | null }) => {
@@ -2025,6 +2222,57 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     pushHistory();
   }, [pushHistory, scheduleFlush]);
 
+  /** Sticky-note body commit. Sticky text lives on the card itself, so a
+   *  no-op edit must not record history (the node keeps focus otherwise). */
+  const commitCardText = useCallback((cardId: string, text: string) => {
+    const document = documentRef.current;
+    if (!document) return;
+    const card = cardsRef.current.find((item) => item.id === cardId);
+    if (!card || (card.text ?? '') === text) return;
+    card.text = text;
+    document.cards = cardsRef.current;
+    // Only the node's data changes; rebuilding the graph would blur the editor.
+    setNodes((current) => current.map((node) => (node.id === cardId
+      ? { ...node, data: { ...node.data, card: { ...node.data.card, text } } }
+      : node)));
+    scheduleFlush();
+    pushHistory();
+  }, [pushHistory, scheduleFlush]);
+
+  /** Frame label commit; frames are stored separately from cards. */
+  const commitFrameTitle = useCallback((frameId: string, title: string) => {
+    const document = documentRef.current;
+    if (!document) return;
+    const frames = readBoardFrames(document);
+    const frame = frames.find((item) => item.id === frameId);
+    if (!frame || (frame.title ?? '') === title) return;
+    document.frames = frames.map((item) => (item.id === frameId
+      ? { ...item, ...(title ? { title } : { title: undefined }) }
+      : item));
+    applyGraphRef.current(document);
+    scheduleFlush();
+    pushHistory();
+  }, [pushHistory, scheduleFlush]);
+
+  /** Frame resize: live frames only redraw the node box, the release commits. */
+  const handleFrameResize = useCallback((nodeId: string, box: ResizeBoxRect, phase: ResizePhase = 'end') => {
+    if (phase === 'live') return;
+    const document = documentRef.current;
+    if (!document) return;
+    const frames = readBoardFrames(document);
+    const frame = frames.find((item) => item.id === nodeId);
+    if (!frame) return;
+    const w = Math.max(80, box.width);
+    const h = Math.max(60, box.height);
+    if (frame.x === box.x && frame.y === box.y && frame.w === w && frame.h === h) return;
+    document.frames = frames.map((item) => (item.id === nodeId
+      ? { ...item, x: box.x, y: box.y, w, h }
+      : item));
+    applyGraphRef.current(document);
+    scheduleFlush();
+    pushHistory();
+  }, [pushHistory, scheduleFlush]);
+
 /**
  * Ink resize scales every point from the bbox captured when the drag started
  * into the live box. Live frames redraw just this node; the release commits.
@@ -2122,10 +2370,14 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     const nextShapes = shapesRef.current.filter((shape) => !idSet.has(shape.id));
     const nextCards = cardsRef.current.filter((card) => !idSet.has(card.id));
     const nextInk = inkRef.current.filter((stroke) => !idSet.has(stroke.id));
+    const currentFrames = readBoardFrames(document);
+    const nextFrames = currentFrames.filter((frame) => !idSet.has(frame.id));
     const shapesChanged = nextShapes.length !== shapesRef.current.length;
     const cardsChanged = nextCards.length !== cardsRef.current.length;
     const inkChanged = nextInk.length !== inkRef.current.length;
-    if (!shapesChanged && !cardsChanged && !inkChanged) return;
+    const framesChanged = nextFrames.length !== currentFrames.length;
+    if (!shapesChanged && !cardsChanged && !inkChanged && !framesChanged) return;
+    if (framesChanged) document.frames = nextFrames;
     if (shapesChanged) {
       shapesRef.current = nextShapes;
       document.shapes = nextShapes;
@@ -2439,6 +2691,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
 
   const handleBoardPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     lastPointerTypeRef.current = event.pointerType;
+    // Touch gestures in select mode: one finger pans, two fingers pinch-zoom
+    // (Obsidian mobile). Rubber-band selection stays a desktop-mouse gesture.
+    setTouchMode(event.pointerType === 'touch');
     pressRef.current = {
       x: event.clientX,
       y: event.clientY,
@@ -2452,7 +2707,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       setLivePoints(liveStrokeRef.current);
       return;
     }
-    if (isShapeTool(tool)) {
+    if (isBoxTool(tool)) {
       const start = flowPositionOf(event);
       shapeDraftRef.current = { start, current: start };
       setShapePreview({ start, end: start });
@@ -2472,7 +2727,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       setLivePoints([...stroke]);
       return;
     }
-    if (isShapeTool(tool) && shapeDraftRef.current) {
+    if (isBoxTool(tool) && shapeDraftRef.current) {
       const current = flowPositionOf(event);
       const { start } = shapeDraftRef.current;
       shapeDraftRef.current.current = current;
@@ -2505,6 +2760,58 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           : rect;
       const document = documentRef.current;
       if (!document) return;
+      // Sticky notes and frames are cards/containers, not shapes: a click
+      // (no drag) drops the Obsidian default size, a drag uses the drawn box.
+      if (tool === 'sticky' || tool === 'frame') {
+        const isSticky = tool === 'sticky';
+        const fallback = isSticky ? DEFAULT_STICKY_SIZE : DEFAULT_FRAME_SIZE;
+        const boxed = rect.w < 24 || rect.h < 24
+          ? { x: draft.start[0], y: draft.start[1], w: fallback.w, h: fallback.h }
+          : rect;
+        const x = Math.round(boxed.x);
+        const y = Math.round(boxed.y);
+        const w = Math.round(Math.max(isSticky ? 80 : 120, boxed.w));
+        const h = Math.round(Math.max(isSticky ? 60 : 80, boxed.h));
+        if (isSticky) {
+          const card: BoardCard = {
+            id: `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+            kind: 'text',
+            x,
+            y,
+            w,
+            h,
+            z: nextZ(),
+            text: '',
+            color: stickyColor,
+            fontSize: stickyFontSize,
+            fontFamily: stickyFontFamily,
+            textAlign: stickyTextAlign,
+            textColor: stickyTextColor,
+          };
+          cardsRef.current = [...cardsRef.current, card];
+          document.cards = cardsRef.current;
+          // Drop straight into text editing, like Obsidian's sticky tool.
+          pendingEditingRef.current = card.id;
+          applyGraph(document);
+          scheduleFlush();
+          pushHistory();
+        } else {
+          const frame: BoardFrame = {
+            id: `f_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+            x,
+            y,
+            w,
+            h,
+          };
+          document.frames = [...readBoardFrames(document), frame];
+          pendingEditingRef.current = frame.id;
+          applyGraph(document);
+          scheduleFlush();
+          pushHistory();
+        }
+        if (!toolLocked) setTool('select');
+        return;
+      }
       const isArrow = tool === 'arrow';
       if (isArrow) {
         const fromNode = nodeAtPoint(cardsRef.current, shapesRef.current, draft.start[0], draft.start[1]);
@@ -2820,6 +3127,18 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   // Any selection opens the panel (cards too); shape/ink rows are gated below.
   const selectionMode = selectedNodeCount > 0;
   const cardOnlySelection = selectionMode && selectedShapeCount === 0 && selectedStrokes.length === 0;
+  const selectedStickyCards = nodes
+    .filter((node) => node.type === 'sticky' && node.selected && selectedCardIds.includes(node.id))
+    .map((node) => node.data.card);
+  const selectedSticky = selectedStickyCards[0] ?? null;
+  const stickyMode = tool === 'sticky' || selectedStickyCards.length > 0;
+  /** Sticky tool without a selection: only the style rows show. */
+  const stickyPlacing = tool === 'sticky' && !selectionMode;
+  const styleStickyColor = selectedSticky?.color ?? stickyColor;
+  const styleStickyFontSize = selectedSticky?.fontSize ?? stickyFontSize;
+  const styleStickyFontFamily = selectedSticky?.fontFamily ?? stickyFontFamily;
+  const styleStickyTextAlign = selectedSticky?.textAlign ?? stickyTextAlign;
+  const styleStickyTextColor = selectedSticky?.textColor ?? stickyTextColor;
   const firstSelected = selectedShapes[0] ?? null;
   const firstStroke = selectedStrokes[0] ?? null;
   const allSelectedLabel = selectedShapeCount > 0 && selectedShapes.every((shape) => shape.shape === 'text');
@@ -2831,9 +3150,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const styleStrokeStyle = selectionMode ? firstSelected?.strokeStyle ?? 'solid' : toolStrokeStyle;
   const styleFontSize = selectionMode ? firstSelected?.fontSize ?? 20 : toolFontSize;
   const styleOpacity = selectionMode ? firstSelected?.opacity ?? 100 : toolOpacity;
-  // Ink has no fill/line-style/edges; every shape-only row hides for it.
-  const showFill = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow') : tool !== 'pen' && tool !== 'text' && tool !== 'arrow';
-  const showStrokeStyle = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : tool !== 'pen' && tool !== 'text';
+  // Ink has no fill/line-style/edges; every shape-only row hides for it —
+  // and sticky/frame tools draw containers, not styled shapes.
+  const showFill = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow') : isShapeTool(tool) && tool !== 'text' && tool !== 'arrow';
+  const showStrokeStyle = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : isShapeTool(tool) && tool !== 'text';
   const showFontSize = inkOnlySelection || cardOnlySelection ? false : selectionMode ? allSelectedLabel : tool === 'text';
   const textOnlySelection = selectionMode && !cardOnlySelection && !inkOnlySelection && allSelectedLabel;
   const showFontFamily = textOnlySelection || (!selectionMode && tool === 'text');
@@ -2857,6 +3177,28 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     if (inkOnlySelection) patchSelectedInk({ width });
     else if (selectionMode) patchSelectedShapes({ strokeWidth: width });
     else setPenWidth(width);
+  };
+  /** Sticky tint: recolours the picked sticky cards, otherwise becomes the
+   *  tint of the next placed sticky (Excalidraw keeps the last used style). */
+  /** Sticky text tools: recolour/resize/restyle the picked sticky cards,
+   *  otherwise become the defaults of the next placed sticky. */
+  const applyStickyStyle = (patch: Partial<BoardCard>) => {
+    if (patch.color !== undefined) setStickyColor(patch.color as StickyColor);
+    if (patch.fontSize !== undefined) setStickyFontSize(patch.fontSize);
+    if (patch.fontFamily !== undefined) setStickyFontFamily(patch.fontFamily);
+    if (patch.textAlign !== undefined) setStickyTextAlign(patch.textAlign);
+    if (patch.textColor !== undefined) setStickyTextColor(patch.textColor);
+    const ids = new Set(selectedStickyCards.map((card) => card.id));
+    if (ids.size === 0) return;
+    const changed = Object.entries(patch).some(([key, value]) => selectedStickyCards.some((card) => card[key as keyof BoardCard] !== value));
+    if (!changed) return;
+    cardsRef.current = cardsRef.current.map((card) => (ids.has(card.id) ? { ...card, ...patch } : card));
+    const document = documentRef.current;
+    if (!document) return;
+    document.cards = cardsRef.current;
+    applyGraph(document);
+    scheduleFlush();
+    pushHistory();
   };
 
   if (state.status !== 'ready') {
@@ -2902,60 +3244,95 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       }}
     >
       <div data-board-toolbar className="absolute left-3 top-3 z-30 flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm">
-        <button type="button" aria-label={t('canvas.board.tool.select')} className={toolButtonClass(tool === 'select')} onClick={() => selectTool('select')}>
-          <MousePointer2 className="h-3.5 w-3.5" />
-        </button>
-        <button type="button" aria-label={t('canvas.board.tool.hand')} className={toolButtonClass(tool === 'hand')} onClick={() => selectTool('hand')}>
-          <Hand className="h-3.5 w-3.5" />
-        </button>
-        <button type="button" aria-label={t('canvas.board.tool.pen')} className={toolButtonClass(tool === 'pen')} onClick={() => selectTool('pen')}>
-          <Pencil className="h-3.5 w-3.5" />
-        </button>
-        <button type="button" aria-label={t('canvas.board.tool.eraser')} className={toolButtonClass(tool === 'eraser')} onClick={() => selectTool('eraser')}>
-          <Eraser className="h-3.5 w-3.5" />
-        </button>
-        {SHAPE_TOOLS.map((shapeKind) => (
-          <button
-            key={shapeKind}
-            type="button"
-            aria-label={t(`canvas.board.tool.${shapeKind}`)}
-            className={toolButtonClass(tool === shapeKind)}
-            onClick={() => selectTool(shapeKind)}
-          >
-            {shapeKind === 'rect' ? <Square className="h-3.5 w-3.5" />
-              : shapeKind === 'ellipse' ? <Circle className="h-3.5 w-3.5" />
-                : shapeKind === 'diamond' ? <Diamond className="h-3.5 w-3.5" />
-                  : shapeKind === 'arrow' ? <ArrowUpRight className="h-3.5 w-3.5" />
-                    : <Type className="h-3.5 w-3.5" />}
+        <Tooltip content={t('canvas.board.tool.select')} shortcut="canvas.tool.select" side="bottom">
+          <button type="button" aria-label={t('canvas.board.tool.select')} className={toolButtonClass(tool === 'select')} onClick={() => selectTool('select')}>
+            <MousePointer2 className="h-3.5 w-3.5" />
           </button>
+        </Tooltip>
+        <Tooltip content={t('canvas.board.tool.hand')} shortcut="canvas.tool.hand" side="bottom">
+          <button type="button" aria-label={t('canvas.board.tool.hand')} className={toolButtonClass(tool === 'hand')} onClick={() => selectTool('hand')}>
+            <Hand className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
+        <Tooltip content={t('canvas.board.tool.pen')} shortcut="canvas.tool.pen" side="bottom">
+          <button type="button" aria-label={t('canvas.board.tool.pen')} className={toolButtonClass(tool === 'pen')} onClick={() => selectTool('pen')}>
+            <Pencil className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
+        <Tooltip content={t('canvas.board.tool.eraser')} shortcut="canvas.tool.eraser" side="bottom">
+          <button type="button" aria-label={t('canvas.board.tool.eraser')} className={toolButtonClass(tool === 'eraser')} onClick={() => selectTool('eraser')}>
+            <Eraser className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
+        {SHAPE_TOOLS.map((shapeKind) => (
+          <Tooltip key={shapeKind} content={t(`canvas.board.tool.${shapeKind}`)} shortcut={`canvas.tool.${shapeKind}`} side="bottom">
+            <button
+              type="button"
+              aria-label={t(`canvas.board.tool.${shapeKind}`)}
+              className={toolButtonClass(tool === shapeKind)}
+              onClick={() => selectTool(shapeKind)}
+            >
+              {shapeKind === 'rect' ? <Square className="h-3.5 w-3.5" />
+                : shapeKind === 'ellipse' ? <Circle className="h-3.5 w-3.5" />
+                  : shapeKind === 'diamond' ? <Diamond className="h-3.5 w-3.5" />
+                    : shapeKind === 'arrow' ? <ArrowUpRight className="h-3.5 w-3.5" />
+                      : <Type className="h-3.5 w-3.5" />}
+            </button>
+          </Tooltip>
         ))}
-        <button
-          type="button"
-          aria-label={t('canvas.board.tool.image')}
-          className={toolButtonClass(false)}
-          onClick={() => { void pickImages(); }}
-        >
-          <ImagePlus className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
-          aria-label={t('canvas.board.tool.note')}
-          className={toolButtonClass(false)}
-          disabled={readOnly}
-          onClick={() => setInsertDialogOpen(true)}
-        >
-          <FileText className="h-3.5 w-3.5" />
-        </button>
-        {selectedEdgeId ? (
+        <Tooltip content={t('canvas.board.tool.sticky')} shortcut="canvas.tool.sticky" side="bottom">
           <button
             type="button"
-            aria-label={t('canvas.board.edgeDelete')}
+            aria-label={t('canvas.board.tool.sticky')}
+            className={toolButtonClass(tool === 'sticky')}
+            onClick={() => selectTool('sticky')}
+          >
+            <StickyNote className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
+        <Tooltip content={t('canvas.board.tool.frame')} shortcut="canvas.tool.frame" side="bottom">
+          <button
+            type="button"
+            aria-label={t('canvas.board.tool.frame')}
+            className={toolButtonClass(tool === 'frame')}
+            onClick={() => selectTool('frame')}
+          >
+            <FrameIcon className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
+        <Tooltip content={t('canvas.board.tool.image')} side="bottom">
+          <button
+            type="button"
+            aria-label={t('canvas.board.tool.image')}
+            className={toolButtonClass(false)}
+            onClick={() => { void pickImages(); }}
+          >
+            <ImagePlus className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
+        <Tooltip content={t('canvas.board.tool.note')} side="bottom">
+          <button
+            type="button"
+            aria-label={t('canvas.board.tool.note')}
             className={toolButtonClass(false)}
             disabled={readOnly}
-            onClick={deleteSelectedEdge}
+            onClick={() => setInsertDialogOpen(true)}
           >
-            <Trash2 className="h-3.5 w-3.5" />
+            <FileText className="h-3.5 w-3.5" />
           </button>
+        </Tooltip>
+        {selectedEdgeId ? (
+          <Tooltip content={t('canvas.board.edgeDelete')} side="bottom">
+            <button
+              type="button"
+              aria-label={t('canvas.board.edgeDelete')}
+              className={toolButtonClass(false)}
+              disabled={readOnly}
+              onClick={deleteSelectedEdge}
+            >
+              <Trash2 className="h-3.5 w-3.5" />
+            </button>
+          </Tooltip>
         ) : null}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
@@ -2968,31 +3345,144 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
             <DropdownMenuItem onClick={() => { void handleExport('png'); }}>{t('canvas.export.png')}</DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
-        <button
-          type="button"
-          aria-label={t('canvas.board.tool.fit')}
-          className={toolButtonClass(false)}
-          onClick={() => { void reactFlow.fitView({ padding: 0.2, maxZoom: 1.2 }); }}
-        >
-          <Maximize2 className="h-3.5 w-3.5" />
-        </button>
-        <button
-          type="button"
-          aria-label={t('canvas.board.tool.lock')}
-          aria-pressed={toolLocked}
-          className={toolButtonClass(toolLocked)}
-          onClick={() => setToolLocked((locked) => !locked)}
-        >
-          {toolLocked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
-        </button>
+        <Tooltip content={t('canvas.board.tool.fit')} side="bottom">
+          <button
+            type="button"
+            aria-label={t('canvas.board.tool.fit')}
+            className={toolButtonClass(false)}
+            onClick={() => { void reactFlow.fitView({ padding: 0.2, maxZoom: 1.2 }); }}
+          >
+            <Maximize2 className="h-3.5 w-3.5" />
+          </button>
+        </Tooltip>
+        <Tooltip content={t('canvas.board.tool.lock')} side="bottom">
+          <button
+            type="button"
+            aria-label={t('canvas.board.tool.lock')}
+            aria-pressed={toolLocked}
+            className={toolButtonClass(toolLocked)}
+            onClick={() => setToolLocked((locked) => !locked)}
+          >
+            {toolLocked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
+          </button>
+        </Tooltip>
       </div>
       <div className="absolute bottom-4 left-3 z-30 flex max-h-[calc(100%-120px)] flex-col items-start gap-2">
-        {(tool === 'pen' || isShapeTool(tool) || selectionMode) && !panelCollapsed ? (
+        {(tool === 'pen' || isShapeTool(tool) || stickyMode || selectionMode) && !panelCollapsed ? (
         <div
           data-board-toolbar
           className="flex min-h-0 w-[184px] flex-col gap-2.5 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
         >
-          {!cardOnlySelection ? (
+          {stickyMode ? (
+          <PanelRow label={t('canvas.board.sticky.color')}>
+            {STICKY_COLORS.map((entry) => (
+              <button
+                key={entry.value}
+                type="button"
+                aria-label={`${t('canvas.board.sticky.color')} ${entry.value}`}
+                onClick={() => applyStickyStyle({ color: entry.value })}
+                className={`h-5 w-5 rounded-[4px] border ${styleStickyColor === entry.value ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
+                style={{ backgroundColor: entry.background }}
+              />
+            ))}
+          </PanelRow>
+          ) : null}
+          {stickyMode ? (
+          <PanelRow label={t('canvas.board.style.font')}>
+            <button
+              type="button"
+              aria-label={t('canvas.board.style.fontHand')}
+              aria-pressed={styleStickyFontFamily === 'hand'}
+              onClick={() => applyStickyStyle({ fontFamily: 'hand' })}
+              className={toolButtonClass(styleStickyFontFamily === 'hand')}
+            >
+              <Pencil className="h-3.5 w-3.5" />
+            </button>
+            <div
+              className="relative"
+              onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as HTMLElement | null)) setStickyFontMenuOpen(false); }}
+            >
+              <button
+                type="button"
+                aria-label={t('canvas.board.style.fontMenu')}
+                aria-expanded={stickyFontMenuOpen}
+                className={`${toolButtonClass(stickyFontMenuOpen)} flex items-center gap-0.5`}
+                onClick={() => setStickyFontMenuOpen((open) => !open)}
+              >
+                <span style={{ fontFamily: TEXT_FONTS[styleStickyFontFamily], fontWeight: TEXT_FONT_WEIGHTS[styleStickyFontFamily] }}>A</span>
+                <ChevronUp className="h-2.5 w-2.5" />
+              </button>
+              {stickyFontMenuOpen ? (
+                <div className="absolute bottom-full left-0 z-40 mb-1 w-28 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-md">
+                  {TEXT_FONT_KEYS.map((key) => {
+                    const label = t(FONT_LABEL_KEYS[key]);
+                    return (
+                      <button
+                        key={key}
+                        type="button"
+                        aria-label={label}
+                        onClick={() => { applyStickyStyle({ fontFamily: key }); setStickyFontMenuOpen(false); }}
+                        className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-[var(--foreground)] hover:bg-[var(--muted)] ${styleStickyFontFamily === key ? 'bg-[var(--muted)]' : ''}`}
+                      >
+                        <span className="w-4 text-center text-[13px]" style={{ fontFamily: TEXT_FONTS[key], fontWeight: TEXT_FONT_WEIGHTS[key] }}>A</span>
+                        <span className="truncate">{label}</span>
+                      </button>
+                    );
+                  })}
+                </div>
+              ) : null}
+            </div>
+          </PanelRow>
+          ) : null}
+          {stickyMode ? (
+          <PanelRow label={t('canvas.board.style.fontSize')}>
+            {FONT_SIZES.map((size, index) => (
+              <button
+                key={size}
+                type="button"
+                aria-label={`${t('canvas.board.style.fontSize')} ${FONT_SIZE_LABELS[index]}`}
+                onClick={() => applyStickyStyle({ fontSize: size })}
+                className={`${toolButtonClass(styleStickyFontSize === size)} w-7 text-[10px]`}
+              >
+                {FONT_SIZE_LABELS[index]}
+              </button>
+            ))}
+          </PanelRow>
+          ) : null}
+          {stickyMode ? (
+          <PanelRow label={t('canvas.board.style.textAlign')}>
+            {TEXT_ALIGNS.map((align) => (
+              <button
+                key={align}
+                type="button"
+                aria-label={t(`canvas.board.textAlign.${align}`)}
+                onClick={() => applyStickyStyle({ textAlign: align })}
+                className={toolButtonClass(styleStickyTextAlign === align)}
+              >
+                <span className={`flex w-3.5 flex-col gap-[3px] ${align === 'left' ? 'items-start' : align === 'right' ? 'items-end' : 'items-center'}`}>
+                  <span className="block h-[2px] w-full bg-current" />
+                  <span className="block h-[2px] w-2/3 bg-current" />
+                  <span className="block h-[2px] w-full bg-current" />
+                </span>
+              </button>
+            ))}
+          </PanelRow>
+          ) : null}
+          {stickyMode ? (
+          <PanelRow label={t('canvas.board.style.textColor')}>
+            {INK_COLORS.map((color) => (
+              <button
+                key={color}
+                type="button"
+                aria-label={`${t('canvas.board.style.textColor')} ${color}`}
+                onClick={() => applyStickyStyle({ textColor: color })}
+                className={`h-5 w-5 rounded-[4px] border ${styleStickyTextColor === color ? 'border-[var(--foreground)] ring-2 ring-[var(--foreground)]/30' : 'border-transparent'}`}
+                style={{ backgroundColor: color }}
+              />
+            ))}
+          </PanelRow>
+          ) : null}
+          {!cardOnlySelection && !stickyPlacing ? (
           <PanelRow label={t('canvas.board.style.stroke')}>
             <div className="flex flex-wrap items-center gap-1.5">
               {INK_COLORS.map((color) => (
@@ -3057,7 +3547,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
               </div>
             </PanelRow>
           ) : null}
-          {textOnlySelection || cardOnlySelection ? null : (
+          {textOnlySelection || cardOnlySelection || stickyPlacing ? null : (
           <PanelRow label={t('canvas.board.style.strokeWidth')}>
             {(inkOnlySelection || (selectionMode ? false : tool === 'pen') ? INK_WIDTHS : STROKE_WIDTHS).map((width) => (
               <button
@@ -3470,8 +3960,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         minZoom={0.05}
         maxZoom={4}
         // Selection tool rubber-bands a multi-select; the hand tool pans.
-        panOnDrag={tool === 'hand'}
-        selectionOnDrag={tool === 'select'}
+        // Touch select mode pans with one finger and pinch-zooms with two;
+        // rubber-band selection stays desktop-only (RF's user selection would
+        // otherwise swallow the second touch and block the pinch gesture).
+        panOnDrag={tool === 'hand' || (tool === 'select' && touchMode)}
+        selectionOnDrag={tool === 'select' && !touchMode}
         // Selected nodes must not jump above others, or layer ordering looks broken.
         elevateNodesOnSelect={false}
         nodesDraggable={!readOnly && tool === 'select'}

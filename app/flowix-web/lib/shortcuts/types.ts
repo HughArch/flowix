@@ -104,6 +104,13 @@ export interface ActionDefinition {
     windows?: string[];
     linux?: string[];
   };
+  /**
+   * 允许裸键绑定 (不带修饰键的单字符, e.g. `v` / `h`)。
+   *
+   * 应用级动作必须带修饰键; 只有"画布工具"这类跟随 Obsidian / Excalidraw
+   * 习惯、并且 scope 限定在 `no-input` 的动作用得上。
+   */
+  allowBareKey?: boolean;
   /** 让 Mod 绑定同时接受 Meta/Ctrl；仅用于全选等明确要求双绑定的动作。 */
   acceptEitherMod?: boolean;
   /** 额外条件, return false 时跳过 (但其它 action 仍有机会匹配)。 */

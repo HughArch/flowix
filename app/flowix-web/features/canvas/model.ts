@@ -62,6 +62,13 @@ export interface BoardCard {
   heading?: string;
   /** Image cards reference the canvas `files` map by id. */
   fileId?: string;
+  /** Sticky-note tint (`kind: 'text'`); omitted uses the default yellow. */
+  color?: string;
+  /** Sticky-note text styling (`kind: 'text'`); all optional with sensible defaults. */
+  fontSize?: number;
+  fontFamily?: BoardFontFamily;
+  textAlign?: BoardTextAlign;
+  textColor?: string;
 }
 
 export interface BoardEdge {
@@ -424,6 +431,18 @@ function coerceBoardCard(raw: Record<string, unknown>): BoardCard | null {
     ...(renderScope ? { renderScope } : {}),
     ...(renderScope === 'section' && optionalText(raw.heading) ? { heading: optionalText(raw.heading) } : {}),
     ...(optionalText(raw.fileId) ? { fileId: optionalText(raw.fileId) } : {}),
+    ...(optionalText(raw.color) ? { color: optionalText(raw.color) } : {}),
+    ...(raw.fontSize !== undefined && raw.fontSize !== null
+      ? { fontSize: Math.min(72, Math.max(8, Math.round(readFiniteNumber(raw.fontSize) ?? 12))) }
+      : {}),
+    ...(raw.fontFamily === 'hand' || raw.fontFamily === 'sans' || raw.fontFamily === 'mono'
+      || raw.fontFamily === 'bold' || raw.fontFamily === 'serif'
+      ? { fontFamily: raw.fontFamily }
+      : {}),
+    ...(raw.textAlign === 'left' || raw.textAlign === 'center' || raw.textAlign === 'right'
+      ? { textAlign: raw.textAlign }
+      : {}),
+    ...(optionalText(raw.textColor) ? { textColor: optionalText(raw.textColor) } : {}),
   };
 }
 

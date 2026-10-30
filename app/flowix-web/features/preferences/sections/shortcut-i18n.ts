@@ -9,6 +9,7 @@ const GROUP_KEY_BY_ID: Record<string, I18nKey> = {
   view: 'preferences.shortcuts.group.view',
   system: 'preferences.shortcuts.group.system',
   memo: 'preferences.shortcuts.group.memo',
+  canvas: 'preferences.shortcuts.group.canvas',
 };
 
 export function getShortcutGroupLabel(group: string, t: Translate): string {

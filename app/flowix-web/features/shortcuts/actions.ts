@@ -1,5 +1,8 @@
 import { defineAction } from '@/lib/shortcuts/registry';
 import { invokeHandler } from '@/lib/shortcuts/handler-registry';
+import { isCanvasSurfaceActive } from '@features/canvas/canvas-focus';
+import { CANVAS_TOOL_SHORTCUTS } from '@features/canvas/canvas-tool-shortcuts';
+import type { I18nKey } from '@/lib/i18n';
 import { windows } from '@platform/tauri/client';
 import { useSettingsStore } from '@/lib/store/settings-store';
 import { getThemePreference, setThemePreference } from '@features/preferences/public/runtime-api';
@@ -572,4 +575,55 @@ defineAction({
     linux: 'Enter',
   },
   run: () => invokeHandler('dialog.confirm'),
+});
+
+// ── 画布工具 ──────────────────────────────────────────────
+
+/**
+ * 画布工具快捷键 — 与 Obsidian Canvas / Excalidraw 保持同一套裸键:
+ *
+ *   V 选择   H 抓手   P 画笔   E 橡皮
+ *   R 矩形   O 圆/椭圆   D 菱形   A 箭头   T 文字
+ *   N 便签   F 画框
+ *
+ * 裸键 (无修饰键) 只在画布是当前交互面时生效: scope `no-input` 排除输入框,
+ * `when` 再要求有画布实例被标记为 active (`claimCanvasSurface`), 所以焦点在
+ * 笔记编辑器或左栏时按 V 不会切走工具。
+ *
+ * run 只做分发 — 真正的工具切换逻辑 (含工具栏同步、选中态清理) 由画布组件
+ * 通过 pushHandler 注册, 画布没挂载时 run 返回 false, 按键落回浏览器默认。
+ */
+for (const { actionId, key } of CANVAS_TOOL_SHORTCUTS) {
+  defineAction({
+    id: actionId,
+    // 动态拼接的 i18n key 已在两个 locale 中登记 (画布组), 这里收窄类型。
+    titleKey: `preferences.shortcuts.action.${actionId}.title` as I18nKey,
+    descriptionKey: `preferences.shortcuts.action.${actionId}.description` as I18nKey,
+    group: 'canvas',
+    scope: 'no-input',
+    allowBareKey: true,
+    defaultBinding: {
+      mac: key,
+      windows: key,
+      linux: key,
+    },
+    when: () => isCanvasSurfaceActive(),
+    run: () => invokeHandler(actionId),
+  });
+}
+
+/** Esc: 画布内退出当前绘制工具, 回到选择工具。 */
+defineAction({
+  id: 'canvas.tool.cancel',
+  titleKey: 'preferences.shortcuts.action.canvas.tool.cancel.title',
+  descriptionKey: 'preferences.shortcuts.action.canvas.tool.cancel.description',
+  group: 'canvas',
+  scope: 'no-input',
+  defaultBinding: {
+    mac: 'Escape',
+    windows: 'Escape',
+    linux: 'Escape',
+  },
+  when: () => isCanvasSurfaceActive(),
+  run: () => invokeHandler('canvas.tool.cancel'),
 });
