@@ -1084,6 +1084,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   }, []);
 
   const handleNodesChange: OnNodesChange<BoardNode> = useCallback((changes: NodeChange<BoardNode>[]) => {
+    // A touch drag must not summon the properties panel (Obsidian mobile);
+    // hiding it at drag start also keeps it from blocking the gesture.
+    if (lastPointerTypeRef.current === 'touch' && changes.some((change) => change.type === 'position' && change.dragging)) {
+      touchDraggingRef.current = true;
+      setPanelCollapsed(true);
+    }
     setNodes((current) => applyNodeChanges(changes, current));
   }, []);
 
