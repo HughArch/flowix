@@ -81,6 +81,8 @@ interface BoardNodeData extends Record<string, unknown> {
   inkStroke: BoardInkStroke | null;
   onShapeTextCommit?: (shapeId: string, text: string) => void;
   onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
+  onCardResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
+  onInkResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
   initialEditing?: boolean;
 }
 
@@ -145,10 +147,13 @@ function relativeTime(ms: number): string {
 function NoteCardNode({ data, selected }: NodeProps<BoardNode>) {
   const { t } = useI18n();
   const { card, summary } = data;
+  const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
+    data.onCardResize?.(card.id, params);
   const tags = summary?.tags.slice(0, 2) ?? [];
   const extraTags = (summary?.tags.length ?? 0) - tags.length;
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-[10px] border border-[var(--border)] bg-[var(--card)] shadow-sm">
+      <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
       <div className="flex items-center gap-1.5 border-b border-[var(--border)] px-2.5 py-1.5">
         <FileText className="h-3 w-3 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
         <span className="truncate text-xs font-semibold text-[var(--foreground)]">
@@ -186,8 +191,11 @@ function NoteCardNode({ data, selected }: NodeProps<BoardNode>) {
 
 function StickyNode({ data, selected }: NodeProps<BoardNode>) {
   const { card } = data;
+  const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
+    data.onCardResize?.(card.id, params);
   return (
     <div className="h-full w-full overflow-hidden rounded-[10px] border border-amber-300/60 bg-amber-50 p-2 shadow-sm dark:border-amber-500/30 dark:bg-amber-950/40">
+      <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
       <div className="whitespace-pre-wrap break-words text-[11px] leading-relaxed text-[var(--foreground)]">
         {card.text || ''}
       </div>
@@ -197,10 +205,13 @@ function StickyNode({ data, selected }: NodeProps<BoardNode>) {
 }
 
 function ImageCardNode({ data, selected }: NodeProps<BoardNode>) {
+  const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
+    data.onCardResize?.(data.card.id, params);
   const { t } = useI18n();
   const { dataUrl } = data;
   return (
     <div className="flex h-full w-full items-center justify-center overflow-hidden rounded-[10px] border border-[var(--border)] bg-[var(--muted)] shadow-sm">
+      <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
       {dataUrl
         ? <img src={dataUrl} alt={cardTitle(data.card)} className="h-full w-full object-cover" draggable={false} />
         : (
@@ -217,8 +228,11 @@ function ImageCardNode({ data, selected }: NodeProps<BoardNode>) {
 function CanvasRefNode({ data, selected }: NodeProps<BoardNode>) {
   const { t } = useI18n();
   const { card } = data;
+  const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
+    data.onCardResize?.(card.id, params);
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-[10px] border border-[var(--border)] bg-[var(--card)] shadow-sm">
+      <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
       <div className="flex items-center gap-1.5 border-b border-[var(--border)] px-2.5 py-1.5">
         <FrameIcon className="h-3 w-3 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
         <span className="truncate text-xs font-semibold text-[var(--foreground)]">{cardTitle(card)}</span>
@@ -311,13 +325,9 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
 
   return (
     <div className="relative h-full w-full" style={{ opacity: (shape.opacity ?? 100) / 100 }}>
-      <NodeResizer
-        isVisible={selected && shape.shape !== 'arrow'}
-        minWidth={40}
-        minHeight={30}
+      <ResizeBox
+        visible={selected && shape.shape !== 'arrow'}
         onResizeEnd={(_, params) => data.onShapeResize?.(shape.id, params)}
-        lineClassName="!border-[var(--muted-foreground)]/60"
-        handleClassName="!h-2.5 !w-2.5 !rounded-[3px] !bg-[var(--card)] !border !border-[var(--muted-foreground)] !shadow-sm"
       />
       {sketch}
       <div
@@ -362,6 +372,8 @@ function InkNode({ data, selected }: NodeProps<BoardNode>) {
   const stroke = data.inkStroke;
   if (!stroke) return null;
   const box = inkBox(stroke);
+  const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
+    data.onInkResize?.(stroke.id, params);
   return (
     <div
       className="relative h-full w-full"
@@ -369,12 +381,30 @@ function InkNode({ data, selected }: NodeProps<BoardNode>) {
         ? { outline: '1px solid color-mix(in srgb, var(--muted-foreground) 55%, transparent)' }
         : undefined}
     >
+      <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
       <svg className="pointer-events-none" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible' }}>
         <g transform={`translate(${-box.x},${-box.y})`}>
           <path d={inkPathFor(stroke)} fill={stroke.color} />
         </g>
       </svg>
     </div>
+  );
+}
+
+/** Obsidian-style resize controls shared by every resizable node type. */
+function ResizeBox({ visible, onResizeEnd }: {
+  visible: boolean;
+  onResizeEnd: (_: unknown, params: { x: number; y: number; width: number; height: number }) => void;
+}) {
+  return (
+    <NodeResizer
+      isVisible={visible}
+      minWidth={40}
+      minHeight={30}
+      onResizeEnd={onResizeEnd}
+      lineClassName="!border-[var(--muted-foreground)]/60"
+      handleClassName="!h-2.5 !w-2.5 !rounded-[3px] !bg-[var(--card)] !border !border-[var(--muted-foreground)] !shadow-sm"
+    />
   );
 }
 
@@ -616,8 +646,12 @@ function buildBoardGraph(
   dataUrls: ReadonlyMap<string, string>,
   summaries: ReadonlyMap<string, NoteCardSummary>,
   absolutePathOf: (card: BoardCard) => string | null,
-  onShapeTextCommit?: (shapeId: string, text: string) => void,
-  onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void,
+  callbacks: {
+    onShapeTextCommit?: (shapeId: string, text: string) => void;
+    onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
+    onCardResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
+    onInkResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
+  },
 ): { nodes: BoardNode[]; edges: Edge[] } {
   const nodes: BoardNode[] = [];
   for (const frame of readBoardFrames(document)) {
@@ -637,10 +671,11 @@ function buildBoardGraph(
     });
   }
   for (const shape of readBoardShapes(document)) {
-    nodes.push(shapeNodeFor(shape, onShapeTextCommit, onShapeResize));
+    nodes.push(shapeNodeFor(shape, callbacks.onShapeTextCommit, callbacks.onShapeResize));
   }
   for (const stroke of readBoardInk(document)) {
-    nodes.push(inkNodeFor(stroke));
+    const inkNode = inkNodeFor(stroke);
+    nodes.push({ ...inkNode, data: { ...inkNode.data, onInkResize: callbacks.onInkResize } });
   }
   for (const card of readBoardCards(document)) {
     const absolute = card.kind === 'note' ? absolutePathOf(card) : null;
@@ -655,6 +690,7 @@ function buildBoardGraph(
         summary: absolute ? summaries.get(absolute) ?? null : null,
         shape: null,
         inkStroke: null,
+        ...(callbacks.onCardResize ? { onCardResize: callbacks.onCardResize } : {}),
       },
       style: { width: card.w, height: card.h },
     });
@@ -769,12 +805,17 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const shapeDraftRef = useRef<{ start: number[]; current: number[] } | null>(null);
   const handleShapeResizeRef = useRef<(nodeId: string, box: { x: number; y: number; width: number; height: number }) => void>(() => {});
   const applyGraphRef = useRef<(document: FlowixCanvasDocument) => void>(() => {});
+  const handleCardResizeRef = useRef<(nodeId: string, box: { x: number; y: number; width: number; height: number }) => void>(() => {});
+  const handleInkResizeRef = useRef<(nodeId: string, box: { x: number; y: number; width: number; height: number }) => void>(() => {});
   /** Filled after `scheduleFlush` exists; card/shape callbacks may run earlier. */
   const scheduleFlushRef = useRef<() => void>(() => {});
   const pushHistoryRef = useRef<() => void>(() => {});
   const clipboardRef = useRef<{ cards: BoardCard[]; shapes: BoardShape[]; ink: BoardInkStroke[] } | null>(null);
   /** Ink geometry captured at drag start so a move translates the points. */
   const inkDragStartRef = useRef<Map<string, { boxX: number; boxY: number; points: number[][] }>>(new Map());
+  const lastPointerTypeRef = useRef<string>('mouse');
+  /** True while a touch drag is moving a node — the panel stays hidden. */
+  const touchDraggingRef = useRef(false);
   const liveStrokeRef = useRef<number[][] | null>(null);
   const dataUrlsRef = useRef<Map<string, string>>(new Map());
   const dirtyRef = useRef(false);
@@ -836,8 +877,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       dataUrlsRef.current,
       summariesRef.current,
       absolutePathOf,
-      commitShapeText,
-      handleShapeResizeRef.current,
+      {
+        onShapeTextCommit: commitShapeText,
+        onShapeResize: handleShapeResizeRef.current,
+        onCardResize: handleCardResizeRef.current,
+        onInkResize: handleInkResizeRef.current,
+      },
     );
     // Rebuilding the graph must not drop the user's selection: react-flow reads
     // `selected` off the node objects we hand it.
@@ -1189,13 +1234,13 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
 
   // No dependency array: the callback runs after the handler's declaration is
   // initialized, so it can be assigned without a TDZ read during render.
+  // No dependency array: runs after render, once every handler below is
+  // initialized (avoids TDZ reads of the consts declared further down).
   useEffect(() => {
     handleShapeResizeRef.current = handleShapeResize;
+    handleCardResizeRef.current = handleCardResize;
+    handleInkResizeRef.current = handleInkResize;
   });
-
-  useEffect(() => {
-    applyGraphRef.current = applyGraph;
-  }, [applyGraph]);
 
   /** Drag a handle between two nodes to add a connector. */
   const handleConnect = useCallback((connection: { source: string | null; target: string | null }) => {
@@ -1415,6 +1460,47 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     }
   }, [filePath, insertImage, reactFlow, t]);
 
+  /** Card resize writes the new box straight into the card. */
+  const handleCardResize = useCallback((nodeId: string, box: { x: number; y: number; width: number; height: number }) => {
+    const document = documentRef.current;
+    if (!document) return;
+    const card = cardsRef.current.find((item) => item.id === nodeId);
+    if (!card) return;
+    const w = Math.max(40, box.width);
+    const h = Math.max(30, box.height);
+    if (card.x === box.x && card.y === box.y && card.w === w && card.h === h) return;
+    card.x = box.x;
+    card.y = box.y;
+    card.w = w;
+    card.h = h;
+    document.cards = cardsRef.current;
+    applyGraphRef.current(document);
+    scheduleFlush();
+    pushHistory();
+  }, [pushHistory, scheduleFlush]);
+
+  /** Ink resize scales every point from the old bbox into the new one. */
+  const handleInkResize = useCallback((nodeId: string, box: { x: number; y: number; width: number; height: number }) => {
+    const document = documentRef.current;
+    if (!document) return;
+    const stroke = inkRef.current.find((item) => item.id === nodeId);
+    if (!stroke) return;
+    const oldBox = inkBox(stroke);
+    const w = Math.max(40, box.width);
+    const h = Math.max(30, box.height);
+    if (box.x === oldBox.x && box.y === oldBox.y && w === oldBox.w && h === oldBox.h) return;
+    const sx = oldBox.w === 0 ? 1 : w / oldBox.w;
+    const sy = oldBox.h === 0 ? 1 : h / oldBox.h;
+    stroke.points = stroke.points.map(([x, y]) => [
+      box.x + (x - oldBox.x) * sx,
+      box.y + (y - oldBox.y) * sy,
+    ]);
+    document.ink = inkRef.current;
+    applyGraphRef.current(document);
+    scheduleFlush();
+    pushHistory();
+  }, [pushHistory, scheduleFlush]);
+
   /** Double-click on empty canvas drops a text element and starts editing. */
   const handleSurfaceDoubleClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
     if (readOnly || tool !== 'select') return;
@@ -1528,6 +1614,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   }, [applyGraph, pushHistory, scheduleFlush, selectedShapeIds]);
 
   const handleNodeDragStart = useCallback((_event: unknown, node: BoardNode, dragged: BoardNode[]) => {
+    // On touch, a node drag must not summon the properties panel (Obsidian
+    // mobile behaviour); hide it for the gesture so it can't block the drag.
+    touchDraggingRef.current = lastPointerTypeRef.current === 'touch';
+    if (touchDraggingRef.current) setPanelCollapsed(true);
     inkDragStartRef.current.clear();
     for (const item of dragged.length > 0 ? dragged : [node]) {
       if (item.type !== 'ink') continue;
@@ -1627,6 +1717,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   }, [reactFlow, syncInkToDocument]);
 
   const handleBoardPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    lastPointerTypeRef.current = event.pointerType;
     pressRef.current = {
       x: event.clientX,
       y: event.clientY,
