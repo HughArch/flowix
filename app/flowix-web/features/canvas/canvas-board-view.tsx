@@ -463,18 +463,21 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
     const contentH = element.scrollHeight;
     element.style.height = `${contentH}px`;
     const pad = SHAPE_PADDING * 2;
-    const isText = current.shape === 'text';
-    const isClosed = current.shape === 'rect' || current.shape === 'ellipse' || current.shape === 'diamond';
-    // A text element's visible bounds are the selection ring, so the node box
-    // (shape + ring padding) must at least contain the text; closed shapes
-    // grow once the label would cross the drawn outline. Arrows and lines
-    // keep their two-point geometry and never grow. The reported box is the
-    // node box, centered on the shape center so growth stays symmetric.
-    const nextBoxH = isText
-      ? (contentH + 2 > current.h + pad ? contentH + 2 : null)
-      : isClosed
-        ? (contentH > current.h ? contentH + 8 + pad : null)
-        : null;
+    let nextBoxH: number | null = null;
+    if (current.shape === 'text') {
+      // A text element's visible bounds are the selection ring, so the node
+      // box (shape + ring padding) must at least contain the text.
+      if (contentH + 2 > current.h + pad) nextBoxH = contentH + 2;
+    } else if (current.shape === 'rect' || current.shape === 'ellipse' || current.shape === 'diamond') {
+      // Closed shapes grow once the label would cross the drawn outline. The
+      // label lives in the shape's inscribed rectangle (full box for rects,
+      // 1/√2 for ellipses, 1/2 for diamonds — the same width the label wraps
+      // at), so the height follows that factor. Arrows and lines keep their
+      // two-point geometry and never grow. The reported box is the node box,
+      // centered on the shape center so growth stays symmetric.
+      const factor = SHAPE_LABEL_FACTORS[current.shape] ?? 1;
+      if (contentH > current.h * factor - 8) nextBoxH = (contentH + 8) / factor + pad;
+    }
     if (nextBoxH === null) return;
     const cy = current.y + current.h / 2;
     data.onShapeResize?.(current.id, {
@@ -500,6 +503,9 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   const canEditLabel = Boolean(shape.text)
     || shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond'
     || shape.shape === 'text';
+  // Ellipse/diamond labels wrap inside the inscribed rectangle so they never
+  // cross the outline; everything else wraps at the node container.
+  const labelWidth = shapeLabelWidth(shape);
 
   const sketch = shape.shape === 'text' ? null : (
     <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none' }}>
@@ -580,13 +586,25 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
               if (event.key === 'Escape') { data.onShapeTextCommit?.(shape.id, draft); setEditing(false); }
               if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); setEditing(false); data.onShapeTextCommit?.(shape.id, draft); }
             }}
-            style={{ fontSize, color: shape.shape === 'text' ? stroke : undefined, fontFamily: fontStack, fontWeight }}
-            className={`w-full resize-none overflow-hidden bg-transparent p-0 ${alignClass} leading-snug text-[var(--foreground)] outline-none`}
+            style={{
+              fontSize,
+              color: shape.shape === 'text' ? stroke : undefined,
+              fontFamily: fontStack,
+              fontWeight,
+              ...(labelWidth ? { width: labelWidth } : {}),
+            }}
+            className={`${labelWidth ? 'mx-auto' : 'w-full'} resize-none overflow-hidden bg-transparent p-0 ${alignClass} leading-snug text-[var(--foreground)] outline-none`}
           />
         ) : shape.text ? (
           <span
-            className={`pointer-events-none whitespace-pre-wrap break-words leading-snug ${alignClass}`}
-            style={{ color: shape.shape === 'text' ? stroke : 'var(--foreground)', fontSize, fontFamily: fontStack, fontWeight }}
+            className={`pointer-events-none whitespace-pre-wrap break-words leading-snug ${alignClass} ${labelWidth ? 'mx-auto' : ''}`}
+            style={{
+              color: shape.shape === 'text' ? stroke : 'var(--foreground)',
+              fontSize,
+              fontFamily: fontStack,
+              fontWeight,
+              ...(labelWidth ? { width: labelWidth } : {}),
+            }}
           >
             {shape.text}
           </span>
@@ -861,6 +879,23 @@ function textShapeAt(point: number[], align: 'left' | 'center' | 'right'): { x: 
     w,
     h,
   };
+}
+
+/** Fraction of the shape box the label may occupy (per axis). Ellipse and
+ *  diamond labels are constrained to the inscribed rectangle so the text
+ *  never crosses the curved or slanted outline; rect labels span the box. */
+const SHAPE_LABEL_FACTORS: Partial<Record<BoardShapeKind, number>> = {
+  ellipse: 1 / Math.SQRT2,
+  diamond: 0.5,
+};
+
+/** Wrap width for a label that must stay inside the drawn outline (the
+ *  ellipse/diamond inscribed rectangle); null wraps at the node container
+ *  (rects, text elements, arrows and lines). */
+function shapeLabelWidth(shape: BoardShape): number | null {
+  const factor = SHAPE_LABEL_FACTORS[shape.shape];
+  if (!factor) return null;
+  return Math.max(24, Math.round(shape.w * factor) - 8);
 }
 
 /** Bounding box of an ink stroke, padded for selection/hit area. */
