@@ -258,7 +258,9 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   const stroke = shape.stroke ?? '#64748b';
   const strokeWidth = shape.strokeWidth ?? 2;
   const fontSize = shape.fontSize ?? 16;
-  const fontStack = TEXT_FONTS[shape.fontFamily ?? 'hand'];
+  const fontFamilyKey = shape.fontFamily ?? 'hand';
+  const fontStack = TEXT_FONTS[fontFamilyKey];
+  const fontWeight = shape.shape === 'text' ? TEXT_FONT_WEIGHTS[fontFamilyKey] : 400;
   const textAlign = shape.textAlign ?? 'center';
   const alignClass = textAlign === 'left' ? 'text-left' : textAlign === 'right' ? 'text-right' : 'text-center';
   // Node boxes are padded, so paths must be translated by the padded origin.
@@ -337,13 +339,13 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
               if (event.key === 'Escape') { setEditing(false); }
               if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); setEditing(false); data.onShapeTextCommit?.(shape.id, draft); }
             }}
-            style={{ fontSize, color: shape.shape === 'text' ? stroke : undefined, fontFamily: fontStack }}
+            style={{ fontSize, color: shape.shape === 'text' ? stroke : undefined, fontFamily: fontStack, fontWeight }}
             className={`h-full w-full resize-none bg-transparent ${alignClass} leading-snug text-[var(--foreground)] outline-none`}
           />
         ) : shape.text ? (
           <span
             className={`pointer-events-none whitespace-pre-wrap break-words leading-snug ${alignClass}`}
-            style={{ color: shape.shape === 'text' ? stroke : 'var(--foreground)', fontSize, fontFamily: fontStack }}
+            style={{ color: shape.shape === 'text' ? stroke : 'var(--foreground)', fontSize, fontFamily: fontStack, fontWeight }}
           >
             {shape.text}
           </span>
@@ -388,13 +390,18 @@ const NODE_TYPES = {
 
 type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | BoardShapeKind;
 /** Handwriting stack: CJK brushes first, then Latin sketch fonts. */
-const HAND_FONT = "'Xiaolai SC','Kaiti SC',KaiTi,STKaiti,'Segoe Print','Comic Sans MS',cursive";
-/** Font faces for the text panel row (Obsidian: handwriting / normal / code / serif). */
-const TEXT_FONTS: Record<'hand' | 'sans' | 'mono' | 'serif', string> = {
-  hand: HAND_FONT,
-  sans: 'system-ui, -apple-system, "Segoe UI", sans-serif',
-  mono: 'ui-monospace, SFMono-Regular, Menlo, Consolas, monospace',
-  serif: 'Georgia, "Times New Roman", "Songti SC", serif',
+/** Font faces for the text panel row, matching Obsidian's five slots. */
+const TEXT_FONTS: Record<'hand' | 'sans' | 'mono' | 'bold' | 'serif', string> = {
+  // Bundled Virgil with a CJK handwriting fallback (楷体).
+  hand: "'Flowix Canvas Hand','Xiaolai SC','Kaiti SC',KaiTi,STKaiti,'Segoe Print',cursive",
+  sans: "'Flowix Canvas Sans', system-ui, -apple-system, 'Segoe UI', sans-serif",
+  mono: "'Flowix Canvas Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
+  bold: "system-ui, -apple-system, 'Segoe UI Black', 'Noto Sans', sans-serif",
+  serif: "Georgia, 'Times New Roman', 'Songti SC', 'SimSun', serif",
+};
+/** Extra weight for the bold slot. */
+const TEXT_FONT_WEIGHTS: Record<'hand' | 'sans' | 'mono' | 'bold' | 'serif', number> = {
+  hand: 400, sans: 400, mono: 400, bold: 800, serif: 400,
 };
 const SHAPE_TOOLS: BoardShapeKind[] = ['rect', 'ellipse', 'diamond', 'text', 'arrow'];
 const isShapeTool = (tool: BoardTool): tool is BoardShapeKind =>
@@ -410,7 +417,7 @@ const ROUGHNESS_LEVELS = [0, 1, 2.5] as const;
 const FONT_SIZES = [12, 16, 20, 28, 36];
 const FONT_SIZE_LABELS = ['XS', 'S', 'M', 'L', 'XL'] as const;
 const TEXT_ALIGNS = ['left', 'center', 'right'] as const;
-const TEXT_FONT_KEYS = ['hand', 'sans', 'mono', 'serif'] as const;
+const TEXT_FONT_KEYS = ['hand', 'sans', 'mono', 'bold', 'serif'] as const;
 const INK_WIDTHS = [2, 5, 10];
 /** Ink renders above cards: annotation strokes cross card bodies like on a whiteboard. */
 const INK_Z_INDEX = 20;
@@ -742,7 +749,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [toolFill, setToolFill] = useState('transparent');
   const [toolStrokeStyle, setToolStrokeStyle] = useState<BoardStrokeStyle>('solid');
   const [toolFontSize, setToolFontSize] = useState(20);
-  const [toolFontFamily, setToolFontFamily] = useState<'hand' | 'sans' | 'mono' | 'serif'>('hand');
+  const [toolFontFamily, setToolFontFamily] = useState<'hand' | 'sans' | 'mono' | 'bold' | 'serif'>('hand');
   const [toolTextAlign, setToolTextAlign] = useState<'left' | 'center' | 'right'>('center');
   const [toolOpacity, setToolOpacity] = useState(100);
   const [toolPressure, setToolPressure] = useState(true);
@@ -2304,8 +2311,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
                   onClick={() => (selectionMode ? patchSelectedShapes({ fontFamily: key }) : setToolFontFamily(key))}
                   className={toolButtonClass(styleFontFamily === key)}
                 >
-                  <span style={{ fontFamily: TEXT_FONTS[key], fontSize: 13, fontWeight: key === 'serif' ? 700 : 400 }}>
-                    {key === 'hand' ? <Pencil className="h-3.5 w-3.5" /> : key === 'mono' ? '</>' : 'A'}
+                  <span style={{ fontFamily: TEXT_FONTS[key], fontSize: 13, fontWeight: TEXT_FONT_WEIGHTS[key] }}>
+                    {key === 'hand' ? <Pencil className="h-3.5 w-3.5" />
+                      : key === 'mono' ? '</>'
+                        : key === 'bold' ? 'B'
+                          : 'A'}
                   </span>
                 </button>
               ))}

@@ -92,7 +92,7 @@ export type BoardShapeKind = 'rect' | 'ellipse' | 'diamond' | 'text' | 'arrow';
 
 /** Diagram shape in board (flow) coordinates; `text` is the inline label. */
 export type BoardStrokeStyle = 'solid' | 'dashed' | 'dotted';
-export type BoardFontFamily = 'hand' | 'sans' | 'mono' | 'serif';
+export type BoardFontFamily = 'hand' | 'sans' | 'mono' | 'bold' | 'serif';
 export type BoardTextAlign = 'left' | 'center' | 'right';
 
 export interface BoardShape {
@@ -490,7 +490,8 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
     const y2 = readFiniteNumber(raw.y2);
     const opacity = readFiniteNumber(raw.opacity);
     const fillStyle = raw.fillStyle === 'solid' || raw.fillStyle === 'cross-hatch' ? raw.fillStyle : raw.fillStyle === 'hachure' ? 'hachure' : undefined;
-    const fontFamily: BoardFontFamily | undefined = raw.fontFamily === 'sans' || raw.fontFamily === 'mono' || raw.fontFamily === 'serif'
+    const fontFamily: BoardFontFamily | undefined = raw.fontFamily === 'sans' || raw.fontFamily === 'mono'
+      || raw.fontFamily === 'serif' || raw.fontFamily === 'bold'
       ? raw.fontFamily
       : raw.fontFamily === 'hand' ? 'hand' : undefined;
     const textAlign: BoardTextAlign | undefined = raw.textAlign === 'left' || raw.textAlign === 'right'
