@@ -99,14 +99,6 @@
  * metrics) and Cascadia Code. CJK has no glyphs in these files and falls
  * back to the handwriting/serif stacks declared per face. */
 @font-face {
-	font-family: 'Flowix Canvas Hand';
-	src: url('../assets/fonts/CanvasVirgil.woff2') format('woff2');
-	font-weight: 400;
-	font-style: normal;
-	font-display: swap;
-}
-
-@font-face {
 	font-family: 'Flowix Canvas Sans';
 	src: url('../assets/fonts/CanvasSans.woff2') format('woff2');
 	font-weight: 400;

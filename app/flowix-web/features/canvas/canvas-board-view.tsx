@@ -117,7 +117,7 @@ function CardHandles({ visible = false }: { visible?: boolean }) {
         type="target"
         position={Position.Top}
         className={visible
-          ? '!h-2.5 !w-2.5 !border-0 !bg-[var(--muted-foreground)]/60'
+          ? '!h-2.5 !w-2.5 !rounded-full !bg-[var(--card)] !border !border-[var(--muted-foreground)]'
           : '!h-3 !w-3 !border-0 !bg-transparent'}
       />
       {visible ? (
@@ -316,8 +316,8 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
         minWidth={40}
         minHeight={30}
         onResizeEnd={(_, params) => data.onShapeResize?.(shape.id, params)}
-        lineClassName="!border-[var(--foreground)]/40"
-        handleClassName="!bg-[var(--card)] !border-[var(--foreground)]/60"
+        lineClassName="!border-[var(--muted-foreground)]/60"
+        handleClassName="!h-2.5 !w-2.5 !rounded-[3px] !bg-[var(--card)] !border !border-[var(--muted-foreground)] !shadow-sm"
       />
       {sketch}
       <div
@@ -393,10 +393,10 @@ type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | BoardShapeKind;
 /** Font faces for the text panel row, matching Obsidian's five slots. */
 const TEXT_FONTS: Record<'hand' | 'sans' | 'mono' | 'bold' | 'serif', string> = {
   // Bundled Virgil with a CJK handwriting fallback (楷体).
-  hand: "'Flowix Canvas Hand','Xiaolai SC','Kaiti SC',KaiTi,STKaiti,'Segoe Print',cursive",
+  hand: "'Flowix Canvas Excalifont', 'Flowix Canvas Xiaolai', 'Xiaolai SC', 'Kaiti SC', KaiTi, STKaiti, 'Segoe Print', cursive",
   sans: "'Flowix Canvas Sans', system-ui, -apple-system, 'Segoe UI', sans-serif",
   mono: "'Flowix Canvas Mono', ui-monospace, SFMono-Regular, Menlo, Consolas, monospace",
-  bold: "system-ui, -apple-system, 'Segoe UI Black', 'Noto Sans', sans-serif",
+  bold: "'Flowix Canvas Lilita', 'Flowix Canvas Sans', system-ui, -apple-system, sans-serif",
   serif: "Georgia, 'Times New Roman', 'Songti SC', 'SimSun', serif",
 };
 /** Extra weight for the bold slot. */
@@ -759,6 +759,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [linkEditing, setLinkEditing] = useState(false);
   /** Obsidian: the properties dashboard can be collapsed via its menu button. */
   const [panelCollapsed, setPanelCollapsed] = useState(false);
+  /** A panel-opening select must be a click on an element, never a drag. */
+  const pressRef = useRef<{ x: number; y: number; onElement: boolean } | null>(null);
   const [linkDraft, setLinkDraft] = useState('');
   const documentRef = useRef<FlowixCanvasDocument | null>(null);
   const cardsRef = useRef<BoardCard[]>([]);
@@ -1052,16 +1054,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     selectedIdsRef.current = ids;
     setSelectedShapeIds(selected.filter((node) => node.type === 'shape').map((node) => node.id));
     setSelectedInkIds(selected.filter((node) => node.type === 'ink').map((node) => node.id));
-    if (selected.length > 0) setPanelCollapsed(false);
   }, []);
 
-  const handleSelectionChange = useCallback(({ nodes: selected }: { nodes: BoardNode[] }) => {
-    const ids = selected.map((node) => node.id);
-    selectedIdsRef.current = ids;
-    setSelectedShapeIds(selected.filter((node) => node.type === 'shape').map((node) => node.id));
-    setSelectedInkIds(selected.filter((node) => node.type === 'ink').map((node) => node.id));
-    if (selected.length > 0) setPanelCollapsed(false);
-  }, []);
+  /** No-op: the selection mirror is derived from the node list. */
+  const handleSelectionChange = useCallback(() => {}, []);
 
   /** Every nodes update re-derives the selection mirror (idempotent). */
   useEffect(() => {
@@ -1631,6 +1627,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   }, [reactFlow, syncInkToDocument]);
 
   const handleBoardPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    pressRef.current = {
+      x: event.clientX,
+      y: event.clientY,
+      onElement: !!(event.target as Element).closest('.react-flow__node:not(.react-flow__node-frame)'),
+    };
     if (readOnly || tool === 'select' || event.button !== 0) return;
     if ((event.target as Element).closest('[data-board-toolbar]')) return;
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* synthetic pointers cannot capture */ }
@@ -1670,6 +1671,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   }, [eraseInkAt, flowPositionOf, readOnly, tool]);
 
   const handleBoardPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const press = pressRef.current;
+    if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 5 && press.onElement) {
+      // A click (not a drag) on an element summons the panel.
+      setPanelCollapsed(false);
+    }
+    pressRef.current = null;
     const draft = shapeDraftRef.current;
     shapeDraftRef.current = null;
     setShapePreview(null);
