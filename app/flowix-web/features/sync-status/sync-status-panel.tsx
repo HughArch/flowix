@@ -1,6 +1,6 @@
 'use client';
 
-import { useCallback, useEffect, useState } from 'react';
+import { useCallback, useEffect, useState, type ReactNode } from 'react';
 import { GitCompare, X } from 'lucide-react';
 import { ArrowsClockwiseIcon, CheckCircleIcon, WarningCircleIcon } from '@phosphor-icons/react';
 import { Button } from '@shared/ui/button';
@@ -29,39 +29,92 @@ const PHASE_KEYS: Record<FnsSyncPhase, I18nKey> = {
   filesPush: 'sync.panel.phaseFilesPush',
 };
 
+const PILL = 'inline-flex h-5 shrink-0 items-center gap-1 rounded-md px-1.5 text-[11px] font-medium leading-none tabular-nums';
+const PILL_RECEIVE = `${PILL} bg-[color-mix(in_oklch,var(--info)_12%,transparent)] text-[var(--info)]`;
+const PILL_SEND = `${PILL} bg-[color-mix(in_oklch,var(--warning)_16%,transparent)] text-[color-mix(in_oklch,var(--warning)_72%,var(--foreground))]`;
+const PILL_MUTED = `${PILL} bg-[var(--muted)] text-[var(--muted-foreground)]`;
+const CHIP = 'min-w-0 truncate rounded-md bg-[var(--muted)] px-1.5 py-0.5 text-[11px] leading-4 text-[var(--muted-foreground)]';
+
 function formatTime(value: number, language: string): string {
-  return new Intl.DateTimeFormat(language === 'zh-CN' ? 'zh-CN' : 'en-US', {
-    month: '2-digit',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-  }).format(new Date(value));
+  const date = new Date(value);
+  const sameDay = date.toDateString() === new Date().toDateString();
+  return new Intl.DateTimeFormat(language === 'zh-CN' ? 'zh-CN' : 'en-US', sameDay
+    ? { hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }
+    : { month: '2-digit', day: '2-digit', hour: '2-digit', minute: '2-digit', hour12: false },
+  ).format(date);
+}
+
+function formatDuration(ms: number): string {
+  if (ms < 1000) return `${ms}ms`;
+  return `${(ms / 1000).toFixed(ms < 10000 ? 1 : 0)}s`;
+}
+
+function InfoRow({ label, title, children }: {
+  label: string;
+  title?: string;
+  children: ReactNode;
+}) {
+  return (
+    <div className="flex items-center justify-between gap-2">
+      <span className="shrink-0 text-[var(--muted-foreground)]">{label}</span>
+      <span className="min-w-0 truncate text-right text-[var(--foreground)]" title={title}>
+        {children}
+      </span>
+    </div>
+  );
 }
 
 function RecordRow({ record, language }: { record: FnsSyncRecord; language: string }) {
+  const { t } = useI18n();
+  const fileCount = record.filesPulled + record.filesPushed;
+  const noChanges = record.ok && record.pulled === 0 && record.pushed === 0 && fileCount === 0;
   return (
-    <div className="flex items-start gap-2 rounded-lg px-2 py-1.5 text-xs hover:bg-[var(--muted)]">
-      <span className="mt-0.5 shrink-0">
-        {record.ok
-          ? <CheckCircleIcon className="h-3.5 w-3.5 text-[var(--success,#22c55e)]" />
-          : <WarningCircleIcon className="h-3.5 w-3.5 text-[var(--destructive)]" />}
-      </span>
-      <div className="min-w-0 flex-1">
-        <div className="flex items-baseline justify-between gap-2">
-          <span className="truncate text-[var(--foreground)]">
-            {record.vault || record.notebookId}
-          </span>
-          <span className="shrink-0 text-[var(--muted-foreground)]">
-            {formatTime(record.at, language)}
-          </span>
-        </div>
-        <div className="text-[var(--muted-foreground)]">
+    <div className="relative rounded-lg py-1.5 pl-3.5 pr-1.5 hover:bg-[var(--hover-bg)]">
+      {/* Timeline accent bar, like the reference log: green = ok, red = failed. */}
+      <span
+        aria-hidden
+        className={`absolute bottom-1.5 left-0 top-1.5 w-[3px] rounded-full ${
+          record.ok ? 'bg-[var(--success)]' : 'bg-[var(--destructive)]'
+        }`}
+      />
+      <div className="flex items-center gap-1.5">
+        <span className="shrink-0 text-[11px] tabular-nums text-[var(--muted-foreground)]">
+          {formatTime(record.at, language)}
+        </span>
+        <span
+          className={`truncate text-xs font-medium ${
+            record.ok ? 'text-[var(--foreground)]' : 'text-[var(--destructive)]'
+          }`}
+        >
+          {record.ok ? t('sync.panel.done') : t('sync.panel.failed')}
+        </span>
+        <span className="ml-auto flex shrink-0 items-center gap-1">
+          {record.pulled > 0 && (
+            <span className={PILL_RECEIVE}>↓ {t('sync.panel.receive')} {record.pulled}</span>
+          )}
+          {record.pushed > 0 && (
+            <span className={PILL_SEND}>↑ {t('sync.panel.send')} {record.pushed}</span>
+          )}
+          {noChanges && <span className={PILL_MUTED}>{t('sync.panel.noChanges')}</span>}
           {record.ok
-            ? `↓${record.pulled} ↑${record.pushed} · 📎 ↓${record.filesPulled} ↑${record.filesPushed} · ${record.durationMs}ms`
-            : record.error}
-        </div>
+            ? <CheckCircleIcon weight="fill" className="h-3.5 w-3.5 shrink-0 text-[var(--success)]" />
+            : <WarningCircleIcon weight="fill" className="h-3.5 w-3.5 shrink-0 text-[var(--destructive)]" />}
+        </span>
       </div>
+      <div className="mt-1 flex items-center gap-1.5">
+        <span className={CHIP} title={record.vault || record.notebookId}>
+          {record.vault || record.notebookId}
+        </span>
+        {fileCount > 0 && (
+          <span className={`${PILL_MUTED} shrink-0`}>📎 ↓{record.filesPulled} ↑{record.filesPushed}</span>
+        )}
+        <span className="ml-auto shrink-0 text-[11px] tabular-nums text-[var(--muted-foreground)]">
+          {formatDuration(record.durationMs)}
+        </span>
+      </div>
+      {!record.ok && record.error && (
+        <p className="mt-1 break-words text-[11px] leading-4 text-[var(--destructive)]">{record.error}</p>
+      )}
     </div>
   );
 }
@@ -83,7 +136,7 @@ function ConflictRow({
 }) {
   const { t } = useI18n();
   return (
-    <div className="space-y-1 rounded-lg border border-[var(--border)] px-2 py-1.5">
+    <div className="space-y-1 rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 py-1.5">
       <button
         type="button"
         className="flex w-full items-center gap-1 rounded text-left"
@@ -370,6 +423,13 @@ export function SyncStatusPanel() {
     ? formatTime(lastRecord.at, language)
     : t('sync.panel.never');
   const retryAt = status?.nextRetryAt ? formatTime(status.nextRetryAt, language) : null;
+  const headerDot = syncing
+    ? 'bg-[var(--brand)] animate-pulse'
+    : status?.lastError
+      ? 'bg-[var(--destructive)]'
+      : notebookState?.bound
+        ? 'bg-[var(--success)]'
+        : 'bg-[var(--muted-foreground)]';
 
   return (
     <>
@@ -391,6 +451,7 @@ export function SyncStatusPanel() {
           <span className="flex-1 text-sm font-medium text-[var(--foreground)]">
             {t('sync.panel.title')}
           </span>
+          <span aria-hidden className={`h-2 w-2 shrink-0 rounded-full ${headerDot}`} />
           <Button
             size="sm"
             variant="ghost"
@@ -403,199 +464,194 @@ export function SyncStatusPanel() {
           </Button>
         </header>
 
-        {!selectedNotebookId ? (
-          <p className="px-3 py-6 text-center text-xs text-[var(--muted-foreground)]">
-            {t('sync.panel.noNotebook')}
-          </p>
-        ) : !notebookState?.bound ? (
-          <div className="space-y-2 border-y border-[var(--divider)] px-3 py-3 text-xs">
-            <p className="text-[var(--muted-foreground)]">{t('sync.panel.notBound')}</p>
-            <label className="block space-y-1">
-              <span className="text-[var(--muted-foreground)]">{t('sync.panel.token')}</span>
-              <select
-                className="h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 text-sm"
-                value={selectedTokenId}
-                onChange={(event) => setSelectedTokenId(event.target.value)}
+        <div className="min-h-0 flex-1 space-y-2.5 overflow-y-auto px-3 pb-4">
+          {!selectedNotebookId ? (
+            <p className="py-6 text-center text-xs text-[var(--muted-foreground)]">
+              {t('sync.panel.noNotebook')}
+            </p>
+          ) : !notebookState?.bound ? (
+            <div className="space-y-2.5 rounded-xl bg-[color-mix(in_oklch,var(--muted)_40%,transparent)] p-3 text-xs">
+              <p className="text-[var(--muted-foreground)]">{t('sync.panel.notBound')}</p>
+              <label className="block space-y-1">
+                <span className="text-[var(--muted-foreground)]">{t('sync.panel.token')}</span>
+                <select
+                  className="h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 text-sm"
+                  value={selectedTokenId}
+                  onChange={(event) => setSelectedTokenId(event.target.value)}
+                >
+                  <option value="">{t('sync.panel.noToken')}</option>
+                  {config?.tokens.map((token) => (
+                    <option key={token.id} value={token.id}>{token.label}</option>
+                  ))}
+                </select>
+              </label>
+              <label className="block space-y-1">
+                <span className="text-[var(--muted-foreground)]">{t('sync.panel.vault')}</span>
+                <input
+                  className="h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 text-sm"
+                  value={vault}
+                  placeholder={t('sync.panel.vaultHint')}
+                  onChange={(event) => setVault(event.target.value)}
+                />
+              </label>
+              <Button
+                size="sm"
+                className="w-full rounded-lg"
+                disabled={busy || !selectedTokenId}
+                onClick={() => void bind()}
               >
-                <option value="">{t('sync.panel.noToken')}</option>
-                {config?.tokens.map((token) => (
-                  <option key={token.id} value={token.id}>{token.label}</option>
-                ))}
-              </select>
-            </label>
-            <label className="block space-y-1">
-              <span className="text-[var(--muted-foreground)]">{t('sync.panel.vault')}</span>
-              <input
-                className="h-8 w-full rounded-lg border border-[var(--border)] bg-[var(--card)] px-2 text-sm"
-                value={vault}
-                placeholder={t('sync.panel.vaultHint')}
-                onChange={(event) => setVault(event.target.value)}
-              />
-            </label>
-            <Button
-              size="sm"
-              className="w-full rounded-lg"
-              disabled={busy || !selectedTokenId}
-              onClick={() => void bind()}
-            >
-              {t('sync.panel.bind')}
-            </Button>
-          </div>
-        ) : (
-          <div className="space-y-2 border-y border-[var(--divider)] px-3 py-3 text-xs">
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--muted-foreground)]">{t('sync.panel.vault')}</span>
-              <span className="text-[var(--foreground)]">{notebookState.vault}</span>
+                {t('sync.panel.bind')}
+              </Button>
             </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--muted-foreground)]">{t('sync.panel.token')}</span>
-              <span className="text-[var(--foreground)]">
+          ) : (
+            <div className="space-y-1.5 rounded-xl bg-[color-mix(in_oklch,var(--muted)_40%,transparent)] px-3 py-2.5 text-xs">
+              <InfoRow label={t('sync.panel.vault')} title={notebookState.vault}>
+                {notebookState.vault}
+              </InfoRow>
+              <InfoRow label={t('sync.panel.token')} title={notebookState.tokenLabel ?? notebookState.tokenId}>
                 {notebookState.tokenLabel ?? notebookState.tokenId}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--muted-foreground)]">{t('sync.panel.status')}</span>
-              <span className="text-[var(--foreground)]">
-                {syncing ? t('sync.panel.running') : t('sync.panel.idle')}
-              </span>
-            </div>
-            <div className="flex items-center justify-between">
-              <span className="text-[var(--muted-foreground)]">{t('sync.panel.lastSync')}</span>
-              <span className="text-[var(--foreground)]">{lastSync}</span>
-            </div>
-            {retryAt && (
-              <div className="flex items-center justify-between">
-                <span className="text-[var(--muted-foreground)]">{t('sync.panel.retryAt')}</span>
-                <span className="text-[var(--foreground)]">{retryAt}</span>
-              </div>
-            )}
-            {status?.progress && (
-              <div className="space-y-1 pt-1">
-                <div className="flex items-center justify-between">
-                  <span className="text-[var(--muted-foreground)]">
-                    {t(PHASE_KEYS[status.progress.phase])}
-                  </span>
-                  {status.progress.phase !== 'scanning' && (
-                    <span className="text-[var(--foreground)]">
-                      {Math.min(status.progress.completed + 1, Math.max(status.progress.total, 1))}
-                      /{status.progress.total}
+              </InfoRow>
+              <InfoRow label={t('sync.panel.status')}>
+                {syncing
+                  ? (
+                      <span className="inline-flex items-center gap-1.5 text-[var(--brand)]">
+                        <span className="h-1.5 w-1.5 animate-pulse rounded-full bg-[var(--brand)]" />
+                        {t('sync.panel.running')}
+                      </span>
+                    )
+                  : t('sync.panel.idle')}
+              </InfoRow>
+              <InfoRow label={t('sync.panel.lastSync')}>{lastSync}</InfoRow>
+              {retryAt && (
+                <InfoRow label={t('sync.panel.retryAt')}>{retryAt}</InfoRow>
+              )}
+              {status?.progress && (
+                <div className="space-y-1 pt-1">
+                  <div className="flex items-center justify-between">
+                    <span className="text-[var(--muted-foreground)]">
+                      {t(PHASE_KEYS[status.progress.phase])}
                     </span>
+                    {status.progress.phase !== 'scanning' && (
+                      <span className="tabular-nums text-[var(--foreground)]">
+                        {Math.min(status.progress.completed + 1, Math.max(status.progress.total, 1))}
+                        /{status.progress.total}
+                      </span>
+                    )}
+                  </div>
+                  {status.progress.phase !== 'scanning' && (
+                    <div className="h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
+                      <div
+                        className="h-full rounded-full bg-[var(--brand,#6366f1)] transition-[width] duration-200"
+                        style={{
+                          width: `${status.progress.total > 0
+                            ? Math.min(100, Math.round((status.progress.completed / status.progress.total) * 100))
+                            : 0}%`,
+                        }}
+                      />
+                    </div>
+                  )}
+                  {status.progress.currentPath && (
+                    <p className="truncate text-[var(--muted-foreground)]" title={status.progress.currentPath}>
+                      {status.progress.currentPath}
+                    </p>
                   )}
                 </div>
-                {status.progress.phase !== 'scanning' && (
-                  <div className="h-1.5 overflow-hidden rounded-full bg-[var(--muted)]">
-                    <div
-                      className="h-full rounded-full bg-[var(--brand,#6366f1)] transition-[width] duration-200"
-                      style={{
-                        width: `${status.progress.total > 0
-                          ? Math.min(100, Math.round((status.progress.completed / status.progress.total) * 100))
-                          : 0}%`,
-                      }}
-                    />
-                  </div>
-                )}
-                {status.progress.currentPath && (
-                  <p className="truncate text-[var(--muted-foreground)]">
-                    {status.progress.currentPath}
-                  </p>
-                )}
-              </div>
-            )}
-            {status?.lastError && (
-              <p className="break-words text-[var(--destructive)]">{status.lastError}</p>
-            )}
-          </div>
-        )}
-
-        {notebookState?.bound && (
-          <div className="flex gap-2 px-3 py-3">
-            <Button
-              size="sm"
-              className="flex-1 rounded-lg"
-              disabled={syncing}
-              onClick={() => void syncNow()}
-            >
-              {syncing ? t('sync.panel.running') : t('sync.panel.syncCurrent')}
-            </Button>
-            <Button
-              size="sm"
-              variant="outline"
-              className="rounded-lg"
-              disabled={syncing}
-              onClick={() => void unbind()}
-            >
-              {t('sync.panel.unbind')}
-            </Button>
-          </div>
-        )}
-
-        {notebookState?.bound && conflicts.length > 0 && (
-          <div className="space-y-1 border-b border-[var(--divider)] px-3 pb-3">
-            <div className="flex items-center gap-1.5 px-2 pt-1 text-xs font-medium text-[var(--warning,#eab308)]">
-              <WarningCircleIcon className="h-3.5 w-3.5" />
-              {t('sync.panel.conflicts').replace('{count}', String(conflicts.length))}
+              )}
+              {status?.lastError && (
+                <p className="break-words pt-0.5 text-[var(--destructive)]">{status.lastError}</p>
+              )}
             </div>
-            {conflicts.map((conflict) => (
-              <ConflictRow
-                key={conflict.path}
-                conflict={conflict}
-                busy={conflictBusy === conflict.path}
-                disabled={conflictBusy !== null}
-                onResolve={(action) => void resolveConflict(conflict.path, action)}
-                onDismiss={() => void dismissConflict(conflict.path)}
-                onViewDiff={() => setDiffPath(conflict.path)}
-              />
-            ))}
-          </div>
-        )}
+          )}
 
-        <ConflictDiffDialog
-          notebookId={selectedNotebookId ?? ''}
-          path={diffPath}
-          busy={conflictBusy !== null}
-          onResolve={(path, action) => void resolveConflict(path, action)}
-          onClose={() => setDiffPath(null)}
-        />
-
-        {notebookState?.bound && conflicts.length === 0 && legacyCopies.length > 0 && (
-          <div className="border-b border-[var(--divider)] px-3 pb-3">
-            <div className="flex items-center justify-between px-2 pt-1">
-              <span className="text-xs font-medium text-[var(--muted-foreground)]">
-                {t('sync.panel.legacyCopies').replace('{count}', String(legacyCopies.length))}
-              </span>
+          {notebookState?.bound && (
+            <div className="flex gap-2">
+              <Button
+                size="sm"
+                className="h-8 flex-1 rounded-lg"
+                disabled={syncing}
+                onClick={() => void syncNow()}
+              >
+                {syncing ? t('sync.panel.running') : t('sync.panel.syncCurrent')}
+              </Button>
               <Button
                 size="sm"
                 variant="outline"
-                className="h-6 rounded-md px-2 text-[11px]"
-                disabled={legacyBusy}
-                onClick={() => void cleanupLegacy()}
+                className="h-8 rounded-lg"
+                disabled={syncing}
+                onClick={() => void unbind()}
               >
-                {t('sync.panel.cleanup')}
+                {t('sync.panel.unbind')}
               </Button>
             </div>
-            <p
-              className="truncate px-2 pt-1 text-[11px] text-[var(--muted-foreground)]"
-              title={legacyCopies.join('\n')}
-            >
-              {legacyCopies[0]}
-              {legacyCopies.length > 1 && ` +${legacyCopies.length - 1}`}
-            </p>
-          </div>
-        )}
-
-        <div className="min-h-0 flex-1 overflow-auto px-1 pb-3">
-          <div className="px-2 py-1 text-xs font-medium text-[var(--muted-foreground)]">
-            {t('sync.panel.history')}
-          </div>
-          {(notebookState?.history.length ?? 0) === 0 ? (
-            <p className="px-2 py-6 text-center text-xs text-[var(--muted-foreground)]">
-              {t('sync.panel.empty')}
-            </p>
-          ) : (
-            notebookState?.history.map((record, index) => (
-              <RecordRow key={`${record.at}-${index}`} record={record} language={language} />
-            ))
           )}
+
+          {notebookState?.bound && conflicts.length > 0 && (
+            <section className="space-y-1.5 rounded-xl border border-[color-mix(in_oklch,var(--warning)_40%,var(--border))] bg-[color-mix(in_oklch,var(--warning)_10%,transparent)] p-2.5">
+              <div className="flex items-center gap-1.5 px-0.5 text-xs font-medium text-[color-mix(in_oklch,var(--warning)_70%,var(--foreground))]">
+                <WarningCircleIcon weight="fill" className="h-3.5 w-3.5" />
+                {t('sync.panel.conflicts').replace('{count}', String(conflicts.length))}
+              </div>
+              {conflicts.map((conflict) => (
+                <ConflictRow
+                  key={conflict.path}
+                  conflict={conflict}
+                  busy={conflictBusy === conflict.path}
+                  disabled={conflictBusy !== null}
+                  onResolve={(action) => void resolveConflict(conflict.path, action)}
+                  onDismiss={() => void dismissConflict(conflict.path)}
+                  onViewDiff={() => setDiffPath(conflict.path)}
+                />
+              ))}
+            </section>
+          )}
+
+          <ConflictDiffDialog
+            notebookId={selectedNotebookId ?? ''}
+            path={diffPath}
+            busy={conflictBusy !== null}
+            onResolve={(path, action) => void resolveConflict(path, action)}
+            onClose={() => setDiffPath(null)}
+          />
+
+          {notebookState?.bound && conflicts.length === 0 && legacyCopies.length > 0 && (
+            <section className="space-y-1 rounded-xl bg-[color-mix(in_oklch,var(--muted)_40%,transparent)] p-2.5">
+              <div className="flex items-center justify-between gap-2">
+                <span className="min-w-0 truncate text-xs font-medium text-[var(--muted-foreground)]">
+                  {t('sync.panel.legacyCopies').replace('{count}', String(legacyCopies.length))}
+                </span>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  className="h-6 shrink-0 rounded-md px-2 text-[11px]"
+                  disabled={legacyBusy}
+                  onClick={() => void cleanupLegacy()}
+                >
+                  {t('sync.panel.cleanup')}
+                </Button>
+              </div>
+              <p className="truncate text-[11px] text-[var(--muted-foreground)]" title={legacyCopies.join('\n')}>
+                {legacyCopies[0]}
+                {legacyCopies.length > 1 && ` +${legacyCopies.length - 1}`}
+              </p>
+            </section>
+          )}
+
+          <section className="pt-0.5">
+            <div className="pb-1 text-xs font-medium text-[var(--muted-foreground)]">
+              {t('sync.panel.history')}
+            </div>
+            {(notebookState?.history.length ?? 0) === 0 ? (
+              <p className="py-6 text-center text-xs text-[var(--muted-foreground)]">
+                {t('sync.panel.empty')}
+              </p>
+            ) : (
+              <div className="space-y-0.5">
+                {notebookState?.history.map((record, index) => (
+                  <RecordRow key={`${record.at}-${index}`} record={record} language={language} />
+                ))}
+              </div>
+            )}
+          </section>
         </div>
       </aside>
     </>
