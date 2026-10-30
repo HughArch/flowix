@@ -705,3 +705,163 @@ fn structured_background_actions_set_list_and_clear() {
     drop(stdin);
     assert!(child.wait().unwrap().success());
 }
+
+#[test]
+fn structured_canvas_actions_build_and_edit_a_board() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    let notebook_dir = tmp.path().join("notebooks").join("work");
+    seed_notebook(&config_dir, &notebook_dir);
+    std::fs::write(notebook_dir.join("a.md"), "# A 篇\n正文\n").unwrap();
+    std::fs::write(notebook_dir.join("b.md"), "# B 篇\n正文\n").unwrap();
+
+    let (mut child, mut stdin, mut stdout) = spawn_mcp(&config_dir);
+    let _ = request(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "flowix-test", "version": "1"}
+        }),
+    );
+
+    // Create.
+    let created = call_structured(
+        &mut stdin,
+        &mut stdout,
+        2,
+        json!({"action":"canvas.create", "name":"计划", "folder":"画布"}),
+    );
+    assert_eq!(created["result"]["isError"], false, "{created}");
+    let content = &created["result"]["structuredContent"];
+    let address = content["address"].as_str().unwrap().to_owned();
+    assert_eq!(address, "work::画布/计划.flowix-canvas");
+    let canvas_path = notebook_dir.join("画布").join("计划.flowix-canvas");
+    let stored = std::fs::read_to_string(&canvas_path).unwrap();
+    assert!(stored.starts_with("{\n  \"type\": \"flowix/canvas\""), "{stored}");
+
+    // Sticky text card, auto-placed.
+    let sticky = call_structured(
+        &mut stdin,
+        &mut stdout,
+        3,
+        json!({"action":"canvas.addCard", "address":address, "text":"便签", "color":"blue"}),
+    );
+    assert_eq!(sticky["result"]["isError"], false, "{sticky}");
+    let sticky_id = sticky["result"]["structuredContent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    assert!(sticky_id.starts_with("c_"));
+
+    // Note card referencing an existing note.
+    let note_card = call_structured(
+        &mut stdin,
+        &mut stdout,
+        4,
+        json!({"action":"canvas.addCard", "address":address, "note":"work::a.md"}),
+    );
+    let note_card_id = note_card["result"]["structuredContent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+
+    // Shape + edge between the two cards.
+    let shape = call_structured(
+        &mut stdin,
+        &mut stdout,
+        5,
+        json!({"action":"canvas.addShape", "address":address, "shape":"rect", "text":"节点"}),
+    );
+    let shape_id = shape["result"]["structuredContent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let edge = call_structured(
+        &mut stdin,
+        &mut stdout,
+        6,
+        json!({"action":"canvas.addEdge", "address":address, "from":note_card_id, "to":shape_id, "label":"依赖"}),
+    );
+    assert_eq!(edge["result"]["isError"], false, "{edge}");
+
+    // Duplicate edge is an error.
+    let duplicate = call_structured(
+        &mut stdin,
+        &mut stdout,
+        7,
+        json!({"action":"canvas.addEdge", "address":address, "from":note_card_id, "to":shape_id}),
+    );
+    assert_eq!(duplicate["result"]["isError"], true, "{duplicate}");
+
+    // Batch grid of note cards.
+    let batch = call_structured(
+        &mut stdin,
+        &mut stdout,
+        8,
+        json!({"action":"canvas.addNotes", "address":address, "notes":["work::a.md", "work::b.md"], "columns":2}),
+    );
+    assert_eq!(batch["result"]["isError"], false, "{batch}");
+    assert_eq!(
+        batch["result"]["structuredContent"]["ids"]
+            .as_array()
+            .unwrap()
+            .len(),
+        2
+    );
+
+    // Show: normalized summary with counts and note-card identity.
+    let shown = call_structured(
+        &mut stdin,
+        &mut stdout,
+        9,
+        json!({"action":"canvas.show", "address":address}),
+    );
+    assert_eq!(shown["result"]["isError"], false, "{shown}");
+    let board = &shown["result"]["structuredContent"];
+    assert_eq!(board["counts"]["cards"], 4);
+    assert_eq!(board["counts"]["shapes"], 1);
+    assert_eq!(board["counts"]["edges"], 1);
+    let note_entry = board["cards"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|card| card["id"] == note_card_id.as_str())
+        .unwrap();
+    assert_eq!(note_entry["kind"], "note");
+    assert_eq!(note_entry["title"], "A 篇");
+    assert_eq!(note_entry["path"], "a.md");
+
+    // Legacy command path shares the same store.
+    let legacy = call_tool(&mut stdin, &mut stdout, 10, &format!("canvas show {address}"), None);
+    assert_eq!(legacy["result"]["isError"], false, "{legacy}");
+
+    // Remove cascades the edge.
+    let removed = call_structured(
+        &mut stdin,
+        &mut stdout,
+        11,
+        json!({"action":"canvas.remove", "address":address, "ids":[note_card_id, sticky_id]}),
+    );
+    assert_eq!(removed["result"]["isError"], false, "{removed}");
+    let content = &removed["result"]["structuredContent"];
+    assert_eq!(content["removed"].as_array().unwrap().len(), 2);
+    assert_eq!(content["removedEdges"].as_array().unwrap().len(), 1);
+    assert_eq!(content["counts"]["cards"], 2);
+    assert_eq!(content["counts"]["edges"], 0);
+
+    // Unknown action is a JSON-RPC-level error.
+    let unknown = call_structured(
+        &mut stdin,
+        &mut stdout,
+        12,
+        json!({"action":"canvas.layout", "address":address}),
+    );
+    assert_eq!(unknown["error"]["code"], -32602, "{unknown}");
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}

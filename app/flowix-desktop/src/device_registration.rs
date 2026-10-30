@@ -630,12 +630,13 @@ mod tests {
         assert_eq!(payload.app_version, "9.8.7");
 
         let json = serde_json::to_value(payload).unwrap();
-        let keys = json
+        let mut keys = json
             .as_object()
             .unwrap()
             .keys()
             .cloned()
             .collect::<Vec<_>>();
+        keys.sort();
         assert_eq!(
             keys,
             vec!["appVersion", "arch", "deviceId", "installedAt", "os"]

@@ -20,7 +20,9 @@ flowix-core = { path = "flowix-core" }
 flowix-plugin-runtime = { path = "flowix-plugin-runtime" }
 flowix-fns = { path = "flowix-fns" }
 serde = { version = "1", features = ["derive"] }
-serde_json = "1"
+# preserve_order: JSON object keys keep document order — required for
+# byte-stable `.flowix-canvas` round-trips (see flowix-core::canvas).
+serde_json = { version = "1", features = ["preserve_order"] }
 serde_yaml = "0.9"
 toml = "0.8"
 tauri-plugin-process = "2"

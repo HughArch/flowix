@@ -6,6 +6,7 @@ pub mod cli;
 pub(crate) mod background_store;
 pub mod cloud;
 pub(crate) mod callout_store;
+pub(crate) mod canvas_store;
 pub(crate) mod collection_store;
 pub(crate) mod columns_store;
 pub(crate) mod toggle_store;

@@ -3,10 +3,11 @@
   "properties": {
     "action": {
       "type": "string",
-      "enum": ["notebooks", "list", "tags", "show", "search", "create", "edit", "write", "delete", "cloud.versions", "cloud.restore", "collection.read", "artifact.list", "artifact.describe", "artifact.create", "columns.list", "columns.add", "columns.remove", "columns.width", "background.list", "background.set", "background.clear", "callout.list", "callout.add", "callout.set", "callout.remove", "toggle.list", "toggle.add", "toggle.set", "toggle.remove"],
+      "enum": ["notebooks", "list", "tags", "show", "search", "create", "edit", "write", "delete", "cloud.versions", "cloud.restore", "collection.read", "artifact.list", "artifact.describe", "artifact.create", "columns.list", "columns.add", "columns.remove", "columns.width", "background.list", "background.set", "background.clear", "callout.list", "callout.add", "callout.set", "callout.remove", "toggle.list", "toggle.add", "toggle.set", "toggle.remove", "canvas.create", "canvas.show", "canvas.addCard", "canvas.addShape", "canvas.addEdge", "canvas.addFrame", "canvas.addNotes", "canvas.remove"],
       "description": "Structured operation. Prefer this over the legacy command field."
     },
     "notebook": { "type": "string", "description": "Notebook name or id; defaults to the current notebook where supported." },
+    "address": { "type": "string", "description": "Note or canvas address: <notebook>::<relative-path>, or an absolute path (show, edit, write, delete, columns.*, background.*, callout.*, toggle.*, canvas.*)." },
     "id": { "type": "string", "description": "Memo id or filename." },
     "historyId": { "type": "integer", "description": "Cloud history id for cloud.restore, taken from cloud.versions." },
     "query": { "type": "string" },
@@ -27,13 +28,34 @@
     "column": { "type": "integer", "minimum": 1, "description": "1-based column index for columns.remove." },
     "widths": { "type": "array", "items": { "type": "integer", "minimum": 25, "maximum": 1000 }, "description": "Relative column width weights, one per column." },
     "line": { "type": "integer", "minimum": 1, "description": "1-based Markdown line whose text block receives or clears the background (background.set and background.clear)." },
-    "color": { "type": "string", "enum": ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "gray"], "description": "Background color for background.set, callout.add/set and toggle.add/set." },
+    "color": { "type": "string", "enum": ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "gray"], "description": "Background color for background.set, callout.add/set and toggle.add/set; sticky tint for canvas.addCard." },
     "icon": { "type": "string", "description": "Callout icon (an emoji character). callout.add defaults to 💡." },
-    "title": { "type": "string", "description": "Title line for toggle.add/set. Empty titles are allowed; the body stays in the collapsible section." },
+    "title": { "type": "string", "description": "Title line for toggle.add/set. Empty titles are allowed; the body stays in the collapsible section. Also the card title snapshot for canvas.addCard." },
     "open": { "type": "boolean", "description": "Toggle fold state for toggle.add (default true) or toggle.set (omit to keep the current state)." },
     "bg": { "type": "string", "enum": ["red", "orange", "yellow", "green", "cyan", "blue", "purple", "pink", "gray"], "description": "Whole-container background for toggle.add/set." },
     "clearBg": { "type": "boolean", "default": false, "description": "For toggle.set: remove the container background instead of setting one." },
     "keepContent": { "type": "boolean", "default": true, "description": "For callout.remove and toggle.remove: keep the container content as plain blocks (default) instead of deleting it with the container." },
+    "name": { "type": "string", "description": "Canvas name (filename stem) for canvas.create; defaults to Untitled." },
+    "folder": { "type": "string", "description": "Notebook-relative target folder for canvas.create." },
+    "note": { "type": "string", "description": "Note address (<notebook>::<path>) to place on the canvas as a note card (canvas.addCard)." },
+    "notes": { "type": "array", "items": { "type": "string" }, "description": "Note addresses placed as a grid of note cards (canvas.addNotes)." },
+    "text": { "type": "string", "description": "Sticky text content for canvas.addCard, or the shape label for canvas.addShape." },
+    "shape": { "type": "string", "enum": ["rect", "ellipse", "diamond", "text", "arrow", "line"], "description": "Shape kind for canvas.addShape." },
+    "from": { "type": "string", "description": "Existing card/shape id the edge starts at (canvas.addEdge)." },
+    "to": { "type": "string", "description": "Existing card/shape id the edge ends at (canvas.addEdge)." },
+    "label": { "type": "string", "description": "Edge label (canvas.addEdge)." },
+    "fill": { "type": "string", "description": "Shape background paint, e.g. #ffffff or transparent (canvas.addShape)." },
+    "stroke": { "type": "string", "description": "Shape outline color, e.g. #1e1e1e (canvas.addShape)." },
+    "ids": { "type": "array", "items": { "type": "string" }, "description": "Element ids to remove (canvas.remove); connected edges are removed too." },
+    "x": { "type": "number", "description": "Left edge of the new element in flow coordinates; omitted auto-places beside existing content." },
+    "y": { "type": "number", "description": "Top edge of the new element in flow coordinates; omitted auto-places beside existing content." },
+    "w": { "type": "number", "description": "Element width; defaults to the element's board size (note 420, sticky 220, shape 160, label 240, frame 480)." },
+    "h": { "type": "number", "description": "Element height; defaults to the element's board size." },
+    "x2": { "type": "number", "description": "Arrow/line head X (canvas.addShape); defaults to x + 160." },
+    "y2": { "type": "number", "description": "Arrow/line head Y (canvas.addShape); defaults to y." },
+    "gapX": { "type": "number", "description": "Horizontal grid gap for canvas.addNotes (default 40)." },
+    "gapY": { "type": "number", "description": "Vertical grid gap for canvas.addNotes (default 40)." },
+    "columns": { "type": "integer", "minimum": 1, "maximum": 12, "description": "Grid columns for canvas.addNotes (default 3)." },
     "command": { "type": "string", "deprecated": true, "description": "Legacy restricted CLI command without the flowix prefix." },
     "stdin": { "type": "string", "deprecated": true, "description": "Legacy content paired with command." }
   },
@@ -68,6 +90,30 @@
   }, {
     "if": { "properties": { "action": { "const": "toggle.remove" } }, "required": ["action"] },
     "then": { "required": ["block"] }
+  }, {
+    "if": { "properties": { "action": { "const": "canvas.show" } }, "required": ["action"] },
+    "then": { "required": ["address"] }
+  }, {
+    "if": { "properties": { "action": { "const": "canvas.addCard" } }, "required": ["action"] },
+    "then": {
+      "required": ["address"],
+      "oneOf": [{ "required": ["note"] }, { "required": ["text"] }]
+    }
+  }, {
+    "if": { "properties": { "action": { "const": "canvas.addShape" } }, "required": ["action"] },
+    "then": { "required": ["address", "shape"] }
+  }, {
+    "if": { "properties": { "action": { "const": "canvas.addEdge" } }, "required": ["action"] },
+    "then": { "required": ["address", "from", "to"] }
+  }, {
+    "if": { "properties": { "action": { "const": "canvas.addFrame" } }, "required": ["action"] },
+    "then": { "required": ["address"] }
+  }, {
+    "if": { "properties": { "action": { "const": "canvas.addNotes" } }, "required": ["action"] },
+    "then": { "required": ["address", "notes"] }
+  }, {
+    "if": { "properties": { "action": { "const": "canvas.remove" } }, "required": ["action"] },
+    "then": { "required": ["address", "ids"] }
   }],
   "additionalProperties": false
 }

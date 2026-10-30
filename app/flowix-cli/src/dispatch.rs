@@ -3,8 +3,8 @@
 //! `cli` 模块只负责把 argv 解析成结构化命令；这里负责把命令转给执行层。
 
 use crate::{
-    background_store, callout_store, cli, cloud, columns_store, errors::CliError, mcp, operation,
-    path_store, paths, plugin, store, toggle_store,
+    background_store, callout_store, canvas_store, cli, cloud, columns_store, errors::CliError,
+    mcp, operation, path_store, paths, plugin, store, toggle_store,
 };
 
 /// 跑 CLI 主入口。
@@ -237,6 +237,124 @@ pub fn run_cli(args: &[String]) -> Result<(), CliError> {
                 block,
                 delete_content,
             } => path_store::print(toggle_store::remove(&id, block, !delete_content)?, json),
+        },
+        cli::Cli::Canvas { command, json } => match command {
+            cli::CanvasCommand::Create {
+                notebook,
+                name,
+                folder,
+            } => {
+                let name = name
+                    .as_deref()
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .unwrap_or("Untitled");
+                path_store::print(
+                    canvas_store::create(notebook.as_deref(), name, folder.as_deref())?,
+                    json,
+                )
+            }
+            cli::CanvasCommand::Show { id } => path_store::print(canvas_store::show(&id)?, json),
+            cli::CanvasCommand::AddCard {
+                id,
+                note,
+                text,
+                color,
+                title,
+                x,
+                y,
+                w,
+                h,
+            } => path_store::print(
+                canvas_store::add_card(
+                    &id,
+                    note.as_deref(),
+                    text.as_deref(),
+                    color.as_deref(),
+                    title.as_deref(),
+                    canvas_store::Placement { x, y, w, h },
+                )?,
+                json,
+            ),
+            cli::CanvasCommand::AddShape {
+                id,
+                shape,
+                text,
+                fill,
+                stroke,
+                x,
+                y,
+                w,
+                h,
+                x2,
+                y2,
+            } => path_store::print(
+                canvas_store::add_shape(
+                    &id,
+                    canvas_store::ShapeArgs {
+                        shape: &shape,
+                        text: text.as_deref(),
+                        fill: fill.as_deref(),
+                        stroke: stroke.as_deref(),
+                        placement: canvas_store::Placement { x, y, w, h },
+                        x2,
+                        y2,
+                    },
+                )?,
+                json,
+            ),
+            cli::CanvasCommand::AddEdge {
+                id,
+                from,
+                to,
+                label,
+            } => path_store::print(
+                canvas_store::add_edge(&id, &from, &to, label.as_deref())?,
+                json,
+            ),
+            cli::CanvasCommand::AddFrame {
+                id,
+                title,
+                x,
+                y,
+                w,
+                h,
+            } => path_store::print(
+                canvas_store::add_frame(
+                    &id,
+                    title.as_deref(),
+                    canvas_store::Placement { x, y, w, h },
+                )?,
+                json,
+            ),
+            cli::CanvasCommand::AddNotes {
+                id,
+                notes,
+                columns,
+                x,
+                y,
+                gap_x,
+                gap_y,
+                w,
+                h,
+            } => path_store::print(
+                canvas_store::add_notes(
+                    &id,
+                    &notes,
+                    flowix_core::canvas::GridPlan {
+                        columns: columns.unwrap_or(3),
+                        gap_x: gap_x.unwrap_or(flowix_core::canvas::AUTO_PLACE_GAP),
+                        gap_y: gap_y.unwrap_or(flowix_core::canvas::AUTO_PLACE_GAP),
+                        w,
+                        h,
+                        start: x.zip(y),
+                    },
+                )?,
+                json,
+            ),
+            cli::CanvasCommand::Remove { id, ids } => {
+                path_store::print(canvas_store::remove(&id, &ids)?, json)
+            }
         },
         cli::Cli::Mcp => {
             use std::io::{stdin, stdout};

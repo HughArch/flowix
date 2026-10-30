@@ -4,7 +4,11 @@ use flowix_core::{memo_file::NotebookConfig, NoteService};
 use serde_json::{json, Value};
 use std::{io::Read, path::Path};
 
-fn address(
+/// Resolve `<notebook>::<relative>` / absolute / default-notebook addresses
+/// into (storage, notebook config, notebook-relative path). Shared by the
+/// note commands and the canvas commands (which additionally require the
+/// `.flowix-canvas` extension via `flowix_core::canvas::resolve_canvas_path`).
+pub(crate) fn address(
     raw: &str,
 ) -> Result<(flowix_core::memo_file::MemoFile, NotebookConfig, String), CliError> {
     let mf = store::open()?;
@@ -42,7 +46,7 @@ fn address(
             .any(|part| part.is_empty() || part == "." || part == "..")
     {
         return Err(CliError::Usage(
-            "note address must be a notebook-relative Markdown path".into(),
+            "note address must be a notebook-relative path".into(),
         ));
     }
     let notebook = notebook.clone();
@@ -262,11 +266,13 @@ pub(crate) fn print(value: Value, json: bool) -> Result<(), CliError> {
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::*;
     use std::sync::Mutex;
 
-    static ENV_LOCK: Mutex<()> = Mutex::new(());
+    /// Process-global env lock: these tests mutate `FLOWIX_HOME`, which is
+    /// process state. Tests in other modules (canvas_store) take the same lock.
+    pub(crate) static ENV_LOCK: Mutex<()> = Mutex::new(());
 
     #[test]
     fn path_crud_does_not_create_memo_identity() {

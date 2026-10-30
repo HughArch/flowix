@@ -4,8 +4,9 @@ A [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) bundle
 that registers the **local `flowix-cli` MCP server** with any Harness
 instance. Once installed, the agent gets the
 `mcp__flowix__memo` tool to search, read, create, and edit
-Flowix Markdown memos, and to create declared plugin artifacts such as mind
-maps.
+Flowix Markdown memos, edit rich note content (columns, callouts, toggles),
+build and edit `.flowix-canvas` canvas boards, and create declared plugin
+artifacts such as mind maps.
 
 The bundle includes a small launcher. It transparently proxies to `flowix-cli`
 when installed; otherwise it keeps the tool registered and returns an
@@ -65,6 +66,15 @@ Prefer structured arguments:
 
 ```json
 {"action":"search","query":"product plan","notebook":"work","tag":"project/flowix","limit":20}
+```
+
+Canvas boards are managed through the same tool, for example:
+
+```json
+{"action":"canvas.create","notebook":"work","name":"计划","folder":"画布"}
+```
+```json
+{"action":"canvas.addNotes","address":"work::画布/计划.flowix-canvas","notes":["work::A.md","work::B.md"],"columns":3}
 ```
 
 The legacy `{ "command": "search ...", "stdin": "..." }` form remains

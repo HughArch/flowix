@@ -16,6 +16,14 @@ Flowix 是用于操作笔记和插件产物的非交互式 CLI，使用 `--json`
 - `flowix create <notebook> --file <UTF-8文件>` — 创建新笔记
 - `flowix delete <地址>` — 删除笔记
 - `flowix plugin create mindmap --notebook <name|id|path> [--source-note <地址>] --json` — 创建 Flowix 思维导图文档
+- `flowix canvas create <notebook> --name <名称> [--folder <目录>] --json` — 新建画布（`.flowix-canvas`）
+- `flowix canvas show <画布地址> --json` — 查看画布内容摘要（卡片/形状/连线/分组框）
+- `flowix canvas add-card <画布地址> (--note <笔记地址> | --text <文本>) [--color yellow|red|green|blue|purple] [--x N --y N --w N --h N] --json` — 加笔记卡片或便签；坐标省略时自动摆放
+- `flowix canvas add-shape <画布地址> --shape rect|ellipse|diamond|text|arrow|line [--text <标签>] [--x N --y N --w N --h N] --json` — 加形状
+- `flowix canvas add-edge <画布地址> --from <元素id> --to <元素id> [--label <文本>] --json` — 连线
+- `flowix canvas add-frame <画布地址> [--title <标题>] [--x N --y N --w N --h N] --json` — 加分组框
+- `flowix canvas add-notes <画布地址> --notes <地址1,地址2,...> [--columns N] --json` — 把多篇笔记摆成网格卡片
+- `flowix canvas remove <画布地址> --ids <id1,id2,...> --json` — 删除元素（相连连线一并删除）
 
 仅当用户明确要求生成/创建思维导图时调用 mindmap 工具。调用前先整理最终 Markdown：
 
@@ -23,6 +31,8 @@ Flowix 是用于操作笔记和插件产物的非交互式 CLI，使用 `--json`
 - 分支使用二/三级标题和无序列表；
 - 不要手工创建 `.plugin-output` 文件；
 - 成功后向用户返回 `title`、`notebookId` 和 `notePath`。
+
+画布操作仅当用户明确要求创建/修改画布或白板时调用；不要手写 `.flowix-canvas` JSON 文件。
 
 ## 工作空间范围
 

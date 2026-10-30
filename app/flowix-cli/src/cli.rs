@@ -122,9 +122,84 @@ pub enum Cli {
         command: ToggleCommand,
         json: bool,
     },
+    /// Create, inspect and edit `.flowix-canvas` board documents.
+    Canvas {
+        command: CanvasCommand,
+        json: bool,
+    },
     /// Model Context Protocol over stdio。向外部 Agent 暴露唯一工具
     /// `memo`，工具参数采用受限的 Flowix CLI 语法。
     Mcp,
+}
+
+#[derive(Debug)]
+pub enum CanvasCommand {
+    /// Create an empty canvas with a unique `<name>.flowix-canvas` filename.
+    Create {
+        notebook: Option<String>,
+        name: Option<String>,
+        folder: Option<String>,
+    },
+    Show {
+        id: String,
+    },
+    /// Add a note card (referencing an existing note) or a sticky text card.
+    AddCard {
+        id: String,
+        note: Option<String>,
+        text: Option<String>,
+        color: Option<String>,
+        title: Option<String>,
+        x: Option<f64>,
+        y: Option<f64>,
+        w: Option<f64>,
+        h: Option<f64>,
+    },
+    /// Add a diagram shape (rect/ellipse/diamond/text/arrow/line).
+    AddShape {
+        id: String,
+        shape: String,
+        text: Option<String>,
+        fill: Option<String>,
+        stroke: Option<String>,
+        x: Option<f64>,
+        y: Option<f64>,
+        w: Option<f64>,
+        h: Option<f64>,
+        x2: Option<f64>,
+        y2: Option<f64>,
+    },
+    AddEdge {
+        id: String,
+        from: String,
+        to: String,
+        label: Option<String>,
+    },
+    AddFrame {
+        id: String,
+        title: Option<String>,
+        x: Option<f64>,
+        y: Option<f64>,
+        w: Option<f64>,
+        h: Option<f64>,
+    },
+    /// Place several notes as a grid of note cards.
+    AddNotes {
+        id: String,
+        notes: Vec<String>,
+        columns: Option<usize>,
+        x: Option<f64>,
+        y: Option<f64>,
+        gap_x: Option<f64>,
+        gap_y: Option<f64>,
+        w: Option<f64>,
+        h: Option<f64>,
+    },
+    /// Remove cards/shapes/frames/ink by id (connected edges go with them).
+    Remove {
+        id: String,
+        ids: Vec<String>,
+    },
 }
 
 #[derive(Debug)]
@@ -522,6 +597,89 @@ pub(crate) fn parse(args: &[String]) -> Result<Option<Cli>, CliError> {
             };
             Ok(Some(Cli::Toggle { command, json }))
         }
+        Some(("canvas", sub)) => {
+            let optional_f64 = |command: &clap::ArgMatches, name: &str| command.get_one::<f64>(name).copied();
+            let command = match sub.subcommand() {
+                Some(("create", command)) => CanvasCommand::Create {
+                    notebook: command.get_one::<String>("notebook").cloned(),
+                    name: command.get_one::<String>("name").cloned(),
+                    folder: command.get_one::<String>("folder").cloned(),
+                },
+                Some(("show", command)) => CanvasCommand::Show {
+                    id: required_string(command, "id")?,
+                },
+                Some(("add-card", command)) => CanvasCommand::AddCard {
+                    id: required_string(command, "id")?,
+                    note: command.get_one::<String>("note").cloned(),
+                    text: command.get_one::<String>("text").cloned(),
+                    color: command.get_one::<String>("color").cloned(),
+                    title: command.get_one::<String>("title").cloned(),
+                    x: optional_f64(command, "x"),
+                    y: optional_f64(command, "y"),
+                    w: optional_f64(command, "w"),
+                    h: optional_f64(command, "h"),
+                },
+                Some(("add-shape", command)) => CanvasCommand::AddShape {
+                    id: required_string(command, "id")?,
+                    shape: required_string(command, "shape")?,
+                    text: command.get_one::<String>("text").cloned(),
+                    fill: command.get_one::<String>("fill").cloned(),
+                    stroke: command.get_one::<String>("stroke").cloned(),
+                    x: optional_f64(command, "x"),
+                    y: optional_f64(command, "y"),
+                    w: optional_f64(command, "w"),
+                    h: optional_f64(command, "h"),
+                    x2: optional_f64(command, "x2"),
+                    y2: optional_f64(command, "y2"),
+                },
+                Some(("add-edge", command)) => CanvasCommand::AddEdge {
+                    id: required_string(command, "id")?,
+                    from: required_string(command, "from")?,
+                    to: required_string(command, "to")?,
+                    label: command.get_one::<String>("label").cloned(),
+                },
+                Some(("add-frame", command)) => CanvasCommand::AddFrame {
+                    id: required_string(command, "id")?,
+                    title: command.get_one::<String>("title").cloned(),
+                    x: optional_f64(command, "x"),
+                    y: optional_f64(command, "y"),
+                    w: optional_f64(command, "w"),
+                    h: optional_f64(command, "h"),
+                },
+                Some(("add-notes", command)) => CanvasCommand::AddNotes {
+                    id: required_string(command, "id")?,
+                    notes: command
+                        .get_many::<String>("notes")
+                        .map(|values| values.cloned().collect())
+                        .unwrap_or_default(),
+                    columns: command.get_one::<usize>("columns").copied(),
+                    x: optional_f64(command, "x"),
+                    y: optional_f64(command, "y"),
+                    gap_x: optional_f64(command, "gap-x"),
+                    gap_y: optional_f64(command, "gap-y"),
+                    w: optional_f64(command, "w"),
+                    h: optional_f64(command, "h"),
+                },
+                Some(("remove", command)) => CanvasCommand::Remove {
+                    id: required_string(command, "id")?,
+                    ids: command
+                        .get_many::<String>("ids")
+                        .map(|values| values.cloned().collect())
+                        .unwrap_or_default(),
+                },
+                Some((other, _)) => {
+                    return Err(CliError::Usage(format!(
+                        "unknown canvas command: `{other}`"
+                    )))
+                }
+                None => {
+                    return Err(CliError::Usage(format!(
+                        "usage: {DISPLAY_BIN} canvas <create|show|add-card|add-shape|add-edge|add-frame|add-notes|remove>"
+                    )))
+                }
+            };
+            Ok(Some(Cli::Canvas { command, json }))
+        }
         Some(("mcp", _)) => Ok(Some(Cli::Mcp)),
         Some((other, _)) => Err(CliError::Usage(format!(
             "unknown command: `{other}`\n(run `{DISPLAY_BIN} --help` for usage)"
@@ -537,7 +695,7 @@ pub(crate) fn cli_command() -> Command {
     Command::new(DISPLAY_BIN)
         .version(env!("CARGO_PKG_VERSION"))
         .about("Manage local Flowix notebooks, Markdown notes, and artifacts")
-        .after_help("For Markdown content, --file is recommended (especially on Windows PowerShell 5.1). Files must be UTF-8. Note addresses use <notebook-id>::<relative-path> or an absolute path. Examples:\n  flowix create <notebook> --file body.md --json\n  flowix show work::Notes/Example.md --json\n  flowix write work::Notes/Example.md --file body.md --json\n  flowix list\n  flowix search TODO --tag project/flowix --limit 20\n  flowix background set work::Notes/Example.md --line 3 --color yellow --json\n  flowix callout add work::Notes/Example.md --icon \"⚠️\" --color yellow --content \"Check this\" --json\n  flowix toggle add work::Notes/Example.md --title \"Details\" --collapsed --bg yellow --content \"Hidden body\" --json\n  flowix collection read --notebook <notebook-id> --id <collection-id> --json\n  flowix collection read --notebook <notebook-id> --path 'Assets/Images.index.yaml' --json\n  flowix mcp")
+        .after_help("For Markdown content, --file is recommended (especially on Windows PowerShell 5.1). Files must be UTF-8. Note addresses use <notebook-id>::<relative-path> or an absolute path. Examples:\n  flowix create <notebook> --file body.md --json\n  flowix show work::Notes/Example.md --json\n  flowix write work::Notes/Example.md --file body.md --json\n  flowix list\n  flowix search TODO --tag project/flowix --limit 20\n  flowix background set work::Notes/Example.md --line 3 --color yellow --json\n  flowix callout add work::Notes/Example.md --icon \"⚠️\" --color yellow --content \"Check this\" --json\n  flowix toggle add work::Notes/Example.md --title \"Details\" --collapsed --bg yellow --content \"Hidden body\" --json\n  flowix collection read --notebook <notebook-id> --id <collection-id> --json\n  flowix collection read --notebook <notebook-id> --path 'Assets/Images.index.yaml' --json\n  flowix canvas create work --name 计划 --json\n  flowix canvas add-card work::画布/计划.flowix-canvas --note work::Notes/Example.md --json\n  flowix canvas add-notes work::画布/计划.flowix-canvas --notes work::A.md,work::B.md --columns 3 --json\n  flowix mcp")
         .arg(
             Arg::new("json")
                 .long("json")
@@ -1023,6 +1181,114 @@ pub(crate) fn cli_command() -> Command {
                             Arg::new("delete-content")
                                 .long("delete-content")
                                 .action(ArgAction::SetTrue),
+                        ),
+                ),
+        )
+        .subcommand(
+            Command::new("canvas")
+                .about("Create, inspect and edit .flowix-canvas board documents")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("create")
+                        .about("Create an empty canvas with a unique filename")
+                        .arg(
+                            Arg::new("notebook")
+                                .allow_hyphen_values(true)
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("name")
+                                .long("name")
+                                .value_name("NAME")
+                                .help("Canvas name (filename stem); defaults to Untitled")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("folder")
+                                .long("folder")
+                                .value_name("DIR")
+                                .help("Notebook-relative target folder")
+                                .num_args(1),
+                        ),
+                )
+                .subcommand(Command::new("show").about("Show the board as a normalized summary").arg(required_arg("id")))
+                .subcommand(
+                    Command::new("add-card")
+                        .about("Add a note card (--note) or a sticky text card (--text)")
+                        .arg(required_arg("id"))
+                        .arg(Arg::new("note").long("note").value_name("NOTE-ADDRESS").num_args(1))
+                        .arg(Arg::new("text").long("text").value_name("TEXT").num_args(1))
+                        .arg(Arg::new("color").long("color").value_name("COLOR").help("Sticky tint: yellow/red/green/blue/purple").num_args(1))
+                        .arg(Arg::new("title").long("title").value_name("TITLE").help("Card title snapshot (overrides the note title)").num_args(1))
+                        .arg(Arg::new("x").long("x").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("y").long("y").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("w").long("w").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("h").long("h").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .group(clap::ArgGroup::new("card-source").args(["note", "text"]).required(true).multiple(false)),
+                )
+                .subcommand(
+                    Command::new("add-shape")
+                        .about("Add a rect/ellipse/diamond/text/arrow/line shape")
+                        .arg(required_arg("id"))
+                        .arg(Arg::new("shape").long("shape").value_name("KIND").num_args(1))
+                        .arg(Arg::new("text").long("text").value_name("TEXT").num_args(1))
+                        .arg(Arg::new("fill").long("fill").value_name("COLOR").num_args(1))
+                        .arg(Arg::new("stroke").long("stroke").value_name("COLOR").num_args(1))
+                        .arg(Arg::new("x").long("x").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("y").long("y").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("w").long("w").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("h").long("h").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("x2").long("x2").value_parser(clap::value_parser!(f64)).help("Arrow/line head X").num_args(1))
+                        .arg(Arg::new("y2").long("y2").value_parser(clap::value_parser!(f64)).help("Arrow/line head Y").num_args(1)),
+                )
+                .subcommand(
+                    Command::new("add-edge")
+                        .about("Connect two cards/shapes with a labeled edge")
+                        .arg(required_arg("id"))
+                        .arg(Arg::new("from").long("from").value_name("ELEMENT-ID").num_args(1))
+                        .arg(Arg::new("to").long("to").value_name("ELEMENT-ID").num_args(1))
+                        .arg(Arg::new("label").long("label").value_name("TEXT").num_args(1)),
+                )
+                .subcommand(
+                    Command::new("add-frame")
+                        .about("Add a grouping frame (defaults to 480x360, auto-placed)")
+                        .arg(required_arg("id"))
+                        .arg(Arg::new("title").long("title").value_name("TITLE").num_args(1))
+                        .arg(Arg::new("x").long("x").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("y").long("y").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("w").long("w").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("h").long("h").value_parser(clap::value_parser!(f64)).num_args(1)),
+                )
+                .subcommand(
+                    Command::new("add-notes")
+                        .about("Place notes as a grid of note cards (auto-placed beside existing content)")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("notes")
+                                .long("notes")
+                                .value_name("NOTE-ADDRESS")
+                                .value_delimiter(',')
+                                .num_args(1..)
+                                .help("Comma-separated note addresses"),
+                        )
+                        .arg(Arg::new("columns").long("columns").value_parser(clap::value_parser!(usize)).num_args(1))
+                        .arg(Arg::new("x").long("x").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("y").long("y").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("gap-x").long("gap-x").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("gap-y").long("gap-y").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("w").long("w").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("h").long("h").value_parser(clap::value_parser!(f64)).num_args(1)),
+                )
+                .subcommand(
+                    Command::new("remove")
+                        .about("Remove elements by id (connected edges are removed too)")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("ids")
+                                .long("ids")
+                                .value_name("ELEMENT-ID")
+                                .value_delimiter(',')
+                                .num_args(1..),
                         ),
                 ),
         )

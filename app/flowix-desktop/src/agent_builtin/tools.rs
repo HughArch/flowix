@@ -261,6 +261,44 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
         {
             "type": "function",
             "function": {
+                "name": "canvas",
+                "description": "管理当前笔记本内的画布（.flowix-canvas 白板文档）。用户要求创建画布/白板、把笔记摆上画布、加形状连线时用它，不要手写画布 JSON。action: create/list/read/addCard/addShape/addEdge/addFrame/addNotes/remove。addNotes 可把多篇笔记自动排版成网格；坐标省略时自动放在现有内容旁边。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["create", "list", "read", "addCard", "addShape", "addEdge", "addFrame", "addNotes", "remove"] },
+                        "path": { "type": "string", "description": "画布文件相对路径（.flowix-canvas，来自 create/list）" },
+                        "name": { "type": "string", "description": "create：画布名称（决定文件名，默认 Untitled）" },
+                        "parent": { "type": "string", "description": "create：目标文件夹相对路径；用户未说明位置时先询问" },
+                        "notePath": { "type": "string", "description": "addCard：作为笔记卡片的笔记相对路径（与 text 二选一）" },
+                        "text": { "type": "string", "description": "addCard：便签文字；addShape：形状标签" },
+                        "color": { "type": "string", "enum": ["yellow", "red", "green", "blue", "purple"], "description": "addCard：便签底色，默认 yellow" },
+                        "title": { "type": "string", "description": "addCard：卡片标题快照（默认取笔记标题）" },
+                        "shape": { "type": "string", "enum": ["rect", "ellipse", "diamond", "text", "arrow", "line"], "description": "addShape：形状类型" },
+                        "fill": { "type": "string", "description": "addShape：填充色，如 #ffffff" },
+                        "stroke": { "type": "string", "description": "addShape：描边色，如 #1e1e1e" },
+                        "from": { "type": "string", "description": "addEdge：起点元素 id（卡片/形状）" },
+                        "to": { "type": "string", "description": "addEdge：终点元素 id" },
+                        "label": { "type": "string", "description": "addEdge：连线标签" },
+                        "notePaths": { "type": "array", "items": { "type": "string" }, "description": "addNotes：批量上画布的笔记相对路径" },
+                        "columns": { "type": "integer", "description": "addNotes：网格列数，默认 3" },
+                        "ids": { "type": "array", "items": { "type": "string" }, "description": "remove：要删除的元素 id（相连的连线一并删除）" },
+                        "x": { "type": "number", "description": "元素左上角 X（省略则自动摆放）" },
+                        "y": { "type": "number", "description": "元素左上角 Y" },
+                        "w": { "type": "number", "description": "宽度（默认按元素类型：笔记卡 420、便签 220、形状 160、文字 240、分组框 480）" },
+                        "h": { "type": "number", "description": "高度（默认按元素类型）" },
+                        "x2": { "type": "number", "description": "addShape：箭头/线段终点 X（默认 x+160）" },
+                        "y2": { "type": "number", "description": "addShape：箭头/线段终点 Y（默认 y）" },
+                        "gapX": { "type": "number", "description": "addNotes：横向间距，默认 40" },
+                        "gapY": { "type": "number", "description": "addNotes：纵向间距，默认 40" }
+                    },
+                    "required": ["action"]
+                }
+            }
+        },
+        {
+            "type": "function",
+            "function": {
                 "name": "callout",
                 "description": "管理笔记里的提示块（callout）。用户要求 callout/提示块/警告框时用它，不要手写 ::: callout 语法。action: list/add/set/remove；block 从 1 开始。",
                 "parameters": {
@@ -636,6 +674,11 @@ fn execute_inner(
             execute_cloud_tool(&guard, scope, name, &args)
         } else if matches!(name, "file_create" | "file_read" | "file_write") {
             execute_file_tool(&guard, scope, name, &args)
+        } else if matches!(name, "canvas") {
+            // 画布文件不在笔记索引里：写侧走 MemoFile 文件锁，标题快照查
+            // NoteService，所以两者都要。
+            let mut service = NoteService::new(&guard);
+            super::canvas_tools::execute(&guard, &mut service, scope, &args)
         } else {
             let mut service = NoteService::new(&guard);
             execute_with_service(&mut service, scope, name, &args)
@@ -897,11 +940,11 @@ fn resolve_writable_file_path(
     Ok((relative, absolute))
 }
 
-fn mark_file_self_write(scope: &ToolScope, absolute: &Path) {
+pub(crate) fn mark_file_self_write(scope: &ToolScope, absolute: &Path) {
     (scope.mark_self_write)(absolute);
 }
 
-fn string_arg(args: &Value, key: &str) -> Option<String> {
+pub(crate) fn string_arg(args: &Value, key: &str) -> Option<String> {
     args.get(key)
         .and_then(Value::as_str)
         .map(str::to_owned)

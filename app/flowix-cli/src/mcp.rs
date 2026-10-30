@@ -5,8 +5,8 @@
 //! argv and dispatched directly to the typed store layer; no system shell is spawned.
 
 use crate::{
-    background_store, callout_store, cli, columns_store, errors::CliError, fmt, operation, output,
-    path_store, plugin, store, toggle_store,
+    background_store, callout_store, canvas_store, cli, columns_store, errors::CliError, fmt,
+    operation, output, path_store, plugin, store, toggle_store,
 };
 use serde_json::{json, Map, Value};
 use std::io::{BufRead, Write};
@@ -20,7 +20,7 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
     LATEST_PROTOCOL_VERSION,
 ];
 
-pub const TOOL_DESCRIPTION: &str = "Search and manage Flowix Markdown notes, inspect or edit Notion-style content columns, line background colors, Flowus-style callouts and collapsible toggle blocks, read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
+pub const TOOL_DESCRIPTION: &str = "Search and manage Flowix Markdown notes, inspect or edit Notion-style content columns, line background colors, Flowus-style callouts and collapsible toggle blocks, create, inspect and edit .flowix-canvas canvas boards (note cards, sticky notes, shapes, edges, frames), read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
 
 /// Run the MCP line-delimited JSON-RPC loop until stdin reaches EOF.
 pub fn run_mcp<R: BufRead, W: Write>(reader: R, mut writer: W) -> Result<(), CliError> {
@@ -79,7 +79,7 @@ fn initialize_result(params: &Value) -> Value {
             "title": "Flowix Memo",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Use the memo tool to search and manage Flowix Markdown memos, read collection datasets with collection.read by collectionId or notebook-relative path, create declared plugin artifacts such as mind maps, and inspect or restore cloud (FNS) note history with cloud.versions and cloud.restore."
+        "instructions": "Use the memo tool to search and manage Flowix Markdown memos, read collection datasets with collection.read by collectionId or notebook-relative path, create declared plugin artifacts such as mind maps, build and edit canvas boards with canvas.* actions (canvas.create, canvas.show, canvas.addCard, canvas.addShape, canvas.addEdge, canvas.addFrame, canvas.addNotes, canvas.remove), and inspect or restore cloud (FNS) note history with cloud.versions and cloud.restore."
     })
 }
 
@@ -188,6 +188,27 @@ fn validate_argument_keys(arguments: &Map<String, Value>) -> Result<(), CliError
         "clearBg",
         "keepContent",
         "historyId",
+        "name",
+        "folder",
+        "note",
+        "notes",
+        "text",
+        "shape",
+        "from",
+        "to",
+        "label",
+        "fill",
+        "stroke",
+        "ids",
+        "x",
+        "y",
+        "w",
+        "h",
+        "x2",
+        "y2",
+        "gapX",
+        "gapY",
+        "columns",
         "command",
         "stdin",
     ];
@@ -345,6 +366,104 @@ fn parse_structured_operation(
             block: integer(arguments, "block", 1, 1, usize::MAX)?,
             keep_content: boolean(arguments, "keepContent", true)?,
         }),
+        "canvas.create" => Ok(FlowixOperation::CanvasCreate {
+            notebook,
+            name: optional_string(arguments, "name")?
+                .map(|name| name.trim().to_owned())
+                .filter(|name| !name.is_empty())
+                .unwrap_or_else(|| "Untitled".into()),
+            folder: optional_string(arguments, "folder")?,
+        }),
+        "canvas.show" => Ok(FlowixOperation::CanvasShow { address: address()? }),
+        "canvas.addCard" => Ok(FlowixOperation::CanvasAddCard {
+            address: address()?,
+            note: optional_string(arguments, "note")?,
+            text: optional_string(arguments, "text")?,
+            color: optional_string(arguments, "color")?,
+            title: optional_string(arguments, "title")?,
+            x: optional_number(arguments, "x")?,
+            y: optional_number(arguments, "y")?,
+            w: optional_number(arguments, "w")?,
+            h: optional_number(arguments, "h")?,
+        }),
+        "canvas.addShape" => Ok(FlowixOperation::CanvasAddShape {
+            address: address()?,
+            shape: required_string(arguments, "shape")?,
+            text: optional_string(arguments, "text")?,
+            fill: optional_string(arguments, "fill")?,
+            stroke: optional_string(arguments, "stroke")?,
+            x: optional_number(arguments, "x")?,
+            y: optional_number(arguments, "y")?,
+            w: optional_number(arguments, "w")?,
+            h: optional_number(arguments, "h")?,
+            x2: optional_number(arguments, "x2")?,
+            y2: optional_number(arguments, "y2")?,
+        }),
+        "canvas.addEdge" => Ok(FlowixOperation::CanvasAddEdge {
+            address: address()?,
+            from: required_string(arguments, "from")?,
+            to: required_string(arguments, "to")?,
+            label: optional_string(arguments, "label")?,
+        }),
+        "canvas.addFrame" => Ok(FlowixOperation::CanvasAddFrame {
+            address: address()?,
+            title: optional_string(arguments, "title")?,
+            x: optional_number(arguments, "x")?,
+            y: optional_number(arguments, "y")?,
+            w: optional_number(arguments, "w")?,
+            h: optional_number(arguments, "h")?,
+        }),
+        "canvas.addNotes" => Ok(FlowixOperation::CanvasAddNotes {
+            address: address()?,
+            notes: {
+                let values = arguments
+                    .get("notes")
+                    .and_then(Value::as_array)
+                    .ok_or_else(|| {
+                        CliError::Usage("memo.notes must be an array of note addresses".into())
+                    })?;
+                values
+                    .iter()
+                    .map(|value| {
+                        value
+                            .as_str()
+                            .map(str::to_owned)
+                            .filter(|note| !note.trim().is_empty())
+                            .ok_or_else(|| {
+                                CliError::Usage(
+                                    "memo.notes must contain note address strings".into(),
+                                )
+                            })
+                    })
+                    .collect::<Result<Vec<_>, _>>()?
+            },
+            columns: optional_integer(arguments, "columns")?,
+            x: optional_number(arguments, "x")?,
+            y: optional_number(arguments, "y")?,
+            gap_x: optional_number(arguments, "gapX")?,
+            gap_y: optional_number(arguments, "gapY")?,
+            w: optional_number(arguments, "w")?,
+            h: optional_number(arguments, "h")?,
+        }),
+        "canvas.remove" => {
+            let ids = arguments
+                .get("ids")
+                .and_then(Value::as_array)
+                .ok_or_else(|| CliError::Usage("memo.ids must be an array of element ids".into()))?;
+            let ids = ids
+                .iter()
+                .map(|value| {
+                    value
+                        .as_str()
+                        .map(str::to_owned)
+                        .filter(|id| !id.trim().is_empty())
+                        .ok_or_else(|| {
+                            CliError::Usage("memo.ids must contain element id strings".into())
+                        })
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            Ok(FlowixOperation::CanvasRemove { address: address()?, ids })
+        }
         _ => Err(CliError::Usage(format!("unknown memo action: `{action}`"))),
     }
 }
@@ -404,6 +523,18 @@ fn optional_integer(arguments: &Map<String, Value>, key: &str) -> Result<Option<
                 .as_u64()
                 .map(|number| number as usize)
                 .ok_or_else(|| CliError::Usage(format!("memo.{key} must be an integer")))
+        })
+        .transpose()
+}
+
+fn optional_number(arguments: &Map<String, Value>, key: &str) -> Result<Option<f64>, CliError> {
+    arguments
+        .get(key)
+        .map(|value| {
+            value
+                .as_f64()
+                .filter(|number| number.is_finite())
+                .ok_or_else(|| CliError::Usage(format!("memo.{key} must be a finite number")))
         })
         .transpose()
 }
@@ -724,6 +855,108 @@ fn execute_command(command: &str, stdin: Option<&str>) -> Result<Value, CliError
                     block,
                     delete_content,
                 } => toggle_store::remove(&id, block, !delete_content),
+            }
+        }
+        cli::Cli::Canvas { command, .. } => {
+            reject_stdin(stdin)?;
+            match command {
+                cli::CanvasCommand::Create {
+                    notebook,
+                    name,
+                    folder,
+                } => canvas_store::create(
+                    notebook.as_deref(),
+                    name
+                        .as_deref()
+                        .map(str::trim)
+                        .filter(|name| !name.is_empty())
+                        .unwrap_or("Untitled"),
+                    folder.as_deref(),
+                ),
+                cli::CanvasCommand::Show { id } => canvas_store::show(&id),
+                cli::CanvasCommand::AddCard {
+                    id,
+                    note,
+                    text,
+                    color,
+                    title,
+                    x,
+                    y,
+                    w,
+                    h,
+                } => canvas_store::add_card(
+                    &id,
+                    note.as_deref(),
+                    text.as_deref(),
+                    color.as_deref(),
+                    title.as_deref(),
+                    canvas_store::Placement { x, y, w, h },
+                ),
+                cli::CanvasCommand::AddShape {
+                    id,
+                    shape,
+                    text,
+                    fill,
+                    stroke,
+                    x,
+                    y,
+                    w,
+                    h,
+                    x2,
+                    y2,
+                } => canvas_store::add_shape(
+                    &id,
+                    canvas_store::ShapeArgs {
+                        shape: &shape,
+                        text: text.as_deref(),
+                        fill: fill.as_deref(),
+                        stroke: stroke.as_deref(),
+                        placement: canvas_store::Placement { x, y, w, h },
+                        x2,
+                        y2,
+                    },
+                ),
+                cli::CanvasCommand::AddEdge {
+                    id,
+                    from,
+                    to,
+                    label,
+                } => canvas_store::add_edge(&id, &from, &to, label.as_deref()),
+                cli::CanvasCommand::AddFrame {
+                    id,
+                    title,
+                    x,
+                    y,
+                    w,
+                    h,
+                } => canvas_store::add_frame(
+                    &id,
+                    title.as_deref(),
+                    canvas_store::Placement { x, y, w, h },
+                ),
+                cli::CanvasCommand::AddNotes {
+                    id,
+                    notes,
+                    columns,
+                    x,
+                    y,
+                    gap_x,
+                    gap_y,
+                    w,
+                    h,
+                } => canvas_store::add_notes(
+                    &id,
+                    &notes,
+                    flowix_core::canvas::GridPlan {
+                        columns: columns.unwrap_or(3),
+                        gap_x: gap_x.unwrap_or(flowix_core::canvas::AUTO_PLACE_GAP),
+                        gap_y: gap_y.unwrap_or(flowix_core::canvas::AUTO_PLACE_GAP),
+                        w,
+                        h,
+                        start: x.zip(y),
+                    },
+                ),
+                cli::CanvasCommand::Remove { id, ids } => canvas_store::remove(&id, &ids),
             }
         }
         cli::Cli::Version | cli::Cli::Completion { .. } | cli::Cli::Mcp => Err(CliError::Usage(

@@ -18,6 +18,7 @@
 //! - [`commands`] — 配置 IPC。
 
 pub(crate) mod commands;
+mod canvas_tools;
 mod config;
 mod mcp;
 mod provider;

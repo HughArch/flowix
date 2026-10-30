@@ -22,4 +22,5 @@ pub mod text_merge;
 
 pub use service::{FlowixError, NotePage, NoteSaveOutcome, NoteService};
 
+pub mod canvas;
 pub mod collection;
