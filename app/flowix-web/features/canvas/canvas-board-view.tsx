@@ -195,6 +195,16 @@ function CardHandles({ visible = false }: { visible?: boolean }) {
   );
 }
 
+/** Programmatic focus drops the caret at the first character; editing an
+ *  existing label should resume where the text left off, so park the caret
+ *  at the end (no-op for an empty editor). */
+function focusTextEditorAtEnd(element: HTMLTextAreaElement | HTMLInputElement | null) {
+  if (!element) return;
+  element.focus();
+  const end = element.value.length;
+  element.setSelectionRange(end, end);
+}
+
 /** Compact relative timestamp for card footers. */
 function relativeTime(ms: number): string {
   if (!ms) return '';
@@ -294,7 +304,7 @@ function StickyNode({ data, selected }: NodeProps<BoardNode>) {
   // the note right away.
   useEffect(() => {
     if (!editing) return;
-    const focusTimer = window.setTimeout(() => textareaRef.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => focusTextEditorAtEnd(textareaRef.current), 0);
     return () => window.clearTimeout(focusTimer);
   }, [editing]);
   return (
@@ -395,7 +405,7 @@ function FrameNode({ data, selected }: NodeProps<BoardNode>) {
   // a microtask after the placing drag, so the title input needs a macrotask.
   useEffect(() => {
     if (!editing) return;
-    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => focusTextEditorAtEnd(inputRef.current), 0);
     return () => window.clearTimeout(focusTimer);
   }, [editing]);
   return (
@@ -448,7 +458,7 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   // microtask, so autofocus loses to it after a placing drag or double-click.
   useEffect(() => {
     if (!editing) return;
-    const focusTimer = window.setTimeout(() => textareaRef.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => focusTextEditorAtEnd(textareaRef.current), 0);
     return () => window.clearTimeout(focusTimer);
   }, [editing]);
   // Auto-fit while editing: the textarea is sized to its content (the flex
