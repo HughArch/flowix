@@ -9,7 +9,7 @@
  *
  * 键位对齐 Obsidian Canvas / Excalidraw, 保持同一套肌肉记忆:
  *   V 选择  H 抓手  P 画笔  E 橡皮
- *   R 矩形  O 圆形  D 菱形  A 箭头  T 文字
+ *   R 矩形  O 圆形  D 菱形  A 箭头  L 直线  T 文字
  *   N 便签  F 画框
  */
 
@@ -23,6 +23,7 @@ export type CanvasToolShortcutTarget =
   | 'ellipse'
   | 'diamond'
   | 'arrow'
+  | 'line'
   | 'text'
   | 'sticky'
   | 'frame';
@@ -45,6 +46,7 @@ export const CANVAS_TOOL_SHORTCUTS: readonly CanvasToolShortcut[] = [
   { actionId: 'canvas.tool.ellipse', key: 'o', tool: 'ellipse' },
   { actionId: 'canvas.tool.diamond', key: 'd', tool: 'diamond' },
   { actionId: 'canvas.tool.arrow', key: 'a', tool: 'arrow' },
+  { actionId: 'canvas.tool.line', key: 'l', tool: 'line' },
   { actionId: 'canvas.tool.text', key: 't', tool: 'text' },
   { actionId: 'canvas.tool.sticky', key: 'n', tool: 'sticky' },
   { actionId: 'canvas.tool.frame', key: 'f', tool: 'frame' },

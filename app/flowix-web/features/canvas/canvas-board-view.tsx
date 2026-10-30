@@ -33,7 +33,7 @@ import {
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
 import '../../styles/canvas-board.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Link2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Link2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, Pencil, Plus, Redo2, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { Tooltip } from '@shared/ui/tooltip';
 import { pushHandler } from '@/lib/shortcuts';
 import { claimCanvasSurface, getActiveCanvasSurface, releaseCanvasSurface, setActiveCanvasSurface } from './canvas-focus';
@@ -84,7 +84,7 @@ import { boardToSvg, svgToPngBase64 } from './board-export';
 import { cachedRoughPaths, roughLineSketch } from './board-rough';
 import { alignShapes, distributeShapes, type BoardAlignMode } from './board-align';
 import {
-  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuTrigger,
+  DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@shared/ui/dropdown-menu';
 
 const SAVE_DEBOUNCE_MS = 800;
@@ -437,10 +437,17 @@ function FrameNode({ data, selected }: NodeProps<BoardNode>) {
 
 /** Rect/ellipse/diamond with an inline text label, resizable when selected. */
 function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
-  const { t } = useI18n();
   const [editing, setEditing] = useState(Boolean(data.initialEditing));
   const [draft, setDraft] = useState(data.shape?.text ?? '');
+  const textareaRef = useRef<HTMLTextAreaElement>(null);
   const shape = data.shape;
+  // Same reclaim as sticky/frame: React Flow refocuses the node wrapper in a
+  // microtask, so autofocus loses to it after a placing drag or double-click.
+  useEffect(() => {
+    if (!editing) return;
+    const focusTimer = window.setTimeout(() => textareaRef.current?.focus(), 0);
+    return () => window.clearTimeout(focusTimer);
+  }, [editing]);
   if (!shape) return null;
   const stroke = shape.stroke ?? '#64748b';
   const strokeWidth = shape.strokeWidth ?? 2;
@@ -451,16 +458,27 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   const textAlign = shape.textAlign ?? 'center';
   const alignClass = textAlign === 'left' ? 'text-left' : textAlign === 'right' ? 'text-right' : 'text-center';
   // Node boxes are padded, so paths must be translated by the padded origin.
-  const origin = shape.shape === 'arrow' ? arrowBox(shape) : shapeBoxWithPadding(shape);
+  const origin = shape.shape === 'arrow' || shape.shape === 'line' ? arrowBox(shape) : shapeBoxWithPadding(shape);
 
   const sketch = shape.shape === 'text' ? null : (
     <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none' }}>
       <g transform={`translate(${-origin.x},${-origin.y})`}>
-        {shape.shape === 'arrow' ? (
+        {shape.shape === 'arrow' || shape.shape === 'line' ? (
           (() => {
             const x2 = shape.x2 ?? shape.x + shape.w;
             const y2 = shape.y2 ?? shape.y + shape.h;
             const sketch = roughLineSketch(shape.x, shape.y, x2, y2, shape);
+            const line = (
+              <path
+                d={sketch.d}
+                strokeDasharray={sketch.dash}
+                stroke={stroke}
+                strokeWidth={strokeWidth}
+                strokeLinecap="round"
+                fill="none"
+              />
+            );
+            if (shape.shape === 'line') return line;
             const angle = Math.atan2(y2 - shape.y, x2 - shape.x);
             const head = 10 + strokeWidth * 2;
             const spread = Math.PI / 7;
@@ -468,14 +486,7 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
             const h2 = [x2 - head * Math.cos(angle + spread), y2 - head * Math.sin(angle + spread)];
             return (
               <>
-                <path
-                  d={sketch.d}
-                  strokeDasharray={sketch.dash}
-                  stroke={stroke}
-                  strokeWidth={strokeWidth}
-                  strokeLinecap="round"
-                  fill="none"
-                />
+                {line}
                 <polygon points={`${x2},${y2} ${h1[0]},${h1[1]} ${h2[0]},${h2[1]}`} fill={stroke} />
               </>
             );
@@ -499,7 +510,7 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   return (
     <div className="relative h-full w-full" style={{ opacity: (shape.opacity ?? 100) / 100 }}>
       <ResizeBox
-        visible={selected && shape.shape !== 'arrow'}
+        visible={selected && shape.shape !== 'arrow' && shape.shape !== 'line'}
         onResize={(_, params) => data.onShapeResize?.(shape.id, params, 'live')}
         onResizeEnd={(_, params) => data.onShapeResize?.(shape.id, params, 'end')}
       />
@@ -507,20 +518,25 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
       <div
         className={`absolute inset-0 flex items-center px-2 ${alignClass} ${textAlign === 'center' ? 'justify-center' : ''}`}
         onDoubleClick={(event) => {
+          // Adding text via double-click is gone (a double-click is the global
+          // "drop a text element" gesture now); existing labels stay editable.
+          if (!shape.text) return;
           event.stopPropagation();
-          setDraft(shape.text ?? '');
+          setDraft(shape.text);
           setEditing(true);
         }}
       >
         {editing ? (
           <textarea
-            autoFocus
+            ref={textareaRef}
             value={draft}
             onChange={(event) => setDraft(event.target.value)}
             onBlur={() => { setEditing(false); data.onShapeTextCommit?.(shape.id, draft); }}
             onKeyDown={(event) => {
               event.stopPropagation();
-              if (event.key === 'Escape') { setEditing(false); }
+              // Esc keeps the typed text (unmounting a focused element never
+              // fires blur, so commit here or the draft is lost).
+              if (event.key === 'Escape') { data.onShapeTextCommit?.(shape.id, draft); setEditing(false); }
               if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); setEditing(false); data.onShapeTextCommit?.(shape.id, draft); }
             }}
             style={{ fontSize, color: shape.shape === 'text' ? stroke : undefined, fontFamily: fontStack, fontWeight }}
@@ -533,8 +549,6 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
           >
             {shape.text}
           </span>
-        ) : selected ? (
-          <span className="pointer-events-none text-[10px] text-[var(--muted-foreground)]">{t('canvas.board.shape.labelHint')}</span>
         ) : null}
       </div>
       <CardHandles visible={selected} />
@@ -614,16 +628,17 @@ const TEXT_FONTS: Record<'hand' | 'sans' | 'mono' | 'bold' | 'serif', string> = 
 const TEXT_FONT_WEIGHTS: Record<'hand' | 'sans' | 'mono' | 'bold' | 'serif', number> = {
   hand: 400, sans: 400, mono: 400, bold: 800, serif: 400,
 };
-const SHAPE_TOOLS: BoardShapeKind[] = ['rect', 'ellipse', 'diamond', 'text', 'arrow'];
+const SHAPE_TOOLS: BoardShapeKind[] = ['rect', 'ellipse', 'diamond', 'text', 'arrow', 'line'];
 const isShapeTool = (tool: BoardTool): tool is BoardShapeKind =>
-  tool === 'rect' || tool === 'ellipse' || tool === 'diamond' || tool === 'text' || tool === 'arrow';
+  tool === 'rect' || tool === 'ellipse' || tool === 'diamond' || tool === 'text' || tool === 'arrow' || tool === 'line';
 /** Tools drawn by dragging a box: shapes plus sticky notes and frames. */
 const isBoxTool = (tool: BoardTool): boolean => isShapeTool(tool) || tool === 'sticky' || tool === 'frame';
 
 const INK_COLORS = ['#1e1e1e', '#e03131', '#2f9e44', '#1971c2', '#f08c00'];
-/** Sticky-note tints, mirroring Obsidian's colour row (yellow / red / green / blue / purple). */
+/** Sticky-note tints, mirroring Obsidian's colour row (yellow / red / green / blue / purple).
+ *  The default yellow is Obsidian's canvas card yellow (#ffdf6b). */
 const STICKY_COLORS = [
-  { value: 'yellow', background: '#fff8d6', border: '#f0e2a6', foreground: '#4a3b00' },
+  { value: 'yellow', background: '#ffdf6b', border: '#e3c24a', foreground: '#4a3b00' },
   { value: 'red', background: '#ffe3e3', border: '#f5c2c2', foreground: '#5c1a1a' },
   { value: 'green', background: '#d8f5dd', border: '#a9dcb4', foreground: '#14432a' },
   { value: 'blue', background: '#dceafd', border: '#b3cdf2', foreground: '#123a63' },
@@ -747,10 +762,11 @@ function shapeNodeFor(
   onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void,
   initialEditing = false,
 ): BoardNode {
-  const arrow = shape.shape === 'arrow' && shape.x2 !== undefined && shape.y2 !== undefined;
+  const twoPoint = (shape.shape === 'arrow' || shape.shape === 'line')
+    && shape.x2 !== undefined && shape.y2 !== undefined;
   // Node boxes carry padding so the selection ring sits outside the drawing
   // (Obsidian-style) instead of overlapping the shape outline.
-  const box = arrow
+  const box = twoPoint
     ? arrowBox(shape)
     : shapeBoxWithPadding(shape);
   return {
@@ -2334,9 +2350,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     pushHistory();
   }, [pushHistory, scheduleFlush]);
 
-  /** Double-click on empty canvas drops a text element and starts editing. */
+  /** Double-click on empty canvas drops a text element and starts editing
+   *  (Obsidian's global gesture; the hand tool keeps it too). */
   const handleSurfaceDoubleClick = useCallback((event: React.MouseEvent<HTMLDivElement>) => {
-    if (readOnly || tool !== 'select') return;
+    if (readOnly || (tool !== 'select' && tool !== 'hand')) return;
     if ((event.target as Element).closest('.react-flow__node, [data-board-toolbar]')) return;
     const document = documentRef.current;
     if (!document) return;
@@ -2836,10 +2853,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       const arrowEnd = rect.w < 24 && rect.h < 24
         ? [draft.start[0] + 160, draft.start[1]]
         : draft.current;
-      const shape: BoardShape = isArrow
+      // Arrows and lines share the two-point geometry (x/y tail, x2/y2 head);
+      // only the arrowhead rendering differs.
+      const shape: BoardShape = isArrow || tool === 'line'
         ? {
           id: shapeId(),
-          shape: 'arrow',
+          shape: tool as BoardShapeKind,
           x: arrowStart[0],
           y: arrowStart[1],
           x2: arrowEnd[0],
@@ -3104,14 +3123,15 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     const [ex, ey] = shapePreview.end;
     const minX = Math.min(sx, ex);
     const minY = Math.min(sy, ey);
+    const twoPoint = tool === 'arrow' || tool === 'line';
     return {
       id: 'preview',
       shape: tool,
-      x: tool === 'arrow' ? sx : minX,
-      y: tool === 'arrow' ? sy : minY,
+      x: twoPoint ? sx : minX,
+      y: twoPoint ? sy : minY,
       w: Math.abs(ex - sx),
       h: Math.abs(ey - sy),
-      ...(tool === 'arrow' ? { x2: ex, y2: ey } : {}),
+      ...(twoPoint ? { x2: ex, y2: ey } : {}),
       stroke: penColor,
     };
   })();
@@ -3152,7 +3172,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const styleOpacity = selectionMode ? firstSelected?.opacity ?? 100 : toolOpacity;
   // Ink has no fill/line-style/edges; every shape-only row hides for it —
   // and sticky/frame tools draw containers, not styled shapes.
-  const showFill = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow') : isShapeTool(tool) && tool !== 'text' && tool !== 'arrow';
+  const showFill = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow' && shape.shape !== 'line') : isShapeTool(tool) && tool !== 'text' && tool !== 'arrow' && tool !== 'line';
   const showStrokeStyle = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : isShapeTool(tool) && tool !== 'text';
   const showFontSize = inkOnlySelection || cardOnlySelection ? false : selectionMode ? allSelectedLabel : tool === 'text';
   const textOnlySelection = selectionMode && !cardOnlySelection && !inkOnlySelection && allSelectedLabel;
@@ -3276,7 +3296,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
                 : shapeKind === 'ellipse' ? <Circle className="h-3.5 w-3.5" />
                   : shapeKind === 'diamond' ? <Diamond className="h-3.5 w-3.5" />
                     : shapeKind === 'arrow' ? <ArrowUpRight className="h-3.5 w-3.5" />
-                      : <Type className="h-3.5 w-3.5" />}
+                      : shapeKind === 'line' ? <Minus className="h-3.5 w-3.5" />
+                        : <Type className="h-3.5 w-3.5" />}
             </button>
           </Tooltip>
         ))}
@@ -3288,26 +3309,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
             onClick={() => selectTool('sticky')}
           >
             <StickyNote className="h-3.5 w-3.5" />
-          </button>
-        </Tooltip>
-        <Tooltip content={t('canvas.board.tool.frame')} shortcut="canvas.tool.frame" side="bottom">
-          <button
-            type="button"
-            aria-label={t('canvas.board.tool.frame')}
-            className={toolButtonClass(tool === 'frame')}
-            onClick={() => selectTool('frame')}
-          >
-            <FrameIcon className="h-3.5 w-3.5" />
-          </button>
-        </Tooltip>
-        <Tooltip content={t('canvas.board.tool.image')} side="bottom">
-          <button
-            type="button"
-            aria-label={t('canvas.board.tool.image')}
-            className={toolButtonClass(false)}
-            onClick={() => { void pickImages(); }}
-          >
-            <ImagePlus className="h-3.5 w-3.5" />
           </button>
         </Tooltip>
         <Tooltip content={t('canvas.board.tool.note')} side="bottom">
@@ -3334,17 +3335,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
             </button>
           </Tooltip>
         ) : null}
-        <DropdownMenu>
-          <DropdownMenuTrigger asChild>
-            <button type="button" aria-label={t('canvas.export.menu')} className={toolButtonClass(false)}>
-              <Download className="h-3.5 w-3.5" />
-            </button>
-          </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-[168px]">
-            <DropdownMenuItem onClick={() => { void handleExport('svg'); }}>{t('canvas.export.svg')}</DropdownMenuItem>
-            <DropdownMenuItem onClick={() => { void handleExport('png'); }}>{t('canvas.export.png')}</DropdownMenuItem>
-          </DropdownMenuContent>
-        </DropdownMenu>
         <Tooltip content={t('canvas.board.tool.fit')} side="bottom">
           <button
             type="button"
@@ -3366,6 +3356,38 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
             {toolLocked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
           </button>
         </Tooltip>
+        {/* Infrequent tools live behind the … overflow (Obsidian-style): the
+            frame tool, image import, and the export actions. The trigger
+            highlights while the frame tool is engaged so its active state is
+            still visible even though its own button is in the menu. */}
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <button type="button" aria-label={t('canvas.board.tool.more')} className={toolButtonClass(tool === 'frame')}>
+              <MoreHorizontal className="h-3.5 w-3.5" />
+            </button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start" className="w-[150px]">
+            {/* The shared menu item has no built-in gap, so icon+label rows
+                space themselves (otherwise the icon touches the text). */}
+            <DropdownMenuItem className="gap-2" onClick={() => selectTool('frame')}>
+              <FrameIcon className="h-3.5 w-3.5 shrink-0" />
+              {t('canvas.board.tool.frame')}
+            </DropdownMenuItem>
+            <DropdownMenuItem className="gap-2" onClick={() => { void pickImages(); }}>
+              <ImagePlus className="h-3.5 w-3.5 shrink-0" />
+              {t('canvas.board.tool.image')}
+            </DropdownMenuItem>
+            <DropdownMenuSeparator />
+            <DropdownMenuItem className="gap-2" onClick={() => { void handleExport('svg'); }}>
+              <Download className="h-3.5 w-3.5 shrink-0" />
+              {t('canvas.export.svg')}
+            </DropdownMenuItem>
+            <DropdownMenuItem className="gap-2" onClick={() => { void handleExport('png'); }}>
+              <Download className="h-3.5 w-3.5 shrink-0" />
+              {t('canvas.export.png')}
+            </DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
       <div className="absolute bottom-4 left-3 z-30 flex max-h-[calc(100%-120px)] flex-col items-start gap-2">
         {(tool === 'pen' || isShapeTool(tool) || stickyMode || selectionMode) && !panelCollapsed ? (
@@ -3959,6 +3981,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
         minZoom={0.05}
         maxZoom={4}
+        // d3-zoom's built-in double-click-zoom calls stopImmediatePropagation
+        // on the pane, which kills the board's onDoubleClick before it ever
+        // reaches the "double-click drops a text element" handler. A board
+        // never zooms on double-click (Obsidian drops a card there instead).
+        zoomOnDoubleClick={false}
         // Selection tool rubber-bands a multi-select; the hand tool pans.
         // Touch select mode pans with one finger and pinch-zooms with two;
         // rubber-band selection stays desktop-only (RF's user selection would
@@ -3997,7 +4024,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
               }}
             >
               <g transform={`translate(${-Math.min(previewShape.x, previewShape.x2 ?? previewShape.x) + 16},${-Math.min(previewShape.y, previewShape.y2 ?? previewShape.y) + 16})`}>
-                {previewShape.shape === 'arrow' ? (
+                {previewShape.shape === 'arrow' || previewShape.shape === 'line' ? (
                   <path
                     d={roughLineSketch(previewShape.x, previewShape.y, previewShape.x2 ?? previewShape.x, previewShape.y2 ?? previewShape.y, previewShape, { preview: true }).d}
                     stroke={penColor}

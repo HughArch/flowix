@@ -106,7 +106,7 @@ export interface BoardInkStroke {
   pressure?: boolean;
 }
 
-export type BoardShapeKind = 'rect' | 'ellipse' | 'diamond' | 'text' | 'arrow';
+export type BoardShapeKind = 'rect' | 'ellipse' | 'diamond' | 'text' | 'arrow' | 'line';
 
 /** Diagram shape in board (flow) coordinates; `text` is the inline label. */
 export type BoardStrokeStyle = 'solid' | 'dashed' | 'dotted';
@@ -513,7 +513,7 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
     const h = readFiniteNumber(raw.h);
     if (!id || x === null || y === null || w === null || h === null) continue;
     const shape: BoardShapeKind = raw.shape === 'ellipse' || raw.shape === 'diamond'
-      || raw.shape === 'text' || raw.shape === 'arrow'
+      || raw.shape === 'text' || raw.shape === 'arrow' || raw.shape === 'line'
       ? raw.shape
       : 'rect';
     const text = typeof raw.text === 'string' && raw.text ? raw.text : undefined;
@@ -546,7 +546,8 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
       y,
       w: Math.max(16, w),
       h: Math.max(16, h),
-      ...(shape === 'arrow' && x2 !== null && y2 !== null ? { x2, y2 } : {}),
+      // Both two-point strokes keep their endpoint pair; `w`/`h` is the box.
+      ...((shape === 'arrow' || shape === 'line') && x2 !== null && y2 !== null ? { x2, y2 } : {}),
       ...(opacity !== null ? { opacity: Math.min(100, Math.max(1, Math.round(opacity))) } : {}),
       ...(fillStyle ? { fillStyle } : {}),
       ...(roughness !== null && roughness >= 0 ? { roughness: Math.min(2.5, roughness) } : {}),

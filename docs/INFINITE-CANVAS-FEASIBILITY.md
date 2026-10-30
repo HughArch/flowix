@@ -599,3 +599,12 @@ APK（x86_64 debug）装到 `Pixel_7` 模拟器后暴露一串只在触控下出
 2. **缩放手势命中区**：此前 10px 控制点 + 1px 边线要“瞄准”才出缩放光标。修复 = canvas-board.css 给 `.react-flow__resize-control.handle/line::before` 画 `inset:-8px` 的透明 halo——伪元素命中区随元素放大，光标反馈范围同步变大（实测手柄外 9px、边线外 6px 仍是 nwse/ns-resize，12px/10px 处让位）。视觉不变。
 3. **选择器状态下的双指缩放**：RF 的 zoom filter 在 `!panOnDrag && touchstart` 时直接拒绝（system/index.js 2939 行），而选择工具的 user-selection（selectionOnDrag）又会吞掉第二根手指 → 触摸双指缩放完全失效。修复 = 触摸语义切分：`handleBoardPointerDown` 按 pointerType 维护 `touchMode`，选择工具下 `selectionOnDrag={tool==='select' && !touchMode}`、`panOnDrag={tool==='hand' || (tool==='select' && touchMode)}`——**触摸：单指拖空白=平移、双指=捏合缩放、点按=选中元素；鼠标：拖拽=框选多选**（Obsidian mobile 同语义）。
 4. **验证记录**（桌面 dev + CDP 真触摸事件 `Input.dispatchTouchEvent`）：选择工具下双指从 300px 撑到 480px，viewport zoom 1.112→1.779；捏合回落 480→300，zoom 回 1.112；单指触摸拖拽平移 translate (-503,66)→(-653,16) 与手势同向等距；鼠标框选不受影响（touchMode 按 pointerType 门控）。便签：放置→点选→字号 XL+文字颜色蓝，DOM 36px/#1971c2、文件 fontSize/textColor 落盘。
+
+### 15.29 便签配色 + 全局双击加文字 + 直线工具 + 工具栏溢出菜单（2026-10-30）
+
+1. **便签默认底色**：Obsidian 便签的暖黄在暗色主题下偏灰，改为取参考图的 `#ffdf6b`（`STICKY_COLORS` 第一项 `yellow`，前景保持深灰 `#3f3a1e`）。其余四色（红/绿/蓝/紫）沿用 Obsidian 色板。已存在的便签不受影响（color 已落盘的按盘上值渲染）。
+2. **全局双击加文字**：取消矩形/椭圆/菱形/箭头/直线的“自带双击进编辑”，改为 Obsidian 式**空白处双击 → 就地落一个文字元素并进入编辑**（`onPaneClick` 的 dblclick 分支：用双击点换算 flow 坐标，建 `shape:'text'` 的最小盒 200×40，`pendingEditingRef` 挂 `initialEditing`）。形状本身不再响应双击（不抢占、不误触发），要改形状文字走属性面板或选中后 Enter。
+3. **直线工具（L）**：`BoardShapeKind` 增 `'line'`，与 `arrow` 共用两点几何（`x2/y2` 端点对，`w/h` 仍是包围盒），渲染复用 `roughLineSketch` 但**不画箭头端**；快捷键表加 `L`，actions.ts 循环注册自动带出偏好设置条目与工具栏悬浮说明。`readBoardShapes` 的白名单与 `x2/y2` 保留条件同步放开（否则重载后直线丢端点、退化成矩形）。
+4. **工具栏溢出菜单**：工具栏末尾加 `…`（`MoreHorizontal`）下拉，收纳**画框 / 图片 / 导出 SVG / 导出 PNG** 四个低频项（导出两项之间加分隔线）；`…` 按钮在画框工具激活时高亮，保证被收纳工具的活动态仍可见。删掉 i18n 的 `canvas.export.menu`、`canvas.board.shape.labelHint`。
+5. **实现坑**：共享的 `DropdownMenuItem` 基类没有 `gap`，图标与文字会贴在一起——菜单项需显式 `className="gap-2"`（实测 8px）；`d3-zoom` 的双击放大在 pane 上 `stopImmediatePropagation()`，会吞掉我们的 dblclick，需 `zoomOnDoubleClick={false}`（画布本来也不该双击缩放）；`ShapeNode` 的 textarea 同样要用 `setTimeout(0)` 抢焦点并在 Esc 显式 commit（与便签/画框同因：RF 微任务抢焦点、卸载不触发 blur）。
+6. **验证记录**（桌面 dev + CDP 真键鼠事件）：N→放置，DOM 背景 `rgb(255,223,107)` = `#ffdf6b`；空白双击→textarea 聚焦→键入「双击输入成功」→Esc，`shape.text` 落盘且不再有 textarea；矩形上双击不再进入文字编辑（`rectTextarea:false`）；L→拖拽落直线，文件 `shape:"line"` 带 `x2/y2` 且无箭头端；`…` 菜单四项齐全、图标与文字间距 8px。
