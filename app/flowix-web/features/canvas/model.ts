@@ -2,11 +2,12 @@
  * `.flowix-canvas` document model.
  *
  * A canvas file is plain JSON so the FNS file channel syncs it without any
- * special casing. The schema mirrors the decisions in
- * docs/INFINITE-CANVAS-FEASIBILITY.md §2: Excalidraw-compatible `elements`
- * today, a reserved `cards` array for note-card nodes later. Image bitmaps are
- * referenced through the scene `files` map; both are size-capped on save so a
- * single drawing cannot silently exceed the sync attachment limit.
+ * special casing. The schema mirrors docs/INFINITE-CANVAS-FEASIBILITY.md §15:
+ * `elements` is the Excalidraw drawing layer; `cards`/`shapes`/`ink`/`edges`/
+ * `frames` form the Phase 2 board layer, and a document with cards renders as
+ * a card board instead of a drawing surface. Image bitmaps are referenced
+ * through the scene `files` map; both are size-capped on save so a single
+ * canvas cannot silently exceed the sync attachment limit.
  */
 
 export const CANVAS_FILE_EXTENSION = 'flowix-canvas';
@@ -17,6 +18,10 @@ export const CANVAS_DOCUMENT_VERSION = 1;
 export const MAX_CANVAS_FILE_BYTES = 2 * 1024 * 1024;
 export const MAX_CANVAS_FILES_TOTAL_BYTES = 8 * 1024 * 1024;
 export const MAX_CANVAS_ELEMENTS = 5000;
+/** Board-layer guard: cards/edges/frames are far lighter than elements but still need a ceiling. */
+export const MAX_CANVAS_CARDS = 2000;
+export const MAX_CANVAS_INK_STROKES = 2000;
+export const MAX_CANVAS_INK_POINTS = 4000;
 
 export interface FlowixCanvasMeta {
   createdAt: string;
@@ -28,6 +33,122 @@ export interface PersistedCanvasAppState {
   viewBackgroundColor?: string;
   gridSize?: number | null;
   gridModeEnabled?: boolean;
+  /** Board-layer viewport, persisted so reopening a board restores the camera. */
+  viewport?: BoardViewport;
+}
+
+/** Board-layer card node. Note identity follows the note-link convention
+ * (`notebookId` + notebook-relative `path`); `title` is a snapshot used when
+ * the note cannot be resolved and as a rebind hint. */
+export interface BoardCard {
+  id: string;
+  kind: 'note' | 'text' | 'image' | 'canvas';
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Stacking order across shapes/cards/ink; omitted uses type defaults. */
+  z?: number;
+  notebookId?: string;
+  /** Notebook name snapshot: notebook ids are per-device, so a card synced to
+   *  another device resolves its root by name when the id is unknown. */
+  notebookName?: string;
+  path?: string;
+  title?: string;
+  text?: string;
+  /** What the card body renders; omitted (or `'excerpt'`) keeps the summary face. */
+  renderScope?: 'excerpt' | 'full' | 'section';
+  /** `renderScope: 'section'` anchor: render this heading's subtree. */
+  heading?: string;
+  /** Image cards reference the canvas `files` map by id. */
+  fileId?: string;
+  /** Sticky-note tint (`kind: 'text'`); omitted uses the default yellow. */
+  color?: string;
+  /** Sticky-note text styling (`kind: 'text'`); all optional with sensible defaults. */
+  fontSize?: number;
+  fontFamily?: BoardFontFamily;
+  textAlign?: BoardTextAlign;
+  textColor?: string;
+}
+
+export interface BoardEdge {
+  id: string;
+  from: string;
+  to: string;
+  label?: string | null;
+}
+
+export interface BoardFrame {
+  id: string;
+  title?: string;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  color?: string;
+}
+
+export interface BoardViewport {
+  x: number;
+  y: number;
+  zoom: number;
+}
+
+/** Freehand stroke in board (flow) coordinates. */
+export interface BoardInkStroke {
+  id: string;
+  points: number[][];
+  color: string;
+  width: number;
+  /** Stacking order across shapes/cards/ink; omitted keeps ink above cards. */
+  z?: number;
+  /** False when the stroke was drawn with simulated-pressure off. */
+  pressure?: boolean;
+}
+
+export type BoardShapeKind = 'rect' | 'ellipse' | 'diamond' | 'text' | 'arrow' | 'line';
+
+/** Diagram shape in board (flow) coordinates; `text` is the inline label. */
+export type BoardStrokeStyle = 'solid' | 'dashed' | 'dotted';
+export type BoardFontFamily = 'hand' | 'sans' | 'mono' | 'bold' | 'serif';
+export type BoardTextAlign = 'left' | 'center' | 'right';
+
+export interface BoardShape {
+  id: string;
+  /** `text` is a standalone label with no outline. */
+  shape: BoardShapeKind;
+  x: number;
+  y: number;
+  w: number;
+  h: number;
+  /** Background paint; `transparent` means no fill. */
+  fill?: string;
+  /** roughjs fill paint style. */
+  fillStyle?: 'hachure' | 'solid' | 'cross-hatch';
+  /** Hand-drawn wobble amount: 0 architect, 1 artist, 2.5 scribbler. */
+  roughness?: number;
+  /** Rectangle corner treatment. */
+  edges?: 'sharp' | 'round';
+  /** Click-through URL shown as a badge on the shape. */
+  link?: string;
+  /** Outline color, also the text color for standalone labels. */
+  stroke?: string;
+  strokeWidth?: number;
+  strokeStyle?: BoardStrokeStyle;
+  /** Label size in flow pixels. */
+  fontSize?: number;
+  /** Text face: handwriting, sans, mono, serif (Obsidian's font row). */
+  fontFamily?: BoardFontFamily;
+  /** Text alignment inside the shape box. */
+  textAlign?: BoardTextAlign;
+  text?: string;
+  /** Arrow head position in flow coordinates (`x`/`y` is the tail). */
+  x2?: number;
+  y2?: number;
+  /** 1-100; omitted means fully opaque. */
+  opacity?: number;
+  /** Stacking order across shapes/cards/ink; omitted uses type defaults. */
+  z?: number;
 }
 
 /**
@@ -48,8 +169,16 @@ export interface FlowixCanvasDocument {
   meta: FlowixCanvasMeta;
   /** Excalidraw element objects; schema is owned by the editor layer. */
   elements: unknown[];
-  /** Phase 2 note-card nodes. Reserved and always empty in v1. */
+  /** Board-layer card nodes. A document with cards renders as a card board. */
   cards: unknown[];
+  /** Board-layer shape nodes (rect/ellipse/diamond); Phase 2.3 writes these. */
+  shapes: unknown[];
+  /** Board-layer freehand strokes; Phase 2.3 writes these. */
+  ink: unknown[];
+  /** Board-layer edges between cards/shapes. */
+  edges: unknown[];
+  /** Board-layer grouping frames. */
+  frames: unknown[];
   /** Excalidraw binary files (image bitmaps), keyed by file id. */
   files: Record<string, unknown>;
   appState?: PersistedCanvasAppState;
@@ -78,6 +207,10 @@ export function createCanvasDocument(): FlowixCanvasDocument {
     meta: { createdAt: timestamp, updatedAt: timestamp },
     elements: [],
     cards: [],
+    shapes: [],
+    ink: [],
+    edges: [],
+    frames: [],
     files: {},
   };
 }
@@ -106,6 +239,12 @@ export function parseCanvasDocument(text: string): FlowixCanvasDocument {
     throw new CanvasParseError(`不支持的画布版本: ${String(version)}`);
   }
   const meta = isPlainObject(raw.meta) ? raw.meta : {};
+  // Board arrays pass through untouched (entries are kept by reference) so a
+  // parse -> serialize round-trip stays byte-stable for fields the reading
+  // surface has not edited yet; the board view swaps in normalized values on
+  // its first real change.
+  const passthrough = (value: unknown): unknown[] =>
+    Array.isArray(value) ? value.filter(isPlainObject).slice(0, MAX_CANVAS_CARDS) : [];
   const document: FlowixCanvasDocument = {
     type: CANVAS_DOCUMENT_TYPE,
     version: CANVAS_DOCUMENT_VERSION,
@@ -116,7 +255,11 @@ export function parseCanvasDocument(text: string): FlowixCanvasDocument {
     elements: Array.isArray(raw.elements)
       ? raw.elements.filter(isPlainObject).slice(0, MAX_CANVAS_ELEMENTS)
       : [],
-    cards: Array.isArray(raw.cards) ? raw.cards.filter(isPlainObject) : [],
+    cards: passthrough(raw.cards),
+    shapes: passthrough(raw.shapes),
+    ink: passthrough(raw.ink),
+    edges: passthrough(raw.edges),
+    frames: passthrough(raw.frames),
     files: isPlainObject(raw.files) ? raw.files : {},
   };
   const appState = pickPersistedAppState(raw.appState);
@@ -235,10 +378,222 @@ function pickPersistedAppState(stored: unknown): PersistedCanvasAppState {
   if (typeof stored.viewBackgroundColor === 'string') state.viewBackgroundColor = stored.viewBackgroundColor;
   if (typeof stored.gridSize === 'number' || stored.gridSize === null) state.gridSize = stored.gridSize as number | null;
   if (typeof stored.gridModeEnabled === 'boolean') state.gridModeEnabled = stored.gridModeEnabled;
+  const viewport = pickBoardViewport(stored.viewport);
+  if (viewport) state.viewport = viewport;
   return state;
+}
+
+function pickBoardViewport(value: unknown): BoardViewport | null {
+  if (!isPlainObject(value)) return null;
+  const x = value.x;
+  const y = value.y;
+  const zoom = value.zoom;
+  if (typeof x !== 'number' || !Number.isFinite(x)) return null;
+  if (typeof y !== 'number' || !Number.isFinite(y)) return null;
+  if (typeof zoom !== 'number' || !Number.isFinite(zoom) || zoom <= 0) return null;
+  return { x, y, zoom };
 }
 
 /** Restore only the whitelisted app-state fields the editor persists. */
 export function readPersistedAppState(document: FlowixCanvasDocument): PersistedCanvasAppState {
   return document.appState ?? {};
+}
+
+function readFiniteNumber(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function coerceBoardCard(raw: Record<string, unknown>): BoardCard | null {
+  const id = typeof raw.id === 'string' && raw.id ? raw.id : null;
+  const x = readFiniteNumber(raw.x);
+  const y = readFiniteNumber(raw.y);
+  const w = readFiniteNumber(raw.w);
+  const h = readFiniteNumber(raw.h);
+  if (!id || x === null || y === null || w === null || h === null) return null;
+  const kind = raw.kind === 'text' || raw.kind === 'image' || raw.kind === 'canvas' ? raw.kind : 'note';
+  const z = readFiniteNumber(raw.z);
+  const renderScope = raw.renderScope === 'full' || raw.renderScope === 'section' ? raw.renderScope : undefined;
+  const optionalText = (value: unknown): string | undefined =>
+    typeof value === 'string' && value ? value : undefined;
+  return {
+    id,
+    kind,
+    x,
+    y,
+    w: Math.max(16, w),
+    h: Math.max(16, h),
+    ...(z !== null ? { z } : {}),
+    ...(optionalText(raw.notebookId) ? { notebookId: optionalText(raw.notebookId) } : {}),
+    ...(optionalText(raw.notebookName) ? { notebookName: optionalText(raw.notebookName) } : {}),
+    ...(optionalText(raw.path) ? { path: optionalText(raw.path) } : {}),
+    ...(optionalText(raw.title) ? { title: optionalText(raw.title) } : {}),
+    ...(optionalText(raw.text) ? { text: optionalText(raw.text) } : {}),
+    ...(renderScope ? { renderScope } : {}),
+    ...(renderScope === 'section' && optionalText(raw.heading) ? { heading: optionalText(raw.heading) } : {}),
+    ...(optionalText(raw.fileId) ? { fileId: optionalText(raw.fileId) } : {}),
+    ...(optionalText(raw.color) ? { color: optionalText(raw.color) } : {}),
+    ...(raw.fontSize !== undefined && raw.fontSize !== null
+      ? { fontSize: Math.min(72, Math.max(8, Math.round(readFiniteNumber(raw.fontSize) ?? 12))) }
+      : {}),
+    ...(raw.fontFamily === 'hand' || raw.fontFamily === 'sans' || raw.fontFamily === 'mono'
+      || raw.fontFamily === 'bold' || raw.fontFamily === 'serif'
+      ? { fontFamily: raw.fontFamily }
+      : {}),
+    ...(raw.textAlign === 'left' || raw.textAlign === 'center' || raw.textAlign === 'right'
+      ? { textAlign: raw.textAlign }
+      : {}),
+    ...(optionalText(raw.textColor) ? { textColor: optionalText(raw.textColor) } : {}),
+  };
+}
+
+/** Normalized board cards; malformed entries are skipped instead of failing the file. */
+export function readBoardCards(document: FlowixCanvasDocument): BoardCard[] {
+  const cards: BoardCard[] = [];
+  for (const raw of document.cards) {
+    if (!isPlainObject(raw)) continue;
+    const card = coerceBoardCard(raw);
+    if (card) cards.push(card);
+  }
+  return cards;
+}
+
+export function readBoardEdges(document: FlowixCanvasDocument): BoardEdge[] {
+  const edges: BoardEdge[] = [];
+  for (const raw of document.edges) {
+    if (!isPlainObject(raw)) continue;
+    const id = typeof raw.id === 'string' && raw.id ? raw.id : null;
+    const from = typeof raw.from === 'string' && raw.from ? raw.from : null;
+    const to = typeof raw.to === 'string' && raw.to ? raw.to : null;
+    if (!id || !from || !to) continue;
+    edges.push({
+      id,
+      from,
+      to,
+      ...(typeof raw.label === 'string' && raw.label ? { label: raw.label } : {}),
+    });
+  }
+  return edges;
+}
+
+export function readBoardFrames(document: FlowixCanvasDocument): BoardFrame[] {
+  const frames: BoardFrame[] = [];
+  for (const raw of document.frames) {
+    if (!isPlainObject(raw)) continue;
+    const id = typeof raw.id === 'string' && raw.id ? raw.id : null;
+    const x = readFiniteNumber(raw.x);
+    const y = readFiniteNumber(raw.y);
+    const w = readFiniteNumber(raw.w);
+    const h = readFiniteNumber(raw.h);
+    if (!id || x === null || y === null || w === null || h === null) continue;
+    frames.push({
+      id,
+      x,
+      y,
+      w: Math.max(16, w),
+      h: Math.max(16, h),
+      ...(typeof raw.title === 'string' && raw.title ? { title: raw.title } : {}),
+      ...(typeof raw.color === 'string' && raw.color ? { color: raw.color } : {}),
+    });
+  }
+  return frames;
+}
+
+export function readBoardViewport(document: FlowixCanvasDocument): BoardViewport | null {
+  return readPersistedAppState(document).viewport ?? null;
+}
+
+export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
+  const shapes: BoardShape[] = [];
+  for (const raw of document.shapes.slice(0, MAX_CANVAS_CARDS)) {
+    if (!isPlainObject(raw)) continue;
+    const id = typeof raw.id === 'string' && raw.id ? raw.id : null;
+    const x = readFiniteNumber(raw.x);
+    const y = readFiniteNumber(raw.y);
+    const w = readFiniteNumber(raw.w);
+    const h = readFiniteNumber(raw.h);
+    if (!id || x === null || y === null || w === null || h === null) continue;
+    const shape: BoardShapeKind = raw.shape === 'ellipse' || raw.shape === 'diamond'
+      || raw.shape === 'text' || raw.shape === 'arrow' || raw.shape === 'line'
+      ? raw.shape
+      : 'rect';
+    const text = typeof raw.text === 'string' && raw.text ? raw.text : undefined;
+    const fill = typeof raw.fill === 'string' && raw.fill ? raw.fill : undefined;
+    const stroke = typeof raw.stroke === 'string' && raw.stroke ? raw.stroke : undefined;
+    const fontSize = readFiniteNumber(raw.fontSize);
+    const strokeWidth = readFiniteNumber(raw.strokeWidth);
+    const strokeStyle: BoardStrokeStyle | undefined = raw.strokeStyle === 'dashed' || raw.strokeStyle === 'dotted'
+      ? raw.strokeStyle
+      : raw.strokeStyle === 'solid' ? 'solid' : undefined;
+    const x2 = readFiniteNumber(raw.x2);
+    const y2 = readFiniteNumber(raw.y2);
+    const opacity = readFiniteNumber(raw.opacity);
+    const fillStyle = raw.fillStyle === 'solid' || raw.fillStyle === 'cross-hatch' ? raw.fillStyle : raw.fillStyle === 'hachure' ? 'hachure' : undefined;
+    const fontFamily: BoardFontFamily | undefined = raw.fontFamily === 'sans' || raw.fontFamily === 'mono'
+      || raw.fontFamily === 'serif' || raw.fontFamily === 'bold'
+      ? raw.fontFamily
+      : raw.fontFamily === 'hand' ? 'hand' : undefined;
+    const textAlign: BoardTextAlign | undefined = raw.textAlign === 'left' || raw.textAlign === 'right'
+      ? raw.textAlign
+      : raw.textAlign === 'center' ? 'center' : undefined;
+    const roughness = readFiniteNumber(raw.roughness);
+    const z = readFiniteNumber(raw.z);
+    const edges = raw.edges === 'round' ? 'round' : raw.edges === 'sharp' ? 'sharp' : undefined;
+    const link = typeof raw.link === 'string' && raw.link.trim() ? raw.link.trim() : undefined;
+    shapes.push({
+      id,
+      shape,
+      x,
+      y,
+      w: Math.max(16, w),
+      h: Math.max(16, h),
+      // Both two-point strokes keep their endpoint pair; `w`/`h` is the box.
+      ...((shape === 'arrow' || shape === 'line') && x2 !== null && y2 !== null ? { x2, y2 } : {}),
+      ...(opacity !== null ? { opacity: Math.min(100, Math.max(1, Math.round(opacity))) } : {}),
+      ...(fillStyle ? { fillStyle } : {}),
+      ...(roughness !== null && roughness >= 0 ? { roughness: Math.min(2.5, roughness) } : {}),
+      ...(edges ? { edges } : {}),
+      ...(link ? { link } : {}),
+      ...(fill ? { fill } : {}),
+      ...(stroke ? { stroke } : {}),
+      ...(fontSize && fontSize > 0 ? { fontSize } : {}),
+      ...(fontFamily ? { fontFamily } : {}),
+      ...(textAlign ? { textAlign } : {}),
+      ...(strokeWidth && strokeWidth > 0 ? { strokeWidth } : {}),
+      ...(strokeStyle ? { strokeStyle } : {}),
+      ...(text ? { text } : {}),
+      ...(z !== null ? { z } : {}),
+    });
+  }
+  return shapes;
+}
+
+export function readBoardInk(document: FlowixCanvasDocument): BoardInkStroke[] {
+  const strokes: BoardInkStroke[] = [];
+  for (const raw of document.ink.slice(0, MAX_CANVAS_INK_STROKES)) {
+    if (!isPlainObject(raw)) continue;
+    const id = typeof raw.id === 'string' && raw.id ? raw.id : null;
+    const color = typeof raw.color === 'string' && raw.color ? raw.color : null;
+    const width = readFiniteNumber(raw.width);
+    if (!id || !color || width === null || width <= 0) continue;
+    const rawPoints = Array.isArray(raw.points) ? raw.points.slice(0, MAX_CANVAS_INK_POINTS) : [];
+    const points: number[][] = [];
+    for (const point of rawPoints) {
+      if (!Array.isArray(point)) continue;
+      const x = readFiniteNumber(point[0]);
+      const y = readFiniteNumber(point[1]);
+      if (x === null || y === null) continue;
+      points.push([x, y]);
+    }
+    if (points.length < 2) continue;
+    const z = readFiniteNumber(raw.z);
+    strokes.push({
+      id,
+      points,
+      color,
+      width,
+      ...(z !== null ? { z } : {}),
+      ...(raw.pressure === false ? { pressure: false } : {}),
+    });
+  }
+  return strokes;
 }

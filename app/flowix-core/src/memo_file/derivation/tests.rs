@@ -783,3 +783,20 @@ fn agent_thread_card_attr_decodes_all_supported_entities() {
     assert_eq!(agents.len(), 1);
     assert_eq!(agents[0].title, "<AI> & Helper \u{00A0} v2");
 }
+
+#[test]
+fn card_excerpt_skips_title_and_markdown_noise() {
+    let content = "---\ntags: [a]\n---\n\n# 标题行\n\n::: callout icon=\"x\" color=\"yellow\"\n正文第一段 ++高亮++ 内容\n:::\n第二段 ==重点== 文本\n";
+    let excerpt = crate::memo_file::extract_card_excerpt(content, 120);
+    assert!(!excerpt.contains("标题行"), "excerpt must start after the title line: {excerpt}");
+    assert!(!excerpt.contains(":::"), "directive lines must be dropped: {excerpt}");
+    assert!(!excerpt.contains("++") && !excerpt.contains("=="), "inline markers must be stripped: {excerpt}");
+    assert!(excerpt.contains("正文第一段 高亮 内容"), "body text must survive: {excerpt}");
+}
+
+#[test]
+fn card_excerpt_respects_the_char_budget() {
+    let content = "# t\n\n一二三四五六七八九十\n";
+    assert_eq!(crate::memo_file::extract_card_excerpt(content, 4).chars().count(), 4);
+    assert_eq!(crate::memo_file::extract_card_excerpt("# only title\n", 10), "");
+}

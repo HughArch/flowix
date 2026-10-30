@@ -1,0 +1,82 @@
+/*
+ * Canvas board: read-only note card bodies and reference chips.
+ *
+ * The card body mirrors the editor DOM chain (.markdown-editor >
+ * .editor-document-body > .ProseMirror) so the editor stylesheet applies
+ * unchanged, then relaxes the document-shell sizing a fixed-height card
+ * breaks (max-width column, document paddings, text cursor).
+ */
+
+.canvas-note-content {
+  min-height: 0;
+}
+
+.canvas-note-content .markdown-editor {
+  height: auto;
+  min-height: 100%;
+  overflow: visible;
+}
+
+.canvas-note-content .markdown-editor .ProseMirror:not(.agent-composer__input-content) {
+  max-width: none;
+  min-height: 0;
+  margin: 0;
+  padding: 0.45rem 0.65rem 0.75rem;
+  font-size: 12.5px;
+  line-height: 1.65;
+  cursor: default;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.canvas-note-content img,
+.canvas-note-content video {
+  max-width: 100%;
+}
+
+/* Note references arrive as legacy <note> serialization; the read-only
+ * renderer upgrades them to chips. */
+.readonly-note-ref {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 0.3em;
+  max-width: 100%;
+  padding: 0 0.45em;
+  border-radius: 5px;
+  border: 1px solid color-mix(in srgb, var(--muted-foreground) 35%, transparent);
+  background: var(--muted);
+  font-size: 0.92em;
+  white-space: nowrap;
+}
+
+.readonly-note-ref__title {
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.readonly-note-ref__heading {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+}
+
+/* Frames are click-through backdrops (pointer-events: none on the node body),
+ * so their resize controls must opt back in or the handles are unusable. */
+.react-flow__node-frame .react-flow__resize-control {
+  pointer-events: all;
+}
+
+/* Fat invisible hit areas around the resize handles and edge strips: the
+ * 10px handles / 5px lines need sniper precision with a mouse and are worse
+ * with a finger. The ::before halo enlarges the grab zone without changing
+ * what is drawn (and extends the resize cursor's hover area with it). */
+.react-flow__resize-control.handle::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}
+
+.react-flow__resize-control.line::before {
+  content: '';
+  position: absolute;
+  inset: -8px;
+}

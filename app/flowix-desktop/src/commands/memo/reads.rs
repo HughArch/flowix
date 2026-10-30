@@ -408,3 +408,152 @@ pub async fn search_path_notes(
     .await
     .map_err(|error| error.to_string())?
 }
+
+/// One note card rendered on a canvas board.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteCardSummary {
+    /// Echoed so the board can map results back to its cards.
+    pub file_path: String,
+    pub title: String,
+    pub excerpt: String,
+    pub tags: Vec<String>,
+    pub modified_at: u64,
+    pub char_count: usize,
+}
+
+const NOTE_CARD_SUMMARY_LIMIT: usize = 500;
+const NOTE_CARD_EXCERPT_CHARS: usize = 240;
+
+/// Batch summaries for canvas board note cards.
+///
+/// `preview` in the note index is the title line, so cards need a real body
+/// excerpt; one batched call avoids one IPC round-trip per card.
+#[tauri::command]
+pub async fn read_note_card_summaries(
+    window: tauri::WebviewWindow,
+    file_paths: Vec<String>,
+    app: AppHandle,
+) -> Vec<NoteCardSummary> {
+    crate::document_io::run("read_note_card_summaries", move || {
+        let state = app.state::<AppState>();
+        let mut summaries = Vec::new();
+        for file_path in file_paths.into_iter().take(NOTE_CARD_SUMMARY_LIMIT) {
+            let path = Path::new(&file_path);
+            if !crate::commands::helpers::can_access_document_path(path, window.label(), &state) {
+                continue;
+            }
+            let Ok(metadata) = fs::metadata(path) else { continue };
+            if !metadata.is_file() {
+                continue;
+            }
+            let Ok(content) = fs::read_to_string(path) else { continue };
+            let (title, _) = flowix_core::memo_file::extract_title_and_preview(&content);
+            let excerpt = flowix_core::memo_file::extract_card_excerpt(&content, NOTE_CARD_EXCERPT_CHARS);
+            let tags = flowix_core::memo_file::extract_document_metadata(&content)
+                .map(|metadata| metadata.tags)
+                .unwrap_or_default();
+            let modified_at = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0);
+            let char_count = content.chars().filter(|character| !character.is_whitespace()).count();
+            summaries.push(NoteCardSummary {
+                file_path,
+                title,
+                excerpt,
+                tags,
+                modified_at,
+                char_count,
+            });
+        }
+        summaries
+    })
+    .await
+    .unwrap_or_default()
+}
+
+/// Full note content for canvas board cards that render the body inline.
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct NoteCardContent {
+    /// Echoed so the board can map results back to its cards.
+    pub file_path: String,
+    /// `None` when the note is unreadable or outside the window's scope.
+    pub content: Option<String>,
+    /// Content was cut at `NOTE_CARD_CONTENT_MAX_BYTES`; the body renders partial.
+    pub truncated: bool,
+    pub modified_at: u64,
+}
+
+const NOTE_CARD_CONTENT_LIMIT: usize = 500;
+const NOTE_CARD_CONTENT_MAX_BYTES: usize = 256 * 1024;
+/// One board's inline bodies must fit through a single IPC payload.
+const NOTE_CARD_CONTENT_TOTAL_BYTES: usize = 8 * 1024 * 1024;
+
+/// Batch full content for canvas board note cards.
+///
+/// Mirrors `read_note_card_summaries`: one IPC round-trip per board, scope
+/// check per path, missing/unauthorized files come back as `content: null`
+/// so the card can keep its excerpt face.
+#[tauri::command]
+pub async fn read_note_card_contents(
+    window: tauri::WebviewWindow,
+    file_paths: Vec<String>,
+    app: AppHandle,
+) -> Vec<NoteCardContent> {
+    crate::document_io::run("read_note_card_contents", move || {
+        let state = app.state::<AppState>();
+        let mut results = Vec::new();
+        let mut total_bytes = 0usize;
+        for file_path in file_paths.into_iter().take(NOTE_CARD_CONTENT_LIMIT) {
+            let path = Path::new(&file_path);
+            if !crate::commands::helpers::can_access_document_path(path, window.label(), &state) {
+                continue;
+            }
+            if total_bytes >= NOTE_CARD_CONTENT_TOTAL_BYTES {
+                // Budget exhausted: later cards keep their excerpt face.
+                results.push(NoteCardContent {
+                    file_path,
+                    content: None,
+                    truncated: true,
+                    modified_at: 0,
+                });
+                continue;
+            }
+            let Ok(metadata) = fs::metadata(path) else { continue };
+            if !metadata.is_file() {
+                continue;
+            }
+            let Ok(raw) = fs::read_to_string(path) else { continue };
+            let truncated = raw.len() > NOTE_CARD_CONTENT_MAX_BYTES;
+            let content = if truncated {
+                let mut end = NOTE_CARD_CONTENT_MAX_BYTES;
+                while !raw.is_char_boundary(end) {
+                    end -= 1;
+                }
+                raw[..end].to_string()
+            } else {
+                raw
+            };
+            total_bytes = total_bytes.saturating_add(content.len());
+            let modified_at = metadata
+                .modified()
+                .ok()
+                .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                .map(|duration| duration.as_millis() as u64)
+                .unwrap_or(0);
+            results.push(NoteCardContent {
+                file_path,
+                content: Some(content),
+                truncated,
+                modified_at,
+            });
+        }
+        results
+    })
+    .await
+    .unwrap_or_default()
+}

@@ -59,10 +59,13 @@ export function resolveBinding(
   const platformKey: 'mac' | 'windows' | 'linux' =
     platform === 'mac' ? 'mac' : platform === 'windows' ? 'windows' : 'linux';
 
+  // 裸键 (单字母) 只在动作显式声明时允许解析, 见 ActionDefinition.allowBareKey。
+  const parseOptions = { allowBareKey: def.allowBareKey === true };
+
   // 1. 覆盖层
   if (Object.prototype.hasOwnProperty.call(overrides, actionId)) {
     const raw = overrides[actionId];
-    const parsed = tryParseChord(raw);
+    const parsed = tryParseChord(raw, parseOptions);
     if (parsed) {
       return { chord: parsed, chordString: raw, isDefault: false };
     }
@@ -80,7 +83,7 @@ export function resolveBinding(
   ];
   for (const raw of candidates) {
     if (!raw) continue;
-    const parsed = tryParseChord(raw);
+    const parsed = tryParseChord(raw, parseOptions);
     if (parsed) return { chord: parsed, chordString: raw, isDefault: true };
   }
 
@@ -98,19 +101,22 @@ export function resolveBindings(
   const primary = resolveBinding(actionId, overrides);
   if (!primary.chord) return [];
 
+  const def = registry.get(actionId);
+  // 裸键 (单字母) 只在动作显式声明时允许解析, 与 resolveBinding 保持一致。
+  const parseOptions = { allowBareKey: def?.allowBareKey === true };
+
   const override = overrides[actionId];
-  if (Object.prototype.hasOwnProperty.call(overrides, actionId) && tryParseChord(override)) {
+  if (Object.prototype.hasOwnProperty.call(overrides, actionId) && tryParseChord(override, parseOptions)) {
     return [primary];
   }
 
-  const def = registry.get(actionId);
   if (!def?.alternateBindings) return [primary];
   const platform = getPlatform();
   const platformKey: 'mac' | 'windows' | 'linux' =
     platform === 'mac' ? 'mac' : platform === 'windows' ? 'windows' : 'linux';
   const alternates = def.alternateBindings[platformKey] ?? [];
   const resolved = alternates.flatMap((raw): ResolvedBinding[] => {
-    const chord = tryParseChord(raw);
+    const chord = tryParseChord(raw, parseOptions);
     return chord ? [{ chord, chordString: raw, isDefault: true }] : [];
   });
   return [primary, ...resolved];

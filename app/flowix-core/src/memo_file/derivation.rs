@@ -344,6 +344,44 @@ fn extract_title_and_preview_from_body(body: &str) -> (String, String) {
     (title, preview)
 }
 
+/// Board-card body excerpt: the note body after its title line, markdown noise
+/// stripped, at most `max_chars` characters. Lines are joined with `\n` so a
+/// card can clamp them visually.
+///
+/// `preview` from [`extract_title_and_preview`] is the title line itself and
+/// therefore useless as card body text; this is the counterpart that starts
+/// after it.
+pub fn extract_card_excerpt(content: &str, max_chars: usize) -> String {
+    let body = strip_block_node_lines(&strip_fenced_code_blocks(extract_body_content(content)));
+    let mut lines = body
+        .lines()
+        .map(str::trim)
+        .filter(|line| !is_blank_line(line))
+        .filter(|line| !line.starts_with(":::"))
+        .map(strip_markdown)
+        .map(|line| strip_card_inline_markers(&line))
+        .filter(|line| !line.is_empty());
+    // The first meaningful line is the note title.
+    let _title_line = lines.next();
+    let mut excerpt = String::new();
+    for line in lines {
+        if excerpt.chars().count() >= max_chars {
+            break;
+        }
+        if !excerpt.is_empty() {
+            excerpt.push('\n');
+        }
+        excerpt.push_str(&line);
+    }
+    excerpt.chars().take(max_chars).collect()
+}
+
+/// Drop inline emphasis markers that `strip_markdown` leaves behind (`++x++`,
+/// `==x==`) so a card body does not show syntax noise.
+fn strip_card_inline_markers(line: &str) -> String {
+    line.replace("++", "").replace("==", "")
+}
+
 pub fn extract_thumbnail(content: &str) -> Option<String> {
     let body = strip_block_node_lines(&strip_fenced_code_blocks(extract_body_content(content)));
     extract_thumbnail_from_body(&body)

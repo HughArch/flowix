@@ -144,12 +144,24 @@ export function isStandaloneKey(key: string): boolean {
   return STANDALONE_KEYS.has(key);
 }
 
+export interface ParseChordOptions {
+  /**
+   * 允许"裸键" — 不带任何修饰键的单字符键 (e.g. `v` / `h`)。
+   *
+   * 默认关闭: 应用级快捷键必须带修饰键, 否则在输入框之外按一个字母就会
+   * 触发动作。画布工具 (Obsidian / Excalidraw 的 V 选择、H 抓手) 是明确
+   * 需要裸键的场景 — 这类 action 自己声明 `allowBareKey: true`, 并把 scope
+   * 限定为 `no-input`, 再在 handler 里判断画布是否持有焦点。
+   */
+  allowBareKey?: boolean;
+}
+
 /**
  * 把 chord 字符串解析为结构化 KeyChord。
  *
  * @throws ChordParseError
  */
-export function parseChord(input: string): KeyChord {
+export function parseChord(input: string, options: ParseChordOptions = {}): KeyChord {
   const trimmed = input.trim();
   if (!trimmed) throw new ChordParseError('empty chord', input);
 
@@ -184,7 +196,7 @@ export function parseChord(input: string): KeyChord {
     throw new ChordParseError('a non-modifier key is required', input);
   }
 
-  if (!hasModifier && !isStandaloneKey(chord.key)) {
+  if (!hasModifier && !isStandaloneKey(chord.key) && !(options.allowBareKey && chord.key.length === 1)) {
     throw new ChordParseError(
       'at least one modifier is required (or use a special key like F1-F12 / Escape / Enter)',
       input,
@@ -197,9 +209,9 @@ export function parseChord(input: string): KeyChord {
 /**
  * 安全解析 — 失败返回 null 不抛错, 给"用户编辑/读取覆盖层"等容错场景用。
  */
-export function tryParseChord(input: string): KeyChord | null {
+export function tryParseChord(input: string, options: ParseChordOptions = {}): KeyChord | null {
   try {
-    return parseChord(input);
+    return parseChord(input, options);
   } catch {
     return null;
   }
