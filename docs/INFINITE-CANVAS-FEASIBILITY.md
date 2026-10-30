@@ -540,3 +540,42 @@ APK（x86_64 debug）装到 `Pixel_7` 模拟器后暴露一串只在触控下出
 
 3. **移动端属性面板遮挡缩放手柄**：面板容器的 `max-h-[calc(100%-120px)]` 放在自动高度元素上，百分比没有参照 → 实际不生效，面板随行数长到遮盖半个画布，被压住的手柄点不到（用户所述"必须手动隐藏工具栏才能拖动"）。修复：上限移到**定位容器**（`absolute bottom-4` 的父级，百分比相对画布），面板本体改为 `min-h-0 overflow-y-auto`。
 4. **验证记录**（桌面 WebView2 + 模拟器）：矩形 rough 路径、笔迹、文字字号都在拖拽过程中实时增长；松手与最后一帧完全一致（无跳变）；文字框长宽比保持不变、字号随框等比变化。
+
+### 15.24 笔记卡片：只读全文 / 标题片段 / 侧栏编辑实时镜像（2026-10-30）
+
+产品对齐 AFFiNE：画布卡片在**三端一致**地只读渲染完整的笔记正文（或按标题选中的片段）；双击在桌面/平板的右侧栏打开笔记编辑，编辑内容实时镜像回左侧卡片；手机窄视口保持整屏跳转。
+
+1. **渲染路线：静态 HTML，不挂 Tiptap 实例**。worker 解析 Markdown（`parseMarkdownInWorker`）→ 用 `getSchema(createMarkdownEditorExtensions())` 构造**只读 schema** → `DOMSerializer` 序列化 → 展示层后处理。实测 2KB 笔记 ~7ms/篇、9.5KB ~11ms/篇；50 个 Tiptap 实例的 0.5~1.5s 成本被绕开。渲染结果挂在 `.markdown-editor > .editor-document-body > .ProseMirror` 外壳里，编辑器样式原样生效（`styles/canvas-board.css` 只修正固定卡高下的文档壳尺寸）。
+   - `features/editor/read-only/read-only-schema.ts`：schema 必须用真实 node 定义，parser-only 注册表只有 markdown tokenizer（图片/互链节点缺失，重复追加会丢属性）。
+   - `features/editor/read-only/render-note-content.ts`：`sanitizeBlocks` 丢弃 frontmatter/未知节点（未知容器解包保留子节点）、`renderNoteContentHtml` 失败时降级为转义纯文本；表现层补齐 **callout 图标栏**（NodeView 专属）、**附件 URL**（storageKey → 笔记本绝对路径）、**互链芯片**（含 heading）。
+   - 已验证渲染：callout（颜色/图标栏）、toggle、表格、任务列表、代码块、引用芯片、图片附件。已知退化：mermaid/Shiki 高亮退化为代码块，agent thread card 为静态占位。
+2. **数据模型**：`BoardCard.renderScope?: 'excerpt' | 'full' | 'section'` + `heading?: string`（v1 可选字段，老卡缺省仍是摘要）。只存引用不复制正文，FNS 冲突面不变。标题片段取"该标题到下一个同级/更高级标题"，标题失效时**回退整篇**并保留字段（改名回来自动恢复）。
+3. **数据通路**：新增批量 IPC `read_note_card_contents(filePaths)`（单文件 256KB / 单板总计 8MB 上限，超出保留摘要面），内容按 `path+heading` 缓存；插入时只请求新卡对应路径，其它卡命中缓存。
+4. **插入入口**：工具栏「笔记」按钮打开插入对话框（搜索笔记 + 整篇/按标题范围）；文件树拖拽复用 `shared/drag-drop/drag-drop-coordinator`，画布注册 drop target（优先级 60），落点即卡片位置。
+5. **双击路由**：桌面/平板按**视口宽度**（`useIsMobileViewport`，≤767 为手机）决定——宽屏开 `browser-column`（画布保持可见），窄屏整屏 `main-third`；画布自身在侧栏时反向开在工作栏，避免替换自己的标签页。`CanvasSurfaceViewProps` 新增 `workspaceHost`，渲染器传 `context.host`。
+6. **实时镜像**：订阅 `subscribeDocumentBufferChanges`（每次击键更新 buffer，含侧栏隔离 session），250ms 防抖 → 重新切片/解析/序列化 → 只更新缓存并 `applyGraph`；按路径做版本号丢弃乱序的 worker 结果。外部磁盘/FNS 变更走 `subscribeNotebookChanges`（外部编辑归一化为 `query-invalidated`，不能按 `resource-updated` 过滤），400ms 防抖后强制重读。
+7. **交互**：未选中的卡面 `pointer-events: none`，让点击/滚轮/拖拽全部归画布；选中后卡体 `overflow-y-auto nodrag nowheel touch-pan-y`——单指上下滑动阅读、滚轮滚内容，不拖动卡片也不缩放画布；移动卡片改从标题栏拖动。内容更新用 `useLayoutEffect` 恢复 `scrollTop`，编辑时卡面不跳。
+8. **验证记录**（桌面 dev + CDP）：插入整篇/标题片段落盘正确；片段卡只含该小节；失效标题回退整篇；双击开右侧标签页且画布保留；右侧输入后卡片 ~1s 内更新；外部改文件后卡片刷新；卡内滚动 300px 在内容刷新后保持。
+
+### 15.25 卡片与连线四项修订（2026-10-30）
+
+1. **新建元素沿用上次样式**：`patchSelectedShapes` / `patchSelectedInk` 在修改选中元素的同时同步工具默认值（描边/填充/填充风格/线型/线宽/字号/字体/对齐/透明度/粗糙度/边角），下次新建同类元素直接继承；此前选中元素改样式只改元素本身，新建会回到旧默认值。
+2. **卡片标题与属性**：卡片头部标题改用卡片自带的笔记标题快照（`card.title`），不再使用批量摘要的 `summary.title`（它是正文首行派生，正文以 H1 开头时头部会重复该 H1）；卡片底部不再显示标签等笔记属性，只保留修改时间。
+3. **四向连接点**：`CardHandles` 由「上(target)+下(source)」扩为四向各一对（`src-top/right/bottom/left`、`tgt-...`），target 常驻透明命中区、source 在选中时显示圆点。连线在 `buildBoardGraph` 里按两节点包围盒几何选择相对的两侧并显式写入 `sourceHandle`/`targetHandle`，节点移动后自动换边；source handle 必须常驻（不能只在选中时挂载），否则取消选中后非默认边的锚点会消失。
+4. **连线样式**：原来 55% 透明度 1.5px 的细线在正常缩放下看起来像淡虚线。改为实线 `var(--muted-foreground)`、2px、0.85 不透明度，并加 `MarkerType.ArrowClosed` 箭头。
+
+另外：`BoardCard` 新增 `notebookName` 快照。notebook id 是设备本地的，画布经 FNS 同步到另一台设备后 id 对不上；`absolutePathOf` 现在按「id → name → 唯一笔记本」依次解析，跨端卡片仍能找到笔记。
+
+5. **移动端双击**：触摸事件在 `touch-action:none` 的画布里不会合成 `dblclick`，`onNodeDoubleClick` 在安卓上永远不触发。新增 `onNodeClick` 的触摸双击检测（同一节点 350ms 内两次 tap，`lastPointerTypeRef === 'touch'` 才启用），桌面仍走 `dblclick`，不会重复打开。桌面 CDP 触摸模拟验证：两次 touch 后画布卸载、笔记在主栏打开。
+6. **跨端验证**：Android 模拟器（x86_64）安装后打开 `笔记卡片演示.flowix-canvas`，全文卡/片段卡渲染正确（callout 颜色+图标、任务列表、表格），连线为实线+箭头；真触摸选中卡片后单指滑动 `scrollTop 0→333`，卡片 transform 不变；三端一致。
+
+7. **连线可删除**：此前只有 `onNodesDelete`，React Flow 的边删除没有落点。新增 `onEdgesDelete` + 显式边选中态（`onEdgeClick`/`onPaneClick` + `selectedEdgeId`，选中为品牌色 2.5px），工具栏出现「删除连线」按钮（移动端可点），Delete/Backspace 快捷键同样生效。选中边时节点选择被清空，避免一次删除两类元素。
+8. **实时镜像缓存键**：`absolutePathOf` 之前返回混合斜杠路径（`D:\flowix/test/x.md`），而实时 buffer 用 `canonicalPath`（`D:/flowix/test/x.md`）写入 `contentHtmlRef`，两者键不一致——实时渲染写进去的内容卡片读不到，只有保存后的磁盘刷新看起来"更新"。修复：`absolutePathOf`/`cardContentKey` 一律 canonical，磁盘刷新遇到比文件 mtime 更新的实时 buffer 时优先用 buffer（防自动保存把卡面回退到旧内容）。
+
+### 15.26 移动端卡片拖动（2026-10-30）
+
+现象：第一次拖动正常，第二次拖不动。根因：触摸拖动会让节点进入选中态，而选中的笔记卡体是只读滚动区（`nodrag nowheel`），第二次从卡体起手就被滚动层吞掉；卡头只有 26px，缩放后很难点中。
+
+修复：触摸拖拽结束时（`handleNodeDragStop` + `touchDraggingRef`）清空选中（节点选中/面板/`selectedIdsRef`），卡片回到"可拖动"状态。交互模型固定为：**未选中/刚拖完 = 可拖动；轻点选中 = 阅读模式，单指上下滚动；选中时拖标题栏仍可移动**。桌面鼠标拖拽不受影响（按 pointerType 门控）。
+
+补充：React Flow 对**轻点**也会触发 `onNodeDragStart/Stop`，直接按 dragStop 取消选中会把"点选卡片阅读"一起打掉。改为在 dragStart 记录几何、dragStop 比较位移（>3 flow 单位才视为拖动）后再取消选中；轻点保持选中。验证：连续两次触摸拖动位置均变化且每次拖后 `selected=false`；轻点后 `selected=true`。

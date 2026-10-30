@@ -195,6 +195,7 @@ export function CanvasRenderer({ surface, context }: RendererProps<'file-canvas'
     filePath={surface.fileIdentity.path}
     notebookPath={surface.scopePath}
     readOnly={context.readOnly}
+    workspaceHost={context.host}
     reportPresentation={context.reportPresentation}
   />;
 }

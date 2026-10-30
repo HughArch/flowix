@@ -10,7 +10,7 @@
  * excerpt IPC lands in the next chunk.
  */
 
-import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react';
 import {
   Handle,
   Position,
@@ -21,6 +21,7 @@ import {
   ViewportPortal,
   applyNodeChanges,
   useReactFlow,
+  MarkerType,
   type Edge,
   type Node,
   type NodeChange,
@@ -31,14 +32,25 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
+import '../../styles/canvas-board.css';
 import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Link2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
+import { parseMarkdownInWorker } from '@features/editor/markdown-parser';
+import { renderNoteContentHtml, sliceNoteByHeading } from '@features/editor/read-only/render-note-content';
+import { NoteCardContent } from './note-card-content';
+import { NoteCardInsertDialog, type NoteCardSelection } from './note-card-insert-dialog';
+import { registerDropTarget } from '@shared/drag-drop/drag-drop-coordinator';
+import { isMarkdownNoteDragResource, type NotebookDragResource } from '@features/memo/public/drag-resource-api';
+import { useIsMobileViewport } from '@features/shell/hooks/use-is-mobile-viewport';
 import { toast } from '@/lib/toast';
+import { canonicalPath, samePath } from '@/lib/path';
+import { subscribeNotebookChanges } from '@platform/tauri/notebook-change-events';
 import { useI18n } from '@/lib/i18n';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { openNoteByNotebookPath } from '@features/memo/public/note-navigation-api';
 import { subscribeExternalDocumentChanges } from '@features/document/store/external-document-watch';
+import { getBuffer, subscribeDocumentBufferChanges } from '@features/document/store/buffer-registry';
 import { createLogger } from '@/lib/logger';
 import {
   CanvasParseError,
@@ -77,6 +89,8 @@ interface BoardNodeData extends Record<string, unknown> {
   card: BoardCard;
   dataUrl: string | null;
   summary: NoteCardSummary | null;
+  /** Rendered read-only body for cards that opt out of the excerpt face. */
+  contentHtml: string | null;
   shape: BoardShape | null;
   inkStroke: BoardInkStroke | null;
   onShapeTextCommit?: (shapeId: string, text: string) => void;
@@ -113,24 +127,55 @@ function cardTitle(card: BoardCard): string {
   return card.id;
 }
 
+/** Content cache key: one note can back both a full card and section cards.
+ *  Canonicalized so live-buffer paths and IPC paths share one key. */
+function cardContentKey(absolutePath: string, heading?: string): string {
+  const path = canonicalPath(absolutePath);
+  return heading ? `${path}\n${heading}` : path;
+}
+
 /**
  * Connection anchors. The target handle is always present (invisible) so a
  * dragged connector can land on any node; the source handle only appears on
  * the selected node, keeping the resting board clean.
  */
+/** Connection anchors on all four sides. Edge sides are chosen from geometry
+ *  at graph-build time, so every node carries all eight handles (targets are
+ *  invisible hit areas; sources show as dots on the selected node). Without
+ *  persistent source handles, edges whose chosen side is not the default would
+ *  lose their anchor when the node is deselected. */
+const CONNECTION_SIDES = [
+  ['top', Position.Top],
+  ['right', Position.Right],
+  ['bottom', Position.Bottom],
+  ['left', Position.Left],
+] as const;
+
 function CardHandles({ visible = false }: { visible?: boolean }) {
   return (
     <>
-      <Handle
-        type="target"
-        position={Position.Top}
-        className={visible
-          ? '!h-2.5 !w-2.5 !rounded-full !bg-[var(--card)] !border !border-[var(--muted-foreground)]'
-          : '!h-3 !w-3 !border-0 !bg-transparent'}
-      />
-      {visible ? (
-        <Handle type="source" position={Position.Bottom} className="!h-2.5 !w-2.5 !border-0 !bg-[var(--muted-foreground)]/60" />
-      ) : null}
+      {CONNECTION_SIDES.map(([side, position]) => (
+        <Handle
+          key={`tgt-${side}`}
+          id={`tgt-${side}`}
+          type="target"
+          position={position}
+          className="!h-3 !w-3 !border-0 !bg-transparent"
+        />
+      ))}
+      {CONNECTION_SIDES.map(([side, position]) => (
+        <Handle
+          key={`src-${side}`}
+          id={`src-${side}`}
+          type="source"
+          position={position}
+          className={visible
+            ? '!h-2.5 !w-2.5 !rounded-full !border !border-[var(--card)] !bg-[var(--muted-foreground)]'
+            // Unselected sources are not connection starts; keeping them out
+            // of hit-testing leaves the card edges draggable.
+            : '!pointer-events-none !h-3 !w-3 !border-0 !bg-transparent'}
+        />
+      ))}
     </>
   );
 }
@@ -155,18 +200,37 @@ function NoteCardNode({ data, selected }: NodeProps<BoardNode>) {
   const { card, summary } = data;
   const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
     data.onCardResize?.(card.id, params, 'end');
-  const tags = summary?.tags.slice(0, 2) ?? [];
-  const extraTags = (summary?.tags.length ?? 0) - tags.length;
+  const scrollRef = useRef<HTMLDivElement>(null);
+  /** Keep the reading position across live editor mirroring. */
+  const scrollTopRef = useRef(0);
+  useLayoutEffect(() => {
+    const element = scrollRef.current;
+    if (element) element.scrollTop = scrollTopRef.current;
+  }, [data.contentHtml]);
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-[10px] border border-[var(--border)] bg-[var(--card)] shadow-sm">
       <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
       <div className="flex items-center gap-1.5 border-b border-[var(--border)] px-2.5 py-1.5">
         <FileText className="h-3 w-3 shrink-0 text-[var(--muted-foreground)]" aria-hidden="true" />
         <span className="truncate text-xs font-semibold text-[var(--foreground)]">
-          {summary?.title || cardTitle(card)}
+          {/* The card header is the note's title, not its first body line:
+              `summary.title` is body-derived, so a note whose body starts
+              with an H1 would otherwise repeat that H1 in the header. */}
+          {cardTitle(card)}
         </span>
       </div>
-      {summary?.excerpt ? (
+      {data.contentHtml ? (
+        <div
+          ref={scrollRef}
+          onScroll={(event) => { scrollTopRef.current = event.currentTarget.scrollTop; }}
+          // Unselected cards let pointer/wheel gestures fall through to the
+          // canvas; selecting a card turns the body into a scrollable reader
+          // (and pins it so scrolling never drags or pans the board).
+          className={`min-h-0 flex-1 overflow-y-auto ${selected ? 'nodrag nowheel touch-pan-y' : 'pointer-events-none'}`}
+        >
+          <NoteCardContent html={data.contentHtml} />
+        </div>
+      ) : summary?.excerpt ? (
         <div className="flex-1 overflow-hidden px-2.5 py-1.5">
           <p className="whitespace-pre-wrap break-words text-[11px] leading-[1.6] text-[var(--muted-foreground)] [display:-webkit-box] [-webkit-box-orient:vertical] [-webkit-line-clamp:5]">
             {summary.excerpt}
@@ -177,19 +241,13 @@ function NoteCardNode({ data, selected }: NodeProps<BoardNode>) {
           {t('canvas.board.emptyNote')}
         </div>
       )}
-      <div className="flex items-center gap-1.5 px-2.5 pb-1.5 pt-0.5">
-        {tags.map((tag) => (
-          <span key={tag} className="truncate rounded bg-[var(--muted)] px-1.5 py-0.5 text-[10px] text-[var(--muted-foreground)]">
-            #{tag}
-          </span>
-        ))}
-        {extraTags > 0 ? (
-          <span className="text-[10px] text-[var(--muted-foreground)]">+{extraTags}</span>
-        ) : null}
-        {summary?.modifiedAt ? (
+      {/* Tags are note properties, not card chrome: the canvas card shows only
+          the document, so the footer keeps the timestamp alone. */}
+      {summary?.modifiedAt ? (
+        <div className="flex items-center px-2.5 pb-1.5 pt-0.5">
           <span className="ml-auto shrink-0 text-[10px] text-[var(--muted-foreground)]">{relativeTime(summary.modifiedAt)}</span>
-        ) : null}
-      </div>
+        </div>
+      ) : null}
       <CardHandles visible={selected} />
     </div>
   );
@@ -582,6 +640,7 @@ function shapeNodeFor(
       card: { id: shape.id, kind: 'text', x: box.x, y: box.y, w: box.w, h: box.h },
       dataUrl: null,
       summary: null,
+      contentHtml: null,
       shape,
       inkStroke: null,
       ...(onShapeTextCommit ? { onShapeTextCommit } : {}),
@@ -640,6 +699,7 @@ function inkNodeFor(stroke: BoardInkStroke): BoardNode {
       card: { id: stroke.id, kind: 'text', x: box.x, y: box.y, w: box.w, h: box.h },
       dataUrl: null,
       summary: null,
+      contentHtml: null,
       shape: null,
       inkStroke: stroke,
     },
@@ -667,6 +727,7 @@ function buildBoardGraph(
   document: FlowixCanvasDocument,
   dataUrls: ReadonlyMap<string, string>,
   summaries: ReadonlyMap<string, NoteCardSummary>,
+  contentHtml: ReadonlyMap<string, string>,
   absolutePathOf: (card: BoardCard) => string | null,
   callbacks: {
     onShapeTextCommit?: (shapeId: string, text: string) => void;
@@ -686,6 +747,7 @@ function buildBoardGraph(
         card: { id: frame.id, kind: 'text', x: frame.x, y: frame.y, w: frame.w, h: frame.h, title: frame.title },
         dataUrl: null,
         summary: null,
+        contentHtml: null,
         shape: null,
         inkStroke: null,
       },
@@ -710,6 +772,7 @@ function buildBoardGraph(
         card,
         dataUrl: card.fileId ? dataUrls.get(card.fileId) ?? null : null,
         summary: absolute ? summaries.get(absolute) ?? null : null,
+        contentHtml: absolute ? contentHtml.get(cardContentKey(absolute, card.heading)) ?? null : null,
         shape: null,
         inkStroke: null,
         ...(callbacks.onCardResize ? { onCardResize: callbacks.onCardResize } : {}),
@@ -718,18 +781,60 @@ function buildBoardGraph(
     });
   }
   const cardIds = new Set(nodes.filter((node) => node.type !== 'frame' && node.type !== 'ink').map((node) => node.id));
+  const boundsById = new Map<string, { x: number; y: number; w: number; h: number }>();
+  for (const node of nodes) {
+    const width = typeof node.style?.width === 'number' ? node.style.width : node.width;
+    const height = typeof node.style?.height === 'number' ? node.style.height : node.height;
+    if (typeof width === 'number' && typeof height === 'number') {
+      boundsById.set(node.id, { x: node.position.x, y: node.position.y, w: width, h: height });
+    }
+  }
+  const EDGE_COLOR = 'var(--muted-foreground)';
   const edges: Edge[] = [];
   for (const edge of readBoardEdges(document)) {
     if (!cardIds.has(edge.from) || !cardIds.has(edge.to)) continue;
+    const fromBox = boundsById.get(edge.from);
+    const toBox = boundsById.get(edge.to);
+    const [fromSide, toSide] = fromBox && toBox
+      ? connectionSides(fromBox, toBox)
+      : ['bottom', 'top'] as const;
     edges.push({
       id: edge.id,
       source: edge.from,
       target: edge.to,
+      sourceHandle: `src-${fromSide}`,
+      targetHandle: `tgt-${toSide}`,
       ...(edge.label ? { label: edge.label } : {}),
-      style: { stroke: 'color-mix(in srgb, var(--muted-foreground) 55%, transparent)', strokeWidth: 1.5 },
+      // Solid, high-contrast stroke plus an arrow head: the old 55%-opacity
+      // hairline read as a dashed line at normal zoom.
+      style: { stroke: EDGE_COLOR, strokeWidth: 2, opacity: 0.85 },
+      markerEnd: { type: MarkerType.ArrowClosed, color: EDGE_COLOR, width: 18, height: 18 },
     });
   }
   return { nodes, edges };
+}
+
+/** Selected connectors use the brand colour so the delete affordance is
+ *  visible at a glance. */
+function markEdgeSelected(edge: Edge, selected: boolean): Edge {
+  if (!selected) return edge;
+  return {
+    ...edge,
+    selected: true,
+    style: { ...edge.style, stroke: 'var(--brand)', strokeWidth: 2.5 },
+    markerEnd: { type: MarkerType.ArrowClosed, color: 'var(--brand)', width: 18, height: 18 },
+  };
+}
+
+/** Pick the pair of node sides that face each other. */
+function connectionSides(
+  from: { x: number; y: number; w: number; h: number },
+  to: { x: number; y: number; w: number; h: number },
+): readonly ['top' | 'right' | 'bottom' | 'left', 'top' | 'right' | 'bottom' | 'left'] {
+  const dx = (to.x + to.w / 2) - (from.x + from.w / 2);
+  const dy = (to.y + to.h / 2) - (from.y + from.h / 2);
+  if (Math.abs(dx) >= Math.abs(dy)) return dx >= 0 ? ['right', 'left'] : ['left', 'right'];
+  return dy >= 0 ? ['bottom', 'top'] : ['top', 'bottom'];
 }
 
 /** Map of canvas file id -> resolved data URL for image cards. */
@@ -780,9 +885,10 @@ export function CanvasBoardView(props: CanvasBoardViewProps) {
   );
 }
 
-function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifecycleReady, reportPresentation }: CanvasBoardViewProps) {
+function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost = 'main-third', onSurfaceLifecycleReady, reportPresentation }: CanvasBoardViewProps) {
   const { t } = useI18n();
   const reactFlow = useReactFlow();
+  const isNarrowViewport = useIsMobileViewport();
   const boardRef = useRef<HTMLDivElement>(null);
   const zoom = useStore((state) => state.transform[2]);
   const [state, setState] = useState<BoardLoadState>({ status: 'loading' });
@@ -820,6 +926,13 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [linkEditing, setLinkEditing] = useState(false);
   /** Obsidian: the properties dashboard can be collapsed via its menu button. */
   const [panelCollapsed, setPanelCollapsed] = useState(false);
+  const [insertDialogOpen, setInsertDialogOpen] = useState(false);
+  /** Cascade successive inserts instead of stacking them on one point. */
+  const insertCascadeRef = useRef(0);
+  /** Connectors are not nodes: their selection is tracked separately so the
+   *  Delete key and the toolbar button can remove them. */
+  const [selectedEdgeId, setSelectedEdgeId] = useState<string | null>(null);
+  const selectedEdgeIdRef = useRef<string | null>(null);
   /** A panel-opening select must be a click on an element, never a drag. */
   const pressRef = useRef<{ x: number; y: number; onElement: boolean } | null>(null);
   const [linkDraft, setLinkDraft] = useState('');
@@ -864,10 +977,18 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
    * programmatic and must not look like an edit (an open would rewrite the
    * file and re-sort the tree, the same trap the drawing surface hit). */
   const moveSeedRef = useRef<Viewport | null>(null);
+  /** Absolute note path (+ section anchor) -> rendered read-only body HTML. */
+  const contentHtmlRef = useRef<Map<string, string>>(new Map());
+  /** Latest live editor buffer per note path; unsaved edits mirror onto cards. */
+  const liveContentRef = useRef<Map<string, string>>(new Map());
+  /** When the live buffer last changed, so a slow save cannot overwrite it. */
+  const liveEditAtRef = useRef<Map<string, number>>(new Map());
+  /** Per-path render generation, so out-of-order worker parses are dropped. */
+  const liveRenderVersionRef = useRef<Map<string, number>>(new Map());
   /** Absolute note path -> summary; fetched in one batch per board open. */
   const summariesRef = useRef<Map<string, NoteCardSummary>>(new Map());
   /** Notebook id -> root, so cards referencing another notebook still resolve. */
-  const notebooksRef = useRef<Array<{ id: string; path: string }>>([]);
+  const notebooksRef = useRef<Array<{ id: string; name: string; path: string }>>([]);
 
   /** Switching to a drawing tool drops the selection (Obsidian behaviour),
    * otherwise the panel keeps showing the previously selected element. */
@@ -885,14 +1006,27 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
 
   const retryLoad = useCallback(() => setRetryToken((token) => token + 1), []);
 
+  /** Notebook ids are per-device: resolve a synced card through its name
+   *  snapshot (or the only notebook, when that is unambiguous). */
+  const resolveCardNotebook = useCallback((card: BoardCard) => {
+    const byId = card.notebookId
+      ? notebooksRef.current.find((notebook) => notebook.id === card.notebookId)
+      : undefined;
+    const byName = !byId && card.notebookName
+      ? notebooksRef.current.find((notebook) => notebook.name === card.notebookName)
+      : undefined;
+    const single = !card.notebookId && !card.notebookName ? notebooksRef.current[0] : undefined;
+    return byId ?? byName ?? single ?? null;
+  }, []);
+
   const absolutePathOf = useCallback((card: BoardCard): string | null => {
     if (!card.path) return null;
-    const root = card.notebookId
-      ? notebooksRef.current.find((notebook) => notebook.id === card.notebookId)?.path
-      : notebooksRef.current[0]?.path;
+    const root = resolveCardNotebook(card)?.path;
     if (!root) return null;
-    return `${root.replace(/[\\/]+$/, '')}/${card.path.replace(/^[\\/]+/, '')}`;
-  }, []);
+    // Always canonical (forward slashes): this string is both the IPC path and
+    // the content-cache key, and live buffer paths are canonicalized too.
+    return canonicalPath(`${root.replace(/[\\/]+$/, '')}/${card.path.replace(/^[\\/]+/, '')}`);
+  }, [resolveCardNotebook]);
 
   /** Next free stacking slot: new elements land on top of everything. */
   const nextZ = useCallback(() => {
@@ -921,6 +1055,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       document,
       dataUrlsRef.current,
       summariesRef.current,
+      contentHtmlRef.current,
       absolutePathOf,
       {
         onShapeTextCommit: commitShapeText,
@@ -935,7 +1070,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     setNodes(selected.length === 0
       ? nextNodes
       : nextNodes.map((node) => (selected.includes(node.id) ? { ...node, selected: true } : node)));
-    setEdges(nextEdges);
+    const selectedEdge = selectedEdgeIdRef.current;
+    setEdges(selectedEdge
+      ? nextEdges.map((edge) => (edge.id === selectedEdge ? markEdgeSelected(edge, true) : edge))
+      : nextEdges);
   }, [absolutePathOf, commitShapeText]);
 
   const snapshotDocument = useCallback((): string | null => {
@@ -1006,9 +1144,185 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     return true;
   }, [absolutePathOf]);
 
+  /**
+   * Render inline bodies for cards that opt out of the excerpt face
+   * (`renderScope: 'full' | 'section'`). Content is fetched in one batch,
+   * parsed in the markdown worker, and cached per path+heading so viewport
+   * remounts never re-render. One note can back several cards (full and
+   * section faces), so requests are keyed by path+heading while the IPC is
+   * deduplicated per path. A missing section heading falls back to the whole
+   * note; unreadable notes keep their excerpt face.
+   */
+  const loadCardContents = useCallback(async (
+    document: FlowixCanvasDocument,
+    options: { force?: boolean; onlyPaths?: string[] } = {},
+  ): Promise<boolean> => {
+    const cards = readBoardCards(document).filter((card) => (
+      card.kind === 'note' && (card.renderScope === 'full' || card.renderScope === 'section')
+    ));
+    if (cards.length === 0) return false;
+    const requestsByPath = new Map<string, Array<string | undefined>>();
+    for (const card of cards) {
+      const absolute = absolutePathOf(card);
+      if (!absolute) continue;
+      if (options.onlyPaths && !options.onlyPaths.some((path) => samePath(path, absolute))) continue;
+      const heading = card.renderScope === 'section' ? card.heading : undefined;
+      const variants = requestsByPath.get(absolute) ?? [];
+      if (!variants.some((existing) => existing === heading)) variants.push(heading);
+      requestsByPath.set(absolute, variants);
+    }
+    if (requestsByPath.size === 0) return false;
+    const results = await notesClient.readCardContents([...requestsByPath.keys()]).catch(() => []);
+    if (results.length === 0) return false;
+    let rendered = false;
+    for (const result of results) {
+      if (!result.content) continue;
+      const variants = requestsByPath.get(result.filePath);
+      if (!variants) continue;
+      // A note open in an editor has a newer live buffer than its last save;
+      // preferring the disk copy here would regress the card on every autosave.
+      const resultPath = canonicalPath(result.filePath);
+      const liveContent = liveContentRef.current.get(resultPath);
+      const liveAt = liveEditAtRef.current.get(resultPath) ?? 0;
+      const source = liveContent != null && liveAt > result.modifiedAt ? liveContent : result.content;
+      const parsed = await parseMarkdownInWorker(source)
+        .then((reply) => reply.document)
+        .catch(() => null);
+      if (!parsed) continue;
+      for (const heading of variants) {
+        const key = cardContentKey(result.filePath, heading);
+        if (!options.force && contentHtmlRef.current.has(key)) continue;
+        try {
+          // A missing heading renders the whole note (product decision), so
+          // the card self-heals when the anchor is renamed back.
+          const sectionBlocks = heading ? sliceNoteByHeading(parsed, heading) : null;
+          const body = sectionBlocks ? { type: 'doc' as const, content: sectionBlocks } : parsed;
+          contentHtmlRef.current.set(key, renderNoteContentHtml(body, { notebookPath }));
+          rendered = true;
+        } catch (error) {
+          logger.warn('canvas board note content render failed', { path: result.filePath, error: String(error) });
+        }
+      }
+    }
+    return rendered;
+  }, [absolutePathOf, notebookPath]);
+
+  /**
+   * Re-render every card backed by the given note paths from the live editor
+   * buffers. This is the "edit on the right, mirror on the canvas" path: the
+   * buffer updates on every keystroke, so a short debounce keeps typing smooth
+   * while the card still tracks the editor almost immediately.
+   */
+  const refreshLiveContents = useCallback(async (paths: string[]) => {
+    const document = documentRef.current;
+    if (!document || paths.length === 0) return;
+    let changed = false;
+    for (const path of paths) {
+      const content = liveContentRef.current.get(path);
+      if (content == null) continue;
+      const headings = new Set<string | undefined>();
+      for (const card of cardsRef.current) {
+        if (card.kind !== 'note' || (card.renderScope !== 'full' && card.renderScope !== 'section')) continue;
+        if (!samePath(absolutePathOf(card) ?? '', path)) continue;
+        headings.add(card.renderScope === 'section' ? card.heading : undefined);
+      }
+      if (headings.size === 0) continue;
+      const version = (liveRenderVersionRef.current.get(path) ?? 0) + 1;
+      liveRenderVersionRef.current.set(path, version);
+      const parsed = await parseMarkdownInWorker(content)
+        .then((reply) => reply.document)
+        .catch(() => null);
+      if (!parsed || liveRenderVersionRef.current.get(path) !== version) continue;
+      for (const heading of headings) {
+        const sectionBlocks = heading ? sliceNoteByHeading(parsed, heading) : null;
+        const body = sectionBlocks ? { type: 'doc' as const, content: sectionBlocks } : parsed;
+        contentHtmlRef.current.set(cardContentKey(path, heading), renderNoteContentHtml(body, { notebookPath }));
+        changed = true;
+      }
+    }
+    if (changed) applyGraphRef.current(document);
+  }, [absolutePathOf, notebookPath]);
+
+  // Mirror live edits: any open editor (work column or the browser column's
+  // isolated session) that targets a note on this board re-renders the card.
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    let timer: number | null = null;
+    const pending = new Set<string>();
+    const flush = () => {
+      timer = null;
+      const paths = [...pending];
+      pending.clear();
+      if (paths.length > 0) void refreshLiveContents(paths);
+    };
+    const unsubscribe = subscribeDocumentBufferChanges((identity) => {
+      const content = getBuffer(identity)?.content;
+      if (content == null) return;
+      const path = canonicalPath(identity.path);
+      if (liveContentRef.current.get(path) === content) return;
+      liveContentRef.current.set(path, content);
+      liveEditAtRef.current.set(path, Date.now());
+      // Cheap pre-check before scheduling: only notes on this board matter.
+      if (!cardsRef.current.some((card) => (
+        card.kind === 'note'
+        && (card.renderScope === 'full' || card.renderScope === 'section')
+        && samePath(absolutePathOf(card) ?? '', path)
+      ))) return;
+      pending.add(path);
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(flush, 250);
+    });
+    return () => {
+      unsubscribe();
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [absolutePathOf, refreshLiveContents, state.status]);
+
+  // Disk/FNS changes to referenced notes (note closed): force one re-read per
+  // changed path and re-render the cards backed by it.
+  useEffect(() => {
+    if (state.status !== 'ready') return;
+    let timer: number | null = null;
+    const pending = new Set<string>();
+    const flush = () => {
+      timer = null;
+      const document = documentRef.current;
+      const paths = [...pending];
+      pending.clear();
+      if (!document || paths.length === 0) return;
+      void loadCardContents(document, { force: true, onlyPaths: paths }).then((rendered) => {
+        if (rendered) applyGraphRef.current(document);
+      });
+    };
+    const unsubscribe = subscribeNotebookChanges((change) => {
+      if (!change.notebookId) return;
+      // External disk edits arrive as `query-invalidated` (path-only, no note
+      // entry); in-app saves carry `resource-updated`. A move leaves the card
+      // pointing at a stale path, so only its title snapshot changes.
+      if (change.kind === 'path-moved') return;
+      const affected = cardsRef.current.filter((card) => (
+        card.kind === 'note'
+        && (card.renderScope === 'full' || card.renderScope === 'section')
+        && resolveCardNotebook(card)?.id === change.notebookId
+        && (change.relativePath ? samePath(card.path ?? '', change.relativePath) : true)
+      ));
+      if (affected.length === 0) return;
+      for (const card of affected) {
+        const absolute = absolutePathOf(card);
+        if (absolute) pending.add(absolute);
+      }
+      if (timer !== null) window.clearTimeout(timer);
+      timer = window.setTimeout(flush, 400);
+    });
+    return () => {
+      unsubscribe();
+      if (timer !== null) window.clearTimeout(timer);
+    };
+  }, [absolutePathOf, loadCardContents, resolveCardNotebook, state.status]);
+
   const notebooks = useNoteStore((state) => state.notebooks);
   useEffect(() => {
-    notebooksRef.current = notebooks.map((notebook) => ({ id: notebook.id, path: notebook.path }));
+    notebooksRef.current = notebooks.map((notebook) => ({ id: notebook.id, name: notebook.name, path: notebook.path }));
   }, [notebooks]);
 
   useEffect(() => {
@@ -1025,6 +1339,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     setLivePoints(null);
     dataUrlsRef.current = new Map();
     summariesRef.current = new Map();
+    contentHtmlRef.current = new Map();
     void (async () => {
       const text = await files.read(filePath, notebookPath ?? undefined);
       if (cancelled) return;
@@ -1055,12 +1370,13 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       setState({ status: 'ready' });
       // Card bodies arrive after the board paints; the graph rebuilds with them.
       const loaded = await loadCardSummaries(document);
-      if (!cancelled && loaded) applyGraph(document);
+      const contentsLoaded = await loadCardContents(document);
+      if (!cancelled && (loaded || contentsLoaded)) applyGraph(document);
     })().catch((error) => {
       if (!cancelled) setState({ status: 'error', message: error instanceof CanvasParseError ? error.message : error instanceof Error ? error.message : String(error) });
     });
     return () => { cancelled = true; };
-  }, [applyGraph, filePath, loadCardSummaries, notebookPath, retryToken, t]);
+  }, [applyGraph, filePath, loadCardContents, loadCardSummaries, notebookPath, retryToken, t]);
 
   // Notebook roots can arrive after the board paints; resolve card paths again
   // once they are known so summaries are not silently missing.
@@ -1069,11 +1385,13 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     const document = documentRef.current;
     if (!document) return;
     let cancelled = false;
-    void loadCardSummaries(document).then((loaded) => {
-      if (!cancelled && loaded) applyGraph(document);
-    });
+    void (async () => {
+      const summariesLoaded = await loadCardSummaries(document);
+      const contentsLoaded = await loadCardContents(document);
+      if (!cancelled && (summariesLoaded || contentsLoaded)) applyGraph(document);
+    })();
     return () => { cancelled = true; };
-  }, [applyGraph, loadCardSummaries, notebooks, state.status]);
+  }, [applyGraph, loadCardContents, loadCardSummaries, notebooks, state.status]);
 
   const flush = useCallback(async (): Promise<boolean> => {
     if (timerRef.current !== null) {
@@ -1172,6 +1490,19 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       if (ids.has(shape.id)) Object.assign(shape, patch);
     }
     document.shapes = shapesRef.current;
+    // The last style used also becomes the style for newly created elements:
+    // editing a selected shape must not fall back to stale tool defaults.
+    if (patch.stroke !== undefined) setPenColor(patch.stroke);
+    if (patch.fill !== undefined) setToolFill(patch.fill);
+    if (patch.fillStyle !== undefined) setToolFillStyle(patch.fillStyle);
+    if (patch.strokeStyle !== undefined) setToolStrokeStyle(patch.strokeStyle);
+    if (patch.strokeWidth !== undefined) setPenWidth(patch.strokeWidth);
+    if (patch.fontSize !== undefined) setToolFontSize(patch.fontSize);
+    if (patch.fontFamily !== undefined) setToolFontFamily(patch.fontFamily);
+    if (patch.textAlign !== undefined) setToolTextAlign(patch.textAlign);
+    if (patch.opacity !== undefined) setToolOpacity(patch.opacity);
+    if (patch.roughness !== undefined) setToolRoughness(patch.roughness);
+    if (patch.edges !== undefined) setToolEdges(patch.edges);
     applyGraph(document);
     scheduleFlush();
     if (record) pushHistory();
@@ -1186,6 +1517,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       if (ids.has(stroke.id)) Object.assign(stroke, patch);
     }
     document.ink = inkRef.current;
+    if (patch.color !== undefined) setPenColor(patch.color);
+    if (patch.width !== undefined) setPenWidth(patch.width);
     applyGraph(document);
     scheduleFlush();
     if (record) pushHistory();
@@ -1526,6 +1859,98 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     }
   }, [insertImage]);
 
+  /**
+   * Insert a note card with its top-left at a flow position. The card stores
+   * only the note identity plus its read-only scope; the body is rendered from
+   * the note as soon as the content batch returns, and again whenever the note
+   * changes.
+   */
+  const insertNoteCardAt = useCallback(async (selection: NoteCardSelection, flowX: number, flowY: number) => {
+    const document = documentRef.current;
+    if (!document || readOnly) return;
+    const width = selection.renderScope === 'section' ? 380 : 420;
+    const height = selection.renderScope === 'section' ? 300 : 400;
+    const card: BoardCard = {
+      id: `c_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      kind: 'note',
+      x: Math.round(flowX),
+      y: Math.round(flowY),
+      w: width,
+      h: height,
+      z: nextZ(),
+      notebookId: selection.notebookId,
+      ...(selection.notebookName ? { notebookName: selection.notebookName } : {}),
+      path: selection.path,
+      title: selection.title,
+      renderScope: selection.renderScope,
+      ...(selection.renderScope === 'section' && selection.heading ? { heading: selection.heading } : {}),
+    };
+    cardsRef.current = [...cardsRef.current, card];
+    document.cards = cardsRef.current;
+    applyGraphRef.current(document);
+    scheduleFlush();
+    pushHistory();
+    // Titles/tags and the rendered body arrive after the card face paints.
+    const loadedSummary = await loadCardSummaries(document);
+    const absolute = absolutePathOf(card);
+    const loadedContent = await loadCardContents(document, absolute ? { onlyPaths: [absolute] } : {});
+    if (loadedSummary || loadedContent) applyGraphRef.current(document);
+  }, [absolutePathOf, loadCardContents, loadCardSummaries, nextZ, pushHistory, readOnly, scheduleFlush]);
+
+  /** Toolbar dialog: centre the new card in the viewport, cascading repeats. */
+  const insertNoteCard = useCallback(async (selection: NoteCardSelection) => {
+    const width = selection.renderScope === 'section' ? 380 : 420;
+    const height = selection.renderScope === 'section' ? 300 : 400;
+    const rect = boardRef.current?.getBoundingClientRect();
+    const center = rect
+      ? reactFlow.screenToFlowPosition({ x: rect.left + rect.width / 2, y: rect.top + rect.height / 2 })
+      : { x: 0, y: 0 };
+    const offset = insertCascadeRef.current * 32;
+    insertCascadeRef.current += 1;
+    await insertNoteCardAt(selection, center.x - width / 2 + offset, center.y - height / 2 + offset);
+  }, [insertNoteCardAt, reactFlow]);
+
+  // File-tree drag: drop one or more notes onto the board as full-note cards.
+  useEffect(() => {
+    if (state.status !== 'ready' || readOnly) return;
+    return registerDropTarget<NotebookDragResource, { x: number; y: number }>({
+      id: `canvas-board:${filePath}`,
+      priority: 60,
+      hitTest: (point) => {
+        const rect = boardRef.current?.getBoundingClientRect();
+        if (!rect) return null;
+        if (point.x < rect.left || point.x > rect.right || point.y < rect.top || point.y > rect.bottom) return null;
+        const flow = reactFlow.screenToFlowPosition({ x: point.x, y: point.y });
+        return { x: flow.x, y: flow.y };
+      },
+      locationKey: (location) => `${Math.round(location.x)},${Math.round(location.y)}`,
+      evaluate: (payload) => {
+        const notes = payload.items.filter(isMarkdownNoteDragResource);
+        return notes.length > 0 && notes.length === payload.items.length
+          ? { accepted: true }
+          : { accepted: false, reason: 'unsupported-resource' };
+      },
+      onPreview: () => {},
+      onDrop: async (payload, location) => {
+        const notes = payload.items.filter(isMarkdownNoteDragResource);
+        let offset = 0;
+        for (const note of notes) {
+          await insertNoteCardAt({
+            notebookId: note.notebookId,
+            notebookName: notebooksRef.current.find((notebook) => notebook.id === note.notebookId)?.name,
+            path: note.relativePath,
+            title: note.title,
+            renderScope: 'full',
+          }, location.x + offset, location.y + offset);
+          offset += 32;
+        }
+      },
+      onError: (error) => {
+        logger.warn('canvas board note drop failed', { error: String(error) });
+      },
+    });
+  }, [filePath, insertNoteCardAt, reactFlow, readOnly, state.status]);
+
   // Clipboard paste works without focusing the canvas first.
   useEffect(() => {
     if (state.status !== 'ready') return;
@@ -1724,6 +2149,64 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     removeByIds(deleted.map((node) => node.id));
   }, [removeByIds]);
 
+  /** Delete selected connectors. React Flow only reports deletions through
+   *  `onEdgesDelete`; without it the controlled `edges` prop restores them on
+   *  the next render. */
+  const handleEdgesDelete = useCallback((deleted: Edge[]) => {
+    const document = documentRef.current;
+    if (!document || readOnly || deleted.length === 0) return;
+    const ids = new Set(deleted.map((edge) => edge.id));
+    const current = readBoardEdges(document);
+    const next = current.filter((edge) => !ids.has(edge.id));
+    if (next.length === current.length) return;
+    document.edges = next;
+    applyGraph(document);
+    scheduleFlush();
+    pushHistory();
+  }, [applyGraph, pushHistory, readOnly, scheduleFlush]);
+
+  const selectEdge = useCallback((edgeId: string | null) => {
+    selectedEdgeIdRef.current = edgeId;
+    setSelectedEdgeId(edgeId);
+    if (edgeId) {
+      // A connector is an exclusive selection: otherwise Delete would remove
+      // both the edge and whatever node happened to be selected.
+      selectedIdsRef.current = [];
+      setSelectedShapeIds([]);
+      setSelectedCardIds([]);
+      setSelectedInkIds([]);
+      setNodes((current) => current.some((node) => node.selected)
+        ? current.map((node) => (node.selected ? { ...node, selected: false } : node))
+        : current);
+    }
+    const document = documentRef.current;
+    if (document) applyGraphRef.current(document);
+  }, []);
+
+  const deleteSelectedEdge = useCallback(() => {
+    const edgeId = selectedEdgeIdRef.current;
+    if (!edgeId) return;
+    handleEdgesDelete([{ id: edgeId } as Edge]);
+    selectedEdgeIdRef.current = null;
+    setSelectedEdgeId(null);
+    const document = documentRef.current;
+    if (document) applyGraphRef.current(document);
+  }, [handleEdgesDelete]);
+
+  useEffect(() => {
+    if (!selectedEdgeId) return;
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'Delete' && event.key !== 'Backspace') return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || target.tagName === 'INPUT' || target.tagName === 'TEXTAREA')) return;
+      event.preventDefault();
+      event.stopPropagation();
+      deleteSelectedEdge();
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [deleteSelectedEdge, selectedEdgeId]);
+
   /** Global stacking across shapes/cards/ink: normalize to dense z values,
    * move the picked elements, then write each array back in stacking order.
    * Type defaults only apply until the first layer op assigns explicit z. */
@@ -1784,11 +2267,15 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     pushHistory();
   }, [applyGraph, pushHistory, scheduleFlush, selectedCardIds, selectedInkIds, selectedShapeIds]);
 
+  const dragStartPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const handleNodeDragStart = useCallback((_event: unknown, node: BoardNode, dragged: BoardNode[]) => {
     // On touch, a node drag must not summon the properties panel (Obsidian
     // mobile behaviour); hide it for the gesture so it can't block the drag.
     touchDraggingRef.current = lastPointerTypeRef.current === 'touch';
     if (touchDraggingRef.current) setPanelCollapsed(true);
+    dragStartPositionsRef.current = new Map(
+      (dragged.length > 0 ? dragged : [node]).map((item) => [item.id, { x: item.position.x, y: item.position.y }]),
+    );
     inkDragStartRef.current.clear();
     for (const item of dragged.length > 0 ? dragged : [node]) {
       if (item.type !== 'ink') continue;
@@ -1806,7 +2293,29 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const handleNodeDragStop = useCallback(
     (event: unknown, node: BoardNode, dragged: BoardNode[]) => {
       void event;
+      const moved = (dragged.length > 0 ? dragged : [node]).some((item) => {
+        const start = dragStartPositionsRef.current.get(item.id);
+        return start && (Math.abs(item.position.x - start.x) > 3 || Math.abs(item.position.y - start.y) > 3);
+      });
+      dragStartPositionsRef.current.clear();
       syncPositionsToDocument(dragged.length > 0 ? dragged : [node]);
+      if (!touchDraggingRef.current) return;
+      touchDraggingRef.current = false;
+      // React Flow also runs dragStart/Stop for a stationary tap; only a real
+      // move should leave reading mode. Otherwise a tap could never select a
+      // card for scrolling.
+      if (!moved) return;
+      // Touch drags must leave the card in moving mode. A selected note card
+      // turns its body into a scrollable reader (`nodrag`), so the next touch
+      // drag that starts on the body would be swallowed — the "first drag
+      // works, second does not" cycle. Tapping selects it for reading.
+      selectedIdsRef.current = [];
+      setSelectedShapeIds([]);
+      setSelectedCardIds([]);
+      setSelectedInkIds([]);
+      setNodes((current) => current.some((item) => item.selected)
+        ? current.map((item) => (item.selected ? { ...item, selected: false } : item))
+        : current);
     },
     [syncPositionsToDocument],
   );
@@ -1834,19 +2343,60 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     scheduleFlush();
   }, [scheduleFlush]);
 
-  const handleNodeDoubleClick = useCallback<NodeMouseHandler<BoardNode>>(async (event, node) => {
-    void event;
+  /** A touch double-tap can reach us through both `onNodeClick` and the
+   *  synthesized `dblclick`; open once per gesture. */
+  const lastOpenRef = useRef<{ id: string; at: number } | null>(null);
+  const openCardNode = useCallback(async (node: BoardNode) => {
     if (tool !== 'select') return;
     const card = cardsRef.current.find((item) => item.id === node.id);
     if (!card || (card.kind !== 'note' && card.kind !== 'canvas')) return;
-    if (!card.notebookId || !card.path) return;
+    if (!card.path) return;
+    const now = Date.now();
+    if (lastOpenRef.current?.id === card.id && now - lastOpenRef.current.at < 600) return;
+    lastOpenRef.current = { id: card.id, at: now };
+    const notebook = resolveCardNotebook(card);
+    if (!notebook) {
+      toast.error(t('canvas.board.openFailed'));
+      return;
+    }
+    // Affine-style split view: the note opens beside the canvas so edits and
+    // the read-only card stay visible together. Narrow (phone) viewports have
+    // no side column, so they keep the full-screen navigation. A canvas that
+    // already lives in the side column sends the note to the work column
+    // instead of replacing its own tab.
+    const destination = isNarrowViewport
+      ? undefined
+      : workspaceHost === 'browser-column'
+        ? 'main-third' as const
+        : 'browser-column' as const;
     try {
-      await openNoteByNotebookPath(card.notebookId, card.path);
+      await openNoteByNotebookPath(notebook.id, card.path, null, destination ? { destination } : undefined);
     } catch (error) {
       logger.warn('canvas board open card failed', { path: card.path, error: String(error) });
       toast.error(t('canvas.board.openFailed'));
     }
-  }, [t, tool]);
+  }, [isNarrowViewport, resolveCardNotebook, t, tool, workspaceHost]);
+
+  const handleNodeDoubleClick = useCallback<NodeMouseHandler<BoardNode>>((event, node) => {
+    void event;
+    void openCardNode(node);
+  }, [openCardNode]);
+
+  /** Two taps on the same node. Taps inside the touch-action:none canvas do
+   *  not synthesize `dblclick` on Android, so mobile double-tap is detected
+   *  from the click stream instead. */
+  const lastNodeTapRef = useRef<{ id: string; at: number } | null>(null);
+  const handleNodeClick = useCallback<NodeMouseHandler<BoardNode>>((event, node) => {
+    void event;
+    if (lastPointerTypeRef.current !== 'touch') return;
+    const now = Date.now();
+    const last = lastNodeTapRef.current;
+    lastNodeTapRef.current = { id: node.id, at: now };
+    if (last && last.id === node.id && now - last.at < 350) {
+      lastNodeTapRef.current = null;
+      void openCardNode(node);
+    }
+  }, [openCardNode]);
 
   /** Reset the camera to 100% around the current center (Obsidian-style). */
   const resetZoom = useCallback(() => {
@@ -2153,10 +2703,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         lastSavedTextRef.current = text;
         moveSeedRef.current = readBoardViewport(document);
         await loadCardSummaries(document);
+        await loadCardContents(document);
         applyGraph(document);
       });
     });
-  }, [applyGraph, filePath, loadCardSummaries, notebookPath, state.status]);
+  }, [applyGraph, filePath, loadCardContents, loadCardSummaries, notebookPath, state.status]);
 
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
@@ -2386,6 +2937,26 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         >
           <ImagePlus className="h-3.5 w-3.5" />
         </button>
+        <button
+          type="button"
+          aria-label={t('canvas.board.tool.note')}
+          className={toolButtonClass(false)}
+          disabled={readOnly}
+          onClick={() => setInsertDialogOpen(true)}
+        >
+          <FileText className="h-3.5 w-3.5" />
+        </button>
+        {selectedEdgeId ? (
+          <button
+            type="button"
+            aria-label={t('canvas.board.edgeDelete')}
+            className={toolButtonClass(false)}
+            disabled={readOnly}
+            onClick={deleteSelectedEdge}
+          >
+            <Trash2 className="h-3.5 w-3.5" />
+          </button>
+        ) : null}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <button type="button" aria-label={t('canvas.export.menu')} className={toolButtonClass(false)}>
@@ -2892,6 +3463,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         onNodeDragStop={handleNodeDragStop}
         onMoveEnd={handleMoveEnd}
         onNodeDoubleClick={handleNodeDoubleClick}
+        onNodeClick={handleNodeClick}
         defaultViewport={defaultViewport}
         fitView={!initialViewport}
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
@@ -2911,6 +3483,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
         onlyRenderVisibleElements
         deleteKeyCode={['Delete']}
         onNodesDelete={handleNodesDelete}
+        onEdgesDelete={handleEdgesDelete}
+        onEdgeClick={(_event, edge) => selectEdge(edge.id)}
+        onPaneClick={() => selectEdge(null)}
         onSelectionChange={handleSelectionChange}
       >
         {/* Plain whiteboard background: the board is a canvas, not a grid sheet. */}
@@ -2964,6 +3539,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           ) : null}
         </ViewportPortal>
       </ReactFlow>
+      <NoteCardInsertDialog
+        open={insertDialogOpen}
+        onClose={() => setInsertDialogOpen(false)}
+        onInsert={insertNoteCard}
+      />
     </div>
   );
 }

@@ -210,6 +210,31 @@ describe('board layer', () => {
     expect(cards[0].kind).toBe('note');
   });
 
+  it('keeps the notebook name snapshot for cross-device resolution', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      cards: [{ id: 'c', kind: 'note', x: 0, y: 0, w: 10, h: 10, notebookId: 'nb_x', notebookName: '测试', path: 'a.md' }],
+    }));
+    expect(readBoardCards(document)[0]).toMatchObject({ notebookId: 'nb_x', notebookName: '测试' });
+  });
+
+  it('coerces render scope and section anchors on note cards', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      cards: [
+        { id: 'full', kind: 'note', x: 0, y: 0, w: 10, h: 10, renderScope: 'full' },
+        { id: 'section', kind: 'note', x: 0, y: 0, w: 10, h: 10, renderScope: 'section', heading: '设计' },
+        { id: 'section-no-heading', kind: 'note', x: 0, y: 0, w: 10, h: 10, renderScope: 'section' },
+        { id: 'bogus', kind: 'note', x: 0, y: 0, w: 10, h: 10, renderScope: 'huge', heading: 'x' },
+      ],
+    }));
+    const cards = readBoardCards(document);
+    expect(cards.find((card) => card.id === 'full')?.renderScope).toBe('full');
+    expect(cards.find((card) => card.id === 'section')).toMatchObject({ renderScope: 'section', heading: '设计' });
+    expect(cards.find((card) => card.id === 'section-no-heading')?.heading).toBeUndefined();
+    expect(cards.find((card) => card.id === 'bogus')?.renderScope).toBeUndefined();
+  });
+
   it('keeps board collections and viewport across a serialize round-trip', () => {
     const document = parseCanvasDocument(boardText);
     const { text } = serializeCanvasDocument(

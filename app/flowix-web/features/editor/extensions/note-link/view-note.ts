@@ -632,6 +632,9 @@ function createNoteReferenceExtension(presentation: 'document' | 'composer') {
           notebook: a.notebookId ?? '',
           relativePath: a.relativePath ?? '',
           path: a.originalPath ?? '',
+          // The NodeView owns the visible DOM; this attribute only carries the
+          // anchor into static/clipboard output (read-only renderers).
+          heading: a.heading ?? '',
           ...(a.stale ? { stale: 'true' } : {}),
         },
         // 序列化时 strip title 后缀, 跟 NodeView 渲染一致; 旧 markdown

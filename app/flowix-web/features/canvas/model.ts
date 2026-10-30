@@ -50,9 +50,16 @@ export interface BoardCard {
   /** Stacking order across shapes/cards/ink; omitted uses type defaults. */
   z?: number;
   notebookId?: string;
+  /** Notebook name snapshot: notebook ids are per-device, so a card synced to
+   *  another device resolves its root by name when the id is unknown. */
+  notebookName?: string;
   path?: string;
   title?: string;
   text?: string;
+  /** What the card body renders; omitted (or `'excerpt'`) keeps the summary face. */
+  renderScope?: 'excerpt' | 'full' | 'section';
+  /** `renderScope: 'section'` anchor: render this heading's subtree. */
+  heading?: string;
   /** Image cards reference the canvas `files` map by id. */
   fileId?: string;
 }
@@ -398,6 +405,7 @@ function coerceBoardCard(raw: Record<string, unknown>): BoardCard | null {
   if (!id || x === null || y === null || w === null || h === null) return null;
   const kind = raw.kind === 'text' || raw.kind === 'image' || raw.kind === 'canvas' ? raw.kind : 'note';
   const z = readFiniteNumber(raw.z);
+  const renderScope = raw.renderScope === 'full' || raw.renderScope === 'section' ? raw.renderScope : undefined;
   const optionalText = (value: unknown): string | undefined =>
     typeof value === 'string' && value ? value : undefined;
   return {
@@ -409,9 +417,12 @@ function coerceBoardCard(raw: Record<string, unknown>): BoardCard | null {
     h: Math.max(16, h),
     ...(z !== null ? { z } : {}),
     ...(optionalText(raw.notebookId) ? { notebookId: optionalText(raw.notebookId) } : {}),
+    ...(optionalText(raw.notebookName) ? { notebookName: optionalText(raw.notebookName) } : {}),
     ...(optionalText(raw.path) ? { path: optionalText(raw.path) } : {}),
     ...(optionalText(raw.title) ? { title: optionalText(raw.title) } : {}),
     ...(optionalText(raw.text) ? { text: optionalText(raw.text) } : {}),
+    ...(renderScope ? { renderScope } : {}),
+    ...(renderScope === 'section' && optionalText(raw.heading) ? { heading: optionalText(raw.heading) } : {}),
     ...(optionalText(raw.fileId) ? { fileId: optionalText(raw.fileId) } : {}),
   };
 }

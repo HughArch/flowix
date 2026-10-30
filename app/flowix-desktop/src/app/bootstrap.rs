@@ -598,6 +598,7 @@ pub fn run() {
             commands::memo::reads::get_used_memo_tag_ids,
             commands::memo::reads::read_document,
             commands::memo::reads::read_note_card_summaries,
+            commands::memo::reads::read_note_card_contents,
             commands::memo::reads::note_path_status,
             commands::memo::reads::get_document_modified_at,
             commands::memo::reads::write_document,
