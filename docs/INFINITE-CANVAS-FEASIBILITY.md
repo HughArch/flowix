@@ -512,3 +512,7 @@ APK（x86_64 debug）装到 `Pixel_7` 模拟器后暴露一串只在触控下出
 - 字体行对齐 Obsidian 五格：手写（笔尖）/ 正常（A）/ 代码（</>）/ 粗体（B，weight 800）/ 衬线（A）；`BoardFontFamily` 增加 `bold`，文字元素按面渲染字重。
 - 验证：`document.fonts.check` 三款均 true；"Hello Flowix 手写体" 拉丁部分是 Virgil、中文是楷体；面板显示五格。
 - 说明：Excalifont（Obsidian 新默认手写体）在包内是 7 个 hashed 子集且无 unicode-range 清单，无法直接内联；Virgil 是单文件且在 Obsidian 列表里仍可选用，故选它。
+
+### 15.21 补充：触控拖拽收起面板（2026-10-30）
+
+移动端语义对齐 Obsidian：**点选 = 唤起面板；拖拽 = 手势期间收起面板**。实现：`handleNodesChange` 检测 `position + dragging` 且 `pointerType === 'touch'` 时收起；`onNodeDragStop` 复位。附带修复：绘制工具下点选元素的旧逻辑移除（绘制永远优先），切换工具清空选中。
