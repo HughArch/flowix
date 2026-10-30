@@ -175,7 +175,10 @@ function CardHandles({ visible = false }: { visible?: boolean }) {
           id={`tgt-${side}`}
           type="target"
           position={position}
-          className="!h-3 !w-3 !border-0 !bg-transparent"
+          // Drops snap to the nearest handle geometrically (`connectionRadius`),
+          // so targets never need pointer events: this keeps them from eating
+          // node drags near the edge midpoints.
+          className="!pointer-events-none !h-3 !w-3 !border-0 !bg-transparent"
         />
       ))}
       {CONNECTION_SIDES.map(([side, position]) => (
@@ -185,9 +188,13 @@ function CardHandles({ visible = false }: { visible?: boolean }) {
           type="source"
           position={position}
           className={visible
-            ? '!h-2.5 !w-2.5 !rounded-full !border !border-[var(--card)] !bg-[var(--muted-foreground)]'
-            // Unselected sources are not connection starts; keeping them out
-            // of hit-testing leaves the card edges draggable.
+            // A 24px grab zone with the dot painted by gradient: starting a
+            // connection no longer needs pixel-perfect aim (a finger needs
+            // the whole box). On nodes whose root clips (sticky/image/note),
+            // the outer half of the zone is cut off and the inner half works.
+            // z-20 puts the dot above the resizer's edge lines (z-10), which
+            // otherwise win exactly at the midpoints where the dots sit.
+            ? '!z-20 !h-6 !w-6 !rounded-full !border-0 !bg-[radial-gradient(circle,var(--muted-foreground)_0_3px,var(--card)_3px_4.5px,transparent_5px)]'
             : '!pointer-events-none !h-3 !w-3 !border-0 !bg-transparent'}
         />
       ))}
@@ -4208,6 +4215,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         panOnDrag={tool === 'hand'}
         selectionOnDrag={false}
         zoomOnPinch={tool === 'hand'}
+        // Generous snap radius for landing a connection near a handle
+        // (default 20) — the main touch-friendliness lever on the drop side.
+        connectionRadius={40}
         // Selected nodes must not jump above others, or layer ordering looks broken.
         elevateNodesOnSelect={false}
         nodesDraggable={!readOnly && tool === 'select'}
