@@ -117,8 +117,10 @@ type BoardNode = Node<BoardNodeData>;
 /** Resize box in flow coordinates, as reported by NodeResizer. */
 type ResizeBoxRect = { x: number; y: number; width: number; height: number };
 /** `live` fires on every drag frame (the node must redraw immediately),
- * `end` fires once on release (commit to the document + history). */
-type ResizePhase = 'live' | 'end';
+ * `end` fires once on release (commit to the document + history), `grow`
+ * fires from the label editor when text outgrows the shape (no rescale
+ * base, no history — the text commit records the final geometry). */
+type ResizePhase = 'live' | 'end' | 'grow';
 
 /** Decoded pixel size of a data URL image. */
 function imageSizeOf(dataUrl: string): Promise<{ width: number; height: number }> {
@@ -448,6 +450,40 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
     const focusTimer = window.setTimeout(() => textareaRef.current?.focus(), 0);
     return () => window.clearTimeout(focusTimer);
   }, [editing]);
+  // Auto-fit while editing: the textarea is sized to its content (the flex
+  // container keeps it vertically centered, so the caret starts in the middle
+  // of the shape), and content that outgrows the box expands it around its
+  // center through the 'grow' resize phase.
+  useLayoutEffect(() => {
+    if (!editing) return;
+    const element = textareaRef.current;
+    const current = data.shape;
+    if (!element || !current) return;
+    element.style.height = '0px';
+    const contentH = element.scrollHeight;
+    element.style.height = `${contentH}px`;
+    const pad = SHAPE_PADDING * 2;
+    const isText = current.shape === 'text';
+    const isClosed = current.shape === 'rect' || current.shape === 'ellipse' || current.shape === 'diamond';
+    // A text element's visible bounds are the selection ring, so the node box
+    // (shape + ring padding) must at least contain the text; closed shapes
+    // grow once the label would cross the drawn outline. Arrows and lines
+    // keep their two-point geometry and never grow. The reported box is the
+    // node box, centered on the shape center so growth stays symmetric.
+    const nextBoxH = isText
+      ? (contentH + 2 > current.h + pad ? contentH + 2 : null)
+      : isClosed
+        ? (contentH > current.h ? contentH + 8 + pad : null)
+        : null;
+    if (nextBoxH === null) return;
+    const cy = current.y + current.h / 2;
+    data.onShapeResize?.(current.id, {
+      x: current.x - SHAPE_PADDING,
+      y: cy - nextBoxH / 2,
+      width: current.w + pad,
+      height: nextBoxH,
+    }, 'grow');
+  }, [editing, draft, data]);
   if (!shape) return null;
   const stroke = shape.stroke ?? '#64748b';
   const strokeWidth = shape.strokeWidth ?? 2;
@@ -459,6 +495,11 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   const alignClass = textAlign === 'left' ? 'text-left' : textAlign === 'right' ? 'text-right' : 'text-center';
   // Node boxes are padded, so paths must be translated by the padded origin.
   const origin = shape.shape === 'arrow' || shape.shape === 'line' ? arrowBox(shape) : shapeBoxWithPadding(shape);
+  // Double-click edits the label: closed shapes and text elements start from
+  // empty too; arrows and lines only re-edit an existing label.
+  const canEditLabel = Boolean(shape.text)
+    || shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond'
+    || shape.shape === 'text';
 
   const sketch = shape.shape === 'text' ? null : (
     <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none' }}>
@@ -518,11 +559,11 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
       <div
         className={`absolute inset-0 flex items-center px-2 ${alignClass} ${textAlign === 'center' ? 'justify-center' : ''}`}
         onDoubleClick={(event) => {
-          // Adding text via double-click is gone (a double-click is the global
-          // "drop a text element" gesture now); existing labels stay editable.
-          if (!shape.text) return;
+          // On the bare pane a double-click is the global "drop a text
+          // element" gesture; on a shape it edits the label instead.
+          if (!canEditLabel) return;
           event.stopPropagation();
-          setDraft(shape.text);
+          setDraft(shape.text ?? '');
           setEditing(true);
         }}
       >
@@ -540,7 +581,7 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
               if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); setEditing(false); data.onShapeTextCommit?.(shape.id, draft); }
             }}
             style={{ fontSize, color: shape.shape === 'text' ? stroke : undefined, fontFamily: fontStack, fontWeight }}
-            className={`h-full w-full resize-none bg-transparent ${alignClass} leading-snug text-[var(--foreground)] outline-none`}
+            className={`w-full resize-none overflow-hidden bg-transparent p-0 ${alignClass} leading-snug text-[var(--foreground)] outline-none`}
           />
         ) : shape.text ? (
           <span
@@ -800,6 +841,25 @@ function shapeBoxWithPadding(shape: BoardShape): { x: number; y: number; w: numb
     y: shape.y - SHAPE_PADDING,
     w: shape.w + SHAPE_PADDING * 2,
     h: shape.h + SHAPE_PADDING * 2,
+  };
+}
+
+/** Geometry for a fresh text element whose caret lands on an anchor point.
+ *  The editor sizes the textarea to one line and centers it in the node box
+ *  (shape + ring padding), so centering the box on the point puts the caret
+ *  on it vertically; horizontally the box shifts by alignment because the
+ *  caret hugs the left edge, the center, or the right edge of the textarea
+ *  (which sits `SHAPE_PADDING - px-2` = 4px inside the shape origin). */
+function textShapeAt(point: number[], align: 'left' | 'center' | 'right'): { x: number; y: number; w: number; h: number } {
+  const [px, py] = point;
+  const w = 240;
+  const h = 40;
+  const inset = SHAPE_PADDING - 8;
+  return {
+    x: align === 'left' ? px + inset : align === 'right' ? px - w - inset : px - w / 2,
+    y: py - h / 2,
+    w,
+    h,
   };
 }
 
@@ -1780,7 +1840,17 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
    * Text elements scale uniformly: the box keeps the aspect ratio implied by
    * the label and the font size tracks the box, so the text keeps filling it.
    */
-  const applyShapeResize = useCallback((nodeId: string, box: ResizeBoxRect, shape: BoardShape) => {
+  /** `direct` (the 'grow' phase) applies the box verbatim: no rescale base is
+   *  captured and text elements skip their uniform-scale branch, so editor-
+   *  driven growth never disturbs a later handle drag. */
+  const applyShapeResize = useCallback((nodeId: string, box: ResizeBoxRect, shape: BoardShape, direct = false) => {
+    if (direct) {
+      shape.x = box.x + SHAPE_PADDING;
+      shape.y = box.y + SHAPE_PADDING;
+      shape.w = Math.max(16, box.width - SHAPE_PADDING * 2);
+      shape.h = Math.max(16, box.height - SHAPE_PADDING * 2);
+      return;
+    }
     const base = resizeBaseRef.current?.id === nodeId
       ? resizeBaseRef.current
       : (resizeBaseRef.current = { id: nodeId, kind: 'shape', x: shape.x, y: shape.y, w: shape.w, h: shape.h, fontSize: shape.fontSize ?? FONT_SIZES[2] });
@@ -1812,8 +1882,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     if (!document) return;
     const shape = shapesRef.current.find((item) => item.id === nodeId);
     if (!shape) return;
-    if (phase === 'live') {
-      applyShapeResize(nodeId, box, shape);
+    if (phase === 'live' || phase === 'grow') {
+      applyShapeResize(nodeId, box, shape, phase === 'grow');
       // Redraw this node only: rebuilding the whole graph every frame would
       // fight the drag and drop the selection.
       const next = { ...shape };
@@ -1833,6 +1903,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           style: { ...node.style, width: nodeBox.w, height: nodeBox.h },
         }
         : node))));
+      // Grow rides the text editing session: persist the geometry (the commit
+      // may no-op when only the box changed) but leave history to the commit.
+      if (phase === 'grow') {
+        document.shapes = shapesRef.current;
+        scheduleFlush();
+      }
       return;
     }
     // Live frames already wrote the geometry on screen. The end event reports
@@ -2358,13 +2434,14 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     const document = documentRef.current;
     if (!document) return;
     const position = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    const box = textShapeAt([position.x, position.y], toolTextAlign);
     const shape: BoardShape = {
       id: shapeId(),
       shape: 'text',
-      x: position.x,
-      y: position.y - 12,
-      w: 240,
-      h: 40,
+      x: box.x,
+      y: box.y,
+      w: box.w,
+      h: box.h,
       stroke: penColor,
       z: nextZ(),
       fontSize: toolFontSize,
@@ -2771,7 +2848,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       // A click without a drag still drops a default-sized shape; labels are
       // always click-placed and start in edit mode like Excalidraw text.
       const box = isLabel
-        ? { x: draft.start[0], y: draft.start[1] - 12, w: 240, h: 40 }
+        ? textShapeAt(draft.start, toolTextAlign)
         : rect.w < 24 || rect.h < 24
           ? { x: draft.start[0] - 80, y: draft.start[1] - 50, w: 160, h: 100 }
           : rect;
@@ -2913,7 +2990,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       z: nextZ(),
       ...(toolPressure ? {} : { pressure: false }),
     }]);
-  }, [applyGraph, commitShapeText, nextZ, penColor, penWidth, pushHistory, scheduleFlush, syncInkToDocument, tool]);
+  }, [applyGraph, commitShapeText, nextZ, penColor, penWidth, pushHistory, scheduleFlush, syncInkToDocument, tool, toolFontFamily, toolFontSize, toolTextAlign]);
 
   // Native capture-phase listeners: React's synthetic pointer events never
   // reached these handlers for real touch input on Android (only synthetic
