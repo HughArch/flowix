@@ -505,3 +505,10 @@ APK（x86_64 debug）装到 `Pixel_7` 模拟器后暴露一串只在触控下出
 5. **绘制工具下永远绘制**（不再抢手势去选中指针下的元素）；切换工具时清空选中，面板只显示该工具自己的行。
 
 实测：点选元素 → 面板显示对应行；在已有内容上两次触控滑动 → 笔迹立即可见（ink 37→40）；画笔面板只剩 描边/线宽/压感。
+
+### 15.21 字体面：内置 Virgil/Liberation/Cascadia + 五格字体行（2026-10-30）
+
+- 从 `@excalidraw/excalidraw` 包中提取单文件 woff2 并随包分发（+193KB）：**Virgil**（Excalidraw 最早的手绘拉丁字体）、**Liberation Sans**（Helvetica 度量）、**Cascadia Code**（等宽）。中文仍走系统回退：手写体槽位用楷体。
+- 字体行对齐 Obsidian 五格：手写（笔尖）/ 正常（A）/ 代码（</>）/ 粗体（B，weight 800）/ 衬线（A）；`BoardFontFamily` 增加 `bold`，文字元素按面渲染字重。
+- 验证：`document.fonts.check` 三款均 true；"Hello Flowix 手写体" 拉丁部分是 Virgil、中文是楷体；面板显示五格。
+- 说明：Excalifont（Obsidian 新默认手写体）在包内是 7 个 hashed 子集且无 unicode-range 清单，无法直接内联；Virgil 是单文件且在 Obsidian 列表里仍可选用，故选它。
