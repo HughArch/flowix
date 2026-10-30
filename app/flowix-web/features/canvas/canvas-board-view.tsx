@@ -235,7 +235,7 @@ function FrameNode({ data }: NodeProps<BoardNode>) {
   const { card } = data;
   return (
     <div
-      className="h-full w-full rounded-xl border-2 border-dashed bg-[var(--muted)]/30"
+      className="pointer-events-none h-full w-full rounded-xl border-2 border-dashed bg-[var(--muted)]/30"
       style={{ borderColor: 'color-mix(in srgb, var(--muted-foreground) 45%, transparent)' }}
     >
       {card.title ? (
@@ -782,6 +782,20 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const summariesRef = useRef<Map<string, NoteCardSummary>>(new Map());
   /** Notebook id -> root, so cards referencing another notebook still resolve. */
   const notebooksRef = useRef<Array<{ id: string; path: string }>>([]);
+
+  /** Switching to a drawing tool drops the selection (Obsidian behaviour),
+   * otherwise the panel keeps showing the previously selected element. */
+  const selectTool = useCallback((next: BoardTool) => {
+    setTool(next);
+    if (next === 'select') return;
+    // Clear the rendered selection too: the mirror is derived from node.selected.
+    selectedIdsRef.current = [];
+    setSelectedShapeIds([]);
+    setSelectedInkIds([]);
+    setNodes((current) => current.some((node) => node.selected)
+      ? current.map((node) => (node.selected ? { ...node, selected: false } : node))
+      : current);
+  }, []);
 
   const retryLoad = useCallback(() => setRetryToken((token) => token + 1), []);
 
@@ -1596,6 +1610,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     inkRef.current = strokes;
     // First real edit swaps the passthrough array for normalized values.
     document.ink = strokes;
+    // Strokes are rendered as nodes now, so the graph has to be rebuilt or a
+    // freshly drawn (or erased) stroke never shows up until a reopen.
+    applyGraphRef.current(document);
     scheduleFlush();
     pushHistory();
   }, [pushHistory, scheduleFlush]);
@@ -1609,8 +1626,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const handleBoardPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     if (readOnly || tool === 'select' || event.button !== 0) return;
     if ((event.target as Element).closest('[data-board-toolbar]')) return;
-    // Clicking an existing element selects it instead of drawing on top of it.
-    if ((event.target as Element).closest('.react-flow__node')) return;
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* synthetic pointers cannot capture */ }
     if (tool === 'pen') {
       liveStrokeRef.current = [flowPositionOf(event)];
@@ -1744,6 +1759,27 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       ...(toolPressure ? {} : { pressure: false }),
     }]);
   }, [applyGraph, commitShapeText, penColor, penWidth, pushHistory, scheduleFlush, syncInkToDocument, tool]);
+
+  // Native capture-phase listeners: React's synthetic pointer events never
+  // reached these handlers for real touch input on Android (only synthetic
+  // dispatch worked), so pen drawing silently did nothing on device.
+  useEffect(() => {
+    const element = boardRef.current;
+    if (!element) return;
+    const down = (event: PointerEvent) => handleBoardPointerDown(event as unknown as React.PointerEvent<HTMLDivElement>);
+    const move = (event: PointerEvent) => handleBoardPointerMove(event as unknown as React.PointerEvent<HTMLDivElement>);
+    const up = (event: PointerEvent) => handleBoardPointerUp(event as unknown as React.PointerEvent<HTMLDivElement>);
+    element.addEventListener('pointerdown', down, true);
+    element.addEventListener('pointermove', move, true);
+    element.addEventListener('pointerup', up, true);
+    element.addEventListener('pointercancel', up, true);
+    return () => {
+      element.removeEventListener('pointerdown', down, true);
+      element.removeEventListener('pointermove', move, true);
+      element.removeEventListener('pointerup', up, true);
+      element.removeEventListener('pointercancel', up, true);
+    };
+  }, [handleBoardPointerDown, handleBoardPointerMove, handleBoardPointerUp]);
 
   useEffect(() => {
     const title = filePath.split(/[\\/]/).filter(Boolean).pop() ?? filePath;
@@ -2007,14 +2043,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   return (
     <div
       ref={boardRef}
+      // Touch gestures must reach the canvas instead of scrolling the shell.
+      style={{ touchAction: 'none' }}
       className={`h-full min-h-0 w-full ${tool === 'hand' ? 'cursor-grab' : tool !== 'select' ? 'cursor-crosshair' : ''}`}
       data-canvas-surface={filePath}
       // The board owns pan/zoom gestures; the shell's swipe-down must not steal them.
       data-mobile-swipe-ignore="true"
-      onPointerDown={handleBoardPointerDown}
-      onPointerMove={handleBoardPointerMove}
-      onPointerUp={handleBoardPointerUp}
-      onPointerCancel={handleBoardPointerUp}
       onDoubleClick={handleSurfaceDoubleClick}
       onPaste={(event) => {
         const images = [...(event.clipboardData?.files ?? [])].filter((file) => file.type.startsWith('image/'));
@@ -2038,16 +2072,16 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       }}
     >
       <div data-board-toolbar className="absolute left-3 top-3 z-30 flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm">
-        <button type="button" aria-label={t('canvas.board.tool.select')} className={toolButtonClass(tool === 'select')} onClick={() => setTool('select')}>
+        <button type="button" aria-label={t('canvas.board.tool.select')} className={toolButtonClass(tool === 'select')} onClick={() => selectTool('select')}>
           <MousePointer2 className="h-3.5 w-3.5" />
         </button>
-        <button type="button" aria-label={t('canvas.board.tool.hand')} className={toolButtonClass(tool === 'hand')} onClick={() => setTool('hand')}>
+        <button type="button" aria-label={t('canvas.board.tool.hand')} className={toolButtonClass(tool === 'hand')} onClick={() => selectTool('hand')}>
           <Hand className="h-3.5 w-3.5" />
         </button>
-        <button type="button" aria-label={t('canvas.board.tool.pen')} className={toolButtonClass(tool === 'pen')} onClick={() => setTool('pen')}>
+        <button type="button" aria-label={t('canvas.board.tool.pen')} className={toolButtonClass(tool === 'pen')} onClick={() => selectTool('pen')}>
           <Pencil className="h-3.5 w-3.5" />
         </button>
-        <button type="button" aria-label={t('canvas.board.tool.eraser')} className={toolButtonClass(tool === 'eraser')} onClick={() => setTool('eraser')}>
+        <button type="button" aria-label={t('canvas.board.tool.eraser')} className={toolButtonClass(tool === 'eraser')} onClick={() => selectTool('eraser')}>
           <Eraser className="h-3.5 w-3.5" />
         </button>
         {SHAPE_TOOLS.map((shapeKind) => (
@@ -2056,7 +2090,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
             type="button"
             aria-label={t(`canvas.board.tool.${shapeKind}`)}
             className={toolButtonClass(tool === shapeKind)}
-            onClick={() => setTool(shapeKind)}
+            onClick={() => selectTool(shapeKind)}
           >
             {shapeKind === 'rect' ? <Square className="h-3.5 w-3.5" />
               : shapeKind === 'ellipse' ? <Circle className="h-3.5 w-3.5" />
