@@ -327,3 +327,31 @@ describe('board shape opacity', () => {
     expect(shapes[2].opacity).toBeUndefined();
   });
 });
+
+describe('board element stacking', () => {
+  it('reads z on shapes, cards and ink, and drops non-numeric z', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      shapes: [{ id: 's1', shape: 'rect', x: 0, y: 0, w: 10, h: 10, z: 3 }, { id: 's2', shape: 'rect', x: 0, y: 0, w: 10, h: 10, z: 'top' }],
+      cards: [{ id: 'c1', kind: 'text', x: 0, y: 0, w: 40, h: 30, z: 7 }, { id: 'c2', kind: 'text', x: 0, y: 0, w: 40, h: 30 }],
+      ink: [{ id: 'k1', points: [[0, 0], [5, 5]], color: '#111827', width: 4, z: 1 }],
+    }));
+    expect(readBoardShapes(document).map((shape) => shape.z)).toEqual([3, undefined]);
+    expect(readBoardCards(document).map((card) => card.z)).toEqual([7, undefined]);
+    expect(readBoardInk(document)[0].z).toBe(1);
+  });
+
+  it('keeps z through a serialize round-trip', () => {
+    const document = parseCanvasDocument(JSON.stringify({
+      type: 'flowix/canvas', version: 1,
+      shapes: [{ id: 's1', shape: 'rect', x: 0, y: 0, w: 10, h: 10, z: 3 }],
+      cards: [{ id: 'c1', kind: 'text', x: 0, y: 0, w: 40, h: 30, z: 7 }],
+      ink: [{ id: 'k1', points: [[0, 0], [5, 5]], color: '#111827', width: 4, z: 1 }],
+    }));
+    const { text } = serializeCanvasDocument(document, document.elements, {}, document.files, new Map(), { touchUpdatedAt: false });
+    const parsed = JSON.parse(text);
+    expect(parsed.shapes[0].z).toBe(3);
+    expect(parsed.cards[0].z).toBe(7);
+    expect(parsed.ink[0].z).toBe(1);
+  });
+});

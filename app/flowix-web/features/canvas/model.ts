@@ -47,6 +47,8 @@ export interface BoardCard {
   y: number;
   w: number;
   h: number;
+  /** Stacking order across shapes/cards/ink; omitted uses type defaults. */
+  z?: number;
   notebookId?: string;
   path?: string;
   title?: string;
@@ -84,6 +86,8 @@ export interface BoardInkStroke {
   points: number[][];
   color: string;
   width: number;
+  /** Stacking order across shapes/cards/ink; omitted keeps ink above cards. */
+  z?: number;
   /** False when the stroke was drawn with simulated-pressure off. */
   pressure?: boolean;
 }
@@ -129,6 +133,8 @@ export interface BoardShape {
   y2?: number;
   /** 1-100; omitted means fully opaque. */
   opacity?: number;
+  /** Stacking order across shapes/cards/ink; omitted uses type defaults. */
+  z?: number;
 }
 
 /**
@@ -391,6 +397,7 @@ function coerceBoardCard(raw: Record<string, unknown>): BoardCard | null {
   const h = readFiniteNumber(raw.h);
   if (!id || x === null || y === null || w === null || h === null) return null;
   const kind = raw.kind === 'text' || raw.kind === 'image' || raw.kind === 'canvas' ? raw.kind : 'note';
+  const z = readFiniteNumber(raw.z);
   const optionalText = (value: unknown): string | undefined =>
     typeof value === 'string' && value ? value : undefined;
   return {
@@ -400,6 +407,7 @@ function coerceBoardCard(raw: Record<string, unknown>): BoardCard | null {
     y,
     w: Math.max(16, w),
     h: Math.max(16, h),
+    ...(z !== null ? { z } : {}),
     ...(optionalText(raw.notebookId) ? { notebookId: optionalText(raw.notebookId) } : {}),
     ...(optionalText(raw.path) ? { path: optionalText(raw.path) } : {}),
     ...(optionalText(raw.title) ? { title: optionalText(raw.title) } : {}),
@@ -498,6 +506,7 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
       ? raw.textAlign
       : raw.textAlign === 'center' ? 'center' : undefined;
     const roughness = readFiniteNumber(raw.roughness);
+    const z = readFiniteNumber(raw.z);
     const edges = raw.edges === 'round' ? 'round' : raw.edges === 'sharp' ? 'sharp' : undefined;
     const link = typeof raw.link === 'string' && raw.link.trim() ? raw.link.trim() : undefined;
     shapes.push({
@@ -521,6 +530,7 @@ export function readBoardShapes(document: FlowixCanvasDocument): BoardShape[] {
       ...(strokeWidth && strokeWidth > 0 ? { strokeWidth } : {}),
       ...(strokeStyle ? { strokeStyle } : {}),
       ...(text ? { text } : {}),
+      ...(z !== null ? { z } : {}),
     });
   }
   return shapes;
@@ -544,7 +554,15 @@ export function readBoardInk(document: FlowixCanvasDocument): BoardInkStroke[] {
       points.push([x, y]);
     }
     if (points.length < 2) continue;
-    strokes.push({ id, points, color, width, ...(raw.pressure === false ? { pressure: false } : {}) });
+    const z = readFiniteNumber(raw.z);
+    strokes.push({
+      id,
+      points,
+      color,
+      width,
+      ...(z !== null ? { z } : {}),
+      ...(raw.pressure === false ? { pressure: false } : {}),
+    });
   }
   return strokes;
 }

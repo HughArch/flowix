@@ -31,7 +31,7 @@ import {
 } from '@xyflow/react';
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Link2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Link2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MousePointer2, Pencil, Plus, Redo2, Square, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { toast } from '@/lib/toast';
@@ -80,13 +80,19 @@ interface BoardNodeData extends Record<string, unknown> {
   shape: BoardShape | null;
   inkStroke: BoardInkStroke | null;
   onShapeTextCommit?: (shapeId: string, text: string) => void;
-  onShapeResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
-  onCardResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
-  onInkResize?: (nodeId: string, box: { x: number; y: number; width: number; height: number }) => void;
+  onShapeResize?: (nodeId: string, box: ResizeBoxRect, phase: ResizePhase) => void;
+  onCardResize?: (nodeId: string, box: ResizeBoxRect, phase: ResizePhase) => void;
+  onInkResize?: (nodeId: string, box: ResizeBoxRect, phase: ResizePhase) => void;
   initialEditing?: boolean;
 }
 
 type BoardNode = Node<BoardNodeData>;
+
+/** Resize box in flow coordinates, as reported by NodeResizer. */
+type ResizeBoxRect = { x: number; y: number; width: number; height: number };
+/** `live` fires on every drag frame (the node must redraw immediately),
+ * `end` fires once on release (commit to the document + history). */
+type ResizePhase = 'live' | 'end';
 
 /** Decoded pixel size of a data URL image. */
 function imageSizeOf(dataUrl: string): Promise<{ width: number; height: number }> {
@@ -148,7 +154,7 @@ function NoteCardNode({ data, selected }: NodeProps<BoardNode>) {
   const { t } = useI18n();
   const { card, summary } = data;
   const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
-    data.onCardResize?.(card.id, params);
+    data.onCardResize?.(card.id, params, 'end');
   const tags = summary?.tags.slice(0, 2) ?? [];
   const extraTags = (summary?.tags.length ?? 0) - tags.length;
   return (
@@ -192,7 +198,7 @@ function NoteCardNode({ data, selected }: NodeProps<BoardNode>) {
 function StickyNode({ data, selected }: NodeProps<BoardNode>) {
   const { card } = data;
   const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
-    data.onCardResize?.(card.id, params);
+    data.onCardResize?.(card.id, params, 'end');
   return (
     <div className="h-full w-full overflow-hidden rounded-[10px] border border-amber-300/60 bg-amber-50 p-2 shadow-sm dark:border-amber-500/30 dark:bg-amber-950/40">
       <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
@@ -206,7 +212,7 @@ function StickyNode({ data, selected }: NodeProps<BoardNode>) {
 
 function ImageCardNode({ data, selected }: NodeProps<BoardNode>) {
   const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
-    data.onCardResize?.(data.card.id, params);
+    data.onCardResize?.(data.card.id, params, 'end');
   const { t } = useI18n();
   const { dataUrl } = data;
   return (
@@ -229,7 +235,7 @@ function CanvasRefNode({ data, selected }: NodeProps<BoardNode>) {
   const { t } = useI18n();
   const { card } = data;
   const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
-    data.onCardResize?.(card.id, params);
+    data.onCardResize?.(card.id, params, 'end');
   return (
     <div className="flex h-full w-full flex-col overflow-hidden rounded-[10px] border border-[var(--border)] bg-[var(--card)] shadow-sm">
       <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
@@ -327,7 +333,8 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
     <div className="relative h-full w-full" style={{ opacity: (shape.opacity ?? 100) / 100 }}>
       <ResizeBox
         visible={selected && shape.shape !== 'arrow'}
-        onResizeEnd={(_, params) => data.onShapeResize?.(shape.id, params)}
+        onResize={(_, params) => data.onShapeResize?.(shape.id, params, 'live')}
+        onResizeEnd={(_, params) => data.onShapeResize?.(shape.id, params, 'end')}
       />
       {sketch}
       <div
@@ -372,8 +379,8 @@ function InkNode({ data, selected }: NodeProps<BoardNode>) {
   const stroke = data.inkStroke;
   if (!stroke) return null;
   const box = inkBox(stroke);
-  const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
-    data.onInkResize?.(stroke.id, params);
+  const onResize = (_: unknown, params: ResizeBoxRect) => data.onInkResize?.(stroke.id, params, 'live');
+  const onResizeEnd = (_: unknown, params: ResizeBoxRect) => data.onInkResize?.(stroke.id, params, 'end');
   return (
     <div
       className="relative h-full w-full"
@@ -381,7 +388,7 @@ function InkNode({ data, selected }: NodeProps<BoardNode>) {
         ? { outline: '1px solid color-mix(in srgb, var(--muted-foreground) 55%, transparent)' }
         : undefined}
     >
-      <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
+      <ResizeBox visible={selected} onResize={onResize} onResizeEnd={onResizeEnd} />
       <svg className="pointer-events-none" style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible' }}>
         <g transform={`translate(${-box.x},${-box.y})`}>
           <path d={inkPathFor(stroke)} fill={stroke.color} />
@@ -392,18 +399,25 @@ function InkNode({ data, selected }: NodeProps<BoardNode>) {
 }
 
 /** Obsidian-style resize controls shared by every resizable node type. */
-function ResizeBox({ visible, onResizeEnd }: {
+function ResizeBox({ visible, onResize, onResizeEnd }: {
   visible: boolean;
-  onResizeEnd: (_: unknown, params: { x: number; y: number; width: number; height: number }) => void;
+  /** Fires on every drag frame; the node redraws its content immediately. */
+  onResize?: (_: unknown, params: ResizeBoxRect) => void;
+  onResizeEnd: (_: unknown, params: ResizeBoxRect) => void;
 }) {
   return (
     <NodeResizer
       isVisible={visible}
       minWidth={40}
       minHeight={30}
+      {...(onResize ? { onResize } : {})}
       onResizeEnd={onResizeEnd}
-      lineClassName="!border-[var(--muted-foreground)]/60"
-      handleClassName="!h-2.5 !w-2.5 !rounded-[3px] !bg-[var(--card)] !border !border-[var(--muted-foreground)] !shadow-sm"
+      // z-10 lifts the controls above the node's own content layers (the
+      // absolute text div paints after them and otherwise steals half of each
+      // handle), so the whole handle grabs instead of only the quadrant that
+      // pokes outside the node box.
+      lineClassName="!z-10 !border-[var(--muted-foreground)]/60"
+      handleClassName="!z-10 !h-2.5 !w-2.5 !rounded-[3px] !bg-[var(--card)] !border !border-[var(--muted-foreground)] !shadow-sm"
     />
   );
 }
@@ -448,6 +462,14 @@ const FONT_SIZES = [12, 16, 20, 28, 36];
 const FONT_SIZE_LABELS = ['XS', 'S', 'M', 'L', 'XL'] as const;
 const TEXT_ALIGNS = ['left', 'center', 'right'] as const;
 const TEXT_FONT_KEYS = ['hand', 'sans', 'mono', 'bold', 'serif'] as const;
+/** Menu labels for the font row (Obsidian lists the faces by name). */
+const FONT_LABEL_KEYS: Record<(typeof TEXT_FONT_KEYS)[number], 'canvas.board.style.fontHand' | 'canvas.board.style.fontSans' | 'canvas.board.style.fontMono' | 'canvas.board.style.fontBold' | 'canvas.board.style.fontSerif'> = {
+  hand: 'canvas.board.style.fontHand',
+  sans: 'canvas.board.style.fontSans',
+  mono: 'canvas.board.style.fontMono',
+  bold: 'canvas.board.style.fontBold',
+  serif: 'canvas.board.style.fontSerif',
+};
 const INK_WIDTHS = [2, 5, 10];
 /** Ink renders above cards: annotation strokes cross card bodies like on a whiteboard. */
 const INK_Z_INDEX = 20;
@@ -555,7 +577,7 @@ function shapeNodeFor(
     id: shape.id,
     type: 'shape',
     position: { x: box.x, y: box.y },
-    zIndex: 5,
+    zIndex: shape.z ?? 5,
     data: {
       card: { id: shape.id, kind: 'text', x: box.x, y: box.y, w: box.w, h: box.h },
       dataUrl: null,
@@ -613,7 +635,7 @@ function inkNodeFor(stroke: BoardInkStroke): BoardNode {
     id: stroke.id,
     type: 'ink',
     position: { x: box.x, y: box.y },
-    zIndex: 20,
+    zIndex: stroke.z ?? 20,
     data: {
       card: { id: stroke.id, kind: 'text', x: box.x, y: box.y, w: box.w, h: box.h },
       dataUrl: null,
@@ -683,7 +705,7 @@ function buildBoardGraph(
       id: card.id,
       type: nodeKindForCard(card),
       position: { x: card.x, y: card.y },
-      zIndex: 10,
+      zIndex: card.z ?? 10,
       data: {
         card,
         dataUrl: card.fileId ? dataUrls.get(card.fileId) ?? null : null,
@@ -695,7 +717,7 @@ function buildBoardGraph(
       style: { width: card.w, height: card.h },
     });
   }
-  const cardIds = new Set(nodes.filter((node) => node.zIndex === 10 || node.zIndex === 5).map((node) => node.id));
+  const cardIds = new Set(nodes.filter((node) => node.type !== 'frame' && node.type !== 'ink').map((node) => node.id));
   const edges: Edge[] = [];
   for (const edge of readBoardEdges(document)) {
     if (!cardIds.has(edge.from) || !cardIds.has(edge.to)) continue;
@@ -772,6 +794,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [shapePreview, setShapePreview] = useState<{ start: number[]; end: number[] } | null>(null);
   const [selectedShapeIds, setSelectedShapeIds] = useState<string[]>([]);
   const [selectedInkIds, setSelectedInkIds] = useState<string[]>([]);
+  const [selectedCardIds, setSelectedCardIds] = useState<string[]>([]);
   const selectedIdsRef = useRef<string[]>([]);
   /** Linear undo stack of serialized documents; index points at the current one. */
   const historyRef = useRef<{ stack: string[]; index: number }>({ stack: [], index: -1 });
@@ -786,6 +809,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const [toolStrokeStyle, setToolStrokeStyle] = useState<BoardStrokeStyle>('solid');
   const [toolFontSize, setToolFontSize] = useState(20);
   const [toolFontFamily, setToolFontFamily] = useState<'hand' | 'sans' | 'mono' | 'bold' | 'serif'>('hand');
+  /** Obsidian: the font row keeps a hand shortcut plus an "A" menu button. */
+  const [fontMenuOpen, setFontMenuOpen] = useState(false);
   const [toolTextAlign, setToolTextAlign] = useState<'left' | 'center' | 'right'>('center');
   const [toolOpacity, setToolOpacity] = useState(100);
   const [toolPressure, setToolPressure] = useState(true);
@@ -803,10 +828,21 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
   const inkRef = useRef<BoardInkStroke[]>([]);
   const shapesRef = useRef<BoardShape[]>([]);
   const shapeDraftRef = useRef<{ start: number[]; current: number[] } | null>(null);
-  const handleShapeResizeRef = useRef<(nodeId: string, box: { x: number; y: number; width: number; height: number }) => void>(() => {});
+  /** Geometry captured at the start of a resize gesture (shapes / ink). */
+  const resizeBaseRef = useRef<{
+    id: string;
+    kind: 'shape' | 'ink';
+    x: number;
+    y: number;
+    w: number;
+    h: number;
+    fontSize?: number;
+    points?: number[][];
+  } | null>(null);
+  const handleShapeResizeRef = useRef<(nodeId: string, box: ResizeBoxRect, phase?: ResizePhase) => void>(() => {});
   const applyGraphRef = useRef<(document: FlowixCanvasDocument) => void>(() => {});
-  const handleCardResizeRef = useRef<(nodeId: string, box: { x: number; y: number; width: number; height: number }) => void>(() => {});
-  const handleInkResizeRef = useRef<(nodeId: string, box: { x: number; y: number; width: number; height: number }) => void>(() => {});
+  const handleCardResizeRef = useRef<(nodeId: string, box: ResizeBoxRect, phase?: ResizePhase) => void>(() => {});
+  const handleInkResizeRef = useRef<(nodeId: string, box: ResizeBoxRect, phase?: ResizePhase) => void>(() => {});
   /** Filled after `scheduleFlush` exists; card/shape callbacks may run earlier. */
   const scheduleFlushRef = useRef<() => void>(() => {});
   const pushHistoryRef = useRef<() => void>(() => {});
@@ -856,6 +892,15 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       : notebooksRef.current[0]?.path;
     if (!root) return null;
     return `${root.replace(/[\\/]+$/, '')}/${card.path.replace(/^[\\/]+/, '')}`;
+  }, []);
+
+  /** Next free stacking slot: new elements land on top of everything. */
+  const nextZ = useCallback(() => {
+    let max = 0;
+    for (const shape of shapesRef.current) max = Math.max(max, shape.z ?? 5);
+    for (const card of cardsRef.current) max = Math.max(max, card.z ?? 10);
+    for (const stroke of inkRef.current) max = Math.max(max, stroke.z ?? 20);
+    return max + 1;
   }, []);
 
   const commitShapeText = useCallback((shapeId: string, text: string) => {
@@ -1105,6 +1150,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     selectedIdsRef.current = ids;
     setSelectedShapeIds(selected.filter((node) => node.type === 'shape').map((node) => node.id));
     setSelectedInkIds(selected.filter((node) => node.type === 'ink').map((node) => node.id));
+    setSelectedCardIds(selected.filter((node) => node.type !== 'frame' && node.type !== 'shape' && node.type !== 'ink').map((node) => node.id));
   }, []);
 
   /** No-op: the selection mirror is derived from the node list. */
@@ -1215,34 +1261,91 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     pushHistory();
   }, [scheduleFlush]);
 
-  /** Resize handles write the new box straight back into the document. */
-  const handleShapeResize = useCallback((nodeId: string, box: { x: number; y: number; width: number; height: number }) => {
+  /**
+   * Resize live/commit for shapes.
+   *
+   * `live` fires on every drag frame: the shape's geometry is rewritten and the
+   * node's data/size are replaced in place, so the rough paths (and labels)
+   * grow with the handle instead of waiting for release. On release the
+   * geometry already on screen is committed to the document, history records
+   * it and the graph is rebuilt from that truth.
+   *
+   * Text elements scale uniformly: the box keeps the aspect ratio implied by
+   * the label and the font size tracks the box, so the text keeps filling it.
+   */
+  const applyShapeResize = useCallback((nodeId: string, box: ResizeBoxRect, shape: BoardShape) => {
+    const base = resizeBaseRef.current?.id === nodeId
+      ? resizeBaseRef.current
+      : (resizeBaseRef.current = { id: nodeId, kind: 'shape', x: shape.x, y: shape.y, w: shape.w, h: shape.h, fontSize: shape.fontSize ?? FONT_SIZES[2] });
+    if (shape.shape === 'text') {
+      // Uniform scale from the box the drag started with; anchor at the box
+      // center so the label stays under the pointer while it grows.
+      const baseW = base.w + SHAPE_PADDING * 2;
+      const baseH = base.h + SHAPE_PADDING * 2;
+      const scale = Math.sqrt(Math.max(0.05, box.width / baseW) * Math.max(0.05, box.height / baseH));
+      const w = Math.max(16, base.w * scale);
+      const h = Math.max(16, base.h * scale);
+      const cx = box.x + box.width / 2;
+      const cy = box.y + box.height / 2;
+      shape.x = cx - w / 2;
+      shape.y = cy - h / 2;
+      shape.w = w;
+      shape.h = h;
+      shape.fontSize = Math.max(6, Math.round((base.fontSize ?? shape.fontSize ?? FONT_SIZES[2]) * scale));
+      return;
+    }
+    shape.x = box.x + SHAPE_PADDING;
+    shape.y = box.y + SHAPE_PADDING;
+    shape.w = Math.max(16, box.width - SHAPE_PADDING * 2);
+    shape.h = Math.max(16, box.height - SHAPE_PADDING * 2);
+  }, []);
+
+  const handleShapeResize = useCallback((nodeId: string, box: ResizeBoxRect, phase: ResizePhase = 'end') => {
     const document = documentRef.current;
     if (!document) return;
     const shape = shapesRef.current.find((item) => item.id === nodeId);
     if (!shape) return;
-    const x = box.x + SHAPE_PADDING;
-    const y = box.y + SHAPE_PADDING;
-    const w = Math.max(16, box.width - SHAPE_PADDING * 2);
-    const h = Math.max(16, box.height - SHAPE_PADDING * 2);
-    if (shape.x === x && shape.y === y && shape.w === w && shape.h === h) return;
-    shape.x = x;
-    shape.y = y;
-    shape.w = w;
-    shape.h = h;
+    if (phase === 'live') {
+      applyShapeResize(nodeId, box, shape);
+      // Redraw this node only: rebuilding the whole graph every frame would
+      // fight the drag and drop the selection.
+      const next = { ...shape };
+      const nodeBox = shapeBoxWithPadding(next);
+      // React Flow emits its own dimension change right after this callback,
+      // so a synchronous update would be overwritten and the box would show
+      // the raw drag rect (text boxes are snapped to the label's aspect).
+      queueMicrotask(() => setNodes((current) => current.map((node) => (node.id === nodeId
+        ? {
+          ...node,
+          data: { ...node.data, shape: next },
+          // Both the layout fields and the inline style: React Flow's own
+          // dimension change writes width/height, and the renderer prefers
+          // those over style.
+          width: nodeBox.w,
+          height: nodeBox.h,
+          style: { ...node.style, width: nodeBox.w, height: nodeBox.h },
+        }
+        : node))));
+      return;
+    }
+    // Live frames already wrote the geometry on screen. The end event reports
+    // d3's release point, which differs slightly from the last move frame — so
+    // recomputing here made the element jump on mouse-up. Commit what the user
+    // sees. Without live frames (a click, not a drag) honor the reported box.
+    if (resizeBaseRef.current?.id !== nodeId) applyShapeResize(nodeId, box, shape);
+    resizeBaseRef.current = null;
     document.shapes = shapesRef.current;
-    // The rough paths are generated from the shape geometry, so the node must
-    // be rebuilt — otherwise only the hit box grows and the drawing stays put.
+    // Rebuild from the document so node boxes, hit areas and selection rings
+    // all agree with the committed geometry.
     applyGraphRef.current(document);
     scheduleFlush();
     pushHistory();
-  }, [pushHistory, scheduleFlush]);
+  }, [applyShapeResize, pushHistory, scheduleFlush]);
 
-  // No dependency array: the callback runs after the handler's declaration is
-  // initialized, so it can be assigned without a TDZ read during render.
   // No dependency array: runs after render, once every handler below is
   // initialized (avoids TDZ reads of the consts declared further down).
   useEffect(() => {
+    applyGraphRef.current = applyGraph;
     handleShapeResizeRef.current = handleShapeResize;
     handleCardResizeRef.current = handleCardResize;
     handleInkResizeRef.current = handleInkResize;
@@ -1283,27 +1386,35 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     if (clipboard.cards.length === 0 && clipboard.shapes.length === 0 && clipboard.ink.length === 0) return;
     const offset = 28;
     const newIds: string[] = [];
+    // Clones land on top of the stack, one slot each.
+    let cloneZ = nextZ();
     const nextCards = [...cardsRef.current, ...clipboard.cards.map((card) => {
-      const clone = { ...card, id: `${card.id.split('_')[0]}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`, x: card.x + offset, y: card.y + offset };
+      const clone = { ...card, id: `${card.id.split('_')[0]}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`, x: card.x + offset, y: card.y + offset, z: cloneZ };
+      cloneZ += 1;
       newIds.push(clone.id);
       return clone;
     })];
     const nextShapes = [...shapesRef.current, ...clipboard.shapes.map((shape) => {
       const id = shapeId();
       newIds.push(id);
-      return {
+      const clone = {
         ...shape,
         id,
         x: shape.x + offset,
         y: shape.y + offset,
+        z: cloneZ,
         ...(shape.x2 !== undefined ? { x2: shape.x2 + offset } : {}),
         ...(shape.y2 !== undefined ? { y2: shape.y2 + offset } : {}),
       };
+      cloneZ += 1;
+      return clone;
     })];
     const nextInk = [...inkRef.current, ...clipboard.ink.map((stroke) => {
       const id = inkStrokeId();
       newIds.push(id);
-      return { ...stroke, id, points: stroke.points.map(([x, y]) => [x + offset, y + offset]) };
+      const clone = { ...stroke, id, z: cloneZ, points: stroke.points.map(([x, y]) => [x + offset, y + offset]) };
+      cloneZ += 1;
+      return clone;
     })];
     cardsRef.current = nextCards;
     shapesRef.current = nextShapes;
@@ -1316,7 +1427,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     applyGraph(document);
     scheduleFlush();
     pushHistory();
-  }, [applyGraph, pushHistory, scheduleFlush]);
+  }, [applyGraph, nextZ, pushHistory, scheduleFlush]);
 
   const duplicateSelection = useCallback(() => {
     copySelection();
@@ -1375,6 +1486,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       y: params.flowY,
       w: width,
       h: height,
+      z: nextZ(),
       fileId,
     };
     document.files = {
@@ -1389,7 +1501,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     applyGraphRef.current(document);
     scheduleFlush();
     pushHistory();
-  }, [filePath, pushHistory, scheduleFlush, t]);
+  }, [filePath, nextZ, pushHistory, scheduleFlush, t]);
 
   /** Insert whatever image files the clipboard or a drop carries. */
   const insertImageFiles = useCallback(async (files: File[], flowX: number, flowY: number) => {
@@ -1466,8 +1578,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     }
   }, [filePath, insertImage, reactFlow, t]);
 
-  /** Card resize writes the new box straight into the card. */
-  const handleCardResize = useCallback((nodeId: string, box: { x: number; y: number; width: number; height: number }) => {
+  /** Card resize writes the new box straight into the card. The card body
+   * already grows live (NodeResizer resizes the node box and the content
+   * fills it), so only the release has to reach the document. */
+  const handleCardResize = useCallback((nodeId: string, box: ResizeBoxRect, phase: ResizePhase = 'end') => {
+    if (phase === 'live') return;
     const document = documentRef.current;
     if (!document) return;
     const card = cardsRef.current.find((item) => item.id === nodeId);
@@ -1485,22 +1600,61 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     pushHistory();
   }, [pushHistory, scheduleFlush]);
 
-  /** Ink resize scales every point from the old bbox into the new one. */
-  const handleInkResize = useCallback((nodeId: string, box: { x: number; y: number; width: number; height: number }) => {
+/**
+ * Ink resize scales every point from the bbox captured when the drag started
+ * into the live box. Live frames redraw just this node; the release commits.
+ */
+  const handleInkResize = useCallback((nodeId: string, box: ResizeBoxRect, phase: ResizePhase = 'end') => {
     const document = documentRef.current;
     if (!document) return;
     const stroke = inkRef.current.find((item) => item.id === nodeId);
     if (!stroke) return;
-    const oldBox = inkBox(stroke);
+    // The stroke mutates every frame, so the source bbox must be snapshotted
+    // once per gesture — re-deriving it from the live points compounds the scale.
+    const gestureActive = resizeBaseRef.current?.id === nodeId;
+    if (phase === 'end' && gestureActive) {
+      // The points already hold the last live frame; the end event's box is
+      // d3's release point and would shift the stroke on mouse-up.
+      resizeBaseRef.current = null;
+      document.ink = inkRef.current;
+      applyGraphRef.current(document);
+      scheduleFlush();
+      pushHistory();
+      return;
+    }
+    const base = gestureActive
+      ? resizeBaseRef.current
+      : (resizeBaseRef.current = {
+        id: nodeId,
+        kind: 'ink',
+        ...inkBox(stroke),
+        // Explicit copy: the stroke's own points array is rewritten below.
+      });
+    if (!base || base.kind !== 'ink') return;
+    const basePoints = base.points ?? (base.points = stroke.points.map(([x, y]) => [x, y]));
     const w = Math.max(40, box.width);
     const h = Math.max(30, box.height);
-    if (box.x === oldBox.x && box.y === oldBox.y && w === oldBox.w && h === oldBox.h) return;
-    const sx = oldBox.w === 0 ? 1 : w / oldBox.w;
-    const sy = oldBox.h === 0 ? 1 : h / oldBox.h;
-    stroke.points = stroke.points.map(([x, y]) => [
-      box.x + (x - oldBox.x) * sx,
-      box.y + (y - oldBox.y) * sy,
+    const sx = base.w === 0 ? 1 : w / base.w;
+    const sy = base.h === 0 ? 1 : h / base.h;
+    stroke.points = basePoints.map(([x, y]) => [
+      box.x + (x - base.x) * sx,
+      box.y + (y - base.y) * sy,
     ]);
+    if (phase === 'live') {
+      const next = { ...stroke, points: stroke.points };
+      const nodeBox = inkBox(next);
+      queueMicrotask(() => setNodes((current) => current.map((node) => (node.id === nodeId
+        ? {
+          ...node,
+          data: { ...node.data, inkStroke: next },
+          width: nodeBox.w,
+          height: nodeBox.h,
+          style: { ...node.style, width: nodeBox.w, height: nodeBox.h },
+        }
+        : node))));
+      return;
+    }
+    resizeBaseRef.current = null;
     document.ink = inkRef.current;
     applyGraphRef.current(document);
     scheduleFlush();
@@ -1522,6 +1676,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       w: 240,
       h: 40,
       stroke: penColor,
+      z: nextZ(),
       fontSize: toolFontSize,
       fontFamily: toolFontFamily,
       textAlign: toolTextAlign,
@@ -1532,7 +1687,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     setNodes((current) => [...current, shapeNodeFor(shape, commitShapeText, handleShapeResizeRef.current, true)]);
     scheduleFlush();
     pushHistory();
-  }, [commitShapeText, penColor, pushHistory, reactFlow, readOnly, scheduleFlush, tool, toolFontFamily, toolFontSize, toolTextAlign]);
+  }, [commitShapeText, nextZ, penColor, pushHistory, reactFlow, readOnly, scheduleFlush, tool, toolFontFamily, toolFontSize, toolTextAlign]);
 
   /** Delete key on a selected card/shape edits the document, not just the view. */
   const removeByIds = useCallback((ids: string[]) => {
@@ -1569,55 +1724,65 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
     removeByIds(deleted.map((node) => node.id));
   }, [removeByIds]);
 
-  /** Layer ordering within cards/shapes arrays; front/back jump the ends. */
+  /** Global stacking across shapes/cards/ink: normalize to dense z values,
+   * move the picked elements, then write each array back in stacking order.
+   * Type defaults only apply until the first layer op assigns explicit z. */
   const moveSelectedLayer = useCallback((layer: 'front' | 'forward' | 'backward' | 'back') => {
     const document = documentRef.current;
-    if (!document || selectedShapeIds.length === 0) return;
-    const ids = new Set(selectedShapeIds);
-    const reorder = (list: (BoardShape | BoardCard)[]) => {
-      const picked = list.filter((item) => ids.has(item.id));
-      if (picked.length === 0) return list;
-      const rest = list.filter((item) => !ids.has(item.id));
-      if (layer === 'front') return [...rest, ...picked];
-      if (layer === 'back') return [...picked, ...rest];
-      const next = [...list];
-      const step = layer === 'forward' ? 1 : -1;
-      const indexes = next.map((item, index) => (ids.has(item.id) ? index : -1)).filter((index) => index >= 0);
-      if (step === 1) {
-        for (let i = indexes.length - 1; i >= 0; i -= 1) {
-          const index = indexes[i];
-          if (index < next.length - 1) {
-            [next[index], next[index + 1]] = [next[index + 1], next[index]];
+    if (!document) return;
+    const ids = new Set([...selectedShapeIds, ...selectedCardIds, ...selectedInkIds]);
+    if (ids.size === 0) return;
+    const defaultZ = { shape: 5, card: 10, ink: 20 } as const;
+    type Entry = { el: BoardShape | BoardCard | BoardInkStroke; kind: keyof typeof defaultZ };
+    const entries: Entry[] = [
+      ...shapesRef.current.map((el) => ({ el, kind: 'shape' as const })),
+      ...cardsRef.current.map((el) => ({ el, kind: 'card' as const })),
+      ...inkRef.current.map((el) => ({ el, kind: 'ink' as const })),
+    ];
+    const zOf = (entry: Entry) => entry.el.z ?? defaultZ[entry.kind];
+    // Stable order: explicit z, array position breaks ties (legacy files).
+    const stack = entries
+      .map((entry, index) => ({ entry, index }))
+      .sort((a, b) => zOf(a.entry) - zOf(b.entry) || a.index - b.index)
+      .map(({ entry }) => entry);
+    let next: Entry[];
+    if (layer === 'front') {
+      next = [...stack.filter((entry) => !ids.has(entry.el.id)), ...stack.filter((entry) => ids.has(entry.el.id))];
+    } else if (layer === 'back') {
+      next = [...stack.filter((entry) => ids.has(entry.el.id)), ...stack.filter((entry) => !ids.has(entry.el.id))];
+    } else {
+      next = [...stack];
+      if (layer === 'forward') {
+        for (let i = next.length - 2; i >= 0; i -= 1) {
+          if (ids.has(next[i].el.id) && !ids.has(next[i + 1].el.id)) {
+            [next[i], next[i + 1]] = [next[i + 1], next[i]];
           }
         }
       } else {
-        for (const index of indexes) {
-          if (index > 0) {
-            [next[index], next[index - 1]] = [next[index - 1], next[index]];
+        for (let i = 1; i < next.length; i += 1) {
+          if (ids.has(next[i].el.id) && !ids.has(next[i - 1].el.id)) {
+            [next[i], next[i - 1]] = [next[i - 1], next[i]];
           }
         }
       }
-      return next;
-    };
-    document.shapes = reorder(shapesRef.current);
-    document.cards = reorder(cardsRef.current);
-    // Ink has its own stacking array; reorder it too so card/shape/ink
-    // relative order within each layer still responds to the buttons.
-    const inkIds = new Set(selectedInkIds);
-    const pickedInk = inkRef.current.filter((stroke) => inkIds.has(stroke.id));
-    if (pickedInk.length > 0) {
-      const restInk = inkRef.current.filter((stroke) => !inkIds.has(stroke.id));
-      document.ink = layer === 'front' ? [...restInk, ...pickedInk]
-        : layer === 'back' ? [...pickedInk, ...restInk]
-          : inkRef.current;
-      inkRef.current = document.ink as BoardInkStroke[];
     }
-    shapesRef.current = [...document.shapes] as BoardShape[];
-    cardsRef.current = [...document.cards] as BoardCard[];
+    // Dense re-assignment keeps future inserts and repeat presses well-ordered.
+    const shapesOut: BoardShape[] = [];
+    const cardsOut: BoardCard[] = [];
+    const inkOut: BoardInkStroke[] = [];
+    next.forEach((entry, index) => {
+      entry.el.z = index + 1;
+      if (entry.kind === 'shape') shapesOut.push(entry.el as BoardShape);
+      else if (entry.kind === 'card') cardsOut.push(entry.el as BoardCard);
+      else inkOut.push(entry.el as BoardInkStroke);
+    });
+    document.shapes = shapesRef.current = shapesOut;
+    document.cards = cardsRef.current = cardsOut;
+    document.ink = inkRef.current = inkOut;
     applyGraph(document);
     scheduleFlush();
     pushHistory();
-  }, [applyGraph, pushHistory, scheduleFlush, selectedShapeIds]);
+  }, [applyGraph, pushHistory, scheduleFlush, selectedCardIds, selectedInkIds, selectedShapeIds]);
 
   const handleNodeDragStart = useCallback((_event: unknown, node: BoardNode, dragged: BoardNode[]) => {
     // On touch, a node drag must not summon the properties panel (Obsidian
@@ -1825,6 +1990,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           w: Math.abs(arrowEnd[0] - arrowStart[0]),
           h: Math.abs(arrowEnd[1] - arrowStart[1]),
           stroke: penColor,
+          z: nextZ(),
           ...(toolStrokeStyle !== 'solid' ? { strokeStyle: toolStrokeStyle } : {}),
           ...(toolRoughness !== 1 ? { roughness: toolRoughness } : {}),
           ...(toolOpacity < 100 ? { opacity: toolOpacity } : {}),
@@ -1837,6 +2003,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           w: box.w,
           h: box.h,
           stroke: penColor,
+          z: nextZ(),
           ...(isLabel
             ? { fontSize: toolFontSize, fontFamily: toolFontFamily, textAlign: toolTextAlign, text: '' }
             : {
@@ -1867,9 +2034,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
       points: stroke,
       color: penColor,
       width: penWidth,
+      z: nextZ(),
       ...(toolPressure ? {} : { pressure: false }),
     }]);
-  }, [applyGraph, commitShapeText, penColor, penWidth, pushHistory, scheduleFlush, syncInkToDocument, tool]);
+  }, [applyGraph, commitShapeText, nextZ, penColor, penWidth, pushHistory, scheduleFlush, syncInkToDocument, tool]);
 
   // Native capture-phase listeners: React's synthetic pointer events never
   // reached these handlers for real touch input on Android (only synthetic
@@ -2247,11 +2415,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           {toolLocked ? <Lock className="h-3.5 w-3.5" /> : <LockOpen className="h-3.5 w-3.5" />}
         </button>
       </div>
-      <div className="absolute bottom-4 left-3 z-30 flex flex-col items-start gap-2">
+      <div className="absolute bottom-4 left-3 z-30 flex max-h-[calc(100%-120px)] flex-col items-start gap-2">
         {(tool === 'pen' || isShapeTool(tool) || selectionMode) && !panelCollapsed ? (
         <div
           data-board-toolbar
-          className="flex max-h-[calc(100%-120px)] w-[184px] flex-col gap-2.5 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
+          className="flex min-h-0 w-[184px] flex-col gap-2.5 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
         >
           {!cardOnlySelection ? (
           <PanelRow label={t('canvas.board.style.stroke')}>
@@ -2407,22 +2575,53 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, onSurfaceLifec
           ) : null}
           {showFontFamily ? (
             <PanelRow label={t('canvas.board.style.font')}>
-              {TEXT_FONT_KEYS.map((key) => (
+              <button
+                type="button"
+                aria-label={t('canvas.board.style.fontHand')}
+                aria-pressed={styleFontFamily === 'hand'}
+                onClick={() => (selectionMode ? patchSelectedShapes({ fontFamily: 'hand' }) : setToolFontFamily('hand'))}
+                className={toolButtonClass(styleFontFamily === 'hand')}
+              >
+                <Pencil className="h-3.5 w-3.5" />
+              </button>
+              <div
+                className="relative"
+                onBlur={(event) => { if (!event.currentTarget.contains(event.relatedTarget as HTMLElement | null)) setFontMenuOpen(false); }}
+              >
                 <button
-                  key={key}
                   type="button"
-                  aria-label={`${t('canvas.board.style.font')} ${key}`}
-                  onClick={() => (selectionMode ? patchSelectedShapes({ fontFamily: key }) : setToolFontFamily(key))}
-                  className={toolButtonClass(styleFontFamily === key)}
+                  aria-label={t('canvas.board.style.fontMenu')}
+                  aria-expanded={fontMenuOpen}
+                  className={`${toolButtonClass(fontMenuOpen)} flex items-center gap-0.5`}
+                  onClick={() => setFontMenuOpen((open) => !open)}
                 >
-                  <span style={{ fontFamily: TEXT_FONTS[key], fontSize: 13, fontWeight: TEXT_FONT_WEIGHTS[key] }}>
-                    {key === 'hand' ? <Pencil className="h-3.5 w-3.5" />
-                      : key === 'mono' ? '</>'
-                        : key === 'bold' ? 'B'
-                          : 'A'}
-                  </span>
+                  <span style={{ fontFamily: TEXT_FONTS[styleFontFamily], fontWeight: TEXT_FONT_WEIGHTS[styleFontFamily] }}>A</span>
+                  <ChevronUp className="h-2.5 w-2.5" />
                 </button>
-              ))}
+                {fontMenuOpen ? (
+                  <div className="absolute bottom-full left-0 z-40 mb-1 w-28 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-md">
+                    {TEXT_FONT_KEYS.map((key) => {
+                      const label = t(FONT_LABEL_KEYS[key]);
+                      return (
+                        <button
+                          key={key}
+                          type="button"
+                          aria-label={label}
+                          onClick={() => {
+                            if (selectionMode) patchSelectedShapes({ fontFamily: key });
+                            else setToolFontFamily(key);
+                            setFontMenuOpen(false);
+                          }}
+                          className={`flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-left text-xs text-[var(--foreground)] hover:bg-[var(--muted)] ${styleFontFamily === key ? 'bg-[var(--muted)]' : ''}`}
+                        >
+                          <span className="w-4 text-center text-[13px]" style={{ fontFamily: TEXT_FONTS[key], fontWeight: TEXT_FONT_WEIGHTS[key] }}>A</span>
+                          <span className="truncate">{label}</span>
+                        </button>
+                      );
+                    })}
+                  </div>
+                ) : null}
+              </div>
             </PanelRow>
           ) : null}
           {showFontSize ? (
