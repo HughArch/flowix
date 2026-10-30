@@ -83,6 +83,7 @@ import { type CanvasSurfaceViewProps } from './surface-props';
 import { boardToSvg, svgToPngBase64 } from './board-export';
 import { cachedRoughPaths, roughLineSketch } from './board-rough';
 import { alignShapes, distributeShapes, type BoardAlignMode } from './board-align';
+import { shapeGrowBoxHeight, shapeLabelWidth } from './shape-label';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@shared/ui/dropdown-menu';
@@ -453,7 +454,8 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   // Auto-fit while editing: the textarea is sized to its content (the flex
   // container keeps it vertically centered, so the caret starts in the middle
   // of the shape), and content that outgrows the box expands it around its
-  // center through the 'grow' resize phase.
+  // center through the 'grow' resize phase (per-shape factors and the
+  // convergence slack live in shape-label.ts).
   useLayoutEffect(() => {
     if (!editing) return;
     const element = textareaRef.current;
@@ -462,28 +464,13 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
     element.style.height = '0px';
     const contentH = element.scrollHeight;
     element.style.height = `${contentH}px`;
-    const pad = SHAPE_PADDING * 2;
-    let nextBoxH: number | null = null;
-    if (current.shape === 'text') {
-      // A text element's visible bounds are the selection ring, so the node
-      // box (shape + ring padding) must at least contain the text.
-      if (contentH + 2 > current.h + pad) nextBoxH = contentH + 2;
-    } else if (current.shape === 'rect' || current.shape === 'ellipse' || current.shape === 'diamond') {
-      // Closed shapes grow once the label would cross the drawn outline. The
-      // label lives in the shape's inscribed rectangle (full box for rects,
-      // 1/√2 for ellipses, 1/2 for diamonds — the same width the label wraps
-      // at), so the height follows that factor. Arrows and lines keep their
-      // two-point geometry and never grow. The reported box is the node box,
-      // centered on the shape center so growth stays symmetric.
-      const factor = SHAPE_LABEL_FACTORS[current.shape] ?? 1;
-      if (contentH > current.h * factor - 8) nextBoxH = (contentH + 8) / factor + pad;
-    }
+    const nextBoxH = shapeGrowBoxHeight(current.shape, current.h, contentH, SHAPE_PADDING);
     if (nextBoxH === null) return;
     const cy = current.y + current.h / 2;
     data.onShapeResize?.(current.id, {
       x: current.x - SHAPE_PADDING,
       y: cy - nextBoxH / 2,
-      width: current.w + pad,
+      width: current.w + SHAPE_PADDING * 2,
       height: nextBoxH,
     }, 'grow');
   }, [editing, draft, data]);
@@ -879,23 +866,6 @@ function textShapeAt(point: number[], align: 'left' | 'center' | 'right'): { x: 
     w,
     h,
   };
-}
-
-/** Fraction of the shape box the label may occupy (per axis). Ellipse and
- *  diamond labels are constrained to the inscribed rectangle so the text
- *  never crosses the curved or slanted outline; rect labels span the box. */
-const SHAPE_LABEL_FACTORS: Partial<Record<BoardShapeKind, number>> = {
-  ellipse: 1 / Math.SQRT2,
-  diamond: 0.5,
-};
-
-/** Wrap width for a label that must stay inside the drawn outline (the
- *  ellipse/diamond inscribed rectangle); null wraps at the node container
- *  (rects, text elements, arrows and lines). */
-function shapeLabelWidth(shape: BoardShape): number | null {
-  const factor = SHAPE_LABEL_FACTORS[shape.shape];
-  if (!factor) return null;
-  return Math.max(24, Math.round(shape.w * factor) - 8);
 }
 
 /** Bounding box of an ink stroke, padded for selection/hit area. */
