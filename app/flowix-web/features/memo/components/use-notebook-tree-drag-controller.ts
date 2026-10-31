@@ -443,7 +443,14 @@ export function useNotebookTreeDragController({
     window.setTimeout(() => {
       if (suppressOpenPathsRef.current === suppressedPaths) suppressOpenPathsRef.current = new Set();
     }, 0);
-    const handledByDropTarget = endDragSession(drag.dragPayload.sessionId, { x: event.clientX, y: event.clientY });
+    // 树内有效落点优先于画布/表格等全局 drop target——移动端这些视图
+    // 铺满整屏 (树是覆盖在其上的浮层), 不优先会被它们截走放置。
+    let handledByDropTarget = false;
+    if (drag.targetDirectoryPath) {
+      cancelDragSession(drag.dragPayload.sessionId);
+    } else {
+      handledByDropTarget = endDragSession(drag.dragPayload.sessionId, { x: event.clientX, y: event.clientY });
+    }
     if (handledByDropTarget || !drag.targetDirectoryPath) return;
     void handleDrop(drag.targetDirectoryPath, drag.sourceItems, drag.preserveSelectionAfterMove);
   }, [clearDragExpandTimer, handleDrop, stopDragAutoScroll]);
