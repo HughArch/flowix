@@ -709,6 +709,9 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "preferences.shortcuts.action.editor.undo.title": "Undo",
     "preferences.shortcuts.action.editor.undo.description":
       "Undo the last edit",
+    "preferences.shortcuts.action.document.saveAndSync.title": "Save and sync",
+    "preferences.shortcuts.action.document.saveAndSync.description":
+      "Save the current document and sync its notebook (FNS)",
     "preferences.shortcuts.action.editor.redo.title": "Redo",
     "preferences.shortcuts.action.editor.redo.description":
       "Redo the last undone edit",
@@ -1403,6 +1406,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "canvas.load.missing": "The canvas file does not exist or was deleted",
     "canvas.save.failed": "Failed to save the canvas",
     "canvas.save.filesDropped": "{count} image(s) were too large to keep in the canvas",
+    "canvas.board.save": "Save & sync",
     "canvas.board.doubleClickOpen": "Double-click to open the note",
     "canvas.board.tool.rect": "Rectangle",
     "canvas.board.tool.ellipse": "Ellipse",
