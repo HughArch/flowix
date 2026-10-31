@@ -65,6 +65,16 @@
   pointer-events: all;
 }
 
+/* The resizer gestures are d3-drag based: touchmove must be preventDefault-able
+ * from the very first move or the Android WebView's gesture recognizer takes
+ * over and fires touchcancel (the "resize follows for ~10px then snaps off"
+ * bug). d3 pins touch-action:none as an inline style when it binds, but a React
+ * re-render that recreates the control element briefly exposes a fresh node
+ * without it — pin it in CSS so the browser never sees a scrollable handle. */
+.react-flow__resize-control {
+  touch-action: none;
+}
+
 /* Fat invisible hit areas around the resize handles and edge strips: the
  * 10px handles / 5px lines need sniper precision with a mouse and are worse
  * with a finger. The ::before halo enlarges the grab zone without changing
