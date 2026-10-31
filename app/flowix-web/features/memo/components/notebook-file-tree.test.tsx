@@ -394,7 +394,7 @@ describe('NotebookFileTree pointer dragging', () => {
 
     await act(async () => folderRow.dispatchEvent(new MouseEvent('click', { bubbles: true, detail: 1 })));
     expect(onFolderSelect).not.toHaveBeenCalled();
-    await act(async () => vi.advanceTimersByTime(220));
+    await act(async () => vi.advanceTimersByTime(320));
     expect(onFolderSelect).toHaveBeenCalledWith('/notes/projects');
     expect(tree.toggle).not.toHaveBeenCalled();
 
@@ -1250,6 +1250,7 @@ describe('NotebookFileTree pointer dragging', () => {
     await act(async () => root.unmount());
   });
 
+  // 500 行虚拟列表要渲染多轮并逐帧滚动, 全量并行跑时默认 5s 预算不够。
   it('bounds mounted rows for a large mixed file tree and updates the window on scroll', async () => {
     const rootChildren = Array.from({ length: 500 }, (_, index) => ({
       ...item(`/notes/item-${String(index).padStart(3, '0')}.md`, 'document'),
@@ -1308,5 +1309,5 @@ describe('NotebookFileTree pointer dragging', () => {
     }
 
     await act(async () => root.unmount());
-  });
+  }, 20000);
 });

@@ -230,10 +230,11 @@ describe('list transforms', () => {
 
     expect(startBlockDragForView(view, { pos: sourcePos, nodeSize: source.nodeSize })).toBe(true)
     expect(dropBlockDragAtForView(view, 20, 25)).toBe(true)
-    expect(view.state.doc.childCount).toBe(3)
-    expect(view.state.doc.child(0).textContent).toBe('A')
-    expect(view.state.doc.child(1).textContent).toBe('Outside')
-    expect(view.state.doc.child(2).textContent).toBe('B')
+    // 172ff9b2 起普通段落拖到列表项之间会并入该列表成为新 item
+    // （保住有序列表编号、不在两个列表之间留裸段落），不再拆成两个列表。
+    expect(view.state.doc.childCount).toBe(1)
+    expect(itemsOf(view.state.doc.child(0)).map(node => node.firstChild?.textContent))
+      .toEqual(['A', 'Outside', 'B'])
   })
 
   it('splits a nested list when a root paragraph lands between its children', () => {
@@ -260,9 +261,12 @@ describe('list transforms', () => {
     const source = view.state.doc.nodeAt(sourcePos)!
     expect(startBlockDragForView(view, { pos: sourcePos, nodeSize: source.nodeSize })).toBe(true)
     expect(dropBlockDragAtForView(view, 20, 55)).toBe(true)
+    // 同上：落进嵌套列表项之间的段落并入该嵌套列表，而不是把它拆成两半。
     const parent = view.state.doc.firstChild!.firstChild!
-    expect(itemsOf(parent).slice(1).map(node => node.type.name))
-      .toEqual(['bulletList', 'paragraph', 'bulletList'])
+    const nested = parent.child(parent.childCount - 1)
+    expect(nested.type.name).toBe('bulletList')
+    expect(itemsOf(nested).map(node => node.firstChild?.textContent))
+      .toEqual(['A', 'Outside', 'B'])
   })
 
   it('nests a dragged task item under an ordinary item while keeping its checkbox', () => {

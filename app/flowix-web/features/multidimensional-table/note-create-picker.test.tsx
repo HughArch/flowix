@@ -26,9 +26,11 @@ function render(value = '', allowSelect = true) {
 }
 
 describe('shared note creation and selection', () => {
-  it('uses the same placeholder for creation-only and searchable entry points', () => {
+  it('gives creation-only entry points a compact name-only placeholder and no listbox', () => {
     const view = render('', false);
-    expect(view.textarea.placeholder).toBe('输入名称搜索 或 新建');
+    // 纯创建入口与可搜索入口自 03fa4900 起分开提示：无候选列表时
+    // 不再展示「搜索 或 新建」措辞，只提示输入笔记名称。
+    expect(view.textarea.placeholder).toBe('笔记名称');
     expect(view.container.querySelector('[role="listbox"]')).toBeNull();
   });
 

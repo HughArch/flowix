@@ -249,7 +249,7 @@ export function TableGalleryView({ records, titleField, fields, renderValue, ima
   </div>;
 }
 
-export function TableKanbanView({ groupField, titleField, records, groups, renderValue, recordStatus, noteIconForRecord, onDropRecord, onExternalNoteDrop, dropNotebookId, canDropExternal = false, onReorderLane, onAddTask, onAddLane, onOpenRecord, onRenameRecord, onDeleteRecord, canAddTask = true, canAddLane = true, embeddedInEditor = false }: {
+export function TableKanbanView({ groupField, titleField, records, groups, renderValue, recordStatus, noteIconForRecord, onDropRecord, onExternalNoteDrop, dropNotebookId, canDropExternal = false, canMoveRecords = true, onReorderLane, onAddTask, onAddLane, onOpenRecord, onRenameRecord, onDeleteRecord, canAddTask = true, canAddLane = true, embeddedInEditor = false }: {
   groupField: TableField;
   titleField: TableField;
   records?: TableRecord[];
@@ -261,6 +261,8 @@ export function TableKanbanView({ groupField, titleField, records, groups, rende
   onExternalNoteDrop?: (notes: NotebookNoteDragResource[], groupId: string, beforeRecordId: string | null) => void | Promise<void>;
   dropNotebookId?: string | null;
   canDropExternal?: boolean;
+  /** Whether records can be moved between lanes. Independent of external note drops. */
+  canMoveRecords?: boolean;
   onReorderLane: (sourceOptionId: string, targetOptionId: string, insertAfter: boolean) => void;
   onAddTask?: (groupId: string) => void;
   onAddLane?: () => void;
@@ -294,8 +296,8 @@ export function TableKanbanView({ groupField, titleField, records, groups, rende
   const pointerPositionRef = useRef({ x: 0, y: 0 });
   const floatingCardRef = useRef<HTMLElement | null>(null);
   const kanbanTargetId = useId();
-  const externalDropConfigRef = useRef({ groupField, dropNotebookId, canDropExternal, onExternalNoteDrop, onDropRecord });
-  externalDropConfigRef.current = { groupField, dropNotebookId, canDropExternal, onExternalNoteDrop, onDropRecord };
+  const externalDropConfigRef = useRef({ groupField, dropNotebookId, canDropExternal, canMoveRecords, onExternalNoteDrop, onDropRecord });
+  externalDropConfigRef.current = { groupField, dropNotebookId, canDropExternal, canMoveRecords, onExternalNoteDrop, onDropRecord };
   const laneOptions = groupField.options ?? [];
   const allRecords = useMemo(() => records ?? [...new Map([...groups.values()].flat().map((record) => [record.id, record])).values()], [groups, records]);
   const assignedRecordIds = new Set(laneOptions.flatMap((option) => groups.get(option.id) ?? []).map((record) => record.id));
@@ -389,7 +391,7 @@ export function TableKanbanView({ groupField, titleField, records, groups, rende
       const records = payload.items.filter(isKanbanRecordDragResource);
       if (records.length === payload.items.length) {
         if (records.length !== 1) return { accepted: false, reason: 'unsupported-resource' };
-        if (!config.canDropExternal) return { accepted: false, reason: 'read-only' };
+        if (!config.canMoveRecords) return { accepted: false, reason: 'read-only' };
         if (location.groupId !== KANBAN_UNASSIGNED_GROUP_ID
           && (!config.groupField.options?.some((option) => option.id === location.groupId) || !config.groupField.property_key)) {
           return { accepted: false, reason: 'unavailable' };

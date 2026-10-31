@@ -4,6 +4,10 @@ import { CONTEXT_PROMPT_MARKER } from "@features/agent/message";
 import type { ThreadProjection } from "@features/agent/store/session-reducer";
 import { emptyProjection } from "@features/agent/store/session-reducer";
 
+// beforeEach 里的 facade 链首次动态 import 冷编译在低端机超过默认 10s
+// hookTimeout（只有首个用例承担），放宽本文件的钩子与用例预算。
+vi.setConfig({ hookTimeout: 30_000, testTimeout: 30_000 });
+
 async function seedProjection(threadId: string, updater: (projection: ThreadProjection) => ThreadProjection) {
   const { useAgentSessionStore } = await import("@features/agent/store/agent-session-store");
   useAgentSessionStore.setState((state) => ({

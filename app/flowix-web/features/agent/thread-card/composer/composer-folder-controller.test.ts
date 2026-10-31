@@ -155,7 +155,9 @@ describe("ComposerFolderController", () => {
     const markdown = editor.getMarkdown();
     expect(markdown).toContain("flowix://folder/%2FUsers%2Frop%2FDesktop%2Fvibe%2Fflowix-main");
     expect(composerFolderMarkdownToPrompt(markdown)).toBe("请操作 @flowix-main ");
-    expect(document.querySelector(".agent-composer__folder-token")?.textContent)
+    // The chip renders an icon before the label, so assert the label node
+    // itself instead of the card's aggregate textContent.
+    expect(document.querySelector(".agent-composer__folder-token-label")?.textContent)
       .toBe("@flowix-main");
 
     controller.dispose();

@@ -1002,7 +1002,9 @@ fn mutate_locked(
         }
         let (item, path, source, mut document) = catalog.read(&request.collection_id)?;
         if let Some(locked_path) = locked_path {
-            if dunce::canonicalize(&path).map_err(|error| error.to_string())? != locked_path {
+            // locked_path 由文件锁以 std::fs::canonicalize 形态产生（Windows 带
+            // \\?\ 前缀）；这里必须用同一形态比较，dunce 会剥前缀导致恒不等。
+            if std::fs::canonicalize(&path).map_err(|error| error.to_string())? != locked_path {
                 return Err("COLLECTION_PATH_CHANGED".into());
             }
         }
@@ -1174,7 +1176,9 @@ fn mutate_locked(
             operation_id: operation.operation_id,
             status: status.into(),
             collection_id: request.collection_id.clone(),
-            actual_name: actual.collection.name,
+            // CollectionMetadata.name 已废弃（skip_serializing，parse 恒为空），
+            // 与 catalog 一致从路径派生展示名。
+            actual_name: display_name_for_path(&actual_path, actual.collection.placement),
             previous_relative_path: item.relative_path.clone(),
             notebook_path: catalog.root.to_string_lossy().into_owned(),
             actual_relative_path: actual_path

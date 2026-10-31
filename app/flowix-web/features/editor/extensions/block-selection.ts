@@ -229,10 +229,19 @@ export function resolveBlockContainer(doc: PMNode, pos: number): BlockContainer 
         index: $pos.index(parentDepth),
       }
     }
+    // Atom blocks (nodeSize 1) have no position inside them: `pos + 1` already
+    // points past the node at the parent's depth. Resolve from the node's own
+    // start boundary so drags of atom blocks still find their container.
+    const $start = doc.resolve(pos)
+    return {
+      parent: $start.parent,
+      parentStart: $start.depth === 0 ? 0 : $start.start($start.depth),
+      parentTypeName: $start.parent.type.name,
+      index: $start.index($start.depth),
+    }
   } catch {
     return null
   }
-  return null
 }
 
 function rangeForBlock(state: EditorState, block: BlockSelectionTarget): BlockSelectionRange | null {

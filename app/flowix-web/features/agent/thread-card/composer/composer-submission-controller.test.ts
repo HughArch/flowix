@@ -70,9 +70,11 @@ describe("composer submission transaction", () => {
     options[stage].mockRejectedValueOnce(new Error("request rejected"));
     await controller.submit(options);
     expect(controller.phase).toBe("failed");
+    // 附件快照字段已由 images 更名为 attachments（bffe1da5 附件重构：
+    // 文档与图片附件统一走该字段，图片不再单独叫 images）。
     expect(controller.snapshot).toMatchObject({
       markdown: "[Review](flowix://skill/codex/review) hello", prompt: "$review hello",
-      images: [{ path: "/tmp/file.png" }],
+      attachments: [{ path: "/tmp/file.png" }],
     });
     if (stage === "bind") {
       expect(composer.clear).not.toHaveBeenCalled();

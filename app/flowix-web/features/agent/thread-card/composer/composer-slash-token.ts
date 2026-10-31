@@ -25,8 +25,16 @@ export interface ComposerSlashTokenValue {
   agentType?: AgentTypeKey;
 }
 
-const SLASH_TOKEN_RE = /^\[((?:\\.|[^\]\n])*)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex|pi|flowix)\/)?([a-z0-9._:-]+)\)/i;
-const SLASH_TOKEN_GLOBAL_RE = /\[((?:\\.|[^\]\n])*)\]\(flowix:\/\/slash\/(?:(deepseek-harness|codex|pi|flowix)\/)?([a-z0-9._:-]+)\)/gi;
+const SLASH_TOKEN_RE = /^\[((?:\\.|[^\]\n])*)\]\(flowix:\/\/slash\/(?:(dsh|deepseek-harness|codex|pi|flowix)\/)?([a-z0-9._:-]+)\)/i;
+const SLASH_TOKEN_GLOBAL_RE = /\[((?:\\.|[^\]\n])*)\]\(flowix:\/\/slash\/(?:(dsh|deepseek-harness|codex|pi|flowix)\/)?([a-z0-9._:-]+)\)/gi;
+/** `deepseek-harness` was renamed to `dsh`; persisted drafts still carry the old key. */
+const LEGACY_RUNTIME_ALIASES: Record<string, string> = { "deepseek-harness": "dsh" };
+
+function normalizeRuntimeKey(raw: string | undefined): string | undefined {
+  if (!raw) return undefined;
+  const key = raw.toLowerCase();
+  return LEGACY_RUNTIME_ALIASES[key] ?? key;
+}
 const LEGACY_DSH_COMMANDS = new Set([
   "compact",
   "skill",
@@ -158,9 +166,10 @@ export const ComposerSlashToken = Node.create<ComposerSlashTokenOptions>({
     const href = String(token.href ?? "");
     const path = href.replace(/^flowix:\/\/slash\//i, "");
     const parts = path.split("/");
-    const agentType = parts[0] === "dsh" || parts[0] === "codex" || parts[0] === "pi"
-      || parts[0] === "flowix"
-      ? parts[0]
+    const scoped = normalizeRuntimeKey(parts[0]);
+    const agentType = scoped === "dsh" || scoped === "codex" || scoped === "pi"
+      || scoped === "flowix"
+      ? scoped
       : undefined;
     const command = (agentType ? parts[1] : parts[0]) ||
       String(token.text ?? "").replace(/^\//, "");
@@ -340,10 +349,11 @@ export function composerSlashMarkdownToPrompt(markdown: string): string {
   return markdown.replace(
     SLASH_TOKEN_GLOBAL_RE,
     (match, label: string, scopedAgent: string | undefined, command: string, offset: number, source: string) => {
+      const scoped = normalizeRuntimeKey(scopedAgent);
       // Flowix skill chips are UI-only references: they expand to their
       // display name in the visible message while the skill body rides
       // `llmContent` (see flowix-skill-service.ts).
-      if (scopedAgent?.toLowerCase() === "flowix") {
+      if (scoped === "flowix") {
         const text = unescapeSlashTokenLabel(label).trim() || piSkillName(command);
         const after = source.slice(offset + match.length);
         return `${text}${after && !/^\s/u.test(after) ? " " : ""}`;
@@ -351,11 +361,11 @@ export function composerSlashMarkdownToPrompt(markdown: string): string {
       // Unscoped chips are legacy data. Preserve old DSH drafts while keeping
       // the product-only permission chips UI-only as before.
       if (
-        scopedAgent &&
-        scopedAgent.toLowerCase() !== "dsh" &&
-        scopedAgent.toLowerCase() !== "codex" &&
-        scopedAgent.toLowerCase() !== "pi" ||
-        (!scopedAgent && !LEGACY_DSH_COMMANDS.has(command.toLowerCase()))
+        scoped &&
+        scoped !== "dsh" &&
+        scoped !== "codex" &&
+        scoped !== "pi" ||
+        (!scoped && !LEGACY_DSH_COMMANDS.has(command.toLowerCase()))
       ) {
         return "";
       }

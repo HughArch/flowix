@@ -124,7 +124,9 @@ it('creates calendars with the editable date preset and round trips the shared b
   expect(calendar.dataset.schema.preset_fields).toContain(NOTE_CALENDAR_DATE_FIELD_ID);
   const fixture = (await import('../../../fixtures/collections/table-calendar-preset.yaml?raw')).default;
   const parsed = parseTableDocument(fixture);
-  expect(parseTableDocument(serializeTableDocument(parsed))).toEqual(parsed);
+  // fixture 带已废弃的 collection.name；解析端兼容但 wire 不再携带。
+  expect(parseTableDocument(serializeTableDocument(parsed)))
+    .toEqual({ ...parsed, collection: { ...parsed.collection, name: undefined } });
   expect(parsed.views.items[0].config.date_field).toBe(calendar.views.items[0].config.date_field);
 });
 

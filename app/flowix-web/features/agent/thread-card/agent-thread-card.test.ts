@@ -35,23 +35,14 @@ const toastMock = vi.hoisted(() => ({
 
 vi.mock("@/lib/toast", () => ({ toast: toastMock }));
 
-vi.mock("@features/workspace/use-cases/browser-column-navigation", () => ({
-  openBrowserColumnFileBrowser: vi.fn(() => ({
-    host: 'browser-column',
-    tabId: 'file-browser:/Users/rop/Desktop/vibe/flowix-main',
-    alreadyOpen: false,
-  })),
-  openBrowserColumnNotebookNote: vi.fn(() => ({
-    host: 'browser-column', tabId: 'file:external-note', alreadyOpen: false,
-  })),
-  openBrowserColumnText: vi.fn(() => ({
-    host: 'browser-column', tabId: 'file:external-text', alreadyOpen: false,
-  })),
-  openBrowserColumnWebpage: vi.fn(() => ({
-    host: 'browser-column',
-    tabId: 'web:https://example.com/docs',
-    alreadyOpen: false,
-  })),
+// ec591686/4f1452d9 起链接统一经 openWorkspaceSurface 分流，thread-card 不再
+// 直接调用 browser-column-navigation；断言切面随之上移到 open-surface-api。
+const surfaceOpen = vi.hoisted(() => ({ openWorkspaceSurface: vi.fn() }));
+vi.mock("@features/workspace/public/open-surface-api", () => ({
+  openWorkspaceSurface: surfaceOpen.openWorkspaceSurface,
+  openBrowserColumnTabInWorkColumn: vi.fn(
+    async () => ({ status: "cancelled", host: "main-third", reason: "navigation-cancelled" }),
+  ),
 }));
 
 vi.mock("@tauri-apps/plugin-opener", () => ({
@@ -386,7 +377,9 @@ describe("AgentThreadCard NodeView streaming", () => {
         typeKey: "codex",
         collapsed: false,
         fullscreen: true,
-        inputImages: [{
+        // 编辑器属性已改名 inputAttachments；inputImages 仅是持久化注释里的
+        // 兼容写键，渲染入口只认新键。
+        inputAttachments: [{
           path: "/tmp/pasted.png",
           mimeType: "image/png",
           name: "pasted.png",
@@ -632,6 +625,11 @@ describe("AgentThreadCard NodeView streaming", () => {
     document.body.innerHTML = "";
     localStorage.clear();
     vi.clearAllMocks();
+    surfaceOpen.openWorkspaceSurface.mockResolvedValue({
+      status: "opened",
+      host: "browser-column",
+      location: { host: "browser-column", tabId: "file:external-text" },
+    });
     // ProseMirror selection updates require geometry APIs absent in jsdom.
     Object.defineProperties(Range.prototype, {
       getClientRects: { configurable: true, value: () => [] },
@@ -651,6 +649,7 @@ describe("AgentThreadCard NodeView streaming", () => {
       "ResizeObserver",
       class {
         observe() {}
+        unobserve() {}
         disconnect() {}
       },
     );
@@ -755,12 +754,12 @@ describe("AgentThreadCard NodeView streaming", () => {
       await import("@features/agent/thread-card");
     const { useChatStore } = await import("@features/agent/store/agent-session-test-facade");
     const { openPath, openUrl } = await import("@tauri-apps/plugin-opener");
-    const { openBrowserColumnText } = await import(
-      "@features/workspace/use-cases/browser-column-navigation",
+    const { openWorkspaceSurface } = await import(
+      "@features/workspace/public/open-surface-api",
     );
     vi.mocked(openPath).mockClear();
     vi.mocked(openUrl).mockClear();
-    vi.mocked(openBrowserColumnText).mockClear();
+    vi.mocked(openWorkspaceSurface).mockClear();
 
     const threadId = "thread-card-local-file-link";
     const host = document.createElement("div");
@@ -808,10 +807,15 @@ describe("AgentThreadCard NodeView streaming", () => {
 
     // 工作空间外的 docx 有专用预览面（externalFileViewKind → 'docx'），
     // 统一分流后不再回退系统默认应用，而是经浏览器列打开。
-    expect(openBrowserColumnText).toHaveBeenCalledWith(
-      "/Users/rop/Desktop/人物档案/tool-smoke-test/outputs/tool-smoke-report.docx",
-      null,
-    );
+    expect(openWorkspaceSurface).toHaveBeenCalledWith({
+      host: "browser-column",
+      target: {
+        kind: "external",
+        path: "/Users/rop/Desktop/人物档案/tool-smoke-test/outputs/tool-smoke-report.docx",
+        scopePath: null,
+        transitionId: null,
+      },
+    });
     expect(openPath).not.toHaveBeenCalled();
     expect(openUrl).not.toHaveBeenCalled();
   });
@@ -821,11 +825,11 @@ describe("AgentThreadCard NodeView streaming", () => {
       await import("@features/agent/thread-card");
     const { useChatStore } = await import("@features/agent/store/agent-session-test-facade");
     const { openPath } = await import("@tauri-apps/plugin-opener");
-    const { openBrowserColumnText } = await import(
-      "@features/workspace/use-cases/browser-column-navigation",
+    const { openWorkspaceSurface } = await import(
+      "@features/workspace/public/open-surface-api",
     );
     vi.mocked(openPath).mockClear();
-    vi.mocked(openBrowserColumnText).mockClear();
+    vi.mocked(openWorkspaceSurface).mockClear();
 
     const threadId = "thread-card-markdown-link";
     const host = document.createElement("div");
@@ -867,25 +871,29 @@ describe("AgentThreadCard NodeView streaming", () => {
     )?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     await flushPromises();
 
-    expect(openBrowserColumnText).toHaveBeenCalledWith(
-      "/Users/rop/Documents/Outside Note.md",
-      null,
-    );
+    expect(openWorkspaceSurface).toHaveBeenCalledWith({
+      host: "browser-column",
+      target: {
+        kind: "external",
+        path: "/Users/rop/Documents/Outside Note.md",
+        scopePath: null,
+        transitionId: null,
+      },
+    });
     expect(openPath).not.toHaveBeenCalled();
   });
 
   it('opens a Tauri HTTP Windows file href as a local file and keeps its line reference', async () => {
     const { AgentThreadCard } = await import('@features/agent/thread-card');
     const { useChatStore } = await import('@features/agent/store/agent-session-test-facade');
-    const { openBrowserColumnText, openBrowserColumnWebpage } = await import(
-      '@features/workspace/use-cases/browser-column-navigation',
+    const { openWorkspaceSurface } = await import(
+      '@features/workspace/public/open-surface-api',
     );
     const { peekAgentLocationRequest, consumeAgentLocationRequest } = await import(
       '@features/document/use-cases/agent-location-navigation',
     );
     const threadId = 'thread-card-tauri-windows-file-link';
-    vi.mocked(openBrowserColumnText).mockClear();
-    vi.mocked(openBrowserColumnWebpage).mockClear();
+    vi.mocked(openWorkspaceSurface).mockClear();
     vi.stubGlobal('navigator', { platform: 'Win32', userAgent: 'Windows' });
 
     const host = document.createElement('div');
@@ -910,8 +918,15 @@ describe("AgentThreadCard NodeView streaming", () => {
     vi.useFakeTimers();
     link?.dispatchEvent(new MouseEvent('click', { bubbles: true, cancelable: true }));
     await flushPromises();
-    expect(openBrowserColumnText).toHaveBeenCalledWith('D:/Notes/推广设计/Flowix Agent.md', null);
-    expect(openBrowserColumnWebpage).not.toHaveBeenCalled();
+    expect(openWorkspaceSurface).toHaveBeenCalledWith({
+      host: 'browser-column',
+      target: {
+        kind: 'external',
+        path: 'D:/Notes/推广设计/Flowix Agent.md',
+        scopePath: null,
+        transitionId: null,
+      },
+    });
     const request = peekAgentLocationRequest('D:/Notes/推广设计/Flowix Agent.md');
     expect(request?.location).toEqual({ line: 144 });
     if (request) consumeAgentLocationRequest(request.path, request.id);
@@ -925,8 +940,8 @@ describe("AgentThreadCard NodeView streaming", () => {
     const { useChatStore, useAgentConversationStore } = await import(
       "@features/agent/store/agent-session-test-facade",
     );
-    const { openBrowserColumnFileBrowser, openBrowserColumnText } = await import(
-      "@features/workspace/use-cases/browser-column-navigation",
+    const { openWorkspaceSurface } = await import(
+      "@features/workspace/public/open-surface-api",
     );
     const threadId = "thread-card-workspace-file-link";
     const instance = useAgentConversationStore.getState().createInstance({
@@ -943,8 +958,7 @@ describe("AgentThreadCard NodeView streaming", () => {
       },
       source: { kind: "thread-card" },
     });
-    vi.mocked(openBrowserColumnFileBrowser).mockClear();
-    vi.mocked(openBrowserColumnText).mockClear();
+    vi.mocked(openWorkspaceSurface).mockClear();
 
     const host = document.createElement("div");
     document.body.append(host);
@@ -986,11 +1000,16 @@ describe("AgentThreadCard NodeView streaming", () => {
     )?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     await flushPromises();
 
-    expect(openBrowserColumnFileBrowser).toHaveBeenCalledWith(
-      "/Users/rop/Desktop/vibe/flowix-main",
-      "/Users/rop/Desktop/vibe/flowix-main/src/main.ts",
-    );
-    expect(openBrowserColumnText).not.toHaveBeenCalled();
+    // 工作空间内的文件带 scopePath，走 file-browser target 由浏览器列定位。
+    expect(openWorkspaceSurface).toHaveBeenCalledWith({
+      host: "browser-column",
+      target: expect.objectContaining({
+        kind: "file-browser",
+        activeFilePath: "/Users/rop/Desktop/vibe/flowix-main/src/main.ts",
+        folderPath: "/Users/rop/Desktop/vibe/flowix-main",
+        scopePath: "/Users/rop/Desktop/vibe/flowix-main",
+      }),
+    });
   });
 
   it("opens a clicked tool file summary through the Thread Card link handler", async () => {
@@ -999,12 +1018,11 @@ describe("AgentThreadCard NodeView streaming", () => {
     const { useChatStore } = await import(
       "@features/agent/store/agent-session-test-facade",
     );
-    const { openBrowserColumnText, openBrowserColumnFileBrowser } = await import(
-      "@features/workspace/use-cases/browser-column-navigation",
+    const { openWorkspaceSurface } = await import(
+      "@features/workspace/public/open-surface-api",
     );
     const threadId = "thread-card-tool-file-link";
-    vi.mocked(openBrowserColumnText).mockClear();
-    vi.mocked(openBrowserColumnFileBrowser).mockClear();
+    vi.mocked(openWorkspaceSurface).mockClear();
 
     const host = document.createElement("div");
     document.body.append(host);
@@ -1050,11 +1068,15 @@ describe("AgentThreadCard NodeView streaming", () => {
     link?.dispatchEvent(new MouseEvent("click", { bubbles: true, cancelable: true }));
     await flushPromises();
 
-    expect(openBrowserColumnText).toHaveBeenCalledWith(
-      "/Users/rop/Documents/Outside.ts",
-      null,
-    );
-    expect(openBrowserColumnFileBrowser).not.toHaveBeenCalled();
+    expect(openWorkspaceSurface).toHaveBeenCalledWith({
+      host: "browser-column",
+      target: {
+        kind: "external",
+        path: "/Users/rop/Documents/Outside.ts",
+        scopePath: null,
+        transitionId: null,
+      },
+    });
   });
 
   it("uses thread runtime as the Thread Card footer running source", async () => {
@@ -1721,7 +1743,8 @@ describe("AgentThreadCard NodeView streaming", () => {
     await vi.waitFor(() => expect(toastMock.error).toHaveBeenCalledWith("backend rejected request"));
     expect(getComposerValue(input)).toBe(draftBeforeSend);
     expect(editor.getJSON().content?.[0]?.attrs?.inputAttachments).toEqual(images);
-    expect(host.querySelector(".agent-composer__attachment-token-label")?.textContent).toBe("retry.pdf");
+    // 附件 UI 已改为输入框上方的 chip strip（内联 token 仅用于旧持久化内容）。
+    expect(host.querySelector(".agent-composer__attachment-chip-label")?.textContent).toBe("retry.pdf");
     expect(agent.deleteCachedAttachment).not.toHaveBeenCalled();
     (await waitForEnabledSendButton(host)).click();
     await vi.waitFor(() => expect(getComposerValue(input)).toBe(""));
@@ -3574,9 +3597,10 @@ describe("AgentThreadCard NodeView streaming", () => {
     expect(host.querySelector(".agent-thread-card")?.textContent).toContain(
       "still renders",
     );
-    expect(host.querySelectorAll(".agent-thread-card__message")).toHaveLength(
-      2,
-    );
+    // tool 消息以 tool-group 形式渲染（不再产生 __message 行）；坏数据的
+    // toolInput 只能让该组按 failed 呈现，不得拖垮后续消息的渲染。
+    expect(host.querySelectorAll(".agent-thread-card__message")).toHaveLength(1);
+    expect(host.querySelector(".agent-thread-card__tool-group")).not.toBeNull();
   });
 });
 
@@ -3601,6 +3625,7 @@ describe("AgentThreadCard input history navigation", () => {
       "ResizeObserver",
       class {
         observe() {}
+        unobserve() {}
         disconnect() {}
       },
     );
@@ -4183,6 +4208,7 @@ describe("AgentThreadCard input latency optimizations", () => {
       "ResizeObserver",
       class {
         observe() {}
+        unobserve() {}
         disconnect() {}
       },
     );
@@ -4340,6 +4366,7 @@ describe("AgentThreadCard composer during agent run", () => {
       "ResizeObserver",
       class {
         observe() {}
+        unobserve() {}
         disconnect() {}
       },
     );
@@ -4432,7 +4459,8 @@ describe("AgentThreadCard composer during agent run", () => {
       });
       await vi.waitFor(() => expect(host.querySelector(".agent-background-terminals__queue-steer")).not.toBeNull());
       const deleteButton = host.querySelector<HTMLButtonElement>(".agent-background-terminals__queue-delete");
-      expect(deleteButton?.querySelector("svg")).not.toBeNull();
+      // 删除按钮是纯文本按钮（无图标，与 React 版 background-terminals 一致）。
+      expect(deleteButton?.textContent).toBeTruthy();
       expect(deleteButton?.getAttribute("aria-label")).toBeTruthy();
       host.querySelector<HTMLButtonElement>(".agent-background-terminals__queue-steer")?.click();
       await vi.waitFor(() => {

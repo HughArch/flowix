@@ -32,9 +32,9 @@ describe('getFileIcon', () => {
   });
 
   it('uses a generic file icon for unknown extensions', () => {
-    // Extensionless text files are opened by CodeMirror (LICENSE, Makefile,
-    // Dockerfile), while a binary-looking extension remains generic.
-    expect(getFileIcon('LICENSE')).toBe(FileCodeIcon);
+    // 图标语言统一（content-icon 分类，03fa4900）：无扩展名与未知扩展名
+    // 都归入 generic 文本图标，无扩展名文本文件不再特判为代码图标。
+    expect(getFileIcon('LICENSE')).toBe(FileTextIcon);
     expect(getFileIcon('data.bin')).toBe(FileTextIcon);
   });
 });

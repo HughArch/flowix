@@ -658,6 +658,15 @@ fn migrate_legacy_schema(connection: &mut Connection) -> Result<(), String> {
         rows
     };
     if columns.iter().any(|column| column == "display_name") {
+        // display_name 时代的表没有 position 列；03fa4900 拆出显式初始化时
+        // 丢掉了原来随 open() 执行的补列步骤，这里补齐到当前 schema。
+        if !columns.iter().any(|column| column == "position") {
+            connection
+                .execute_batch(
+                    "ALTER TABLE property_presets ADD COLUMN position INTEGER NOT NULL DEFAULT 0",
+                )
+                .map_err(|error| error.to_string())?;
+        }
         return Ok(());
     }
     if !columns.iter().any(|column| column == "definition_json") {
@@ -731,6 +740,7 @@ fn migrate_legacy_schema(connection: &mut Connection) -> Result<(), String> {
             revision INTEGER NOT NULL DEFAULT 1,
             multiple INTEGER,
             updated_at INTEGER NOT NULL,
+            position INTEGER NOT NULL DEFAULT 0,
             PRIMARY KEY(scope, id)
          );
          CREATE TABLE property_preset_options (
@@ -1091,6 +1101,8 @@ mod tests {
         drop(connection);
 
         let store = PropertyPresetStore::new(&path);
+        // 旧 schema 迁移不再随 open() 执行（03fa4900），需显式初始化。
+        store.initialize_legacy_schema().unwrap();
         let registry = store.get().unwrap();
         assert_eq!(registry.fields[0].id.as_deref(), Some("fld_user"));
         assert_eq!(registry.fields[0].name.as_deref(), Some("Topics"));

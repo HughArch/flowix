@@ -733,7 +733,9 @@ export function createAgentThreadCardMessageElement(options: {
         isStreaming: options.isStreaming,
       });
       const attachments = createUserMessageAttachments(message, language);
-      if (attachments) bubble.append(attachments);
+      // Attachments sit below the bubble, not inside it: the bubble owns the
+      // text background while the chip row is a sibling.
+      if (attachments) item.append(attachments);
     } else if (message.role === "reasoning") {
       const header = document.createElement("button");
       header.type = "button";

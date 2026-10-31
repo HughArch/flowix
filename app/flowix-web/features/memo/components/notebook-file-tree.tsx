@@ -487,6 +487,13 @@ export function NotebookFileTree({
   const handleRepositorySectionHeightChange = useCallback((height: number) => {
     setRepositorySectionHeight((current) => current === height ? current : height);
   }, []);
+  const handleRepositoryExpand = useCallback((repositoryElement: HTMLElement) => {
+    const scroller = treeScrollerRef.current;
+    if (!scroller) return;
+    const scrollerTop = scroller.getBoundingClientRect().top;
+    const repositoryTop = repositoryElement.getBoundingClientRect().top;
+    scroller.scrollTop += repositoryTop - scrollerTop - 36;
+  }, []);
   const renderRowIndexByPath = useMemo(() => new Map(
     renderRows.flatMap((row, index) => row.kind === 'node'
       ? [[canonicalPath(row.item.fullPath), index] as const]
@@ -1289,7 +1296,7 @@ export function NotebookFileTree({
               )}
               onAddRepository={() => { void handleAddRepository(); }}
               onRemoveRepository={(repository) => { void handleRemoveRepository(repository); }}
-              onExpandRepository={() => {}}
+              onExpandRepository={handleRepositoryExpand}
               canAddRepository={Boolean(notebookId)}
               onOpenFile={handleOpenRepositoryFile}
               onOpenInNewTab={onNoteOpenInNewTab ? handleOpenPathInNewTab : undefined}
@@ -1401,7 +1408,7 @@ export function NotebookFileTree({
               onHeightChange={() => {}}
               onAddRepository={() => { void handleAddRepository(); }}
               onRemoveRepository={(repository) => { void handleRemoveRepository(repository); }}
-              onExpandRepository={() => {}}
+              onExpandRepository={handleRepositoryExpand}
               canAddRepository={Boolean(notebookId)}
               onOpenFile={handleOpenRepositoryFile}
               onOpenInNewTab={onNoteOpenInNewTab ? handleOpenPathInNewTab : undefined}
