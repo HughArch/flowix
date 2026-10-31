@@ -2946,8 +2946,13 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         const end = flowPositionOf(event);
         const dragged = Math.hypot(event.clientX - gesture.startScreen.x, event.clientY - gesture.startScreen.y) >= 6;
         // pointercancel has no follow-up click; only a real pointerup needs
-        // its click swallowed.
-        if (dragged && event.type === 'pointerup') suppressPaneClickRef.current = true;
+        // its click swallowed. The timeout is a failsafe: if no click ever
+        // follows (pointer released outside the window), a stuck flag would
+        // eat the next legitimate tap-select.
+        if (dragged && event.type === 'pointerup') {
+          suppressPaneClickRef.current = true;
+          window.setTimeout(() => { suppressPaneClickRef.current = false; }, 350);
+        }
         if (dragged) {
           const minX = Math.min(gesture.startFlow[0], end[0]);
           const minY = Math.min(gesture.startFlow[1], end[1]);
