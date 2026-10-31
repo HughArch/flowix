@@ -42,3 +42,24 @@ export function polygonContainsBox(
 
 /** Relative inward nudge for probes (fraction of the half-extent). */
 const CORNER_INSET = 1e-6;
+
+/** Flow-px forgiveness at the element edge: a rope tracing the outline will
+ *  inevitably dip a pixel or two inside the drawn bounds (stroke width, hand
+ *  wobble), so containment ignores this outer shell of the element. A rope
+ *  that slices deeper than the shell still fails the element. */
+export const LASSO_EDGE_TOLERANCE = 6;
+
+/** Containment test for an element's visible box. Boxes too small to carry
+ *  the tolerance shell use strict containment; zero-extent bounds (straight
+ *  arrows/lines/ink) are contained when both endpoints fall inside. */
+export function polygonContainsElement(polygon: LassoPolygon, box: { x: number; y: number; w: number; h: number }): boolean {
+  if (box.w <= 0 || box.h <= 0) {
+    return pointInPolygon(box.x, box.y, polygon)
+      && pointInPolygon(box.x + box.w, box.y + box.h, polygon);
+  }
+  const t = LASSO_EDGE_TOLERANCE;
+  if (box.w > t * 2 && box.h > t * 2) {
+    return polygonContainsBox(polygon, box.x + t, box.y + t, box.w - t * 2, box.h - t * 2);
+  }
+  return polygonContainsBox(polygon, box.x, box.y, box.w, box.h);
+}

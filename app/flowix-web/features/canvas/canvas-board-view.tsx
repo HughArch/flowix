@@ -90,7 +90,7 @@ import {
   type CanvasBoardContextMenuHandle,
 } from './canvas-board-context-menu';
 import { boardToSvg, svgToPngBase64 } from './board-export';
-import { polygonContainsBox } from './lasso-geometry';
+import { polygonContainsElement } from './lasso-geometry';
 import { cachedRoughPaths, roughLineSketch } from './board-rough';
 import { alignShapes, distributeShapes, type BoardAlignMode } from './board-align';
 import { shapeGrowBoxHeight, shapeLabelWidth } from './shape-label';
@@ -3247,12 +3247,40 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
             // start for the region tests. Only elements fully enclosed by the
             // rope are selected (a partial overlap stays unselected). Shift
             // keeps the existing selection, like the rubber-band.
+            //
+            // Containment runs on the VISIBLE element bounds (model space),
+            // not the React Flow node boxes: shape nodes inflate their box by
+            // the selection-ring padding (12px, arrows 14px) and ink nodes by
+            // 16px, so a rope hugging the drawn outline would otherwise miss.
             const polygon = [...gesture.points, end];
+            const visibleBounds = new Map<string, { x: number; y: number; w: number; h: number }>();
+            for (const card of cardsRef.current) visibleBounds.set(card.id, { x: card.x, y: card.y, w: card.w, h: card.h });
+            for (const shape of shapesRef.current) {
+              const x2 = shape.x2 ?? shape.x + shape.w;
+              const y2 = shape.y2 ?? shape.y + shape.h;
+              visibleBounds.set(shape.id, {
+                x: Math.min(shape.x, x2),
+                y: Math.min(shape.y, y2),
+                w: Math.abs(x2 - shape.x),
+                h: Math.abs(y2 - shape.y),
+              });
+            }
+            for (const stroke of inkRef.current) {
+              let minX = Infinity;
+              let minY = Infinity;
+              let maxX = -Infinity;
+              let maxY = -Infinity;
+              for (const [px, py] of stroke.points) {
+                minX = Math.min(minX, px);
+                minY = Math.min(minY, py);
+                maxX = Math.max(maxX, px);
+                maxY = Math.max(maxY, py);
+              }
+              visibleBounds.set(stroke.id, { x: minX, y: minY, w: maxX - minX, h: maxY - minY });
+            }
             setNodes((current) => current.map((node) => {
               if (node.type === 'frame') return gesture.additive ? node : (node.selected ? { ...node, selected: false } : node);
-              const width = node.width ?? Number(node.style?.width ?? 0);
-              const height = node.height ?? Number(node.style?.height ?? 0);
-              const hit = polygonContainsBox(polygon, node.position.x, node.position.y, width, height);
+              const hit = visibleBounds.has(node.id) && polygonContainsElement(polygon, visibleBounds.get(node.id)!);
               if (hit) return node.selected ? node : { ...node, selected: true };
               return gesture.additive ? node : (node.selected ? { ...node, selected: false } : node);
             }));
@@ -3987,6 +4015,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       style={{ touchAction: 'none' }}
       className={`h-full min-h-0 w-full ${tool === 'hand' ? 'cursor-grab' : tool !== 'select' ? 'cursor-crosshair' : ''}`}
       data-canvas-surface={filePath}
+      // Exposes the active tool to E2E tooling without poking React state.
+      data-board-tool={tool}
       // The board owns pan/zoom gestures; the shell's swipe-down must not steal them.
       data-mobile-swipe-ignore="true"
       onDoubleClick={handleSurfaceDoubleClick}

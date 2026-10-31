@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { pointInPolygon, polygonContainsBox } from './lasso-geometry';
+import { pointInPolygon, polygonContainsBox, polygonContainsElement } from './lasso-geometry';
 
 /** Unit square lasso: (0,0) → (10,0) → (10,10) → (0,10). */
 const SQUARE = [[0, 0], [10, 0], [10, 10], [0, 10]] as const;
@@ -51,5 +51,36 @@ describe('polygonContainsBox', () => {
     expect(polygonContainsBox([], 0, 0, 10, 10)).toBe(false);
     expect(polygonContainsBox([[0, 0]], 0, 0, 10, 10)).toBe(false);
     expect(polygonContainsBox(SQUARE, 0, 0, 0, 10)).toBe(false);
+  });
+});
+
+describe('polygonContainsElement', () => {
+  /** 100x100 element: (1,1) → (101,101). */
+  const ELEMENT = { x: 1, y: 1, w: 100, h: 100 };
+  /** Rope 1px outside the element outline. */
+  const HUGGING = [[0, 0], [102, 0], [102, 102], [0, 102]] as const;
+  /** Rope tracing the inner edge, 3px inside the outline. */
+  const INNER = [[4, 4], [98, 4], [98, 98], [4, 98]] as const;
+  /** Rope slicing 9px deep — past the 6px tolerance shell. */
+  const SLICING = [[10, 10], [92, 10], [92, 92], [10, 92]] as const;
+
+  it('forgives a rope that hugs or slightly clips the element edge', () => {
+    expect(polygonContainsElement(HUGGING, ELEMENT)).toBe(true);
+    expect(polygonContainsElement(INNER, ELEMENT)).toBe(true);
+    expect(polygonContainsElement(SLICING, ELEMENT)).toBe(false);
+  });
+
+  it('keeps strict containment for elements smaller than the shell', () => {
+    // A 10x10 element inside the 10x10 square lasso cannot carry a 6px
+    // shell; the rope must enclose the element box itself.
+    expect(polygonContainsElement(SQUARE, { x: 0, y: 0, w: 10, h: 10 })).toBe(true);
+    expect(polygonContainsElement(SQUARE, { x: 0, y: 0, w: 11, h: 10 })).toBe(false);
+  });
+
+  it('treats zero-extent strokes as contained when both endpoints are in', () => {
+    // Horizontal line segment fully inside the square lasso.
+    expect(polygonContainsElement(SQUARE, { x: 2, y: 5, w: 6, h: 0 })).toBe(true);
+    // Segment crossing the rope boundary: the far endpoint is outside.
+    expect(polygonContainsElement(SQUARE, { x: 2, y: 5, w: 12, h: 0 })).toBe(false);
   });
 });
