@@ -3662,9 +3662,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       </div>
       {/* Explicit save + FNS sync (Ctrl+S shares the same path via the
           document.saveAndSync handler). The board pointer handlers ignore
-          clicks on [data-board-toolbar], so the button never starts a marquee. */}
+          clicks on [data-board-toolbar], so the button never starts a marquee.
+          Narrow viewports drop the chip one row below the toolbar: the tool
+          row already overflows the screen edge, so sharing its corner would
+          cover the clipped fit/lock/more buttons. */}
       {!readOnly ? (
-        <div data-board-toolbar className="absolute right-3 top-3 z-30">
+        <div data-board-toolbar className={`absolute right-3 z-30 ${isNarrowViewport ? 'top-14' : 'top-3'}`}>
           <Tooltip content={t('canvas.board.save')} shortcut="document.saveAndSync" side="bottom">
             <button
               type="button"
