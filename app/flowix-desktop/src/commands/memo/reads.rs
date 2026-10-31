@@ -118,6 +118,50 @@ pub async fn list_notes_by_path(
     .map_err(|error| format!("path-based note list task failed: {error}"))?
 }
 
+/// One `.flowix-canvas` file on disk, for surfaces outside the note index
+/// (AI-composer @ mentions, canvas pickers).
+#[derive(serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct CanvasFileEntrySummary {
+    pub relative_path: String,
+    pub updated_at: u64,
+}
+
+/// List the notebook's canvas files by walking the notebook tree. Canvas
+/// documents are plain files outside the note index, so this cannot go
+/// through `NoteService`.
+#[tauri::command]
+pub async fn list_canvas_files_by_path(
+    notebook_id: String,
+    app: AppHandle,
+) -> Result<Vec<CanvasFileEntrySummary>, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<AppState>();
+        let memo_file = read_lock(&state.memo_file, "memo_file");
+        let notebook_root = memo_file
+            .read_notebook_configs()
+            .map_err(|error| error.to_string())?
+            .into_iter()
+            .find(|config| config.id == notebook_id)
+            .map(|config| std::path::PathBuf::from(config.path))
+            .ok_or_else(|| format!("notebook {notebook_id} not found"))?;
+        Ok(flowix_core::canvas::list_canvas_files(&notebook_root)
+            .into_iter()
+            .map(|relative_path| {
+                let updated_at = std::fs::metadata(notebook_root.join(&relative_path))
+                    .ok()
+                    .and_then(|metadata| metadata.modified().ok())
+                    .and_then(|time| time.duration_since(std::time::UNIX_EPOCH).ok())
+                    .map(|duration| duration.as_millis() as u64)
+                    .unwrap_or(0);
+                CanvasFileEntrySummary { relative_path, updated_at }
+            })
+            .collect())
+    })
+    .await
+    .map_err(|error| format!("canvas list task failed: {error}"))?
+}
+
 /// Read one note from the current index projection without changing index state.
 #[tauri::command]
 pub async fn get_indexed_note_by_path(

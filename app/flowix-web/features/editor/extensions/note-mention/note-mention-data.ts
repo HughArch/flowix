@@ -22,20 +22,45 @@ async function fetchMentionNotes(query: string): Promise<MentionNoteItem[]> {
   const notebooks = useNoteStore.getState().notebooks;
   const normalizedQuery = query.trim().toLocaleLowerCase();
   const groups = await Promise.all(notebooks.map(async (notebook) => {
-    const entries = await notes.list(notebook.id);
-    return entries.filter((note) => !normalizedQuery || note.title.toLocaleLowerCase().includes(normalizedQuery))
-      .map((note): MentionNoteItem => ({
-        relativePath: note.relativePath,
-        filename: note.relativePath.split('/').pop() || note.relativePath,
-        title: note.title,
-        updatedAt: note.updatedAt,
+    const [entries, canvases] = await Promise.all([
+      notes.list(notebook.id),
+      notes.listCanvases(notebook.id).catch((error) => {
+        console.warn('[note-mention] canvas list failed:', error);
+        return [];
+      }),
+    ]);
+    const noteItems = entries.map((note): MentionNoteItem => ({
+      relativePath: note.relativePath,
+      filename: note.relativePath.split('/').pop() || note.relativePath,
+      title: note.title,
+      updatedAt: note.updatedAt,
+      notebookId: notebook.id,
+      notebookName: notebook.name,
+      notebookPath: notebook.path,
+      originalPath: null,
+    }));
+    // Canvas documents live outside the note index; expose them so the
+    // composer can @-mention a board (the canvas tool / CLI read them).
+    const canvasItems = canvases.map((canvas): MentionNoteItem => {
+      const stem = canvas.relativePath.split('/').pop()?.replace(/\.flowix-canvas$/i, '') || canvas.relativePath;
+      return {
+        relativePath: canvas.relativePath,
+        filename: canvas.relativePath.split('/').pop() || canvas.relativePath,
+        title: stem,
+        updatedAt: canvas.updatedAt,
         notebookId: notebook.id,
         notebookName: notebook.name,
         notebookPath: notebook.path,
         originalPath: null,
-      }));
+      };
+    });
+    return [...noteItems, ...canvasItems];
   }));
-  return groups.flat().sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 200);
+  const merged = groups.flat();
+  const filtered = merged.filter((item) => !normalizedQuery
+    || item.title.toLocaleLowerCase().includes(normalizedQuery)
+    || item.relativePath.toLocaleLowerCase().includes(normalizedQuery));
+  return filtered.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 200);
 }
 
 function loadMentionNotes(): Promise<MentionNoteItem[]> {

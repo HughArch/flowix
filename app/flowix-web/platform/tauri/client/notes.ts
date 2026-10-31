@@ -132,6 +132,9 @@ export const notes = {
   moveToDirectory: (filePath: string, notebookId: string, parentRelativePath: string) =>
     invoke<{ path: string; notebookChange: NotebookPathMove }>('move_memo_to_directory', { filePath, notebookId, parentRelativePath }).then((result) => { publishNotebookPathMove(result.notebookChange); return result; }),
   list: (notebookId: string) => invoke<NoteEntry[]>('list_notes_by_path', { notebookId }),
+  /** Notebook-relative `.flowix-canvas` files; canvases live outside the note index. */
+  listCanvases: (notebookId: string) =>
+    invoke<Array<{ relativePath: string; updatedAt: number }>>('list_canvas_files_by_path', { notebookId }),
   getIndexed: (notebookId: string, relativePath: string) =>
     invoke<NoteEntry | null>('get_indexed_note_by_path', { notebookId, relativePath }),
   /** Batched title/excerpt/tags for canvas board cards (one IPC for the whole board). */

@@ -588,6 +588,7 @@ pub fn run() {
             // `#[tauri::command]` 宏生成的 `__cmd__xxx` wrapper �?��数所�?            // 模块的同�?macro, �?��在�?模块�?�� (`commands::memo::reads::xxx`)
             // 解析�? `commands::memo::xxx` 顶层�?��不传�?macro re-export.
             commands::memo::reads::list_notes_by_path,
+            commands::memo::reads::list_canvas_files_by_path,
             commands::memo::reads::get_indexed_note_by_path,
             commands::memo::reads::get_path_notes,
             commands::memo::reads::resolve_markdown_location,

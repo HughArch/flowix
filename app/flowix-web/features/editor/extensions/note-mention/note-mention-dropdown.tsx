@@ -91,7 +91,7 @@ export function NoteMentionDropdown({
                     onSelect(item);
                   }}
                 >
-                  <span className="mention-note-title">{item.title}</span>
+                  <span className="mention-note-title">{item.relativePath.toLowerCase().endsWith('.flowix-canvas') ? item.filename : item.title}</span>
                 </button>
               );
             })
