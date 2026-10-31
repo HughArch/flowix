@@ -4234,7 +4234,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         elementsSelectable={true}
         onConnect={handleConnect}
         onlyRenderVisibleElements
-        deleteKeyCode={['Delete']}
+        // Both keys delete: many keyboards label Backspace "Del", so users
+        // pressing the key they see must get the same behavior. (RF ignores
+        // key events aimed at inputs/editors, so typing is unaffected.)
+        deleteKeyCode={['Delete', 'Backspace']}
         onNodesDelete={handleNodesDelete}
         onEdgesDelete={handleEdgesDelete}
         onEdgeClick={(_event, edge) => selectEdge(edge.id)}
