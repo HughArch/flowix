@@ -132,9 +132,59 @@ fn canvas_crud_round_trip() {
         )?;
         let _ = frame["id"].as_str().unwrap();
         let edge = add_edge(&address, &note_card_id, &shape_id, Some("依赖"))?;
-        assert!(edge["id"].as_str().unwrap().starts_with("e_"));
+        let edge_id = edge["id"].as_str().unwrap().to_owned();
+        assert!(edge_id.starts_with("e_"));
         // Duplicate edge is rejected.
         assert!(add_edge(&address, &note_card_id, &shape_id, None).is_err());
+
+        // Update: move the shape, relabel the edge.
+        let moved = update(
+            &address,
+            &shape_id,
+            &UpdateArgs {
+                x: Some(42.0),
+                y: None,
+                w: None,
+                h: None,
+                x2: None,
+                y2: None,
+                text: Some("移动过的节点"),
+                color: None,
+                fill: None,
+                stroke: None,
+                label: None,
+                from: None,
+                to: None,
+                title: None,
+            },
+        )?;
+        assert_eq!(moved["kind"], "shape");
+        update(
+            &address,
+            &edge_id,
+            &UpdateArgs {
+                label: Some("强依赖"),
+                ..Default::default()
+            },
+        )?;
+        let shown = show(&address)?;
+        let moved_shape = shown["shapes"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == shape_id.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(moved_shape["x"].as_f64(), Some(42.0));
+        assert_eq!(moved_shape["text"], "移动过的节点");
+        let relabeled = shown["edges"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|entry| entry["id"] == edge_id.as_str())
+            .unwrap()
+            .clone();
+        assert_eq!(relabeled["label"], "强依赖");
 
         // Batch note grid.
         let note2 = path_store::create("work", "# 第二篇\n")?;

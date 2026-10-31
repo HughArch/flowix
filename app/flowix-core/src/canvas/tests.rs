@@ -585,3 +585,282 @@ fn canvas_path_detection_is_extension_based() {
     assert!(!is_canvas_path("a.md"));
     assert!(!is_canvas_path("a.flowix-canvas.md"));
 }
+
+#[test]
+fn update_moves_resizes_and_retexts_elements() {
+    let mut document = CanvasDocument::create(NOW);
+    let card = document
+        .add_text_card(
+            &TextCardInput {
+                x: Some(0.0),
+                y: Some(0.0),
+                w: None,
+                h: None,
+                text: Some("便签".into()),
+                color: Some("blue".into()),
+            },
+            NOW,
+        )
+        .unwrap();
+    let shape = document
+        .add_shape(
+            &ShapeInput {
+                shape: "rect".into(),
+                x: Some(0.0),
+                y: Some(0.0),
+                ..Default::default()
+            },
+            NOW,
+        )
+        .unwrap();
+
+    // Move + resize the sticky.
+    let kind = document
+        .update_element(
+            &card,
+            &ElementPatch {
+                x: Some(120.4),
+                y: Some(-30.0),
+                w: Some(300.0),
+                h: Some(90.0),
+                x2: None,
+                y2: None,
+                text: Some("改过".into()),
+                color: Some("red".into()),
+                fill: None,
+                stroke: None,
+                label: None,
+                from: None,
+                to: None,
+                title: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    assert_eq!(kind, "card");
+    let updated = document
+        .board_cards()
+        .into_iter()
+        .find(|c| c.id == card)
+        .unwrap();
+    assert_eq!((updated.x, updated.y), (120.0, -30.0));
+    assert_eq!((updated.w, updated.h), (300.0, 90.0));
+    assert_eq!(updated.text.as_deref(), Some("改过"));
+    assert_eq!(updated.color.as_deref(), Some("red"));
+
+    // Blank text clears the attribute.
+    document
+        .update_element(
+            &card,
+            &ElementPatch {
+                text: Some("  ".into()),
+                ..Default::default()
+            },
+            NOW,
+        )
+        .unwrap();
+    let cleared = document
+        .board_cards()
+        .into_iter()
+        .find(|c| c.id == card)
+        .unwrap();
+    assert_eq!(cleared.text, None);
+
+    // Wrong-kind fields fail loudly.
+    assert!(document
+        .update_element(
+            &card,
+            &ElementPatch {
+                fill: Some("#fff".into()),
+                ..Default::default()
+            },
+            NOW
+        )
+        .is_err());
+    assert!(document
+        .update_element(
+            &shape,
+            &ElementPatch {
+                label: Some("x".into()),
+                ..Default::default()
+            },
+            NOW
+        )
+        .is_err());
+    assert!(document
+        .update_element(
+            "ghost",
+            &ElementPatch {
+                x: Some(1.0),
+                ..Default::default()
+            },
+            NOW
+        )
+        .is_err());
+    assert!(document
+        .update_element(&card, &ElementPatch::default(), NOW)
+        .is_err());
+
+    // Unknown-version fields on shape geometry: x2/y2 rejected on box shapes.
+    assert!(document
+        .update_element(
+            &shape,
+            &ElementPatch {
+                x2: Some(9.0),
+                ..Default::default()
+            },
+            NOW
+        )
+        .is_err());
+}
+
+#[test]
+fn update_two_point_shape_recomputes_box_and_edges_relink() {
+    let mut document = CanvasDocument::create(NOW);
+    let a = document
+        .add_note_card(
+            &NoteCardInput {
+                notebook_id: "nb".into(),
+                notebook_name: None,
+                path: "a.md".into(),
+                title: None,
+                x: None,
+                y: None,
+                w: None,
+                h: None,
+                render_scope: None,
+                heading: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    let b = document
+        .add_note_card(
+            &NoteCardInput {
+                notebook_id: "nb".into(),
+                notebook_name: None,
+                path: "b.md".into(),
+                title: None,
+                x: None,
+                y: None,
+                w: None,
+                h: None,
+                render_scope: None,
+                heading: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    let c = document
+        .add_note_card(
+            &NoteCardInput {
+                notebook_id: "nb".into(),
+                notebook_name: None,
+                path: "c.md".into(),
+                title: None,
+                x: None,
+                y: None,
+                w: None,
+                h: None,
+                render_scope: None,
+                heading: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    let arrow = document
+        .add_shape(
+            &ShapeInput {
+                shape: "arrow".into(),
+                x: Some(0.0),
+                y: Some(0.0),
+                ..Default::default()
+            },
+            NOW,
+        )
+        .unwrap();
+
+    // Move the head; box recomputes from endpoints.
+    document
+        .update_element(
+            &arrow,
+            &ElementPatch {
+                x: None,
+                y: None,
+                w: None,
+                h: None,
+                x2: Some(320.0),
+                y2: Some(40.0),
+                text: None,
+                color: None,
+                fill: None,
+                stroke: None,
+                label: None,
+                from: None,
+                to: None,
+                title: None,
+            },
+            NOW,
+        )
+        .unwrap();
+    let stored: Value = serde_json::from_str(&document.serialize()).unwrap();
+    assert_eq!(stored["shapes"][0]["x2"], 320);
+    assert_eq!(stored["shapes"][0]["w"], 320);
+    assert_eq!(stored["shapes"][0]["h"], 40);
+    // Direct w/h on a two-point shape is rejected.
+    assert!(document
+        .update_element(
+            &arrow,
+            &ElementPatch {
+                w: Some(99.0),
+                ..Default::default()
+            },
+            NOW
+        )
+        .is_err());
+
+    // Relink the edge a -> b to a -> c; duplicates and missing endpoints fail.
+    let edge = document.add_edge(&a, &b, None, NOW).unwrap();
+    // A second a->c edge exists before the relink, so to: c is a duplicate.
+    document.add_edge(&a, &c, None, NOW).unwrap();
+    assert!(document
+        .update_element(
+            &edge,
+            &ElementPatch {
+                to: Some(c.clone()),
+                ..Default::default()
+            },
+            NOW
+        )
+        .is_err());
+    // Remove the blocker, relink succeeds.
+    document.remove(&[document.board_edges().last().unwrap().id.as_str()], NOW);
+    document
+        .update_element(
+            &edge,
+            &ElementPatch {
+                to: Some(c.clone()),
+                label: Some("改为".into()),
+                ..Default::default()
+            },
+            NOW,
+        )
+        .unwrap();
+    let relinked = document
+        .board_edges()
+        .into_iter()
+        .find(|e| e.id == edge)
+        .unwrap();
+    assert_eq!(relinked.to, c);
+    assert_eq!(relinked.label.as_deref(), Some("改为"));
+    assert!(document
+        .update_element(
+            &edge,
+            &ElementPatch {
+                from: Some("ghost".into()),
+                ..Default::default()
+            },
+            NOW
+        )
+        .is_err());
+}

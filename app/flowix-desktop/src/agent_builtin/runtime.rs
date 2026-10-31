@@ -1064,6 +1064,11 @@ fn system_prompt(
   · 文字行背景 → background action=set
   · 序号（block/column/line）都从 1 开始；修改前先 list 确认序号。
 - 用户消息中 @标题 形式的提及通常对应 relativePath 为「标题.md」的笔记。
+- 画布（.flowix-canvas 白板）用 canvas 工具管理：用户要求创建画布/白板、把笔记摆上画布、加形状连线、移动或调整元素时调用，不要手写画布 JSON。
+  · 先用 action=read 拿到现有元素 id；addEdge 的 from/to、update 和 remove 的 id 都用这些 id；
+  · 多篇笔记摆成网格用 action=addNotes（坐标省略时自动放在现有内容旁边）；单个笔记卡用 addCard(notePath)，便签/短文字用 addCard(text)；
+  · 移动/改尺寸/改文字用 action=update（箭头/线段端点用 x2/y2 调整）；删除连线直接 remove 它的 id；
+  · 笔记卡片引用笔记本体（画布上渲染实时内容），不要把正文复制进画布；大段结构化内容先写成笔记再上画布。
 {web_search_rule}{mcp_rule}
 - 用用户的语言回答；提到笔记时给出其相对路径；不要虚构笔记内容。{agents_section}{skills_section}",
         name = scope.notebook_name,

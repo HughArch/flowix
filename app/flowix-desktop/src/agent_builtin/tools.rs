@@ -266,7 +266,7 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
                 "parameters": {
                     "type": "object",
                     "properties": {
-                        "action": { "type": "string", "enum": ["create", "list", "read", "addCard", "addShape", "addEdge", "addFrame", "addNotes", "remove"] },
+                        "action": { "type": "string", "enum": ["create", "list", "read", "addCard", "addShape", "addEdge", "addFrame", "addNotes", "update", "remove"] },
                         "path": { "type": "string", "description": "画布文件相对路径（.flowix-canvas，来自 create/list）" },
                         "name": { "type": "string", "description": "create：画布名称（决定文件名，默认 Untitled）" },
                         "parent": { "type": "string", "description": "create：目标文件夹相对路径；用户未说明位置时先询问" },

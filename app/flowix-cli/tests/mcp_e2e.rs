@@ -786,6 +786,10 @@ fn structured_canvas_actions_build_and_edit_a_board() {
         6,
         json!({"action":"canvas.addEdge", "address":address, "from":note_card_id, "to":shape_id, "label":"依赖"}),
     );
+    let edge_id = edge["result"]["structuredContent"]["id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
     assert_eq!(edge["result"]["isError"], false, "{edge}");
 
     // Duplicate edge is an error.
@@ -835,6 +839,35 @@ fn structured_canvas_actions_build_and_edit_a_board() {
     assert_eq!(note_entry["title"], "A 篇");
     assert_eq!(note_entry["path"], "a.md");
 
+    // Update: move the shape and relabel the edge.
+    let moved = call_structured(
+        &mut stdin,
+        &mut stdout,
+        11,
+        json!({"action":"canvas.updateElement", "address":address, "id":shape_id, "x":42, "y":24, "text":"移动过的节点"}),
+    );
+    assert_eq!(moved["result"]["isError"], false, "{moved}");
+    assert_eq!(moved["result"]["structuredContent"]["kind"], "shape", "{moved}");
+    let relabeled = call_structured(
+        &mut stdin,
+        &mut stdout,
+        12,
+        json!({"action":"canvas.updateElement", "address":address, "id":edge_id, "label":"强依赖"}),
+    );
+    assert_eq!(relabeled["result"]["isError"], false, "{relabeled}");
+    let shown2 = call_structured(
+        &mut stdin,
+        &mut stdout,
+        13,
+        json!({"action":"canvas.show", "address":address}),
+    );
+    let board2 = &shown2["result"]["structuredContent"];
+    let moved_shape = board2["shapes"].as_array().unwrap().iter().find(|s| s["id"] == shape_id.as_str()).unwrap();
+    assert_eq!(moved_shape["x"].as_f64(), Some(42.0));
+    assert_eq!(moved_shape["text"], "移动过的节点");
+    let relabeled_edge = board2["edges"].as_array().unwrap().iter().find(|e| e["id"] == edge_id.as_str()).unwrap();
+    assert_eq!(relabeled_edge["label"], "强依赖");
+
     // Legacy command path shares the same store.
     let legacy = call_tool(&mut stdin, &mut stdout, 10, &format!("canvas show {address}"), None);
     assert_eq!(legacy["result"]["isError"], false, "{legacy}");
@@ -843,7 +876,7 @@ fn structured_canvas_actions_build_and_edit_a_board() {
     let removed = call_structured(
         &mut stdin,
         &mut stdout,
-        11,
+        14,
         json!({"action":"canvas.remove", "address":address, "ids":[note_card_id, sticky_id]}),
     );
     assert_eq!(removed["result"]["isError"], false, "{removed}");
@@ -857,7 +890,7 @@ fn structured_canvas_actions_build_and_edit_a_board() {
     let unknown = call_structured(
         &mut stdin,
         &mut stdout,
-        12,
+        15,
         json!({"action":"canvas.layout", "address":address}),
     );
     assert_eq!(unknown["error"]["code"], -32602, "{unknown}");

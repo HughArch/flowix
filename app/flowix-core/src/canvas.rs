@@ -767,9 +767,9 @@ impl CanvasDocument {
         Ok(id)
     }
 
-    /// Remove cards/shapes/ink/frames by id; edges with a removed endpoint are
-    /// removed with them (the graph would drop them anyway). Returns the ids
-    /// actually removed.
+    /// Remove cards/shapes/ink/frames/edges by id; edges with a removed
+    /// endpoint are removed with them (the graph would drop them anyway).
+    /// Returns the ids actually removed.
     pub fn remove(&mut self, ids: &[&str], now: &str) -> RemoveReport {
         if ids.is_empty() {
             return RemoveReport {
@@ -795,11 +795,13 @@ impl CanvasDocument {
         let (shapes, shapes_removed) = keep(&self.shapes);
         let (ink, ink_removed) = keep(&self.ink);
         let (frames, frames_removed) = keep(&self.frames);
+        let (mut kept_edges, edges_removed_direct) = keep(&self.edges);
         let mut removed: Vec<String> = Vec::new();
         removed.extend(cards_removed);
         removed.extend(shapes_removed);
         removed.extend(ink_removed);
         removed.extend(frames_removed);
+        removed.extend(edges_removed_direct.clone());
         if removed.is_empty() {
             return RemoveReport {
                 removed,
@@ -807,9 +809,8 @@ impl CanvasDocument {
             };
         }
         let gone: std::collections::HashSet<&str> = removed.iter().map(String::as_str).collect();
-        let mut kept_edges = Vec::with_capacity(self.edges.len());
-        let mut removed_edges = Vec::new();
-        for edge in &self.edges {
+        let mut removed_edges = edges_removed_direct;
+        kept_edges.retain(|edge| {
             let from = edge.get("from").and_then(Value::as_str).unwrap_or_default();
             let to = edge.get("to").and_then(Value::as_str).unwrap_or_default();
             if gone.contains(from) || gone.contains(to) {
@@ -819,10 +820,11 @@ impl CanvasDocument {
                         .unwrap_or_default()
                         .to_owned(),
                 );
+                false
             } else {
-                kept_edges.push(edge.clone());
+                true
             }
-        }
+        });
         self.cards = cards;
         self.shapes = shapes;
         self.ink = ink;
@@ -832,6 +834,222 @@ impl CanvasDocument {
         RemoveReport {
             removed,
             removed_edges,
+        }
+    }
+
+    /// Update one existing element in place (move / resize / retext / relink).
+    /// Fields not applicable to the element's kind are rejected so a wrong
+    /// patch fails loudly instead of silently writing dead keys. Text-ish
+    /// fields set to an empty/blank string clear the attribute. Returns the
+    /// element kind that was updated.
+    pub fn update_element(
+        &mut self,
+        id: &str,
+        patch: &ElementPatch,
+        now: &str,
+    ) -> Result<&'static str, CanvasError> {
+        let has_geometry = patch.x.is_some()
+            || patch.y.is_some()
+            || patch.w.is_some()
+            || patch.h.is_some()
+            || patch.x2.is_some()
+            || patch.y2.is_some();
+        let has_textish = patch.text.is_some()
+            || patch.color.is_some()
+            || patch.fill.is_some()
+            || patch.stroke.is_some()
+            || patch.label.is_some()
+            || patch.title.is_some();
+        let has_relink = patch.from.is_some() || patch.to.is_some();
+        if !has_geometry && !has_textish && !has_relink {
+            return Err(CanvasError(
+                "update 缺少可应用的字段（x/y/w/h/x2/y2/text/color/fill/stroke/label/from/to/title）"
+                    .into(),
+            ));
+        }
+
+        let locate = |entries: &[Value]| {
+            entries
+                .iter()
+                .position(|entry| entry.get("id").and_then(Value::as_str) == Some(id))
+        };
+
+        if let Some(index) = locate(&self.cards) {
+            if has_relink || patch.fill.is_some() || patch.stroke.is_some() || patch.label.is_some()
+            {
+                return Err(CanvasError(
+                    "卡片不支持 from/to/fill/stroke/label 字段".into(),
+                ));
+            }
+            let entry = self.cards[index]
+                .as_object_mut()
+                .expect("card is an object");
+            Self::write_point_fields(entry, patch);
+            Self::write_textish_field(entry, "title", patch.title.as_deref());
+            Self::write_textish_field(entry, "text", patch.text.as_deref());
+            Self::write_textish_field(entry, "color", patch.color.as_deref());
+            self.touch(now);
+            return Ok("card");
+        }
+        if let Some(index) = locate(&self.shapes) {
+            if has_relink || patch.label.is_some() {
+                return Err(CanvasError("形状不支持 from/to/label 字段".into()));
+            }
+            let shape_kind = self.shapes[index]
+                .get("shape")
+                .and_then(Value::as_str)
+                .unwrap_or("rect")
+                .to_owned();
+            let two_point = matches!(shape_kind.as_str(), "arrow" | "line");
+            if two_point
+                && (patch.w.is_some() || patch.h.is_some())
+                && !has_geometry_endpoints(patch)
+            {
+                return Err(CanvasError(
+                    "箭头/线段的范围由两端点决定，请用 x2/y2 调整而不是 w/h".into(),
+                ));
+            }
+            if !two_point && (patch.x2.is_some() || patch.y2.is_some()) {
+                return Err(CanvasError(format!(
+                    "{shape_kind} 形状不支持 x2/y2（仅箭头/线段有两端点）"
+                )));
+            }
+            let entry = self.shapes[index]
+                .as_object_mut()
+                .expect("shape is an object");
+            Self::write_point_fields(entry, patch);
+            if two_point {
+                // Keep the stored box consistent with the endpoints, exactly
+                // like `add_shape` writes it (w = |x2-x|, h = |y2-y|).
+                let x = entry.get("x").and_then(Value::as_f64).unwrap_or_default();
+                let y = entry.get("y").and_then(Value::as_f64).unwrap_or_default();
+                let x2 = entry.get("x2").and_then(Value::as_f64).unwrap_or(x);
+                let y2 = entry.get("y2").and_then(Value::as_f64).unwrap_or(y);
+                entry.insert("w".into(), json!(round_coord((x2 - x).abs())));
+                entry.insert("h".into(), json!(round_coord((y2 - y).abs())));
+            }
+            Self::write_textish_field(entry, "text", patch.text.as_deref());
+            Self::write_textish_field(entry, "fill", patch.fill.as_deref());
+            Self::write_textish_field(entry, "stroke", patch.stroke.as_deref());
+            self.touch(now);
+            return Ok("shape");
+        }
+        if let Some(index) = locate(&self.frames) {
+            if has_relink
+                || patch.text.is_some()
+                || patch.color.is_some()
+                || patch.fill.is_some()
+                || patch.stroke.is_some()
+                || patch.label.is_some()
+                || patch.x2.is_some()
+                || patch.y2.is_some()
+            {
+                return Err(CanvasError("分组框只支持 x/y/w/h/title".into()));
+            }
+            let entry = self.frames[index]
+                .as_object_mut()
+                .expect("frame is an object");
+            Self::write_point_fields(entry, patch);
+            Self::write_textish_field(entry, "title", patch.title.as_deref());
+            self.touch(now);
+            return Ok("frame");
+        }
+        if let Some(index) = locate(&self.edges) {
+            if has_geometry
+                || patch.text.is_some()
+                || patch.color.is_some()
+                || patch.fill.is_some()
+                || patch.stroke.is_some()
+                || patch.title.is_some()
+            {
+                return Err(CanvasError("连线只支持 from/to/label".into()));
+            }
+            let from = patch
+                .from
+                .clone()
+                .or_else(|| {
+                    self.edges[index]
+                        .get("from")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .expect("edge always has from");
+            let to = patch
+                .to
+                .clone()
+                .or_else(|| {
+                    self.edges[index]
+                        .get("to")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .expect("edge always has to");
+            let connectable = self.connectable_ids();
+            for endpoint in [&from, &to] {
+                if !connectable.contains(endpoint) {
+                    return Err(CanvasError(format!(
+                        "连线端点不存在（需要已存在的卡片或形状 id）: {endpoint}"
+                    )));
+                }
+            }
+            let duplicates = self
+                .board_edges()
+                .iter()
+                .any(|edge| edge.id != id && edge.from == from && edge.to == to);
+            if duplicates {
+                return Err(CanvasError(format!("连线已存在: {from} -> {to}")));
+            }
+            let entry = self.edges[index]
+                .as_object_mut()
+                .expect("edge is an object");
+            entry.insert("from".into(), json!(from));
+            entry.insert("to".into(), json!(to));
+            Self::write_textish_field(entry, "label", patch.label.as_deref());
+            self.touch(now);
+            return Ok("edge");
+        }
+        if locate(&self.ink).is_some() {
+            return Err(CanvasError(
+                "手绘笔迹不支持 update（不支持整体改写），请 remove 后重画".into(),
+            ));
+        }
+        Err(CanvasError(format!(
+            "元素 id 不存在: {id}（先 show 查看现有元素 id）"
+        )))
+    }
+
+    /// Write x/y/w/h (+x2/y2 when present in the patch) with the same
+    /// rounding and minimum sizes the add paths use.
+    fn write_point_fields(entry: &mut Map<String, Value>, patch: &ElementPatch) {
+        if let Some(x) = patch.x {
+            entry.insert("x".into(), json!(round_coord(x)));
+        }
+        if let Some(y) = patch.y {
+            entry.insert("y".into(), json!(round_coord(y)));
+        }
+        if let Some(w) = patch.w {
+            entry.insert("w".into(), json!(round_coord(w.max(MIN_ELEMENT_SIZE))));
+        }
+        if let Some(h) = patch.h {
+            entry.insert("h".into(), json!(round_coord(h.max(MIN_ELEMENT_SIZE))));
+        }
+        if let Some(x2) = patch.x2 {
+            entry.insert("x2".into(), json!(round_coord(x2)));
+        }
+        if let Some(y2) = patch.y2 {
+            entry.insert("y2".into(), json!(round_coord(y2)));
+        }
+    }
+
+    /// Set or clear an optional string field (blank clears the attribute,
+    /// matching how the board view drops empty labels).
+    fn write_textish_field(entry: &mut Map<String, Value>, key: &str, value: Option<&str>) {
+        let Some(value) = value else { return };
+        let trimmed = value.trim();
+        if trimmed.is_empty() {
+            entry.remove(key);
+        } else {
+            entry.insert(key.into(), json!(trimmed));
         }
     }
 
@@ -923,6 +1141,29 @@ pub struct FrameInput {
     pub y: Option<f64>,
     pub w: Option<f64>,
     pub h: Option<f64>,
+}
+
+/// Field patch for [`CanvasDocument::update_element`]. `None` leaves the
+/// attribute unchanged; text-ish fields set to a blank string clear it.
+#[derive(Debug, Clone, Default)]
+pub struct ElementPatch {
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub w: Option<f64>,
+    pub h: Option<f64>,
+    pub x2: Option<f64>,
+    pub y2: Option<f64>,
+    pub text: Option<String>,
+    pub color: Option<String>,
+    pub fill: Option<String>,
+    pub stroke: Option<String>,
+    /// Edge label.
+    pub label: Option<String>,
+    /// Edge endpoint re-targeting.
+    pub from: Option<String>,
+    pub to: Option<String>,
+    /// Frame title / note-card title snapshot.
+    pub title: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -1184,6 +1425,12 @@ pub fn resolve_canvas_path(notebook_root: &Path, relative: &str) -> Result<PathB
 
 fn round_coord(value: f64) -> i64 {
     value.round() as i64
+}
+
+/// True when the patch touches endpoint geometry (used to allow endpoint +
+/// box together on two-point shapes, where endpoints win).
+fn has_geometry_endpoints(patch: &ElementPatch) -> bool {
+    patch.x.is_some() || patch.y.is_some() || patch.x2.is_some() || patch.y2.is_some()
 }
 
 fn size_or(w: Option<f64>, h: Option<f64>, default: (f64, f64)) -> (f64, f64) {

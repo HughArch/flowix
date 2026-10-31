@@ -1,4 +1,6 @@
 <!-- flowix:instructions:start -->
+> ⚠️ 本标记块由 Flowix 桌面端自动维护：**每次发送消息时块内内容会被强制覆写**，请勿在此块内修改或添加内容。自定义项目指令请写在标记块之外（下方），不会被覆盖。
+
 ## Flowix CLI
 
 Flowix 是用于操作笔记和插件产物的非交互式 CLI，使用 `--json` 时返回 JSON。
@@ -23,7 +25,8 @@ Flowix 是用于操作笔记和插件产物的非交互式 CLI，使用 `--json`
 - `flowix canvas add-edge <画布地址> --from <元素id> --to <元素id> [--label <文本>] --json` — 连线
 - `flowix canvas add-frame <画布地址> [--title <标题>] [--x N --y N --w N --h N] --json` — 加分组框
 - `flowix canvas add-notes <画布地址> --notes <地址1,地址2,...> [--columns N] --json` — 把多篇笔记摆成网格卡片
-- `flowix canvas remove <画布地址> --ids <id1,id2,...> --json` — 删除元素（相连连线一并删除）
+- `flowix canvas remove <画布地址> --ids <id1,id2,...> --json` — 删除元素（可单独删除连线；删除元素时相连连线一并删除）
+- `flowix canvas update <画布地址> --element <元素id> [--x N --y N --w N --h N --x2 N --y2 N] [--text T --title T --color C --label L --from id --to id] --json` — 移动/改尺寸/改文字/改连线端点（箭头线段用 x2/y2）
 
 仅当用户明确要求生成/创建思维导图时调用 mindmap 工具。调用前先整理最终 Markdown：
 

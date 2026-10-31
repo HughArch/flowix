@@ -271,6 +271,59 @@ pub(crate) fn add_card(
     }))
 }
 
+/// `flowix canvas update` / `canvas.updateElement` — move / resize / retext /
+/// relink one existing element. Blank text-ish values clear the attribute.
+pub(crate) fn update(
+    raw: &str,
+    element_id: &str,
+    args: &UpdateArgs<'_>,
+) -> Result<Value, CliError> {
+    let (mf, notebook, relative, mut document) = load(raw)?;
+    let patch = canvas::ElementPatch {
+        x: args.x,
+        y: args.y,
+        w: args.w,
+        h: args.h,
+        x2: args.x2,
+        y2: args.y2,
+        text: args.text.map(str::to_owned),
+        color: args.color.map(str::to_owned),
+        fill: args.fill.map(str::to_owned),
+        stroke: args.stroke.map(str::to_owned),
+        label: args.label.map(str::to_owned),
+        from: args.from.map(str::to_owned),
+        to: args.to.map(str::to_owned),
+        title: args.title.map(str::to_owned),
+    };
+    let kind = document
+        .update_element(element_id, &patch, &canvas::now_iso())
+        .map_err(usage)?;
+    save(&mf, &notebook, &relative, &document)?;
+    Ok(json!({
+        "ok": true, "action": "canvas.updateElement", "address": format!("{}::{}", notebook.id, relative),
+        "id": element_id, "kind": kind, "counts": counts(&document),
+    }))
+}
+
+/// Update patch for [`update`], grouped to keep the call sites flat.
+#[derive(Default)]
+pub(crate) struct UpdateArgs<'a> {
+    pub x: Option<f64>,
+    pub y: Option<f64>,
+    pub w: Option<f64>,
+    pub h: Option<f64>,
+    pub x2: Option<f64>,
+    pub y2: Option<f64>,
+    pub text: Option<&'a str>,
+    pub color: Option<&'a str>,
+    pub fill: Option<&'a str>,
+    pub stroke: Option<&'a str>,
+    pub label: Option<&'a str>,
+    pub from: Option<&'a str>,
+    pub to: Option<&'a str>,
+    pub title: Option<&'a str>,
+}
+
 /// Shape attributes for [`add_shape`], grouped to keep the call sites flat.
 pub(crate) struct ShapeArgs<'a> {
     pub shape: &'a str,

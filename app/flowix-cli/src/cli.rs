@@ -195,10 +195,29 @@ pub enum CanvasCommand {
         w: Option<f64>,
         h: Option<f64>,
     },
-    /// Remove cards/shapes/frames/ink by id (connected edges go with them).
+    // Remove cards/shapes/frames/ink/edges by id (connected edges go with them).
     Remove {
         id: String,
         ids: Vec<String>,
+    },
+    // Move / resize / retext / relink one existing element.
+    Update {
+        id: String,
+        element: String,
+        x: Option<f64>,
+        y: Option<f64>,
+        w: Option<f64>,
+        h: Option<f64>,
+        x2: Option<f64>,
+        y2: Option<f64>,
+        text: Option<String>,
+        color: Option<String>,
+        fill: Option<String>,
+        stroke: Option<String>,
+        label: Option<String>,
+        from: Option<String>,
+        to: Option<String>,
+        title: Option<String>,
     },
 }
 
@@ -666,6 +685,24 @@ pub(crate) fn parse(args: &[String]) -> Result<Option<Cli>, CliError> {
                         .get_many::<String>("ids")
                         .map(|values| values.cloned().collect())
                         .unwrap_or_default(),
+                },
+                Some(("update", command)) => CanvasCommand::Update {
+                    id: required_string(command, "id")?,
+                    element: required_string(command, "element")?,
+                    x: optional_f64(command, "x"),
+                    y: optional_f64(command, "y"),
+                    w: optional_f64(command, "w"),
+                    h: optional_f64(command, "h"),
+                    x2: optional_f64(command, "x2"),
+                    y2: optional_f64(command, "y2"),
+                    text: command.get_one::<String>("text").cloned(),
+                    color: command.get_one::<String>("color").cloned(),
+                    fill: command.get_one::<String>("fill").cloned(),
+                    stroke: command.get_one::<String>("stroke").cloned(),
+                    label: command.get_one::<String>("label").cloned(),
+                    from: command.get_one::<String>("from").cloned(),
+                    to: command.get_one::<String>("to").cloned(),
+                    title: command.get_one::<String>("title").cloned(),
                 },
                 Some((other, _)) => {
                     return Err(CliError::Usage(format!(
@@ -1290,6 +1327,26 @@ pub(crate) fn cli_command() -> Command {
                                 .value_delimiter(',')
                                 .num_args(1..),
                         ),
+                )
+                .subcommand(
+                    Command::new("update")
+                        .about("Move, resize, retext or relink one element by id")
+                        .arg(required_arg("id"))
+                        .arg(Arg::new("element").long("element").value_name("ELEMENT-ID").help("Element id to update (from canvas show)").num_args(1))
+                        .arg(Arg::new("x").long("x").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("y").long("y").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("w").long("w").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("h").long("h").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("x2").long("x2").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("y2").long("y2").value_parser(clap::value_parser!(f64)).num_args(1))
+                        .arg(Arg::new("text").long("text").value_name("TEXT").num_args(1))
+                        .arg(Arg::new("color").long("color").value_name("COLOR").num_args(1))
+                        .arg(Arg::new("fill").long("fill").value_name("COLOR").num_args(1))
+                        .arg(Arg::new("stroke").long("stroke").value_name("COLOR").num_args(1))
+                        .arg(Arg::new("label").long("label").value_name("TEXT").num_args(1))
+                        .arg(Arg::new("from").long("from").value_name("ELEMENT-ID").num_args(1))
+                        .arg(Arg::new("to").long("to").value_name("ELEMENT-ID").num_args(1))
+                        .arg(Arg::new("title").long("title").value_name("TITLE").num_args(1)),
                 ),
         )
         .subcommand(Command::new("completion").about("Generate shell completion").arg(required_arg("shell")))

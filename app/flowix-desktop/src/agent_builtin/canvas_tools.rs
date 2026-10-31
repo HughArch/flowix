@@ -138,6 +138,32 @@ pub(crate) fn execute(
             Ok(json!({ "ok": true, "action": "canvas.addNotes", "path": relative,
                 "ids": ids, "counts": counts(&document) }))
         }
+        "update" => {
+            let (relative, mut document) = load(scope, args)?;
+            let id = string_arg(args, "id").ok_or("缺少 id（要更新的元素 id，来自 read）")?;
+            let patch = canvas::ElementPatch {
+                x: number_arg(args, "x"),
+                y: number_arg(args, "y"),
+                w: number_arg(args, "w"),
+                h: number_arg(args, "h"),
+                x2: number_arg(args, "x2"),
+                y2: number_arg(args, "y2"),
+                text: string_arg(args, "text"),
+                color: string_arg(args, "color"),
+                fill: string_arg(args, "fill"),
+                stroke: string_arg(args, "stroke"),
+                label: string_arg(args, "label"),
+                from: string_arg(args, "from"),
+                to: string_arg(args, "to"),
+                title: string_arg(args, "title"),
+            };
+            let kind = document
+                .update_element(&id, &patch, &canvas::now_iso())
+                .map_err(|error| error.0)?;
+            save(memo_file, scope, &relative, &document)?;
+            Ok(json!({ "ok": true, "action": "canvas.update", "path": relative,
+                "id": id, "kind": kind, "counts": counts(&document) }))
+        }
         "remove" => {
             let (relative, mut document) = load(scope, args)?;
             let ids = args
@@ -164,7 +190,7 @@ pub(crate) fn execute(
                 "counts": counts(&document) }))
         }
         other => Err(format!(
-            "未知 canvas action: {other}（可用 create/list/read/addCard/addShape/addEdge/addFrame/addNotes/remove）"
+            "未知 canvas action: {other}（可用 create/list/read/addCard/addShape/addEdge/addFrame/addNotes/update/remove）"
         )),
     }
 }
@@ -425,7 +451,8 @@ mod tests {
             call(json!({"action":"addShape", "path":path, "shape":"rect", "text":"节点"})).unwrap();
         let shape_id = shape["id"].as_str().unwrap().to_owned();
         let edge = call(json!({"action":"addEdge", "path":path, "from":note_card_id, "to":shape_id, "label":"依赖"})).unwrap();
-        assert!(edge["id"].as_str().unwrap().starts_with("e_"));
+        let edge_id = edge["id"].as_str().unwrap().to_owned();
+        assert!(edge_id.starts_with("e_"));
 
         // Note card got the derived title.
         let read = call(json!({"action":"read", "path":path})).unwrap();
@@ -445,6 +472,25 @@ mod tests {
         .unwrap();
         assert_eq!(batch["ids"].as_array().unwrap().len(), 2);
         assert_eq!(batch["counts"]["cards"], 4, "{batch}");
+
+        // Update: move the sticky, relabel the edge.
+        let moved = call(
+            json!({"action":"update", "path":path, "id":sticky_id, "x":200, "y":80, "text":"移动过"}),
+        )
+        .unwrap();
+        assert_eq!(moved["kind"], "card", "{moved}");
+        let relabeled =
+            call(json!({"action":"update", "path":path, "id":edge_id, "label":"改标注"})).unwrap();
+        assert_eq!(relabeled["kind"], "edge", "{relabeled}");
+        let read_after_update = call(json!({"action":"read", "path":path})).unwrap();
+        let moved_card = read_after_update["cards"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|card| card["id"] == sticky_id.as_str())
+            .unwrap();
+        assert_eq!(moved_card["x"].as_f64(), Some(200.0));
+        assert_eq!(moved_card["text"], "移动过");
 
         // Remove cascades the edge.
         let removed =

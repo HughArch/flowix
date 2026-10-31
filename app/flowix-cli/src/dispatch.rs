@@ -355,6 +355,46 @@ pub fn run_cli(args: &[String]) -> Result<(), CliError> {
             cli::CanvasCommand::Remove { id, ids } => {
                 path_store::print(canvas_store::remove(&id, &ids)?, json)
             }
+            cli::CanvasCommand::Update {
+                id,
+                element,
+                x,
+                y,
+                w,
+                h,
+                x2,
+                y2,
+                text,
+                color,
+                fill,
+                stroke,
+                label,
+                from,
+                to,
+                title,
+            } => path_store::print(
+                canvas_store::update(
+                    &id,
+                    &element,
+                    &canvas_store::UpdateArgs {
+                        x,
+                        y,
+                        w,
+                        h,
+                        x2,
+                        y2,
+                        text: text.as_deref(),
+                        color: color.as_deref(),
+                        fill: fill.as_deref(),
+                        stroke: stroke.as_deref(),
+                        label: label.as_deref(),
+                        from: from.as_deref(),
+                        to: to.as_deref(),
+                        title: title.as_deref(),
+                    },
+                )?,
+                json,
+            ),
         },
         cli::Cli::Mcp => {
             use std::io::{stdin, stdout};
