@@ -542,6 +542,27 @@
   font-weight: 500;
 }
 
+/* File-type icon in front of the label (canvas boards, notes, other files). */
+.mention-note-title--with-icon {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.mention-note-item-icon {
+  width: 0.875rem;
+  height: 0.875rem;
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+
+.mention-note-title-text {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
 .mention-note-dropdown:not(.tag-mention-dropdown) .mention-note-title {
   font-weight: 400;
 }

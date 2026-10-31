@@ -1,5 +1,6 @@
 import { type MouseEvent } from 'react';
 import { LoaderCircle } from 'lucide-react';
+import { ContentIcon } from '@features/content/components/content-icon';
 import { useSelectedItemScroll } from '@features/editor/extensions/shared/use-selected-item-scroll';
 import { OverlayScrollbar } from '@shared/ui/overlay-scrollbar';
 import type { MentionNoteItem } from '@features/editor/extensions/note-mention/note-mention-data';
@@ -91,7 +92,15 @@ export function NoteMentionDropdown({
                     onSelect(item);
                   }}
                 >
-                  <span className="mention-note-title">{item.relativePath.toLowerCase().endsWith('.flowix-canvas') ? item.filename : item.title}</span>
+                  <span className="mention-note-title mention-note-title--with-icon">
+                    <ContentIcon
+                      content={{ kind: 'file', path: item.relativePath }}
+                      className="mention-note-item-icon"
+                    />
+                    <span className="mention-note-title-text">
+                      {item.relativePath.toLowerCase().endsWith('.flowix-canvas') ? item.filename : item.title}
+                    </span>
+                  </span>
                 </button>
               );
             })
