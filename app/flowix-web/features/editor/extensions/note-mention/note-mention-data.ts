@@ -56,11 +56,24 @@ async function fetchMentionNotes(query: string): Promise<MentionNoteItem[]> {
     });
     return [...noteItems, ...canvasItems];
   }));
-  const merged = groups.flat();
-  const filtered = merged.filter((item) => !normalizedQuery
-    || item.title.toLocaleLowerCase().includes(normalizedQuery)
-    || item.relativePath.toLocaleLowerCase().includes(normalizedQuery));
-  return filtered.sort((a, b) => b.updatedAt - a.updatedAt).slice(0, 200);
+  // Notes compete for the 200-entry window (bulk perf notes can otherwise
+  // crowd out everything else); canvases are rare, so all matching ones stay.
+  const filteredNotes = groups.flat().filter((item) => !isCanvasItem(item)
+    && (!normalizedQuery
+      || item.title.toLocaleLowerCase().includes(normalizedQuery)
+      || item.relativePath.toLocaleLowerCase().includes(normalizedQuery)))
+    .sort((a, b) => b.updatedAt - a.updatedAt)
+    .slice(0, 200);
+  const filteredCanvases = groups.flat().filter(isCanvasItem)
+    .filter((item) => !normalizedQuery
+      || item.title.toLocaleLowerCase().includes(normalizedQuery)
+      || item.relativePath.toLocaleLowerCase().includes(normalizedQuery))
+    .sort((a, b) => b.updatedAt - a.updatedAt);
+  return [...filteredNotes, ...filteredCanvases];
+}
+
+function isCanvasItem(item: MentionNoteItem): boolean {
+  return item.relativePath.toLowerCase().endsWith('.flowix-canvas');
 }
 
 function loadMentionNotes(): Promise<MentionNoteItem[]> {

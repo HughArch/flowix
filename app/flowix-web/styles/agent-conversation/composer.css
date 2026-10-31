@@ -521,6 +521,18 @@
   cursor: pointer;
 }
 
+/* File-type glyph (note / canvas board) in front of the label. */
+.agent-composer-slash-menu__item-icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  opacity: 0.75;
+}
+
+.agent-composer-slash-menu__item-icon svg {
+  width: 0.875rem;
+  height: 0.875rem;
+}
+
 .agent-composer-slash-menu__section {
   margin: 0.25rem 0.5rem 0.125rem;
   padding: 0.35rem 0 0.125rem;

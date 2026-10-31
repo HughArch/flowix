@@ -3,6 +3,7 @@ import { isMobileDevice } from "@shared/platform";
 import { useDocumentStore } from "@features/document/store/document-store";
 import { useNoteStore } from "@features/memo/store/note-store";
 import { canonicalPath, joinNotebookMemoPath } from "@/lib/path";
+import { fileIconSvgForPath } from "@features/content/components/content-icon-svg";
 import { displayTitleFromFilename } from "@/lib/utils";
 import {
   insertComposerFolderToken,
@@ -505,9 +506,16 @@ export class ComposerFolderController {
     item.setAttribute("role", "option");
     item.setAttribute("aria-selected", String(index === this.activeIndex));
 
+    const isCanvas = note.relativePath.toLowerCase().endsWith(".flowix-canvas");
+
+    const icon = document.createElement("span");
+    icon.className = "agent-composer-slash-menu__item-icon";
+    icon.innerHTML = fileIconSvgForPath(note.relativePath);
+
     const name = document.createElement("span");
     name.className = "agent-composer-slash-menu__name";
-    name.textContent = note.title || note.filename;
+    // Canvas boards keep the full filename so the kind stays readable.
+    name.textContent = isCanvas ? (note.filename || note.title) : (note.title || note.filename);
     const notebook = document.createElement("span");
     notebook.className = "agent-composer-slash-menu__description";
     // Mobile AI panel: the left side already shows the filename, so the right
@@ -517,9 +525,9 @@ export class ComposerFolderController {
       : note.notebookName;
     if (description) {
       notebook.textContent = description;
-      item.append(name, notebook);
+      item.append(icon, name, notebook);
     } else {
-      item.append(name);
+      item.append(icon, name);
     }
     item.addEventListener("mousemove", (event) => this.handleItemMouseMove(event, index));
     item.addEventListener("pointerdown", (event) => event.preventDefault());
