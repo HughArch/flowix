@@ -188,13 +188,15 @@ function CardHandles({ visible = false }: { visible?: boolean }) {
           type="source"
           position={position}
           className={visible
-            // A 24px grab zone with the dot painted by gradient: starting a
-            // connection no longer needs pixel-perfect aim (a finger needs
-            // the whole box). On nodes whose root clips (sticky/image/note),
-            // the outer half of the zone is cut off and the inner half works.
-            // z-20 puts the dot above the resizer's edge lines (z-10), which
-            // otherwise win exactly at the midpoints where the dots sit.
-            ? '!z-20 !h-6 !w-6 !rounded-full !border-0 !bg-[radial-gradient(circle,var(--muted-foreground)_0_3px,var(--card)_3px_4.5px,transparent_5px)]'
+            // The dot keeps its original look; the ::after pseudo (hit-tested
+            // as part of the element) stretches the grab zone to ~34px so
+            // starting a connection no longer needs pixel-perfect aim and a
+            // finger has a real target. On nodes whose root clips
+            // (sticky/image/note), the outer part of the zone is cut off and
+            // the inner half works. z-20 puts the dot above the resizer's
+            // edge lines (z-10), which otherwise win exactly at the midpoints
+            // where the dots sit.
+            ? '!z-20 !h-2.5 !w-2.5 !rounded-full !border !border-[var(--card)] !bg-[var(--muted-foreground)] after:absolute after:-inset-3 after:rounded-full after:content-[""]'
             : '!pointer-events-none !h-3 !w-3 !border-0 !bg-transparent'}
         />
       ))}
