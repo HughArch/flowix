@@ -377,6 +377,29 @@ export function useNotebookTreeDragController({
     };
   }, [notebookId, notebookPath, selectedFilePaths, treeItemsByPath]);
 
+  // 移动端长按直接进入移动状态：startItemDrag 在 pointerdown 时已挂起一次拖拽，
+  // 这里把它激活（抬起浮层、开启拖拽会话），后续 pointermove/pointerup 走常规拖拽路径。
+  const beginLongPressMove = useCallback((item: DocTreeItem, pointerId: number) => {
+    const drag = pointerDragRef.current;
+    if (!drag || drag.active || drag.pointerId !== pointerId) return;
+    if (!drag.sourcePaths.some((sourcePath) => samePath(sourcePath, item.fullPath))) return;
+    drag.active = true;
+    setDragPreview({ name: drag.sourceName, path: drag.sourcePath, count: drag.sourcePaths.length });
+    updateDragPreviewPosition(drag.startX + 12, drag.startY + 12);
+    beginDragSession(drag.dragPayload, { x: drag.startX, y: drag.startY }, () => {
+      const active = pointerDragRef.current;
+      if (!active || active.pointerId !== drag.pointerId) return;
+      stopDragAutoScroll();
+      clearDragExpandTimer();
+      if (active.captureElement.hasPointerCapture(active.pointerId)) {
+        active.captureElement.releasePointerCapture(active.pointerId);
+      }
+      pointerDragRef.current = null;
+      setDragOverFolderPath(null);
+      setDragPreview(null);
+    });
+  }, [clearDragExpandTimer, stopDragAutoScroll, updateDragPreviewPosition]);
+
   const handlePointerMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
     const drag = pointerDragRef.current;
     if (!drag || event.pointerId !== drag.pointerId) return;
@@ -493,6 +516,12 @@ export function useNotebookTreeDragController({
 
   const shouldSuppressOpen = useCallback((path: string) => suppressOpenPathsRef.current.has(canonicalPath(path)), []);
 
+  /** Menu-driven move: reuses the drop pipeline (feedback, refresh, toasts). */
+  const moveSources = useCallback(
+    (targetDirectoryPath: string, sources: NotebookMoveSource[]) => handleDrop(targetDirectoryPath, sources),
+    [handleDrop],
+  );
+
   return {
     dragOverFolderPath,
     dragPreview,
@@ -500,6 +529,8 @@ export function useNotebookTreeDragController({
     dragPreviewPositionRef,
     moveFeedback,
     startItemDrag,
+    beginLongPressMove,
+    moveSources,
     handlePointerMove,
     handlePointerUp,
     handlePointerCancel,

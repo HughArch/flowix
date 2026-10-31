@@ -11,6 +11,7 @@ import {
   type PointerEvent as ReactPointerEvent,
 } from 'react';
 import {
+  ArrowsOutCardinalIcon,
   CopyIcon,
   EyeSlashIcon,
   FolderOpenIcon,
@@ -51,6 +52,10 @@ const TREE_MENU_ITEM_CLASS =
 const TREE_EDGE_GUTTER = 6;
 const INDENT_PER_LEVEL = 20;
 const FOLDER_SINGLE_CLICK_DELAY_MS = 300;
+// 移动端长按阈值：超过即进入移动状态 (拖拽), 不再唤起菜单。
+const MOBILE_DEVICE = isMobileDevice();
+const MOBILE_LONG_PRESS_MS = 500;
+const MOBILE_LONG_PRESS_MOVE_THRESHOLD_PX = 8;
 
 function DefaultFolderCheck() {
   return (
@@ -103,6 +108,8 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   onDeleteFolder,
   onDeleteFile,
   onSetDefaultFolder,
+  onRequestMove,
+  onLongPressMove,
   isDefaultFolder,
   onPointerDown,
   onKeyDown,
@@ -144,6 +151,10 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   onDeleteFolder?: (path: string) => Promise<void>;
   onDeleteFile?: (item: DocTreeItem) => Promise<void>;
   onSetDefaultFolder?: (folderPath: string) => void;
+  /** 移动端菜单里的「移动到…」: 打开目标文件夹选择框。 */
+  onRequestMove?: (item: DocTreeItem) => void;
+  /** 移动端长按进入移动状态: 激活该行已挂起的拖拽会话。 */
+  onLongPressMove?: (item: DocTreeItem, pointerId: number) => void;
   isDefaultFolder?: boolean;
   onKeyDown?: (path: string, event: ReactKeyboardEvent<HTMLDivElement>) => void;
   onFocus?: (path: string) => void;
@@ -161,7 +172,68 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   useEffect(() => () => {
     if (folderClickTimer.current !== null) clearTimeout(folderClickTimer.current);
   }, []);
+  // 移动端长按: 500ms 后进入移动状态 (激活拖拽), 期间拦截 touchmove 防止滚动接管手势。
+  const longPressTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const longPressCleanupRef = useRef<(() => void) | null>(null);
+  const longPressActiveRef = useRef(false);
+  const consumeLongPressClick = useCallback(() => {
+    const consumed = longPressActiveRef.current;
+    longPressActiveRef.current = false;
+    return consumed;
+  }, []);
+  const clearLongPress = useCallback(() => {
+    if (longPressTimerRef.current !== null) {
+      clearTimeout(longPressTimerRef.current);
+      longPressTimerRef.current = null;
+    }
+    longPressCleanupRef.current?.();
+    longPressCleanupRef.current = null;
+  }, []);
+  useEffect(() => clearLongPress, [clearLongPress]);
+  const startLongPressMove = useCallback((event: ReactPointerEvent<HTMLDivElement>) => {
+    if (!MOBILE_DEVICE || !onLongPressMove || event.pointerType !== 'touch') return;
+    clearLongPress();
+    const element = event.currentTarget;
+    const startX = event.clientX;
+    const startY = event.clientY;
+    const pointerId = event.pointerId;
+    let timer: ReturnType<typeof setTimeout> | null = null;
+    const detach = () => {
+      element.removeEventListener('touchmove', handleTouchMove);
+      element.removeEventListener('touchend', handleTouchEnd);
+      element.removeEventListener('touchcancel', handleTouchEnd);
+    };
+    const cancel = () => {
+      if (timer !== null) {
+        clearTimeout(timer);
+        timer = null;
+      }
+      detach();
+    };
+    const handleTouchMove = (touchEvent: TouchEvent) => {
+      if (longPressActiveRef.current) {
+        // 长按已激活: 阻止 WebView 把手势转成滚动 (滚动会触发 pointercancel, 拖拽就断了)。
+        touchEvent.preventDefault();
+        return;
+      }
+      const touch = touchEvent.touches[0];
+      if (touch && Math.hypot(touch.clientX - startX, touch.clientY - startY) > MOBILE_LONG_PRESS_MOVE_THRESHOLD_PX) {
+        cancel();
+      }
+    };
+    const handleTouchEnd = () => cancel();
+    timer = setTimeout(() => {
+      timer = null;
+      longPressActiveRef.current = true;
+      onLongPressMove(item, pointerId);
+    }, MOBILE_LONG_PRESS_MS);
+    element.addEventListener('touchmove', handleTouchMove, { passive: false });
+    element.addEventListener('touchend', handleTouchEnd);
+    element.addEventListener('touchcancel', handleTouchEnd);
+    longPressCleanupRef.current = cancel;
+  }, [clearLongPress, item, onLongPressMove]);
   const selectFolderOnSingleClick = (event: ReactMouseEvent<HTMLDivElement>) => {
+    if (consumeLongPressClick()) return;
     if (event.detail !== 1) {
       if (folderClickTimer.current !== null) {
         clearTimeout(folderClickTimer.current);
@@ -407,6 +479,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
           onClick={isFolder
             ? selectFolderOnSingleClick
             : (event) => {
+                if (consumeLongPressClick()) return;
                 // 手机单栏: shell 监听后收起列表覆盖层, 回到文档 (文件夹不触发)。
                 window.dispatchEvent(new Event('flowix:open-note-from-list'));
                 onOpen(item.fullPath, event);
@@ -415,14 +488,23 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
             ? toggleFolderOnDoubleClick
             : undefined}
           onFocus={() => onFocus?.(item.fullPath)}
+          onContextMenu={(event) => {
+            // 移动端长按进入移动状态, 菜单只从行尾「…」按钮唤起,
+            // 因此拦截 WebView 长按产生的 contextmenu。
+            if (MOBILE_DEVICE) event.preventDefault();
+          }}
           onPointerDown={(event) => {
+            longPressActiveRef.current = false;
             if (renaming) {
               event.stopPropagation();
               return;
             }
             if (event.button !== 0) return;
             onPointerDown(item, event);
+            startLongPressMove(event);
           }}
+          onPointerUp={clearLongPress}
+          onPointerCancel={clearLongPress}
           onKeyDown={(event) => {
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault();
@@ -611,6 +693,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
         <NotebookTreeMoreButton
           label={t('memo.fileTree.moreActions')}
           active={contextMenuOpen}
+          alwaysVisible={MOBILE_DEVICE}
         />
       )}
         </div>
@@ -643,6 +726,12 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
           <PencilSimpleIcon className="mr-2 h-4 w-4" />
           {t('memo.fileTree.rename')}
         </ContextMenuItem>
+        {onRequestMove && (
+          <ContextMenuItem onClick={() => onRequestMove(item)} className={TREE_MENU_ITEM_CLASS}>
+            <ArrowsOutCardinalIcon className="mr-2 h-4 w-4" aria-hidden="true" />
+            {t('memo.fileTree.moveToFolder')}
+          </ContextMenuItem>
+        )}
         {!isFolder && (!isNote || !displayedMemo) && <NotebookCopyContextMenu path={item.fullPath} isNote={isNote} />}
         {isFolder && onDeleteFolder && (
           <ContextMenuItem
@@ -806,7 +895,7 @@ export const NotebookTreeRow = memo(function NotebookTreeRow({
   );
 });
 
-function NotebookTreeMoreButton({ label, active }: { label: string; active: boolean }) {
+function NotebookTreeMoreButton({ label, active, alwaysVisible = false }: { label: string; active: boolean; alwaysVisible?: boolean }) {
   const { openAt } = useContextMenuContext();
 
   return (
@@ -823,6 +912,7 @@ function NotebookTreeMoreButton({ label, active }: { label: string; active: bool
       onKeyDown={(event) => event.stopPropagation()}
       className={cn(
         'pointer-events-none ml-0 flex h-6 w-0 shrink-0 items-center justify-center overflow-hidden rounded-md text-[var(--muted-foreground)] opacity-0 transition-[width,margin,opacity,color] duration-[37.5ms] group-hover:pointer-events-auto group-hover:ml-1 group-hover:w-6 group-hover:opacity-100 hover:text-[var(--foreground)] focus-visible:pointer-events-auto focus-visible:ml-1 focus-visible:w-6 focus-visible:opacity-100 focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-[var(--brand)]',
+        alwaysVisible && 'pointer-events-auto ml-1 w-6 opacity-100',
         active && 'pointer-events-auto ml-1 w-6 opacity-100 text-[var(--foreground)]',
       )}
     >

@@ -62,6 +62,7 @@ import {
   type FolderTreeSort,
 } from '@features/memo/components/use-folder-tree';
 import { NotebookTreeRow } from '@features/memo/components/notebook-tree-row';
+import { NotebookMoveToFolderDialog } from '@features/memo/components/notebook-move-to-folder-dialog';
 import { getWorkspaceAgentRepositories, type WorkspaceAgentRepository } from '@features/agent/public/workspace-api';
 import { useAgentWorkspaceStore } from '@features/agent/store/agent-workspace-store';
 import {
@@ -410,6 +411,8 @@ export function NotebookFileTree({
   const openCustomizeDisplay = useCallback((rect: DOMRect) => customizePanelRef.current?.open(rect), []);
   const [agentSectionHeight, setAgentSectionHeight] = useState(0);
   const [draft, setDraft] = useState<NotebookTreeDraftState | null>(null);
+  // 移动端菜单「移动到…」的目标选择框。
+  const [moveDialogItem, setMoveDialogItem] = useState<DocTreeItem | null>(null);
   const treeScrollerRef = useRef<HTMLDivElement | null>(null);
   const treeRootRef = useRef<HTMLDivElement | null>(null);
   const externalDropSurfaceRef = useRef<HTMLDivElement | null>(null);
@@ -527,6 +530,8 @@ export function NotebookFileTree({
     dragPreviewPositionRef,
     moveFeedback,
     startItemDrag: handlePointerDownItem,
+    beginLongPressMove: handleLongPressMoveActivate,
+    moveSources: handleMoveSources,
     handlePointerMove: handleTreePointerMove,
     handlePointerUp: handleTreePointerUp,
     handlePointerCancel: handleTreePointerCancel,
@@ -940,6 +945,8 @@ export function NotebookFileTree({
             ? onDeleteFile
             : undefined}
           onSetDefaultFolder={item.type === 'folder' ? onSetDefaultCreateFolder : undefined}
+          onRequestMove={MOBILE_DEVICE ? setMoveDialogItem : undefined}
+          onLongPressMove={MOBILE_DEVICE ? handleLongPressMoveActivate : undefined}
           isDefaultFolder={item.type === 'folder' && defaultCreateFolder === relativeFolderPath(notebookPath, item.fullPath)}
           onKeepAliveChange={handleRowKeepAliveChange}
           onPointerDown={handlePointerDownItem}
@@ -1346,6 +1353,22 @@ export function NotebookFileTree({
         />
       </ListSurfaceViewport>
       {creationDialog}
+      {moveDialogItem && MOBILE_DEVICE && (
+        <NotebookMoveToFolderDialog
+          item={moveDialogItem}
+          notebookPath={notebookPath}
+          onClose={() => setMoveDialogItem(null)}
+          onMoveTo={async (targetDirectoryPath) => {
+            const source = moveDialogItem;
+            setMoveDialogItem(null);
+            await handleMoveSources(targetDirectoryPath, [{
+              path: source.fullPath,
+              resourceKind: source.resourceKind,
+              isFolder: source.type === 'folder',
+            }]);
+          }}
+        />
+      )}
       <NotebookTreeCustomizePanel ref={customizePanelRef} sectionOrder={sectionOrder} hiddenSections={hiddenSections} onChange={updateSections} />
       <div
         ref={repositoriesPageRef}
