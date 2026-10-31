@@ -3290,6 +3290,51 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     return () => window.removeEventListener('keydown', onKeyDown);
   }, [copySelection, duplicateSelection, pasteClipboard]);
 
+  /** Arrow-key nudge for selected elements. React Flow's built-in a11y
+   *  movement only edits view state — positions never reached the document,
+   *  so the next graph rebuild (blur, selection change) snapped elements
+   *  back. Intercept the keys in capture phase, move both the view and the
+   *  document, and coalesce held-key repeats into one undo entry. */
+  const lastNudgeAtRef = useRef(0);
+  useEffect(() => {
+    const onKeyDown = (event: KeyboardEvent) => {
+      if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight' && event.key !== 'ArrowUp' && event.key !== 'ArrowDown') return;
+      const target = event.target as HTMLElement | null;
+      if (target && (target.isContentEditable || ['INPUT', 'TEXTAREA'].includes(target.tagName))) return;
+      const selected = nodes.filter((item) => item.selected);
+      if (selected.length === 0) return;
+      event.preventDefault();
+      event.stopPropagation();
+      const step = event.shiftKey ? 10 : 1;
+      const dx = event.key === 'ArrowLeft' ? -step : event.key === 'ArrowRight' ? step : 0;
+      const dy = event.key === 'ArrowUp' ? -step : event.key === 'ArrowDown' ? step : 0;
+      // Ink needs a drag-start record for syncPositionsToDocument to
+      // translate its points; seed it lazily on the first nudge stroke.
+      for (const item of selected) {
+        if (item.type !== 'ink' || inkDragStartRef.current.has(item.id)) continue;
+        const stroke = inkRef.current.find((entry) => entry.id === item.id);
+        const box = stroke ? inkBox(stroke) : null;
+        if (!stroke || !box) continue;
+        inkDragStartRef.current.set(item.id, {
+          boxX: box.x,
+          boxY: box.y,
+          points: stroke.points.map(([x, y]) => [x, y]),
+        });
+      }
+      const selectedIds = new Set(selected.map((item) => item.id));
+      const movedNodes = selected.map((item) => ({ ...item, position: { x: item.position.x + dx, y: item.position.y + dy } }));
+      setNodes((current) => current.map((item) => (selectedIds.has(item.id)
+        ? { ...item, position: { x: item.position.x + dx, y: item.position.y + dy } }
+        : item)));
+      syncPositionsToDocument(movedNodes);
+      const now = Date.now();
+      if (now - lastNudgeAtRef.current > 800) pushHistory();
+      lastNudgeAtRef.current = now;
+    };
+    window.addEventListener('keydown', onKeyDown, true);
+    return () => window.removeEventListener('keydown', onKeyDown, true);
+  }, [nodes, pushHistory, syncPositionsToDocument]);
+
   const defaultViewport = useMemo<Viewport>(
     () => initialViewport ?? { x: 0, y: 0, zoom: 1 },
     [initialViewport],
