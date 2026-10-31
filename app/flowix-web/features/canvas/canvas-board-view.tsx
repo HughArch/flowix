@@ -33,13 +33,15 @@ import {
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
 import '../../styles/canvas-board.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Link2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, Pencil, Plus, Redo2, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Link2, Loader2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, Pencil, Plus, Redo2, Save, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { Tooltip } from '@shared/ui/tooltip';
 import { pushHandler } from '@/lib/shortcuts';
 import { claimCanvasSurface, getActiveCanvasSurface, releaseCanvasSurface, setActiveCanvasSurface } from './canvas-focus';
 import { CANVAS_TOOL_SHORTCUTS } from './canvas-tool-shortcuts';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
+import { formatSyncOutcomeSummary, syncNotebookNow } from '@features/document/public/sync-coordination';
+import { resolveNotebookIdForPath } from '@features/document/use-cases/resolve-notebook-id-for-path';
 import { parseMarkdownInWorker } from '@features/editor/markdown-parser';
 import { renderNoteContentHtml, sliceNoteByHeading } from '@features/editor/read-only/render-note-content';
 import { NoteCardContent } from './note-card-content';
@@ -1238,6 +1240,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const dataUrlsRef = useRef<Map<string, string>>(new Map());
   const dirtyRef = useRef(false);
   const timerRef = useRef<number | null>(null);
+  /** Re-render mirror of `dirtyRef` driving the save button's unsaved dot. */
+  const [saveDirty, setSaveDirty] = useState(false);
+  /** True while the explicit save-and-sync run is in flight (button spinner). */
+  const [saveBusy, setSaveBusy] = useState(false);
+  const saveBusyRef = useRef(false);
   const lastSavedTextRef = useRef<string | null>(null);
   /** Canvas file id -> notebook-relative attachment key, for reference-safe serialization. */
   const storageKeysRef = useRef<Map<string, string>>(new Map());
@@ -1605,6 +1612,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   useEffect(() => {
     notebooksRef.current = notebooks.map((notebook) => ({ id: notebook.id, name: notebook.name, path: notebook.path }));
   }, [notebooks]);
+  /** Owning notebook for save-and-sync; external-scope boards resolve to none. */
+  const notebookId = useMemo(
+    () => resolveNotebookIdForPath(filePath, notebooks),
+    [filePath, notebooks],
+  );
 
   useEffect(() => {
     let cancelled = false;
@@ -1680,7 +1692,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       timerRef.current = null;
     }
     const document = documentRef.current;
-    if (!document || !dirtyRef.current) return true;
+    if (!document || !dirtyRef.current) {
+      setSaveDirty(false);
+      return true;
+    }
     const build = () => serializeCanvasDocument(
       document,
       document.elements,
@@ -1692,6 +1707,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     const stable = build();
     if (stable.text === lastSavedTextRef.current) {
       dirtyRef.current = false;
+      setSaveDirty(false);
       return true;
     }
     document.meta = { ...document.meta, updatedAt: new Date().toISOString() };
@@ -1700,6 +1716,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       const saved = await files.write(filePath, text, undefined, notebookPath ?? undefined);
       if (!saved) throw new Error('write_file returned false');
       dirtyRef.current = false;
+      setSaveDirty(false);
       lastSavedTextRef.current = text;
       return true;
     } catch (error) {
@@ -1710,12 +1727,32 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
 
   const scheduleFlush = useCallback(() => {
     dirtyRef.current = true;
+    setSaveDirty(true);
     if (timerRef.current !== null) return;
     timerRef.current = window.setTimeout(() => {
       timerRef.current = null;
       void flush();
     }, SAVE_DEBOUNCE_MS);
   }, [flush]);
+
+  /** 保存按钮 / Ctrl+S (画布 active 时): flush 本板, 再同步所在 notebook。
+   *  未绑定 FNS 时 `syncNotebookNow` 返回 null, 静默跳过同步部分。 */
+  const saveAndSync = useCallback(async (): Promise<void> => {
+    if (readOnly || saveBusyRef.current) return;
+    saveBusyRef.current = true;
+    setSaveBusy(true);
+    try {
+      if (!(await flush())) return;
+      if (!notebookId) return;
+      const outcome = await syncNotebookNow(notebookId);
+      if (outcome) toast.success(formatSyncOutcomeSummary(outcome, t));
+    } catch (error) {
+      toast.error(`${t('sync.panel.failed')}: ${error instanceof Error ? error.message : String(error)}`);
+    } finally {
+      saveBusyRef.current = false;
+      setSaveBusy(false);
+    }
+  }, [flush, notebookId, readOnly, t]);
 
   useEffect(() => {
     scheduleFlushRef.current = scheduleFlush;
@@ -2017,8 +2054,14 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       selectTool('select');
       return true;
     }, { isActive: ownedByThisBoard }));
+    // Ctrl+S: 本板是当前交互面时由画布自管保存并同步; 否则 action.run 落到
+    // sync-coordination 的通用「保存打开文档并同步」路径。
+    pops.push(pushHandler('document.saveAndSync', () => {
+      void saveAndSync();
+      return true;
+    }, { isActive: ownedByThisBoard }));
     return () => pops.forEach((pop) => pop());
-  }, [readOnly, selectTool, surfaceId]);
+  }, [readOnly, saveAndSync, selectTool, surfaceId]);
 
   /** Drag a handle between two nodes to add a connector. */
   const handleConnect = useCallback((connection: { source: string | null; target: string | null }) => {
@@ -3662,6 +3705,30 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+      {/* Explicit save + FNS sync (Ctrl+S shares the same path via the
+          document.saveAndSync handler). The board pointer handlers ignore
+          clicks on [data-board-toolbar], so the button never starts a marquee.
+          Narrow viewports drop the chip one row below the toolbar: the tool
+          row already overflows the screen edge, so sharing its corner would
+          cover the clipped fit/lock/more buttons. */}
+      {!readOnly ? (
+        <div data-board-toolbar className={`absolute right-3 z-30 ${isNarrowViewport ? 'top-14' : 'top-3'}`}>
+          <Tooltip content={t('canvas.board.save')} shortcut="document.saveAndSync" side="bottom">
+            <button
+              type="button"
+              aria-label={t('canvas.board.save')}
+              className="relative flex h-8 w-8 items-center justify-center rounded-lg border border-[var(--border)] bg-[var(--card)] text-[var(--muted-foreground)] shadow-sm transition-colors hover:bg-[var(--muted)] hover:text-[var(--foreground)] disabled:pointer-events-none disabled:opacity-60"
+              disabled={saveBusy}
+              onClick={() => { void saveAndSync(); }}
+            >
+              {saveBusy ? <Loader2 className="h-3.5 w-3.5 flowix-spin" /> : <Save className="h-3.5 w-3.5" />}
+              {saveDirty && !saveBusy ? (
+                <span aria-hidden="true" className="absolute right-1 top-1 h-1.5 w-1.5 rounded-full bg-[var(--brand)]" />
+              ) : null}
+            </button>
+          </Tooltip>
+        </div>
+      ) : null}
       <div className="absolute bottom-4 left-3 z-30 flex max-h-[calc(100%-120px)] flex-col items-start gap-2">
         {(tool === 'pen' || isShapeTool(tool) || stickyMode || selectionMode) && !panelCollapsed ? (
         <div

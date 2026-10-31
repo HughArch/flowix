@@ -7,6 +7,7 @@ import { windows } from '@platform/tauri/client';
 import { useSettingsStore } from '@/lib/store/settings-store';
 import { getThemePreference, setThemePreference } from '@features/preferences/public/runtime-api';
 import { navigateDocumentHistory } from '@features/document/use-cases/document-navigation';
+import { saveOpenDocumentsAndSync } from '@features/document/public/sync-coordination';
 import { resolveSystemTheme, type ResolvedThemeId, type ThemeId } from '@features/theme';
 
 /**
@@ -39,6 +40,7 @@ import { resolveSystemTheme, type ResolvedThemeId, type ThemeId } from '@feature
  *     editor.toggleBulletList   ⌘⌥8         editor  — 块元素 → 无序列表
  *     editor.toggleOrderedList  ⌘⌥7         editor  — 块元素 → 有序列表
  *     editor.toggleTaskList     ⌘⌥9         editor  — 块元素 → 待办列表
+ *     document.saveAndSync      ⌘S          window  — 保存当前文档并同步 (FNS)
  *
  *   navigation
  *     palette.search  ⌘K          no-input — 打开/关闭命令面板 (toggle)
@@ -289,6 +291,33 @@ defineAction({
   scope: 'editor',
   defaultBinding: { mac: 'Mod+Alt+9', windows: 'Mod+Alt+9', linux: 'Mod+Alt+9' },
   run: () => invokeHandler('editor.toggleTaskList'),
+});
+
+/**
+ * 保存当前工作并同步 (Ctrl+S / ⌘S)。
+ *
+ * scope: 'window' — 编辑器、画布、任意位置都可触发; 命中后 preventDefault,
+ * 覆盖浏览器默认的"保存网页"。
+ *
+ * 分发顺序:
+ *  1. handler 栈里有画布实例且是当前 active surface → 画布自管 flush 本板并
+ *     同步其所在 notebook (pushHandler 由 canvas-board-view 注册);
+ *  2. 否则走 sync-coordination 的通用路径: flush 所有打开的编辑会话与挂载的
+ *     画布板, 再同步这些会话所属的 notebook — 未绑定 FNS 的 notebook 由引擎
+ *     返回 null, 静默跳过。
+ */
+defineAction({
+  id: 'document.saveAndSync',
+  titleKey: 'preferences.shortcuts.action.document.saveAndSync.title',
+  descriptionKey: 'preferences.shortcuts.action.document.saveAndSync.description',
+  group: 'editor',
+  scope: 'window',
+  defaultBinding: { mac: 'Mod+S', windows: 'Mod+S', linux: 'Mod+S' },
+  run: () => {
+    if (invokeHandler('document.saveAndSync')) return true;
+    void saveOpenDocumentsAndSync();
+    return true;
+  },
 });
 
 // ── 导航 ─────────────────────────────────────────────────

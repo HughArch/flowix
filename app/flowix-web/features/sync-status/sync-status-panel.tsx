@@ -17,7 +17,7 @@ import {
   type FnsSyncRecord,
 } from '@platform/tauri/client';
 import { useNoteStore } from '@features/memo/store/note-store';
-import { flushOpenDocumentsForNotebook, reloadOpenDocumentsAfterSync } from '@features/document/public/sync-coordination';
+import { flushOpenDocumentsForNotebook, formatSyncOutcomeSummary, reloadOpenDocumentsAfterSync } from '@features/document/public/sync-coordination';
 import { useSyncPanelStore } from './sync-panel-store';
 import { ConflictDiffDialog } from './conflict-diff-dialog';
 
@@ -345,13 +345,7 @@ export function SyncStatusPanel() {
       await reloadOpenDocumentsAfterSync(selectedNotebookId);
       await refresh();
       if (outcome) {
-        let summary = `${t('sync.panel.done')} · ${outcome.vault} ↓${outcome.pulled} ↑${outcome.pushed} · 📎 ↓${outcome.filesPulled} ↑${outcome.filesPushed}`;
-        if (outcome.conflicts.length > 0) {
-          summary += ` · ⚠ ${t('sync.panel.conflicts').replace('{count}', String(outcome.conflicts.length))}`;
-        } else if (outcome.conflictsAutoResolved > 0) {
-          summary += ` · ✓ ${t('sync.conflict.autoResolved').replace('{count}', String(outcome.conflictsAutoResolved))}`;
-        }
-        toast.success(summary);
+        toast.success(formatSyncOutcomeSummary(outcome, t));
       } else {
         toast.error(t('sync.panel.skipped'));
       }

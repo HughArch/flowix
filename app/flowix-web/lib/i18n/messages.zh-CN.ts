@@ -693,6 +693,9 @@ const zhCN = {
     "preferences.shortcuts.action.editor.undo.title": "撤销",
     "preferences.shortcuts.action.editor.undo.description":
       "撤销上一步编辑操作",
+    "preferences.shortcuts.action.document.saveAndSync.title": "保存并同步",
+    "preferences.shortcuts.action.document.saveAndSync.description":
+      "保存当前文档并同步其所在笔记本（FNS）",
     "preferences.shortcuts.action.editor.redo.title": "重做",
     "preferences.shortcuts.action.editor.redo.description":
       "重做上一步被撤销的操作",
@@ -1380,6 +1383,7 @@ const zhCN = {
     "canvas.load.missing": "画布文件不存在或已被删除",
     "canvas.save.failed": "画布保存失败",
     "canvas.save.filesDropped": "部分图片过大，未能随画布保存（{count} 张）",
+    "canvas.board.save": "保存并同步",
     "canvas.board.doubleClickOpen": "双击打开笔记",
     "canvas.board.tool.rect": "矩形",
     "canvas.board.tool.ellipse": "圆",
