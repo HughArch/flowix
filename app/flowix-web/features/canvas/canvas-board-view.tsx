@@ -83,6 +83,7 @@ import { type CanvasSurfaceViewProps } from './surface-props';
 import { boardToSvg, svgToPngBase64 } from './board-export';
 import { cachedRoughPaths, roughLineSketch } from './board-rough';
 import { alignShapes, distributeShapes, type BoardAlignMode } from './board-align';
+import { shapeGrowBoxHeight, shapeLabelWidth } from './shape-label';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@shared/ui/dropdown-menu';
@@ -117,8 +118,10 @@ type BoardNode = Node<BoardNodeData>;
 /** Resize box in flow coordinates, as reported by NodeResizer. */
 type ResizeBoxRect = { x: number; y: number; width: number; height: number };
 /** `live` fires on every drag frame (the node must redraw immediately),
- * `end` fires once on release (commit to the document + history). */
-type ResizePhase = 'live' | 'end';
+ * `end` fires once on release (commit to the document + history), `grow`
+ * fires from the label editor when text outgrows the shape (no rescale
+ * base, no history — the text commit records the final geometry). */
+type ResizePhase = 'live' | 'end' | 'grow';
 
 /** Decoded pixel size of a data URL image. */
 function imageSizeOf(dataUrl: string): Promise<{ width: number; height: number }> {
@@ -172,7 +175,10 @@ function CardHandles({ visible = false }: { visible?: boolean }) {
           id={`tgt-${side}`}
           type="target"
           position={position}
-          className="!h-3 !w-3 !border-0 !bg-transparent"
+          // Drops snap to the nearest handle geometrically (`connectionRadius`),
+          // so targets never need pointer events: this keeps them from eating
+          // node drags near the edge midpoints.
+          className="!pointer-events-none !h-3 !w-3 !border-0 !bg-transparent"
         />
       ))}
       {CONNECTION_SIDES.map(([side, position]) => (
@@ -182,14 +188,30 @@ function CardHandles({ visible = false }: { visible?: boolean }) {
           type="source"
           position={position}
           className={visible
-            ? '!h-2.5 !w-2.5 !rounded-full !border !border-[var(--card)] !bg-[var(--muted-foreground)]'
-            // Unselected sources are not connection starts; keeping them out
-            // of hit-testing leaves the card edges draggable.
+            // The dot keeps its original look; the ::after pseudo (hit-tested
+            // as part of the element) stretches the grab zone to ~34px so
+            // starting a connection no longer needs pixel-perfect aim and a
+            // finger has a real target. On nodes whose root clips
+            // (sticky/image/note), the outer part of the zone is cut off and
+            // the inner half works. z-20 puts the dot above the resizer's
+            // edge lines (z-10), which otherwise win exactly at the midpoints
+            // where the dots sit.
+            ? '!z-20 !h-2.5 !w-2.5 !rounded-full !border !border-[var(--card)] !bg-[var(--muted-foreground)] after:absolute after:-inset-3 after:rounded-full after:content-[""]'
             : '!pointer-events-none !h-3 !w-3 !border-0 !bg-transparent'}
         />
       ))}
     </>
   );
+}
+
+/** Programmatic focus drops the caret at the first character; editing an
+ *  existing label should resume where the text left off, so park the caret
+ *  at the end (no-op for an empty editor). */
+function focusTextEditorAtEnd(element: HTMLTextAreaElement | HTMLInputElement | null) {
+  if (!element) return;
+  element.focus();
+  const end = element.value.length;
+  element.setSelectionRange(end, end);
 }
 
 /** Compact relative timestamp for card footers. */
@@ -291,7 +313,7 @@ function StickyNode({ data, selected }: NodeProps<BoardNode>) {
   // the note right away.
   useEffect(() => {
     if (!editing) return;
-    const focusTimer = window.setTimeout(() => textareaRef.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => focusTextEditorAtEnd(textareaRef.current), 0);
     return () => window.clearTimeout(focusTimer);
   }, [editing]);
   return (
@@ -392,7 +414,7 @@ function FrameNode({ data, selected }: NodeProps<BoardNode>) {
   // a microtask after the placing drag, so the title input needs a macrotask.
   useEffect(() => {
     if (!editing) return;
-    const focusTimer = window.setTimeout(() => inputRef.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => focusTextEditorAtEnd(inputRef.current), 0);
     return () => window.clearTimeout(focusTimer);
   }, [editing]);
   return (
@@ -445,9 +467,32 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   // microtask, so autofocus loses to it after a placing drag or double-click.
   useEffect(() => {
     if (!editing) return;
-    const focusTimer = window.setTimeout(() => textareaRef.current?.focus(), 0);
+    const focusTimer = window.setTimeout(() => focusTextEditorAtEnd(textareaRef.current), 0);
     return () => window.clearTimeout(focusTimer);
   }, [editing]);
+  // Auto-fit while editing: the textarea is sized to its content (the flex
+  // container keeps it vertically centered, so the caret starts in the middle
+  // of the shape), and content that outgrows the box expands it around its
+  // center through the 'grow' resize phase (per-shape factors and the
+  // convergence slack live in shape-label.ts).
+  useLayoutEffect(() => {
+    if (!editing) return;
+    const element = textareaRef.current;
+    const current = data.shape;
+    if (!element || !current) return;
+    element.style.height = '0px';
+    const contentH = element.scrollHeight;
+    element.style.height = `${contentH}px`;
+    const nextBoxH = shapeGrowBoxHeight(current.shape, current.h, contentH, SHAPE_PADDING);
+    if (nextBoxH === null) return;
+    const cy = current.y + current.h / 2;
+    data.onShapeResize?.(current.id, {
+      x: current.x - SHAPE_PADDING,
+      y: cy - nextBoxH / 2,
+      width: current.w + SHAPE_PADDING * 2,
+      height: nextBoxH,
+    }, 'grow');
+  }, [editing, draft, data]);
   if (!shape) return null;
   const stroke = shape.stroke ?? '#64748b';
   const strokeWidth = shape.strokeWidth ?? 2;
@@ -459,6 +504,14 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
   const alignClass = textAlign === 'left' ? 'text-left' : textAlign === 'right' ? 'text-right' : 'text-center';
   // Node boxes are padded, so paths must be translated by the padded origin.
   const origin = shape.shape === 'arrow' || shape.shape === 'line' ? arrowBox(shape) : shapeBoxWithPadding(shape);
+  // Double-click edits the label: closed shapes and text elements start from
+  // empty too; arrows and lines only re-edit an existing label.
+  const canEditLabel = Boolean(shape.text)
+    || shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond'
+    || shape.shape === 'text';
+  // Ellipse/diamond labels wrap inside the inscribed rectangle so they never
+  // cross the outline; everything else wraps at the node container.
+  const labelWidth = shapeLabelWidth(shape);
 
   const sketch = shape.shape === 'text' ? null : (
     <svg style={{ position: 'absolute', inset: 0, width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none' }}>
@@ -518,11 +571,11 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
       <div
         className={`absolute inset-0 flex items-center px-2 ${alignClass} ${textAlign === 'center' ? 'justify-center' : ''}`}
         onDoubleClick={(event) => {
-          // Adding text via double-click is gone (a double-click is the global
-          // "drop a text element" gesture now); existing labels stay editable.
-          if (!shape.text) return;
+          // On the bare pane a double-click is the global "drop a text
+          // element" gesture; on a shape it edits the label instead.
+          if (!canEditLabel) return;
           event.stopPropagation();
-          setDraft(shape.text);
+          setDraft(shape.text ?? '');
           setEditing(true);
         }}
       >
@@ -539,13 +592,25 @@ function ShapeNode({ data, selected }: NodeProps<BoardNode>) {
               if (event.key === 'Escape') { data.onShapeTextCommit?.(shape.id, draft); setEditing(false); }
               if (event.key === 'Enter' && !event.shiftKey) { event.preventDefault(); setEditing(false); data.onShapeTextCommit?.(shape.id, draft); }
             }}
-            style={{ fontSize, color: shape.shape === 'text' ? stroke : undefined, fontFamily: fontStack, fontWeight }}
-            className={`h-full w-full resize-none bg-transparent ${alignClass} leading-snug text-[var(--foreground)] outline-none`}
+            style={{
+              fontSize,
+              color: shape.shape === 'text' ? stroke : undefined,
+              fontFamily: fontStack,
+              fontWeight,
+              ...(labelWidth ? { width: labelWidth } : {}),
+            }}
+            className={`${labelWidth ? 'mx-auto' : 'w-full'} resize-none overflow-hidden bg-transparent p-0 ${alignClass} leading-snug text-[var(--foreground)] outline-none`}
           />
         ) : shape.text ? (
           <span
-            className={`pointer-events-none whitespace-pre-wrap break-words leading-snug ${alignClass}`}
-            style={{ color: shape.shape === 'text' ? stroke : 'var(--foreground)', fontSize, fontFamily: fontStack, fontWeight }}
+            className={`pointer-events-none whitespace-pre-wrap break-words leading-snug ${alignClass} ${labelWidth ? 'mx-auto' : ''}`}
+            style={{
+              color: shape.shape === 'text' ? stroke : 'var(--foreground)',
+              fontSize,
+              fontFamily: fontStack,
+              fontWeight,
+              ...(labelWidth ? { width: labelWidth } : {}),
+            }}
           >
             {shape.text}
           </span>
@@ -792,6 +857,9 @@ function shapeNodeFor(
 const ARROW_PADDING = 14;
 /** Selection ring padding around shapes; the node box is the shape plus this. */
 const SHAPE_PADDING = 12;
+/** Zoom bounds; mirrored by the ReactFlow min/max props. */
+const ZOOM_MIN = 0.05;
+const ZOOM_MAX = 4;
 
 /** Node box for a plain shape: the shape inflated by the selection padding. */
 function shapeBoxWithPadding(shape: BoardShape): { x: number; y: number; w: number; h: number } {
@@ -800,6 +868,25 @@ function shapeBoxWithPadding(shape: BoardShape): { x: number; y: number; w: numb
     y: shape.y - SHAPE_PADDING,
     w: shape.w + SHAPE_PADDING * 2,
     h: shape.h + SHAPE_PADDING * 2,
+  };
+}
+
+/** Geometry for a fresh text element whose caret lands on an anchor point.
+ *  The editor sizes the textarea to one line and centers it in the node box
+ *  (shape + ring padding), so centering the box on the point puts the caret
+ *  on it vertically; horizontally the box shifts by alignment because the
+ *  caret hugs the left edge, the center, or the right edge of the textarea
+ *  (which sits `SHAPE_PADDING - px-2` = 4px inside the shape origin). */
+function textShapeAt(point: number[], align: 'left' | 'center' | 'right'): { x: number; y: number; w: number; h: number } {
+  const [px, py] = point;
+  const w = 240;
+  const h = 40;
+  const inset = SHAPE_PADDING - 8;
+  return {
+    x: align === 'left' ? px + inset : align === 'right' ? px - w - inset : px - w / 2,
+    y: py - h / 2,
+    w,
+    h,
   };
 }
 
@@ -1052,8 +1139,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const historyRef = useRef<{ stack: string[]; index: number }>({ stack: [], index: -1 });
   const [historyDepth, setHistoryDepth] = useState({ index: -1, length: 0 });
   const [tool, setTool] = useState<BoardTool>('select');
-  /** Latest pointer was touch: select mode pans/pinches instead of rubber band. */
-  const [touchMode, setTouchMode] = useState(false);
+  /** Manual rubber-band for select-mode pane drags. React Flow's own user
+   *  selection cannot coexist with two-finger pan/pinch on touch — its d3
+   *  filter rejects the whole touch stream once panOnDrag is off — so the
+   *  marquee and the two-finger pan/pinch are implemented by hand and RF's
+   *  gesture props stay off in select mode. */
+  const [marquee, setMarquee] = useState<{ start: number[]; end: number[] } | null>(null);
   /** Sticky defaults for the next sticky note (Obsidian keeps the last used). */
   const [stickyColor, setStickyColor] = useState<StickyColor>('yellow');
   const [stickyFontSize, setStickyFontSize] = useState(FONT_SIZES[2]);
@@ -1125,6 +1216,22 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   /** Ink geometry captured at drag start so a move translates the points. */
   const inkDragStartRef = useRef<Map<string, { boxX: number; boxY: number; points: number[][] }>>(new Map());
   const lastPointerTypeRef = useRef<string>('mouse');
+  /** Set when a rubber-band drag ends: the click the browser synthesizes on
+   *  the pane right after would clear the selection React Flow just received
+   *  (d3's own click suppression never engages because its gesture filter
+   *  rejected the press), so the capture-phase listener below swallows it. */
+  const suppressPaneClickRef = useRef(false);
+  /** Active select-mode gesture: one pointer rubber-bands, two pan/pinch. */
+  const marqueeRef = useRef<{
+    pointers: Map<number, { x: number; y: number }>;
+    mode: 'select' | 'pan';
+    startFlow: number[];
+    startScreen: { x: number; y: number };
+    startMid: { x: number; y: number };
+    startDist: number;
+    startViewport: Viewport;
+    additive: boolean;
+  } | null>(null);
   /** True while a touch drag is moving a node — the panel stays hidden. */
   const touchDraggingRef = useRef(false);
   const liveStrokeRef = useRef<number[][] | null>(null);
@@ -1780,7 +1887,17 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
    * Text elements scale uniformly: the box keeps the aspect ratio implied by
    * the label and the font size tracks the box, so the text keeps filling it.
    */
-  const applyShapeResize = useCallback((nodeId: string, box: ResizeBoxRect, shape: BoardShape) => {
+  /** `direct` (the 'grow' phase) applies the box verbatim: no rescale base is
+   *  captured and text elements skip their uniform-scale branch, so editor-
+   *  driven growth never disturbs a later handle drag. */
+  const applyShapeResize = useCallback((nodeId: string, box: ResizeBoxRect, shape: BoardShape, direct = false) => {
+    if (direct) {
+      shape.x = box.x + SHAPE_PADDING;
+      shape.y = box.y + SHAPE_PADDING;
+      shape.w = Math.max(16, box.width - SHAPE_PADDING * 2);
+      shape.h = Math.max(16, box.height - SHAPE_PADDING * 2);
+      return;
+    }
     const base = resizeBaseRef.current?.id === nodeId
       ? resizeBaseRef.current
       : (resizeBaseRef.current = { id: nodeId, kind: 'shape', x: shape.x, y: shape.y, w: shape.w, h: shape.h, fontSize: shape.fontSize ?? FONT_SIZES[2] });
@@ -1812,8 +1929,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     if (!document) return;
     const shape = shapesRef.current.find((item) => item.id === nodeId);
     if (!shape) return;
-    if (phase === 'live') {
-      applyShapeResize(nodeId, box, shape);
+    if (phase === 'live' || phase === 'grow') {
+      applyShapeResize(nodeId, box, shape, phase === 'grow');
       // Redraw this node only: rebuilding the whole graph every frame would
       // fight the drag and drop the selection.
       const next = { ...shape };
@@ -1833,6 +1950,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           style: { ...node.style, width: nodeBox.w, height: nodeBox.h },
         }
         : node))));
+      // Grow rides the text editing session: persist the geometry (the commit
+      // may no-op when only the box changed) but leave history to the commit.
+      if (phase === 'grow') {
+        document.shapes = shapesRef.current;
+        scheduleFlush();
+      }
       return;
     }
     // Live frames already wrote the geometry on screen. The end event reports
@@ -2358,13 +2481,14 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     const document = documentRef.current;
     if (!document) return;
     const position = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    const box = textShapeAt([position.x, position.y], toolTextAlign);
     const shape: BoardShape = {
       id: shapeId(),
       shape: 'text',
-      x: position.x,
-      y: position.y - 12,
-      w: 240,
-      h: 40,
+      x: box.x,
+      y: box.y,
+      w: box.w,
+      h: box.h,
       stroke: penColor,
       z: nextZ(),
       fontSize: toolFontSize,
@@ -2708,15 +2832,46 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
 
   const handleBoardPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     lastPointerTypeRef.current = event.pointerType;
-    // Touch gestures in select mode: one finger pans, two fingers pinch-zoom
-    // (Obsidian mobile). Rubber-band selection stays a desktop-mouse gesture.
-    setTouchMode(event.pointerType === 'touch');
     pressRef.current = {
       x: event.clientX,
       y: event.clientY,
       onElement: !!(event.target as Element).closest('.react-flow__node:not(.react-flow__node-frame)'),
     };
-    if (readOnly || tool === 'select' || event.button !== 0) return;
+    if (tool === 'select' && !readOnly) {
+      const gesture = marqueeRef.current;
+      const point = { x: event.clientX, y: event.clientY };
+      if (gesture) {
+        // A second finger converts the rubber-band into a two-finger pan/pinch
+        // (Obsidian mobile); any further fingers ride along untouched.
+        if (gesture.mode === 'pan' || gesture.pointers.size >= 2) return;
+        gesture.pointers.set(event.pointerId, point);
+        setMarquee(null);
+        gesture.mode = 'pan';
+        const [a, b] = [...gesture.pointers.values()];
+        gesture.startMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        gesture.startDist = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+        gesture.startViewport = reactFlow.getViewport();
+        return;
+      }
+      // Presses on elements belong to them (React Flow drags the node); the
+      // pane starts a rubber-band, with mouse and touch alike.
+      if (pressRef.current.onElement || (event.target as Element).closest('[data-board-toolbar]')) return;
+      if (event.pointerType === 'mouse' && event.button !== 0) return;
+      marqueeRef.current = {
+        pointers: new Map([[event.pointerId, point]]),
+        mode: 'select',
+        startFlow: flowPositionOf(event),
+        // Copies: the pointers map entry is mutated on every move, and these
+        // must keep holding the gesture's origin.
+        startScreen: { ...point },
+        startMid: { ...point },
+        startDist: 1,
+        startViewport: reactFlow.getViewport(),
+        additive: event.shiftKey,
+      };
+      return;
+    }
+    if (readOnly || event.button !== 0) return;
     if ((event.target as Element).closest('[data-board-toolbar]')) return;
     try { event.currentTarget.setPointerCapture(event.pointerId); } catch { /* synthetic pointers cannot capture */ }
     if (tool === 'pen') {
@@ -2731,10 +2886,34 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       return;
     }
     eraseInkAt(flowPositionOf(event));
-  }, [eraseInkAt, flowPositionOf, readOnly, tool]);
+  }, [eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
 
   const handleBoardPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
-    if (readOnly || tool === 'select') return;
+    if (tool === 'select') {
+      const gesture = marqueeRef.current;
+      if (!gesture) return;
+      const tracked = gesture.pointers.get(event.pointerId);
+      if (!tracked) return;
+      tracked.x = event.clientX;
+      tracked.y = event.clientY;
+      if (gesture.mode === 'pan' && gesture.pointers.size >= 2) {
+        const [a, b] = [...gesture.pointers.values()];
+        const mid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
+        const dist = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
+        const zoom = Math.min(ZOOM_MAX, Math.max(ZOOM_MIN, gesture.startViewport.zoom * (dist / gesture.startDist)));
+        // The flow point under the first midpoint stays under the current one,
+        // so the canvas follows the fingers and zooms around their center.
+        const anchorX = (gesture.startMid.x - gesture.startViewport.x) / gesture.startViewport.zoom;
+        const anchorY = (gesture.startMid.y - gesture.startViewport.y) / gesture.startViewport.zoom;
+        void reactFlow.setViewport({ x: mid.x - anchorX * zoom, y: mid.y - anchorY * zoom, zoom });
+        return;
+      }
+      if (gesture.mode === 'select' && gesture.pointers.size === 1) {
+        setMarquee({ start: gesture.startFlow, end: flowPositionOf(event) });
+      }
+      return;
+    }
+    if (readOnly) return;
     const stroke = liveStrokeRef.current;
     if (tool === 'pen' && stroke) {
       const position = flowPositionOf(event);
@@ -2752,9 +2931,48 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       return;
     }
     if (tool === 'eraser' && event.buttons % 2 === 1) eraseInkAt(flowPositionOf(event));
-  }, [eraseInkAt, flowPositionOf, readOnly, tool]);
+  }, [eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
 
   const handleBoardPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const gesture = marqueeRef.current;
+    if (gesture && tool === 'select' && !readOnly) {
+      gesture.pointers.delete(event.pointerId);
+      if (gesture.mode === 'pan') {
+        // A pan gesture ends once fewer than two fingers remain.
+        if (gesture.pointers.size < 2) marqueeRef.current = null;
+      } else {
+        marqueeRef.current = null;
+        setMarquee(null);
+        const end = flowPositionOf(event);
+        const dragged = Math.hypot(event.clientX - gesture.startScreen.x, event.clientY - gesture.startScreen.y) >= 6;
+        // pointercancel has no follow-up click; only a real pointerup needs
+        // its click swallowed. The timeout is a failsafe: if no click ever
+        // follows (pointer released outside the window), a stuck flag would
+        // eat the next legitimate tap-select.
+        if (dragged && event.type === 'pointerup') {
+          suppressPaneClickRef.current = true;
+          window.setTimeout(() => { suppressPaneClickRef.current = false; }, 350);
+        }
+        if (dragged) {
+          const minX = Math.min(gesture.startFlow[0], end[0]);
+          const minY = Math.min(gesture.startFlow[1], end[1]);
+          const maxX = Math.max(gesture.startFlow[0], end[0]);
+          const maxY = Math.max(gesture.startFlow[1], end[1]);
+          // Frames are backdrops, not marquee targets (they are picked by
+          // clicking); everything else intersects the rect. Shift keeps the
+          // existing selection, like React Flow's own rubber-band.
+          setNodes((current) => current.map((node) => {
+            if (node.type === 'frame') return gesture.additive ? node : (node.selected ? { ...node, selected: false } : node);
+            const width = node.width ?? Number(node.style?.width ?? 0);
+            const height = node.height ?? Number(node.style?.height ?? 0);
+            const hit = node.position.x < maxX && node.position.x + width > minX
+              && node.position.y < maxY && node.position.y + height > minY;
+            if (hit) return node.selected ? node : { ...node, selected: true };
+            return gesture.additive ? node : (node.selected ? { ...node, selected: false } : node);
+          }));
+        }
+      }
+    }
     const press = pressRef.current;
     if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 5 && press.onElement) {
       // A click (not a drag) on an element summons the panel.
@@ -2771,7 +2989,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       // A click without a drag still drops a default-sized shape; labels are
       // always click-placed and start in edit mode like Excalidraw text.
       const box = isLabel
-        ? { x: draft.start[0], y: draft.start[1] - 12, w: 240, h: 40 }
+        ? textShapeAt(draft.start, toolTextAlign)
         : rect.w < 24 || rect.h < 24
           ? { x: draft.start[0] - 80, y: draft.start[1] - 50, w: 160, h: 100 }
           : rect;
@@ -2913,7 +3131,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       z: nextZ(),
       ...(toolPressure ? {} : { pressure: false }),
     }]);
-  }, [applyGraph, commitShapeText, nextZ, penColor, penWidth, pushHistory, scheduleFlush, syncInkToDocument, tool]);
+  }, [applyGraph, commitShapeText, flowPositionOf, nextZ, penColor, penWidth, pushHistory, readOnly, scheduleFlush, syncInkToDocument, tool, toolFontFamily, toolFontSize, toolTextAlign]);
 
   // Native capture-phase listeners: React's synthetic pointer events never
   // reached these handlers for real touch input on Android (only synthetic
@@ -2928,11 +3146,21 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     element.addEventListener('pointermove', move, true);
     element.addEventListener('pointerup', up, true);
     element.addEventListener('pointercancel', up, true);
+    // A rubber-band drag must not be undone by the click that follows its
+    // pointerup (React Flow's pane click clears the selection).
+    const swallowPaneClick = (event: MouseEvent) => {
+      if (!suppressPaneClickRef.current) return;
+      suppressPaneClickRef.current = false;
+      event.stopPropagation();
+      event.preventDefault();
+    };
+    element.addEventListener('click', swallowPaneClick, true);
     return () => {
       element.removeEventListener('pointerdown', down, true);
       element.removeEventListener('pointermove', move, true);
       element.removeEventListener('pointerup', up, true);
       element.removeEventListener('pointercancel', up, true);
+      element.removeEventListener('click', swallowPaneClick, true);
     };
   }, [handleBoardPointerDown, handleBoardPointerMove, handleBoardPointerUp]);
 
@@ -3979,19 +4207,24 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         defaultViewport={defaultViewport}
         fitView={!initialViewport}
         fitViewOptions={{ padding: 0.25, maxZoom: 1 }}
-        minZoom={0.05}
-        maxZoom={4}
+        minZoom={ZOOM_MIN}
+        maxZoom={ZOOM_MAX}
         // d3-zoom's built-in double-click-zoom calls stopImmediatePropagation
         // on the pane, which kills the board's onDoubleClick before it ever
         // reaches the "double-click drops a text element" handler. A board
         // never zooms on double-click (Obsidian drops a card there instead).
         zoomOnDoubleClick={false}
-        // Selection tool rubber-bands a multi-select; the hand tool pans.
-        // Touch select mode pans with one finger and pinch-zooms with two;
-        // rubber-band selection stays desktop-only (RF's user selection would
-        // otherwise swallow the second touch and block the pinch gesture).
-        panOnDrag={tool === 'hand' || (tool === 'select' && touchMode)}
-        selectionOnDrag={tool === 'select' && !touchMode}
+        // The hand tool pans and pinches through React Flow. In select mode
+        // RF's d3 gestures are fully off (its filter cannot express "one
+        // finger selects, two fingers pan" — turning pan off rejects the
+        // whole touch stream), so the rubber-band and the two-finger
+        // pan/pinch are implemented in the board's pointer handlers above.
+        panOnDrag={tool === 'hand'}
+        selectionOnDrag={false}
+        zoomOnPinch={tool === 'hand'}
+        // Generous snap radius for landing a connection near a handle
+        // (default 20) — the main touch-friendliness lever on the drop side.
+        connectionRadius={40}
         // Selected nodes must not jump above others, or layer ordering looks broken.
         elevateNodesOnSelect={false}
         nodesDraggable={!readOnly && tool === 'select'}
@@ -4001,7 +4234,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         elementsSelectable={true}
         onConnect={handleConnect}
         onlyRenderVisibleElements
-        deleteKeyCode={['Delete']}
+        // Both keys delete: many keyboards label Backspace "Del", so users
+        // pressing the key they see must get the same behavior. (RF ignores
+        // key events aimed at inputs/editors, so typing is unaffected.)
+        deleteKeyCode={['Delete', 'Backspace']}
         onNodesDelete={handleNodesDelete}
         onEdgesDelete={handleEdgesDelete}
         onEdgeClick={(_event, edge) => selectEdge(edge.id)}
@@ -4010,6 +4246,38 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       >
         {/* Plain whiteboard background: the board is a canvas, not a grid sheet. */}
         <ViewportPortal>
+          {marquee ? (() => {
+            const [sx, sy] = marquee.start;
+            const [ex, ey] = marquee.end;
+            const x = Math.min(sx, ex);
+            const y = Math.min(sy, ey);
+            const w = Math.abs(ex - sx);
+            const h = Math.abs(ey - sy);
+            return (
+              <svg
+                style={{
+                  position: 'absolute',
+                  left: x - 1,
+                  top: y - 1,
+                  width: w + 2,
+                  height: h + 2,
+                  pointerEvents: 'none',
+                }}
+              >
+                <rect
+                  x={1}
+                  y={1}
+                  width={Math.max(0, w)}
+                  height={Math.max(0, h)}
+                  fill="color-mix(in srgb, var(--foreground) 6%, transparent)"
+                  stroke="var(--foreground)"
+                  strokeDasharray="4 3"
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+            );
+          })() : null}
           {previewShape && previewShape.w + previewShape.h > 0 ? (
             <svg
               style={{
