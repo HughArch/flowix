@@ -674,13 +674,25 @@ function ResizeBox({ visible, onResize, onResizeEnd }: {
   onResize?: (_: unknown, params: ResizeBoxRect) => void;
   onResizeEnd: (_: unknown, params: ResizeBoxRect) => void;
 }) {
+  // XYResizer tears down and re-binds its d3 drag whenever these callbacks
+  // change identity — and the node components re-render on every frame of a
+  // live resize (dimension changes flow back through setNodes), so fresh
+  // inline closures would kill the in-flight gesture. Touch is hit hardest:
+  // d3 tracks touchmove on the control element itself, so a rebind orphans
+  // the finger mid-gesture (mouse survives via its window-level listeners).
+  // Route the latest callbacks through a ref and hand d3 identities that
+  // never change across renders.
+  const callbacksRef = useRef({ onResize, onResizeEnd });
+  callbacksRef.current = { onResize, onResizeEnd };
+  const stableOnResize = useRef((_event: unknown, params: ResizeBoxRect) => callbacksRef.current.onResize?.(_event, params)).current;
+  const stableOnResizeEnd = useRef((_event: unknown, params: ResizeBoxRect) => callbacksRef.current.onResizeEnd(_event, params)).current;
   return (
     <NodeResizer
       isVisible={visible}
       minWidth={40}
       minHeight={30}
-      {...(onResize ? { onResize } : {})}
-      onResizeEnd={onResizeEnd}
+      onResize={stableOnResize}
+      onResizeEnd={stableOnResizeEnd}
       // z-10 lifts the controls above the node's own content layers (the
       // absolute text div paints after them and otherwise steals half of each
       // handle), so the whole handle grabs instead of only the quadrant that
@@ -3228,8 +3240,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       }
     }
     const press = pressRef.current;
-    if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 5 && press.onElement) {
-      // A click (not a drag) on an element summons the panel.
+    if (press && Math.hypot(event.clientX - press.x, event.clientY - press.y) < 5 && press.onElement && tool === 'select') {
+      // A click (not a drag) on an element summons the panel. Hand mode is a
+      // pure panning tool: taps there must not select or open the panel.
       setPanelCollapsed(false);
     }
     pressRef.current = null;
@@ -3927,7 +3940,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   }
 
   const toolButtonClass = (active: boolean) =>
-    `flex h-7 w-7 items-center justify-center rounded-md ${active ? 'bg-[var(--foreground)] text-[var(--background)]' : 'text-[var(--muted-foreground)] hover:bg-[var(--muted)]'}`;
+    `flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${active ? 'bg-[var(--foreground)] text-[var(--background)]' : 'text-[var(--muted-foreground)] hover:bg-[var(--muted)]'}`;
 
   return (
     <div
@@ -3970,7 +3983,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         void insertImageFiles(files, position.x, position.y);
       }}
     >
-      <div data-board-toolbar className="absolute left-3 top-3 z-30 flex items-center gap-0.5 rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm">
+      {/* Clamped to the viewport and horizontally scrollable on touch: the
+          tool row overflows narrow screens, so pan-x scrolls it. The scroll
+          gesture never reaches the canvas (toolbar presses return early in the
+          pointer handlers) or the shell swipes (the whole board is
+          swipe-ignore), and touch-pan-x means vertical drags stay untouched. */}
+      <div data-board-toolbar className="absolute left-3 top-3 z-30 flex max-w-[calc(100vw-24px)] items-center gap-0.5 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <Tooltip content={t('canvas.board.tool.select')} shortcut="canvas.tool.select" side="bottom">
           <button type="button" aria-label={t('canvas.board.tool.select')} className={toolButtonClass(tool === 'select')} onClick={() => selectTool('select')}>
             <MousePointer2 className="h-3.5 w-3.5" />
@@ -4120,7 +4138,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           </Tooltip>
         </div>
       ) : null}
-      <div className="absolute bottom-4 left-3 z-30 flex max-h-[calc(100%-120px)] flex-col items-start gap-2">
+      {/* The container is a layout shell spanning the union of its children
+          (panel + button rows); its transparent regions must not eat canvas
+          touches — with the panel open they cover a large invisible rectangle
+          over resize handles and marquee gestures. pointer-events lives on
+          the visible children only. */}
+      <div className="pointer-events-none absolute bottom-4 left-3 z-30 flex max-h-[calc(100%-120px)] flex-col items-start gap-2 [&>*]:pointer-events-auto">
         {(tool === 'pen' || isShapeTool(tool) || stickyMode || selectionMode) && !panelCollapsed ? (
         <div
           data-board-toolbar
@@ -4735,9 +4758,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         elevateNodesOnSelect={false}
         nodesDraggable={!readOnly && tool === 'select'}
         nodesConnectable={!readOnly && tool === 'select'}
-        // Elements stay clickable even with a drawing tool active, so
-        // selecting always switches the panel to the right element type.
-        elementsSelectable={true}
+        // Pen/eraser taps keep their panel-switching behaviour via selection;
+        // the hand tool opt-out lives on the elementsSelectable prop above.
         onConnect={handleConnect}
         onlyRenderVisibleElements
         // Both keys delete: many keyboards label Backspace "Del", so users
@@ -4746,7 +4768,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         deleteKeyCode={['Delete', 'Backspace']}
         onNodesDelete={handleNodesDelete}
         onEdgesDelete={handleEdgesDelete}
-        onEdgeClick={(_event, edge) => selectEdge(edge.id)}
+        // Hand mode is a pure panning tool: nothing is selectable while it is
+        // active (Obsidian behaviour), so taps cannot flip selections or
+        // summon the panel mid-pan.
+        elementsSelectable={tool !== 'hand'}
+        onEdgeClick={(_event, edge) => { if (tool !== 'hand') selectEdge(edge.id); }}
         onPaneClick={() => selectEdge(null)}
         onNodeContextMenu={handleNodeContextMenu}
         onPaneContextMenu={handlePaneContextMenu}
