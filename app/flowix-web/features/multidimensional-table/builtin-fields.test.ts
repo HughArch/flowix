@@ -65,7 +65,10 @@ describe('shared collection contract fixture', () => {
     expect(document.views.items[0].config.visible_fields).toEqual([
       document.dataset.schema.primary_field_id, ...BUILTIN_TABLE_FIELDS.filter((field) => !builtinPresetTableField(field.id) || document.dataset.schema.preset_fields.includes(field.id)).map((field) => field.id),
     ]);
-    expect(parseTableDocument(serializeTableDocument(document))).toEqual(document);
+    // 共享 fixture 是旧格式，带已废弃的 collection.name；解析端兼容但 wire
+    // 不再携带，round-trip 后 name 消失属预期。
+    expect(parseTableDocument(serializeTableDocument(document)))
+      .toEqual({ ...document, collection: { ...document.collection, name: undefined } });
     document.views.items[0].config.visible_fields = [];
     expect(parseTableDocument(serializeTableDocument(document)).views.items[0].config.visible_fields).toEqual([]);
     document.views.items[0].config.visible_fields = ['__unknown__'];

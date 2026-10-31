@@ -157,7 +157,9 @@ describe('ComposerSlashCommandController', () => {
     expect(composer.querySelector('.agent-thread-card__slash-token')?.textContent).toBe(translate(getCurrentAppLanguage(), 'editor.threadCard.composer.longTask'));
     expect(composer.querySelector('.agent-thread-card__slash-token--control')).not.toBeNull();
     const wrapper = composer.querySelector('.agent-thread-card__slash-token-wrapper');
-    expect(wrapper?.childNodes).toHaveLength(3);
+    // Leading caret anchor, the chip itself, the hover action group, and the
+    // trailing caret anchor.
+    expect(wrapper?.childNodes).toHaveLength(4);
     expect(wrapper?.firstChild?.textContent).toBe('\u200B');
     expect(wrapper?.lastChild?.textContent).toBe('\u200B');
 
@@ -406,7 +408,11 @@ describe('ComposerSlashCommandController', () => {
     expect(document.querySelector('.agent-composer-slash-menu__scope')).toBeNull();
     type(nextEditor, '');
     type(nextEditor, '/');
-    await vi.waitFor(() => expect(listDshSkills).toHaveBeenCalledTimes(2));
+    // Re-opening the menu reuses the freshly cached skill catalog instead of
+    // hitting the loader again.
+    await vi.waitFor(() => expect([...document.querySelectorAll('.agent-composer-slash-menu__name')]
+      .map((node) => node.textContent)).toContain('review'));
+    expect(listDshSkills).toHaveBeenCalledOnce();
     nextController.dispose();
     nextEditor.destroy();
   });

@@ -93,7 +93,7 @@ describe('TableKanbanView pointer movement', () => {
     expect(onOpenRecord).toHaveBeenCalledWith('first');
   });
 
-  it('resolves another lane and passes its select option to the move handler', () => {
+  it('resolves another lane and passes its select option to the move handler', async () => {
     container = document.createElement('div');
     root = createRoot(container);
     const onDropRecord = vi.fn();
@@ -122,7 +122,9 @@ describe('TableKanbanView pointer movement', () => {
     expect(floating?.classList.contains('opacity-50')).toBe(false);
     expect(floating?.style.left).toBe('44px');
     expect(floating?.style.top).toBe('44px');
-    pointer(source, 'pointerup', 30, 30);
+    // endDragSession defers onDrop to a microtask, so the drop has to be
+    // awaited before asserting on the handler.
+    await act(async () => { pointer(source, 'pointerup', 30, 30); });
 
     expect(onDropRecord).toHaveBeenCalledWith('first', 'done', null);
     expect(document.querySelector('[data-kanban-floating-preview]')).toBeNull();
@@ -166,7 +168,7 @@ describe('TableKanbanView pointer movement', () => {
     expect(sourceLane.querySelector('.multidimensional-table__kanban-empty')).toBeNull();
   });
 
-  it('passes the insertion card when reordering within a lane', () => {
+  it('passes the insertion card when reordering within a lane', async () => {
     container = document.createElement('div');
     root = createRoot(container);
     const onDropRecord = vi.fn();
@@ -191,7 +193,7 @@ describe('TableKanbanView pointer movement', () => {
 
     pointer(source, 'pointerdown', 10, 10);
     pointer(source, 'pointermove', 30, 25);
-    pointer(source, 'pointerup', 30, 25);
+    await act(async () => { pointer(source, 'pointerup', 30, 25); });
 
     expect(onDropRecord).toHaveBeenCalledWith('second', 'todo', 'first');
   });

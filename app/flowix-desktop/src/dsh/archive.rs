@@ -76,10 +76,16 @@ pub(super) fn extract_archive(bytes: &[u8], destination: &Path) -> Result<(), St
 }
 
 pub(super) fn safe_archive_path(path: &Path) -> Result<PathBuf, String> {
+    // Windows paths can be rooted without being absolute ("/absolute" has a
+    // root but no prefix) and prefixed without a root ("C:evil"). Both pass
+    // is_absolute(), yet PathBuf::join replaces the destination with them, so
+    // they must be rejected alongside `..` to keep extraction inside the
+    // target directory.
     if path.is_absolute()
+        || path.has_root()
         || path
             .components()
-            .any(|component| matches!(component, Component::ParentDir))
+            .any(|component| matches!(component, Component::ParentDir | Component::Prefix(_)))
     {
         return Err(format!("unsafe DSH archive path: {}", path.display()));
     }

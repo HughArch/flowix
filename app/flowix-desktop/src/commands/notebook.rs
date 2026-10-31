@@ -1111,6 +1111,9 @@ mod tests {
         )
         .unwrap();
         fs::remove_dir_all(config_dir.join("db")).unwrap();
+        // 4f1452d9 起，已初始化安装的注册库丢失会被拒绝静默重建；本测试锁定
+        // 的是「运行时依赖缺失但仍允许建库」的新装场景，须一并移除初始化标记。
+        fs::remove_file(config_dir.join("notebook-registry-initialized")).unwrap();
         // Keep the same in-memory MemoFile, as with an already open Dev window.
         assert!(memo.read_notebook_configs().unwrap().is_empty());
         assert!(memo.read_selected_notebook_id().unwrap().is_none());

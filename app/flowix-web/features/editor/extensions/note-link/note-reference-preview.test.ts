@@ -1,4 +1,4 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, beforeEach, expect, it, vi } from 'vitest';
 import { Editor } from '@tiptap/core';
 import StarterKit from '@tiptap/starter-kit';
 import { notes } from '@platform/tauri/client';
@@ -14,6 +14,12 @@ const initialWorkColumn = useWorkColumnStore.getState();
 const initialBrowserColumn = useBrowserColumnStore.getState();
 const initialFocus = useWorkspaceFocusStore.getState();
 let editor: Editor | null = null;
+
+beforeEach(() => {
+  // openNoteByNotebookPath probes the physical path before opening it; without
+  // this the call falls through to real Tauri IPC and throws.
+  vi.spyOn(notes, 'pathStatus').mockResolvedValue('present');
+});
 
 afterEach(() => {
   editor?.destroy();

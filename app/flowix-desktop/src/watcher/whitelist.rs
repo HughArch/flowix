@@ -214,24 +214,22 @@ mod tests {
     }
 
     #[test]
-    fn default_skips_blacklisted_files() {
+    fn default_allows_hidden_markdown_files() {
+        // watch_hidden 默认开启：点前缀 .md 交给扩展名白名单把关，
+        // 内部目录由 allows() 的 .flowix/.agents 常拒分支兜底。
         let w = WhitelistConfig::default();
+        assert!(w.allows(Path::new("/x/.hidden.md")).is_ok());
+        // 点前缀但不在扩展名白名单；默认 skip_files 已清空，无黑名单可命中。
         assert_eq!(
             w.allows(Path::new("/x/.DS_Store")),
-            Err(DropReason::PathNotWhitelisted) // 闅愯棌鏂囦欢浼樺厛
-        );
-        // 非隐藏的黑名单文�?- *.tmp �?���?".tmp" 结尾, ".tmp.md" 不匹�?        // (临时文件场景�? 用户�?*.tmp.md 这�?带后缀�? 行为应当放�?�?watcher 重命名�?�?
-        assert!(w.allows(Path::new("/x/notes.tmp.md")).is_ok());
-        // �?.tmp 命中
-        assert_eq!(
-            w.allows(Path::new("/x/notes.tmp")),
-            Err(DropReason::PathBlacklisted)
+            Err(DropReason::ExtensionMismatch)
         );
     }
 
     #[test]
-    fn default_skips_hidden() {
-        let w = WhitelistConfig::default();
+    fn watch_hidden_false_still_skips_hidden() {
+        let mut w = WhitelistConfig::default();
+        w.watch_hidden = false;
         assert_eq!(
             w.allows(Path::new("/x/.hidden.md")),
             Err(DropReason::PathNotWhitelisted)
@@ -242,13 +240,27 @@ mod tests {
     fn watch_hidden_true_allows_dots() {
         let mut w = WhitelistConfig::default();
         w.watch_hidden = true;
-        // .DS_Store 仍然黑名�?
+        // 用户配置的黑名单仍优先于隐藏文件放行。
+        w.skip_files.push(".DS_Store".into());
         assert_eq!(
             w.allows(Path::new("/x/.DS_Store")),
             Err(DropReason::PathBlacklisted)
         );
-        // �?��隐�?.md 放�?
+        // 普通隐藏 .md 放行。
         assert!(w.allows(Path::new("/x/.hidden.md")).is_ok());
+    }
+
+    #[test]
+    fn configured_skip_files_win_over_extension_allowlist() {
+        // "*.tmp" 只命中以 .tmp 结尾的名字；".tmp.md"（watcher 重命名场景）
+        // 不受黑名单影响，仍按扩展名白名单放行。
+        let mut w = WhitelistConfig::default();
+        w.skip_files.push("*.tmp".into());
+        assert_eq!(
+            w.allows(Path::new("/x/notes.tmp")),
+            Err(DropReason::PathBlacklisted)
+        );
+        assert!(w.allows(Path::new("/x/notes.tmp.md")).is_ok());
     }
 
     #[test]

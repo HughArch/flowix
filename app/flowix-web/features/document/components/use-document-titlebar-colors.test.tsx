@@ -10,7 +10,12 @@ import { resolveDocumentTitlebarTarget, type DocumentTitlebarTarget } from './do
 const mocks = vi.hoisted(() => ({ save: vi.fn(), read: vi.fn(), error: vi.fn() }));
 vi.mock('../public/path-properties', () => ({ setDocumentProperties: mocks.save }));
 vi.mock('@platform/tauri/client', () => ({ notes: { readDocument: mocks.read } }));
-vi.mock('@/lib/i18n', () => ({ useI18n: () => ({ t: (key: string) => key }) }));
+// 整体替换会让间接依赖（@/lib/constants → DEFAULT_APP_LANGUAGE）在 import 期
+// 炸掉，只覆盖组件用到的 useI18n，其余保留真实导出。
+vi.mock('@/lib/i18n', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('@/lib/i18n')>()),
+  useI18n: () => ({ t: (key: string) => key }),
+}));
 vi.mock('@/lib/toast', () => ({ toast: { error: mocks.error } }));
 vi.mock('@/lib/logger', () => ({ createLogger: () => ({ error: vi.fn(), warn: vi.fn() }) }));
 vi.mock('@features/memo/store/note-store', async () => {

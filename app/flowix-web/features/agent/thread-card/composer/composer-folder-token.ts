@@ -126,7 +126,7 @@ export const ComposerFolderToken = Node.create({
         wrapperClassName: "agent-composer__inline-atom-wrapper agent-composer__folder-token-wrapper",
         cardClassName: "agent-composer__folder-token",
         leadingIcon: folderIcon ?? undefined,
-        label: displayName,
+        label: `@${displayName}`,
         labelClassName: "agent-composer__folder-token-label",
         title: path,
         hoverActions: [{

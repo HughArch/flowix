@@ -621,14 +621,14 @@ mod tests {
             .update_title(
                 "claude-local-cwd",
                 "Claude cwd".to_string(),
-                AgentId("claude".to_string()),
+                AgentId("claudecode".to_string()),
             )
             .await
             .unwrap();
         manager
             .upsert_agent_conversation_instance(UpsertAgentConversationInstance {
                 instance_id: "inst-claude-cwd".to_string(),
-                agent_type: "claude".to_string(),
+                agent_type: "claudecode".to_string(),
                 initial_title: "Claude cwd".to_string(),
                 thread_id: Some("claude-local-cwd".to_string()),
                 runtime_config: None,
@@ -653,7 +653,7 @@ mod tests {
         manager
             .upsert_external_session(
                 "claude-local-cwd",
-                "claude",
+                "claudecode",
                 sid,
                 Some(serde_json::json!({ "cwd": "/project/flowix-main" })),
             )
@@ -665,7 +665,7 @@ mod tests {
         manager
             .upsert_external_session(
                 sid,
-                "claude",
+                "claudecode",
                 sid,
                 Some(serde_json::json!({ "cwd": "/project/flowix-main" })),
             )
@@ -680,7 +680,7 @@ mod tests {
         }
         assert_eq!(
             manager
-                .find_thread_by_external_session(sid, "claude")
+                .find_thread_by_external_session(sid, "claudecode")
                 .await
                 .unwrap()
                 .as_deref(),
@@ -945,7 +945,7 @@ mod tests {
         for (index, payload) in payloads.iter().enumerate() {
             manager
                 .insert_agent_external_event(NewAgentExternalEvent {
-                    runtime: "claude".to_string(),
+                    runtime: "claudecode".to_string(),
                     thread_id: thread_id.to_string(),
                     normalized_json: payload.to_string(),
                     raw_json: None,
@@ -987,7 +987,7 @@ mod tests {
         {
             legacy
                 .insert_agent_external_event(NewAgentExternalEvent {
-                    runtime: "claude".to_string(),
+                    runtime: "claudecode".to_string(),
                     thread_id: "legacy-claude".to_string(),
                     normalized_json: payload.to_string(),
                     raw_json: None,
@@ -1016,7 +1016,7 @@ mod tests {
         for (index, payload) in payloads.iter().enumerate() {
             manager
                 .insert_agent_external_event(NewAgentExternalEvent {
-                    runtime: "deepseek-harness".to_string(),
+                    runtime: "dsh".to_string(),
                     thread_id: thread_id.to_string(),
                     normalized_json: payload.to_string(),
                     raw_json: None,
@@ -1027,7 +1027,7 @@ mod tests {
         }
 
         let page = manager
-            .get_external_event_messages_page("deepseek-harness", thread_id, None, 10)
+            .get_external_event_messages_page("dsh", thread_id, None, 10)
             .await
             .unwrap()
             .expect("database history should materialize");
@@ -1059,7 +1059,7 @@ mod tests {
         for (index, payload) in payloads.iter().enumerate() {
             manager
                 .insert_agent_external_event(NewAgentExternalEvent {
-                    runtime: "deepseek-harness".to_string(),
+                    runtime: "dsh".to_string(),
                     thread_id: thread_id.to_string(),
                     normalized_json: payload.to_string(),
                     raw_json: None,
@@ -1070,7 +1070,7 @@ mod tests {
         }
 
         let page = manager
-            .get_external_event_messages_page("deepseek-harness", thread_id, None, 10)
+            .get_external_event_messages_page("dsh", thread_id, None, 10)
             .await
             .unwrap()
             .expect("database history should materialize");
@@ -1524,7 +1524,7 @@ mod tests {
         let migrated = Arc::new(ThreadManager::new(db_path).expect("rerun migrations"));
         assert_eq!(
             migrated
-                .get_external_session("claude-legacy-thread", "claude")
+                .get_external_session("claude-legacy-thread", "claudecode")
                 .await
                 .expect("read migrated Claude binding")
                 .as_deref(),
@@ -1584,7 +1584,7 @@ mod tests {
         manager
             .upsert_external_session(
                 "thread-simplified-index",
-                "deepseek-harness",
+                "dsh",
                 "dsh-provider-id",
                 None,
             )
@@ -1611,7 +1611,7 @@ mod tests {
         manager
             .upsert_external_session(
                 "thread-simplified-index",
-                "claude",
+                "claudecode",
                 "claude-provider-id",
                 Some(serde_json::json!({ "cwd": "/workspace/claude" })),
             )
@@ -1654,7 +1654,7 @@ mod tests {
         );
         manager
             .insert_agent_external_event(NewAgentExternalEvent {
-                runtime: "claude".to_string(),
+                runtime: "claudecode".to_string(),
                 thread_id: "thread-simplified-index".to_string(),
                 normalized_json: r#"{"kind":"text","run_id":"claude-run","text":"hello"}"#
                     .to_string(),
@@ -1752,7 +1752,7 @@ mod tests {
         let claude_event_count: i64 = conn
             .query_row(
                 "SELECT COUNT(*) FROM agent_external_events
-                 WHERE runtime = 'claude' AND thread_id = ?1",
+                 WHERE runtime = 'claudecode' AND thread_id = ?1",
                 ["thread-simplified-index"],
                 |row| row.get(0),
             )
@@ -1763,7 +1763,7 @@ mod tests {
             .query_row(
                 "SELECT COUNT(*) FROM thread_external_sessions
                  WHERE thread_id = ?1 AND runtime IN (
-                    'codex', 'deepseek-harness', 'opencode', 'hermes', 'claude', 'pi'
+                    'codex', 'dsh', 'opencode', 'hermes', 'claudecode', 'pi'
                  )",
                 ["thread-simplified-index"],
                 |row| row.get(0),
@@ -1785,7 +1785,7 @@ mod tests {
         );
         assert_eq!(
             manager
-                .get_external_session("thread-simplified-index", "claude")
+                .get_external_session("thread-simplified-index", "claudecode")
                 .await
                 .expect("resolve claude provider id")
                 .as_deref(),
@@ -1801,7 +1801,7 @@ mod tests {
         );
         assert_eq!(
             manager
-                .get_external_session("thread-simplified-index", "deepseek-harness")
+                .get_external_session("thread-simplified-index", "dsh")
                 .await
                 .expect("resolve dsh provider id")
                 .as_deref(),

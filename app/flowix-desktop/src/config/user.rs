@@ -1641,6 +1641,10 @@ mod tests {
         .unwrap();
 
         let store = test_user_config_store(home.path().to_path_buf());
+        // legacy JSON 迁移移到了显式初始化阶段（03fa4900），按生产顺序触发；
+        // 补上迁移完成标志——后面 patch_preference 的断言依赖它。
+        store.initialize_legacy_config_migrations().unwrap();
+        store.prepare_initialized_runtime();
         let migrated = store.get_property_presets().unwrap();
         assert_eq!(migrated.fields.len(), 1);
         assert!(migrated.fields[0]
@@ -1697,6 +1701,8 @@ mod tests {
         std::fs::write(config_dir.join("dsh-settings.yaml"), "legacy: true\n").unwrap();
 
         let store = UserConfigStore::new(home.path().to_path_buf());
+        // 迁移不再在构造函数内急切执行（fa288701），按生产启动顺序显式触发。
+        store.initialize_legacy_dsh_layout().unwrap();
         let dsh_dir = store.dsh_dir();
 
         assert_eq!(

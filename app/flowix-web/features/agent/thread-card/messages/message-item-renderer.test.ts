@@ -633,8 +633,15 @@ describe("unified tool message rendering", () => {
     expect(bubble?.contains(attachments ?? null)).toBe(false);
     expect(attachments?.children).toHaveLength(2);
     expect(attachments?.textContent).not.toContain("图片 1");
-    expect(attachments?.textContent).toBe("");
-    expect(attachments?.children[0].querySelector("img")).toBeNull();
+    // Each chip shows the file name as its visible label; the icon slot is
+    // upgraded to a cached preview asynchronously, so only the label and the
+    // accessible name are asserted here.
+    expect(attachments?.children[0].querySelector(
+      ".agent-thread-card__message-attachment-label",
+    )?.textContent).toBe("first.png");
+    expect(attachments?.children[1].querySelector(
+      ".agent-thread-card__message-attachment-label",
+    )?.textContent).toBe("second.jpg");
     expect(attachments?.children[0].getAttribute("aria-label")).toContain(
       "/tmp/first.png",
     );

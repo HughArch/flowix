@@ -31,7 +31,7 @@ describe('ListColumnGuideCard', () => {
       .IS_REACT_ACT_ENVIRONMENT = false;
   });
 
-  it('wraps from the current page and offers Get Started after both pages', async () => {
+  it('wraps through all pages and offers Get Started after every page was visited', async () => {
     function Harness() {
       const [activeView, setActiveView] = useState(initialView);
       return <ListColumnGuideCard activeView={activeView} onViewChange={setActiveView} />;
@@ -43,15 +43,20 @@ describe('ListColumnGuideCard', () => {
     const activate = async (label: string) => {
       const button = Array.from(host.querySelectorAll<HTMLButtonElement>('button'))
         .find((candidate) => candidate.textContent?.includes(label));
-      expect(button).not.toBeNull();
+      expect(button).toBeDefined();
       await act(async () => {
         button!.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true, button: 0 }));
         button!.dispatchEvent(new MouseEvent('click', { bubbles: true, button: 0, detail: 1 }));
       });
     };
 
+    // 三页向导（folders → conversations → cards）：selectPage 会把目标页一并
+    // 记为已访问，从 cards 出发两次 next 后三页全部看遍，「完成」才出现。
     await activate('memo.guide.next');
     expect(host.textContent).toContain('memo.guide.fileTree.title');
+
+    await activate('memo.guide.next');
+    expect(host.textContent).toContain('memo.guide.conversations.title');
     expect(host.textContent).toContain('memo.guide.done');
 
     await activate('memo.guide.done');

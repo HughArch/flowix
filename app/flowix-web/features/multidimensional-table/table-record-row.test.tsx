@@ -162,7 +162,8 @@ describe('folder table note switching', () => {
     renderPopupContent = true;
     const view = renderRow('draft', undefined, false, false);
     expect(view.container.querySelector('[role="listbox"]')).toBeNull();
-    expect(view.container.querySelector('textarea[aria-label="新建或选择笔记"]')).toBeTruthy();
+    // 纯创建入口的 aria-label 自 03fa4900 起为「笔记名称」。
+    expect(view.container.querySelector('textarea[aria-label="笔记名称"]')).toBeTruthy();
     expect(view.container.querySelector('input[type="search"]')).toBeNull();
   });
 

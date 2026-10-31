@@ -1853,6 +1853,12 @@ mod tests {
             "export {};",
         )
         .unwrap();
+        // flowix_profile_present 要求真实 bundle 自带的入口文件。
+        std::fs::write(
+            source.join("node_modules/dsh-flowix-memory/launcher.mjs"),
+            "export {};",
+        )
+        .unwrap();
         std::fs::write(source.join("package.json"), br#"{"name":"dsh-profile-flowix","private":true,"dsh":{"profile":{"bundles":["@deepseek-ai/dsh-base","dsh-appserver","dsh-flowix-memory"]}}}"#).unwrap();
         let repo = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../..");
         let patch_source = repo.join("scripts/dsh-dev-profile.patch.yml");
@@ -1905,6 +1911,13 @@ mod tests {
         assert!(safe_archive_path(Path::new("../escape")).is_err());
         assert!(safe_archive_path(Path::new("/absolute")).is_err());
         assert!(safe_archive_path(Path::new("dsh-host")).is_ok());
+        // Windows 专属形态：rooted-but-relative（"\x"）与 prefix-without-root
+        // （"C:x"）都会在 join 时整体替换目标路径，必须一并拒绝。
+        #[cfg(windows)]
+        {
+            assert!(safe_archive_path(Path::new("\\absolute")).is_err());
+            assert!(safe_archive_path(Path::new("C:evil")).is_err());
+        }
     }
 
     #[test]

@@ -62,14 +62,17 @@ describe("createRuntimeInfoRequester", () => {
   });
 
   it("does not expose the Flowix thread id as a Pi session id", async () => {
+    // revision 未携带 session id 且候选 sessionId 与 threadId 相同（不是合法
+    // Pi session）时，必须回退到 runtime IPC 取真实 session id。
     mocks.getPiSessionPage.mockResolvedValue({
       messages: [],
-      revision: { sessionId: "native-pi-session", appendCursor: null, leafId: null },
+      revision: { sessionId: null, appendCursor: null, leafId: null },
       beforeEntryId: null,
       oldestSequence: null,
       snapshotSequence: 0,
       hasMore: false,
     });
+    mocks.getPiSessionId.mockResolvedValue("native-pi-session");
     const request = createRuntimeInfoRequester(
       "pi",
       () => "thread-1",

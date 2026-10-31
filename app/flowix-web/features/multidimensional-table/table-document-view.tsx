@@ -3260,6 +3260,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
         onDropRecord={dropKanbanRecord}
         dropNotebookId={resolvedNotebookId}
         canDropExternal={editable && !saving && Boolean(document && noteField && notebookPath && resolvedNotebookId)}
+        canMoveRecords={editable && !saving}
         onExternalNoteDrop={addExternalNotesToKanban}
         onReorderLane={reorderKanbanLane}
         onAddLane={editable ? addKanbanLane : undefined}

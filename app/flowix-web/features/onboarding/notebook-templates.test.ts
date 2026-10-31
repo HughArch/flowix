@@ -42,7 +42,8 @@ describe('notebook templates', () => {
     ).toBe(true);
     const firstTemplatePaths = getNotebookTemplateFiles(firstTemplateId)
       .map((file) => file.path);
-    expect(firstTemplatePaths).toContain('进度视图.csv');
+    // fa288701 模板大改后，首模板的表格视图文件更名为内容视图.csv。
+    expect(firstTemplatePaths).toContain('内容视图.csv');
     expect(NOTEBOOK_TEMPLATES.find((template) => template.id === firstTemplateId)?.name).toBe('自媒体运营');
   });
 });

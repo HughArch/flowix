@@ -55,6 +55,9 @@ export function useDocumentTitlebarColors(target: DocumentTitlebarTarget) {
   const pending = useRef(0);
   const revision = useRef(0);
   const mounted = useRef(false);
+  // 一次写入失败后，投影（笔记列表）仍是旧值；在用户再次修改前，投影同步
+  // 不得把未保存的本地选择冲掉。
+  const unsaved = useRef(false);
   const { path, displayId } = target.fileIdentity;
 
   useEffect(() => {
@@ -75,6 +78,7 @@ export function useDocumentTitlebarColors(target: DocumentTitlebarTarget) {
 
   useEffect(() => {
     if (!target.indexable || pending.current > 0 || syncBufferColors()) return;
+    if (unsaved.current) return;
     if (projectedColors) {
       setColors((previous) => equalColors(previous, projectedColors) ? previous : projectedColors);
       return;
@@ -94,9 +98,11 @@ export function useDocumentTitlebarColors(target: DocumentTitlebarTarget) {
     if (!target.indexable) return;
     ++revision.current;
     pending.current += 1;
+    unsaved.current = false;
     setColors(next);
     void saveColors(target, next).catch((error) => {
       logger.error('save colors failed', { error, path });
+      unsaved.current = true;
       if (mounted.current) {
         toast.error(t('media.properties.saveFailed'));
       }

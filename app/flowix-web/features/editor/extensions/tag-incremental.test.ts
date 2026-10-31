@@ -27,7 +27,8 @@ describe('incremental tag decorations', () => {
     apply(state.tr.split(5));
     apply(state.tr.join(state.doc.child(0).nodeSize));
     apply(state.tr.replaceWith(0, state.doc.content.size, [p('#new'), schema.node('codeBlock', null, schema.text('#code'))]));
-    expect(positions(state)).toHaveLength(3);
+    // 0f2fd171 起每个标签产生 4 个装饰（前缀/内容 × 内/外双层 span）。
+    expect(positions(state)).toHaveLength(4);
   });
 
   it('updates block type changes and tags around inline hard breaks', () => {
@@ -36,7 +37,8 @@ describe('incremental tag decorations', () => {
       p('plain'),
     ]), plugins: [createTagDecorationPlugin()] });
     expectFullResult(state);
-    expect(positions(state)).toHaveLength(6);
+    // 两个标签 × 每标签 4 个装饰（见首个用例内注释）。
+    expect(positions(state)).toHaveLength(8);
     state = state.apply(state.tr.setBlockType(0, state.doc.child(0).nodeSize, schema.nodes.codeBlock));
     expectFullResult(state);
     expect(positions(state)).toHaveLength(0);

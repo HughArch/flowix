@@ -42,8 +42,23 @@ it('shows a same-size translucent card at the sorted destination even when the p
       onExternalNoteDrop={onDrop}
     />));
     const firstCard = container.querySelector<HTMLElement>('[data-gallery-record="automatic"]')!;
+    // jsdom reports zeroed rectangles, so the gallery hit test needs explicit
+    // geometry for the scroll root and every card it measures.
+    const galleryRoot = container.querySelector<HTMLElement>('.multidimensional-table__gallery')!;
+    Object.defineProperty(galleryRoot, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ left: 0, top: 0, right: 400, bottom: 400, width: 400, height: 400 }),
+    });
     Object.defineProperty(document, 'elementFromPoint', { configurable: true, value: () => firstCard });
-    Object.defineProperty(firstCard, 'getBoundingClientRect', { configurable: true, value: () => ({ left: 0, top: 0, width: 160, height: 210 }) });
+    Object.defineProperty(firstCard, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ left: 0, top: 0, right: 160, bottom: 210, width: 160, height: 210 }),
+    });
+    const oldCard = container.querySelector<HTMLElement>('[data-gallery-record="old"]')!;
+    Object.defineProperty(oldCard, 'getBoundingClientRect', {
+      configurable: true,
+      value: () => ({ left: 180, top: 0, right: 340, bottom: 210, width: 160, height: 210 }),
+    });
     act(() => beginDragSession({
       sourceId: 'sidebar', sessionId: 'gallery-sorted-drop',
       items: [{ kind: 'note', notebookId: 'book', relativePath: 'incoming.md', title: 'incoming.md' }],
