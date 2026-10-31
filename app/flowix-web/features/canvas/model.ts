@@ -8,6 +8,14 @@
  * a card board instead of a drawing surface. Image bitmaps are referenced
  * through the scene `files` map; both are size-capped on save so a single
  * canvas cannot silently exceed the sync attachment limit.
+ *
+ * MIRRORED IN RUST: `app/flowix-core/src/canvas.rs` re-implements the parse /
+ * serialize / coercion rules, the guards and the board defaults for the CLI,
+ * the memo MCP tool and the mobile agent. When this schema, those constants
+ * or the defaults change, update that file in the same change — the Rust side
+ * passes board entries through as raw JSON, so unknown fields survive, but it
+ * hard-fails on an unknown `version`, and its own writes use the defaults
+ * defined here.
  */
 
 export const CANVAS_FILE_EXTENSION = 'flowix-canvas';

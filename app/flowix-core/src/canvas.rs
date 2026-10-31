@@ -14,6 +14,13 @@
 //!
 //! Every mutation refreshes `meta.updatedAt`; every add assigns the same id
 //! prefixes (`c_`/`s_`/`e_`/`f_`) and default sizes the board view uses.
+//!
+//! 同步约定：前端是本模型的编辑侧实现，前端新增/修改画布字段、守卫常量、
+//! 解析宽容度或默认尺寸时，必须在同一次变更里同步更新本文件。对齐点：
+//! parse 规则（type/version 闸门、条目透传与上限）、serialize 布局（字段
+//! 顺序、缩进、尾换行）、读取归一化默认值、以及新建元素写入的字段集合。
+//! 顶层字段两边都是固定集合，顶层演进必须两边同改；条目内的未知字段靠
+//! 透传自动存活。
 
 use std::path::{Path, PathBuf};
 
