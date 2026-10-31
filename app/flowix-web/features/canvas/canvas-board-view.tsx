@@ -23,6 +23,7 @@ import {
   useReactFlow,
   MarkerType,
   type Edge,
+  type EdgeMouseHandler,
   type Node,
   type NodeChange,
   type NodeMouseHandler,
@@ -35,7 +36,7 @@ import '@xyflow/react/dist/style.css';
 import '../../styles/canvas-board.css';
 import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Link2, Loader2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, Pencil, Plus, Redo2, Save, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { Tooltip } from '@shared/ui/tooltip';
-import { pushHandler } from '@/lib/shortcuts';
+import { pushHandler, formatChord } from '@/lib/shortcuts';
 import { claimCanvasSurface, getActiveCanvasSurface, releaseCanvasSurface, setActiveCanvasSurface } from './canvas-focus';
 import { CANVAS_TOOL_SHORTCUTS } from './canvas-tool-shortcuts';
 import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/tauri/client';
@@ -82,6 +83,12 @@ import {
   type FlowixCanvasDocument,
 } from './model';
 import { type CanvasSurfaceViewProps } from './surface-props';
+import {
+  CanvasBoardContextMenu,
+  type BoardContextMenuItem,
+  type BoardContextMenuRequest,
+  type CanvasBoardContextMenuHandle,
+} from './canvas-board-context-menu';
 import { boardToSvg, svgToPngBase64 } from './board-export';
 import { cachedRoughPaths, roughLineSketch } from './board-rough';
 import { alignShapes, distributeShapes, type BoardAlignMode } from './board-align';
@@ -94,6 +101,12 @@ const SAVE_DEBOUNCE_MS = 800;
 const logger = createLogger('canvas-board');
 /** Retry cadence for image cards whose attachment had not synced on open. */
 const IMAGE_RETRY_DELAYS_MS = [3_000, 8_000, 15_000];
+/** Touch long-press duration and the movement slop that cancels it. The slop
+ *  doubles as the coarse-pointer nodeDragThreshold, so a stationary press
+ *  never starts a node drag — a drag that began before the menu opened would
+ *  freeze mid-gesture once the board starts swallowing the gesture's moves. */
+const LONG_PRESS_MS = 500;
+const LONG_PRESS_SLOP_PX = 8;
 
 interface BoardNodeData extends Record<string, unknown> {
   card: BoardCard;
@@ -133,6 +146,14 @@ function imageSizeOf(dataUrl: string): Promise<{ width: number; height: number }
     image.onerror = () => reject(new Error('image decode failed'));
     image.src = dataUrl;
   });
+}
+
+/** True when the event lands inside an active text editor (sticky note, frame
+ *  title, shape label). The canvas menu must not swallow right-click /
+ *  long-press there — the native text menu (copy/paste/selection) applies. */
+function isTextEditingTarget(target: EventTarget | null): boolean {
+  if (!(target instanceof HTMLElement)) return false;
+  return target.isContentEditable || ['INPUT', 'TEXTAREA'].includes(target.tagName);
 }
 
 function cardTitle(card: BoardCard): string {
@@ -785,6 +806,33 @@ function inkStrokeId(): string {
   return `k_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 8)}`;
 }
 
+/** Bounding box of clipboard contents (cards, shapes incl. endpoints, ink),
+ *  used to centre a paste that targets an explicit point. */
+function clipboardBounds(clipboard: { cards: BoardCard[]; shapes: BoardShape[]; ink: BoardInkStroke[] }): { x: number; y: number; w: number; h: number } | null {
+  let minX = Infinity;
+  let minY = Infinity;
+  let maxX = -Infinity;
+  let maxY = -Infinity;
+  const grow = (x: number, y: number, w: number, h: number) => {
+    minX = Math.min(minX, x);
+    minY = Math.min(minY, y);
+    maxX = Math.max(maxX, x + w);
+    maxY = Math.max(maxY, y + h);
+  };
+  for (const card of clipboard.cards) grow(card.x, card.y, card.w, card.h);
+  for (const shape of clipboard.shapes) {
+    const x2 = shape.x2 ?? shape.x + shape.w;
+    const y2 = shape.y2 ?? shape.y + shape.h;
+    grow(Math.min(shape.x, x2), Math.min(shape.y, y2), Math.abs(x2 - shape.x), Math.abs(y2 - shape.y));
+  }
+  for (const stroke of clipboard.ink) {
+    const box = inkBox(stroke);
+    grow(box.x, box.y, box.w, box.h);
+  }
+  if (!Number.isFinite(minX)) return null;
+  return { x: minX, y: minY, w: maxX - minX, h: maxY - minY };
+}
+
 function nodeKindForCard(card: BoardCard): BoardNode['type'] {
   if (card.kind === 'text') return 'sticky';
   if (card.kind === 'image') return 'image';
@@ -1223,6 +1271,36 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
    *  (d3's own click suppression never engages because its gesture filter
    *  rejected the press), so the capture-phase listener below swallows it. */
   const suppressPaneClickRef = useRef(false);
+  /** Right-click / long-press menu: one shell instance serves all modes. */
+  const contextMenuRef = useRef<CanvasBoardContextMenuHandle>(null);
+  /** Pending touch long-press; fires the context menu unless the finger moves
+   *  beyond the slop or the gesture ends first. */
+  const longPressRef = useRef<{
+    pointerId: number;
+    startX: number;
+    startY: number;
+    x: number;
+    y: number;
+    nodeElement: Element | null;
+    timer: number;
+  } | null>(null);
+  /** Pointer whose long-press already opened the menu: the rest of that
+   *  gesture (moves, lift, synthesized click) is swallowed so the open menu
+   *  is never dragged around or click-activated by the lifting finger. */
+  const longPressFiredRef = useRef<number | null>(null);
+  /** Android fires a synthetic `contextmenu` at the end of a long-press;
+   *  swallow the one that immediately follows our own menu open. Auto-expires
+   *  so a stale flag never eats the next real right-click. */
+  const suppressNextContextMenuRef = useRef(false);
+  /** Pointer handlers hold stable closures; this always points at the latest
+   *  long-press fire (same late-binding pattern as applyGraphRef below). */
+  const fireLongPressRef = useRef<() => void>(() => {});
+  /** Coarse pointers get the long-press slop as nodeDragThreshold (see the
+   *  LONG_PRESS_SLOP_PX comment); fine pointers keep React Flow's precise 1px. */
+  const isCoarsePointer = useMemo(
+    () => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches,
+    [],
+  );
   /** Active select-mode gesture: one pointer rubber-bands, two pan/pinch. */
   const marqueeRef = useRef<{
     pointers: Map<number, { x: number; y: number }>;
@@ -1265,6 +1343,15 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const summariesRef = useRef<Map<string, NoteCardSummary>>(new Map());
   /** Notebook id -> root, so cards referencing another notebook still resolve. */
   const notebooksRef = useRef<Array<{ id: string; name: string; path: string }>>([]);
+
+  /** Drop a pending touch long-press (gesture ended, moved, or another press). */
+  const cancelLongPress = useCallback(() => {
+    const pending = longPressRef.current;
+    if (pending) {
+      window.clearTimeout(pending.timer);
+      longPressRef.current = null;
+    }
+  }, []);
 
   /** Switching to a drawing tool drops the selection (Obsidian behaviour),
    * otherwise the panel keeps showing the previously selected element. */
@@ -2091,17 +2178,23 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     };
   }, []);
 
-  const pasteClipboard = useCallback(() => {
+  /** Paste the clipboard. Without `at` the clones cascade off the originals;
+   *  with one (context-menu paste) the whole group is centred on that flow
+   *  point, like Obsidian pasting at the cursor. */
+  const pasteClipboard = useCallback((at?: number[]) => {
     const clipboard = clipboardRef.current;
     const document = documentRef.current;
     if (!clipboard || !document) return;
     if (clipboard.cards.length === 0 && clipboard.shapes.length === 0 && clipboard.ink.length === 0) return;
     const offset = 28;
+    const bounds = at ? clipboardBounds(clipboard) : null;
+    const dx = bounds ? Math.round(at![0] - (bounds.x + bounds.w / 2)) : offset;
+    const dy = bounds ? Math.round(at![1] - (bounds.y + bounds.h / 2)) : offset;
     const newIds: string[] = [];
     // Clones land on top of the stack, one slot each.
     let cloneZ = nextZ();
     const nextCards = [...cardsRef.current, ...clipboard.cards.map((card) => {
-      const clone = { ...card, id: `${card.id.split('_')[0]}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`, x: card.x + offset, y: card.y + offset, z: cloneZ };
+      const clone = { ...card, id: `${card.id.split('_')[0]}_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`, x: card.x + dx, y: card.y + dy, z: cloneZ };
       cloneZ += 1;
       newIds.push(clone.id);
       return clone;
@@ -2112,11 +2205,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       const clone = {
         ...shape,
         id,
-        x: shape.x + offset,
-        y: shape.y + offset,
+        x: shape.x + dx,
+        y: shape.y + dy,
         z: cloneZ,
-        ...(shape.x2 !== undefined ? { x2: shape.x2 + offset } : {}),
-        ...(shape.y2 !== undefined ? { y2: shape.y2 + offset } : {}),
+        ...(shape.x2 !== undefined ? { x2: shape.x2 + dx } : {}),
+        ...(shape.y2 !== undefined ? { y2: shape.y2 + dy } : {}),
       };
       cloneZ += 1;
       return clone;
@@ -2124,7 +2217,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     const nextInk = [...inkRef.current, ...clipboard.ink.map((stroke) => {
       const id = inkStrokeId();
       newIds.push(id);
-      const clone = { ...stroke, id, z: cloneZ, points: stroke.points.map(([x, y]) => [x + offset, y + offset]) };
+      const clone = { ...stroke, id, z: cloneZ, points: stroke.points.map(([x, y]) => [x + dx, y + dy]) };
       cloneZ += 1;
       return clone;
     })];
@@ -2145,6 +2238,68 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     copySelection();
     pasteClipboard();
   }, [copySelection, pasteClipboard]);
+
+  /** Select every content element. Frames stay backdrops (matching the
+   *  rubber-band) and connectors keep their exclusive selection, so it is
+   *  cleared first. */
+  const selectAllElements = useCallback(() => {
+    selectedEdgeIdRef.current = null;
+    setSelectedEdgeId(null);
+    selectedIdsRef.current = [];
+    setNodes((current) => current.map((node) => (node.type === 'frame'
+      ? (node.selected ? { ...node, selected: false } : node)
+      : (node.selected ? node : { ...node, selected: true }))));
+  }, []);
+
+  /** Wrap the current selection in a new frame sized to its bounding box.
+   *  Frames render behind everything, so nothing is visually covered. */
+  const createFrameFromSelection = useCallback(() => {
+    const document = documentRef.current;
+    if (!document) return;
+    const ids = new Set(selectedIdsRef.current);
+    if (ids.size === 0) return;
+    let minX = Infinity;
+    let minY = Infinity;
+    let maxX = -Infinity;
+    let maxY = -Infinity;
+    for (const card of cardsRef.current) {
+      if (!ids.has(card.id)) continue;
+      minX = Math.min(minX, card.x);
+      minY = Math.min(minY, card.y);
+      maxX = Math.max(maxX, card.x + card.w);
+      maxY = Math.max(maxY, card.y + card.h);
+    }
+    for (const shape of shapesRef.current) {
+      if (!ids.has(shape.id)) continue;
+      const x2 = shape.x2 ?? shape.x + shape.w;
+      const y2 = shape.y2 ?? shape.y + shape.h;
+      minX = Math.min(minX, shape.x, x2);
+      minY = Math.min(minY, shape.y, y2);
+      maxX = Math.max(maxX, shape.x, x2);
+      maxY = Math.max(maxY, shape.y, y2);
+    }
+    for (const stroke of inkRef.current) {
+      if (!ids.has(stroke.id)) continue;
+      const box = inkBox(stroke);
+      minX = Math.min(minX, box.x);
+      minY = Math.min(minY, box.y);
+      maxX = Math.max(maxX, box.x + box.w);
+      maxY = Math.max(maxY, box.y + box.h);
+    }
+    if (!Number.isFinite(minX)) return;
+    const padding = 60;
+    const frame: BoardFrame = {
+      id: `f_${Date.now().toString(36)}_${Math.random().toString(36).slice(2, 6)}`,
+      x: Math.round(minX - padding),
+      y: Math.round(minY - padding),
+      w: Math.round(maxX - minX + padding * 2),
+      h: Math.round(maxY - minY + padding * 2),
+    };
+    document.frames = [...readBoardFrames(document), frame];
+    applyGraphRef.current(document);
+    scheduleFlush();
+    pushHistory();
+  }, [applyGraphRef, pushHistory, scheduleFlush]);
 
   /**
    * Insert an image card. Bytes are persisted into attachments/ and only the
@@ -2549,7 +2704,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   /** Delete key on a selected card/shape edits the document, not just the view. */
   const removeByIds = useCallback((ids: string[]) => {
     const document = documentRef.current;
-    if (!document || ids.length === 0) return;
+    if (!document || ids.length === 0 || readOnly) return;
     const idSet = new Set(ids);
     const nextShapes = shapesRef.current.filter((shape) => !idSet.has(shape.id));
     const nextCards = cardsRef.current.filter((card) => !idSet.has(card.id));
@@ -2579,11 +2734,18 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     applyGraph(document);
     scheduleFlush();
     pushHistory();
-  }, [applyGraph, pushHistory, scheduleFlush]);
+  }, [applyGraph, pushHistory, readOnly, scheduleFlush]);
 
   const handleNodesDelete = useCallback((deleted: BoardNode[]) => {
     removeByIds(deleted.map((node) => node.id));
   }, [removeByIds]);
+
+  /** Copy + delete in one step (context menu 剪切 / Ctrl+X). */
+  const cutSelection = useCallback(() => {
+    if (selectedIdsRef.current.length === 0) return;
+    copySelection();
+    removeByIds(selectedIdsRef.current);
+  }, [copySelection, removeByIds]);
 
   /** Delete selected connectors. React Flow only reports deletions through
    *  `onEdgesDelete`; without it the controlled `edges` prop restores them on
@@ -2874,12 +3036,33 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   }, [reactFlow, syncInkToDocument]);
 
   const handleBoardPointerDown = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    // A pointerdown means the previous gesture ended — possibly outside the
+    // board, where we never saw its pointerup. A stale fired-flag would
+    // swallow a recycled pointer id's moves, so drop it unconditionally.
+    longPressFiredRef.current = null;
     lastPointerTypeRef.current = event.pointerType;
     pressRef.current = {
       x: event.clientX,
       y: event.clientY,
       onElement: !!(event.target as Element).closest('.react-flow__node:not(.react-flow__node-frame)'),
     };
+    // Touch long-press summons the context menu. Any element press qualifies
+    // (that is exactly where the element menu is wanted); toolbar hits and
+    // active text editors do not — long-press there means text selection.
+    cancelLongPress();
+    if (tool === 'select' && !readOnly && event.pointerType === 'touch'
+      && !(event.target as Element).closest('[data-board-toolbar]')
+      && !isTextEditingTarget(event.target)) {
+      longPressRef.current = {
+        pointerId: event.pointerId,
+        startX: event.clientX,
+        startY: event.clientY,
+        x: event.clientX,
+        y: event.clientY,
+        nodeElement: (event.target as Element).closest('.react-flow__node'),
+        timer: window.setTimeout(() => fireLongPressRef.current(), LONG_PRESS_MS),
+      };
+    }
     if (tool === 'select' && !readOnly) {
       const gesture = marqueeRef.current;
       const point = { x: event.clientX, y: event.clientY };
@@ -2929,9 +3112,22 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       return;
     }
     eraseInkAt(flowPositionOf(event));
-  }, [eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
+  }, [cancelLongPress, eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
 
   const handleBoardPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const pendingPress = longPressRef.current;
+    if (pendingPress && event.pointerId === pendingPress.pointerId) {
+      pendingPress.x = event.clientX;
+      pendingPress.y = event.clientY;
+      if (Math.hypot(event.clientX - pendingPress.startX, event.clientY - pendingPress.startY) > LONG_PRESS_SLOP_PX) cancelLongPress();
+    }
+    if (longPressFiredRef.current === event.pointerId) {
+      // The menu is open: swallow the rest of the gesture. Capture-phase
+      // stopPropagation also keeps React Flow's node drag from ever seeing
+      // the first move, so nothing drags behind the menu.
+      event.stopPropagation();
+      return;
+    }
     if (tool === 'select') {
       const gesture = marqueeRef.current;
       if (!gesture) return;
@@ -2974,9 +3170,20 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       return;
     }
     if (tool === 'eraser' && event.buttons % 2 === 1) eraseInkAt(flowPositionOf(event));
-  }, [eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
+  }, [cancelLongPress, eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
 
   const handleBoardPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    if (longPressFiredRef.current === event.pointerId) {
+      longPressFiredRef.current = null;
+      cancelLongPress();
+      // Swallow the lift and the click it synthesizes (same trap as the
+      // rubber-band release below); the menu stays open.
+      suppressPaneClickRef.current = true;
+      window.setTimeout(() => { suppressPaneClickRef.current = false; }, 350);
+      event.stopPropagation();
+      return;
+    }
+    cancelLongPress();
     const gesture = marqueeRef.current;
     if (gesture && tool === 'select' && !readOnly) {
       gesture.pointers.delete(event.pointerId);
@@ -3174,7 +3381,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       z: nextZ(),
       ...(toolPressure ? {} : { pressure: false }),
     }]);
-  }, [applyGraph, commitShapeText, flowPositionOf, nextZ, penColor, penWidth, pushHistory, readOnly, scheduleFlush, syncInkToDocument, tool, toolFontFamily, toolFontSize, toolTextAlign]);
+  }, [applyGraph, cancelLongPress, commitShapeText, flowPositionOf, nextZ, penColor, penWidth, pushHistory, readOnly, scheduleFlush, syncInkToDocument, tool, toolFontFamily, toolFontSize, toolTextAlign]);
 
   // Native capture-phase listeners: React's synthetic pointer events never
   // reached these handlers for real touch input on Android (only synthetic
@@ -3327,11 +3534,17 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       const key = event.key.toLowerCase();
       if (key === 'c') { event.preventDefault(); copySelection(); return; }
       if (key === 'v') { event.preventDefault(); pasteClipboard(); return; }
-      if (key === 'd') { event.preventDefault(); duplicateSelection(); }
+      if (key === 'd') { event.preventDefault(); duplicateSelection(); return; }
+      // Cut and select-all are new chords (context menu parity); unlike
+      // copy/paste they hijack keys other panes use, so they only fire while
+      // this board is the active interaction surface.
+      if ((key === 'x' || key === 'a') && getActiveCanvasSurface() !== surfaceId) return;
+      if (key === 'x') { event.preventDefault(); cutSelection(); return; }
+      if (key === 'a') { event.preventDefault(); selectAllElements(); }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [copySelection, duplicateSelection, pasteClipboard]);
+  }, [copySelection, cutSelection, duplicateSelection, pasteClipboard, selectAllElements, surfaceId]);
 
   /** Arrow-key nudge for selected elements. React Flow's built-in a11y
    *  movement only edits view state — positions never reached the document,
@@ -3432,6 +3645,170 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       toast.error(error instanceof Error ? error.message : t('canvas.export.failed'));
     }
   }, [absolutePathOf, filePath, t]);
+
+  /** Right-click / long-press hit-testing: a hit on an element that is not
+   *  already part of the selection re-selects exclusively; a hit inside the
+   *  current selection (single or multi) keeps it, so the menu acts on all
+   *  of it (Obsidian behaviour). */
+  const selectNodeExclusively = useCallback((nodeId: string) => {
+    if (selectedIdsRef.current.includes(nodeId)) return;
+    selectedEdgeIdRef.current = null;
+    setSelectedEdgeId(null);
+    selectedIdsRef.current = [nodeId];
+    setNodes((current) => current.map((node) => (node.selected === (node.id === nodeId)
+      ? node
+      : { ...node, selected: node.id === nodeId })));
+  }, []);
+
+  /** Build the item list for a request and open the shared menu shell.
+   *  Mirrors Obsidian's canvas menus, reduced to what the board supports. */
+  const openContextMenu = useCallback((request: BoardContextMenuRequest) => {
+    const document = documentRef.current;
+    if (!document) return;
+    const items: BoardContextMenuItem[] = [];
+    const mod = (chord: string) => formatChord(chord);
+    const clipboard = clipboardRef.current;
+    const hasClipboardContent = !!clipboard
+      && clipboard.cards.length + clipboard.shapes.length + clipboard.ink.length > 0;
+    /** Context-menu paste lands at the invoked point (not the cascade). */
+    const pasteItem = (flowPoint: [number, number]) => ({
+      kind: 'item' as const,
+      id: 'paste',
+      label: t('canvas.board.menu.paste'),
+      shortcut: mod('Mod+V'),
+      onSelect: () => pasteClipboard(flowPoint),
+    });
+    if (request.mode === 'edge') {
+      items.push({ kind: 'item', id: 'delete-edge', label: t('canvas.board.edgeDelete'), onSelect: deleteSelectedEdge });
+    } else if (request.mode === 'board') {
+      if (!readOnly && hasClipboardContent) items.push(pasteItem(request.flowPoint));
+      if (!readOnly) {
+        items.push({ kind: 'separator' });
+        items.push({
+          kind: 'item',
+          id: 'select-all',
+          label: t('canvas.board.menu.selectAll'),
+          shortcut: mod('Mod+A'),
+          disabled: nodes.length === 0,
+          onSelect: selectAllElements,
+        });
+      }
+      items.push(
+        { kind: 'separator' },
+        {
+          kind: 'item',
+          id: 'fit-view',
+          label: t('canvas.board.menu.fitView'),
+          onSelect: () => void reactFlow.fitView({ padding: 0.2, maxZoom: 1.2 }),
+        },
+        { kind: 'item', id: 'reset-zoom', label: t('canvas.board.menu.resetZoom'), onSelect: resetZoom },
+        { kind: 'separator' },
+        { kind: 'item', id: 'export-svg', label: t('canvas.export.svg'), onSelect: () => void handleExport('svg') },
+        { kind: 'item', id: 'export-png', label: t('canvas.export.png'), onSelect: () => void handleExport('png') },
+      );
+    } else {
+      // Selection menu. Frames participate in delete only: they are not
+      // cloned and carry no stacking slot (they render behind everything).
+      const ids = selectedIdsRef.current;
+      const frameIds = new Set(readBoardFrames(document).map((frame) => frame.id));
+      const hasElements = ids.some((id) => !frameIds.has(id));
+      if (!readOnly) {
+        if (hasElements) {
+          items.push(
+            { kind: 'item', id: 'cut', label: t('canvas.board.menu.cut'), shortcut: mod('Mod+X'), onSelect: cutSelection },
+            { kind: 'item', id: 'copy', label: t('canvas.board.menu.copy'), shortcut: mod('Mod+C'), onSelect: copySelection },
+            pasteItem(request.flowPoint),
+            { kind: 'separator' },
+            { kind: 'item', id: 'duplicate', label: t('canvas.board.action.duplicate'), shortcut: mod('Mod+D'), onSelect: duplicateSelection },
+            { kind: 'item', id: 'create-frame', label: t('canvas.board.menu.createFrame'), onSelect: createFrameFromSelection },
+            { kind: 'separator' },
+            { kind: 'item', id: 'layer-backward', label: t('canvas.board.layer.backward'), onSelect: () => moveSelectedLayer('backward') },
+            { kind: 'item', id: 'layer-forward', label: t('canvas.board.layer.forward'), onSelect: () => moveSelectedLayer('forward') },
+            { kind: 'item', id: 'layer-back', label: t('canvas.board.layer.back'), onSelect: () => moveSelectedLayer('back') },
+            { kind: 'item', id: 'layer-front', label: t('canvas.board.layer.front'), onSelect: () => moveSelectedLayer('front') },
+          );
+        } else if (hasClipboardContent) {
+          items.push(pasteItem(request.flowPoint));
+        }
+        items.push(
+          { kind: 'separator' },
+          { kind: 'item', id: 'delete', label: t('canvas.board.action.delete'), onSelect: () => removeByIds(selectedIdsRef.current) },
+        );
+      }
+    }
+    contextMenuRef.current?.open(request, items);
+  }, [
+    copySelection, createFrameFromSelection, cutSelection, deleteSelectedEdge, duplicateSelection,
+    handleExport, moveSelectedLayer, nodes.length, pasteClipboard, readOnly, reactFlow, removeByIds,
+    resetZoom, selectAllElements, t,
+  ]);
+
+  /** Touch long-press fired: open the menu at the press point and mark the
+   *  gesture so its remaining events are swallowed (see longPressFiredRef). */
+  const fireLongPress = useCallback(() => {
+    const pending = longPressRef.current;
+    longPressRef.current = null;
+    if (!pending) return;
+    longPressFiredRef.current = pending.pointerId;
+    // Kill any rubber-band the same press had started.
+    if (marqueeRef.current) {
+      marqueeRef.current = null;
+      setMarquee(null);
+    }
+    suppressNextContextMenuRef.current = true;
+    window.setTimeout(() => { suppressNextContextMenuRef.current = false; }, 800);
+    const nodeElement = pending.nodeElement?.isConnected ? pending.nodeElement : null;
+    const nodeId = nodeElement?.getAttribute('data-id') ?? null;
+    const flow = reactFlow.screenToFlowPosition({ x: pending.x, y: pending.y });
+    if (nodeId) {
+      selectNodeExclusively(nodeId);
+      openContextMenu({ mode: 'selection', screen: { x: pending.x, y: pending.y }, flowPoint: [flow.x, flow.y] });
+    } else {
+      openContextMenu({ mode: 'board', screen: { x: pending.x, y: pending.y }, flowPoint: [flow.x, flow.y] });
+    }
+  }, [openContextMenu, reactFlow, selectNodeExclusively]);
+
+  useEffect(() => {
+    fireLongPressRef.current = fireLongPress;
+  });
+
+  /** React Flow context events. Each consumes the post-long-press suppress
+   *  flag (Android's synthetic contextmenu lands on the same element the
+   *  finger pressed), then opens the matching menu. */
+  const handleNodeContextMenu = useCallback<NodeMouseHandler<BoardNode>>((event, node) => {
+    // Right-click inside an editing text field keeps the native text menu.
+    if (isTextEditingTarget(event.target)) return;
+    event.preventDefault();
+    if (suppressNextContextMenuRef.current) {
+      suppressNextContextMenuRef.current = false;
+      return;
+    }
+    if (readOnly) return;
+    selectNodeExclusively(node.id);
+    const flow = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    openContextMenu({ mode: 'selection', screen: { x: event.clientX, y: event.clientY }, flowPoint: [flow.x, flow.y] });
+  }, [openContextMenu, readOnly, reactFlow, selectNodeExclusively]);
+
+  const handlePaneContextMenu = useCallback((event: React.MouseEvent | MouseEvent) => {
+    event.preventDefault();
+    if (suppressNextContextMenuRef.current) {
+      suppressNextContextMenuRef.current = false;
+      return;
+    }
+    const flow = reactFlow.screenToFlowPosition({ x: event.clientX, y: event.clientY });
+    openContextMenu({ mode: 'board', screen: { x: event.clientX, y: event.clientY }, flowPoint: [flow.x, flow.y] });
+  }, [openContextMenu, reactFlow]);
+
+  const handleEdgeContextMenu = useCallback<EdgeMouseHandler<Edge>>((event, edge) => {
+    event.preventDefault();
+    if (suppressNextContextMenuRef.current) {
+      suppressNextContextMenuRef.current = false;
+      return;
+    }
+    if (readOnly) return;
+    selectEdge(edge.id);
+    openContextMenu({ mode: 'edge', screen: { x: event.clientX, y: event.clientY } });
+  }, [openContextMenu, readOnly, selectEdge]);
 
   const previewShape: BoardShape | null = (() => {
     if (!shapePreview || !isShapeTool(tool)) return null;
@@ -3558,6 +3935,16 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       // The board owns pan/zoom gestures; the shell's swipe-down must not steal them.
       data-mobile-swipe-ignore="true"
       onDoubleClick={handleSurfaceDoubleClick}
+      // The board fully owns the context menu (React Flow context events +
+      // long-press); never let the WebView's native menu appear here — except
+      // inside active text editors, where the native text menu applies. React
+      // Flow's own handlers run deeper in the tree and consume the suppress
+      // flag before this catch-all fires.
+      onContextMenu={(event) => {
+        if (isTextEditingTarget(event.target)) return;
+        event.preventDefault();
+        cancelLongPress();
+      }}
       onPaste={(event) => {
         const images = [...(event.clipboardData?.files ?? [])].filter((file) => file.type.startsWith('image/'));
         if (images.length === 0) return;
@@ -4313,6 +4700,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         onNodesChange={handleNodesChange}
         onNodeDragStart={handleNodeDragStart}
         onNodeDragStop={handleNodeDragStop}
+        // The pane does not scroll natively, so the shared menu's scroll-close
+        // never fires: dismiss the context menu on any pan/zoom under it.
+        onMove={() => contextMenuRef.current?.close()}
         onMoveEnd={handleMoveEnd}
         onNodeDoubleClick={handleNodeDoubleClick}
         onNodeClick={handleNodeClick}
@@ -4354,6 +4744,15 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         onEdgesDelete={handleEdgesDelete}
         onEdgeClick={(_event, edge) => selectEdge(edge.id)}
         onPaneClick={() => selectEdge(null)}
+        onNodeContextMenu={handleNodeContextMenu}
+        onPaneContextMenu={handlePaneContextMenu}
+        onEdgeContextMenu={handleEdgeContextMenu}
+        // A stationary touch press must not start a node drag (it would freeze
+        // mid-gesture once the long-press menu opens and the board starts
+        // swallowing the gesture). Align the threshold with the long-press
+        // slop so "press + drift within slop + hold" still opens the menu and
+        // "press + real move" still drags; fine pointers stay at the default.
+        nodeDragThreshold={isCoarsePointer ? LONG_PRESS_SLOP_PX : 1}
         onSelectionChange={handleSelectionChange}
       >
         {/* Plain whiteboard background: the board is a canvas, not a grid sheet. */}
@@ -4439,6 +4838,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           ) : null}
         </ViewportPortal>
       </ReactFlow>
+      <CanvasBoardContextMenu ref={contextMenuRef} />
       <NoteCardInsertDialog
         open={insertDialogOpen}
         onClose={() => setInsertDialogOpen(false)}
