@@ -4051,12 +4051,16 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         void insertImageFiles(files, position.x, position.y);
       }}
     >
-      {/* Clamped to the viewport and horizontally scrollable on touch: the
-          tool row overflows narrow screens, so pan-x scrolls it. The scroll
-          gesture never reaches the canvas (toolbar presses return early in the
-          pointer handlers) or the shell swipes (the whole board is
-          swipe-ignore), and touch-pan-x means vertical drags stay untouched. */}
-      <div data-board-toolbar className="absolute left-3 top-3 z-30 flex max-w-[calc(100vw-24px)] items-center gap-0.5 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      {/* Stacked corner shell: the tool row and — while 2+ shapes are
+          selected — the align/distribute bar below it. Clamped to the viewport
+          and horizontally scrollable on touch: the rows overflow narrow
+          screens, so pan-x scrolls them. The scroll gesture never reaches the
+          canvas (toolbar presses return early in the pointer handlers) or the
+          shell swipes (the whole board is swipe-ignore), and touch-pan-x means
+          vertical drags stay untouched. Each row carries [data-board-toolbar]
+          so canvas gestures ignore both. */}
+      <div className="absolute left-3 top-3 z-30 flex max-w-[calc(100vw-24px)] flex-col items-start gap-1.5">
+        <div data-board-toolbar className="flex max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <Tooltip content={t('canvas.board.tool.select')} shortcut="canvas.tool.select" side="bottom">
           <button type="button" aria-label={t('canvas.board.tool.select')} className={toolButtonClass(tool === 'select')} onClick={() => selectTool('select')}>
             <MousePointer2 className="h-3.5 w-3.5" />
@@ -4185,6 +4189,52 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        </div>
+        {/* Align/distribute bar for the current multi-selection (2+ shapes;
+            distribution needs 3). Horizontal, docked under the tool row. */}
+        {selectedShapeCount >= 2 ? (
+          <div data-board-toolbar className="flex max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {([
+              ['left', AlignStartVertical], ['hcenter', AlignCenterVertical], ['right', AlignEndVertical],
+              ['top', AlignStartHorizontal], ['vcenter', AlignCenterHorizontal], ['bottom', AlignEndHorizontal],
+            ] as const).map(([mode, Icon]) => (
+              <Tooltip key={mode} content={t(`canvas.board.align.${mode}`)} side="bottom">
+                <button
+                  type="button"
+                  aria-label={t(`canvas.board.align.${mode}`)}
+                  className={toolButtonClass(false)}
+                  onClick={() => alignSelectedShapes(mode)}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                </button>
+              </Tooltip>
+            ))}
+            {selectedShapeCount >= 3 ? (
+              <>
+                <Tooltip content={t('canvas.board.distribute.h')} side="bottom">
+                  <button
+                    type="button"
+                    aria-label={t('canvas.board.distribute.h')}
+                    className={toolButtonClass(false)}
+                    onClick={() => distributeSelectedShapes('h')}
+                  >
+                    <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
+                  </button>
+                </Tooltip>
+                <Tooltip content={t('canvas.board.distribute.v')} side="bottom">
+                  <button
+                    type="button"
+                    aria-label={t('canvas.board.distribute.v')}
+                    className={toolButtonClass(false)}
+                    onClick={() => distributeSelectedShapes('v')}
+                  >
+                    <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
+                  </button>
+                </Tooltip>
+              </>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       {/* Explicit save + FNS sync (Ctrl+S shares the same path via the
           document.saveAndSync handler). The board pointer handlers ignore
@@ -4587,46 +4637,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
               </div>
             </div>
           ) : null}
-          {selectionMode && selectedShapeCount >= 2 ? (
-            <PanelRow label={t('canvas.board.align.title')}>
-              <div className="flex flex-wrap items-center gap-1">
-                {([
-                  ['left', AlignStartVertical], ['hcenter', AlignCenterVertical], ['right', AlignEndVertical],
-                  ['top', AlignStartHorizontal], ['vcenter', AlignCenterHorizontal], ['bottom', AlignEndHorizontal],
-                ] as const).map(([mode, Icon]) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    aria-label={t(`canvas.board.align.${mode}`)}
-                    className={toolButtonClass(false)}
-                    onClick={() => alignSelectedShapes(mode)}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                  </button>
-                ))}
-                {selectedShapeCount >= 3 ? (
-                  <>
-                    <button
-                      type="button"
-                      aria-label={t('canvas.board.distribute.h')}
-                      className={toolButtonClass(false)}
-                      onClick={() => distributeSelectedShapes('h')}
-                    >
-                      <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={t('canvas.board.distribute.v')}
-                      className={toolButtonClass(false)}
-                      onClick={() => distributeSelectedShapes('v')}
-                    >
-                      <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
-                    </button>
-                  </>
-                ) : null}
-              </div>
-            </PanelRow>
-          ) : null}
           {selectionMode ? (
             <PanelRow label={t('canvas.board.layer.title')}>
               <div className="flex items-center gap-1">
@@ -4753,45 +4763,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           </div>
         </div>
       </div>
-          {selectedShapeCount >= 2 ? (
-            <>
-              <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-              {([
-                ['left', AlignStartVertical], ['hcenter', AlignCenterVertical], ['right', AlignEndVertical],
-                ['top', AlignStartHorizontal], ['vcenter', AlignCenterHorizontal], ['bottom', AlignEndHorizontal],
-              ] as const).map(([mode, Icon]) => (
-                <button
-                  key={`align-${mode}`}
-                  type="button"
-                  aria-label={t(`canvas.board.align.${mode}`)}
-                  className={toolButtonClass(false)}
-                  onClick={() => alignSelectedShapes(mode)}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                </button>
-              ))}
-              {selectedShapeCount >= 3 ? (
-                <>
-                  <button
-                    type="button"
-                    aria-label={t('canvas.board.distribute.h')}
-                    className={toolButtonClass(false)}
-                    onClick={() => distributeSelectedShapes('h')}
-                  >
-                    <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={t('canvas.board.distribute.v')}
-                    className={toolButtonClass(false)}
-                    onClick={() => distributeSelectedShapes('v')}
-                  >
-                    <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
-                  </button>
-                </>
-              ) : null}
-            </>
-          ) : null}
       <ReactFlow
         nodes={nodes}
         edges={edges}
