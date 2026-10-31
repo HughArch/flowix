@@ -1481,6 +1481,7 @@ const enUS: Record<keyof typeof zhCN, string> = {
     "canvas.board.tool.note": 'Note',
     "canvas.board.tool.sticky": 'Sticky note',
     "canvas.board.tool.frame": 'Frame',
+    "canvas.board.tool.lasso": 'Lasso',
     "canvas.board.sticky.placeholder": 'Double-click to type',
     "canvas.board.sticky.color": 'Sticky color',
     "canvas.board.style.textColor": 'Text color',
