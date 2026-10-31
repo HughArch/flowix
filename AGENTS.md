@@ -32,7 +32,12 @@ Flowix 是用于操作笔记和插件产物的非交互式 CLI，使用 `--json`
 - 不要手工创建 `.plugin-output` 文件；
 - 成功后向用户返回 `title`、`notebookId` 和 `notePath`。
 
-画布操作仅当用户明确要求创建/修改画布或白板时调用；不要手写 `.flowix-canvas` JSON 文件。
+画布操作仅当用户明确要求创建/修改画布或白板时调用；不要手写 `.flowix-canvas` JSON 文件。画布工作流：
+
+- 修改前先 `flowix canvas show <画布地址> --json` 拿到现有元素 id；`add-edge` 的 `--from/--to` 和 `remove` 的 `--ids` 都用这些 id；
+- 把多篇笔记摆上画布用 `canvas add-notes --notes <地址1,地址2,...> --columns 3`，坐标省略时自动放在现有内容旁边；单个笔记卡片用 `canvas add-card --note`，便签/短文字用 `--text`；
+- 笔记卡片引用笔记本体（画布上渲染实时内容），不要把笔记正文复制进画布；大段结构化内容先写成笔记再上画布；
+- 成功后向用户返回画布地址（`<笔记本ID>::<路径>.flowix-canvas`）。
 
 ## 工作空间范围
 

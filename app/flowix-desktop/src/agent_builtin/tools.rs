@@ -262,7 +262,7 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
             "type": "function",
             "function": {
                 "name": "canvas",
-                "description": "管理当前笔记本内的画布（.flowix-canvas 白板文档）。用户要求创建画布/白板、把笔记摆上画布、加形状连线时用它，不要手写画布 JSON。action: create/list/read/addCard/addShape/addEdge/addFrame/addNotes/remove。addNotes 可把多篇笔记自动排版成网格；坐标省略时自动放在现有内容旁边。",
+                "description": "管理当前笔记本内的画布（.flowix-canvas 白板文档）。用户要求创建画布/白板、把笔记摆上画布、加形状连线时用它，不要手写画布 JSON。action: create/list/read/addCard/addShape/addEdge/addFrame/addNotes/remove。典型流程：先 read 拿到元素 id 再 addEdge/remove；多篇笔记用 addNotes 排成网格，单个笔记卡用 addCard(notePath)，便签用 addCard(text)；坐标省略时自动放在现有内容旁边；笔记卡片引用笔记本体，不要把正文复制进画布。",
                 "parameters": {
                     "type": "object",
                     "properties": {
