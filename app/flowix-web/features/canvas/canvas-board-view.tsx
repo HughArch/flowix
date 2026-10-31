@@ -34,7 +34,7 @@ import {
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
 import '../../styles/canvas-board.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Lasso, Link2, Loader2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, Pencil, Plus, Redo2, Save, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Lasso, Link2, Loader2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Plus, Redo2, Save, Shapes, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { Tooltip } from '@shared/ui/tooltip';
 import { pushHandler, formatChord } from '@/lib/shortcuts';
 import { claimCanvasSurface, getActiveCanvasSurface, releaseCanvasSurface, setActiveCanvasSurface } from './canvas-focus';
@@ -94,6 +94,8 @@ import { polygonContainsElement } from './lasso-geometry';
 import { cachedRoughPaths, roughLineSketch } from './board-rough';
 import { alignShapes, distributeShapes, type BoardAlignMode } from './board-align';
 import { shapeGrowBoxHeight, shapeLabelWidth } from './shape-label';
+import { recognizeStrokeShape, shapeFromStrokeHit } from './draw-to-shape';
+import { blendHexColor, bucketTargetAt } from './bucket-fill';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@shared/ui/dropdown-menu';
@@ -319,7 +321,18 @@ function StickyNode({ data, selected }: NodeProps<BoardNode>) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
     data.onCardResize?.(card.id, params, 'end');
-  const tint = STICKY_COLORS.find((entry) => entry.value === card.color) ?? STICKY_COLORS[0];
+  // Bucket fill layers arbitrary blended hexes onto a sticky; named tints
+  // keep their palette entry, hex colours derive border/text from the paint.
+  const namedTint = STICKY_COLORS.find((entry) => entry.value === card.color);
+  const tint = namedTint
+    ?? (card.color && card.color.startsWith('#')
+      ? {
+        value: 'custom' as const,
+        background: card.color,
+        border: `color-mix(in srgb, ${card.color} 72%, black)`,
+        foreground: '#1e1e1e',
+      }
+      : STICKY_COLORS[0]);
   /** Text tools (字号/字体/对齐/文字颜色) apply to the sticky body text. */
   const fontSize = card.fontSize ?? 12;
   const fontFamilyKey = card.fontFamily ?? 'sans';
@@ -445,8 +458,15 @@ function FrameNode({ data, selected }: NodeProps<BoardNode>) {
     <div
       // The frame is a backdrop: it must never swallow clicks meant for the
       // cards inside it, so only the border/title band is interactive.
+      // Bucket-filled frames tint their background; unfilled ones keep the
+      // muted wash (the inline style wins over the Tailwind class when set).
       className="pointer-events-none relative h-full w-full rounded-xl border-2 border-dashed bg-[var(--muted)]/20"
-      style={{ borderColor: 'color-mix(in srgb, var(--muted-foreground) 45%, transparent)' }}
+      style={{
+        ...(card.color ? { backgroundColor: card.color } : {}),
+        borderColor: card.color
+          ? `color-mix(in srgb, ${card.color} 55%, var(--muted-foreground))`
+          : 'color-mix(in srgb, var(--muted-foreground) 45%, transparent)',
+      }}
     >
       <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
       <div
@@ -714,7 +734,7 @@ const NODE_TYPES = {
   ink: InkNode,
 };
 
-type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | 'lasso' | 'sticky' | 'frame' | BoardShapeKind;
+type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | 'lasso' | 'sticky' | 'frame' | 'bucket' | BoardShapeKind;
 /** Handwriting stack: CJK brushes first, then Latin sketch fonts. */
 /** Font faces for the text panel row, matching Obsidian's five slots. */
 const TEXT_FONTS: Record<'hand' | 'sans' | 'mono' | 'bold' | 'serif', string> = {
@@ -1037,7 +1057,7 @@ function buildBoardGraph(
       // Frames sit under every other layer: a frame is a backdrop, not content.
       selectable: true,
       data: {
-        card: { id: frame.id, kind: 'text', x: frame.x, y: frame.y, w: frame.w, h: frame.h, title: frame.title },
+        card: { id: frame.id, kind: 'text', x: frame.x, y: frame.y, w: frame.w, h: frame.h, title: frame.title, ...(frame.color ? { color: frame.color } : {}) },
         dataUrl: null,
         summary: null,
         contentHtml: null,
@@ -1234,6 +1254,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const [toolTextAlign, setToolTextAlign] = useState<'left' | 'center' | 'right'>('center');
   const [toolOpacity, setToolOpacity] = useState(100);
   const [toolPressure, setToolPressure] = useState(true);
+  /** Draw-to-shape: pen strokes whose outline matches a clean rect/ellipse/
+   *  diamond/line become that shape instead of staying ink (Excalidraw's
+   *  draw-to-shape). Toggled from the … menu; with ink selected the menu item
+   *  converts the selection once instead of toggling. */
+  const [drawToShapeMode, setDrawToShapeMode] = useState(false);
   const [toolFillStyle, setToolFillStyle] = useState<'hachure' | 'solid' | 'cross-hatch'>('hachure');
   const [toolRoughness, setToolRoughness] = useState(1);
   const [toolEdges, setToolEdges] = useState<'sharp' | 'round'>('sharp');
@@ -1946,6 +1971,107 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     scheduleFlush();
     if (record) pushHistory();
   }, [applyGraph, pushHistory, scheduleFlush, selectedInkIds]);
+
+  /** Append a shape to the document and render it (live creation path). */
+  const commitShapeElement = useCallback((shape: BoardShape) => {
+    const document = documentRef.current;
+    if (!document) return;
+    shapesRef.current = [...shapesRef.current, shape];
+    document.shapes = shapesRef.current;
+    setNodes((current) => [...current, shapeNodeFor(shape, commitShapeText, handleShapeResizeRef.current)]);
+    scheduleFlush();
+    pushHistory();
+  }, [commitShapeText, pushHistory, scheduleFlush]);
+
+  /** One-shot draw-to-shape: selected ink strokes whose outline matches a
+   *  clean shape become that shape; unmatched strokes stay ink (Excalidraw's
+   *  Shift+X on a selection). */
+  const convertSelectedInkToShapes = useCallback(() => {
+    const document = documentRef.current;
+    if (!document || selectedInkIds.length === 0) return;
+    const ids = new Set(selectedInkIds);
+    const keptStrokes: BoardInkStroke[] = [];
+    const added: BoardShape[] = [];
+    for (const stroke of inkRef.current) {
+      if (!ids.has(stroke.id)) { keptStrokes.push(stroke); continue; }
+      const hit = recognizeStrokeShape(stroke.points);
+      if (!hit) { keptStrokes.push(stroke); continue; }
+      added.push(shapeFromStrokeHit(hit, {
+        id: shapeId(),
+        color: stroke.color,
+        strokeWidth: Math.max(1, stroke.width),
+        z: stroke.z ?? nextZ(),
+        fill: toolFill,
+        fillStyle: toolFillStyle,
+        roughness: toolRoughness,
+        edges: toolEdges,
+      }));
+    }
+    if (added.length === 0) return;
+    inkRef.current = keptStrokes;
+    document.ink = keptStrokes;
+    shapesRef.current = [...shapesRef.current, ...added];
+    document.shapes = shapesRef.current;
+    // The replacement shapes take over the strokes' selection so the panel
+    // immediately shows the converted result (applyGraph re-marks these ids).
+    selectedIdsRef.current = added.map((shape) => shape.id);
+    setSelectedInkIds([]);
+    setSelectedShapeIds(added.map((shape) => shape.id));
+    applyGraph(document);
+    scheduleFlush();
+    pushHistory();
+  }, [applyGraph, nextZ, pushHistory, scheduleFlush, selectedInkIds, toolEdges, toolFill, toolFillStyle, toolRoughness]);
+
+  /** …-menu draw-to-shape entry: with ink selected it converts the selection
+   *  once, otherwise it toggles auto-convert for the pen tool. */
+  const handleDrawToShapeMenu = useCallback(() => {
+    if (selectedInkIds.length > 0 && !readOnly) {
+      convertSelectedInkToShapes();
+      return;
+    }
+    setDrawToShapeMode((mode) => !mode);
+  }, [convertSelectedInkToShapes, readOnly, selectedInkIds]);
+
+  /** Bucket fill: layer the current background paint onto the box element
+   *  under the point. An existing colour blends with the new one (叠加) —
+   *  repeated fills deepen toward the colour; the transparent swatch clears. */
+  const applyBucketAt = useCallback((position: number[]) => {
+    const document = documentRef.current;
+    if (!document || readOnly) return;
+    const target = bucketTargetAt(shapesRef.current, cardsRef.current, readBoardFrames(document), position[0], position[1]);
+    if (!target) return;
+    const paint = toolFill;
+    if (target.kind === 'shape') {
+      const shape = shapesRef.current.find((item) => item.id === target.id);
+      if (!shape) return;
+      shape.fill = paint === 'transparent' ? 'transparent' : blendHexColor(shape.fill, paint);
+      // First real edit swaps the passthrough arrays for normalized values.
+      document.shapes = shapesRef.current;
+    } else if (target.kind === 'frame') {
+      const frames = readBoardFrames(document);
+      const index = frames.findIndex((frame) => frame.id === target.id);
+      if (index < 0) return;
+      frames[index] = {
+        ...frames[index],
+        color: paint === 'transparent' ? undefined : blendHexColor(frames[index].color, paint),
+      };
+      document.frames = frames;
+    } else {
+      const card = cardsRef.current.find((item) => item.id === target.id);
+      if (!card) return;
+      if (paint === 'transparent') {
+        card.color = 'yellow';
+      } else {
+        const tint = STICKY_COLORS.find((entry) => entry.value === card.color)?.background
+          ?? (card.color && card.color.startsWith('#') ? card.color : STICKY_COLORS[0].background);
+        card.color = blendHexColor(tint, paint);
+      }
+      document.cards = cardsRef.current;
+    }
+    applyGraph(document);
+    scheduleFlush();
+    pushHistory();
+  }, [applyGraph, pushHistory, readOnly, scheduleFlush, toolFill]);
 
   /** Align selected shapes inside their common bounding box. */
   const alignSelectedShapes = useCallback((mode: BoardAlignMode) => {
@@ -3139,8 +3265,12 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       setShapePreview({ start, end: start });
       return;
     }
+    if (tool === 'bucket') {
+      applyBucketAt(flowPositionOf(event));
+      return;
+    }
     eraseInkAt(flowPositionOf(event));
-  }, [cancelLongPress, eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
+  }, [applyBucketAt, cancelLongPress, eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
 
   const handleBoardPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
     const pendingPress = longPressRef.current;
@@ -3455,6 +3585,24 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     setLivePoints(null);
     if (!stroke) return;
     try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    // Draw-to-shape: a pen stroke whose outline matches a clean shape becomes
+    // that shape instead of ink; unmatched strokes fall through as ink.
+    if (drawToShapeMode) {
+      const hit = recognizeStrokeShape(stroke);
+      if (hit) {
+        commitShapeElement(shapeFromStrokeHit(hit, {
+          id: shapeId(),
+          color: penColor,
+          strokeWidth: Math.max(1, penWidth),
+          z: nextZ(),
+          fill: toolFill,
+          fillStyle: toolFillStyle,
+          roughness: toolRoughness,
+          edges: toolEdges,
+        }));
+        return;
+      }
+    }
     if (stroke.length === 1) stroke.push([stroke[0][0] + 0.01, stroke[0][1] + 0.01]);
     syncInkToDocument([...inkRef.current, {
       id: inkStrokeId(),
@@ -3464,7 +3612,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       z: nextZ(),
       ...(toolPressure ? {} : { pressure: false }),
     }]);
-  }, [applyGraph, cancelLongPress, commitShapeText, flowPositionOf, nextZ, penColor, penWidth, pushHistory, readOnly, scheduleFlush, syncInkToDocument, tool, toolFontFamily, toolFontSize, toolTextAlign]);
+  }, [applyGraph, cancelLongPress, commitShapeElement, commitShapeText, drawToShapeMode, flowPositionOf, nextZ, penColor, penWidth, pushHistory, readOnly, scheduleFlush, syncInkToDocument, tool, toolEdges, toolFill, toolFillStyle, toolFontFamily, toolFontSize, toolOpacity, toolRoughness, toolStrokeStyle, toolTextAlign]);
 
   // Native capture-phase listeners: React's synthetic pointer events never
   // reached these handlers for real touch input on Android (only synthetic
@@ -3948,7 +4096,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const styleOpacity = selectionMode ? firstSelected?.opacity ?? 100 : toolOpacity;
   // Ink has no fill/line-style/edges; every shape-only row hides for it —
   // and sticky/frame tools draw containers, not styled shapes.
-  const showFill = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow' && shape.shape !== 'line') : isShapeTool(tool) && tool !== 'text' && tool !== 'arrow' && tool !== 'line';
+  // Bucket mode always shows the paint row: the selected swatch is what a
+  // click layers onto the element under the pointer.
+  const showFill = tool === 'bucket' || (inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow' && shape.shape !== 'line') : isShapeTool(tool) && tool !== 'text' && tool !== 'arrow' && tool !== 'line');
   const showStrokeStyle = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : isShapeTool(tool) && tool !== 'text';
   const showFontSize = inkOnlySelection || cardOnlySelection ? false : selectionMode ? allSelectedLabel : tool === 'text';
   const textOnlySelection = selectionMode && !cardOnlySelection && !inkOnlySelection && allSelectedLabel;
@@ -4154,12 +4304,17 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           </button>
         </Tooltip>
         {/* Infrequent tools live behind the … overflow (Obsidian-style): the
-            lasso and frame tools, image import, and the export actions. The
-            trigger highlights while either tool is engaged so its active state
-            is still visible even though its own button is in the menu. */}
+            lasso, frame, draw-to-shape and bucket tools, image import, and the
+            export actions. The trigger highlights while one of them is engaged
+            so its active state is still visible even though its own button is
+            in the menu. */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button type="button" aria-label={t('canvas.board.tool.more')} className={toolButtonClass(tool === 'frame' || tool === 'lasso')}>
+            <button
+              type="button"
+              aria-label={t('canvas.board.tool.more')}
+              className={toolButtonClass(tool === 'frame' || tool === 'lasso' || tool === 'bucket' || (tool === 'pen' && drawToShapeMode))}
+            >
               <MoreHorizontal className="h-3.5 w-3.5" />
             </button>
           </DropdownMenuTrigger>
@@ -4173,6 +4328,16 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
             <DropdownMenuItem className="gap-2" onClick={() => selectTool('frame')}>
               <FrameIcon className="h-3.5 w-3.5 shrink-0" />
               {t('canvas.board.tool.frame')}
+            </DropdownMenuItem>
+            {/* Draw-to-shape (Excalidraw): with ink selected it converts the
+                selection once; otherwise it toggles auto-convert for the pen. */}
+            <DropdownMenuItem className="gap-2" onClick={handleDrawToShapeMenu}>
+              <Shapes className="h-3.5 w-3.5 shrink-0" />
+              {t('canvas.board.tool.drawToShape')}
+            </DropdownMenuItem>
+            <DropdownMenuItem className="gap-2" onClick={() => selectTool('bucket')}>
+              <PaintBucket className="h-3.5 w-3.5 shrink-0" />
+              {t('canvas.board.tool.bucket')}
             </DropdownMenuItem>
             <DropdownMenuItem className="gap-2" onClick={() => { void pickImages(); }}>
               <ImagePlus className="h-3.5 w-3.5 shrink-0" />
@@ -4266,7 +4431,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           over resize handles and marquee gestures. pointer-events lives on
           the visible children only. */}
       <div className="pointer-events-none absolute bottom-4 left-3 z-30 flex max-h-[calc(100%-120px)] flex-col items-start gap-2 [&>*]:pointer-events-auto">
-        {(tool === 'pen' || isShapeTool(tool) || stickyMode || selectionMode) && !panelCollapsed ? (
+        {(tool === 'pen' || tool === 'bucket' || isShapeTool(tool) || stickyMode || selectionMode) && !panelCollapsed ? (
         <div
           data-board-toolbar
           className="flex min-h-0 w-[184px] flex-col gap-2.5 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
