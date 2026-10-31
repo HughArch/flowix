@@ -78,8 +78,11 @@ export function NoteCardInsertDialog({
   const filtered = useMemo(() => {
     if (!notes) return [];
     const needle = query.trim().toLowerCase();
-    if (!needle) return notes;
-    return notes.filter((note) => (
+    // This dialog inserts note cards; canvas files are not note content and
+    // their JSON would not survive the markdown heading extraction below.
+    const listable = notes.filter((note) => !note.relativePath.toLowerCase().endsWith('.flowix-canvas'));
+    if (!needle) return listable;
+    return listable.filter((note) => (
       note.title.toLowerCase().includes(needle)
       || note.relativePath.toLowerCase().includes(needle)
     ));
