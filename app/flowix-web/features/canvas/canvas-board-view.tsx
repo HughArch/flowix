@@ -2807,11 +2807,15 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
 
   /** Global stacking across shapes/cards/ink: normalize to dense z values,
    * move the picked elements, then write each array back in stacking order.
-   * Type defaults only apply until the first layer op assigns explicit z. */
+   * Type defaults only apply until the first layer op assigns explicit z.
+   * Reads the selection mirror ref, not the state arrays: the context menu
+   * builds its items in the same handler that re-selects the right-clicked
+   * node, so a state-based closure would act on the stale (pre-click)
+   * selection and silently no-op. */
   const moveSelectedLayer = useCallback((layer: 'front' | 'forward' | 'backward' | 'back') => {
     const document = documentRef.current;
     if (!document) return;
-    const ids = new Set([...selectedShapeIds, ...selectedCardIds, ...selectedInkIds]);
+    const ids = new Set(selectedIdsRef.current);
     if (ids.size === 0) return;
     const defaultZ = { shape: 5, card: 10, ink: 20 } as const;
     type Entry = { el: BoardShape | BoardCard | BoardInkStroke; kind: keyof typeof defaultZ };
@@ -2863,7 +2867,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     applyGraph(document);
     scheduleFlush();
     pushHistory();
-  }, [applyGraph, pushHistory, scheduleFlush, selectedCardIds, selectedInkIds, selectedShapeIds]);
+  }, [applyGraph, pushHistory, scheduleFlush]);
 
   const dragStartPositionsRef = useRef<Map<string, { x: number; y: number }>>(new Map());
   const handleNodeDragStart = useCallback((_event: unknown, node: BoardNode, dragged: BoardNode[]) => {

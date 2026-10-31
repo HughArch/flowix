@@ -86,7 +86,10 @@ export const CanvasBoardContextMenu = forwardRef<CanvasBoardContextMenuHandle>(f
             ? <ContextMenuSeparator key={`sep-${index}`} />
             : (
               <ContextMenuItem key={item.id} disabled={item.disabled} onSelect={item.onSelect}>
-                <span className="min-w-0 flex-1 truncate">{item.label}</span>
+                {/* text-left: the UA centers button text and it inherits into
+                    this stretched label span; bare-text items elsewhere never
+                    notice because their anonymous flex item hugs its content. */}
+                <span className="min-w-0 flex-1 truncate text-left">{item.label}</span>
                 {item.shortcut ? <ContextMenuShortcut>{item.shortcut}</ContextMenuShortcut> : null}
               </ContextMenuItem>
             )
