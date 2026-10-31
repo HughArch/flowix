@@ -34,7 +34,7 @@ import {
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
 import '../../styles/canvas-board.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Link2, Loader2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, Pencil, Plus, Redo2, Save, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Lasso, Link2, Loader2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, Pencil, Plus, Redo2, Save, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { Tooltip } from '@shared/ui/tooltip';
 import { pushHandler, formatChord } from '@/lib/shortcuts';
 import { claimCanvasSurface, getActiveCanvasSurface, releaseCanvasSurface, setActiveCanvasSurface } from './canvas-focus';
@@ -90,6 +90,7 @@ import {
   type CanvasBoardContextMenuHandle,
 } from './canvas-board-context-menu';
 import { boardToSvg, svgToPngBase64 } from './board-export';
+import { polygonContainsElement } from './lasso-geometry';
 import { cachedRoughPaths, roughLineSketch } from './board-rough';
 import { alignShapes, distributeShapes, type BoardAlignMode } from './board-align';
 import { shapeGrowBoxHeight, shapeLabelWidth } from './shape-label';
@@ -713,7 +714,7 @@ const NODE_TYPES = {
   ink: InkNode,
 };
 
-type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | 'sticky' | 'frame' | BoardShapeKind;
+type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | 'lasso' | 'sticky' | 'frame' | BoardShapeKind;
 /** Handwriting stack: CJK brushes first, then Latin sketch fonts. */
 /** Font faces for the text panel row, matching Obsidian's five slots. */
 const TEXT_FONTS: Record<'hand' | 'sans' | 'mono' | 'bold' | 'serif', string> = {
@@ -1207,6 +1208,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
    *  marquee and the two-finger pan/pinch are implemented by hand and RF's
    *  gesture props stay off in select mode. */
   const [marquee, setMarquee] = useState<{ start: number[]; end: number[] } | null>(null);
+  /** Live lasso path in flow coordinates while the lasso tool drags. */
+  const [lassoPath, setLassoPath] = useState<number[][] | null>(null);
   /** Sticky defaults for the next sticky note (Obsidian keeps the last used). */
   const [stickyColor, setStickyColor] = useState<StickyColor>('yellow');
   const [stickyFontSize, setStickyFontSize] = useState(FONT_SIZES[2]);
@@ -1313,11 +1316,14 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     () => typeof window !== 'undefined' && typeof window.matchMedia === 'function' && window.matchMedia('(pointer: coarse)').matches,
     [],
   );
-  /** Active select-mode gesture: one pointer rubber-bands, two pan/pinch. */
+  /** Active select/lasso-mode gesture: one pointer rubber-bands or lassos,
+   *  two pan/pinch. */
   const marqueeRef = useRef<{
     pointers: Map<number, { x: number; y: number }>;
-    mode: 'select' | 'pan';
+    mode: 'select' | 'lasso' | 'pan';
     startFlow: number[];
+    /** Lasso path so far (flow coordinates); only meaningful in lasso mode. */
+    points: number[][];
     startScreen: { x: number; y: number };
     startMid: { x: number; y: number };
     startDist: number;
@@ -3079,7 +3085,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         timer: window.setTimeout(() => fireLongPressRef.current(), LONG_PRESS_MS),
       };
     }
-    if (tool === 'select' && !readOnly) {
+    if ((tool === 'select' || tool === 'lasso') && !readOnly) {
       const gesture = marqueeRef.current;
       const point = { x: event.clientX, y: event.clientY };
       if (gesture) {
@@ -3088,6 +3094,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         if (gesture.mode === 'pan' || gesture.pointers.size >= 2) return;
         gesture.pointers.set(event.pointerId, point);
         setMarquee(null);
+        setLassoPath(null);
         gesture.mode = 'pan';
         const [a, b] = [...gesture.pointers.values()];
         gesture.startMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
@@ -3096,15 +3103,20 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         return;
       }
       // Presses on elements belong to them (React Flow drags the node); the
-      // pane starts a rubber-band, with mouse and touch alike.
-      if (pressRef.current.onElement || (event.target as Element).closest('[data-board-toolbar]')) return;
+      // pane starts a rubber-band, with mouse and touch alike. The lasso is a
+      // dedicated tool: nodes cannot drag in it, so the rope may start on top
+      // of an element and sweep across everything.
+      if (tool === 'select' && (pressRef.current.onElement || (event.target as Element).closest('[data-board-toolbar]'))) return;
+      if (tool === 'lasso' && (event.target as Element).closest('[data-board-toolbar]')) return;
       if (event.pointerType === 'mouse' && event.button !== 0) return;
+      const startFlow = flowPositionOf(event);
       marqueeRef.current = {
         pointers: new Map([[event.pointerId, point]]),
-        mode: 'select',
-        startFlow: flowPositionOf(event),
+        mode: tool,
+        startFlow,
         // Copies: the pointers map entry is mutated on every move, and these
         // must keep holding the gesture's origin.
+        points: [startFlow],
         startScreen: { ...point },
         startMid: { ...point },
         startDist: 1,
@@ -3144,7 +3156,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       event.stopPropagation();
       return;
     }
-    if (tool === 'select') {
+    if (tool === 'select' || tool === 'lasso') {
       const gesture = marqueeRef.current;
       if (!gesture) return;
       const tracked = gesture.pointers.get(event.pointerId);
@@ -3165,6 +3177,15 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       }
       if (gesture.mode === 'select' && gesture.pointers.size === 1) {
         setMarquee({ start: gesture.startFlow, end: flowPositionOf(event) });
+      }
+      if (gesture.mode === 'lasso' && gesture.pointers.size === 1) {
+        const points = gesture.points;
+        const position = flowPositionOf(event);
+        const last = points[points.length - 1];
+        if (Math.hypot(position[0] - last[0], position[1] - last[1]) >= 1) {
+          points.push(position);
+          setLassoPath([...points]);
+        }
       }
       return;
     }
@@ -3201,14 +3222,15 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     }
     cancelLongPress();
     const gesture = marqueeRef.current;
-    if (gesture && tool === 'select' && !readOnly) {
+    if (gesture && (tool === 'select' || tool === 'lasso') && !readOnly) {
       gesture.pointers.delete(event.pointerId);
       if (gesture.mode === 'pan') {
         // A pan gesture ends once fewer than two fingers remain.
         if (gesture.pointers.size < 2) marqueeRef.current = null;
       } else {
         marqueeRef.current = null;
-        setMarquee(null);
+        if (gesture.mode === 'lasso') setLassoPath(null);
+        else setMarquee(null);
         const end = flowPositionOf(event);
         const dragged = Math.hypot(event.clientX - gesture.startScreen.x, event.clientY - gesture.startScreen.y) >= 6;
         // pointercancel has no follow-up click; only a real pointerup needs
@@ -3220,22 +3242,66 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           window.setTimeout(() => { suppressPaneClickRef.current = false; }, 350);
         }
         if (dragged) {
-          const minX = Math.min(gesture.startFlow[0], end[0]);
-          const minY = Math.min(gesture.startFlow[1], end[1]);
-          const maxX = Math.max(gesture.startFlow[0], end[0]);
-          const maxY = Math.max(gesture.startFlow[1], end[1]);
-          // Frames are backdrops, not marquee targets (they are picked by
-          // clicking); everything else intersects the rect. Shift keeps the
-          // existing selection, like React Flow's own rubber-band.
-          setNodes((current) => current.map((node) => {
-            if (node.type === 'frame') return gesture.additive ? node : (node.selected ? { ...node, selected: false } : node);
-            const width = node.width ?? Number(node.style?.width ?? 0);
-            const height = node.height ?? Number(node.style?.height ?? 0);
-            const hit = node.position.x < maxX && node.position.x + width > minX
-              && node.position.y < maxY && node.position.y + height > minY;
-            if (hit) return node.selected ? node : { ...node, selected: true };
-            return gesture.additive ? node : (node.selected ? { ...node, selected: false } : node);
-          }));
+          if (gesture.mode === 'lasso') {
+            // The release point joins the path; the rope closes back to its
+            // start for the region tests. Only elements fully enclosed by the
+            // rope are selected (a partial overlap stays unselected). Shift
+            // keeps the existing selection, like the rubber-band.
+            //
+            // Containment runs on the VISIBLE element bounds (model space),
+            // not the React Flow node boxes: shape nodes inflate their box by
+            // the selection-ring padding (12px, arrows 14px) and ink nodes by
+            // 16px, so a rope hugging the drawn outline would otherwise miss.
+            const polygon = [...gesture.points, end];
+            const visibleBounds = new Map<string, { x: number; y: number; w: number; h: number }>();
+            for (const card of cardsRef.current) visibleBounds.set(card.id, { x: card.x, y: card.y, w: card.w, h: card.h });
+            for (const shape of shapesRef.current) {
+              const x2 = shape.x2 ?? shape.x + shape.w;
+              const y2 = shape.y2 ?? shape.y + shape.h;
+              visibleBounds.set(shape.id, {
+                x: Math.min(shape.x, x2),
+                y: Math.min(shape.y, y2),
+                w: Math.abs(x2 - shape.x),
+                h: Math.abs(y2 - shape.y),
+              });
+            }
+            for (const stroke of inkRef.current) {
+              let minX = Infinity;
+              let minY = Infinity;
+              let maxX = -Infinity;
+              let maxY = -Infinity;
+              for (const [px, py] of stroke.points) {
+                minX = Math.min(minX, px);
+                minY = Math.min(minY, py);
+                maxX = Math.max(maxX, px);
+                maxY = Math.max(maxY, py);
+              }
+              visibleBounds.set(stroke.id, { x: minX, y: minY, w: maxX - minX, h: maxY - minY });
+            }
+            setNodes((current) => current.map((node) => {
+              if (node.type === 'frame') return gesture.additive ? node : (node.selected ? { ...node, selected: false } : node);
+              const hit = visibleBounds.has(node.id) && polygonContainsElement(polygon, visibleBounds.get(node.id)!);
+              if (hit) return node.selected ? node : { ...node, selected: true };
+              return gesture.additive ? node : (node.selected ? { ...node, selected: false } : node);
+            }));
+          } else {
+            const minX = Math.min(gesture.startFlow[0], end[0]);
+            const minY = Math.min(gesture.startFlow[1], end[1]);
+            const maxX = Math.max(gesture.startFlow[0], end[0]);
+            const maxY = Math.max(gesture.startFlow[1], end[1]);
+            // Frames are backdrops, not marquee targets (they are picked by
+            // clicking); everything else intersects the rect. Shift keeps the
+            // existing selection, like React Flow's own rubber-band.
+            setNodes((current) => current.map((node) => {
+              if (node.type === 'frame') return gesture.additive ? node : (node.selected ? { ...node, selected: false } : node);
+              const width = node.width ?? Number(node.style?.width ?? 0);
+              const height = node.height ?? Number(node.style?.height ?? 0);
+              const hit = node.position.x < maxX && node.position.x + width > minX
+                && node.position.y < maxY && node.position.y + height > minY;
+              if (hit) return node.selected ? node : { ...node, selected: true };
+              return gesture.additive ? node : (node.selected ? { ...node, selected: false } : node);
+            }));
+          }
         }
       }
     }
@@ -3949,6 +4015,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       style={{ touchAction: 'none' }}
       className={`h-full min-h-0 w-full ${tool === 'hand' ? 'cursor-grab' : tool !== 'select' ? 'cursor-crosshair' : ''}`}
       data-canvas-surface={filePath}
+      // Exposes the active tool to E2E tooling without poking React state.
+      data-board-tool={tool}
       // The board owns pan/zoom gestures; the shell's swipe-down must not steal them.
       data-mobile-swipe-ignore="true"
       onDoubleClick={handleSurfaceDoubleClick}
@@ -3983,12 +4051,16 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         void insertImageFiles(files, position.x, position.y);
       }}
     >
-      {/* Clamped to the viewport and horizontally scrollable on touch: the
-          tool row overflows narrow screens, so pan-x scrolls it. The scroll
-          gesture never reaches the canvas (toolbar presses return early in the
-          pointer handlers) or the shell swipes (the whole board is
-          swipe-ignore), and touch-pan-x means vertical drags stay untouched. */}
-      <div data-board-toolbar className="absolute left-3 top-3 z-30 flex max-w-[calc(100vw-24px)] items-center gap-0.5 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+      {/* Stacked corner shell: the tool row and — while 2+ shapes are
+          selected — the align/distribute bar below it. Clamped to the viewport
+          and horizontally scrollable on touch: the rows overflow narrow
+          screens, so pan-x scrolls them. The scroll gesture never reaches the
+          canvas (toolbar presses return early in the pointer handlers) or the
+          shell swipes (the whole board is swipe-ignore), and touch-pan-x means
+          vertical drags stay untouched. Each row carries [data-board-toolbar]
+          so canvas gestures ignore both. */}
+      <div className="absolute left-3 top-3 z-30 flex max-w-[calc(100vw-24px)] flex-col items-start gap-1.5">
+        <div data-board-toolbar className="flex max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
         <Tooltip content={t('canvas.board.tool.select')} shortcut="canvas.tool.select" side="bottom">
           <button type="button" aria-label={t('canvas.board.tool.select')} className={toolButtonClass(tool === 'select')} onClick={() => selectTool('select')}>
             <MousePointer2 className="h-3.5 w-3.5" />
@@ -4082,18 +4154,22 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           </button>
         </Tooltip>
         {/* Infrequent tools live behind the … overflow (Obsidian-style): the
-            frame tool, image import, and the export actions. The trigger
-            highlights while the frame tool is engaged so its active state is
-            still visible even though its own button is in the menu. */}
+            lasso and frame tools, image import, and the export actions. The
+            trigger highlights while either tool is engaged so its active state
+            is still visible even though its own button is in the menu. */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button type="button" aria-label={t('canvas.board.tool.more')} className={toolButtonClass(tool === 'frame')}>
+            <button type="button" aria-label={t('canvas.board.tool.more')} className={toolButtonClass(tool === 'frame' || tool === 'lasso')}>
               <MoreHorizontal className="h-3.5 w-3.5" />
             </button>
           </DropdownMenuTrigger>
           <DropdownMenuContent align="start" className="w-[150px]">
             {/* The shared menu item has no built-in gap, so icon+label rows
                 space themselves (otherwise the icon touches the text). */}
+            <DropdownMenuItem className="gap-2" onClick={() => selectTool('lasso')}>
+              <Lasso className="h-3.5 w-3.5 shrink-0" />
+              {t('canvas.board.tool.lasso')}
+            </DropdownMenuItem>
             <DropdownMenuItem className="gap-2" onClick={() => selectTool('frame')}>
               <FrameIcon className="h-3.5 w-3.5 shrink-0" />
               {t('canvas.board.tool.frame')}
@@ -4113,6 +4189,52 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
             </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
+        </div>
+        {/* Align/distribute bar for the current multi-selection (2+ shapes;
+            distribution needs 3). Horizontal, docked under the tool row. */}
+        {selectedShapeCount >= 2 ? (
+          <div data-board-toolbar className="flex max-w-full items-center gap-0.5 overflow-x-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-1 shadow-sm touch-pan-x [scrollbar-width:none] [&::-webkit-scrollbar]:hidden">
+            {([
+              ['left', AlignStartVertical], ['hcenter', AlignCenterVertical], ['right', AlignEndVertical],
+              ['top', AlignStartHorizontal], ['vcenter', AlignCenterHorizontal], ['bottom', AlignEndHorizontal],
+            ] as const).map(([mode, Icon]) => (
+              <Tooltip key={mode} content={t(`canvas.board.align.${mode}`)} side="bottom">
+                <button
+                  type="button"
+                  aria-label={t(`canvas.board.align.${mode}`)}
+                  className={toolButtonClass(false)}
+                  onClick={() => alignSelectedShapes(mode)}
+                >
+                  <Icon className="h-3.5 w-3.5" />
+                </button>
+              </Tooltip>
+            ))}
+            {selectedShapeCount >= 3 ? (
+              <>
+                <Tooltip content={t('canvas.board.distribute.h')} side="bottom">
+                  <button
+                    type="button"
+                    aria-label={t('canvas.board.distribute.h')}
+                    className={toolButtonClass(false)}
+                    onClick={() => distributeSelectedShapes('h')}
+                  >
+                    <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
+                  </button>
+                </Tooltip>
+                <Tooltip content={t('canvas.board.distribute.v')} side="bottom">
+                  <button
+                    type="button"
+                    aria-label={t('canvas.board.distribute.v')}
+                    className={toolButtonClass(false)}
+                    onClick={() => distributeSelectedShapes('v')}
+                  >
+                    <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
+                  </button>
+                </Tooltip>
+              </>
+            ) : null}
+          </div>
+        ) : null}
       </div>
       {/* Explicit save + FNS sync (Ctrl+S shares the same path via the
           document.saveAndSync handler). The board pointer handlers ignore
@@ -4515,46 +4637,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
               </div>
             </div>
           ) : null}
-          {selectionMode && selectedShapeCount >= 2 ? (
-            <PanelRow label={t('canvas.board.align.title')}>
-              <div className="flex flex-wrap items-center gap-1">
-                {([
-                  ['left', AlignStartVertical], ['hcenter', AlignCenterVertical], ['right', AlignEndVertical],
-                  ['top', AlignStartHorizontal], ['vcenter', AlignCenterHorizontal], ['bottom', AlignEndHorizontal],
-                ] as const).map(([mode, Icon]) => (
-                  <button
-                    key={mode}
-                    type="button"
-                    aria-label={t(`canvas.board.align.${mode}`)}
-                    className={toolButtonClass(false)}
-                    onClick={() => alignSelectedShapes(mode)}
-                  >
-                    <Icon className="h-3.5 w-3.5" />
-                  </button>
-                ))}
-                {selectedShapeCount >= 3 ? (
-                  <>
-                    <button
-                      type="button"
-                      aria-label={t('canvas.board.distribute.h')}
-                      className={toolButtonClass(false)}
-                      onClick={() => distributeSelectedShapes('h')}
-                    >
-                      <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
-                    </button>
-                    <button
-                      type="button"
-                      aria-label={t('canvas.board.distribute.v')}
-                      className={toolButtonClass(false)}
-                      onClick={() => distributeSelectedShapes('v')}
-                    >
-                      <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
-                    </button>
-                  </>
-                ) : null}
-              </div>
-            </PanelRow>
-          ) : null}
           {selectionMode ? (
             <PanelRow label={t('canvas.board.layer.title')}>
               <div className="flex items-center gap-1">
@@ -4681,45 +4763,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           </div>
         </div>
       </div>
-          {selectedShapeCount >= 2 ? (
-            <>
-              <div className="mx-1 h-5 w-px bg-[var(--border)]" />
-              {([
-                ['left', AlignStartVertical], ['hcenter', AlignCenterVertical], ['right', AlignEndVertical],
-                ['top', AlignStartHorizontal], ['vcenter', AlignCenterHorizontal], ['bottom', AlignEndHorizontal],
-              ] as const).map(([mode, Icon]) => (
-                <button
-                  key={`align-${mode}`}
-                  type="button"
-                  aria-label={t(`canvas.board.align.${mode}`)}
-                  className={toolButtonClass(false)}
-                  onClick={() => alignSelectedShapes(mode)}
-                >
-                  <Icon className="h-3.5 w-3.5" />
-                </button>
-              ))}
-              {selectedShapeCount >= 3 ? (
-                <>
-                  <button
-                    type="button"
-                    aria-label={t('canvas.board.distribute.h')}
-                    className={toolButtonClass(false)}
-                    onClick={() => distributeSelectedShapes('h')}
-                  >
-                    <AlignHorizontalDistributeCenter className="h-3.5 w-3.5" />
-                  </button>
-                  <button
-                    type="button"
-                    aria-label={t('canvas.board.distribute.v')}
-                    className={toolButtonClass(false)}
-                    onClick={() => distributeSelectedShapes('v')}
-                  >
-                    <AlignVerticalDistributeCenter className="h-3.5 w-3.5" />
-                  </button>
-                </>
-              ) : null}
-            </>
-          ) : null}
       <ReactFlow
         nodes={nodes}
         edges={edges}
@@ -4819,6 +4862,49 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
               </svg>
             );
           })() : null}
+          {(() => {
+            if (!lassoPath || lassoPath.length < 2) return null;
+            let minX = Infinity;
+            let minY = Infinity;
+            let maxX = -Infinity;
+            let maxY = -Infinity;
+            for (const [px, py] of lassoPath) {
+              minX = Math.min(minX, px);
+              minY = Math.min(minY, py);
+              maxX = Math.max(maxX, px);
+              maxY = Math.max(maxY, py);
+            }
+            // Local coordinates inside the offset svg; the stroke path stays
+            // open (the drawn rope), only the fill closes back to the start.
+            const local = lassoPath.map(([px, py]) => `${px - minX + 1},${py - minY + 1}`);
+            return (
+              <svg
+                style={{
+                  position: 'absolute',
+                  left: minX - 1,
+                  top: minY - 1,
+                  width: maxX - minX + 2,
+                  height: maxY - minY + 2,
+                  overflow: 'visible',
+                  pointerEvents: 'none',
+                }}
+              >
+                <polygon
+                  points={local.join(' ')}
+                  fill="color-mix(in srgb, var(--foreground) 6%, transparent)"
+                  stroke="none"
+                />
+                <path
+                  d={`M ${local.join(' L ')}`}
+                  fill="none"
+                  stroke="var(--foreground)"
+                  strokeDasharray="4 3"
+                  strokeWidth={1}
+                  vectorEffect="non-scaling-stroke"
+                />
+              </svg>
+            );
+          })()}
           {previewShape && previewShape.w + previewShape.h > 0 ? (
             <svg
               style={{
