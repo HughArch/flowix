@@ -15,10 +15,12 @@ import type { BoardShape } from './model';
 
 /** A stroke whose bounding box is smaller than this stays ink (taps, ticks). */
 const MIN_SHAPE_DIAGONAL = 24;
-/** Mean outline error (fraction of the box size) a candidate must beat. */
-const ACCEPT_ERROR = 0.12;
+/** Mean outline error (fraction of the box size) a candidate must beat.
+ *  Generous on purpose: real hand strokes wobble far more than synthetic
+ *  samples, and a missed conversion reads as "the tool did nothing". */
+const ACCEPT_ERROR = 0.16;
 /** Open strokes closer than this to their ideal line become lines. */
-const MAX_LINE_DEVIATION = 0.08;
+const MAX_LINE_DEVIATION = 0.12;
 /** Closure gap: Excalidraw's isPathALoop heuristic (start/end within 10% of
  *  the drawn perimeter counts as a loop). */
 const CLOSURE_FRACTION = 0.1;
@@ -72,10 +74,22 @@ export function recognizeStrokeShape(points: readonly (readonly number[])[]): St
 
   if (isClosedLoop(points)) {
     const scale = Math.max(w, h, 1);
-    // Structural guards, not just error scores: a triangle hugging its bbox
-    // scores low against both the rectangle and the inscribed ellipse, but a
-    // rectangle's stroke visits all four bbox corners and an ellipse's never
-    // does — so each candidate only exists when its outline geometry holds.
+    // First ask what the stroke's corner structure is: a closed stroke that
+    // simplifies to exactly four dominant vertices is a quadrilateral — a
+    // rectangle or a diamond by position, regardless of tilt or wobble. This
+    // is far more forgiving of real hand strokes than error scores alone
+    // (error scoring alone misclassifies tilted rects and sloppy ellipses).
+    const quad = simplifyClosedRing(points, Math.max(2.5, 0.025 * Math.hypot(w, h)));
+    if (quad.length === 3) return null;
+    if (quad.length === 4) {
+      return verticesNearEdgeMidpoints(quad, minX, minY, maxX, maxY)
+        ? { kind: 'diamond', x: minX, y: minY, w, h }
+        : { kind: 'rect', x: minX, y: minY, w, h };
+    }
+    // Five or more vertices: a rounded outline. Structural guards, not just
+    // error scores: a rectangle's stroke visits all four bbox corners while
+    // an ellipse's never does, so each candidate only exists when its outline
+    // geometry holds.
     const candidates: [number, ClosedShapeHit['kind']][] = [];
     if (coversBboxCorners(points, minX, minY, maxX, maxY)) {
       candidates.push([meanRectError(points, minX, minY, maxX, maxY) / scale, 'rect']);
@@ -152,13 +166,14 @@ function isClosedLoop(points: readonly (readonly number[])[]): boolean {
 }
 
 /** Corner reach: a hand-drawn rectangle rounds its corners by a fraction of
- *  the short side, so a point within this radius counts as visiting it. */
-const CORNER_REACH = 0.2;
+ *  the short side, so a point within this radius counts as visiting it. Kept
+ *  just below an inscribed ellipse's structural closest approach to a corner
+ *  ((√2−1)/2 ≈ 0.207 of the short side) so ellipses never read as rects. */
+const CORNER_REACH = 0.19;
 
 /** Corner clearance for the ellipse candidate: a true ellipse's outline keeps
- *  this much distance from the bbox corners (an inscribed ellipse's closest
- *  approach is (√2−1)/2 ≈ 0.207 of the short side). */
-const CORNER_CLEARANCE = 0.15;
+ *  this much distance from the bbox corners. */
+const CORNER_CLEARANCE = 0.12;
 
 /** True when every bounding-box corner has a stroke point nearby — the
  *  signature of a rectangle (triangles always leave one corner empty). */
@@ -181,6 +196,66 @@ function cornersClearOfPoints(points: readonly (readonly number[])[], minX: numb
     for (const [x, y] of points) {
       if (Math.hypot(x - cx, y - cy) <= clearance) return false;
     }
+  }
+  return true;
+}
+
+/** Ramer–Douglas–Peucker for an open polyline: keeps the endpoints and every
+ *  point farther than `tolerance` from the current chord. */
+function simplifyOpenLine(points: readonly (readonly number[])[], tolerance: number): number[][] {
+  if (points.length < 3) return points.map((point) => [point[0], point[1]]);
+  const [ax, ay] = points[0];
+  const [bx, by] = points[points.length - 1];
+  let maxDistance = 0;
+  let maxIndex = 0;
+  for (let index = 1; index < points.length - 1; index += 1) {
+    const distance = distanceToSegment(points[index][0], points[index][1], ax, ay, bx, by);
+    if (distance > maxDistance) { maxDistance = distance; maxIndex = index; }
+  }
+  if (maxDistance <= tolerance) return [[ax, ay], [bx, by]];
+  const head = simplifyOpenLine(points.slice(0, maxIndex + 1), tolerance);
+  const tail = simplifyOpenLine(points.slice(maxIndex), tolerance);
+  return [...head.slice(0, -1), ...tail];
+}
+
+/** Dominant vertices of a closed stroke: RDP each half of the ring (split at
+ *  the point farthest from the start) and drop the duplicated joints. */
+function simplifyClosedRing(points: readonly (readonly number[])[], tolerance: number): number[][] {
+  const [sx, sy] = points[0];
+  let farIndex = 0;
+  let farDistance = 0;
+  for (let index = 1; index < points.length; index += 1) {
+    const distance = Math.hypot(points[index][0] - sx, points[index][1] - sy);
+    if (distance > farDistance) { farDistance = distance; farIndex = index; }
+  }
+  if (farIndex === 0 || farIndex === points.length - 1) return [];
+  const head = simplifyOpenLine(points.slice(0, farIndex + 1), tolerance);
+  const tail = simplifyOpenLine([...points.slice(farIndex), points[0]], tolerance);
+  // Both halves repeat their shared joints (start, far point, start again).
+  return [...head.slice(0, -1), ...tail.slice(0, -1)];
+}
+
+/** True when the four vertices sit near the bbox edge midpoints — the
+ *  signature of a diamond (a rectangle's vertices sit at the corners). */
+function verticesNearEdgeMidpoints(
+  quad: readonly (readonly number[])[],
+  minX: number,
+  minY: number,
+  maxX: number,
+  maxY: number,
+): boolean {
+  const midpoints: [number, number][] = [
+    [(minX + maxX) / 2, minY],
+    [maxX, (minY + maxY) / 2],
+    [(minX + maxX) / 2, maxY],
+    [minX, (minY + maxY) / 2],
+  ];
+  // Scale: a rect's corners sit one half-short-side away from the nearest
+  // edge midpoint, a 45° diamond's vertices sit on them; 1/8 of the short
+  // side puts the rect/diamond boundary near a 42° tilt.
+  const reach = 0.125 * Math.min(maxX - minX, maxY - minY);
+  for (const [vx, vy] of quad) {
+    if (!midpoints.some(([mx, my]) => Math.hypot(vx - mx, vy - my) <= reach)) return false;
   }
   return true;
 }

@@ -54,6 +54,16 @@ function diamondStroke(cx: number, cy: number, a: number, b: number, seed = 13):
   ], 1.5, seed);
 }
 
+/** Rectangle rotated by `deg` around its centre, closed. */
+function tiltedRectStroke(cx: number, cy: number, w: number, h: number, deg: number, seed = 17): number[][] {
+  const rad = (deg * Math.PI) / 180;
+  const ring = [[-w / 2, -h / 2], [w / 2, -h / 2], [w / 2, h / 2], [-w / 2, h / 2], [-w / 2, -h / 2]];
+  return handDrawn(ring.map(([x, y]) => [
+    cx + x * Math.cos(rad) - y * Math.sin(rad),
+    cy + x * Math.sin(rad) + y * Math.cos(rad),
+  ]), 1.5, seed);
+}
+
 describe('recognizeStrokeShape', () => {
   it('converts hand-drawn rectangles, ellipses, and diamonds', () => {
     const rect = recognizeStrokeShape(rectStroke(40, 20, 200, 140));
@@ -65,6 +75,13 @@ describe('recognizeStrokeShape', () => {
     }
     expect(recognizeStrokeShape(ellipseStroke(140, 90, 100, 70))?.kind).toBe('ellipse');
     expect(recognizeStrokeShape(diamondStroke(140, 90, 100, 70))?.kind).toBe('diamond');
+  });
+
+  it('converts a tilted rectangle regardless of drawing angle', () => {
+    expect(recognizeStrokeShape(tiltedRectStroke(150, 120, 220, 140, 15))?.kind).toBe('rect');
+    expect(recognizeStrokeShape(tiltedRectStroke(150, 120, 220, 140, 30))?.kind).toBe('rect');
+    // A 45°-tilted square IS a diamond geometrically.
+    expect(recognizeStrokeShape(tiltedRectStroke(150, 150, 200, 200, 45))?.kind).toBe('diamond');
   });
 
   it('keeps a sloppy rectangle sloppy-free: each kind scores its own outline best', () => {

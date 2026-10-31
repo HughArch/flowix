@@ -1461,6 +1461,7 @@ const zhCN = {
     "canvas.board.tool.lasso": '套索',
     "canvas.board.tool.drawToShape": '笔迹转图形',
     "canvas.board.tool.bucket": '油漆桶填充',
+    "canvas.board.drawToShape.noMatch": '选中的笔迹没有识别出图形',
     "canvas.board.sticky.placeholder": '双击输入文字',
     "canvas.board.sticky.color": '便签颜色',
     "canvas.board.style.textColor": '文字颜色',

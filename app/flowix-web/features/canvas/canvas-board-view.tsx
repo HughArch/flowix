@@ -2007,7 +2007,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         edges: toolEdges,
       }));
     }
-    if (added.length === 0) return;
+    // Silence reads as breakage: say so when no selected stroke matched.
+    if (added.length === 0) {
+      toast.info(t('canvas.board.drawToShape.noMatch'));
+      return;
+    }
     inkRef.current = keptStrokes;
     document.ink = keptStrokes;
     shapesRef.current = [...shapesRef.current, ...added];
@@ -2020,31 +2024,42 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     applyGraph(document);
     scheduleFlush();
     pushHistory();
-  }, [applyGraph, nextZ, pushHistory, scheduleFlush, selectedInkIds, toolEdges, toolFill, toolFillStyle, toolRoughness]);
+  }, [applyGraph, nextZ, pushHistory, scheduleFlush, selectedInkIds, t, toolEdges, toolFill, toolFillStyle, toolRoughness]);
 
   /** …-menu draw-to-shape entry: with ink selected it converts the selection
-   *  once, otherwise it toggles auto-convert for the pen tool. */
+   *  once, otherwise it toggles auto-convert and jumps to the pen tool so the
+   *  next stroke is drawn (and converted) right away. */
   const handleDrawToShapeMenu = useCallback(() => {
     if (selectedInkIds.length > 0 && !readOnly) {
       convertSelectedInkToShapes();
       return;
     }
-    setDrawToShapeMode((mode) => !mode);
-  }, [convertSelectedInkToShapes, readOnly, selectedInkIds]);
+    const next = !drawToShapeMode;
+    setDrawToShapeMode(next);
+    if (next && tool !== 'pen') selectTool('pen');
+  }, [convertSelectedInkToShapes, drawToShapeMode, readOnly, selectTool, selectedInkIds, tool]);
 
   /** Bucket fill: layer the current background paint onto the box element
-   *  under the point. An existing colour blends with the new one (叠加) —
-   *  repeated fills deepen toward the colour; the transparent swatch clears. */
+   *  under the point. The paint lands with the panel's 透明度 as its blending
+   *  strength (50% at the default 100%), so an existing colour mixes with the
+   *  new one (叠加) and repeated fills of different colours layer up; the
+   *  transparent swatch clears. The 填充 row's fill style rides along. */
   const applyBucketAt = useCallback((position: number[]) => {
     const document = documentRef.current;
     if (!document || readOnly) return;
     const target = bucketTargetAt(shapesRef.current, cardsRef.current, readBoardFrames(document), position[0], position[1]);
     if (!target) return;
     const paint = toolFill;
+    const weight = Math.max(0.05, 0.5 * (toolOpacity / 100));
     if (target.kind === 'shape') {
       const shape = shapesRef.current.find((item) => item.id === target.id);
       if (!shape) return;
-      shape.fill = paint === 'transparent' ? 'transparent' : blendHexColor(shape.fill, paint);
+      if (paint === 'transparent') {
+        shape.fill = 'transparent';
+      } else {
+        shape.fill = blendHexColor(shape.fill, paint, weight);
+        shape.fillStyle = toolFillStyle;
+      }
       // First real edit swaps the passthrough arrays for normalized values.
       document.shapes = shapesRef.current;
     } else if (target.kind === 'frame') {
@@ -2053,7 +2068,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       if (index < 0) return;
       frames[index] = {
         ...frames[index],
-        color: paint === 'transparent' ? undefined : blendHexColor(frames[index].color, paint),
+        color: paint === 'transparent' ? undefined : blendHexColor(frames[index].color, paint, weight),
       };
       document.frames = frames;
     } else {
@@ -2064,14 +2079,14 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       } else {
         const tint = STICKY_COLORS.find((entry) => entry.value === card.color)?.background
           ?? (card.color && card.color.startsWith('#') ? card.color : STICKY_COLORS[0].background);
-        card.color = blendHexColor(tint, paint);
+        card.color = blendHexColor(tint, paint, weight);
       }
       document.cards = cardsRef.current;
     }
     applyGraph(document);
     scheduleFlush();
     pushHistory();
-  }, [applyGraph, pushHistory, readOnly, scheduleFlush, toolFill]);
+  }, [applyGraph, pushHistory, readOnly, scheduleFlush, toolFill, toolFillStyle, toolOpacity]);
 
   /** Align selected shapes inside their common bounding box. */
   const alignSelectedShapes = useCallback((mode: BoardAlignMode) => {
@@ -4106,8 +4121,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const showTextAlign = textOnlySelection || (!selectionMode && tool === 'text');
   const styleFontFamily = selectionMode ? firstSelected?.fontFamily ?? 'hand' : toolFontFamily;
   const styleTextAlign = selectionMode ? firstSelected?.textAlign ?? 'center' : toolTextAlign;
-  const showOpacity = inkOnlySelection || cardOnlySelection ? false : selectionMode || isShapeTool(tool);
-  const showFillStyle = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond') : tool === 'rect' || tool === 'ellipse' || tool === 'diamond';
+  const showOpacity = inkOnlySelection || cardOnlySelection ? false : selectionMode || isShapeTool(tool) || tool === 'bucket';
+  const showFillStyle = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond') : tool === 'bucket' || tool === 'rect' || tool === 'ellipse' || tool === 'diamond';
   const showRoughness = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : isShapeTool(tool) && tool !== 'text';
   const showEdges = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.length > 0 && selectedShapes.every((shape) => shape.shape === 'rect') : tool === 'rect';
   const styleFillStyle = selectionMode ? firstSelected?.fillStyle ?? 'hachure' : toolFillStyle;
@@ -4163,7 +4178,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       ref={boardRef}
       // Touch gestures must reach the canvas instead of scrolling the shell.
       style={{ touchAction: 'none' }}
-      className={`h-full min-h-0 w-full ${tool === 'hand' ? 'cursor-grab' : tool !== 'select' ? 'cursor-crosshair' : ''}`}
+      className={`h-full min-h-0 w-full ${tool === 'hand' ? 'cursor-grab' : tool === 'bucket' ? 'canvas-cursor-bucket' : tool !== 'select' ? 'cursor-crosshair' : ''}`}
       data-canvas-surface={filePath}
       // Exposes the active tool to E2E tooling without poking React state.
       data-board-tool={tool}
@@ -4966,8 +4981,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         elevateNodesOnSelect={false}
         nodesDraggable={!readOnly && tool === 'select'}
         nodesConnectable={!readOnly && tool === 'select'}
-        // Pen/eraser taps keep their panel-switching behaviour via selection;
-        // the hand tool opt-out lives on the elementsSelectable prop above.
         onConnect={handleConnect}
         onlyRenderVisibleElements
         // Both keys delete: many keyboards label Backspace "Del", so users
@@ -4978,8 +4991,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         onEdgesDelete={handleEdgesDelete}
         // Hand mode is a pure panning tool: nothing is selectable while it is
         // active (Obsidian behaviour), so taps cannot flip selections or
-        // summon the panel mid-pan.
-        elementsSelectable={tool !== 'hand'}
+        // summon the panel mid-pan. Pen/eraser strokes and bucket clicks are
+        // mark-making, not picks: they must not select what they touch, or a
+        // stroke across an element leaves it wearing a selection border.
+        elementsSelectable={tool !== 'hand' && tool !== 'pen' && tool !== 'eraser' && tool !== 'bucket'}
         onEdgeClick={(_event, edge) => { if (tool !== 'hand') selectEdge(edge.id); }}
         onPaneClick={() => selectEdge(null)}
         onNodeContextMenu={handleNodeContextMenu}
