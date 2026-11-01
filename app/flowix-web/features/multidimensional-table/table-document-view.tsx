@@ -3359,6 +3359,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
           const path = imagePaths(notePropertyEditorValue(noteForRecord(record), field))[0];
           return path ? imageUrls[`${record.id}:${field.id}:${path}`] ?? null : null;
         }}
+        noteCover={(record) => noteThumbnailUrl(noteForRecord(record)?.cover ?? null, notebookPath)}
         noteThumbnail={(record) => noteThumbnailUrl(noteForRecord(record)?.thumbnail, notebookPath)}
         onOpenRecord={(record, anchorRect) => {
           const note = noteForRecord(record);

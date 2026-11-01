@@ -81,6 +81,8 @@ interface MarkdownEditorProps {
   linkContext?: EditorLinkContext;
   /** Content in the document scroller that stays outside ProseMirror. */
   header?: ReactNode;
+  /** Notion-style cover banner rendered above the header inside the scroller. */
+  cover?: ReactNode;
 }
 
 const persistenceLog = createLogger('document:editor');
@@ -272,6 +274,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   onAppendToTitle,
   linkContext,
   header,
+  cover,
 }, ref) {
   const { t } = useI18n();
   const resolvedPlaceholder = placeholder || t('editor.placeholder');
@@ -1075,6 +1078,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   const editorContentChildren = (
     <>
       {editorInstance && <HeadingOutlineNavigation editor={editorInstance} />}
+      {cover}
       {header}
       <div ref={editorMountRef} className="editor-document-body" />
       {editorInstance && <DragContextMenu editor={editorInstance} />}
@@ -1088,7 +1092,7 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
   );
 
   return (
-    <div className={`markdown-editor ${className || ''}`}>
+    <div className={`markdown-editor group/editor ${className || ''}`}>
       <SearchReplacePanel
         editor={editorRef.current}
         visible={searchPanelOpen}

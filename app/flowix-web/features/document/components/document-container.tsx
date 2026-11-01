@@ -42,6 +42,7 @@ import {
 } from '@features/document/components/lazy-document-editor';
 import { LazyCodeEditor } from '@features/document/components/lazy-code-editor';
 import { MemoDocumentHeader } from '@features/document/components/memo-document-header';
+import { NoteCoverBanner } from '@features/document/components/note-cover/note-cover-banner';
 import type {
   MemoTitleBodyNavigation,
   MemoTitleEditorHandle,
@@ -616,6 +617,17 @@ export function DocumentContainer({
       onPasteToBody={handlePasteTitleContentToBody}
     />
   ) : null;
+  // The banner lives inside the editor scroller (rich mode only); source mode
+  // edits raw YAML, so the cover preview is intentionally hidden there.
+  const documentCover = usesCodeEditor ? null : (
+    <NoteCoverBanner
+      path={documentIdentity.path}
+      displayId={displayId}
+      editable={!readOnly}
+      getNotebookId={getAttachmentNotebookId}
+      getNotebookPath={getAttachmentNotebookPath}
+    />
+  );
 
   return (
     <div
@@ -665,6 +677,7 @@ export function DocumentContainer({
             content={content}
             initialParsedContent={parsedMarkdownMatches && parsedMarkdownDocument?.source === content ? parsedMarkdownDocument.document ?? undefined : undefined}
             header={documentHeader}
+            cover={documentCover}
             editable={!readOnly}
             onDirty={handleDirty}
             onChange={(content) => {

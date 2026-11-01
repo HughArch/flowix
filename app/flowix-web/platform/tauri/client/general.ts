@@ -87,6 +87,9 @@ export const web = {
   resolveBilibiliVideo: (videoId: string, page: number) =>
     invoke<{ aid: number; cid: number }>('resolve_bilibili_video', { videoId, page }),
   parsePage: (url: string) => invoke<WebPageMetadata>('parse_web_page', { url }),
+  /** Download a remote image for the note cover; bytes are validated in Rust. */
+  fetchImageFromUrl: (url: string) =>
+    invoke<{ contentBase64: string; mimeType: string | null }>('fetch_url_image_base64', { url }),
 };
 
 /** DeepSeek Harness model probe. This uses dsh-host/runtime and owns its

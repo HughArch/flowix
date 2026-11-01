@@ -55,6 +55,10 @@ interface MemoCardBodyProps {
   hasAgents: boolean;
   hasTodos: boolean;
   runningAgentType?: AgentTypeKey;
+  /** Manual cover (`flowix_cover`); suppresses the auto first-image thumbnail. */
+  cover: string | null;
+  coverFailed: boolean;
+  onCoverFailed: () => void;
   thumbnail: string | null;
   thumbnailFailed: boolean;
   onThumbnailFailed: () => void;
@@ -280,6 +284,9 @@ function DetailedMemoCardBody({
   timeLabel,
   hasTodos,
   runningAgentType,
+  cover,
+  coverFailed,
+  onCoverFailed,
   thumbnail,
   thumbnailFailed,
   onThumbnailFailed,
@@ -288,6 +295,18 @@ function DetailedMemoCardBody({
   return (
     <>
       <div className="space-y-2">
+        {cover && !coverFailed ? (
+          <div className="relative h-24 w-full overflow-hidden rounded-md border border-[color-mix(in_oklch,var(--border)_70%,transparent)] bg-[var(--muted)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-[transform,box-shadow] group-hover:scale-[1.01] group-hover:shadow-[0_2px_6px_rgba(0,0,0,0.08)]">
+            <img
+              src={cover}
+              alt=""
+              loading="lazy"
+              draggable={false}
+              onError={onCoverFailed}
+              className="h-full w-full rounded-md object-cover"
+            />
+          </div>
+        ) : null}
         <h3 className="mr-3 min-w-0 max-w-full overflow-hidden line-clamp-2 text-sm leading-[20px] text-[var(--foreground)]">
           {memo.colors.length > 0 && (
             <span className="mr-1.5 inline-flex items-center align-middle">
@@ -302,7 +321,7 @@ function DetailedMemoCardBody({
           />
           <span className="min-w-0">{title}</span>
         </h3>
-        {thumbnail && !thumbnailFailed ? (
+        {!cover && thumbnail && !thumbnailFailed ? (
           <div className="relative h-16 w-[114px] overflow-hidden rounded-md border border-[color-mix(in_oklch,var(--border)_70%,transparent)] bg-[var(--muted)] shadow-[0_1px_2px_rgba(0,0,0,0.04)] transition-[transform,box-shadow] group-hover:scale-[1.01] group-hover:shadow-[0_2px_6px_rgba(0,0,0,0.08)]">
             <img
               src={thumbnail}
@@ -383,7 +402,9 @@ export function MemoCardImpl({
     (notebook) => notebook.id === memo.notebookId,
   )?.path;
   const thumbnail = thumbnailSrc(memo.thumbnail, notebookPath);
+  const cover = thumbnailSrc(memo.cover ?? null, notebookPath);
   const [thumbnailFailed, setThumbnailFailed] = useState(false);
+  const [coverFailed, setCoverFailed] = useState(false);
   const hasAgents = (memo.agents?.length ?? 0) > 0;
   const hasTodos = (memo.todos?.length ?? 0) > 0;
   const timeLabel = formatTimeAgo(memo.updatedAt || memo.createdAt, t);
@@ -400,6 +421,9 @@ export function MemoCardImpl({
     hasAgents,
     hasTodos,
     runningAgentType,
+    cover,
+    coverFailed,
+    onCoverFailed: () => setCoverFailed(true),
     thumbnail,
     thumbnailFailed,
     onThumbnailFailed: () => setThumbnailFailed(true),
@@ -409,6 +433,10 @@ export function MemoCardImpl({
   useEffect(() => {
     setThumbnailFailed(false);
   }, [thumbnail]);
+
+  useEffect(() => {
+    setCoverFailed(false);
+  }, [cover]);
 
   return (
     <MemoCardShell

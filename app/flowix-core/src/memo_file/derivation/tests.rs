@@ -296,6 +296,26 @@ fn thumbnail_ignores_images_inside_fenced_code() {
 }
 
 #[test]
+fn cover_reads_flowix_cover_frontmatter() {
+    let md = "---\nflowix_cover: attachments/cover.jpg\n---\n# Title\nbody\n";
+    let fields = derive_note_fields(md);
+    assert_eq!(
+        fields.metadata.as_ref().and_then(|metadata| metadata.cover.clone()),
+        Some("attachments/cover.jpg".to_string())
+    );
+}
+
+#[test]
+fn cover_ignores_blank_flowix_cover_value() {
+    let md = "---\nflowix_cover: \"   \"\n---\n# Title\nbody\n";
+    let fields = derive_note_fields(md);
+    assert_eq!(
+        fields.metadata.as_ref().and_then(|metadata| metadata.cover.clone()),
+        None
+    );
+}
+
+#[test]
 fn tags_dedup_and_trim() {
     let v = extract_tags_from_body("#a #b #a");
     assert_eq!(v, vec!["a".to_string(), "b".to_string()]);

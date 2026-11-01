@@ -707,6 +707,7 @@ pub fn run() {
             commands::font::get_cached_font_bytes,
             // web page metadata
             commands::web::parse_web_page,
+            commands::web::fetch_url_image_base64,
             commands::web::resolve_bilibili_video,
             // dialog
             commands::dialog::select_directory,

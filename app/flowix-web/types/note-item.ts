@@ -30,6 +30,8 @@ export interface NoteListItem {
   sizeBytes?: number;
   favorited: boolean;
   icon: string | null;
+  /** Manual cover attachment key (`flowix_cover`); absent on legacy projections. */
+  cover?: string | null;
   colors: NoteColor[];
   properties: Record<string, unknown>;
 }
