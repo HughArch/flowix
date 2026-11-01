@@ -111,7 +111,13 @@ function collectFlatBlocks(doc: PMNode): { pos: number; nodeSize: number }[] {
 /** 从锚点行到手指所在行, 整段加入块选中 (跨容器连续)。 */
 function extendAcrossFlatBlocks(editor: Editor, anchorPos: number, targetPos: number): boolean {
   if (editor.isDestroyed) return false
-  const blocks = collectFlatBlocks(editor.state.doc)
+  const doc = editor.state.doc
+  const anchorColumn = columnRangeForPos(doc, anchorPos)
+  // 分栏内每一列是独立的选中单元: 锚点在列内时, 扩选范围收在这一列里。
+  // 否则下滑到列底会顺着扁平序列跳进右边那一列, 表现为"整行一起被选中"。
+  const blocks = collectFlatBlocks(doc).filter((block) => (
+    !anchorColumn || (block.pos >= anchorColumn.from && block.pos < anchorColumn.to)
+  ))
   const anchorIndex = blocks.findIndex((block) => block.pos === anchorPos)
   const targetIndex = blocks.findIndex((block) => block.pos === targetPos)
   if (anchorIndex < 0 || targetIndex < 0) return false
@@ -125,6 +131,19 @@ function extendAcrossFlatBlocks(editor: Editor, anchorPos: number, targetPos: nu
   return true
 }
 
+/** 文档位置所在 `column` 节点的位置区间 (不在列内时返回 null)。 */
+function columnRangeForPos(doc: PMNode, pos: number): { from: number; to: number } | null {
+  let result: { from: number; to: number } | null = null
+  doc.descendants((node, nodePos) => {
+    if (result) return false
+    if (node.type.name !== 'column') return true
+    if (pos < nodePos || pos >= nodePos + node.nodeSize) return true
+    result = { from: nodePos, to: nodePos + node.nodeSize }
+    return false
+  })
+  return result
+}
+
 /** 把文档位置落到扁平序列里最内层的可圈选块 (容器命中时下钻)。 */
 function resolveFlatBlockPos(doc: PMNode, pos: number): number | null {
   let best: number | null = null
@@ -136,6 +155,22 @@ function resolveFlatBlockPos(doc: PMNode, pos: number): number | null {
   }
   return best
 }
+
+/**
+ * 扩选阶段用于块命中的水平坐标。
+ *
+ * 普通行取正文水平中线 (避开 posAtCoords 在边距里解析不到的死角)。
+ * 分栏内必须取**手指所在那一列**的中线: 若仍用整篇正文的中线, 在左列长按
+ * 下滑时命中点会落到右列, 扩选范围被另一列的块截断, 表现为"多列里选不中
+ * 这一列的行"。
+ */
+function resolveHitX(info: CurrentBlockInfo): number {
+  const column = info.dom.closest('.flowix-column')
+  const rect = (column ?? info.dom).getBoundingClientRect()
+  if (rect.width > 0) return rect.left + rect.width / 2
+  return rect.left
+}
+
 
 export function useMobileBlockSelection({
   editor,
@@ -189,8 +224,7 @@ export function useMobileBlockSelection({
       press.timer = null
       if (pressRef.current !== press) return
       press.extending = true
-      const viewRect = editor.view.dom.getBoundingClientRect()
-      press.hitX = viewRect.left + viewRect.width / 2
+      press.hitX = resolveHitX(info)
       // 锚点必须落到扁平序列里的行位置: 长按可能命中 callout / 列表这类
       // 容器, 容器本身不在序列中, 直接用它会把扩选判成"找不到锚点"。
       press.anchorPos = resolveFlatBlockPos(editor.state.doc, info.pos) ?? info.pos

@@ -26,7 +26,11 @@ function sameBlock(a: CurrentBlockInfo | null, b: CurrentBlockInfo | null): bool
  *
  * 与行尾抓手 (行级) 的区别: 这枚抓手对应**整块容器** (分栏 / 列表 / 引用 /
  * callout / 折叠块), 点击出元素菜单、按住拖动整体移动。因此它取的是
- * `resolveTopLevelContainer` 解析出的最外层容器, 而不是当前行。
+ * `resolveContainerBlock` 解析出的本层最外层容器, 而不是当前行。
+ *
+ * 「本层」的边界是 doc 或 column: 分栏里每一列都是独立单元, 列内 callout
+ * 的抓手只作用于该列的 callout, 不会升级成整块 `columns` (否则点左列 callout
+ * 的抓手会选中并修改整行)。
  *
  * 只在 `enabled` 为真时计算 (多选态下让位给行尾圆点)。
  */

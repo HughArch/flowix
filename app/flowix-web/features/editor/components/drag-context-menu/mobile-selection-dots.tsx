@@ -21,13 +21,21 @@ import { getBlockSelection } from '@features/editor/extensions/block-selection'
 const VIEWPORT_OVERSCAN_PX = 200
 /** 圆点直径, 与 CSS `.mobile-selection-dot` 保持一致。 */
 const DOT_SIZE = 18
+/** 子级 (嵌套块) 圆点直径, 与 CSS `.mobile-selection-dot.child` 一致。 */
+const CHILD_DOT_SIZE = 14
 /** 与首行文字的垂直对齐余量 (行盒中心对齐时再补的偏移)。 */
 const DOT_Y_FALLBACK = 5
+/** 非分栏行: 圆点距滚动容器右缘的净空 (与行尾抓手同一留白带)。 */
+const DOT_RIGHT_INSET = 13
+/** 分栏内: 圆点距「所在列」右缘的净空 (与 COLUMN_HANDLE_INSET 一致)。 */
+const COLUMN_DOT_INSET = 4
 
 interface SelectionDot {
   key: string
   info: CurrentBlockInfo
   y: number
+  /** 距滚动容器右缘的距离; 分栏内按所在列的右缘计算。 */
+  right: number
   selected: boolean
   /** 嵌套块 (列表项等) = 子级圆点, 比顶层父级圆点小一号。 */
   child: boolean
@@ -102,6 +110,17 @@ export function MobileSelectionDots({
         }
       }
 
+      // 分栏内每一列都有自己的行尾: 圆点必须贴「所在列」的右缘, 不能贴
+      // 滚动容器右缘 —— 否则左列的行圆点会跑到右列上, 右列的行圆点则
+      // 压在 `.flowix-column-remove` (列右上角的 ×) 上, 视觉上像"整行选中"。
+      const columnRect = dom.closest('.flowix-column')?.getBoundingClientRect() ?? null
+      const dotSize = depth > 0 ? CHILD_DOT_SIZE : DOT_SIZE
+      const baseRight = columnRect
+        ? Math.max(0, contentRect.right - columnRect.right) + COLUMN_DOT_INSET
+        : DOT_RIGHT_INSET
+      // 子级圆点小一号, 右移半个差值让它与父级圆点在同一条竖线上居中。
+      const right = baseRight + (DOT_SIZE - dotSize) / 2
+
       next.push({
         key: `${pos}`,
         info: {
@@ -113,6 +132,7 @@ export function MobileSelectionDots({
           dom,
         },
         y,
+        right,
         selected: selected.has(pos),
         child: depth > 0,
       })
@@ -126,7 +146,11 @@ export function MobileSelectionDots({
       parent.forEach((node, offset) => {
         const pos = contentStart + offset
         if (CONTAINER_DOT_TYPES.has(node.type.name)) {
-          if (depth < MAX_WALK_DEPTH) walk(node, pos + 1, depth + 1)
+          // `column` 是「列」这一层的边界: 列内的块是该列的顶层行, 圆点用
+          // 父级尺寸 (18px), 不能因为整块分栏嵌套在 doc 之下就一律降级成
+          // 子级小圆点 —— 否则多列布局里每列的行圆点都比普通行小一号。
+          const nextDepth = node.type.name === 'column' ? 0 : depth + 1
+          if (nextDepth <= MAX_WALK_DEPTH) walk(node, pos + 1, nextDepth)
           return
         }
         if (!DOT_BLOCK_TYPES.has(node.type.name)) return
@@ -137,7 +161,10 @@ export function MobileSelectionDots({
 
     setDots((prev) => (
       prev.length === next.length && prev.every((dot, index) => (
-        dot.key === next[index].key && dot.y === next[index].y && dot.selected === next[index].selected
+        dot.key === next[index].key
+        && dot.y === next[index].y
+        && dot.right === next[index].right
+        && dot.selected === next[index].selected
       ))
         ? prev
         : next
@@ -183,7 +210,7 @@ export function MobileSelectionDots({
           type="button"
           aria-pressed={dot.selected}
           className={`mobile-selection-dot${dot.selected ? ' selected' : ''}${dot.child ? ' child' : ''}`}
-          style={{ top: `${dot.y}px` }}
+          style={{ top: `${dot.y}px`, right: `${dot.right}px` }}
           onPointerDown={(event) => gesture.onPointerDown(event, dot.info)}
         />
       ))}

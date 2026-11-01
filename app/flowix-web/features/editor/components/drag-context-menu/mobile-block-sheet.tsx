@@ -251,7 +251,9 @@ export function MobileBlockSheet({
         onClick={onClose}
         className="shrink-0 rounded-lg px-2 py-1 text-sm text-[var(--brand)]"
       >
-        {t('editor.block.done')}
+        {/* 底部弹层统一用「取消」: 这里的关闭是放弃操作, 不是确认执行 ——
+         * 动作点完即生效并自动收起, 不存在需要"完成"确认的中间态。 */}
+        {t('editor.block.cancel')}
       </button>
     </div>
   )

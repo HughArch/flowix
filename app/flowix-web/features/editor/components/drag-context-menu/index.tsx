@@ -218,6 +218,10 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     onActivate: (info) => {
       hoveredBlockRef.current = info
       state.refresh()
+      // 父容器抓手走的是另一个 hook (它按 hoveredBlockRef 解析容器), 不会
+      // 跟着行抓手一起刷新。点中 callout / 列表 / 分栏里的某一行后必须同步
+      // 重算, 否则左侧容器抓手要等到下一次事务才出现 (表现为"点了没反应")。
+      containerHandle.refresh()
     },
   })
   // 多选态下正文任意位置的长按由原生 pointerdown 监听发起, 经 ref 取

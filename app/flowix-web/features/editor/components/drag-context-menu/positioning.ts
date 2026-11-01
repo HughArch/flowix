@@ -81,6 +81,15 @@ export const LEFT_HANDLE_INSET = 13
  */
 export const COLUMN_HANDLE_INSET = 4
 
+/**
+ * 分栏内父容器抓手距列左缘的净空。
+ *
+ * 非首列的 `.flowix-column-content` 有 18px 的 `padding-left`, 正好等于抓手
+ * 宽度, 所以抓手贴列左缘放 (净空 0) 就整枚落在留白里, 不压列内文字, 也不会
+ * 越到左列去。首列没有这层 padding, 用的是编辑器自己的 gutter。
+ */
+export const COLUMN_LEFT_HANDLE_INSET = 0
+
 /** Whether this block paints a line-background band the handle must clear. */
 export function blockHasLineBackground(
   typeName: string,
@@ -185,16 +194,21 @@ export function computeHandlePosition(
 }
 
 /**
- * 解析「包含该块的最外层容器」(doc 的直接子节点)。
+ * 解析「包含该块的容器」。
  *
- * 触屏父容器抓手作用于「容器整体」, 所以必须取最外层: 例如 callout 里的
- * 列表项, 抓手对应的是 callout, 而不是列表 —— 否则列表抓手和 callout 抓手
- * 会同时出现, 用户分不清在拖谁。
+ * 触屏父容器抓手作用于「容器整体」, 所以取的是同一层里最外层的容器:
+ * 例如 callout 里的列表项, 抓手对应的是 callout, 而不是列表 —— 否则列表
+ * 抓手和 callout 抓手会同时出现, 用户分不清在拖谁。
  *
- * 顶层节点不是容器 (普通段落 / 标题 / 图片等) 时返回 null, 表示不需要
- * 父容器抓手。
+ * 边界是 doc 或 **column**: 分栏里的每一列是独立的排版单元, 列内 callout
+ * 的抓手必须作用于「这一列里的 callout」。若继续往外走到 doc 的直接子节点
+ * (`columns`), 点击左列 callout 的抓手会钉住并修改整行 (跨越所有列),
+ * 表现为"选中的是整行, 属性调整作用到整行"。
+ *
+ * 块本身不在任何容器内 (顶层普通段落 / 标题 / 图片等) 时返回 null,
+ * 表示不需要父容器抓手。
  */
-export function resolveTopLevelContainer(
+export function resolveContainerBlock(
   editor: Editor,
   info: CurrentBlockInfo | null,
 ): CurrentBlockInfo | null {
@@ -202,42 +216,67 @@ export function resolveTopLevelContainer(
   const view = editor.view
   if (!view || view.isDestroyed) return null
   const { doc } = view.state
-  if (info.pos < 0 || info.pos >= doc.content.size) return null
+  if (info.pos < 0 || info.pos > doc.content.size) return null
 
-  let offset = 0
-  for (let index = 0; index < doc.childCount; index += 1) {
-    const child = doc.child(index)
-    const end = offset + child.nodeSize
-    if (info.pos >= offset && info.pos < end) {
-      if (!PARENT_CONTAINER_TYPES.has(child.type.name)) return null
-      const dom = view.nodeDOM(offset)
-      if (!(dom instanceof HTMLElement)) return null
-      return {
-        node: child,
-        typeName: child.type.name,
-        attrs: child.attrs,
-        pos: offset,
-        nodeSize: child.nodeSize,
-        dom,
-      }
+  let $pos
+  try {
+    // `pos` 是 open token, `pos + 1` 一定落在块内部; 文档末尾的原子块没有
+    // 内部位置, 退化到边界本身 (与 block-selection 的解析保持一致)。
+    $pos = doc.resolve(Math.min(info.pos + 1, doc.content.size))
+  } catch {
+    return null
+  }
+
+  // 由内向外找第一个「父节点是 doc 或 column」的容器 = 本层最外层容器。
+  //
+  // 先确定所在列的深度: 列内的一切 (包括列内 callout 外层的 `columns`) 都
+  // 不能越过这一层。否则点击左列 callout 的抓手会解析到 `columns`, 表现为
+  // "选中的是整行, 属性调整作用到整行/整块分栏"。
+  let columnDepth = -1
+  for (let depth = $pos.depth; depth >= 1; depth -= 1) {
+    if ($pos.node(depth).type.name === 'column') {
+      columnDepth = depth
+      break
     }
-    offset = end
+  }
+
+  for (let depth = $pos.depth; depth >= 1; depth -= 1) {
+    if (columnDepth >= 0 && depth <= columnDepth) break
+    const node = $pos.node(depth)
+    if (!PARENT_CONTAINER_TYPES.has(node.type.name)) continue
+    const parentTypeName = depth === 1 ? null : $pos.node(depth - 1).type.name
+    if (parentTypeName !== null && parentTypeName !== 'column') continue
+    const pos = $pos.before(depth)
+    const dom = view.nodeDOM(pos)
+    if (!(dom instanceof HTMLElement)) continue
+    return {
+      node,
+      typeName: node.type.name,
+      attrs: node.attrs,
+      pos,
+      nodeSize: node.nodeSize,
+      dom,
+    }
   }
   return null
 }
 
 /**
- * 父容器抓手的位置: 固定在正文左侧 gutter (与行尾抓手对称)。
+ * 父容器抓手的位置: 正文左侧 gutter (与行尾抓手对称)。
  *
  * 用固定 gutter 而不是"容器左缘再往左": 嵌套容器 (callout 内的列表、引用内
  * 的段落) 左缘本来就已经缩进, 再往外挪会压到 callout 图标 / 列表序号。
  * 固定 gutter 保证任何层级都落在留白带里, 不压正文。
+ *
+ * 分栏是例外: 列内的容器抓手必须挂在「自己这一列」的左侧留白里。若仍用
+ * 整个正文的左 gutter, 左列 callout 的抓手会跑到整块最左边 (视觉上像在
+ * 选整行), 右列容器的抓手则会落到左列上, 点了作用到错的列。
  */
 export function computeContainerHandlePosition(
   editor: Editor,
   info: CurrentBlockInfo | null,
 ): HandlePosition | null {
-  const container = resolveTopLevelContainer(editor, info)
+  const container = resolveContainerBlock(editor, info)
   if (!container) return null
   const view = editor.view
   const editorDom = view.dom as HTMLElement
@@ -248,9 +287,20 @@ export function computeContainerHandlePosition(
   const nodeRect = container.dom.getBoundingClientRect()
   if (nodeRect.height === 0) return null
 
+  // 列内容器: 落在该列自己的左侧留白。非首列的 `.flowix-column-content`
+  // 有 18px 的 padding-left (正好一枚抓手宽), 抓手贴列左缘就整枚在留白里;
+  // 首列没有这层 padding, 它的左留白就是编辑器自己的 gutter。
+  const columnElement = container.dom.closest('.flowix-column')
+  const columnRect = columnElement?.getBoundingClientRect() ?? null
+  const isFirstColumn = !!columnElement
+    && !columnElement.previousElementSibling?.classList.contains('flowix-column')
+  const x = columnRect && !isFirstColumn
+    ? columnRect.left - contentRect.left + editorContent.scrollLeft + COLUMN_LEFT_HANDLE_INSET
+    : LEFT_HANDLE_INSET
+
   return {
     visible: true,
-    x: LEFT_HANDLE_INSET,
+    x,
     y: nodeContentY(nodeRect.top, contentRect.top, editorContent.scrollTop, 5),
     blockInfo: container,
   }
