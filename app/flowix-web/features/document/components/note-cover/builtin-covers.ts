@@ -5,7 +5,7 @@
 // property-icons.ts 的模式一致, URL 直接喂 <img src=...>。
 
 const COVER_MODULES = import.meta.glob<string>(
-  '../../../assets/covers/*.jpg',
+  '../../../../assets/covers/*.jpg',
   { eager: true, import: 'default' },
 );
 

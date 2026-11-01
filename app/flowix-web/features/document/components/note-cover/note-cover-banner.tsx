@@ -28,8 +28,12 @@ export function NoteCoverBanner({ path, displayId, editable, getNotebookId, getN
   const [pickerOpen, setPickerOpen] = useState(false);
   const coverUrl = useMemo(() => {
     if (!cover) return null;
-    const storageKey = decodeStorageKey(cover);
-    return storageKey ? resolveAttachmentUrl(storageKey, getNotebookPath() ?? undefined) : cover;
+    // Remote cover URLs render as-is; attachment keys resolve against the
+    // notebook root. Keys persisted by this feature are plain
+    // `attachments/...` paths, so `decodeStorageKey` alone is not enough.
+    if (/^https?:\/\//i.test(cover)) return cover;
+    const storageKey = decodeStorageKey(cover) ?? cover;
+    return resolveAttachmentUrl(storageKey, getNotebookPath() ?? undefined);
   }, [cover, getNotebookPath]);
 
   const handleRemove = async () => {

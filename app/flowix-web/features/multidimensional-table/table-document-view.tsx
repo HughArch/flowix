@@ -277,6 +277,14 @@ function noteThumbnailUrl(thumbnail: string | null | undefined, notebookPath?: s
   return storageKey ? resolveAttachmentUrl(storageKey, notebookPath) : thumbnail;
 }
 
+/** Cover keys persisted by the picker are plain `attachments/...` paths. */
+function noteCoverUrl(cover: string | null | undefined, notebookPath?: string | null): string | null {
+  if (!cover) return null;
+  if (/^https?:\/\//i.test(cover)) return cover;
+  const storageKey = decodeStorageKey(cover) ?? cover;
+  return resolveAttachmentUrl(storageKey, notebookPath);
+}
+
 function isoDate(date: Date): string {
   return `${date.getFullYear()}-${String(date.getMonth() + 1).padStart(2, '0')}-${String(date.getDate()).padStart(2, '0')}`;
 }
@@ -3359,7 +3367,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
           const path = imagePaths(notePropertyEditorValue(noteForRecord(record), field))[0];
           return path ? imageUrls[`${record.id}:${field.id}:${path}`] ?? null : null;
         }}
-        noteCover={(record) => noteThumbnailUrl(noteForRecord(record)?.cover ?? null, notebookPath)}
+        noteCover={(record) => noteCoverUrl(noteForRecord(record)?.cover ?? null, notebookPath)}
         noteThumbnail={(record) => noteThumbnailUrl(noteForRecord(record)?.thumbnail, notebookPath)}
         onOpenRecord={(record, anchorRect) => {
           const note = noteForRecord(record);

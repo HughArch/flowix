@@ -21,6 +21,7 @@ interface CoverPickerDialogProps {
   onOpenChange: (open: boolean) => void;
   /** Owner note path; attachments are saved under the note's notebook. */
   path: string;
+  /** Frontend-resolved owning notebook; Rust resolves attachments dir from it. */
   getNotebookId: () => string | undefined;
   /** Persist the saved attachment key into `flowix_cover`. */
   onSelect: (storageKey: string) => Promise<boolean>;
@@ -38,11 +39,15 @@ export function CoverPickerDialog({ open, onOpenChange, path, getNotebookId, onS
     setSaving(true);
     try {
       const base64 = await bytesToBase64(await blob.arrayBuffer());
+      // Scope by the frontend-resolved notebook: key resolution in the UI
+      // uses longest-prefix matching, and nested notebook roots on this
+      // device make a notePath-based owner resolve differently in Rust.
+      const notebookId = getNotebookId();
+      if (!notebookId) throw new Error('notebook is not resolved for the cover owner note');
       const saved = await notebookAssets.saveContent({
         content: base64,
         fileName: `note-cover-${Date.now()}.${extension}`,
-        ...(getNotebookId() ? { notebookId: getNotebookId() } : {}),
-        notePath: path,
+        notebookId,
       });
       const selected = await onSelect(saved.key);
       if (selected) {
@@ -51,7 +56,7 @@ export function CoverPickerDialog({ open, onOpenChange, path, getNotebookId, onS
         toast.error(t('document.cover.saveFailed'));
       }
     } catch (error) {
-      logger.warn('save cover failed', { error, path });
+      logger.warn('save cover failed', { error: error instanceof Error ? error.message : String(error), path });
       toast.error(t('document.cover.saveFailed'));
     } finally {
       setSaving(false);

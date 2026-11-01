@@ -23,9 +23,12 @@ interface NoteReferencePreviewControllerOptions {
 
 function noteReferenceThumbnailUrl(thumbnail: string | null, notebookPath?: string | null): string | null {
   if (!thumbnail) return null;
-  const storageKey = decodeStorageKey(thumbnail);
+  if (/^https?:\/\//i.test(thumbnail)) return thumbnail;
+  // Manual covers persist plain `attachments/...` keys, so only fall back to
+  // the raw value when the value is not an asset:// URL.
+  const storageKey = decodeStorageKey(thumbnail) ?? thumbnail;
   // Attachment keys are notebook-relative; resolve against the referenced note's notebook.
-  return storageKey ? resolveAttachmentUrl(storageKey, notebookPath) : thumbnail;
+  return resolveAttachmentUrl(storageKey, notebookPath);
 }
 
 /** Owns the composer note-reference preview's DOM, async lifecycle, and placement. */

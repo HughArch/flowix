@@ -84,6 +84,14 @@ function thumbnailSrc(thumbnail: string | null | undefined, notebookPath?: strin
   return storageKey ? resolveAttachmentUrl(storageKey, notebookPath) : thumbnail;
 }
 
+/** Cover keys persisted by the picker are plain `attachments/...` paths. */
+function coverSrc(cover: string | null | undefined, notebookPath?: string | null): string | null {
+  if (!cover) return null;
+  if (/^https?:\/\//i.test(cover)) return cover;
+  const storageKey = decodeStorageKey(cover) ?? cover;
+  return resolveAttachmentUrl(storageKey, notebookPath);
+}
+
 function AgentTodoIcons({
   hasTodos,
   runningAgentType,
@@ -402,7 +410,7 @@ export function MemoCardImpl({
     (notebook) => notebook.id === memo.notebookId,
   )?.path;
   const thumbnail = thumbnailSrc(memo.thumbnail, notebookPath);
-  const cover = thumbnailSrc(memo.cover ?? null, notebookPath);
+  const cover = coverSrc(memo.cover ?? null, notebookPath);
   const [thumbnailFailed, setThumbnailFailed] = useState(false);
   const [coverFailed, setCoverFailed] = useState(false);
   const hasAgents = (memo.agents?.length ?? 0) > 0;
