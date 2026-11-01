@@ -34,7 +34,7 @@ import {
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
 import '../../styles/canvas-board.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Lasso, Link2, Loader2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, PaintBucket, Pencil, Plus, Redo2, Save, Shapes, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Lasso, Link2, Loader2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, Pencil, Plus, Redo2, Save, Shapes, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { Tooltip } from '@shared/ui/tooltip';
 import { pushHandler, formatChord } from '@/lib/shortcuts';
 import { claimCanvasSurface, getActiveCanvasSurface, releaseCanvasSurface, setActiveCanvasSurface } from './canvas-focus';
@@ -102,6 +102,27 @@ import {
 
 const SAVE_DEBOUNCE_MS = 800;
 const logger = createLogger('canvas-board');
+
+/** Excalidraw's bucket-fill glyph (tabler 24×24, the same paths core renders
+ *  for its bucket tool) so the fill tool reads identically to Excalidraw. */
+function BucketFillIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M5 16l1.465 1.638a2 2 0 1 1 -3.015 .099l1.55 -1.737z" />
+      <path d="M13.737 9.737c2.299 -2.3 3.23 -5.095 2.081 -6.245c-1.15 -1.15 -3.945 -.217 -6.244 2.082c-2.3 2.299 -3.231 5.095 -2.082 6.244c1.15 1.15 3.946 .218 6.245 -2.081z" />
+      <path d="M7.492 11.818c.362 .362 .768 .676 1.208 .934l6.895 4.047c1.078 .557 2.255 -.075 3.692 -1.512c1.437 -1.437 2.07 -2.614 1.512 -3.692c-.372 -.718 -1.72 -3.017 -4.047 -6.895a6.015 6.015 0 0 0 -.934 -1.208" />
+    </svg>
+  );
+}
 /** Retry cadence for image cards whose attachment had not synced on open. */
 const IMAGE_RETRY_DELAYS_MS = [3_000, 8_000, 15_000];
 /** Touch long-press duration and the movement slop that cancels it. The slop
@@ -4170,8 +4191,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         </div>;
   }
 
-  const toolButtonClass = (active: boolean) =>
-    `flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${active ? 'bg-[var(--foreground)] text-[var(--background)]' : 'text-[var(--muted-foreground)] hover:bg-[var(--muted)]'}`;
+  // `accent` mirrors Excalidraw's selected-tool look (soft blue rounded
+  // background) for the bucket tool's active state on the … trigger.
+  const toolButtonClass = (active: boolean, accent = false) =>
+    `flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${active ? (accent ? 'canvas-tool-active-accent' : 'bg-[var(--foreground)] text-[var(--background)]') : 'text-[var(--muted-foreground)] hover:bg-[var(--muted)]'}`;
 
   return (
     <div
@@ -4328,7 +4351,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
             <button
               type="button"
               aria-label={t('canvas.board.tool.more')}
-              className={toolButtonClass(tool === 'frame' || tool === 'lasso' || tool === 'bucket' || (tool === 'pen' && drawToShapeMode))}
+              className={toolButtonClass(
+                tool === 'frame' || tool === 'lasso' || tool === 'bucket' || (tool === 'pen' && drawToShapeMode),
+                tool === 'bucket',
+              )}
             >
               <MoreHorizontal className="h-3.5 w-3.5" />
             </button>
@@ -4351,7 +4377,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
               {t('canvas.board.tool.drawToShape')}
             </DropdownMenuItem>
             <DropdownMenuItem className="gap-2" onClick={() => selectTool('bucket')}>
-              <PaintBucket className="h-3.5 w-3.5 shrink-0" />
+              <BucketFillIcon className="h-3.5 w-3.5 shrink-0" />
               {t('canvas.board.tool.bucket')}
             </DropdownMenuItem>
             <DropdownMenuItem className="gap-2" onClick={() => { void pickImages(); }}>
@@ -4560,7 +4586,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
             ))}
           </PanelRow>
           ) : null}
-          {!cardOnlySelection && !stickyPlacing ? (
+          {!cardOnlySelection && !stickyPlacing && tool !== 'bucket' ? (
           <PanelRow label={t('canvas.board.style.stroke')}>
             <div className="flex flex-wrap items-center gap-1.5">
               {INK_COLORS.map((color) => (
@@ -4625,7 +4651,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
               </div>
             </PanelRow>
           ) : null}
-          {textOnlySelection || cardOnlySelection || stickyPlacing ? null : (
+          {textOnlySelection || cardOnlySelection || stickyPlacing || tool === 'bucket' ? null : (
           <PanelRow label={t('canvas.board.style.strokeWidth')}>
             {(inkOnlySelection || (selectionMode ? false : tool === 'pen') ? INK_WIDTHS : STROKE_WIDTHS).map((width) => (
               <button
