@@ -45,6 +45,16 @@ interface UseBlockDragGestureOptions {
   ignoreBlurRef: MutableRefObject<boolean>
   onDragStart?: () => void
   onTap?: (anchorRect: DOMRect) => void
+  /**
+   * 触屏行尾抓手: 非拖动的抬手 = 切换该块的多选状态, 而不是打开元素菜单。
+   * 与 `onTap` 互斥 (两者都是"没拖动就松手"的语义, 只是目标不同)。
+   */
+  onTapBlock?: (info: CurrentBlockInfo) => void
+  /**
+   * 拖动结束后是否把焦点还给编辑器。桌面需要 (撤销/重做走正文 history),
+   * 触屏不要 ── 会把软键盘顶起来。
+   */
+  focusAfterDrag?: boolean
 }
 
 const BLOCK_DRAG_START_THRESHOLD_PX = 4
@@ -82,6 +92,8 @@ export function useBlockDragGesture({
   ignoreBlurRef,
   onDragStart,
   onTap,
+  onTapBlock,
+  focusAfterDrag = true,
 }: UseBlockDragGestureOptions) {
   const [isDragging, setIsDragging] = useState(false)
   const pointerDragRef = useRef<PointerBlockDragState | null>(null)
@@ -160,7 +172,8 @@ export function useBlockDragGesture({
     // drag, focus can remain on the handle, leaving the image NodeSelection
     // visible while the focus-gated drag handle state is hidden. Restore the
     // Tiptap editor focus so undo/redo and the handle stay in sync.
-    if (didDrag && !editor.isDestroyed) {
+    // 触屏不抢焦点: 会把软键盘顶起来, 而移动端这次拖动后面接的是底部菜单。
+    if (didDrag && focusAfterDrag && !editor.isDestroyed) {
       editor.commands.focus(undefined, { scrollIntoView: false })
     }
 
@@ -170,12 +183,15 @@ export function useBlockDragGesture({
         toggleBlockSelection(editor, info)
       } else if (drag.selectionModifier === 'extend' && info) {
         extendBlockSelection(editor, info)
+      } else if (onTapBlock && info) {
+        // 触屏行尾抓手: 轻点 = 切换该行的多选状态 (不进元素菜单)。
+        onTapBlock(info)
       } else {
         clearBlockSelection(editor)
         onTap?.(drag.anchorRect)
       }
     }
-  }, [cancelScheduledMove, editor, ignoreBlurRef, markDragClickSuppressed, onTap, releasePointerCapture, removeDragPreview])
+  }, [cancelScheduledMove, editor, focusAfterDrag, ignoreBlurRef, markDragClickSuppressed, onTap, onTapBlock, releasePointerCapture, removeDragPreview])
 
   const onPointerDown = useCallback((event: PointerEvent<HTMLDivElement>) => {
     if (event.button !== 0) return

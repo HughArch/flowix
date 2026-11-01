@@ -35,6 +35,25 @@ const BLOCK_SELECTOR =
 
 const HANDLE_X_OFFSET = 18
 
+/** 抓手对齐方式: 桌面/父容器 = 左侧 gutter, 触屏行抓手 = 行尾。 */
+export type HandleAlign = 'left' | 'right'
+
+/**
+ * 需要在左侧单独出「父容器抓手」的容器块。
+ *
+ * 这些容器在触屏上整块可被移动 (点击出元素菜单, 按住拖动 = 移动整体),
+ * 与行尾抓手 (点击进多选) 是两套不同的交互, 所以容器左侧挂一枚独立的
+ * 抓手, 而不是复用行尾那枚。
+ */
+export const PARENT_CONTAINER_TYPES = new Set([
+  'columns',
+  'bulletList',
+  'orderedList',
+  'blockquote',
+  'callout',
+  'toggle',
+])
+
 /**
  * A line-background band starts 12px left of its block, so the default handle
  * position (18–36px from the ProseMirror edge) lands half inside the fill.
@@ -48,6 +67,19 @@ export const LINE_BACKGROUND_HANDLE_SHIFT = 14
  * 18px 的抓手/圆点居中其中 (inset 13px), 不挤也不压正文。
  */
 export const RIGHT_HANDLE_INSET = 13
+
+/**
+ * 触屏父容器抓手距滚动容器左缘的净空。触屏正文左侧留白同步加宽到
+ * 2.25rem (36px), 18px 抓手落在 13–31px 的留白带里, 不压正文与列表序号。
+ */
+export const LEFT_HANDLE_INSET = 13
+
+/**
+ * 分栏内行尾抓手距列右缘的净空。列内容在触屏下预留 26px 的右侧 padding,
+ * 抓手落在预留带内, 既不会压到列内文字, 也不会和 `.flowix-columns-add`
+ * (位于分栏容器右缘外 8–30px) 重叠。
+ */
+export const COLUMN_HANDLE_INSET = 4
 
 /** Whether this block paints a line-background band the handle must clear. */
 export function blockHasLineBackground(
@@ -120,10 +152,15 @@ export function computeHandlePosition(
   const columnElement = info.dom.closest('.flowix-column')
   const columnRect = columnElement?.getBoundingClientRect() ?? null
   const isFirstColumn = !!columnElement && !columnElement.previousElementSibling?.classList.contains('flowix-column')
-  // 触屏模式抓手挂在行尾 (贴滚动容器右缘、收进正文右侧 padding 带内),
-  // 永远不压正文; 列布局 / 左侧 gutter 那套锚定都不适用。
+  // 触屏模式抓手挂在行尾 (贴右缘、收进正文右侧 padding 带内), 永远不压正文。
+  //
+  // 分栏内的行必须按「所在列」的右缘定位, 不能用滚动容器的右缘: 否则两列
+  // 里的每一行抓手都挤到整块的最右边, 第一列的行抓手会横穿第二列压在文字上,
+  // 第二列的行抓手则与 `.flowix-columns-add` (分栏容器右缘外) 重叠。
   const x = alignRight
-    ? contentRect.width - HANDLE_SIZE - RIGHT_HANDLE_INSET
+    ? columnRect
+      ? columnRect.right - contentRect.left + editorContent.scrollLeft - HANDLE_SIZE - COLUMN_HANDLE_INSET
+      : contentRect.width - HANDLE_SIZE - RIGHT_HANDLE_INSET
     : columnRect
       ? (isFirstColumn
           ? nodeContentX(proseMirrorRect.left, contentRect.left, editorContent.scrollLeft)
@@ -145,6 +182,78 @@ export function computeHandlePosition(
     )
 
   return { visible: true, x: x - xOffset, y, blockInfo: info }
+}
+
+/**
+ * 解析「包含该块的最外层容器」(doc 的直接子节点)。
+ *
+ * 触屏父容器抓手作用于「容器整体」, 所以必须取最外层: 例如 callout 里的
+ * 列表项, 抓手对应的是 callout, 而不是列表 —— 否则列表抓手和 callout 抓手
+ * 会同时出现, 用户分不清在拖谁。
+ *
+ * 顶层节点不是容器 (普通段落 / 标题 / 图片等) 时返回 null, 表示不需要
+ * 父容器抓手。
+ */
+export function resolveTopLevelContainer(
+  editor: Editor,
+  info: CurrentBlockInfo | null,
+): CurrentBlockInfo | null {
+  if (!info) return null
+  const view = editor.view
+  if (!view || view.isDestroyed) return null
+  const { doc } = view.state
+  if (info.pos < 0 || info.pos >= doc.content.size) return null
+
+  let offset = 0
+  for (let index = 0; index < doc.childCount; index += 1) {
+    const child = doc.child(index)
+    const end = offset + child.nodeSize
+    if (info.pos >= offset && info.pos < end) {
+      if (!PARENT_CONTAINER_TYPES.has(child.type.name)) return null
+      const dom = view.nodeDOM(offset)
+      if (!(dom instanceof HTMLElement)) return null
+      return {
+        node: child,
+        typeName: child.type.name,
+        attrs: child.attrs,
+        pos: offset,
+        nodeSize: child.nodeSize,
+        dom,
+      }
+    }
+    offset = end
+  }
+  return null
+}
+
+/**
+ * 父容器抓手的位置: 固定在正文左侧 gutter (与行尾抓手对称)。
+ *
+ * 用固定 gutter 而不是"容器左缘再往左": 嵌套容器 (callout 内的列表、引用内
+ * 的段落) 左缘本来就已经缩进, 再往外挪会压到 callout 图标 / 列表序号。
+ * 固定 gutter 保证任何层级都落在留白带里, 不压正文。
+ */
+export function computeContainerHandlePosition(
+  editor: Editor,
+  info: CurrentBlockInfo | null,
+): HandlePosition | null {
+  const container = resolveTopLevelContainer(editor, info)
+  if (!container) return null
+  const view = editor.view
+  const editorDom = view.dom as HTMLElement
+  const editorContent = editorDom.closest('.editor-content') as HTMLElement | null
+  if (!editorContent) return null
+
+  const contentRect = editorContent.getBoundingClientRect()
+  const nodeRect = container.dom.getBoundingClientRect()
+  if (nodeRect.height === 0) return null
+
+  return {
+    visible: true,
+    x: LEFT_HANDLE_INSET,
+    y: nodeContentY(nodeRect.top, contentRect.top, editorContent.scrollTop, 5),
+    blockInfo: container,
+  }
 }
 
 export function nodeContentX(

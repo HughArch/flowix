@@ -66,13 +66,37 @@ export function useDragHandlePosition(
     let mounted = true
 
     const commitState = (next: DragHandlePositionState) => {
+      // TEMP-DEBUG
+      ;(globalThis as unknown as { __hd?: unknown[] }).__hd?.push({
+        tag: 'commit',
+        visible: next.visible,
+        x: Math.round(next.x),
+        y: Math.round(next.y),
+        mounted,
+      })
       if (!mounted) return
       setState((prev) => shouldUpdateState(prev, next) ? next : prev)
     }
 
     const updateDragHandle = () => {
+      // TEMP-DEBUG
+      ;(globalThis as unknown as { __hd?: unknown[] }).__hd?.push({
+        tag: 'update-enter',
+        mounted,
+        tap: tapActivated,
+        hover: hoverInfoRef?.current?.typeName ?? null,
+        inter: interactionInfoRef?.current?.typeName ?? null,
+        keep: keepVisibleRef?.current ?? null,
+      })
       if (!mounted) return
       const interactionInfo = keepVisibleRef?.current ? interactionInfoRef?.current : null
+      // TEMP-DEBUG
+      ;(globalThis as unknown as { __hd?: unknown[] }).__hd?.push({
+        tag: 'update',
+        tap: tapActivated,
+        hover: hoverInfoRef?.current?.typeName ?? null,
+        inter: interactionInfo?.typeName ?? null,
+      })
       // Hovering a block shows its handle even when the editor is unfocused.
       // This is what makes Mod/Shift-click block selection possible without
       // first clicking into the body (which would reset the selection).
@@ -107,6 +131,8 @@ export function useDragHandlePosition(
     }
 
     const scheduleUpdate = () => {
+      // TEMP-DEBUG
+      ;(globalThis as unknown as { __hd?: unknown[] }).__hd?.push({ tag: 'schedule' })
       if (frameRef.current != null) return
       frameRef.current = requestAnimationFrame(() => {
         frameRef.current = null
@@ -180,6 +206,8 @@ export function useDragHandlePosition(
     updateDragHandle()
 
     return () => {
+      // TEMP-DEBUG
+      ;(globalThis as unknown as { __hd?: unknown[] }).__hd?.push({ tag: 'cleanup' })
       mounted = false
       refreshRef.current = () => {}
       if (frameRef.current != null) cancelAnimationFrame(frameRef.current)

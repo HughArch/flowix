@@ -50,6 +50,14 @@ interface MobilePressState {
   hitX: number
   /** 扩选锚点 (扁平序列里的块位置), 长按触发时确定。 */
   anchorPos: number
+  /**
+   * 轻点是否切换选中。
+   *
+   * 抓手 / 圆点上轻点 = 进多选 (true);
+   * 正文行上轻点 = 只唤出行尾抓手、不进多选 (false) —— 长按才进多选,
+   * 否则手机上点一下正文就会莫名其妙进入多选态。
+   */
+  tapToggles: boolean
 }
 
 interface UseMobileBlockSelectionOptions {
@@ -148,14 +156,21 @@ export function useMobileBlockSelection({
   const hitTest = useCallback((clientY: number): number | null => {
     const press = pressRef.current
     if (!press || editor.isDestroyed) return null
-    const bar = document.querySelector('[role="toolbar"]')
+    const bar = document.querySelector('[data-mobile-selection-bar]')
     if (bar && clientY >= bar.getBoundingClientRect().top) return null
     const coords = editor.view.posAtCoords({ left: press.hitX, top: clientY })
     if (!coords) return null
     return resolveFlatBlockPos(editor.state.doc, coords.pos)
   }, [editor])
 
-  const startPress = useCallback((info: CurrentBlockInfo | null, clientX: number, clientY: number, pointerId: number) => {
+  const startPress = useCallback((
+    info: CurrentBlockInfo | null,
+    clientX: number,
+    clientY: number,
+    pointerId: number,
+    /** 轻点是否切换选中; 正文行上传 false (轻点只唤抓手)。 */
+    tapToggles = true,
+  ) => {
     if (!info) return
     ignoreBlurRef.current = true
     const press: MobilePressState = {
@@ -168,6 +183,7 @@ export function useMobileBlockSelection({
       timer: null,
       hitX: 0,
       anchorPos: info.pos,
+      tapToggles,
     }
     press.timer = window.setTimeout(() => {
       press.timer = null
@@ -257,6 +273,11 @@ export function useMobileBlockSelection({
       // 长按扩选或中途滑动都不再当作"轻点", 否则抬手会把刚选好的行取消掉。
       if (press.extending || press.moved) return
       if (press.info) {
+        // 正文行上轻点: 只把抓手停到这一行, 不进多选 (长按才进多选)。
+        if (!press.tapToggles) {
+          onActivate(press.info)
+          return
+        }
         toggleBlockSelection(editor, press.info)
         onActivate(press.info)
       }

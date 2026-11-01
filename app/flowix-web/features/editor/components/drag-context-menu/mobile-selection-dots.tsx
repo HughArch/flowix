@@ -71,7 +71,10 @@ export function MobileSelectionDots({
     // 底部操作面板已覆盖的区域不再渲染圆点: 一来视觉上不与菜单叠印,
     // 二来那段区域里的行本来就被面板挡着, 点不到。
     const barTopInContent = (() => {
-      const bar = document.querySelector('[role="toolbar"]')
+      // 必须用专用属性: role="toolbar" 同时被选区气泡菜单 / 思维导图控件
+      // 使用, 用 role 查询会拿到那些元素, 把"面板上沿"算到屏幕中部,
+      // 导致该行以下的所有圆点都被当成"面板覆盖区"裁掉。
+      const bar = document.querySelector('[data-mobile-selection-bar]')
       if (!bar) return Number.POSITIVE_INFINITY
       return bar.getBoundingClientRect().top - contentRect.top + scrollTop - 8
     })()
