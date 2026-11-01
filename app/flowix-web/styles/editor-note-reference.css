@@ -430,27 +430,27 @@
   color: var(--foreground);
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__style-row {
+.note-block__style-panel .note-block__style-row {
   display: flex;
   align-items: center;
   gap: 0.5rem;
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__style-label {
+.note-block__style-panel .note-block__style-label {
   flex: 0 0 auto;
   color: var(--muted-foreground);
   font-size: 0.75rem;
   white-space: nowrap;
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__swatches {
+.note-block__style-panel .note-block__swatches {
   display: flex;
   flex: 1 1 auto;
   flex-wrap: wrap;
   gap: 0.3rem;
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__swatch {
+.note-block__style-panel .note-block__swatch {
   display: inline-flex;
   align-items: center;
   justify-content: center;
@@ -463,15 +463,15 @@
   transition: transform 0.1s ease, box-shadow 0.1s ease;
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__swatch:hover {
+.note-block__style-panel .note-block__swatch:hover {
   transform: scale(1.12);
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__swatch.is-active {
+.note-block__style-panel .note-block__swatch.is-active {
   box-shadow: 0 0 0 2px var(--input-bg, var(--document-bg)), 0 0 0 3.5px var(--document-link);
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__style-input {
+.note-block__style-panel .note-block__style-input {
   flex: 1 1 auto;
   min-width: 0;
   padding: 0.3rem 0.45rem;
@@ -483,7 +483,7 @@
   font-size: 0.78rem;
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__style-input:focus-visible {
+.note-block__style-panel .note-block__style-input:focus-visible {
   outline: none;
   border-color: color-mix(in oklch, var(--document-link) 55%, var(--border));
 }
