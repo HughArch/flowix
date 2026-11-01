@@ -67,6 +67,10 @@ import {
 } from '@features/editor/extensions/flowix-block-background'
 import type { FlowixTextColor } from '@features/editor/extensions/flowix-text-mark'
 import {
+  DEFAULT_CALLOUT_COLOR,
+  normalizeCalloutColor,
+} from '@features/editor/extensions/callout/callout-markdown'
+import {
   addColumnBesideBlock,
   canSplitBlockToColumns,
   deleteColumn,
@@ -852,7 +856,35 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     }
   }, [closeMenu, editor, menuTarget])
   const blockBackgroundMenu = useMemo<BlockBackgroundMenuState | undefined>(() => {
-    if (!menuTarget || !menuBlockBackgroundAvailable) return undefined
+    if (!menuTarget) return undefined
+
+    // callout 容器: 着色落在 callout 自己的 `color` 属性上 (边框 + 底色),
+    // 而不是行背景。行背景的候选类型里没有 callout, 走下面那条分支会得到
+    // undefined, 菜单里的「着色」就整项消失 —— 这正是"callout 只有分栏和
+    // 删除"的第二个原因。
+    if (menuTarget.typeName === 'callout') {
+      const node = editor.state.doc.nodeAt(menuTarget.pos)
+      if (!node || node.type.name !== 'callout') return undefined
+      return {
+        current: normalizeCalloutColor(node.attrs?.color),
+        onChange: (color) => {
+          const live = editor.state.doc.nodeAt(menuTarget.pos)
+          if (!live || live.type.name !== 'callout') return
+          editor.view.dispatch(
+            editor.state.tr
+              .setNodeMarkup(menuTarget.pos, undefined, {
+                ...live.attrs,
+                color: color ?? DEFAULT_CALLOUT_COLOR,
+              })
+              .scrollIntoView(),
+          )
+          clearBlockSelection(editor)
+          closeMenu()
+        },
+      }
+    }
+
+    if (!menuBlockBackgroundAvailable) return undefined
     return {
       current: menuBlockBackground,
       onChange: (color) => {
