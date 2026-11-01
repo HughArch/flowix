@@ -34,7 +34,7 @@ import {
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
 import '../../styles/canvas-board.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Lasso, Link2, Loader2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, Pencil, Plus, Redo2, Save, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Lasso, Link2, Loader2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, Pencil, Plus, Redo2, Save, Shapes, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { Tooltip } from '@shared/ui/tooltip';
 import { pushHandler, formatChord } from '@/lib/shortcuts';
 import { claimCanvasSurface, getActiveCanvasSurface, releaseCanvasSurface, setActiveCanvasSurface } from './canvas-focus';
@@ -94,12 +94,35 @@ import { polygonContainsElement } from './lasso-geometry';
 import { cachedRoughPaths, roughLineSketch } from './board-rough';
 import { alignShapes, distributeShapes, type BoardAlignMode } from './board-align';
 import { shapeGrowBoxHeight, shapeLabelWidth } from './shape-label';
+import { recognizeStrokeShape, shapeFromStrokeHit } from './draw-to-shape';
+import { blendHexColor, bucketTargetAt } from './bucket-fill';
 import {
   DropdownMenu, DropdownMenuContent, DropdownMenuItem, DropdownMenuSeparator, DropdownMenuTrigger,
 } from '@shared/ui/dropdown-menu';
 
 const SAVE_DEBOUNCE_MS = 800;
 const logger = createLogger('canvas-board');
+
+/** Excalidraw's bucket-fill glyph (tabler 24×24, the same paths core renders
+ *  for its bucket tool) so the fill tool reads identically to Excalidraw. */
+function BucketFillIcon({ className }: { className?: string }) {
+  return (
+    <svg
+      viewBox="0 0 24 24"
+      fill="none"
+      stroke="currentColor"
+      strokeWidth={1.5}
+      strokeLinecap="round"
+      strokeLinejoin="round"
+      className={className}
+      aria-hidden="true"
+    >
+      <path d="M5 16l1.465 1.638a2 2 0 1 1 -3.015 .099l1.55 -1.737z" />
+      <path d="M13.737 9.737c2.299 -2.3 3.23 -5.095 2.081 -6.245c-1.15 -1.15 -3.945 -.217 -6.244 2.082c-2.3 2.299 -3.231 5.095 -2.082 6.244c1.15 1.15 3.946 .218 6.245 -2.081z" />
+      <path d="M7.492 11.818c.362 .362 .768 .676 1.208 .934l6.895 4.047c1.078 .557 2.255 -.075 3.692 -1.512c1.437 -1.437 2.07 -2.614 1.512 -3.692c-.372 -.718 -1.72 -3.017 -4.047 -6.895a6.015 6.015 0 0 0 -.934 -1.208" />
+    </svg>
+  );
+}
 /** Retry cadence for image cards whose attachment had not synced on open. */
 const IMAGE_RETRY_DELAYS_MS = [3_000, 8_000, 15_000];
 /** Touch long-press duration and the movement slop that cancels it. The slop
@@ -319,7 +342,18 @@ function StickyNode({ data, selected }: NodeProps<BoardNode>) {
   const textareaRef = useRef<HTMLTextAreaElement>(null);
   const onResizeEnd = (_: unknown, params: { x: number; y: number; width: number; height: number }) =>
     data.onCardResize?.(card.id, params, 'end');
-  const tint = STICKY_COLORS.find((entry) => entry.value === card.color) ?? STICKY_COLORS[0];
+  // Bucket fill layers arbitrary blended hexes onto a sticky; named tints
+  // keep their palette entry, hex colours derive border/text from the paint.
+  const namedTint = STICKY_COLORS.find((entry) => entry.value === card.color);
+  const tint = namedTint
+    ?? (card.color && card.color.startsWith('#')
+      ? {
+        value: 'custom' as const,
+        background: card.color,
+        border: `color-mix(in srgb, ${card.color} 72%, black)`,
+        foreground: '#1e1e1e',
+      }
+      : STICKY_COLORS[0]);
   /** Text tools (字号/字体/对齐/文字颜色) apply to the sticky body text. */
   const fontSize = card.fontSize ?? 12;
   const fontFamilyKey = card.fontFamily ?? 'sans';
@@ -445,8 +479,15 @@ function FrameNode({ data, selected }: NodeProps<BoardNode>) {
     <div
       // The frame is a backdrop: it must never swallow clicks meant for the
       // cards inside it, so only the border/title band is interactive.
+      // Bucket-filled frames tint their background; unfilled ones keep the
+      // muted wash (the inline style wins over the Tailwind class when set).
       className="pointer-events-none relative h-full w-full rounded-xl border-2 border-dashed bg-[var(--muted)]/20"
-      style={{ borderColor: 'color-mix(in srgb, var(--muted-foreground) 45%, transparent)' }}
+      style={{
+        ...(card.color ? { backgroundColor: card.color } : {}),
+        borderColor: card.color
+          ? `color-mix(in srgb, ${card.color} 55%, var(--muted-foreground))`
+          : 'color-mix(in srgb, var(--muted-foreground) 45%, transparent)',
+      }}
     >
       <ResizeBox visible={selected} onResizeEnd={onResizeEnd} />
       <div
@@ -714,7 +755,7 @@ const NODE_TYPES = {
   ink: InkNode,
 };
 
-type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | 'lasso' | 'sticky' | 'frame' | BoardShapeKind;
+type BoardTool = 'select' | 'hand' | 'pen' | 'eraser' | 'lasso' | 'sticky' | 'frame' | 'bucket' | BoardShapeKind;
 /** Handwriting stack: CJK brushes first, then Latin sketch fonts. */
 /** Font faces for the text panel row, matching Obsidian's five slots. */
 const TEXT_FONTS: Record<'hand' | 'sans' | 'mono' | 'bold' | 'serif', string> = {
@@ -1037,7 +1078,7 @@ function buildBoardGraph(
       // Frames sit under every other layer: a frame is a backdrop, not content.
       selectable: true,
       data: {
-        card: { id: frame.id, kind: 'text', x: frame.x, y: frame.y, w: frame.w, h: frame.h, title: frame.title },
+        card: { id: frame.id, kind: 'text', x: frame.x, y: frame.y, w: frame.w, h: frame.h, title: frame.title, ...(frame.color ? { color: frame.color } : {}) },
         dataUrl: null,
         summary: null,
         contentHtml: null,
@@ -1234,6 +1275,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const [toolTextAlign, setToolTextAlign] = useState<'left' | 'center' | 'right'>('center');
   const [toolOpacity, setToolOpacity] = useState(100);
   const [toolPressure, setToolPressure] = useState(true);
+  /** Draw-to-shape: pen strokes whose outline matches a clean rect/ellipse/
+   *  diamond/line become that shape instead of staying ink (Excalidraw's
+   *  draw-to-shape). Toggled from the … menu; with ink selected the menu item
+   *  converts the selection once instead of toggling. */
+  const [drawToShapeMode, setDrawToShapeMode] = useState(false);
   const [toolFillStyle, setToolFillStyle] = useState<'hachure' | 'solid' | 'cross-hatch'>('hachure');
   const [toolRoughness, setToolRoughness] = useState(1);
   const [toolEdges, setToolEdges] = useState<'sharp' | 'round'>('sharp');
@@ -1330,6 +1376,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     startViewport: Viewport;
     additive: boolean;
   } | null>(null);
+  /** Currently pressed touch pointers (screen coords), tracked across every
+   *  tool and target so a second finger can upgrade any press — even one that
+   *  started on an element — into a two-finger pan/pinch. */
+  const touchPointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   /** True while a touch drag is moving a node — the panel stays hidden. */
   const touchDraggingRef = useRef(false);
   const liveStrokeRef = useRef<number[][] | null>(null);
@@ -1946,6 +1996,122 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     scheduleFlush();
     if (record) pushHistory();
   }, [applyGraph, pushHistory, scheduleFlush, selectedInkIds]);
+
+  /** Append a shape to the document and render it (live creation path). */
+  const commitShapeElement = useCallback((shape: BoardShape) => {
+    const document = documentRef.current;
+    if (!document) return;
+    shapesRef.current = [...shapesRef.current, shape];
+    document.shapes = shapesRef.current;
+    setNodes((current) => [...current, shapeNodeFor(shape, commitShapeText, handleShapeResizeRef.current)]);
+    scheduleFlush();
+    pushHistory();
+  }, [commitShapeText, pushHistory, scheduleFlush]);
+
+  /** One-shot draw-to-shape: selected ink strokes whose outline matches a
+   *  clean shape become that shape; unmatched strokes stay ink (Excalidraw's
+   *  Shift+X on a selection). */
+  const convertSelectedInkToShapes = useCallback(() => {
+    const document = documentRef.current;
+    if (!document || selectedInkIds.length === 0) return;
+    const ids = new Set(selectedInkIds);
+    const keptStrokes: BoardInkStroke[] = [];
+    const added: BoardShape[] = [];
+    for (const stroke of inkRef.current) {
+      if (!ids.has(stroke.id)) { keptStrokes.push(stroke); continue; }
+      const hit = recognizeStrokeShape(stroke.points);
+      if (!hit) { keptStrokes.push(stroke); continue; }
+      added.push(shapeFromStrokeHit(hit, {
+        id: shapeId(),
+        color: stroke.color,
+        strokeWidth: Math.max(1, stroke.width),
+        z: stroke.z ?? nextZ(),
+        fill: toolFill,
+        fillStyle: toolFillStyle,
+        roughness: toolRoughness,
+        edges: toolEdges,
+      }));
+    }
+    // Silence reads as breakage: say so when no selected stroke matched.
+    if (added.length === 0) {
+      toast.info(t('canvas.board.drawToShape.noMatch'));
+      return;
+    }
+    inkRef.current = keptStrokes;
+    document.ink = keptStrokes;
+    shapesRef.current = [...shapesRef.current, ...added];
+    document.shapes = shapesRef.current;
+    // The replacement shapes take over the strokes' selection so the panel
+    // immediately shows the converted result (applyGraph re-marks these ids).
+    selectedIdsRef.current = added.map((shape) => shape.id);
+    setSelectedInkIds([]);
+    setSelectedShapeIds(added.map((shape) => shape.id));
+    applyGraph(document);
+    scheduleFlush();
+    pushHistory();
+  }, [applyGraph, nextZ, pushHistory, scheduleFlush, selectedInkIds, t, toolEdges, toolFill, toolFillStyle, toolRoughness]);
+
+  /** …-menu draw-to-shape entry: with ink selected it converts the selection
+   *  once, otherwise it toggles auto-convert and jumps to the pen tool so the
+   *  next stroke is drawn (and converted) right away. */
+  const handleDrawToShapeMenu = useCallback(() => {
+    if (selectedInkIds.length > 0 && !readOnly) {
+      convertSelectedInkToShapes();
+      return;
+    }
+    const next = !drawToShapeMode;
+    setDrawToShapeMode(next);
+    if (next && tool !== 'pen') selectTool('pen');
+  }, [convertSelectedInkToShapes, drawToShapeMode, readOnly, selectTool, selectedInkIds, tool]);
+
+  /** Bucket fill: layer the current background paint onto the box element
+   *  under the point. The paint lands with the panel's 透明度 as its blending
+   *  strength (50% at the default 100%), so an existing colour mixes with the
+   *  new one (叠加) and repeated fills of different colours layer up; the
+   *  transparent swatch clears. The 填充 row's fill style rides along. */
+  const applyBucketAt = useCallback((position: number[]) => {
+    const document = documentRef.current;
+    if (!document || readOnly) return;
+    const target = bucketTargetAt(shapesRef.current, cardsRef.current, readBoardFrames(document), position[0], position[1]);
+    if (!target) return;
+    const paint = toolFill;
+    const weight = Math.max(0.05, 0.5 * (toolOpacity / 100));
+    if (target.kind === 'shape') {
+      const shape = shapesRef.current.find((item) => item.id === target.id);
+      if (!shape) return;
+      if (paint === 'transparent') {
+        shape.fill = 'transparent';
+      } else {
+        shape.fill = blendHexColor(shape.fill, paint, weight);
+        shape.fillStyle = toolFillStyle;
+      }
+      // First real edit swaps the passthrough arrays for normalized values.
+      document.shapes = shapesRef.current;
+    } else if (target.kind === 'frame') {
+      const frames = readBoardFrames(document);
+      const index = frames.findIndex((frame) => frame.id === target.id);
+      if (index < 0) return;
+      frames[index] = {
+        ...frames[index],
+        color: paint === 'transparent' ? undefined : blendHexColor(frames[index].color, paint, weight),
+      };
+      document.frames = frames;
+    } else {
+      const card = cardsRef.current.find((item) => item.id === target.id);
+      if (!card) return;
+      if (paint === 'transparent') {
+        card.color = 'yellow';
+      } else {
+        const tint = STICKY_COLORS.find((entry) => entry.value === card.color)?.background
+          ?? (card.color && card.color.startsWith('#') ? card.color : STICKY_COLORS[0].background);
+        card.color = blendHexColor(tint, paint, weight);
+      }
+      document.cards = cardsRef.current;
+    }
+    applyGraph(document);
+    scheduleFlush();
+    pushHistory();
+  }, [applyGraph, pushHistory, readOnly, scheduleFlush, toolFill, toolFillStyle, toolOpacity]);
 
   /** Align selected shapes inside their common bounding box. */
   const alignSelectedShapes = useCallback((mode: BoardAlignMode) => {
@@ -3061,8 +3227,16 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     // A pointerdown means the previous gesture ended — possibly outside the
     // board, where we never saw its pointerup. A stale fired-flag would
     // swallow a recycled pointer id's moves, so drop it unconditionally.
+    // Captured before the drop: a second finger must not upgrade into a
+    // pinch once the long-press has fired and the menu is on screen.
+    const menuWasOpen = longPressFiredRef.current !== null;
     longPressFiredRef.current = null;
     lastPointerTypeRef.current = event.pointerType;
+    if (event.pointerType === 'touch') {
+      touchPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    } else {
+      touchPointersRef.current.delete(event.pointerId);
+    }
     pressRef.current = {
       x: event.clientX,
       y: event.clientY,
@@ -3102,6 +3276,29 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         gesture.startViewport = reactFlow.getViewport();
         return;
       }
+      // First finger resting on an element (its press belongs to React Flow's
+      // node drag, so no gesture exists): a second finger still means
+      // pan/pinch. Take both touch pointers into a pan gesture; XYDrag aborts
+      // the node drag by itself on the next two-touch touchmove. This is the
+      // second-finger tolerance and it must stay under the long-press: past
+      // LONG_PRESS_MS the menu has already fired and menuWasOpen blocks the
+      // takeover, so the two gestures never fight.
+      if (event.pointerType === 'touch' && !menuWasOpen && touchPointersRef.current.size === 2) {
+        cancelLongPress();
+        const [a, b] = [...touchPointersRef.current.values()];
+        marqueeRef.current = {
+          pointers: new Map(touchPointersRef.current),
+          mode: 'pan',
+          startFlow: flowPositionOf(event),
+          points: [],
+          startScreen: { ...point },
+          startMid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+          startDist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+          startViewport: reactFlow.getViewport(),
+          additive: false,
+        };
+        return;
+      }
       // Presses on elements belong to them (React Flow drags the node); the
       // pane starts a rubber-band, with mouse and touch alike. The lasso is a
       // dedicated tool: nodes cannot drag in it, so the rope may start on top
@@ -3139,10 +3336,19 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       setShapePreview({ start, end: start });
       return;
     }
+    if (tool === 'bucket') {
+      applyBucketAt(flowPositionOf(event));
+      return;
+    }
     eraseInkAt(flowPositionOf(event));
-  }, [cancelLongPress, eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
+  }, [applyBucketAt, cancelLongPress, eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
 
   const handleBoardPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const trackedTouch = event.pointerType === 'touch' ? touchPointersRef.current.get(event.pointerId) : null;
+    if (trackedTouch) {
+      trackedTouch.x = event.clientX;
+      trackedTouch.y = event.clientY;
+    }
     const pendingPress = longPressRef.current;
     if (pendingPress && event.pointerId === pendingPress.pointerId) {
       pendingPress.x = event.clientX;
@@ -3210,6 +3416,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   }, [cancelLongPress, eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
 
   const handleBoardPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    // Runs for pointerup and pointercancel alike, before every early return:
+    // the pressed-touch-pointers mirror must never keep a lifted finger.
+    if (event.pointerType === 'touch') touchPointersRef.current.delete(event.pointerId);
     if (longPressFiredRef.current === event.pointerId) {
       longPressFiredRef.current = null;
       cancelLongPress();
@@ -3455,6 +3664,24 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     setLivePoints(null);
     if (!stroke) return;
     try { event.currentTarget.releasePointerCapture(event.pointerId); } catch { /* already released */ }
+    // Draw-to-shape: a pen stroke whose outline matches a clean shape becomes
+    // that shape instead of ink; unmatched strokes fall through as ink.
+    if (drawToShapeMode) {
+      const hit = recognizeStrokeShape(stroke);
+      if (hit) {
+        commitShapeElement(shapeFromStrokeHit(hit, {
+          id: shapeId(),
+          color: penColor,
+          strokeWidth: Math.max(1, penWidth),
+          z: nextZ(),
+          fill: toolFill,
+          fillStyle: toolFillStyle,
+          roughness: toolRoughness,
+          edges: toolEdges,
+        }));
+        return;
+      }
+    }
     if (stroke.length === 1) stroke.push([stroke[0][0] + 0.01, stroke[0][1] + 0.01]);
     syncInkToDocument([...inkRef.current, {
       id: inkStrokeId(),
@@ -3464,7 +3691,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       z: nextZ(),
       ...(toolPressure ? {} : { pressure: false }),
     }]);
-  }, [applyGraph, cancelLongPress, commitShapeText, flowPositionOf, nextZ, penColor, penWidth, pushHistory, readOnly, scheduleFlush, syncInkToDocument, tool, toolFontFamily, toolFontSize, toolTextAlign]);
+  }, [applyGraph, cancelLongPress, commitShapeElement, commitShapeText, drawToShapeMode, flowPositionOf, nextZ, penColor, penWidth, pushHistory, readOnly, scheduleFlush, syncInkToDocument, tool, toolEdges, toolFill, toolFillStyle, toolFontFamily, toolFontSize, toolOpacity, toolRoughness, toolStrokeStyle, toolTextAlign]);
 
   // Native capture-phase listeners: React's synthetic pointer events never
   // reached these handlers for real touch input on Android (only synthetic
@@ -3948,7 +4175,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const styleOpacity = selectionMode ? firstSelected?.opacity ?? 100 : toolOpacity;
   // Ink has no fill/line-style/edges; every shape-only row hides for it —
   // and sticky/frame tools draw containers, not styled shapes.
-  const showFill = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow' && shape.shape !== 'line') : isShapeTool(tool) && tool !== 'text' && tool !== 'arrow' && tool !== 'line';
+  // Bucket mode always shows the paint row: the selected swatch is what a
+  // click layers onto the element under the pointer.
+  const showFill = tool === 'bucket' || (inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text' && shape.shape !== 'arrow' && shape.shape !== 'line') : isShapeTool(tool) && tool !== 'text' && tool !== 'arrow' && tool !== 'line');
   const showStrokeStyle = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : isShapeTool(tool) && tool !== 'text';
   const showFontSize = inkOnlySelection || cardOnlySelection ? false : selectionMode ? allSelectedLabel : tool === 'text';
   const textOnlySelection = selectionMode && !cardOnlySelection && !inkOnlySelection && allSelectedLabel;
@@ -3956,8 +4185,8 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   const showTextAlign = textOnlySelection || (!selectionMode && tool === 'text');
   const styleFontFamily = selectionMode ? firstSelected?.fontFamily ?? 'hand' : toolFontFamily;
   const styleTextAlign = selectionMode ? firstSelected?.textAlign ?? 'center' : toolTextAlign;
-  const showOpacity = inkOnlySelection || cardOnlySelection ? false : selectionMode || isShapeTool(tool);
-  const showFillStyle = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond') : tool === 'rect' || tool === 'ellipse' || tool === 'diamond';
+  const showOpacity = inkOnlySelection || cardOnlySelection ? false : selectionMode || isShapeTool(tool) || tool === 'bucket';
+  const showFillStyle = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape === 'rect' || shape.shape === 'ellipse' || shape.shape === 'diamond') : tool === 'bucket' || tool === 'rect' || tool === 'ellipse' || tool === 'diamond';
   const showRoughness = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.some((shape) => shape.shape !== 'text') : isShapeTool(tool) && tool !== 'text';
   const showEdges = inkOnlySelection || cardOnlySelection ? false : selectionMode ? selectedShapes.length > 0 && selectedShapes.every((shape) => shape.shape === 'rect') : tool === 'rect';
   const styleFillStyle = selectionMode ? firstSelected?.fillStyle ?? 'hachure' : toolFillStyle;
@@ -4005,15 +4234,17 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         </div>;
   }
 
-  const toolButtonClass = (active: boolean) =>
-    `flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${active ? 'bg-[var(--foreground)] text-[var(--background)]' : 'text-[var(--muted-foreground)] hover:bg-[var(--muted)]'}`;
+  // `accent` mirrors Excalidraw's selected-tool look (soft blue rounded
+  // background) for the bucket tool's active state on the … trigger.
+  const toolButtonClass = (active: boolean, accent = false) =>
+    `flex h-7 w-7 shrink-0 items-center justify-center rounded-md ${active ? (accent ? 'canvas-tool-active-accent' : 'bg-[var(--foreground)] text-[var(--background)]') : 'text-[var(--muted-foreground)] hover:bg-[var(--muted)]'}`;
 
   return (
     <div
       ref={boardRef}
       // Touch gestures must reach the canvas instead of scrolling the shell.
       style={{ touchAction: 'none' }}
-      className={`h-full min-h-0 w-full ${tool === 'hand' ? 'cursor-grab' : tool !== 'select' ? 'cursor-crosshair' : ''}`}
+      className={`h-full min-h-0 w-full ${tool === 'hand' ? 'cursor-grab' : tool === 'bucket' ? 'canvas-cursor-bucket' : tool !== 'select' ? 'cursor-crosshair' : ''}`}
       data-canvas-surface={filePath}
       // Exposes the active tool to E2E tooling without poking React state.
       data-board-tool={tool}
@@ -4154,12 +4385,20 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           </button>
         </Tooltip>
         {/* Infrequent tools live behind the … overflow (Obsidian-style): the
-            lasso and frame tools, image import, and the export actions. The
-            trigger highlights while either tool is engaged so its active state
-            is still visible even though its own button is in the menu. */}
+            lasso, frame, draw-to-shape and bucket tools, image import, and the
+            export actions. The trigger highlights while one of them is engaged
+            so its active state is still visible even though its own button is
+            in the menu. */}
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
-            <button type="button" aria-label={t('canvas.board.tool.more')} className={toolButtonClass(tool === 'frame' || tool === 'lasso')}>
+            <button
+              type="button"
+              aria-label={t('canvas.board.tool.more')}
+              className={toolButtonClass(
+                tool === 'frame' || tool === 'lasso' || tool === 'bucket' || (tool === 'pen' && drawToShapeMode),
+                tool === 'bucket',
+              )}
+            >
               <MoreHorizontal className="h-3.5 w-3.5" />
             </button>
           </DropdownMenuTrigger>
@@ -4173,6 +4412,16 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
             <DropdownMenuItem className="gap-2" onClick={() => selectTool('frame')}>
               <FrameIcon className="h-3.5 w-3.5 shrink-0" />
               {t('canvas.board.tool.frame')}
+            </DropdownMenuItem>
+            {/* Draw-to-shape (Excalidraw): with ink selected it converts the
+                selection once; otherwise it toggles auto-convert for the pen. */}
+            <DropdownMenuItem className="gap-2" onClick={handleDrawToShapeMenu}>
+              <Shapes className="h-3.5 w-3.5 shrink-0" />
+              {t('canvas.board.tool.drawToShape')}
+            </DropdownMenuItem>
+            <DropdownMenuItem className="gap-2" onClick={() => selectTool('bucket')}>
+              <BucketFillIcon className="h-3.5 w-3.5 shrink-0" />
+              {t('canvas.board.tool.bucket')}
             </DropdownMenuItem>
             <DropdownMenuItem className="gap-2" onClick={() => { void pickImages(); }}>
               <ImagePlus className="h-3.5 w-3.5 shrink-0" />
@@ -4266,7 +4515,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
           over resize handles and marquee gestures. pointer-events lives on
           the visible children only. */}
       <div className="pointer-events-none absolute bottom-4 left-3 z-30 flex max-h-[calc(100%-120px)] flex-col items-start gap-2 [&>*]:pointer-events-auto">
-        {(tool === 'pen' || isShapeTool(tool) || stickyMode || selectionMode) && !panelCollapsed ? (
+        {(tool === 'pen' || tool === 'bucket' || isShapeTool(tool) || stickyMode || selectionMode) && !panelCollapsed ? (
         <div
           data-board-toolbar
           className="flex min-h-0 w-[184px] flex-col gap-2.5 overflow-y-auto rounded-lg border border-[var(--border)] bg-[var(--card)] p-2.5 shadow-sm"
@@ -4380,7 +4629,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
             ))}
           </PanelRow>
           ) : null}
-          {!cardOnlySelection && !stickyPlacing ? (
+          {!cardOnlySelection && !stickyPlacing && tool !== 'bucket' ? (
           <PanelRow label={t('canvas.board.style.stroke')}>
             <div className="flex flex-wrap items-center gap-1.5">
               {INK_COLORS.map((color) => (
@@ -4445,7 +4694,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
               </div>
             </PanelRow>
           ) : null}
-          {textOnlySelection || cardOnlySelection || stickyPlacing ? null : (
+          {textOnlySelection || cardOnlySelection || stickyPlacing || tool === 'bucket' ? null : (
           <PanelRow label={t('canvas.board.style.strokeWidth')}>
             {(inkOnlySelection || (selectionMode ? false : tool === 'pen') ? INK_WIDTHS : STROKE_WIDTHS).map((width) => (
               <button
@@ -4801,8 +5050,6 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         elevateNodesOnSelect={false}
         nodesDraggable={!readOnly && tool === 'select'}
         nodesConnectable={!readOnly && tool === 'select'}
-        // Pen/eraser taps keep their panel-switching behaviour via selection;
-        // the hand tool opt-out lives on the elementsSelectable prop above.
         onConnect={handleConnect}
         onlyRenderVisibleElements
         // Both keys delete: many keyboards label Backspace "Del", so users
@@ -4813,8 +5060,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         onEdgesDelete={handleEdgesDelete}
         // Hand mode is a pure panning tool: nothing is selectable while it is
         // active (Obsidian behaviour), so taps cannot flip selections or
-        // summon the panel mid-pan.
-        elementsSelectable={tool !== 'hand'}
+        // summon the panel mid-pan. Pen/eraser strokes and bucket clicks are
+        // mark-making, not picks: they must not select what they touch, or a
+        // stroke across an element leaves it wearing a selection border.
+        elementsSelectable={tool !== 'hand' && tool !== 'pen' && tool !== 'eraser' && tool !== 'bucket'}
         onEdgeClick={(_event, edge) => { if (tool !== 'hand') selectEdge(edge.id); }}
         onPaneClick={() => selectEdge(null)}
         onNodeContextMenu={handleNodeContextMenu}
