@@ -1376,6 +1376,10 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     startViewport: Viewport;
     additive: boolean;
   } | null>(null);
+  /** Currently pressed touch pointers (screen coords), tracked across every
+   *  tool and target so a second finger can upgrade any press — even one that
+   *  started on an element — into a two-finger pan/pinch. */
+  const touchPointersRef = useRef<Map<number, { x: number; y: number }>>(new Map());
   /** True while a touch drag is moving a node — the panel stays hidden. */
   const touchDraggingRef = useRef(false);
   const liveStrokeRef = useRef<number[][] | null>(null);
@@ -3223,8 +3227,16 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     // A pointerdown means the previous gesture ended — possibly outside the
     // board, where we never saw its pointerup. A stale fired-flag would
     // swallow a recycled pointer id's moves, so drop it unconditionally.
+    // Captured before the drop: a second finger must not upgrade into a
+    // pinch once the long-press has fired and the menu is on screen.
+    const menuWasOpen = longPressFiredRef.current !== null;
     longPressFiredRef.current = null;
     lastPointerTypeRef.current = event.pointerType;
+    if (event.pointerType === 'touch') {
+      touchPointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    } else {
+      touchPointersRef.current.delete(event.pointerId);
+    }
     pressRef.current = {
       x: event.clientX,
       y: event.clientY,
@@ -3262,6 +3274,29 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         gesture.startMid = { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 };
         gesture.startDist = Math.max(1, Math.hypot(a.x - b.x, a.y - b.y));
         gesture.startViewport = reactFlow.getViewport();
+        return;
+      }
+      // First finger resting on an element (its press belongs to React Flow's
+      // node drag, so no gesture exists): a second finger still means
+      // pan/pinch. Take both touch pointers into a pan gesture; XYDrag aborts
+      // the node drag by itself on the next two-touch touchmove. This is the
+      // second-finger tolerance and it must stay under the long-press: past
+      // LONG_PRESS_MS the menu has already fired and menuWasOpen blocks the
+      // takeover, so the two gestures never fight.
+      if (event.pointerType === 'touch' && !menuWasOpen && touchPointersRef.current.size === 2) {
+        cancelLongPress();
+        const [a, b] = [...touchPointersRef.current.values()];
+        marqueeRef.current = {
+          pointers: new Map(touchPointersRef.current),
+          mode: 'pan',
+          startFlow: flowPositionOf(event),
+          points: [],
+          startScreen: { ...point },
+          startMid: { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 },
+          startDist: Math.max(1, Math.hypot(a.x - b.x, a.y - b.y)),
+          startViewport: reactFlow.getViewport(),
+          additive: false,
+        };
         return;
       }
       // Presses on elements belong to them (React Flow drags the node); the
@@ -3309,6 +3344,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   }, [applyBucketAt, cancelLongPress, eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
 
   const handleBoardPointerMove = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    const trackedTouch = event.pointerType === 'touch' ? touchPointersRef.current.get(event.pointerId) : null;
+    if (trackedTouch) {
+      trackedTouch.x = event.clientX;
+      trackedTouch.y = event.clientY;
+    }
     const pendingPress = longPressRef.current;
     if (pendingPress && event.pointerId === pendingPress.pointerId) {
       pendingPress.x = event.clientX;
@@ -3376,6 +3416,9 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
   }, [cancelLongPress, eraseInkAt, flowPositionOf, readOnly, reactFlow, tool]);
 
   const handleBoardPointerUp = useCallback((event: React.PointerEvent<HTMLDivElement>) => {
+    // Runs for pointerup and pointercancel alike, before every early return:
+    // the pressed-touch-pointers mirror must never keep a lifted finger.
+    if (event.pointerType === 'touch') touchPointersRef.current.delete(event.pointerId);
     if (longPressFiredRef.current === event.pointerId) {
       longPressFiredRef.current = null;
       cancelLongPress();
