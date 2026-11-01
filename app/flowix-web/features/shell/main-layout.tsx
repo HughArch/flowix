@@ -624,6 +624,8 @@ export function MainLayout({
   // 滚动追踪器写入), 下滑回看或任何导航 / 列表覆盖时恢复。列表覆盖层
   // 全屏展示时不收合, 否则标题栏按钮会一起消失。
   const mobileChromeHidden = useMobileChromeStore((state) => state.hidden);
+  // 块多选等场景强制只收底部状态栏 (编辑器写入), 标题栏保持可用。
+  const statusBarForceHidden = useMobileChromeStore((state) => state.statusBarHidden);
   const hideMobileChrome = isMobileDevice() && mobileChromeHidden && !showMobileList;
   // ── 侧栏动画掉帧修复 ────────────────────────────────────────────────
   // 侧栏宽度动画的每一帧都会强制右侧编辑器全量重排 (大 DOM 全宽折行),
@@ -1102,7 +1104,7 @@ export function MainLayout({
           </div>
           {/* Status bar */}
           {isMobileDevice() ? (
-            <MobileChromeCollapse hidden={hideMobileChrome}>{statusBarNode}</MobileChromeCollapse>
+            <MobileChromeCollapse hidden={hideMobileChrome || statusBarForceHidden}>{statusBarNode}</MobileChromeCollapse>
           ) : statusBarNode}
         </div>
       </div>

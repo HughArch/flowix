@@ -478,15 +478,16 @@ html[data-platform="mac"] .markdown-editor .editor-content {
 }
 
 /* 手机窄视口 (断点与 use-is-mobile-viewport 的 MOBILE_VIEWPORT_MAX_WIDTH
- * 一致): 正文与标题头两侧留白 2.5rem → 1rem, 桌面档位在小屏上会吃掉
- * 近 1/5 的有效阅读宽度。仅收窄左右, 顶部 / 底部留白保持不动。 */
+ * 一致): 正文与标题头两侧留白 2.5rem → 1.25rem。桌面档位在小屏上会吃掉
+ * 近 1/5 的有效阅读宽度, 但收得过窄时正文又会贴边 ── 1.25rem 是在两者之间
+ * 只加宽一点点的折中 (原 1rem)。仅收窄左右, 顶部 / 底部留白保持不动。 */
 @media (max-width: 767px) {
   .markdown-editor .ProseMirror:not(.agent-composer__input-content) {
-    padding-inline: 1rem;
+    padding-inline: 1.25rem;
   }
 
   .memo-document-header {
-    padding-inline: 1rem;
+    padding-inline: 1.25rem;
   }
 }
 
@@ -1779,6 +1780,194 @@ html[data-platform="mac"] .markdown-editor .editor-content {
 .markdown-editor .ProseMirror:not(.agent-composer__input-content) .is-block-selected [data-flowix-block-bg]::after {
   outline: 1px dashed color-mix(in oklch, var(--brand) 62%, transparent);
   outline-offset: 1px;
+}
+
+/* ── 移动端多选模式 (参考用户提供截图): ──────────────────────────────
+ * 选中的行 = 通栏浅蓝色带 (不圆角、左右顶到屏幕边), 行尾圆点标记选中。
+ * `html.flowix-touch-selecting` 由 DragContextMenu 在选中数 > 0 时挂上。
+ * 通栏实现: 色块向两侧各借 1.25rem (正文 padding) 再用等量 padding 补回,
+ * 文字位置不动; 列表项的 marker 在盒子外, 借边距会拽歪序号, 保持内缩。 */
+/* 选中态下文档底部预留底部面板的高度: 滚动到底时最后一行的圆点
+ * 不会被底部菜单压住/贴着, 消除"点菜单误触到行"的临界区。 */
+html.flowix-touch-selecting .markdown-editor .ProseMirror:not(.agent-composer__input-content) {
+  padding-bottom: 210px;
+}
+
+html.flowix-touch-selecting .markdown-editor .ProseMirror:not(.agent-composer__input-content) :is(p, h1, h2, h3, h4, h5, h6, blockquote, pre, .tableWrapper).is-block-selected {
+  border-radius: 0;
+  background-color: color-mix(in oklch, var(--brand) 9%, transparent);
+  margin-inline: -1.25rem -2.75rem;
+  padding-inline: 1.25rem 2.75rem;
+}
+
+html.flowix-touch-selecting .markdown-editor .ProseMirror:not(.agent-composer__input-content) .is-block-selected,
+html.flowix-touch-selecting .markdown-editor .ProseMirror:not(.agent-composer__input-content) .is-block-selected:hover {
+  transition: none;
+}
+
+/* 行尾多选圆点: 实心品牌色 = 已选, 空心灰 = 未选。定位由
+ * MobileSelectionDots 以内联 top 控制 (与抓手同一坐标系)。
+ * z-index 30: 高于编辑器内容与 overlay 滚动条 (2), 低于底部面板 (155) —
+ * 视口底部被面板盖住的圆点直接被面板压住, 不再浮在面板上重叠。 */
+.mobile-selection-dot {
+  position: absolute;
+  right: 13px;
+  z-index: 30;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1.5px solid color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+  border-radius: 9999px;
+  background: var(--card);
+  pointer-events: auto;
+  transition: transform 100ms ease;
+}
+
+.mobile-selection-dot.selected {
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+.mobile-selection-dot:active {
+  transform: scale(1.15);
+}
+
+/* 圆点层: 覆盖编辑器可滚动区域, 底部让位给操作面板 (高度由面板测量后
+ * 写入 --mobile-selection-bar-height)。overflow hidden 把落在面板区域
+ * 的圆点连渲染带点击一起裁掉, 面板可正常点按。 */
+.mobile-selection-dots-layer {
+  position: absolute;
+  inset: 0 0 var(--mobile-selection-bar-height, 0px) 0;
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.mobile-selection-dots-layer .mobile-selection-dot {
+  pointer-events: auto;
+}
+
+/* 子级 (列表项等嵌套块) 圆点小一号, 与父级区分 */
+.mobile-selection-dot.child {
+  width: 14px;
+  height: 14px;
+  right: 15px;
+}
+
+/* ── 移动端右侧抽屉 (Obsidian 式面板): ──────────────────────────────
+ * 标题栏右上角按钮拉出; 标题栏是一排 tab 图标 (目前只有「目录」, 默认
+ * 选中), 面板体可滚动。盖过正文但低于底部操作条 / 弹层。 */
+.mobile-right-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 149;
+  background: rgb(0 0 0 / 30%);
+}
+
+.mobile-right-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  width: min(82vw, 320px);
+  padding-top: env(safe-area-inset-top);
+  background: var(--card);
+  border-left: 1px solid var(--border-popup);
+  box-shadow: -4px 0 24px -3px rgb(0 0 0 / 24%);
+  animation: mobile-right-drawer-in 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@keyframes mobile-right-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+
+  to {
+    transform: translateX(0);
+  }
+}
+
+.mobile-right-drawer__tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--divider);
+}
+
+.mobile-right-drawer__tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--muted-foreground);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.mobile-right-drawer__tab-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.mobile-right-drawer__tab.active {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.mobile-right-drawer__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.heading-outline-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 6px 12px;
+}
+
+.heading-outline-panel__empty {
+  padding: 20px 14px;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+
+/* 触屏上隐藏编辑器的 overlay 滚动条: 手指滚动用不上它, 还会盖住行尾
+ * 抓手 / 圆点的点击。桌面 (可 hover) 保留。右侧留白同时加宽给行尾
+ * 圆点 / 抓手一个不挤的落位 (正文文字右缘相应左移)。 */
+@media (pointer: coarse) {
+  .markdown-editor .overlay-scrollbar-track {
+    display: none;
+  }
+
+  .markdown-editor .ProseMirror:not(.agent-composer__input-content) {
+    padding-right: 2.75rem;
+  }
+
+  .memo-document-header {
+    padding-right: 2.75rem;
+  }
+}
+
+/* 着色面板色块 */
+.mobile-color-swatch {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1.5px solid color-mix(in oklch, var(--muted-foreground) 45%, transparent);
+}
+
+.mobile-color-swatch[style] {
+  border-color: transparent;
 }
 
 .markdown-editor .ProseMirror:not(.agent-composer__input-content) .flowix-block-drop-indicator {

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent } from 'react'
+import { useCallback, useEffect, useLayoutEffect, useMemo, useRef, useState, type CSSProperties, type KeyboardEvent, type ReactNode } from 'react'
 import { createPortal } from 'react-dom'
 import type { Editor } from '@tiptap/core'
 import {
@@ -21,7 +21,33 @@ import {
 import { isMobileDevice } from '@shared/platform'
 import { renderDragIcon } from '@features/editor/components/drag-context-menu/icons'
 import type { BlockMenuItem } from '@features/editor/components/drag-context-menu/items'
-import { clearBlockSelection } from '@features/editor/extensions/block-selection'
+import {
+  clearBlockSelection,
+  getBlockSelection,
+  type BlockSelectionRange,
+} from '@features/editor/extensions/block-selection'
+import { useMobileBlockSelection } from '@features/editor/components/drag-context-menu/use-mobile-block-selection'
+import { MobileSelectionDots } from '@features/editor/components/drag-context-menu/mobile-selection-dots'
+import {
+  MobileBlockSelectionBar,
+  MobileBlockSheet,
+  type MobileSheetAction,
+} from '@features/editor/components/drag-context-menu/mobile-block-sheet'
+import {
+  blockInfoForPos,
+  copyBlocksToClipboard,
+  cutBlocksToClipboard,
+  moveSelectedBlocks,
+  pasteBlocksFromClipboard,
+  selectAllTopLevelBlocks,
+} from '@features/editor/components/drag-context-menu/block-clipboard'
+import {
+  FLOWIX_TEXT_COLORS,
+  setFlowixTextStyle,
+} from '@features/editor/extensions/flowix-text-mark'
+import { toast } from '@/lib/toast'
+import { useI18n } from '@/lib/i18n'
+import { useMobileChromeStore } from '@features/document/public/shell-api'
 import { fitTableToWidth } from '@features/editor/extensions/table/table-fit-width'
 import {
   getTableTextAlign,
@@ -52,6 +78,16 @@ interface DragContextMenuProps {
   editor: Editor
 }
 
+function colorSwatchIcon(color: FlowixTextColor | null): ReactNode {
+  return (
+    <span
+      aria-hidden="true"
+      className="mobile-color-swatch"
+      style={color ? { background: `var(--flowix-text-${color})` } : undefined}
+    />
+  )
+}
+
 interface MenuViewportPosition {
   left: number
   top: number
@@ -67,6 +103,16 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
   // 重渲染, 避免 theme / personalize / shortcuts 改动把整个组件拉一遍。
   // 这两个值进 useEffect deps, slider 拖动时 handle 跟着重新锚定。
   const { fontSize, lineHeight } = useEditorTypography()
+  const { t } = useI18n()
+
+  // 触屏 (手机 WebView) 走一套完全不同的交互:
+  //   行前不常驻抓手 → 点行才出现抓手 → 点抓手进入选中 → 长按抓手上下滑动
+  //   批量多选 → 底部工具栏剪贴。桌面保留原有的悬浮菜单 + 拖动换位。
+  const isTouchMode = isMobileDevice()
+  /** 底部操作条显示与否 / 选中行数。由 blockSelection 插件状态驱动。 */
+  const [selectedBlockCount, setSelectedBlockCount] = useState(0)
+  const [mobileSheetOpen, setMobileSheetOpen] = useState(false)
+  const [mobileSheetMode, setMobileSheetMode] = useState<'convert' | 'color'>('convert')
 
   const [showMenu, setShowMenu] = useState(false)
   const [isHovered, setIsHovered] = useState(false)
@@ -87,7 +133,7 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
   /** 菜单打开时间戳: 用于忽略键盘收起引起的瞬时 resize/scroll。 */
   const menuOpenedAtRef = useRef(0)
   const openMenuRef = useRef<(anchorRect?: DOMRect, placeAtPointer?: boolean) => void>(() => {})
-  const state = useDragHandlePosition(editor, fontSize, lineHeight, ignoreBlur, menuOpenRef, menuTargetRef, hoveredBlockRef)
+  const state = useDragHandlePosition(editor, fontSize, lineHeight, ignoreBlur, menuOpenRef, menuTargetRef, hoveredBlockRef, isTouchMode)
   const handleTap = useCallback((anchorRect: DOMRect) => openMenuRef.current(anchorRect), [])
 
   const handleBlockDragStart = useCallback(() => {
@@ -120,6 +166,205 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
   useEffect(() => {
     menuOpenRef.current = showMenu
   }, [showMenu])
+
+  // 触屏: 抓手不再走"拖动换位置"的手势, 改用点击选中 / 长按滑动扩选。
+  // 桌面仍走 useBlockDragGesture, 两者对 pointermove 的解释相反, 不能共用。
+  const mobileGesture = useMobileBlockSelection({
+    editor,
+    blockInfo: state.blockInfo,
+    ignoreBlurRef: ignoreBlur,
+    onActivate: (info) => {
+      hoveredBlockRef.current = info
+      state.refresh()
+    },
+  })
+  // 多选态下正文任意位置的长按由原生 pointerdown 监听发起, 经 ref 取
+  // 最新的手势实例, 避免把每渲染次变化的对象塞进 effect 依赖。
+  const mobileGestureRef = useRef(mobileGesture)
+  mobileGestureRef.current = mobileGesture
+  const selectionActiveRef = useRef(false)
+  selectionActiveRef.current = selectedBlockCount > 0
+
+  const selectedRanges = useCallback(
+    (): BlockSelectionRange[] => getBlockSelection(editor.state)?.ranges ?? [],
+    [editor],
+  )
+
+  // 底部操作条跟随 blockSelection 插件的状态: 该状态存在 ProseMirror 里,
+  // 不经过 React, 因此用 transaction 事件把它同步到本地 state。
+  useEffect(() => {
+    if (!isTouchMode || !editor?.view || editor.view.isDestroyed) return
+    const sync = () => {
+      if (editor.isDestroyed) return
+      setSelectedBlockCount(getBlockSelection(editor.state)?.ranges.length ?? 0)
+    }
+    sync()
+    editor.on('transaction', sync)
+    return () => {
+      editor.off('transaction', sync)
+    }
+  }, [editor, isTouchMode])
+
+  // 选中被清空 (点正文 / Esc / 剪贴完成) 时收起底部弹层, 避免留下空壳。
+  useEffect(() => {
+    if (selectedBlockCount === 0) setMobileSheetOpen(false)
+  }, [selectedBlockCount])
+
+  // 多选模式 (选中数 > 0): 行尾切换为小圆点 + 整行色带 (截图样式),
+  // 通过根类名让 CSS 接管选中态视觉; 退出时移除。同时给编辑器表面打上
+  // data-mobile-swipe-ignore, 多选态下的下滑不再触发搜索面板手势。
+  useEffect(() => {
+    if (!isTouchMode) return
+    document.documentElement.classList.toggle('flowix-touch-selecting', selectedBlockCount > 0)
+    if (selectedBlockCount > 0) {
+      // 圆点层接管行尾, 抓手不再需要锚点。
+      hoveredBlockRef.current = null
+    }
+    const surface = editor.view.dom.closest('.editor-content') as HTMLElement | null
+    surface?.setAttribute('data-mobile-swipe-ignore', '')
+    return () => {
+      document.documentElement.classList.remove('flowix-touch-selecting')
+      surface?.removeAttribute('data-mobile-swipe-ignore')
+    }
+  }, [editor, isTouchMode, selectedBlockCount])
+
+  // 进入多选的瞬间收起软键盘 (参考 Flowus): 选中是批处理意图, 键盘只会
+  // 挡住底部菜单。只在 0 → N 的跳变时收一次, 之后点圆点不再打断。
+  const prevSelectionCountRef = useRef(0)
+  useEffect(() => {
+    if (!isTouchMode) return
+    if (prevSelectionCountRef.current === 0 && selectedBlockCount > 0) {
+      editor.commands.blur()
+    }
+    prevSelectionCountRef.current = selectedBlockCount
+  }, [editor, isTouchMode, selectedBlockCount])
+
+  // 多选期间强制只收起底部状态栏 (标题栏保持可用), 退出时还原。
+  const selectionActive = selectedBlockCount > 0
+  useEffect(() => {
+    if (!isTouchMode) return
+    if (!selectionActive) return
+    useMobileChromeStore.getState().setStatusBarHidden(true)
+    return () => useMobileChromeStore.getState().setStatusBarHidden(false)
+  }, [isTouchMode, selectionActive])
+
+  // 多选态下点击编辑器与底部面板之外 (标题栏空白 / 其他浮层外区域等)
+  // = 取消多选。编辑器内由行点击/圆点接管, 不走这里。
+  useEffect(() => {
+    if (!isTouchMode || !selectionActive) return
+    const onDocPointerDown = (event: PointerEvent) => {
+      const target = event.target instanceof Element ? event.target : null
+      if (!target) return
+      if (
+        target.closest('.editor-content')
+        || target.closest('[role="toolbar"]')
+        || target.closest('[aria-label="转换为"]')
+        || target.closest('[aria-label="着色"]')
+        || target.closest('.mobile-right-drawer')
+      ) return
+      ;[...document.querySelectorAll<HTMLElement>('[role="toolbar"] button')]
+        .find((button) => button.textContent === '完成')
+        ?.click()
+    }
+    document.addEventListener('pointerdown', onDocPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onDocPointerDown, true)
+  }, [isTouchMode, selectionActive])
+
+  const closeMobileSheet = useCallback(() => setMobileSheetOpen(false), [])
+
+  const finishMobileSelection = useCallback(() => {
+    clearBlockSelection(editor)
+    setMobileSheetOpen(false)
+    hoveredBlockRef.current = null
+    state.refresh()
+  }, [editor, state.refresh])
+
+  const handleMobileCopy = useCallback(() => {
+    const ranges = selectedRanges()
+    if (copyBlocksToClipboard(editor, ranges)) toast.success(t('editor.block.copySuccess'))
+    else toast.error(t('editor.block.clipboardFailed'))
+  }, [editor, selectedRanges, t])
+
+  const handleMobileCut = useCallback(() => {
+    const ranges = selectedRanges()
+    if (cutBlocksToClipboard(editor, ranges)) {
+      toast.success(t('editor.block.cutSuccess'))
+      setMobileSheetOpen(false)
+      hoveredBlockRef.current = null
+      state.refresh()
+    } else {
+      toast.error(t('editor.block.clipboardFailed'))
+    }
+  }, [editor, selectedRanges, state.refresh, t])
+
+  const handleMobilePaste = useCallback(() => {
+    const ranges = selectedRanges()
+    // 有选中行时粘贴到第一行之前, 否则插到当前光标处。
+    const at = ranges[0]?.from
+    void pasteBlocksFromClipboard(editor, at).then((ok) => {
+      if (!ok) toast.error(t('editor.block.clipboardFailed'))
+      setMobileSheetOpen(false)
+      hoveredBlockRef.current = null
+      state.refresh()
+    })
+  }, [editor, selectedRanges, state.refresh, t])
+
+  const handleMobileSelectAll = useCallback(() => {
+    selectAllTopLevelBlocks(editor)
+  }, [editor])
+
+  const handleMobileDelete = useCallback(() => {
+    const ranges = selectedRanges()
+    if (ranges.length === 0) return
+    const tr = editor.state.tr
+    for (const range of [...ranges].sort((a, b) => b.from - a.from)) {
+      const node = editor.state.doc.nodeAt(range.from)
+      if (!node) continue
+      tr.delete(range.from, range.from + node.nodeSize)
+    }
+    if (tr.docChanged) editor.view.dispatch(tr)
+    clearBlockSelection(editor)
+    setMobileSheetOpen(false)
+    hoveredBlockRef.current = null
+    state.refresh()
+  }, [editor, selectedRanges, state.refresh])
+
+  // 选中块 → 完整块信息 + PM 选区挪进该块。"转换为"的 toggle 与"着色"的
+  // 文字样式都作用于 PM 选区, 不挪会命中光标所在行而不是选中的行。
+  const prepareSelectedBlock = useCallback(() => {
+    const first = selectedRanges()[0]
+    const info = first ? blockInfoForPos(editor, first.from) : null
+    if (!info) return null
+    menuTargetRef.current = info
+    setMenuTarget(info)
+    if (info.nodeSize > 2) {
+      editor.commands.setTextSelection({
+        from: info.pos + 1,
+        to: info.pos + info.nodeSize - 1,
+      })
+    }
+    return info
+  }, [editor, selectedRanges])
+
+  const openMobileSheet = useCallback((mode: 'convert' | 'color') => {
+    if (!prepareSelectedBlock()) return
+    setMobileSheetMode(mode)
+    setMobileSheetOpen(true)
+  }, [prepareSelectedBlock])
+
+  const handleMobileConvert = useCallback(() => openMobileSheet('convert'), [openMobileSheet])
+  const handleMobileColor = useCallback(() => openMobileSheet('color'), [openMobileSheet])
+
+  const handleMobileInsert = useCallback((side: 'before' | 'after') => {
+    const info = prepareSelectedBlock()
+    if (!info) return
+    insertParagraphAtEdge(editor, info, side)
+    setMobileSheetOpen(false)
+  }, [editor, prepareSelectedBlock])
+
+  const handleMobileMove = useCallback((direction: -1 | 1) => {
+    if (moveSelectedBlocks(editor, direction)) setMobileSheetOpen(false)
+  }, [editor])
 
   // Follow the block under the pointer. Selection-driven positioning alone
   // would force a click into the body before every Mod-click on another row,
@@ -204,28 +449,33 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
       state.refresh()
     }
 
-    // ── 触屏双击唤出块菜单 ─────────────────────────────────────────────
-    // 长按交回系统 (文本选择); 触屏没有 hover, 双击命中块即打开操作菜单。
-    // 桌面保留双击选词习惯, 不接管。
-    const handleDoubleClick = (event: MouseEvent) => {
+    // ── 触屏: 正文区域的统一按下入口 ───────────────────────────────────
+    // 非多选态: 点中某一行时把抓手停到那一行 (行前不常驻抓手)。
+    // 多选态: 任意位置长按 → 圈选手势 (范围内行批量加入多选); 轻点行 →
+    // 切换该行选中 (手势 startPress 的 tap 分支)。抓手 / 圆点自己的
+    // React handler 优先, 这里跳过。桌面不接管。
+    const handleSurfacePointerDown = (event: PointerEvent) => {
+      if (event.pointerType === 'mouse') return
       if (!isMobileDevice()) return
       if (!editor.isEditable || editor.isDestroyed || editor.view.isDestroyed) return
       if (containerRef.current?.contains(event.target as Node)) return
+      const target = event.target instanceof Element ? event.target : null
+      if (target?.closest('.mobile-selection-dot')) return
+      if (selectionActiveRef.current) {
+        event.preventDefault()
+        // 底部面板上沿的贴边条带: 点这里视觉上像点菜单, 实际会命中面板
+        // 遮住的那行 ── 直接吞掉, 不进选中手势。
+        const bar = document.querySelector('[role="toolbar"]')
+        if (bar && event.clientY >= bar.getBoundingClientRect().top - 12) return
+        const info = getBlockInfoAtCoords(editor, event.clientX, event.clientY)
+        if (!info) return
+        mobileGestureRef.current.startPress(info, event.clientX, event.clientY, event.pointerId)
+        return
+      }
       const info = getBlockInfoAtCoords(editor, event.clientX, event.clientY)
       if (!info) return
-      event.preventDefault()
-      event.stopPropagation()
-      ignoreBlur.current = true
-      window.setTimeout(() => {
-        ignoreBlur.current = false
-      }, 0)
       hoveredBlockRef.current = info
-      interactionBlockInfoRef.current = info
       state.refresh()
-      openMenuRef.current(new DOMRect(event.clientX, event.clientY, 1, 1), true)
-      // 双击的第一下已让编辑器聚焦并唤起输入法: 打开菜单后立即失焦,
-      // 键盘收起; 菜单因 menuOpenRef 守卫保留。
-      editor.commands.blur()
     }
 
     /**
@@ -268,14 +518,14 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     surface.addEventListener('pointerleave', handlePointerLeave)
     surface.addEventListener('contextmenu', handleContextMenu)
     surface.addEventListener('change', handleTaskCheckboxChange)
-    surface.addEventListener('dblclick', handleDoubleClick)
+    surface.addEventListener('pointerdown', handleSurfacePointerDown)
     return () => {
       if (frame != null) window.cancelAnimationFrame(frame)
       surface.removeEventListener('pointermove', handlePointerMove)
       surface.removeEventListener('pointerleave', handlePointerLeave)
       surface.removeEventListener('contextmenu', handleContextMenu)
       surface.removeEventListener('change', handleTaskCheckboxChange)
-      surface.removeEventListener('dblclick', handleDoubleClick)
+      surface.removeEventListener('pointerdown', handleSurfacePointerDown)
     }
   }, [editor, state.refresh])
 
@@ -555,9 +805,101 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
     setIsHovered(false)
     setSelectedIndex(0)
     setMenuInputMode('mouse')
+    // 触屏没有浮动菜单: 任何 openMenu 请求 (含外接键盘 Enter) 都落到底部弹层。
+    if (isTouchMode) {
+      setMobileSheetOpen(true)
+      return
+    }
     setShowMenu(true)
-  }, [editor, interactionBlockInfoRef, state.blockInfo])
+  }, [editor, interactionBlockInfoRef, isTouchMode, state.blockInfo])
   openMenuRef.current = openMenu
+
+  // "转换为"弹层只保留块类型转换分组 (标题 / 列表 / 引用 / 代码块),
+  // 菜单项执行完自动收起弹层, 不要求用户再点一次 "完成"。
+  // 标题项在桌面菜单里展示为 markdown 符号 (#/##), 移动端换成可读文案。
+  // "着色"弹层 = 行背景 + 文字颜色 两组色板, 选择后面板保持打开方便试色。
+  const mobileSheetActions = useMemo<MobileSheetAction[]>(() => {
+    if (mobileSheetMode === 'color') {
+      const targetPos = selectedRanges()[0]?.from ?? null
+      const closeAfter = (fn: () => void) => () => {
+        fn()
+        setMobileSheetOpen(false)
+      }
+      const lineBgActions: MobileSheetAction[] = [
+        {
+          id: 'line-bg-section',
+          group: 'background',
+          icon: null,
+          label: '',
+          sectionLabel: t('editor.highlight.lineBackground'),
+          onSelect: () => {},
+        },
+        {
+          id: 'line-bg-default',
+          group: 'background',
+          icon: colorSwatchIcon(null),
+          label: t('editor.highlight.default'),
+          onSelect: closeAfter(() => setFlowixBlockBackground(editor, null, { targetPos })),
+        },
+        ...FLOWIX_TEXT_COLORS.map((color): MobileSheetAction => ({
+          id: `line-bg-${color}`,
+          group: 'background',
+          icon: colorSwatchIcon(color),
+          label: t(`editor.highlight.${color}`),
+          onSelect: closeAfter(() => setFlowixBlockBackground(editor, color, { targetPos })),
+        })),
+      ]
+      const fgActions: MobileSheetAction[] = [
+        {
+          id: 'fg-section',
+          group: 'background',
+          icon: null,
+          label: '',
+          sectionLabel: t('editor.highlight.foreground'),
+          onSelect: () => {},
+        },
+        {
+          id: 'fg-default',
+          group: 'background',
+          icon: colorSwatchIcon(null),
+          label: t('editor.highlight.default'),
+          onSelect: () => setFlowixTextStyle(editor, { fg: null }),
+        },
+        ...FLOWIX_TEXT_COLORS.map((color): MobileSheetAction => ({
+          id: `fg-${color}`,
+          group: 'background',
+          icon: colorSwatchIcon(color),
+          label: t(`editor.highlight.${color}`),
+          onSelect: () => setFlowixTextStyle(editor, { fg: color }),
+        })),
+      ]
+      return [...lineBgActions, ...fgActions]
+    }
+
+    return menuActions
+      .filter((action) => action.group === 'heading' || action.group === 'list' || action.group === 'block')
+      .map((action) => {
+        const headingLevel = /^h([1-4])$/.exec(action.id)?.[1]
+        const label = headingLevel
+          ? t(`preferences.shortcuts.action.editor.setHeading${headingLevel}.title` as never)
+          : action.label
+        return {
+          ...action,
+          label,
+          onSelect: () => {
+            action.onSelect()
+            setMobileSheetOpen(false)
+          },
+          children: action.children?.map((child) => ({
+            ...child,
+            onSelect: () => {
+              child.onSelect()
+              setMobileSheetOpen(false)
+            },
+          })),
+        }
+      })
+  }, [editor, menuActions, mobileSheetMode, selectedRanges, t])
 
   const handleMenuHover = (index: number) => {
     setMenuInputMode('mouse')
@@ -662,11 +1004,14 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
           top: `${state.y}px`,
           width: `${HANDLE_SIZE}px`,
           height: `${HANDLE_SIZE}px`,
-          display: state.visible ? 'flex' : 'none',
+          // 多选模式下行尾交给小圆点层, 抓手让位。
+          display: state.visible && !(isTouchMode && selectedBlockCount > 0) ? 'flex' : 'none',
           alignItems: 'center',
           justifyContent: 'center',
           pointerEvents: 'auto',
-          zIndex: 1,
+          // 行尾抓手必须压过 overlay 滚动条轨道 (z=2), 否则滚动后右缘被
+          // 轨道截胡, 点抓手没反应; 仍低于抽屉 (149/150) 与底部面板 (155+)。
+          zIndex: 30,
           background: showMenu ? 'var(--brand)' : (isHovered ? 'var(--muted)' : 'transparent'),
           color: showMenu ? 'var(--primary-foreground)' : 'var(--brand)',
           borderRadius: '4px',
@@ -686,15 +1031,20 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
           }
         }}
         onKeyDown={onHandleKeyDown}
-        onPointerDown={onPointerDown}
-        onPointerMove={onPointerMove}
-        onPointerUp={onPointerUp}
-        onPointerCancel={onPointerCancel}
-        onLostPointerCapture={onLostPointerCapture}
+        onPointerDown={isTouchMode ? mobileGesture.onPointerDown : onPointerDown}
+        onPointerMove={isTouchMode ? undefined : onPointerMove}
+        onPointerUp={isTouchMode ? undefined : onPointerUp}
+        onPointerCancel={isTouchMode ? undefined : onPointerCancel}
+        onLostPointerCapture={isTouchMode ? undefined : onLostPointerCapture}
       >
         {renderDragIcon(state.blockInfo)}
       </div>
-      {showMenu && typeof document !== 'undefined' && createPortal(
+      {/* 多选模式: 行尾小圆点 (已选实心 / 未选空心), 点选 + 长按滑动扩选。 */}
+      {isTouchMode && selectedBlockCount > 0 && (
+        <MobileSelectionDots editor={editor} gesture={mobileGesture} />
+      )}
+      {/* 桌面: 悬浮菜单贴在抓手旁。触屏走底部弹层, 不再渲染这个浮层。 */}
+      {!isTouchMode && showMenu && typeof document !== 'undefined' && createPortal(
         <BlockActionMenu
           actions={menuActions}
           selectedIndex={selectedIndex}
@@ -707,6 +1057,34 @@ export function DragContextMenu({ editor }: DragContextMenuProps) {
           onKeyDown={handleMenuKeyDown}
         />,
         document.body,
+      )}
+      {isTouchMode && (
+        <>
+          <MobileBlockSelectionBar
+            count={selectedBlockCount}
+            showMore={selectedBlockCount === 1}
+            actions={{
+              onSelectAll: handleMobileSelectAll,
+              onCopy: handleMobileCopy,
+              onCut: handleMobileCut,
+              onPaste: handleMobilePaste,
+              onDelete: handleMobileDelete,
+              onMore: handleMobileConvert,
+              onColor: handleMobileColor,
+              onInsertAbove: () => handleMobileInsert('before'),
+              onInsertBelow: () => handleMobileInsert('after'),
+              onMoveUp: () => handleMobileMove(-1),
+              onMoveDown: () => handleMobileMove(1),
+              onDone: finishMobileSelection,
+            }}
+          />
+          <MobileBlockSheet
+            open={mobileSheetOpen}
+            title={mobileSheetMode === 'color' ? t('editor.block.coloring') : t('editor.block.convertTo')}
+            actions={mobileSheetActions}
+            onClose={closeMobileSheet}
+          />
+        </>
       )}
     </>
   )

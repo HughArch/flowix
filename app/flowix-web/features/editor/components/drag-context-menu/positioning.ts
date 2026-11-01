@@ -43,6 +43,12 @@ const HANDLE_X_OFFSET = 18
  */
 export const LINE_BACKGROUND_HANDLE_SHIFT = 14
 
+/**
+ * 触屏行尾抓手距滚动容器右缘的净空。触屏正文右侧留白加宽到 2.75rem (44px),
+ * 18px 的抓手/圆点居中其中 (inset 13px), 不挤也不压正文。
+ */
+export const RIGHT_HANDLE_INSET = 13
+
 /** Whether this block paints a line-background band the handle must clear. */
 export function blockHasLineBackground(
   typeName: string,
@@ -73,6 +79,8 @@ export function computeHandlePosition(
   lineHeight: number,
   requireFocus = true,
   preferredInfo?: CurrentBlockInfo | null,
+  /** 触屏: 抓手挂行尾 (右缘), 而不是桌面风格的左侧 gutter。 */
+  alignRight = false,
 ): HandlePosition | HandleHidden | null {
   const view = editor.view
   if (!view) return null
@@ -112,11 +120,15 @@ export function computeHandlePosition(
   const columnElement = info.dom.closest('.flowix-column')
   const columnRect = columnElement?.getBoundingClientRect() ?? null
   const isFirstColumn = !!columnElement && !columnElement.previousElementSibling?.classList.contains('flowix-column')
-  const x = columnRect
-    ? (isFirstColumn
-        ? nodeContentX(proseMirrorRect.left, contentRect.left, editorContent.scrollLeft)
-        : columnRect.left - contentRect.left + editorContent.scrollLeft - 8)
-    : nodeContentX(proseMirrorRect.left, contentRect.left, editorContent.scrollLeft)
+  // 触屏模式抓手挂在行尾 (贴滚动容器右缘、收进正文右侧 padding 带内),
+  // 永远不压正文; 列布局 / 左侧 gutter 那套锚定都不适用。
+  const x = alignRight
+    ? contentRect.width - HANDLE_SIZE - RIGHT_HANDLE_INSET
+    : columnRect
+      ? (isFirstColumn
+          ? nodeContentX(proseMirrorRect.left, contentRect.left, editorContent.scrollLeft)
+          : columnRect.left - contentRect.left + editorContent.scrollLeft - 8)
+      : nodeContentX(proseMirrorRect.left, contentRect.left, editorContent.scrollLeft)
   // Columns reserve an 18px gutter for the handle and place the resize line
   // 12px outside the column edge. Later columns keep that fixed gutter; the
   // first column has the editor's wider padding, so a background band still
