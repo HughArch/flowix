@@ -357,14 +357,6 @@ export function MainLayout({
   const {
     shouldRenderAgentConversationList,
     showMemoListSurface,
-    memoListPreviewVisible,
-    memoListPreviewPhase,
-    handleMemoListPreviewTriggerEnter,
-    handleMemoListPreviewTriggerLeave,
-    handleMemoListPreviewEnter,
-    handleMemoListPreviewLeave,
-    handleMemoListPreviewCompanionEnter,
-    handleMemoListPreviewCompanionLeave,
     agentConversationListNode,
   } = useMainMiddleColumnController({
     onConversationListBack: () => {
@@ -373,7 +365,6 @@ export function MainLayout({
     },
     isAgentConversationView,
     isMemoListHidden,
-    noteNavigationPhase,
   });
   const currentFileIdentity = activeExternalSession?.fileIdentity ?? null;
   const currentDocumentInstanceKey = currentFileIdentity?.displayId ?? null;
@@ -906,24 +897,16 @@ export function MainLayout({
             onOpenPlugin={handleOpenPlugin}
             onRequestClose={closeNoteNavigation}
             onCloseComplete={completeNoteNavigationClose}
-            onCompanionSurfaceEnter={handleMemoListPreviewCompanionEnter}
-            onCompanionSurfaceLeave={handleMemoListPreviewCompanionLeave}
           />
-          {/* List column: one mounted subtree shared by the docked sidebar and hover preview. */}
           <ListColumn
             hidden={effectiveMemoListHidden}
-            previewVisible={memoListPreviewVisible}
-            previewPhase={memoListPreviewPhase === 'open' ? 'open' : 'closing'}
             memoColWidth={memoColWidth}
             mobileFullWidth={mobileSingleColumn}
             containerRef={mobileListGestureRef}
             isDraggingListDivider={isDraggingListDivider}
             selectedNotebook={selectedNotebook}
-            noteNavigationPhase={noteNavigationPhase}
             onCollapseMemoList={mobileSingleColumn ? handleCollapseListColumn : handleCollapseListColumnDesktop}
             onOpenPreferences={(tab) => void windows.openPreferences(tab)}
-            onPreviewEnter={handleMemoListPreviewEnter}
-            onPreviewLeave={handleMemoListPreviewLeave}
             onPointerDown={(event) => {
               if (event.button !== 0) return;
               const target = event.target;
@@ -1002,27 +985,6 @@ export function MainLayout({
               onPointerDown={(event) => focusWorkspaceHostFromEvent(event, 'main-third')}
               onFocusCapture={(event) => focusWorkspaceHostFromEvent(event, 'main-third')}
             >
-            {isMemoListHidden && !mobileSingleColumn && (
-              <button
-                type="button"
-                data-memo-list-preview-edge-trigger
-                onMouseEnter={handleMemoListPreviewTriggerEnter}
-                onMouseLeave={handleMemoListPreviewTriggerLeave}
-                // Clicking the collapsed edge follows the hover interaction:
-                // open the floating preview instead of restoring the full
-                // list column.
-                onClick={handleMemoListPreviewEnter}
-                aria-label={t('document.titlebar.showSidebar')}
-                title={t('document.titlebar.showSidebarTooltip')}
-                className="group absolute bottom-0 left-0 top-0 z-[60] flex w-4 items-center justify-center text-[var(--muted-foreground)] opacity-30 transition-[color,opacity] duration-150 hover:text-[var(--foreground)] hover:opacity-50 focus-visible:outline-none focus-visible:text-[var(--brand)] focus-visible:opacity-100"
-              >
-                <span className="flex translate-x-0 flex-col items-center gap-[6px]" aria-hidden="true">
-                  <span className="h-1 w-1 rounded-full bg-current" />
-                  <span className="h-1 w-1 rounded-full bg-current" />
-                  <span className="h-1 w-1 rounded-full bg-current" />
-                </span>
-              </button>
-            )}
             {/* Fixed top navigation bar */}
             {isMobileDevice() ? (
               <MobileChromeCollapse hidden={hideMobileChrome}>{workColumnTitlebar}</MobileChromeCollapse>

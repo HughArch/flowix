@@ -1,19 +1,14 @@
 'use client';
 
-import { useEffect, useRef, type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
+import { type PointerEvent as ReactPointerEvent, type ReactNode, type RefObject } from 'react';
 
 import type { Notebook } from '@features/memo/store/note-store';
 import { MemoListTitlebarMac } from '@features/memo/components/memo-list-titlebar-mac';
 import { MemoListTitlebarWin } from '@features/memo/components/memo-list-titlebar-win';
-import type { NoteNavigationDrawerPhase } from '@features/memo/public/shell-api';
 import { cn } from '@/lib/utils';
-
-type ListColumnPreviewPhase = 'open' | 'closing';
 
 interface ListColumnProps {
   hidden: boolean;
-  previewVisible: boolean;
-  previewPhase: ListColumnPreviewPhase;
   memoColWidth: number;
   /**
    * 手机单栏: 列表脱离文档流, 变成绝对定位的整屏抽屉, transform 滑入/滑出
@@ -24,29 +19,23 @@ interface ListColumnProps {
   containerRef?: RefObject<HTMLDivElement | null>;
   isDraggingListDivider: boolean;
   selectedNotebook: Notebook | null;
-  noteNavigationPhase: NoteNavigationDrawerPhase;
   onCollapseMemoList: () => void;
   onOpenPreferences: (tab?: string) => void;
-  onPreviewEnter: () => void;
-  onPreviewLeave: () => void;
   onPointerDown: (event: ReactPointerEvent<HTMLDivElement>) => void;
   children: ReactNode;
 }
 
 function ListColumnTitlebar({
-  previewVisible,
   selectedNotebook,
   onCollapseMemoList,
   onOpenPreferences,
 }: Pick<
   ListColumnProps,
-  | 'previewVisible'
   | 'selectedNotebook'
   | 'onCollapseMemoList'
   | 'onOpenPreferences'
 >) {
   const props = {
-    isPreview: previewVisible,
     selectedNotebook,
     onCollapseMemoList,
     onOpenPreferences,
@@ -59,90 +48,18 @@ function ListColumnTitlebar({
     : <MemoListTitlebarMac {...props} />;
 }
 
-/**
- * The list column shared by the docked sidebar and the hover preview.
- * The list content stays mounted as one subtree. The preview keeps the
- * titlebar's layout space while hiding its docked-only controls.
- */
 export function ListColumn({
   hidden,
-  previewVisible,
-  previewPhase,
   memoColWidth,
   mobileFullWidth = false,
   containerRef,
   isDraggingListDivider,
   selectedNotebook,
-  noteNavigationPhase,
   onCollapseMemoList,
   onOpenPreferences,
-  onPreviewEnter,
-  onPreviewLeave,
   onPointerDown,
   children,
 }: ListColumnProps) {
-  const previewRef = useRef<HTMLDivElement>(null);
-
-  // Run the preview animation from the presence lifecycle only. In
-  // particular, changing the navigation drawer must only update `left`; it
-  // must not replay the preview's enter animation.
-  useEffect(() => {
-    const preview = previewRef.current;
-    if (!previewVisible || !preview) return;
-
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
-
-    const animation = preview.animate(
-      previewPhase === 'open'
-        ? [
-            { opacity: 0, transform: 'translate3d(-12px, 0, 0) scale(0.98)' },
-            { opacity: 1, transform: 'translate3d(0, 0, 0) scale(1)' },
-          ]
-        : [
-            { opacity: 1, transform: 'translate3d(0, 0, 0) scale(1)' },
-            { opacity: 0, transform: 'translate3d(-12px, 0, 0) scale(0.98)' },
-          ],
-      {
-        duration: previewPhase === 'open' ? 200 : 160,
-        easing: 'cubic-bezier(0.16, 1, 0.3, 1)',
-        fill: 'both',
-      },
-    );
-
-    return () => animation.cancel();
-  }, [previewPhase, previewVisible]);
-
-  useEffect(() => {
-    if (!previewVisible) return;
-
-    const isOwnedOverlay = (target: EventTarget | null) => (
-      target instanceof Element
-      && Boolean(target.closest('[data-flowix-list-column-overlay]'))
-    );
-
-    const handlePointerOver = (event: PointerEvent) => {
-      if (isOwnedOverlay(event.target)) onPreviewEnter();
-    };
-
-    const handlePointerOut = (event: PointerEvent) => {
-      if (!isOwnedOverlay(event.target)) return;
-      const relatedTarget = event.relatedTarget;
-      const isInsidePreview = relatedTarget instanceof Node
-        && Boolean(previewRef.current?.contains(relatedTarget));
-      if (isOwnedOverlay(relatedTarget) || isInsidePreview) {
-        return;
-      }
-      onPreviewLeave();
-    };
-
-    document.addEventListener('pointerover', handlePointerOver);
-    document.addEventListener('pointerout', handlePointerOut);
-    return () => {
-      document.removeEventListener('pointerover', handlePointerOver);
-      document.removeEventListener('pointerout', handlePointerOut);
-    };
-  }, [onPreviewEnter, onPreviewLeave, previewVisible]);
-
   return (
     <div
       ref={containerRef}
@@ -162,55 +79,33 @@ export function ListColumn({
               isDraggingListDivider
                 ? 'transition-none'
                 : 'transition-[width] duration-200 ease-[cubic-bezier(0.32,0.72,0,1)] motion-reduce:transition-none',
-              previewVisible ? 'overflow-visible' : 'overflow-hidden',
+              'overflow-hidden',
             ),
       )}
       style={mobileFullWidth ? undefined : { width: hidden ? 0 : memoColWidth }}
-      aria-hidden={hidden && !previewVisible}
+      aria-hidden={hidden}
       inert={mobileFullWidth && hidden ? true : undefined}
       onPointerDown={onPointerDown}
     >
       <div
-        ref={previewRef}
-        data-memo-list-hover-preview={previewVisible ? '' : undefined}
-        data-preview-state={previewVisible ? previewPhase : undefined}
-        onMouseEnter={previewVisible ? onPreviewEnter : undefined}
-        onMouseLeave={previewVisible ? onPreviewLeave : undefined}
         className={cn(
           'flex min-w-0 flex-col',
-          previewVisible
-            ? cn(
-                'absolute left-0 top-0 m-1 h-[calc(100%-0.5rem)] w-[280px] overflow-hidden rounded-xl transition-[left] flowix-note-navigation-motion',
-                noteNavigationPhase === 'open' ? 'z-[110]' : 'z-[90]',
-                'border border-[var(--border-popup)] bg-[var(--list-bg)]',
-                'shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]',
-              )
-            : mobileFullWidth
-              ? // 抽屉整体滑动, 内容保持不透明 (淡出只服务于停靠模式的宽度裁切)。
-                'relative h-full w-full overflow-hidden bg-[var(--list-bg)]'
-              : cn(
-                  'relative h-full overflow-hidden bg-[var(--list-bg)]',
-                  // 收起/展开期间内容淡出淡入, 配合外层宽度过渡, 避免
-                  // 列表被生硬裁切; 内容宽度固定, 宽度动画不再逐帧重排。
-                  'transition-opacity duration-150 motion-reduce:transition-none',
-                  hidden ? 'opacity-0' : 'opacity-100',
-                ),
+          mobileFullWidth
+            ? // 抽屉整体滑动, 内容保持不透明 (淡出只服务于停靠模式的宽度裁切)。
+              'relative h-full w-full overflow-hidden bg-[var(--list-bg)]'
+            : cn(
+                'relative h-full overflow-hidden bg-[var(--list-bg)]',
+                // 收起/展开期间内容淡出淡入, 配合外层宽度过渡, 避免
+                // 列表被生硬裁切; 内容宽度固定, 宽度动画不再逐帧重排。
+                'transition-opacity duration-150 motion-reduce:transition-none',
+                hidden ? 'opacity-0' : 'opacity-100',
+              ),
         )}
-        style={previewVisible
-          ? (noteNavigationPhase === 'open'
-              ? { left: 'calc(var(--flowix-note-navigation-drawer-width) + 0.25rem)' }
-              : undefined)
-          : mobileFullWidth
-            ? undefined
-            : { width: memoColWidth }}
+        style={mobileFullWidth ? undefined : { width: memoColWidth }}
       >
         <ListColumnTitlebar
-          previewVisible={previewVisible}
           selectedNotebook={selectedNotebook}
-          // In the hover preview the same control closes the popover. The
-          // memo list is already hidden, so collapsing it again would not
-          // dismiss the preview.
-          onCollapseMemoList={previewVisible ? onPreviewLeave : onCollapseMemoList}
+          onCollapseMemoList={onCollapseMemoList}
           onOpenPreferences={onOpenPreferences}
         />
         <div className="relative min-h-0 flex-1">
