@@ -10,6 +10,7 @@ import { CodeBlockShikiBase } from '@features/editor/extensions/codeblock-shiki/
 import { FlowixHighlight } from '@features/editor/extensions/flowix-text-mark';
 import { MarkdownLinkParserExtension } from '@features/editor/extensions/markdown-link-markdown';
 import { NoteReferenceMarkdownExtension } from '@features/editor/extensions/note-link/note-reference-markdown';
+import { NoteReferenceBlockMarkdownExtension } from '@features/editor/extensions/note-block/note-reference-block-markdown';
 import { FlowixTable } from '@features/editor/extensions/table/flowix-table';
 import { FrontmatterMarkdownExtension } from '@features/editor/extensions/frontmatter-markdown';
 import { TableReferenceMarkdownExtension } from '@features/multidimensional-table/table-reference-markdown';
@@ -87,6 +88,7 @@ export function createMarkdownParserExtensions() {
     FlowixHighlight.configure({ multicolor: true }),
     FrontmatterMarkdownExtension,
     NoteReferenceMarkdownExtension,
+    NoteReferenceBlockMarkdownExtension,
     // Notes that embed an AI thread card used to be rejected by the worker so
     // the browser parser could keep the card. Registering the markdown-only
     // spec lets background parsing keep it as a node instead.

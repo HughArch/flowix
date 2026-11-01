@@ -3,13 +3,21 @@ import { resolveNoteCoverUrl } from '@features/document/components/note-cover/co
 
 export interface NoteReferencePreviewData {
   title: string;
+  /** 渲染后的纯文本摘要 (卡片摘要行用). */
   preview: string;
+  /** 完整笔记渲染出的只读 HTML; 空串表示渲染不可用 (弹窗退回摘要展示). */
+  contentHtml: string;
   thumbnail: string | null;
+  /** 原笔记的 emoji 图标 (属性面板 icon); 无图标时为 null. */
+  icon: string | null;
   notebookId: string;
   relativePath: string;
   notebookPath: string;
   filePath: string;
 }
+
+/** `toggle`: click-to-open (agent composer chips). `hover`: pointer-delay popover. */
+export type NoteReferencePreviewMode = 'toggle' | 'hover';
 
 interface NoteReferencePreviewControllerOptions {
   anchor: HTMLElement;
@@ -19,6 +27,15 @@ interface NoteReferencePreviewControllerOptions {
   openNote: (data: NoteReferencePreviewData) => Promise<void>;
   t: (key: I18nKey) => string;
   onError: (error: unknown) => void;
+  mode?: NoteReferencePreviewMode;
+  /** Hover open delay in ms (hover mode only). */
+  hoverOpenDelay?: number;
+  /** Hover close delay in ms (hover mode only); covers the card → popover hop. */
+  hoverCloseDelay?: number;
+  /** 定位向上翻转时额外让出的顶部高度 (px), 避免盖住卡片悬浮工具条. */
+  topClearance?: number;
+  /** 弹窗关闭后回调 (含外点/移出/Escape), 供宿主重算 hover 状态. */
+  onClosed?: () => void;
 }
 
 function noteReferenceThumbnailUrl(thumbnail: string | null, notebookPath?: string | null): string | null {
@@ -27,19 +44,36 @@ function noteReferenceThumbnailUrl(thumbnail: string | null, notebookPath?: stri
   return resolveNoteCoverUrl(thumbnail, notebookPath);
 }
 
-/** Owns the composer note-reference preview's DOM, async lifecycle, and placement. */
+const HOVER_OPEN_DELAY_MS = 450;
+const HOVER_CLOSE_DELAY_MS = 260;
+
+/**
+ * Owns the note-reference preview popover's DOM, async lifecycle, and
+ * placement. `toggle` mode (agent composer) opens/closes on click; `hover`
+ * mode opens after a pointer delay and closes when the pointer leaves both
+ * the anchor and the popover, so users can read or click into the preview.
+ */
 export class NoteReferencePreviewController {
   private popover: HTMLDivElement | null = null;
   private title: HTMLElement | null = null;
-  private text: HTMLElement | null = null;
+  private icon: HTMLElement | null = null;
+  private content: HTMLElement | null = null;
   private image: HTMLImageElement | null = null;
   private openButton: HTMLButtonElement | null = null;
   private isOpen = false;
   private isDisposed = false;
   private requestId = 0;
   private cache: { key: string; promise: Promise<NoteReferencePreviewData | null> } | null = null;
+  private hoverTimer: number | null = null;
+  private readonly mode: NoteReferencePreviewMode;
 
-  constructor(private readonly options: NoteReferencePreviewControllerOptions) {}
+  constructor(private readonly options: NoteReferencePreviewControllerOptions) {
+    this.mode = options.mode ?? 'toggle';
+    if (this.mode === 'hover') {
+      options.anchor.addEventListener('pointerenter', this.handleAnchorPointerEnter);
+      options.anchor.addEventListener('pointerleave', this.handleAnchorPointerLeave);
+    }
+  }
 
   toggle(): void {
     if (this.isDisposed) return;
@@ -62,21 +96,73 @@ export class NoteReferencePreviewController {
   dispose(): void {
     if (this.isDisposed) return;
     this.isDisposed = true;
+    this.clearHoverTimer();
+    if (this.mode === 'hover') {
+      this.options.anchor.removeEventListener('pointerenter', this.handleAnchorPointerEnter);
+      this.options.anchor.removeEventListener('pointerleave', this.handleAnchorPointerLeave);
+    }
     this.close();
     this.popover?.remove();
     this.popover = null;
   }
 
+  private clearHoverTimer(): void {
+    if (this.hoverTimer !== null) {
+      window.clearTimeout(this.hoverTimer);
+      this.hoverTimer = null;
+    }
+  }
+
+  private scheduleHover(open: boolean, delay: number): void {
+    this.clearHoverTimer();
+    this.hoverTimer = window.setTimeout(() => {
+      this.hoverTimer = null;
+      if (this.isDisposed) return;
+      if (open) {
+        if (!this.isOpen) this.show();
+      } else {
+        this.close();
+      }
+    }, delay);
+  }
+
+  private handleAnchorPointerEnter = (): void => {
+    if (this.isDisposed) return;
+    this.scheduleHover(true, this.options.hoverOpenDelay ?? HOVER_OPEN_DELAY_MS);
+  };
+
+  private handleAnchorPointerLeave = (event: PointerEvent): void => {
+    if (this.isDisposed || !this.isOpen) return;
+    // Moving onto the popover keeps it open; the popover installs its own
+    // leave handler that closes after the same grace delay.
+    const next = event.relatedTarget;
+    if (next instanceof Node && this.popover?.contains(next)) return;
+    this.scheduleHover(false, this.options.hoverCloseDelay ?? HOVER_CLOSE_DELAY_MS);
+  };
+
+  private handlePopoverPointerLeave = (event: PointerEvent): void => {
+    if (this.isDisposed || !this.isOpen) return;
+    const next = event.relatedTarget;
+    if (next instanceof Node && this.options.anchor.contains(next)) return;
+    this.scheduleHover(false, this.options.hoverCloseDelay ?? HOVER_CLOSE_DELAY_MS);
+  };
+
+  private handlePopoverPointerEnter = (): void => {
+    if (this.mode === 'hover') this.clearHoverTimer();
+  };
+
   private ensurePopover(): void {
     if (this.popover) return;
 
     const popover = document.createElement('div');
-    popover.className = 'agent-composer__note-reference-preview';
+    popover.className = 'note-reference-preview';
     popover.hidden = true;
     popover.setAttribute('role', 'dialog');
+    popover.addEventListener('pointerenter', this.handlePopoverPointerEnter);
+    popover.addEventListener('pointerleave', this.handlePopoverPointerLeave);
 
     const image = document.createElement('img');
-    image.className = 'agent-composer__note-reference-preview-image';
+    image.className = 'note-reference-preview__image';
     image.alt = '';
     image.draggable = false;
     image.hidden = true;
@@ -87,17 +173,21 @@ export class NoteReferencePreviewController {
     });
 
     const body = document.createElement('div');
-    body.className = 'agent-composer__note-reference-preview-body';
+    body.className = 'note-reference-preview__body';
     const titleRow = document.createElement('div');
-    titleRow.className = 'agent-composer__note-reference-preview-title-row';
+    titleRow.className = 'note-reference-preview__title-row';
+    const icon = document.createElement('span');
+    icon.className = 'note-reference-preview__icon';
+    icon.hidden = true;
     const title = document.createElement('div');
-    title.className = 'agent-composer__note-reference-preview-title';
-    const text = document.createElement('div');
-    text.className = 'agent-composer__note-reference-preview-text';
+    title.className = 'note-reference-preview__title';
+    const content = document.createElement('div');
+    // 完整笔记只读内容; 内层 DOM 链与编辑器一致, 让编辑器样式直接生效.
+    content.className = 'note-reference-preview__content';
 
     const openButton = document.createElement('button');
     openButton.type = 'button';
-    openButton.className = 'agent-composer__note-reference-preview-open';
+    openButton.className = 'note-reference-preview__open';
     openButton.textContent = this.options.t('editor.noteLink.openNote');
     openButton.addEventListener('mousedown', (event) => event.preventDefault());
     openButton.addEventListener('click', (event) => {
@@ -106,14 +196,15 @@ export class NoteReferencePreviewController {
       void this.openReferencedNote();
     });
 
-    titleRow.append(title, openButton);
-    body.append(titleRow, text);
+    titleRow.append(icon, title, openButton);
+    body.append(titleRow, content);
     popover.append(image, body);
     document.body.append(popover);
 
     this.popover = popover;
+    this.icon = icon;
     this.title = title;
-    this.text = text;
+    this.content = content;
     this.image = image;
     this.openButton = openButton;
   }
@@ -136,6 +227,7 @@ export class NoteReferencePreviewController {
   }
 
   private close(): void {
+    if (!this.isOpen) return;
     this.isOpen = false;
     this.requestId += 1;
     if (this.popover) this.popover.hidden = true;
@@ -146,6 +238,7 @@ export class NoteReferencePreviewController {
     window.removeEventListener('scroll', this.position, true);
     document.removeEventListener('pointerdown', this.handleOutsidePointer, true);
     document.removeEventListener('keydown', this.handleKeyDown, true);
+    this.options.onClosed?.();
   }
 
   private handleOutsidePointer = (event: PointerEvent): void => {
@@ -177,11 +270,13 @@ export class NoteReferencePreviewController {
   }
 
   private loadAndRender(): void {
-    if (!this.isOpen || !this.text || !this.openButton || !this.popover) return;
+    if (!this.isOpen || !this.content || !this.openButton || !this.popover) return;
     const requestId = ++this.requestId;
     this.title!.textContent = this.options.getFallbackTitle();
+    if (this.icon) this.icon.hidden = true;
     this.popover.setAttribute('aria-label', this.title!.textContent ?? '');
-    this.text.textContent = this.options.t('editor.noteLink.previewLoading');
+    this.content.textContent = this.options.t('editor.noteLink.previewLoading');
+    this.content.classList.add('is-placeholder');
     this.openButton.disabled = true;
     if (this.image) this.image.hidden = true;
     this.position();
@@ -189,13 +284,34 @@ export class NoteReferencePreviewController {
     void this.loadCachedData().then((data) => {
       if (this.isDisposed || !this.isOpen || requestId !== this.requestId) return;
       if (!data) {
-        this.text!.textContent = this.options.t('editor.noteLink.previewUnavailable');
+        this.content!.textContent = this.options.t('editor.noteLink.previewUnavailable');
         this.openButton!.disabled = true;
       } else {
+        if (this.icon) {
+          if (data.icon) {
+            this.icon.textContent = data.icon;
+            this.icon.hidden = false;
+          } else {
+            this.icon.hidden = true;
+          }
+        }
         this.title!.textContent = data.title;
         this.popover!.setAttribute('aria-label', data.title);
-        this.text!.textContent = data.preview.trim()
-          || this.options.t('editor.noteLink.previewEmpty');
+        // 完整笔记渲染 HTML (只读管线输出, 非用户原样注入); 渲染不可用时
+        // 退回纯文本摘要, 二者都为空才是真正的"暂无预览内容".
+        const html = data.contentHtml.trim();
+        if (html) {
+          this.content!.classList.remove('is-placeholder');
+          this.content!.innerHTML = `
+            <div class="note-reference-preview__doc">
+              <div class="editor-document-body">
+                <div class="ProseMirror tiptap" aria-readonly="true">${html}</div>
+              </div>
+            </div>`;
+        } else {
+          this.content!.classList.add('is-placeholder');
+          this.content!.textContent = data.preview.trim() || this.options.t('editor.noteLink.previewEmpty');
+        }
         this.openButton!.disabled = false;
         const thumbnailUrl = noteReferenceThumbnailUrl(data.thumbnail, data.notebookPath);
         if (thumbnailUrl && this.image) {
@@ -206,7 +322,7 @@ export class NoteReferencePreviewController {
       this.position();
     }).catch(() => {
       if (this.isDisposed || !this.isOpen || requestId !== this.requestId) return;
-      this.text!.textContent = this.options.t('editor.noteLink.previewUnavailable');
+      this.content!.textContent = this.options.t('editor.noteLink.previewUnavailable');
       this.openButton!.disabled = true;
       this.position();
     });
@@ -214,19 +330,30 @@ export class NoteReferencePreviewController {
 
   private position = (): void => {
     if (!this.isOpen || !this.popover?.isConnected || !this.options.anchor.isConnected) return;
+    // 高度先按视口收紧 (上下都放不下时不再贴视口底溢出).
+    const maxH = Math.min(544, window.innerHeight - 16);
+    if (this.popover.style.maxHeight !== `${maxH}px`) this.popover.style.maxHeight = `${maxH}px`;
     const anchorRect = this.options.anchor.getBoundingClientRect();
     const popoverRect = this.popover.getBoundingClientRect();
     const width = popoverRect.width || 304;
     const height = popoverRect.height || 156;
     const padding = 8;
+    const clearance = this.options.topClearance ?? 0;
     const left = Math.min(
       Math.max(anchorRect.left + (anchorRect.width - width) / 2, padding),
       Math.max(padding, window.innerWidth - width - padding),
     );
-    const preferredTop = anchorRect.top - height - 8;
-    const top = preferredTop >= padding
-      ? preferredTop
-      : Math.min(anchorRect.bottom + 8, Math.max(padding, window.innerHeight - height - padding));
+    // 优先放卡片下方 (不挡工具条); 下方放不下再向上翻, 并让出顶部工具条高度.
+    const belowTop = anchorRect.bottom + 8;
+    let top: number;
+    if (belowTop + height <= window.innerHeight - padding) {
+      top = belowTop;
+    } else {
+      const aboveTop = anchorRect.top - height - 8 - clearance;
+      top = aboveTop >= padding
+        ? aboveTop
+        : Math.min(anchorRect.bottom + 8, Math.max(padding, window.innerHeight - height - padding));
+    }
     this.popover.style.left = `${left}px`;
     this.popover.style.top = `${top}px`;
   };

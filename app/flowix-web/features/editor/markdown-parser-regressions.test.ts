@@ -136,6 +136,7 @@ describe('worker parses content that previously forced the browser parser', () =
   it.each([
     ['math block', 'Before\n\n$$\nx^2 + y^2\n$$\n\nAfter'],
     ['web card', 'Before\n\n::webcard[{"url":"https://example.com","title":"Example"}]\n\nAfter'],
+    ['note block card', `Before\n\n::notecard${JSON.stringify({ notebookId: 'w', relativePath: 'a.md', notebookName: 'W', title: 'A', originalPath: null, linkStyle: 'flowix', linkTarget: null, heading: null, stale: false, layout: 'cardLarge' })}\n\nAfter`],
     ['table metadata', '<!-- flowix:table {"version":1,"columns":[{"width":120}]} -->\n\n| a |\n| --- |\n| 1 |'],
     ['table widths', '<!-- flowix:table-widths=120,80 -->\n\n| a | b |\n| --- | --- |\n| 1 | 2 |'],
     ['table reference', 'Before\n\n<!-- flowix:table-reference {"version":1,"path":"a.md"} -->\n\nAfter'],

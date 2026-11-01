@@ -14,6 +14,7 @@ import {
   PaperclipIcon,
   QuotesIcon,
   SmileyIcon,
+  SquaresFourIcon,
   TableIcon,
   TextHFourIcon,
   TextHOneIcon,
@@ -69,7 +70,8 @@ export type SlashMenuItemId =
   | 'agent-thread-pi'
   | 'agent-thread-flowix'
   | 'create-child-note'
-  | 'reference-note';
+  | 'reference-note'
+  | 'note-block';
 
 export type AgentThreadSlashMenuItemId = Extract<SlashMenuItemId, `agent-thread-${string}`>;
 
@@ -378,6 +380,14 @@ export const SLASH_MENU_ITEMS: SlashMenuItem[] = [
     labelKey: 'editor.slash.label.referenceMemo',
     keywords: ['note', 'memo', 'reference', 'mention', 'link', 'yinyong', 'biji'],
     icon: LinkSimpleIcon,
+    sectionKey: 'editor.slash.section.memo',
+  },
+  {
+    id: 'note-block',
+    labelKey: 'editor.slash.label.noteBlock',
+    description: '插入整行笔记卡片，支持多种布局',
+    keywords: ['note', 'memo', 'card', 'block', 'reference', 'link', 'biji', 'kapian', '卡片'],
+    icon: SquaresFourIcon,
     sectionKey: 'editor.slash.section.memo',
   },
 ];

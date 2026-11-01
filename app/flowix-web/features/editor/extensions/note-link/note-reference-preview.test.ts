@@ -69,7 +69,7 @@ it('opens the referenced note from its composer preview while a conversation is 
 
   const card = editor.view.dom.querySelector<HTMLElement>('.note-reference__card')!;
   card.click();
-  const openButton = document.querySelector<HTMLButtonElement>('.agent-composer__note-reference-preview-open')!;
+  const openButton = document.querySelector<HTMLButtonElement>('.note-reference-preview__open')!;
   await vi.waitFor(() => expect(openButton.disabled).toBe(false));
   expect(useBrowserColumnStore.getState().tabs).toHaveLength(0);
 
@@ -82,12 +82,12 @@ it('opens the referenced note from its composer preview while a conversation is 
     });
   });
   expect(useWorkColumnStore.getState().navigation.target).toEqual(conversation);
-  expect(document.querySelector<HTMLElement>('.agent-composer__note-reference-preview')?.hidden).toBe(true);
+  expect(document.querySelector<HTMLElement>('.note-reference-preview')?.hidden).toBe(true);
 
   card.click();
   await vi.waitFor(() => expect(openButton.disabled).toBe(false));
   openButton.click();
-  await vi.waitFor(() => expect(document.querySelector<HTMLElement>('.agent-composer__note-reference-preview')?.hidden).toBe(true));
+  await vi.waitFor(() => expect(document.querySelector<HTMLElement>('.note-reference-preview')?.hidden).toBe(true));
   expect(useBrowserColumnStore.getState().tabs).toHaveLength(1);
   expect(useWorkColumnStore.getState().navigation.target).toEqual(conversation);
 });
@@ -132,7 +132,7 @@ it('keeps the current note (and its embedded conversation) in the work column', 
 
   const card = editor.view.dom.querySelector<HTMLElement>('.note-reference__card')!;
   card.click();
-  const openButton = document.querySelector<HTMLButtonElement>('.agent-composer__note-reference-preview-open')!;
+  const openButton = document.querySelector<HTMLButtonElement>('.note-reference-preview__open')!;
   await vi.waitFor(() => expect(openButton.disabled).toBe(false));
 
   openButton.click();

@@ -2219,12 +2219,13 @@ html.flowix-block-dragging * {
   object-fit: contain;
 }
 
-.agent-composer__note-reference-preview {
+.note-reference-preview {
   position: fixed;
   z-index: 1000;
   display: flex;
-  width: min(18rem, calc(100vw - 1rem));
-  max-height: calc(100vh - 1rem);
+  width: min(22rem, calc(100vw - 1rem));
+  /* 高度封顶, 完整内容由 __content 内部滚动 (触屏滑动 / 滚轮). */
+  max-height: min(34rem, calc(100vh - 2rem));
   flex-direction: column;
   gap: 0.65rem;
   overflow: hidden;
@@ -2237,12 +2238,12 @@ html.flowix-block-dragging * {
   pointer-events: auto;
 }
 
-.agent-composer__note-reference-preview[hidden],
-.agent-composer__note-reference-preview-image[hidden] {
+.note-reference-preview[hidden],
+.note-reference-preview__image[hidden] {
   display: none;
 }
 
-.agent-composer__note-reference-preview-image {
+.note-reference-preview__image {
   display: block;
   width: 100%;
   max-height: min(10rem, 32vh);
@@ -2250,21 +2251,31 @@ html.flowix-block-dragging * {
   object-fit: cover;
 }
 
-.agent-composer__note-reference-preview-body {
+.note-reference-preview__body {
   display: flex;
+  min-height: 0;
   min-width: 0;
+  flex: 1 1 auto;
   flex-direction: column;
-  gap: 0.25rem;
+  gap: 0.35rem;
 }
 
-.agent-composer__note-reference-preview-title-row {
+.note-reference-preview__title-row {
   display: flex;
   min-width: 0;
+  flex: 0 0 auto;
   align-items: center;
   gap: 0.5rem;
 }
 
-.agent-composer__note-reference-preview-title {
+/* 原笔记的 emoji 图标 (无图标时 hidden) */
+.note-reference-preview__icon {
+  flex: 0 0 auto;
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.note-reference-preview__title {
   display: -webkit-box;
   flex: 1 1 auto;
   min-width: 0;
@@ -2278,19 +2289,48 @@ html.flowix-block-dragging * {
   -webkit-line-clamp: 2;
 }
 
-.agent-composer__note-reference-preview-text {
-  display: -webkit-box;
-  overflow: hidden;
+/* 完整笔记内容滚动区: 触屏滑动 / 滚轮阅读; 内层 DOM 链与编辑器一致,
+ * 编辑器排版样式直接生效 (仿 canvas 卡片的 read-only 挂载方式). */
+.note-reference-preview__content {
+  min-height: 3rem;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  scrollbar-width: thin;
+}
+
+.note-reference-preview__content.is-placeholder {
   color: var(--muted-foreground);
   font-size: 0.78rem;
   line-height: 1.4;
-  overflow-wrap: anywhere;
   white-space: pre-wrap;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 4;
+  overflow-wrap: anywhere;
 }
 
-.agent-composer__note-reference-preview-open {
+.note-reference-preview__content .note-reference-preview__doc.markdown-editor {
+  height: auto;
+  min-height: 0;
+  overflow: visible;
+}
+
+.note-reference-preview__content .ProseMirror:not(.agent-composer__input-content) {
+  max-width: none;
+  min-height: 0;
+  margin: 0;
+  padding: 0.35rem 0.45rem 0.55rem;
+  font-size: 0.78rem;
+  line-height: 1.6;
+  cursor: default;
+  user-select: text;
+  -webkit-user-select: text;
+}
+
+.note-reference-preview__content img,
+.note-reference-preview__content video {
+  max-width: 100%;
+}
+
+.note-reference-preview__open {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
@@ -2305,17 +2345,17 @@ html.flowix-block-dragging * {
   cursor: pointer;
 }
 
-.agent-composer__note-reference-preview-open:hover:not(:disabled) {
+.note-reference-preview__open:hover:not(:disabled) {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-.agent-composer__note-reference-preview-open:focus-visible {
+.note-reference-preview__open:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 
-.agent-composer__note-reference-preview-open:disabled {
+.note-reference-preview__open:disabled {
   cursor: default;
   opacity: 0.55;
 }

@@ -117,3 +117,400 @@
   margin-left: 4px;
   white-space: nowrap;
 }
+
+/* ─── 块级笔记引用 (noteReferenceBlock) ──────────────────────────────────────
+ * slash 菜单插入的整行笔记卡片, 对照 FlowUs 的页面引用块:
+ *   line      默认样式 — 单行 (图标 + 标题 + 内联摘要)
+ *   card      小卡片   — 有边框卡片, 标题 + 两行摘要
+ *   cardLarge 大卡片   — 封面横幅 + 标题 + 三行摘要
+ * 悬浮块时右上角出现布局工具条 (打开 / 默认 / 小卡片 / 大卡片)。
+ *
+ * 宽度规则:
+ *   - 默认样式 / 小卡片: 永远整行 (block), 保持既有行为;
+ *   - 大卡片: 仅当位于文档顶层且连续相邻时以 inline-grid 排成一行
+ *     (run 信息由块节点的 row-layout 插件写入 data-run-count):
+ *     单卡 → 1/3 行宽并加高趋近方形; 两卡 → 平分; 三卡及以上 → 每行 1/3 换行;
+ *   - 位于多列等容器内的卡片一律 width:100% 填满所在列, 复用现有多列布局
+ *     表达"一行多卡片" (每列一张, 列宽可拖拽调整)。 */
+
+.markdown-editor .tiptap .editor-note-reference-block {
+  position: relative;
+  display: block;
+  width: 100%;
+  margin: 0.5rem 0;
+}
+
+/* 文档顶层的大卡片: 参与同行网格 (inline-grid 让连续卡片共享一行并自然换行;
+ * grid item 默认 stretch, 配合外层 min-height 把单卡拉高)。 */
+.markdown-editor .tiptap > .editor-note-reference-block[data-layout='cardLarge'] {
+  display: inline-grid;
+  vertical-align: top;
+  /* 一行三卡的基础宽度 (每卡自带 margin-right 作列间距)。 */
+  width: calc((100% - 1.125rem) / 3);
+  margin: 0.5rem 0.375rem 0.5rem 0;
+}
+
+.markdown-editor .tiptap > .editor-note-reference-block[data-layout='cardLarge'][data-run-count='1'] {
+  width: calc((100% - 0.375rem) / 3);
+  min-height: 15rem;
+}
+
+.markdown-editor .tiptap > .editor-note-reference-block[data-layout='cardLarge'][data-run-count='2'] {
+  width: calc((100% - 0.75rem) / 2);
+}
+
+/* 单卡空间变大后放开摘要行数, 让内容填充卡片 */
+.markdown-editor
+  .tiptap
+  > .editor-note-reference-block[data-layout='cardLarge'][data-run-count='1']
+  .note-block__preview {
+  -webkit-line-clamp: 6;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--card, var(--document-bg));
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block:hover .note-block__card,
+.markdown-editor .tiptap .editor-note-reference-block.is-selected .note-block__card {
+  border-color: color-mix(in oklch, var(--document-link) 45%, var(--border));
+}
+
+.markdown-editor .tiptap .editor-note-reference-block.is-selected .note-block__card {
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--document-link) 18%, transparent);
+}
+
+.markdown-editor .tiptap .editor-note-reference-block.is-stale .note-block__card {
+  opacity: 0.55;
+}
+
+/* ── 布局: line (默认样式) ── 单行排布, 摘要内联截断, 卡片感最弱 */
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='line'] .note-block__card {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  border-color: transparent;
+  background: transparent;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='line']:hover .note-block__card {
+  background: color-mix(in oklch, var(--document-link) 6%, transparent);
+  border-color: transparent;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='line'] .note-block__head {
+  flex-shrink: 0;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='line'] .note-block__title {
+  white-space: nowrap;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--document-link) 45%, transparent);
+  text-underline-offset: 3px;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='line'] .note-block__snippet {
+  overflow: hidden;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ── 布局: card (小卡片) ── 标题行 + 两行摘要 */
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='card'] .note-block__card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.625rem 0.75rem;
+}
+
+/* ── 布局: cardLarge (大卡片) ── 封面横幅 + 标题 + 三行摘要 */
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='cardLarge'] .note-block__card {
+  display: flex;
+  flex-direction: column;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__banner {
+  height: 8.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--muted);
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__banner-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__banner-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--muted-foreground);
+  opacity: 0.55;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='cardLarge'] .note-block__head,
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='cardLarge'] .note-block__preview {
+  margin: 0 0.75rem;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='cardLarge'] .note-block__head {
+  margin-top: 0.625rem;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='cardLarge'] .note-block__preview {
+  margin-bottom: 0.625rem;
+}
+
+/* ── 卡片内部元素 ── */
+.markdown-editor .tiptap .editor-note-reference-block .note-block__head {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  color: var(--document-link);
+}
+
+/* 原笔记的 emoji 图标 (属性面板 icon), 优先于通用文件图形展示 */
+.markdown-editor .tiptap .editor-note-reference-block .note-block__note-icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__banner-note-icon {
+  font-size: 2.5rem;
+  line-height: 1;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__title {
+  overflow: hidden;
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--document-link);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block:hover .note-block__title {
+  color: color-mix(in oklch, var(--document-link), white 20%);
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__preview {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  /* 数据未加载完成时保留一行高度, 避免卡片高度跳动. */
+  min-height: 1.15rem;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='cardLarge'] .note-block__preview {
+  -webkit-line-clamp: 3;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__stale-mark {
+  padding: 0.375rem 0.75rem 0;
+  color: var(--document-link);
+  font-size: 0.75rem;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='line'] .note-block__stale-mark {
+  padding: 0;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+/* ── 悬浮工具条: 卡片样式 + 布局切换 (仅可编辑态展示) ──
+ * 挂 body (fixed, JS 跟随卡片右上角): .markdown-editor 带 isolation: isolate,
+ * 编辑器内部是独立层叠上下文, 工具条 z-index 再高也压不过挂 body 的预览弹窗;
+ * 挂 body 后与弹窗同层比较, 1001 > 1000 → 工具条始终在最上层可点. */
+.note-block__toolbar {
+  position: fixed;
+  z-index: 1001;
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  border-radius: 8px;
+  /* 毛玻璃: 半透明底 + 背景模糊, 贴近原生悬浮工具条的精致质感. */
+  background: color-mix(in srgb, var(--input-bg, var(--document-bg)) 86%, transparent);
+  backdrop-filter: blur(10px) saturate(1.15);
+  -webkit-backdrop-filter: blur(10px) saturate(1.15);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 5%),
+    0 4px 14px -4px rgb(0 0 0 / 12%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.note-block__toolbar.is-visible {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.note-block__toolbar .note-block__toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.5rem;
+  height: 1.5rem;
+  padding: 0;
+  border: 0;
+  border-radius: 5px;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.note-block__toolbar .note-block__toolbar-button svg {
+  width: 0.9rem;
+  height: 0.9rem;
+}
+
+.note-block__toolbar .note-block__toolbar-button:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.note-block__toolbar .note-block__toolbar-button.is-active {
+  background: color-mix(in oklch, var(--document-link) 12%, transparent);
+  color: var(--document-link);
+}
+
+.note-block__toolbar .note-block__toolbar-separator {
+  width: 1px;
+  height: 0.85rem;
+  margin: 0 2px;
+  background: color-mix(in oklch, var(--border) 75%, transparent);
+}
+
+/* ── 卡片样式面板 (工具条铅笔按钮): 填充颜色 + 自定义展示文字 ──
+ * 挂载在 body 下 (fixed), 避免输入事件被 ProseMirror 当作文档突变破坏节点;
+ * 位置由 NodeView 跟随卡片右上角计算. */
+.note-block__style-panel {
+  position: fixed;
+  z-index: 1002;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 15rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border-popup, var(--border));
+  border-radius: 0.6rem;
+  background: var(--input-bg, var(--document-bg));
+  box-shadow: 0 6px 20px -4px rgb(0 0 0 / 22%);
+  color: var(--foreground);
+}
+
+.note-block__style-panel .note-block__style-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.note-block__style-panel .note-block__style-label {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.note-block__style-panel .note-block__swatches {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.note-block__style-panel .note-block__swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+
+.note-block__style-panel .note-block__swatch:hover {
+  transform: scale(1.12);
+}
+
+.note-block__style-panel .note-block__swatch.is-active {
+  box-shadow: 0 0 0 2px var(--input-bg, var(--document-bg)), 0 0 0 3.5px var(--document-link);
+}
+
+.note-block__style-panel .note-block__style-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: var(--background, transparent);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.note-block__style-panel .note-block__style-input:focus-visible {
+  outline: none;
+  border-color: color-mix(in oklch, var(--document-link) 55%, var(--border));
+}
+
+/* ── 卡片填充色 (样式面板选择; 只影响卡片底色, 封面区域不受影响) ── */
+.markdown-editor .tiptap .editor-note-reference-block[data-color='red'] .note-block__card { background: color-mix(in oklch, var(--memo-color-red) 14%, transparent); }
+.markdown-editor .tiptap .editor-note-reference-block[data-color='orange'] .note-block__card { background: color-mix(in oklch, var(--memo-color-orange) 14%, transparent); }
+.markdown-editor .tiptap .editor-note-reference-block[data-color='yellow'] .note-block__card { background: color-mix(in oklch, var(--memo-color-yellow) 16%, transparent); }
+.markdown-editor .tiptap .editor-note-reference-block[data-color='green'] .note-block__card { background: color-mix(in oklch, var(--memo-color-green) 14%, transparent); }
+.markdown-editor .tiptap .editor-note-reference-block[data-color='cyan'] .note-block__card { background: color-mix(in oklch, var(--memo-color-cyan) 14%, transparent); }
+.markdown-editor .tiptap .editor-note-reference-block[data-color='blue'] .note-block__card { background: color-mix(in oklch, var(--memo-color-blue) 14%, transparent); }
+.markdown-editor .tiptap .editor-note-reference-block[data-color='gray'] .note-block__card { background: color-mix(in oklch, var(--memo-color-gray) 16%, transparent); }
+
+/* ── 手机窄视口: 一张卡片占满一行 ───────────────────────────────────────
+ * 取消同行多卡网格与单卡加高 (阈值与 shell 单栏切换一致, 767px)。
+ * 触屏没有 hover, 点击卡片即选中, 选中态展示布局工具条。 */
+@media (max-width: 767px) {
+  .markdown-editor .tiptap > .editor-note-reference-block[data-layout='cardLarge'] {
+    display: block;
+    width: 100%;
+    margin-right: 0;
+    min-height: unset;
+  }
+
+  .markdown-editor .tiptap .editor-note-reference-block .note-block__preview {
+    -webkit-line-clamp: 3;
+  }
+}
+

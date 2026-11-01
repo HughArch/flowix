@@ -191,6 +191,9 @@ function getVisibleBlockElement(info: CurrentBlockInfo): HTMLElement | null {
   // Same for a toggle: its NodeView is the visible container and the handle
   // must follow the whole block, not an ancestor.
   if (info.typeName === 'toggle') return info.dom
+  // Block note cards are top-level atom NodeViews; there is no block ancestor
+  // to fall back to, so the card wrapper itself anchors the handle.
+  if (info.typeName === 'noteReferenceBlock') return info.dom
 
   if (info.typeName === 'table') {
     if (info.dom.matches('table, .tableWrapper')) return info.dom
