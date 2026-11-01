@@ -1,5 +1,6 @@
 import { describe, expect, it } from 'vitest';
-import { sanitizeNotePreviewText } from './note-preview-data';
+import type { JSONContent } from '@tiptap/core';
+import { jsonToPlainText, sanitizeNotePreviewText } from './note-preview-data';
 
 describe('sanitizeNotePreviewText', () => {
   it('drops fenced-div / callout marker lines and keeps readable body text', () => {
@@ -39,5 +40,49 @@ describe('sanitizeNotePreviewText', () => {
   it('collapses blank runs and trims the result', () => {
     expect(sanitizeNotePreviewText('\n\nA\n\n\n\nB\n\n')).toBe('A\nB');
     expect(sanitizeNotePreviewText('')).toBe('');
+  });
+});
+
+describe('jsonToPlainText', () => {
+  it('joins blocks with line breaks and keeps inline text', () => {
+    const doc: JSONContent = {
+      type: 'doc',
+      content: [
+        { type: 'heading', attrs: { level: 1 }, content: [{ type: 'text', text: '计划' }] },
+        { type: 'paragraph', content: [
+          { type: 'text', text: '第一段', marks: [{ type: 'bold' }] },
+          { type: 'hardBreak' },
+          { type: 'text', text: '第二行' },
+        ] },
+        {
+          type: 'bulletList',
+          content: [
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: '条目一' }] }] },
+            { type: 'listItem', content: [{ type: 'paragraph', content: [{ type: 'text', text: '条目二' }] }] },
+          ],
+        },
+      ],
+    };
+    expect(jsonToPlainText(doc)).toBe('计划\n第一段\n第二行\n条目一\n条目二');
+  });
+
+  it('skips media nodes and caps the excerpt length', () => {
+    const doc: JSONContent = {
+      type: 'doc',
+      content: [
+        { type: 'image', attrs: { src: 'a.png' } },
+        { type: 'paragraph', content: [{ type: 'text', text: 'x'.repeat(1000) }] },
+      ],
+    };
+    const text = jsonToPlainText(doc);
+    expect(text).not.toContain('a.png');
+    expect(text.length).toBeLessThanOrEqual(400);
+    expect(text.startsWith('xxx')).toBe(true);
+  });
+
+  it('returns empty for nullish input', () => {
+    expect(jsonToPlainText(null)).toBe('');
+    expect(jsonToPlainText(undefined)).toBe('');
+    expect(jsonToPlainText({ type: 'doc' })).toBe('');
   });
 });

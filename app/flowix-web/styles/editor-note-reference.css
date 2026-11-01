@@ -412,6 +412,91 @@
   background: var(--border);
 }
 
+/* ── 卡片样式面板 (工具条铅笔按钮): 填充颜色 + 自定义展示文字 ──
+ * 挂载在 body 下 (fixed), 避免输入事件被 ProseMirror 当作文档突变破坏节点;
+ * 位置由 NodeView 跟随卡片右上角计算. */
+.note-block__style-panel {
+  position: fixed;
+  z-index: 1000;
+  display: flex;
+  flex-direction: column;
+  gap: 0.5rem;
+  min-width: 15rem;
+  padding: 0.6rem 0.7rem;
+  border: 1px solid var(--border-popup, var(--border));
+  border-radius: 0.6rem;
+  background: var(--input-bg, var(--document-bg));
+  box-shadow: 0 6px 20px -4px rgb(0 0 0 / 22%);
+  color: var(--foreground);
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__style-row {
+  display: flex;
+  align-items: center;
+  gap: 0.5rem;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__style-label {
+  flex: 0 0 auto;
+  color: var(--muted-foreground);
+  font-size: 0.75rem;
+  white-space: nowrap;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__swatches {
+  display: flex;
+  flex: 1 1 auto;
+  flex-wrap: wrap;
+  gap: 0.3rem;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__swatch {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.15rem;
+  height: 1.15rem;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 50%;
+  cursor: pointer;
+  transition: transform 0.1s ease, box-shadow 0.1s ease;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__swatch:hover {
+  transform: scale(1.12);
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__swatch.is-active {
+  box-shadow: 0 0 0 2px var(--input-bg, var(--document-bg)), 0 0 0 3.5px var(--document-link);
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__style-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  padding: 0.3rem 0.45rem;
+  border: 1px solid var(--border);
+  border-radius: 0.4rem;
+  background: var(--background, transparent);
+  color: var(--foreground);
+  font: inherit;
+  font-size: 0.78rem;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__style-input:focus-visible {
+  outline: none;
+  border-color: color-mix(in oklch, var(--document-link) 55%, var(--border));
+}
+
+/* ── 卡片填充色 (样式面板选择; 只影响卡片底色, 封面区域不受影响) ── */
+.markdown-editor .tiptap .editor-note-reference-block[data-color='red'] .note-block__card { background: color-mix(in oklch, var(--memo-color-red) 14%, transparent); }
+.markdown-editor .tiptap .editor-note-reference-block[data-color='orange'] .note-block__card { background: color-mix(in oklch, var(--memo-color-orange) 14%, transparent); }
+.markdown-editor .tiptap .editor-note-reference-block[data-color='yellow'] .note-block__card { background: color-mix(in oklch, var(--memo-color-yellow) 16%, transparent); }
+.markdown-editor .tiptap .editor-note-reference-block[data-color='green'] .note-block__card { background: color-mix(in oklch, var(--memo-color-green) 14%, transparent); }
+.markdown-editor .tiptap .editor-note-reference-block[data-color='cyan'] .note-block__card { background: color-mix(in oklch, var(--memo-color-cyan) 14%, transparent); }
+.markdown-editor .tiptap .editor-note-reference-block[data-color='blue'] .note-block__card { background: color-mix(in oklch, var(--memo-color-blue) 14%, transparent); }
+.markdown-editor .tiptap .editor-note-reference-block[data-color='gray'] .note-block__card { background: color-mix(in oklch, var(--memo-color-gray) 16%, transparent); }
+
 /* ── 手机窄视口: 一张卡片占满一行 ───────────────────────────────────────
  * 取消同行多卡网格与单卡加高 (阈值与 shell 单栏切换一致, 767px)。
  * 触屏没有 hover, 点击卡片即选中, 选中态展示布局工具条。 */

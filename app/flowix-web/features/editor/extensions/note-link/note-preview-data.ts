@@ -1,11 +1,16 @@
 // Shared async loader that turns stored noteReference attrs into preview data
-// (title / body preview / cover). Used by the inline note-reference NodeView,
-// the block note-reference card, and the hover preview popover.
+// (title / body preview / cover / full rendered content). Used by the inline
+// note-reference NodeView, the block note-reference card, and the hover
+// preview popover.
+import type { JSONContent } from '@tiptap/core';
+
 import { notes as notesClient } from '@platform/tauri/client';
 import type { NoteEntry } from '@platform/tauri/client/notes';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { joinNotebookMemoPath } from '@/lib/path';
 import { displayTitleFromFilename } from '@/lib/utils';
+import { parseMarkdownInWorker } from '@features/editor/markdown-parser';
+import { parseNoteMarkdown, renderNoteContentHtml } from '@features/editor/read-only/render-note-content';
 import { stripMdSuffix } from '@features/editor/extensions/note-link/markdown';
 import type { NoteReferencePreviewData } from '@features/editor/extensions/note-link/note-reference-preview-controller';
 import type { NoteReferenceAttrs } from './note-reference-markdown';
@@ -51,9 +56,63 @@ export function sanitizeNotePreviewText(raw: string): string {
   return kept.join('\n').replace(/\n{2,}/g, '\n').trim();
 }
 
+/** 卡片摘要纯文本的最大长度 (显示层还有 line-clamp, 这里只防超长文档). */
+const EXCERPT_MAX_CHARS = 400;
+
+/** 块级节点: 提取纯文本时前后补换行; 媒体节点不产生文本. */
+const PLAIN_TEXT_BLOCK_TYPES = new Set([
+  'paragraph', 'heading', 'codeBlock', 'blockquote', 'callout', 'toggle',
+  'listItem', 'taskItem', 'bulletList', 'orderedList', 'taskList',
+  'table', 'tableRow', 'tableCell', 'tableHeader', 'mathBlock',
+  'horizontalRule', 'webCard', 'noteReferenceBlock', 'agentThreadCard', 'columns', 'column',
+]);
+
+function collectPlainText(node: JSONContent, out: string[]): void {
+  if (node.type === 'text') {
+    out.push(node.text ?? '');
+    return;
+  }
+  if (node.type === 'hardBreak') {
+    out.push('\n');
+    return;
+  }
+  // 图片/视频等媒体不进纯文本摘要.
+  if (node.type === 'image' || node.type === 'videoAttachment' || node.type === 'attachment') return;
+  const isBlock = PLAIN_TEXT_BLOCK_TYPES.has(node.type ?? '');
+  if (isBlock && out.length > 0 && !out[out.length - 1].endsWith('\n')) out.push('\n');
+  for (const child of Array.isArray(node.content) ? node.content : []) collectPlainText(child, out);
+  if (isBlock) out.push('\n');
+}
+
+/** 把渲染后的笔记 JSON 拍平成可读纯文本 (用于卡片摘要, 天然不带 markdown 符号). */
+export function jsonToPlainText(json: JSONContent | null | undefined): string {
+  if (!json) return '';
+  const out: string[] = [];
+  for (const block of Array.isArray(json.content) ? json.content : []) collectPlainText(block, out);
+  // 卡片摘要逐行展示, 块级节点叠加产生的连续换行折叠为单换行.
+  return out.join('').replace(/\n{2,}/g, '\n').trim().slice(0, EXCERPT_MAX_CHARS);
+}
+
+async function parseNoteMarkdownBestEffort(markdown: string): Promise<JSONContent | null> {
+  try {
+    const reply = await parseMarkdownInWorker(markdown);
+    return reply.document ?? null;
+  } catch {
+    // jsdom / worker 不可用时退回主线程解析.
+    try {
+      return parseNoteMarkdown(markdown);
+    } catch {
+      return null;
+    }
+  }
+}
+
 /**
- * Resolve note locator attrs to a preview payload. Returns `null` when the
- * target cannot be located (caller renders a title-only / unavailable state).
+ * Resolve note locator attrs to a preview payload: locator fields, cover,
+ * icon, a readable plain-text excerpt, and the full note rendered to
+ * read-only HTML (the hover popover mounts it for scrollable preview).
+ * Returns `null` when the target cannot be located (caller renders a
+ * title-only / unavailable state).
  */
 export async function loadNoteReferencePreviewData(
   attrs: NoteReferenceAttrs,
@@ -111,14 +170,41 @@ export async function loadNoteReferencePreviewData(
     return null;
   }
 
+  // 索引偶发抖动 (IPC 竞态 / 索引未就绪) 会丢掉封面与标题, 抛错时重试一次;
+  // 返回 null 表示索引里确实没有这篇笔记, 不重试.
   let entry: NoteEntry | null = null;
   try {
     entry = await notesClient.getIndexed(notebookId, relativePath);
-  } catch { /* Render the saved reference title if the index is unavailable. */ }
+  } catch {
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    try {
+      entry = await notesClient.getIndexed(notebookId, relativePath);
+    } catch { /* 保留 attrs 标题与占位封面. */ }
+  }
+
+  // 全文渲染: 摘要取自渲染后的纯文本 (天然不带 markdown/callout 源码符号,
+  // 首行是特殊块也能出文字), 完整 HTML 供悬浮预览滚动阅读.
+  let previewText = '';
+  let contentHtml = '';
+  const content = await notesClient.readDocument(filePath).catch(() => null);
+  if (content) {
+    const parsed = await parseNoteMarkdownBestEffort(content);
+    if (parsed) {
+      previewText = jsonToPlainText(parsed);
+      try {
+        contentHtml = renderNoteContentHtml(parsed, { notebookPath });
+      } catch { /* 摘要仍可用; 弹窗退回纯文本展示. */ }
+    }
+  }
+  if (!previewText) {
+    // 全文不可得时退回索引摘要 (仍清洗一轮结构标记).
+    previewText = sanitizeNotePreviewText(entry?.preview ?? '');
+  }
 
   const data: NoteReferencePreviewData = {
     title: entry?.title || noteReferenceDisplayTitle(attrs) || fallbackTitle,
-    preview: sanitizeNotePreviewText(entry?.preview ?? ''),
+    preview: previewText,
+    contentHtml,
     thumbnail: entry?.cover ?? entry?.thumbnail ?? null,
     icon: entry?.icon ?? null,
     notebookId,

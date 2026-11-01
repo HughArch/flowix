@@ -13,6 +13,8 @@ import { Plugin } from '@tiptap/pm/state';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import type { NodeView as ProseMirrorNodeView, EditorView } from '@tiptap/pm/view';
 import { isMobileDevice } from '@shared/platform';
+import { NOTE_COLORS } from '@/types/note-item';
+import { NOTE_COLOR_HEX } from '@features/memo/store/note-store';
 
 import { translate, type I18nKey } from '@/lib/i18n';
 import { getCurrentAppLanguage } from '@features/preferences/public/runtime-api';
@@ -40,7 +42,13 @@ function tKey(key: I18nKey, params?: Record<string, string | number>): string {
   return translate(getCurrentAppLanguage(), key, params);
 }
 
-type BlockAttrs = NoteReferenceAttrs & { layout: NoteReferenceBlockLayout };
+type BlockAttrs = NoteReferenceAttrs & {
+  layout: NoteReferenceBlockLayout;
+  /** 卡片填充色 (NoteColor 小写串; 空串 = 不填充). */
+  color: string;
+  /** 自定义展示文字: 覆盖卡片摘要 (笔记首行); 空串 = 使用首行. */
+  customText: string;
+};
 
 /** Locator fields that invalidate cached preview data when they change. */
 function locatorKey(attrs: BlockAttrs): string {
@@ -53,8 +61,8 @@ function locatorKey(attrs: BlockAttrs): string {
   ]);
 }
 
-const TOOLBAR_ICONS: Record<'open' | NoteReferenceBlockLayout, string> = {
-  open: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>',
+const TOOLBAR_ICONS: Record<'style' | NoteReferenceBlockLayout, string> = {
+  style: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M17 3a2.85 2.83 0 1 1 4 4L7.5 20.5 2 22l1.5-5.5Z"/><path d="m15 5 4 4"/></svg>',
   line: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><line x1="4" y1="12" x2="20" y2="12"/></svg>',
   card: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="5" width="16" height="14" rx="2"/><line x1="4" y1="10" x2="20" y2="10"/></svg>',
   cardLarge: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="13" rx="2"/><line x1="8" y1="21" x2="16" y2="21"/><line x1="12" y1="17" x2="12" y2="21"/></svg>',
@@ -200,8 +208,8 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     toolbar.className = 'note-block__toolbar';
     toolbar.contentEditable = 'false';
 
-    const open = this.createToolbarButton('open', tKey('editor.noteLink.openNote'));
-    toolbar.appendChild(open);
+    const style = this.createToolbarButton('style', tKey('editor.noteBlock.styleButton'));
+    toolbar.appendChild(style);
 
     const separator = document.createElement('span');
     separator.className = 'note-block__toolbar-separator';
@@ -214,20 +222,21 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     return toolbar;
   }
 
-  private createToolbarButton(action: 'open' | NoteReferenceBlockLayout, label: string): HTMLButtonElement {
+  private createToolbarButton(action: 'style' | NoteReferenceBlockLayout, label: string): HTMLButtonElement {
     const button = document.createElement('button');
     button.type = 'button';
     button.className = 'note-block__toolbar-button';
     button.dataset.action = action;
     button.title = label;
     button.setAttribute('aria-label', label);
+    button.setAttribute('aria-haspopup', 'dialog');
     button.innerHTML = TOOLBAR_ICONS[action];
     button.addEventListener('mousedown', (event) => event.preventDefault());
     button.addEventListener('click', (event) => {
       event.preventDefault();
       event.stopPropagation();
       if (this.destroyed || !this.view.editable) return;
-      if (action === 'open') void this.openReference();
+      if (action === 'style') this.toggleStylePanel();
       else this.applyAttrs({ layout: action });
     });
     return button;
@@ -244,6 +253,9 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
 
     card.innerHTML = '';
     this.dom.dataset.layout = attrs.layout;
+    // 卡片填充色 (样式面板设置; 封面区域不受影响).
+    if (attrs.color) this.dom.dataset.color = attrs.color;
+    else delete this.dom.dataset.color;
     this.dom.classList.toggle('is-stale', attrs.stale);
     this.dom.setAttribute('data-note-block-title', title);
 
@@ -269,6 +281,23 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
         image.draggable = false;
         image.loading = 'lazy';
         image.src = coverUrl;
+        // 封面资源加载失败 (附件暂缺 / 索引抖动) 时退回图标占位, 避免裂图.
+        image.addEventListener('error', () => {
+          image.remove();
+          if (!banner.querySelector('.note-block__banner-placeholder')) {
+            const placeholder = document.createElement('div');
+            placeholder.className = 'note-block__banner-placeholder';
+            if (noteIcon) {
+              const iconEmoji = document.createElement('span');
+              iconEmoji.className = 'note-block__banner-note-icon';
+              iconEmoji.textContent = noteIcon;
+              placeholder.appendChild(iconEmoji);
+            } else {
+              placeholder.innerHTML = iconSvg;
+            }
+            banner.appendChild(placeholder);
+          }
+        });
         banner.appendChild(image);
       } else {
         const placeholder = document.createElement('div');
@@ -307,14 +336,17 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     head.append(icon, titleSpan);
     card.appendChild(head);
 
-    // 摘要文本: line 布局内联截断; 卡片布局独立区块.
-    const previewText = this.data?.preview.trim() ?? '';
+    // 摘要文本: 自定义展示文字优先, 否则用笔记正文首行 (全文纯文本);
+    // line 布局内联截断, 卡片布局独立区块.
+    const customText = attrs.customText.trim();
+    const previewText = customText || this.data?.preview.trim() || '';
     if (previewText || !this.data) {
       const preview = document.createElement('div');
       preview.className = attrs.layout === 'line'
         ? 'note-block__snippet'
         : 'note-block__preview';
       preview.textContent = previewText;
+      if (customText) preview.title = customText;
       card.appendChild(preview);
     }
 
@@ -326,13 +358,156 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     }
   }
 
+  // ── 卡片样式面板 (工具条铅笔按钮) ───────────────────────────────────────
+
+  private stylePanel: HTMLElement | null = null;
+  private handleStylePanelOutside: ((event: PointerEvent) => void) | null = null;
+
+  private toggleStylePanel(): void {
+    if (this.stylePanel) {
+      this.closeStylePanel();
+      return;
+    }
+    const attrs = this.attrs;
+
+    const panel = document.createElement('div');
+    panel.className = 'note-block__style-panel';
+    panel.setAttribute('role', 'dialog');
+    panel.setAttribute('aria-label', tKey('editor.noteBlock.styleButton'));
+
+    // 填充颜色: 封面区域之外的整体背景, 复用笔记颜色体系.
+    const colorRow = document.createElement('div');
+    colorRow.className = 'note-block__style-row';
+    const colorLabel = document.createElement('span');
+    colorLabel.className = 'note-block__style-label';
+    colorLabel.textContent = tKey('editor.noteBlock.styleColor');
+    const swatches = document.createElement('div');
+    swatches.className = 'note-block__swatches';
+    for (const color of NOTE_COLORS) {
+      const swatch = document.createElement('button');
+      swatch.type = 'button';
+      swatch.className = 'note-block__swatch';
+      swatch.dataset.color = color;
+      swatch.title = tKey(`document.color.${color}` as I18nKey);
+      swatch.setAttribute('aria-label', swatch.title);
+      swatch.style.background = `color-mix(in oklch, ${NOTE_COLOR_HEX[color]} 60%, white)`;
+      if (attrs.color === color) swatch.classList.add('is-active');
+      swatch.addEventListener('click', (event) => {
+        event.preventDefault();
+        event.stopPropagation();
+        if (this.destroyed) return;
+        const next = this.attrs.color === color ? '' : color;
+        this.applyAttrs({ color: next });
+        for (const item of Array.from(swatches.querySelectorAll('.note-block__swatch'))) {
+          item.classList.toggle('is-active', item === swatch && next !== '');
+        }
+      });
+      swatches.appendChild(swatch);
+    }
+    colorRow.append(colorLabel, swatches);
+    panel.appendChild(colorRow);
+
+    // 自定义展示文字: 覆盖卡片摘要 (笔记首行); 留空恢复.
+    const textRow = document.createElement('div');
+    textRow.className = 'note-block__style-row';
+    const textLabel = document.createElement('span');
+    textLabel.className = 'note-block__style-label';
+    textLabel.textContent = tKey('editor.noteBlock.styleText');
+    const textInput = document.createElement('input');
+    textInput.className = 'note-block__style-input';
+    textInput.type = 'text';
+    textInput.placeholder = tKey('editor.noteBlock.styleTextPlaceholder');
+    textInput.value = attrs.customText;
+    textInput.maxLength = 200;
+    const commitText = () => {
+      if (this.destroyed) return;
+      const value = textInput.value.trim();
+      if (value !== this.attrs.customText) this.applyAttrs({ customText: value });
+    };
+    textInput.addEventListener('keydown', (event) => {
+      // 面板内输入不让事件落到编辑器 (stopEvent 已拦, 这里防默认行为).
+      event.stopPropagation();
+      if (event.key === 'Enter') {
+        event.preventDefault();
+        commitText();
+        this.closeStylePanel();
+      } else if (event.key === 'Escape') {
+        event.preventDefault();
+        textInput.value = this.attrs.customText;
+        this.closeStylePanel();
+      }
+    });
+    textInput.addEventListener('blur', commitText);
+    textRow.append(textLabel, textInput);
+    panel.appendChild(textRow);
+
+    this.stylePanel = panel;
+    // 面板必须挂在 body 下: 挂在卡片 wrapper (编辑器 DOM) 内时, 输入框的
+    // 打字/输入法事件会被 ProseMirror 当作文档突变处理, 直接破坏节点.
+    document.body.appendChild(panel);
+    this.positionStylePanel();
+    window.addEventListener('resize', this.handleStylePanelReposition);
+    window.addEventListener('scroll', this.handleStylePanelReposition, true);
+
+    // 点击面板外关闭; 面板与工具条内部点击不关 (便于选色/输入).
+    this.handleStylePanelOutside = (event: PointerEvent) => {
+      const target = event.target;
+      if (target instanceof Node && this.stylePanel?.contains(target)) return;
+      if (target instanceof Node && this.dom.contains(target)) return;
+      commitText();
+      this.closeStylePanel();
+    };
+    document.addEventListener('pointerdown', this.handleStylePanelOutside, true);
+    window.requestAnimationFrame(() => textInput.focus());
+  }
+
+  /** 面板跟随卡片右上角 (工具条下方), 视口内钳制. */
+  private positionStylePanel(): void {
+    if (!this.stylePanel || this.destroyed) return;
+    if (!this.stylePanel.isConnected || !this.dom.isConnected) return;
+    const cardRect = this.dom.getBoundingClientRect();
+    const panelRect = this.stylePanel.getBoundingClientRect();
+    const margin = 8;
+    const preferredLeft = cardRect.right - panelRect.width;
+    const left = Math.min(
+      Math.max(margin, preferredLeft),
+      Math.max(margin, window.innerWidth - panelRect.width - margin),
+    );
+    // 默认贴卡片顶部 (工具条下方); 底部放不下时翻到卡片上方.
+    let top = cardRect.top + 2.2 * 16;
+    if (top + panelRect.height > window.innerHeight - margin) {
+      top = Math.max(margin, cardRect.top - panelRect.height - 8);
+    }
+    this.stylePanel.style.left = `${Math.round(left)}px`;
+    this.stylePanel.style.top = `${Math.round(top)}px`;
+  }
+
+  private handleStylePanelReposition = (): void => {
+    this.positionStylePanel();
+  };
+
+  private closeStylePanel(): void {
+    window.removeEventListener('resize', this.handleStylePanelReposition);
+    window.removeEventListener('scroll', this.handleStylePanelReposition, true);
+    if (this.handleStylePanelOutside) {
+      document.removeEventListener('pointerdown', this.handleStylePanelOutside, true);
+      this.handleStylePanelOutside = null;
+    }
+    this.stylePanel?.remove();
+    this.stylePanel = null;
+  }
+
   // ── Data ────────────────────────────────────────────────────────────────
+
+  /** 实例级请求序号: 只作废本节点的过期响应; 类级序号会让并发加载的
+   * 其他卡片把先返回的响应误判为过期 (表现为偶发丢封面/摘要). */
+  private loadSeq = 0;
 
   private async loadData(): Promise<void> {
     const attrs = this.attrs;
     const key = locatorKey(attrs);
     if (this.dataKey === key) return;
-    const requestId = ++NoteReferenceBlockView.loadSequence;
+    const requestId = ++this.loadSeq;
     const previous = this.dataPromise;
     this.dataKey = key;
     this.dataPromise = (async () => {
@@ -340,15 +515,13 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
       if (this.destroyed || locatorKey(this.attrs) !== key) return;
       try {
         const data = await loadNoteReferencePreviewData(attrs, tKey('editor.noteLink.untitled'));
-        if (this.destroyed || requestId !== NoteReferenceBlockView.loadSequence) return;
+        if (this.destroyed || requestId !== this.loadSeq) return;
         this.data = data;
         this.renderCard();
       } catch { /* 卡片保持 attrs 标题; hover 预览自行兜底. */ }
     })();
     await this.dataPromise;
   }
-
-  private static loadSequence = 0;
 
   private scheduleStaleCheck(): void {
     const attrs = this.attrs;
@@ -456,6 +629,7 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     this.destroyed = true;
     this.dom.removeEventListener('mousedown', this.handleMouseDown);
     this.dom.removeEventListener('dblclick', this.handleDoubleClick);
+    this.closeStylePanel();
     this.previewController.dispose();
   }
 }
@@ -494,6 +668,8 @@ export const NoteReferenceBlock = TiptapNode.create({
       heading: { default: null },
       stale: { default: false },
       layout: { default: 'card' },
+      color: { default: '' },
+      customText: { default: '' },
     };
   },
 
@@ -512,6 +688,8 @@ export const NoteReferenceBlock = TiptapNode.create({
           heading: null,
           stale: el.getAttribute('data-stale') === 'true',
           layout: (el.getAttribute('data-layout') ?? undefined) as NoteReferenceBlockLayout | undefined,
+          color: el.getAttribute('data-color') || '',
+          customText: el.getAttribute('data-custom-text') || '',
         });
         return attrs;
       },
@@ -531,6 +709,8 @@ export const NoteReferenceBlock = TiptapNode.create({
       'data-original-path': attrs.originalPath ?? '',
       'data-link-target': attrs.linkTarget ?? '',
       'data-layout': attrs.layout,
+      ...(attrs.color ? { 'data-color': attrs.color } : {}),
+      ...(attrs.customText ? { 'data-custom-text': attrs.customText } : {}),
       ...(attrs.stale ? { 'data-stale': 'true' } : {}),
       contenteditable: 'false',
       class: 'editor-note-reference-block',

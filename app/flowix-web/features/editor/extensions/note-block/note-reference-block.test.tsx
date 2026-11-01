@@ -26,6 +26,8 @@ const blockAttrs = {
   heading: null,
   stale: false,
   layout: 'cardLarge',
+  color: '',
+  customText: '',
 };
 
 const editors: Editor[] = [];
@@ -66,7 +68,7 @@ function mountBlock(overrides: Record<string, unknown> = {}): Editor {
 
 describe('noteReferenceBlock markdown', () => {
   it('parses ::notecard back into the block node and serializes losslessly', () => {
-    vi.spyOn(notes, 'getIndexed').mockRejectedValue(new Error('unavailable'));
+    vi.spyOn(notes, 'getIndexed').mockResolvedValue(null as never);
     const markdown = `Before\n\n${NOTE_BLOCK_MARKER}${JSON.stringify(blockAttrs)}\n\nAfter`;
     const element = document.createElement('div');
     document.body.append(element);
@@ -91,7 +93,7 @@ describe('noteReferenceBlock markdown', () => {
   });
 
   it('keeps JSON payloads whose strings contain closing braces', () => {
-    vi.spyOn(notes, 'getIndexed').mockRejectedValue(new Error('unavailable'));
+    vi.spyOn(notes, 'getIndexed').mockResolvedValue(null as never);
     const tricky = {
       ...blockAttrs,
       title: 'Plan } not a terminator {',
@@ -127,7 +129,7 @@ describe('noteReferenceBlock markdown', () => {
 
 describe('noteReferenceBlock node view', () => {
   it('renders title and async preview, and switches layout from the hover toolbar', async () => {
-    vi.spyOn(notes, 'getIndexed').mockResolvedValue({
+    const getIndexed = vi.spyOn(notes, 'getIndexed').mockResolvedValue({
       relativePath: 'Projects/Plan.md', title: 'Plan', preview: 'The body preview', thumbnail: null,
       tags: [], todos: [], agents: [], createdAt: 0, updatedAt: 0,
       favorited: false, icon: null, colors: [], properties: {},
@@ -151,8 +153,10 @@ describe('noteReferenceBlock node view', () => {
     });
     expect(wrapper.dataset.layout).toBe('line');
     expect(wrapper.querySelector('.note-block__banner')).toBeNull();
-    // 预览数据按 locator 缓存, 布局切换不重新请求.
-    expect(notes.getIndexed).toHaveBeenCalledTimes(1);
+    // 预览数据按 locator 缓存, 布局切换不重新请求 (并发后台校验不算).
+    const callsAfterLoad = getIndexed.mock.calls.length;
+    await new Promise((resolve) => setTimeout(resolve, 120));
+    expect(getIndexed.mock.calls.length).toBe(callsAfterLoad);
   });
 
   it('opens the hover preview popover with the loaded note data', async () => {
@@ -169,13 +173,35 @@ describe('noteReferenceBlock node view', () => {
     await vi.waitFor(() => {
       const popover = document.querySelector<HTMLElement>('.note-reference-preview');
       expect(popover?.hidden).toBe(false);
-      expect(document.querySelector('.note-reference-preview__text')?.textContent).toBe('The body preview');
+      // 全文渲染不可用时内容区退回纯文本摘要.
+      expect(document.querySelector('.note-reference-preview__content')?.textContent).toBe('The body preview');
     }, { timeout: 3000 });
 
     wrapper.dispatchEvent(new window.PointerEvent('pointerleave', { bubbles: false }));
     await vi.waitFor(() => {
       expect(document.querySelector<HTMLElement>('.note-reference-preview')?.hidden).toBe(true);
     }, { timeout: 3000 });
+  });
+
+  it('renders the full note into the scrollable hover preview when readable', async () => {
+    vi.spyOn(notes, 'getIndexed').mockResolvedValue({
+      relativePath: 'Projects/Plan.md', title: 'Plan', preview: '', thumbnail: null,
+      tags: [], todos: [], agents: [], createdAt: 0, updatedAt: 0,
+      favorited: false, icon: '📘', colors: [], properties: {},
+    });
+    vi.spyOn(notes, 'readDocument').mockResolvedValue('# 渲染标题\n\n正文段落。');
+
+    const editor = mountBlock();
+    const wrapper = editor.view.dom.querySelector<HTMLElement>('.editor-note-reference-block')!;
+    wrapper.dispatchEvent(new window.PointerEvent('pointerenter', { bubbles: false }));
+
+    await vi.waitFor(() => {
+      const content = document.querySelector<HTMLElement>('.note-reference-preview__content');
+      expect(content?.querySelector('h1')?.textContent).toBe('渲染标题');
+      expect(content?.textContent).toContain('正文段落。');
+    }, { timeout: 3000 });
+    // 卡片摘要取自全文纯文本, 首行特殊块不再一刀切丢内容.
+    expect(wrapper.querySelector('.note-block__preview')?.textContent).toContain('渲染标题');
   });
 
   it('shows the note emoji icon in the card and the preview popover', async () => {
@@ -214,7 +240,7 @@ describe('noteReferenceBlock row layout', () => {
   }
 
   it('computes consecutive runs of large cards only', () => {
-    vi.spyOn(notes, 'getIndexed').mockRejectedValue(new Error('unavailable'));
+    vi.spyOn(notes, 'getIndexed').mockResolvedValue(null as never);
     const large = { type: 'noteReferenceBlock', attrs: { ...blockAttrs, layout: 'cardLarge' } };
     const small = { type: 'noteReferenceBlock', attrs: { ...blockAttrs, layout: 'card' } };
     const editor = mountDoc([
@@ -236,7 +262,7 @@ describe('noteReferenceBlock row layout', () => {
   });
 
   it('writes run data attributes onto large-card DOM only', async () => {
-    vi.spyOn(notes, 'getIndexed').mockRejectedValue(new Error('unavailable'));
+    vi.spyOn(notes, 'getIndexed').mockResolvedValue(null as never);
     const large = { type: 'noteReferenceBlock', attrs: { ...blockAttrs, layout: 'cardLarge' } };
     const small = { type: 'noteReferenceBlock', attrs: { ...blockAttrs, layout: 'card' } };
     const editor = mountDoc([{ type: 'paragraph' }, large, large, small]);
@@ -254,12 +280,55 @@ describe('noteReferenceBlock row layout', () => {
   });
 
   it('keeps small-card rows full width: stacked cards do not merge into one run', () => {
-    vi.spyOn(notes, 'getIndexed').mockRejectedValue(new Error('unavailable'));
+    vi.spyOn(notes, 'getIndexed').mockResolvedValue(null as never);
     const small = { type: 'noteReferenceBlock', attrs: { ...blockAttrs, layout: 'card' } };
     const editor = mountDoc([{ type: 'paragraph' }, small, small]);
     const runs = computeNoteBlockRuns(editor.state.doc);
     expect(runs).toEqual([]);
     const wrappers = [...editor.view.dom.querySelectorAll<HTMLElement>('.editor-note-reference-block')];
     expect(wrappers.map((w) => w.dataset.runCount)).toEqual([undefined, undefined]);
+  });
+});
+
+describe('noteReferenceBlock style panel', () => {
+  it('configures fill color and custom display text from the toolbar', async () => {
+    vi.spyOn(notes, 'getIndexed').mockResolvedValue({
+      relativePath: 'Projects/Plan.md', title: 'Plan', preview: 'The body preview', thumbnail: null,
+      tags: [], todos: [], agents: [], createdAt: 0, updatedAt: 0,
+      favorited: false, icon: null, colors: [], properties: {},
+    });
+
+    const editor = mountBlock({ layout: 'card' });
+    const wrapper = editor.view.dom.querySelector<HTMLElement>('.editor-note-reference-block')!;
+
+    // 铅笔按钮现在是"卡片样式"入口而非打开笔记.
+    const styleButton = wrapper.querySelector<HTMLButtonElement>('.note-block__toolbar-button[data-action="style"]')!;
+    expect(styleButton.getAttribute('aria-label')).toBe('卡片样式');
+    // 面板挂在 body 下 (脱离编辑器 DOM, 输入不会被 ProseMirror 当作文档突变).
+    expect(document.querySelector('.note-block__style-panel')).toBeNull();
+    styleButton.click();
+    const panel = document.querySelector<HTMLElement>('.note-block__style-panel')!;
+    expect(panel).not.toBeNull();
+
+    // 选填充色 → attrs.color 与卡片 data-color 同步.
+    const yellow = panel.querySelector<HTMLButtonElement>('.note-block__swatch[data-color="yellow"]')!;
+    yellow.click();
+    await vi.waitFor(() => {
+      const node = (editor.getJSON().content ?? []).find(item => item.type === 'noteReferenceBlock');
+      expect(node?.attrs).toMatchObject({ color: 'yellow' });
+    });
+    expect(wrapper.dataset.color).toBe('yellow');
+
+    // 自定义展示文字 (Enter 提交并关闭面板) → 摘要行替换为自定义文字.
+    const input = panel.querySelector<HTMLInputElement>('.note-block__style-input')!;
+    input.value = '自定义摘要文字';
+    input.dispatchEvent(new window.Event('input', { bubbles: true }));
+    input.dispatchEvent(new window.KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true }));
+    await vi.waitFor(() => {
+      const node = (editor.getJSON().content ?? []).find(item => item.type === 'noteReferenceBlock');
+      expect(node?.attrs).toMatchObject({ customText: '自定义摘要文字' });
+    });
+    expect(wrapper.querySelector('.note-block__preview')?.textContent).toBe('自定义摘要文字');
+    expect(document.querySelector('.note-block__style-panel')).toBeNull();
   });
 });

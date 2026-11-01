@@ -3,7 +3,10 @@ import { resolveNoteCoverUrl } from '@features/document/components/note-cover/co
 
 export interface NoteReferencePreviewData {
   title: string;
+  /** 渲染后的纯文本摘要 (卡片摘要行用). */
   preview: string;
+  /** 完整笔记渲染出的只读 HTML; 空串表示渲染不可用 (弹窗退回摘要展示). */
+  contentHtml: string;
   thumbnail: string | null;
   /** 原笔记的 emoji 图标 (属性面板 icon); 无图标时为 null. */
   icon: string | null;
@@ -50,7 +53,7 @@ export class NoteReferencePreviewController {
   private popover: HTMLDivElement | null = null;
   private title: HTMLElement | null = null;
   private icon: HTMLElement | null = null;
-  private text: HTMLElement | null = null;
+  private content: HTMLElement | null = null;
   private image: HTMLImageElement | null = null;
   private openButton: HTMLButtonElement | null = null;
   private isOpen = false;
@@ -174,8 +177,9 @@ export class NoteReferencePreviewController {
     icon.hidden = true;
     const title = document.createElement('div');
     title.className = 'note-reference-preview__title';
-    const text = document.createElement('div');
-    text.className = 'note-reference-preview__text';
+    const content = document.createElement('div');
+    // 完整笔记只读内容; 内层 DOM 链与编辑器一致, 让编辑器样式直接生效.
+    content.className = 'note-reference-preview__content';
 
     const openButton = document.createElement('button');
     openButton.type = 'button';
@@ -189,14 +193,14 @@ export class NoteReferencePreviewController {
     });
 
     titleRow.append(icon, title, openButton);
-    body.append(titleRow, text);
+    body.append(titleRow, content);
     popover.append(image, body);
     document.body.append(popover);
 
     this.popover = popover;
     this.icon = icon;
     this.title = title;
-    this.text = text;
+    this.content = content;
     this.image = image;
     this.openButton = openButton;
   }
@@ -261,12 +265,13 @@ export class NoteReferencePreviewController {
   }
 
   private loadAndRender(): void {
-    if (!this.isOpen || !this.text || !this.openButton || !this.popover) return;
+    if (!this.isOpen || !this.content || !this.openButton || !this.popover) return;
     const requestId = ++this.requestId;
     this.title!.textContent = this.options.getFallbackTitle();
     if (this.icon) this.icon.hidden = true;
     this.popover.setAttribute('aria-label', this.title!.textContent ?? '');
-    this.text.textContent = this.options.t('editor.noteLink.previewLoading');
+    this.content.textContent = this.options.t('editor.noteLink.previewLoading');
+    this.content.classList.add('is-placeholder');
     this.openButton.disabled = true;
     if (this.image) this.image.hidden = true;
     this.position();
@@ -274,7 +279,7 @@ export class NoteReferencePreviewController {
     void this.loadCachedData().then((data) => {
       if (this.isDisposed || !this.isOpen || requestId !== this.requestId) return;
       if (!data) {
-        this.text!.textContent = this.options.t('editor.noteLink.previewUnavailable');
+        this.content!.textContent = this.options.t('editor.noteLink.previewUnavailable');
         this.openButton!.disabled = true;
       } else {
         if (this.icon) {
@@ -287,8 +292,21 @@ export class NoteReferencePreviewController {
         }
         this.title!.textContent = data.title;
         this.popover!.setAttribute('aria-label', data.title);
-        this.text!.textContent = data.preview.trim()
-          || this.options.t('editor.noteLink.previewEmpty');
+        // 完整笔记渲染 HTML (只读管线输出, 非用户原样注入); 渲染不可用时
+        // 退回纯文本摘要, 二者都为空才是真正的"暂无预览内容".
+        const html = data.contentHtml.trim();
+        if (html) {
+          this.content!.classList.remove('is-placeholder');
+          this.content!.innerHTML = `
+            <div class="note-reference-preview__doc">
+              <div class="editor-document-body">
+                <div class="ProseMirror tiptap" aria-readonly="true">${html}</div>
+              </div>
+            </div>`;
+        } else {
+          this.content!.classList.add('is-placeholder');
+          this.content!.textContent = data.preview.trim() || this.options.t('editor.noteLink.previewEmpty');
+        }
         this.openButton!.disabled = false;
         const thumbnailUrl = noteReferenceThumbnailUrl(data.thumbnail, data.notebookPath);
         if (thumbnailUrl && this.image) {
@@ -299,7 +317,7 @@ export class NoteReferencePreviewController {
       this.position();
     }).catch(() => {
       if (this.isDisposed || !this.isOpen || requestId !== this.requestId) return;
-      this.text!.textContent = this.options.t('editor.noteLink.previewUnavailable');
+      this.content!.textContent = this.options.t('editor.noteLink.previewUnavailable');
       this.openButton!.disabled = true;
       this.position();
     });

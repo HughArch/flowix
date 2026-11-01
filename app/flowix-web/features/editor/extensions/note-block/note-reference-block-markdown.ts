@@ -18,6 +18,10 @@ export interface NoteReferenceBlockAttrs {
   heading: string | null;
   stale: boolean;
   layout: NoteReferenceBlockLayout;
+  /** 卡片填充色 (NoteColor 小写串; 空串 = 不填充). */
+  color: string;
+  /** 自定义展示文字: 覆盖卡片摘要 (笔记首行); 空串 = 使用首行. */
+  customText: string;
 }
 
 export const DEFAULT_NOTE_BLOCK_LAYOUT: NoteReferenceBlockLayout = 'card';
@@ -56,6 +60,8 @@ export function normalizeNoteBlockAttrs(attrs: Partial<NoteReferenceBlockAttrs> 
     heading: normalizeNullableText(attrs?.heading),
     stale: attrs?.stale === true,
     layout: normalizeNoteBlockLayout(attrs?.layout),
+    color: normalizeText(attrs?.color),
+    customText: normalizeText(attrs?.customText),
   };
 }
 
