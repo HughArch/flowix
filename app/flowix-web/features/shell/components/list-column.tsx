@@ -88,16 +88,19 @@ export function ListColumn({
       onPointerDown={onPointerDown}
     >
       <div
-        className={mobileFullWidth
-          ? // 抽屉整体滑动, 内容保持不透明 (淡出只服务于停靠模式的宽度裁切)。
-            'relative h-full w-full overflow-hidden bg-[var(--list-bg)]'
-          : cn(
-              'relative h-full overflow-hidden bg-[var(--list-bg)]',
-              // 收起/展开期间内容淡出淡入, 配合外层宽度过渡, 避免
-              // 列表被生硬裁切; 内容宽度固定, 宽度动画不再逐帧重排。
-              'transition-opacity duration-150 motion-reduce:transition-none',
-              hidden ? 'opacity-0' : 'opacity-100',
-            )}
+        className={cn(
+          'flex min-w-0 flex-col',
+          mobileFullWidth
+            ? // 抽屉整体滑动, 内容保持不透明 (淡出只服务于停靠模式的宽度裁切)。
+              'relative h-full w-full overflow-hidden bg-[var(--list-bg)]'
+            : cn(
+                'relative h-full overflow-hidden bg-[var(--list-bg)]',
+                // 收起/展开期间内容淡出淡入, 配合外层宽度过渡, 避免
+                // 列表被生硬裁切; 内容宽度固定, 宽度动画不再逐帧重排。
+                'transition-opacity duration-150 motion-reduce:transition-none',
+                hidden ? 'opacity-0' : 'opacity-100',
+              ),
+        )}
         style={mobileFullWidth ? undefined : { width: memoColWidth }}
       >
         <ListColumnTitlebar
