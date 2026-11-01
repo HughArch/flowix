@@ -3,20 +3,17 @@
 import { SidebarToggleIcon } from '@shared/icons/sidebar-toggle-icon';
 import { Tooltip } from '@shared/ui/tooltip';
 import { useI18n } from '@/lib/i18n';
-import { CaretDoubleLeftIcon } from '@phosphor-icons/react';
 import searchIcon from '@/assets/search.svg?raw';
 import { NotebookIconMenu } from './notebook-icon-menu';
 import type { Notebook } from '../store';
 
 interface MemoListTitlebarMacProps {
-  isPreview?: boolean;
   selectedNotebook: Notebook | null;
   onCollapseMemoList: () => void;
   onOpenPreferences: (tab?: string) => void;
 }
 
 export function MemoListTitlebarMac({
-  isPreview = false,
   selectedNotebook,
   onCollapseMemoList,
   onOpenPreferences,
@@ -28,7 +25,7 @@ export function MemoListTitlebarMac({
       className="relative h-12 pr-3.5 shrink-0 flex items-center justify-between gap-1"
     >
       <div className="ml-[82px] flex items-center">
-        {!isPreview && selectedNotebook && (
+        {selectedNotebook && (
           <NotebookIconMenu
             onOpenPreferences={onOpenPreferences}
             buttonClassName="ml-1 h-6 w-6 [-webkit-app-region:no-drag]"
@@ -36,48 +33,32 @@ export function MemoListTitlebarMac({
         )}
       </div>
       <div className="flex items-center gap-4">
-        {!isPreview && (
-          <Tooltip content={t("memo.list.searchTooltip")} shortcut="palette.search">
-            <button
-              type="button"
-              onClick={() => window.dispatchEvent(new CustomEvent('flowix:open-palette'))}
-              aria-label={t("memo.list.search")}
-              className="w-5 h-5 flex items-center justify-center text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors [-webkit-app-region:no-drag]"
-            >
-              <span
-                className="flex h-5 w-5 items-center justify-center [&>svg]:h-5 [&>svg]:w-5"
-                dangerouslySetInnerHTML={{ __html: searchIcon }}
-              />
-            </button>
-          </Tooltip>
-        )}
-        {!isPreview && (
-          <Tooltip
-            content={t("memo.list.collapseMemoListTooltip")}
-            shortcut="panel.memoList.toggle"
+        <Tooltip content={t("memo.list.searchTooltip")} shortcut="palette.search">
+          <button
+            type="button"
+            onClick={() => window.dispatchEvent(new CustomEvent('flowix:open-palette'))}
+            aria-label={t("memo.list.search")}
+            className="w-5 h-5 flex items-center justify-center text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors [-webkit-app-region:no-drag]"
           >
-            <button
-              type="button"
-              onClick={onCollapseMemoList}
-              aria-label={t("memo.list.collapseMemoList")}
-              className="w-5 h-5 flex items-center justify-center text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors [-webkit-app-region:no-drag]"
-            >
-              <SidebarToggleIcon className="w-5 h-5" />
-            </button>
-          </Tooltip>
-        )}
-        {isPreview && (
-          <Tooltip content={t("memo.list.collapseMemoListTooltip")}>
-            <button
-              type="button"
-              onClick={onCollapseMemoList}
-              aria-label={t("memo.list.collapseMemoList")}
-              className="w-5 h-5 flex items-center justify-center text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors [-webkit-app-region:no-drag]"
-            >
-              <CaretDoubleLeftIcon className="h-4 w-4" weight="regular" />
-            </button>
-          </Tooltip>
-        )}
+            <span
+              className="flex h-5 w-5 items-center justify-center [&>svg]:h-5 [&>svg]:w-5"
+              dangerouslySetInnerHTML={{ __html: searchIcon }}
+            />
+          </button>
+        </Tooltip>
+        <Tooltip
+          content={t("memo.list.collapseMemoListTooltip")}
+          shortcut="panel.memoList.toggle"
+        >
+          <button
+            type="button"
+            onClick={onCollapseMemoList}
+            aria-label={t("memo.list.collapseMemoList")}
+            className="w-5 h-5 flex items-center justify-center text-[var(--muted-foreground)] hover:text-[var(--foreground)] transition-colors [-webkit-app-region:no-drag]"
+          >
+            <SidebarToggleIcon className="w-5 h-5" />
+          </button>
+        </Tooltip>
       </div>
     </div>
   );

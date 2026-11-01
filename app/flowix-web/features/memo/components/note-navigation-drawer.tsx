@@ -18,8 +18,6 @@ interface NoteNavigationDrawerProps {
   onOpenPlugin: (plugin: PluginDescriptor) => void | Promise<void>;
   onRequestClose: () => void;
   onCloseComplete: () => void;
-  onCompanionSurfaceEnter?: () => void;
-  onCompanionSurfaceLeave?: () => void;
 }
 
 /**
@@ -35,8 +33,6 @@ export function NoteNavigationDrawer({
   onOpenPlugin,
   onRequestClose,
   onCloseComplete,
-  onCompanionSurfaceEnter,
-  onCompanionSurfaceLeave,
 }: NoteNavigationDrawerProps) {
   const { t } = useI18n();
   const drawerRef = useRef<HTMLElement>(null);
@@ -110,8 +106,6 @@ export function NoteNavigationDrawer({
           phase === 'open' && 'shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.16)]',
         )}
         onTransitionEnd={handleTransitionEnd}
-        onMouseEnter={onCompanionSurfaceEnter}
-        onMouseLeave={onCompanionSurfaceLeave}
       >
         <NoteNavigationPanel
           selectedNotebook={selectedNotebook}

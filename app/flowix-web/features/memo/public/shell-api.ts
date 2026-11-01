@@ -6,7 +6,6 @@ export { MemoList } from '@features/memo/components/memo-list';
 export { useNotebookNoteIcons } from '@features/memo/hooks/use-notebook-note-icons';
 export { NotebookNoteTabIcon } from '@features/memo/components/notebook-note-tab-icon';
 export { NotebookTreeFileIcon } from '@features/memo/components/notebook-tree-file-icon';
-export { useMemoListHoverPreview } from '@features/memo/components/use-memo-list-hover-preview';
 export { MemoListTitlebarWin } from '@features/memo/components/memo-list-titlebar-win';
 export { MemoListTitlebarMac } from '@features/memo/components/memo-list-titlebar-mac';
 export { NoteNavigationPanel } from '@features/memo/components/note-navigation-panel';

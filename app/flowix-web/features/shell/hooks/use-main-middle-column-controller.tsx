@@ -5,10 +5,6 @@ import {
   useState,
   type ReactNode,
 } from 'react';
-import {
-  useMemoListHoverPreview,
-  type NoteNavigationDrawerPhase,
-} from '@features/memo/public/shell-api';
 import { createLogger } from '@/lib/logger';
 import { useI18n } from '@/lib/i18n';
 import { ListSurfaceLoadingState } from '@shared/ui/list-surface';
@@ -38,14 +34,6 @@ function AgentConversationListLoadingFallback() {
 export interface MainMiddleColumnController {
   shouldRenderAgentConversationList: boolean;
   showMemoListSurface: boolean;
-  memoListPreviewVisible: boolean;
-  memoListPreviewPhase: 'closed' | 'opening' | 'open' | 'closing';
-  handleMemoListPreviewTriggerEnter(): void;
-  handleMemoListPreviewTriggerLeave(): void;
-  handleMemoListPreviewEnter(): void;
-  handleMemoListPreviewLeave(): void;
-  handleMemoListPreviewCompanionEnter(): void;
-  handleMemoListPreviewCompanionLeave(): void;
   agentConversationListNode: ReactNode;
 }
 
@@ -53,12 +41,10 @@ export function useMainMiddleColumnController({
   isAgentConversationView,
   onConversationListBack,
   isMemoListHidden,
-  noteNavigationPhase,
 }: {
   isAgentConversationView: boolean;
   onConversationListBack: () => void;
   isMemoListHidden: boolean;
-  noteNavigationPhase: NoteNavigationDrawerPhase;
 }): MainMiddleColumnController {
   const [agentConversationListMounted, setAgentConversationListMounted] = useState(
     () => isAgentConversationView,
@@ -77,13 +63,10 @@ export function useMainMiddleColumnController({
     return () => window.clearTimeout(timer);
   }, []);
 
-  const preview = useMemoListHoverPreview(isMemoListHidden, noteNavigationPhase);
-  const memoListPreviewVisible = isMemoListHidden && preview.phase !== 'closed';
   // The conversation list remains mounted to preserve its paged snapshot, but
-  // its transient portal-backed menus must be closed whenever neither the
-  // sidebar nor its hover preview is currently visible.
-  const agentConversationListActive = isAgentConversationView
-    && (!isMemoListHidden || memoListPreviewVisible);
+  // its transient portal-backed menus must be closed whenever the sidebar is
+  // not visible.
+  const agentConversationListActive = isAgentConversationView && !isMemoListHidden;
   const shouldRenderAgentConversationList = agentConversationListMounted || isAgentConversationView;
 
   return {
@@ -91,14 +74,6 @@ export function useMainMiddleColumnController({
     // The selected surface follows the store immediately; a lazy chunk uses
     // its own Suspense fallback instead of keeping the previous notes visible.
     showMemoListSurface: !isAgentConversationView,
-    memoListPreviewVisible,
-    memoListPreviewPhase: preview.phase,
-    handleMemoListPreviewTriggerEnter: preview.handleTriggerEnter,
-    handleMemoListPreviewTriggerLeave: preview.handleTriggerLeave,
-    handleMemoListPreviewEnter: preview.handlePreviewEnter,
-    handleMemoListPreviewLeave: preview.handlePreviewLeave,
-    handleMemoListPreviewCompanionEnter: preview.handleCompanionSurfaceEnter,
-    handleMemoListPreviewCompanionLeave: preview.handleCompanionSurfaceLeave,
     agentConversationListNode: (
       <Suspense fallback={<AgentConversationListLoadingFallback />}>
         <AgentConversationList isActive={agentConversationListActive} onBack={onConversationListBack} />
