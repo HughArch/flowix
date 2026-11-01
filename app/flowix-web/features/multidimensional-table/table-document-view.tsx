@@ -35,6 +35,7 @@ import type { PropertyFieldConfig } from '@/lib/constants';
 import { compareAndPatchDocumentProperties, removeDocumentProperty, setDocumentProperties } from '@features/document/public/path-properties';
 import { PROPERTY_URL_RE } from '@features/document/properties/property-type';
 import { decodeStorageKey, resolveAttachmentUrl } from '@features/editor/extensions/attachment-link/utils';
+import { resolveNoteCoverUrl } from '@features/document/components/note-cover/cover-url';
 import { getAllPresets, resolvePropertyPreset, resolvePropertyDisplayName, type PropertyPreset } from '@features/document/properties/presets';
 import { usePropertyPresets } from '@features/properties/public-api';
 import { createFileBrowserTarget } from '@features/workspace/public/browser-column-api';
@@ -275,14 +276,6 @@ function noteThumbnailUrl(thumbnail: string | null | undefined, notebookPath?: s
   if (!thumbnail) return null;
   const storageKey = decodeStorageKey(thumbnail);
   return storageKey ? resolveAttachmentUrl(storageKey, notebookPath) : thumbnail;
-}
-
-/** Cover keys persisted by the picker are plain `attachments/...` paths. */
-function noteCoverUrl(cover: string | null | undefined, notebookPath?: string | null): string | null {
-  if (!cover) return null;
-  if (/^https?:\/\//i.test(cover)) return cover;
-  const storageKey = decodeStorageKey(cover) ?? cover;
-  return resolveAttachmentUrl(storageKey, notebookPath);
 }
 
 function isoDate(date: Date): string {
@@ -3367,7 +3360,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
           const path = imagePaths(notePropertyEditorValue(noteForRecord(record), field))[0];
           return path ? imageUrls[`${record.id}:${field.id}:${path}`] ?? null : null;
         }}
-        noteCover={(record) => noteCoverUrl(noteForRecord(record)?.cover ?? null, notebookPath)}
+        noteCover={(record) => resolveNoteCoverUrl(noteForRecord(record)?.cover ?? null, notebookPath)}
         noteThumbnail={(record) => noteThumbnailUrl(noteForRecord(record)?.thumbnail, notebookPath)}
         onOpenRecord={(record, anchorRect) => {
           const note = noteForRecord(record);

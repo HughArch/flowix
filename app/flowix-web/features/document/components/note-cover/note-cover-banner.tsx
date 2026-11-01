@@ -3,8 +3,8 @@ import { ImagePlus } from 'lucide-react';
 import { useI18n } from '@/lib/i18n';
 import { createLogger } from '@/lib/logger';
 import { toast } from '@/lib/toast';
-import { decodeStorageKey, resolveAttachmentUrl } from '@features/editor/extensions/attachment-link/utils';
 import { CoverPickerDialog } from './cover-picker-dialog';
+import { resolveNoteCoverUrl } from './cover-url';
 import { useDocumentCover } from './use-document-cover';
 
 const logger = createLogger('note-cover-banner');
@@ -26,15 +26,7 @@ export function NoteCoverBanner({ path, displayId, editable, getNotebookId, getN
   const { t } = useI18n();
   const { cover, setCover, removeCover } = useDocumentCover(path, displayId);
   const [pickerOpen, setPickerOpen] = useState(false);
-  const coverUrl = useMemo(() => {
-    if (!cover) return null;
-    // Remote cover URLs render as-is; attachment keys resolve against the
-    // notebook root. Keys persisted by this feature are plain
-    // `attachments/...` paths, so `decodeStorageKey` alone is not enough.
-    if (/^https?:\/\//i.test(cover)) return cover;
-    const storageKey = decodeStorageKey(cover) ?? cover;
-    return resolveAttachmentUrl(storageKey, getNotebookPath() ?? undefined);
-  }, [cover, getNotebookPath]);
+  const coverUrl = useMemo(() => resolveNoteCoverUrl(cover, getNotebookPath() ?? undefined), [cover, getNotebookPath]);
 
   const handleRemove = async () => {
     try {
@@ -60,7 +52,7 @@ export function NoteCoverBanner({ path, displayId, editable, getNotebookId, getN
     return (
       <>
         {/* Notion-style hover affordance: zero-footprint until the editor is hovered. */}
-        <div className="pointer-events-none relative z-10 mx-auto -mb-7 flex h-7 w-full max-w-[var(--editor-document-max-width,680px)] justify-end px-10 opacity-0 transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 group-hover/editor:pointer-events-auto group-hover/editor:opacity-100">
+        <div className="pointer-events-none relative z-10 mx-auto -mb-7 flex h-7 w-full max-w-[var(--editor-document-max-width,680px)] shrink-0 justify-end px-10 opacity-0 transition-opacity focus-within:pointer-events-auto focus-within:opacity-100 group-hover/editor:pointer-events-auto group-hover/editor:opacity-100">
           <button
             type="button"
             onClick={() => setPickerOpen(true)}
@@ -77,7 +69,9 @@ export function NoteCoverBanner({ path, displayId, editable, getNotebookId, getN
 
   return (
     <>
-      <div data-note-cover className="group/cover relative w-full overflow-hidden bg-[var(--muted)]">
+      {/* shrink-0: the scroller is a column flex; without it long documents
+          squeeze the banner to zero height (overflow-hidden zeroes min-height). */}
+      <div data-note-cover className="group/cover relative w-full shrink-0 overflow-hidden bg-[var(--muted)]">
         <img
           src={coverUrl}
           alt=""

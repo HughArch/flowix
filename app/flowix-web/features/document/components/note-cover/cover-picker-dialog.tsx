@@ -9,7 +9,7 @@ import { web } from '@platform/tauri/client/general';
 import { Button } from '@shared/ui/button';
 import { Dialog, DialogContent, DialogHeader, DialogTitle } from '@shared/ui/dialog';
 import { Input } from '@shared/ui/input';
-import { BUILTIN_COVER_URLS } from './builtin-covers';
+import { BUILTIN_COVER_OPTIONS } from './builtin-covers';
 import { base64ToBlob, bytesToBase64, cropToCoverBlob, isSvgPayload } from './cover-image';
 
 const logger = createLogger('note-cover-picker');
@@ -63,13 +63,17 @@ export function CoverPickerDialog({ open, onOpenChange, path, getNotebookId, onS
     }
   };
 
-  const selectBuiltinCover = async (url: string) => {
+  /** Built-ins ship with the app: persist a `builtin:` reference, no copy. */
+  const selectBuiltinCover = async (builtinKey: string) => {
     try {
-      const response = await fetch(url);
-      if (!response.ok) throw new Error(`fetch failed: ${response.status}`);
-      await persistCover(await response.blob(), 'jpg');
+      const selected = await onSelect(builtinKey);
+      if (selected) {
+        onOpenChange(false);
+      } else {
+        toast.error(t('document.cover.saveFailed'));
+      }
     } catch (error) {
-      logger.warn('load builtin cover failed', { error, url });
+      logger.warn('select builtin cover failed', { error: error instanceof Error ? error.message : String(error) });
       toast.error(t('document.cover.saveFailed'));
     }
   };
@@ -116,7 +120,7 @@ export function CoverPickerDialog({ open, onOpenChange, path, getNotebookId, onS
 
   return (
     <Dialog open={open} onOpenChange={(next) => { if (!saving && !downloading) onOpenChange(next); }}>
-      <DialogContent className="rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
+      <DialogContent className="max-w-[720px] rounded-xl border border-[var(--border-popup)] bg-[var(--card)] shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]">
         <DialogHeader>
           <DialogTitle>{t('document.cover.pickerTitle')}</DialogTitle>
         </DialogHeader>
@@ -139,16 +143,16 @@ export function CoverPickerDialog({ open, onOpenChange, path, getNotebookId, onS
           ))}
         </div>
         {tab === 'gallery' && (
-          <div className="grid max-h-[300px] grid-cols-4 gap-2 overflow-y-auto pr-1">
-            {BUILTIN_COVER_URLS.map((url) => (
+          <div className="grid max-h-[380px] grid-cols-3 gap-3 overflow-y-auto pr-1">
+            {BUILTIN_COVER_OPTIONS.map((option) => (
               <button
-                key={url}
+                key={option.key}
                 type="button"
                 disabled={saving}
-                onClick={() => void selectBuiltinCover(url)}
-                className="relative aspect-[3/1] overflow-hidden rounded-md border border-[var(--border)] transition-colors hover:border-[var(--brand)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] disabled:opacity-60"
+                onClick={() => void selectBuiltinCover(option.key)}
+                className="relative aspect-[3/1] overflow-hidden rounded-lg border border-[var(--border)] transition-colors hover:border-[var(--brand)] focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[var(--brand)] disabled:opacity-60"
               >
-                <img src={url} alt="" loading="lazy" draggable={false} className="h-full w-full object-cover" />
+                <img src={option.url} alt="" loading="lazy" draggable={false} className="h-full w-full object-cover" />
                 {saving && <span className="absolute inset-0 flex items-center justify-center bg-black/30"><Loader2 className="flowix-spin text-white" aria-hidden="true" /></span>}
               </button>
             ))}
