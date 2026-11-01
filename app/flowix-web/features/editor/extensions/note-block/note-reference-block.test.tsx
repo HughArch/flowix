@@ -145,7 +145,8 @@ describe('noteReferenceBlock node view', () => {
       expect(wrapper.querySelector('.note-block__preview')?.textContent).toBe('The body preview');
     });
 
-    const lineButton = wrapper.querySelector<HTMLButtonElement>('.note-block__toolbar-button[data-action="line"]')!;
+    // 工具条挂 body: 单卡文档中 body 上只有一份工具条.
+    const lineButton = document.body.querySelector<HTMLButtonElement>('.note-block__toolbar-button[data-action="line"]')!;
     lineButton.click();
     await vi.waitFor(() => {
       const node = (editor.getJSON().content ?? []).find(item => item.type === 'noteReferenceBlock');
@@ -271,7 +272,9 @@ describe('noteReferenceBlock row layout', () => {
     expect(wrappers.map((w) => w.dataset.runIndex)).toEqual(['0', '1', undefined]);
     // 大卡片被切换为小卡片后 (布局工具条), run 重新同步:
     // 第一张不再参与, 第二张大卡片自成为单卡 run.
-    const toolbar = wrappers[0].querySelector<HTMLButtonElement>('.note-block__toolbar-button[data-action="card"]')!;
+    // 工具条挂 body, 按 NodeView 创建顺序与卡片一一对应.
+    const toolbar = document.body.querySelectorAll<HTMLButtonElement>('.note-block__toolbar')[0]!
+      .querySelector<HTMLButtonElement>('.note-block__toolbar-button[data-action="card"]')!;
     toolbar.click();
     await vi.waitFor(() => {
       const after = [...editor.view.dom.querySelectorAll<HTMLElement>('.editor-note-reference-block')];
@@ -302,7 +305,7 @@ describe('noteReferenceBlock style panel', () => {
     const wrapper = editor.view.dom.querySelector<HTMLElement>('.editor-note-reference-block')!;
 
     // 铅笔按钮现在是"卡片样式"入口而非打开笔记.
-    const styleButton = wrapper.querySelector<HTMLButtonElement>('.note-block__toolbar-button[data-action="style"]')!;
+    const styleButton = document.body.querySelector<HTMLButtonElement>('.note-block__toolbar-button[data-action="style"]')!;
     expect(styleButton.getAttribute('aria-label')).toBe('卡片样式');
     // 面板挂在 body 下 (脱离编辑器 DOM, 输入不会被 ProseMirror 当作文档突变).
     expect(document.querySelector('.note-block__style-panel')).toBeNull();

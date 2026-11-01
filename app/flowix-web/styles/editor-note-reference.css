@@ -346,73 +346,71 @@
   white-space: nowrap;
 }
 
-/* ── 悬浮工具条: 打开 + 布局切换 (仅可编辑态展示) ── */
-.markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar {
-  position: absolute;
-  /* 高于悬浮预览弹窗 (.note-reference-preview, z-index 1000, 挂 body):
-   * 两者同处根层叠上下文 (.editor-content 无 z-index 不创建),
-   * 工具条必须始终在最上层可点. */
+/* ── 悬浮工具条: 卡片样式 + 布局切换 (仅可编辑态展示) ──
+ * 挂 body (fixed, JS 跟随卡片右上角): .markdown-editor 带 isolation: isolate,
+ * 编辑器内部是独立层叠上下文, 工具条 z-index 再高也压不过挂 body 的预览弹窗;
+ * 挂 body 后与弹窗同层比较, 1001 > 1000 → 工具条始终在最上层可点. */
+.note-block__toolbar {
+  position: fixed;
   z-index: 1001;
-  top: -0.8rem;
-  right: 0.5rem;
   display: flex;
   align-items: center;
-  gap: 0.125rem;
-  padding: 0.125rem;
-  border: 1px solid var(--border);
-  border-radius: 0.5rem;
-  background: var(--input-bg, var(--document-bg));
-  box-shadow: 0 2px 10px -2px rgb(0 0 0 / 18%);
+  gap: 2px;
+  padding: 3px;
+  border: 1px solid color-mix(in oklch, var(--border) 70%, transparent);
+  border-radius: 8px;
+  /* 毛玻璃: 半透明底 + 背景模糊, 贴近原生悬浮工具条的精致质感. */
+  background: color-mix(in srgb, var(--input-bg, var(--document-bg)) 86%, transparent);
+  backdrop-filter: blur(10px) saturate(1.15);
+  -webkit-backdrop-filter: blur(10px) saturate(1.15);
+  box-shadow:
+    0 1px 2px rgb(0 0 0 / 5%),
+    0 4px 14px -4px rgb(0 0 0 / 12%);
   opacity: 0;
   pointer-events: none;
   transition: opacity 0.12s ease;
 }
 
-.markdown-editor
-  .tiptap:not([contenteditable='false'])
-  .editor-note-reference-block:hover .note-block__toolbar,
-.markdown-editor
-  .tiptap:not([contenteditable='false'])
-  .editor-note-reference-block.is-selected .note-block__toolbar {
+.note-block__toolbar.is-visible {
   opacity: 1;
   pointer-events: auto;
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar-button {
+.note-block__toolbar .note-block__toolbar-button {
   display: inline-flex;
   align-items: center;
   justify-content: center;
-  width: 1.65rem;
-  height: 1.65rem;
+  width: 1.5rem;
+  height: 1.5rem;
   padding: 0;
   border: 0;
-  border-radius: 0.35rem;
+  border-radius: 5px;
   background: transparent;
   color: var(--muted-foreground);
   cursor: pointer;
   transition: background-color 0.12s ease, color 0.12s ease;
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar-button svg {
-  width: 0.95rem;
-  height: 0.95rem;
+.note-block__toolbar .note-block__toolbar-button svg {
+  width: 0.9rem;
+  height: 0.9rem;
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar-button:hover {
+.note-block__toolbar .note-block__toolbar-button:hover {
   background: var(--muted);
   color: var(--foreground);
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar-button.is-active {
+.note-block__toolbar .note-block__toolbar-button.is-active {
   background: color-mix(in oklch, var(--document-link) 12%, transparent);
   color: var(--document-link);
 }
 
-.markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar-separator {
+.note-block__toolbar .note-block__toolbar-separator {
   width: 1px;
-  height: 1rem;
-  margin: 0 0.125rem;
-  background: var(--border);
+  height: 0.85rem;
+  margin: 0 2px;
+  background: color-mix(in oklch, var(--border) 75%, transparent);
 }
 
 /* ── 卡片样式面板 (工具条铅笔按钮): 填充颜色 + 自定义展示文字 ──
@@ -420,7 +418,7 @@
  * 位置由 NodeView 跟随卡片右上角计算. */
 .note-block__style-panel {
   position: fixed;
-  z-index: 1000;
+  z-index: 1002;
   display: flex;
   flex-direction: column;
   gap: 0.5rem;

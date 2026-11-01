@@ -174,18 +174,33 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     this.dom.contentEditable = 'false';
     this.dom.addEventListener('mousedown', this.handleMouseDown);
     this.dom.addEventListener('dblclick', this.handleDoubleClick);
-
-    this.dom.appendChild(this.createToolbar());
+    // 悬浮工具条挂 body: .markdown-editor 带 isolation: isolate, 编辑器内部
+    // 是独立层叠上下文, 工具条 z-index 再高也压不过挂 body 的预览弹窗;
+    // 挂 body 后与弹窗同层比较 (工具条 z 1001 > 弹窗 1000), 始终在最上面.
+    this.dom.addEventListener('pointerenter', this.handleCardPointerEnter);
+    this.dom.addEventListener('pointerleave', this.handleCardPointerLeave);
 
     const card = document.createElement('div');
     card.className = 'note-block__card';
     this.dom.appendChild(card);
+
+    document.body.appendChild(this.createToolbar());
+    window.addEventListener('resize', this.handleToolbarReposition);
+    window.addEventListener('scroll', this.handleToolbarReposition, true);
 
     this.previewController = new NoteReferencePreviewController({
       anchor: this.dom,
       mode: 'hover',
       // 弹窗向上翻转时让出工具条高度, 避免盖住卡片右上角的布局工具条.
       topClearance: 36,
+      // 弹窗关闭后按真实指针位置重算工具条显隐 (弹窗盖卡片期间 cardHovered
+      // 被强制保持, 关闭时若指针已不在卡片上需恢复隐藏).
+      onClosed: () => {
+        if (this.destroyed) return;
+        this.cardHovered = this.dom.matches(':hover');
+        this.toolbarHovered = this.toolbar?.matches(':hover') ?? false;
+        this.syncToolbarVisible();
+      },
       getLocatorKey: () => locatorKey(this.attrs),
       getFallbackTitle: () => noteReferenceDisplayTitle(this.attrs) || tKey('editor.noteLink.untitled'),
       loadData: () => loadNoteReferencePreviewData(this.attrs, tKey('editor.noteLink.untitled')),
@@ -203,12 +218,32 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     return normalizeNoteBlockAttrs(this.node.attrs as Partial<BlockAttrs>);
   }
 
-  // ── DOM builders ────────────────────────────────────────────────────────
+  // ── 悬浮工具条 (挂 body, 跟随卡片右上角) ────────────────────────────────
+
+  private toolbar: HTMLElement | null = null;
+  private toolbarHovered = false;
+  private cardHovered = false;
 
   private createToolbar(): HTMLElement {
     const toolbar = document.createElement('div');
     toolbar.className = 'note-block__toolbar';
     toolbar.contentEditable = 'false';
+    this.toolbar = toolbar;
+    this.syncToolbarVisible();
+    toolbar.addEventListener('pointerenter', () => {
+      this.toolbarHovered = true;
+      this.syncToolbarVisible();
+    });
+    toolbar.addEventListener('pointerleave', (event) => {
+      const next = event.relatedTarget;
+      if (next instanceof Node && this.dom.contains(next)) {
+        this.cardHovered = true;
+      } else {
+        this.toolbarHovered = false;
+        this.cardHovered = false;
+      }
+      this.syncToolbarVisible();
+    });
 
     const style = this.createToolbarButton('style', tKey('editor.noteBlock.styleButton'));
     toolbar.appendChild(style);
@@ -223,6 +258,60 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     }
     return toolbar;
   }
+
+  private handleCardPointerEnter = (): void => {
+    this.cardHovered = true;
+    this.syncToolbarVisible();
+  };
+
+  private handleCardPointerLeave = (event: PointerEvent): void => {
+    const next = event.relatedTarget;
+    if (next instanceof Node && this.toolbar?.contains(next)) {
+      this.toolbarHovered = true;
+      this.cardHovered = false;
+    } else if (next instanceof Element && next.closest('.note-reference-preview')) {
+      // 弹窗向上翻转盖住卡片时, 指针"落在"预览弹窗上 — 视为仍在卡片上,
+      // 工具条保持显示 (工具条挂 body 且 z 更高, 始终浮在弹窗之上可点).
+      this.cardHovered = true;
+    } else {
+      this.cardHovered = false;
+    }
+    this.syncToolbarVisible();
+  };
+
+  /** 工具条显隐: hover 卡片或工具条、样式面板打开时显示; 只读态不显示. */
+  private syncToolbarVisible(): void {
+    const toolbar = this.toolbar;
+    if (!toolbar) return;
+    const shouldShow = (this.cardHovered || this.toolbarHovered)
+      && this.view.editable
+      && !this.destroyed;
+    toolbar.classList.toggle('is-visible', shouldShow);
+    if (shouldShow) this.positionToolbar();
+  }
+
+  /** 工具条贴卡片右上角 (原 top -0.8rem), 视口内钳制. */
+  private positionToolbar(): void {
+    const toolbar = this.toolbar;
+    if (!toolbar || this.destroyed) return;
+    if (!toolbar.isConnected || !this.dom.isConnected) return;
+    const cardRect = this.dom.getBoundingClientRect();
+    const toolbarRect = toolbar.getBoundingClientRect();
+    const margin = 8;
+    const left = Math.min(
+      Math.max(margin, cardRect.right - toolbarRect.width - 8),
+      Math.max(margin, window.innerWidth - toolbarRect.width - margin),
+    );
+    // 默认悬在卡片上缘 (-0.8rem); 卡片贴近视口顶部时改放卡片内部顶行.
+    let top = cardRect.top - 0.8 * 16;
+    if (top < margin) top = cardRect.top + 8;
+    toolbar.style.left = `${Math.round(left)}px`;
+    toolbar.style.top = `${Math.round(top)}px`;
+  }
+
+  private handleToolbarReposition = (): void => {
+    this.positionToolbar();
+  };
 
   private createToolbarButton(action: 'style' | NoteReferenceBlockLayout, label: string): HTMLButtonElement {
     const button = document.createElement('button');
@@ -352,13 +441,15 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
       card.appendChild(preview);
     }
 
-    // 工具条按钮选中态与当前布局同步.
-    for (const button of Array.from(this.dom.querySelectorAll<HTMLButtonElement>('.note-block__toolbar-button'))) {
+    // 工具条 (挂 body) 按钮选中态与当前布局同步.
+    for (const button of Array.from(this.toolbar?.querySelectorAll<HTMLButtonElement>('.note-block__toolbar-button') ?? [])) {
       const action = button.dataset.action;
       button.classList.toggle('is-active', action === attrs.layout);
       button.setAttribute('aria-pressed', String(action === attrs.layout));
     }
   }
+
+  // ── DOM builders ────────────────────────────────────────────────────────
 
   // ── 卡片样式面板 (工具条铅笔按钮) ───────────────────────────────────────
 
@@ -370,6 +461,9 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
       this.closeStylePanel();
       return;
     }
+    // 面板打开期间工具条保持可见 (否则鼠标移向面板时工具条隐藏, 入口消失).
+    this.toolbarHovered = true;
+    this.syncToolbarVisible();
     const attrs = this.attrs;
 
     const panel = document.createElement('div');
@@ -497,6 +591,8 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     }
     this.stylePanel?.remove();
     this.stylePanel = null;
+    this.toolbarHovered = this.toolbar?.matches(':hover') ?? false;
+    this.syncToolbarVisible();
   }
 
   // ── Data ────────────────────────────────────────────────────────────────
@@ -631,7 +727,13 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     this.destroyed = true;
     this.dom.removeEventListener('mousedown', this.handleMouseDown);
     this.dom.removeEventListener('dblclick', this.handleDoubleClick);
+    this.dom.removeEventListener('pointerenter', this.handleCardPointerEnter);
+    this.dom.removeEventListener('pointerleave', this.handleCardPointerLeave);
+    window.removeEventListener('resize', this.handleToolbarReposition);
+    window.removeEventListener('scroll', this.handleToolbarReposition, true);
     this.closeStylePanel();
+    this.toolbar?.remove();
+    this.toolbar = null;
     this.previewController.dispose();
   }
 }

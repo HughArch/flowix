@@ -34,6 +34,8 @@ interface NoteReferencePreviewControllerOptions {
   hoverCloseDelay?: number;
   /** 定位向上翻转时额外让出的顶部高度 (px), 避免盖住卡片悬浮工具条. */
   topClearance?: number;
+  /** 弹窗关闭后回调 (含外点/移出/Escape), 供宿主重算 hover 状态. */
+  onClosed?: () => void;
 }
 
 function noteReferenceThumbnailUrl(thumbnail: string | null, notebookPath?: string | null): string | null {
@@ -236,6 +238,7 @@ export class NoteReferencePreviewController {
     window.removeEventListener('scroll', this.position, true);
     document.removeEventListener('pointerdown', this.handleOutsidePointer, true);
     document.removeEventListener('keydown', this.handleKeyDown, true);
+    this.options.onClosed?.();
   }
 
   private handleOutsidePointer = (event: PointerEvent): void => {
@@ -327,6 +330,9 @@ export class NoteReferencePreviewController {
 
   private position = (): void => {
     if (!this.isOpen || !this.popover?.isConnected || !this.options.anchor.isConnected) return;
+    // 高度先按视口收紧 (上下都放不下时不再贴视口底溢出).
+    const maxH = Math.min(544, window.innerHeight - 16);
+    if (this.popover.style.maxHeight !== `${maxH}px`) this.popover.style.maxHeight = `${maxH}px`;
     const anchorRect = this.options.anchor.getBoundingClientRect();
     const popoverRect = this.popover.getBoundingClientRect();
     const width = popoverRect.width || 304;
