@@ -349,7 +349,10 @@
 /* ── 悬浮工具条: 打开 + 布局切换 (仅可编辑态展示) ── */
 .markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar {
   position: absolute;
-  z-index: 20;
+  /* 高于悬浮预览弹窗 (.note-reference-preview, z-index 1000, 挂 body):
+   * 两者同处根层叠上下文 (.editor-content 无 z-index 不创建),
+   * 工具条必须始终在最上层可点. */
+  z-index: 1001;
   top: -0.8rem;
   right: 0.5rem;
   display: flex;

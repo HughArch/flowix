@@ -184,6 +184,8 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     this.previewController = new NoteReferencePreviewController({
       anchor: this.dom,
       mode: 'hover',
+      // 弹窗向上翻转时让出工具条高度, 避免盖住卡片右上角的布局工具条.
+      topClearance: 36,
       getLocatorKey: () => locatorKey(this.attrs),
       getFallbackTitle: () => noteReferenceDisplayTitle(this.attrs) || tKey('editor.noteLink.untitled'),
       loadData: () => loadNoteReferencePreviewData(this.attrs, tKey('editor.noteLink.untitled')),

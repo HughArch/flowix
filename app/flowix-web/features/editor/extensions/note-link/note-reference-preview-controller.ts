@@ -32,6 +32,8 @@ interface NoteReferencePreviewControllerOptions {
   hoverOpenDelay?: number;
   /** Hover close delay in ms (hover mode only); covers the card → popover hop. */
   hoverCloseDelay?: number;
+  /** 定位向上翻转时额外让出的顶部高度 (px), 避免盖住卡片悬浮工具条. */
+  topClearance?: number;
 }
 
 function noteReferenceThumbnailUrl(thumbnail: string | null, notebookPath?: string | null): string | null {
@@ -330,14 +332,22 @@ export class NoteReferencePreviewController {
     const width = popoverRect.width || 304;
     const height = popoverRect.height || 156;
     const padding = 8;
+    const clearance = this.options.topClearance ?? 0;
     const left = Math.min(
       Math.max(anchorRect.left + (anchorRect.width - width) / 2, padding),
       Math.max(padding, window.innerWidth - width - padding),
     );
-    const preferredTop = anchorRect.top - height - 8;
-    const top = preferredTop >= padding
-      ? preferredTop
-      : Math.min(anchorRect.bottom + 8, Math.max(padding, window.innerHeight - height - padding));
+    // 优先放卡片下方 (不挡工具条); 下方放不下再向上翻, 并让出顶部工具条高度.
+    const belowTop = anchorRect.bottom + 8;
+    let top: number;
+    if (belowTop + height <= window.innerHeight - padding) {
+      top = belowTop;
+    } else {
+      const aboveTop = anchorRect.top - height - 8 - clearance;
+      top = aboveTop >= padding
+        ? aboveTop
+        : Math.min(anchorRect.bottom + 8, Math.max(padding, window.innerHeight - height - padding));
+    }
     this.popover.style.left = `${left}px`;
     this.popover.style.top = `${top}px`;
   };
