@@ -19,6 +19,12 @@
   --flowix-text-pink: oklch(66% 0.2 350);
   --flowix-text-gray: var(--memo-color-gray);
   --flowix-default-mark-bg: color-mix(in oklch, var(--flowix-text-red) 20%, transparent);
+  /* 块选中态底色。刻意不用品牌色、也不用行背景色板里的任何颜色 ——
+   * 选中是"操作范围"提示, 若与色板色同族, 用户会分不清"这行被选中"
+   * 还是"这行本来就有背景色"。中性前景色派生的淡底在明暗主题下都成立,
+   * 且与 9 种色板色明显区分。 */
+  --flowix-block-selection-bg: color-mix(in oklch, var(--foreground) 8%, transparent);
+  --flowix-block-selection-bg-hover: color-mix(in oklch, var(--foreground) 13%, transparent);
 }
 
 /* Editable text tags keep the Windows icon face. Property chips use the
@@ -478,15 +484,16 @@ html[data-platform="mac"] .markdown-editor .editor-content {
 }
 
 /* 手机窄视口 (断点与 use-is-mobile-viewport 的 MOBILE_VIEWPORT_MAX_WIDTH
- * 一致): 正文与标题头两侧留白 2.5rem → 1rem, 桌面档位在小屏上会吃掉
- * 近 1/5 的有效阅读宽度。仅收窄左右, 顶部 / 底部留白保持不动。 */
+ * 一致): 正文与标题头两侧留白 2.5rem → 1.25rem。桌面档位在小屏上会吃掉
+ * 近 1/5 的有效阅读宽度, 但收得过窄时正文又会贴边 ── 1.25rem 是在两者之间
+ * 只加宽一点点的折中 (原 1rem)。仅收窄左右, 顶部 / 底部留白保持不动。 */
 @media (max-width: 767px) {
   .markdown-editor .ProseMirror:not(.agent-composer__input-content) {
-    padding-inline: 1rem;
+    padding-inline: 1.25rem;
   }
 
   .memo-document-header {
-    padding-inline: 1rem;
+    padding-inline: 1.25rem;
   }
 }
 
@@ -1751,19 +1758,21 @@ html[data-platform="mac"] .markdown-editor .editor-content {
 }
 
 /* 块级选中态: 由 drag context menu 在用户点击 handle 后切换, 用来指示
- * 浮动菜单的 transform / delete 操作作用于哪一段。柔背景 + 圆角 + 左侧
- * 强调色, 视觉上读作"行指示", 不抢文本。
+ * 浮动菜单的 transform / delete 操作作用于哪一段。柔背景 + 圆角, 视觉上
+ * 读作"行指示", 不抢文本。
+ * 底色用 --flowix-block-selection-bg (中性前景色派生), 刻意与 9 种行背景
+ * 色板色区分: 否则用户分不清"这行被选中"和"这行本来就有背景色"。
  * transition 只动画会被改动的属性, 避免影响光标闪烁等 ProseMirror 内部更新。 */
 .markdown-editor .ProseMirror:not(.agent-composer__input-content) .is-block-selected {
   position: relative;
-  background-color: color-mix(in oklch, var(--brand) 6%, transparent);
+  background-color: var(--flowix-block-selection-bg);
   border-radius: 6px;
   transition:
     background-color 120ms ease-out;
 }
 
 .markdown-editor .ProseMirror:not(.agent-composer__input-content) .is-block-selected:hover {
-  background-color: color-mix(in oklch, var(--brand) 10%, transparent);
+  background-color: var(--flowix-block-selection-bg-hover);
 }
 
 /* 行背景已经提供了整块视觉，选中态不再叠加 brand 底色。
@@ -1779,6 +1788,222 @@ html[data-platform="mac"] .markdown-editor .editor-content {
 .markdown-editor .ProseMirror:not(.agent-composer__input-content) .is-block-selected [data-flowix-block-bg]::after {
   outline: 1px dashed color-mix(in oklch, var(--brand) 62%, transparent);
   outline-offset: 1px;
+}
+
+/* ── 移动端多选模式 (参考用户提供截图): ──────────────────────────────
+ * 选中的行 = 通栏浅蓝色带 (不圆角、左右顶到屏幕边), 行尾圆点标记选中。
+ * `html.flowix-touch-selecting` 由 DragContextMenu 在选中数 > 0 时挂上。
+ * 通栏实现: 色块向两侧各借 1.25rem (正文 padding) 再用等量 padding 补回,
+ * 文字位置不动; 列表项的 marker 在盒子外, 借边距会拽歪序号, 保持内缩。 */
+/* 选中态下文档底部预留底部面板的高度: 滚动到底时最后一行的圆点
+ * 不会被底部菜单压住/贴着, 消除"点菜单误触到行"的临界区。 */
+html.flowix-touch-selecting .markdown-editor .ProseMirror:not(.agent-composer__input-content) {
+  padding-bottom: 210px;
+}
+
+html.flowix-touch-selecting .markdown-editor .ProseMirror:not(.agent-composer__input-content) :is(p, h1, h2, h3, h4, h5, h6, blockquote, pre, .tableWrapper).is-block-selected {
+  border-radius: 0;
+  background-color: var(--flowix-block-selection-bg);
+  margin-inline: -1.25rem -2.75rem;
+  padding-inline: 1.25rem 2.75rem;
+}
+
+/* 分栏内每一列都是独立的行单元: 选中色带不能像普通行那样向两侧借边距,
+ * 否则会横穿列边界 (左列的行把色带铺到右列上), 读作"整行选中"。
+ * 列内色带收在本列内容盒里, 右侧留出 22px 给行尾抓手 / 圆点。 */
+html.flowix-touch-selecting .markdown-editor .ProseMirror:not(.agent-composer__input-content) .flowix-column :is(p, h1, h2, h3, h4, h5, h6, blockquote, pre, .tableWrapper).is-block-selected {
+  margin-inline: 0;
+  padding-inline: 0;
+}
+
+html.flowix-touch-selecting .markdown-editor .ProseMirror:not(.agent-composer__input-content) .is-block-selected,
+html.flowix-touch-selecting .markdown-editor .ProseMirror:not(.agent-composer__input-content) .is-block-selected:hover {
+  transition: none;
+}
+
+/* 行尾多选圆点: 实心品牌色 = 已选, 空心灰 = 未选。定位由
+ * MobileSelectionDots 以内联 top/right 控制 (与抓手同一坐标系) ——
+ * right 必须是内联的: 分栏里每一列都要贴「自己这一列」的右缘, 否则左列的
+ * 行圆点会跑到右列上, 读作"整行选中"。
+ * z-index 30: 高于编辑器内容与 overlay 滚动条 (2), 低于底部面板 (155) —
+ * 视口底部被面板盖住的圆点直接被面板压住, 不再浮在面板上重叠。 */
+.mobile-selection-dot {
+  position: absolute;
+  z-index: 30;
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  border: 1.5px solid color-mix(in oklch, var(--muted-foreground) 55%, transparent);
+  border-radius: 9999px;
+  background: var(--card);
+  pointer-events: auto;
+  transition: transform 100ms ease;
+}
+
+.mobile-selection-dot.selected {
+  border-color: var(--brand);
+  background: var(--brand);
+}
+
+.mobile-selection-dot:active {
+  transform: scale(1.15);
+}
+
+/* 圆点层: 覆盖编辑器可滚动区域。
+ *
+ * 这里刻意 **不做 overflow 裁剪**。圆点用的是"内容坐标"(top 含 scrollTop),
+ * 而这一层的盒子高度只是可视区高度 ── 滚动之后两者不再重合, 一旦按高度
+ * 裁剪, 视口下半部分的圆点会被整片裁掉, 表现就是"选中某行后, 该行下面
+ * 所有行都没有圆点"。
+ * 面板区域的圆点改由 JS 过滤 (MobileSelectionDots 按面板上沿跳过) + 面板
+ * 自身 z-index (155 > 30) 覆盖来保证: 视觉上被面板压住, 点击也落到面板上。 */
+.mobile-selection-dots-layer {
+  position: absolute;
+  inset: 0;
+  pointer-events: none;
+}
+
+.mobile-selection-dots-layer .mobile-selection-dot {
+  pointer-events: auto;
+}
+
+/* 子级 (列表项等嵌套块) 圆点小一号, 与父级区分。水平位置由 JS 内联 right
+ * 计算 (分栏内按所在列右缘), 这里只改尺寸, 保证大小不同的圆点仍在同一竖线
+ * 上居中。 */
+.mobile-selection-dot.child {
+  width: 14px;
+  height: 14px;
+}
+
+/* ── 移动端右侧抽屉 (Obsidian 式面板): ──────────────────────────────
+ * 标题栏右上角按钮拉出; 标题栏是一排 tab 图标 (目前只有「目录」, 默认
+ * 选中), 面板体可滚动。盖过正文但低于底部操作条 / 弹层。 */
+.mobile-right-drawer-backdrop {
+  position: fixed;
+  inset: 0;
+  z-index: 149;
+  background: rgb(0 0 0 / 30%);
+}
+
+.mobile-right-drawer {
+  position: fixed;
+  top: 0;
+  right: 0;
+  bottom: 0;
+  z-index: 150;
+  display: flex;
+  flex-direction: column;
+  width: min(82vw, 320px);
+  padding-top: env(safe-area-inset-top);
+  background: var(--card);
+  border-left: 1px solid var(--border-popup);
+  box-shadow: -4px 0 24px -3px rgb(0 0 0 / 24%);
+  animation: mobile-right-drawer-in 180ms cubic-bezier(0.32, 0.72, 0, 1);
+}
+
+@keyframes mobile-right-drawer-in {
+  from {
+    transform: translateX(100%);
+  }
+
+  to {
+    transform: translateX(0);
+  }
+}
+
+.mobile-right-drawer__tabs {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--divider);
+}
+
+.mobile-right-drawer__tab {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 8px;
+  color: var(--muted-foreground);
+  transition: background-color 120ms ease, color 120ms ease;
+}
+
+.mobile-right-drawer__tab-label {
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--foreground);
+}
+
+.mobile-right-drawer__tab.active {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.mobile-right-drawer__body {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overscroll-behavior: contain;
+  -webkit-overflow-scrolling: touch;
+  padding-bottom: env(safe-area-inset-bottom);
+}
+
+.heading-outline-panel {
+  display: flex;
+  flex-direction: column;
+  padding: 4px 6px 12px;
+}
+
+.heading-outline-panel__empty {
+  padding: 20px 14px;
+  font-size: 13px;
+  color: var(--muted-foreground);
+}
+
+/* 触屏上隐藏编辑器的 overlay 滚动条: 手指滚动用不上它, 还会盖住行尾
+ * 抓手 / 圆点的点击。桌面 (可 hover) 保留。右侧留白同时加宽给行尾
+ * 圆点 / 抓手一个不挤的落位 (正文文字右缘相应左移)。 */
+@media (pointer: coarse) {
+  .markdown-editor .overlay-scrollbar-track {
+    display: none;
+  }
+
+  /* 触屏两侧都要留出抓手位置: 左侧是父容器抓手 (LEFT_HANDLE_INSET=13),
+   * 右侧是行尾抓手。两侧同宽 2.75rem, 抓手整体落在留白带里, 永不压字。 */
+  .markdown-editor .ProseMirror:not(.agent-composer__input-content) {
+    padding-inline: 2.75rem;
+  }
+
+  .memo-document-header {
+    padding-inline: 2.75rem;
+  }
+
+  /* 分栏内每一列都在自己右侧留出抓手带: 行尾抓手按「所在列」的右缘定位
+   * (宽 18px + 内缩 4px = 22px), 留 22px 后抓手正好贴在列内留白里。
+   * 首列原本没有这层留白, 导致列内最后一行的抓手压字; 末列则会撞上
+   * `.flowix-columns-add`。 */
+  .flowix-column-content {
+    padding-right: 22px;
+  }
+
+  /* 分栏"加号"沿用基础规则的 right: -30px: 上一行的 padding-right 已把行尾
+   * 抓手推到列内留白里 (列右缘 - 18px - 4px), 加号落在列右缘 + 8px, 两者
+   * 之间留 12px 空档, 不会叠在一起。 */
+}
+
+/* 着色面板色块 */
+.mobile-color-swatch {
+  display: inline-block;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  border: 1.5px solid color-mix(in oklch, var(--muted-foreground) 45%, transparent);
+}
+
+.mobile-color-swatch[style] {
+  border-color: transparent;
 }
 
 .markdown-editor .ProseMirror:not(.agent-composer__input-content) .flowix-block-drop-indicator {
@@ -2519,6 +2744,35 @@ html.flowix-block-dragging * {
 .flowix-columns-add:hover {
   background: var(--hover-bg);
   color: var(--foreground);
+}
+
+/* 触屏: 分栏控制按钮必须让开行尾抓手 / 圆点所在的右侧留白带。
+ *
+ * `.flowix-column-remove` (×) 的原位是 `top: 2px; right: 2px` —— 正好压在列
+ * 首行的行尾抓手上, 就是用户反馈的"右侧抓手和 - 重叠"。它默认 `opacity: 0`,
+ * 但触屏点过列之后 `:hover` 会「粘住」把它显形, 并且一直吃点击, 表现为
+ * "点抓手没反应"。
+ *
+ * 处理: 两个按钮都挪到列右缘之外的列间距里, 与 + 号上下分开 (右上 = 加列,
+ * 右下 = 删除列)。触屏没有 hover, 改为常显, 否则它们就是"看不见但吃点击"
+ * 的死区。
+ *
+ * 注意顺序: 必须写在上面基础规则之后 —— 同优先级下后者胜, 放在前面会被
+ * `top: 2px; right: 2px` 覆盖掉 (踩过)。 */
+@media (pointer: coarse) {
+  .flowix-columns-add,
+  .flowix-column-remove {
+    opacity: 1;
+  }
+
+  .flowix-column-remove {
+    top: auto;
+    bottom: 4px;
+    /* 列间距只有 24px, 按钮宽 20px。用 -30px 会越界 6px 压到右列的左侧
+     * 留白带 (右列父容器抓手正好落在那 18px 里)。-24px 让按钮右缘刚好停在
+     * 下一列左缘, 整枚留在间距内。 */
+    right: -24px;
+  }
 }
 
 /* Drop hint for creating a column on either side of a block. */

@@ -408,11 +408,17 @@ export function useBlockMenuActions(
       )
     }
     if (blockTypeName === 'callout') {
-      // The handle targets the whole container, so text-block conversions do
-      // not apply. Keep deletion and the column operations (splitting a
-      // callout into columns stays valid). Callouts carry their own colour, so
-      // the line-background palette is not offered.
-      return actions.filter((action) => action.group === 'danger' || action.group === 'layout')
+      // The handle targets the whole container, so text-block conversions
+      // (heading / list / block) do not apply — a callout cannot become a
+      // heading. Everything else stays: deletion, the column operations
+      // (splitting a callout into columns stays valid), the line-background
+      // palette (着色) and inserting a paragraph above / below the container.
+      return actions.filter(
+        (action) => action.group === 'danger'
+          || action.group === 'layout'
+          || action.group === 'background'
+          || action.group === 'insert',
+      )
     }
     return actions
   }, [

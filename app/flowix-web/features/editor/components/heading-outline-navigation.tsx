@@ -176,17 +176,15 @@ export function calculateHeadingOutlinePopoverPosition(
   return { left, top, maxWidth, maxHeight }
 }
 
-export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
-  const { t } = useI18n()
+/**
+ * 目录数据模型: 标题刷新 / 当前标题跟踪 / 折叠查询 / 滚动定位。
+ * 桌面右缘导航条与移动端右侧抽屉共用, 避免 `querySelectorAll` 刷新和
+ * 活动标题跟踪的两套实现漂移。
+ */
+export function useHeadingOutlineModel(editor: Editor) {
   const [allHeadings, setAllHeadings] = useState<HeadingItem[]>([])
   const [activeElement, setActiveElement] = useState<HTMLElement | null>(null)
-  const [expanded, setExpanded] = useState(false)
-  const [visible, setVisible] = useState(false)
-  const anchorRef = useRef<HTMLDivElement>(null)
-  const popoverRef = useRef<HTMLDivElement>(null)
-  const [popoverPosition, setPopoverPosition] = useState<HeadingOutlinePopoverPosition | null>(null)
   const allHeadingsRef = useRef<HeadingItem[]>([])
-  const headings = filterHeadingsForOutline(allHeadings)
 
   const refreshHeadings = useCallback(() => {
     const nextHeadings = readHeadings(editor)
@@ -194,17 +192,6 @@ export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
     allHeadingsRef.current = nextHeadings
     setAllHeadings(nextHeadings)
   }, [editor])
-
-  // 移动端左滑手势唤出目录 ── 锚点可能尚未完成延迟显示, 这里同时置为可见。
-  useEffect(() => {
-    const openOutline = () => {
-      if (allHeadingsRef.current.length === 0) return
-      setVisible(true)
-      setExpanded(true)
-    }
-    window.addEventListener('flowix:open-outline', openOutline)
-    return () => window.removeEventListener('flowix:open-outline', openOutline)
-  }, [])
 
   useEffect(() => {
     refreshHeadings()
@@ -244,7 +231,103 @@ export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
   }, [editor, refreshHeadings])
 
   useEffect(() => {
+    const scrollContainer = getScrollContainer(editor)
+    if (!scrollContainer) return
+
+    let frameId: number | null = null
+    const updateActiveHeading = () => {
+      frameId = null
+      const currentHeadings = allHeadingsRef.current
+      const nextHeading = currentHeadings.length === 0
+        ? null
+        : currentHeadings[getActiveHeadingIndex(currentHeadings, scrollContainer)] ?? null
+      setActiveElement((current) => current === nextHeading?.element ? current : nextHeading?.element ?? null)
+    }
+    const scheduleUpdate = () => {
+      if (frameId !== null) return
+      frameId = window.requestAnimationFrame(updateActiveHeading)
+    }
+
+    updateActiveHeading()
+    scrollContainer.addEventListener('scroll', scheduleUpdate, { passive: true })
+    window.addEventListener('resize', scheduleUpdate)
+
+    return () => {
+      scrollContainer.removeEventListener('scroll', scheduleUpdate)
+      window.removeEventListener('resize', scheduleUpdate)
+      if (frameId !== null) window.cancelAnimationFrame(frameId)
+    }
+  }, [editor])
+
+  useEffect(() => {
     setActiveElement(null)
+    const scrollContainer = getScrollContainer(editor)
+    if (scrollContainer && allHeadings.length > 0) {
+      const activeHeading = allHeadings[getActiveHeadingIndex(allHeadings, scrollContainer)]
+      setActiveElement(activeHeading?.element ?? null)
+    }
+  }, [editor, allHeadings])
+
+  // The outline shares the document's fold state. Resolve each row's heading
+  // position from its DOM node so the row toggle dispatches the exact same
+  // transaction as the gutter button.
+  const resolveHeadingPos = useCallback((element: HTMLElement): number | null => {
+    if (editor.isDestroyed) return null
+    try {
+      return editor.view.posAtDOM(element, 0) - 1
+    } catch {
+      return null
+    }
+  }, [editor])
+
+  const headingHasContent = useCallback((pos: number): boolean => {
+    if (editor.isDestroyed) return false
+    const range = computeHeadingRange(editor.state.doc, pos)
+    return range !== null && range.end > range.start
+  }, [editor])
+
+  const scrollToHeading = useCallback((heading: HeadingItem, afterNavigate?: () => void) => {
+    const scrollContainer = getScrollContainer(editor)
+    if (!scrollContainer) return
+
+    const targetRect = heading.element.getBoundingClientRect()
+    const containerRect = scrollContainer.getBoundingClientRect()
+    const top = Math.max(
+      0,
+      scrollContainer.scrollTop + targetRect.top - containerRect.top - SCROLL_OFFSET_PX,
+    )
+    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
+
+    setActiveElement(heading.element)
+    afterNavigate?.()
+    scrollContainer.scrollTo({
+      top,
+      behavior: reduceMotion ? 'auto' : 'smooth',
+    })
+  }, [editor])
+
+  return {
+    allHeadings,
+    headings: filterHeadingsForOutline(allHeadings),
+    activeElement,
+    setActiveElement,
+    scrollToHeading,
+    resolveHeadingPos,
+    headingHasContent,
+  }
+}
+
+export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
+  const { t } = useI18n()
+  const model = useHeadingOutlineModel(editor)
+  const { allHeadings, headings, activeElement } = model
+  const [expanded, setExpanded] = useState(false)
+  const [visible, setVisible] = useState(false)
+  const anchorRef = useRef<HTMLDivElement>(null)
+  const popoverRef = useRef<HTMLDivElement>(null)
+  const [popoverPosition, setPopoverPosition] = useState<HeadingOutlinePopoverPosition | null>(null)
+
+  useEffect(() => {
     if (allHeadings.length === 0) {
       setVisible(false)
       return
@@ -332,81 +415,6 @@ export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
     }
   }, [editor, expanded])
 
-  useEffect(() => {
-    const scrollContainer = getScrollContainer(editor)
-    if (!scrollContainer) return
-
-    let frameId: number | null = null
-    const updateActiveHeading = () => {
-      frameId = null
-      const currentHeadings = allHeadingsRef.current
-      const nextHeading = currentHeadings.length === 0
-        ? null
-        : currentHeadings[getActiveHeadingIndex(currentHeadings, scrollContainer)] ?? null
-      setActiveElement((current) => current === nextHeading?.element ? current : nextHeading?.element ?? null)
-    }
-    const scheduleUpdate = () => {
-      if (frameId !== null) return
-      frameId = window.requestAnimationFrame(updateActiveHeading)
-    }
-
-    updateActiveHeading()
-    scrollContainer.addEventListener('scroll', scheduleUpdate, { passive: true })
-    window.addEventListener('resize', scheduleUpdate)
-
-    return () => {
-      scrollContainer.removeEventListener('scroll', scheduleUpdate)
-      window.removeEventListener('resize', scheduleUpdate)
-      if (frameId !== null) window.cancelAnimationFrame(frameId)
-    }
-  }, [editor])
-
-  useEffect(() => {
-    const scrollContainer = getScrollContainer(editor)
-    if (scrollContainer && allHeadings.length > 0) {
-      const activeHeading = allHeadings[getActiveHeadingIndex(allHeadings, scrollContainer)]
-      setActiveElement(activeHeading?.element ?? null)
-    }
-  }, [editor, allHeadings])
-
-  // The outline shares the document's fold state. Resolve each row's heading
-  // position from its DOM node so the row toggle dispatches the exact same
-  // transaction as the gutter button.
-  const resolveHeadingPos = (element: HTMLElement): number | null => {
-    if (editor.isDestroyed) return null
-    try {
-      return editor.view.posAtDOM(element, 0) - 1
-    } catch {
-      return null
-    }
-  }
-
-  const headingHasContent = (pos: number): boolean => {
-    if (editor.isDestroyed) return false
-    const range = computeHeadingRange(editor.state.doc, pos)
-    return range !== null && range.end > range.start
-  }
-
-  const scrollToHeading = (heading: HeadingItem) => {
-    const scrollContainer = getScrollContainer(editor)
-    if (!scrollContainer) return
-
-    const targetRect = heading.element.getBoundingClientRect()
-    const containerRect = scrollContainer.getBoundingClientRect()
-    const top = Math.max(
-      0,
-      scrollContainer.scrollTop + targetRect.top - containerRect.top - SCROLL_OFFSET_PX,
-    )
-    const reduceMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches
-
-    setActiveElement(heading.element)
-    setExpanded(false)
-    scrollContainer.scrollTo({
-      top,
-      behavior: reduceMotion ? 'auto' : 'smooth',
-    })
-  }
-
   const navigationActiveElement = getNavigationActiveElement(
     allHeadings,
     headings,
@@ -464,8 +472,8 @@ export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
             >
               {allHeadings.map((heading, index) => {
                 const isActive = heading.element === activeElement
-                const pos = resolveHeadingPos(heading.element)
-                const hasContent = pos !== null && headingHasContent(pos)
+                const pos = model.resolveHeadingPos(heading.element)
+                const hasContent = pos !== null && model.headingHasContent(pos)
                 const folded = heading.folded
                 return (
                   <div
@@ -498,7 +506,7 @@ export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
                       className="heading-outline-navigation__popover-item"
                       data-level={heading.level}
                       aria-current={isActive ? 'location' : undefined}
-                      onClick={() => scrollToHeading(heading)}
+                      onClick={() => model.scrollToHeading(heading, () => setExpanded(false))}
                     >
                       {heading.text || `H${heading.level}`}
                     </button>
@@ -510,6 +518,75 @@ export function HeadingOutlineNavigation({ editor }: { editor: Editor }) {
           document.body,
         )
       )}
+    </div>
+  )
+}
+
+/**
+ * 移动端右侧抽屉的目录面板。
+ *
+ * 行样式直接复用桌面弹出层的 `__popover-row` 系列类 (顶层选择器, 不受
+ * popover 容器约束), 视觉与桌面一致。点条目滚动定位后抽屉保持打开,
+ * 方便连续跳转; 折叠按钮与桌面共用同一事务。
+ */
+export function HeadingOutlinePanel({ editor }: { editor: Editor }) {
+  const { t } = useI18n()
+  const model = useHeadingOutlineModel(editor)
+  const { allHeadings, activeElement } = model
+
+  if (allHeadings.length === 0) {
+    return (
+      <div className="heading-outline-panel__empty">
+        {t('editor.headingOutline.empty')}
+      </div>
+    )
+  }
+
+  return (
+    <div className="heading-outline-panel" role="navigation" aria-label={t('editor.headingOutline.title')}>
+      {allHeadings.map((heading, index) => {
+        const isActive = heading.element === activeElement
+        const pos = model.resolveHeadingPos(heading.element)
+        const hasContent = pos !== null && model.headingHasContent(pos)
+        const folded = heading.folded
+        return (
+          <div
+            key={`${heading.level}-${index}`}
+            className={`heading-outline-navigation__popover-row${isActive ? ' is-active' : ''}`}
+            data-level={heading.level}
+          >
+            {hasContent && pos !== null ? (
+              <button
+                type="button"
+                className="heading-outline-navigation__popover-fold"
+                data-folded={folded ? 'true' : 'false'}
+                aria-label={folded
+                  ? t('editor.headingFold.unfold')
+                  : t('editor.headingFold.fold')}
+                aria-expanded={!folded}
+                onClick={(event) => {
+                  event.stopPropagation()
+                  toggleHeadingFold(editor.view, pos)
+                }}
+              />
+            ) : (
+              <span
+                className="heading-outline-navigation__popover-fold-spacer"
+                aria-hidden="true"
+              />
+            )}
+            <button
+              type="button"
+              className="heading-outline-navigation__popover-item"
+              data-level={heading.level}
+              aria-current={isActive ? 'location' : undefined}
+              onClick={() => model.scrollToHeading(heading)}
+            >
+              {heading.text || `H${heading.level}`}
+            </button>
+          </div>
+        )
+      })}
     </div>
   )
 }

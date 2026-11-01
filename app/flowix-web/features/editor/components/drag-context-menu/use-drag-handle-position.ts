@@ -44,6 +44,12 @@ export function useDragHandlePosition(
   keepVisibleRef?: RefObject<boolean>,
   interactionInfoRef?: RefObject<CurrentBlockInfo | null>,
   hoverInfoRef?: RefObject<CurrentBlockInfo | null>,
+  /**
+   * 触屏模式: 抓手不再"跟随光标/选区常显", 只有用户点中某一行之后才出现
+   * (由 hoverInfoRef / interactionInfoRef 显式指定)。没有显式目标时直接
+   * 隐藏, 这样手机上每行前面不会常驻一个抓手。
+   */
+  tapActivated = false,
 ): DragHandlePositionResult {
   const [state, setState] = useState<DragHandlePositionState>(HIDDEN_STATE)
   const frameRef = useRef<number | null>(null)
@@ -60,23 +66,57 @@ export function useDragHandlePosition(
     let mounted = true
 
     const commitState = (next: DragHandlePositionState) => {
+      // TEMP-DEBUG
+      ;(globalThis as unknown as { __hd?: unknown[] }).__hd?.push({
+        tag: 'commit',
+        visible: next.visible,
+        x: Math.round(next.x),
+        y: Math.round(next.y),
+        mounted,
+      })
       if (!mounted) return
       setState((prev) => shouldUpdateState(prev, next) ? next : prev)
     }
 
     const updateDragHandle = () => {
+      // TEMP-DEBUG
+      ;(globalThis as unknown as { __hd?: unknown[] }).__hd?.push({
+        tag: 'update-enter',
+        mounted,
+        tap: tapActivated,
+        hover: hoverInfoRef?.current?.typeName ?? null,
+        inter: interactionInfoRef?.current?.typeName ?? null,
+        keep: keepVisibleRef?.current ?? null,
+      })
       if (!mounted) return
       const interactionInfo = keepVisibleRef?.current ? interactionInfoRef?.current : null
+      // TEMP-DEBUG
+      ;(globalThis as unknown as { __hd?: unknown[] }).__hd?.push({
+        tag: 'update',
+        tap: tapActivated,
+        hover: hoverInfoRef?.current?.typeName ?? null,
+        inter: interactionInfo?.typeName ?? null,
+      })
       // Hovering a block shows its handle even when the editor is unfocused.
       // This is what makes Mod/Shift-click block selection possible without
       // first clicking into the body (which would reset the selection).
       const preferredInfo = interactionInfo ?? hoverInfoRef?.current ?? null
+      // 触屏没有 hover 概念: 抓手只在"用户点了某一行"之后出现。没有显式
+      // 目标时保持隐藏, 这样手机上每行前面不会常驻一个抓手。
+      if (tapActivated && !preferredInfo) {
+        commitState(HIDDEN_STATE)
+        return
+      }
       const pos = computeHandlePosition(
         editor,
         fontSize,
         lineHeight,
-        !keepVisibleRef?.current,
+        // 触屏不依赖焦点: 点行会让编辑器聚焦再收起键盘, 焦点抖动不能连带
+        // 把抓手藏掉。
+        tapActivated ? false : !keepVisibleRef?.current,
         preferredInfo,
+        // 触屏抓手挂行尾, 桌面保持左侧 gutter。
+        tapActivated,
       )
       if (!pos || !pos.visible) {
         commitState(HIDDEN_STATE)
@@ -91,6 +131,8 @@ export function useDragHandlePosition(
     }
 
     const scheduleUpdate = () => {
+      // TEMP-DEBUG
+      ;(globalThis as unknown as { __hd?: unknown[] }).__hd?.push({ tag: 'schedule' })
       if (frameRef.current != null) return
       frameRef.current = requestAnimationFrame(() => {
         frameRef.current = null
@@ -164,6 +206,8 @@ export function useDragHandlePosition(
     updateDragHandle()
 
     return () => {
+      // TEMP-DEBUG
+      ;(globalThis as unknown as { __hd?: unknown[] }).__hd?.push({ tag: 'cleanup' })
       mounted = false
       refreshRef.current = () => {}
       if (frameRef.current != null) cancelAnimationFrame(frameRef.current)
@@ -182,7 +226,7 @@ export function useDragHandlePosition(
       window.removeEventListener('resize', scheduleUpdate)
       resizeObserver.disconnect()
     }
-  }, [editor, fontSize, lineHeight, ignoreBlurRef, keepVisibleRef, interactionInfoRef, hoverInfoRef])
+  }, [editor, fontSize, lineHeight, ignoreBlurRef, keepVisibleRef, interactionInfoRef, hoverInfoRef, tapActivated])
 
   return { ...state, refresh }
 }

@@ -66,8 +66,12 @@ for (const [platform, Titlebar] of [['mac', DocumentTitlebarMac], ['windows', Do
 
     it('hides document controls during Agent fullscreen and restores them on exit', async () => {
       await act(async () => root.render(<Titlebar {...props} />));
+      // 颜色入口已收进 "..." 菜单 (色块行内嵌在菜单内容里), 标题栏不再有
+      // 独立的颜色按钮; "..." 菜单按钮是现在唯一常驻的文档操作入口。
       const color = () => container.querySelector('[aria-label="document.color.button"]');
-      expect(color()).not.toBeNull();
+      expect(color()).toBeNull();
+      const more = () => container.querySelector('[aria-label="document.titlebar.moreTooltip"]');
+      expect(more()).not.toBeNull();
       const card = document.createElement('div');
       card.className = 'agent-thread-card--fullscreen';
       card.dataset.agentType = 'codex';
@@ -75,11 +79,11 @@ for (const [platform, Titlebar] of [['mac', DocumentTitlebarMac], ['windows', Do
       host.append(card);
       await act(async () => window.dispatchEvent(new Event('flowix:agent-thread-card-fullscreen-change')));
       expect(color()).toBeNull();
-      expect(container.querySelector('[aria-label="document.titlebar.moreTooltip"]')).toBeNull();
+      expect(more()).toBeNull();
       expect(container.textContent).not.toContain('note A');
       card.remove();
       await act(async () => window.dispatchEvent(new Event('flowix:agent-thread-card-fullscreen-change')));
-      expect(color()).not.toBeNull();
+      expect(more()).not.toBeNull();
       expect(container.textContent).toContain('note A');
     });
 

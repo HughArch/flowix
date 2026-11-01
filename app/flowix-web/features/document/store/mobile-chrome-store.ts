@@ -5,11 +5,17 @@ interface MobileChromeState {
   /** 上滑浏览文档内容时收起标题栏 / 状态栏 (仅移动端布局消费)。 */
   hidden: boolean;
   setHidden: (hidden: boolean) => void;
+  /** 强制只收起底部状态栏 (块多选等场景), 不影响标题栏。 */
+  statusBarHidden: boolean;
+  setStatusBarHidden: (hidden: boolean) => void;
 }
 
 export const useMobileChromeStore = create<MobileChromeState>((set) => ({
   hidden: false,
   setHidden: (hidden) => set((state) => (state.hidden === hidden ? state : { hidden })),
+  statusBarHidden: false,
+  setStatusBarHidden: (statusBarHidden) =>
+    set((state) => (state.statusBarHidden === statusBarHidden ? state : { statusBarHidden })),
 }));
 
 /** 连续上滑浏览该距离后收起 chrome。 */

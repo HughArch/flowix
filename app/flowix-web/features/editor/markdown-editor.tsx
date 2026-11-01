@@ -9,7 +9,9 @@ import { TableBubbleMenu } from '@features/editor/extensions/table/table-bubble-
 import { EditorToolbar } from '@features/editor/components/editor-toolbar';
 import { SelectionBubbleMenu } from '@features/editor/components/selection-bubble-menu';
 import { HeadingOutlineNavigation } from '@features/editor/components/heading-outline-navigation';
+import { MobileRightDrawer } from '@features/editor/components/mobile-right-drawer';
 import { DragContextMenu } from '@features/editor/components/drag-context-menu';
+import { isMobileDevice } from '@shared/platform';
 import { attachLinkHoverTooltip } from '@features/editor/components/link-hover-tooltip';
 import { navigateToHeadingAnchor } from '@features/editor/components/heading-anchor-navigation';
 import {
@@ -1077,11 +1079,14 @@ export const MarkdownEditor = forwardRef<MarkdownEditorHandle, MarkdownEditorPro
 
   const editorContentChildren = (
     <>
-      {editorInstance && <HeadingOutlineNavigation editor={editorInstance} />}
+      {/* 移动端不再渲染右缘目录命中条 (会截胡行尾抓手/圆点的点击),
+          目录改由标题栏按钮 + 右侧抽屉承载; 桌面保留原导航条。 */}
+      {editorInstance && !isMobileDevice() && <HeadingOutlineNavigation editor={editorInstance} />}
       {cover}
       {header}
       <div ref={editorMountRef} className="editor-document-body" />
       {editorInstance && <DragContextMenu editor={editorInstance} />}
+      {editorInstance && isMobileDevice() && <MobileRightDrawer editor={editorInstance} />}
       {editorInstance && !isScrolling && (
         <>
           <TableBubbleMenu editor={editorInstance} />

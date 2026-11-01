@@ -72,13 +72,17 @@ function getColorLabel(color: NoteColor, language: AppLanguage): string {
   return translate(language, COLOR_LABEL_KEYS[color]);
 }
 
-export function NoteColorPicker({
+/**
+ * 色块行本体。抽出来是因为它有两个宿主:
+ *   - `NoteColorPicker`: 独立触发按钮 + 浮层 (旧入口, 保留给其它调用方);
+ *   - 文档标题栏 "..." 菜单: 直接内嵌在菜单里 (新的唯一入口)。
+ * 多选语义不变: 点色块 toggle, 点 "无" 清空全部。
+ */
+export function NoteColorSwatchRow({
   colors,
-  iconButtonClass,
   onChange,
 }: {
   colors: NoteColor[];
-  iconButtonClass: string;
   onChange: (next: NoteColor[]) => void;
 }) {
   const { t, language } = useI18n();
@@ -96,6 +100,58 @@ export function NoteColorPicker({
   };
 
   const clear = () => onChange([]);
+
+  return (
+    <div className="flex items-center gap-1.5">
+      <Tooltip content={t("document.color.noColorTooltip")}>
+        <button
+          type="button"
+          aria-label={t("document.color.clear")}
+          onClick={clear}
+          className={`relative h-7 w-7 rounded-md border bg-transparent transition-colors ${
+            colors.length === 0
+              ? 'border-[var(--muted-foreground)]'
+              : 'border-[var(--border)] hover:border-[var(--muted-foreground)]'
+          }`}
+        />
+      </Tooltip>
+      {NOTE_COLORS.map((c) => {
+        const isSelected = selected.has(c);
+        return (
+          <button
+            key={c}
+            type="button"
+            aria-label={getColorLabel(c, language)}
+            aria-pressed={isSelected}
+            onClick={() => toggle(c)}
+            className="relative h-7 w-7 rounded-md transition-transform hover:scale-110"
+            style={{ backgroundColor: NOTE_COLOR_HEX[c] }}
+          >
+            {isSelected && (
+              <span
+                aria-hidden="true"
+                className="pointer-events-none absolute inset-0 flex items-center justify-center text-white opacity-70"
+              >
+                <Check className="h-2.5 w-2.5" strokeWidth={3} />
+              </span>
+            )}
+          </button>
+        );
+      })}
+    </div>
+  );
+}
+
+export function NoteColorPicker({
+  colors,
+  iconButtonClass,
+  onChange,
+}: {
+  colors: NoteColor[];
+  iconButtonClass: string;
+  onChange: (next: NoteColor[]) => void;
+}) {
+  const { t } = useI18n();
 
   return (
     <DropdownMenu>
@@ -131,43 +187,7 @@ export function NoteColorPicker({
         align="end"
         className="w-[180px] rounded-xl border-[var(--border-popup)] p-1 shadow-[0_4px_24px_-3px_rgb(0_0_0_/_0.24)]"
       >
-        <div className="flex items-center gap-1.5">
-          <Tooltip content={t("document.color.noColorTooltip")}>
-            <button
-              type="button"
-              aria-label={t("document.color.clear")}
-              onClick={clear}
-              className={`relative h-7 w-7 rounded-md border bg-transparent transition-colors ${
-                colors.length === 0
-                  ? 'border-[var(--muted-foreground)]'
-                  : 'border-[var(--border)] hover:border-[var(--muted-foreground)]'
-              }`}
-            />
-          </Tooltip>
-          {NOTE_COLORS.map((c) => {
-            const isSelected = selected.has(c);
-            return (
-              <button
-                key={c}
-                type="button"
-                aria-label={getColorLabel(c, language)}
-                aria-pressed={isSelected}
-                onClick={() => toggle(c)}
-                className="relative h-7 w-7 rounded-md transition-transform hover:scale-110"
-                style={{ backgroundColor: NOTE_COLOR_HEX[c] }}
-              >
-                {isSelected && (
-                  <span
-                    aria-hidden="true"
-                    className="pointer-events-none absolute inset-0 flex items-center justify-center text-white opacity-70"
-                  >
-                    <Check className="h-2.5 w-2.5" strokeWidth={3} />
-                  </span>
-                )}
-              </button>
-            );
-          })}
-        </div>
+        <NoteColorSwatchRow colors={colors} onChange={onChange} />
       </DropdownMenuContent>
     </DropdownMenu>
   );

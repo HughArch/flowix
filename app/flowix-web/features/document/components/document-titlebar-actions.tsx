@@ -1,5 +1,5 @@
 import { useState } from 'react';
-import { Check, Code2, Ellipsis, Lock } from 'lucide-react';
+import { Check, Code2, Ellipsis, Lock, PanelRight, Search } from 'lucide-react';
 import { LinkSimpleIcon, CopyIcon, FolderOpenIcon, FileMdIcon, FileDocIcon, FilePdfIcon, ClockIcon, MapPinSimpleAreaIcon, ShareNetworkIcon, TrashSimpleIcon, SwatchesIcon, ArrowsClockwiseIcon, LockSimpleIcon, LockSimpleOpenIcon } from '@phosphor-icons/react';
 import { DropdownMenu, DropdownMenuTrigger, DropdownMenuContent, DropdownMenuItem } from '@shared/ui/dropdown-menu';
 import { POPUP_SEPARATOR_CLASS } from '@shared/ui/popup-separator';
@@ -13,13 +13,14 @@ import { useSyncPanelStore } from '@features/sync-status';
 import { useMobileBackInterceptor } from '@features/shell/hooks/use-mobile-back-button';
 import { EditorFontSwitcher } from './editor-font-switcher';
 import { DocumentPageWidthSlider } from './document-page-width-slider';
-import { NoteColorPicker } from './document-titlebar-controls';
+import { NoteColorSwatchRow } from './document-titlebar-controls';
 import {
   CloudHistorySubmenu, CloudHistoryDialog,
   VersionHistorySubmenu, VersionHistoryDialog, formatVersionTime,
 } from './document-version-history-menu';
 import { DocumentShareDialog } from './document-share-dialog';
 import { useDocumentTitlebarActions } from './use-document-titlebar-actions';
+import { useMobileRightDrawerStore } from '@features/editor/components/mobile-right-drawer-store';
 import type { DocumentTitlebarProps, DocumentTitlebarTarget } from './document-titlebar-model';
 import type { DocumentEditorMode } from '@features/document/store/document-editor-view-store';
 
@@ -90,9 +91,32 @@ export function DocumentTitlebarActions({
 
   return (
     <>
-    {canEditColors && !locked && (
-      <NoteColorPicker colors={colors} iconButtonClass={iconButtonClass}
-        onChange={changeColors} />
+    {/* 移动端右上角: 颜色入口收进 "..." 菜单, 这个位置让给搜索 ── 与列表栏
+        搜索按钮走同一个事件 (flowix:open-palette), 由 MemoListServicesHost
+        统一打开全局搜索面板。桌面端保留原来的按钮排布。 */}
+    {isMobileDevice() && !locked && (
+      <button
+        type="button"
+        className={iconButtonClass}
+        aria-label={t('memo.list.search')}
+        title={t('memo.list.searchTooltip')}
+        onClick={() => window.dispatchEvent(new CustomEvent('flowix:open-palette'))}
+      >
+        <Search className="h-4 w-4" />
+      </button>
+    )}
+    {/* 移动端右侧抽屉 (Obsidian 式面板) 开关: 目录等面板从右侧拉出,
+        取代旧的右缘命中条, 避免截胡编辑器行尾的抓手 / 圆点。 */}
+    {isMobileDevice() && (
+      <button
+        type="button"
+        className={iconButtonClass}
+        aria-label={t('document.titlebar.rightSidebar')}
+        title={t('document.titlebar.rightSidebar')}
+        onClick={() => useMobileRightDrawerStore.getState().toggle()}
+      >
+        <PanelRight className="h-4 w-4" />
+      </button>
     )}
     {locked && (
       <span
@@ -151,6 +175,19 @@ export function DocumentTitlebarActions({
           <FontSizeSwitcher sizeMode={selectedFontSizeMode} onSelect={setEditorFontSizeMode} />
           <DocumentPageWidthSlider />
         </> : null}
+        {/* 文档颜色: 原右上角独立按钮已收进这里, 菜单内直接铺开 7 个色块。
+            锁定文档不可改色, 因此与原来的按钮门控保持一致。 */}
+        {canEditColors && !locked && (
+          <>
+            <div className="flex shrink-0 items-center px-2 py-1 text-xs font-normal text-[var(--muted-foreground)]">
+              {t('document.color.tooltip')}
+            </div>
+            <div className="px-2 pb-1">
+              <NoteColorSwatchRow colors={colors} onChange={changeColors} />
+            </div>
+            <div role="separator" aria-hidden="true" className={POPUP_SEPARATOR_CLASS} />
+          </>
+        )}
         <DropdownMenuItem onClick={() => void handleCopyPath()} className={itemClass}>
           <LinkSimpleIcon className="h-4 w-4" /> {t('memo.fileTree.copyPath')}
         </DropdownMenuItem>
