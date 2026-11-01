@@ -4,7 +4,7 @@ import type { EditorView } from '@tiptap/pm/view';
 import { createRoot, type Root } from 'react-dom/client';
 import { isMobileDevice } from '@shared/platform';
 import { useNoteStore } from '@features/memo/store/note-store';
-import { openNoteMention, invalidateMentionNotes } from '@features/editor/extensions/note-mention';
+import { openNoteMention, openNoteBlockMention, invalidateMentionNotes } from '@features/editor/extensions/note-mention';
 import {
   SLASH_MENU_ITEMS,
   SlashMenuDropdown,
@@ -703,6 +703,17 @@ function handleSelect(item: SlashMenuItem): void {
     deleteTriggerText(editor);
     closeMenu();
     openNoteMention(editor);
+    return;
+  }
+
+  if (item.id === 'note-block') {
+    // 行内 @ 引用与块级卡片共用同一套笔记候选弹窗; 这里先抹掉 "/query",
+    // 块级变体在选中笔记后按空块 / 段中两种情况落位 (见 openNoteBlockMention).
+    deleteTriggerText(editor);
+    closeMenu();
+    if (!openNoteBlockMention(editor)) {
+      editor.commands.focus();
+    }
     return;
   }
 

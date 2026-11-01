@@ -11,6 +11,9 @@ export interface NoteReferencePreviewData {
   filePath: string;
 }
 
+/** `toggle`: click-to-open (agent composer chips). `hover`: pointer-delay popover. */
+export type NoteReferencePreviewMode = 'toggle' | 'hover';
+
 interface NoteReferencePreviewControllerOptions {
   anchor: HTMLElement;
   getLocatorKey: () => string;
@@ -19,6 +22,11 @@ interface NoteReferencePreviewControllerOptions {
   openNote: (data: NoteReferencePreviewData) => Promise<void>;
   t: (key: I18nKey) => string;
   onError: (error: unknown) => void;
+  mode?: NoteReferencePreviewMode;
+  /** Hover open delay in ms (hover mode only). */
+  hoverOpenDelay?: number;
+  /** Hover close delay in ms (hover mode only); covers the card → popover hop. */
+  hoverCloseDelay?: number;
 }
 
 function noteReferenceThumbnailUrl(thumbnail: string | null, notebookPath?: string | null): string | null {
@@ -27,7 +35,15 @@ function noteReferenceThumbnailUrl(thumbnail: string | null, notebookPath?: stri
   return resolveNoteCoverUrl(thumbnail, notebookPath);
 }
 
-/** Owns the composer note-reference preview's DOM, async lifecycle, and placement. */
+const HOVER_OPEN_DELAY_MS = 450;
+const HOVER_CLOSE_DELAY_MS = 260;
+
+/**
+ * Owns the note-reference preview popover's DOM, async lifecycle, and
+ * placement. `toggle` mode (agent composer) opens/closes on click; `hover`
+ * mode opens after a pointer delay and closes when the pointer leaves both
+ * the anchor and the popover, so users can read or click into the preview.
+ */
 export class NoteReferencePreviewController {
   private popover: HTMLDivElement | null = null;
   private title: HTMLElement | null = null;
@@ -38,8 +54,16 @@ export class NoteReferencePreviewController {
   private isDisposed = false;
   private requestId = 0;
   private cache: { key: string; promise: Promise<NoteReferencePreviewData | null> } | null = null;
+  private hoverTimer: number | null = null;
+  private readonly mode: NoteReferencePreviewMode;
 
-  constructor(private readonly options: NoteReferencePreviewControllerOptions) {}
+  constructor(private readonly options: NoteReferencePreviewControllerOptions) {
+    this.mode = options.mode ?? 'toggle';
+    if (this.mode === 'hover') {
+      options.anchor.addEventListener('pointerenter', this.handleAnchorPointerEnter);
+      options.anchor.addEventListener('pointerleave', this.handleAnchorPointerLeave);
+    }
+  }
 
   toggle(): void {
     if (this.isDisposed) return;
@@ -62,21 +86,73 @@ export class NoteReferencePreviewController {
   dispose(): void {
     if (this.isDisposed) return;
     this.isDisposed = true;
+    this.clearHoverTimer();
+    if (this.mode === 'hover') {
+      this.options.anchor.removeEventListener('pointerenter', this.handleAnchorPointerEnter);
+      this.options.anchor.removeEventListener('pointerleave', this.handleAnchorPointerLeave);
+    }
     this.close();
     this.popover?.remove();
     this.popover = null;
   }
 
+  private clearHoverTimer(): void {
+    if (this.hoverTimer !== null) {
+      window.clearTimeout(this.hoverTimer);
+      this.hoverTimer = null;
+    }
+  }
+
+  private scheduleHover(open: boolean, delay: number): void {
+    this.clearHoverTimer();
+    this.hoverTimer = window.setTimeout(() => {
+      this.hoverTimer = null;
+      if (this.isDisposed) return;
+      if (open) {
+        if (!this.isOpen) this.show();
+      } else {
+        this.close();
+      }
+    }, delay);
+  }
+
+  private handleAnchorPointerEnter = (): void => {
+    if (this.isDisposed) return;
+    this.scheduleHover(true, this.options.hoverOpenDelay ?? HOVER_OPEN_DELAY_MS);
+  };
+
+  private handleAnchorPointerLeave = (event: PointerEvent): void => {
+    if (this.isDisposed || !this.isOpen) return;
+    // Moving onto the popover keeps it open; the popover installs its own
+    // leave handler that closes after the same grace delay.
+    const next = event.relatedTarget;
+    if (next instanceof Node && this.popover?.contains(next)) return;
+    this.scheduleHover(false, this.options.hoverCloseDelay ?? HOVER_CLOSE_DELAY_MS);
+  };
+
+  private handlePopoverPointerLeave = (event: PointerEvent): void => {
+    if (this.isDisposed || !this.isOpen) return;
+    const next = event.relatedTarget;
+    if (next instanceof Node && this.options.anchor.contains(next)) return;
+    this.scheduleHover(false, this.options.hoverCloseDelay ?? HOVER_CLOSE_DELAY_MS);
+  };
+
+  private handlePopoverPointerEnter = (): void => {
+    if (this.mode === 'hover') this.clearHoverTimer();
+  };
+
   private ensurePopover(): void {
     if (this.popover) return;
 
     const popover = document.createElement('div');
-    popover.className = 'agent-composer__note-reference-preview';
+    popover.className = 'note-reference-preview';
     popover.hidden = true;
     popover.setAttribute('role', 'dialog');
+    popover.addEventListener('pointerenter', this.handlePopoverPointerEnter);
+    popover.addEventListener('pointerleave', this.handlePopoverPointerLeave);
 
     const image = document.createElement('img');
-    image.className = 'agent-composer__note-reference-preview-image';
+    image.className = 'note-reference-preview__image';
     image.alt = '';
     image.draggable = false;
     image.hidden = true;
@@ -87,17 +163,17 @@ export class NoteReferencePreviewController {
     });
 
     const body = document.createElement('div');
-    body.className = 'agent-composer__note-reference-preview-body';
+    body.className = 'note-reference-preview__body';
     const titleRow = document.createElement('div');
-    titleRow.className = 'agent-composer__note-reference-preview-title-row';
+    titleRow.className = 'note-reference-preview__title-row';
     const title = document.createElement('div');
-    title.className = 'agent-composer__note-reference-preview-title';
+    title.className = 'note-reference-preview__title';
     const text = document.createElement('div');
-    text.className = 'agent-composer__note-reference-preview-text';
+    text.className = 'note-reference-preview__text';
 
     const openButton = document.createElement('button');
     openButton.type = 'button';
-    openButton.className = 'agent-composer__note-reference-preview-open';
+    openButton.className = 'note-reference-preview__open';
     openButton.textContent = this.options.t('editor.noteLink.openNote');
     openButton.addEventListener('mousedown', (event) => event.preventDefault());
     openButton.addEventListener('click', (event) => {
@@ -136,6 +212,7 @@ export class NoteReferencePreviewController {
   }
 
   private close(): void {
+    if (!this.isOpen) return;
     this.isOpen = false;
     this.requestId += 1;
     if (this.popover) this.popover.hidden = true;

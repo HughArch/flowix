@@ -2219,7 +2219,7 @@ html.flowix-block-dragging * {
   object-fit: contain;
 }
 
-.agent-composer__note-reference-preview {
+.note-reference-preview {
   position: fixed;
   z-index: 1000;
   display: flex;
@@ -2237,12 +2237,12 @@ html.flowix-block-dragging * {
   pointer-events: auto;
 }
 
-.agent-composer__note-reference-preview[hidden],
-.agent-composer__note-reference-preview-image[hidden] {
+.note-reference-preview[hidden],
+.note-reference-preview__image[hidden] {
   display: none;
 }
 
-.agent-composer__note-reference-preview-image {
+.note-reference-preview__image {
   display: block;
   width: 100%;
   max-height: min(10rem, 32vh);
@@ -2250,21 +2250,21 @@ html.flowix-block-dragging * {
   object-fit: cover;
 }
 
-.agent-composer__note-reference-preview-body {
+.note-reference-preview__body {
   display: flex;
   min-width: 0;
   flex-direction: column;
   gap: 0.25rem;
 }
 
-.agent-composer__note-reference-preview-title-row {
+.note-reference-preview__title-row {
   display: flex;
   min-width: 0;
   align-items: center;
   gap: 0.5rem;
 }
 
-.agent-composer__note-reference-preview-title {
+.note-reference-preview__title {
   display: -webkit-box;
   flex: 1 1 auto;
   min-width: 0;
@@ -2278,7 +2278,7 @@ html.flowix-block-dragging * {
   -webkit-line-clamp: 2;
 }
 
-.agent-composer__note-reference-preview-text {
+.note-reference-preview__text {
   display: -webkit-box;
   overflow: hidden;
   color: var(--muted-foreground);
@@ -2290,7 +2290,7 @@ html.flowix-block-dragging * {
   -webkit-line-clamp: 4;
 }
 
-.agent-composer__note-reference-preview-open {
+.note-reference-preview__open {
   display: inline-flex;
   flex: 0 0 auto;
   align-items: center;
@@ -2305,17 +2305,17 @@ html.flowix-block-dragging * {
   cursor: pointer;
 }
 
-.agent-composer__note-reference-preview-open:hover:not(:disabled) {
+.note-reference-preview__open:hover:not(:disabled) {
   text-decoration: underline;
   text-underline-offset: 2px;
 }
 
-.agent-composer__note-reference-preview-open:focus-visible {
+.note-reference-preview__open:focus-visible {
   outline: 2px solid var(--brand);
   outline-offset: 2px;
 }
 
-.agent-composer__note-reference-preview-open:disabled {
+.note-reference-preview__open:disabled {
   cursor: default;
   opacity: 0.55;
 }

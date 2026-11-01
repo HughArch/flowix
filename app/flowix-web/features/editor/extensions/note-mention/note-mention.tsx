@@ -11,6 +11,7 @@ import {
   toNoteReferenceAttrs,
   type MentionNoteItem,
 } from '@features/editor/extensions/note-mention/note-mention-data';
+import { DEFAULT_NOTE_BLOCK_LAYOUT } from '@features/editor/extensions/note-block/note-reference-block-markdown';
 
 const TRIGGER = '@';
 const WIDTH = 280;
@@ -103,3 +104,40 @@ const wikiNoteMentionConfig: SuggestionMenuConfig<MentionNoteItem> = {
 
 /** Obsidian-style `[[` note picker. */
 export const WikiNoteMention = createSuggestionExtension<MentionNoteItem>(wikiNoteMentionConfig);
+
+/**
+ * Slash-menu entry for block-level note cards. Shares the inline mention's
+ * trigger/query/dropdown, but the picked note becomes an `noteReferenceBlock`
+ * occupying its own line. When the caret sits in an empty textblock (the
+ * usual `/`-at-line-start case) that block is replaced so no empty paragraph
+ * is left behind; mid-paragraph insertion splits the paragraph instead.
+ */
+export function openNoteBlockMention(editor: Editor): boolean {
+  if (!editor.schema.nodes.noteReferenceBlock) return false;
+  const config: SuggestionMenuConfig<MentionNoteItem> = {
+    ...noteMentionConfig,
+    onSelect: ({ editor: targetEditor, item, deleteTriggerText }) => {
+      deleteTriggerText();
+      const { state } = targetEditor;
+      const { $from } = state.selection;
+      // 空文本块整体替换 (与其它 slash 块级插入的 prepareSlashBlockTarget 同思路),
+      // 避免插入后留下一个空段落; 非空段落则直接在光标处切分插入.
+      let replaceRange: { from: number; to: number } | undefined;
+      if ($from.depth >= 1 && $from.parent.isTextblock && $from.parent.content.size === 0) {
+        replaceRange = { from: $from.before($from.depth), to: $from.after($from.depth) };
+      }
+      targetEditor
+        .chain()
+        .focus()
+        .insertContentAt(replaceRange ?? state.selection.from, {
+          type: 'noteReferenceBlock',
+          attrs: {
+            ...toNoteReferenceAttrs(item),
+            layout: DEFAULT_NOTE_BLOCK_LAYOUT,
+          },
+        })
+        .run();
+    },
+  };
+  return openSuggestionMenuFromEditor(editor, config);
+}

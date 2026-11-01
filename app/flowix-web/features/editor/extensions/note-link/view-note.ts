@@ -31,31 +31,20 @@ import {
 import { navigateToHeadingAnchor } from '@features/editor/components/heading-anchor-navigation';
 import GithubSlugger from 'github-slugger';
 import { notes as notesClient } from '@platform/tauri/client';
-import type { NoteEntry } from '@platform/tauri/client/notes';
 import { useNoteStore } from '@features/memo/store/note-store';
 import { joinNotebookMemoPath } from '@/lib/path';
 import { buildNoteOpenLink } from '@platform/open-target/path-link';
-import { displayTitleFromFilename } from '@/lib/utils';
 import { toast } from '@/lib/toast';
 import {
   NoteReferencePreviewController,
   type NoteReferencePreviewData,
 } from '@features/editor/extensions/note-link/note-reference-preview-controller';
+import {
+  loadNoteReferencePreviewData,
+  noteReferenceDisplayTitle,
+} from '@features/editor/extensions/note-link/note-preview-data';
 
 // ─── Attrs ────────────────────────────────────────────────────────────────────
-
-function noteReferenceDisplayTitle(attrs: NoteReferenceAttrs): string {
-  if (attrs.relativePath) return displayTitleFromFilename(attrs.relativePath);
-  if (attrs.linkTarget?.startsWith('flowix://open?')) {
-    try {
-      const url = new URL(attrs.linkTarget);
-      const file = url.searchParams.get('f') ?? url.searchParams.get('file') ?? url.searchParams.get('relativePath') ?? url.searchParams.get('path');
-      if (file) return displayTitleFromFilename(file);
-    } catch { /* Keep the authored label for malformed links. */ }
-  }
-  if (attrs.originalPath) return displayTitleFromFilename(attrs.originalPath);
-  return stripMdSuffix(attrs.title || '');
-}
 
 function tKey(key: I18nKey, params?: Record<string, string | number>): string {
   return translate(getCurrentAppLanguage(), key, params);
@@ -125,32 +114,32 @@ class NoteReferenceView implements ProseMirrorNodeView {
    * 立即放弃 dispatch, 避免 dispatch 到已死的 view 触发 PM 内部错误,
    * 或把 attrs 写到错的 noteReference 节点 (pos 处已被别的节点占据). */
   private destroyed = false;
-  private previewController: NoteReferencePreviewController | null = null;
+  private previewController: NoteReferencePreviewController;
 
   constructor(node: ProseMirrorNode, view: EditorView, getPos: (() => number | undefined) | undefined, private readonly presentation: 'document' | 'composer') {
     this.node = node;
     this.view = view;
     this.getPos = getPos;
     this.dom = this.createCard();
-    if (this.presentation === 'composer') {
-      this.previewController = new NoteReferencePreviewController({
-        anchor: this.dom,
-        getLocatorKey: () => this.previewLocatorKey(),
-        getFallbackTitle: () => noteReferenceDisplayTitle(this.node.attrs as NoteReferenceAttrs)
-          || tKey('editor.noteLink.untitled'),
-        loadData: () => this.loadNotePreviewData(),
-        openNote: async (data) => {
-          await openNoteByNotebookPath(
-            data.notebookId,
-            data.relativePath,
-            null,
-            { destination: 'browser-column' },
-          );
-        },
-        t: (key) => tKey(key),
-        onError: (error) => toast.error(error instanceof Error ? error.message : String(error)),
-      });
-    }
+    // composer: 点击切换预览 (既有交互); document: 悬停延时预览.
+    this.previewController = new NoteReferencePreviewController({
+      anchor: this.dom,
+      mode: this.presentation === 'composer' ? 'toggle' : 'hover',
+      getLocatorKey: () => this.previewLocatorKey(),
+      getFallbackTitle: () => noteReferenceDisplayTitle(this.node.attrs as NoteReferenceAttrs)
+        || tKey('editor.noteLink.untitled'),
+      loadData: () => this.loadNotePreviewData(),
+      openNote: async (data) => {
+        await openNoteByNotebookPath(
+          data.notebookId,
+          data.relativePath,
+          null,
+          { destination: 'browser-column' },
+        );
+      },
+      t: (key) => tKey(key),
+      onError: (error) => toast.error(error instanceof Error ? error.message : String(error)),
+    });
 
     // mount 时按笔记本和相对路径校验目标是否仍存在.
   }
@@ -273,86 +262,14 @@ class NoteReferenceView implements ProseMirrorNodeView {
   }
 
   private async loadNotePreviewData(): Promise<NoteReferencePreviewData | null> {
-    let attrs = this.node.attrs as NoteReferenceAttrs;
-    let notebookId = attrs.notebookId;
-    let relativePath = attrs.relativePath ?? null;
-    let notebookPath: string | null = null;
-    let location: Awaited<ReturnType<typeof notesClient.resolveLocation>> | null = null;
-    let physicalPath = attrs.originalPath;
-    let notebookName = attrs.notebookName;
-
-    if (attrs.linkTarget && /^flowix:\/\/open\?/i.test(attrs.linkTarget)) {
-      try {
-        const url = new URL(attrs.linkTarget);
-        notebookId ||= url.searchParams.get('notebookId');
-        relativePath ||= url.searchParams.get('f') ?? url.searchParams.get('file') ?? url.searchParams.get('relativePath');
-        notebookName ||= url.searchParams.get('b') ?? url.searchParams.get('book') ?? '';
-        physicalPath ||= url.searchParams.get('path');
-      } catch { /* Keep the authored attrs as fallback. */ }
-    } else if (!physicalPath && attrs.linkTarget && /^\//.test(attrs.linkTarget)) {
-      physicalPath = attrs.linkTarget;
+    const attrs = this.node.attrs as NoteReferenceAttrs;
+    // Relative wiki links may be resolved lazily by the same note-reference
+    // resolver used when opening the chip. Re-read attrs after it completes.
+    if (!attrs.notebookId && !attrs.relativePath && attrs.linkStyle === 'wiki' && attrs.linkTarget) {
+      await this.refreshMemoAttrs();
+      return loadNoteReferencePreviewData(this.node.attrs as NoteReferenceAttrs, tKey('editor.noteLink.untitled'));
     }
-
-    if ((!notebookId || !relativePath) && physicalPath) {
-      try {
-        location = await notesClient.resolveLocation(physicalPath);
-        notebookId ||= location?.notebookId;
-        relativePath ||= location?.relativePath;
-        notebookPath = location?.notebookPath ?? null;
-      } catch { /* A missing note still gets a title-only preview. */ }
-    }
-
-    if (!notebookId || !relativePath) {
-      // Relative wiki links may be resolved lazily by the same note-reference
-      // resolver used when opening the chip. Re-read attrs after it completes.
-      if (attrs.linkStyle === 'wiki' && attrs.linkTarget) {
-        await this.refreshMemoAttrs();
-        attrs = this.node.attrs as NoteReferenceAttrs;
-        notebookId = attrs.notebookId;
-        relativePath = attrs.relativePath ?? null;
-      }
-    }
-
-    if (!notebookId && relativePath && notebookName) {
-      let notebooks = useNoteStore.getState().notebooks;
-      if (!notebooks.length) {
-        await useNoteStore.getState().loadNotebooks();
-        notebooks = useNoteStore.getState().notebooks;
-      }
-      const matches = notebooks.filter((item) => item.name === notebookName);
-      if (matches.length === 1) notebookId = matches[0].id;
-    }
-
-    if (!notebookId || !relativePath) {
-      return null;
-    }
-
-    let notebook = useNoteStore.getState().notebooks.find((item) => item.id === notebookId);
-    if (!notebook) {
-      await useNoteStore.getState().loadNotebooks();
-      notebook = useNoteStore.getState().notebooks.find((item) => item.id === notebookId);
-    }
-    notebookPath ||= notebook?.path ?? null;
-    const filePath = notebookPath ? joinNotebookMemoPath(notebookPath, relativePath) : null;
-    if (!notebookPath || !filePath) {
-      return null;
-    }
-
-    let entry: NoteEntry | null = null;
-    try {
-      entry = await notesClient.getIndexed(notebookId, relativePath);
-    } catch { /* Render the saved reference title if the index is unavailable. */ }
-
-    const data: NoteReferencePreviewData = {
-      title: entry?.title || noteReferenceDisplayTitle(attrs) || tKey('editor.noteLink.untitled'),
-      preview: entry?.preview ?? '',
-      thumbnail: entry?.cover ?? entry?.thumbnail ?? null,
-      notebookId,
-      relativePath,
-      notebookPath,
-      filePath,
-    };
-    return data;
+    return loadNoteReferencePreviewData(attrs, tKey('editor.noteLink.untitled'));
   }
 
   private selectOnClick(): void {
@@ -579,8 +496,7 @@ class NoteReferenceView implements ProseMirrorNodeView {
 
   destroy(): void {
     this.destroyed = true;
-    this.previewController?.dispose();
-    this.previewController = null;
+    this.previewController.dispose();
   }
 }
 

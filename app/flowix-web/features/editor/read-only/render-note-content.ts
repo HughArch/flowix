@@ -229,10 +229,37 @@ function enhanceNoteReferences(element: HTMLElement): void {
   }
 }
 
+/**
+ * Block note references ship a schema-level shell (`div[data-type]`); the
+ * interactive card lives in a NodeView. Static output only rehydrates the
+ * title line — no async IPC, canvas boards render dozens of these.
+ */
+function enhanceNoteReferenceBlocks(element: HTMLElement): void {
+  for (const node of Array.from(element.querySelectorAll<HTMLElement>('div[data-type="note-reference-block"]'))) {
+    if (node.querySelector('.note-block__head')) continue;
+    const relativePath = node.getAttribute('data-relative-path') ?? '';
+    const title = node.getAttribute('data-title')
+      || relativePath.split('/').pop()?.replace(/\.md$/i, '')
+      || 'Untitled';
+    const card = document.createElement('div');
+    card.className = 'note-block__card';
+    const head = document.createElement('div');
+    head.className = 'note-block__head';
+    const titleSpan = document.createElement('span');
+    titleSpan.className = 'note-block__title';
+    titleSpan.textContent = title;
+    head.appendChild(titleSpan);
+    card.appendChild(head);
+    node.replaceChildren(card);
+    node.setAttribute('data-note-block-title', title);
+  }
+}
+
 function enhanceReadOnlyHtml(element: HTMLElement, options: NoteRenderOptions): void {
   for (const callout of Array.from(element.querySelectorAll<HTMLElement>('.flowix-callout'))) enhanceCallout(callout);
   enhanceAttachments(element, options);
   enhanceNoteReferences(element);
+  enhanceNoteReferenceBlocks(element);
 }
 
 /** Render a parsed note document (or a sliced section) to static HTML. */

@@ -117,3 +117,250 @@
   margin-left: 4px;
   white-space: nowrap;
 }
+
+/* ─── 块级笔记引用 (noteReferenceBlock) ──────────────────────────────────────
+ * slash 菜单插入的整行笔记卡片, 对照 FlowUs 的页面引用块:
+ *   line      默认样式 — 单行 (图标 + 标题 + 内联摘要)
+ *   card      小卡片   — 有边框卡片, 标题 + 两行摘要
+ *   cardLarge 大卡片   — 封面横幅 + 标题 + 三行摘要
+ * 悬浮块时右上角出现布局工具条 (打开 / 默认 / 小卡片 / 大卡片)。 */
+
+.markdown-editor .tiptap .editor-note-reference-block {
+  position: relative;
+  margin: 0.5rem 0;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__card {
+  overflow: hidden;
+  border: 1px solid var(--border);
+  border-radius: 0.65rem;
+  background: var(--card, var(--document-bg));
+  cursor: pointer;
+  transition: border-color 0.15s ease, box-shadow 0.15s ease;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block:hover .note-block__card,
+.markdown-editor .tiptap .editor-note-reference-block.is-selected .note-block__card {
+  border-color: color-mix(in oklch, var(--document-link) 45%, var(--border));
+}
+
+.markdown-editor .tiptap .editor-note-reference-block.is-selected .note-block__card {
+  box-shadow: 0 0 0 2px color-mix(in oklch, var(--document-link) 18%, transparent);
+}
+
+.markdown-editor .tiptap .editor-note-reference-block.is-stale .note-block__card {
+  opacity: 0.55;
+}
+
+/* ── 布局: line (默认样式) ── 单行排布, 摘要内联截断, 卡片感最弱 */
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='line'] .note-block__card {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  padding: 0.375rem 0.625rem;
+  border-color: transparent;
+  background: transparent;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='line']:hover .note-block__card {
+  background: color-mix(in oklch, var(--document-link) 6%, transparent);
+  border-color: transparent;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='line'] .note-block__head {
+  flex-shrink: 0;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='line'] .note-block__title {
+  white-space: nowrap;
+  text-decoration: underline;
+  text-decoration-color: color-mix(in oklch, var(--document-link) 45%, transparent);
+  text-underline-offset: 3px;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='line'] .note-block__snippet {
+  overflow: hidden;
+  flex: 1 1 auto;
+  min-width: 0;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  line-height: 1.4;
+  white-space: nowrap;
+  text-overflow: ellipsis;
+}
+
+/* ── 布局: card (小卡片) ── 标题行 + 两行摘要 */
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='card'] .note-block__card {
+  display: flex;
+  flex-direction: column;
+  gap: 0.3rem;
+  padding: 0.625rem 0.75rem;
+}
+
+/* ── 布局: cardLarge (大卡片) ── 封面横幅 + 标题 + 三行摘要 */
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='cardLarge'] .note-block__card {
+  display: flex;
+  flex-direction: column;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__banner {
+  height: 8.5rem;
+  border-bottom: 1px solid var(--border);
+  background: var(--muted);
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__banner-image {
+  display: block;
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__banner-placeholder {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  height: 100%;
+  color: var(--muted-foreground);
+  opacity: 0.55;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='cardLarge'] .note-block__head,
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='cardLarge'] .note-block__preview {
+  margin: 0 0.75rem;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='cardLarge'] .note-block__head {
+  margin-top: 0.625rem;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='cardLarge'] .note-block__preview {
+  margin-bottom: 0.625rem;
+}
+
+/* ── 卡片内部元素 ── */
+.markdown-editor .tiptap .editor-note-reference-block .note-block__head {
+  display: flex;
+  align-items: center;
+  gap: 0.375rem;
+  min-width: 0;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__icon {
+  display: inline-flex;
+  flex-shrink: 0;
+  align-items: center;
+  color: var(--document-link);
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__title {
+  overflow: hidden;
+  flex: 0 1 auto;
+  min-width: 0;
+  color: var(--document-link);
+  font-size: 0.875rem;
+  font-weight: 600;
+  line-height: 1.35;
+  overflow-wrap: anywhere;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block:hover .note-block__title {
+  color: color-mix(in oklch, var(--document-link), white 20%);
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__preview {
+  display: -webkit-box;
+  overflow: hidden;
+  color: var(--muted-foreground);
+  font-size: 0.8rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+  white-space: pre-wrap;
+  -webkit-box-orient: vertical;
+  -webkit-line-clamp: 2;
+  /* 数据未加载完成时保留一行高度, 避免卡片高度跳动. */
+  min-height: 1.15rem;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='cardLarge'] .note-block__preview {
+  -webkit-line-clamp: 3;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__stale-mark {
+  padding: 0.375rem 0.75rem 0;
+  color: var(--document-link);
+  font-size: 0.75rem;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block[data-layout='line'] .note-block__stale-mark {
+  padding: 0;
+  font-size: 0.8rem;
+  white-space: nowrap;
+}
+
+/* ── 悬浮工具条: 打开 + 布局切换 (仅可编辑态展示) ── */
+.markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar {
+  position: absolute;
+  z-index: 20;
+  top: -0.8rem;
+  right: 0.5rem;
+  display: flex;
+  align-items: center;
+  gap: 0.125rem;
+  padding: 0.125rem;
+  border: 1px solid var(--border);
+  border-radius: 0.5rem;
+  background: var(--input-bg, var(--document-bg));
+  box-shadow: 0 2px 10px -2px rgb(0 0 0 / 18%);
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 0.12s ease;
+}
+
+.markdown-editor
+  .tiptap:not([contenteditable='false'])
+  .editor-note-reference-block:hover .note-block__toolbar,
+.markdown-editor
+  .tiptap:not([contenteditable='false'])
+  .editor-note-reference-block.is-selected .note-block__toolbar {
+  opacity: 1;
+  pointer-events: auto;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar-button {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 1.65rem;
+  height: 1.65rem;
+  padding: 0;
+  border: 0;
+  border-radius: 0.35rem;
+  background: transparent;
+  color: var(--muted-foreground);
+  cursor: pointer;
+  transition: background-color 0.12s ease, color 0.12s ease;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar-button svg {
+  width: 0.95rem;
+  height: 0.95rem;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar-button:hover {
+  background: var(--muted);
+  color: var(--foreground);
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar-button.is-active {
+  background: color-mix(in oklch, var(--document-link) 12%, transparent);
+  color: var(--document-link);
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__toolbar-separator {
+  width: 1px;
+  height: 1rem;
+  margin: 0 0.125rem;
+  background: var(--border);
+}
+

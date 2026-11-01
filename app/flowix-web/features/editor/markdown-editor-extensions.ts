@@ -13,6 +13,7 @@ import MarkdownPaste from '@features/editor/extensions/markdown-paste';
 import ManagedPasteRules from '@features/editor/extensions/paste-rules';
 import { LinkSelectionHighlight, MarkdownLink } from '@features/editor/extensions/markdown-link';
 import { NoteReference } from '@features/editor/extensions/note-link';
+import { NoteReferenceBlock } from '@features/editor/extensions/note-block/note-reference-block';
 import { NoteMention, WikiNoteMention } from '@features/editor/extensions/note-mention';
 import { TagMention } from '@features/editor/extensions/tag-mention';
 import { CodeBlockShikiBase } from '@features/editor/extensions/codeblock-shiki/codeblock-shiki-base';
@@ -388,6 +389,7 @@ export function createMarkdownEditorExtensions({
       getAttachmentNotebookId,
     }),
     NoteReference,
+    NoteReferenceBlock,
     NoteMention,
     WikiNoteMention,
     TagMention,
