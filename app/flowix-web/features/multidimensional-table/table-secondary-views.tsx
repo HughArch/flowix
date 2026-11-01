@@ -58,12 +58,14 @@ function formatGalleryUpdatedAt(timestamp: string): string {
   return `更新 ${Math.floor(elapsedMonths / 12)}年前`;
 }
 
-export function TableGalleryView({ records, titleField, fields, renderValue, imageUrl, noteThumbnail, onOpenRecord, onCreateBlankNote, onChooseData, recordStatus, noteIcon, canAddData = true, dropNotebookId, canDropExternal = false, previewExternalNoteDrop, nextRecordId, dropAreaRef, onExternalNoteDrop }: {
+export function TableGalleryView({ records, titleField, fields, renderValue, imageUrl, noteCover, noteThumbnail, onOpenRecord, onCreateBlankNote, onChooseData, recordStatus, noteIcon, canAddData = true, dropNotebookId, canDropExternal = false, previewExternalNoteDrop, nextRecordId, dropAreaRef, onExternalNoteDrop }: {
   records: TableRecord[];
   titleField: TableField;
   fields: TableField[];
   renderValue: ValueRenderer;
   imageUrl: (record: TableRecord, field: TableField) => string | null;
+  /** Manual cover URL (`flowix_cover`) resolved by the caller. */
+  noteCover?: (record: TableRecord) => string | null;
   noteThumbnail?: (record: TableRecord) => string | null;
   onOpenRecord: (record: TableRecord, anchorRect: DOMRect) => void;
   onCreateBlankNote?: () => void;
@@ -202,7 +204,9 @@ export function TableGalleryView({ records, titleField, fields, renderValue, ima
       {renderedRecords.map((record) => {
         const cover = imageField ? imageUrl(record, imageField) : null;
         const notePreview = noteThumbnail?.(record) ?? null;
-        const imageSources = [...new Set([notePreview, cover, documentCardPlaceholder].filter((source): source is string => Boolean(source)))];
+        // 手动封面优先于正文首图, 与笔记卡片一致。
+        const manualCover = noteCover?.(record) ?? null;
+        const imageSources = [...new Set([manualCover, notePreview, cover, documentCardPlaceholder].filter((source): source is string => Boolean(source)))];
         const missing = recordStatus?.(record) === 'missing';
         const iconValue = noteIcon?.(record);
         const icon = iconValue ? getPropertyIconOption(iconValue) : null;

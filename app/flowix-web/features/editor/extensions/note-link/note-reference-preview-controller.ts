@@ -1,5 +1,5 @@
 import type { I18nKey } from '@/lib/i18n';
-import { decodeStorageKey, resolveAttachmentUrl } from '@features/editor/extensions/attachment-link/utils';
+import { resolveNoteCoverUrl } from '@features/document/components/note-cover/cover-url';
 
 export interface NoteReferencePreviewData {
   title: string;
@@ -22,10 +22,9 @@ interface NoteReferencePreviewControllerOptions {
 }
 
 function noteReferenceThumbnailUrl(thumbnail: string | null, notebookPath?: string | null): string | null {
-  if (!thumbnail) return null;
-  const storageKey = decodeStorageKey(thumbnail);
-  // Attachment keys are notebook-relative; resolve against the referenced note's notebook.
-  return storageKey ? resolveAttachmentUrl(storageKey, notebookPath) : thumbnail;
+  // Manual covers may be `builtin:` app assets, remote URLs, or attachment
+  // keys; resolveNoteCoverUrl handles every persisted form.
+  return resolveNoteCoverUrl(thumbnail, notebookPath);
 }
 
 /** Owns the composer note-reference preview's DOM, async lifecycle, and placement. */

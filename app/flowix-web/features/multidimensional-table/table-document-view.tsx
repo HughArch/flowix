@@ -35,6 +35,7 @@ import type { PropertyFieldConfig } from '@/lib/constants';
 import { compareAndPatchDocumentProperties, removeDocumentProperty, setDocumentProperties } from '@features/document/public/path-properties';
 import { PROPERTY_URL_RE } from '@features/document/properties/property-type';
 import { decodeStorageKey, resolveAttachmentUrl } from '@features/editor/extensions/attachment-link/utils';
+import { resolveNoteCoverUrl } from '@features/document/components/note-cover/cover-url';
 import { getAllPresets, resolvePropertyPreset, resolvePropertyDisplayName, type PropertyPreset } from '@features/document/properties/presets';
 import { usePropertyPresets } from '@features/properties/public-api';
 import { createFileBrowserTarget } from '@features/workspace/public/browser-column-api';
@@ -3359,6 +3360,7 @@ function TableDocumentViewSession({ onSurfaceLifecycleReady, reportPresentation,
           const path = imagePaths(notePropertyEditorValue(noteForRecord(record), field))[0];
           return path ? imageUrls[`${record.id}:${field.id}:${path}`] ?? null : null;
         }}
+        noteCover={(record) => resolveNoteCoverUrl(noteForRecord(record)?.cover ?? null, notebookPath)}
         noteThumbnail={(record) => noteThumbnailUrl(noteForRecord(record)?.thumbnail, notebookPath)}
         onOpenRecord={(record, anchorRect) => {
           const note = noteForRecord(record);

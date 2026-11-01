@@ -804,6 +804,7 @@ pub(super) struct DerivedDocumentMetadata {
     pub(super) tags: Vec<String>,
     pub(super) favorited: bool,
     pub(super) icon: Option<String>,
+    pub(super) cover: Option<String>,
     pub(super) colors: Vec<NoteColor>,
     pub(super) properties: serde_json::Value,
 }
@@ -814,6 +815,7 @@ impl Default for DerivedDocumentMetadata {
             tags: Vec::new(),
             favorited: false,
             icon: None,
+            cover: None,
             colors: Vec::new(),
             properties: serde_json::json!({}),
         }
@@ -854,6 +856,13 @@ pub(super) fn derive_note_fields(full_content: &str) -> DerivedNoteFields<'_> {
                 .properties
                 .get("flowix_icon")
                 .and_then(serde_json::Value::as_str)
+                .map(str::to_string),
+            cover: metadata
+                .properties
+                .get("flowix_cover")
+                .and_then(serde_json::Value::as_str)
+                .map(str::trim)
+                .filter(|value| !value.is_empty())
                 .map(str::to_string),
             colors: metadata
                 .properties

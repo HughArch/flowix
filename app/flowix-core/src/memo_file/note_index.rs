@@ -21,7 +21,7 @@ use super::{
 };
 
 // Keep list and single-entry reads on the same projection decoder.
-const NOTE_ENTRY_COLUMNS: &str = "relative_path, title, preview, thumbnail, created_at, updated_at, favorited, icon, colors_json, properties_json, size_bytes, tags, todos, agents";
+const NOTE_ENTRY_COLUMNS: &str = "relative_path, title, preview, thumbnail, created_at, updated_at, favorited, icon, colors_json, properties_json, size_bytes, tags, todos, agents, cover";
 
 /// Supported predicates applied before pagination; values are always SQL parameters.
 #[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
@@ -60,12 +60,13 @@ fn note_entry_from_row(row: &rusqlite::Row<'_>) -> rusqlite::Result<NoteEntry> {
         favorited: row.get::<_, i64>(6)? != 0, icon: row.get(7)?,
         colors: json(row, 8)?, properties: json(row, 9)?, size_bytes: row.get(10)?,
         tags: json(row, 11)?, todos: json(row, 12)?, agents: json(row, 13)?,
+        cover: row.get(14)?,
     })
 }
 
-const SCHEMA_VERSION: i64 = 4;
-// Version 10 stores derived tags, todos, and agents on each notes row.
-const PARSER_VERSION: i64 = 10;
+const SCHEMA_VERSION: i64 = 5;
+// Version 11 derives the manual cover key (`flowix_cover`) onto each notes row.
+const PARSER_VERSION: i64 = 11;
 const NOTE_SEARCH_FTS_VERSION: i64 = 2;
 const NOTE_INDEX_REFRESH_PENDING: &str = "note-index-refresh-pending";
 const NOTE_INDEX_REFRESH_PENDING_DIR: &str = "note-index-refresh-pending.d";
@@ -162,6 +163,9 @@ pub struct NoteEntry {
     pub updated_at: i64,
     pub favorited: bool,
     pub icon: Option<String>,
+    /// Manual cover attachment key (`flowix_cover`); notebook-relative or absolute URL.
+    #[serde(default)]
+    pub cover: Option<String>,
     pub colors: Vec<NoteColor>,
     pub properties: serde_json::Value,
 }
@@ -214,6 +218,7 @@ fn note_entry_from_derived_fields(
         updated_at,
         favorited: metadata.favorited,
         icon: metadata.icon,
+        cover: metadata.cover,
         colors: metadata.colors,
         properties: metadata.properties,
     }
@@ -1884,13 +1889,13 @@ impl MemoFile {
         let filename = relative.rsplit('/').next().unwrap_or(&relative).to_owned();
         let filename_lower = filename.to_lowercase();
         tx.execute(
-                "INSERT INTO notes (relative_path, size_bytes, modified_ns, content_hash, title, preview, thumbnail, properties_json, indexed_at, created_at, updated_at, favorited, icon, colors_json, filename, filename_lower, tags, todos, agents) \
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19) \
+                "INSERT INTO notes (relative_path, size_bytes, modified_ns, content_hash, title, preview, thumbnail, properties_json, indexed_at, created_at, updated_at, favorited, icon, cover, colors_json, filename, filename_lower, tags, todos, agents) \
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14, ?15, ?16, ?17, ?18, ?19, ?20) \
                  ON CONFLICT(relative_path) DO UPDATE SET size_bytes=excluded.size_bytes, modified_ns=excluded.modified_ns, \
                  content_hash=excluded.content_hash, title=excluded.title, preview=excluded.preview, thumbnail=excluded.thumbnail, \
                  properties_json=excluded.properties_json, indexed_at=excluded.indexed_at, \
                  created_at=excluded.created_at, updated_at=excluded.updated_at, favorited=excluded.favorited, \
-                 icon=excluded.icon, colors_json=excluded.colors_json, filename=excluded.filename, filename_lower=excluded.filename_lower, \
+                 icon=excluded.icon, cover=excluded.cover, colors_json=excluded.colors_json, filename=excluded.filename, filename_lower=excluded.filename_lower, \
                  tags=excluded.tags, todos=excluded.todos, agents=excluded.agents",
                 params![relative, size, modified_ns, hash, title, derived.preview, derived.thumbnail,
                     metadata.properties.to_string(),
@@ -1898,7 +1903,7 @@ impl MemoFile {
                     previous.as_ref().map(|(_, _, _, created)| *created).filter(|created| *created > 0)
                         .unwrap_or(file_created_ms),
                     modified_ns.unwrap_or(0) / 1_000_000,
-                    i64::from(metadata.favorited), metadata.icon,
+                    i64::from(metadata.favorited), metadata.icon, metadata.cover,
                      serde_json::to_string(&metadata.colors).map_err(io::Error::other)?,
                      filename, filename_lower,
                      serde_json::to_string(&metadata.tags).map_err(io::Error::other)?,
@@ -1978,7 +1983,7 @@ impl MemoFile {
               size_bytes INTEGER NOT NULL, modified_ns INTEGER, content_hash TEXT NOT NULL, \
               title TEXT NOT NULL, preview TEXT NOT NULL, thumbnail TEXT, properties_json TEXT NOT NULL, indexed_at INTEGER NOT NULL, \
               created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, \
-              favorited INTEGER NOT NULL DEFAULT 0, icon TEXT, colors_json TEXT NOT NULL DEFAULT '[]', \
+              favorited INTEGER NOT NULL DEFAULT 0, icon TEXT, cover TEXT, colors_json TEXT NOT NULL DEFAULT '[]', \
               filename TEXT NOT NULL DEFAULT '', filename_lower TEXT NOT NULL DEFAULT '', \
               tags TEXT NOT NULL DEFAULT '[]', todos TEXT NOT NULL DEFAULT '[]', agents TEXT NOT NULL DEFAULT '[]'); \
             CREATE TABLE IF NOT EXISTS note_content_revisions (notebook_id TEXT NOT NULL, \
@@ -1999,6 +2004,7 @@ impl MemoFile {
                 ("updated_at", "INTEGER NOT NULL DEFAULT 0"),
                 ("favorited", "INTEGER NOT NULL DEFAULT 0"),
                 ("icon", "TEXT"),
+                ("cover", "TEXT"),
                 ("colors_json", "TEXT NOT NULL DEFAULT '[]'"),
                 ("filename", "TEXT NOT NULL DEFAULT ''"),
                 ("filename_lower", "TEXT NOT NULL DEFAULT ''"),
@@ -2192,7 +2198,7 @@ mod tests {
         let conn = memo.open_note_index_connection("background").unwrap();
         // A malformed field unrelated to tree rows must not break this query.
         conn.execute("UPDATE notes SET properties_json='invalid', favorited=1, icon='star', colors_json='[\"red\"]' WHERE relative_path='a.md'", []).unwrap();
-        conn.execute("INSERT INTO notes SELECT 'nested/a.md', size_bytes, modified_ns, content_hash, title, preview, thumbnail, properties_json, indexed_at, created_at, updated_at, favorited, icon, colors_json, filename, filename_lower, tags, todos, agents FROM notes WHERE relative_path='a.md'", []).unwrap();
+        conn.execute("INSERT INTO notes SELECT 'nested/a.md', size_bytes, modified_ns, content_hash, title, preview, thumbnail, properties_json, indexed_at, created_at, updated_at, favorited, icon, cover, colors_json, filename, filename_lower, tags, todos, agents FROM notes WHERE relative_path='a.md'", []).unwrap();
         fs::remove_file(root.join("a.md")).unwrap();
         let mut paths: Vec<String> = (0..650).map(|i| format!("missing-{i}.md")).collect();
         paths.push("a.md".into());

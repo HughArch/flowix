@@ -346,7 +346,7 @@ class NoteReferenceView implements ProseMirrorNodeView {
     const data: NoteReferencePreviewData = {
       title: entry?.title || noteReferenceDisplayTitle(attrs) || tKey('editor.noteLink.untitled'),
       preview: entry?.preview ?? '',
-      thumbnail: entry?.thumbnail ?? null,
+      thumbnail: entry?.cover ?? entry?.thumbnail ?? null,
       notebookId,
       relativePath,
       notebookPath,

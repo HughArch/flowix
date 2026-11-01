@@ -27,6 +27,8 @@ export interface NoteEntry {
   updatedAt: number;
   favorited: boolean;
   icon: string | null;
+  /** Manual cover attachment key (`flowix_cover`); notebook-relative or remote URL. */
+  cover?: string | null;
   colors: NoteColor[];
   properties: Record<string, unknown>;
 }

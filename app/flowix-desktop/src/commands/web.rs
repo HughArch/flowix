@@ -40,6 +40,92 @@ pub async fn parse_web_page(url: String) -> Result<WebPageMetadata, String> {
     Ok(extract_metadata(&html, &final_url))
 }
 
+/// Manual note covers: fetch a remote image and hand the bytes to the webview
+/// for cropping. Bytes are validated so only real image payloads are accepted.
+const MAX_COVER_IMAGE_BYTES: usize = 25 * 1024 * 1024;
+
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FetchedImagePayload {
+    pub content_base64: String,
+    pub mime_type: Option<String>,
+}
+
+#[tauri::command]
+pub async fn fetch_url_image_base64(url: String) -> Result<FetchedImagePayload, String> {
+    let normalized_url = normalize_url(&url)?;
+    let client = reqwest::Client::builder()
+        .user_agent("Mozilla/5.0 Flowix Cover Fetcher")
+        .redirect(reqwest::redirect::Policy::limited(6))
+        .timeout(std::time::Duration::from_secs(30))
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let response = client
+        .get(&normalized_url)
+        .header(
+            reqwest::header::ACCEPT,
+            "image/avif,image/webp,image/png,image/jpeg,image/gif,image/svg+xml,*/*;q=0.8",
+        )
+        .send()
+        .await
+        .map_err(|e| format!("failed to fetch image: {e}"))?
+        .error_for_status()
+        .map_err(|e| format!("image request failed: {e}"))?;
+
+    let mime_type = response
+        .headers()
+        .get(reqwest::header::CONTENT_TYPE)
+        .and_then(|value| value.to_str().ok())
+        .map(|value| value.split(';').next().unwrap_or(value).trim().to_string())
+        .filter(|value| !value.is_empty());
+    if let Some(mime) = &mime_type {
+        if !mime.starts_with("image/") {
+            return Err("url does not point to an image".into());
+        }
+    }
+
+    let bytes = response
+        .bytes()
+        .await
+        .map_err(|e| format!("failed to read image: {e}"))?;
+    if bytes.len() > MAX_COVER_IMAGE_BYTES {
+        return Err("image exceeds the 25 MB size limit".into());
+    }
+    if !looks_like_image(&bytes) {
+        return Err("url does not point to a valid image".into());
+    }
+
+    use base64::Engine as _;
+    Ok(FetchedImagePayload {
+        content_base64: base64::engine::general_purpose::STANDARD.encode(&bytes),
+        mime_type,
+    })
+}
+
+/// Content sniffing: servers may omit or lie about `Content-Type`, so verify
+/// magic bytes before persisting a downloaded cover.
+fn looks_like_image(bytes: &[u8]) -> bool {
+    if bytes.starts_with(&[0xFF, 0xD8, 0xFF]) // JPEG
+        || bytes.starts_with(&[0x89, b'P', b'N', b'G']) // PNG
+        || bytes.starts_with(b"GIF8") // GIF87a/GIF89a
+        || bytes.starts_with(b"BM") // BMP
+        || (bytes.starts_with(b"RIFF") && bytes.len() >= 12 && &bytes[8..12] == b"WEBP")
+        || (bytes.len() >= 12
+            && matches!(
+                &bytes[4..12],
+                b"ftypavif" | b"ftypheic" | b"ftypheix" | b"ftypmif1" | b"ftypmsf1"
+            ))
+    {
+        return true;
+    }
+    // SVG: optional BOM/XML declaration before the <svg root tag.
+    let head = String::from_utf8_lossy(&bytes[..bytes.len().min(512)]);
+    let trimmed = head.trim_start_matches('\u{FEFF}').trim_start();
+    trimmed.starts_with("<svg")
+        || (trimmed.starts_with("<?xml") && trimmed.contains("<svg"))
+}
+
 fn normalize_url(raw: &str) -> Result<String, String> {
     let trimmed = raw.trim();
     if trimmed.is_empty() {
