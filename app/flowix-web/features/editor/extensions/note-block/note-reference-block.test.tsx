@@ -8,7 +8,7 @@ import {
   NOTE_BLOCK_MARKER,
   normalizeNoteBlockAttrs,
 } from './note-reference-block-markdown';
-import { NoteReferenceBlock } from './note-reference-block';
+import { computeNoteBlockRuns, NoteReferenceBlock } from './note-reference-block';
 
 const notebook: Notebook = {
   id: 'work', name: 'Work', path: '/notes',
@@ -176,5 +176,90 @@ describe('noteReferenceBlock node view', () => {
     await vi.waitFor(() => {
       expect(document.querySelector<HTMLElement>('.note-reference-preview')?.hidden).toBe(true);
     }, { timeout: 3000 });
+  });
+
+  it('shows the note emoji icon in the card and the preview popover', async () => {
+    vi.spyOn(notes, 'getIndexed').mockResolvedValue({
+      relativePath: 'Projects/Plan.md', title: 'Plan', preview: 'The body preview', thumbnail: null,
+      tags: [], todos: [], agents: [], createdAt: 0, updatedAt: 0,
+      favorited: false, icon: '🔥', colors: [], properties: {},
+    });
+
+    const editor = mountBlock({ layout: 'cardLarge' });
+    const wrapper = editor.view.dom.querySelector<HTMLElement>('.editor-note-reference-block')!;
+    await vi.waitFor(() => {
+      expect(wrapper.querySelector('.note-block__note-icon')?.textContent).toBe('🔥');
+    });
+
+    wrapper.dispatchEvent(new window.PointerEvent('pointerenter', { bubbles: false }));
+    await vi.waitFor(() => {
+      const popover = document.querySelector<HTMLElement>('.note-reference-preview');
+      expect(popover?.hidden).toBe(false);
+      expect(document.querySelector('.note-reference-preview__icon')?.textContent).toBe('🔥');
+    }, { timeout: 3000 });
+  });
+});
+
+describe('noteReferenceBlock row layout', () => {
+  function mountDoc(content: Array<Record<string, unknown>>): Editor {
+    const element = document.createElement('div');
+    document.body.append(element);
+    const editor = new Editor({
+      element,
+      extensions: [StarterKit, NoteReferenceBlock],
+      content: { type: 'doc', content },
+    });
+    editors.push(editor);
+    return editor;
+  }
+
+  it('computes consecutive runs of large cards only', () => {
+    vi.spyOn(notes, 'getIndexed').mockRejectedValue(new Error('unavailable'));
+    const large = { type: 'noteReferenceBlock', attrs: { ...blockAttrs, layout: 'cardLarge' } };
+    const small = { type: 'noteReferenceBlock', attrs: { ...blockAttrs, layout: 'card' } };
+    const editor = mountDoc([
+      { type: 'paragraph' },
+      large,
+      large,
+      { type: 'paragraph' },
+      large,
+      small, // 小卡片打断 run 且自身不参与
+      large,
+    ]);
+    const runs = computeNoteBlockRuns(editor.state.doc);
+    expect(runs).toEqual([
+      { pos: 2, count: 2, index: 0 },
+      { pos: 3, count: 2, index: 1 },
+      { pos: 6, count: 1, index: 0 },
+      { pos: 8, count: 1, index: 0 },
+    ]);
+  });
+
+  it('writes run data attributes onto large-card DOM only', async () => {
+    vi.spyOn(notes, 'getIndexed').mockRejectedValue(new Error('unavailable'));
+    const large = { type: 'noteReferenceBlock', attrs: { ...blockAttrs, layout: 'cardLarge' } };
+    const small = { type: 'noteReferenceBlock', attrs: { ...blockAttrs, layout: 'card' } };
+    const editor = mountDoc([{ type: 'paragraph' }, large, large, small]);
+    const wrappers = [...editor.view.dom.querySelectorAll<HTMLElement>('.editor-note-reference-block')];
+    expect(wrappers.map((w) => w.dataset.runCount)).toEqual(['2', '2', undefined]);
+    expect(wrappers.map((w) => w.dataset.runIndex)).toEqual(['0', '1', undefined]);
+    // 大卡片被切换为小卡片后 (布局工具条), run 重新同步:
+    // 第一张不再参与, 第二张大卡片自成为单卡 run.
+    const toolbar = wrappers[0].querySelector<HTMLButtonElement>('.note-block__toolbar-button[data-action="card"]')!;
+    toolbar.click();
+    await vi.waitFor(() => {
+      const after = [...editor.view.dom.querySelectorAll<HTMLElement>('.editor-note-reference-block')];
+      expect(after.map((w) => w.dataset.runCount)).toEqual([undefined, '1', undefined]);
+    });
+  });
+
+  it('keeps small-card rows full width: stacked cards do not merge into one run', () => {
+    vi.spyOn(notes, 'getIndexed').mockRejectedValue(new Error('unavailable'));
+    const small = { type: 'noteReferenceBlock', attrs: { ...blockAttrs, layout: 'card' } };
+    const editor = mountDoc([{ type: 'paragraph' }, small, small]);
+    const runs = computeNoteBlockRuns(editor.state.doc);
+    expect(runs).toEqual([]);
+    const wrappers = [...editor.view.dom.querySelectorAll<HTMLElement>('.editor-note-reference-block')];
+    expect(wrappers.map((w) => w.dataset.runCount)).toEqual([undefined, undefined]);
   });
 });

@@ -9,6 +9,7 @@
 // Markdown form: `::notecard{…json…}` (see note-reference-block-markdown.ts).
 import { Node as TiptapNode, mergeAttributes, type JSONContent } from '@tiptap/core';
 import { NodeSelection } from '@tiptap/pm/state';
+import { Plugin } from '@tiptap/pm/state';
 import type { Node as ProseMirrorNode } from '@tiptap/pm/model';
 import type { NodeView as ProseMirrorNodeView, EditorView } from '@tiptap/pm/view';
 import { isMobileDevice } from '@shared/platform';
@@ -64,6 +65,81 @@ const LAYOUT_LABEL_KEYS: Record<NoteReferenceBlockLayout, I18nKey> = {
   card: 'editor.noteBlock.layoutCard',
   cardLarge: 'editor.noteBlock.layoutCardLarge',
 };
+
+// ─── 同行多卡片布局 ────────────────────────────────────────────────────────────
+// 只有连续相邻的顶层「大卡片」(layout === 'cardLarge') 排成一行: 单卡占 1/3 宽
+// (加高趋近方形), 两卡平分一行, 三卡及以上按 1/3 逐行排布。默认样式 / 小卡片
+// 保持整行 (block) 行为。run 信息写到卡片 DOM 的 data 属性上 (CSS 按
+// data-run-count 选宽度), 不引入包装容器节点, 文档结构保持扁平。
+// 卡片放进多列等容器时由 CSS 兜底为 100% 列宽填充, 与现有多列布局复用。
+
+export interface NoteBlockRunInfo {
+  /** 节点在 doc 中的起始位置. */
+  pos: number;
+  /** 所在连续 run 的卡片总数 (封顶 3, 仅用于宽度选择). */
+  count: number;
+  /** 在 run 内的序号 (0 基). */
+  index: number;
+}
+
+/** 纯函数: 计算顶层连续大卡片的 run 信息 (供测试与同步共用). */
+export function computeNoteBlockRuns(doc: ProseMirrorNode): NoteBlockRunInfo[] {
+  const runs: NoteBlockRunInfo[] = [];
+  let positions: number[] = [];
+  let pos = 0;
+  const flush = () => {
+    if (positions.length === 0) return;
+    const count = Math.min(positions.length, 3);
+    positions.forEach((runPos, index) => runs.push({ pos: runPos, count, index }));
+    positions = [];
+  };
+  doc.forEach((node) => {
+    const start = pos;
+    pos += node.nodeSize;
+    // 非大卡片 (默认样式 / 小卡片) 不参与同行排布, 并打断 run.
+    if (node.type.name !== 'noteReferenceBlock' || normalizeNoteBlockAttrs(node.attrs as Partial<BlockAttrs>).layout !== 'cardLarge') {
+      flush();
+      return;
+    }
+    positions.push(start);
+  });
+  flush();
+  return runs;
+}
+
+/** 把 run 信息同步到卡片 NodeView 的外层 DOM (幂等, 只在值变化时写). */
+export function syncNoteBlockRunAttributes(view: EditorView): void {
+  const runByPos = new Map(computeNoteBlockRuns(view.state.doc).map((run) => [run.pos, run]));
+  let pos = 0;
+  view.state.doc.forEach((node) => {
+    const start = pos;
+    pos += node.nodeSize;
+    if (node.type.name !== 'noteReferenceBlock') return;
+    const dom = view.nodeDOM(start);
+    if (!(dom instanceof HTMLElement)) return;
+    const run = runByPos.get(start);
+    const count = run ? String(run.count) : '';
+    const index = run ? String(run.index) : '';
+    if (dom.dataset.runCount !== count) {
+      if (count) dom.dataset.runCount = count;
+      else delete dom.dataset.runCount;
+    }
+    if (dom.dataset.runIndex !== index) {
+      if (index) dom.dataset.runIndex = index;
+      else delete dom.dataset.runIndex;
+    }
+  });
+}
+
+function noteBlockRowLayoutPlugin(): Plugin {
+  return new Plugin({
+    view(editorView) {
+      const sync = () => syncNoteBlockRunAttributes(editorView);
+      sync();
+      return { update: sync, destroy: () => {} };
+    },
+  });
+}
 
 // ─── NodeView ─────────────────────────────────────────────────────────────────
 
@@ -163,6 +239,7 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     const attrs = this.attrs;
     const isCanvas = typeof attrs.relativePath === 'string' && /\.flowix-canvas$/i.test(attrs.relativePath);
     const iconSvg = isCanvas ? CANVAS_FILE_ICON_SVG : NOTE_FILE_ICON_SVG;
+    const noteIcon = this.data?.icon || null;
     const title = noteReferenceDisplayTitle(attrs) || this.data?.title || tKey('editor.noteLink.untitled');
 
     card.innerHTML = '';
@@ -196,7 +273,15 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
       } else {
         const placeholder = document.createElement('div');
         placeholder.className = 'note-block__banner-placeholder';
-        placeholder.innerHTML = iconSvg;
+        // 原笔记的 emoji 图标优先; 没有图标才用通用文件图形.
+        if (noteIcon) {
+          const iconEmoji = document.createElement('span');
+          iconEmoji.className = 'note-block__banner-note-icon';
+          iconEmoji.textContent = noteIcon;
+          placeholder.appendChild(iconEmoji);
+        } else {
+          placeholder.innerHTML = iconSvg;
+        }
         banner.appendChild(placeholder);
       }
       card.appendChild(banner);
@@ -206,7 +291,15 @@ class NoteReferenceBlockView implements ProseMirrorNodeView {
     head.className = 'note-block__head';
     const icon = document.createElement('span');
     icon.className = 'note-block__icon';
-    icon.innerHTML = iconSvg;
+    // 原笔记的 emoji 图标优先展示; 无图标 / 画布引用退回通用文件图形.
+    if (noteIcon && !isCanvas) {
+      const iconEmoji = document.createElement('span');
+      iconEmoji.className = 'note-block__note-icon';
+      iconEmoji.textContent = noteIcon;
+      icon.appendChild(iconEmoji);
+    } else {
+      icon.innerHTML = iconSvg;
+    }
     const titleSpan = document.createElement('span');
     titleSpan.className = 'note-block__title';
     titleSpan.textContent = title;
@@ -454,6 +547,10 @@ export const NoteReferenceBlock = TiptapNode.create({
         return true;
       },
     };
+  },
+
+  addProseMirrorPlugins() {
+    return [noteBlockRowLayoutPlugin()];
   },
 
   ...noteReferenceBlockMarkdownSpec,

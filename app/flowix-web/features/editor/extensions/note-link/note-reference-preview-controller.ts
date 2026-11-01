@@ -5,6 +5,8 @@ export interface NoteReferencePreviewData {
   title: string;
   preview: string;
   thumbnail: string | null;
+  /** 原笔记的 emoji 图标 (属性面板 icon); 无图标时为 null. */
+  icon: string | null;
   notebookId: string;
   relativePath: string;
   notebookPath: string;
@@ -47,6 +49,7 @@ const HOVER_CLOSE_DELAY_MS = 260;
 export class NoteReferencePreviewController {
   private popover: HTMLDivElement | null = null;
   private title: HTMLElement | null = null;
+  private icon: HTMLElement | null = null;
   private text: HTMLElement | null = null;
   private image: HTMLImageElement | null = null;
   private openButton: HTMLButtonElement | null = null;
@@ -166,6 +169,9 @@ export class NoteReferencePreviewController {
     body.className = 'note-reference-preview__body';
     const titleRow = document.createElement('div');
     titleRow.className = 'note-reference-preview__title-row';
+    const icon = document.createElement('span');
+    icon.className = 'note-reference-preview__icon';
+    icon.hidden = true;
     const title = document.createElement('div');
     title.className = 'note-reference-preview__title';
     const text = document.createElement('div');
@@ -182,12 +188,13 @@ export class NoteReferencePreviewController {
       void this.openReferencedNote();
     });
 
-    titleRow.append(title, openButton);
+    titleRow.append(icon, title, openButton);
     body.append(titleRow, text);
     popover.append(image, body);
     document.body.append(popover);
 
     this.popover = popover;
+    this.icon = icon;
     this.title = title;
     this.text = text;
     this.image = image;
@@ -257,6 +264,7 @@ export class NoteReferencePreviewController {
     if (!this.isOpen || !this.text || !this.openButton || !this.popover) return;
     const requestId = ++this.requestId;
     this.title!.textContent = this.options.getFallbackTitle();
+    if (this.icon) this.icon.hidden = true;
     this.popover.setAttribute('aria-label', this.title!.textContent ?? '');
     this.text.textContent = this.options.t('editor.noteLink.previewLoading');
     this.openButton.disabled = true;
@@ -269,6 +277,14 @@ export class NoteReferencePreviewController {
         this.text!.textContent = this.options.t('editor.noteLink.previewUnavailable');
         this.openButton!.disabled = true;
       } else {
+        if (this.icon) {
+          if (data.icon) {
+            this.icon.textContent = data.icon;
+            this.icon.hidden = false;
+          } else {
+            this.icon.hidden = true;
+          }
+        }
         this.title!.textContent = data.title;
         this.popover!.setAttribute('aria-label', data.title);
         this.text!.textContent = data.preview.trim()

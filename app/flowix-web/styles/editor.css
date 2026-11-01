@@ -2264,6 +2264,13 @@ html.flowix-block-dragging * {
   gap: 0.5rem;
 }
 
+/* 原笔记的 emoji 图标 (无图标时 hidden) */
+.note-reference-preview__icon {
+  flex: 0 0 auto;
+  font-size: 1rem;
+  line-height: 1;
+}
+
 .note-reference-preview__title {
   display: -webkit-box;
   flex: 1 1 auto;

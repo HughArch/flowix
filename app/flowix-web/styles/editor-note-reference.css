@@ -123,11 +123,48 @@
  *   line      默认样式 — 单行 (图标 + 标题 + 内联摘要)
  *   card      小卡片   — 有边框卡片, 标题 + 两行摘要
  *   cardLarge 大卡片   — 封面横幅 + 标题 + 三行摘要
- * 悬浮块时右上角出现布局工具条 (打开 / 默认 / 小卡片 / 大卡片)。 */
+ * 悬浮块时右上角出现布局工具条 (打开 / 默认 / 小卡片 / 大卡片)。
+ *
+ * 宽度规则:
+ *   - 默认样式 / 小卡片: 永远整行 (block), 保持既有行为;
+ *   - 大卡片: 仅当位于文档顶层且连续相邻时以 inline-grid 排成一行
+ *     (run 信息由块节点的 row-layout 插件写入 data-run-count):
+ *     单卡 → 1/3 行宽并加高趋近方形; 两卡 → 平分; 三卡及以上 → 每行 1/3 换行;
+ *   - 位于多列等容器内的卡片一律 width:100% 填满所在列, 复用现有多列布局
+ *     表达"一行多卡片" (每列一张, 列宽可拖拽调整)。 */
 
 .markdown-editor .tiptap .editor-note-reference-block {
   position: relative;
+  display: block;
+  width: 100%;
   margin: 0.5rem 0;
+}
+
+/* 文档顶层的大卡片: 参与同行网格 (inline-grid 让连续卡片共享一行并自然换行;
+ * grid item 默认 stretch, 配合外层 min-height 把单卡拉高)。 */
+.markdown-editor .tiptap > .editor-note-reference-block[data-layout='cardLarge'] {
+  display: inline-grid;
+  vertical-align: top;
+  /* 一行三卡的基础宽度 (每卡自带 margin-right 作列间距)。 */
+  width: calc((100% - 1.125rem) / 3);
+  margin: 0.5rem 0.375rem 0.5rem 0;
+}
+
+.markdown-editor .tiptap > .editor-note-reference-block[data-layout='cardLarge'][data-run-count='1'] {
+  width: calc((100% - 0.375rem) / 3);
+  min-height: 15rem;
+}
+
+.markdown-editor .tiptap > .editor-note-reference-block[data-layout='cardLarge'][data-run-count='2'] {
+  width: calc((100% - 0.75rem) / 2);
+}
+
+/* 单卡空间变大后放开摘要行数, 让内容填充卡片 */
+.markdown-editor
+  .tiptap
+  > .editor-note-reference-block[data-layout='cardLarge'][data-run-count='1']
+  .note-block__preview {
+  -webkit-line-clamp: 6;
 }
 
 .markdown-editor .tiptap .editor-note-reference-block .note-block__card {
@@ -253,6 +290,17 @@
   color: var(--document-link);
 }
 
+/* 原笔记的 emoji 图标 (属性面板 icon), 优先于通用文件图形展示 */
+.markdown-editor .tiptap .editor-note-reference-block .note-block__note-icon {
+  font-size: 1rem;
+  line-height: 1;
+}
+
+.markdown-editor .tiptap .editor-note-reference-block .note-block__banner-note-icon {
+  font-size: 2.5rem;
+  line-height: 1;
+}
+
 .markdown-editor .tiptap .editor-note-reference-block .note-block__title {
   overflow: hidden;
   flex: 0 1 auto;
@@ -362,5 +410,21 @@
   height: 1rem;
   margin: 0 0.125rem;
   background: var(--border);
+}
+
+/* ── 手机窄视口: 一张卡片占满一行 ───────────────────────────────────────
+ * 取消同行多卡网格与单卡加高 (阈值与 shell 单栏切换一致, 767px)。
+ * 触屏没有 hover, 点击卡片即选中, 选中态展示布局工具条。 */
+@media (max-width: 767px) {
+  .markdown-editor .tiptap > .editor-note-reference-block[data-layout='cardLarge'] {
+    display: block;
+    width: 100%;
+    margin-right: 0;
+    min-height: unset;
+  }
+
+  .markdown-editor .tiptap .editor-note-reference-block .note-block__preview {
+    -webkit-line-clamp: 3;
+  }
 }
 

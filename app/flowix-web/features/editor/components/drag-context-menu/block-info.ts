@@ -171,6 +171,13 @@ export function getBlockInfoAtCoords(
   const calloutInfo = calloutBlockInfoAtCoords(view, clientX, clientY)
   if (calloutInfo !== undefined) return calloutInfo
 
+  // Block note cards are top-level atom nodes with a custom NodeView whose
+  // DOM matches neither the text-block selector nor `posAtCoords`' inside
+  // resolution (an atom has no inside). Match the card wrapper from the DOM
+  // and map it back to the document position, wherever the card is nested.
+  const noteBlockInfo = noteBlockInfoAtCoords(view, clientX, clientY)
+  if (noteBlockInfo !== undefined) return noteBlockInfo
+
   // Columns need the same treatment: in a column's left gutter `posAtCoords`
   // resolves to the `columns` / `column` container, which has no visible block
   // and therefore no handle. Resolving the row from the DOM keeps the handle
@@ -181,6 +188,39 @@ export function getBlockInfoAtCoords(
   const coordsInfo = blockInfoFromCoords(view, clientX, clientY)
   if (coordsInfo && !isLayoutContainer(coordsInfo.typeName)) return coordsInfo
   return blockInfoFromDom(view, clientX, clientY)
+}
+
+/**
+ * Resolve a block note card (noteReferenceBlock) from the pointer position.
+ * Returns `undefined` when the pointer is not on a note card so the generic
+ * resolvers take over.
+ */
+function noteBlockInfoAtCoords(
+  view: Editor['view'],
+  clientX: number,
+  clientY: number,
+): CurrentBlockInfo | null | undefined {
+  const element = document.elementFromPoint(clientX, clientY)
+  if (!(element instanceof Element) || !view.dom.contains(element)) return undefined
+
+  const card = element.closest<HTMLElement>('.editor-note-reference-block')
+  if (!card || !view.dom.contains(card)) return undefined
+
+  let result: CurrentBlockInfo | null = null
+  view.state.doc.descendants((node, pos) => {
+    if (node.type.name !== 'noteReferenceBlock') return true
+    if (view.nodeDOM(pos) !== card) return true
+    result = {
+      node,
+      typeName: node.type.name,
+      attrs: node.attrs,
+      pos,
+      nodeSize: node.nodeSize,
+      dom: card,
+    }
+    return false
+  })
+  return result
 }
 
 /** Containers that group blocks but never own a drag handle themselves. */

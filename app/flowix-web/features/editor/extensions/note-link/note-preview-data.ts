@@ -24,6 +24,34 @@ export function noteReferenceDisplayTitle(attrs: NoteReferenceAttrs): string {
 }
 
 /**
+ * 索引生成的摘要保留原始 markdown 源码 (callout 栅栏、标题/列表标记、
+ * 行内符号等), 直接渲染到卡片/悬浮预览会出现 "::: callout icon=…" 这类
+ * 噪音。这里做轻量清洗: 丢弃结构性标记行, 剥掉常见行内符号, 只留可读文本。
+ */
+export function sanitizeNotePreviewText(raw: string): string {
+  if (!raw) return '';
+  const kept: string[] = [];
+  for (const line of raw.split('\n')) {
+    const trimmed = line.trim();
+    // 结构性标记行整行丢弃: callout/toggle/列栅栏、::webcard 等块标记、
+    // HTML 注释、frontmatter 边界与主题分隔线。
+    if (!trimmed || /^:::/.test(trimmed) || /^::[a-z-]+\s*[{[]/i.test(trimmed) || /^<!--/.test(trimmed) || /^(-{3,}|\*{3,}|_{3,})$/.test(trimmed)) {
+      continue;
+    }
+    let cleaned = line;
+    cleaned = cleaned.replace(/^\s{0,3}#{1,6}\s+/, ''); // 标题
+    cleaned = cleaned.replace(/^\s{0,3}>\s?/, ''); // 引用
+    cleaned = cleaned.replace(/^\s{0,3}(?:[-*+]|\d{1,9}[.)])\s+(?:\[[ xX]\]\s+)?/, ''); // 列表 / 任务
+    cleaned = cleaned.replace(/!\[([^\]]*)\]\([^)]*\)/g, '$1'); // 图片 → alt 文本
+    cleaned = cleaned.replace(/\[([^\]]*)\]\([^)]*\)/g, '$1'); // 链接 → 链接文字
+    cleaned = cleaned.replace(/`{1,3}([^`]*)`{1,3}/g, '$1'); // 行内代码
+    cleaned = cleaned.replace(/\*\*|__|~~/g, ''); // 加粗 / 斜体 / 删除线标记
+    kept.push(cleaned.trimEnd());
+  }
+  return kept.join('\n').replace(/\n{2,}/g, '\n').trim();
+}
+
+/**
  * Resolve note locator attrs to a preview payload. Returns `null` when the
  * target cannot be located (caller renders a title-only / unavailable state).
  */
@@ -90,8 +118,9 @@ export async function loadNoteReferencePreviewData(
 
   const data: NoteReferencePreviewData = {
     title: entry?.title || noteReferenceDisplayTitle(attrs) || fallbackTitle,
-    preview: entry?.preview ?? '',
+    preview: sanitizeNotePreviewText(entry?.preview ?? ''),
     thumbnail: entry?.cover ?? entry?.thumbnail ?? null,
+    icon: entry?.icon ?? null,
     notebookId,
     relativePath,
     notebookPath,
