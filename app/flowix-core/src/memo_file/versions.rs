@@ -23,6 +23,24 @@ fn is_safe_version_id(value: &str) -> bool {
             .all(|ch| ch.is_ascii_alphanumeric() || matches!(ch, '_' | '-'))
 }
 
+/// UTF-8 documents the archive reads back as text: Markdown notes and
+/// `.flowix-canvas` boards. Attachments stay opaque bytes.
+fn is_text_archive_path(relative_path: &str) -> bool {
+    Path::new(relative_path).is_md() || crate::canvas::is_canvas_path(relative_path)
+}
+
+/// Snapshot files keep a self-describing extension so a version can be opened
+/// directly; a canvas snapshot is the JSON document itself.
+fn version_file_extension(relative_path: &str) -> &'static str {
+    if Path::new(relative_path).is_md() {
+        "md"
+    } else if crate::canvas::is_canvas_path(relative_path) {
+        "json"
+    } else {
+        "bin"
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case")]
 pub enum MemoVersionSource {
@@ -135,7 +153,7 @@ impl MemoFile {
     ) -> Option<PathBuf> {
         let relative = Path::new(relative_path);
         if relative.is_absolute()
-            || !(relative.is_md() || relative_path.starts_with("attachments/"))
+            || !(is_text_archive_path(relative_path) || relative_path.starts_with("attachments/"))
             || relative
                 .components()
                 .any(|part| !matches!(part, std::path::Component::Normal(_)))
@@ -194,7 +212,7 @@ impl MemoFile {
         relative_path: &str,
         version_id: &str,
     ) -> Option<String> {
-        if !Path::new(relative_path).is_md() { return None; }
+        if !is_text_archive_path(relative_path) { return None; }
         String::from_utf8(self.read_path_version_bytes(notebook_id, relative_path, version_id)?).ok()
     }
 
@@ -207,7 +225,7 @@ impl MemoFile {
         if !is_safe_version_id(version_id) { return None; }
         let (archive, manifest) = self.read_path_manifest(notebook_id, relative_path)?;
         let version = manifest.versions.iter().find(|version| version.id == version_id)?;
-        let extension = if Path::new(relative_path).is_md() { "md" } else { "bin" };
+        let extension = version_file_extension(relative_path);
         let version_path = archive.join(format!("{version_id}.{extension}"));
         if fs::symlink_metadata(&version_path).ok()?.file_type().is_symlink() { return None; }
         let bytes = fs::read(version_path).ok()?;
@@ -259,7 +277,7 @@ impl MemoFile {
         if let Some(existing) = manifest.versions.iter_mut()
             .find(|version| version.content_hash == content_hash)
         {
-            let extension = if Path::new(relative_path).is_md() { "md" } else { "bin" };
+            let extension = version_file_extension(relative_path);
             let version_path = archive.join(format!("{}.{extension}", existing.id));
             if fs::read(&version_path).ok().as_deref() != Some(content) {
                 atomic_write_bytes(&version_path, content)?;
@@ -291,7 +309,7 @@ impl MemoFile {
             content_hash,
         };
         fs::create_dir_all(&archive)?;
-        let extension = if Path::new(relative_path).is_md() { "md" } else { "bin" };
+        let extension = version_file_extension(relative_path);
         atomic_write_bytes(&archive.join(format!("{id}.{extension}")), content)?;
         manifest.versions.push(meta.clone());
         manifest
@@ -507,6 +525,105 @@ mod path_version_tests {
                 .read_path_version("work", &renamed, &version.id)
                 .as_deref(),
             Some("# Plan")
+        );
+    }
+
+    #[test]
+    fn archives_canvas_documents_as_json_snapshots() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("notebook");
+        fs::create_dir_all(root.join("Boards")).unwrap();
+        let initial = "{\n  \"type\": \"flowix/canvas\",\n  \"version\": 1\n}\n";
+        let relative = "Boards/Plan.flowix-canvas";
+        let path = root.join(relative);
+        fs::write(&path, initial).unwrap();
+        let store = MemoFile::new(temp.path().join("config"));
+        store
+            .write_notebook_configs(&[NotebookConfig {
+                id: "work".into(),
+                name: "Work".into(),
+                icon: None,
+                path: root.to_string_lossy().to_string(),
+                is_default: true,
+                sort: 0,
+                created_at: 1,
+                updated_at: 1,
+            }])
+            .unwrap();
+
+        let version = store
+            .create_path_version("work", relative, initial, MemoVersionSource::Manual)
+            .unwrap()
+            .unwrap();
+        let archive = store.path_archive_location("work", relative).unwrap();
+        assert!(archive.join(format!("{}.json", version.id)).is_file());
+        assert_eq!(
+            store.read_path_version("work", relative, &version.id).as_deref(),
+            Some(initial)
+        );
+        assert!(store
+            .create_path_version("work", relative, initial, MemoVersionSource::Manual)
+            .unwrap()
+            .is_none());
+
+        let edited = "{\n  \"type\": \"flowix/canvas\",\n  \"version\": 1,\n  \"edited\": true\n}\n";
+        fs::write(&path, edited).unwrap();
+        assert!(store
+            .write_restored_content("work", relative, &path, initial, Some(edited))
+            .unwrap());
+        assert_eq!(fs::read_to_string(&path).unwrap(), initial);
+        let versions = store.list_path_versions("work", relative);
+        assert_eq!(versions.len(), 2);
+        let backup = versions
+            .iter()
+            .find(|entry| entry.source == MemoVersionSource::RestoreBackup)
+            .unwrap();
+        assert_eq!(
+            store.read_path_version("work", relative, &backup.id).as_deref(),
+            Some(edited)
+        );
+
+        assert!(store
+            .create_path_version("work", "Boards/notes.txt", "plain", MemoVersionSource::Manual)
+            .unwrap()
+            .is_none());
+    }
+
+    #[test]
+    fn canvas_archive_follows_generic_file_rename() {
+        let temp = tempfile::tempdir().unwrap();
+        let root = temp.path().join("notebook");
+        fs::create_dir_all(root.join("Boards")).unwrap();
+        let content = "{\n  \"type\": \"flowix/canvas\",\n  \"version\": 1\n}\n";
+        let source = root.join("Boards/Plan.flowix-canvas");
+        fs::write(&source, content).unwrap();
+        let store = MemoFile::new(temp.path().join("config"));
+        store
+            .write_notebook_configs(&[NotebookConfig {
+                id: "work".into(),
+                name: "Work".into(),
+                icon: None,
+                path: root.to_string_lossy().to_string(),
+                is_default: true,
+                sort: 0,
+                created_at: 1,
+                updated_at: 1,
+            }])
+            .unwrap();
+        let version = store
+            .create_path_version("work", "Boards/Plan.flowix-canvas", content, MemoVersionSource::Manual)
+            .unwrap()
+            .unwrap();
+
+        let target = root.join("Boards/Roadmap.flowix-canvas");
+        store.rename_indexed_path(&source, &target).unwrap();
+
+        assert!(store.list_path_versions("work", "Boards/Plan.flowix-canvas").is_empty());
+        assert_eq!(
+            store
+                .read_path_version("work", "Boards/Roadmap.flowix-canvas", &version.id)
+                .as_deref(),
+            Some(content)
         );
     }
 }

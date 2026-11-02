@@ -15,8 +15,8 @@ use tauri::{State, WebviewWindow};
 use crate::config::path_is_inside;
 use crate::lock_utils::read_lock;
 use flowix_core::memo_file::{
-    media_kind_for_path, FileManagementPolicy, MediaResourceKind,
-    NoteColor, MemoFile,
+    media_kind_for_path, notebook_relative_path, FileLockIntent, FileManagementPolicy,
+    MediaResourceKind, NoteColor, MemoFile,
 };
 use sha2::{Digest, Sha256};
 use tokio::sync::{Notify, Semaphore};
@@ -1926,8 +1926,34 @@ pub fn write_file(
     if saved {
         refresh_notebook_note_index(&memo_file, path);
         crate::commands::document_list::refresh_view_document_path(&memo_file, path);
+        if let [notebook_id] = notebook_ids.as_slice() {
+            archive_canvas_write(&memo_file, notebook_id, path, &content);
+        }
     }
     saved
+}
+
+/// Canvas boards save through this generic channel rather than the note write
+/// path, so their throttled automatic snapshot hangs here.
+fn archive_canvas_write(memo_file: &MemoFile, notebook_id: &str, path: &Path, content: &str) {
+    if !flowix_core::canvas::is_canvas_path(&path.to_string_lossy()) {
+        return;
+    }
+    let Some(notebook) = memo_file.get_notebook_config_by_id(notebook_id) else {
+        return;
+    };
+    let Ok(relative_path) = notebook_relative_path(Path::new(&notebook.path), path) else {
+        return;
+    };
+    if let Err(error) = memo_file.with_file_write(
+        notebook_id,
+        path,
+        FileLockIntent::Existing,
+        "auto_path_version",
+        |_| memo_file.maybe_create_auto_path_version(notebook_id, &relative_path, content),
+    ) {
+        tracing::warn!(path = %path.display(), "automatic canvas version failed: {error}");
+    }
 }
 
 #[tauri::command]

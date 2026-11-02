@@ -1405,6 +1405,8 @@ const zhCN = {
     "canvas.save.failed": "画布保存失败",
     "canvas.save.filesDropped": "部分图片过大，未能随画布保存（{count} 张）",
     "canvas.board.save": "保存并同步",
+    "canvas.version.archive": "保存本地归档",
+    "canvas.version.archived": "已保存本地归档",
     "canvas.board.doubleClickOpen": "双击打开笔记",
     "canvas.board.tool.rect": "矩形",
     "canvas.board.tool.ellipse": "圆",

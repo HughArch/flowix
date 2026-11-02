@@ -34,7 +34,7 @@ import {
 import { getStroke } from 'perfect-freehand';
 import '@xyflow/react/dist/style.css';
 import '../../styles/canvas-board.css';
-import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, ImagePlus, Lasso, Link2, Loader2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, Pencil, Plus, Redo2, Save, Shapes, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
+import { AlignCenterHorizontal, AlignCenterVertical, AlignEndHorizontal, AlignEndVertical, AlignHorizontalDistributeCenter, AlignStartHorizontal, AlignStartVertical, AlignVerticalDistributeCenter, Archive, ArrowDown, ArrowDownToLine, ArrowUp, ArrowUpToLine, ArrowUpRight, ChevronUp, Circle, Copy, Diamond, Download, Eraser, Hand, History, ImagePlus, Lasso, Link2, Loader2, Palette, FileText, Frame as FrameIcon, Image as ImageIcon, Lock, LockOpen, Maximize2, Minus, MoreHorizontal, MousePointer2, Pencil, Plus, Redo2, Save, Shapes, Square, StickyNote, Trash2, Type, Undo2, Waves } from 'lucide-react';
 import { Tooltip } from '@shared/ui/tooltip';
 import { pushHandler, formatChord } from '@/lib/shortcuts';
 import { claimCanvasSurface, getActiveCanvasSurface, releaseCanvasSurface, setActiveCanvasSurface } from './canvas-focus';
@@ -43,6 +43,9 @@ import { dialogs, files, notebookAssets, notes as notesClient } from '@platform/
 import type { NoteCardSummary } from '@platform/tauri/client/notes';
 import { formatSyncOutcomeSummary, syncNotebookNow } from '@features/document/public/sync-coordination';
 import { resolveNotebookIdForPath } from '@features/document/use-cases/resolve-notebook-id-for-path';
+import { VersionHistoryDialog, VersionRestoreConfirmDialog } from '@features/document/public/version-history-api';
+import { notebookRelativeCanvasPath } from './canvas-relative-path';
+import { useCanvasVersionHistory } from './use-canvas-version-history';
 import { parseMarkdownInWorker } from '@features/editor/markdown-parser';
 import { renderNoteContentHtml, sliceNoteByHeading } from '@features/editor/read-only/render-note-content';
 import { NoteCardContent } from './note-card-content';
@@ -1772,6 +1775,11 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
     () => resolveNotebookIdForPath(filePath, notebooks),
     [filePath, notebooks],
   );
+  /** Archive address of this board; null outside a notebook, which hides the history entries. */
+  const versionRelativePath = useMemo(() => {
+    const root = notebooks.find((notebook) => notebook.id === notebookId)?.path;
+    return root ? notebookRelativeCanvasPath(filePath, root) : null;
+  }, [filePath, notebookId, notebooks]);
 
   useEffect(() => {
     let cancelled = false;
@@ -1908,6 +1916,16 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
       setSaveBusy(false);
     }
   }, [flush, notebookId, readOnly, t]);
+
+  const lastSavedText = useCallback(() => lastSavedTextRef.current, []);
+  const versionHistory = useCanvasVersionHistory({
+    notebookId,
+    relativePath: versionRelativePath,
+    readOnly,
+    flush,
+    lastSavedText,
+    reload: retryLoad,
+  });
 
   useEffect(() => {
     scheduleFlushRef.current = scheduleFlush;
@@ -4402,7 +4420,7 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
               <MoreHorizontal className="h-3.5 w-3.5" />
             </button>
           </DropdownMenuTrigger>
-          <DropdownMenuContent align="start" className="w-[150px]">
+          <DropdownMenuContent align="start" className="w-[170px]">
             {/* The shared menu item has no built-in gap, so icon+label rows
                 space themselves (otherwise the icon touches the text). */}
             <DropdownMenuItem className="gap-2" onClick={() => selectTool('lasso')}>
@@ -4436,6 +4454,19 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
               <Download className="h-3.5 w-3.5 shrink-0" />
               {t('canvas.export.png')}
             </DropdownMenuItem>
+            {versionHistory.enabled ? (
+              <>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem className="gap-2" onClick={() => { void versionHistory.archiveVersion(); }}>
+                  <Archive className="h-3.5 w-3.5 shrink-0" />
+                  {t('canvas.version.archive')}
+                </DropdownMenuItem>
+                <DropdownMenuItem className="gap-2" onClick={() => versionHistory.setHistoryOpen(true)}>
+                  <History className="h-3.5 w-3.5 shrink-0" />
+                  {t('document.version.menuLabel')}
+                </DropdownMenuItem>
+              </>
+            ) : null}
           </DropdownMenuContent>
         </DropdownMenu>
         </div>
@@ -5208,6 +5239,25 @@ function BoardSurface({ filePath, notebookPath, readOnly = false, workspaceHost 
         open={insertDialogOpen}
         onClose={() => setInsertDialogOpen(false)}
         onInsert={insertNoteCard}
+      />
+      {/* Version history opens as a dialog on every viewport: the … menu is
+          click-driven, so a hover submenu would have no reliable trigger. */}
+      {versionHistory.enabled && notebookId && versionRelativePath ? (
+        <VersionHistoryDialog
+          open={versionHistory.historyOpen}
+          onOpenChange={versionHistory.setHistoryOpen}
+          notebookId={notebookId}
+          relativePath={versionRelativePath}
+          refreshKey={versionHistory.refreshKey}
+          restoringVersionId={versionHistory.restoringVersionId}
+          onSelectVersion={versionHistory.setConfirmVersion}
+        />
+      ) : null}
+      <VersionRestoreConfirmDialog
+        version={versionHistory.confirmVersion}
+        restoring={!!versionHistory.restoringVersionId}
+        onCancel={() => versionHistory.setConfirmVersion(null)}
+        onConfirm={() => { void versionHistory.restoreVersion(); }}
       />
     </div>
   );
