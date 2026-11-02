@@ -4,7 +4,7 @@
 
 use crate::{
     background_store, callout_store, canvas_store, cli, cloud, columns_store, errors::CliError,
-    mcp, operation, path_store, paths, plugin, store, toggle_store,
+    mcp, notecard_store, operation, path_store, paths, plugin, store, toggle_store,
 };
 
 /// 跑 CLI 主入口。
@@ -237,6 +237,54 @@ pub fn run_cli(args: &[String]) -> Result<(), CliError> {
                 block,
                 delete_content,
             } => path_store::print(toggle_store::remove(&id, block, !delete_content)?, json),
+        },
+        cli::Cli::Notecard { command, json } => match command {
+            cli::NotecardCommand::List { id } => path_store::print(notecard_store::list(&id)?, json),
+            cli::NotecardCommand::Add {
+                id,
+                note,
+                at,
+                layout,
+                color,
+                text,
+                title,
+            } => path_store::print(
+                notecard_store::add(
+                    &id,
+                    &note,
+                    at,
+                    layout.as_deref(),
+                    color.as_deref(),
+                    text.as_deref(),
+                    title.as_deref(),
+                )?,
+                json,
+            ),
+            cli::NotecardCommand::Set {
+                id,
+                block,
+                layout,
+                title,
+                color,
+                clear_color,
+                text,
+                clear_text,
+            } => path_store::print(
+                notecard_store::set(
+                    &id,
+                    block,
+                    layout.as_deref(),
+                    title.as_deref(),
+                    color.as_deref(),
+                    clear_color,
+                    text.as_deref(),
+                    clear_text,
+                )?,
+                json,
+            ),
+            cli::NotecardCommand::Remove { id, block } => {
+                path_store::print(notecard_store::remove(&id, block)?, json)
+            }
         },
         cli::Cli::Canvas { command, json } => match command {
             cli::CanvasCommand::Create {

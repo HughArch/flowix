@@ -9,6 +9,7 @@ pub(crate) mod callout_store;
 pub(crate) mod canvas_store;
 pub(crate) mod collection_store;
 pub(crate) mod columns_store;
+pub(crate) mod notecard_store;
 pub(crate) mod toggle_store;
 pub mod errors;
 pub mod fmt;

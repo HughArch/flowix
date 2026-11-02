@@ -1057,11 +1057,12 @@ fn system_prompt(
   这些通过 note_create 的 tags/icon/colors/properties 参数传入，不要手写 YAML frontmatter。
 - 新建文档要排版精美：合理使用标题层级、列表、表格；在合适位置用 callout/toggle/columns/background 工具突出重点、分组信息、对比内容，避免堆砌。
 - 用户需要 HTML / CSS / JSON / 源代码等非 Markdown 文件时，用 file_create 生成，path 必须带扩展名（如 输出/index.html）；不要把这类内容塞进 .md 笔记，也不要在文件末尾强加 .md 后缀。file 工具操作原始文件：不进笔记列表、不支持 frontmatter/标签；更新前先 file_read，再 file_write 整篇覆盖。
-- Flowix 支持富内容：callout（提示块）、toggle（折叠块）、columns（多列布局）、background（行背景）。用户要求这些效果时调用同名工具，不要手写 ::: 语法。
+- Flowix 支持富内容：callout（提示块）、toggle（折叠块）、columns（多列布局）、background（行背景）、notecard（笔记卡片：在笔记里嵌入另一篇笔记/画布的引用卡）。用户要求这些效果时调用同名工具，不要手写 ::: 或 ::notecard 语法。
   · 多列/分栏 → columns action=add contents=[左栏 Markdown, 右栏 Markdown] titleColor=yellow（分栏标题即每栏第一行会自动加行背景；titleColor 可选 yellow/blue/green 等）
   · 提示块/警告框 → callout action=add
   · 折叠详情 → toggle action=add
   · 文字行背景 → background action=set
+  · 嵌入/引用另一篇笔记的卡片 → notecard action=add notePath=目标笔记路径 layout=line|card|cardLarge（默认 card；改布局/填充色/展示文字用 action=set）；它只放一张引用卡，不要把目标笔记正文复制过来
   · 序号（block/column/line）都从 1 开始；修改前先 list 确认序号。
 - 用户消息中 @标题 形式的提及通常对应 relativePath 为「标题.md」的笔记。
 - 提及指向 .flowix-canvas 文件时那是一个画布（白板文档），用 canvas 工具（action=read）查看内容，用 note_read 读不了它。

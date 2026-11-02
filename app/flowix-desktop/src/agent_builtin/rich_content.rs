@@ -1,9 +1,9 @@
 //! Flowix rich-content tools for the built-in assistant.
 //!
-//! Callouts, collapsible toggles, multi-column layouts and line backgrounds
-//! are stored as Flowix-specific Markdown fences. The assistant must never
-//! hand-write those fences; these tools apply the same core transforms as the
-//! editor/CLI so the result stays structurally valid.
+//! Callouts, collapsible toggles, multi-column layouts, line backgrounds and
+//! note cards are stored as Flowix-specific Markdown fences / directives. The
+//! assistant must never hand-write those; these tools apply the same core
+//! transforms as the editor/CLI so the result stays structurally valid.
 //!
 //! Every mutating action reads the current body and saves with expected-content
 //! CAS, mirroring `note_edit`.
@@ -11,12 +11,14 @@
 use flowix_core::memo_file::{
     callout, columns,
     line_background,
+    notecard::{self, FieldUpdate, NoteCardInput, NoteCardUpdate},
     toggle::{self, BackgroundUpdate},
 };
 use flowix_core::{NoteSaveOutcome, NoteService};
 use serde_json::{json, Value};
+use std::path::Path;
 
-use super::tools::normalize_path;
+use super::tools::{normalize_path, ToolScope};
 
 fn action(args: &Value) -> Result<&str, String> {
     args.get("action")
@@ -351,6 +353,131 @@ fn background_op(
     }
 }
 
+/// Note cards (`::notecard`) embed a reference to another note or canvas of
+/// the current notebook. Unlike the fenced containers above, `add` has to
+/// resolve its target first, which is why this entry point takes the whole
+/// [`ToolScope`]: canvases are not note-indexed, so they are checked on disk.
+pub fn notecard(
+    service: &mut NoteService<'_>,
+    scope: &ToolScope,
+    args: &Value,
+) -> Result<Value, String> {
+    let notebook = scope.notebook_id.as_str();
+    let action = action(args)?;
+    let path = path_arg(args)?;
+    let body = read_body(service, notebook, &path)?;
+    match action {
+        "list" => Ok(json!({
+            "ok": true, "action": "notecard.list", "path": path,
+            "blocks": notecard::parse(&body),
+        })),
+        "add" => {
+            let target = string_arg(args, "notePath")
+                .ok_or("notecard add 需要 notePath（被引用笔记或画布的笔记本内相对路径）")?;
+            let target = normalize_path(&target)?;
+            let title = notecard_title(service, scope, &target, string_arg(args, "title").as_deref())?;
+            let next = notecard::insert(
+                &body,
+                usize_arg(args, "at"),
+                &NoteCardInput {
+                    notebook_id: notebook,
+                    relative_path: &target,
+                    notebook_name: &scope.notebook_name,
+                    title: &title,
+                    layout: string_arg(args, "layout").as_deref(),
+                    color: string_arg(args, "color").as_deref(),
+                    custom_text: string_arg(args, "text").as_deref(),
+                },
+            )?;
+            save_body(service, notebook, &path, &next, &body)?;
+            Ok(json!({
+                "ok": true, "action": "notecard.add", "path": path,
+                "blocks": notecard::parse(&next),
+            }))
+        }
+        "set" => {
+            let block = usize_arg(args, "block").ok_or("notecard set 需要 block（从 1 开始）")?;
+            let color = string_arg(args, "color");
+            let clear_color = bool_arg(args, "clearColor");
+            if color.is_some() && clear_color {
+                return Err("notecard set: color 与 clearColor 只能提供一个".into());
+            }
+            let text = string_arg(args, "text");
+            let clear_text = bool_arg(args, "clearText");
+            if text.is_some() && clear_text {
+                return Err("notecard set: text 与 clearText 只能提供一个".into());
+            }
+            let next = notecard::set(
+                &body,
+                block.saturating_sub(1),
+                &NoteCardUpdate {
+                    layout: string_arg(args, "layout").as_deref(),
+                    title: string_arg(args, "title").as_deref(),
+                    color: field_update(color.as_deref(), clear_color),
+                    custom_text: field_update(text.as_deref(), clear_text),
+                },
+            )?;
+            save_body(service, notebook, &path, &next, &body)?;
+            Ok(json!({
+                "ok": true, "action": "notecard.set", "path": path,
+                "blocks": notecard::parse(&next),
+            }))
+        }
+        "remove" => {
+            let block = usize_arg(args, "block").ok_or("notecard remove 需要 block（从 1 开始）")?;
+            let next = notecard::remove(&body, block.saturating_sub(1))?;
+            save_body(service, notebook, &path, &next, &body)?;
+            Ok(json!({
+                "ok": true, "action": "notecard.remove", "path": path,
+                "blocks": notecard::parse(&next),
+            }))
+        }
+        other => Err(format!("notecard 不支持 action: {other}")),
+    }
+}
+
+fn field_update(value: Option<&str>, clear: bool) -> FieldUpdate<'_> {
+    match (value, clear) {
+        (Some(value), _) => FieldUpdate::Set(value),
+        (None, true) => FieldUpdate::Clear,
+        (None, false) => FieldUpdate::Keep,
+    }
+}
+
+/// Title snapshot stored on the card. Notes derive it the same way the note
+/// index does; canvases are titled by file stem after an existence check.
+fn notecard_title(
+    service: &mut NoteService<'_>,
+    scope: &ToolScope,
+    target: &str,
+    title: Option<&str>,
+) -> Result<String, String> {
+    if let Some(title) = title.map(str::trim).filter(|title| !title.is_empty()) {
+        return Ok(title.to_owned());
+    }
+    if flowix_core::canvas::is_canvas_path(target) {
+        let path = flowix_core::canvas::resolve_canvas_path(&scope.notebook_path, target)
+            .map_err(|error| error.0)?;
+        if !path.is_file() {
+            return Err(format!("画布不存在: {target}"));
+        }
+        return Ok(Path::new(target)
+            .file_stem()
+            .and_then(|stem| stem.to_str())
+            .unwrap_or_default()
+            .to_owned());
+    }
+    let document = service
+        .get(&scope.notebook_id, target)
+        .map_err(|error| format!("读取目标笔记失败: {error}"))?;
+    let (derived, _) = flowix_core::memo_file::extract_title_and_preview(&document.body);
+    Ok(if derived.trim().is_empty() {
+        document.entry.title
+    } else {
+        derived
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -442,5 +569,102 @@ mod tests {
         )
         .unwrap_err();
         assert!(error.contains("不支持 action"));
+    }
+
+    fn scope_for(tmp: &tempfile::TempDir, notebook: &str) -> ToolScope {
+        ToolScope {
+            notebook_id: notebook.to_owned(),
+            notebook_name: "Work".into(),
+            notebook_path: tmp.path().join("notes"),
+            config_dir: tmp.path().join("config"),
+            mark_self_write: Arc::new(|_| {}),
+        }
+    }
+
+    #[test]
+    fn notecard_round_trip() {
+        let (tmp, memo, notebook, path) = fixture();
+        let guard = memo.read().unwrap();
+        let mut service = NoteService::new(&guard);
+        let target = service
+            .create(&notebook, None, "Target", "# Target note\n\nbody\n")
+            .unwrap()
+            .entry
+            .relative_path;
+        let scope = scope_for(&tmp, &notebook);
+
+        let added = notecard(
+            &mut service,
+            &scope,
+            &json!({
+                "action": "add", "path": path, "notePath": target,
+                "layout": "cardLarge", "color": "blue", "text": "hint",
+            }),
+        )
+        .unwrap();
+        let block = &added["blocks"][0];
+        assert_eq!(block["address"], format!("work::{target}"));
+        assert_eq!(block["title"], "Target note");
+        assert_eq!(block["notebookName"], "Work");
+        assert_eq!(block["layout"], "cardLarge");
+        assert_eq!(block["color"], "blue");
+        assert_eq!(block["customText"], "hint");
+        assert!(service.get(&notebook, &path).unwrap().body.contains("::notecard{"));
+
+        let updated = notecard(
+            &mut service,
+            &scope,
+            &json!({ "action": "set", "path": path, "block": 1, "layout": "line", "clearColor": true }),
+        )
+        .unwrap();
+        assert_eq!(updated["blocks"][0]["layout"], "line");
+        assert_eq!(updated["blocks"][0]["color"], "");
+        assert_eq!(updated["blocks"][0]["customText"], "hint");
+
+        let removed = notecard(
+            &mut service,
+            &scope,
+            &json!({ "action": "remove", "path": path, "block": 1 }),
+        )
+        .unwrap();
+        assert!(removed["blocks"].as_array().unwrap().is_empty());
+        assert!(!service.get(&notebook, &path).unwrap().body.contains("::notecard"));
+    }
+
+    #[test]
+    fn notecard_rejects_missing_targets_and_conflicting_updates() {
+        let (tmp, memo, notebook, path) = fixture();
+        let guard = memo.read().unwrap();
+        let mut service = NoteService::new(&guard);
+        let scope = scope_for(&tmp, &notebook);
+
+        let no_target = notecard(&mut service, &scope, &json!({ "action": "add", "path": path }))
+            .unwrap_err();
+        assert!(no_target.contains("notePath"), "{no_target}");
+
+        let missing_note = notecard(
+            &mut service,
+            &scope,
+            &json!({ "action": "add", "path": path, "notePath": "Nope.md" }),
+        )
+        .unwrap_err();
+        assert!(missing_note.contains("读取目标笔记失败"), "{missing_note}");
+
+        let missing_canvas = notecard(
+            &mut service,
+            &scope,
+            &json!({ "action": "add", "path": path, "notePath": "Nope.flowix-canvas" }),
+        )
+        .unwrap_err();
+        assert!(missing_canvas.contains("画布不存在"), "{missing_canvas}");
+
+        let conflict = notecard(
+            &mut service,
+            &scope,
+            &json!({ "action": "set", "path": path, "block": 1, "color": "red", "clearColor": true }),
+        )
+        .unwrap_err();
+        assert!(conflict.contains("只能提供一个"), "{conflict}");
+        assert!(!service.get(&notebook, &path).unwrap().body.contains("::notecard"));
     }
 }

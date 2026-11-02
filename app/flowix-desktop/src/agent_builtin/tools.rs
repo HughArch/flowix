@@ -379,6 +379,30 @@ pub fn tool_definitions(web_search_enabled: bool) -> Value {
                 }
             }
         },
+        {
+            "type": "function",
+            "function": {
+                "name": "notecard",
+                "description": "管理笔记里的笔记卡片（在一篇笔记中嵌入另一篇笔记/画布的引用卡片）。用户要求在笔记里插入、引用、嵌入另一篇笔记的卡片，或切换卡片布局/填充色/展示文字时用它，不要手写 ::notecard 语法。action: list/add/set/remove；block 从 1 开始。",
+                "parameters": {
+                    "type": "object",
+                    "properties": {
+                        "action": { "type": "string", "enum": ["list", "add", "set", "remove"] },
+                        "path": { "type": "string", "description": "要编辑的笔记的笔记本内相对路径" },
+                        "notePath": { "type": "string", "description": "add：被引用的目标笔记或画布的笔记本内相对路径" },
+                        "at": { "type": "integer", "description": "插入位置行号（1 开始），默认末尾" },
+                        "block": { "type": "integer", "description": "目标卡片序号（1 开始）" },
+                        "layout": { "type": "string", "enum": ["line", "card", "cardLarge"], "description": "布局：line 单行（图标+标题+摘要）、card 小卡片（默认）、cardLarge 大卡片（封面横幅+标题+摘要）" },
+                        "color": { "type": "string", "description": "卡片填充色：red/orange/yellow/green/cyan/blue/gray" },
+                        "clearColor": { "type": "boolean", "description": "set：清除填充色" },
+                        "text": { "type": "string", "description": "自定义展示文字，替代卡片上的笔记摘要" },
+                        "clearText": { "type": "boolean", "description": "set：清除自定义文字，恢复显示笔记摘要" },
+                        "title": { "type": "string", "description": "卡片标题快照；默认取目标笔记标题" }
+                    },
+                    "required": ["action", "path"]
+                }
+            }
+        },
     ]);
     if web_search_enabled {
         tools
@@ -695,10 +719,14 @@ fn execute_with_service(
 ) -> Result<Value, String> {
     let notebook = &scope.notebook_id;
 
-    // Flowix rich content (callouts / toggles / columns / line backgrounds)
-    // lives in dedicated modules; dispatch before the plain note tools.
+    // Flowix rich content (callouts / toggles / columns / line backgrounds /
+    // note cards) lives in dedicated modules; dispatch before the plain note
+    // tools.
     if matches!(name, "callout" | "toggle" | "columns" | "background") {
         return super::rich_content::execute(service, notebook, name, &args);
+    }
+    if name == "notecard" {
+        return super::rich_content::notecard(service, scope, &args);
     }
 
     match name {

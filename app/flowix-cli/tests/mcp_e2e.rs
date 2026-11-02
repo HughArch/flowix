@@ -391,6 +391,102 @@ fn structured_callout_actions_add_update_and_remove() {
 }
 
 #[test]
+fn structured_notecard_actions_add_update_and_remove() {
+    let tmp = tempfile::tempdir().unwrap();
+    let config_dir = tmp.path().join("config");
+    let notebook_dir = tmp.path().join("notebooks").join("work");
+    seed_notebook(&config_dir, &notebook_dir);
+    std::fs::write(notebook_dir.join("cards.md"), "# Title\n\nbody\n").unwrap();
+    std::fs::write(notebook_dir.join("Target.md"), "# Target note\n\ntext\n").unwrap();
+
+    let (mut child, mut stdin, mut stdout) = spawn_mcp(&config_dir);
+    let _ = request(
+        &mut stdin,
+        &mut stdout,
+        1,
+        "initialize",
+        json!({
+            "protocolVersion": "2025-06-18",
+            "capabilities": {},
+            "clientInfo": {"name": "flowix-test", "version": "1"}
+        }),
+    );
+
+    let added = call_structured(
+        &mut stdin,
+        &mut stdout,
+        2,
+        json!({
+            "action": "notecard.add",
+            "address": "cards.md",
+            "note": "work::Target.md",
+            "layout": "cardLarge",
+            "color": "blue",
+            "text": "read this"
+        }),
+    );
+    assert_eq!(added["result"]["isError"], false, "{added}");
+    let block = &added["result"]["structuredContent"]["blocks"][0];
+    assert_eq!(block["address"], "work::Target.md");
+    assert_eq!(block["title"], "Target note");
+    assert_eq!(block["layout"], "cardLarge");
+    assert_eq!(block["color"], "blue");
+    assert_eq!(block["customText"], "read this");
+
+    let updated = call_structured(
+        &mut stdin,
+        &mut stdout,
+        3,
+        json!({
+            "action": "notecard.set",
+            "address": "cards.md",
+            "block": 1,
+            "layout": "line",
+            "clearColor": true,
+            "clearText": true
+        }),
+    );
+    assert_eq!(updated["result"]["isError"], false, "{updated}");
+    let block = &updated["result"]["structuredContent"]["blocks"][0];
+    assert_eq!(block["layout"], "line");
+    assert_eq!(block["color"], "");
+    assert_eq!(block["customText"], "");
+    assert_eq!(block["title"], "Target note");
+
+    let listed = call_structured(
+        &mut stdin,
+        &mut stdout,
+        4,
+        json!({"action": "notecard.list", "address": "cards.md"}),
+    );
+    assert_eq!(
+        listed["result"]["structuredContent"]["blocks"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+
+    let removed = call_structured(
+        &mut stdin,
+        &mut stdout,
+        5,
+        json!({"action": "notecard.remove", "address": "cards.md", "block": 1}),
+    );
+    assert_eq!(removed["result"]["isError"], false, "{removed}");
+    assert!(removed["result"]["structuredContent"]["blocks"]
+        .as_array()
+        .unwrap()
+        .is_empty());
+    let body = std::fs::read_to_string(notebook_dir.join("cards.md")).unwrap();
+    assert!(!body.contains("::notecard"));
+    assert!(body.contains("body"));
+
+    drop(stdin);
+    assert!(child.wait().unwrap().success());
+}
+
+#[test]
 fn structured_toggle_actions_add_update_and_remove() {
     let tmp = tempfile::tempdir().unwrap();
     let config_dir = tmp.path().join("config");

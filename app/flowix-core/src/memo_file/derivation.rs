@@ -177,6 +177,12 @@ pub fn strip_markdown(text: &str) -> String {
 static AGENT_THREAD_CARD_LINE_RE: Lazy<Regex> =
     Lazy::new(|| Regex::new(r"^::agent-thread-card(?:\{[^}]*\})?$").unwrap());
 
+/// `::notecard{...json...}` ── 块级笔记引用卡片 (`extensions/note-block`) 的
+/// 单行形态。payload 是 JSON, 字符串里可能含 `}`, 所以只要求整行以 `{` 起、
+/// `}` 收; 解析本体见 [`super::notecard`]。
+static NOTE_CARD_LINE_RE: Lazy<Regex> =
+    Lazy::new(|| Regex::new(r"^::notecard\s*\{.*\}$").unwrap());
+
 static TABLE_DELIMITER_CELL_RE: Lazy<Regex> = Lazy::new(|| Regex::new(r"^:?-{3,}:?$").unwrap());
 
 /// `:::agent-thread-card ... :::` ── 围栏形态, 用于节点将来扩展出 body 时的
@@ -212,6 +218,11 @@ static BLOCK_NODE_FILTERS: &[BlockNodeFilter] = &[
                 .replace_all(input, "")
                 .into_owned()
         }),
+    },
+    BlockNodeFilter {
+        name: "notecard",
+        is_block_line: |line| NOTE_CARD_LINE_RE.is_match(line),
+        strip_fences: None,
     },
     BlockNodeFilter {
         name: "markdown-table",
