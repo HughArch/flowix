@@ -95,9 +95,12 @@ fn binary_reports_json_errors_with_stable_shape() {
         .contains("failed to read input file"));
 }
 
-#[cfg(windows)]
+/// `create` / `write` must fail fast with a usage error when no input source
+/// is given, never blocking on or silently consuming stdin. (This used to be
+/// a Windows-only rule; stdin is now explicit-only on every platform, so the
+/// guard is universal.)
 #[test]
-fn windows_rejects_implicit_create_and_write_stdin() {
+fn create_and_write_reject_implicit_stdin() {
     for args in [
         ["create", "any-notebook", "--json"],
         ["write", "any-note", "--json"],
@@ -111,7 +114,7 @@ fn windows_rejects_implicit_create_and_write_stdin() {
         assert!(value["error"]["message"]
             .as_str()
             .unwrap()
-            .contains("stdin input is disabled by default on Windows"));
+            .contains("provide exactly one of --file or --stdin"));
     }
 }
 

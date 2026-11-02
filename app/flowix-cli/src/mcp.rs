@@ -6,7 +6,7 @@
 
 use crate::{
     background_store, callout_store, canvas_store, cli, columns_store, errors::CliError, fmt,
-    operation, output, path_store, plugin, store, toggle_store,
+    notecard_store, operation, output, path_store, plugin, store, toggle_store,
 };
 use serde_json::{json, Map, Value};
 use std::io::{BufRead, Write};
@@ -20,7 +20,7 @@ const SUPPORTED_PROTOCOL_VERSIONS: &[&str] = &[
     LATEST_PROTOCOL_VERSION,
 ];
 
-pub const TOOL_DESCRIPTION: &str = "Search and manage Flowix Markdown notes, inspect or edit Notion-style content columns, line background colors, Flowus-style callouts and collapsible toggle blocks, create, inspect and edit .flowix-canvas canvas boards (note cards, sticky notes, shapes, edges, frames), read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
+pub const TOOL_DESCRIPTION: &str = "Search and manage Flowix Markdown notes, inspect or edit Notion-style content columns, line background colors, Flowus-style callouts, collapsible toggle blocks and block-level note cards (embedded references to other notes with line/card/cardLarge layouts), create, inspect and edit .flowix-canvas canvas boards (note cards, sticky notes, shapes, edges, frames), read table and media library collection datasets by collection ID or notebook-relative path, and use declared artifacts. Delete is destructive.";
 
 /// Run the MCP line-delimited JSON-RPC loop until stdin reaches EOF.
 pub fn run_mcp<R: BufRead, W: Write>(reader: R, mut writer: W) -> Result<(), CliError> {
@@ -79,7 +79,7 @@ fn initialize_result(params: &Value) -> Value {
             "title": "Flowix Memo",
             "version": env!("CARGO_PKG_VERSION")
         },
-        "instructions": "Use the memo tool to search and manage Flowix Markdown memos, read collection datasets with collection.read by collectionId or notebook-relative path, create declared plugin artifacts such as mind maps, build and edit canvas boards with canvas.* actions (canvas.create, canvas.show, canvas.addCard, canvas.addShape, canvas.addEdge, canvas.addFrame, canvas.addNotes, canvas.remove), and inspect or restore cloud (FNS) note history with cloud.versions and cloud.restore."
+        "instructions": "Use the memo tool to search and manage Flowix Markdown memos, read collection datasets with collection.read by collectionId or notebook-relative path, create declared plugin artifacts such as mind maps, embed references to other notes inside a note with notecard.* actions (notecard.list, notecard.add, notecard.set, notecard.remove; never hand-write ::notecard lines), build and edit canvas boards with canvas.* actions (canvas.create, canvas.show, canvas.addCard, canvas.addShape, canvas.addEdge, canvas.addFrame, canvas.addNotes, canvas.remove), and inspect or restore cloud (FNS) note history with cloud.versions and cloud.restore."
     })
 }
 
@@ -188,6 +188,9 @@ fn validate_argument_keys(arguments: &Map<String, Value>) -> Result<(), CliError
         "bg",
         "clearBg",
         "keepContent",
+        "layout",
+        "clearColor",
+        "clearText",
         "historyId",
         "name",
         "folder",
@@ -366,6 +369,32 @@ fn parse_structured_operation(
             address: address()?,
             block: integer(arguments, "block", 1, 1, usize::MAX)?,
             keep_content: boolean(arguments, "keepContent", true)?,
+        }),
+        "notecard.list" => Ok(FlowixOperation::NotecardList {
+            address: address()?,
+        }),
+        "notecard.add" => Ok(FlowixOperation::NotecardAdd {
+            address: address()?,
+            note: required_string(arguments, "note")?,
+            at: optional_integer(arguments, "at")?,
+            layout: optional_string(arguments, "layout")?,
+            color: optional_string(arguments, "color")?,
+            text: optional_string(arguments, "text")?,
+            title: optional_string(arguments, "title")?,
+        }),
+        "notecard.set" => Ok(FlowixOperation::NotecardSet {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
+            layout: optional_string(arguments, "layout")?,
+            title: optional_string(arguments, "title")?,
+            color: optional_string(arguments, "color")?,
+            clear_color: boolean(arguments, "clearColor", false)?,
+            text: optional_string(arguments, "text")?,
+            clear_text: boolean(arguments, "clearText", false)?,
+        }),
+        "notecard.remove" => Ok(FlowixOperation::NotecardRemove {
+            address: address()?,
+            block: integer(arguments, "block", 1, 1, usize::MAX)?,
         }),
         "canvas.create" => Ok(FlowixOperation::CanvasCreate {
             notebook,
@@ -874,6 +903,49 @@ fn execute_command(command: &str, stdin: Option<&str>) -> Result<Value, CliError
                     block,
                     delete_content,
                 } => toggle_store::remove(&id, block, !delete_content),
+            }
+        }
+        cli::Cli::Notecard { command, .. } => {
+            reject_stdin(stdin)?;
+            match command {
+                cli::NotecardCommand::List { id } => notecard_store::list(&id),
+                cli::NotecardCommand::Add {
+                    id,
+                    note,
+                    at,
+                    layout,
+                    color,
+                    text,
+                    title,
+                } => notecard_store::add(
+                    &id,
+                    &note,
+                    at,
+                    layout.as_deref(),
+                    color.as_deref(),
+                    text.as_deref(),
+                    title.as_deref(),
+                ),
+                cli::NotecardCommand::Set {
+                    id,
+                    block,
+                    layout,
+                    title,
+                    color,
+                    clear_color,
+                    text,
+                    clear_text,
+                } => notecard_store::set(
+                    &id,
+                    block,
+                    layout.as_deref(),
+                    title.as_deref(),
+                    color.as_deref(),
+                    clear_color,
+                    text.as_deref(),
+                    clear_text,
+                ),
+                cli::NotecardCommand::Remove { id, block } => notecard_store::remove(&id, block),
             }
         }
         cli::Cli::Canvas { command, .. } => {

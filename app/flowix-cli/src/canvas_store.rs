@@ -157,25 +157,6 @@ fn normalize_folder(raw: &str) -> Result<String, CliError> {
     Ok(normalized)
 }
 
-/// Card title snapshot for a note, derived the same way the board renders
-/// card faces (`extract_title_and_preview`), falling back to the note index
-/// entry title.
-fn note_title_snapshot(document_note: &Value) -> Option<String> {
-    let body = document_note
-        .get("body")
-        .and_then(Value::as_str)
-        .unwrap_or_default();
-    let (derived, _) = flowix_core::memo_file::extract_title_and_preview(body);
-    (!derived.trim().is_empty()).then_some(derived).or_else(|| {
-        document_note
-            .get("note")
-            .and_then(|note| note.get("title"))
-            .and_then(Value::as_str)
-            .filter(|title| !title.trim().is_empty())
-            .map(str::to_owned)
-    })
-}
-
 /// `flowix canvas show` / `canvas.show` — normalized board summary.
 pub(crate) fn show(raw: &str) -> Result<Value, CliError> {
     let (_, notebook, relative, document) = load(raw)?;
@@ -221,7 +202,7 @@ pub(crate) fn add_card(
                 .to_owned();
             let note_title = title
                 .map(str::to_owned)
-                .or_else(|| note_title_snapshot(&document_note));
+                .or_else(|| path_store::note_title_snapshot(&document_note));
             let notebook_name = mf
                 .read_notebook_configs()?
                 .into_iter()
@@ -440,7 +421,7 @@ pub(crate) fn add_notes(
                     .and_then(Value::as_str)
                     .unwrap_or_default()
                     .to_owned(),
-                title: note_title_snapshot(&document_note),
+                title: path_store::note_title_snapshot(&document_note),
                 x: None,
                 y: None,
                 w: grid.w,

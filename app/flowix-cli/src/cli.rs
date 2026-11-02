@@ -122,6 +122,11 @@ pub enum Cli {
         command: ToggleCommand,
         json: bool,
     },
+    /// Inspect or edit block-level note cards (`::notecard`) in a note.
+    Notecard {
+        command: NotecardCommand,
+        json: bool,
+    },
     /// Create, inspect and edit `.flowix-canvas` board documents.
     Canvas {
         command: CanvasCommand,
@@ -316,6 +321,37 @@ pub enum ToggleCommand {
         id: String,
         block: usize,
         delete_content: bool,
+    },
+}
+
+#[derive(Debug)]
+pub enum NotecardCommand {
+    List {
+        id: String,
+    },
+    /// Insert a card pointing at `note` (a note or canvas address).
+    Add {
+        id: String,
+        note: String,
+        at: Option<usize>,
+        layout: Option<String>,
+        color: Option<String>,
+        text: Option<String>,
+        title: Option<String>,
+    },
+    Set {
+        id: String,
+        block: usize,
+        layout: Option<String>,
+        title: Option<String>,
+        color: Option<String>,
+        clear_color: bool,
+        text: Option<String>,
+        clear_text: bool,
+    },
+    Remove {
+        id: String,
+        block: usize,
     },
 }
 
@@ -616,6 +652,47 @@ pub(crate) fn parse(args: &[String]) -> Result<Option<Cli>, CliError> {
             };
             Ok(Some(Cli::Toggle { command, json }))
         }
+        Some(("notecard", sub)) => {
+            let command = match sub.subcommand() {
+                Some(("list", command)) => NotecardCommand::List {
+                    id: required_string(command, "id")?,
+                },
+                Some(("add", command)) => NotecardCommand::Add {
+                    id: required_string(command, "id")?,
+                    note: required_string(command, "note")?,
+                    at: command.get_one::<usize>("at").copied(),
+                    layout: command.get_one::<String>("layout").cloned(),
+                    color: command.get_one::<String>("color").cloned(),
+                    text: command.get_one::<String>("text").cloned(),
+                    title: command.get_one::<String>("title").cloned(),
+                },
+                Some(("set", command)) => NotecardCommand::Set {
+                    id: required_string(command, "id")?,
+                    block: *command.get_one::<usize>("block").unwrap_or(&1),
+                    layout: command.get_one::<String>("layout").cloned(),
+                    title: command.get_one::<String>("title").cloned(),
+                    color: command.get_one::<String>("color").cloned(),
+                    clear_color: command.get_flag("clear-color"),
+                    text: command.get_one::<String>("text").cloned(),
+                    clear_text: command.get_flag("clear-text"),
+                },
+                Some(("remove", command)) => NotecardCommand::Remove {
+                    id: required_string(command, "id")?,
+                    block: *command.get_one::<usize>("block").unwrap_or(&1),
+                },
+                Some((other, _)) => {
+                    return Err(CliError::Usage(format!(
+                        "unknown notecard command: `{other}`"
+                    )))
+                }
+                None => {
+                    return Err(CliError::Usage(format!(
+                        "usage: {DISPLAY_BIN} notecard <list|add|set|remove>"
+                    )))
+                }
+            };
+            Ok(Some(Cli::Notecard { command, json }))
+        }
         Some(("canvas", sub)) => {
             let optional_f64 = |command: &clap::ArgMatches, name: &str| command.get_one::<f64>(name).copied();
             let command = match sub.subcommand() {
@@ -732,7 +809,7 @@ pub(crate) fn cli_command() -> Command {
     Command::new(DISPLAY_BIN)
         .version(env!("CARGO_PKG_VERSION"))
         .about("Manage local Flowix notebooks, Markdown notes, and artifacts")
-        .after_help("For Markdown content, --file is recommended (especially on Windows PowerShell 5.1). Files must be UTF-8. Note addresses use <notebook-id>::<relative-path> or an absolute path. Examples:\n  flowix create <notebook> --file body.md --json\n  flowix show work::Notes/Example.md --json\n  flowix write work::Notes/Example.md --file body.md --json\n  flowix list\n  flowix search TODO --tag project/flowix --limit 20\n  flowix background set work::Notes/Example.md --line 3 --color yellow --json\n  flowix callout add work::Notes/Example.md --icon \"⚠️\" --color yellow --content \"Check this\" --json\n  flowix toggle add work::Notes/Example.md --title \"Details\" --collapsed --bg yellow --content \"Hidden body\" --json\n  flowix collection read --notebook <notebook-id> --id <collection-id> --json\n  flowix collection read --notebook <notebook-id> --path 'Assets/Images.index.yaml' --json\n  flowix canvas create work --name 计划 --json\n  flowix canvas add-card work::画布/计划.flowix-canvas --note work::Notes/Example.md --json\n  flowix canvas add-notes work::画布/计划.flowix-canvas --notes work::A.md,work::B.md --columns 3 --json\n  flowix mcp")
+        .after_help("For Markdown content, --file is recommended (especially on Windows PowerShell 5.1). Files must be UTF-8. Note addresses use <notebook-id>::<relative-path> or an absolute path. Examples:\n  flowix create <notebook> --file body.md --json\n  flowix show work::Notes/Example.md --json\n  flowix write work::Notes/Example.md --file body.md --json\n  flowix list\n  flowix search TODO --tag project/flowix --limit 20\n  flowix background set work::Notes/Example.md --line 3 --color yellow --json\n  flowix callout add work::Notes/Example.md --icon \"⚠️\" --color yellow --content \"Check this\" --json\n  flowix toggle add work::Notes/Example.md --title \"Details\" --collapsed --bg yellow --content \"Hidden body\" --json\n  flowix notecard add work::Notes/Example.md --note work::Notes/Other.md --layout cardLarge --json\n  flowix collection read --notebook <notebook-id> --id <collection-id> --json\n  flowix collection read --notebook <notebook-id> --path 'Assets/Images.index.yaml' --json\n  flowix canvas create work --name 计划 --json\n  flowix canvas add-card work::画布/计划.flowix-canvas --note work::Notes/Example.md --json\n  flowix canvas add-notes work::画布/计划.flowix-canvas --notes work::A.md,work::B.md --columns 3 --json\n  flowix mcp")
         .arg(
             Arg::new("json")
                 .long("json")
@@ -1218,6 +1295,118 @@ pub(crate) fn cli_command() -> Command {
                             Arg::new("delete-content")
                                 .long("delete-content")
                                 .action(ArgAction::SetTrue),
+                        ),
+                ),
+        )
+        .subcommand(
+            Command::new("notecard")
+                .about("Inspect or edit block-level note cards (::notecard) in a note")
+                .subcommand_required(true)
+                .subcommand(
+                    Command::new("list")
+                        .about("List note cards in a note")
+                        .arg(required_arg("id")),
+                )
+                .subcommand(
+                    Command::new("add")
+                        .about("Insert a card referencing another note or canvas (default layout: card)")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("note")
+                                .long("note")
+                                .value_name("NOTE-ADDRESS")
+                                .required(true)
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("at")
+                                .long("at")
+                                .value_parser(clap::value_parser!(usize))
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("layout")
+                                .long("layout")
+                                .value_name("line|card|cardLarge")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("color")
+                                .long("color")
+                                .value_name("COLOR")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("text")
+                                .long("text")
+                                .value_name("TEXT")
+                                .help("Custom display text replacing the note snippet")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("title")
+                                .long("title")
+                                .value_name("TITLE")
+                                .help("Title snapshot; defaults to the referenced note's title")
+                                .num_args(1),
+                        ),
+                )
+                .subcommand(
+                    Command::new("set")
+                        .about("Update a card's layout, title, fill color and/or custom text")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("block")
+                                .long("block")
+                                .required(true)
+                                .value_parser(clap::value_parser!(usize))
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("layout")
+                                .long("layout")
+                                .value_name("line|card|cardLarge")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("title")
+                                .long("title")
+                                .value_name("TITLE")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("color")
+                                .long("color")
+                                .value_name("COLOR")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("clear-color")
+                                .long("clear-color")
+                                .action(ArgAction::SetTrue),
+                        )
+                        .arg(
+                            Arg::new("text")
+                                .long("text")
+                                .value_name("TEXT")
+                                .num_args(1),
+                        )
+                        .arg(
+                            Arg::new("clear-text")
+                                .long("clear-text")
+                                .action(ArgAction::SetTrue),
+                        ),
+                )
+                .subcommand(
+                    Command::new("remove")
+                        .about("Remove a note card")
+                        .arg(required_arg("id"))
+                        .arg(
+                            Arg::new("block")
+                                .long("block")
+                                .required(true)
+                                .value_parser(clap::value_parser!(usize))
+                                .num_args(1),
                         ),
                 ),
         )

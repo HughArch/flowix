@@ -63,6 +63,21 @@ real preview line
     assert_eq!(p, "Real title");
 }
 
+/// `::notecard{...}` 块级笔记卡片同样不占用首行, 否则以卡片开头的笔记会把
+/// JSON payload 当标题。payload 字符串里的 `}` 不会截断匹配。
+#[test]
+fn note_card_line_is_skipped_for_title_and_preview() {
+    let md = "\
+::notecard{\"notebookId\":\"w\",\"relativePath\":\"x.md\",\"title\":\"a } b\",\"layout\":\"card\"}
+  ::notecard{\"notebookId\":\"w\",\"relativePath\":\"y.md\"}
+# Real title
+real preview line
+";
+    let (t, p) = extract_title_and_preview(md);
+    assert_eq!(t, "Real title");
+    assert_eq!(p, "Real title");
+}
+
 #[test]
 fn agent_thread_card_refs_are_extracted_from_body() {
     let md = "\

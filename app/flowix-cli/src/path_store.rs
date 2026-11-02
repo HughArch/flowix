@@ -69,6 +69,25 @@ fn document_json(document: &flowix_core::service::NoteDocument) -> Value {
     })
 }
 
+/// Title snapshot for a note document returned by [`show`], derived the same
+/// way card faces render (`extract_title_and_preview`) and falling back to the
+/// note index entry title. Shared by canvas note cards and note-card blocks.
+pub(crate) fn note_title_snapshot(document_note: &Value) -> Option<String> {
+    let body = document_note
+        .get("body")
+        .and_then(Value::as_str)
+        .unwrap_or_default();
+    let (derived, _) = flowix_core::memo_file::extract_title_and_preview(body);
+    (!derived.trim().is_empty()).then_some(derived).or_else(|| {
+        document_note
+            .get("note")
+            .and_then(|note| note.get("title"))
+            .and_then(Value::as_str)
+            .filter(|title| !title.trim().is_empty())
+            .map(str::to_owned)
+    })
+}
+
 pub(crate) fn list(notebook_key: &str) -> Result<Value, CliError> {
     let mf = store::open()?;
     let notebook = store::resolve_notebook_config(&mf, notebook_key)?;

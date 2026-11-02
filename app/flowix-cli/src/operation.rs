@@ -2,7 +2,7 @@
 
 use crate::{
     background_store, callout_store, canvas_store, cloud, collection_store, columns_store,
-    errors::CliError, fmt, output, path_store, plugin, store, toggle_store,
+    errors::CliError, fmt, notecard_store, output, path_store, plugin, store, toggle_store,
 };
 use serde_json::Value;
 
@@ -144,6 +144,32 @@ pub(crate) enum FlowixOperation {
         address: String,
         block: usize,
         keep_content: bool,
+    },
+    NotecardList {
+        address: String,
+    },
+    NotecardAdd {
+        address: String,
+        note: String,
+        at: Option<usize>,
+        layout: Option<String>,
+        color: Option<String>,
+        text: Option<String>,
+        title: Option<String>,
+    },
+    NotecardSet {
+        address: String,
+        block: usize,
+        layout: Option<String>,
+        title: Option<String>,
+        color: Option<String>,
+        clear_color: bool,
+        text: Option<String>,
+        clear_text: bool,
+    },
+    NotecardRemove {
+        address: String,
+        block: usize,
     },
     CanvasCreate {
         notebook: Option<String>,
@@ -399,6 +425,46 @@ pub(crate) fn execute(operation: FlowixOperation) -> Result<Value, CliError> {
             block,
             keep_content,
         } => toggle_store::remove(&address, block, keep_content),
+        FlowixOperation::NotecardList { address } => notecard_store::list(&address),
+        FlowixOperation::NotecardAdd {
+            address,
+            note,
+            at,
+            layout,
+            color,
+            text,
+            title,
+        } => notecard_store::add(
+            &address,
+            &note,
+            at,
+            layout.as_deref(),
+            color.as_deref(),
+            text.as_deref(),
+            title.as_deref(),
+        ),
+        FlowixOperation::NotecardSet {
+            address,
+            block,
+            layout,
+            title,
+            color,
+            clear_color,
+            text,
+            clear_text,
+        } => notecard_store::set(
+            &address,
+            block,
+            layout.as_deref(),
+            title.as_deref(),
+            color.as_deref(),
+            clear_color,
+            text.as_deref(),
+            clear_text,
+        ),
+        FlowixOperation::NotecardRemove { address, block } => {
+            notecard_store::remove(&address, block)
+        }
         FlowixOperation::CanvasCreate {
             notebook,
             name,
